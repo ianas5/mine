@@ -6,10 +6,15 @@ is the **unpacked** form so the design can be reviewed and refined.
 
 ## Viewing it
 
-Open **`preview.html`** in any browser — it loads the vendored React/ReactDOM
-first, then the dashboard, so it runs standalone (the original export expects the
-design-tool viewer to provide React). `preview.html` is generated from
-`index.html`; edit `index.html` and regenerate if needed.
+- **`preview.html`** — open in any browser. Loads the vendored React/ReactDOM
+  first, then the dashboard, so it runs standalone.
+- **`waves.bundle.html`** — the refined design re-packed into a single
+  self-contained file in the original "Bundled Page" export format (manifest +
+  template + unpacker). Drop this back into the Claude design tool / viewer.
+  Like the original export, it expects the viewer to provide React, so it does
+  **not** run by double-clicking in a plain browser — use `preview.html` for that.
+
+Both are generated from `index.html`; edit `index.html` and regenerate.
 
 ## Structure
 
