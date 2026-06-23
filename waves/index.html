@@ -527,8 +527,9 @@ class Component extends DCLogic {
       const data=await window.WaveParser.loadFromFiles(fileList);
       const rec=data.recognized||[];
       if(rec.length===0){
-        const d=(data.diag||[]).map(x=>x.name+' ('+(x.error?('خطأ: '+x.error):('الأوراق: '+((x.sheets||[]).slice(0,8).join('، ')||'لا شيء')))+')').join(' — ');
-        throw new Error('لم يتعرّف على القسم في الملفات المرفوعة. '+(d||'تأكد أنها ملفات Wave Tracker بصيغة xlsx.'));
+        const picked=(this._picked||[]).join('، ')||'لا شيء';
+        const det=(data.diag||[]).map(x=>x.name+' ← '+(x.error?('خطأ: '+x.error):('أوراق: '+((x.sheets||[]).slice(0,10).join('، ')||'لا شيء')))).join(' | ')||'(لا يوجد تشخيص — قد تكون نسخة قديمة من الملف)';
+        throw new Error('لم يتعرّف على القسم [v6]. المُختار: '+picked+'. التفاصيل: '+det);
       }
       this.data=data;
       const label=this.nowLabel()+' · رُفع '+rec.length+' ('+rec.join('، ')+')';
@@ -643,7 +644,10 @@ class Component extends DCLogic {
   }
 
   handleUpload = (e)=>{
-    const files=e.target.files; if(files&&files.length) this.loadUploaded(files);
+    const files=e.target.files;
+    this._picked = files ? Array.from(files).map(f=>f.name+' ['+Math.round((f.size||0)/1024)+'KB]') : [];
+    if(files&&files.length) this.loadUploaded(files);
+    else this.setState({ err:'لم يُختَر أي ملف.' });
     e.target.value='';
   };
 
