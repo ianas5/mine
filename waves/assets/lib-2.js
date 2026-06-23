@@ -132,18 +132,20 @@
     return null;
   }
 
-  // Detect a role from the workbook's contents (sheet names) when the filename
-  // doesn't make it obvious — so uploads work regardless of how they're named.
-  async function detectRole(blob){
+  // Inspect a workbook's contents (sheet names) to detect its role when the
+  // filename doesn't make it obvious — so uploads work regardless of naming.
+  // Returns { role, sheets, error } so the UI can show useful diagnostics.
+  async function inspectFile(blob){
     try{
       const files=await unzip(blob);
       const names=wbSheets(files).map(s=>s.name);
+      let role=null;
       for(const dept of ['PP','SMRO','SS']){
-        if(names.some(n=>new RegExp('^'+dept+'-\\d+$').test(n))) return {kind:'tracker',dept};
+        if(names.some(n=>new RegExp('^'+dept+'-\\d+$').test(n))){ role={kind:'tracker',dept}; break; }
       }
-      if(names.includes('Management Tracker')) return {kind:'overview'};
-    }catch(e){}
-    return null;
+      if(!role && names.includes('Management Tracker')) role={kind:'overview'};
+      return { role, sheets:names };
+    }catch(e){ return { role:null, sheets:[], error:e.message }; }
   }
 
   const DEPT_FILES = { PP:'uploads/Wave Tracker V2 - PP.xlsx', SMRO:'uploads/Wave Tracker V2 - SMRO.xlsx', SS:'uploads/Wave Tracker V2 - SS.xlsx' };
@@ -176,12 +178,15 @@
 
   // Load from a FileList the user uploaded; fall back to project files for any role not provided
   async function loadFromFiles(fileList){
-    const map={}; const recognized=[];
-    for(const f of fileList){
-      const role=roleOf(f.name) || await detectRole(f);
-      if(!role) continue;
-      if(role.kind==='tracker'){ map['tracker:'+role.dept]=f; recognized.push(role.dept); }
-      else if(role.kind==='overview'){ map['overview']=f; if(recognized.indexOf('Overview')<0) recognized.push('Overview'); }
+    const map={}; const recognized=[]; const diag=[];
+    for(const f of Array.from(fileList)){
+      let role=roleOf(f.name); let info={sheets:[]};
+      if(!role){ info=await inspectFile(f); role=info.role; }
+      diag.push({ name:f.name, dept: role?(role.dept||'overview'):null, sheets:info.sheets||[], error:info.error });
+      if(role){
+        if(role.kind==='tracker'){ map['tracker:'+role.dept]=f; recognized.push(role.dept); }
+        else if(role.kind==='overview'){ map['overview']=f; if(recognized.indexOf('Overview')<0) recognized.push('Overview'); }
+      }
     }
     // fill gaps from project
     for(const dept of ['PP','SMRO','SS']){
@@ -189,7 +194,7 @@
     }
     if(!map['overview']){ try{ const r=await fetch(srcFor('overview')); if(r.ok) map['overview']=await r.blob(); }catch(e){} }
     const result=await buildFromBlobs(map);
-    result.recognized=recognized;
+    result.recognized=recognized; result.diag=diag;
     return result;
   }
 

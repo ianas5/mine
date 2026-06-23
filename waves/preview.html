@@ -255,8 +255,8 @@
           </sc-for>
         </div>
         <div style="display:flex; align-items:center; gap:9px;">
-          <button onclick="{{ onRefresh }}" title="إعادة قراءة ملفات الإكسل" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid rgba(255,255,255,.22); background:rgba(255,255,255,.1); color:var(--headerFg,#faf9f5); transition:.15s;" style-hover="background:rgba(255,255,255,.2);">↻ تحديث</button>
-          <label title="رفع ملفات إكسل محدّثة من جهازك" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid var(--gold,#d97757); background:transparent; color:var(--gold,#e6c66a); transition:.15s;">⬆ رفع ملفات<input type="file" multiple="" accept=".xlsx" onchange="{{ onUpload }}" style="display:none;"></label>
+          <button onclick="{{ onRefresh }}" title="العودة إلى البيانات المدمجة الأصلية ونسيان الملفات المرفوعة" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid rgba(255,255,255,.22); background:rgba(255,255,255,.1); color:var(--headerFg,#faf9f5); transition:.15s;" style-hover="background:rgba(255,255,255,.2);">↻ المدمجة</button>
+          <label title="ارفع ملفات إكسل المحدّثة من جهازك — تُحفظ تلقائيًّا وتبقى بعد إعادة الفتح" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid var(--gold,#d97757); background:transparent; color:var(--gold,#e6c66a); transition:.15s;">⬆ رفع وتحديث<input type="file" multiple="" accept=".xlsx" onchange="{{ onUpload }}" style="display:none;"></label>
           <span style="font-size:11px; opacity:.7; min-width:96px;">{{ syncLabel }}</span>
         </div>
       </div>
@@ -493,10 +493,17 @@ class Component extends DCLogic {
   ];
 
   componentDidMount(){
-    // show bundled snapshot instantly, then refresh live from the xlsx files
+    // If the user previously uploaded their own files, restore that automatically
+    // so periodic updates persist across reopening the page — no re-upload needed.
+    const saved=this.loadSaved();
+    if(saved){ this.data=saved.data; this.setState({ ready:true, lastSync:saved.label||'بياناتك المحفوظة' }); return; }
+    // otherwise show the bundled snapshot instantly, then refresh live from the xlsx
     if(window.WAVES_DATA){ this.data = window.WAVES_DATA; this.setState({ ready:true }); }
     this.refreshFromProject(true);
   }
+  loadSaved(){ try{ const raw=localStorage.getItem('waves_data'); if(!raw) return null; return { data:JSON.parse(raw), label:localStorage.getItem('waves_sync')||'' }; }catch(e){ return null; } }
+  saveData(label){ try{ localStorage.setItem('waves_data', JSON.stringify(this.data)); localStorage.setItem('waves_sync', label||''); }catch(e){} }
+  clearSaved(){ try{ localStorage.removeItem('waves_data'); localStorage.removeItem('waves_sync'); }catch(e){} }
   nowLabel(){
     const d=new Date();
     const p=n=>String(n).padStart(2,'0');
@@ -509,7 +516,9 @@ class Component extends DCLogic {
     try{
       if(!await this.waitParser(80)) throw new Error('المحلّل غير جاهز');
       const data=await window.WaveParser.loadFromProject();
-      this.data=data; this.setState({ ready:true, loading:false, lastSync:this.nowLabel(), err:null });
+      // "تحديث" returns to the built-in data and forgets any saved upload
+      this.clearSaved();
+      this.data=data; this.setState({ ready:true, loading:false, lastSync:'البيانات المدمجة · '+this.nowLabel(), err:null, selected:null });
     }catch(e){
       this.setState({ loading:false, err:silent?null:('تعذّر التحديث: '+e.message) });
     }
@@ -520,8 +529,14 @@ class Component extends DCLogic {
       if(!await this.waitParser(80)) throw new Error('المحلّل غير جاهز');
       const data=await window.WaveParser.loadFromFiles(fileList);
       const rec=data.recognized||[];
-      if(rec.length===0) throw new Error('لم يتم التعرف على أي ملف. ارفع ملفات Wave Tracker (PP / SMRO / SS) أو Overview بصيغة xlsx.');
-      this.data=data; this.setState({ ready:true, loading:false, lastSync:this.nowLabel()+' · رُفع '+rec.length+' ('+rec.join('، ')+')', err:null, selected:null });
+      if(rec.length===0){
+        const d=(data.diag||[]).map(x=>x.name+' ('+(x.error?('خطأ: '+x.error):('الأوراق: '+((x.sheets||[]).slice(0,8).join('، ')||'لا شيء')))+')').join(' — ');
+        throw new Error('لم يتعرّف على القسم في الملفات المرفوعة. '+(d||'تأكد أنها ملفات Wave Tracker بصيغة xlsx.'));
+      }
+      this.data=data;
+      const label=this.nowLabel()+' · رُفع '+rec.length+' ('+rec.join('، ')+')';
+      this.saveData(label); // persist so it survives reopening
+      this.setState({ ready:true, loading:false, lastSync:label, err:null, selected:null });
     }catch(e){
       this.setState({ loading:false, err:'تعذّرت قراءة الملفات: '+e.message });
     }
