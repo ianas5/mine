@@ -539,7 +539,7 @@ class Component extends DCLogic {
       if(rec.length===0){
         const picked=files.map(f=>f.name+' ['+Math.round((f.size||0)/1024)+'KB]').join('، ')||'لا شيء';
         const det=(data.diag||[]).map(x=>x.name+' ← '+(x.error?('خطأ: '+x.error):('أوراق: '+((x.sheets||[]).slice(0,10).join('، ')||'لا شيء')))).join(' | ');
-        throw new Error('لم يتعرّف على القسم [v7]. المُختار: '+picked+'.'+(det?(' التفاصيل: '+det):' سمِّ الملف بحيث يحتوي PP أو SMRO أو SS أو Overview.'));
+        throw new Error('لم يتعرّف على القسم [v8]. المُختار: '+picked+'.'+(det?(' التفاصيل: '+det):' سمِّ الملف بحيث يحتوي PP أو SMRO أو SS أو Overview.'));
       }
       this.data=data;
       const label=this.nowLabel()+' · رُفع '+rec.length+' ('+rec.join('، ')+')';
@@ -654,11 +654,14 @@ class Component extends DCLogic {
   }
 
   handleUpload = (e)=>{
-    const files=e.target.files;
-    this._picked = files ? Array.from(files).map(f=>f.name+' ['+Math.round((f.size||0)/1024)+'KB]') : [];
-    if(files&&files.length) this.loadUploaded(files);
-    else this.setState({ err:'لم يُختَر أي ملف.' });
+    // Snapshot the FileList into a static array BEFORE clearing the input.
+    // loadUploaded is async; clearing e.target.value empties the live FileList
+    // during the first await, so we must capture the File objects up front.
+    const files = e.target.files ? Array.from(e.target.files) : [];
     e.target.value='';
+    this._picked = files.map(f=>f.name+' ['+Math.round((f.size||0)/1024)+'KB]');
+    if(files.length) this.loadUploaded(files);
+    else this.setState({ err:'لم يُختَر أي ملف.' });
   };
 
   chip(label, value, cur, key){
