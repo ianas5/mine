@@ -9,11 +9,11 @@ window.WAVES_DATA = {
      "specialist": "عبدالرحمن آل مسعود",
      "dept": "PP",
      "wave": 1,
-     "currentStage": "3 - Affordability Estimate",
-     "currentStatus": "على المسار",
-     "lastDate": "14/06/2026",
-     "lastUpdate": "بانتظار ردود الشركات على طلبات الحصول على المعلومات (RFI) المرسل من قبل مدير المشروع",
-     "logCount": 7,
+     "currentStage": "4 - Tender Pack Development",
+     "currentStatus": "متأخر",
+     "lastDate": "22/06/2026",
+     "lastUpdate": "تم الرفع",
+     "logCount": 8,
      "log": [
       {
        "seq": "1",
@@ -77,6 +77,15 @@ window.WAVES_DATA = {
        "update": "بانتظار ردود الشركات على طلبات الحصول على المعلومات (RFI) المرسل من قبل مدير المشروع",
        "note": "لا يوجد اجتماع check-out",
        "status": "على المسار"
+      },
+      {
+       "seq": "8",
+       "date": "22/06/2026",
+       "stage": "4 - Tender Pack Development",
+       "deliverable": "",
+       "update": "تم الرفع",
+       "note": "لا يوجد شيئ",
+       "status": "متأخر"
       }
      ]
     },
@@ -1718,7 +1727,7 @@ window.WAVES_DATA = {
    "status": ""
   }
  ],
- "generatedFrom": "Wave Tracker V2",
+ "generatedFrom": "Wave Tracker V2 (PP/SMRO/SS) + Waves Overview",
  "deptNames": {
   "PP": "الإدارة العامة للمشتريات (PP)",
   "SMRO": "الاستدامة والإصلاح والعمرة (SMRO)",
