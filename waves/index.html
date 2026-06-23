@@ -246,13 +246,7 @@
           <div style="font-size:11px; opacity:.65; letter-spacing:1px;">آخر تحديث للبيانات</div>
           <div style="font-size:15px; font-weight:600; font-variant-numeric:tabular-nums;">{{ reportDate }}</div>
         </div>
-        <div role="group" aria-label="نمط العرض" style="display:flex; gap:3px; background:var(--switchBg,rgba(255,255,255,.1)); border:1px solid var(--switchEdge,rgba(255,255,255,.16)); border-radius:11px; padding:3px;">
-          <sc-for list="{{ themeBtns }}" as="t" hint-placeholder-count="3">
-            <button onclick="{{ t.onClick }}" title="{{ t.title }}" style="{{ t.style }}" style-hover="{{ t.hover }}">{{ t.label }}</button>
-          </sc-for>
-        </div>
         <div style="display:flex; align-items:center; gap:9px;">
-          <button onclick="{{ onRefresh }}" title="العودة إلى البيانات المدمجة الأصلية ونسيان الملفات المرفوعة" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid rgba(255,255,255,.22); background:rgba(255,255,255,.1); color:var(--headerFg,#faf9f5); transition:.15s;" style-hover="background:rgba(255,255,255,.2);">↻ المدمجة</button>
           <label title="ارفع ملفات إكسل المحدّثة من جهازك — تُحفظ تلقائيًّا وتبقى بعد إعادة الفتح" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid var(--gold,#d97757); background:transparent; color:var(--gold,#e6c66a); transition:.15s;">⬆ رفع وتحديث<input type="file" multiple="" accept=".xlsx" onchange="{{ onUpload }}" style="display:none;"></label>
           <span style="font-size:11px; opacity:.7; min-width:96px;">{{ syncLabel }}</span>
         </div>
@@ -273,36 +267,15 @@
   <main class="wv-main" style="max-width:1340px; margin:0 auto; padding:28px 30px 60px;">
 
     <sc-if value="{{ isOverview }}" hint-placeholder-val="{{ true }}">
-      <div style="margin-bottom:26px;">
-        <div style="margin-bottom:18px;">
-          <label style="position:relative; display:block; max-width:420px;">
-            <span aria-hidden="true" style="position:absolute; inset-inline-start:13px; top:50%; transform:translateY(-50%); color:var(--muted,#6e6c64); font-size:15px; pointer-events:none;">⌕</span>
-            <input type="search" value="{{ searchValue }}" oninput="{{ onSearch }}" placeholder="ابحث باسم المشروع أو المختص أو الرقم…" aria-label="بحث في المشاريع" style="width:100%; font-family:inherit; font-size:13.5px; padding:10px 14px; padding-inline-start:38px; border-radius:11px; border:1px solid var(--border,#e8e6dc); background:var(--surface,#fff); color:var(--text,#141413); box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05)); outline:none;">
-          </label>
+      <div class="wv-toolbar" style="display:flex; flex-wrap:wrap; gap:20px 26px; align-items:center; margin-bottom:30px;">
+        <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
+          <span style="font-size:12.5px; font-weight:600; color:var(--muted,#6e6c64); margin-inline-end:2px;">القسم</span>
+          <sc-for list="{{ deptChips }}" as="c" hint-placeholder-count="4"><button onclick="{{ c.onClick }}" style="{{ c.style }}">{{ c.label }}</button></sc-for>
         </div>
-        <div class="wv-toolbar" style="display:flex; flex-wrap:wrap; gap:20px 26px; align-items:center;">
-          <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
-            <span style="font-size:12.5px; font-weight:600; color:var(--muted,#6e6c64); margin-inline-end:2px;">القسم</span>
-            <sc-for list="{{ deptChips }}" as="c" hint-placeholder-count="4"><button onclick="{{ c.onClick }}" style="{{ c.style }}">{{ c.label }}</button></sc-for>
-          </div>
-          <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
-            <span style="font-size:12.5px; font-weight:600; color:var(--muted,#6e6c64); margin-inline-end:2px;">الموجة</span>
-            <sc-for list="{{ waveChips }}" as="c" hint-placeholder-count="3"><button onclick="{{ c.onClick }}" style="{{ c.style }}">{{ c.label }}</button></sc-for>
-          </div>
-          <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
-            <span style="font-size:12.5px; font-weight:600; color:var(--muted,#6e6c64); margin-inline-end:2px;">الحالة</span>
-            <sc-for list="{{ statusChips }}" as="c" hint-placeholder-count="5"><button onclick="{{ c.onClick }}" style="{{ c.style }}">{{ c.label }}</button></sc-for>
-          </div>
+        <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
+          <span style="font-size:12.5px; font-weight:600; color:var(--muted,#6e6c64); margin-inline-end:2px;">الموجة</span>
+          <sc-for list="{{ waveChips }}" as="c" hint-placeholder-count="3"><button onclick="{{ c.onClick }}" style="{{ c.style }}">{{ c.label }}</button></sc-for>
         </div>
-      </div>
-
-      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(148px,1fr)); gap:13px; margin-bottom:30px;">
-        <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="6">
-          <button onclick="{{ k.onClick }}" style="{{ k.style }}" style-hover="{{ k.hover }}">
-            <div style="font-size:11.5px; font-weight:600; letter-spacing:.3px; color:var(--muted,#6e6c64); margin-bottom:9px;">{{ k.label }}</div>
-            <div class="wv-num" style="font-size:30px; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; color:{{ k.valColor }};">{{ k.value }}</div>
-          </button>
-        </sc-for>
       </div>
 
       <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
@@ -312,16 +285,6 @@
             <div>
               <div style="font-size:17px; font-weight:600;">{{ g.name }}</div>
               <div style="font-size:12.5px; color:var(--muted,#6e6c64); margin-top:2px;">{{ g.countLabel }}</div>
-            </div>
-            <div style="margin-inline-start:auto; min-width:210px; max-width:360px; flex:1;">
-              <div style="display:flex; height:8px; border-radius:6px; overflow:hidden; background:var(--soft,#f2efe7);">
-                <sc-for list="{{ g.bars }}" as="b" hint-placeholder-count="3"><span style="width:{{ b.pct }}; background:{{ b.color }};"></span></sc-for>
-              </div>
-              <div style="display:flex; gap:13px; flex-wrap:wrap; margin-top:9px;">
-                <sc-for list="{{ g.legend }}" as="l" hint-placeholder-count="3">
-                  <span style="display:flex; align-items:center; gap:5px; font-size:11.5px; color:var(--muted,#6e6c64);"><span style="width:8px; height:8px; border-radius:50%; background:{{ l.color }};"></span>{{ l.label }} <b style="color:var(--text,#141413); font-weight:600; font-variant-numeric:tabular-nums;">{{ l.count }}</b></span>
-                </sc-for>
-              </div>
             </div>
           </div>
           <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(296px,1fr)); gap:15px;">
