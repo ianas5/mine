@@ -64,3 +64,16 @@ visual + accessibility pass:
 
 The runtime (`lib-1`), parser (`lib-2`), and data (`lib-3`) were not modified; all
 changes live in `index.html` (template + `Component`).
+
+## Branding
+
+Restyled onto **Anthropic's brand**: palette (dark `#141413`, light `#faf9f5`,
+orange accent `#d97757`, blue/green secondaries) applied across the three themes,
+and Poppins (display/numerals) + Lora (body) loaded from Google Fonts. Arabic text
+stays on IBM Plex Sans Arabic via per-glyph font fallback, since Poppins/Lora don't
+cover Arabic. Status colors map to brand green/blue/orange, with red kept for risk.
+
+## Documentation
+
+See **`DOCUMENTATION.ar.md`** (Arabic) for the end-user guide: tabs, data files and
+their Excel layout, how to update data, branding, and how to re-bundle.

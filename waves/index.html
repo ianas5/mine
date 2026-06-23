@@ -14,6 +14,7 @@
 <helmet>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <style>/* arabic */
 @font-face {
   font-family: 'IBM Plex Sans Arabic';
@@ -197,9 +198,9 @@
 </style>
 <style>
   *{box-sizing:border-box;}
-  body{margin:0;background:#eceee8;}
+  body{margin:0;background:#faf9f5;}
   ::-webkit-scrollbar{width:11px;height:11px;}
-  ::-webkit-scrollbar-thumb{background:rgba(120,135,128,.42);border-radius:8px;border:3px solid transparent;background-clip:content-box;}
+  ::-webkit-scrollbar-thumb{background:rgba(176,174,165,.5);border-radius:8px;border:3px solid transparent;background-clip:content-box;}
   @keyframes wv-slide{from{transform:translateX(-28px);opacity:0;}to{transform:translateX(0);opacity:1;}}
   @keyframes wv-fade{from{opacity:0;}to{opacity:1;}}
   @keyframes wv-rise{from{transform:translateY(8px);opacity:0;}to{transform:translateY(0);opacity:1;}}
@@ -207,9 +208,12 @@
   @keyframes wv-drift{from{transform:translateX(0);}to{transform:translateX(-50%);}}
   .wv-crest{position:absolute; inset-inline:0; bottom:-11px; height:12px; overflow:hidden; pointer-events:none; z-index:1;}
   .wv-crest svg{position:absolute; top:0; left:0; width:200%; height:12px; animation:wv-drift 16s linear infinite;}
-  /* keyboard focus — resolves against the active theme's gold token */
+  /* brand typography: Poppins for display/wordmark + numerals, Lora for body.
+     Arabic glyphs aren't in Poppins/Lora, so they fall through to IBM Plex per-glyph. */
+  .wv-title, .wv-num{ font-family:'Poppins','IBM Plex Sans Arabic',sans-serif; }
+  /* keyboard focus — resolves against the active theme's accent token */
   button:focus-visible, input:focus-visible, label:focus-visible{
-    outline:2px solid var(--gold,#c8a23a); outline-offset:2px; border-radius:9px;
+    outline:2px solid var(--gold,#d97757); outline-offset:2px; border-radius:9px;
   }
   /* responsive: collapse the generous desktop gutters on small screens */
   @media (max-width:760px){
@@ -226,9 +230,9 @@
 <script src="assets/lib-3.js"></script>
 <script src="assets/lib-2.js"></script>
 </helmet>
-<div ref="{{ setRoot }}" dir="rtl" style="min-height:100vh; background:var(--bg,#eceee8); color:var(--text,#1c2722); font-family:'IBM Plex Sans Arabic',sans-serif; -webkit-font-smoothing:antialiased;">
+<div ref="{{ setRoot }}" dir="rtl" style="min-height:100vh; background:var(--bg,#faf9f5); color:var(--text,#141413); font-family:'Lora','IBM Plex Sans Arabic',serif; -webkit-font-smoothing:antialiased;">
 
-  <header style="position:sticky; top:0; z-index:30; background:var(--headerBg,linear-gradient(120deg,#0b3a2b,#11503b 60%,#0d4332)); color:var(--headerFg,#f1ecdd); box-shadow:var(--shadowLg,0 16px 40px rgba(11,40,30,.22)); border-bottom:1px solid var(--headerEdge,rgba(200,162,58,.35));">
+  <header style="position:sticky; top:0; z-index:30; background:var(--headerBg,linear-gradient(120deg,#1f1e1c,#141413 60%,#000000)); color:var(--headerFg,#faf9f5); box-shadow:var(--shadowLg,0 16px 40px rgba(20,20,18,.22)); border-bottom:1px solid var(--headerEdge,rgba(217,119,87,.35));">
     <div class="wv-shell" style="max-width:1340px; margin:0 auto; padding:18px 30px 0; display:flex; align-items:flex-start; justify-content:space-between; gap:24px; flex-wrap:wrap;">
       <div style="display:flex; align-items:center; gap:16px;">
         <div style="width:52px; height:52px; border-radius:13px; background:#ffffff; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 14px rgba(0,0,0,.18); flex:none;"><img src="assets/image-1.png" alt="Waves" style="width:40px; height:40px; object-fit:contain;"></div>
@@ -248,8 +252,8 @@
           </sc-for>
         </div>
         <div style="display:flex; align-items:center; gap:9px;">
-          <button onclick="{{ onRefresh }}" title="إعادة قراءة ملفات الإكسل" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid rgba(255,255,255,.22); background:rgba(255,255,255,.1); color:var(--headerFg,#f1ecdd); transition:.15s;" style-hover="background:rgba(255,255,255,.2);">↻ تحديث</button>
-          <label title="رفع ملفات إكسل محدّثة من جهازك" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid var(--gold,#c8a23a); background:transparent; color:var(--gold,#e6c66a); transition:.15s;">⬆ رفع ملفات<input type="file" multiple="" accept=".xlsx" onchange="{{ onUpload }}" style="display:none;"></label>
+          <button onclick="{{ onRefresh }}" title="إعادة قراءة ملفات الإكسل" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid rgba(255,255,255,.22); background:rgba(255,255,255,.1); color:var(--headerFg,#faf9f5); transition:.15s;" style-hover="background:rgba(255,255,255,.2);">↻ تحديث</button>
+          <label title="رفع ملفات إكسل محدّثة من جهازك" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid var(--gold,#d97757); background:transparent; color:var(--gold,#e6c66a); transition:.15s;">⬆ رفع ملفات<input type="file" multiple="" accept=".xlsx" onchange="{{ onUpload }}" style="display:none;"></label>
           <span style="font-size:11px; opacity:.7; min-width:96px;">{{ syncLabel }}</span>
         </div>
       </div>
@@ -261,7 +265,7 @@
     </div>
     <div class="wv-crest" aria-hidden="true">
       <svg viewBox="0 0 2400 12" preserveAspectRatio="none">
-        <path d="M0 5 Q 75 9 150 5 T 300 5 T 450 5 T 600 5 T 750 5 T 900 5 T 1050 5 T 1200 5 T 1350 5 T 1500 5 T 1650 5 T 1800 5 T 1950 5 T 2100 5 T 2250 5 T 2400 5 L2400 0 L0 0 Z" fill="var(--gold,#c8a23a)" opacity="0.92"></path>
+        <path d="M0 5 Q 75 9 150 5 T 300 5 T 450 5 T 600 5 T 750 5 T 900 5 T 1050 5 T 1200 5 T 1350 5 T 1500 5 T 1650 5 T 1800 5 T 1950 5 T 2100 5 T 2250 5 T 2400 5 L2400 0 L0 0 Z" fill="var(--gold,#d97757)" opacity="0.92"></path>
       </svg>
     </div>
   </header>
@@ -272,21 +276,21 @@
       <div style="margin-bottom:26px;">
         <div style="margin-bottom:18px;">
           <label style="position:relative; display:block; max-width:420px;">
-            <span aria-hidden="true" style="position:absolute; inset-inline-start:13px; top:50%; transform:translateY(-50%); color:var(--muted,#69756f); font-size:15px; pointer-events:none;">⌕</span>
-            <input type="search" value="{{ searchValue }}" oninput="{{ onSearch }}" placeholder="ابحث باسم المشروع أو المختص أو الرقم…" aria-label="بحث في المشاريع" style="width:100%; font-family:inherit; font-size:13.5px; padding:10px 14px; padding-inline-start:38px; border-radius:11px; border:1px solid var(--border,#e0e4dc); background:var(--surface,#fff); color:var(--text,#1c2722); box-shadow:var(--shadow,0 1px 2px rgba(20,40,30,.05)); outline:none;">
+            <span aria-hidden="true" style="position:absolute; inset-inline-start:13px; top:50%; transform:translateY(-50%); color:var(--muted,#6e6c64); font-size:15px; pointer-events:none;">⌕</span>
+            <input type="search" value="{{ searchValue }}" oninput="{{ onSearch }}" placeholder="ابحث باسم المشروع أو المختص أو الرقم…" aria-label="بحث في المشاريع" style="width:100%; font-family:inherit; font-size:13.5px; padding:10px 14px; padding-inline-start:38px; border-radius:11px; border:1px solid var(--border,#e8e6dc); background:var(--surface,#fff); color:var(--text,#141413); box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05)); outline:none;">
           </label>
         </div>
         <div class="wv-toolbar" style="display:flex; flex-wrap:wrap; gap:20px 26px; align-items:center;">
           <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
-            <span style="font-size:12.5px; font-weight:600; color:var(--muted,#69756f); margin-inline-end:2px;">القسم</span>
+            <span style="font-size:12.5px; font-weight:600; color:var(--muted,#6e6c64); margin-inline-end:2px;">القسم</span>
             <sc-for list="{{ deptChips }}" as="c" hint-placeholder-count="4"><button onclick="{{ c.onClick }}" style="{{ c.style }}">{{ c.label }}</button></sc-for>
           </div>
           <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
-            <span style="font-size:12.5px; font-weight:600; color:var(--muted,#69756f); margin-inline-end:2px;">الموجة</span>
+            <span style="font-size:12.5px; font-weight:600; color:var(--muted,#6e6c64); margin-inline-end:2px;">الموجة</span>
             <sc-for list="{{ waveChips }}" as="c" hint-placeholder-count="3"><button onclick="{{ c.onClick }}" style="{{ c.style }}">{{ c.label }}</button></sc-for>
           </div>
           <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
-            <span style="font-size:12.5px; font-weight:600; color:var(--muted,#69756f); margin-inline-end:2px;">الحالة</span>
+            <span style="font-size:12.5px; font-weight:600; color:var(--muted,#6e6c64); margin-inline-end:2px;">الحالة</span>
             <sc-for list="{{ statusChips }}" as="c" hint-placeholder-count="5"><button onclick="{{ c.onClick }}" style="{{ c.style }}">{{ c.label }}</button></sc-for>
           </div>
         </div>
@@ -295,44 +299,44 @@
       <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(148px,1fr)); gap:13px; margin-bottom:30px;">
         <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="6">
           <button onclick="{{ k.onClick }}" style="{{ k.style }}" style-hover="{{ k.hover }}">
-            <div style="font-size:11.5px; font-weight:600; letter-spacing:.3px; color:var(--muted,#69756f); margin-bottom:9px;">{{ k.label }}</div>
-            <div style="font-size:30px; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; color:{{ k.valColor }};">{{ k.value }}</div>
+            <div style="font-size:11.5px; font-weight:600; letter-spacing:.3px; color:var(--muted,#6e6c64); margin-bottom:9px;">{{ k.label }}</div>
+            <div class="wv-num" style="font-size:30px; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; color:{{ k.valColor }};">{{ k.value }}</div>
           </button>
         </sc-for>
       </div>
 
       <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
         <section style="margin-bottom:36px; animation:wv-fade .3s ease;">
-          <div style="display:flex; align-items:center; gap:14px 18px; flex-wrap:wrap; margin-bottom:16px; padding-bottom:13px; border-bottom:1px solid var(--border,#e0e4dc);">
-            <span style="font-weight:700; font-size:13px; letter-spacing:1px; color:var(--primaryFg,#fff); background:var(--primary,#0f5132); padding:6px 12px; border-radius:9px;">{{ g.code }}</span>
+          <div style="display:flex; align-items:center; gap:14px 18px; flex-wrap:wrap; margin-bottom:16px; padding-bottom:13px; border-bottom:1px solid var(--border,#e8e6dc);">
+            <span style="font-weight:700; font-size:13px; letter-spacing:1px; color:var(--primaryFg,#fff); background:var(--primary,#141413); padding:6px 12px; border-radius:9px;">{{ g.code }}</span>
             <div>
               <div style="font-size:17px; font-weight:600;">{{ g.name }}</div>
-              <div style="font-size:12.5px; color:var(--muted,#69756f); margin-top:2px;">{{ g.countLabel }}</div>
+              <div style="font-size:12.5px; color:var(--muted,#6e6c64); margin-top:2px;">{{ g.countLabel }}</div>
             </div>
             <div style="margin-inline-start:auto; min-width:210px; max-width:360px; flex:1;">
-              <div style="display:flex; height:8px; border-radius:6px; overflow:hidden; background:var(--soft,#eaf1ea);">
+              <div style="display:flex; height:8px; border-radius:6px; overflow:hidden; background:var(--soft,#f2efe7);">
                 <sc-for list="{{ g.bars }}" as="b" hint-placeholder-count="3"><span style="width:{{ b.pct }}; background:{{ b.color }};"></span></sc-for>
               </div>
               <div style="display:flex; gap:13px; flex-wrap:wrap; margin-top:9px;">
                 <sc-for list="{{ g.legend }}" as="l" hint-placeholder-count="3">
-                  <span style="display:flex; align-items:center; gap:5px; font-size:11.5px; color:var(--muted,#69756f);"><span style="width:8px; height:8px; border-radius:50%; background:{{ l.color }};"></span>{{ l.label }} <b style="color:var(--text,#1c2722); font-weight:600; font-variant-numeric:tabular-nums;">{{ l.count }}</b></span>
+                  <span style="display:flex; align-items:center; gap:5px; font-size:11.5px; color:var(--muted,#6e6c64);"><span style="width:8px; height:8px; border-radius:50%; background:{{ l.color }};"></span>{{ l.label }} <b style="color:var(--text,#141413); font-weight:600; font-variant-numeric:tabular-nums;">{{ l.count }}</b></span>
                 </sc-for>
               </div>
             </div>
           </div>
           <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(296px,1fr)); gap:15px;">
             <sc-for list="{{ g.projects }}" as="p" hint-placeholder-count="4">
-              <div onclick="{{ p.open }}" onkeydown="{{ p.openKey }}" tabindex="0" role="button" aria-label="{{ p.aria }}" style="cursor:pointer; background:var(--surface,#fff); border:1px solid var(--border,#e0e4dc); border-radius:15px; padding:17px; box-shadow:var(--shadow,0 1px 2px rgba(20,40,30,.05)); display:flex; flex-direction:column; gap:11px; transition:transform .16s ease, box-shadow .16s ease, border-color .16s ease;" style-hover="transform:translateY(-3px); box-shadow:var(--shadowLg,0 16px 40px rgba(11,40,30,.18)); border-color:var(--gold,#c8a23a);" style-focus-visible="outline:2px solid var(--gold,#c8a23a); outline-offset:3px; transform:translateY(-3px); border-color:var(--gold,#c8a23a);">
+              <div onclick="{{ p.open }}" onkeydown="{{ p.openKey }}" tabindex="0" role="button" aria-label="{{ p.aria }}" style="cursor:pointer; background:var(--surface,#fff); border:1px solid var(--border,#e8e6dc); border-radius:15px; padding:17px; box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05)); display:flex; flex-direction:column; gap:11px; transition:transform .16s ease, box-shadow .16s ease, border-color .16s ease;" style-hover="transform:translateY(-3px); box-shadow:var(--shadowLg,0 16px 40px rgba(20,20,18,.18)); border-color:var(--gold,#d97757);" style-focus-visible="outline:2px solid var(--gold,#d97757); outline-offset:3px; transform:translateY(-3px); border-color:var(--gold,#d97757);">
                 <div style="display:flex; align-items:center; gap:8px;">
-                  <span style="font-weight:700; font-size:11.5px; letter-spacing:.5px; color:var(--primaryFg,#fff); background:var(--primary,#0f5132); padding:3px 9px; border-radius:7px;">{{ p.id }}</span>
-                  <span style="font-size:11.5px; font-weight:500; color:var(--gold,#c8a23a); border:1px solid var(--goldEdge,rgba(200,162,58,.5)); padding:2px 9px; border-radius:20px;">{{ p.waveLabel }}</span>
+                  <span style="font-weight:700; font-size:11.5px; letter-spacing:.5px; color:var(--primaryFg,#fff); background:var(--primary,#141413); padding:3px 9px; border-radius:7px;">{{ p.id }}</span>
+                  <span style="font-size:11.5px; font-weight:500; color:var(--gold,#d97757); border:1px solid var(--goldEdge,rgba(217,119,87,.5)); padding:2px 9px; border-radius:20px;">{{ p.waveLabel }}</span>
                   <span style="margin-inline-start:auto; font-size:11.5px; font-weight:600; padding:4px 11px; border-radius:20px; {{ p.badgeStyle }}">{{ p.statusLabel }}</span>
                 </div>
                 <div style="font-size:15px; font-weight:600; line-height:1.55; min-height:46px;">{{ p.name }}</div>
-                <div style="border-top:1px dashed var(--border,#e0e4dc); padding-top:11px; display:flex; flex-direction:column; gap:7px;">
-                  <div style="display:flex; align-items:center; gap:7px; font-size:12.5px;"><span style="color:var(--muted,#69756f); min-width:64px;">المختص</span><span style="font-weight:500;">{{ p.specialist }}</span></div>
-                  <div style="display:flex; align-items:center; gap:7px; font-size:12.5px;"><span style="color:var(--muted,#69756f); min-width:64px;">المرحلة</span><span style="font-weight:500; color:var(--gold,#a9863c);">{{ p.stageText }}</span></div>
-                  <div style="display:flex; align-items:center; gap:7px; font-size:12.5px;"><span style="color:var(--muted,#69756f); min-width:64px;">آخر تحديث</span><span style="font-weight:500; font-variant-numeric:tabular-nums;">{{ p.lastDate }}</span></div>
+                <div style="border-top:1px dashed var(--border,#e8e6dc); padding-top:11px; display:flex; flex-direction:column; gap:7px;">
+                  <div style="display:flex; align-items:center; gap:7px; font-size:12.5px;"><span style="color:var(--muted,#6e6c64); min-width:64px;">المختص</span><span style="font-weight:500;">{{ p.specialist }}</span></div>
+                  <div style="display:flex; align-items:center; gap:7px; font-size:12.5px;"><span style="color:var(--muted,#6e6c64); min-width:64px;">المرحلة</span><span style="font-weight:500; color:var(--gold,#b5613c);">{{ p.stageText }}</span></div>
+                  <div style="display:flex; align-items:center; gap:7px; font-size:12.5px;"><span style="color:var(--muted,#6e6c64); min-width:64px;">آخر تحديث</span><span style="font-weight:500; font-variant-numeric:tabular-nums;">{{ p.lastDate }}</span></div>
                 </div>
               </div>
             </sc-for>
@@ -341,27 +345,27 @@
       </sc-for>
 
       <sc-if value="{{ noResults }}" hint-placeholder-val="{{ false }}">
-        <div style="text-align:center; padding:70px 20px; color:var(--muted,#69756f); font-size:15px;">لا توجد مشاريع مطابقة لمعايير التصفية الحالية.</div>
+        <div style="text-align:center; padding:70px 20px; color:var(--muted,#6e6c64); font-size:15px;">لا توجد مشاريع مطابقة لمعايير التصفية الحالية.</div>
       </sc-if>
     </sc-if>
 
     <sc-if value="{{ isMgmt }}" hint-placeholder-val="{{ false }}">
       <div style="margin-bottom:18px;">
         <div style="font-size:19px; font-weight:700;">متابعة المهام الإدارية</div>
-        <div style="font-size:13px; color:var(--muted,#69756f); margin-top:3px;">البنود الإدارية والسياسات المشتركة عبر مبادرة الموجات</div>
+        <div style="font-size:13px; color:var(--muted,#6e6c64); margin-top:3px;">البنود الإدارية والسياسات المشتركة عبر مبادرة الموجات</div>
       </div>
       <div style="display:flex; flex-direction:column; gap:14px;">
         <sc-for list="{{ mgmtItems }}" as="m" hint-placeholder-count="6">
-          <div style="background:var(--surface,#fff); border:1px solid var(--border,#e0e4dc); border-radius:15px; padding:18px 20px; box-shadow:var(--shadow,0 1px 2px rgba(20,40,30,.05)); display:flex; gap:18px; align-items:flex-start;">
-            <span style="font-weight:700; font-size:14px; color:var(--primaryFg,#fff); background:var(--primary,#0f5132); width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; flex:none;">{{ m.seq }}</span>
+          <div style="background:var(--surface,#fff); border:1px solid var(--border,#e8e6dc); border-radius:15px; padding:18px 20px; box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05)); display:flex; gap:18px; align-items:flex-start;">
+            <span style="font-weight:700; font-size:14px; color:var(--primaryFg,#fff); background:var(--primary,#141413); width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; flex:none;">{{ m.seq }}</span>
             <div style="flex:1;">
               <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
                 <span style="font-size:16px; font-weight:600;">{{ m.topic }}</span>
                 <span style="font-size:11.5px; font-weight:600; padding:4px 11px; border-radius:20px; {{ m.badgeStyle }}">{{ m.statusLabel }}</span>
-                <span style="margin-inline-start:auto; font-size:12px; color:var(--muted,#69756f); font-variant-numeric:tabular-nums;">{{ m.dateLabel }}</span>
+                <span style="margin-inline-start:auto; font-size:12px; color:var(--muted,#6e6c64); font-variant-numeric:tabular-nums;">{{ m.dateLabel }}</span>
               </div>
               <ul style="margin:0; padding-inline-start:20px; display:flex; flex-direction:column; gap:5px;">
-                <sc-for list="{{ m.actionLines }}" as="a" hint-placeholder-count="3"><li style="font-size:13.5px; line-height:1.6; color:var(--text,#1c2722);">{{ a }}</li></sc-for>
+                <sc-for list="{{ m.actionLines }}" as="a" hint-placeholder-count="3"><li style="font-size:13.5px; line-height:1.6; color:var(--text,#141413);">{{ a }}</li></sc-for>
               </ul>
             </div>
           </div>
@@ -372,29 +376,29 @@
     <sc-if value="{{ isIssues }}" hint-placeholder-val="{{ false }}">
       <div style="margin-bottom:18px;">
         <div style="font-size:19px; font-weight:700;">سجل المعوقات</div>
-        <div style="font-size:13px; color:var(--muted,#69756f); margin-top:3px;">المعوقات المؤثرة على سير المشاريع عبر الإدارات</div>
+        <div style="font-size:13px; color:var(--muted,#6e6c64); margin-top:3px;">المعوقات المؤثرة على سير المشاريع عبر الإدارات</div>
       </div>
       <sc-if value="{{ hasIssues }}" hint-placeholder-val="{{ true }}">
         <div style="display:flex; flex-direction:column; gap:14px;">
           <sc-for list="{{ issuesList }}" as="i" hint-placeholder-count="2">
-            <div style="background:var(--surface,#fff); border:1px solid var(--border,#e0e4dc); border-inline-start:4px solid {{ i.accent }}; border-radius:13px; padding:17px 20px; box-shadow:var(--shadow,0 1px 2px rgba(20,40,30,.05));">
+            <div style="background:var(--surface,#fff); border:1px solid var(--border,#e8e6dc); border-inline-start:4px solid {{ i.accent }}; border-radius:13px; padding:17px 20px; box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05));">
               <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
-                <span style="font-weight:700; font-size:11.5px; color:var(--primaryFg,#fff); background:var(--primary,#0f5132); padding:3px 9px; border-radius:7px;">{{ i.dept }}</span>
+                <span style="font-weight:700; font-size:11.5px; color:var(--primaryFg,#fff); background:var(--primary,#141413); padding:3px 9px; border-radius:7px;">{{ i.dept }}</span>
                 <span style="font-size:11.5px; font-weight:600; padding:4px 11px; border-radius:20px; {{ i.statusStyle }}">{{ i.statusLabel }}</span>
                 <span style="font-size:11.5px; font-weight:600; padding:4px 11px; border-radius:20px; {{ i.impactStyle }}">التأثير: {{ i.impact }}</span>
-                <span style="margin-inline-start:auto; font-size:12px; color:var(--muted,#69756f); font-variant-numeric:tabular-nums;">منذ {{ i.start }}</span>
+                <span style="margin-inline-start:auto; font-size:12px; color:var(--muted,#6e6c64); font-variant-numeric:tabular-nums;">منذ {{ i.start }}</span>
               </div>
               <div style="font-size:15px; font-weight:500; line-height:1.6; margin-bottom:10px;">{{ i.desc }}</div>
-              <div style="display:flex; gap:22px; flex-wrap:wrap; font-size:12.5px; color:var(--muted,#69756f);">
-                <span>المرحلة المتأثرة: <b style="color:var(--text,#1c2722); font-weight:600;">{{ i.stage }}</b></span>
-                <span>المسؤول: <b style="color:var(--text,#1c2722); font-weight:600;">{{ i.owner }}</b></span>
+              <div style="display:flex; gap:22px; flex-wrap:wrap; font-size:12.5px; color:var(--muted,#6e6c64);">
+                <span>المرحلة المتأثرة: <b style="color:var(--text,#141413); font-weight:600;">{{ i.stage }}</b></span>
+                <span>المسؤول: <b style="color:var(--text,#141413); font-weight:600;">{{ i.owner }}</b></span>
               </div>
             </div>
           </sc-for>
         </div>
       </sc-if>
       <sc-if value="{{ noIssues }}" hint-placeholder-val="{{ false }}">
-        <div style="text-align:center; padding:70px 20px; color:var(--muted,#69756f); font-size:15px;">لا توجد معوقات مسجلة حالياً. 🟢</div>
+        <div style="text-align:center; padding:70px 20px; color:var(--muted,#6e6c64); font-size:15px;">لا توجد معوقات مسجلة حالياً. 🟢</div>
       </sc-if>
     </sc-if>
 
@@ -402,15 +406,15 @@
 
   <sc-if value="{{ isDetailOpen }}" hint-placeholder-val="{{ false }}">
     <div onclick="{{ closeDetail }}" style="position:fixed; inset:0; background:rgba(8,20,14,.52); z-index:50; display:flex; justify-content:flex-start; animation:wv-fade .2s ease; backdrop-filter:blur(2px);">
-      <div onclick="{{ stopProp }}" style="background:var(--bg,#eceee8); width:min(720px,100%); height:100%; overflow-y:auto; box-shadow:var(--shadowLg,0 16px 40px rgba(11,40,30,.4)); animation:wv-slide .26s cubic-bezier(.2,.7,.3,1);">
-        <div style="position:sticky; top:0; z-index:2; background:var(--headerBg,linear-gradient(120deg,#0b3a2b,#11503b 60%,#0d4332)); color:var(--headerFg,#f1ecdd); padding:20px 26px;">
+      <div onclick="{{ stopProp }}" style="background:var(--bg,#faf9f5); width:min(720px,100%); height:100%; overflow-y:auto; box-shadow:var(--shadowLg,0 16px 40px rgba(20,20,18,.4)); animation:wv-slide .26s cubic-bezier(.2,.7,.3,1);">
+        <div style="position:sticky; top:0; z-index:2; background:var(--headerBg,linear-gradient(120deg,#1f1e1c,#141413 60%,#000000)); color:var(--headerFg,#faf9f5); padding:20px 26px;">
           <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
             <div style="display:flex; align-items:center; gap:11px; flex-wrap:wrap;">
-              <span style="font-weight:700; font-size:12px; letter-spacing:.5px; color:#11281d; background:var(--gold,#c8a23a); padding:4px 11px; border-radius:8px;">{{ sel.id }}</span>
+              <span style="font-weight:700; font-size:12px; letter-spacing:.5px; color:#141413; background:var(--gold,#d97757); padding:4px 11px; border-radius:8px;">{{ sel.id }}</span>
               <span style="font-size:12px; opacity:.85; border:1px solid rgba(255,255,255,.3); padding:3px 10px; border-radius:20px;">{{ sel.waveLabel }}</span>
               <span style="font-size:12px; font-weight:600; padding:4px 11px; border-radius:20px; {{ sel.badgeStyle }}">{{ sel.statusLabel }}</span>
             </div>
-            <button onclick="{{ closeDetail }}" style="background:rgba(255,255,255,.12); border:none; color:var(--headerFg,#f1ecdd); width:34px; height:34px; border-radius:9px; cursor:pointer; font-size:17px; display:flex; align-items:center; justify-content:center;" style-hover="background:rgba(255,255,255,.22);">✕</button>
+            <button onclick="{{ closeDetail }}" style="background:rgba(255,255,255,.12); border:none; color:var(--headerFg,#faf9f5); width:34px; height:34px; border-radius:9px; cursor:pointer; font-size:17px; display:flex; align-items:center; justify-content:center;" style-hover="background:rgba(255,255,255,.22);">✕</button>
           </div>
           <div style="font-size:21px; font-weight:700; line-height:1.5; margin-top:14px;">{{ sel.name }}</div>
           <div style="display:flex; gap:26px; margin-top:12px; font-size:13px; opacity:.9; flex-wrap:wrap;">
@@ -421,7 +425,7 @@
         </div>
 
         <div style="padding:24px 26px;">
-          <div style="font-size:13px; font-weight:600; color:var(--muted,#69756f); margin-bottom:14px;">مرحلة سلسلة القيمة</div>
+          <div style="font-size:13px; font-weight:600; color:var(--muted,#6e6c64); margin-bottom:14px;">مرحلة سلسلة القيمة</div>
           <div style="display:flex; align-items:center; gap:6px; margin-bottom:30px;">
             <sc-for list="{{ sel.steps }}" as="s" hint-placeholder-count="4">
               <div style="flex:1; text-align:center;">
@@ -431,26 +435,26 @@
             </sc-for>
           </div>
 
-          <div style="font-size:13px; font-weight:600; color:var(--muted,#69756f); margin-bottom:16px;">سجل سير المشروع</div>
+          <div style="font-size:13px; font-weight:600; color:var(--muted,#6e6c64); margin-bottom:16px;">سجل سير المشروع</div>
           <sc-if value="{{ sel.hasLog }}" hint-placeholder-val="{{ true }}">
             <div style="display:flex; flex-direction:column;">
               <sc-for list="{{ sel.log }}" as="e" hint-placeholder-count="5">
                 <div style="display:flex; gap:14px;">
                   <div style="display:flex; flex-direction:column; align-items:center; flex:none; width:18px;">
-                    <span style="width:13px; height:13px; border-radius:50%; background:{{ e.dotColor }}; border:3px solid var(--bg,#eceee8); box-shadow:0 0 0 1px {{ e.dotColor }}; margin-top:5px;"></span>
-                    <span style="flex:1; width:2px; background:var(--border,#e0e4dc);"></span>
+                    <span style="width:13px; height:13px; border-radius:50%; background:{{ e.dotColor }}; border:3px solid var(--bg,#faf9f5); box-shadow:0 0 0 1px {{ e.dotColor }}; margin-top:5px;"></span>
+                    <span style="flex:1; width:2px; background:var(--border,#e8e6dc);"></span>
                   </div>
                   <div style="flex:1; padding-bottom:18px;">
-                    <div style="background:var(--surface,#fff); border:1px solid var(--border,#e0e4dc); border-radius:13px; padding:14px 16px; box-shadow:var(--shadow,0 1px 2px rgba(20,40,30,.05));">
+                    <div style="background:var(--surface,#fff); border:1px solid var(--border,#e8e6dc); border-radius:13px; padding:14px 16px; box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05));">
                       <div style="display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:9px;">
                         <span style="font-size:12.5px; font-weight:700; font-variant-numeric:tabular-nums;">{{ e.date }}</span>
-                        <span style="font-size:11px; font-weight:500; color:var(--gold,#a9863c); background:var(--soft,#eaf1ea); padding:2px 9px; border-radius:6px;">{{ e.stageText }}</span>
-                        <sc-if value="{{ e.hasDeliv }}" hint-placeholder-val="{{ false }}"><span style="font-size:11px; font-weight:500; color:var(--muted,#69756f); border:1px solid var(--border,#e0e4dc); padding:2px 9px; border-radius:6px;">{{ e.deliverable }}</span></sc-if>
+                        <span style="font-size:11px; font-weight:500; color:var(--gold,#b5613c); background:var(--soft,#f2efe7); padding:2px 9px; border-radius:6px;">{{ e.stageText }}</span>
+                        <sc-if value="{{ e.hasDeliv }}" hint-placeholder-val="{{ false }}"><span style="font-size:11px; font-weight:500; color:var(--muted,#6e6c64); border:1px solid var(--border,#e8e6dc); padding:2px 9px; border-radius:6px;">{{ e.deliverable }}</span></sc-if>
                         <span style="margin-inline-start:auto; font-size:11px; font-weight:600; padding:3px 10px; border-radius:20px; {{ e.badgeStyle }}">{{ e.statusLabel }}</span>
                       </div>
                       <div style="font-size:13.5px; line-height:1.7; white-space:pre-line;">{{ e.update }}</div>
                       <sc-if value="{{ e.hasNote }}" hint-placeholder-val="{{ false }}">
-                        <div style="margin-top:10px; padding-top:10px; border-top:1px dashed var(--border,#e0e4dc); font-size:12.5px; line-height:1.65; color:var(--muted,#69756f); white-space:pre-line;"><b style="color:var(--gold,#a9863c); font-weight:600;">ملاحظة:</b> {{ e.note }}</div>
+                        <div style="margin-top:10px; padding-top:10px; border-top:1px dashed var(--border,#e8e6dc); font-size:12.5px; line-height:1.65; color:var(--muted,#6e6c64); white-space:pre-line;"><b style="color:var(--gold,#b5613c); font-weight:600;">ملاحظة:</b> {{ e.note }}</div>
                       </sc-if>
                     </div>
                   </div>
@@ -459,7 +463,7 @@
             </div>
           </sc-if>
           <sc-if value="{{ sel.emptyLog }}" hint-placeholder-val="{{ false }}">
-            <div style="text-align:center; padding:40px 20px; color:var(--muted,#69756f); font-size:14px; background:var(--surface,#fff); border:1px dashed var(--border,#e0e4dc); border-radius:13px;">لم تُسجَّل تحديثات لهذا المشروع بعد.</div>
+            <div style="text-align:center; padding:40px 20px; color:var(--muted,#6e6c64); font-size:14px; background:var(--surface,#fff); border:1px dashed var(--border,#e8e6dc); border-radius:13px;">لم تُسجَّل تحديثات لهذا المشروع بعد.</div>
           </sc-if>
         </div>
       </div>
@@ -473,9 +477,9 @@ class Component extends DCLogic {
   state = { theme:'balanced', tab:'overview', search:'', dept:'all', wave:'all', status:'all', selected:null, ready:false, loading:false, lastSync:null, err:null };
 
   PAL = {
-    sober:    { bg:'#f3f4f0', surface:'#ffffff', surface2:'#f8faf6', headerBg:'#ffffff', headerFg:'#103d2d', headerEdge:'rgba(169,134,60,.45)', text:'#1c2722', muted:'#6c7872', border:'#e4e7e1', primary:'#0f5132', primaryFg:'#ffffff', gold:'#a9863c', goldEdge:'rgba(169,134,60,.5)', soft:'#eef3ee', switchBg:'#f1f4f0', switchEdge:'#e0e4dc', shadow:'0 1px 2px rgba(20,40,30,.06)', shadowLg:'0 14px 38px rgba(20,40,30,.14)', dark:false },
-    balanced: { bg:'#eceee8', surface:'#ffffff', surface2:'#f6f8f3', headerBg:'linear-gradient(120deg,#0b3a2b,#11503b 60%,#0d4332)', headerFg:'#f1ecdd', headerEdge:'rgba(200,162,58,.4)', text:'#1c2722', muted:'#69756f', border:'#e0e4dc', primary:'#0f5132', primaryFg:'#ffffff', gold:'#c8a23a', goldEdge:'rgba(200,162,58,.5)', soft:'#eaf1ea', switchBg:'rgba(255,255,255,.1)', switchEdge:'rgba(255,255,255,.16)', shadow:'0 1px 2px rgba(20,40,30,.05), 0 3px 12px rgba(20,40,30,.05)', shadowLg:'0 16px 40px rgba(11,40,30,.2)', dark:false },
-    bold:     { bg:'#0a120e', surface:'#111d17', surface2:'#16261e', headerBg:'linear-gradient(120deg,#08160f,#0e2a1c)', headerFg:'#f1ead6', headerEdge:'rgba(230,187,80,.35)', text:'#e9efe9', muted:'#8aa097', border:'#1d3127', primary:'#1f9d6b', primaryFg:'#04130c', gold:'#e6bb50', goldEdge:'rgba(230,187,80,.5)', soft:'#13241b', switchBg:'rgba(255,255,255,.07)', switchEdge:'rgba(255,255,255,.13)', shadow:'0 1px 2px rgba(0,0,0,.4)', shadowLg:'0 24px 60px rgba(0,0,0,.55)', dark:true }
+    sober:    { bg:'#faf9f5', surface:'#ffffff', surface2:'#f6f4ee', headerBg:'#ffffff', headerFg:'#141413', headerEdge:'rgba(217,119,87,.4)', text:'#141413', muted:'#6e6c64', border:'#e8e6dc', primary:'#141413', primaryFg:'#faf9f5', gold:'#d97757', goldEdge:'rgba(217,119,87,.5)', soft:'#f2efe7', switchBg:'#f0eee6', switchEdge:'#e8e6dc', shadow:'0 1px 2px rgba(20,20,18,.06)', shadowLg:'0 14px 38px rgba(20,20,18,.13)', dark:false },
+    balanced: { bg:'#faf9f5', surface:'#ffffff', surface2:'#f6f4ee', headerBg:'linear-gradient(120deg,#1f1e1c,#141413 60%,#000000)', headerFg:'#faf9f5', headerEdge:'rgba(217,119,87,.45)', text:'#141413', muted:'#6e6c64', border:'#e8e6dc', primary:'#141413', primaryFg:'#faf9f5', gold:'#d97757', goldEdge:'rgba(217,119,87,.5)', soft:'#f2efe7', switchBg:'rgba(255,255,255,.1)', switchEdge:'rgba(255,255,255,.16)', shadow:'0 1px 2px rgba(20,20,18,.05), 0 3px 12px rgba(20,20,18,.05)', shadowLg:'0 16px 40px rgba(20,20,18,.18)', dark:false },
+    bold:     { bg:'#141413', surface:'#1f1e1c', surface2:'#26241f', headerBg:'linear-gradient(120deg,#26241f,#141413)', headerFg:'#faf9f5', headerEdge:'rgba(217,119,87,.4)', text:'#f2efe7', muted:'#b0aea5', border:'#34322c', primary:'#d97757', primaryFg:'#141413', gold:'#e0916f', goldEdge:'rgba(224,145,111,.5)', soft:'#26241f', switchBg:'rgba(255,255,255,.07)', switchEdge:'rgba(255,255,255,.13)', shadow:'0 1px 2px rgba(0,0,0,.4)', shadowLg:'0 24px 60px rgba(0,0,0,.55)', dark:true }
   };
 
   STAGES = [
@@ -537,8 +541,8 @@ class Component extends DCLogic {
     return 'none'; }
   catColors(key){
     const dark = this.pal().dark;
-    const L = { done:{c:'#0c6b46',b:'#e2f2ea'}, track:{c:'#1d5a9e',b:'#e8eff8'}, late:{c:'#97640f',b:'#fbf0d8'}, risk:{c:'#b23627',b:'#fae6e2'}, none:{c:'#6c7872',b:'#edf0ea'} };
-    const D = { done:{c:'#34d399',b:'rgba(52,211,153,.15)'}, track:{c:'#60a5fa',b:'rgba(96,165,250,.15)'}, late:{c:'#fbbf24',b:'rgba(251,191,36,.15)'}, risk:{c:'#f87171',b:'rgba(248,113,113,.16)'}, none:{c:'#93a89f',b:'rgba(140,160,150,.13)'} };
+    const L = { done:{c:'#5c6e45',b:'#eef0e6'}, track:{c:'#3f6da3',b:'#e9f0f7'}, late:{c:'#b5613c',b:'#f8ebe4'}, risk:{c:'#a3342a',b:'#f6e3e0'}, none:{c:'#8a887f',b:'#efece4'} };
+    const D = { done:{c:'#9fb27f',b:'rgba(120,140,93,.18)'}, track:{c:'#8fb4dc',b:'rgba(106,155,204,.18)'}, late:{c:'#e6916b',b:'rgba(217,119,87,.18)'}, risk:{c:'#e08074',b:'rgba(200,70,55,.2)'}, none:{c:'#b0aea5',b:'rgba(176,174,165,.14)'} };
     return (dark?D:L)[key];
   }
   statusLabel(raw){ const k=this.catKey(raw); return k==='none' ? 'بانتظار البدء' : (raw||'').trim(); }
@@ -573,11 +577,11 @@ class Component extends DCLogic {
 
   themeButtons(){
     const p=this.pal();
-    const headerFg = this.state.theme==='sober' ? '#103d2d' : '#f1ecdd';
+    const headerFg = this.state.theme==='sober' ? '#141413' : '#faf9f5';
     const defs=[['sober','هادئ'],['balanced','متوازن'],['bold','داكن']];
     return defs.map(([key,label])=>{
       const active=this.state.theme===key;
-      const style=`cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; padding:6px 13px; border:none; border-radius:8px; transition:.15s; white-space:nowrap; color:${active?'#11281d':headerFg}; ${active?'':'opacity:.7;'} background:${active?p.gold:'transparent'};`;
+      const style=`cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; padding:6px 13px; border:none; border-radius:8px; transition:.15s; white-space:nowrap; color:${active?'#141413':headerFg}; ${active?'':'opacity:.7;'} background:${active?p.gold:'transparent'};`;
       return { label, title:'عرض بنمط: '+label, style, hover: active?'':'opacity:1; background:rgba(255,255,255,.14);', onClick:()=>this.setState({ theme:key }) };
     });
   }
@@ -649,11 +653,11 @@ class Component extends DCLogic {
     const allProjects=[].concat(...['PP','SMRO','SS'].map(d=>data.departments[d]?data.departments[d].projects:[]));
     const issuesAll=[].concat(...['PP','SMRO','SS'].map(d=>(data.departments[d]?data.departments[d].issues:[]).map(x=>({...x,dept:d}))));
     const tabDefs=[{label:'النظرة العامة',value:'overview',count:allProjects.length},{label:'متابعة الإدارة',value:'mgmt',count:data.managementTracker.length},{label:'المعوقات',value:'issues',count:issuesAll.length}];
-    const headerFg = (this.state.theme==='sober') ? '#103d2d' : '#f1ecdd';
+    const headerFg = (this.state.theme==='sober') ? '#141413' : '#faf9f5';
     const tabs=tabDefs.map(t=>{
       const active=st.tab===t.value;
       const style=`cursor:pointer; font-family:inherit; font-size:14px; font-weight:600; padding:11px 16px 13px; border:none; background:transparent; color:${active?headerFg:(dark?'rgba(241,234,214,.6)':(this.state.theme==='sober'?'#6c7872':'rgba(241,236,221,.62)'))}; border-bottom:2.5px solid ${active?pal.gold:'transparent'}; display:flex; align-items:center; gap:8px; transition:.15s;`;
-      const countStyle=`font-size:11px; font-weight:700; padding:1px 7px; border-radius:20px; background:${active?pal.gold:'rgba(150,150,150,.22)'}; color:${active?'#14281d':(dark?'#cdd8d1':headerFg)};`;
+      const countStyle=`font-size:11px; font-weight:700; padding:1px 7px; border-radius:20px; background:${active?pal.gold:'rgba(150,150,150,.22)'}; color:${active?'#141413':(dark?'#cdd8d1':headerFg)};`;
       return { label:t.label, count:t.count, style, countStyle, onClick:()=>this.setState({tab:t.value, selected:null}) };
     });
 
@@ -674,9 +678,9 @@ class Component extends DCLogic {
       {label:'معوقات مفتوحة', value:openIssues, color:this.catColors('risk').c, action:()=>this.setState({tab:'issues',selected:null})}
     ];
     const kpis=kpiDefs.map(k=>{
-      const style=`width:100%; text-align:start; font-family:inherit; background:var(--surface,#fff); border:1.5px solid ${pal.border}; border-inline-start:3px solid ${k.color}; border-radius:14px; padding:15px 16px; box-shadow:var(--shadow,0 1px 2px rgba(20,40,30,.05)); transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease; ${k.action?'cursor:pointer;':'cursor:default;'}`;
+      const style=`width:100%; text-align:start; font-family:inherit; background:var(--surface,#fff); border:1.5px solid ${pal.border}; border-inline-start:3px solid ${k.color}; border-radius:14px; padding:15px 16px; box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05)); transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease; ${k.action?'cursor:pointer;':'cursor:default;'}`;
       return { label:k.label, value:k.value, valColor:k.color, style,
-        hover:k.action?'transform:translateY(-2px); box-shadow:var(--shadowLg,0 16px 40px rgba(11,40,30,.16));':'',
+        hover:k.action?'transform:translateY(-2px); box-shadow:var(--shadowLg,0 16px 40px rgba(20,20,18,.16));':'',
         onClick:k.action||(()=>{}) };
     });
 
