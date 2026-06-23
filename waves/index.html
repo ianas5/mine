@@ -516,7 +516,9 @@ class Component extends DCLogic {
     try{
       if(!await this.waitParser(80)) throw new Error('المحلّل غير جاهز');
       const data=await window.WaveParser.loadFromFiles(fileList);
-      this.data=data; this.setState({ ready:true, loading:false, lastSync:this.nowLabel()+' · ملفات مرفوعة', err:null, selected:null });
+      const rec=data.recognized||[];
+      if(rec.length===0) throw new Error('لم يتم التعرف على أي ملف. ارفع ملفات Wave Tracker (PP / SMRO / SS) أو Overview بصيغة xlsx.');
+      this.data=data; this.setState({ ready:true, loading:false, lastSync:this.nowLabel()+' · رُفع '+rec.length+' ('+rec.join('، ')+')', err:null, selected:null });
     }catch(e){
       this.setState({ loading:false, err:'تعذّرت قراءة الملفات: '+e.message });
     }

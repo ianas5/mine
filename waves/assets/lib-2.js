@@ -132,6 +132,20 @@
     return null;
   }
 
+  // Detect a role from the workbook's contents (sheet names) when the filename
+  // doesn't make it obvious — so uploads work regardless of how they're named.
+  async function detectRole(blob){
+    try{
+      const files=await unzip(blob);
+      const names=wbSheets(files).map(s=>s.name);
+      for(const dept of ['PP','SMRO','SS']){
+        if(names.some(n=>new RegExp('^'+dept+'-\\d+$').test(n))) return {kind:'tracker',dept};
+      }
+      if(names.includes('Management Tracker')) return {kind:'overview'};
+    }catch(e){}
+    return null;
+  }
+
   const DEPT_FILES = { PP:'uploads/Wave Tracker V2 - PP.xlsx', SMRO:'uploads/Wave Tracker V2 - SMRO.xlsx', SS:'uploads/Wave Tracker V2 - SS.xlsx' };
   const OVERVIEW_FILE = 'uploads/Waves Overview.xlsx';
   const RES_ID = { PP:'ppFile', SMRO:'smroFile', SS:'ssFile', overview:'overviewFile' };
@@ -162,19 +176,21 @@
 
   // Load from a FileList the user uploaded; fall back to project files for any role not provided
   async function loadFromFiles(fileList){
-    const map={};
+    const map={}; const recognized=[];
     for(const f of fileList){
-      const role=roleOf(f.name);
+      const role=roleOf(f.name) || await detectRole(f);
       if(!role) continue;
-      if(role.kind==='tracker') map['tracker:'+role.dept]=f;
-      else if(role.kind==='overview') map['overview']=f;
+      if(role.kind==='tracker'){ map['tracker:'+role.dept]=f; recognized.push(role.dept); }
+      else if(role.kind==='overview'){ map['overview']=f; if(recognized.indexOf('Overview')<0) recognized.push('Overview'); }
     }
     // fill gaps from project
     for(const dept of ['PP','SMRO','SS']){
       if(!map['tracker:'+dept]){ try{ const r=await fetch(srcFor(dept)); if(r.ok) map['tracker:'+dept]=await r.blob(); }catch(e){} }
     }
     if(!map['overview']){ try{ const r=await fetch(srcFor('overview')); if(r.ok) map['overview']=await r.blob(); }catch(e){} }
-    return buildFromBlobs(map);
+    const result=await buildFromBlobs(map);
+    result.recognized=recognized;
+    return result;
   }
 
   window.WaveParser = { loadFromProject, loadFromFiles, roleOf };
