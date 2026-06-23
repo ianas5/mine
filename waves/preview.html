@@ -526,12 +526,20 @@ class Component extends DCLogic {
     this.setState({ loading:true, err:null });
     try{
       if(!await this.waitParser(80)) throw new Error('المحلّل غير جاهز');
-      const data=await window.WaveParser.loadFromFiles(fileList);
-      const rec=data.recognized||[];
+      const WP=window.WaveParser;
+      const files=Array.from(fileList);
+      const data=await WP.loadFromFiles(fileList);
+      // Don't depend on the parser returning a `recognized` field (older builds
+      // didn't): derive recognition here from the filenames via the exposed roleOf.
+      let rec=data.recognized;
+      if(!rec || !rec.length){
+        rec=[];
+        for(const f of files){ const r=WP.roleOf && WP.roleOf(f.name); if(r){ rec.push(r.dept||'Overview'); } }
+      }
       if(rec.length===0){
-        const picked=(this._picked||[]).join('، ')||'لا شيء';
-        const det=(data.diag||[]).map(x=>x.name+' ← '+(x.error?('خطأ: '+x.error):('أوراق: '+((x.sheets||[]).slice(0,10).join('، ')||'لا شيء')))).join(' | ')||'(لا يوجد تشخيص — قد تكون نسخة قديمة من الملف)';
-        throw new Error('لم يتعرّف على القسم [v6]. المُختار: '+picked+'. التفاصيل: '+det);
+        const picked=files.map(f=>f.name+' ['+Math.round((f.size||0)/1024)+'KB]').join('، ')||'لا شيء';
+        const det=(data.diag||[]).map(x=>x.name+' ← '+(x.error?('خطأ: '+x.error):('أوراق: '+((x.sheets||[]).slice(0,10).join('، ')||'لا شيء')))).join(' | ');
+        throw new Error('لم يتعرّف على القسم [v7]. المُختار: '+picked+'.'+(det?(' التفاصيل: '+det):' سمِّ الملف بحيث يحتوي PP أو SMRO أو SS أو Overview.'));
       }
       this.data=data;
       const label=this.nowLabel()+' · رُفع '+rec.length+' ('+rec.join('، ')+')';
