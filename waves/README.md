@@ -6,15 +6,21 @@ is the **unpacked** form so the design can be reviewed and refined.
 
 ## Viewing it
 
-- **`preview.html`** — open in any browser. Loads the vendored React/ReactDOM
-  first, then the dashboard, so it runs standalone.
+- **`waves.standalone.html`** — the easiest option. A single self-contained file
+  (React inlined, all assets embedded). Download it and double-click — it runs
+  offline in any modern browser, no setup. Only Poppins/Lora need internet
+  (Arabic/IBM Plex and all data work offline).
+- **`preview.html`** — open in a browser, but needs the `assets/` and `vendor/`
+  folders beside it (relative paths). Loads vendored React.
 - **`waves.bundle.html`** — the refined design re-packed into a single
   self-contained file in the original "Bundled Page" export format (manifest +
   template + unpacker). Drop this back into the Claude design tool / viewer.
   Like the original export, it expects the viewer to provide React, so it does
-  **not** run by double-clicking in a plain browser — use `preview.html` for that.
+  **not** run by double-clicking in a plain browser — use `waves.standalone.html`
+  for that.
 
-Both are generated from `index.html`; edit `index.html` and regenerate.
+`preview.html`, `waves.bundle.html`, and `waves.standalone.html` are all generated
+from `index.html`; edit `index.html` and regenerate.
 
 ## Structure
 
