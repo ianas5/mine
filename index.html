@@ -508,7 +508,13 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
       <div class="field"><label data-i18n="carbs">Carbs (g)</label><input id="mf-carbs" type="number" placeholder="0" inputmode="numeric"></div>
       <div class="field"><label data-i18n="fat">Fat (g)</label><input id="mf-fat" type="number" placeholder="0" inputmode="numeric"></div>
     </div>
-    <div class="field"><label data-i18n="quick_picks">Quick picks</label><div class="chips" id="meal-quick-picks"></div></div>
+    <div class="field">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <label data-i18n="quick_picks" style="margin:0">Quick picks</label>
+        <button class="btn btn-ghost" style="padding:4px 12px;font-size:13px;" onclick="saveCustomFood()">⭐ Save</button>
+      </div>
+      <div class="chips" id="meal-quick-picks"></div>
+    </div>
     <div style="display:flex;gap:10px;margin-top:6px;">
       <button class="btn btn-ghost btn-full" onclick="closeModal('modal-meal')" data-i18n="cancel">Cancel</button>
       <button class="btn btn-primary btn-full" onclick="saveMeal()" data-i18n="log_food">Log Food</button>
@@ -674,7 +680,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
 
 <script>
 // ── STORAGE ──
-const STORAGE_KEYS={workouts:'ft_workouts',nutrition:'ft_nutrition',measurements:'ft_measurements',goals:'ft_goals',water:'ft_water',programs:'ft_programs',customExercises:'ft_custom_exercises'};
+const STORAGE_KEYS={workouts:'ft_workouts',nutrition:'ft_nutrition',measurements:'ft_measurements',goals:'ft_goals',water:'ft_water',programs:'ft_programs',customExercises:'ft_custom_exercises',customFoods:'ft_custom_foods'};
 function load(k){try{return JSON.parse(localStorage.getItem(k))||null}catch(e){return null}}
 function save(k,v){localStorage.setItem(k,JSON.stringify(v))}
 
@@ -1929,9 +1935,17 @@ function openMealModal(){
   document.getElementById('mf-portion').value='';
   const rb=document.getElementById('mf-search-results');rb.style.display='none';rb.innerHTML='';
   mealSearchBase=null;
-  const qp=document.getElementById('meal-quick-picks');
-  qp.innerHTML=QUICK_FOODS.map(f=>`<span class="chip" onclick="fillQuickFood(${JSON.stringify(f).replace(/"/g,"'")})">${f.name}</span>`).join('');
+  refreshQuickPicks();
   openModal('modal-meal');
+}
+
+function refreshQuickPicks(){
+  const custom=load(STORAGE_KEYS.customFoods)||[];
+  const qp=document.getElementById('meal-quick-picks');
+  if(!qp) return;
+  const builtIn=QUICK_FOODS.map(f=>`<span class="chip" onclick="fillQuickFood(${JSON.stringify(f).replace(/"/g,"'")})">${f.name}</span>`).join('');
+  const saved=custom.map((f,i)=>`<span class="chip" style="padding-right:6px;" onclick="fillQuickFood(${JSON.stringify(f).replace(/"/g,"'")})">${f.name}<span onclick="event.stopPropagation();deleteCustomFood(${i})" style="margin-left:6px;color:var(--text-dim);font-size:11px;">✕</span></span>`).join('');
+  qp.innerHTML=(saved?`<div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;width:100%;margin-bottom:4px;">⭐ Saved</div>${saved}<div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;width:100%;margin:8px 0 4px;">Quick picks</div>`:'') +builtIn;
 }
 
 // ── OPEN FOOD FACTS SEARCH ──
@@ -2007,7 +2021,27 @@ function fillQuickFood(f){
   document.getElementById('mf-carbs').value=f.carbs;
   document.getElementById('mf-fat').value=f.fat;
   document.querySelectorAll('#meal-quick-picks .chip').forEach(c=>c.classList.remove('active'));
-  event.target.classList.add('active');
+  event.target.closest('.chip').classList.add('active');
+}
+function saveCustomFood(){
+  const name=document.getElementById('mf-name').value.trim();
+  if(!name){showToast(lang==='ar'?'اكتب اسم الوجبة أولاً':'Enter a food name first');return;}
+  const cal=parseInt(document.getElementById('mf-cal').value)||0;
+  const protein=parseInt(document.getElementById('mf-protein').value)||0;
+  const carbs=parseInt(document.getElementById('mf-carbs').value)||0;
+  const fat=parseInt(document.getElementById('mf-fat').value)||0;
+  const custom=load(STORAGE_KEYS.customFoods)||[];
+  if(custom.some(f=>f.name.toLowerCase()===name.toLowerCase())){showToast(lang==='ar'?'الوجبة محفوظة مسبقاً':'Already saved');return;}
+  custom.push({name,calories:cal,protein,carbs,fat});
+  save(STORAGE_KEYS.customFoods,custom);
+  refreshQuickPicks();
+  showToast(lang==='ar'?`تم حفظ "${name}" ⭐`:`"${name}" saved ⭐`);
+}
+function deleteCustomFood(idx){
+  const custom=load(STORAGE_KEYS.customFoods)||[];
+  custom.splice(idx,1);
+  save(STORAGE_KEYS.customFoods,custom);
+  refreshQuickPicks();
 }
 function saveMeal(){
   const name=document.getElementById('mf-name').value.trim();
