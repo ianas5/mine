@@ -7,8 +7,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0D0D0D" id="meta-theme-color">
 <meta name="apple-mobile-web-app-title" content="FitTrack">
-<link rel="apple-touch-icon" href="icon.png">
-<link rel="icon" type="image/png" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png?v=3">
+<link rel="icon" type="image/png" href="icon.png?v=3">
 <title>FitTrack Pro – Anas</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
@@ -1114,13 +1114,22 @@ function renderLibrary(){
   const libEl=document.getElementById('exercise-library-list');
   if(!libEl) return;
   const groups=['All',...Object.keys(all)];
-  let html=`<div style="padding:0 16px 12px;"><button class="btn btn-secondary btn-full" onclick="openCustomExModal()" data-i18n="add_custom_exercise">${t('add_custom_exercise')}</button></div>`;
+  let html=`<div style="padding:0 16px 12px;"><button class="btn btn-primary btn-full" onclick="openCustomExModal()" data-i18n="add_custom_exercise">${t('add_custom_exercise')}</button></div>`;
   // Group filter chips
   html+=`<div style="display:flex;gap:8px;overflow-x:auto;padding:0 16px 14px;scrollbar-width:none;">${groups.map(g=>`<span class="chip${activeLibraryGroup===g?' active':''}" style="flex-shrink:0;" onclick="filterLibrary('${g}')">${g==='All'?(lang==='ar'?'الكل':'All'):gl(g)}</span>`).join('')}</div>`;
   // Exercise groups
   Object.entries(all).forEach(([group,exs])=>{
     if(activeLibraryGroup!=='All'&&activeLibraryGroup!==group) return;
-    html+=`<div class="card" style="margin-top:8px;"><div class="card-title">${gl(group)}</div><div class="chips">${exs.map(e=>{const isCust=custom.some(c=>c.name===e&&c.group===group);return `<span class="chip${isCust?' active':''}">${e}${isCust?' ⭐':''}</span>`}).join('')}</div></div>`;
+    const ge=esc(group);
+    const exChips=exs.map(e=>{
+      const isCust=custom.some(c=>c.name===e&&c.group===group);
+      if(isCust){
+        return `<span class="chip active" style="display:inline-flex;align-items:center;gap:6px;">${e} ⭐<span onclick="deleteCustomExercise('${esc(e)}','${ge}')" style="cursor:pointer;color:var(--danger);font-weight:800;font-size:14px;line-height:1;margin-left:2px;">✕</span></span>`;
+      }
+      return `<span class="chip">${e}</span>`;
+    }).join('');
+    const addChip=`<span class="chip" style="border-style:dashed;color:var(--accent);border-color:var(--accent);" onclick="openCustomExModal('${ge}')">＋</span>`;
+    html+=`<div class="card" style="margin-top:8px;"><div class="card-title">${gl(group)}</div><div class="chips">${exChips}${addChip}</div></div>`;
   });
   libEl.innerHTML=html;
 }
@@ -1227,24 +1236,38 @@ function saveWorkout(){
 }
 
 // ── CUSTOM EXERCISE ──
-function openCustomExModal(){
+function esc(s){return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
+
+function openCustomExModal(presetGroup){
   document.getElementById('cef-name').value='';
-  document.getElementById('cef-group').value='Arms';
+  const sel=document.getElementById('cef-group');
+  sel.value=(presetGroup&&[...sel.options].some(o=>o.value===presetGroup))?presetGroup:'Arms';
   openModal('modal-custom-ex');
+  setTimeout(()=>document.getElementById('cef-name').focus(),300);
 }
 
 function saveCustomExercise(){
   const name=document.getElementById('cef-name').value.trim();
   const group=document.getElementById('cef-group').value;
-  if(!name){showToast('Enter an exercise name');return;}
+  if(!name){showToast(lang==='ar'?'اكتب اسم التمرين':'Enter an exercise name');return;}
   const custom=load(STORAGE_KEYS.customExercises)||[];
-  if(custom.some(c=>c.name.toLowerCase()===name.toLowerCase())){showToast('Exercise already exists');return;}
+  if(custom.some(c=>c.name.toLowerCase()===name.toLowerCase())){showToast(lang==='ar'?'التمرين موجود مسبقاً':'Exercise already exists');return;}
   custom.push({name,group});
   save(STORAGE_KEYS.customExercises,custom);
   closeModal('modal-custom-ex');
-  showToast('Exercise added! ⭐');
+  showToast(lang==='ar'?'تمت إضافة التمرين! ⭐':'Exercise added! ⭐');
   populateExercisesDatalist();
   renderLibrary();
+}
+
+function deleteCustomExercise(name,group){
+  const msg=lang==='ar'?`حذف تمرين "${name}"؟`:`Delete "${name}"?`;
+  if(!confirm(msg)) return;
+  const custom=(load(STORAGE_KEYS.customExercises)||[]).filter(c=>!(c.name===name&&c.group===group));
+  save(STORAGE_KEYS.customExercises,custom);
+  populateExercisesDatalist();
+  renderLibrary();
+  showToast(lang==='ar'?'تم حذف التمرين':'Exercise deleted');
 }
 
 // ── WORKOUT UTILS ──
