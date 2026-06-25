@@ -1249,7 +1249,7 @@ function toggleWorkoutDetail(el){
   const sets=el.nextElementSibling;
   const expanded=sets.style.display!=='none';
   sets.style.display=expanded?'none':'block';
-  el.querySelector('div:last-child').style.transform=expanded?'':'rotate(90deg)';
+  el.lastElementChild.style.transform=expanded?'':'rotate(90deg)';
 }
 
 function deleteWorkout(id){
