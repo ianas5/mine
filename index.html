@@ -218,6 +218,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
     </div>
     <div class="hero-date" id="home-date"></div>
   </div>
+  <div id="home-today-workout" style="margin:16px 16px 4px;"></div>
   <div style="padding:16px 0 4px;">
     <div style="display:flex;align-items:center;gap:16px;padding:0 20px;">
       <div class="ring-wrap">
@@ -969,6 +970,7 @@ function renderHome(){
   } else {
     hw.innerHTML=`<div class="card card-sm" style="margin:0;text-align:center;padding:20px;"><div style="font-size:13px;color:var(--text-sub);">${t('no_workouts')} — let's get moving!</div></div>`;
   }
+  renderTodaysWorkout();
   renderQuickPrograms();
   const gw=latestM?latestM.weight:null;
   const sw=goals.startWeight||null,tw=goals.targetWeight||null;
@@ -1333,6 +1335,7 @@ function addExerciseField(prefillName='',opts={}){
         style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px;font-family:inherit;outline:none;">
     </div>`;
   document.getElementById('wf-exercises-list').appendChild(div);
+  renumberSets(document.getElementById('ex-sets-'+id));
 }
 
 function onExNameChange(id,name){
@@ -1994,6 +1997,71 @@ function updateTimerDisplay(){
   if(disp) disp.textContent=m>0?`${m}:${s.toString().padStart(2,'0')}`:String(s);
   const ring=document.getElementById('timer-ring');
   if(ring){const pct=restTimerTotal>0?restTimerRemaining/restTimerTotal:1;ring.style.strokeDashoffset=TIMER_CIRC*(1-pct);}
+}
+
+// ── TODAY'S WORKOUT (home hero) ──
+// Rotates to the program after the most recently performed one
+function getTodaysProgram(){
+  const programs=load(STORAGE_KEYS.programs)||[];
+  if(!programs.length) return null;
+  const workouts=load(STORAGE_KEYS.workouts)||[];
+  const sortedW=[...workouts].sort((a,b)=>b.date.localeCompare(a.date));
+  let lastIdx=-1;
+  for(const w of sortedW){const i=programs.findIndex(p=>p.name===w.name);if(i>=0){lastIdx=i;break;}}
+  const idx=(lastIdx+1)%programs.length;
+  return {program:programs[idx],index:idx,total:programs.length};
+}
+
+function countWorkoutsThisWeek(){
+  const workouts=load(STORAGE_KEYS.workouts)||[];
+  const today=new Date();
+  const weekStart=new Date(today);weekStart.setDate(today.getDate()-((today.getDay()+6)%7));weekStart.setHours(0,0,0,0);
+  return workouts.filter(w=>new Date(w.date+'T12:00:00')>=weekStart).length;
+}
+
+function renderTodaysWorkout(){
+  const el=document.getElementById('home-today-workout');
+  if(!el) return;
+  const today=new Date().toISOString().split('T')[0];
+  const workouts=load(STORAGE_KEYS.workouts)||[];
+  const doneToday=workouts.find(w=>w.date===today);
+  const weekCount=countWorkoutsThisWeek();
+  // Already trained today
+  if(doneToday){
+    el.innerHTML=`<div class="card" style="margin:0;background:linear-gradient(135deg,rgba(0,212,170,0.18),rgba(0,212,170,0.04));border:1px solid rgba(0,212,170,0.3);">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div style="font-size:34px;">✅</div>
+        <div style="flex:1;">
+          <div style="font-size:17px;font-weight:800;">${lang==='ar'?'تم تمرين اليوم!':'Workout done today!'}</div>
+          <div style="font-size:13px;color:var(--text-sub);margin-top:2px;">${doneToday.name} · ${totalSets(doneToday)} ${t('sets')} · ${weekCount} ${lang==='ar'?'هذا الأسبوع':'this week'}</div>
+        </div>
+      </div>
+    </div>`;
+    return;
+  }
+  const today_p=getTodaysProgram();
+  // No programs yet
+  if(!today_p){
+    el.innerHTML=`<div class="card" style="margin:0;background:linear-gradient(135deg,rgba(255,107,53,0.18),rgba(255,107,53,0.03));border:1px solid rgba(255,107,53,0.3);">
+      <div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">${t('todays_workout')}</div>
+      <div style="font-size:18px;font-weight:800;margin-bottom:10px;">${t('no_program_today')}</div>
+      <button class="btn btn-primary btn-full" onclick="switchTab('workouts');switchWorkoutTab('programs')">${t('pick_program')}</button>
+    </div>`;
+    return;
+  }
+  const p=today_p.program;
+  el.innerHTML=`<div class="card" style="margin:0;background:linear-gradient(135deg,rgba(255,107,53,0.2),rgba(255,107,53,0.03));border:1px solid rgba(255,107,53,0.35);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:1px;">${t('todays_workout')}</div>
+      <div style="font-size:11px;font-weight:700;color:var(--text-sub);">${lang==='ar'?'يوم':'Day'} ${today_p.index+1}/${today_p.total} · ${weekCount} ${lang==='ar'?'هذا الأسبوع':'this week'}</div>
+    </div>
+    <div style="font-size:24px;font-weight:800;margin-bottom:4px;">${p.name}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
+      ${p.exercises.slice(0,5).map(e=>`<span style="font-size:11px;background:rgba(255,255,255,0.08);padding:3px 9px;border-radius:7px;">${e}</span>`).join('')}
+      ${p.exercises.length>5?`<span style="font-size:11px;color:var(--text-sub);padding:3px 4px;">+${p.exercises.length-5}</span>`:''}
+    </div>
+    <button class="btn btn-primary btn-full" onclick="startProgram(${p.id})">${t('start_workout')}</button>
+  </div>`;
 }
 
 // ── QUICK PROGRAMS ──
