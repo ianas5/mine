@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Font Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Poppins:wght@400;600;700;800&family=Outfit:wght@400;600;700;800&family=Montserrat:wght@400;600;700;800&family=DM+Sans:wght@400;600;700;800&family=Nunito:wght@400;600;700;800&family=Space+Grotesk:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0D0D0D;color:#F0F0F0;padding:20px 16px 60px;}
+h2{text-align:center;font-size:14px;color:#555;font-family:monospace;letter-spacing:2px;text-transform:uppercase;margin-bottom:24px;padding-top:8px;}
+.card{background:#1A1A1A;border-radius:20px;padding:20px;margin-bottom:16px;border:1px solid #2a2a2a;}
+.font-name{font-size:11px;font-weight:700;color:#FF6B35;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px;font-family:monospace;}
+.row1{font-size:28px;font-weight:800;letter-spacing:-0.5px;margin-bottom:4px;}
+.row2{font-size:13px;color:#888;font-weight:500;margin-bottom:14px;}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+.chip{background:#222;border:1px solid #333;border-radius:10px;padding:7px 14px;font-size:13px;font-weight:600;}
+.chip.orange{background:rgba(255,107,53,0.15);color:#FF6B35;border-color:rgba(255,107,53,0.3);}
+.nums{display:flex;gap:16px;}
+.num-card{background:#222;border-radius:14px;padding:14px;flex:1;text-align:center;}
+.num-val{font-size:26px;font-weight:800;color:#FF6B35;letter-spacing:-1px;}
+.num-lbl{font-size:10px;color:#666;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-top:2px;}
+</style>
+</head>
+<body>
+<h2>Font Preview — FitTrack</h2>
+
+<div id="previews"></div>
+
+<script>
+const fonts = [
+  {name:'Inter', family:'Inter'},
+  {name:'Poppins', family:'Poppins'},
+  {name:'Outfit', family:'Outfit'},
+  {name:'Montserrat', family:'Montserrat'},
+  {name:'DM Sans', family:'DM Sans'},
+  {name:'Nunito', family:'Nunito'},
+  {name:'Space Grotesk', family:'Space Grotesk'},
+  {name:'Plus Jakarta Sans', family:'Plus Jakarta Sans'},
+  {name:'Syne', family:'Syne'},
+];
+
+const container = document.getElementById('previews');
+fonts.forEach(f => {
+  const s = `font-family:'${f.family}',sans-serif`;
+  container.innerHTML += `
+  <div class="card" style="${s}">
+    <div class="font-name">${f.name}</div>
+    <div class="row1">Good morning 👋</div>
+    <div class="row2">Wednesday, June 25 · Streak 7 days</div>
+    <div class="chips">
+      <span class="chip orange">Bench Press</span>
+      <span class="chip orange">Deadlift</span>
+      <span class="chip">Protein 142g</span>
+      <span class="chip">Push Day</span>
+    </div>
+    <div class="nums">
+      <div class="num-card"><div class="num-val">2,140</div><div class="num-lbl">Calories</div></div>
+      <div class="num-card"><div class="num-val">82.5</div><div class="num-lbl">kg</div></div>
+      <div class="num-card"><div class="num-val">14</div><div class="num-lbl">Workouts</div></div>
+    </div>
+  </div>`;
+});
+</script>
+</body>
+</html>
