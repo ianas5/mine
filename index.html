@@ -10,6 +10,9 @@
 <link rel="apple-touch-icon" href="icon.png?v=3">
 <link rel="icon" type="image/png" href="icon.png?v=3">
 <title>FitTrack Pro – Anas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -36,7 +39,7 @@
 [data-theme="light"] .set-row{border-bottom-color:rgba(0,0,0,0.05)}
 [data-theme="light"] .exercise-card{background:var(--card)}
 [data-theme="light"] .day-dot{background:rgba(0,0,0,0.15)}
-html,body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif;min-height:100vh;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+html,body{background:var(--bg);color:var(--text);font-family:'Outfit',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;overflow-x:hidden;-webkit-font-smoothing:antialiased}
 #app{max-width:430px;margin:0 auto;position:relative;min-height:100vh}
 .screen{display:none;padding-bottom:calc(var(--safe-bottom) + 80px);min-height:100vh}
 .screen.active{display:block}
@@ -409,7 +412,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
     <div class="tab active" onclick="switchProgressTab('log')" data-i18n="weight_log">Weight Log</div>
     <div class="tab" onclick="switchProgressTab('analytics')" data-i18n="analytics">Analytics</div>
     <div class="tab" onclick="switchProgressTab('measurements')" data-i18n="measurements">Measurements</div>
-    <div class="tab" onclick="switchProgressTab('photos')">📸 Photos</div>
+    <div class="tab" onclick="switchProgressTab('photos')">Photos</div>
   </div>
   <div class="tab-panel active" id="pt-log" style="padding-top:6px;"><div class="card" style="margin-top:14px;"><div id="weight-log-list"></div></div></div>
   <div class="tab-panel" id="pt-analytics" style="padding-top:14px;">
@@ -432,7 +435,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
   </div>
   <div class="tab-panel" id="pt-measurements" style="padding-top:14px;">
     <div class="card"><div class="card-title" data-i18n="measurements">Measurements</div><div id="measurements-display"></div></div>
-    <div style="padding:0 16px 14px;"><button class="btn btn-secondary btn-full" onclick="openMeasurementsModal()" data-i18n="log_measurements">📏 Log Measurements</button></div>
+    <div style="padding:0 16px 14px;"><button class="btn btn-secondary btn-full" onclick="openMeasurementsModal()" data-i18n="log_measurements">Log Measurements</button></div>
     <div id="meas-history-card" style="display:none;" class="card">
       <div class="card-title" data-i18n="meas_history">Measurements History</div>
       <div id="meas-history-list"></div>
@@ -441,9 +444,9 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
   <div class="tab-panel" id="pt-photos" style="padding-top:14px;">
     <input type="file" id="photo-file-input" accept="image/*" capture="environment" style="display:none;" onchange="onPhotoFileChosen(event)">
     <div style="padding:0 16px 12px;display:flex;gap:10px;">
-      <button class="btn btn-secondary" style="flex:1;" onclick="openPhotoAdd('front')">📸 Front</button>
-      <button class="btn btn-secondary" style="flex:1;" onclick="openPhotoAdd('side')">📸 Side</button>
-      <button class="btn btn-secondary" style="flex:1;" onclick="openPhotoAdd('back')">📸 Back</button>
+      <button class="btn btn-secondary" style="flex:1;" onclick="openPhotoAdd('front')">Front</button>
+      <button class="btn btn-secondary" style="flex:1;" onclick="openPhotoAdd('side')">Side</button>
+      <button class="btn btn-secondary" style="flex:1;" onclick="openPhotoAdd('back')">Back</button>
     </div>
     <div id="photos-grid"></div>
     <div id="photos-empty" style="text-align:center;padding:40px 20px;color:var(--text-sub);display:none;">
@@ -501,7 +504,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
         <option value="" data-i18n="start_fresh">— Start fresh —</option>
       </select>
     </div>
-    <button class="btn btn-secondary btn-full" style="margin-bottom:14px;" onclick="repeatLastWorkout()" data-i18n="repeat_last">🔁 Repeat Last Workout</button>
+    <button class="btn btn-secondary btn-full" style="margin-bottom:14px;" onclick="repeatLastWorkout()" data-i18n="repeat_last">Repeat Last Workout</button>
     <div class="field"><label data-i18n="workout_name">Workout Name</label><input id="wf-name" type="text" placeholder="e.g. Push Day, Leg Day…" data-i18n-ph="workout_name_ph"></div>
     <div class="field"><label data-i18n="date">Date</label><input id="wf-date" type="date"></div>
     <div id="wf-exercises-list"></div>
@@ -542,7 +545,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
     <div class="field">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
         <label data-i18n="quick_picks" style="margin:0">Quick picks</label>
-        <button class="btn btn-ghost" style="padding:4px 12px;font-size:13px;" onclick="saveCustomFood()">⭐ Save</button>
+        <button class="btn btn-ghost" style="padding:4px 12px;font-size:13px;" onclick="saveCustomFood()">Save</button>
       </div>
       <div class="chips" id="meal-quick-picks"></div>
     </div>
@@ -772,8 +775,8 @@ const I18N={
     body_fat:'Body Fat %',muscle_mass:'Muscle (kg)',visceral_fat:'Visceral Fat',bmi_lbl:'BMI',
     inbody:'InBody Metrics',meas_history:'Measurements History',no_inbody:'Log your first InBody results',
     rest_timer:'Rest Timer',start_timer:'Start',pause_timer:'Pause',resume_timer:'Resume',
-    rest_done:'Rest done! 💪',quick_start:'Quick Start',
-    repeat_last:'🔁 Repeat Last Workout',start_workout:'Start Workout ▶',
+    rest_done:'Rest done',quick_start:'Quick Start',
+    repeat_last:'Repeat Last Workout',start_workout:'Start Workout ▶',
     todays_workout:"Today's Workout",no_program_today:'No program scheduled',
     rest_day:'Rest day — no workout planned',pick_program:'Pick a program to start',
     est_1rm:'Est. 1RM',max_weight:'Max Weight',max_reps:'Max Reps',best_volume:'Best Volume',
@@ -837,7 +840,7 @@ const I18N={
     inbody:'نتائج InBody',meas_history:'سجل القياسات',no_inbody:'سجل نتائج InBody الأولى',
     rest_timer:'مؤقت الراحة',start_timer:'ابدأ',pause_timer:'إيقاف',resume_timer:'استكمال',
     rest_done:'انتهت الراحة! 💪',quick_start:'بدء سريع',
-    repeat_last:'🔁 كرر آخر تمرين',start_workout:'ابدأ التمرين ▶',
+    repeat_last:'Repeat Last Workout',start_workout:'ابدأ التمرين ▶',
     todays_workout:'تمرين اليوم',no_program_today:'لا يوجد برنامج مجدول',
     rest_day:'يوم راحة — لا تمرين مخطط',pick_program:'اختر برنامج للبدء',
     est_1rm:'1RM تقديري',max_weight:'أعلى وزن',max_reps:'أعلى تكرار',best_volume:'أفضل حجم',
@@ -1123,7 +1126,7 @@ function renderWorkouts(){
           <div style="color:var(--text-dim);font-size:20px;">›</div>
         </div>
         <div class="exercise-sets" style="display:none;">
-          ${w.exercises.map(ex=>{let wn=0;return `<div style="margin-bottom:12px;"><div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px;">${ex.name}</div>${ex.sets.map((s)=>{const warm=s.warmup;const lbl=warm?'W':(++wn);return `<div class="set-row"><div class="set-num" style="${warm?'color:var(--warn);':''}">${warm?'Warm':'Set '+lbl}</div><div class="set-val"><div class="num">${s.weight>0?s.weight+'kg':t('bw')}</div><div class="lbl">${t('weight')}</div></div><div class="set-val"><div class="num">${s.reps}</div><div class="lbl">${t('reps')}</div></div>${isPR(w.id,ex.name,s,workouts)?'<div class="set-pr">🏆 PR</div>':''}</div>`;}).join('')}${ex.notes?`<div style="font-size:12px;color:var(--text-sub);margin-top:6px;padding:6px 10px;background:var(--surface);border-radius:8px;">📝 ${ex.notes}</div>`:''}</div>`;}).join('')}
+          ${w.exercises.map(ex=>{let wn=0;return `<div style="margin-bottom:12px;"><div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px;">${ex.name}</div>${ex.sets.map((s)=>{const warm=s.warmup;const lbl=warm?'W':(++wn);return `<div class="set-row"><div class="set-num" style="${warm?'color:var(--warn);':''}">${warm?'Warm':'Set '+lbl}</div><div class="set-val"><div class="num">${s.weight>0?s.weight+'kg':t('bw')}</div><div class="lbl">${t('weight')}</div></div><div class="set-val"><div class="num">${s.reps}</div><div class="lbl">${t('reps')}</div></div>${isPR(w.id,ex.name,s,workouts)?'<div class="set-pr">PR</div>':''}</div>`;}).join('')}${ex.notes?`<div style="font-size:12px;color:var(--text-sub);margin-top:6px;padding:6px 10px;background:var(--surface);border-radius:8px;font-style:italic;">${ex.notes}</div>`:''}</div>`;}).join('')}
           <button class="btn btn-danger btn-sm" onclick="deleteWorkout(${w.id})" style="margin-top:6px;width:100%;">${t('delete')}</button>
         </div>
       </div>`).join('');
@@ -1213,7 +1216,7 @@ function renderPrograms(){
   const container=document.getElementById('programs-list');
   if(!container) return;
   if(!programs.length){
-    container.innerHTML=`<div class="empty"><div class="empty-icon">📋</div><div class="empty-title">${t('no_programs')}</div><div class="empty-sub">${t('create_first')}</div></div>`;
+    container.innerHTML=`<div class="empty"><div class="empty-icon" style="font-size:36px;color:var(--text-dim);">—</div><div class="empty-title">${t('no_programs')}</div><div class="empty-sub">${t('create_first')}</div></div>`;
     return;
   }
   container.innerHTML=programs.map(p=>`
@@ -1282,7 +1285,7 @@ function saveProgramModal(){
   }
   save(STORAGE_KEYS.programs,programs);
   closeModal('modal-program');
-  showToast('Program saved! 📋');
+  showToast('Program saved');
   renderPrograms();
   renderQuickPrograms();
 }
@@ -1432,7 +1435,7 @@ function addExerciseField(prefillName='',opts={}){
     const summary=last.sets.map(s=>`${s.weight>0?s.weight:'BW'}×${s.reps}`).join(' · ');
     const topW=Math.max(...last.sets.filter(s=>!s.warmup).map(s=>s.weight),0);
     hint=`<div style="background:var(--surface);border-radius:10px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--text-sub);display:flex;justify-content:space-between;align-items:center;gap:8px;">
-      <span>📊 ${lang==='ar'?'آخر مرة':'Last'} (${daysAgoLabel(last.date)}): <b style="color:var(--text);">${summary}</b></span>
+      <span>Last (${daysAgoLabel(last.date)}): <b style="color:var(--text);">${summary}</b></span>
       ${topW>0?`<button onclick="suggestProgress(${id},${topW+2.5})" style="flex-shrink:0;background:rgba(0,212,170,0.15);border:none;color:var(--accent2);font-weight:800;font-size:12px;padding:5px 9px;border-radius:8px;cursor:pointer;white-space:nowrap;">↗ ${topW+2.5}kg</button>`:''}
     </div>`;
   }
@@ -1450,7 +1453,7 @@ function addExerciseField(prefillName='',opts={}){
     <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">
       <button class="btn btn-ghost btn-sm" onclick="addSetRow(${id})">${t('add_set')}</button>
       <button class="btn btn-ghost btn-sm" onclick="openRestTimer()" style="color:var(--accent2);">⏱ ${t('rest_timer')}</button>
-      <button class="btn btn-ghost btn-sm" onclick="toggleExNote(${id})" style="color:var(--text-sub);">📝 ${lang==='ar'?'ملاحظة':'Note'}</button>
+      <button class="btn btn-ghost btn-sm" onclick="toggleExNote(${id})" style="color:var(--text-sub);">Note</button>
     </div>
     <div id="ex-note-${id}" style="display:${last&&last.notes?'block':'none'};margin-top:8px;">
       <input type="text" class="ex-note-inp" placeholder="${lang==='ar'?'ملاحظة لهذا التمرين…':'Note for this exercise…'}" value="${last&&last.notes?escAttr(last.notes):''}"
@@ -1570,7 +1573,7 @@ function saveWorkout(){
   workouts.push({id:Date.now(),date,name,exercises});
   save(STORAGE_KEYS.workouts,workouts);
   closeModal('modal-workout');
-  showToast('Workout saved! 💪');
+  showToast('Workout saved');
   // PR celebration
   celebrateNewPRs(workouts[workouts.length-1],workouts);
   if(currentTab==='workouts') renderWorkouts();
@@ -1612,7 +1615,7 @@ function saveCustomExercise(){
   custom.push({name,group});
   save(STORAGE_KEYS.customExercises,custom);
   closeModal('modal-custom-ex');
-  showToast(lang==='ar'?'تمت إضافة التمرين! ⭐':'Exercise added! ⭐');
+  showToast('Exercise added');
   populateExercisesDatalist();
   renderLibrary();
 }
@@ -2225,7 +2228,7 @@ function saveCustomFood(){
   custom.push({name,calories:cal,protein,carbs,fat});
   save(STORAGE_KEYS.customFoods,custom);
   refreshQuickPicks();
-  showToast(lang==='ar'?`تم حفظ "${name}" ⭐`:`"${name}" saved ⭐`);
+  showToast(`"${name}" saved`);
 }
 function deleteCustomFood(idx){
   const custom=load(STORAGE_KEYS.customFoods)||[];
@@ -2243,7 +2246,7 @@ function saveMeal(){
   entry.meals.push(meal);
   save(STORAGE_KEYS.nutrition,nutrition);
   closeModal('modal-meal');
-  showToast(`${name} logged! 🥗`);
+  showToast(`${name} logged`);
   if(currentTab==='nutrition') renderNutrition();
   if(currentTab==='home') renderHome();
 }
@@ -2263,9 +2266,9 @@ function saveWeight(){
   if(existing){existing.weight=val;}else{measurements.push({date,weight:val});}
   save(STORAGE_KEYS.measurements,measurements);
   closeModal('modal-weight');
-  showToast('Weight logged! ⚖️');
+  showToast('Weight logged');
   if(currentTab==='progress') renderProgress();
-  if(currentTab==='home') renderHome();
+  renderHome();
 }
 
 // ── GOALS MODAL ──
