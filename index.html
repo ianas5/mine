@@ -554,14 +554,18 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
     <div class="field">
       <label data-i18n="muscle_group">Muscle Group</label>
       <select id="cef-group">
-        <option value="Chest">Chest</option>
-        <option value="Back">Back</option>
-        <option value="Legs">Legs</option>
+        <option value="Chest" selected>Chest</option>
         <option value="Shoulders">Shoulders</option>
-        <option value="Arms" selected>Arms</option>
+        <option value="Back">Back</option>
         <option value="Core">Core</option>
+        <option value="Glutes">Glutes</option>
+        <option value="Quads">Quads</option>
+        <option value="Calves">Calves</option>
+        <option value="Biceps">Biceps</option>
+        <option value="Triceps">Triceps</option>
+        <option value="Hamstrings">Hamstrings</option>
         <option value="Cardio">Cardio</option>
-        <option value="Custom">Custom</option>
+        <option value="Other">Other</option>
       </select>
     </div>
     <div style="display:flex;gap:10px;margin-top:6px;">
@@ -727,8 +731,8 @@ const I18N={
 };
 
 const GROUP_LABELS={
-  en:{Chest:'Chest',Back:'Back',Legs:'Legs',Shoulders:'Shoulders',Arms:'Arms',Core:'Core',Cardio:'Cardio',Custom:'Custom'},
-  ar:{Chest:'صدر',Back:'ظهر',Legs:'أرجل',Shoulders:'أكتاف',Arms:'ذراعين',Core:'كور',Cardio:'كارديو',Custom:'مخصص'}
+  en:{Chest:'Chest',Shoulders:'Shoulders',Back:'Back',Core:'Core',Glutes:'Glutes',Quads:'Quads',Calves:'Calves',Biceps:'Biceps',Triceps:'Triceps',Hamstrings:'Hamstrings',Cardio:'Cardio',Other:'Other',Custom:'Custom',Legs:'Legs',Arms:'Arms'},
+  ar:{Chest:'صدر',Shoulders:'أكتاف',Back:'ظهر',Core:'بطن',Glutes:'جلوتس',Quads:'أمامي الفخذ',Calves:'سمانة',Biceps:'باي',Triceps:'تراي',Hamstrings:'خلفي الفخذ',Cardio:'كارديو',Other:'أخرى',Custom:'مخصص',Legs:'أرجل',Arms:'ذراعين'}
 };
 
 let lang=localStorage.getItem('fit_lang')||'en';
@@ -931,13 +935,16 @@ function renderHome(){
 
 // ── EXERCISE LIBRARY ──
 const EXERCISE_LIBRARY={
-  'Chest':['Bench Press','Incline Bench Press','Dumbbell Fly','Cable Fly','Push-Ups','Dips'],
-  'Back':['Deadlift','Pull-Ups','Barbell Row','Cable Row','Lat Pulldown','Face Pulls'],
-  'Legs':['Squat','Leg Press','Romanian Deadlift','Leg Curl','Leg Extension','Calf Raise','Bulgarian Split Squat'],
-  'Shoulders':['Overhead Press','Lateral Raise','Front Raise','Arnold Press','Rear Delt Fly','Shrugs'],
-  'Arms':['Barbell Curl','Hammer Curl','Tricep Pushdown','Skull Crushers','Preacher Curl','Tricep Dips'],
-  'Core':['Plank','Crunches','Russian Twist','Leg Raise','Ab Wheel','Cable Crunch'],
-  'Cardio':['Running','Cycling','Rowing','Jump Rope','Elliptical','HIIT Intervals']
+  'Chest':['Bench Press','Incline Bench Press','Decline Bench Press','Dumbbell Press','Dumbbell Fly','Cable Fly','Pec Deck','Push-Ups','Dips'],
+  'Shoulders':['Overhead Press','Arnold Press','Lateral Raise','Cable Lateral Raise','Front Raise','Rear Delt Fly','Upright Row','Shrugs'],
+  'Back':['Deadlift','Pull-Ups','Lat Pulldown','Barbell Row','Cable Row','T-Bar Row','Dumbbell Row','Face Pulls','Straight-Arm Pulldown'],
+  'Core':['Plank','Crunches','Hanging Leg Raise','Russian Twist','Cable Crunch','Ab Wheel','Leg Raise','Mountain Climbers'],
+  'Glutes':['Hip Thrust','Glute Bridge','Bulgarian Split Squat','Cable Kickback','Sumo Deadlift','Step-Ups'],
+  'Quads':['Squat','Front Squat','Leg Press','Hack Squat','Leg Extension','Lunges','Goblet Squat'],
+  'Calves':['Standing Calf Raise','Seated Calf Raise','Leg Press Calf Raise','Donkey Calf Raise'],
+  'Biceps':['Barbell Curl','Dumbbell Curl','Hammer Curl','Preacher Curl','Incline Dumbbell Curl','Concentration Curl','Cable Curl'],
+  'Triceps':['Tricep Pushdown','Rope Pushdown','Skull Crushers','Overhead Extension','Close-Grip Bench Press','Tricep Dips','Kickbacks'],
+  'Hamstrings':['Romanian Deadlift','Lying Leg Curl','Seated Leg Curl','Stiff-Leg Deadlift','Good Morning','Nordic Curl']
 };
 
 function getAllExercises(){
@@ -1241,7 +1248,7 @@ function esc(s){return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
 function openCustomExModal(presetGroup){
   document.getElementById('cef-name').value='';
   const sel=document.getElementById('cef-group');
-  sel.value=(presetGroup&&[...sel.options].some(o=>o.value===presetGroup))?presetGroup:'Arms';
+  sel.value=(presetGroup&&[...sel.options].some(o=>o.value===presetGroup))?presetGroup:'Chest';
   openModal('modal-custom-ex');
   setTimeout(()=>document.getElementById('cef-name').focus(),300);
 }
