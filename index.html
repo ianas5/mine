@@ -493,7 +493,13 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
         <option value="snacks">🍎 Snacks</option>
       </select>
     </div>
+    <div class="field" style="position:relative;">
+      <label data-i18n="food_search">🔍 Search foods</label>
+      <input id="mf-search" type="text" placeholder="Search foods…" data-i18n-ph="search_ph" autocomplete="off" oninput="onMealSearchInput()">
+      <div id="mf-search-results" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:20;margin-top:4px;background:var(--card);border:1px solid var(--border);border-radius:12px;max-height:240px;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,0.4);"></div>
+    </div>
     <div class="field"><label data-i18n="food_name">Food Name</label><input id="mf-name" type="text" placeholder="e.g. Chicken breast, Rice…" data-i18n-ph="food_name_ph"></div>
+    <div class="field"><label data-i18n="portion_g">Portion (g) — optional</label><input id="mf-portion" type="number" placeholder="100" inputmode="decimal" oninput="rescalePortion()"></div>
     <div class="field-row">
       <div class="field"><label data-i18n="calories_lbl">Calories</label><input id="mf-cal" type="number" placeholder="kcal" inputmode="numeric"></div>
       <div class="field"><label data-i18n="protein">Protein (g)</label><input id="mf-protein" type="number" placeholder="0" inputmode="numeric"></div>
@@ -736,6 +742,7 @@ const I18N={
     est_1rm:'Est. 1RM',max_weight:'Max Weight',max_reps:'Max Reps',best_volume:'Best Volume',
     new_pr:'🎉 New PR!',warmup:'Warm-up',working:'Working',notes:'Notes',
     week_volume:'Weekly Volume',this_week_sets:'Sets This Week',analytics:'Analytics',
+    food_search:'🔍 Search foods',search_ph:'Type a food name…',portion_g:'Portion (g) — optional',
   },
   ar:{
     nav_home:'الرئيسية',nav_workouts:'التمارين',nav_nutrition:'التغذية',nav_progress:'التقدم',
@@ -799,6 +806,7 @@ const I18N={
     est_1rm:'1RM تقديري',max_weight:'أعلى وزن',max_reps:'أعلى تكرار',best_volume:'أفضل حجم',
     new_pr:'🎉 رقم قياسي جديد!',warmup:'إحماء',working:'فعلي',notes:'ملاحظات',
     week_volume:'الحجم الأسبوعي',this_week_sets:'مجموعات هذا الأسبوع',analytics:'تحليلات',
+    food_search:'🔍 ابحث عن طعام',search_ph:'اكتب اسم الطعام…',portion_g:'الكمية (غ) — اختياري',
   }
 };
 
@@ -1917,11 +1925,82 @@ function openMealModal(){
   document.getElementById('mf-protein').value='';
   document.getElementById('mf-carbs').value='';
   document.getElementById('mf-fat').value='';
+  document.getElementById('mf-search').value='';
+  document.getElementById('mf-portion').value='';
+  const rb=document.getElementById('mf-search-results');rb.style.display='none';rb.innerHTML='';
+  mealSearchBase=null;
   const qp=document.getElementById('meal-quick-picks');
   qp.innerHTML=QUICK_FOODS.map(f=>`<span class="chip" onclick="fillQuickFood(${JSON.stringify(f).replace(/"/g,"'")})">${f.name}</span>`).join('');
   openModal('modal-meal');
 }
+
+// ── OPEN FOOD FACTS SEARCH ──
+let mealSearchBase=null;   // selected food macros per 100g
+let mealSearchTimer=null;
+let mealSearchResults=[];
+function onMealSearchInput(){
+  const q=document.getElementById('mf-search').value.trim();
+  const box=document.getElementById('mf-search-results');
+  clearTimeout(mealSearchTimer);
+  if(q.length<2){box.style.display='none';box.innerHTML='';return;}
+  box.style.display='block';
+  box.innerHTML=`<div style="padding:12px;color:var(--text-sub);font-size:13px;">${lang==='ar'?'جاري البحث…':'Searching…'}</div>`;
+  mealSearchTimer=setTimeout(()=>doMealSearch(q),400);
+}
+async function doMealSearch(q){
+  const box=document.getElementById('mf-search-results');
+  try{
+    const url=`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=24&fields=product_name,product_name_ar,brands,nutriments`;
+    const res=await fetch(url);
+    const data=await res.json();
+    mealSearchResults=(data.products||[]).map(p=>{
+      const n=p.nutriments||{};
+      let cal=n['energy-kcal_100g'];
+      if(cal==null&&n['energy-kcal']!=null) cal=n['energy-kcal'];
+      if(cal==null&&n['energy_100g']!=null) cal=n['energy_100g']/4.184; // kJ→kcal fallback
+      const name=((lang==='ar'&&p.product_name_ar)?p.product_name_ar:p.product_name||'').trim();
+      return {name,brand:(p.brands||'').split(',')[0].trim(),cal:cal!=null?Math.round(cal):null,
+        protein:Math.round(n.proteins_100g||0),carbs:Math.round(n.carbohydrates_100g||0),fat:Math.round(n.fat_100g||0)};
+    }).filter(x=>x.name&&x.cal!=null&&x.cal>0);
+    if(!mealSearchResults.length){
+      box.innerHTML=`<div style="padding:12px;color:var(--text-sub);font-size:13px;">${lang==='ar'?'لا نتائج — أدخل القيم يدوياً':'No results — enter values manually'}</div>`;
+      return;
+    }
+    box.innerHTML=mealSearchResults.slice(0,18).map((it,i)=>`
+      <div onclick="pickFood(${i})" style="padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;">
+        <div style="min-width:0;"><div style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${it.name}</div>${it.brand?`<div style="font-size:11px;color:var(--text-sub);">${it.brand}</div>`:''}</div>
+        <div style="flex-shrink:0;text-align:right;"><div style="font-size:14px;font-weight:800;color:var(--accent);">${it.cal}</div><div style="font-size:9px;color:var(--text-sub);">kcal/100g</div></div>
+      </div>`).join('');
+  }catch(e){
+    box.innerHTML=`<div style="padding:12px;color:var(--text-sub);font-size:13px;">${lang==='ar'?'تعذّر البحث — أدخل القيم يدوياً':'Search failed — enter values manually'}</div>`;
+  }
+}
+function pickFood(i){
+  const it=mealSearchResults[i];
+  if(!it) return;
+  mealSearchBase={cal:it.cal,protein:it.protein,carbs:it.carbs,fat:it.fat};
+  document.getElementById('mf-name').value=it.name;
+  document.getElementById('mf-portion').value=100;
+  applyPortion(100);
+  document.getElementById('mf-search').value='';
+  const box=document.getElementById('mf-search-results');box.style.display='none';box.innerHTML='';
+  document.querySelectorAll('#meal-quick-picks .chip').forEach(c=>c.classList.remove('active'));
+}
+function applyPortion(g){
+  if(!mealSearchBase) return;
+  const f=g/100;
+  document.getElementById('mf-cal').value=Math.round(mealSearchBase.cal*f);
+  document.getElementById('mf-protein').value=Math.round(mealSearchBase.protein*f);
+  document.getElementById('mf-carbs').value=Math.round(mealSearchBase.carbs*f);
+  document.getElementById('mf-fat').value=Math.round(mealSearchBase.fat*f);
+}
+function rescalePortion(){
+  const g=parseFloat(document.getElementById('mf-portion').value)||0;
+  if(g>0&&mealSearchBase) applyPortion(g);
+}
 function fillQuickFood(f){
+  mealSearchBase=null;
+  document.getElementById('mf-portion').value='';
   document.getElementById('mf-name').value=f.name;
   document.getElementById('mf-cal').value=f.calories;
   document.getElementById('mf-protein').value=f.protein;
