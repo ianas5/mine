@@ -2270,6 +2270,13 @@ function saveWeight(){
   const existing=measurements.find(m=>m.date===date);
   if(existing){existing.weight=val;}else{measurements.push({date,weight:val});}
   save(STORAGE_KEYS.measurements,measurements);
+  // Auto-initialise startWeight from peak logged weight so the bar has a reference point
+  const goals=load(STORAGE_KEYS.goals)||{};
+  if(!goals.startWeight){
+    const allW=measurements.map(m=>m.weight);
+    goals.startWeight=Math.max(...allW);
+    save(STORAGE_KEYS.goals,goals);
+  }
   closeModal('modal-weight');
   showToast('Weight logged');
   if(currentTab==='progress') renderProgress();
@@ -2279,8 +2286,10 @@ function saveWeight(){
 // ── GOALS MODAL ──
 function openGoalsModal(){
   const g=load(STORAGE_KEYS.goals)||{};
+  const measurements=load(STORAGE_KEYS.measurements)||[];
+  const maxW=measurements.length?Math.max(...measurements.map(m=>m.weight)):0;
   document.getElementById('gf-cal').value=g.dailyCalories||2000;
-  document.getElementById('gf-sw').value=g.startWeight||'';
+  document.getElementById('gf-sw').value=g.startWeight>0?g.startWeight:(maxW||'');
   document.getElementById('gf-tw').value=g.targetWeight||'';
   document.getElementById('gf-protein').value=g.proteinGoal||160;
   document.getElementById('gf-carbs').value=g.carbsGoal||200;
@@ -2288,10 +2297,12 @@ function openGoalsModal(){
   openModal('modal-goals');
 }
 function saveGoals(){
-  const g={dailyCalories:parseInt(document.getElementById('gf-cal').value)||2000,startWeight:parseFloat(document.getElementById('gf-sw').value)||0,targetWeight:parseFloat(document.getElementById('gf-tw').value)||0,proteinGoal:parseInt(document.getElementById('gf-protein').value)||160,carbsGoal:parseInt(document.getElementById('gf-carbs').value)||200,fatGoal:parseInt(document.getElementById('gf-fat').value)||65,startDate:new Date().toISOString().split('T')[0]};
+  const prev=load(STORAGE_KEYS.goals)||{};
+  const newSW=parseFloat(document.getElementById('gf-sw').value);
+  const g={dailyCalories:parseInt(document.getElementById('gf-cal').value)||2000,startWeight:newSW>0?newSW:(prev.startWeight||0),targetWeight:parseFloat(document.getElementById('gf-tw').value)||0,proteinGoal:parseInt(document.getElementById('gf-protein').value)||160,carbsGoal:parseInt(document.getElementById('gf-carbs').value)||200,fatGoal:parseInt(document.getElementById('gf-fat').value)||65,startDate:new Date().toISOString().split('T')[0]};
   save(STORAGE_KEYS.goals,g);
   closeModal('modal-goals');
-  showToast('Goals updated! 🎯');
+  showToast('Goals updated');
   renderHome();
 }
 
