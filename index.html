@@ -2653,10 +2653,17 @@ function patchMissingEl(id){if(!document.getElementById(id)){const d=document.cr
 patchMissingEl('cal-ring-goal');
 
 // ── INIT ──
-// Migrations run unconditionally, before seedData
-if(!load('ft_nutr_cleared_v1')){save(STORAGE_KEYS.nutrition,[]);save('ft_nutr_cleared_v1',true);}
-if(!load('ft_meas_cleared_v2')){save(STORAGE_KEYS.measurements,[]);save('ft_meas_cleared_v2',true);}
-seedData();
+// One-time clean slate: wipe all demo/seed data so the user starts fresh.
+// Removes seeded workouts, programs, weights, nutrition and goals.
+if(!load('ft_fresh_start_v1')){
+  save(STORAGE_KEYS.workouts,[]);
+  save(STORAGE_KEYS.programs,[]);
+  save(STORAGE_KEYS.measurements,[]);
+  save(STORAGE_KEYS.nutrition,[]);
+  localStorage.removeItem(STORAGE_KEYS.goals);
+  save('ft_fresh_start_v1',true);
+}
+// Demo seeding is permanently disabled — this is now a live app.
 applyTheme();
 applyLang();
 renderHome();
