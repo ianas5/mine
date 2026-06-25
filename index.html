@@ -933,6 +933,10 @@ function seedData(){
     save(STORAGE_KEYS.nutrition,[]);
     save('ft_nutr_cleared_v1',true);
   }
+  if(!load('ft_meas_cleared_v1')){
+    save(STORAGE_KEYS.measurements,[]);
+    save('ft_meas_cleared_v1',true);
+  }
   if(load(STORAGE_KEYS.goals)) return;
   const today=new Date();
   const fmt=d=>d.toISOString().split('T')[0];
@@ -1051,10 +1055,20 @@ function renderHome(){
   document.getElementById('goal-current-w').textContent=gw||'—';
   document.getElementById('goal-target-w').textContent=tw||'—';
   if(gw&&sw&&tw){
-    const total=Math.abs(sw-tw),done=Math.abs(sw-gw),pct=Math.min(100,total>0?(done/total*100):100);
+    // Direction-aware: progress = (sw→gw movement in goal direction) / total
+    const total=Math.abs(sw-tw);
+    const progress=total>0?(sw-gw)/(sw-tw):1; // positive = moving toward target
+    const pct=Math.min(100,Math.max(0,Math.round(progress*100)));
     document.getElementById('goal-bar').style.width=pct+'%';
-    const toGo=(gw-tw).toFixed(1);
-    document.getElementById('goal-caption').textContent=toGo>0?`${t('to_go',toGo)} · ${t('pct_complete',pct)}`:t('goal_reached');
+    const toGo=Math.abs(gw-tw).toFixed(1);
+    const goalDir=sw>tw?'lose':'gain';
+    const onTrack=(goalDir==='lose'&&gw<=tw)||(goalDir==='gain'&&gw>=tw);
+    if(onTrack){
+      document.getElementById('goal-caption').textContent=t('goal_reached');
+    } else {
+      const pctTxt=pct>0?` · ${pct}% done`:'';
+      document.getElementById('goal-caption').textContent=`${toGo} kg to go${pctTxt}`;
+    }
   }
 }
 
