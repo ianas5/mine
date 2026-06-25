@@ -450,6 +450,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
         <option value="" data-i18n="start_fresh">— Start fresh —</option>
       </select>
     </div>
+    <button class="btn btn-secondary btn-full" style="margin-bottom:14px;" onclick="repeatLastWorkout()" data-i18n="repeat_last">🔁 Repeat Last Workout</button>
     <div class="field"><label data-i18n="workout_name">Workout Name</label><input id="wf-name" type="text" placeholder="e.g. Push Day, Leg Day…" data-i18n-ph="workout_name_ph"></div>
     <div class="field"><label data-i18n="date">Date</label><input id="wf-date" type="date"></div>
     <div id="wf-exercises-list"></div>
@@ -709,6 +710,12 @@ const I18N={
     inbody:'InBody Metrics',meas_history:'Measurements History',no_inbody:'Log your first InBody results',
     rest_timer:'Rest Timer',start_timer:'Start',pause_timer:'Pause',resume_timer:'Resume',
     rest_done:'Rest done! 💪',quick_start:'Quick Start',
+    repeat_last:'🔁 Repeat Last Workout',start_workout:'Start Workout ▶',
+    todays_workout:"Today's Workout",no_program_today:'No program scheduled',
+    rest_day:'Rest day — no workout planned',pick_program:'Pick a program to start',
+    est_1rm:'Est. 1RM',max_weight:'Max Weight',max_reps:'Max Reps',best_volume:'Best Volume',
+    new_pr:'🎉 New PR!',warmup:'Warm-up',working:'Working',notes:'Notes',
+    week_volume:'Weekly Volume',this_week_sets:'Sets This Week',
   },
   ar:{
     nav_home:'الرئيسية',nav_workouts:'التمارين',nav_nutrition:'التغذية',nav_progress:'التقدم',
@@ -766,6 +773,12 @@ const I18N={
     inbody:'نتائج InBody',meas_history:'سجل القياسات',no_inbody:'سجل نتائج InBody الأولى',
     rest_timer:'مؤقت الراحة',start_timer:'ابدأ',pause_timer:'إيقاف',resume_timer:'استكمال',
     rest_done:'انتهت الراحة! 💪',quick_start:'بدء سريع',
+    repeat_last:'🔁 كرر آخر تمرين',start_workout:'ابدأ التمرين ▶',
+    todays_workout:'تمرين اليوم',no_program_today:'لا يوجد برنامج مجدول',
+    rest_day:'يوم راحة — لا تمرين مخطط',pick_program:'اختر برنامج للبدء',
+    est_1rm:'1RM تقديري',max_weight:'أعلى وزن',max_reps:'أعلى تكرار',best_volume:'أفضل حجم',
+    new_pr:'🎉 رقم قياسي جديد!',warmup:'إحماء',working:'فعلي',notes:'ملاحظات',
+    week_volume:'الحجم الأسبوعي',this_week_sets:'مجموعات هذا الأسبوع',
   }
 };
 
@@ -1037,7 +1050,7 @@ function renderWorkouts(){
           <div style="color:var(--text-dim);font-size:20px;">›</div>
         </div>
         <div class="exercise-sets" style="display:none;">
-          ${w.exercises.map(ex=>`<div style="margin-bottom:12px;"><div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px;">${ex.name}</div>${ex.sets.map((s,i)=>`<div class="set-row"><div class="set-num">Set ${i+1}</div><div class="set-val"><div class="num">${s.weight>0?s.weight+'kg':t('bw')}</div><div class="lbl">${t('weight')}</div></div><div class="set-val"><div class="num">${s.reps}</div><div class="lbl">${t('reps')}</div></div>${isPR(w.id,ex.name,s,workouts)?'<div class="set-pr">🏆 PR</div>':''}</div>`).join('')}</div>`).join('')}
+          ${w.exercises.map(ex=>{let wn=0;return `<div style="margin-bottom:12px;"><div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px;">${ex.name}</div>${ex.sets.map((s)=>{const warm=s.warmup;const lbl=warm?'W':(++wn);return `<div class="set-row"><div class="set-num" style="${warm?'color:var(--warn);':''}">${warm?'Warm':'Set '+lbl}</div><div class="set-val"><div class="num">${s.weight>0?s.weight+'kg':t('bw')}</div><div class="lbl">${t('weight')}</div></div><div class="set-val"><div class="num">${s.reps}</div><div class="lbl">${t('reps')}</div></div>${isPR(w.id,ex.name,s,workouts)?'<div class="set-pr">🏆 PR</div>':''}</div>`;}).join('')}${ex.notes?`<div style="font-size:12px;color:var(--text-sub);margin-top:6px;padding:6px 10px;background:var(--surface);border-radius:8px;">📝 ${ex.notes}</div>`:''}</div>`;}).join('')}
           <button class="btn btn-danger btn-sm" onclick="deleteWorkout(${w.id})" style="margin-top:6px;width:100%;">${t('delete')}</button>
         </div>
       </div>`).join('');
@@ -1048,7 +1061,18 @@ function renderWorkouts(){
   if(!prs.length){
     prList.innerHTML=`<div class="empty"><div class="empty-icon">🏆</div><div class="empty-title">${t('no_prs')}</div><div class="empty-sub">${t('log_more')}</div></div>`;
   } else {
-    prList.innerHTML=prs.map(pr=>`<div class="card card-sm" style="margin-top:10px;"><div style="display:flex;justify-content:space-between;align-items:center;"><div><div style="font-size:15px;font-weight:700;">${pr.exercise}</div><div style="font-size:12px;color:var(--text-sub);margin-top:2px;">${fmtDate(pr.date)}</div></div><div style="text-align:right;"><div style="font-size:22px;font-weight:800;color:var(--warn);">${pr.weight>0?pr.weight+'kg':t('bw')}</div><div style="font-size:12px;color:var(--text-sub);">${pr.reps} ${t('reps')}</div></div></div></div>`).join('');
+    prList.innerHTML=prs.map(pr=>`<div class="card card-sm" style="margin-top:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div style="font-size:16px;font-weight:800;">${pr.exercise}</div>
+        <div style="font-size:11px;color:var(--text-sub);">${fmtDate(pr.date)}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;">
+        <div style="text-align:center;background:rgba(255,215,0,0.1);border-radius:10px;padding:8px 4px;"><div style="font-size:18px;font-weight:800;color:var(--warn);">${pr.maxWeight>0?pr.maxWeight:'—'}</div><div style="font-size:9px;color:var(--text-sub);font-weight:700;text-transform:uppercase;margin-top:2px;">${t('max_weight')}</div></div>
+        <div style="text-align:center;background:rgba(255,107,53,0.1);border-radius:10px;padding:8px 4px;"><div style="font-size:18px;font-weight:800;color:var(--accent);">${pr.best1RM>0?pr.best1RM:'—'}</div><div style="font-size:9px;color:var(--text-sub);font-weight:700;text-transform:uppercase;margin-top:2px;">${t('est_1rm')}</div></div>
+        <div style="text-align:center;background:rgba(0,212,170,0.1);border-radius:10px;padding:8px 4px;"><div style="font-size:18px;font-weight:800;color:var(--accent2);">${pr.maxReps>0?pr.maxReps:'—'}</div><div style="font-size:9px;color:var(--text-sub);font-weight:700;text-transform:uppercase;margin-top:2px;">${t('max_reps')}</div></div>
+        <div style="text-align:center;background:rgba(255,255,255,0.05);border-radius:10px;padding:8px 4px;"><div style="font-size:18px;font-weight:800;">${pr.bestVolume>0?pr.bestVolume:'—'}</div><div style="font-size:9px;color:var(--text-sub);font-weight:700;text-transform:uppercase;margin-top:2px;">${t('best_volume')}</div></div>
+      </div>
+    </div>`).join('');
   }
   // Programs
   renderPrograms();
@@ -1160,7 +1184,7 @@ function startProgram(id){
   document.getElementById('wf-exercises-list').innerHTML='';
   populateExercisesDatalist();
   populateProgramSelect();
-  prog.exercises.forEach(exName=>addExerciseField(exName));
+  prog.exercises.forEach(exName=>addExerciseField(exName,{locked:true}));
   if(currentTab!=='workouts') switchTab('workouts');
   openModal('modal-workout');
 }
@@ -1227,48 +1251,163 @@ function loadFromProgram(id){
   document.getElementById('wf-name').value=prog.name;
   document.getElementById('wf-exercises-list').innerHTML='';
   exerciseFieldCount=0;
-  prog.exercises.forEach(exName=>addExerciseField(exName));
+  prog.exercises.forEach(exName=>addExerciseField(exName,{locked:true}));
 }
 
-function addExerciseField(prefillName=''){
+// Find the most recent past performance of an exercise (for progressive overload)
+function getLastPerformance(exName,beforeDate){
+  const workouts=load(STORAGE_KEYS.workouts)||[];
+  const matches=workouts
+    .filter(w=>!beforeDate||w.date<beforeDate)
+    .filter(w=>(w.exercises||[]).some(e=>e.name===exName))
+    .sort((a,b)=>b.date.localeCompare(a.date));
+  if(!matches.length) return null;
+  const w=matches[0];
+  const ex=w.exercises.find(e=>e.name===exName);
+  return {date:w.date,sets:ex.sets||[],notes:ex.notes||''};
+}
+
+function daysAgoLabel(dateStr){
+  const d=new Date(dateStr+'T12:00:00'),now=new Date();
+  const diff=Math.round((now-d)/86400000);
+  if(diff<=0) return lang==='ar'?'اليوم':'today';
+  if(diff===1) return lang==='ar'?'أمس':'1d ago';
+  if(lang==='ar') return `قبل ${diff} يوم`;
+  return `${diff}d ago`;
+}
+
+// addExerciseField(name, {locked}) — locked = from a program (fixed orange name, no picker/delete)
+function addExerciseField(prefillName='',opts={}){
   exerciseFieldCount++;
   const id=exerciseFieldCount;
+  const locked=!!opts.locked&&!!prefillName;
   const div=document.createElement('div');
   div.style.cssText='background:var(--card);border-radius:14px;padding:14px;margin-bottom:12px;border:1px solid var(--border);';
   div.dataset.exid=id;
+  if(locked) div.dataset.exname=prefillName;
+  const wfDate=document.getElementById('wf-date').value||new Date().toISOString().split('T')[0];
+  const last=prefillName?getLastPerformance(prefillName,wfDate):null;
+  // Header: fixed orange name when locked, else picker that updates the orange label
+  const header=locked
+    ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+         <div id="ex-label-${id}" style="font-size:16px;font-weight:800;color:var(--accent);">${prefillName}</div>
+       </div>`
+    : `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+         <div id="ex-label-${id}" style="font-size:16px;font-weight:800;color:var(--accent);">${prefillName||(lang==='ar'?'— اختر تمرين —':'— pick exercise —')}</div>
+         <button onclick="this.closest('[data-exid]').remove()" style="background:none;border:none;color:var(--text-sub);font-size:18px;cursor:pointer;">✕</button>
+       </div>
+       <div class="field" style="margin-bottom:10px;">
+         <select class="ex-name-inp" onchange="onExNameChange(${id},this.value)"
+           style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;outline:none;-webkit-appearance:none;">
+           ${exerciseSelectOptions(prefillName)}
+         </select>
+       </div>`;
+  // Last-session hint + suggestion
+  let hint='';
+  if(last&&last.sets.length){
+    const summary=last.sets.map(s=>`${s.weight>0?s.weight:'BW'}×${s.reps}`).join(' · ');
+    const topW=Math.max(...last.sets.filter(s=>!s.warmup).map(s=>s.weight),0);
+    hint=`<div style="background:var(--surface);border-radius:10px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--text-sub);display:flex;justify-content:space-between;align-items:center;gap:8px;">
+      <span>📊 ${lang==='ar'?'آخر مرة':'Last'} (${daysAgoLabel(last.date)}): <b style="color:var(--text);">${summary}</b></span>
+      ${topW>0?`<button onclick="suggestProgress(${id},${topW+2.5})" style="flex-shrink:0;background:rgba(0,212,170,0.15);border:none;color:var(--accent2);font-weight:800;font-size:12px;padding:5px 9px;border-radius:8px;cursor:pointer;white-space:nowrap;">↗ ${topW+2.5}kg</button>`:''}
+    </div>`;
+  }
+  // Pre-build set rows matching last session (auto-fill weights for progressive overload)
+  let setsHtml='';
+  if(last&&last.sets.length){
+    last.sets.forEach((s,i)=>{setsHtml+=makeSetRow(id,i+1,s);});
+  } else {
+    setsHtml=makeSetRow(id,1,null);
+  }
   div.innerHTML=`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-      <div id="ex-label-${id}" style="font-size:15px;font-weight:800;color:var(--accent);">${prefillName||'— pick exercise —'}</div>
-      ${id>1?`<button onclick="this.closest('[data-exid]').remove()" style="background:none;border:none;color:var(--text-sub);font-size:18px;cursor:pointer;">✕</button>`:''}
-    </div>
-    <div class="field" style="margin-bottom:10px;">
-      <select class="ex-name-inp" onchange="document.getElementById('ex-label-${id}').textContent=this.value||'— pick exercise —'"
-        style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;outline:none;-webkit-appearance:none;">
-        ${exerciseSelectOptions(prefillName)}
-      </select>
-    </div>
-    <div id="ex-sets-${id}">${makeSetRow(id,1)}</div>
-    <div style="display:flex;gap:8px;margin-top:6px;">
+    ${header}
+    ${hint}
+    <div id="ex-sets-${id}">${setsHtml}</div>
+    <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">
       <button class="btn btn-ghost btn-sm" onclick="addSetRow(${id})">${t('add_set')}</button>
-      <button class="btn btn-ghost btn-sm" onclick="openRestTimer()" style="color:var(--accent2);flex-shrink:0;">⏱ ${t('rest_timer')}</button>
+      <button class="btn btn-ghost btn-sm" onclick="openRestTimer()" style="color:var(--accent2);">⏱ ${t('rest_timer')}</button>
+      <button class="btn btn-ghost btn-sm" onclick="toggleExNote(${id})" style="color:var(--text-sub);">📝 ${lang==='ar'?'ملاحظة':'Note'}</button>
+    </div>
+    <div id="ex-note-${id}" style="display:${last&&last.notes?'block':'none'};margin-top:8px;">
+      <input type="text" class="ex-note-inp" placeholder="${lang==='ar'?'ملاحظة لهذا التمرين…':'Note for this exercise…'}" value="${last&&last.notes?escAttr(last.notes):''}"
+        style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px;font-family:inherit;outline:none;">
     </div>`;
   document.getElementById('wf-exercises-list').appendChild(div);
 }
 
-function makeSetRow(exId,setNum){
-  return `<div style="display:flex;align-items:flex-end;gap:6px;margin-bottom:8px;" data-setrow="${setNum}">
-    <div style="font-size:11px;color:var(--text-dim);font-weight:800;width:20px;flex-shrink:0;padding-bottom:13px;text-align:center;">${setNum}</div>
-    <div class="field" style="margin-bottom:0;flex:1;"><label style="font-size:10px;">${t('reps')}</label><input type="number" class="set-reps" placeholder="0" inputmode="numeric" style="padding:9px 8px;font-size:15px;text-align:center;"></div>
-    <div class="field" style="margin-bottom:0;flex:1;"><label style="font-size:10px;">${t('weight')} kg</label><input type="number" class="set-wgt" placeholder="0" inputmode="decimal" step="0.5" style="padding:9px 8px;font-size:15px;text-align:center;"></div>
-    <button class="set-done-btn" onclick="markSetDone(this)" title="Done — starts rest timer">✓</button>
-    <button onclick="this.closest('[data-setrow]').remove()" style="flex-shrink:0;width:40px;height:40px;background:rgba(255,71,87,0.1);border:none;color:var(--danger);border-radius:10px;font-size:16px;cursor:pointer;">✕</button>
+function onExNameChange(id,name){
+  document.getElementById('ex-label-'+id).textContent=name||(lang==='ar'?'— اختر تمرين —':'— pick exercise —');
+}
+
+function toggleExNote(id){
+  const n=document.getElementById('ex-note-'+id);
+  if(!n) return;
+  n.style.display=n.style.display==='none'?'block':'none';
+  if(n.style.display==='block') n.querySelector('input').focus();
+}
+
+function suggestProgress(id,weight){
+  document.querySelectorAll('#ex-sets-'+id+' [data-setrow]').forEach(row=>{
+    const w=row.querySelector('.set-wgt');
+    if(w&&row.dataset.warmup!=='1') w.value=weight;
+  });
+  showToast(lang==='ar'?`تم ضبط ${weight}kg ↗`:`Set to ${weight}kg ↗`);
+}
+
+// makeSetRow(exId, setNum, prev) — prev={reps,weight,warmup} from last session
+function makeSetRow(exId,setNum,prev){
+  const isWarm=prev&&prev.warmup;
+  const wPlace=prev&&prev.weight>0?prev.weight:'0';
+  const rPlace=prev&&prev.reps>0?prev.reps:'0';
+  const wVal=prev&&prev.weight>0&&!isWarm?prev.weight:'';
+  return `<div style="display:flex;align-items:flex-end;gap:5px;margin-bottom:8px;" data-setrow="${setNum}" data-warmup="${isWarm?'1':'0'}" data-prevw="${prev&&prev.weight!=null?prev.weight:''}">
+    <button type="button" onclick="toggleWarmup(this)" title="${lang==='ar'?'إحماء':'Warm-up'}" class="set-badge" style="flex-shrink:0;width:26px;height:40px;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;background:${isWarm?'rgba(255,215,0,0.2)':'transparent'};color:${isWarm?'var(--warn)':'var(--text-dim)'};">${isWarm?'W':setNum}</button>
+    <div class="field" style="margin-bottom:0;flex:1;"><label style="font-size:10px;">${t('reps')}</label><input type="number" class="set-reps" placeholder="${rPlace}" inputmode="numeric" style="padding:9px 6px;font-size:15px;text-align:center;"></div>
+    <div class="field" style="margin-bottom:0;flex:1;"><label style="font-size:10px;">${t('weight')} kg</label><input type="number" class="set-wgt" placeholder="${wPlace}" value="${wVal}" inputmode="decimal" step="0.5" oninput="updateSetDelta(this)" style="padding:9px 6px;font-size:15px;text-align:center;"></div>
+    <div class="set-delta" style="width:30px;flex-shrink:0;text-align:center;font-size:11px;font-weight:800;padding-bottom:13px;"></div>
+    <button class="set-done-btn" onclick="markSetDone(this)" title="Done — starts rest timer" style="width:36px;height:40px;">✓</button>
+    <button onclick="this.closest('[data-setrow]').remove()" style="flex-shrink:0;width:32px;height:40px;background:rgba(255,71,87,0.1);border:none;color:var(--danger);border-radius:8px;font-size:15px;cursor:pointer;">✕</button>
   </div>`;
+}
+
+function toggleWarmup(btn){
+  const row=btn.closest('[data-setrow]');
+  const nowWarm=row.dataset.warmup!=='1';
+  row.dataset.warmup=nowWarm?'1':'0';
+  btn.style.background=nowWarm?'rgba(255,215,0,0.2)':'transparent';
+  btn.style.color=nowWarm?'var(--warn)':'var(--text-dim)';
+  renumberSets(row.parentElement);
+  const wInp=row.querySelector('.set-wgt');
+  if(wInp) updateSetDelta(wInp);
+}
+
+function renumberSets(container){
+  if(!container) return;
+  let n=0;
+  container.querySelectorAll('[data-setrow]').forEach(row=>{
+    const badge=row.querySelector('.set-badge');
+    if(row.dataset.warmup==='1'){badge.textContent='W';}
+    else{n++;badge.textContent=n;}
+  });
+}
+
+function updateSetDelta(input){
+  const row=input.closest('[data-setrow]');
+  const deltaEl=row.querySelector('.set-delta');
+  const prevW=row.dataset.prevw===''?null:parseFloat(row.dataset.prevw);
+  const cur=parseFloat(input.value);
+  if(prevW==null||isNaN(cur)||row.dataset.warmup==='1'){deltaEl.textContent='';return;}
+  const d=+(cur-prevW).toFixed(1);
+  if(d===0){deltaEl.textContent='=';deltaEl.style.color='var(--text-dim)';}
+  else if(d>0){deltaEl.textContent='+'+d;deltaEl.style.color='var(--accent2)';}
+  else{deltaEl.textContent=d;deltaEl.style.color='var(--danger)';}
 }
 
 function addSetRow(exId){
   const container=document.getElementById('ex-sets-'+exId);
   const count=container.querySelectorAll('[data-setrow]').length+1;
-  container.insertAdjacentHTML('beforeend',makeSetRow(exId,count));
+  container.insertAdjacentHTML('beforeend',makeSetRow(exId,count,null));
+  renumberSets(container);
 }
 
 function markSetDone(btn){
@@ -1285,16 +1424,20 @@ function saveWorkout(){
   const exerciseDivs=document.querySelectorAll('#wf-exercises-list [data-exid]');
   const exercises=[];
   exerciseDivs.forEach(div=>{
-    const rawName=div.querySelector('.ex-name-inp').value||'';
+    const sel=div.querySelector('.ex-name-inp');
+    const rawName=div.dataset.exname||(sel?sel.value:'')||'';
     const exName=normalizeExName(rawName)||'Exercise';
+    const noteEl=div.querySelector('.ex-note-inp');
+    const notes=noteEl?noteEl.value.trim():'';
     const setRows=div.querySelectorAll('[data-setrow]');
     const sets=[];
     setRows.forEach(row=>{
       const reps=parseInt(row.querySelector('.set-reps').value)||0;
       const weight=parseFloat(row.querySelector('.set-wgt').value)||0;
-      if(reps>0) sets.push({reps,weight});
+      const warmup=row.dataset.warmup==='1';
+      if(reps>0) sets.push(warmup?{reps,weight,warmup:true}:{reps,weight});
     });
-    if(sets.length) exercises.push({name:exName,sets});
+    if(sets.length){const ex={name:exName,sets};if(notes)ex.notes=notes;exercises.push(ex);}
   });
   if(!exercises.length){showToast(t('no_exercises_added')||'Add at least one exercise set');return;}
   const workouts=load(STORAGE_KEYS.workouts)||[];
@@ -1302,8 +1445,25 @@ function saveWorkout(){
   save(STORAGE_KEYS.workouts,workouts);
   closeModal('modal-workout');
   showToast('Workout saved! 💪');
+  // PR celebration
+  celebrateNewPRs(workouts[workouts.length-1],workouts);
   if(currentTab==='workouts') renderWorkouts();
   if(currentTab==='home') renderHome();
+}
+
+// Repeat the most recent workout (names + sets prefilled)
+function repeatLastWorkout(){
+  const workouts=load(STORAGE_KEYS.workouts)||[];
+  if(!workouts.length){showToast(lang==='ar'?'لا يوجد تمرين سابق':'No previous workout');return;}
+  const last=[...workouts].sort((a,b)=>b.date.localeCompare(a.date))[0];
+  exerciseFieldCount=0;
+  document.getElementById('wf-name').value=last.name;
+  document.getElementById('wf-date').value=new Date().toISOString().split('T')[0];
+  document.getElementById('wf-exercises-list').innerHTML='';
+  populateProgramSelect();
+  last.exercises.forEach(ex=>addExerciseField(ex.name,{locked:true}));
+  if(currentTab!=='workouts') switchTab('workouts');
+  openModal('modal-workout');
 }
 
 // ── CUSTOM EXERCISE ──
@@ -1356,20 +1516,54 @@ function deleteWorkout(id){
   showToast('Workout deleted');
 }
 
+// Epley formula: 1RM = w × (1 + reps/30)
+function est1RM(weight,reps){if(weight<=0||reps<=0)return 0;return Math.round(weight*(1+reps/30));}
+function isWorking(s){return !s.warmup;}
+
+// Full PR record per exercise: max weight, max reps, best volume (single set), best est 1RM
 function computePRs(workouts){
   const prMap={};
-  workouts.forEach(w=>{w.exercises.forEach(ex=>{ex.sets.forEach(s=>{if(!prMap[ex.name]||s.weight>prMap[ex.name].weight||(s.weight===prMap[ex.name].weight&&s.reps>prMap[ex.name].reps)){prMap[ex.name]={exercise:ex.name,weight:s.weight,reps:s.reps,date:w.date};}});});});
-  return Object.values(prMap).sort((a,b)=>b.date.localeCompare(a.date));
+  workouts.forEach(w=>{w.exercises.forEach(ex=>{
+    ex.sets.filter(isWorking).forEach(s=>{
+      const p=prMap[ex.name]||(prMap[ex.name]={exercise:ex.name,maxWeight:0,maxReps:0,bestVolume:0,best1RM:0,weight:0,reps:0,date:w.date});
+      const vol=s.weight*s.reps;
+      const orm=est1RM(s.weight,s.reps);
+      if(s.weight>p.maxWeight){p.maxWeight=s.weight;p.weight=s.weight;p.reps=s.reps;p.date=w.date;}
+      if(s.reps>p.maxReps) p.maxReps=s.reps;
+      if(vol>p.bestVolume) p.bestVolume=vol;
+      if(orm>p.best1RM) p.best1RM=orm;
+    });
+  });});
+  return Object.values(prMap).sort((a,b)=>b.best1RM-a.best1RM);
 }
 
+// Is this set a new all-time weight PR (vs everything before this workout's date)?
 function isPR(wid,exName,set,allWorkouts){
+  if(set.warmup||set.weight<=0) return false;
   const thisW=allWorkouts.find(w=>w.id===wid);
   if(!thisW) return false;
-  const maxWeight=allWorkouts.filter(w=>w.date<thisW.date).flatMap(w=>w.exercises).filter(ex=>ex.name===exName).flatMap(ex=>ex.sets).reduce((m,s)=>Math.max(m,s.weight),-1);
-  return set.weight>maxWeight&&set.weight>0;
+  const maxWeight=allWorkouts.filter(w=>w.date<thisW.date).flatMap(w=>w.exercises).filter(ex=>ex.name===exName).flatMap(ex=>ex.sets).filter(isWorking).reduce((m,s)=>Math.max(m,s.weight),-1);
+  return set.weight>maxWeight;
+}
+
+// Show a celebration toast if the just-saved workout set any new weight PRs
+function celebrateNewPRs(savedWorkout,allWorkouts){
+  const prior=allWorkouts.filter(w=>w.id!==savedWorkout.id);
+  const newPRs=[];
+  savedWorkout.exercises.forEach(ex=>{
+    const priorMax=prior.flatMap(w=>w.exercises).filter(e=>e.name===ex.name).flatMap(e=>e.sets).filter(isWorking).reduce((m,s)=>Math.max(m,s.weight),0);
+    const myMax=ex.sets.filter(isWorking).reduce((m,s)=>Math.max(m,s.weight),0);
+    if(myMax>priorMax&&myMax>0) newPRs.push({name:ex.name,weight:myMax});
+  });
+  if(newPRs.length){
+    if(navigator.vibrate) navigator.vibrate([100,50,100,50,200]);
+    const names=newPRs.map(p=>`${p.name} ${p.weight}kg`).join(' · ');
+    setTimeout(()=>showToast(`${t('new_pr')} ${names}`),700);
+  }
 }
 
 function totalSets(w){return w.exercises.reduce((t,e)=>t+e.sets.length,0);}
+function workoutVolume(w){return w.exercises.reduce((t,e)=>t+e.sets.filter(isWorking).reduce((s,st)=>s+st.weight*st.reps,0),0);}
 
 // ── NUTRITION ──
 let selectedNutrDate=new Date().toISOString().split('T')[0];
