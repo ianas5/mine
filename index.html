@@ -1042,24 +1042,24 @@ function renderHome(){
   renderTodaysWorkout();
   renderQuickPrograms();
   const gw=latestM?latestM.weight:null;
-  const sw=goals.startWeight||null,tw=goals.targetWeight||null;
+  const tw=goals.targetWeight||null;
   document.getElementById('goal-current-w').textContent=gw||'—';
   document.getElementById('goal-target-w').textContent=tw||'—';
-  if(gw&&sw&&tw){
-    // Direction-aware: progress = (sw→gw movement in goal direction) / total
-    const total=Math.abs(sw-tw);
-    const progress=total>0?(sw-gw)/(sw-tw):1; // positive = moving toward target
+  if(gw&&tw){
+    // Use the historical peak (for loss) or valley (for gain) as effective start
+    // so the bar fills as the user makes real progress from their personal record
+    const allW=sortedM.map(m=>m.weight);
+    const losing=tw<gw;
+    const effectiveSW=losing?Math.max(...allW,goals.startWeight||0):Math.min(...allW,goals.startWeight||999);
+    const total=Math.abs(effectiveSW-tw);
+    const progress=total>0?(effectiveSW-gw)/(effectiveSW-tw):1;
     const pct=Math.min(100,Math.max(0,Math.round(progress*100)));
     document.getElementById('goal-bar').style.width=pct+'%';
     const toGo=Math.abs(gw-tw).toFixed(1);
-    const goalDir=sw>tw?'lose':'gain';
-    const onTrack=(goalDir==='lose'&&gw<=tw)||(goalDir==='gain'&&gw>=tw);
-    if(onTrack){
-      document.getElementById('goal-caption').textContent=t('goal_reached');
-    } else {
-      const pctTxt=pct>0?` · ${pct}% done`:'';
-      document.getElementById('goal-caption').textContent=`${toGo} kg to go${pctTxt}`;
-    }
+    const onTarget=Math.abs(gw-tw)<0.5;
+    document.getElementById('goal-caption').textContent=onTarget
+      ?t('goal_reached')
+      :`${toGo} kg to go${pct>0?` · ${pct}% done`:''}`;
   }
 }
 
