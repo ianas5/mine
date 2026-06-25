@@ -223,11 +223,10 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
   <div class="header">
     <div class="header-row">
       <div>
-        <div class="hero-greeting" data-i18n="good_morning">Good morning 👋</div>
-        <div class="hero-name">Anas <span style="color:var(--accent)">·</span> FitTrack</div>
+        <div class="hero-greeting" id="home-greeting">Good morning 👋</div>
+        <div class="hero-name">Anas</div>
       </div>
       <div class="header-btns">
-        <button class="icon-btn" id="langToggle" onclick="toggleLang()" title="Toggle Language">عر</button>
         <button class="icon-btn" id="themeToggle" onclick="toggleTheme()" title="Toggle Theme">🌙</button>
         <button class="header-btn" onclick="openGoalsModal()">⚙️</button>
         <button class="header-btn" onclick="toggleSidebar()" style="font-size:22px;">☰</button>
@@ -473,7 +472,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
 <!-- SIDEBAR -->
 <nav class="sidebar" id="sidebar">
   <div class="sidebar-logo">
-    <div style="font-size:21px;font-weight:800;">FitTrack <span style="color:var(--accent)">Pro</span></div>
+    <div style="font-size:21px;font-weight:800;">Anas</div>
     <div style="font-size:13px;color:var(--text-sub);margin-top:3px;">Anas</div>
   </div>
   <div style="margin-top:8px;">
@@ -853,7 +852,7 @@ const GROUP_LABELS={
   ar:{Chest:'صدر',Shoulders:'أكتاف',Back:'ظهر',Core:'بطن',Glutes:'جلوتس',Quads:'أمامي الفخذ',Calves:'سمانة',Biceps:'باي',Triceps:'تراي',Hamstrings:'خلفي الفخذ',Cardio:'كارديو',Other:'أخرى',Custom:'مخصص',Legs:'أرجل',Arms:'ذراعين'}
 };
 
-let lang=localStorage.getItem('fit_lang')||'en';
+const lang='en';
 let theme=localStorage.getItem('fit_theme')||'dark';
 
 function t(key,...args){
@@ -1001,7 +1000,10 @@ function switchProgressTab(tp){
 function renderHome(){
   const today=new Date();
   const todayStr=today.toISOString().split('T')[0];
-  document.getElementById('home-date').textContent=today.toLocaleDateString(lang==='ar'?'ar-SA':'en-US',{weekday:'long',month:'long',day:'numeric'});
+  document.getElementById('home-date').textContent=today.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  const h=today.getHours();
+  const greet=h<12?'Good morning 👋':h<17?'Good afternoon ☀️':'Good evening 🌙';
+  const ge=document.getElementById('home-greeting');if(ge) ge.textContent=greet;
   const goals=load(STORAGE_KEYS.goals)||{dailyCalories:2000,targetWeight:75,startWeight:85,proteinGoal:160,carbsGoal:200,fatGoal:65};
   const nutrition=load(STORAGE_KEYS.nutrition)||[];
   const measurements=load(STORAGE_KEYS.measurements)||[];
@@ -1026,7 +1028,8 @@ function renderHome(){
   while(dateSet.has(check.toISOString().split('T')[0])){streak++;check.setDate(check.getDate()-1);}
   document.getElementById('home-streak').textContent=streak;
   document.getElementById('home-workouts').textContent=workouts.length;
-  const latestM=measurements.length?measurements[measurements.length-1]:null;
+  const sortedM=[...measurements].sort((a,b)=>a.date.localeCompare(b.date));
+  const latestM=sortedM.length?sortedM[sortedM.length-1]:null;
   document.getElementById('home-weight').textContent=latestM?latestM.weight:'—';
   const days=['mon','tue','wed','thu','fri','sat','sun'];
   const weekStart=new Date(today);weekStart.setDate(today.getDate()-((today.getDay()+6)%7));
