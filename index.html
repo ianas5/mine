@@ -2267,16 +2267,16 @@ function saveWeight(){
   if(!val){showToast('Enter a weight value');return;}
   const date=document.getElementById('wgt-date').value;
   const measurements=load(STORAGE_KEYS.measurements)||[];
+  // Auto-init startWeight BEFORE updating so the previous value is included in the peak
+  const goals=load(STORAGE_KEYS.goals)||{};
+  if(!goals.startWeight){
+    const peak=Math.max(...measurements.map(m=>m.weight),val);
+    goals.startWeight=peak;
+    save(STORAGE_KEYS.goals,goals);
+  }
   const existing=measurements.find(m=>m.date===date);
   if(existing){existing.weight=val;}else{measurements.push({date,weight:val});}
   save(STORAGE_KEYS.measurements,measurements);
-  // Auto-initialise startWeight from peak logged weight so the bar has a reference point
-  const goals=load(STORAGE_KEYS.goals)||{};
-  if(!goals.startWeight){
-    const allW=measurements.map(m=>m.weight);
-    goals.startWeight=Math.max(...allW);
-    save(STORAGE_KEYS.goals,goals);
-  }
   closeModal('modal-weight');
   showToast('Weight logged');
   if(currentTab==='progress') renderProgress();
