@@ -928,15 +928,6 @@ function toggleLang(){
 
 // ── SEED DATA ──
 function seedData(){
-  // One-time migration: clear dummy nutrition that was pre-seeded
-  if(!load('ft_nutr_cleared_v1')){
-    save(STORAGE_KEYS.nutrition,[]);
-    save('ft_nutr_cleared_v1',true);
-  }
-  if(!load('ft_meas_cleared_v1')){
-    save(STORAGE_KEYS.measurements,[]);
-    save('ft_meas_cleared_v1',true);
-  }
   if(load(STORAGE_KEYS.goals)) return;
   const today=new Date();
   const fmt=d=>d.toISOString().split('T')[0];
@@ -2606,6 +2597,9 @@ function patchMissingEl(id){if(!document.getElementById(id)){const d=document.cr
 patchMissingEl('cal-ring-goal');
 
 // ── INIT ──
+// Migrations run unconditionally, before seedData
+if(!load('ft_nutr_cleared_v1')){save(STORAGE_KEYS.nutrition,[]);save('ft_nutr_cleared_v1',true);}
+if(!load('ft_meas_cleared_v2')){save(STORAGE_KEYS.measurements,[]);save('ft_meas_cleared_v2',true);}
 seedData();
 applyTheme();
 applyLang();
