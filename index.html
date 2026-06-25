@@ -1964,29 +1964,44 @@ function onMealSearchInput(){
 async function doMealSearch(q){
   const box=document.getElementById('mf-search-results');
   try{
-    const url=`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=24&fields=product_name,product_name_ar,brands,nutriments`;
+    const url=`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=30&fields=product_name,product_name_ar,brands,nutriments`;
     const res=await fetch(url);
     const data=await res.json();
+    const ql=q.toLowerCase();
     mealSearchResults=(data.products||[]).map(p=>{
       const n=p.nutriments||{};
       let cal=n['energy-kcal_100g'];
       if(cal==null&&n['energy-kcal']!=null) cal=n['energy-kcal'];
-      if(cal==null&&n['energy_100g']!=null) cal=n['energy_100g']/4.184; // kJ→kcal fallback
-      const name=((lang==='ar'&&p.product_name_ar)?p.product_name_ar:p.product_name||'').trim();
-      return {name,brand:(p.brands||'').split(',')[0].trim(),cal:cal!=null?Math.round(cal):null,
+      if(cal==null&&n['energy_100g']!=null) cal=n['energy_100g']/4.184;
+      const rawName=((lang==='ar'&&p.product_name_ar)?p.product_name_ar:p.product_name||'').trim();
+      const brand=(p.brands||'').split(',')[0].trim();
+      let displayName=rawName;
+      if(brand&&rawName){
+        const bl=brand.toLowerCase(),nl=rawName.toLowerCase();
+        if(!nl.includes(bl)&&!bl.includes(nl)) displayName=brand+' – '+rawName;
+      } else if(brand&&!rawName){
+        displayName=brand;
+      }
+      return {name:displayName,cal:cal!=null?Math.round(cal):null,
         protein:Math.round(n.proteins_100g||0),carbs:Math.round(n.carbohydrates_100g||0),fat:Math.round(n.fat_100g||0)};
-    }).filter(x=>x.name&&x.cal!=null&&x.cal>0);
+    })
+    .filter(x=>x.name&&x.cal!=null&&x.cal>0)
+    .sort((a,b)=>{
+      const aHas=a.name.toLowerCase().includes(ql)?0:1;
+      const bHas=b.name.toLowerCase().includes(ql)?0:1;
+      return aHas-bHas;
+    });
     if(!mealSearchResults.length){
-      box.innerHTML=`<div style="padding:12px;color:var(--text-sub);font-size:13px;">${lang==='ar'?'لا نتائج — أدخل القيم يدوياً':'No results — enter values manually'}</div>`;
+      box.innerHTML=`<div style="padding:12px 14px;color:var(--text-sub);font-size:13px;">${lang==='ar'?'\u0644\u0627 \u0646\u062a\u0627\u0626\u062c \u2014 \u0623\u062f\u062e\u0644 \u0627\u0644\u0642\u064a\u0645 \u064a\u062f\u0648\u064a\u0627\u064b':'No results \u2014 enter values manually'}</div>`;
       return;
     }
     box.innerHTML=mealSearchResults.slice(0,18).map((it,i)=>`
       <div onclick="pickFood(${i})" style="padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;">
-        <div style="min-width:0;"><div style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${it.name}</div>${it.brand?`<div style="font-size:11px;color:var(--text-sub);">${it.brand}</div>`:''}</div>
+        <div style="min-width:0;flex:1;"><div style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${it.name}</div></div>
         <div style="flex-shrink:0;text-align:right;"><div style="font-size:14px;font-weight:800;color:var(--accent);">${it.cal}</div><div style="font-size:9px;color:var(--text-sub);">kcal/100g</div></div>
       </div>`).join('');
   }catch(e){
-    box.innerHTML=`<div style="padding:12px;color:var(--text-sub);font-size:13px;">${lang==='ar'?'تعذّر البحث — أدخل القيم يدوياً':'Search failed — enter values manually'}</div>`;
+    box.innerHTML=`<div style="padding:12px;color:var(--text-sub);font-size:13px;">${lang==='ar'?'\u062a\u0639\u0630\u0651\u0631 \u0627\u0644\u0628\u062d\u062b \u2014 \u0623\u062f\u062e\u0644 \u0627\u0644\u0642\u064a\u0645 \u064a\u062f\u0648\u064a\u0627\u064b':'Search failed \u2014 enter values manually'}</div>`;
   }
 }
 function pickFood(i){
