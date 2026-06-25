@@ -391,9 +391,28 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
   <div id="badges-row" style="display:flex;gap:8px;flex-wrap:wrap;padding:4px 16px 14px;"></div>
   <div class="tab-bar">
     <div class="tab active" onclick="switchProgressTab('log')" data-i18n="weight_log">Weight Log</div>
+    <div class="tab" onclick="switchProgressTab('analytics')" data-i18n="analytics">Analytics</div>
     <div class="tab" onclick="switchProgressTab('measurements')" data-i18n="measurements">Measurements</div>
   </div>
   <div class="tab-panel active" id="pt-log" style="padding-top:6px;"><div class="card" style="margin-top:14px;"><div id="weight-log-list"></div></div></div>
+  <div class="tab-panel" id="pt-analytics" style="padding-top:14px;">
+    <div class="quick-stats" style="margin-bottom:14px;">
+      <div class="qs-card"><div class="qs-icon">📊</div><div class="qs-val" id="an-week-vol">0</div><div class="qs-label" data-i18n="week_volume">Week Vol</div></div>
+      <div class="qs-card"><div class="qs-icon">🔢</div><div class="qs-val" id="an-week-sets">0</div><div class="qs-label" data-i18n="this_week_sets">Week Sets</div></div>
+      <div class="qs-card"><div class="qs-icon">🏋️</div><div class="qs-val" id="an-month-wkt">0</div><div class="qs-label" data-i18n="nav_workouts">Workouts</div></div>
+    </div>
+    <div class="card"><div class="card-title" data-i18n="week_volume">Weekly Volume (kg)</div><div class="chart-wrap"><canvas id="vol-chart"></canvas></div></div>
+    <div class="card"><div class="card-title" data-i18n="this_week_sets">Weekly Sets</div><div class="chart-wrap"><canvas id="sets-chart"></canvas></div></div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;">
+        <div class="card-title" style="margin-bottom:0;" data-i18n="est_1rm">Est. 1RM Trend</div>
+        <select id="an-1rm-ex" onchange="renderAnalytics()" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 8px;font-size:12px;font-family:inherit;outline:none;-webkit-appearance:none;max-width:55%;"></select>
+      </div>
+      <div class="chart-wrap"><canvas id="orm-chart"></canvas></div>
+    </div>
+    <div class="card"><div class="card-title">Muscle Frequency (30d sets)</div><div class="chart-wrap"><canvas id="muscle-chart"></canvas></div></div>
+    <div class="card"><div class="card-title" data-i18n="calories_lbl">Calories (14d)</div><div class="chart-wrap"><canvas id="cal-chart"></canvas></div></div>
+  </div>
   <div class="tab-panel" id="pt-measurements" style="padding-top:14px;">
     <div class="card"><div class="card-title" data-i18n="measurements">Measurements</div><div id="measurements-display"></div></div>
     <div style="padding:0 16px 14px;"><button class="btn btn-secondary btn-full" onclick="openMeasurementsModal()" data-i18n="log_measurements">📏 Log Measurements</button></div>
@@ -716,7 +735,7 @@ const I18N={
     rest_day:'Rest day — no workout planned',pick_program:'Pick a program to start',
     est_1rm:'Est. 1RM',max_weight:'Max Weight',max_reps:'Max Reps',best_volume:'Best Volume',
     new_pr:'🎉 New PR!',warmup:'Warm-up',working:'Working',notes:'Notes',
-    week_volume:'Weekly Volume',this_week_sets:'Sets This Week',
+    week_volume:'Weekly Volume',this_week_sets:'Sets This Week',analytics:'Analytics',
   },
   ar:{
     nav_home:'الرئيسية',nav_workouts:'التمارين',nav_nutrition:'التغذية',nav_progress:'التقدم',
@@ -779,7 +798,7 @@ const I18N={
     rest_day:'يوم راحة — لا تمرين مخطط',pick_program:'اختر برنامج للبدء',
     est_1rm:'1RM تقديري',max_weight:'أعلى وزن',max_reps:'أعلى تكرار',best_volume:'أفضل حجم',
     new_pr:'🎉 رقم قياسي جديد!',warmup:'إحماء',working:'فعلي',notes:'ملاحظات',
-    week_volume:'الحجم الأسبوعي',this_week_sets:'مجموعات هذا الأسبوع',
+    week_volume:'الحجم الأسبوعي',this_week_sets:'مجموعات هذا الأسبوع',analytics:'تحليلات',
   }
 };
 
@@ -925,8 +944,10 @@ function switchWorkoutTab(tabName){
 }
 
 function switchProgressTab(tp){
-  document.querySelectorAll('#screen-progress .tab').forEach((el,i)=>el.classList.toggle('active',['log','measurements'][i]===tp));
-  document.querySelectorAll('#screen-progress .tab-panel').forEach((el,i)=>el.classList.toggle('active',['pt-log','pt-measurements'][i]==='pt-'+tp));
+  const tabs=['log','analytics','measurements'];
+  document.querySelectorAll('#screen-progress .tab').forEach((el,i)=>el.classList.toggle('active',tabs[i]===tp));
+  document.querySelectorAll('#screen-progress .tab-panel').forEach((el)=>el.classList.toggle('active',el.id==='pt-'+tp));
+  if(tp==='analytics') renderAnalytics();
 }
 
 // ── HOME ──
@@ -1776,6 +1797,110 @@ function renderProgress(){
     const histCard=document.getElementById('meas-history-card');
     if(histCard) histCard.style.display='none';
   }
+}
+
+// ── ANALYTICS / CHARTS ──
+const chartInstances={};
+function mkChart(id,config){
+  if(typeof Chart==='undefined') return; // CDN not loaded — skip gracefully
+  const el=document.getElementById(id);
+  if(!el) return;
+  if(chartInstances[id]){chartInstances[id].destroy();}
+  chartInstances[id]=new Chart(el.getContext('2d'),config);
+}
+function chartColors(){
+  const isDark=document.documentElement.getAttribute('data-theme')!=='light';
+  return {tick:isDark?'rgba(255,255,255,0.4)':'rgba(0,0,0,0.45)',grid:isDark?'rgba(255,255,255,0.05)':'rgba(0,0,0,0.06)'};
+}
+
+// Reverse map: exercise name → muscle group
+function getExerciseGroup(name){
+  for(const[g,exs]of Object.entries(EXERCISE_LIBRARY)){if(exs.includes(name))return g;}
+  const custom=load(STORAGE_KEYS.customExercises)||[];
+  const c=custom.find(c=>c.name===name);
+  return c?c.group:'Other';
+}
+
+// Monday-based start of the ISO week containing d
+function weekStartOf(d){const x=new Date(d);x.setHours(0,0,0,0);x.setDate(x.getDate()-((x.getDay()+6)%7));return x;}
+
+function lastNWeeks(n){
+  const weeks=[];const cur=weekStartOf(new Date());
+  for(let i=n-1;i>=0;i--){const ws=new Date(cur);ws.setDate(cur.getDate()-i*7);weeks.push(ws);}
+  return weeks;
+}
+
+function renderAnalytics(){
+  const workouts=load(STORAGE_KEYS.workouts)||[];
+  const cc=chartColors();
+  const baseOpts={responsive:true,maintainAspectRatio:true,plugins:{legend:{display:false}},
+    scales:{x:{grid:{color:cc.grid},ticks:{color:cc.tick,font:{size:10}}},y:{grid:{color:cc.grid},ticks:{color:cc.tick,font:{size:10}},beginAtZero:true}}};
+
+  // Summary stat cards (this week)
+  const wkStart=weekStartOf(new Date());
+  const wkWkts=workouts.filter(w=>new Date(w.date+'T12:00:00')>=wkStart);
+  const weekVol=wkWkts.reduce((t,w)=>t+workoutVolume(w),0);
+  const weekSets=wkWkts.reduce((t,w)=>t+w.exercises.reduce((s,e)=>s+e.sets.filter(isWorking).length,0),0);
+  const monthPfx=new Date().toISOString().slice(0,7);
+  const setText=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+  setText('an-week-vol',Math.round(weekVol).toLocaleString());
+  setText('an-week-sets',weekSets);
+  setText('an-month-wkt',workouts.filter(w=>w.date.startsWith(monthPfx)).length);
+
+  const weeks=lastNWeeks(8);
+  const weekLabels=weeks.map(w=>w.toLocaleDateString(lang==='ar'?'ar-SA':'en-US',{month:'short',day:'numeric'}));
+  const inWeek=(dateStr,ws)=>{const d=new Date(dateStr+'T12:00:00');const we=new Date(ws);we.setDate(ws.getDate()+7);return d>=ws&&d<we;};
+
+  // Weekly volume
+  const volData=weeks.map(ws=>Math.round(workouts.filter(w=>inWeek(w.date,ws)).reduce((t,w)=>t+workoutVolume(w),0)));
+  mkChart('vol-chart',{type:'bar',data:{labels:weekLabels,datasets:[{data:volData,backgroundColor:'rgba(255,107,53,0.7)',borderRadius:6}]},options:baseOpts});
+
+  // Weekly working sets
+  const setsData=weeks.map(ws=>workouts.filter(w=>inWeek(w.date,ws)).reduce((t,w)=>t+w.exercises.reduce((s,e)=>s+e.sets.filter(isWorking).length,0),0));
+  mkChart('sets-chart',{type:'bar',data:{labels:weekLabels,datasets:[{data:setsData,backgroundColor:'rgba(0,212,170,0.7)',borderRadius:6}]},options:baseOpts});
+
+  // Est 1RM trend for a selected exercise
+  const exNames=[...new Set(workouts.flatMap(w=>w.exercises.map(e=>e.name)))].sort();
+  const sel=document.getElementById('an-1rm-ex');
+  if(sel){
+    const prev=sel.value;
+    sel.innerHTML=exNames.map(n=>`<option value="${escAttr(n)}">${n}</option>`).join('');
+    if(exNames.includes(prev)) sel.value=prev;
+  }
+  const chosen=sel&&sel.value?sel.value:(exNames[0]||null);
+  if(chosen){
+    const pts=workouts.filter(w=>w.exercises.some(e=>e.name===chosen))
+      .sort((a,b)=>a.date.localeCompare(b.date))
+      .map(w=>{const ex=w.exercises.find(e=>e.name===chosen);const best=Math.max(0,...ex.sets.filter(isWorking).map(s=>est1RM(s.weight,s.reps)));return{date:w.date,orm:best};})
+      .filter(p=>p.orm>0);
+    mkChart('orm-chart',{type:'line',data:{labels:pts.map(p=>fmtShort(p.date)),datasets:[{data:pts.map(p=>p.orm),borderColor:'#FF6B35',backgroundColor:'rgba(255,107,53,0.1)',borderWidth:2.5,pointRadius:3,fill:true,tension:0.3}]},options:baseOpts});
+  } else if(chartInstances['orm-chart']){chartInstances['orm-chart'].destroy();delete chartInstances['orm-chart'];}
+
+  // Muscle frequency — working sets per group, last 30 days
+  const cutoff=new Date();cutoff.setDate(cutoff.getDate()-30);
+  const freq={};
+  workouts.filter(w=>new Date(w.date+'T12:00:00')>=cutoff).forEach(w=>w.exercises.forEach(e=>{
+    const g=getExerciseGroup(e.name);const n=e.sets.filter(isWorking).length;freq[g]=(freq[g]||0)+n;
+  }));
+  const fg=Object.entries(freq).sort((a,b)=>b[1]-a[1]);
+  const palette=['#FF6B35','#00D4AA','#FFD700','#3B9EFF','#FF4757','#A78BFA','#F59E0B','#10B981','#EC4899','#8B5CF6','#14B8A6','#F97316'];
+  mkChart('muscle-chart',{type:'bar',data:{labels:fg.map(([g])=>gl(g)),datasets:[{data:fg.map(([,v])=>v),backgroundColor:fg.map((_,i)=>palette[i%palette.length]),borderRadius:5}]},
+    options:{...baseOpts,indexAxis:'y',scales:{x:{grid:{color:cc.grid},ticks:{color:cc.tick,font:{size:10}},beginAtZero:true},y:{grid:{display:false},ticks:{color:cc.tick,font:{size:11}}}}}});
+
+  // Calories — last 14 days vs goal line
+  const goals=load(STORAGE_KEYS.goals)||{dailyCalories:2000};
+  const nutrition=load(STORAGE_KEYS.nutrition)||[];
+  const calLabels=[],calData=[];
+  for(let i=13;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);const ds=d.toISOString().split('T')[0];
+    calLabels.push(fmtShort(ds));
+    const entry=nutrition.find(n=>n.date===ds);
+    calData.push(entry?calcTotals(entry.meals).calories:0);
+  }
+  const goalLine=calData.map(()=>goals.dailyCalories||2000);
+  mkChart('cal-chart',{type:'bar',data:{labels:calLabels,datasets:[
+    {type:'bar',data:calData,backgroundColor:calData.map(v=>v>(goals.dailyCalories||2000)?'rgba(255,71,87,0.7)':'rgba(255,107,53,0.7)'),borderRadius:5},
+    {type:'line',data:goalLine,borderColor:'rgba(0,212,170,0.8)',borderWidth:1.5,borderDash:[4,4],pointRadius:0,fill:false}
+  ]},options:baseOpts});
 }
 
 // ── MODAL HELPERS ──
