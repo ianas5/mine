@@ -16,14 +16,14 @@
 :root{
   --bg:#0D0D0D;--surface:#1A1A1A;--card:#222222;--border:#333333;
   --accent:#FF6B35;--accent2:#00D4AA;--text:#F0F0F0;--text-sub:#888888;--text-dim:#555555;
-  --danger:#FF4757;--warn:#FFD700;--nav-h:72px;--safe-bottom:env(safe-area-inset-bottom,0px);
+  --danger:#FF4757;--warn:#FFD700;--safe-bottom:env(safe-area-inset-bottom,0px);
 }
 [data-theme="light"]{
   --bg:#F2F2F7;--surface:#E5E5EA;--card:#FFFFFF;--border:#C7C7CC;
   --text:#1C1C1E;--text-sub:#6C6C70;--text-dim:#AEAEB2;
 }
 [data-theme="light"] .header{background:rgba(242,242,247,0.95);border-bottom-color:rgba(0,0,0,0.1)}
-[data-theme="light"] .bottom-nav{background:rgba(229,229,234,0.97);border-top-color:rgba(0,0,0,0.1)}
+[data-theme="light"] .sidebar{background:var(--surface);border-right-color:var(--border)}
 [data-theme="light"] .ring-bg{stroke:rgba(0,0,0,0.08)}
 [data-theme="light"] .macro-bar-track{background:rgba(0,0,0,0.08)}
 [data-theme="light"] .modal{background:var(--surface)}
@@ -38,7 +38,7 @@
 [data-theme="light"] .day-dot{background:rgba(0,0,0,0.15)}
 html,body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif;min-height:100vh;overflow-x:hidden;-webkit-font-smoothing:antialiased}
 #app{max-width:430px;margin:0 auto;position:relative;min-height:100vh}
-.screen{display:none;padding-bottom:calc(var(--nav-h) + var(--safe-bottom) + 16px);min-height:100vh}
+.screen{display:none;padding-bottom:calc(var(--safe-bottom) + 80px);min-height:100vh}
 .screen.active{display:block}
 .header{position:sticky;top:0;z-index:100;background:rgba(13,13,13,0.92);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);padding:16px 20px 12px;border-bottom:1px solid rgba(255,255,255,0.06)}
 .header-row{display:flex;align-items:center;justify-content:space-between}
@@ -50,12 +50,16 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
 .header-btn:active{background:var(--border)}
 .icon-btn{width:36px;height:36px;border-radius:50%;background:var(--card);border:none;color:var(--text);font-size:12px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background 0.15s;flex-shrink:0;font-family:inherit}
 .icon-btn:active{background:var(--border)}
-.bottom-nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:430px;height:calc(var(--nav-h) + var(--safe-bottom));background:rgba(20,20,20,0.96);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-top:1px solid rgba(255,255,255,0.08);display:flex;align-items:flex-start;padding-top:8px;z-index:200}
-.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:4px 0;color:var(--text-dim);transition:color 0.15s;-webkit-tap-highlight-color:transparent}
-.nav-item.active{color:var(--accent)}
-.nav-icon{font-size:22px;line-height:1;transition:transform 0.2s}
-.nav-item.active .nav-icon{transform:scale(1.1)}
-.nav-label{font-size:10px;font-weight:600;letter-spacing:0.3px;text-transform:uppercase}
+.sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:300;display:none;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);}
+.sidebar-overlay.open{display:block}
+.sidebar{position:fixed;left:-290px;top:0;height:100vh;width:min(280px,85vw);background:var(--surface);z-index:350;padding:0 0 40px;transition:left 0.3s cubic-bezier(0.32,0.72,0,1);overflow-y:auto;border-right:1px solid var(--border);}
+.sidebar.open{left:0;}
+.sidebar-logo{padding:56px 24px 20px;border-bottom:1px solid var(--border);}
+.sidebar-item{display:flex;align-items:center;gap:14px;padding:14px 24px;font-size:16px;font-weight:600;cursor:pointer;color:var(--text-sub);transition:background 0.15s;-webkit-tap-highlight-color:transparent;}
+.sidebar-item:active{background:var(--card);}
+.sidebar-item.active{color:var(--accent);background:rgba(255,107,53,0.08);}
+.sidebar-icon{font-size:22px;width:28px;text-align:center;}
+.sidebar-section{font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;padding:16px 24px 6px;}
 .card{background:var(--card);border-radius:18px;padding:18px;margin:0 16px 14px;border:1px solid rgba(255,255,255,0.05)}
 .card-sm{padding:14px 16px;border-radius:14px}
 .card-title{font-size:11px;font-weight:700;color:var(--text-sub);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
@@ -75,7 +79,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
 .btn-danger{background:rgba(255,71,87,0.15);color:var(--danger);padding:10px 16px}
 .btn-full{width:100%}
 .btn-sm{font-size:13px;padding:9px 16px;border-radius:10px}
-.fab{position:fixed;bottom:calc(var(--nav-h) + var(--safe-bottom) + 20px);right:calc(50% - 215px + 20px);width:56px;height:56px;border-radius:50%;background:var(--accent);color:#fff;font-size:26px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 24px rgba(255,107,53,0.5);transition:transform 0.2s,box-shadow 0.2s;z-index:150;-webkit-tap-highlight-color:transparent}
+.fab{position:fixed;bottom:calc(var(--safe-bottom) + 20px);right:calc(50% - 215px + 20px);width:56px;height:56px;border-radius:50%;background:var(--accent);color:#fff;font-size:26px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 24px rgba(255,107,53,0.5);transition:transform 0.2s,box-shadow 0.2s;z-index:150;-webkit-tap-highlight-color:transparent}
 .fab:active{transform:scale(0.92);box-shadow:0 2px 12px rgba(255,107,53,0.3)}
 .ring-wrap{position:relative;width:120px;height:120px;margin:0 auto}
 .ring-wrap svg{transform:rotate(-90deg)}
@@ -182,6 +186,16 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
 .empty-sub{font-size:14px;color:var(--text-sub);line-height:1.5}
 .prog-card{background:var(--card);border-radius:16px;padding:16px;margin:0 16px 12px;border:1px solid rgba(255,255,255,0.05)}
 .prog-actions{display:flex;gap:8px;margin-top:10px}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+.cal-day{text-align:center;padding:8px 2px;border-radius:10px;cursor:default;}
+.cal-day.has-workout{background:rgba(255,107,53,0.1);cursor:pointer;}
+.cal-day.is-today{background:rgba(255,107,53,0.18);border:1.5px solid rgba(255,107,53,0.5);}
+.cal-day-num{font-size:14px;font-weight:400;color:var(--text-sub);}
+.cal-day.has-workout .cal-day-num,.cal-day.is-today .cal-day-num{font-weight:800;color:var(--text);}
+.cal-day.is-today .cal-day-num{color:var(--accent);}
+.cal-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);margin:2px auto 0;}
+.set-done-btn{flex-shrink:0;width:40px;height:40px;background:rgba(0,212,170,0.12);border:1.5px solid rgba(0,212,170,0.35);color:var(--accent2);border-radius:10px;font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+.set-done-btn.checked{background:rgba(0,212,170,0.45);color:#fff;border-color:var(--accent2);}
 </style>
 </head>
 <body>
@@ -199,6 +213,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
         <button class="icon-btn" id="langToggle" onclick="toggleLang()" title="Toggle Language">عر</button>
         <button class="icon-btn" id="themeToggle" onclick="toggleTheme()" title="Toggle Theme">🌙</button>
         <button class="header-btn" onclick="openGoalsModal()">⚙️</button>
+        <button class="header-btn" onclick="toggleSidebar()" style="font-size:22px;">☰</button>
       </div>
     </div>
     <div class="hero-date" id="home-date"></div>
@@ -279,7 +294,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
   <div class="header">
     <div class="header-row">
       <div><h1>Work<span>outs</span></h1><div class="header-sub" id="workout-count-label">0 sessions logged</div></div>
-      <button class="header-btn" onclick="openWorkoutModal()">＋</button>
+      <div class="header-btns"><button class="header-btn" onclick="openWorkoutModal()">＋</button><button class="header-btn" onclick="toggleSidebar()" style="font-size:22px;">☰</button></div>
     </div>
   </div>
   <div id="wkt-quick-programs" style="display:none;">
@@ -309,7 +324,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
   <div class="header">
     <div class="header-row">
       <div><h1>Nutri<span>tion</span></h1><div class="header-sub" data-i18n="daily_food_water">Daily food &amp; water log</div></div>
-      <button class="header-btn" onclick="openMealModal()">＋</button>
+      <div class="header-btns"><button class="header-btn" onclick="openMealModal()">＋</button><button class="header-btn" onclick="toggleSidebar()" style="font-size:22px;">☰</button></div>
     </div>
   </div>
   <div class="day-selector" id="nutr-day-selector"></div>
@@ -358,7 +373,7 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
   <div class="header">
     <div class="header-row">
       <div><h1>Pro<span>gress</span></h1><div class="header-sub" data-i18n="weight_body_tracking">Weight &amp; body tracking</div></div>
-      <button class="header-btn" onclick="openWeightModal()">＋</button>
+      <div class="header-btns"><button class="header-btn" onclick="openWeightModal()">＋</button><button class="header-btn" onclick="toggleSidebar()" style="font-size:22px;">☰</button></div>
     </div>
   </div>
   <div class="grid-2">
@@ -389,12 +404,36 @@ html,body{background:var(--bg);color:var(--text);font-family:-apple-system,Blink
   <button class="fab" onclick="openWeightModal()">＋</button>
 </div>
 
-<!-- BOTTOM NAV -->
-<nav class="bottom-nav">
-  <div class="nav-item active" id="nav-home" onclick="switchTab('home')"><div class="nav-icon">🏠</div><div class="nav-label" data-i18n="nav_home">Home</div></div>
-  <div class="nav-item" id="nav-workouts" onclick="switchTab('workouts')"><div class="nav-icon">🏋️</div><div class="nav-label" data-i18n="nav_workouts">Workouts</div></div>
-  <div class="nav-item" id="nav-nutrition" onclick="switchTab('nutrition')"><div class="nav-icon">🥗</div><div class="nav-label" data-i18n="nav_nutrition">Nutrition</div></div>
-  <div class="nav-item" id="nav-progress" onclick="switchTab('progress')"><div class="nav-icon">📈</div><div class="nav-label" data-i18n="nav_progress">Progress</div></div>
+<!-- CALENDAR -->
+<div id="screen-calendar" class="screen">
+  <div class="header">
+    <div class="header-row">
+      <div><h1>Cal<span>endar</span></h1><div class="header-sub">Workout schedule</div></div>
+      <div class="header-btns"><button class="header-btn" onclick="toggleSidebar()" style="font-size:22px;">☰</button></div>
+    </div>
+  </div>
+  <div id="calendar-content" style="padding:16px;"></div>
+</div>
+
+<!-- SIDEBAR OVERLAY -->
+<div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+<!-- SIDEBAR -->
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-logo">
+    <div style="font-size:21px;font-weight:800;">FitTrack <span style="color:var(--accent)">Pro</span></div>
+    <div style="font-size:13px;color:var(--text-sub);margin-top:3px;">Anas</div>
+  </div>
+  <div style="margin-top:8px;">
+    <div class="sidebar-item active" id="snav-home" onclick="switchTab('home');closeSidebar()"><div class="sidebar-icon">🏠</div><div>Home</div></div>
+    <div class="sidebar-item" id="snav-workouts" onclick="switchTab('workouts');closeSidebar()"><div class="sidebar-icon">🏋️</div><div>Workouts</div></div>
+    <div class="sidebar-item" id="snav-nutrition" onclick="switchTab('nutrition');closeSidebar()"><div class="sidebar-icon">🥗</div><div>Nutrition</div></div>
+    <div class="sidebar-item" id="snav-progress" onclick="switchTab('progress');closeSidebar()"><div class="sidebar-icon">📊</div><div>Progress</div></div>
+    <div class="sidebar-item" id="snav-calendar" onclick="switchTab('calendar');closeSidebar()"><div class="sidebar-icon">📅</div><div>Calendar</div></div>
+    <div class="sidebar-section">QUICK ACCESS</div>
+    <div class="sidebar-item" onclick="switchTab('workouts');switchWorkoutTab('programs');closeSidebar()"><div class="sidebar-icon">📋</div><div>Programs</div></div>
+    <div class="sidebar-item" onclick="switchTab('workouts');switchWorkoutTab('library');closeSidebar()"><div class="sidebar-icon">📚</div><div>Library</div></div>
+  </div>
 </nav>
 
 <!-- SHARED DATALIST -->
@@ -808,6 +847,11 @@ function toggleLang(){
 
 // ── SEED DATA ──
 function seedData(){
+  // One-time migration: clear dummy nutrition that was pre-seeded
+  if(!load('ft_nutr_cleared_v1')){
+    save(STORAGE_KEYS.nutrition,[]);
+    save('ft_nutr_cleared_v1',true);
+  }
   if(load(STORAGE_KEYS.goals)) return;
   const today=new Date();
   const fmt=d=>d.toISOString().split('T')[0];
@@ -835,17 +879,6 @@ function seedData(){
     {id:101,name:'Pull Day',exercises:['Deadlift','Pull-Ups','Barbell Row','Barbell Curl']},
     {id:102,name:'Leg Day',exercises:['Squat','Leg Press','Romanian Deadlift','Calf Raise']}
   ]);
-  const meals=[
-    {type:'breakfast',name:'Greek Yogurt + Oats',calories:380,protein:28,carbs:52,fat:8},
-    {type:'lunch',name:'Grilled Chicken & Rice',calories:620,protein:52,carbs:68,fat:12},
-    {type:'dinner',name:'Salmon & Vegetables',calories:540,protein:44,carbs:30,fat:22},
-    {type:'snacks',name:'Protein Shake',calories:180,protein:30,carbs:10,fat:3}
-  ];
-  const nutrition=[];
-  for(let i=0;i<7;i++){
-    nutrition.push({date:daysAgo(i),meals:i===0?meals:meals.map(m=>({...m,calories:m.calories+Math.round((Math.random()-0.5)*80)})),water:i===0?5:Math.floor(Math.random()*8)+1});
-  }
-  save(STORAGE_KEYS.nutrition,nutrition);
   const weights=[];let w=88;
   for(let i=40;i>=0;i-=3){w=Math.max(78,w-(Math.random()*0.8));weights.push({date:daysAgo(i),weight:+w.toFixed(1)});}
   save(STORAGE_KEYS.measurements,weights.map(wt=>({date:wt.date,weight:wt.weight,chest:102,waist:88,hips:96,leftArm:36,rightArm:36.5,leftThigh:58,rightThigh:58.5})));
@@ -857,14 +890,17 @@ let weightChart=null;
 
 function switchTab(tab){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
-  document.getElementById('screen-'+tab).classList.add('active');
-  document.getElementById('nav-'+tab).classList.add('active');
+  document.querySelectorAll('.sidebar-item[id^="snav-"]').forEach(n=>n.classList.remove('active'));
+  const sc=document.getElementById('screen-'+tab);
+  if(sc) sc.classList.add('active');
+  const snav=document.getElementById('snav-'+tab);
+  if(snav) snav.classList.add('active');
   currentTab=tab;
   if(tab==='home') renderHome();
   if(tab==='workouts') renderWorkouts();
   if(tab==='nutrition') renderNutrition();
   if(tab==='progress') renderProgress();
+  if(tab==='calendar') renderCalendar();
 }
 
 function switchWorkoutTab(tabName){
@@ -1202,13 +1238,14 @@ function addExerciseField(prefillName=''){
   div.dataset.exid=id;
   div.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-      <div style="font-size:13px;font-weight:700;color:var(--accent);">${t('exercise_lbl')} ${id}</div>
+      <div id="ex-label-${id}" style="font-size:15px;font-weight:800;color:var(--accent);">${prefillName||'— pick exercise —'}</div>
       ${id>1?`<button onclick="this.closest('[data-exid]').remove()" style="background:none;border:none;color:var(--text-sub);font-size:18px;cursor:pointer;">✕</button>`:''}
     </div>
     <div class="field" style="margin-bottom:10px;">
-      <input type="text" class="ex-name-inp" list="all-exercises-datalist"
-        placeholder="${t('search_exercise')}" value="${prefillName}"
+      <select class="ex-name-inp" onchange="document.getElementById('ex-label-${id}').textContent=this.value||'— pick exercise —'"
         style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;outline:none;-webkit-appearance:none;">
+        ${exerciseSelectOptions(prefillName)}
+      </select>
     </div>
     <div id="ex-sets-${id}">${makeSetRow(id,1)}</div>
     <div style="display:flex;gap:8px;margin-top:6px;">
@@ -1219,10 +1256,12 @@ function addExerciseField(prefillName=''){
 }
 
 function makeSetRow(exId,setNum){
-  return `<div class="field-row-3" style="margin-bottom:8px;" data-setrow="${setNum}">
-    <div class="field" style="margin-bottom:0;"><label>${t('reps')}</label><input type="number" class="set-reps" placeholder="8" inputmode="numeric" style="padding:9px 10px;font-size:14px;"></div>
-    <div class="field" style="margin-bottom:0;"><label>${t('weight')}</label><input type="number" class="set-wgt" placeholder="kg" inputmode="decimal" step="0.5" style="padding:9px 10px;font-size:14px;"></div>
-    <div class="field" style="margin-bottom:0;"><label>&nbsp;</label><button onclick="this.closest('[data-setrow]').remove()" class="btn btn-danger btn-sm" style="width:100%;padding:9px 0;">✕</button></div>
+  return `<div style="display:flex;align-items:flex-end;gap:6px;margin-bottom:8px;" data-setrow="${setNum}">
+    <div style="font-size:11px;color:var(--text-dim);font-weight:800;width:20px;flex-shrink:0;padding-bottom:13px;text-align:center;">${setNum}</div>
+    <div class="field" style="margin-bottom:0;flex:1;"><label style="font-size:10px;">${t('reps')}</label><input type="number" class="set-reps" placeholder="0" inputmode="numeric" style="padding:9px 8px;font-size:15px;text-align:center;"></div>
+    <div class="field" style="margin-bottom:0;flex:1;"><label style="font-size:10px;">${t('weight')} kg</label><input type="number" class="set-wgt" placeholder="0" inputmode="decimal" step="0.5" style="padding:9px 8px;font-size:15px;text-align:center;"></div>
+    <button class="set-done-btn" onclick="markSetDone(this)" title="Done — starts rest timer">✓</button>
+    <button onclick="this.closest('[data-setrow]').remove()" style="flex-shrink:0;width:40px;height:40px;background:rgba(255,71,87,0.1);border:none;color:var(--danger);border-radius:10px;font-size:16px;cursor:pointer;">✕</button>
   </div>`;
 }
 
@@ -1230,6 +1269,14 @@ function addSetRow(exId){
   const container=document.getElementById('ex-sets-'+exId);
   const count=container.querySelectorAll('[data-setrow]').length+1;
   container.insertAdjacentHTML('beforeend',makeSetRow(exId,count));
+}
+
+function markSetDone(btn){
+  btn.classList.add('checked');
+  btn.disabled=true;
+  btn.closest('[data-setrow]').style.opacity='0.75';
+  openRestTimer(restTimerTotal||90);
+  setTimeout(()=>{if(!restTimerRunning) toggleRestTimer();},350);
 }
 
 function saveWorkout(){
@@ -1375,10 +1422,11 @@ function renderNutrition(){
     {type:'snacks',label:t('snacks'),icon:'🍎',bg:'rgba(0,200,100,0.1)'},
   ];
   document.getElementById('meal-sections').innerHTML=MEAL_SLOTS.map(slot=>{
-    const meals=(todayNutr.meals||[]).filter(m=>m.type===slot.type);
+    const allMeals=(todayNutr.meals||[]);
+    const meals=allMeals.map((m,i)=>({...m,_idx:i})).filter(m=>m.type===slot.type);
     const slotCal=meals.reduce((tt,m)=>tt+m.calories,0);
     return `<div class="section-header" style="padding-top:12px;"><div class="section-title" style="display:flex;align-items:center;gap:8px;">${slot.icon} ${slot.label}</div><div style="font-size:13px;font-weight:700;color:var(--text-sub);">${slotCal} kcal</div></div>
-    <div class="card" style="padding:6px 18px;margin-top:0;">${meals.length?meals.map(m=>`<div class="meal-item"><div class="meal-icon" style="background:${slot.bg};">${slot.icon}</div><div class="meal-info"><div class="meal-name">${m.name}</div><div class="meal-meta">P:${m.protein}g · C:${m.carbs}g · F:${m.fat}g</div></div><div class="meal-cal">${m.calories}</div></div>`).join(''):`<div style="padding:12px 0;text-align:center;color:var(--text-dim);font-size:13px;">${t('tap_add_meal',slot.label)}</div>`}</div>`;
+    <div class="card" style="padding:6px 18px;margin-top:0;">${meals.length?meals.map(m=>`<div class="meal-item"><div class="meal-icon" style="background:${slot.bg};">${slot.icon}</div><div class="meal-info"><div class="meal-name">${m.name}</div><div class="meal-meta">P:${m.protein}g · C:${m.carbs}g · F:${m.fat}g</div></div><div class="meal-cal">${m.calories}</div><button onclick="deleteMeal('${selectedNutrDate}',${m._idx})" style="background:none;border:none;color:var(--danger);font-size:20px;cursor:pointer;padding:4px 6px;flex-shrink:0;line-height:1;" title="Delete">✕</button></div>`).join(''):`<div style="padding:12px 0;text-align:center;color:var(--text-dim);font-size:13px;">${t('tap_add_meal',slot.label)}</div>`}</div>`;
   }).join('');
 }
 
@@ -1396,6 +1444,15 @@ function resetWater(){
   const entry=nutrition.find(x=>x.date===selectedNutrDate);
   if(entry){entry.water=0;save(STORAGE_KEYS.nutrition,nutrition);}
   renderNutrition();
+}
+function deleteMeal(date,idx){
+  const nutrition=load(STORAGE_KEYS.nutrition)||[];
+  const entry=nutrition.find(n=>n.date===date);
+  if(!entry) return;
+  entry.meals.splice(idx,1);
+  save(STORAGE_KEYS.nutrition,nutrition);
+  renderNutrition();
+  if(currentTab==='home') renderHome();
 }
 
 // ── PROGRESS ──
@@ -1769,6 +1826,74 @@ function renderQuickPrograms(){
   if(homeDiv&&homeRow){homeDiv.style.display='block';homeRow.innerHTML=cardHtml;}
 }
 
+// ── SIDEBAR ──
+function toggleSidebar(){
+  const sb=document.getElementById('sidebar');
+  const ov=document.getElementById('sidebar-overlay');
+  const isOpen=sb.classList.contains('open');
+  sb.classList.toggle('open',!isOpen);
+  ov.classList.toggle('open',!isOpen);
+}
+function closeSidebar(){
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('open');
+}
+
+// ── CALENDAR ──
+let calYear=new Date().getFullYear();
+let calMonth=new Date().getMonth();
+let calSelected=null;
+
+function renderCalendar(){
+  const workouts=load(STORAGE_KEYS.workouts)||[];
+  const wkDates=new Set(workouts.map(w=>w.date));
+  const y=calYear,m=calMonth;
+  const monthName=new Date(y,m,1).toLocaleDateString(lang==='ar'?'ar-SA':'en-US',{month:'long',year:'numeric'});
+  const firstDow=(new Date(y,m,1).getDay()+6)%7;
+  const daysInMonth=new Date(y,m+1,0).getDate();
+  const todayStr=new Date().toISOString().split('T')[0];
+  const pad=n=>String(n).padStart(2,'0');
+  const dayHdrs=['M','T','W','T','F','S','S'];
+  let html=`<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+    <button onclick="calPrev()" style="background:var(--card);border:none;color:var(--text);border-radius:10px;width:40px;height:40px;font-size:22px;cursor:pointer;">‹</button>
+    <div style="font-size:17px;font-weight:800;">${monthName}</div>
+    <button onclick="calNext()" style="background:var(--card);border:none;color:var(--text);border-radius:10px;width:40px;height:40px;font-size:22px;cursor:pointer;">›</button>
+  </div>
+  <div class="cal-grid" style="margin-bottom:6px;">${dayHdrs.map(d=>`<div style="text-align:center;font-size:11px;font-weight:700;color:var(--text-dim);padding:4px 0;">${d}</div>`).join('')}</div>
+  <div class="cal-grid">`;
+  for(let i=0;i<firstDow;i++) html+=`<div></div>`;
+  for(let d=1;d<=daysInMonth;d++){
+    const ds=`${y}-${pad(m+1)}-${pad(d)}`;
+    const has=wkDates.has(ds),isToday=ds===todayStr;
+    html+=`<div class="cal-day${has?' has-workout':''}${isToday?' is-today':''}" onclick="${has?`calSelect('${ds}')`:''}" >
+      <div class="cal-day-num">${d}</div>
+      ${has?'<div class="cal-dot"></div>':'<div style="height:7px;"></div>'}
+    </div>`;
+  }
+  html+=`</div>`;
+  // Month summary
+  const mPfx=`${y}-${pad(m+1)}`;
+  const mWkt=workouts.filter(w=>w.date.startsWith(mPfx));
+  html+=`<div class="card" style="margin-top:16px;"><div class="card-title">This Month</div>
+    <div style="display:flex;justify-content:space-around;padding:6px 0;">
+      <div style="text-align:center;"><div style="font-size:30px;font-weight:800;color:var(--accent);">${mWkt.length}</div><div style="font-size:11px;color:var(--text-sub);font-weight:700;text-transform:uppercase;margin-top:2px;">Workouts</div></div>
+      <div style="width:1px;background:var(--border);"></div>
+      <div style="text-align:center;"><div style="font-size:30px;font-weight:800;">${mWkt.reduce((t,w)=>t+totalSets(w),0)}</div><div style="font-size:11px;color:var(--text-sub);font-weight:700;text-transform:uppercase;margin-top:2px;">Sets</div></div>
+    </div>
+  </div>`;
+  // Selected day detail
+  if(calSelected){
+    const dayW=workouts.filter(w=>w.date===calSelected);
+    if(dayW.length){
+      html+=`<div class="card" style="margin-top:12px;"><div class="card-title">${fmtDate(calSelected)}</div>${dayW.map(w=>`<div style="margin-bottom:12px;"><div style="font-size:15px;font-weight:800;margin-bottom:6px;">${w.name}</div><div style="display:flex;gap:6px;flex-wrap:wrap;">${w.exercises.map(e=>`<span style="font-size:12px;background:rgba(255,107,53,0.1);color:var(--accent);padding:3px 10px;border-radius:8px;font-weight:600;">${e.name}</span>`).join('')}</div></div>`).join('')}</div>`;
+    }
+  }
+  document.getElementById('calendar-content').innerHTML=html;
+}
+function calPrev(){calMonth--;if(calMonth<0){calMonth=11;calYear--;}calSelected=null;renderCalendar();}
+function calNext(){calMonth++;if(calMonth>11){calMonth=0;calYear++;}calSelected=null;renderCalendar();}
+function calSelect(ds){calSelected=calSelected===ds?null:ds;renderCalendar();}
+
 // Fix missing element referenced in renderHome
 function patchMissingEl(id){if(!document.getElementById(id)){const d=document.createElement('span');d.id=id;d.style.display='none';document.body.appendChild(d);}}
 patchMissingEl('cal-ring-goal');
@@ -1779,6 +1904,9 @@ applyTheme();
 applyLang();
 renderHome();
 renderQuickPrograms();
+// Sidebar initial active
+const _initSnav=document.getElementById('snav-home');
+if(_initSnav) _initSnav.classList.add('active');
 </script>
 </body>
 </html>
