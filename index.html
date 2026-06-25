@@ -967,6 +967,23 @@ function normalizeExName(raw){
   return raw.trim();
 }
 
+// Build grouped <option> list for an exercise dropdown (optgroup per muscle)
+function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+function exerciseSelectOptions(selected=''){
+  const all=getAllExercises();
+  let found=false;
+  let body='';
+  Object.entries(all).forEach(([group,exs])=>{
+    body+=`<optgroup label="${escAttr(gl(group))}">`+exs.map(e=>{
+      const s=(e===selected); if(s) found=true;
+      return `<option value="${escAttr(e)}"${s?' selected':''}>${e}</option>`;
+    }).join('')+`</optgroup>`;
+  });
+  const placeholder=`<option value="">${lang==='ar'?'— اختر تمرين —':'— Select exercise —'}</option>`;
+  const extra=(selected&&!found)?`<option value="${escAttr(selected)}" selected>${selected}</option>`:'';
+  return placeholder+extra+body;
+}
+
 // ── WORKOUTS RENDER ──
 function renderWorkouts(){
   const workouts=load(STORAGE_KEYS.workouts)||[];
@@ -1061,7 +1078,7 @@ function addProgramExField(prefill=''){
   const div=document.createElement('div');
   div.dataset.progex=id;
   div.style.cssText='display:flex;gap:8px;align-items:center;margin-bottom:10px;';
-  div.innerHTML=`<input type="text" class="prog-ex-inp" list="all-exercises-datalist" placeholder="${t('search_exercise')}" value="${prefill}" style="flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;outline:none;-webkit-appearance:none;"><button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--text-sub);font-size:20px;cursor:pointer;flex-shrink:0;padding:0 4px;">✕</button>`;
+  div.innerHTML=`<select class="prog-ex-inp" style="flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;outline:none;-webkit-appearance:none;">${exerciseSelectOptions(prefill)}</select><button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--text-sub);font-size:20px;cursor:pointer;flex-shrink:0;padding:0 4px;">✕</button>`;
   document.getElementById('pf-exercises-list').appendChild(div);
 }
 
