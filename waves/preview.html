@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html><head>
+  <script src="vendor/react.production.min.js"></script>
+  <script src="vendor/react-dom.production.min.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+
+
+
+<script src="assets/lib-1.js"></script>
+</head>
+<body>
+
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>/* arabic */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("assets/font-1.woff2") format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC4, U+10EFC-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("assets/font-2.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("assets/font-3.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("assets/font-4.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* arabic */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/font-5.woff2") format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC4, U+10EFC-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/font-6.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/font-7.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/font-8.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* arabic */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/font-9.woff2") format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC4, U+10EFC-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/font-10.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/font-11.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/font-12.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* arabic */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/font-13.woff2") format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC4, U+10EFC-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/font-14.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/font-15.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/font-16.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* arabic */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/font-17.woff2") format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC4, U+10EFC-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/font-18.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/font-19.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/font-20.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+</style>
+<style>
+  *{box-sizing:border-box;}
+  body{margin:0;background:#faf9f5;}
+  ::-webkit-scrollbar{width:11px;height:11px;}
+  ::-webkit-scrollbar-thumb{background:rgba(176,174,165,.5);border-radius:8px;border:3px solid transparent;background-clip:content-box;}
+  @keyframes wv-slide{from{transform:translateX(-28px);opacity:0;}to{transform:translateX(0);opacity:1;}}
+  @keyframes wv-fade{from{opacity:0;}to{opacity:1;}}
+  @keyframes wv-rise{from{transform:translateY(8px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+  /* signature: a gold crest drifting beneath the header — the "wave" the product is named for */
+  @keyframes wv-drift{from{transform:translateX(0);}to{transform:translateX(-50%);}}
+  .wv-crest{position:absolute; inset-inline:0; bottom:-11px; height:12px; overflow:hidden; pointer-events:none; z-index:1;}
+  .wv-crest svg{position:absolute; top:0; left:0; width:200%; height:12px; animation:wv-drift 16s linear infinite;}
+  /* brand typography: Poppins for display/wordmark + numerals, Lora for body.
+     Arabic glyphs aren't in Poppins/Lora, so they fall through to IBM Plex per-glyph. */
+  .wv-title, .wv-num{ font-family:'Poppins','IBM Plex Sans Arabic',sans-serif; }
+  /* keyboard focus — resolves against the active theme's accent token */
+  button:focus-visible, input:focus-visible, label:focus-visible{
+    outline:2px solid var(--gold,#d97757); outline-offset:2px; border-radius:9px;
+  }
+  /* responsive: collapse the generous desktop gutters on small screens */
+  @media (max-width:760px){
+    .wv-shell{padding-inline:16px !important;}
+    .wv-main{padding-inline:16px !important;}
+    .wv-title{font-size:19px !important; white-space:normal !important;}
+    .wv-toolbar{gap:14px !important;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    *{animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important;}
+    .wv-crest svg{animation:none !important;}
+  }
+</style>
+<script src="assets/lib-3.js"></script>
+<script src="assets/lib-2.js"></script>
+</helmet>
+<div ref="{{ setRoot }}" dir="rtl" style="min-height:100vh; background:var(--bg,#faf9f5); color:var(--text,#141413); font-family:'Lora','IBM Plex Sans Arabic',serif; -webkit-font-smoothing:antialiased;">
+
+  <header style="position:sticky; top:0; z-index:30; background:var(--headerBg,linear-gradient(120deg,#1f1e1c,#141413 60%,#000000)); color:var(--headerFg,#faf9f5); box-shadow:var(--shadowLg,0 16px 40px rgba(20,20,18,.22)); border-bottom:1px solid var(--headerEdge,rgba(217,119,87,.35));">
+    <div class="wv-shell" style="max-width:1340px; margin:0 auto; padding:18px 30px 0; display:flex; align-items:flex-start; justify-content:space-between; gap:24px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:16px;">
+        <div style="width:52px; height:52px; border-radius:13px; background:#ffffff; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 14px rgba(0,0,0,.18); flex:none;"><img src="assets/image-1.png" alt="Waves" style="width:40px; height:40px; object-fit:contain;"></div>
+        <div style="text-align:start;" dir="ltr">
+          <div style="font-size:12px; letter-spacing:2.5px; font-weight:500; text-transform:uppercase; opacity:.72;">تقرير دوري · إدارة التكاليف</div>
+          <div class="wv-title" style="font-size:24px; font-weight:700; line-height:1.25; margin-top:3px; letter-spacing:.4px; white-space:nowrap;">Waves <span style="font-weight:300; opacity:.85;">Projects Tracker</span></div>
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+        <div style="text-align:start;">
+          <div style="font-size:11px; opacity:.65; letter-spacing:1px;">آخر تحديث للبيانات</div>
+          <div style="font-size:15px; font-weight:600; font-variant-numeric:tabular-nums;">{{ reportDate }}</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:9px;">
+          <label title="ارفع ملفات إكسل المحدّثة من جهازك — تُحفظ تلقائيًّا وتبقى بعد إعادة الفتح" style="cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:9px; border:1px solid var(--gold,#d97757); background:transparent; color:var(--gold,#e6c66a); transition:.15s;">⬆ رفع وتحديث<input type="file" multiple="" accept=".xlsx" onchange="{{ onUpload }}" style="display:none;"></label>
+          <span style="font-size:11px; opacity:.7; min-width:96px;">{{ syncLabel }}</span>
+        </div>
+      </div>
+    </div>
+    <div class="wv-shell" style="max-width:1340px; margin:0 auto; padding:14px 30px 0; display:flex; gap:6px;">
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="3">
+        <button onclick="{{ t.onClick }}" style="{{ t.style }}">{{ t.label }}<span style="{{ t.countStyle }}">{{ t.count }}</span></button>
+      </sc-for>
+    </div>
+    <div class="wv-crest" aria-hidden="true">
+      <svg viewBox="0 0 2400 12" preserveAspectRatio="none">
+        <path d="M0 5 Q 75 9 150 5 T 300 5 T 450 5 T 600 5 T 750 5 T 900 5 T 1050 5 T 1200 5 T 1350 5 T 1500 5 T 1650 5 T 1800 5 T 1950 5 T 2100 5 T 2250 5 T 2400 5 L2400 0 L0 0 Z" fill="var(--gold,#d97757)" opacity="0.92"></path>
+      </svg>
+    </div>
+  </header>
+
+  <main class="wv-main" style="max-width:1340px; margin:0 auto; padding:28px 30px 60px;">
+
+    <sc-if value="{{ isOverview }}" hint-placeholder-val="{{ true }}">
+      <div class="wv-toolbar" style="display:flex; flex-wrap:wrap; gap:20px 26px; align-items:center; margin-bottom:30px;">
+        <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
+          <span style="font-size:12.5px; font-weight:600; color:var(--muted,#6e6c64); margin-inline-end:2px;">القسم</span>
+          <sc-for list="{{ deptChips }}" as="c" hint-placeholder-count="4"><button onclick="{{ c.onClick }}" style="{{ c.style }}">{{ c.label }}</button></sc-for>
+        </div>
+        <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
+          <span style="font-size:12.5px; font-weight:600; color:var(--muted,#6e6c64); margin-inline-end:2px;">الموجة</span>
+          <sc-for list="{{ waveChips }}" as="c" hint-placeholder-count="3"><button onclick="{{ c.onClick }}" style="{{ c.style }}">{{ c.label }}</button></sc-for>
+        </div>
+      </div>
+
+      <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+        <section style="margin-bottom:36px; animation:wv-fade .3s ease;">
+          <div style="display:flex; align-items:center; gap:14px 18px; flex-wrap:wrap; margin-bottom:16px; padding-bottom:13px; border-bottom:1px solid var(--border,#e8e6dc);">
+            <span style="font-weight:700; font-size:13px; letter-spacing:1px; color:var(--primaryFg,#fff); background:var(--primary,#141413); padding:6px 12px; border-radius:9px;">{{ g.code }}</span>
+            <div>
+              <div style="font-size:17px; font-weight:600;">{{ g.name }}</div>
+              <div style="font-size:12.5px; color:var(--muted,#6e6c64); margin-top:2px;">{{ g.countLabel }}</div>
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(296px,1fr)); gap:15px;">
+            <sc-for list="{{ g.projects }}" as="p" hint-placeholder-count="4">
+              <div onclick="{{ p.open }}" onkeydown="{{ p.openKey }}" tabindex="0" role="button" aria-label="{{ p.aria }}" style="cursor:pointer; background:var(--surface,#fff); border:1px solid var(--border,#e8e6dc); border-radius:15px; padding:17px; box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05)); display:flex; flex-direction:column; gap:11px; transition:transform .16s ease, box-shadow .16s ease, border-color .16s ease;" style-hover="transform:translateY(-3px); box-shadow:var(--shadowLg,0 16px 40px rgba(20,20,18,.18)); border-color:var(--gold,#d97757);" style-focus-visible="outline:2px solid var(--gold,#d97757); outline-offset:3px; transform:translateY(-3px); border-color:var(--gold,#d97757);">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="font-weight:700; font-size:11.5px; letter-spacing:.5px; color:var(--primaryFg,#fff); background:var(--primary,#141413); padding:3px 9px; border-radius:7px;">{{ p.id }}</span>
+                  <span style="font-size:11.5px; font-weight:500; color:var(--gold,#d97757); border:1px solid var(--goldEdge,rgba(217,119,87,.5)); padding:2px 9px; border-radius:20px;">{{ p.waveLabel }}</span>
+                  <span style="margin-inline-start:auto; font-size:11.5px; font-weight:600; padding:4px 11px; border-radius:20px; {{ p.badgeStyle }}">{{ p.statusLabel }}</span>
+                </div>
+                <div style="font-size:15px; font-weight:600; line-height:1.55; min-height:46px;">{{ p.name }}</div>
+                <div style="border-top:1px dashed var(--border,#e8e6dc); padding-top:11px; display:flex; flex-direction:column; gap:7px;">
+                  <div style="display:flex; align-items:center; gap:7px; font-size:12.5px;"><span style="color:var(--muted,#6e6c64); min-width:64px;">المختص</span><span style="font-weight:500;">{{ p.specialist }}</span></div>
+                  <div style="display:flex; align-items:center; gap:7px; font-size:12.5px;"><span style="color:var(--muted,#6e6c64); min-width:64px;">المرحلة</span><span style="font-weight:500; color:var(--gold,#b5613c);">{{ p.stageText }}</span></div>
+                  <div style="display:flex; align-items:center; gap:7px; font-size:12.5px;"><span style="color:var(--muted,#6e6c64); min-width:64px;">آخر تحديث</span><span style="font-weight:500; font-variant-numeric:tabular-nums;">{{ p.lastDate }}</span></div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </section>
+      </sc-for>
+
+      <sc-if value="{{ noResults }}" hint-placeholder-val="{{ false }}">
+        <div style="text-align:center; padding:70px 20px; color:var(--muted,#6e6c64); font-size:15px;">لا توجد مشاريع مطابقة لمعايير التصفية الحالية.</div>
+      </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ isMgmt }}" hint-placeholder-val="{{ false }}">
+      <div style="margin-bottom:18px;">
+        <div style="font-size:19px; font-weight:700;">متابعة المهام الإدارية</div>
+        <div style="font-size:13px; color:var(--muted,#6e6c64); margin-top:3px;">البنود الإدارية والسياسات المشتركة عبر مبادرة الموجات</div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <sc-for list="{{ mgmtItems }}" as="m" hint-placeholder-count="6">
+          <div style="background:var(--surface,#fff); border:1px solid var(--border,#e8e6dc); border-radius:15px; padding:18px 20px; box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05)); display:flex; gap:18px; align-items:flex-start;">
+            <span style="font-weight:700; font-size:14px; color:var(--primaryFg,#fff); background:var(--primary,#141413); width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; flex:none;">{{ m.seq }}</span>
+            <div style="flex:1;">
+              <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+                <span style="font-size:16px; font-weight:600;">{{ m.topic }}</span>
+                <span style="font-size:11.5px; font-weight:600; padding:4px 11px; border-radius:20px; {{ m.badgeStyle }}">{{ m.statusLabel }}</span>
+                <span style="margin-inline-start:auto; font-size:12px; color:var(--muted,#6e6c64); font-variant-numeric:tabular-nums;">{{ m.dateLabel }}</span>
+              </div>
+              <ul style="margin:0; padding-inline-start:20px; display:flex; flex-direction:column; gap:5px;">
+                <sc-for list="{{ m.actionLines }}" as="a" hint-placeholder-count="3"><li style="font-size:13.5px; line-height:1.6; color:var(--text,#141413);">{{ a }}</li></sc-for>
+              </ul>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isIssues }}" hint-placeholder-val="{{ false }}">
+      <div style="margin-bottom:18px;">
+        <div style="font-size:19px; font-weight:700;">سجل المعوقات</div>
+        <div style="font-size:13px; color:var(--muted,#6e6c64); margin-top:3px;">المعوقات المؤثرة على سير المشاريع عبر الإدارات</div>
+      </div>
+      <sc-if value="{{ hasIssues }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex; flex-direction:column; gap:14px;">
+          <sc-for list="{{ issuesList }}" as="i" hint-placeholder-count="2">
+            <div style="background:var(--surface,#fff); border:1px solid var(--border,#e8e6dc); border-inline-start:4px solid {{ i.accent }}; border-radius:13px; padding:17px 20px; box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05));">
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+                <span style="font-weight:700; font-size:11.5px; color:var(--primaryFg,#fff); background:var(--primary,#141413); padding:3px 9px; border-radius:7px;">{{ i.dept }}</span>
+                <span style="font-size:11.5px; font-weight:600; padding:4px 11px; border-radius:20px; {{ i.statusStyle }}">{{ i.statusLabel }}</span>
+                <span style="font-size:11.5px; font-weight:600; padding:4px 11px; border-radius:20px; {{ i.impactStyle }}">التأثير: {{ i.impact }}</span>
+                <span style="margin-inline-start:auto; font-size:12px; color:var(--muted,#6e6c64); font-variant-numeric:tabular-nums;">منذ {{ i.start }}</span>
+              </div>
+              <div style="font-size:15px; font-weight:500; line-height:1.6; margin-bottom:10px;">{{ i.desc }}</div>
+              <div style="display:flex; gap:22px; flex-wrap:wrap; font-size:12.5px; color:var(--muted,#6e6c64);">
+                <span>المرحلة المتأثرة: <b style="color:var(--text,#141413); font-weight:600;">{{ i.stage }}</b></span>
+                <span>المسؤول: <b style="color:var(--text,#141413); font-weight:600;">{{ i.owner }}</b></span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+      <sc-if value="{{ noIssues }}" hint-placeholder-val="{{ false }}">
+        <div style="text-align:center; padding:70px 20px; color:var(--muted,#6e6c64); font-size:15px;">لا توجد معوقات مسجلة حالياً. 🟢</div>
+      </sc-if>
+    </sc-if>
+
+  </main>
+
+  <sc-if value="{{ isDetailOpen }}" hint-placeholder-val="{{ false }}">
+    <div onclick="{{ closeDetail }}" style="position:fixed; inset:0; background:rgba(8,20,14,.52); z-index:50; display:flex; justify-content:flex-start; animation:wv-fade .2s ease; backdrop-filter:blur(2px);">
+      <div onclick="{{ stopProp }}" style="background:var(--bg,#faf9f5); width:min(720px,100%); height:100%; overflow-y:auto; box-shadow:var(--shadowLg,0 16px 40px rgba(20,20,18,.4)); animation:wv-slide .26s cubic-bezier(.2,.7,.3,1);">
+        <div style="position:sticky; top:0; z-index:2; background:var(--headerBg,linear-gradient(120deg,#1f1e1c,#141413 60%,#000000)); color:var(--headerFg,#faf9f5); padding:20px 26px;">
+          <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
+            <div style="display:flex; align-items:center; gap:11px; flex-wrap:wrap;">
+              <span style="font-weight:700; font-size:12px; letter-spacing:.5px; color:#141413; background:var(--gold,#d97757); padding:4px 11px; border-radius:8px;">{{ sel.id }}</span>
+              <span style="font-size:12px; opacity:.85; border:1px solid rgba(255,255,255,.3); padding:3px 10px; border-radius:20px;">{{ sel.waveLabel }}</span>
+              <span style="font-size:12px; font-weight:600; padding:4px 11px; border-radius:20px; {{ sel.badgeStyle }}">{{ sel.statusLabel }}</span>
+            </div>
+            <button onclick="{{ closeDetail }}" style="background:rgba(255,255,255,.12); border:none; color:var(--headerFg,#faf9f5); width:34px; height:34px; border-radius:9px; cursor:pointer; font-size:17px; display:flex; align-items:center; justify-content:center;" style-hover="background:rgba(255,255,255,.22);">✕</button>
+          </div>
+          <div style="font-size:21px; font-weight:700; line-height:1.5; margin-top:14px;">{{ sel.name }}</div>
+          <div style="display:flex; gap:26px; margin-top:12px; font-size:13px; opacity:.9; flex-wrap:wrap;">
+            <span>القسم · <b style="font-weight:600;">{{ sel.deptName }}</b></span>
+            <span>المختص · <b style="font-weight:600;">{{ sel.specialist }}</b></span>
+            <span>عدد التحديثات · <b style="font-weight:600;">{{ sel.logCount }}</b></span>
+          </div>
+        </div>
+
+        <div style="padding:24px 26px;">
+          <div style="font-size:13px; font-weight:600; color:var(--muted,#6e6c64); margin-bottom:14px;">مرحلة سلسلة القيمة</div>
+          <div style="display:flex; align-items:center; gap:6px; margin-bottom:30px;">
+            <sc-for list="{{ sel.steps }}" as="s" hint-placeholder-count="4">
+              <div style="flex:1; text-align:center;">
+                <div style="height:5px; border-radius:4px; background:{{ s.barColor }};"></div>
+                <div style="margin-top:10px; font-size:12px; font-weight:600; line-height:1.4; color:{{ s.textColor }};">{{ s.name }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="font-size:13px; font-weight:600; color:var(--muted,#6e6c64); margin-bottom:16px;">سجل سير المشروع</div>
+          <sc-if value="{{ sel.hasLog }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex; flex-direction:column;">
+              <sc-for list="{{ sel.log }}" as="e" hint-placeholder-count="5">
+                <div style="display:flex; gap:14px;">
+                  <div style="display:flex; flex-direction:column; align-items:center; flex:none; width:18px;">
+                    <span style="width:13px; height:13px; border-radius:50%; background:{{ e.dotColor }}; border:3px solid var(--bg,#faf9f5); box-shadow:0 0 0 1px {{ e.dotColor }}; margin-top:5px;"></span>
+                    <span style="flex:1; width:2px; background:var(--border,#e8e6dc);"></span>
+                  </div>
+                  <div style="flex:1; padding-bottom:18px;">
+                    <div style="background:var(--surface,#fff); border:1px solid var(--border,#e8e6dc); border-radius:13px; padding:14px 16px; box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05));">
+                      <div style="display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:9px;">
+                        <span style="font-size:12.5px; font-weight:700; font-variant-numeric:tabular-nums;">{{ e.date }}</span>
+                        <span style="font-size:11px; font-weight:500; color:var(--gold,#b5613c); background:var(--soft,#f2efe7); padding:2px 9px; border-radius:6px;">{{ e.stageText }}</span>
+                        <sc-if value="{{ e.hasDeliv }}" hint-placeholder-val="{{ false }}"><span style="font-size:11px; font-weight:500; color:var(--muted,#6e6c64); border:1px solid var(--border,#e8e6dc); padding:2px 9px; border-radius:6px;">{{ e.deliverable }}</span></sc-if>
+                        <span style="margin-inline-start:auto; font-size:11px; font-weight:600; padding:3px 10px; border-radius:20px; {{ e.badgeStyle }}">{{ e.statusLabel }}</span>
+                      </div>
+                      <div style="font-size:13.5px; line-height:1.7; white-space:pre-line;">{{ e.update }}</div>
+                      <sc-if value="{{ e.hasNote }}" hint-placeholder-val="{{ false }}">
+                        <div style="margin-top:10px; padding-top:10px; border-top:1px dashed var(--border,#e8e6dc); font-size:12.5px; line-height:1.65; color:var(--muted,#6e6c64); white-space:pre-line;"><b style="color:var(--gold,#b5613c); font-weight:600;">ملاحظة:</b> {{ e.note }}</div>
+                      </sc-if>
+                    </div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <sc-if value="{{ sel.emptyLog }}" hint-placeholder-val="{{ false }}">
+            <div style="text-align:center; padding:40px 20px; color:var(--muted,#6e6c64); font-size:14px; background:var(--surface,#fff); border:1px dashed var(--border,#e8e6dc); border-radius:13px;">لم تُسجَّل تحديثات لهذا المشروع بعد.</div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script="">
+class Component extends DCLogic {
+  state = { theme:'balanced', tab:'overview', search:'', dept:'all', wave:'all', status:'all', selected:null, ready:false, loading:false, lastSync:null, err:null };
+
+  PAL = {
+    sober:    { bg:'#faf9f5', surface:'#ffffff', surface2:'#f6f4ee', headerBg:'#ffffff', headerFg:'#141413', headerEdge:'rgba(217,119,87,.4)', text:'#141413', muted:'#6e6c64', border:'#e8e6dc', primary:'#141413', primaryFg:'#faf9f5', gold:'#d97757', goldEdge:'rgba(217,119,87,.5)', soft:'#f2efe7', switchBg:'#f0eee6', switchEdge:'#e8e6dc', shadow:'0 1px 2px rgba(20,20,18,.06)', shadowLg:'0 14px 38px rgba(20,20,18,.13)', dark:false },
+    balanced: { bg:'#faf9f5', surface:'#ffffff', surface2:'#f6f4ee', headerBg:'linear-gradient(120deg,#1f1e1c,#141413 60%,#000000)', headerFg:'#faf9f5', headerEdge:'rgba(217,119,87,.45)', text:'#141413', muted:'#6e6c64', border:'#e8e6dc', primary:'#141413', primaryFg:'#faf9f5', gold:'#d97757', goldEdge:'rgba(217,119,87,.5)', soft:'#f2efe7', switchBg:'rgba(255,255,255,.1)', switchEdge:'rgba(255,255,255,.16)', shadow:'0 1px 2px rgba(20,20,18,.05), 0 3px 12px rgba(20,20,18,.05)', shadowLg:'0 16px 40px rgba(20,20,18,.18)', dark:false },
+    bold:     { bg:'#141413', surface:'#1f1e1c', surface2:'#26241f', headerBg:'linear-gradient(120deg,#26241f,#141413)', headerFg:'#faf9f5', headerEdge:'rgba(217,119,87,.4)', text:'#f2efe7', muted:'#b0aea5', border:'#34322c', primary:'#d97757', primaryFg:'#141413', gold:'#e0916f', goldEdge:'rgba(224,145,111,.5)', soft:'#26241f', switchBg:'rgba(255,255,255,.07)', switchEdge:'rgba(255,255,255,.13)', shadow:'0 1px 2px rgba(0,0,0,.4)', shadowLg:'0 24px 60px rgba(0,0,0,.55)', dark:true }
+  };
+
+  STAGES = [
+    { n:2, name:'Needs Identification' },
+    { n:3, name:'Affordability Estimate' },
+    { n:4, name:'Tender Pack Development' },
+    { n:8, name:'Contract Execution' }
+  ];
+
+  componentDidMount(){
+    // If the user previously uploaded their own files, restore that automatically
+    // so periodic updates persist across reopening the page — no re-upload needed.
+    const saved=this.loadSaved();
+    if(saved){ this.data=saved.data; this.setState({ ready:true, lastSync:saved.label||'بياناتك المحفوظة' }); return; }
+    // otherwise show the bundled snapshot instantly, then refresh live from the xlsx
+    if(window.WAVES_DATA){ this.data = window.WAVES_DATA; this.setState({ ready:true }); }
+    this.refreshFromProject(true);
+  }
+  loadSaved(){ try{ const raw=localStorage.getItem('waves_data'); if(!raw) return null; return { data:JSON.parse(raw), label:localStorage.getItem('waves_sync')||'' }; }catch(e){ return null; } }
+  saveData(label){ try{ localStorage.setItem('waves_data', JSON.stringify(this.data)); localStorage.setItem('waves_sync', label||''); }catch(e){} }
+  clearSaved(){ try{ localStorage.removeItem('waves_data'); localStorage.removeItem('waves_sync'); }catch(e){} }
+  nowLabel(){
+    const d=new Date();
+    const p=n=>String(n).padStart(2,'0');
+    return p(d.getDate())+'/'+p(d.getMonth()+1)+'/'+d.getFullYear()+' '+p(d.getHours())+':'+p(d.getMinutes());
+  }
+  waitParser(n){ return new Promise(res=>{ const t=()=>{ if(window.WaveParser) res(true); else if(n-->0) setTimeout(t,40); else res(false); }; t(); }); }
+  async refreshFromProject(silent){
+    if(this.state.loading) return;
+    this.setState({ loading:true, err:null });
+    try{
+      if(!await this.waitParser(80)) throw new Error('المحلّل غير جاهز');
+      const data=await window.WaveParser.loadFromProject();
+      // "تحديث" returns to the built-in data and forgets any saved upload
+      this.clearSaved();
+      this.data=data; this.setState({ ready:true, loading:false, lastSync:'البيانات المدمجة · '+this.nowLabel(), err:null, selected:null });
+    }catch(e){
+      this.setState({ loading:false, err:silent?null:('تعذّر التحديث: '+e.message) });
+    }
+  }
+  async loadUploaded(fileList){
+    this.setState({ loading:true, err:null });
+    try{
+      if(!await this.waitParser(80)) throw new Error('المحلّل غير جاهز');
+      const WP=window.WaveParser;
+      const files=Array.from(fileList);
+      const data=await WP.loadFromFiles(fileList);
+      // Don't depend on the parser returning a `recognized` field (older builds
+      // didn't): derive recognition here from the filenames via the exposed roleOf.
+      let rec=data.recognized;
+      if(!rec || !rec.length){
+        rec=[];
+        for(const f of files){ const r=WP.roleOf && WP.roleOf(f.name); if(r){ rec.push(r.dept||'Overview'); } }
+      }
+      if(rec.length===0){
+        const picked=files.map(f=>f.name+' ['+Math.round((f.size||0)/1024)+'KB]').join('، ')||'لا شيء';
+        const det=(data.diag||[]).map(x=>x.name+' ← '+(x.error?('خطأ: '+x.error):('أوراق: '+((x.sheets||[]).slice(0,10).join('، ')||'لا شيء')))).join(' | ');
+        throw new Error('لم يتعرّف على القسم [v8]. المُختار: '+picked+'.'+(det?(' التفاصيل: '+det):' سمِّ الملف بحيث يحتوي PP أو SMRO أو SS أو Overview.'));
+      }
+      this.data=data;
+      const label=this.nowLabel()+' · رُفع '+rec.length+' ('+rec.join('، ')+')';
+      this.saveData(label); // persist so it survives reopening
+      this.setState({ ready:true, loading:false, lastSync:label, err:null, selected:null });
+    }catch(e){
+      this.setState({ loading:false, err:'تعذّرت قراءة الملفات: '+e.message });
+    }
+  }
+  componentDidUpdate(){ this.applyTheme(); }
+  setRoot = (el)=>{ if(el){ this.root = el; this.applyTheme(); } };
+  applyTheme(){
+    const p = this.PAL[this.state.theme]; if(!p || !this.root) return;
+    const map = { '--bg':p.bg,'--surface':p.surface,'--surface2':p.surface2,'--headerBg':p.headerBg,'--headerFg':p.headerFg,'--headerEdge':p.headerEdge,'--text':p.text,'--muted':p.muted,'--border':p.border,'--primary':p.primary,'--primaryFg':p.primaryFg,'--gold':p.gold,'--goldEdge':p.goldEdge,'--soft':p.soft,'--switchBg':p.switchBg,'--switchEdge':p.switchEdge,'--shadow':p.shadow,'--shadowLg':p.shadowLg };
+    for(const k in map) this.root.style.setProperty(k, map[k]);
+    this.root.style.background = p.bg;
+    try{ document.body.style.background = p.bg; }catch(e){}
+  }
+
+  pal(){ return this.PAL[this.state.theme]; }
+
+  catKey(raw){ const s=(raw||'').trim();
+    if(s==='مكتمل') return 'done';
+    if(s==='على المسار') return 'track';
+    if(s.indexOf('متأخر')===0) return 'late';
+    if(s.indexOf('خطر')===0) return 'risk';
+    return 'none'; }
+  catColors(key){
+    const dark = this.pal().dark;
+    const L = { done:{c:'#5c6e45',b:'#eef0e6'}, track:{c:'#3f6da3',b:'#e9f0f7'}, late:{c:'#b5613c',b:'#f8ebe4'}, risk:{c:'#a3342a',b:'#f6e3e0'}, none:{c:'#8a887f',b:'#efece4'} };
+    const D = { done:{c:'#9fb27f',b:'rgba(120,140,93,.18)'}, track:{c:'#8fb4dc',b:'rgba(106,155,204,.18)'}, late:{c:'#e6916b',b:'rgba(217,119,87,.18)'}, risk:{c:'#e08074',b:'rgba(200,70,55,.2)'}, none:{c:'#b0aea5',b:'rgba(176,174,165,.14)'} };
+    return (dark?D:L)[key];
+  }
+  statusLabel(raw){ const k=this.catKey(raw); return k==='none' ? 'بانتظار البدء' : (raw||'').trim(); }
+  badge(raw){ const c=this.catColors(this.catKey(raw)); return `background:${c.b}; color:${c.c};`; }
+
+  stageInfo(raw){
+    const m = (raw||'').match(/\d+/); const num = m ? +m[0] : 0;
+    return { num, text: (raw && raw.trim()) ? raw.trim() : '—' };
+  }
+
+  filteredProjects(deptKey){
+    const d = this.data.departments[deptKey];
+    if(!d) return [];
+    const q = this.state.search.trim();
+    return d.projects.filter(p=>{
+      if(this.state.wave!=='all' && p.wave!==+this.state.wave) return false;
+      if(this.state.status!=='all' && this.catKey(p.currentStatus)!==this.catKey(this.state.status)) return false;
+      if(q){ const hay = (p.id+' '+p.name+' '+p.specialist).toLowerCase(); if(hay.indexOf(q.toLowerCase())===-1) return false; }
+      return true;
+    });
+  }
+
+  projView(p){
+    const si = this.stageInfo(p.currentStage);
+    return { id:p.id, name:p.name, specialist:p.specialist||'—', waveLabel:'الموجة '+(p.wave||'—'),
+      stageText:si.text, lastDate:p.lastDate||'—',
+      statusLabel:this.statusLabel(p.currentStatus), badgeStyle:this.badge(p.currentStatus),
+      aria:p.id+' · '+p.name,
+      open:()=>this.setState({ selected:p.id }),
+      openKey:(e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); this.setState({ selected:p.id }); } } };
+  }
+
+  themeButtons(){
+    const p=this.pal();
+    const headerFg = this.state.theme==='sober' ? '#141413' : '#faf9f5';
+    const defs=[['sober','هادئ'],['balanced','متوازن'],['bold','داكن']];
+    return defs.map(([key,label])=>{
+      const active=this.state.theme===key;
+      const style=`cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; padding:6px 13px; border:none; border-radius:8px; transition:.15s; white-space:nowrap; color:${active?'#141413':headerFg}; ${active?'':'opacity:.7;'} background:${active?p.gold:'transparent'};`;
+      return { label, title:'عرض بنمط: '+label, style, hover: active?'':'opacity:1; background:rgba(255,255,255,.14);', onClick:()=>this.setState({ theme:key }) };
+    });
+  }
+
+  statusChips(){
+    const p=this.pal();
+    const defs=[['الكل','all'],['مكتمل','مكتمل'],['على المسار','على المسار'],['متأخر','متأخر'],['خطر','خطر']];
+    return defs.map(([label,value])=>{
+      const active=this.state.status===value;
+      const cc = value==='all' ? { c:p.primary } : this.catColors(this.catKey(value));
+      const style = `cursor:pointer; font-family:inherit; font-size:12.5px; font-weight:600; padding:6px 13px; border-radius:9px; transition:.15s; white-space:nowrap; ` +
+        (active ? `background:${cc.c}; color:#fff; border:1px solid ${cc.c};`
+                : `background:${p.surface}; color:${value==='all'?p.muted:cc.c}; border:1px solid ${p.border};`);
+      return { label, style, onClick:()=>this.setState({ status:value, selected:null }) };
+    });
+  }
+
+  buildSelected(){
+    if(!this.state.selected) return null;
+    let proj=null;
+    for(const d in this.data.departments){ const f=this.data.departments[d].projects.find(x=>x.id===this.state.selected); if(f){ proj=f; break; } }
+    if(!proj) return null;
+    const cur = this.stageInfo(proj.currentStage).num;
+    const pal=this.pal();
+    const steps = this.STAGES.map(s=>{
+      const active = cur>=s.n && cur>0;
+      const current = cur===s.n;
+      return { name:s.name,
+        barColor: active ? (current ? pal.gold : pal.primary) : pal.border,
+        textColor: active ? pal.text : pal.muted };
+    });
+    const log = (proj.log||[]).map(e=>{
+      const si=this.stageInfo(e.stage); const ck=this.catKey(e.status); const cc=this.catColors(ck);
+      return { date:e.date||'—', stageText:si.text, deliverable:e.deliverable, hasDeliv:!!(e.deliverable&&e.deliverable!=='لايوجد'),
+        update:e.update||'—', note:e.note, hasNote:!!(e.note&&e.note.trim()&&e.note.trim()!=='لايوجد'&&e.note.trim()!=='لا يوجد'),
+        statusLabel:this.statusLabel(e.status), badgeStyle:`background:${cc.b}; color:${cc.c};`, dotColor:cc.c };
+    });
+    return { id:proj.id, name:proj.name, specialist:proj.specialist||'—', waveLabel:'الموجة '+(proj.wave||'—'),
+      deptName:proj.dept, logCount:proj.logCount||log.length,
+      statusLabel:this.statusLabel(proj.currentStatus), badgeStyle:this.badge(proj.currentStatus),
+      steps, log, hasLog:log.length>0, emptyLog:log.length===0 };
+  }
+
+  handleUpload = (e)=>{
+    // Snapshot the FileList into a static array BEFORE clearing the input.
+    // loadUploaded is async; clearing e.target.value empties the live FileList
+    // during the first await, so we must capture the File objects up front.
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value='';
+    this._picked = files.map(f=>f.name+' ['+Math.round((f.size||0)/1024)+'KB]');
+    if(files.length) this.loadUploaded(files);
+    else this.setState({ err:'لم يُختَر أي ملف.' });
+  };
+
+  chip(label, value, cur, key){
+    const p=this.pal(); const active = cur===value;
+    const style = `cursor:pointer; font-family:inherit; font-size:12.5px; font-weight:600; padding:6px 13px; border-radius:9px; transition:.15s; white-space:nowrap; ` +
+      (active ? `background:${p.primary}; color:${p.primaryFg}; border:1px solid ${p.primary};`
+              : `background:${p.surface}; color:${p.muted}; border:1px solid ${p.border};`);
+    return { label, style, onClick:()=>this.setState({ [key]:value, selected:null }) };
+  }
+
+  renderVals(){
+    const empty = { setRoot:this.setRoot, reportDate:'—', tabs:[], kpis:[], deptChips:[], waveChips:[], statusChips:this.statusChips(), themeBtns:this.themeButtons(),
+      searchValue:this.state.search, onSearch:e=>this.setState({ search:e.target.value, selected:null }),
+      groups:[], mgmtItems:[], issuesList:[],
+      onRefresh:()=>this.refreshFromProject(false), onUpload:this.handleUpload, syncLabel:this.state.loading?'جارٍ التحديث…':(this.state.err||''),
+      isOverview:true, isMgmt:false, isIssues:false, noResults:false, hasIssues:false, noIssues:false,
+      isDetailOpen:false, sel:{}, closeDetail:()=>this.setState({selected:null}), stopProp:e=>e.stopPropagation() };
+    if(!this.data) return empty;
+    const data=this.data; const pal=this.pal(); const dark=pal.dark;
+    const st=this.state;
+
+    // tabs
+    const allProjects=[].concat(...['PP','SMRO','SS'].map(d=>data.departments[d]?data.departments[d].projects:[]));
+    const issuesAll=[].concat(...['PP','SMRO','SS'].map(d=>(data.departments[d]?data.departments[d].issues:[]).map(x=>({...x,dept:d}))));
+    const tabDefs=[{label:'النظرة العامة',value:'overview',count:allProjects.length},{label:'متابعة الإدارة',value:'mgmt',count:data.managementTracker.length},{label:'المعوقات',value:'issues',count:issuesAll.length}];
+    const headerFg = (this.state.theme==='sober') ? '#141413' : '#faf9f5';
+    const tabs=tabDefs.map(t=>{
+      const active=st.tab===t.value;
+      const style=`cursor:pointer; font-family:inherit; font-size:14px; font-weight:600; padding:11px 16px 13px; border:none; background:transparent; color:${active?headerFg:(dark?'rgba(241,234,214,.6)':(this.state.theme==='sober'?'#6c7872':'rgba(241,236,221,.62)'))}; border-bottom:2.5px solid ${active?pal.gold:'transparent'}; display:flex; align-items:center; gap:8px; transition:.15s;`;
+      const countStyle=`font-size:11px; font-weight:700; padding:1px 7px; border-radius:20px; background:${active?pal.gold:'rgba(150,150,150,.22)'}; color:${active?'#141413':(dark?'#cdd8d1':headerFg)};`;
+      return { label:t.label, count:t.count, style, countStyle, onClick:()=>this.setState({tab:t.value, selected:null}) };
+    });
+
+    // report date = max log date
+    let maxd=0, maxlabel='—';
+    allProjects.forEach(p=>(p.log||[]).forEach(e=>{ if(e.date){ const [d,m,y]=e.date.split('/').map(Number); const t=Date.UTC(y,m-1,d); if(t>maxd){maxd=t;maxlabel=e.date;} } }));
+
+    // KPIs
+    const counts={done:0,track:0,late:0,risk:0,none:0};
+    allProjects.forEach(p=>counts[this.catKey(p.currentStatus)]++);
+    const openIssues=issuesAll.filter(i=>(i.status||'').trim()!=='مغلق').length;
+    const kpiDefs=[
+      {label:'إجمالي المشاريع', value:allProjects.length, color:pal.gold},
+      {label:'مكتمل', value:counts.done, color:this.catColors('done').c},
+      {label:'على المسار', value:counts.track, color:this.catColors('track').c},
+      {label:'متأخر', value:counts.late, color:this.catColors('late').c},
+      {label:'خطر', value:counts.risk, color:this.catColors('risk').c},
+      {label:'معوقات مفتوحة', value:openIssues, color:this.catColors('risk').c, action:()=>this.setState({tab:'issues',selected:null})}
+    ];
+    const kpis=kpiDefs.map(k=>{
+      const style=`width:100%; text-align:start; font-family:inherit; background:var(--surface,#fff); border:1.5px solid ${pal.border}; border-inline-start:3px solid ${k.color}; border-radius:14px; padding:15px 16px; box-shadow:var(--shadow,0 1px 2px rgba(20,20,18,.05)); transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease; ${k.action?'cursor:pointer;':'cursor:default;'}`;
+      return { label:k.label, value:k.value, valColor:k.color, style,
+        hover:k.action?'transform:translateY(-2px); box-shadow:var(--shadowLg,0 16px 40px rgba(20,20,18,.16));':'',
+        onClick:k.action||(()=>{}) };
+    });
+
+    // filter chips
+    const deptChips=[this.chip('الكل','all',st.dept,'dept'),this.chip('PP','PP',st.dept,'dept'),this.chip('SMRO','SMRO',st.dept,'dept'),this.chip('SS','SS',st.dept,'dept')];
+    const waveChips=[this.chip('الكل','all',st.wave,'wave'),this.chip('الأولى','1',String(st.wave),'wave'),this.chip('الثانية','2',String(st.wave),'wave')];
+
+    // groups
+    const order=['PP','SMRO','SS'].filter(d=> st.dept==='all' || st.dept===d);
+    const groups=[];
+    order.forEach(d=>{
+      const fp=this.filteredProjects(d);
+      if(fp.length===0 && (st.search||st.wave!=='all'||st.status!=='all')) return;
+      const cc={done:0,track:0,late:0,risk:0,none:0};
+      fp.forEach(p=>cc[this.catKey(p.currentStatus)]++);
+      const total=fp.length||1;
+      const segOrder=['done','track','late','risk','none'];
+      const bars=segOrder.filter(k=>cc[k]>0).map(k=>({ pct:(cc[k]/total*100).toFixed(2)+'%', color:this.catColors(k).c }));
+      const legendDefs=[['مكتمل','done'],['على المسار','track'],['متأخر','late'],['خطر','risk']];
+      const legend=legendDefs.filter(([l,k])=>cc[k]>0).map(([l,k])=>({label:l,count:cc[k],color:this.catColors(k).c}));
+      groups.push({ code:d, name:'قسم '+d, countLabel:fp.length+' مشروع', bars, legend, projects:fp.map(p=>this.projView(p)) });
+    });
+    const noResults = groups.length===0;
+
+    // management tracker
+    const mgmtItems=data.managementTracker.map(m=>{
+      const isDone=(m.status||'').trim()==='مكتمل';
+      const ck=isDone?'done':'late';
+      const cc=this.catColors(ck);
+      const lines=(m.action||'').split('\n').map(s=>s.replace(/^[•\-\s]+/,'').trim()).filter(Boolean);
+      return { seq:m.seq, topic:m.topic, statusLabel:isDone?'مكتمل':'قيد التنفيذ', badgeStyle:`background:${cc.b}; color:${cc.c};`,
+        dateLabel:m.date||'', actionLines:lines.length?lines:['—'] };
+    });
+
+    // issues
+    const issuesList=issuesAll.map(i=>{
+      const open=(i.status||'').trim()!=='مغلق';
+      const sc=this.catColors(open?'risk':'done');
+      const impKey=((i.impact||'').indexOf('توقف')>=0)?'risk':(((i.impact||'').indexOf('تأخير')>=0)?'late':'none');
+      const ic=this.catColors(impKey);
+      return { dept:i.dept, desc:i.desc, stage:i.stage||'—', owner:(i.owner&&i.owner!=='.'?i.owner:'غير محدد'), impact:i.impact||'—', start:i.start||'—',
+        statusLabel:i.status||'—', statusStyle:`background:${sc.b}; color:${sc.c};`, impactStyle:`background:${ic.b}; color:${ic.c};`, accent:sc.c };
+    });
+
+    const sel=this.buildSelected();
+
+    const syncLabel = st.loading ? 'جارٍ التحديث…' : (st.err ? st.err : (st.lastSync ? 'تمت المزامنة '+st.lastSync : ''));
+    return { setRoot:this.setRoot, reportDate:maxlabel, tabs, kpis, deptChips, waveChips, statusChips:this.statusChips(), themeBtns:this.themeButtons(),
+      searchValue:st.search, onSearch:e=>this.setState({ search:e.target.value, selected:null }),
+      groups, mgmtItems, issuesList,
+      onRefresh:()=>this.refreshFromProject(false), onUpload:this.handleUpload, syncLabel,
+      isOverview:st.tab==='overview', isMgmt:st.tab==='mgmt', isIssues:st.tab==='issues',
+      noResults, hasIssues:issuesList.length>0, noIssues:issuesList.length===0,
+      isDetailOpen:!!sel, sel:sel||{}, closeDetail:()=>this.setState({selected:null}), stopProp:e=>e.stopPropagation() };
+  }
+}
+</script>
+
+
+</body></html>
