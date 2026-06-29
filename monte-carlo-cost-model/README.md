@@ -50,19 +50,22 @@ formulas** — open it and press **F9** to run / re-roll. No macros required.
 
 ```bash
 pip install openpyxl
-# args:  [iterations] [years] [start_year] [currency]
-python3 generate_advanced_model.py                 # 5,000 iters, 5 years, 2025, SAR
-python3 generate_advanced_model.py 5000 20 2026     # 20-year project from 2026
-python3 generate_advanced_model.py 3000 30 2030 USD # 30-year, USD, lighter file
+# args:  [iterations] [years] [start_year] [currency] [mode]
+python3 generate_advanced_model.py 3000 5 2025 SAR flex   # FLEX: up to 30 yrs in one file
+python3 generate_advanced_model.py 5000 20 2026 SAR       # FIXED: exactly 20 year columns
+python3 generate_advanced_model.py 3000 30 2030 USD       # FIXED: 30-year, USD
 ```
 
-The **number of years and start year are structural** — they set how many FY
-columns/rows the Profiling, Inflation, Results and Engine sheets have, so they're
-chosen when the workbook is generated (any duration from 1–40 works; annual
-profiles auto-build to sum to 100%).
+**The shipped file is a FLEX build** (structured for up to 30 years, extra years
+hidden). Three ways to change scope:
 
-**Currency is live**: money cells carry no embedded symbol — just edit the
-*Currency* cell on the Setup sheet and the whole Dashboard relabels.
+- **Duration** — set *Number of years* on Setup, then run the **`ApplySettings`**
+  macro (see [`vba/VBA_SETUP.md`](vba/VBA_SETUP.md)) to show that many FY
+  columns/rows. Or regenerate in **FIXED** mode for a lighter, single-duration
+  file. Either way, annual profiles auto-build to sum to 100%.
+- **Start year** — *live*: edit the *Start year* cell; all calendar labels follow.
+- **Currency** — *live*: money cells carry no embedded symbol, so editing the
+  *Currency* cell relabels the whole Dashboard.
 
 Edit the `COST_LINES`, `RISKS`, `DISCOUNT`, `INFL_BASE`, etc. at the top of
 `generate_advanced_model.py` and re-run.

@@ -29,13 +29,21 @@ from openpyxl.utils import get_column_letter as L
 # ============================================================================
 # 0. CONFIG + EXAMPLE DATA  (edit, then re-run)
 # ============================================================================
-# Positional args:  [iterations]  [years]  [start_year]
-ITER       = int(sys.argv[1]) if len(sys.argv) > 1 else 4000
-N_YEARS    = max(1, min(40, int(sys.argv[2]) if len(sys.argv) > 2 else 5))
-START_YEAR = int(sys.argv[3]) if len(sys.argv) > 3 else 2025
-BASE_YEAR  = START_YEAR
-CURRENCY   = sys.argv[4] if len(sys.argv) > 4 else "SAR"   # display only — editable live in Setup
-OUTFILE    = "AdvancedMonteCarloCostModel.xlsx"
+# Positional args:  [iterations]  [years]  [start_year]  [currency]  [mode]
+#   mode = "flex"  -> build for MAXY years and pre-hide the unused ones, so the
+#                     duration can be changed in-Excel with the ApplySettings
+#                     macro (one file covers 1..MAXY years).
+#   mode = "fixed" -> build exactly [years] year columns (lighter file). default.
+ITER         = int(sys.argv[1]) if len(sys.argv) > 1 else 4000
+_years_arg   = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+START_YEAR   = int(sys.argv[3]) if len(sys.argv) > 3 else 2025
+BASE_YEAR    = START_YEAR
+CURRENCY     = sys.argv[4] if len(sys.argv) > 4 else "SAR"   # display only — live in Setup
+FLEX         = len(sys.argv) > 5 and sys.argv[5].lower() in ("flex", "flexible", "1")
+MAXY         = 30
+ACTIVE_YEARS = max(1, min(MAXY, _years_arg))
+N_YEARS      = MAXY if FLEX else ACTIVE_YEARS                # structural build size
+OUTFILE      = "AdvancedMonteCarloCostModel.xlsx"
 PROJECT    = "Sample Construction Project"
 CONF_DEF   = "P80"
 DISCOUNT   = 0.08
@@ -80,10 +88,13 @@ RISKS = [
 K, J, Y = len(COST_LINES), len(RISKS), N_YEARS
 FY = [f"FY{y+1}" for y in range(Y)]
 FYYEAR = [START_YEAR + y for y in range(Y)]
-# Build per-item annual profiles + inflation for the requested duration
-COST_PROFILES = [make_profile(Y, c[9]) for c in COST_LINES]
-RISK_PROFILES = [make_profile(Y, r[10]) for r in RISKS]
-INFL_RATES = [0.0] + [INFL_BASE] * (Y - 1)        # FY1 = base year (factor 1.0)
+# Profiles built over the ACTIVE years, padded with zeros up to the build size,
+# so inactive years contribute nothing until they are switched on.
+def pad(p): return p + [0.0] * (Y - len(p))
+COST_PROFILES = [pad(make_profile(ACTIVE_YEARS, c[9])) for c in COST_LINES]
+RISK_PROFILES = [pad(make_profile(ACTIVE_YEARS, r[10])) for r in RISKS]
+INFL_RATES = ([0.0] + [INFL_BASE] * (ACTIVE_YEARS - 1) + [0.0] * (Y - ACTIVE_YEARS))
+INACTIVE = list(range(ACTIVE_YEARS, Y))           # year indexes to pre-hide (flex mode)
 
 # ============================================================================
 # 1. STYLES
@@ -132,7 +143,7 @@ setup.cell(1,2,"MODEL SETUP").font=TITLE
 setup.cell(2,2,"Yellow cells are inputs. These settings drive the whole model.").font=SUB
 rows=[
  ("Project name",PROJECT,None),("Currency",CURRENCY,None),("Base year",BASE_YEAR,"0"),
- ("Start year",START_YEAR,"0"),("Number of years",N_YEARS,"0"),
+ ("Start year",START_YEAR,"0"),("Number of years",ACTIVE_YEARS,"0"),
  ("Monte Carlo iterations",ITER,"#,##0"),("Confidence level",CONF_DEF,None),
  ("Default distribution","Triangular",None),("Annual inflation (default)",0.03,PCT1),
  ("Discount rate",DISCOUNT,PCT1),("VAT treatment","Excluded",None),
@@ -147,6 +158,8 @@ CONF_CELL=ref(S,3,r0+6)          # "P80"
 NYEARS_CELL=ref(S,3,r0+4)
 ITER_CELL=ref(S,3,r0+5)
 DISC_CELL=ref(S,3,r0+9)
+START_CELL=ref(S,3,r0+3)         # Start year — drives all FY calendar labels (live)
+def fylabel(y): return f'="FY{y+1} ("&TEXT({START_CELL}+{y},"0")&")"'
 # numeric confidence helper
 put(setup,r0+15,2,"Confidence (numeric)",font=F(size=9,italic=True,color="888888"),bd=False)
 cn=put(setup,r0+15,3,f"=VALUE(MID({CONF_CELL},2,2))/100",fmt=PCT0,al=Rt); cn.font=F(size=9,italic=True,color="888888")
@@ -200,7 +213,7 @@ cp.cell(1,1,"COST PROFILING — annual % allocation").font=TITLE
 cp.cell(2,1,"Each row must sum to 100%. Rows that do not are highlighted red. Yellow cells are inputs.").font=SUB
 CPH=3; CPF=4; CP_FY0=3
 hcell(cp,CPH,1,"WBS"); hcell(cp,CPH,2,"Cost Item")
-for y in range(Y): hcell(cp,CPH,CP_FY0+y,f"{FY[y]} ({FYYEAR[y]})")
+for y in range(Y): hcell(cp,CPH,CP_FY0+y,FY[y])   # static (Excel table headers must be text)
 hcell(cp,CPH,CP_FY0+Y,"Total %")
 for i,(wbs,item,*_rest) in enumerate(COST_LINES):
     r=CPF+i; prof=COST_PROFILES[i]
@@ -255,7 +268,7 @@ rp.cell(1,1,"RISK PROFILING — annual % allocation of risk impact").font=TITLE
 rp.cell(2,1,"Each row must sum to 100%. Rows that do not are highlighted red.").font=SUB
 RPH=3; RPF=4; RP_FY0=3
 hcell(rp,RPH,1,"Risk ID"); hcell(rp,RPH,2,"Risk Name")
-for y in range(Y): hcell(rp,RPH,RP_FY0+y,f"{FY[y]} ({FYYEAR[y]})")
+for y in range(Y): hcell(rp,RPH,RP_FY0+y,FY[y])   # static (Excel table headers must be text)
 hcell(rp,RPH,RP_FY0+Y,"Total %")
 for i,rk in enumerate(RISKS):
     r=RPF+i; prof=RISK_PROFILES[i]
@@ -281,7 +294,7 @@ INFH=3; INFF=4
 hcell(inf,INFH,1,"FY"); hcell(inf,INFH,2,"Year"); hcell(inf,INFH,3,"Inflation Rate"); hcell(inf,INFH,4,"Cumulative Factor")
 for y in range(Y):
     r=INFF+y
-    put(inf,r,1,FY[y],al=C); put(inf,r,2,FYYEAR[y],fmt="0",al=C)
+    put(inf,r,1,FY[y],al=C); put(inf,r,2,f"={START_CELL}+{y}",fmt="0",al=C)
     put(inf,r,3,INFL_RATES[y],fmt=PCT1,al=C,fillc=INPUT)
     if y==0: put(inf,r,4,"=1",fmt="0.0000",al=C)
     else:    put(inf,r,4,f"=D{r-1}*(1+C{r})",fmt="0.0000",al=C)
@@ -404,7 +417,7 @@ confcols=[("P50",0.5),("P70",0.7),("P80",0.8),("P90",0.9)]
 hcell(rs,c0,1,"Year")
 for j,(lbl,_) in enumerate(confcols): hcell(rs,c0,2+j,lbl)
 for y in range(Y):
-    r=c0+1+y; put(rs,r,1,f"{FY[y]} ({FYYEAR[y]})",al=C,font=LBL)
+    r=c0+1+y; put(rs,r,1,fylabel(y),al=C,font=LBL)
     for j,(lbl,p) in enumerate(confcols): put(rs,r,2+j,f"={PCT(YTrng(y),p)}",fmt=MONEY0,al=Rt)
 CF_FIRST=c0+1; CF_LAST=c0+Y
 # D. NPV table
@@ -472,7 +485,7 @@ CUM_FIRST=2; CUM_LAST=1+NP
 # S-curve by year: cumulative P50 and P80 spend
 cd.cell(1,10,"Year"); cd.cell(1,11,"Cum P50"); cd.cell(1,12,"Cum P80")
 for y in range(Y):
-    r=2+y; cd.cell(r,10,FYYEAR[y])
+    r=2+y; cd.cell(r,10,f"={START_CELL}+{y}")
     p50=f"SUM({rng(RS,2,CF_FIRST,2,CF_FIRST+y)})"   # cumulative of Results C P50 column
     p80=f"SUM({rng(RS,4,CF_FIRST,4,CF_FIRST+y)})"   # P80 column (4th col -> col D index 4)
     cd.cell(r,11,f"={p50}").number_format=MONEY0
@@ -620,6 +633,17 @@ db.add_chart(tor2,"F36")
 
 db.sheet_view.showGridLines=False
 
+# Flex mode: pre-hide the year columns/rows beyond the active duration so the
+# file opens looking like an ACTIVE_YEARS project. The ApplySettings macro
+# toggles these the same way when the user changes "Number of years".
+if FLEX and INACTIVE:
+    for y in INACTIVE:
+        cp.column_dimensions[L(CP_FY0 + y)].hidden = True   # Cost Profiling FY col
+        rp.column_dimensions[L(RP_FY0 + y)].hidden = True   # Risk Profiling FY col
+        inf.row_dimensions[INFF + y].hidden = True          # Inflation FY row
+        rs.row_dimensions[CF_FIRST + y].hidden = True       # Results cash-flow row
+        en.column_dimensions[L(YT0 + y)].hidden = True      # Engine year col (calc)
+
 # remove the default empty sheet, then order
 if "Sheet" in wb.sheetnames: del wb["Sheet"]
 order=["Dashboard","Setup","Cost Lines","Cost Profiling","Risk Register","Risk Profiling",
@@ -654,7 +678,8 @@ for _ in range(20000):
 totals.sort(); npvs.sort()
 baseml=sum(c[6] for c in COST_LINES)
 def pc(a,p): return a[int(p*(len(a)-1))]
-print(f"Saved {OUTFILE}  ({ITER:,} in-sheet iterations, {K} cost lines, {J} risks, {Y} years)")
+print(f"Saved {OUTFILE}  ({ITER:,} iterations, {K} cost lines, {J} risks, "
+      f"{'FLEX build ' + str(Y) + ' yrs, active=' + str(ACTIVE_YEARS) if FLEX else str(Y) + ' years'})")
 print("Reference (independent 20k Python run — Excel will be close):")
 print(f"  Base (ML)            {CURRENCY} {baseml:,.0f}")
 print(f"  Total expected       {CURRENCY} {sum(totals)/len(totals):,.0f}")

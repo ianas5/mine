@@ -19,6 +19,7 @@ button, input validation gating, and a one-click PDF export.
    - `modValidation.bas`
    - `modDashboard.bas`
    - `modExport.bas`
+   - `modSetup.bas`  *(duration control — for the FLEX build)*
 4. Close the editor. **File ▸ Save As** and choose
    **Excel Macro-Enabled Workbook (\*.xlsm)**.
 5. Add the button on the Dashboard:
@@ -39,6 +40,27 @@ button, input validation gating, and a one-click PDF export.
 | `modValidation` | `ValidateInputs()` | Returns True only if every check on the Checks sheet passes. |
 | `modDashboard` | `RefreshDashboard()`, `CalculatePercentiles()` | Recalcs dependent sheets and stamps the run time. |
 | `modExport` | `ExportReport()` | Exports Dashboard + Results to a PDF next to the file. |
+| `modSetup` | `ApplySettings()` | (FLEX build) Shows exactly *Number of years* FY columns/rows. Also `YearsPlus`/`YearsMinus`. |
+
+## Changing the project duration (FLEX build)
+
+The shipped workbook is a **FLEX build**: it is structured for up to **30 years**
+with the unused ones hidden. To change the horizon:
+
+1. On the **Setup** sheet, set **Number of years** (cell C8) to e.g. `20`.
+2. Run the **`ApplySettings`** macro (add a Dashboard button assigned to it, or
+   run it from Alt+F8). It shows/hides FY columns and rows across Cost Profiling,
+   Risk Profiling, Inflation, Results and the Engine to match.
+3. Years you switch **on** start at 0% in the profile tables — fill in their
+   allocation so each row still totals 100% (the **Checks** sheet flags any that
+   don't).
+
+**Start year** and **currency** need no macro — edit the *Start year* and
+*Currency* cells on Setup and the calendar labels / Dashboard update live.
+
+> Prefer a lighter, faster file for a single fixed duration? Regenerate without
+> FLEX:  `python3 generate_advanced_model.py 5000 20 2026 SAR`  (builds exactly
+> 20 year columns).
 
 ## Macro security
 
