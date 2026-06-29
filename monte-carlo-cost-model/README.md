@@ -1,96 +1,100 @@
 # Monte Carlo Cost Model
 
-A probabilistic cost-estimation tool. Instead of a single "the project will cost
-X" number, you give each cost driver a **range of uncertainty**, run thousands of
-random scenarios (a Monte Carlo simulation), and get a full picture of the
-likely outcomes: expected cost, confidence levels (P50/P80/P90), the probability
-of staying within budget, and how much contingency you actually need.
+Probabilistic, **time-phased** cost estimation. Instead of one deterministic
+"the project will cost X", you give each cost driver and risk a *range* of
+uncertainty, run thousands of random scenarios (Monte Carlo), and read off the
+expected cost, confidence levels (P50/P80/P90), required contingency, annual
+cash flow, and NPV.
 
-> ملخص: أداة لحساب تكلفة المشاريع باستخدام محاكاة مونتي كارلو. تعرّف لكل بند
-> توزيعًا احتماليًا، تشغّل آلاف المحاكاات، وتحصل على المتوسط، نسب الثقة
-> (P50/P80/P90)، احتمال البقاء ضمن الميزانية، والاحتياطي المطلوب.
+> ملخص: نموذج تكلفة احتمالي موزّع على السنوات بمحاكاة مونتي كارلو — تقديرات
+> ثلاثية النقاط، سجل مخاطر، تضخم، وخصم/NPV، ومخرجات حسب مستوى الثقة.
 
-This project is **standalone** and unrelated to anything else in the repository.
-
----
-
-## What's inside
-
-| File | What it is |
-|------|------------|
-| **`index.html`** | The interactive web app. Open it in any browser — no install, no server, runs 100% locally. |
-| **`MonteCarloCostModel.xlsx`** | A self-contained Excel workbook where the simulation runs **inside the spreadsheet** with live `RAND()` formulas. Press **F9** to re-roll. |
-| **`generate_excel_model.py`** | The Python (openpyxl) script that builds the `.xlsx`. Re-run it to regenerate after editing the model. |
-
-You get the same model in two forms: a polished interactive app **and** a real,
-editable Excel file.
+Standalone project — unrelated to anything else in the repository.
 
 ---
 
-## The web app (`index.html`)
+## ⭐ Advanced workbook (primary): `AdvancedMonteCarloCostModel.xlsx`
 
-Just open the file. Features:
+An app-like Excel workbook. The Monte Carlo engine is built from **live
+formulas** — open it and press **F9** to run / re-roll. No macros required.
 
-- **Flexible line items** — add any number of cost drivers, each with its own
-  probability distribution.
-- **6 distributions** — Fixed, Uniform, Triangular, **PERT**, Normal, Lognormal.
-- **Up to 100,000 iterations**, seeded for reproducible results.
-- **Results**
-  - Summary: Mean, Median (P50), Std-dev, P80, observed range.
-  - **Budget & contingency**: probability of finishing under your budget, and the
-    recommended budget for any confidence level (e.g. P80).
-  - **Histogram** of the total-cost distribution.
-  - **S-curve** (cumulative probability) with your budget marked.
-  - **Tornado / sensitivity chart** — which items drive the uncertainty.
-- **Excel ↔ app** — export full results to `.xlsx`, or import line items from an
-  Excel/CSV file (columns: `Name, Distribution, P1, P2, P3`).
-- Save/load scenarios locally, dark/light theme.
+**Sheets**
 
-### Distribution parameters
+| Sheet | Purpose |
+|-------|---------|
+| **Dashboard** | Executive view: KPIs (base / expected / P50–P90 / contingency / recommended budget / NPV) + 4 charts + a checks warning. |
+| **Setup** | Project name, currency, years, iterations, confidence (dropdown), inflation, discount rate, VAT. |
+| **Cost Lines** | `tbl_CostLines` — 3-point unit costs, quantities, distribution & include dropdowns. Totals computed. |
+| **Cost Profiling** | `tbl_CostProfile` — % of each cost line spent per year (rows must total 100%, auto-highlighted). |
+| **Risk Register** | `tbl_RiskRegister` — probability + 3PE impact per risk. |
+| **Risk Profiling** | `tbl_RiskProfile` — % of each risk impact per year. |
+| **Inflation** | Per-year rate → compounding cumulative factor. |
+| **Engine** | The formula Monte Carlo (one row per iteration). |
+| **Results** | Percentiles, contingency table, annual cash flow by confidence, NPV by confidence. |
+| **Sensitivity** | Tornado — P90−P10 spread of each driver. |
+| **Assumptions** | Assumptions log. |
+| **Checks** | Live validation (profiles = 100%, Min ≤ ML ≤ Max, valid rates…). Dashboard shows a warning if any fail. |
 
-| Distribution | P1 | P2 | P3 |
-|---|---|---|---|
-| Fixed | value | — | — |
-| Uniform | min | max | — |
-| Triangular | min | most likely | max |
-| PERT | min | most likely | max |
-| Normal | mean | std dev | — |
-| Lognormal | mean | std dev | — |
+**How the model works**
 
----
+- Each iteration samples every **cost line** from its distribution
+  (Triangular / PERT / Normal) and spreads it across years by its cost profile.
+- Each **risk** is *probability-weighted*: a uniform draw decides whether it
+  occurs; only then is its 3PE impact sampled and spread by its risk profile.
+- Annual amounts are **inflated** by the cumulative factor, summed to the total
+  project cost, and discounted to **NPV**.
+- `Contingency = ConfidenceTotal − Base(Most-Likely)`;
+  `Recommended Budget = ConfidenceTotal`.
 
-## The Excel model (`MonteCarloCostModel.xlsx`)
-
-A genuine in-sheet Monte Carlo — no macros, no add-ins.
-
-1. Open the **Monte Carlo** sheet.
-2. Edit the **yellow** input cells (P1/P2/P3) and the Budget / Confidence.
-3. Press **F9** to re-roll all iterations. The summary stats, histogram and
-   S-curve update live.
-
-Each iteration is one row in the simulation block (columns to the right). Every
-draw uses inverse-transform sampling on a single stored `RAND()`, so the
-sampling is statistically correct. Uses `NORM.INV` / `LOGNORM.INV` / `BETA.INV`
-/ `PERCENTILE.INC` / `STDEV.S` — **requires Excel 2010+** (also works in
-LibreOffice Calc).
-
-### Regenerating / customizing the Excel file
-
-Edit the `ITEMS` list at the top of `generate_excel_model.py`, then:
+**Regenerate / customize**
 
 ```bash
 pip install openpyxl
-python3 generate_excel_model.py            # default 5,000 iterations
-python3 generate_excel_model.py 10000      # custom iteration count
+python3 generate_advanced_model.py            # default 5,000 iterations
+python3 generate_advanced_model.py 10000      # more iterations (heavier file)
 ```
+
+Edit the `COST_LINES`, `RISKS`, `INFL_RATES`, `DISCOUNT`, etc. at the top of
+`generate_advanced_model.py` and re-run.
+
+> Distributions use `NORM.INV` / `BETA.INV` / `PERCENTILE.INC` — needs **Excel
+> 2010+** (also works in LibreOffice Calc).
+
+### Optional: real "Run Simulation" button (VBA)
+
+The workbook works without macros. To add a clickable button, validation gating,
+and one-click PDF export, import the modules in **`vba/`** — see
+[`vba/VBA_SETUP.md`](vba/VBA_SETUP.md). Routines: `RunMonteCarlo`,
+`SampleTriangular`, `ValidateInputs`, `RefreshDashboard`, `CalculatePercentiles`,
+`ExportReport`.
 
 ---
 
-## How Monte Carlo costing works (in one paragraph)
+## Also included
 
-A deterministic estimate adds up your best-guess numbers and gives one total —
-which is almost always wrong, because every line item has uncertainty. Monte
-Carlo instead **samples** each item from its distribution thousands of times and
-sums them, building up the distribution of the *total*. From that distribution
-you can read the expected cost, how bad a bad day looks (P90/P95), the chance of
-beating your budget, and the contingency required to hit a target confidence.
+- **`index.html`** — an interactive in-browser version (no install). Add cost
+  items with distributions, run up to 100k iterations, see histogram / S-curve /
+  tornado, and export/import Excel & CSV.
+- **`MonteCarloCostModel.xlsx`** + `generate_excel_model.py` — a lightweight,
+  single-sheet in-Excel Monte Carlo (no time-phasing/risk register). Good as a
+  minimal starting point.
+
+---
+
+## Verification
+
+`generate_advanced_model.py` runs an **independent pure-Python** Monte Carlo
+(20k samples) that re-implements the exact model logic and prints reference
+numbers, so you can confirm the in-sheet results land in the same ballpark. For
+the bundled example data:
+
+| Metric | Reference |
+|--------|-----------|
+| Base (Most-Likely) | SAR 366,000 |
+| Total expected | ≈ SAR 468,000 |
+| P50 / P80 / P90 | ≈ 464k / 509k / 532k |
+| Contingency @P80 | ≈ SAR 143,000 |
+| NPV @P80 | ≈ SAR 405,000 |
+
+This is an MVP — correlations between cost lines, more distributions, and a
+saved-snapshot mode are natural next steps.
