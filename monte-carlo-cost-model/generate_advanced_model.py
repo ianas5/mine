@@ -17,7 +17,7 @@ Usage:  python3 generate_advanced_model.py [iterations]
 Output: AdvancedMonteCarloCostModel.xlsx
 """
 
-import sys, math, random
+import sys, math, random, os
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, Protection
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -85,6 +85,19 @@ RISKS = [
     ("R3","Material price spike","Market",0.50,10000,25000,55000,"Triangular","3.1","Procurement","bell"),
     ("R4","Schedule delay","Delivery",0.25,20000,40000,80000,"Pert","5.1","PM","late"),
 ]
+# Number of cost lines / risks (env vars). Larger counts are padded with blank,
+# ready-to-fill template rows (Include = No, zero values) so the model already
+# has the slots wired into Profiling + Engine; smaller counts truncate.
+#   e.g.  LINES=50 RISKS=20 python3 generate_advanced_model.py ...
+NUM_LINES = max(1, int(os.environ.get("LINES", len(COST_LINES))))
+NUM_RISKS = max(0, int(os.environ.get("RISKS", len(RISKS))))
+def _blank_line(i):  return (f"{i+1}.0", f"Cost Item {i+1}", "—", "LS", 1, 0, 0, 0, "Triangular", "even")
+def _blank_risk(i):  return (f"R{i+1}", f"Risk {i+1}", "—", 0.0, 0, 0, 0, "Triangular", "", "", "even")
+while len(COST_LINES) < NUM_LINES: COST_LINES.append(_blank_line(len(COST_LINES)))
+while len(RISKS)      < NUM_RISKS: RISKS.append(_blank_risk(len(RISKS)))
+COST_LINES = COST_LINES[:NUM_LINES]
+RISKS      = RISKS[:NUM_RISKS]
+
 K, J, Y = len(COST_LINES), len(RISKS), N_YEARS
 FY = [f"FY{y+1}" for y in range(Y)]
 FYYEAR = [START_YEAR + y for y in range(Y)]
@@ -145,7 +158,7 @@ rows=[
  ("Project name",PROJECT,None),("Currency",CURRENCY,None),("Base year",BASE_YEAR,"0"),
  ("Start year",START_YEAR,"0"),("Number of years",ACTIVE_YEARS,"0"),
  ("Monte Carlo iterations",ITER,"#,##0"),("Confidence level",CONF_DEF,None),
- ("Default distribution","Triangular",None),("Annual inflation (default)",0.03,PCT1),
+ ("Default distribution","Triangular",None),
  ("Discount rate",DISCOUNT,PCT1),("VAT treatment","Excluded",None),
  ("Model version","1.0 (MVP)",None),("Prepared by","",None),("Date","",None),
 ]
@@ -157,18 +170,37 @@ for i,(lbl,val,fmt) in enumerate(rows):
 CONF_CELL=ref(S,3,r0+6)          # "P80"
 NYEARS_CELL=ref(S,3,r0+4)
 ITER_CELL=ref(S,3,r0+5)
-DISC_CELL=ref(S,3,r0+9)
+DISC_CELL=ref(S,3,r0+8)          # Discount rate (inflation moved to its own sheet)
 START_CELL=ref(S,3,r0+3)         # Start year — drives all FY calendar labels (live)
 def fylabel(y): return f'="FY{y+1} ("&TEXT({START_CELL}+{y},"0")&")"'
+# inflation note — the real inflation inputs live on the Inflation sheet
+inf_note=put(setup,r0+8,5,"↳ inflation is set per year on the Inflation sheet",
+             font=F(size=9,italic=True,color="888888"),bd=False)
+# iterations cell shows the ACTUAL number of Engine rows (structural — the
+# simulation size is fixed when the file is generated; editing it does nothing).
+itc=setup.cell(r0+5,3); itc.value="=COUNT('Engine'!$A:$A)"; itc.number_format="#,##0"
+itc.fill=fill("FFFFFF"); itc.font=F(size=10,bold=True); itc.alignment=Rt; itc.border=BOX
+put(setup,r0+5,5,"↳ fixed at generation — re-run the script with more iterations to change",
+    font=F(size=9,italic=True,color="888888"),bd=False)
 # numeric confidence helper
-put(setup,r0+15,2,"Confidence (numeric)",font=F(size=9,italic=True,color="888888"),bd=False)
-cn=put(setup,r0+15,3,f"=VALUE(MID({CONF_CELL},2,2))/100",fmt=PCT0,al=Rt); cn.font=F(size=9,italic=True,color="888888")
-CONFP_CELL=ref(S,3,r0+15)
+hrow=r0+14
+put(setup,hrow,2,"Confidence (numeric)",font=F(size=9,italic=True,color="888888"),bd=False)
+cn=put(setup,hrow,3,f"=VALUE(MID({CONF_CELL},2,2))/100",fmt=PCT0,al=Rt); cn.font=F(size=9,italic=True,color="888888")
+CONFP_CELL=ref(S,3,hrow)
+# live counts of ACTIVE (Include = Yes) cost lines / risks  (informational)
+CL_INC=f"'Cost Lines'!$N$4:$N${3+K}"; RR_INC=f"'Risk Register'!$M$4:$M${3+J}"
+put(setup,hrow+1,2,"Active cost lines",font=LBL,bd=False)
+put(setup,hrow+1,3,f"=COUNTIF({CL_INC},\"Yes\")",fmt="0",al=Rt).font=F(size=10,bold=True,color=ORANGE)
+put(setup,hrow+2,2,"Active risks",font=LBL,bd=False)
+put(setup,hrow+2,3,f"=COUNTIF({RR_INC},\"Yes\")",fmt="0",al=Rt).font=F(size=10,bold=True,color=ORANGE)
+put(setup,hrow+3,2,"(fill a blank row + set Include=Yes to add; counts update live)",
+    font=F(size=9,italic=True,color="888888"),bd=False)
 # dropdowns
 dv_conf=DataValidation(type="list",formula1='"P50,P60,P70,P80,P90,P95"'); setup.add_data_validation(dv_conf); dv_conf.add(f"C{r0+6}")
 dv_dist0=DataValidation(type="list",formula1='"Triangular,Pert,Normal"'); setup.add_data_validation(dv_dist0); dv_dist0.add(f"C{r0+7}")
-dv_vat=DataValidation(type="list",formula1='"Included,Excluded"'); setup.add_data_validation(dv_vat); dv_vat.add(f"C{r0+10}")
+dv_vat=DataValidation(type="list",formula1='"Included,Excluded"'); setup.add_data_validation(dv_vat); dv_vat.add(f"C{r0+9}")
 setup.column_dimensions["B"].width=26; setup.column_dimensions["C"].width=24
+setup.column_dimensions["E"].width=40
 
 # ============================================================================
 # 3. COST LINES SHEET  (tbl_CostLines)
@@ -191,7 +223,7 @@ for i,(wbs,item,cat,unit,qty,mn,ml,mx,dist,prof) in enumerate(COST_LINES):
     put(cl,r,10,f"=F{r}*G{r}",fmt=MONEY0,al=Rt)   # Min Total
     put(cl,r,11,f"=F{r}*H{r}",fmt=MONEY0,al=Rt)   # ML Total
     put(cl,r,12,f"=F{r}*I{r}",fmt=MONEY0,al=Rt)   # Max Total
-    put(cl,r,13,dist,al=C); put(cl,r,14,"Yes",al=C); put(cl,r,15,"")
+    put(cl,r,13,dist,al=C); put(cl,r,14,"Yes" if ml>0 else "No",al=C); put(cl,r,15,"")
 CL_LAST=CLF+K-1
 tbl=Table(displayName="tbl_CostLines",ref=f"A{CLH}:O{CL_LAST}")
 tbl.tableStyleInfo=TableStyleInfo(name="TableStyleMedium2",showRowStripes=True)
@@ -247,7 +279,7 @@ for i,(rid,name,cat,prob,mn,ml,mx,dist,linked,owner,prof) in enumerate(RISKS):
     put(rr,r,6,ml,fmt=MONEY0,al=Rt,fillc=INPUT)
     put(rr,r,7,mx,fmt=MONEY0,al=Rt,fillc=INPUT)
     put(rr,r,8,dist,al=C); put(rr,r,9,linked,al=C); put(rr,r,10,owner)
-    put(rr,r,11,"Mitigation plan"); put(rr,r,12,"Open",al=C); put(rr,r,13,"Yes",al=C); put(rr,r,14,"")
+    put(rr,r,11,"Mitigation plan"); put(rr,r,12,"Open",al=C); put(rr,r,13,"Yes" if ml>0 else "No",al=C); put(rr,r,14,"")
 RR_LAST=RRF+J-1
 tbl=Table(displayName="tbl_RiskRegister",ref=f"A{RRH}:N{RR_LAST}")
 tbl.tableStyleInfo=TableStyleInfo(name="TableStyleMedium3",showRowStripes=True); rr.add_table(tbl)

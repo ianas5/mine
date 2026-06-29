@@ -50,22 +50,27 @@ formulas** — open it and press **F9** to run / re-roll. No macros required.
 
 ```bash
 pip install openpyxl
-# args:  [iterations] [years] [start_year] [currency] [mode]
-python3 generate_advanced_model.py 3000 5 2025 SAR flex   # FLEX: up to 30 yrs in one file
-python3 generate_advanced_model.py 5000 20 2026 SAR       # FIXED: exactly 20 year columns
-python3 generate_advanced_model.py 3000 30 2030 USD       # FIXED: 30-year, USD
+# args:  [iterations] [years] [start_year] [currency] [mode]   env: LINES, RISKS
+python3 generate_advanced_model.py 3000 5 2025 SAR flex            # FLEX: up to 30 yrs
+python3 generate_advanced_model.py 5000 20 2026 SAR               # FIXED: exactly 20 yrs
+LINES=50 RISKS=20 python3 generate_advanced_model.py 5000 10 2025  # 50 cost lines, 20 risks
 ```
 
 **The shipped file is a FLEX build** (structured for up to 30 years, extra years
-hidden). Three ways to change scope:
+hidden). What is *live* vs *structural*:
 
-- **Duration** — set *Number of years* on Setup, then run the **`ApplySettings`**
-  macro (see [`vba/VBA_SETUP.md`](vba/VBA_SETUP.md)) to show that many FY
-  columns/rows. Or regenerate in **FIXED** mode for a lighter, single-duration
-  file. Either way, annual profiles auto-build to sum to 100%.
-- **Start year** — *live*: edit the *Start year* cell; all calendar labels follow.
-- **Currency** — *live*: money cells carry no embedded symbol, so editing the
-  *Currency* cell relabels the whole Dashboard.
+| Setting | How to change | |
+|---------|---------------|--|
+| **Currency** | edit the *Currency* cell on Setup | live |
+| **Start year** | edit the *Start year* cell — calendar labels follow | live |
+| **Cost-line / risk values & profiles** | edit the tables | live |
+| **Add a cost line / risk** | fill a blank template row, set *Include = Yes*, add its 100% profile — Cost/Risk Profiling rows are pre-linked, the Engine slot is pre-wired | live, up to the built count |
+| **Duration (year count)** | set *Number of years*, run the **`ApplySettings`** macro | macro |
+| **More cost lines / risks than built, or more iterations** | regenerate (`LINES=…`, `RISKS=…`, iterations arg) | regenerate |
+
+The simulation size (**iterations** = number of Engine rows) is **fixed when the
+file is generated** — the Setup cell just reports the built count. Inflation is
+set **per year on the Inflation sheet**, not on Setup.
 
 Edit the `COST_LINES`, `RISKS`, `DISCOUNT`, `INFL_BASE`, etc. at the top of
 `generate_advanced_model.py` and re-run.
