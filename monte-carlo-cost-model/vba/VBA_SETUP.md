@@ -1,6 +1,42 @@
-# Adding the "Run Simulation" button (optional VBA)
+# VBA setup
 
-The workbook **already works without any macros** — the Monte Carlo engine is
+There are **two workbooks**, with different VBA:
+
+| Workbook | Engine | VBA role |
+|----------|--------|----------|
+| **`MonteCarloCostModel_VBA.xlsx`** | VBA computes everything | **Required** — fully dynamic (any # of cost lines / risks / iterations / years). |
+| **`AdvancedMonteCarloCostModel.xlsx`** | in-sheet formulas (F9) | Optional — adds buttons / export to a model that already runs without macros. |
+
+---
+
+## A) The VBA-engine workbook (`MonteCarloCostModel_VBA.xlsx`) — recommended
+
+The simulation runs inside VBA, so the file is tiny and everything is dynamic:
+add rows to the tables, change *Iterations* / *Number of years* on Setup, then
+run. **Results appear only after you run the macro** (there is no F9 fallback).
+
+1. Open the file ▸ **Alt+F11** ▸ **File ▸ Import File…** and import:
+   - `modEngine.bas`  ·  `modDistributions.bas`  ·  `modExport.bas`
+2. Close the editor ▸ **Save As ▸ Excel Macro-Enabled Workbook (.xlsm)**.
+3. Wire the Dashboard buttons (Developer ▸ Insert ▸ Button ▸ Assign Macro):
+
+   | Placeholder | Macro |
+   |-------------|-------|
+   | **A7:C7** ▶ Run Simulation | `RunSimulation` |
+   | **D7:E7** 📅 Apply Years | `ApplyYears` |
+   | **F7:G7** ⬇ Export Report | `ExportReport` |
+
+   *(No buttons? Run from **Alt+F8 ▸ RunSimulation**.)*
+
+**Use it:** fill the input tables (add/remove rows as needed), set *Iterations*
+and *Number of years* on Setup, click **Run Simulation**. To change cost lines
+or risks, just add/remove table rows — the engine reads whatever is there.
+
+---
+
+## B) The formula workbook (`AdvancedMonteCarloCostModel.xlsx`)
+
+This workbook **already works without any macros** — the Monte Carlo engine is
 built from live formulas, so pressing **F9** re-rolls the whole simulation and
 every result/chart updates. The VBA below is optional: it adds a real clickable
 button, input validation gating, and a one-click PDF export.

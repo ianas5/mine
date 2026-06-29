@@ -88,6 +88,21 @@ and one-click PDF export, import the modules in **`vba/`** — see
 
 ---
 
+## ⚙️ Fully-dynamic variant: `MonteCarloCostModel_VBA.xlsx`
+
+A lean (~30 KB) **macro-driven** build where the simulation runs inside VBA
+(`vba/modEngine.bas`) instead of sheet formulas. Because the engine reads the
+input tables at runtime, **everything is dynamic**:
+
+- **Cost lines / risks** — just add or remove rows in the tables.
+- **Iterations** and **number of years** — plain input cells on Setup.
+
+Trade-off: it must be saved as **`.xlsm`** and **only computes when you run the
+macro** (no F9). Build it with `python3 generate_vba_model.py` (honours `LINES=` /
+`RISKS=`), import `modEngine` + `modDistributions` + `modExport`, and run
+`RunSimulation` — see [`vba/VBA_SETUP.md`](vba/VBA_SETUP.md). *Note: the VBA
+hasn't been run in this environment, so expect to test it in your Excel.*
+
 ## Also included
 
 - **`index.html`** — an interactive in-browser version (no install). Add cost
