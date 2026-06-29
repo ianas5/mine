@@ -22,6 +22,7 @@ Private Const SET_ITERS As String = "C9"
 Private Const SET_CONF  As String = "C10"
 Private Const SET_DISC  As String = "C11"
 Private Const SET_CONFP As String = "C16"
+Private Const MAXY      As Long = 30      ' FY columns built into the profiling tables
 
 Public Sub RunSimulation()
     Dim t0 As Double: t0 = Timer
@@ -41,6 +42,8 @@ Public Sub RunSimulation()
     Dim confP As Double: confP = CDbl(ws.Range(SET_CONFP).Value)
     If nYears < 1 Then nYears = 1
     If nIter < 1 Then nIter = 1
+
+    SyncTables   ' make sure every cost line / risk has a matching profiling row
 
     Application.ScreenUpdating = False
     Application.Calculation = xlCalculationManual
@@ -178,6 +181,52 @@ Public Sub ApplyYears()
         infS.Rows(3 + y).Hidden = hide        ' FY rows start at row 4
     Next y
     Application.ScreenUpdating = True
+End Sub
+
+' Keep the profiling tables in step with the register tables: one profiling row
+' per cost line / risk, name/ID linked, new rows defaulted to an even split over
+' the active years. Runs automatically before each simulation; can also be run
+' on its own (Alt+F8 ▸ SyncTables) after you add cost lines or risks.
+Public Sub SyncTables()
+    Dim nA As Long: nA = CLng(Sheets("Setup").Range(SET_YEARS).Value)
+    If nA < 1 Then nA = 1
+    If nA > MAXY Then nA = MAXY
+    Application.ScreenUpdating = False
+    SyncOne Sheets("Cost Lines").ListObjects("tbl_CostLines"), _
+            Sheets("Cost Profiling").ListObjects("tbl_CostProfile"), nA
+    SyncOne Sheets("Risk Register").ListObjects("tbl_RiskRegister"), _
+            Sheets("Risk Profiling").ListObjects("tbl_RiskProfile"), nA
+    Application.ScreenUpdating = True
+End Sub
+
+Private Sub SyncOne(regTbl As ListObject, profTbl As ListObject, ByVal nActive As Long)
+    Dim nReg As Long: nReg = regTbl.DataBodyRange.Rows.Count
+    Dim nProf As Long
+    On Error Resume Next
+    nProf = profTbl.DataBodyRange.Rows.Count
+    On Error GoTo 0
+    Do While nProf < nReg: profTbl.ListRows.Add: nProf = nProf + 1: Loop
+    Do While nProf > nReg: profTbl.ListRows(nProf).Delete: nProf = nProf - 1: Loop
+
+    Dim regSheet As String: regSheet = regTbl.Parent.Name
+    Dim ncols As Long: ncols = profTbl.ListColumns.Count        ' WBS/ID, Name, FY1..FYMAXY, Total%
+    Dim i As Long, y As Long, sm As Double
+    For i = 1 To nReg
+        profTbl.DataBodyRange.Cells(i, 1).Formula = _
+            "='" & regSheet & "'!" & regTbl.DataBodyRange.Cells(i, 1).Address(False, False)
+        profTbl.DataBodyRange.Cells(i, 2).Formula = _
+            "='" & regSheet & "'!" & regTbl.DataBodyRange.Cells(i, 2).Address(False, False)
+        sm = 0
+        For y = 1 To MAXY: sm = sm + Num(profTbl.DataBodyRange.Cells(i, 2 + y).Value): Next y
+        If sm = 0 Then                                          ' new/blank row -> even split
+            For y = 1 To MAXY
+                profTbl.DataBodyRange.Cells(i, 2 + y).Value = IIf(y <= nActive, 1# / nActive, 0)
+            Next y
+        End If
+        profTbl.DataBodyRange.Cells(i, ncols).Formula = "=SUM(" & _
+            profTbl.DataBodyRange.Cells(i, 3).Address(False, False) & ":" & _
+            profTbl.DataBodyRange.Cells(i, 2 + MAXY).Address(False, False) & ")"
+    Next i
 End Sub
 
 '------------------------------------------------------------------ helpers

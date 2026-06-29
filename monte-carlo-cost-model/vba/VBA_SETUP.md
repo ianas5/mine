@@ -32,6 +32,12 @@ run. **Results appear only after you run the macro** (there is no F9 fallback).
 and *Number of years* on Setup, click **Run Simulation**. To change cost lines
 or risks, just add/remove table rows — the engine reads whatever is there.
 
+> **Adding a cost line/risk?** `RunSimulation` first calls **`SyncTables`**,
+> which gives every new line/risk a matching Cost/Risk **Profiling** row (name
+> linked, defaulted to an even split across the active years — edit it as you
+> like). You can also run `SyncTables` on its own (Alt+F8) right after adding
+> rows, before touching the profile %.
+
 ---
 
 ## B) The formula workbook (`AdvancedMonteCarloCostModel.xlsx`)
