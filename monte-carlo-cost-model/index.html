@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0D0D0D" id="meta-theme-color">
+<title>Monte Carlo Cost Model</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230D0D0D'/%3E%3Crect x='5' y='17' width='4' height='9' rx='1' fill='%23FF6B35'/%3E%3Crect x='11' y='12' width='4' height='14' rx='1' fill='%23FF6B35'/%3E%3Crect x='17' y='7' width='4' height='19' rx='1' fill='%2300D4AA'/%3E%3Crect x='23' y='13' width='4' height='13' rx='1' fill='%23FF6B35'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0D0D0D;--surface:#1A1A1A;--card:#222222;--border:#333333;
+  --accent:#FF6B35;--accent2:#00D4AA;--text:#F0F0F0;--text-sub:#888888;--text-dim:#555555;
+  --danger:#FF4757;--warn:#FFD700;--purple:#7C5CFC;--radius:16px;
+}
+[data-theme="light"]{
+  --bg:#F2F2F7;--surface:#FFFFFF;--card:#FFFFFF;--border:#D8D8DD;
+  --text:#1C1C1E;--text-sub:#6C6C70;--text-dim:#A0A0A6;
+}
+html,body{background:var(--bg);color:var(--text);font-family:'Outfit',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;-webkit-font-smoothing:antialiased;line-height:1.4}
+.wrap{max-width:1120px;margin:0 auto;padding:18px 16px 80px}
+/* Header */
+.header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
+.header h1{font-size:24px;font-weight:800;letter-spacing:-0.5px}
+.header h1 span{color:var(--accent)}
+.header .sub{font-size:13px;color:var(--text-sub);margin-top:2px}
+.icon-btn{width:40px;height:40px;border-radius:12px;background:var(--card);border:1px solid var(--border);color:var(--text);font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s;flex-shrink:0}
+.icon-btn:active{transform:scale(.94)}
+/* Cards */
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:16px}
+.card-title{font-size:12px;font-weight:700;color:var(--text-sub);text-transform:uppercase;letter-spacing:1px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.card-title .hint{font-size:11px;font-weight:500;color:var(--text-dim);text-transform:none;letter-spacing:0}
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;border:none;border-radius:12px;font-size:14px;font-weight:700;cursor:pointer;transition:.15s;font-family:inherit;letter-spacing:-0.2px;padding:11px 18px;white-space:nowrap}
+.btn:active{transform:scale(.97)}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:#ff7d4d}
+.btn-ghost{background:var(--surface);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{border-color:var(--text-dim)}
+.btn-sm{padding:8px 12px;font-size:13px;border-radius:10px}
+.btn-block{width:100%}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px}
+/* Settings grid */
+.settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.field{display:flex;flex-direction:column;gap:5px}
+.field label{font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.5px}
+.field input,.field select{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:10px 11px;color:var(--text);font-size:14px;font-family:inherit;font-weight:600;width:100%;outline:none;transition:.15s}
+[data-theme="light"] .field input,[data-theme="light"] .field select{background:#F2F2F7}
+.field input:focus,.field select:focus{border-color:var(--accent)}
+.field input.bad{border-color:var(--danger)}
+/* Items table */
+.items-head,.item-row{display:grid;grid-template-columns:1.6fr 1.2fr repeat(3,0.9fr) 38px 34px;gap:8px;align-items:center}
+.items-head{font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;padding:0 2px 8px}
+.item-row{padding:8px 2px;border-top:1px solid var(--border)}
+.item-row input,.item-row select{background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:8px 8px;color:var(--text);font-size:13px;font-family:inherit;font-weight:600;width:100%;outline:none}
+[data-theme="light"] .item-row input,[data-theme="light"] .item-row select{background:#F2F2F7}
+.item-row input:focus,.item-row select:focus{border-color:var(--accent)}
+.item-row input.bad{border-color:var(--danger)}
+.item-row input::placeholder{color:var(--text-dim);font-weight:500}
+.p-hidden{visibility:hidden}
+.sw{position:relative;width:38px;height:22px;flex-shrink:0}
+.sw input{display:none}
+.sw label{position:absolute;inset:0;background:var(--border);border-radius:11px;cursor:pointer;transition:.2s}
+.sw label::after{content:'';position:absolute;width:16px;height:16px;border-radius:50%;background:#fff;top:3px;left:3px;transition:.2s}
+.sw input:checked + label{background:var(--accent2)}
+.sw input:checked + label::after{transform:translateX(16px)}
+.del-btn{background:none;border:none;color:var(--text-dim);font-size:18px;cursor:pointer;padding:4px;border-radius:8px;transition:.15s}
+.del-btn:hover{color:var(--danger)}
+/* Summary stat cards */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:15px}
+.stat .lbl{font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.stat .val{font-size:25px;font-weight:800;letter-spacing:-1px}
+.stat .val.accent{color:var(--accent)}
+.stat .val.teal{color:var(--accent2)}
+.stat .sub{font-size:12px;color:var(--text-dim);margin-top:3px;font-weight:500}
+/* Budget callout */
+.callout{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.callout .big{font-size:30px;font-weight:800;letter-spacing:-1px}
+.gauge{height:9px;background:var(--border);border-radius:5px;overflow:hidden;margin-top:10px}
+.gauge > i{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--accent2),var(--accent))}
+/* Percentile table */
+.ptable{width:100%;border-collapse:collapse;font-size:14px}
+.ptable th,.ptable td{padding:9px 8px;text-align:right;border-bottom:1px solid var(--border)}
+.ptable th:first-child,.ptable td:first-child{text-align:left}
+.ptable th{font-size:11px;font-weight:700;color:var(--text-sub);text-transform:uppercase;letter-spacing:.5px}
+.ptable td{font-weight:600}
+.ptable tr td.tag{color:var(--text-sub);font-weight:600}
+.ptable tr.hl td{color:var(--accent);font-weight:800}
+/* Chart */
+.chart-box{position:relative;height:300px}
+.chart-box.tall{height:340px}
+/* misc */
+.muted{color:var(--text-sub);font-size:13px}
+.empty{text-align:center;color:var(--text-dim);padding:30px 10px;font-size:14px}
+.badge{display:inline-block;font-size:10px;font-weight:700;padding:3px 8px;border-radius:7px;background:rgba(255,107,53,.14);color:var(--accent);letter-spacing:.3px}
+.spinner{display:inline-block;width:15px;height:15px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.row-flex{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.note{font-size:12px;color:var(--text-dim);margin-top:10px;line-height:1.6}
+.hide{display:none!important}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:760px){
+  .items-head{display:none}
+  .item-row{grid-template-columns:1fr 1fr;gap:7px;padding:12px;border:1px solid var(--border);border-radius:12px;margin-bottom:10px}
+  .item-row .col-name{grid-column:1/3}
+  .item-row .col-dist{grid-column:1/3}
+  .item-row .col-toggle,.item-row .col-del{grid-column:auto}
+  .callout{grid-template-columns:1fr}
+  .grid-2{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header">
+    <div>
+      <h1>Monte&nbsp;<span>Carlo</span> Cost Model</h1>
+      <div class="sub">Probabilistic cost estimation &amp; contingency analysis</div>
+    </div>
+    <button class="icon-btn" id="themeBtn" title="Toggle theme">◐</button>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="card">
+    <div class="card-title">Simulation Settings</div>
+    <div class="settings">
+      <div class="field">
+        <label>Iterations</label>
+        <select id="iters">
+          <option value="1000">1,000</option>
+          <option value="5000">5,000</option>
+          <option value="10000" selected>10,000</option>
+          <option value="50000">50,000</option>
+          <option value="100000">100,000</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Currency</label>
+        <input id="cur" value="$" maxlength="4">
+      </div>
+      <div class="field">
+        <label>Budget / Target</label>
+        <input id="budget" type="number" placeholder="optional" step="any">
+      </div>
+      <div class="field">
+        <label>Confidence %</label>
+        <input id="conf" type="number" value="80" min="50" max="99" step="1">
+      </div>
+      <div class="field">
+        <label>Random Seed</label>
+        <input id="seed" type="number" value="12345" step="1">
+      </div>
+    </div>
+  </div>
+
+  <!-- COST ITEMS -->
+  <div class="card">
+    <div class="card-title">
+      <span>Cost Line Items</span>
+      <span class="hint">each item = a cost driver with its own uncertainty</span>
+    </div>
+    <div class="items-head">
+      <div>Name</div><div>Distribution</div>
+      <div id="lp1">Min</div><div id="lp2">Likely</div><div id="lp3">Max</div>
+      <div>On</div><div></div>
+    </div>
+    <div id="itemsList"></div>
+    <div style="margin-top:14px" class="toolbar">
+      <button class="btn btn-ghost btn-sm" id="addBtn">+ Add Item</button>
+      <button class="btn btn-ghost btn-sm" id="exampleBtn">Load Example</button>
+      <button class="btn btn-ghost btn-sm" id="clearBtn">Clear All</button>
+    </div>
+  </div>
+
+  <!-- ACTIONS -->
+  <div class="card">
+    <div class="toolbar">
+      <button class="btn btn-primary" id="runBtn" style="flex:1;min-width:160px">▶ Run Simulation</button>
+      <button class="btn btn-ghost" id="exportBtn">⬇ Export Excel</button>
+      <button class="btn btn-ghost" id="importBtn">⬆ Import Excel/CSV</button>
+      <button class="btn btn-ghost" id="saveBtn">💾 Save</button>
+      <button class="btn btn-ghost" id="loadBtn">📂 Load</button>
+      <input type="file" id="fileIn" accept=".xlsx,.xls,.csv" class="hide">
+    </div>
+    <div class="note" id="statusNote">Define your cost items, then run the simulation. Everything runs locally in your browser.</div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="results" class="hide">
+
+    <div class="card">
+      <div class="card-title">Summary <span class="hint" id="summaryHint"></span></div>
+      <div class="stats" id="statCards"></div>
+    </div>
+
+    <div class="card" id="budgetCard">
+      <div class="card-title">Budget &amp; Contingency</div>
+      <div class="callout" id="calloutBox"></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">Total Cost Distribution</div>
+        <div class="chart-box"><canvas id="histChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Cumulative Probability (S-Curve)</div>
+        <div class="chart-box"><canvas id="curveChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">Percentiles</div>
+        <table class="ptable" id="pctTable"></table>
+      </div>
+      <div class="card">
+        <div class="card-title">Sensitivity (Tornado) <span class="hint">what drives the uncertainty</span></div>
+        <div class="chart-box tall"><canvas id="tornadoChart"></canvas></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="note" style="text-align:center">
+    Monte Carlo Cost Model · runs fully client-side · distributions: Fixed · Uniform · Triangular · PERT · Normal · Lognormal
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   Monte Carlo Cost Model — engine + UI
+   ============================================================ */
+const $ = id => document.getElementById(id);
+const DISTS = {
+  fixed:      {label:'Fixed',       labels:['Value','',''],            n:1},
+  uniform:    {label:'Uniform',     labels:['Min','Max',''],           n:2},
+  triangular: {label:'Triangular',  labels:['Min','Most Likely','Max'],n:3},
+  pert:       {label:'PERT',        labels:['Min','Most Likely','Max'],n:3},
+  normal:     {label:'Normal',      labels:['Mean','Std Dev',''],      n:2},
+  lognormal:  {label:'Lognormal',   labels:['Mean','Std Dev',''],      n:2},
+};
+const KEY = 'mc_cost_model_v1';
+let state = { items:[], iters:10000, cur:'$', budget:'', conf:80, seed:12345 };
+let lastResult = null;
+let charts = {};
+let uid = 1;
+
+/* ---------- Defaults / Example ---------- */
+function exampleItems(){
+  return [
+    {id:uid++, name:'Labor',          dist:'pert',       p1:40000, p2:55000, p3:90000, on:true},
+    {id:uid++, name:'Materials',      dist:'triangular', p1:30000, p2:38000, p3:60000, on:true},
+    {id:uid++, name:'Equipment',      dist:'normal',     p1:15000, p2:3000,  p3:'',    on:true},
+    {id:uid++, name:'Subcontractors', dist:'uniform',    p1:20000, p2:35000, p3:'',    on:true},
+    {id:uid++, name:'Permits & Fees', dist:'fixed',      p1:5000,  p2:'',    p3:'',    on:true},
+    {id:uid++, name:'Risk Reserve',   dist:'lognormal',  p1:8000,  p2:4000,  p3:'',    on:true},
+  ];
+}
+
+/* ============================================================
+   Seeded RNG + distribution samplers
+   ============================================================ */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let _spare = 0, _hasSpare = false;
+function resetNormal(){ _hasSpare = false; }
+function nextNormal(rng){
+  if(_hasSpare){ _hasSpare = false; return _spare; }
+  let u,v,s;
+  do { u = rng()*2-1; v = rng()*2-1; s = u*u+v*v; } while(s>=1 || s===0);
+  const m = Math.sqrt(-2*Math.log(s)/s);
+  _spare = v*m; _hasSpare = true;
+  return u*m;
+}
+function nextGamma(rng, shape){
+  if(shape < 1){ return nextGamma(rng, shape+1) * Math.pow(rng(), 1/shape); }
+  const d = shape - 1/3, c = 1/Math.sqrt(9*d);
+  while(true){
+    let x = nextNormal(rng), v = 1 + c*x;
+    if(v <= 0) continue;
+    v = v*v*v;
+    const u = rng();
+    if(u < 1 - 0.0331*x*x*x*x) return d*v;
+    if(Math.log(u) < 0.5*x*x + d*(1 - v + Math.log(v))) return d*v;
+  }
+}
+function nextBeta(rng,a,b){ const x = nextGamma(rng,a), y = nextGamma(rng,b); return x/(x+y); }
+function nextTri(rng,min,mode,max){
+  if(max <= min) return min;
+  const u = rng(), fc = (mode-min)/(max-min);
+  return u < fc ? min + Math.sqrt(u*(max-min)*(mode-min))
+                : max - Math.sqrt((1-u)*(max-min)*(max-mode));
+}
+function nextPert(rng,min,mode,max){
+  if(max <= min) return min;
+  const a = 1 + 4*(mode-min)/(max-min), b = 1 + 4*(max-mode)/(max-min);
+  return min + nextBeta(rng,a,b)*(max-min);
+}
+function nextLogn(rng,mean,sd){
+  if(mean <= 0) return Math.max(0,mean);
+  const v = Math.log(1 + (sd*sd)/(mean*mean));
+  const mu = Math.log(mean) - v/2, sigma = Math.sqrt(v);
+  return Math.exp(mu + sigma*nextNormal(rng));
+}
+function sampleItem(rng,it){
+  const a=+it.p1||0, b=+it.p2||0, c=+it.p3||0;
+  switch(it.dist){
+    case 'fixed':      return a;
+    case 'uniform':    return Math.min(a,b) + Math.abs(b-a)*rng();
+    case 'triangular': return nextTri(rng, a, b, c);
+    case 'pert':       return nextPert(rng, a, b, c);
+    case 'normal':     return a + b*nextNormal(rng);
+    case 'lognormal':  return nextLogn(rng, a, b);
+    default:           return a;
+  }
+}
+function centralValue(it){
+  const a=+it.p1||0, b=+it.p2||0, c=+it.p3||0;
+  switch(it.dist){
+    case 'uniform':    return (a+b)/2;
+    case 'triangular': return (a+b+c)/3;
+    case 'pert':       return (a+4*b+c)/6;
+    default:           return a; // fixed, normal, lognormal -> p1
+  }
+}
+
+/* ============================================================
+   Run simulation
+   ============================================================ */
+function percentile(sorted, p){           // p in [0,1], Excel PERCENTILE.INC
+  const n = sorted.length;
+  if(n === 1) return sorted[0];
+  const idx = p*(n-1), lo = Math.floor(idx), hi = Math.ceil(idx);
+  if(lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi]-sorted[lo])*(idx-lo);
+}
+async function runSimulation(){
+  syncFromInputs();
+  const items = state.items.filter(it => it.on && validItem(it));
+  if(items.length === 0){ status('Add at least one valid cost item.', true); return; }
+
+  const N = state.iters;
+  const btn = $('runBtn');
+  btn.innerHTML = '<span class="spinner"></span> Running…';
+  btn.disabled = true;
+  await new Promise(r => requestAnimationFrame(()=>requestAnimationFrame(r)));
+
+  const rng = mulberry32(state.seed >>> 0);
+  resetNormal();
+  const totals = new Float64Array(N);
+  const k = items.length;
+  const sx = new Float64Array(k), sxx = new Float64Array(k), sxt = new Float64Array(k);
+  let st = 0, stt = 0;
+  const buf = new Float64Array(k);
+
+  for(let i=0;i<N;i++){
+    let total = 0;
+    for(let j=0;j<k;j++){ const x = sampleItem(rng, items[j]); buf[j] = x; total += x; }
+    totals[i] = total;
+    st += total; stt += total*total;
+    for(let j=0;j<k;j++){ const x = buf[j]; sx[j]+=x; sxx[j]+=x*x; sxt[j]+=x*total; }
+  }
+
+  // stats
+  const mean = st/N;
+  const variance = Math.max(0, stt/N - mean*mean);
+  const sd = Math.sqrt(variance);
+  const sorted = Float64Array.from(totals).sort();
+  const min = sorted[0], max = sorted[N-1];
+
+  const pct = {};
+  [1,5,10,20,25,50,75,80,90,95,99].forEach(p => pct['p'+p] = percentile(sorted, p/100));
+
+  // sensitivity (correlation of each item with total)
+  const varT = variance;
+  const sens = items.map((it,j) => {
+    const covj = sxt[j]/N - (sx[j]/N)*mean;
+    const varj = Math.max(0, sxx[j]/N - (sx[j]/N)**2);
+    const r = (varj>0 && varT>0) ? covj/Math.sqrt(varj*varT) : 0;
+    return { name: it.name || 'Item', r, contrib: r*r };
+  });
+  const sumC = sens.reduce((a,s)=>a+s.contrib,0) || 1;
+  sens.forEach(s => s.contribPct = 100*s.contrib/sumC);
+  sens.sort((a,b)=>b.contribPct-a.contribPct);
+
+  // budget
+  const budget = state.budget === '' ? null : +state.budget;
+  let pUnder = null, budgetPctile = null;
+  if(budget != null && isFinite(budget)){
+    let cnt = 0; for(let i=0;i<N;i++) if(totals[i] <= budget) cnt++;
+    pUnder = 100*cnt/N; budgetPctile = pUnder;
+  }
+  const base = items.reduce((a,it)=>a+centralValue(it),0);
+  const confP = percentile(sorted, Math.min(99,Math.max(50,state.conf))/100);
+
+  lastResult = { N, mean, sd, min, max, pct, sens, budget, pUnder, base, conf:state.conf,
+                 confP, contingency: confP-base, contingencyMean: confP-mean, sorted };
+  renderResults();
+
+  btn.innerHTML = '▶ Run Simulation';
+  btn.disabled = false;
+  status(`Done — ${N.toLocaleString()} iterations · ${items.length} active item(s).`);
+  saveLocal();
+}
+
+/* ============================================================
+   Rendering
+   ============================================================ */
+function money(n){
+  if(!isFinite(n)) return '—';
+  return state.cur + Math.round(n).toLocaleString('en-US');
+}
+function moneyShort(n){
+  const a = Math.abs(n), s = n<0?'-':'';
+  if(a >= 1e9) return state.cur+s+(n/1e9).toFixed(1).replace(/\.0$/,'')+'B';
+  if(a >= 1e6) return state.cur+s+(a/1e6).toFixed(2).replace(/\.?0+$/,'')+'M';
+  if(a >= 1e3) return state.cur+s+Math.round(a/1e3)+'k';
+  return state.cur+Math.round(n);
+}
+function renderResults(){
+  const r = lastResult;
+  $('results').classList.remove('hide');
+  $('summaryHint').textContent = `${r.N.toLocaleString()} iterations`;
+
+  // Stat cards
+  $('statCards').innerHTML = `
+    <div class="stat"><div class="lbl">Mean (Expected)</div><div class="val accent">${money(r.mean)}</div><div class="sub">average total cost</div></div>
+    <div class="stat"><div class="lbl">Median (P50)</div><div class="val">${money(r.pct.p50)}</div><div class="sub">50% chance below</div></div>
+    <div class="stat"><div class="lbl">Std Deviation</div><div class="val">${money(r.sd)}</div><div class="sub">± spread (${(100*r.sd/r.mean).toFixed(0)}% CoV)</div></div>
+    <div class="stat"><div class="lbl">P80 (Conservative)</div><div class="val teal">${money(r.pct.p80)}</div><div class="sub">80% chance below</div></div>
+    <div class="stat"><div class="lbl">Range</div><div class="val" style="font-size:18px">${moneyShort(r.min)} – ${moneyShort(r.max)}</div><div class="sub">min → max observed</div></div>
+  `;
+
+  // Budget & contingency callout
+  const box = $('calloutBox');
+  let html = '';
+  if(r.budget != null){
+    const ok = r.pUnder >= 50;
+    html += `<div>
+      <div class="lbl muted" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-sub)">P(cost ≤ ${money(r.budget)})</div>
+      <div class="big" style="color:${ok?'var(--accent2)':'var(--danger)'}">${r.pUnder.toFixed(1)}%</div>
+      <div class="gauge"><i style="width:${Math.min(100,r.pUnder)}%"></i></div>
+      <div class="sub muted" style="margin-top:8px">Your budget sits at the ${r.pUnder.toFixed(0)}th percentile of outcomes.</div>
+    </div>`;
+  } else {
+    html += `<div>
+      <div class="lbl muted" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-sub)">Base Estimate (deterministic)</div>
+      <div class="big">${money(r.base)}</div>
+      <div class="sub muted" style="margin-top:8px">Sum of each item's central value. Set a Budget above to see confidence.</div>
+    </div>`;
+  }
+  html += `<div>
+    <div class="lbl muted" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-sub)">Recommended budget @ ${r.conf}% confidence</div>
+    <div class="big" style="color:var(--accent)">${money(r.confP)}</div>
+    <div class="sub muted" style="margin-top:8px">Contingency vs base (${money(r.base)}): <b style="color:var(--text)">${money(r.contingency)}</b>
+      (${(100*r.contingency/Math.max(1,r.base)).toFixed(0)}%)</div>
+  </div>`;
+  box.innerHTML = html;
+
+  // Percentile table
+  const rows = [
+    ['P10 — Optimistic','p10'],['P25','p25'],['P50 — Median','p50','hl'],
+    ['P75','p75'],['P80','p80'],['P90','p90'],['P95 — Conservative','p95'],['P99','p99']
+  ];
+  $('pctTable').innerHTML =
+    `<thead><tr><th>Confidence Level</th><th>Total Cost</th><th>vs Mean</th></tr></thead><tbody>` +
+    rows.map(([lbl,k,cls])=>{
+      const v = r.pct[k], d = v-r.mean, sign = d>=0?'+':'';
+      return `<tr class="${cls||''}"><td class="tag">${lbl}</td><td>${money(v)}</td><td class="tag">${sign}${money(d).replace(state.cur,state.cur)}</td></tr>`;
+    }).join('') + `</tbody>`;
+
+  drawHist();
+  drawCurve();
+  drawTornado();
+}
+
+/* vertical reference line plugin */
+const vLinePlugin = {
+  id:'vLine',
+  afterDraw(chart){
+    const opt = chart.config.options.plugins.vLine;
+    if(!opt || opt.value==null) return;
+    const x = chart.scales.x.getPixelForValue(opt.value);
+    if(x==null || isNaN(x)) return;
+    const {top,bottom} = chart.chartArea;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.strokeStyle = opt.color||'#FF4757'; ctx.lineWidth=2; ctx.setLineDash([5,4]);
+    ctx.beginPath(); ctx.moveTo(x,top); ctx.lineTo(x,bottom); ctx.stroke();
+    if(opt.label){
+      ctx.setLineDash([]); ctx.fillStyle=opt.color||'#FF4757';
+      ctx.font='700 11px Outfit'; ctx.textAlign = x>chart.width-70?'right':'left';
+      ctx.fillText(opt.label, x>chart.width-70?x-6:x+6, top+12);
+    }
+    ctx.restore();
+  }
+};
+Chart.register(vLinePlugin);
+
+function axisColor(){ return getComputedStyle(document.body).getPropertyValue('--text-sub'); }
+function gridColor(){ return getComputedStyle(document.body).getPropertyValue('--border'); }
+
+function drawHist(){
+  const r = lastResult, sorted = r.sorted, N = r.N;
+  const nb = 40, min = r.min, max = r.max, w = (max-min)/nb || 1;
+  const counts = new Array(nb).fill(0), centers = [];
+  for(let i=0;i<nb;i++) centers.push(min + w*(i+0.5));
+  for(let i=0;i<N;i++){ let b = Math.floor((sorted[i]-min)/w); if(b>=nb) b=nb-1; if(b<0) b=0; counts[b]++; }
+  const pctData = counts.map(c => 100*c/N);
+  if(charts.hist) charts.hist.destroy();
+  charts.hist = new Chart($('histChart'), {
+    type:'bar',
+    data:{ labels:centers, datasets:[{ data:pctData, backgroundColor:'rgba(255,107,53,.55)',
+      borderColor:'#FF6B35', borderWidth:1, borderRadius:3, barPercentage:1, categoryPercentage:1 }] },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false},
+        vLine:{ value:r.budget!=null?r.budget:r.pct.p50, color:r.budget!=null?'#FF4757':'#00D4AA',
+                label:r.budget!=null?'Budget':'P50' },
+        tooltip:{ callbacks:{ title:c=>'≈ '+money(centers[c[0].dataIndex]),
+                  label:c=>c.raw.toFixed(2)+'% of outcomes' } } },
+      scales:{
+        x:{ type:'linear', min, max, ticks:{ color:axisColor(), maxTicksLimit:6, callback:v=>moneyShort(v) },
+            grid:{ color:gridColor() } },
+        y:{ ticks:{ color:axisColor(), callback:v=>v+'%' }, grid:{ color:gridColor() },
+            title:{ display:true, text:'Probability', color:axisColor() } }
+      }
+    }
+  });
+}
+function drawCurve(){
+  const r = lastResult;
+  const pts = [];
+  for(let kp=0;kp<=100;kp++) pts.push({ x: percentile(r.sorted, kp/100), y: kp });
+  if(charts.curve) charts.curve.destroy();
+  charts.curve = new Chart($('curveChart'), {
+    type:'line',
+    data:{ datasets:[{ data:pts, borderColor:'#00D4AA', borderWidth:2.5,
+      pointRadius:0, fill:true, backgroundColor:'rgba(0,212,170,.10)', tension:.1 }] },
+    options:{
+      responsive:true, maintainAspectRatio:false, parsing:false,
+      plugins:{ legend:{display:false},
+        vLine:{ value:r.budget!=null?r.budget:null, color:'#FF4757',
+                label:r.budget!=null?('Budget · '+r.pUnder.toFixed(0)+'%'):'' },
+        tooltip:{ callbacks:{ title:c=>money(c[0].parsed.x), label:c=>c.parsed.y+'% chance at or below' } } },
+      scales:{
+        x:{ type:'linear', ticks:{ color:axisColor(), maxTicksLimit:6, callback:v=>moneyShort(v) }, grid:{ color:gridColor() } },
+        y:{ min:0, max:100, ticks:{ color:axisColor(), callback:v=>v+'%' }, grid:{ color:gridColor() },
+            title:{ display:true, text:'Cumulative probability', color:axisColor() } }
+      }
+    }
+  });
+}
+function drawTornado(){
+  const r = lastResult, s = r.sens.slice(0,12);
+  if(charts.tornado) charts.tornado.destroy();
+  charts.tornado = new Chart($('tornadoChart'), {
+    type:'bar',
+    data:{ labels:s.map(x=>x.name), datasets:[{ data:s.map(x=>x.contribPct),
+      backgroundColor:s.map((_,i)=>i===0?'#FF6B35':'rgba(124,92,252,.65)'),
+      borderColor:s.map((_,i)=>i===0?'#FF6B35':'#7C5CFC'), borderWidth:1, borderRadius:4 }] },
+    options:{
+      indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false},
+        tooltip:{ callbacks:{ label:c=>{ const it=s[c.dataIndex];
+          return [`Contribution to variance: ${it.contribPct.toFixed(1)}%`, `Correlation r = ${it.r.toFixed(2)}`]; } } } },
+      scales:{
+        x:{ ticks:{ color:axisColor(), callback:v=>v+'%' }, grid:{ color:gridColor() },
+            title:{ display:true, text:'Share of total uncertainty', color:axisColor() } },
+        y:{ ticks:{ color:axisColor() }, grid:{ display:false } }
+      }
+    }
+  });
+}
+
+/* ============================================================
+   Items UI
+   ============================================================ */
+function validItem(it){
+  const a=+it.p1, b=+it.p2, c=+it.p3;
+  switch(it.dist){
+    case 'fixed':      return isFinite(a);
+    case 'uniform':    return isFinite(a)&&isFinite(b);
+    case 'normal':     return isFinite(a)&&isFinite(b)&&b>=0;
+    case 'lognormal':  return isFinite(a)&&isFinite(b)&&a>0&&b>=0;
+    case 'triangular':
+    case 'pert':       return isFinite(a)&&isFinite(b)&&isFinite(c)&&a<=b&&b<=c&&a<c;
+  }
+  return false;
+}
+function renderItems(){
+  const list = $('itemsList');
+  if(state.items.length === 0){ list.innerHTML = `<div class="empty">No items yet. Click <b>+ Add Item</b> or <b>Load Example</b>.</div>`; return; }
+  list.innerHTML = state.items.map(it => itemRow(it)).join('');
+}
+function itemRow(it){
+  const d = DISTS[it.dist], opts = Object.keys(DISTS).map(k=>`<option value="${k}" ${k===it.dist?'selected':''}>${DISTS[k].label}</option>`).join('');
+  const pInput = (n,val) => {
+    const show = d.n >= n;
+    const bad = !validItem(it) ? 'bad' : '';
+    return `<input class="${show?'':'p-hidden'} ${bad}" data-id="${it.id}" data-f="p${n}" type="number" step="any"
+            placeholder="${show?d.labels[n-1]:''}" value="${val===''||val==null?'':val}" ${show?'':'tabindex=-1'}>`;
+  };
+  return `<div class="item-row" data-row="${it.id}">
+    <div class="col-name"><input data-id="${it.id}" data-f="name" placeholder="Item name" value="${escapeHtml(it.name||'')}"></div>
+    <div class="col-dist"><select data-id="${it.id}" data-f="dist">${opts}</select></div>
+    <div>${pInput(1,it.p1)}</div>
+    <div>${pInput(2,it.p2)}</div>
+    <div>${pInput(3,it.p3)}</div>
+    <div class="col-toggle sw"><input type="checkbox" id="sw${it.id}" data-id="${it.id}" data-f="on" ${it.on?'checked':''}><label for="sw${it.id}"></label></div>
+    <div class="col-del"><button class="del-btn" data-del="${it.id}" title="Remove">✕</button></div>
+  </div>`;
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* delegated events on items list */
+$('itemsList').addEventListener('input', e=>{
+  const t = e.target, id = +t.dataset.id, f = t.dataset.f;
+  if(!id || !f) return;
+  const it = state.items.find(x=>x.id===id); if(!it) return;
+  if(f==='on') it.on = t.checked;
+  else if(f.startsWith('p')) it[f] = t.value;
+  else it[f] = t.value;
+  if(f==='dist'){ renderItems(); }
+  // live-validate param fields without full re-render
+  if(f.startsWith('p')){
+    const ok = validItem(it);
+    document.querySelectorAll(`.item-row[data-row="${id}"] input[data-f^="p"]`).forEach(inp=>inp.classList.toggle('bad',!ok));
+  }
+  saveLocal();
+});
+$('itemsList').addEventListener('click', e=>{
+  const del = e.target.dataset.del;
+  if(del){ state.items = state.items.filter(x=>x.id!=+del); renderItems(); saveLocal(); }
+});
+
+/* ============================================================
+   Settings sync + persistence
+   ============================================================ */
+function syncFromInputs(){
+  state.iters = +$('iters').value;
+  state.cur = $('cur').value || '$';
+  state.budget = $('budget').value;
+  state.conf = Math.min(99,Math.max(50, +$('conf').value||80));
+  state.seed = +$('seed').value||0;
+}
+function applyToInputs(){
+  $('iters').value = state.iters; $('cur').value = state.cur;
+  $('budget').value = state.budget; $('conf').value = state.conf; $('seed').value = state.seed;
+}
+['iters','cur','budget','conf','seed'].forEach(id=>{
+  $(id).addEventListener('input',()=>{ syncFromInputs(); saveLocal(); });
+});
+function saveLocal(){
+  try{ localStorage.setItem(KEY, JSON.stringify({state, ts:Date.now()})); }catch(e){}
+}
+function loadLocal(){
+  try{
+    const raw = localStorage.getItem(KEY);
+    if(raw){ const o = JSON.parse(raw); if(o.state){ state = o.state; uid = Math.max(1,...state.items.map(i=>i.id||0))+1; return true; } }
+  }catch(e){}
+  return false;
+}
+function status(msg, warn){ const n=$('statusNote'); n.textContent=msg; n.style.color = warn?'var(--danger)':''; }
+
+/* ============================================================
+   Excel / CSV export + import (SheetJS)
+   ============================================================ */
+function exportExcel(){
+  if(!lastResult){ status('Run a simulation first, then export.', true); return; }
+  const r = lastResult, wb = XLSX.utils.book_new();
+
+  const inputs = [['Name','Distribution','P1','P2','P3','Enabled','Central Value']];
+  state.items.forEach(it=>inputs.push([it.name, it.dist, num(it.p1), num(it.p2), num(it.p3), it.on?'Yes':'No', centralValue(it)]));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(inputs), 'Inputs');
+
+  const settings = [['Setting','Value'],['Iterations',r.N],['Seed',state.seed],
+    ['Budget',state.budget===''?'(none)':+state.budget],['Confidence %',state.conf],['Currency',state.cur]];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(settings), 'Settings');
+
+  const summary = [['Metric','Value'],
+    ['Mean (expected)',r.mean],['Std Deviation',r.sd],['Coef. of Variation %',100*r.sd/r.mean],
+    ['Minimum',r.min],['Maximum',r.max],['Base estimate (deterministic)',r.base],
+    ['Recommended budget @'+r.conf+'%',r.confP],['Contingency vs base',r.contingency]];
+  if(r.budget!=null){ summary.push(['Budget',r.budget],['P(cost ≤ budget) %',r.pUnder]); }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Summary');
+
+  const pr = [['Percentile','Total Cost']];
+  [1,5,10,20,25,50,75,80,90,95,99].forEach(p=>pr.push(['P'+p, r.pct['p'+p]]));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pr), 'Percentiles');
+
+  const se = [['Item','Correlation r','Contribution to variance %']];
+  r.sens.forEach(s=>se.push([s.name, s.r, s.contribPct]));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(se), 'Sensitivity');
+
+  const cap = Math.min(r.N, 50000), it = [['Iteration','Total Cost']];
+  for(let i=0;i<cap;i++) it.push([i+1, r.sorted[i]]);   // sorted sample (good for charting in Excel)
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(it), 'Iterations (sorted)');
+
+  XLSX.writeFile(wb, 'MonteCarloCostModel_Results.xlsx');
+  status('Exported MonteCarloCostModel_Results.xlsx');
+}
+function num(v){ return v===''||v==null?'':(+v); }
+
+function importFile(file){
+  const reader = new FileReader();
+  reader.onload = e=>{
+    try{
+      const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+      const sheet = wb.Sheets['Inputs'] || wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, {header:1, blankrows:false});
+      const items = parseRows(rows);
+      if(items.length === 0){ status('No valid items found. Need columns: Name, Distribution, P1, P2, P3.', true); return; }
+      state.items = items; renderItems(); saveLocal();
+      status(`Imported ${items.length} item(s) from ${file.name}.`);
+    }catch(err){ status('Could not read file: '+err.message, true); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+function parseRows(rows){
+  if(!rows.length) return [];
+  // find header row
+  let h = 0;
+  for(let i=0;i<Math.min(5,rows.length);i++){
+    const r = (rows[i]||[]).map(x=>String(x).toLowerCase());
+    if(r.some(c=>c.includes('name')) && r.some(c=>c.includes('dist'))){ h=i; break; }
+  }
+  const header = (rows[h]||[]).map(x=>String(x).toLowerCase().trim());
+  const ci = (...names)=>{ for(const n of names){ const k=header.findIndex(c=>c.includes(n)); if(k>=0) return k; } return -1; };
+  const iName=ci('name'), iDist=ci('dist'), iP1=ci('p1','min','value','mean'), iP2=ci('p2','likely','max','std'), iP3=ci('p3','max'), iOn=ci('enabled','on');
+  const out = [];
+  for(let i=h+1;i<rows.length;i++){
+    const row = rows[i]; if(!row||!row.length) continue;
+    const name = iName>=0?row[iName]:row[0];
+    if(name==null || String(name).trim()==='') continue;
+    let dist = String(iDist>=0?row[iDist]:'normal').toLowerCase().trim();
+    if(!DISTS[dist]) dist = ({beta:'pert',uniform:'uniform',gauss:'normal'}[dist]) || 'normal';
+    const on = iOn>=0 ? !/^(no|false|0|off)$/i.test(String(row[iOn]).trim()) : true;
+    out.push({ id:uid++, name:String(name).trim(), dist,
+      p1:cell(row,iP1,2), p2:cell(row,iP2,3), p3:cell(row,iP3,4), on });
+  }
+  return out;
+}
+function cell(row,idx,fallback){
+  const i = idx>=0?idx:fallback; const v = row[i];
+  return (v===''||v==null||isNaN(+v))?'':(+v);
+}
+
+/* ============================================================
+   Save / Load named scenarios (localStorage)
+   ============================================================ */
+function saveScenario(){
+  const name = prompt('Save scenario as:', 'My Cost Model');
+  if(!name) return;
+  const all = JSON.parse(localStorage.getItem('mc_scenarios')||'{}');
+  syncFromInputs(); all[name] = state;
+  localStorage.setItem('mc_scenarios', JSON.stringify(all));
+  status('Saved scenario "'+name+'".');
+}
+function loadScenario(){
+  const all = JSON.parse(localStorage.getItem('mc_scenarios')||'{}');
+  const names = Object.keys(all);
+  if(!names.length){ status('No saved scenarios yet.', true); return; }
+  const name = prompt('Load which scenario?\n\n• '+names.join('\n• '), names[names.length-1]);
+  if(!name || !all[name]){ return; }
+  state = all[name]; uid = Math.max(1,...state.items.map(i=>i.id||0))+1;
+  applyToInputs(); renderItems(); status('Loaded "'+name+'". Run the simulation to see results.');
+}
+
+/* ============================================================
+   Buttons + init
+   ============================================================ */
+$('addBtn').onclick = ()=>{ state.items.push({id:uid++, name:'', dist:'normal', p1:'', p2:'', p3:'', on:true}); renderItems(); saveLocal(); };
+$('exampleBtn').onclick = ()=>{ state.items = exampleItems(); renderItems(); saveLocal(); status('Loaded example cost items.'); };
+$('clearBtn').onclick = ()=>{ if(confirm('Remove all items?')){ state.items=[]; renderItems(); saveLocal(); } };
+$('runBtn').onclick = runSimulation;
+$('exportBtn').onclick = exportExcel;
+$('importBtn').onclick = ()=>$('fileIn').click();
+$('fileIn').onchange = e=>{ if(e.target.files[0]) importFile(e.target.files[0]); e.target.value=''; };
+$('saveBtn').onclick = saveScenario;
+$('loadBtn').onclick = loadScenario;
+
+/* theme */
+function setTheme(t){
+  document.body.setAttribute('data-theme', t);
+  $('meta-theme-color').setAttribute('content', t==='light'?'#F2F2F7':'#0D0D0D');
+  localStorage.setItem('mc_theme', t);
+  if(lastResult) renderResults();   // redraw charts with new colors
+}
+$('themeBtn').onclick = ()=> setTheme(document.body.getAttribute('data-theme')==='light'?'dark':'light');
+setTheme(localStorage.getItem('mc_theme') || 'dark');
+
+/* boot */
+if(!loadLocal()){ state.items = exampleItems(); }
+applyToInputs();
+renderItems();
+</script>
+</body>
+</html>
