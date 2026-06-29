@@ -22,12 +22,21 @@ button, input validation gating, and a one-click PDF export.
    - `modSetup.bas`  *(duration control — for the FLEX build)*
 4. Close the editor. **File ▸ Save As** and choose
    **Excel Macro-Enabled Workbook (\*.xlsm)**.
-5. Add the button on the Dashboard:
-   - **Developer ▸ Insert ▸ Button (Form Control)**, draw it near cell A7.
-   - Assign macro **`RunMonteCarlo`**.
-   - (Optional) Add a second button assigned to **`ExportReport`**.
+5. Wire the buttons. The Dashboard already has three coloured **placeholder
+   cells** on row 7 — just draw a Form Control button over each and assign the
+   macro:
+
+   | Placeholder cell | Label | Assign macro |
+   |------------------|-------|--------------|
+   | **A7:C7** | ▶ Run Simulation | `RunMonteCarlo` |
+   | **D7:E7** | 📅 Apply Years | `ApplySettings` |
+   | **F7:G7** | ⬇ Export Report | `ExportReport` |
+
+   For each: **Developer ▸ Insert ▸ Button (Form Control)**, draw it over the
+   cell, and pick the macro. (Or right-click an existing shape ▸ **Assign
+   Macro**.)
    > If the Developer tab is hidden: File ▸ Options ▸ Customize Ribbon ▸ tick
-   > **Developer**.
+   > **Developer**. No macros yet? Everything still runs with **F9**.
 6. (Optional) For the "last run" timestamp: select Dashboard cell **J5**,
    type `LastRun` in the Name Box (left of the formula bar), press Enter.
 

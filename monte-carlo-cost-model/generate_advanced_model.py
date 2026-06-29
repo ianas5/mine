@@ -569,14 +569,22 @@ for i,(lbl,cell) in enumerate(meta):
     cc=1+i
     x=db.cell(4,cc,lbl); x.font=F(size=9,color="888888"); x.alignment=C
     y=db.cell(5,cc,f"={cell}"); y.font=F(bold=True,size=11); y.alignment=C; y.fill=fill(GREYBG); y.border=BOX
-# run / status
-run=db.cell(7,1,"▶  PRESS  F9  TO  RUN / RE-ROLL  SIMULATION"); run.font=F(bold=True,size=12,color=WHITE)
-run.fill=fill(TEAL); run.alignment=C
-db.merge_cells("A7:D7")
-warn=db.cell(7,6,f"={ALLOK_CELL}"); warn.font=F(bold=True,size=12); warn.alignment=C; warn.fill=fill(GREYBG); warn.border=BOX
-db.merge_cells("F7:J7")
-db.conditional_formatting.add("F7:J7",FormulaRule(formula=['$F$7="ALL OK"'],fill=fill("C6EFCE"),font=F(color="006100",bold=True)))
-db.conditional_formatting.add("F7:J7",FormulaRule(formula=['$F$7<>"ALL OK"'],fill=fill("FFC7CE"),font=F(color="9C0006",bold=True)))
+# Action buttons (assign the matching macro once you import the VBA modules).
+def button(cellrng, label, color):
+    first = cellrng.split(":")[0]
+    b = db[first]; b.value = label
+    b.font = F(bold=True, size=11, color=WHITE); b.fill = fill(color); b.alignment = C
+    b.border = BOX; db.merge_cells(cellrng)
+button("A7:C7", "▶  Run Simulation",  TEAL)      # -> RunMonteCarlo
+button("D7:E7", "\U0001F4C5  Apply Years", "7C5CFC")  # -> ApplySettings
+button("F7:G7", "⬇  Export Report",   ORANGE)    # -> ExportReport
+warn = db.cell(7, 8, f"={ALLOK_CELL}")
+warn.font = F(bold=True, size=12); warn.alignment = C; warn.fill = fill(GREYBG); warn.border = BOX
+db.merge_cells("H7:J7")
+db.conditional_formatting.add("H7:J7", FormulaRule(formula=['$H$7="ALL OK"'], fill=fill("C6EFCE"), font=F(color="006100", bold=True)))
+db.conditional_formatting.add("H7:J7", FormulaRule(formula=['$H$7<>"ALL OK"'], fill=fill("FFC7CE"), font=F(color="9C0006", bold=True)))
+hint = db.cell(8, 1, "No macros imported yet? Just press F9 to run/re-roll. To wire the buttons, see vba/VBA_SETUP.md.")
+hint.font = SUB; db.merge_cells("A8:J8")
 
 # KPI cards
 def kpi(row,col,label,formula,fmt=MONEY,color=NAVY):
