@@ -20,13 +20,20 @@ run. **Results appear only after you run the macro** (there is no F9 fallback).
 2. Close the editor ▸ **Save As ▸ Excel Macro-Enabled Workbook (.xlsm)**.
 3. Wire the Dashboard buttons (Developer ▸ Insert ▸ Button ▸ Assign Macro):
 
-   | Placeholder | Macro |
-   |-------------|-------|
-   | **A7:C7** ▶ Run Simulation | `RunSimulation` |
-   | **D7:E7** 📅 Apply Years | `ApplyYears` |
-   | **F7:G7** ⬇ Export Report | `ExportReport` |
+   | Sheet · Placeholder | Macro |
+   |---------------------|-------|
+   | Dashboard **A7:C7** ▶ Run Simulation | `RunSimulation` |
+   | Dashboard **D7:E7** 📅 Apply Years | `ApplyYears` |
+   | Dashboard **F7:G7** ⬇ Export Report | `ExportReport` |
+   | Cost Lines **A2** ➕ Add Cost Line | `AddCostLine` |
+   | Risk Register **A2** ➕ Add Risk | `AddRisk` |
 
-   *(No buttons? Run from **Alt+F8 ▸ RunSimulation**.)*
+   *(No buttons? Run any of them from **Alt+F8**.)*
+
+   `AddCostLine` / `AddRisk` insert a fully-formatted table row (formulas,
+   dropdowns, number formats) and create the matching profiling row — the
+   reliable way to grow the model. `SyncTables` (auto-run before each
+   simulation) just keeps the profiling tables matched to the register tables.
 
 **Use it:** fill the input tables (add/remove rows as needed), set *Iterations*
 and *Number of years* on Setup, click **Run Simulation**. To change cost lines

@@ -140,8 +140,9 @@ for i,(wbs,item,cat,unit,qty,mn,ml,mx,dist,shape) in enumerate(COST_LINES):
     put(cl,r,13,dist,al=Cn);put(cl,r,14,"Yes" if ml>0 else "No",al=Cn);put(cl,r,15,"")
 CLL=F0+K-1
 t=Table(displayName="tbl_CostLines",ref=f"A{H}:O{CLL}"); t.tableStyleInfo=TableStyleInfo(name="TableStyleMedium2",showRowStripes=True); cl.add_table(t)
-dv=DataValidation(type="list",formula1='"Triangular,Pert,Normal"'); cl.add_data_validation(dv); dv.add(f"M{F0}:M{CLL}")
-dv=DataValidation(type="list",formula1='"Yes,No"'); cl.add_data_validation(dv); dv.add(f"N{F0}:N{CLL}")
+dv=DataValidation(type="list",formula1='"Triangular,Pert,Normal"'); cl.add_data_validation(dv); dv.add(f"M{F0}:M{CLL+60}")
+dv=DataValidation(type="list",formula1='"Yes,No"'); cl.add_data_validation(dv); dv.add(f"N{F0}:N{CLL+60}")
+b=cl.cell(2,1,"➕  Add Cost Line   →  assign macro: AddCostLine"); b.font=Fn(bold=True,size=10,color=WHITE); b.fill=fill(TEAL); b.alignment=Cn; cl.merge_cells("A2:F2")
 for col,w in zip("ABCDEFGHIJKLMNO",[7,20,12,16,6,9,12,15,12,12,14,12,12,9,14]): cl.column_dimensions[col].width=w
 cl.freeze_panes="B4"
 
@@ -174,8 +175,9 @@ for i,(rid,name,cat,prob,mn,ml,mx,dist,owner,shape) in enumerate(RISKS):
     put(rr,r,8,dist,al=Cn);put(rr,r,9,owner);put(rr,r,10,"Yes" if ml>0 else "No",al=Cn);put(rr,r,11,"")
 RRL=F0+J-1
 t=Table(displayName="tbl_RiskRegister",ref=f"A{H}:K{RRL}"); t.tableStyleInfo=TableStyleInfo(name="TableStyleMedium3",showRowStripes=True); rr.add_table(t)
-dv=DataValidation(type="list",formula1='"Triangular,Pert,Normal"'); rr.add_data_validation(dv); dv.add(f"H{F0}:H{RRL}")
-dv=DataValidation(type="list",formula1='"Yes,No"'); rr.add_data_validation(dv); dv.add(f"J{F0}:J{RRL}")
+dv=DataValidation(type="list",formula1='"Triangular,Pert,Normal"'); rr.add_data_validation(dv); dv.add(f"H{F0}:H{RRL+60}")
+dv=DataValidation(type="list",formula1='"Yes,No"'); rr.add_data_validation(dv); dv.add(f"J{F0}:J{RRL+60}")
+b=rr.cell(2,1,"➕  Add Risk   →  assign macro: AddRisk"); b.font=Fn(bold=True,size=10,color=WHITE); b.fill=fill(RED); b.alignment=Cn; rr.merge_cells("A2:F2")
 for col,w in zip("ABCDEFGHIJK",[8,24,12,11,12,15,12,12,13,9,14]): rr.column_dimensions[col].width=w
 rr.freeze_panes="B4"
 

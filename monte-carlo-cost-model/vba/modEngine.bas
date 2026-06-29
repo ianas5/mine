@@ -199,6 +199,57 @@ Public Sub SyncTables()
     Application.ScreenUpdating = True
 End Sub
 
+' Add a fully-formatted cost line (inherits the table's formatting, dropdowns and
+' the Min/ML/Max Total formulas) and create its matching profiling row.
+Public Sub AddCostLine()
+    Dim t As ListObject, r As ListRow, rr As Long, n As Long
+    On Error GoTo Fail
+    Set t = Sheets("Cost Lines").ListObjects("tbl_CostLines")
+    Set r = t.ListRows.Add
+    n = t.ListRows.Count: rr = r.Range.row
+    With r.Range
+        .Cells(1, 1).Value = n & ".0"
+        .Cells(1, 2).Value = "New Cost Item"
+        .Cells(1, 5).Value = "LS"
+        .Cells(1, 6).Value = 1
+        If .Cells(1, 10).Formula = "" Then .Cells(1, 10).Formula = "=F" & rr & "*G" & rr
+        If .Cells(1, 11).Formula = "" Then .Cells(1, 11).Formula = "=F" & rr & "*H" & rr
+        If .Cells(1, 12).Formula = "" Then .Cells(1, 12).Formula = "=F" & rr & "*I" & rr
+        .Cells(1, 13).Value = "Triangular"
+        .Cells(1, 14).Value = "Yes"
+    End With
+    SyncTables
+    Sheets("Cost Lines").Activate: Application.Goto r.Range.Cells(1, 7), False
+    MsgBox "New cost line added (fully formatted)." & vbCrLf & _
+           "Enter Min / Most Likely / Max unit cost. A matching Cost Profiling row was created.", _
+           vbInformation, "Add Cost Line"
+    Exit Sub
+Fail: MsgBox "AddCostLine error: " & Err.Description, vbCritical
+End Sub
+
+' Add a fully-formatted risk and create its matching risk-profiling row.
+Public Sub AddRisk()
+    Dim t As ListObject, r As ListRow, n As Long
+    On Error GoTo Fail
+    Set t = Sheets("Risk Register").ListObjects("tbl_RiskRegister")
+    Set r = t.ListRows.Add
+    n = t.ListRows.Count
+    With r.Range
+        .Cells(1, 1).Value = "R" & n
+        .Cells(1, 2).Value = "New Risk"
+        .Cells(1, 4).Value = 0.3
+        .Cells(1, 8).Value = "Triangular"
+        .Cells(1, 10).Value = "Yes"
+    End With
+    SyncTables
+    Sheets("Risk Register").Activate: Application.Goto r.Range.Cells(1, 5), False
+    MsgBox "New risk added (fully formatted)." & vbCrLf & _
+           "Enter Probability and Min / Most Likely / Max impact. A matching Risk Profiling row was created.", _
+           vbInformation, "Add Risk"
+    Exit Sub
+Fail: MsgBox "AddRisk error: " & Err.Description, vbCritical
+End Sub
+
 Private Sub SyncOne(regTbl As ListObject, profTbl As ListObject, ByVal nActive As Long)
     Dim nReg As Long: nReg = regTbl.DataBodyRange.Rows.Count
     Dim nProf As Long
