@@ -50,11 +50,21 @@ formulas** — open it and press **F9** to run / re-roll. No macros required.
 
 ```bash
 pip install openpyxl
-python3 generate_advanced_model.py            # default 5,000 iterations
-python3 generate_advanced_model.py 10000      # more iterations (heavier file)
+# args:  [iterations] [years] [start_year] [currency]
+python3 generate_advanced_model.py                 # 5,000 iters, 5 years, 2025, SAR
+python3 generate_advanced_model.py 5000 20 2026     # 20-year project from 2026
+python3 generate_advanced_model.py 3000 30 2030 USD # 30-year, USD, lighter file
 ```
 
-Edit the `COST_LINES`, `RISKS`, `INFL_RATES`, `DISCOUNT`, etc. at the top of
+The **number of years and start year are structural** — they set how many FY
+columns/rows the Profiling, Inflation, Results and Engine sheets have, so they're
+chosen when the workbook is generated (any duration from 1–40 works; annual
+profiles auto-build to sum to 100%).
+
+**Currency is live**: money cells carry no embedded symbol — just edit the
+*Currency* cell on the Setup sheet and the whole Dashboard relabels.
+
+Edit the `COST_LINES`, `RISKS`, `DISCOUNT`, `INFL_BASE`, etc. at the top of
 `generate_advanced_model.py` and re-run.
 
 > Distributions use `NORM.INV` / `BETA.INV` / `PERCENTILE.INC` — needs **Excel

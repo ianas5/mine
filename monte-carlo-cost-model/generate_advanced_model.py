@@ -29,40 +29,61 @@ from openpyxl.utils import get_column_letter as L
 # ============================================================================
 # 0. CONFIG + EXAMPLE DATA  (edit, then re-run)
 # ============================================================================
+# Positional args:  [iterations]  [years]  [start_year]
 ITER       = int(sys.argv[1]) if len(sys.argv) > 1 else 4000
+N_YEARS    = max(1, min(40, int(sys.argv[2]) if len(sys.argv) > 2 else 5))
+START_YEAR = int(sys.argv[3]) if len(sys.argv) > 3 else 2025
+BASE_YEAR  = START_YEAR
+CURRENCY   = sys.argv[4] if len(sys.argv) > 4 else "SAR"   # display only — editable live in Setup
 OUTFILE    = "AdvancedMonteCarloCostModel.xlsx"
 PROJECT    = "Sample Construction Project"
-CURRENCY   = "SAR"
-BASE_YEAR  = 2025
-START_YEAR = 2025
-N_YEARS    = 5
 CONF_DEF   = "P80"
 DISCOUNT   = 0.08
-INFL_RATES = [0.0, 0.035, 0.035, 0.030, 0.030]   # per FY (FY1 factor = 1.0)
-MONEY      = f'"{CURRENCY}" #,##0'
+INFL_BASE  = 0.03                                # default annual inflation
+# Money cells carry NO embedded currency symbol, so the currency is whatever you
+# type in the Setup "Currency" cell (shown across the Dashboard). Change it live.
+MONEY      = '#,##0'
 MONEY0     = '#,##0'
 PCT1       = '0.0%'
 PCT0       = '0%'
 
-# Cost lines: wbs, item, category, unit, qty, minU, mlU, maxU, dist, profile(% per FY)
+# Annual allocation is described by a SHAPE so the model works for ANY duration:
+#   even  = equal each year     early = front-loaded     late = back-loaded
+#   bell  = peaks in the middle
+def make_profile(Y, shape):
+    if Y == 1: return [1.0]
+    if shape == "early": w = [float(Y - i) for i in range(Y)]
+    elif shape == "late": w = [float(i + 1) for i in range(Y)]
+    elif shape == "bell":
+        mid = (Y - 1) / 2.0
+        w = [max(0.05, 1.0 - abs(i - mid) / (mid + 1)) for i in range(Y)]
+    else: w = [1.0] * Y               # even
+    s = sum(w)
+    return [x / s for x in w]
+
+# Cost lines: wbs, item, category, unit, qty, minU, mlU, maxU, dist, profile-shape
 COST_LINES = [
-    ("1.1","Site Preparation","Civil","LS",1,28000,38000,60000,"Triangular",[0.40,0.40,0.20,0.00,0.00]),
-    ("1.2","Foundations","Civil","LS",1,45000,55000,75000,"Triangular",[0.10,0.50,0.40,0.00,0.00]),
-    ("2.1","Superstructure","Structural","LS",1,90000,120000,170000,"Pert",[0.00,0.30,0.40,0.30,0.00]),
-    ("3.1","MEP Systems","MEP","LS",1,60000,80000,115000,"Pert",[0.00,0.10,0.40,0.40,0.10]),
-    ("4.1","Finishes","Architectural","LS",1,30000,45000,70000,"Triangular",[0.00,0.00,0.20,0.50,0.30]),
-    ("5.1","Project Management","PM","LS",1,20000,28000,40000,"Normal",[0.20,0.20,0.20,0.20,0.20]),
+    ("1.1","Site Preparation","Civil","LS",1,28000,38000,60000,"Triangular","early"),
+    ("1.2","Foundations","Civil","LS",1,45000,55000,75000,"Triangular","early"),
+    ("2.1","Superstructure","Structural","LS",1,90000,120000,170000,"Pert","bell"),
+    ("3.1","MEP Systems","MEP","LS",1,60000,80000,115000,"Pert","late"),
+    ("4.1","Finishes","Architectural","LS",1,30000,45000,70000,"Triangular","late"),
+    ("5.1","Project Management","PM","LS",1,20000,28000,40000,"Normal","even"),
 ]
-# Risks: id, name, category, prob, minI, mlI, maxI, dist, linked, owner, profile(% per FY)
+# Risks: id, name, category, prob, minI, mlI, maxI, dist, linked, owner, profile-shape
 RISKS = [
-    ("R1","Adverse ground conditions","Technical",0.30,20000,45000,90000,"Triangular","1.2","Civil Lead",[0.50,0.50,0.00,0.00,0.00]),
-    ("R2","Major design change","Commercial",0.40,15000,30000,60000,"Pert","2.1","Design Mgr",[0.00,0.40,0.40,0.20,0.00]),
-    ("R3","Material price spike","Market",0.50,10000,25000,55000,"Triangular","3.1","Procurement",[0.00,0.20,0.40,0.40,0.00]),
-    ("R4","Schedule delay","Delivery",0.25,20000,40000,80000,"Pert","5.1","PM",[0.00,0.00,0.30,0.40,0.30]),
+    ("R1","Adverse ground conditions","Technical",0.30,20000,45000,90000,"Triangular","1.2","Civil Lead","early"),
+    ("R2","Major design change","Commercial",0.40,15000,30000,60000,"Pert","2.1","Design Mgr","bell"),
+    ("R3","Material price spike","Market",0.50,10000,25000,55000,"Triangular","3.1","Procurement","bell"),
+    ("R4","Schedule delay","Delivery",0.25,20000,40000,80000,"Pert","5.1","PM","late"),
 ]
 K, J, Y = len(COST_LINES), len(RISKS), N_YEARS
 FY = [f"FY{y+1}" for y in range(Y)]
 FYYEAR = [START_YEAR + y for y in range(Y)]
+# Build per-item annual profiles + inflation for the requested duration
+COST_PROFILES = [make_profile(Y, c[9]) for c in COST_LINES]
+RISK_PROFILES = [make_profile(Y, r[10]) for r in RISKS]
+INFL_RATES = [0.0] + [INFL_BASE] * (Y - 1)        # FY1 = base year (factor 1.0)
 
 # ============================================================================
 # 1. STYLES
@@ -182,7 +203,7 @@ hcell(cp,CPH,1,"WBS"); hcell(cp,CPH,2,"Cost Item")
 for y in range(Y): hcell(cp,CPH,CP_FY0+y,f"{FY[y]} ({FYYEAR[y]})")
 hcell(cp,CPH,CP_FY0+Y,"Total %")
 for i,(wbs,item,*_rest) in enumerate(COST_LINES):
-    r=CPF+i; prof=COST_LINES[i][9]
+    r=CPF+i; prof=COST_PROFILES[i]
     put(cp,r,1,f"='{CL}'!A{CLF+i}",al=C); put(cp,r,2,f"='{CL}'!B{CLF+i}")
     for y in range(Y): put(cp,r,CP_FY0+y,prof[y],fmt=PCT0,al=C,fillc=INPUT)
     tot=put(cp,r,CP_FY0+Y,f"=SUM({L(CP_FY0)}{r}:{L(CP_FY0+Y-1)}{r})",fmt=PCT0,al=C); tot.font=F(bold=True,size=10)
@@ -237,7 +258,7 @@ hcell(rp,RPH,1,"Risk ID"); hcell(rp,RPH,2,"Risk Name")
 for y in range(Y): hcell(rp,RPH,RP_FY0+y,f"{FY[y]} ({FYYEAR[y]})")
 hcell(rp,RPH,RP_FY0+Y,"Total %")
 for i,rk in enumerate(RISKS):
-    r=RPF+i; prof=rk[10]
+    r=RPF+i; prof=RISK_PROFILES[i]
     put(rp,r,1,f"='{RR}'!A{RRF+i}",al=C); put(rp,r,2,f"='{RR}'!B{RRF+i}")
     for y in range(Y): put(rp,r,RP_FY0+y,prof[y],fmt=PCT0,al=C,fillc=INPUT)
     tot=put(rp,r,RP_FY0+Y,f"=SUM({L(RP_FY0)}{r}:{L(RP_FY0+Y-1)}{r})",fmt=PCT0,al=C); tot.font=F(bold=True,size=10)
@@ -526,6 +547,8 @@ for col in "ABCDEFGHIJ": db.column_dimensions[col].width=15
 db.cell(1,1,"MONTE CARLO COST MODEL").font=F(bold=True,size=20,color=ORANGE)
 db.cell(2,1,f"=\"{PROJECT}\"").font=F(bold=True,size=12)
 db.cell(2,1,f"={ref(S,3,r0)}").font=F(bold=True,size=12)
+nt=db.cell(3,1,f'="All figures in "&{ref(S,3,r0+1)}&" — change the Currency cell on the Setup sheet to switch."')
+nt.font=SUB
 # meta strip
 meta=[("Currency",ref(S,3,r0+1)),("Base year",ref(S,3,r0+2)),("Years",NYEARS_CELL),
       ("Iterations",ITER_CELL),("Confidence",CONF_CELL),("Distribution",ref(S,3,r0+7))]
@@ -624,8 +647,8 @@ for _ in range(20000):
     ri=[(samp(rk[7],rk[4],rk[5],rk[6],rng_) if rng_.random()<=rk[3] else 0) for rk in RISKS]
     yt=[]
     for y in range(Y):
-        base=sum(cs[k]*COST_LINES[k][9][y] for k in range(K))
-        rsk=sum(ri[j]*RISKS[j][10][y] for j in range(J))
+        base=sum(cs[k]*COST_PROFILES[k][y] for k in range(K))
+        rsk=sum(ri[j]*RISK_PROFILES[j][y] for j in range(J))
         yt.append((base+rsk)*fac[y])
     totals.append(sum(yt)); npvs.append(sum(yt[y]/(1+DISCOUNT)**(y+1) for y in range(Y)))
 totals.sort(); npvs.sort()
