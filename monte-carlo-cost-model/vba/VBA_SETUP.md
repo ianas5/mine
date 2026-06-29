@@ -25,15 +25,19 @@ run. **Results appear only after you run the macro** (there is no F9 fallback).
    | Dashboard **A7:C7** ▶ Run Simulation | `RunSimulation` |
    | Dashboard **D7:E7** 📅 Apply Years | `ApplyYears` |
    | Dashboard **F7:G7** ⬇ Export Report | `ExportReport` |
-   | Cost Lines **A2** ➕ Add Cost Line | `AddCostLine` |
-   | Risk Register **A2** ➕ Add Risk | `AddRisk` |
+   | Cost Lines **A2** ➕ Add | `AddCostLine` |
+   | Cost Lines **D2** 🗑 Delete | `DeleteCostLine` |
+   | Risk Register **A2** ➕ Add | `AddRisk` |
+   | Risk Register **D2** 🗑 Delete | `DeleteRisk` |
 
    *(No buttons? Run any of them from **Alt+F8**.)*
 
    `AddCostLine` / `AddRisk` insert a fully-formatted table row (formulas,
-   dropdowns, number formats) and create the matching profiling row — the
-   reliable way to grow the model. `SyncTables` (auto-run before each
-   simulation) just keeps the profiling tables matched to the register tables.
+   dropdowns, number formats) and create the matching profiling row.
+   `DeleteCostLine` / `DeleteRisk` remove the selected row and its profiling row.
+   The **No.** column auto-numbers (1, 2, 3 … / R1, R2 …) and re-numbers on
+   add/delete. `SyncTables` (auto-run before each simulation) keeps the profiling
+   tables matched to the register tables.
 
 **Use it:** fill the input tables (add/remove rows as needed), set *Iterations*
 and *Number of years* on Setup, click **Run Simulation**. To change cost lines

@@ -128,13 +128,13 @@ st.column_dimensions["B"].width=24; st.column_dimensions["C"].width=20; st.colum
 # ================================================================ COST LINES
 CL="Cost Lines"; cl=sheet(CL,ORANGE)
 cl.cell(1,1,"COST LINES — 3-Point Estimates  (add rows freely; the macro reads them all)").font=TITLE
-cols=["WBS","Cost Item","Category","Description","Unit","Quantity","Min Unit Cost","Most Likely Unit Cost",
+cols=["No.","Cost Item","Category","Description","Unit","Quantity","Min Unit Cost","Most Likely Unit Cost",
       "Max Unit Cost","Min Total Cost","Most Likely Total Cost","Max Total Cost","Distribution","Include?","Notes"]
 H=3; F0=4
 for j,h in enumerate(cols): hc(cl,H,1+j,h)
 for i,(wbs,item,cat,unit,qty,mn,ml,mx,dist,shape) in enumerate(COST_LINES):
     r=F0+i
-    put(cl,r,1,wbs,al=Cn);put(cl,r,2,item);put(cl,r,3,cat);put(cl,r,4,f"{item} works");put(cl,r,5,unit,al=Cn)
+    put(cl,r,1,f"=ROW()-{H}",al=Cn);put(cl,r,2,item);put(cl,r,3,cat);put(cl,r,4,f"{item} works");put(cl,r,5,unit,al=Cn)
     for cc,val in ((6,qty),(7,mn),(8,ml),(9,mx)): put(cl,r,cc,val,fmt=MONEY,al=Rt,fillc=INPUT)
     put(cl,r,10,f"=F{r}*G{r}",fmt=MONEY,al=Rt);put(cl,r,11,f"=F{r}*H{r}",fmt=MONEY,al=Rt);put(cl,r,12,f"=F{r}*I{r}",fmt=MONEY,al=Rt)
     put(cl,r,13,dist,al=Cn);put(cl,r,14,"Yes" if ml>0 else "No",al=Cn);put(cl,r,15,"")
@@ -142,14 +142,15 @@ CLL=F0+K-1
 t=Table(displayName="tbl_CostLines",ref=f"A{H}:O{CLL}"); t.tableStyleInfo=TableStyleInfo(name="TableStyleMedium2",showRowStripes=True); cl.add_table(t)
 dv=DataValidation(type="list",formula1='"Triangular,Pert,Normal"'); cl.add_data_validation(dv); dv.add(f"M{F0}:M{CLL+60}")
 dv=DataValidation(type="list",formula1='"Yes,No"'); cl.add_data_validation(dv); dv.add(f"N{F0}:N{CLL+60}")
-b=cl.cell(2,1,"➕  Add Cost Line   →  assign macro: AddCostLine"); b.font=Fn(bold=True,size=10,color=WHITE); b.fill=fill(TEAL); b.alignment=Cn; cl.merge_cells("A2:F2")
+b=cl.cell(2,1,"➕ Add  →  AddCostLine"); b.font=Fn(bold=True,size=10,color=WHITE); b.fill=fill(TEAL); b.alignment=Cn; cl.merge_cells("A2:C2")
+b=cl.cell(2,4,"🗑 Delete selected  →  DeleteCostLine"); b.font=Fn(bold=True,size=10,color=WHITE); b.fill=fill(RED); b.alignment=Cn; cl.merge_cells("D2:G2")
 for col,w in zip("ABCDEFGHIJKLMNO",[7,20,12,16,6,9,12,15,12,12,14,12,12,9,14]): cl.column_dimensions[col].width=w
 cl.freeze_panes="B4"
 
 # ================================================================ COST PROFILING
 CP="Cost Profiling"; cp=sheet(CP,ORANGE)
 cp.cell(1,1,"COST PROFILING — % per year (rows must total 100%)").font=TITLE
-hc(cp,3,1,"WBS"); hc(cp,3,2,"Cost Item")
+hc(cp,3,1,"No."); hc(cp,3,2,"Cost Item")
 for y in range(MAXY): hc(cp,3,3+y,f"FY{y+1}")
 hc(cp,3,3+MAXY,"Total %")
 for i in range(K):
@@ -157,7 +158,7 @@ for i in range(K):
     put(cp,r,1,f"='{CL}'!A{F0+i}",al=Cn); put(cp,r,2,f"='{CL}'!B{F0+i}")
     for y in range(MAXY): put(cp,r,3+y,COST_PROFILES[i][y],fmt=PCT0,al=Cn,fillc=INPUT)
     # Total % counts only the ACTIVE years (Setup C8) so hidden years never break it
-    put(cp,r,3+MAXY,f"=SUM(C{r}:INDEX(C{r}:{L(2+MAXY)}{r},'{S}'!$C$8))",fmt=PCT0,al=Cn).font=Fn(bold=True,size=10)
+    put(cp,r,3+MAXY,f"=SUM(C{r}:INDEX(C{r}:{L(2+MAXY)}{r},1,'{S}'!$C$8))",fmt=PCT0,al=Cn).font=Fn(bold=True,size=10)
 CPL=F0+K-1
 t=Table(displayName="tbl_CostProfile",ref=f"A3:{L(3+MAXY)}{CPL}"); t.tableStyleInfo=TableStyleInfo(name="TableStyleMedium2",showRowStripes=True); cp.add_table(t)
 cp.conditional_formatting.add(f"{L(3+MAXY)}{F0}:{L(3+MAXY)}{CPL}",FormulaRule(formula=[f"ABS({L(3+MAXY)}{F0}-1)>0.001"],fill=fill("FFC7CE")))
@@ -170,7 +171,7 @@ rcols=["Risk ID","Risk Name","Category","Probability","Min Impact","Most Likely 
 for j,h in enumerate(rcols): hc(rr,H,1+j,h)
 for i,(rid,name,cat,prob,mn,ml,mx,dist,owner,shape) in enumerate(RISKS):
     r=F0+i
-    put(rr,r,1,rid,al=Cn);put(rr,r,2,name);put(rr,r,3,cat)
+    put(rr,r,1,f'="R"&(ROW()-{H})',al=Cn);put(rr,r,2,name);put(rr,r,3,cat)
     put(rr,r,4,prob,fmt=PCT0,al=Cn,fillc=INPUT)
     for cc,val in ((5,mn),(6,ml),(7,mx)): put(rr,r,cc,val,fmt=MONEY,al=Rt,fillc=INPUT)
     put(rr,r,8,dist,al=Cn);put(rr,r,9,owner);put(rr,r,10,"Yes" if ml>0 else "No",al=Cn);put(rr,r,11,"")
@@ -178,7 +179,8 @@ RRL=F0+J-1
 t=Table(displayName="tbl_RiskRegister",ref=f"A{H}:K{RRL}"); t.tableStyleInfo=TableStyleInfo(name="TableStyleMedium3",showRowStripes=True); rr.add_table(t)
 dv=DataValidation(type="list",formula1='"Triangular,Pert,Normal"'); rr.add_data_validation(dv); dv.add(f"H{F0}:H{RRL+60}")
 dv=DataValidation(type="list",formula1='"Yes,No"'); rr.add_data_validation(dv); dv.add(f"J{F0}:J{RRL+60}")
-b=rr.cell(2,1,"➕  Add Risk   →  assign macro: AddRisk"); b.font=Fn(bold=True,size=10,color=WHITE); b.fill=fill(RED); b.alignment=Cn; rr.merge_cells("A2:F2")
+b=rr.cell(2,1,"➕ Add  →  AddRisk"); b.font=Fn(bold=True,size=10,color=WHITE); b.fill=fill(TEAL); b.alignment=Cn; rr.merge_cells("A2:C2")
+b=rr.cell(2,4,"🗑 Delete selected  →  DeleteRisk"); b.font=Fn(bold=True,size=10,color=WHITE); b.fill=fill(RED); b.alignment=Cn; rr.merge_cells("D2:G2")
 for col,w in zip("ABCDEFGHIJK",[8,24,12,11,12,15,12,12,13,9,14]): rr.column_dimensions[col].width=w
 rr.freeze_panes="B4"
 
@@ -192,7 +194,7 @@ for i in range(J):
     r=F0+i
     put(rp,r,1,f"='{RR}'!A{F0+i}",al=Cn); put(rp,r,2,f"='{RR}'!B{F0+i}")
     for y in range(MAXY): put(rp,r,3+y,RISK_PROFILES[i][y],fmt=PCT0,al=Cn,fillc=INPUT)
-    put(rp,r,3+MAXY,f"=SUM(C{r}:INDEX(C{r}:{L(2+MAXY)}{r},'{S}'!$C$8))",fmt=PCT0,al=Cn).font=Fn(bold=True,size=10)
+    put(rp,r,3+MAXY,f"=SUM(C{r}:INDEX(C{r}:{L(2+MAXY)}{r},1,'{S}'!$C$8))",fmt=PCT0,al=Cn).font=Fn(bold=True,size=10)
 RPL=F0+J-1
 t=Table(displayName="tbl_RiskProfile",ref=f"A3:{L(3+MAXY)}{RPL}"); t.tableStyleInfo=TableStyleInfo(name="TableStyleMedium3",showRowStripes=True); rp.add_table(t)
 rp.conditional_formatting.add(f"{L(3+MAXY)}{F0}:{L(3+MAXY)}{RPL}",FormulaRule(formula=[f"ABS({L(3+MAXY)}{F0}-1)>0.001"],fill=fill("FFC7CE")))

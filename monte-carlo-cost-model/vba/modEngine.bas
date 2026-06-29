@@ -208,7 +208,7 @@ Public Sub AddCostLine()
     Set r = t.ListRows.Add
     n = t.ListRows.Count: rr = r.Range.row
     With r.Range
-        .Cells(1, 1).Value = n & ".0"
+        .Cells(1, 1).Formula = "=ROW()-3"      ' sequential No. (auto-renumbers)
         .Cells(1, 2).Value = "New Cost Item"
         .Cells(1, 5).Value = "LS"
         .Cells(1, 6).Value = 1
@@ -235,7 +235,7 @@ Public Sub AddRisk()
     Set r = t.ListRows.Add
     n = t.ListRows.Count
     With r.Range
-        .Cells(1, 1).Value = "R" & n
+        .Cells(1, 1).Formula = "=""R""&(ROW()-3)"   ' sequential R1,R2,... (auto-renumbers)
         .Cells(1, 2).Value = "New Risk"
         .Cells(1, 4).Value = 0.3
         .Cells(1, 8).Value = "Triangular"
@@ -248,6 +248,44 @@ Public Sub AddRisk()
            vbInformation, "Add Risk"
     Exit Sub
 Fail: MsgBox "AddRisk error: " & Err.Description, vbCritical
+End Sub
+
+' Delete the cost line in the currently-selected table row (plus its profiling
+' row). Select any cell in the Cost Lines table first, then run.
+Public Sub DeleteCostLine()
+    DeleteSelectedRow Sheets("Cost Lines").ListObjects("tbl_CostLines"), "Cost Lines", "cost line"
+    SyncTables
+End Sub
+
+' Delete the selected risk (plus its profiling row).
+Public Sub DeleteRisk()
+    DeleteSelectedRow Sheets("Risk Register").ListObjects("tbl_RiskRegister"), "Risk Register", "risk"
+    SyncTables
+End Sub
+
+Private Sub DeleteSelectedRow(t As ListObject, ByVal shName As String, ByVal label As String)
+    On Error GoTo Fail
+    If t.ListRows.Count <= 1 Then
+        MsgBox "Keep at least one " & label & " row.", vbExclamation: Exit Sub
+    End If
+    Dim idx As Long: idx = 0
+    If ActiveSheet.Name = shName Then
+        If Not Intersect(ActiveCell, t.DataBodyRange) Is Nothing Then
+            idx = ActiveCell.row - t.DataBodyRange.row + 1
+        End If
+    End If
+    If idx = 0 Then
+        Dim ans As String
+        ans = InputBox("Select a row in the " & shName & " table first, or type its number (1.." _
+              & t.ListRows.Count & "):", "Delete " & label)
+        If Not IsNumeric(ans) Then Exit Sub
+        idx = CLng(ans)
+    End If
+    If idx < 1 Or idx > t.ListRows.Count Then MsgBox "No valid row.", vbExclamation: Exit Sub
+    If MsgBox("Delete " & label & " row " & idx & "?", vbYesNo + vbQuestion, "Confirm") = vbYes Then _
+        t.ListRows(idx).Delete
+    Exit Sub
+Fail: MsgBox "Delete error: " & Err.Description, vbCritical
 End Sub
 
 Private Sub SyncOne(regTbl As ListObject, profTbl As ListObject, ByVal nActive As Long)
@@ -279,7 +317,7 @@ Private Sub SyncOne(regTbl As ListObject, profTbl As ListObject, ByVal nActive A
         aLast = profTbl.DataBodyRange.Cells(i, 2 + MAXY).Address(False, False)
         ' Total % counts only the ACTIVE years (Setup C8) -> hidden years can't break it
         profTbl.DataBodyRange.Cells(i, ncols).Formula = _
-            "=SUM(" & a3 & ":INDEX(" & a3 & ":" & aLast & ",Setup!$C$8))"
+            "=SUM(" & a3 & ":INDEX(" & a3 & ":" & aLast & ",1,Setup!$C$8))"
     Next i
 End Sub
 
