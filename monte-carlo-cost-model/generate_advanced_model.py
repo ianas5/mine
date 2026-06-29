@@ -251,7 +251,7 @@ for i,(wbs,item,*_rest) in enumerate(COST_LINES):
     r=CPF+i; prof=COST_PROFILES[i]
     put(cp,r,1,f"='{CL}'!A{CLF+i}",al=C); put(cp,r,2,f"='{CL}'!B{CLF+i}")
     for y in range(Y): put(cp,r,CP_FY0+y,prof[y],fmt=PCT0,al=C,fillc=INPUT)
-    tot=put(cp,r,CP_FY0+Y,f"=SUM({L(CP_FY0)}{r}:{L(CP_FY0+Y-1)}{r})",fmt=PCT0,al=C); tot.font=F(bold=True,size=10)
+    tot=put(cp,r,CP_FY0+Y,f"=SUM({L(CP_FY0)}{r}:INDEX({L(CP_FY0)}{r}:{L(CP_FY0+Y-1)}{r},{NYEARS_CELL}))",fmt=PCT0,al=C); tot.font=F(bold=True,size=10)
 CP_LAST=CPF+K-1
 tbl=Table(displayName="tbl_CostProfile",ref=f"A{CPH}:{L(CP_FY0+Y)}{CP_LAST}")
 tbl.tableStyleInfo=TableStyleInfo(name="TableStyleMedium2",showRowStripes=True); cp.add_table(tbl)
@@ -306,7 +306,7 @@ for i,rk in enumerate(RISKS):
     r=RPF+i; prof=RISK_PROFILES[i]
     put(rp,r,1,f"='{RR}'!A{RRF+i}",al=C); put(rp,r,2,f"='{RR}'!B{RRF+i}")
     for y in range(Y): put(rp,r,RP_FY0+y,prof[y],fmt=PCT0,al=C,fillc=INPUT)
-    tot=put(rp,r,RP_FY0+Y,f"=SUM({L(RP_FY0)}{r}:{L(RP_FY0+Y-1)}{r})",fmt=PCT0,al=C); tot.font=F(bold=True,size=10)
+    tot=put(rp,r,RP_FY0+Y,f"=SUM({L(RP_FY0)}{r}:INDEX({L(RP_FY0)}{r}:{L(RP_FY0+Y-1)}{r},{NYEARS_CELL}))",fmt=PCT0,al=C); tot.font=F(bold=True,size=10)
 RP_LAST=RPF+J-1
 tbl=Table(displayName="tbl_RiskProfile",ref=f"A{RPH}:{L(RP_FY0+Y)}{RP_LAST}")
 tbl.tableStyleInfo=TableStyleInfo(name="TableStyleMedium3",showRowStripes=True); rp.add_table(tbl)

@@ -156,7 +156,8 @@ for i in range(K):
     r=F0+i
     put(cp,r,1,f"='{CL}'!A{F0+i}",al=Cn); put(cp,r,2,f"='{CL}'!B{F0+i}")
     for y in range(MAXY): put(cp,r,3+y,COST_PROFILES[i][y],fmt=PCT0,al=Cn,fillc=INPUT)
-    put(cp,r,3+MAXY,f"=SUM(C{r}:{L(2+MAXY)}{r})",fmt=PCT0,al=Cn).font=Fn(bold=True,size=10)
+    # Total % counts only the ACTIVE years (Setup C8) so hidden years never break it
+    put(cp,r,3+MAXY,f"=SUM(C{r}:INDEX(C{r}:{L(2+MAXY)}{r},'{S}'!$C$8))",fmt=PCT0,al=Cn).font=Fn(bold=True,size=10)
 CPL=F0+K-1
 t=Table(displayName="tbl_CostProfile",ref=f"A3:{L(3+MAXY)}{CPL}"); t.tableStyleInfo=TableStyleInfo(name="TableStyleMedium2",showRowStripes=True); cp.add_table(t)
 cp.conditional_formatting.add(f"{L(3+MAXY)}{F0}:{L(3+MAXY)}{CPL}",FormulaRule(formula=[f"ABS({L(3+MAXY)}{F0}-1)>0.001"],fill=fill("FFC7CE")))
@@ -191,7 +192,7 @@ for i in range(J):
     r=F0+i
     put(rp,r,1,f"='{RR}'!A{F0+i}",al=Cn); put(rp,r,2,f"='{RR}'!B{F0+i}")
     for y in range(MAXY): put(rp,r,3+y,RISK_PROFILES[i][y],fmt=PCT0,al=Cn,fillc=INPUT)
-    put(rp,r,3+MAXY,f"=SUM(C{r}:{L(2+MAXY)}{r})",fmt=PCT0,al=Cn).font=Fn(bold=True,size=10)
+    put(rp,r,3+MAXY,f"=SUM(C{r}:INDEX(C{r}:{L(2+MAXY)}{r},'{S}'!$C$8))",fmt=PCT0,al=Cn).font=Fn(bold=True,size=10)
 RPL=F0+J-1
 t=Table(displayName="tbl_RiskProfile",ref=f"A3:{L(3+MAXY)}{RPL}"); t.tableStyleInfo=TableStyleInfo(name="TableStyleMedium3",showRowStripes=True); rp.add_table(t)
 rp.conditional_formatting.add(f"{L(3+MAXY)}{F0}:{L(3+MAXY)}{RPL}",FormulaRule(formula=[f"ABS({L(3+MAXY)}{F0}-1)>0.001"],fill=fill("FFC7CE")))

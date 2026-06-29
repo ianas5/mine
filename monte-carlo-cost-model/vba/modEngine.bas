@@ -274,9 +274,12 @@ Private Sub SyncOne(regTbl As ListObject, profTbl As ListObject, ByVal nActive A
                 profTbl.DataBodyRange.Cells(i, 2 + y).Value = IIf(y <= nActive, 1# / nActive, 0)
             Next y
         End If
-        profTbl.DataBodyRange.Cells(i, ncols).Formula = "=SUM(" & _
-            profTbl.DataBodyRange.Cells(i, 3).Address(False, False) & ":" & _
-            profTbl.DataBodyRange.Cells(i, 2 + MAXY).Address(False, False) & ")"
+        Dim a3 As String, aLast As String
+        a3 = profTbl.DataBodyRange.Cells(i, 3).Address(False, False)
+        aLast = profTbl.DataBodyRange.Cells(i, 2 + MAXY).Address(False, False)
+        ' Total % counts only the ACTIVE years (Setup C8) -> hidden years can't break it
+        profTbl.DataBodyRange.Cells(i, ncols).Formula = _
+            "=SUM(" & a3 & ":INDEX(" & a3 & ":" & aLast & ",Setup!$C$8))"
     Next i
 End Sub
 
