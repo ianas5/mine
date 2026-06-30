@@ -411,25 +411,47 @@ End Sub
 Private Sub WriteSensitivity(lName() As String, rName() As String, lSamp() As Double, rSamp() As Double, _
                              lOn() As Boolean, rOn() As Boolean, ByVal nL As Long, ByVal nR As Long, ByVal nIter As Long)
     Dim sn As Worksheet: Set sn = Sheets("Sensitivity")
-    sn.Range("A5:E40").ClearContents
-    Dim row As Long: row = 5
-    Dim i As Long, p10 As Double, p90 As Double
+    sn.Range("A5:E60").ClearContents
+    Dim cap As Long: cap = nL + nR
+    If cap < 1 Then Exit Sub
+    Dim nm() As String, ty() As String, p10() As Double, p90() As Double, rg() As Double
+    ReDim nm(1 To cap): ReDim ty(1 To cap): ReDim p10(1 To cap): ReDim p90(1 To cap): ReDim rg(1 To cap)
+    Dim m As Long, i As Long: m = 0
     For i = 1 To nL
         If lOn(i) Then
-            p10 = ColPctl(lSamp, i, nIter, 0.1): p90 = ColPctl(lSamp, i, nIter, 0.9)
-            sn.Cells(row, 1).Value = lName(i): sn.Cells(row, 2).Value = "Cost"
-            sn.Cells(row, 3).Value = p10: sn.Cells(row, 4).Value = p90: sn.Cells(row, 5).Value = p90 - p10
-            row = row + 1
+            m = m + 1: nm(m) = lName(i): ty(m) = "Cost"
+            p10(m) = ColPctl(lSamp, i, nIter, 0.1): p90(m) = ColPctl(lSamp, i, nIter, 0.9): rg(m) = p90(m) - p10(m)
         End If
     Next i
     For i = 1 To nR
         If rOn(i) Then
-            p10 = ColPctl(rSamp, i, nIter, 0.1): p90 = ColPctl(rSamp, i, nIter, 0.9)
-            sn.Cells(row, 1).Value = rName(i): sn.Cells(row, 2).Value = "Risk"
-            sn.Cells(row, 3).Value = p10: sn.Cells(row, 4).Value = p90: sn.Cells(row, 5).Value = p90 - p10
-            row = row + 1
+            m = m + 1: nm(m) = rName(i): ty(m) = "Risk"
+            p10(m) = ColPctl(rSamp, i, nIter, 0.1): p90(m) = ColPctl(rSamp, i, nIter, 0.9): rg(m) = p90(m) - p10(m)
         End If
     Next i
+    ' sort descending by range so the tornado lists the biggest driver first
+    Dim j As Long, k As Long
+    For i = 1 To m - 1
+        k = i
+        For j = i + 1 To m
+            If rg(j) > rg(k) Then k = j
+        Next j
+        If k <> i Then
+            SwapS nm, i, k: SwapS ty, i, k
+            SwapD p10, i, k: SwapD p90, i, k: SwapD rg, i, k
+        End If
+    Next i
+    For i = 1 To m
+        sn.Cells(4 + i, 1).Value = nm(i): sn.Cells(4 + i, 2).Value = ty(i)
+        sn.Cells(4 + i, 3).Value = p10(i): sn.Cells(4 + i, 4).Value = p90(i): sn.Cells(4 + i, 5).Value = rg(i)
+    Next i
+End Sub
+
+Private Sub SwapD(arr() As Double, ByVal a As Long, ByVal b As Long)
+    Dim t As Double: t = arr(a): arr(a) = arr(b): arr(b) = t
+End Sub
+Private Sub SwapS(arr() As String, ByVal a As Long, ByVal b As Long)
+    Dim t As String: t = arr(a): arr(a) = arr(b): arr(b) = t
 End Sub
 
 Private Sub WriteCharts(total() As Double, yearT() As Double, ByVal nYears As Long, ByVal nIter As Long)
@@ -458,16 +480,16 @@ Private Sub WriteCharts(total() As Double, yearT() As Double, ByVal nYears As Lo
         cd.Cells(2 + k, 4).Value = Pctl(total, k / (NP - 1))
         cd.Cells(2 + k, 5).Value = k / (NP - 1)
     Next k
-    ' cumulative cash flow by year (P50 / P80)
+    ' cumulative cash flow by year (P50 / P70)
     Dim startY As Long: startY = CLng(Sheets("Setup").Range("C7").Value)
-    Dim c50 As Double, c80 As Double, y As Long
-    c50 = 0: c80 = 0
+    Dim c50 As Double, c70 As Double, y As Long
+    c50 = 0: c70 = 0
     For y = 1 To nYears
         c50 = c50 + ColPctl(yearT, y, nIter, 0.5)
-        c80 = c80 + ColPctl(yearT, y, nIter, 0.8)
+        c70 = c70 + ColPctl(yearT, y, nIter, 0.7)
         cd.Cells(1 + y, 7).Value = startY + y - 1
         cd.Cells(1 + y, 8).Value = c50
-        cd.Cells(1 + y, 9).Value = c80
+        cd.Cells(1 + y, 9).Value = c70
     Next y
     cd.Range("G" & (2 + nYears) & ":I31").ClearContents
 End Sub

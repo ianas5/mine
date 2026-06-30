@@ -37,7 +37,7 @@ BASE_YEAR = 2025
 ACTIVE_Y  = 5            # years shown by default
 MAXY      = 30           # year columns/rows built into the input tables
 ITERS_DEF = 10000        # default iterations (a real input the macro reads)
-CONF_DEF  = "P80"
+CONF_DEF  = "P70"        # default confidence level
 DISCOUNT  = 0.08
 INFL_BASE = 0.03
 
@@ -102,6 +102,10 @@ def put(ws,r,c,v,fmt=None,font=None,al=None,bd=True,fillc=None):
     if bd:x.border=BOX
     if fillc:x.fill=fill(fillc)
     return x
+def axt(ax, title=None, numfmt=None):   # label/format a chart axis
+    ax.delete=False
+    if title is not None: ax.title=title
+    if numfmt is not None: ax.numFmt=numfmt
 
 # ================================================================ SETUP
 S="Setup"; st=sheet(S,NAVY)
@@ -247,10 +251,12 @@ for r in range(SN_F,SN_MAX):
     for c in range(1,6): put(sn,r,c,None,fmt=(MONEY if c>=3 else None),al=(Rt if c>=3 else Lt))
 sn.column_dimensions["A"].width=24
 for c in "BCDE": sn.column_dimensions[c].width=15
-tor=BarChart(); tor.type="bar"; tor.title="Tornado — uncertainty drivers"; tor.legend=None
+tor=BarChart(); tor.type="bar"; tor.title="Tornado — what drives the uncertainty"; tor.legend=None
 tor.add_data(Reference(sn,min_col=5,min_row=4,max_row=SN_MAX-1),titles_from_data=True)
 tor.set_categories(Reference(sn,min_col=1,min_row=SN_F,max_row=SN_MAX-1))
-tor.height=9; tor.width=16; tor.x_axis.delete=False; tor.y_axis.delete=False
+tor.height=9; tor.width=16
+axt(tor.x_axis); axt(tor.y_axis,"Uncertainty  (P90 − P10)","#,##0")
+tor.x_axis.scaling.orientation="maxMin"   # biggest driver at the top
 sn.add_chart(tor,"G4")
 
 # ================================================================ CHARTDATA (hidden, VBA writes)
@@ -260,7 +266,7 @@ cd.cell(1,1,"Center");cd.cell(1,2,"Count")
 for r in range(2,2+NB): put(cd,r,1,None,fmt=MONEY,bd=False); put(cd,r,2,None,bd=False)
 cd.cell(1,4,"Cost");cd.cell(1,5,"CumProb")
 for r in range(2,2+NP): put(cd,r,4,None,fmt=MONEY,bd=False); put(cd,r,5,None,fmt=PCT0,bd=False)
-cd.cell(1,7,"Year");cd.cell(1,8,"Cum P50");cd.cell(1,9,"Cum P80")
+cd.cell(1,7,"Year");cd.cell(1,8,"Cum P50");cd.cell(1,9,"Cum P70")
 for r in range(2,2+MAXY):
     put(cd,r,7,None,bd=False); put(cd,r,8,None,fmt=MONEY,bd=False); put(cd,r,9,None,fmt=MONEY,bd=False)
 
@@ -317,21 +323,28 @@ for i,(lbl,color) in enumerate(kpis):
     db.merge_cells(start_row=row+1,start_column=col,end_row=row+1,end_column=col+1)
     KPI_CELLS.append((row+1,col))
 # charts (reference ChartData / Sensitivity that VBA fills)
+# 1) Histogram: X = cost bins, Y = how many runs landed there
 hist=BarChart(); hist.type="col"; hist.title="Total Cost Distribution"; hist.legend=None; hist.gapWidth=6
 hist.add_data(Reference(cd,min_col=2,min_row=1,max_row=1+NB),titles_from_data=True)
 hist.set_categories(Reference(cd,min_col=1,min_row=2,max_row=1+NB)); hist.height=7.5; hist.width=13
-hist.x_axis.delete=False; hist.y_axis.delete=False; db.add_chart(hist,"A20")
-cur=ScatterChart(); cur.title="Cumulative Probability"; cur.legend=None; cur.x_axis.title="Cost"; cur.y_axis.title="Prob"
+axt(hist.x_axis,"Total cost"); axt(hist.y_axis,"Frequency (number of runs)"); db.add_chart(hist,"A20")
+# 2) S-curve: X = cost, Y = probability the cost is at or below X
+cur=ScatterChart(); cur.title="Cumulative Probability (S-curve)"; cur.legend=None
 s=Series(Reference(cd,min_col=5,min_row=2,max_row=1+NP),Reference(cd,min_col=4,min_row=2,max_row=1+NP),title="S-curve"); s.smooth=True
-cur.series.append(s); cur.height=7.5; cur.width=13; cur.x_axis.delete=False; cur.y_axis.delete=False; db.add_chart(cur,"F20")
+cur.series.append(s); cur.height=7.5; cur.width=13
+axt(cur.x_axis,"Total cost","#,##0"); axt(cur.y_axis,"Probability (cost ≤ x)","0%")
+cur.y_axis.scaling.min=0; cur.y_axis.scaling.max=1; db.add_chart(cur,"F20")
+# 3) Cash flow: X = year, Y = cumulative spend (P50 and P70 lines)
 scf=LineChart(); scf.title="Cumulative Cash Flow by Year"; scf.style=12
 scf.add_data(Reference(cd,min_col=8,min_row=1,max_col=9,max_row=1+MAXY),titles_from_data=True)
 scf.set_categories(Reference(cd,min_col=7,min_row=2,max_row=1+MAXY)); scf.height=7.5; scf.width=13
-scf.x_axis.delete=False; scf.y_axis.delete=False; db.add_chart(scf,"A36")
+axt(scf.x_axis,"Year"); axt(scf.y_axis,"Cumulative cost","#,##0"); db.add_chart(scf,"A36")
+# 4) Tornado: bar length = P90−P10 of each driver (value axis = y for horizontal bars)
 tor2=BarChart(); tor2.type="bar"; tor2.title="Sensitivity (Tornado)"; tor2.legend=None
 tor2.add_data(Reference(sn,min_col=5,min_row=4,max_row=SN_MAX-1),titles_from_data=True)
 tor2.set_categories(Reference(sn,min_col=1,min_row=SN_F,max_row=SN_MAX-1)); tor2.height=7.5; tor2.width=13
-tor2.x_axis.delete=False; tor2.y_axis.delete=False; db.add_chart(tor2,"F36")
+axt(tor2.x_axis); axt(tor2.y_axis,"Uncertainty  (P90 − P10)","#,##0")
+tor2.x_axis.scaling.orientation="maxMin"; db.add_chart(tor2,"F36")
 
 # tidy: hide year columns/rows beyond the active default (ApplyYears macro toggles these)
 for y in range(ACTIVE_Y, MAXY):

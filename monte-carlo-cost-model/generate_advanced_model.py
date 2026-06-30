@@ -45,7 +45,7 @@ ACTIVE_YEARS = max(1, min(MAXY, _years_arg))
 N_YEARS      = MAXY if FLEX else ACTIVE_YEARS                # structural build size
 OUTFILE      = "AdvancedMonteCarloCostModel.xlsx"
 PROJECT    = "Sample Construction Project"
-CONF_DEF   = "P80"
+CONF_DEF   = "P70"
 DISCOUNT   = 0.08
 INFL_BASE  = 0.03                                # default annual inflation
 # Money cells carry NO embedded currency symbol, so the currency is whatever you
