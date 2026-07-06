@@ -1,67 +1,97 @@
 # CLAUDE.md
 
-Guidance for working in this repository.
+Permanent instruction set for this project. Read and follow this on every task.
+Detailed business rules, formulas, and UI specifications live in `/docs` — not
+here.
 
-## What this project is
+## Project mission
 
-**FitTrack Pro** — a personal fitness and health tracking app for phones. It
-tracks workouts, nutrition, water, body weight, body measurements, InBody
-metrics, and progress photos, and visualizes trends with charts.
+FitTrack Pro is a personal fitness and health tracking app. It helps one user
+log workouts, nutrition, water, body weight, measurements, and progress photos,
+and understand their trends over time. The app must stay fast, private, and
+effortless to use on a phone. The user's data belongs to the user: it stays on
+their device unless they explicitly export it.
 
-The entire application is a single file: `index.html`. There is no build step,
-no framework, no package manager, and no backend. It is a client-side
-Progressive Web App that persists everything in the browser's `localStorage`.
+## Development philosophy
 
-## Repository layout
+- **Simplicity over cleverness.** Prefer the smallest change that fully solves
+  the problem. Do not add abstraction, tooling, or dependencies the project does
+  not need.
+- **Preserve what works.** This is a single-file, no-build app. Keep it that way
+  unless a change genuinely requires otherwise, and never break the ability to
+  run it by opening the file directly.
+- **Protect user data.** Persistence is local and irreplaceable. Never write
+  changes that could silently corrupt, wipe, or migrate stored data without a
+  clear, safe, reversible path.
+- **Ship deliberately.** Small, verified, self-contained changes beat large
+  speculative ones.
 
-| Path               | Purpose                                                        |
-| ------------------ | ------------------------------------------------------------- |
-| `index.html`       | The whole app: markup, CSS (`<style>`), and JS (`<script>`).   |
-| `icon.png`         | App / apple-touch icon referenced by `<link rel="icon">`.      |
-| `font-preview.html`| Standalone page for previewing the Outfit font choice.         |
-| `README.md`        | Minimal readme.                                                |
-| `docs/`            | Project knowledge base (see below).                            |
+## General coding standards
 
-## Knowledge base
+- Match the surrounding code's style, naming, and density. Consistency with the
+  existing file matters more than personal preference.
+- Keep the app dependency-free and buildless. Do not introduce frameworks,
+  package managers, or transpilers.
+- Route all persisted state through the project's storage helpers and key map —
+  never touch `localStorage` directly.
+- Route all user-facing text through the translation layer; do not hard-code
+  strings that should be translatable.
+- Reuse existing helpers, tokens, and components before writing new ones. Avoid
+  duplicating logic.
+- Write clear, self-explanatory code. Comment the "why" when intent is not
+  obvious; do not narrate the obvious.
 
-- `docs/architecture.md` — how `index.html` is organized and how data flows.
-- `docs/business-rules.md` — the behavioral rules the code enforces.
-- `docs/formulas.md` — every calculation used (1RM, volume, goal progress…).
-- `docs/ui-guidelines.md` — design tokens, layout, and component conventions.
-- `docs/roadmap.md` — observable gaps and unfinished areas in the current code.
-- `docs/testing-checklist.md` — manual checks to run before shipping a change.
+## Architecture principles
 
-## Tech stack
+- One app, one file: markup, styles, and logic stay together unless a change
+  specifically demands separation.
+- Rendering is pull-based: read from storage, compute, then update the view.
+  After mutating data, refresh the affected view(s).
+- Keep concerns separated by function and section as the file already does
+  (storage, navigation, per-screen rendering, cross-cutting features).
+- Derive values from stored data at render time rather than storing redundant
+  computed state.
+- Keep styling driven by the shared design tokens; do not scatter one-off values
+  that a token already covers.
 
-- Vanilla HTML/CSS/JavaScript, no transpiler.
-- [Chart.js 4.4.0](https://cdn.jsdelivr.net/npm/chart.js@4.4.0) loaded from a CDN
-  (`<script src>` in `<head>`) — used for all charts.
-- [Outfit](https://fonts.googleapis.com/css2?family=Outfit) web font from Google
-  Fonts.
-- Persistence: `localStorage` only. No server, no external API calls for data.
+## Workflow before making changes
 
-## How to run
+1. **Understand first.** Locate the relevant code and read it before editing.
+   Check `/docs` for the rules or formulas that govern the area.
+2. **Confirm scope.** Know exactly what should change and, just as importantly,
+   what should not. If the request is ambiguous, ask before acting.
+3. **Plan the smallest correct change.** Identify the specific functions,
+   sections, and storage keys involved.
+4. **Make the change** consistently with existing patterns.
+5. **Verify** the change works and nothing adjacent regressed.
 
-Open `index.html` in a browser, or serve the directory with any static file
-server. No install or build is required. The layout is designed for a mobile
-viewport (`#app` is capped at `max-width: 430px`).
+## Validation mindset
 
-## Conventions
+- Treat stored data as potentially empty, partial, or malformed. Handle the
+  empty/first-run state and guard against missing fields.
+- Never assume optional browser APIs exist — feature-check before using them.
+- Preserve invariants defined in `/docs`; if a change would alter documented
+  behavior, update the docs in the same change.
+- Prefer failures that are visible and safe over silent data loss.
 
-- Everything lives in `index.html`. Keep markup, styles, and script in that one
-  file unless a change specifically requires splitting.
-- JavaScript is written in a terse, dependency-free style (short helpers, direct
-  DOM manipulation via `innerHTML`, no modules). Match the surrounding style.
-- All persisted state goes through the `load()` / `save()` helpers and the
-  `STORAGE_KEYS` map — do not read or write `localStorage` keys directly.
-- Rendering is pull-based: a `render*()` function reads from storage, computes,
-  and rewrites a container's `innerHTML`. After mutating data, call the relevant
-  `render*()` (and usually `renderHome()`).
-- User-facing strings go through the `t(key)` translation helper and the `I18N`
-  dictionary (English and Arabic entries exist).
+## Definition of done
 
-## Git / branch policy
+A change is done only when all of the following hold:
 
-Active development branch for the current task: `claude/project-knowledge-base-bt206y`.
-Commit with clear messages and push to the designated branch. Do not open a pull
-request unless explicitly asked.
+- It fully addresses the request, with no unrelated changes bundled in.
+- It loads with no console errors and the empty/first-run state still works.
+- The affected flows were manually verified (see `docs/testing-checklist.md`).
+- Existing behavior, data, and design conventions are preserved unless the change
+  intentionally updates them.
+- Any documented rule, formula, or spec affected by the change is updated in
+  `/docs`.
+- The commit message clearly states what changed and why.
+
+## Maintaining consistency
+
+- `/docs` is the source of truth for detailed behavior. When code and docs
+  disagree, reconcile them — do not leave them out of sync.
+- Follow the established conventions for storage access, translation, rendering,
+  and styling on every task, so the project reads as if written by one author.
+- When introducing a new pattern, prefer extending an existing one; if a new
+  convention is truly warranted, apply it consistently and note it.
