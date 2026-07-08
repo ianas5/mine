@@ -82,7 +82,7 @@ Five layers, with a strict **one-way dependency direction**. An arrow means "may
 
 **The rules (enforced by lint — rule config owned by CODING_STANDARDS, defined here):**
 
-- **`app/`** imports feature screens and navigation helpers only. Nothing imports from `app/`.
+- **`app/`** imports feature screens and navigation helpers only — plus **composition-root wiring in `app/_layout`**: mounting global providers and injecting data-layer artifacts that must not be reached by an inverted dependency (e.g. the `data/schema` migration bundle passed into the `core/db` DB-ready gate). This composition-root exception is confined to the root layout; ordinary route files stay thin (rule 5). Nothing imports from `app/`.
 - **`features/*`** may import from `domain/`, `data/`, and `core/`. **A feature must never import from another feature.** Shared cross-feature code is promoted to `core/` (infra/ui) or `domain/` (logic).
 - **`domain/`** may import only from `domain/` and pure `core/utils`. It must **not** import React, React Native, Expo, `data/`, `features/`, or any UI. It is a pure, framework-agnostic leaf.
 - **`data/`** may import from `core/db` and `domain/models`. It contains the **only** SQL in the codebase. No UI, no features.
@@ -315,3 +315,4 @@ Binding rules for anyone extending the codebase:
 ## Changelog
 
 - 2026-07-08 — v1 baseline frozen (five open decisions approved; F2 consistency amendment: Drizzle ORM + drizzle-kit and Victory Native XL added to the §3 matrix; Inter/Lucide noted as design assets).
+- 2026-07-08 — Amendment (Phase 2, approved): §4 now explicitly permits composition-root wiring in `app/_layout` (mounting providers and injecting the `data/schema` migration bundle into the `core/db` gate). Documents existing architectural intent; no change to the dependency direction.

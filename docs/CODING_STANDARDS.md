@@ -30,7 +30,7 @@
 
 1. **Path aliases:** `@/core/*`, `@/domain/*`, `@/data/*`, `@/features/*`. No relative imports that climb more than one level (`../../` forbidden).
 2. **Import order** (lint-enforced, auto-fixed): react/react-native → third-party → `@/core` → `@/domain` → `@/data` → `@/features` → relative. One blank line between groups.
-3. **The ARCHITECTURE §4 dependency rules are lint rules,** not documentation: `eslint-plugin-boundaries` (or equivalent) encodes — `domain` imports nothing above it and no framework; `data` never imports `features`/`app`; features never import features; only `data/` imports `expo-sqlite`/Drizzle; only `core/storage` imports MMKV. A boundary violation is a build failure, not a warning.
+3. **The ARCHITECTURE §4 dependency rules are lint rules,** not documentation: `eslint-plugin-boundaries` (or equivalent) encodes — `domain` imports nothing above it and no framework; `data` never imports `features`/`app`; features never import features; only `data/` and `core/db` import `expo-sqlite`/Drizzle (the connection and migration runner live in `core/db` per ARCHITECTURE §5); only `core/storage` imports MMKV. A boundary violation is a build failure, not a warning.
 4. **Token enforcement (DESIGN_SYSTEM §7):** `no-restricted-syntax` bans hex color literals and raw `fontSize`/`padding`/`margin` numbers outside `core/theme` + `core/ui`.
 
 ## 4. React & Component Patterns
@@ -101,3 +101,4 @@
 ## Changelog
 
 - 2026-07-08 — v1 baseline frozen (five approved refinements applied: documentation-first rule, Rule of Two, platform-first dependencies, public-API barrels, leave-it-better).
+- 2026-07-08 — Amendment (Phase 2, approved): §3.3 now allows `core/db` (in addition to `data/`) to import `expo-sqlite`/Drizzle, aligning with ARCHITECTURE §5 which places the connection and migration runner in `core/db`. Alignment only; no architecture change.
