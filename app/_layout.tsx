@@ -11,6 +11,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, type ReactNode } from 'react';
 
 import { ThemeProvider } from '@/core/theme';
+import { ToastHost } from '@/core/ui';
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -38,6 +39,7 @@ export default function RootLayout(): ReactNode {
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(tabs)" />
       </Stack>
+      <ToastHost />
     </ThemeProvider>
   );
 }

@@ -20,6 +20,7 @@
     "expo": "~57.0.4",
     "expo-constants": "~57.0.3",
     "expo-font": "~57.0.0",
+    "expo-haptics": "^57.0.0",
     "expo-linking": "~57.0.2",
     "expo-router": "~57.0.4",
     "expo-splash-screen": "~57.0.2",
@@ -38,6 +39,7 @@
     "react-native-worklets": "0.10.0"
   },
   "devDependencies": {
+    "@testing-library/react-native": "^14.0.1",
     "@types/jest": "^29.5.14",
     "@types/react": "~19.2.2",
     "eslint": "^9.37.0",
@@ -54,6 +56,9 @@
     "testMatch": [
       "**/*.test.ts",
       "**/*.test.tsx"
+    ],
+    "setupFiles": [
+      "<rootDir>/jest.setup.js"
     ]
   }
 }

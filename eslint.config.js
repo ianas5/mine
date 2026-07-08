@@ -10,6 +10,12 @@ module.exports = defineConfig([
     ignores: ['dist/*', '.expo/*', 'node_modules/*', 'ios/*', 'android/*', 'scripts/*'],
   },
   {
+    files: ['jest.setup.js'],
+    languageOptions: {
+      globals: { jest: 'readonly', require: 'readonly' },
+    },
+  },
+  {
     files: ['app/**/*.{ts,tsx}', 'src/**/*.{ts,tsx}'],
     plugins: { boundaries },
     settings: {
