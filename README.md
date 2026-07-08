@@ -3,37 +3,34 @@
 A private, single-user mobile fitness tracking app — workouts, nutrition, body
 measurements, progress photos, and analytics that explain progress over time.
 
-See [`PROJECT_VISION.md`](./PROJECT_VISION.md) for the full product vision.
+## Start here
+
+**[`PROJECT_INDEX.md`](./PROJECT_INDEX.md)** — the navigation entry point for the
+entire documentation set: what each document owns, reading order, key decision
+locator, and precedence.
+
+- [`PRODUCT_PRINCIPLES.md`](./PRODUCT_PRINCIPLES.md) — the product's constitution (highest authority)
+- [`PROJECT_VISION.md`](./PROJECT_VISION.md) — the product definition
+- [`docs/`](./docs) — the eight technical documents (domain, architecture, database, analytics, design, UX, standards, workflow) and the implementation roadmap
 
 ## Status
 
-The repository has been **reset to a clean slate** for a complete greenfield
-rebuild. The previous prototype (a single-file web PWA) has been removed. No
-application code, architecture, or scaffolding exists yet — implementation is
-intentionally paused until the dedicated architecture documents are provided.
+**Documentation baseline: FROZEN (v1 · 2026-07-08).** The complete governing
+documentation set is committed; implementation has not started and awaits
+explicit approval to begin Phase 0 of
+[`docs/IMPLEMENTATION_ROADMAP.md`](./docs/IMPLEMENTATION_ROADMAP.md).
 
-## Intended Technology Stack
+Per the freeze terms: no document changes except for real, discovered defects
+(via the amendment flow in `docs/DEVELOPMENT_WORKFLOW.md` §6); new features
+belong to post-v1; implementation follows the frozen documentation exactly.
 
-The rebuild targets a mobile-first app (primarily iPhone, with Android as a
-secondary goal) on the following baseline stack:
+## Technology (baseline, detailed in `docs/ARCHITECTURE.md` §3)
 
-- **Expo** (latest stable SDK)
-- **React Native**
-- **TypeScript** — strong typing throughout
-- **Expo Router** — navigation
-- **Local-first architecture**
-- **SQLite** — primary database
-- **Zustand** — lightweight global state
-- **React Hook Form** — forms
-- **Zod** — validation
-- **MMKV** — lightweight settings and cached preferences
-- **Feature-based project structure** with a reusable component architecture
+Expo (latest stable SDK) · React Native · TypeScript (strict) · Expo Router ·
+SQLite (`expo-sqlite`) + Drizzle ORM/drizzle-kit · Zustand · React Hook Form ·
+Zod · MMKV · Victory Native XL · Inter · Lucide — local-first, offline-only,
+single-user, metric units, English UI.
 
-Designed for long-term maintainability and scalability.
-
-> Architecture documents will be provided next and take precedence over any
-> assumptions above.
-
-## Preserved Assets
+## Preserved assets
 
 - `icon.png` — 1024×1024 app icon, retained for reuse in the new build.
