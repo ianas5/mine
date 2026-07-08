@@ -1,4 +1,4 @@
-export { initDb, getDb, setDbForTesting } from './client';
+export { initDb, getDb, setDbForTesting, runInTransaction } from './client';
 export type { AppDb } from './client';
 export { DbGate } from './DbGate';
 export { emitTableChanges, subscribeToTables, useTableVersion } from './changeBus';

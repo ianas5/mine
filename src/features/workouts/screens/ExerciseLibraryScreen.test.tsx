@@ -4,9 +4,9 @@ import { setDbForTesting } from '@/core/db';
 import { createTestDb, type TestDb } from '@/data/testing/createTestDb';
 import { seedDatabase } from '@/data/seed/seedDatabase';
 
-import { WorkoutsScreen } from './WorkoutsScreen';
+import { ExerciseLibraryScreen } from './ExerciseLibraryScreen';
 
-describe('WorkoutsScreen (library, seeded)', () => {
+describe('ExerciseLibraryScreen (library, seeded)', () => {
   let testDb: TestDb;
 
   beforeEach(async () => {
@@ -18,14 +18,14 @@ describe('WorkoutsScreen (library, seeded)', () => {
   afterEach(() => testDb.close());
 
   it('renders seeded exercises grouped by muscle', async () => {
-    await render(<WorkoutsScreen />);
+    await render(<ExerciseLibraryScreen />);
 
     expect(await screen.findByText('Barbell Bench Press')).toBeTruthy();
     expect(screen.getByText('Chest')).toBeTruthy();
   });
 
   it('filters the list by the search query', async () => {
-    await render(<WorkoutsScreen />);
+    await render(<ExerciseLibraryScreen />);
     await screen.findByText('Barbell Bench Press');
 
     await fireEvent.changeText(screen.getByLabelText('Search exercises'), 'squat');

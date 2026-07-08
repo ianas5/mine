@@ -43,6 +43,7 @@ export default function RootLayout(): ReactNode {
         <StatusBar style="auto" />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="active-workout" options={{ animation: 'slide_from_bottom' }} />
         </Stack>
         <ToastHost />
       </DbGate>

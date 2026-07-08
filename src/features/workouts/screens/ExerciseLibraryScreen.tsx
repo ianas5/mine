@@ -13,7 +13,7 @@ import { useExercises } from '../hooks/useExercises';
 import { groupExercises } from '../logic/groupExercises';
 
 /** Exercise Library — browse/search the catalog, add custom, archive (Phase 3). */
-export function WorkoutsScreen(): ReactNode {
+export function ExerciseLibraryScreen(): ReactNode {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');

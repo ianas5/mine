@@ -1,15 +1,18 @@
+import { sql } from 'drizzle-orm';
 import { drizzle, type ExpoSQLiteDatabase } from 'drizzle-orm/expo-sqlite';
 import { openDatabaseSync } from 'expo-sqlite';
 
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 
 /**
- * The app database handle. Native runtime uses the expo-sqlite driver; the
- * test harness injects a better-sqlite3-backed instance with the identical
- * schema/migrations (DEVELOPMENT_WORKFLOW §4.2). Both satisfy the same
- * query-builder surface used by repositories.
+ * The app database handle. Typed as the production expo-sqlite driver so Drizzle's
+ * query-builder generics infer cleanly (a union of the two drivers collapses
+ * that inference). The better-sqlite3 test harness injects a structurally
+ * compatible instance via `setDbForTesting` (DEVELOPMENT_WORKFLOW §4.2) — both
+ * are Drizzle `BaseSQLiteDatabase` subclasses exposing the same builder surface;
+ * `await` transparently handles the sync (test) vs async (device) result.
  */
-export type AppDb = ExpoSQLiteDatabase | BetterSQLite3Database;
+export type AppDb = ExpoSQLiteDatabase;
 
 let db: AppDb | null = null;
 
@@ -34,7 +37,29 @@ export function getDb(): AppDb {
   return db;
 }
 
-/** Test-only injection point for the better-sqlite3 harness. */
-export function setDbForTesting(testDb: AppDb): void {
-  db = testDb;
+/** Test-only injection point for the better-sqlite3 harness (structurally compatible). */
+export function setDbForTesting(testDb: BetterSQLite3Database): void {
+  db = testDb as unknown as AppDb;
+}
+
+/**
+ * Runs `fn` inside a single all-or-nothing transaction (ARCHITECTURE rule 11).
+ * Manual BEGIN/COMMIT/ROLLBACK via `run` so it works identically over the
+ * async expo-sqlite driver and the sync better-sqlite3 test driver.
+ */
+export async function runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
+  const active = getDb();
+  await active.run(sql`BEGIN`);
+  try {
+    const result = await fn();
+    await active.run(sql`COMMIT`);
+    return result;
+  } catch (cause) {
+    try {
+      await active.run(sql`ROLLBACK`);
+    } catch {
+      // ignore rollback failure; surface the original cause
+    }
+    throw cause;
+  }
 }

@@ -15,6 +15,13 @@
       "when": 1783547056585,
       "tag": "0001_lonely_lady_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783552638419,
+      "tag": "0002_cheerful_malcolm_colcord",
+      "breakpoints": true
     }
   ]
 }

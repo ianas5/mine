@@ -1,0 +1,22 @@
+import type { EpochMs, IsoDate } from './scalars';
+
+/** Today's device-local calendar date as `YYYY-MM-DD` (FITNESS_DOMAIN §2.3). */
+export function todayIso(now: Date = new Date()): IsoDate {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/** Formats an elapsed duration as `M:SS` (or `H:MM:SS` past an hour). */
+export function formatElapsed(ms: EpochMs): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const ss = String(s).padStart(2, '0');
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${ss}`;
+  }
+  return `${m}:${ss}`;
+}

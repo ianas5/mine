@@ -27,6 +27,12 @@ jest.mock('expo-haptics', () => ({
   NotificationFeedbackType: { Success: 'success', Warning: 'warning' },
 }));
 
+// expo-router navigation is provided by the native runtime; stub it for tests.
+jest.mock('expo-router', () => ({
+  useRouter: () => ({ push: jest.fn(), back: jest.fn(), replace: jest.fn() }),
+  Redirect: () => null,
+}));
+
 // expo-crypto is native; use Node's randomUUID in tests.
 jest.mock('expo-crypto', () => ({
   randomUUID: () => require('node:crypto').randomUUID(),
