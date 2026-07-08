@@ -27,6 +27,11 @@ jest.mock('expo-haptics', () => ({
   NotificationFeedbackType: { Success: 'success', Warning: 'warning' },
 }));
 
+// expo-crypto is native; use Node's randomUUID in tests.
+jest.mock('expo-crypto', () => ({
+  randomUUID: () => require('node:crypto').randomUUID(),
+}));
+
 // Safe-area insets need a native provider; the library ships a test mock.
 jest.mock(
   'react-native-safe-area-context',

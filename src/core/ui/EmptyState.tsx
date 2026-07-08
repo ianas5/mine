@@ -8,7 +8,7 @@ import { Button } from './Button';
 interface EmptyStateProps {
   readonly icon?: ReactNode;
   readonly title: string;
-  readonly cta?: { readonly label: string; readonly onPress: () => void };
+  readonly cta?: { readonly label: string; readonly onPress: () => void } | undefined;
 }
 
 /** Quiet, directive empty state — one factual line, optional action (UI_UX §6). */

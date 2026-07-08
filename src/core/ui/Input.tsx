@@ -7,7 +7,7 @@ interface InputProps {
   readonly value: string;
   readonly onChangeText: (text: string) => void;
   readonly label?: string;
-  readonly error?: string;
+  readonly error?: string | undefined;
   readonly placeholder?: string;
   readonly unit?: string;
   readonly keyboardType?: KeyboardTypeOptions;

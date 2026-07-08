@@ -13,7 +13,8 @@ import { useEffect, type ReactNode } from 'react';
 import { DbGate } from '@/core/db';
 import { ThemeProvider } from '@/core/theme';
 import { ToastHost } from '@/core/ui';
-// Composition root: the migration bundle is injected here so core never imports data.
+// Composition root: data-layer artifacts are injected here so core never imports data.
+import { seedDatabase } from '@/data/seed/seedDatabase';
 import migrations from '@/data/schema/migrations/migrations';
 
 void SplashScreen.preventAutoHideAsync();
@@ -38,7 +39,7 @@ export default function RootLayout(): ReactNode {
 
   return (
     <ThemeProvider>
-      <DbGate migrations={migrations}>
+      <DbGate migrations={migrations} afterMigrate={seedDatabase}>
         <StatusBar style="auto" />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />

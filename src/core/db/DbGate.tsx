@@ -12,6 +12,8 @@ export type MigrationBundle = Parameters<typeof migrate>[1];
 interface DbGateProps {
   /** Injected by the composition root (app/_layout) from data/schema — core never imports data. */
   readonly migrations: MigrationBundle;
+  /** Idempotent seeder run after migrations, before ready (DATABASE §5.6). Injected too. */
+  readonly afterMigrate?: () => Promise<void>;
   readonly children: ReactNode;
 }
 
@@ -31,6 +33,7 @@ export function DbGate(props: DbGateProps): ReactNode {
         const db = initDb();
         // The gate only ever constructs the expo driver; the cast narrows the union.
         await migrate(db as Parameters<typeof migrate>[0], props.migrations);
+        await props.afterMigrate?.();
         if (live) setState('ready');
       } catch (cause) {
         if (live) {

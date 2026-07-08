@@ -10,7 +10,7 @@ interface SheetProps {
   readonly visible: boolean;
   readonly onClose: () => void;
   readonly children: ReactNode;
-  readonly title?: string;
+  readonly title?: string | undefined;
   /** When true, dismissal asks "Discard entry?" once (UI_UX §2 dirty-state guard). */
   readonly dirty?: boolean;
 }
