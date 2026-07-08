@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+dist/
+web-build/
+ios/
+android/
+package-lock.json
+docs/journal/screenshots/
+*.png
+*.md

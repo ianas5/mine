@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Fitness",
+    "slug": "personal-fitness-tracker",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./icon.png",
+    "scheme": "fitness",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.anas.fitness"
+    },
+    "android": {
+      "package": "com.anas.fitness",
+      "adaptiveIcon": {
+        "foregroundImage": "./icon.png",
+        "backgroundColor": "#0B0C0E"
+      }
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./icon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0B0C0E",
+          "image": "./icon.png",
+          "imageWidth": 120
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
