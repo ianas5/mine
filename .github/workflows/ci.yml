@@ -1,5 +1,5 @@
-# CI per DEVELOPMENT_WORKFLOW §3: typecheck → lint (zero warnings) → format check → tests.
-# The migration check joins in Phase 2 when the database layer exists.
+# CI per DEVELOPMENT_WORKFLOW §3:
+# typecheck → lint (zero warnings) → format check → tests → migration check.
 name: CI
 
 on:
@@ -21,3 +21,4 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm run test -- --ci
+      - run: npm run db:check

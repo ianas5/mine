@@ -10,8 +10,11 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, type ReactNode } from 'react';
 
+import { DbGate } from '@/core/db';
 import { ThemeProvider } from '@/core/theme';
 import { ToastHost } from '@/core/ui';
+// Composition root: the migration bundle is injected here so core never imports data.
+import migrations from '@/data/schema/migrations/migrations';
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -35,11 +38,13 @@ export default function RootLayout(): ReactNode {
 
   return (
     <ThemeProvider>
-      <StatusBar style="auto" />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-      </Stack>
-      <ToastHost />
+      <DbGate migrations={migrations}>
+        <StatusBar style="auto" />
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(tabs)" />
+        </Stack>
+        <ToastHost />
+      </DbGate>
     </ThemeProvider>
   );
 }

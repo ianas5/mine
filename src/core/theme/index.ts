@@ -1,5 +1,6 @@
 export { ThemeProvider } from './ThemeProvider';
 export { useTheme } from './useTheme';
+export { useThemeControls } from './useThemeControls';
 export { useThemedStyles } from './useThemedStyles';
 export { triggerHaptic } from './haptics';
 export type { HapticToken } from './haptics';
