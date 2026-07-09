@@ -10,6 +10,13 @@ export function todayIso(now: Date = new Date()): IsoDate {
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
+/** Shifts an ISO date by `days` (may be negative), staying device-local. */
+export function addDaysIso(iso: IsoDate, days: number): IsoDate {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return todayIso(d);
+}
+
 /** ISO weekday for a date: 0 = Monday … 6 = Sunday (DATABASE §3.3 templates.weekday). */
 export function isoWeekday(iso: IsoDate): number {
   const jsDay = new Date(`${iso}T00:00:00`).getDay(); // 0 = Sunday … 6 = Saturday

@@ -10,6 +10,6 @@ export { Input } from './Input';
 export { Stepper } from './Stepper';
 export { Chip } from './Chip';
 export { SegmentedControl } from './SegmentedControl';
-export { ToastHost, showToast } from './Toast';
+export { ToastHost, showToast, type ToastAction } from './Toast';
 export { Dialog } from './Dialog';
 export { Sheet } from './Sheet';

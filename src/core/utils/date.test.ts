@@ -1,4 +1,4 @@
-import { formatRelativeDate, isoWeekday, todayIso, weekdayLabel } from './date';
+import { addDaysIso, formatRelativeDate, isoWeekday, todayIso, weekdayLabel } from './date';
 
 describe('date helpers (FITNESS_DOMAIN §2.3, edge 14 device-local)', () => {
   it('formats today as device-local YYYY-MM-DD (never UTC-shifted)', () => {
@@ -20,6 +20,12 @@ describe('date helpers (FITNESS_DOMAIN §2.3, edge 14 device-local)', () => {
     expect(weekdayLabel(0)).toBe('Monday');
     expect(weekdayLabel(6)).toBe('Sunday');
     expect(weekdayLabel(isoWeekday('2024-01-07'))).toBe('Sunday');
+  });
+
+  it('shifts a date by whole days across month boundaries', () => {
+    expect(addDaysIso('2026-07-09', 1)).toBe('2026-07-10');
+    expect(addDaysIso('2026-07-01', -1)).toBe('2026-06-30');
+    expect(addDaysIso('2026-12-31', 1)).toBe('2027-01-01');
   });
 
   it('humanizes recency relative to a device-local now', () => {

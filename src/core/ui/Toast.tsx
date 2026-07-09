@@ -1,27 +1,38 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 // (hideTimer stays a ref: it is only touched inside effects/handlers.)
-import { Animated, Text, View } from 'react-native';
+import { Animated, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { triggerHaptic, useTheme } from '@/core/theme';
 
 type ToastTone = 'neutral' | 'success';
 
+/** An optional single action (e.g. Undo) shown on the toast (UI_UX §6). */
+export interface ToastAction {
+  readonly label: string;
+  readonly onPress: () => void;
+}
+
 interface ToastMessage {
   readonly text: string;
   readonly tone: ToastTone;
+  readonly action: ToastAction | undefined;
 }
 
 const DISPLAY_MS = 2500;
+const ACTION_DISPLAY_MS = 5000; // Undo toasts linger (UI_UX §6)
 
 let listener: ((message: ToastMessage) => void) | null = null;
 
-/** Show a single-line toast (one at a time, 2.5s). Success tone adds the success haptic. */
-export function showToast(text: string, tone: ToastTone = 'neutral'): void {
+/**
+ * Show a single-line toast (one at a time). Success tone adds the success haptic.
+ * An optional `action` (e.g. Undo) makes the toast tappable and lingers 5 s.
+ */
+export function showToast(text: string, tone: ToastTone = 'neutral', action?: ToastAction): void {
   if (tone === 'success') {
     triggerHaptic('success');
   }
-  listener?.({ text, tone });
+  listener?.({ text, tone, action });
 }
 
 /** Mounted once at the app root; renders the active toast above the tab bar. */
@@ -31,6 +42,18 @@ export function ToastHost(): ReactNode {
   const [message, setMessage] = useState<ToastMessage | null>(null);
   const [opacity] = useState(() => new Animated.Value(0));
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const dismiss = (): void => {
+    if (hideTimer.current !== null) {
+      clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+    Animated.timing(opacity, {
+      toValue: 0,
+      duration: theme.motion.base,
+      useNativeDriver: true,
+    }).start(() => setMessage(null));
+  };
 
   useEffect(() => {
     listener = (next) => {
@@ -43,13 +66,16 @@ export function ToastHost(): ReactNode {
         duration: theme.motion.fast,
         useNativeDriver: true,
       }).start();
-      hideTimer.current = setTimeout(() => {
-        Animated.timing(opacity, {
-          toValue: 0,
-          duration: theme.motion.base,
-          useNativeDriver: true,
-        }).start(() => setMessage(null));
-      }, DISPLAY_MS);
+      hideTimer.current = setTimeout(
+        () => {
+          Animated.timing(opacity, {
+            toValue: 0,
+            duration: theme.motion.base,
+            useNativeDriver: true,
+          }).start(() => setMessage(null));
+        },
+        next.action ? ACTION_DISPLAY_MS : DISPLAY_MS,
+      );
     };
     return () => {
       listener = null;
@@ -62,9 +88,11 @@ export function ToastHost(): ReactNode {
   if (message === null) {
     return null;
   }
+
+  const action = message.action;
   return (
     <View
-      pointerEvents="none"
+      pointerEvents="box-none"
       style={{
         position: 'absolute',
         left: theme.space.lg,
@@ -77,6 +105,9 @@ export function ToastHost(): ReactNode {
         accessibilityRole="alert"
         style={{
           opacity,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: theme.space.md,
           backgroundColor: theme.color.surfaceRaised,
           borderColor: message.tone === 'success' ? theme.color.positive : theme.color.border,
           borderWidth: 1,
@@ -88,6 +119,21 @@ export function ToastHost(): ReactNode {
         <Text style={{ ...theme.type.bodyStrong, color: theme.color.textPrimary }}>
           {message.text}
         </Text>
+        {action ? (
+          <Pressable
+            onPress={() => {
+              action.onPress();
+              dismiss();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={action.label}
+            hitSlop={theme.space.sm}
+          >
+            <Text style={{ ...theme.type.bodyStrong, color: theme.color.accent }}>
+              {action.label}
+            </Text>
+          </Pressable>
+        ) : null}
       </Animated.View>
     </View>
   );

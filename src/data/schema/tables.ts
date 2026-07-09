@@ -10,6 +10,7 @@ import {
 } from 'drizzle-orm/sqlite-core';
 
 import { LOAD_TYPES, MUSCLE_GROUPS } from '@/domain/fitness';
+import { MEAL_SLOTS, SERVING_UNITS } from '@/domain/nutrition';
 
 const UNILATERAL_COUNTING = ['none', 'single_doubled', 'per_side'] as const;
 
@@ -220,3 +221,58 @@ export const sets = sqliteTable(
   ],
 );
 export type SetRow = typeof sets.$inferSelect;
+
+/**
+ * `foods` — reusable foods and quick meals (DATABASE §3.5, FITNESS_DOMAIN §4.1).
+ * Seed rows use stable ids `food_seed_<slug>`. No fiber column (FITNESS_DOMAIN §4).
+ */
+export const foods = sqliteTable(
+  'foods',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    servingAmount: real('serving_amount').notNull(),
+    servingUnit: text('serving_unit').notNull(),
+    kcal: integer('kcal').notNull(),
+    proteinG: real('protein_g').notNull(),
+    carbG: real('carb_g').notNull(),
+    fatG: real('fat_g').notNull(),
+    isQuickMeal: integer('is_quick_meal').notNull().default(0),
+    isCustom: integer('is_custom').notNull().default(1),
+    isArchived: integer('is_archived').notNull().default(0),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [check('foods_serving_unit', oneOf('serving_unit', SERVING_UNITS))],
+);
+export type FoodRow = typeof foods.$inferSelect;
+
+/**
+ * `meal_entries` — the log; **macros snapshotted at log time** (DATABASE §3.5,
+ * FITNESS_DOMAIN §4.1/§4.2). Editing a food never rewrites past entries; day totals
+ * are `SUM … GROUP BY date`, never a stored aggregate. `food_id` is SET NULL on
+ * delete (provenance) so history survives a food deletion.
+ */
+export const mealEntries = sqliteTable(
+  'meal_entries',
+  {
+    id: text('id').primaryKey(),
+    date: text('date').notNull(),
+    slot: text('slot'),
+    foodId: text('food_id').references(() => foods.id, { onDelete: 'set null' }),
+    foodName: text('food_name').notNull(),
+    loggedAmount: real('logged_amount').notNull(),
+    loggedUnit: text('logged_unit').notNull(),
+    kcal: integer('kcal').notNull(),
+    proteinG: real('protein_g').notNull(),
+    carbG: real('carb_g').notNull(),
+    fatG: real('fat_g').notNull(),
+    loggedAt: integer('logged_at').notNull(),
+  },
+  (table) => [
+    index('meal_entries_date').on(table.date),
+    index('meal_entries_food').on(table.foodId),
+    check('meal_entries_slot', sql`${table.slot} IS NULL OR (${oneOf('slot', MEAL_SLOTS)})`),
+  ],
+);
+export type MealEntryRow = typeof mealEntries.$inferSelect;
