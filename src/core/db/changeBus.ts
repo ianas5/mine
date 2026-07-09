@@ -5,7 +5,7 @@ import { useSyncExternalStore } from 'react';
  * table(s) changed; data hooks re-query on their tables only. Deliberately just
  * an emitter keyed by table name — no query keys, no staleness policies.
  */
-export type TableName = 'settings' | 'exercises' | 'workouts';
+export type TableName = 'settings' | 'exercises' | 'workouts' | 'programs';
 
 type Listener = () => void;
 

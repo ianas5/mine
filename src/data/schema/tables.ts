@@ -68,6 +68,69 @@ export const exercises = sqliteTable(
 
 export type ExerciseRow = typeof exercises.$inferSelect;
 
+/**
+ * `programs` — a named collection of session templates (DATABASE §3.3). At most one
+ * is active; that invariant is enforced in the repository transaction, not the schema.
+ */
+export const programs = sqliteTable('programs', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  notes: text('notes'),
+  isActive: integer('is_active').notNull().default(0),
+  isArchived: integer('is_archived').notNull().default(0),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+export type ProgramRow = typeof programs.$inferSelect;
+
+/** `templates` — a single-session blueprint (DATABASE §3.3). NULL program = standalone. */
+export const templates = sqliteTable(
+  'templates',
+  {
+    id: text('id').primaryKey(),
+    programId: text('program_id').references(() => programs.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    position: integer('position').notNull().default(0),
+    // 0 = Monday … 6 = Sunday; enables the weekday-scheduled suggestion (§3.8/§5.2).
+    weekday: integer('weekday'),
+    notes: text('notes'),
+    isArchived: integer('is_archived').notNull().default(0),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    index('templates_program').on(table.programId),
+    check(
+      'templates_weekday',
+      sql`${table.weekday} IS NULL OR (${table.weekday} >= 0 AND ${table.weekday} <= 6)`,
+    ),
+  ],
+);
+export type TemplateRow = typeof templates.$inferSelect;
+
+/** `template_exercises` — planned targets, never performance (DATABASE §3.3). */
+export const templateExercises = sqliteTable(
+  'template_exercises',
+  {
+    id: text('id').primaryKey(),
+    templateId: text('template_id')
+      .notNull()
+      .references(() => templates.id, { onDelete: 'cascade' }),
+    exerciseId: text('exercise_id')
+      .notNull()
+      .references(() => exercises.id, { onDelete: 'restrict' }),
+    position: integer('position').notNull(),
+    targetSets: integer('target_sets'),
+    targetRepMin: integer('target_rep_min'),
+    targetRepMax: integer('target_rep_max'),
+    targetRpe: real('target_rpe'),
+    restSeconds: integer('rest_seconds'),
+    notes: text('notes'),
+  },
+  (table) => [index('template_exercises_template').on(table.templateId, table.position)],
+);
+export type TemplateExerciseRow = typeof templateExercises.$inferSelect;
+
 /** `workouts` — completed sessions (DATABASE §3.4). Multiple per date allowed. */
 export const workouts = sqliteTable(
   'workouts',
@@ -75,8 +138,9 @@ export const workouts = sqliteTable(
     id: text('id').primaryKey(),
     date: text('date').notNull(),
     name: text('name').notNull(),
-    // Provenance only. FK to templates is added in Phase 8 when that table exists (TD-004).
-    templateId: text('template_id'),
+    // Provenance only (which template started this session). SET NULL on template
+    // delete — a workout is history and is never rewritten by template changes.
+    templateId: text('template_id').references(() => templates.id, { onDelete: 'set null' }),
     startedAt: integer('started_at'),
     endedAt: integer('ended_at'),
     notes: text('notes'),

@@ -8,6 +8,7 @@ import { Card, Chip } from '@/core/ui';
 import { useDefaultBodyweight } from '../hooks/useDefaultBodyweight';
 import { useExercisePreview } from '../hooks/useExercisePreview';
 import { useExercisePrBaseline } from '../hooks/useExercisePrBaseline';
+import { formatTarget } from '../logic/formatTarget';
 import { inSessionPrFlags } from '../logic/inSessionPrFlags';
 import { useSessionActions, type SessionExercise } from '../stores/useSessionStore';
 import { ExerciseHistoryPanel } from './ExerciseHistoryPanel';
@@ -27,6 +28,7 @@ export function ActiveExerciseCard(props: ActiveExerciseCardProps): ReactNode {
   const bodyweightKg = useDefaultBodyweight();
   const prBaseline = useExercisePrBaseline(exercise.exerciseId, exercise.loadType);
   const prFlags = inSessionPrFlags(exercise.sets, exercise.loadType, bodyweightKg, prBaseline);
+  const targetLabel = formatTarget(exercise.target);
 
   return (
     <Card style={{ gap: theme.space.sm }}>
@@ -60,6 +62,10 @@ export function ActiveExerciseCard(props: ActiveExerciseCardProps): ReactNode {
         </View>
       ) : null}
 
+      {targetLabel ? (
+        <Text style={{ ...theme.type.caption, color: theme.color.accent }}>{targetLabel}</Text>
+      ) : null}
+
       <ExerciseHistoryPanel preview={preview} loadType={exercise.loadType} />
 
       <View>
@@ -71,6 +77,7 @@ export function ActiveExerciseCard(props: ActiveExerciseCardProps): ReactNode {
             set={set}
             loadType={exercise.loadType}
             isPr={prFlags[index] ?? false}
+            restSeconds={exercise.restSeconds}
           />
         ))}
       </View>

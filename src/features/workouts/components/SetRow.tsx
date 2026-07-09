@@ -17,6 +17,8 @@ interface SetRowProps {
   readonly loadType: LoadType;
   /** Optimistic: this set sets a new running weight/e1RM best (UI_UX §4.1, P15). */
   readonly isPr: boolean;
+  /** Template rest default (seconds) for this exercise, seeds the rest timer. */
+  readonly restSeconds: number | null;
 }
 
 /** One logged set — big controls, warm-up toggle, and a one-tap complete (✓). */
@@ -24,7 +26,7 @@ export function SetRow(props: SetRowProps): ReactNode {
   const theme = useTheme();
   const actions = useSessionActions();
   const rest = useRestActions();
-  const { set, loadType, exerciseLocalId, isPr } = props;
+  const { set, loadType, exerciseLocalId, isPr, restSeconds } = props;
 
   const showWeight = loadType !== 'bodyweight' && loadType !== 'timed';
   const repsIsSeconds = loadType === 'timed';
@@ -37,7 +39,7 @@ export function SetRow(props: SetRowProps): ReactNode {
     actions.toggleSetDone(exerciseLocalId, set.localId);
     // Auto-start rest only when a WORKING set is completed (UI_UX §4.2) — warm-ups
     // and un-checking a set never start a rest.
-    if (becomingDone && !set.warmup) rest.start(exerciseLocalId, Date.now());
+    if (becomingDone && !set.warmup) rest.start(exerciseLocalId, Date.now(), restSeconds);
   };
 
   return (

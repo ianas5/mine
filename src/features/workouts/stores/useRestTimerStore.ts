@@ -12,8 +12,12 @@ export const DEFAULT_REST_SEC = 90;
 export const REST_EXTEND_SEC = 30;
 
 interface RestActions {
-  /** Auto-started when a working set is completed (UI_UX §4.2). Wall-clock based. */
-  readonly start: (exerciseLocalId: string, now: number) => void;
+  /**
+   * Auto-started when a working set is completed (UI_UX §4.2). Wall-clock based.
+   * `defaultSec` seeds a template's `rest_seconds` when this exercise has no
+   * remembered in-session extension; falls back to the 90 s default.
+   */
+  readonly start: (exerciseLocalId: string, now: number, defaultSec?: number | null) => void;
   /** Add time to the running rest and remember it as this exercise's preference. */
   readonly extend: (deltaSec: number, now: number) => void;
   /** User skipped the rest (or it elapsed) — clears the countdown, keeps prefs. */
@@ -44,8 +48,10 @@ const INITIAL = {
 export const useRestTimerStore = create<RestTimerState>((set, get) => ({
   ...INITIAL,
   actions: {
-    start: (exerciseLocalId, now) => {
-      const durationSec = get().prefs[exerciseLocalId] ?? DEFAULT_REST_SEC;
+    start: (exerciseLocalId, now, defaultSec) => {
+      const durationSec =
+        get().prefs[exerciseLocalId] ??
+        (defaultSec != null && defaultSec > 0 ? defaultSec : DEFAULT_REST_SEC);
       set({ running: true, endsAt: now + durationSec * 1000, exerciseLocalId, durationSec });
     },
 

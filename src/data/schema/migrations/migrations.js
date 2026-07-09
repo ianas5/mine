@@ -5,6 +5,7 @@ import m0000 from './0000_misty_maverick.sql';
 import m0001 from './0001_lonely_lady_deathstrike.sql';
 import m0002 from './0002_cheerful_malcolm_colcord.sql';
 import m0003 from './0003_zippy_bloodscream.sql';
+import m0004 from './0004_aspiring_warpath.sql';
 
 export default {
   journal,
@@ -13,5 +14,6 @@ export default {
     m0001,
     m0002,
     m0003,
+    m0004,
   },
 };

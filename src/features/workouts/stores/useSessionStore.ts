@@ -21,13 +21,36 @@ export interface SessionSet {
   readonly done: boolean;
 }
 
+/** Planned targets carried from a template, shown at logging (never performance). */
+export interface SessionTarget {
+  readonly sets: number | null;
+  readonly repMin: number | null;
+  readonly repMax: number | null;
+  readonly rpe: number | null;
+}
+
 export interface SessionExercise {
   readonly localId: string;
   readonly exerciseId: string;
   readonly name: string;
   readonly loadType: LoadType;
   readonly unilateralCounting: UnilateralCounting;
+  /** Planned target from a template start, or null for an ad-hoc exercise. */
+  readonly target: SessionTarget | null;
+  /** Template rest default (seconds) for this exercise, or null. */
+  readonly restSeconds: number | null;
   readonly sets: readonly SessionSet[];
+}
+
+/** A pre-built exercise for a template or repeat-last start. */
+export interface PreparedExercise {
+  readonly exerciseId: string;
+  readonly name: string;
+  readonly loadType: LoadType;
+  readonly unilateralCounting: UnilateralCounting;
+  readonly target: SessionTarget | null;
+  readonly restSeconds: number | null;
+  readonly sets: readonly PreviewSet[];
 }
 
 export interface SessionState {
@@ -36,6 +59,8 @@ export interface SessionState {
   readonly recovered: boolean;
   readonly name: string;
   readonly startedAt: number | null;
+  /** Provenance: the template this session was started from (never mutated on save). */
+  readonly templateId: string | null;
   readonly exercises: readonly SessionExercise[];
   readonly actions: SessionActions;
 }
@@ -49,6 +74,12 @@ interface SetPatch {
 
 interface SessionActions {
   readonly start: (startedAt: number, name?: string) => void;
+  readonly begin: (
+    startedAt: number,
+    name: string,
+    prepared: readonly PreparedExercise[],
+    templateId?: string | null,
+  ) => void;
   readonly restore: (draft: SessionDraft) => void;
   readonly acknowledgeRecovery: () => void;
   readonly setName: (name: string) => void;
@@ -72,6 +103,7 @@ const INITIAL = {
   active: false,
   recovered: false,
   name: '',
+  templateId: null as string | null,
   startedAt: null as number | null,
   exercises: [],
 };
@@ -88,7 +120,36 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   ...INITIAL,
   actions: {
     start: (startedAt, name = 'Workout') =>
-      set({ active: true, recovered: false, name, startedAt, exercises: [] }),
+      set({ active: true, recovered: false, name, templateId: null, startedAt, exercises: [] }),
+
+    // Start a session pre-built from a template or a repeated workout (Phase 8).
+    // Prepared exercises carry planned targets (display only) and pre-filled set
+    // values; an exercise with no prepared sets still gets one empty set to log into.
+    begin: (startedAt, name, prepared, templateId = null) =>
+      set({
+        active: true,
+        recovered: false,
+        name,
+        templateId,
+        startedAt,
+        exercises: prepared.map((ex) => ({
+          localId: localId('ex'),
+          exerciseId: ex.exerciseId,
+          name: ex.name,
+          loadType: ex.loadType,
+          unilateralCounting: ex.unilateralCounting,
+          target: ex.target,
+          restSeconds: ex.restSeconds,
+          sets: (ex.sets.length > 0 ? ex.sets : [{ weightKg: 0, reps: 0 }]).map((s) => ({
+            localId: localId('set'),
+            weightKg: s.weightKg,
+            reps: s.reps,
+            rpe: null,
+            warmup: false,
+            done: false,
+          })),
+        })),
+      }),
 
     // Rehydrate a crash-recovered session (ARCHITECTURE §7.1). localIds are minted
     // fresh through the same counter so ids created after recovery never collide.
@@ -97,6 +158,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         active: true,
         recovered: true,
         name: draft.name,
+        templateId: draft.templateId ?? null,
         startedAt: draft.startedAt,
         exercises: draft.exercises.map((ex) => ({
           localId: localId('ex'),
@@ -104,6 +166,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           name: ex.name,
           loadType: ex.loadType,
           unilateralCounting: ex.unilateralCounting,
+          target: ex.target ?? null,
+          restSeconds: ex.restSeconds ?? null,
           sets: ex.sets.map((s) => ({
             localId: localId('set'),
             weightKg: s.weightKg,
@@ -134,6 +198,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               name: exercise.name,
               loadType: exercise.loadType,
               unilateralCounting: exercise.defaultUnilateral ? 'single_doubled' : 'none',
+              target: null,
+              restSeconds: null,
               sets: source.map((s) => ({
                 localId: localId('set'),
                 weightKg: s.weightKg,

@@ -10,6 +10,18 @@ export function todayIso(now: Date = new Date()): IsoDate {
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
+/** ISO weekday for a date: 0 = Monday … 6 = Sunday (DATABASE §3.3 templates.weekday). */
+export function isoWeekday(iso: IsoDate): number {
+  const jsDay = new Date(`${iso}T00:00:00`).getDay(); // 0 = Sunday … 6 = Saturday
+  return (jsDay + 6) % 7;
+}
+
+/** Full label for an ISO weekday (0 = Monday … 6 = Sunday). */
+export function weekdayLabel(isoWeekdayIndex: number): string {
+  const labels = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  return labels[isoWeekdayIndex] ?? '';
+}
+
 /** Humanized recency: `Today`, `Yesterday`, or `Mon · 4d ago` (FITNESS_DOMAIN §2.3 dates). */
 export function formatRelativeDate(iso: IsoDate, now: Date = new Date()): string {
   const d = new Date(`${iso}T00:00:00`);

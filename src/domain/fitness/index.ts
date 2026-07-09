@@ -33,3 +33,5 @@ export { summarizeExerciseHistory } from './exerciseHistory';
 export type { ExercisePreview, HistorySetRow, PreviewSet } from './exerciseHistory';
 export { computeExerciseBests, detectNewPRs, EMPTY_BESTS } from './personalRecords';
 export type { ExerciseBests, ExerciseSetRow, PrEvent, PrKind } from './personalRecords';
+export { suggestTemplate } from './templateSuggestion';
+export type { RecentTemplateUse, TemplateSuggestion } from './templateSuggestion';

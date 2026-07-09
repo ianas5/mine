@@ -16,6 +16,7 @@ export function sessionToStatExercises(exercises: readonly SessionExercise[]): S
 export function sessionToWorkoutInput(state: SessionState, endedAt: number): NewWorkoutInput {
   return {
     name: state.name,
+    templateId: state.templateId,
     startedAt: state.startedAt,
     endedAt,
     notes: null,

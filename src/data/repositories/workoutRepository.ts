@@ -40,6 +40,8 @@ export interface NewWorkoutExerciseInput {
 
 export interface NewWorkoutInput {
   readonly name: string;
+  /** Provenance: the template this session started from, or null (DATABASE §3.4). */
+  readonly templateId?: string | null;
   readonly startedAt: number | null;
   readonly endedAt: number | null;
   readonly notes: string | null;
@@ -70,7 +72,7 @@ export const workoutRepository = {
         id: workoutId,
         date: todayIso(),
         name: input.name.trim() || 'Workout',
-        templateId: null,
+        templateId: input.templateId ?? null,
         startedAt: input.startedAt,
         endedAt: input.endedAt,
         notes: input.notes,

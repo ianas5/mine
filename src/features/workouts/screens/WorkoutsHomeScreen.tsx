@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { ChevronRight, Dumbbell, Play } from 'lucide-react-native';
+import { CalendarRange, ChevronRight, Dumbbell } from 'lucide-react-native';
 import { useState, type ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
@@ -7,6 +7,7 @@ import { useTheme } from '@/core/theme';
 import { Button, Card, Dialog, Screen, Section } from '@/core/ui';
 
 import { RecentWorkoutList } from '../components/RecentWorkoutList';
+import { StartSection } from '../components/StartSection';
 import { useRestActions } from '../stores/useRestTimerStore';
 import { useSessionActions, useSessionStore } from '../stores/useSessionStore';
 
@@ -19,11 +20,6 @@ export function WorkoutsHomeScreen(): ReactNode {
   const sessionActive = useSessionStore((s) => s.active);
   const recovered = useSessionStore((s) => s.recovered);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-
-  const startEmpty = (): void => {
-    actions.start(Date.now(), 'Workout');
-    router.push('/active-workout');
-  };
 
   const resume = (): void => {
     actions.acknowledgeRecovery();
@@ -86,47 +82,23 @@ export function WorkoutsHomeScreen(): ReactNode {
           ) : null}
         </Card>
       ) : (
-        <View style={{ marginBottom: theme.space.lg, gap: theme.space.sm }}>
-          <Button label="Start empty workout" onPress={startEmpty} />
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: theme.space.xs,
-            }}
-          >
-            <Play color={theme.color.textTertiary} size={14} />
-            <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
-              Programs & templates arrive in a later update
-            </Text>
-          </View>
-        </View>
+        <StartSection />
       )}
 
-      <Pressable
-        onPress={() => router.push('/workouts/library')}
-        accessibilityRole="button"
-        accessibilityLabel="Manage exercises"
-        style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
-      >
-        <Card
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: theme.space.md,
-          }}
-        >
-          <Dumbbell color={theme.color.accent} size={22} strokeWidth={1.75} />
-          <View style={{ flex: 1 }}>
-            <Text style={{ ...theme.type.body, color: theme.color.textPrimary }}>Exercises</Text>
-            <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
-              Browse, search, and add custom exercises
-            </Text>
-          </View>
-          <ChevronRight color={theme.color.textTertiary} size={20} />
-        </Card>
-      </Pressable>
+      <View style={{ gap: theme.space.sm }}>
+        <NavRow
+          icon={<CalendarRange color={theme.color.accent} size={22} strokeWidth={1.75} />}
+          title="Programs"
+          subtitle="Plan sessions, weekdays, and targets"
+          onPress={() => router.push('/workouts/programs')}
+        />
+        <NavRow
+          icon={<Dumbbell color={theme.color.accent} size={22} strokeWidth={1.75} />}
+          title="Exercises"
+          subtitle="Browse, search, and add custom exercises"
+          onPress={() => router.push('/workouts/library')}
+        />
+      </View>
 
       <View style={{ marginTop: theme.space.xl }}>
         <Section title="Recent">
@@ -143,5 +115,33 @@ export function WorkoutsHomeScreen(): ReactNode {
         onCancel={() => setConfirmDiscard(false)}
       />
     </Screen>
+  );
+}
+
+function NavRow(props: {
+  readonly icon: ReactNode;
+  readonly title: string;
+  readonly subtitle: string;
+  readonly onPress: () => void;
+}): ReactNode {
+  const theme = useTheme();
+  return (
+    <Pressable
+      onPress={props.onPress}
+      accessibilityRole="button"
+      accessibilityLabel={props.title}
+      style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+    >
+      <Card style={{ flexDirection: 'row', alignItems: 'center', gap: theme.space.md }}>
+        {props.icon}
+        <View style={{ flex: 1 }}>
+          <Text style={{ ...theme.type.body, color: theme.color.textPrimary }}>{props.title}</Text>
+          <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
+            {props.subtitle}
+          </Text>
+        </View>
+        <ChevronRight color={theme.color.textTertiary} size={20} />
+      </Card>
+    </Pressable>
   );
 }
