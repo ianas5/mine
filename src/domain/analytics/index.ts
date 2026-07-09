@@ -33,6 +33,30 @@ export {
 export { sevenDayMovingAverage, latestMovingAverage } from './movingAverage';
 export { bucketSeries, MAX_CHART_POINTS, type Granularity, type Aggregation } from './bucketing';
 export {
+  resolveBodyweightForDate,
+  type TrainingSet,
+  type TrainingExercise,
+  type TrainingWorkout,
+  type WeighIn,
+} from './trainingData';
+export {
+  computeWorkoutAnalytics,
+  PUSH_PULL_BAND,
+  UPPER_LOWER_BAND,
+  type WorkoutAnalytics,
+  type WorkoutAnalyticsInput,
+  type Balance,
+  type GroupVolume,
+  type KeyExerciseStrength,
+} from './workoutAnalytics';
+export {
+  computeMuscleReports,
+  reportForGroup,
+  type MuscleGroupReport,
+  type MuscleAnalyticsInput,
+  type ExerciseRef,
+} from './muscleAnalytics';
+export {
   computeBodyAnalytics,
   WEIGHT_STABILITY_KG,
   type BodyAnalytics,

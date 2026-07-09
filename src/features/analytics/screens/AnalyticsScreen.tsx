@@ -23,6 +23,7 @@ import {
   type TrendClassification,
 } from '@/domain/analytics';
 
+import { TrainingSection } from '../components/TrainingSection';
 import { TrendChart } from '../components/TrendChart';
 import { useBodyAnalytics, type BodyAnalyticsView } from '../hooks/useBodyAnalytics';
 
@@ -85,12 +86,16 @@ export function AnalyticsScreen(): ReactNode {
         <BodySection view={view} />
       )}
 
+      <View style={{ marginTop: theme.space.xl }}>
+        <TrainingSection range={range} />
+      </View>
+
       <View style={{ marginTop: theme.space.xl, gap: theme.space.sm }}>
-        <Text style={{ ...theme.type.micro, color: theme.color.textSecondary }}>TRAINING</Text>
+        <Text style={{ ...theme.type.micro, color: theme.color.textSecondary }}>NUTRITION</Text>
         <Card>
           <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
-            Training and nutrition analytics arrive in later updates. Nothing is estimated until the
-            data supports it.
+            Nutrition analytics arrive in the next update. Nothing is estimated until the data
+            supports it.
           </Text>
         </Card>
       </View>

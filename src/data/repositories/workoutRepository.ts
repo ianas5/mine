@@ -9,8 +9,10 @@ import {
   type ExerciseSetRow,
   type HistorySetRow,
   type LoadType,
+  type MuscleGroup,
   type UnilateralCounting,
 } from '@/domain/fitness';
+import type { TrainingExercise, TrainingSet, TrainingWorkout } from '@/domain/analytics';
 import type { Workout, WorkoutExercise } from '@/domain/models';
 
 import { newId } from '../id';
@@ -252,6 +254,75 @@ export const workoutRepository = {
       }
     }
     return [...countable.values()];
+  },
+
+  /**
+   * All workouts since a date, joined to their exercises (name, load type, primary
+   * muscle group, unilateral counting) and sets — the input to the Workout and Muscle
+   * analytics calculators. SQL only joins/windows; the calculators do the domain math.
+   */
+  async getTrainingWorkoutsSince(sinceIso: IsoDate): Promise<TrainingWorkout[]> {
+    const db = getDb();
+    const rows = await db
+      .select({
+        workoutId: workouts.id,
+        date: workouts.date,
+        startedAt: workouts.startedAt,
+        endedAt: workouts.endedAt,
+        exerciseRowId: workoutExercises.id,
+        exerciseId: workoutExercises.exerciseId,
+        exercisePosition: workoutExercises.position,
+        counting: workoutExercises.unilateralCounting,
+        name: exercises.name,
+        loadType: exercises.loadType,
+        primaryMuscleGroup: exercises.primaryMuscleGroup,
+        setPosition: sets.position,
+        weightKg: sets.weightKg,
+        reps: sets.reps,
+        isWarmup: sets.isWarmup,
+      })
+      .from(workouts)
+      .innerJoin(workoutExercises, eq(workoutExercises.workoutId, workouts.id))
+      .innerJoin(exercises, eq(workoutExercises.exerciseId, exercises.id))
+      .innerJoin(sets, eq(sets.workoutExerciseId, workoutExercises.id))
+      .where(gte(workouts.date, sinceIso))
+      .orderBy(asc(workouts.date), asc(workoutExercises.position), asc(sets.position));
+
+    const byWorkout = new Map<string, TrainingWorkout & { _ex: Map<string, TrainingExercise> }>();
+    for (const r of rows) {
+      let workout = byWorkout.get(r.workoutId);
+      if (!workout) {
+        workout = {
+          id: r.workoutId,
+          date: r.date,
+          startedAt: r.startedAt,
+          endedAt: r.endedAt,
+          exercises: [],
+          _ex: new Map(),
+        };
+        byWorkout.set(r.workoutId, workout);
+      }
+      let exercise = workout._ex.get(r.exerciseRowId);
+      if (!exercise) {
+        exercise = {
+          exerciseId: r.exerciseId,
+          name: r.name,
+          loadType: r.loadType as LoadType,
+          primaryMuscleGroup: r.primaryMuscleGroup as MuscleGroup,
+          counting: r.counting as UnilateralCounting,
+          sets: [],
+        };
+        workout._ex.set(r.exerciseRowId, exercise);
+        (workout.exercises as TrainingExercise[]).push(exercise);
+      }
+      (exercise.sets as TrainingSet[]).push({
+        weightKg: r.weightKg,
+        reps: r.reps,
+        warmup: r.isWarmup === 1,
+      });
+    }
+
+    return [...byWorkout.values()].map(({ _ex, ...workout }) => workout);
   },
 
   /** Deletes a workout and its cascade tree. */
