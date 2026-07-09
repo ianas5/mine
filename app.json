@@ -7,6 +7,7 @@
     "icon": "./icon.png",
     "scheme": "fitness",
     "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.anas.fitness"
@@ -24,12 +25,21 @@
     },
     "plugins": [
       "expo-router",
+      "expo-dev-client",
       [
         "expo-splash-screen",
         {
           "backgroundColor": "#0B0C0E",
           "image": "./icon.png",
           "imageWidth": 120
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Fitness adds progress photos you pick from your library.",
+          "cameraPermission": "Fitness uses the camera to capture progress photos.",
+          "microphonePermission": false
         }
       ]
     ],
