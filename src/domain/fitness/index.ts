@@ -31,3 +31,5 @@ export { computeWorkoutStats, isCountableWorkout } from './workoutStats';
 export type { StatExercise, WorkoutStats } from './workoutStats';
 export { summarizeExerciseHistory } from './exerciseHistory';
 export type { ExercisePreview, HistorySetRow, PreviewSet } from './exerciseHistory';
+export { computeExerciseBests, detectNewPRs, EMPTY_BESTS } from './personalRecords';
+export type { ExerciseBests, ExerciseSetRow, PrEvent, PrKind } from './personalRecords';

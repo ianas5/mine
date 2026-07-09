@@ -5,7 +5,10 @@ import { Pressable, Text, View } from 'react-native';
 import { useTheme } from '@/core/theme';
 import { Card, Chip } from '@/core/ui';
 
+import { useDefaultBodyweight } from '../hooks/useDefaultBodyweight';
 import { useExercisePreview } from '../hooks/useExercisePreview';
+import { useExercisePrBaseline } from '../hooks/useExercisePrBaseline';
+import { inSessionPrFlags } from '../logic/inSessionPrFlags';
 import { useSessionActions, type SessionExercise } from '../stores/useSessionStore';
 import { ExerciseHistoryPanel } from './ExerciseHistoryPanel';
 import { SetRow } from './SetRow';
@@ -21,6 +24,9 @@ export function ActiveExerciseCard(props: ActiveExerciseCardProps): ReactNode {
   const { exercise } = props;
   const isUnilateral = exercise.unilateralCounting !== 'none';
   const preview = useExercisePreview(exercise.exerciseId, exercise.loadType);
+  const bodyweightKg = useDefaultBodyweight();
+  const prBaseline = useExercisePrBaseline(exercise.exerciseId, exercise.loadType);
+  const prFlags = inSessionPrFlags(exercise.sets, exercise.loadType, bodyweightKg, prBaseline);
 
   return (
     <Card style={{ gap: theme.space.sm }}>
@@ -64,6 +70,7 @@ export function ActiveExerciseCard(props: ActiveExerciseCardProps): ReactNode {
             index={index}
             set={set}
             loadType={exercise.loadType}
+            isPr={prFlags[index] ?? false}
           />
         ))}
       </View>

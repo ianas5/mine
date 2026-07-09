@@ -20,12 +20,14 @@ export const settingsRepository = {
     if (existing) {
       return rowToSettings(existing);
     }
+    // Idempotent create: concurrent readers (several hooks mount at once) must not
+    // race on the single row — the first insert wins, the rest no-op and re-select.
     const now = Date.now();
-    const inserted = await db
+    await db
       .insert(settings)
       .values({ id: SINGLETON_ID, createdAt: now, updatedAt: now })
-      .returning();
-    const created = inserted[0];
+      .onConflictDoNothing();
+    const created = (await db.select().from(settings).where(eq(settings.id, SINGLETON_ID)))[0];
     if (!created) {
       throw new Error('settings row could not be created');
     }

@@ -1,3 +1,4 @@
+import { useRouter } from 'expo-router';
 import { useState, type ReactNode } from 'react';
 import { Text, View } from 'react-native';
 
@@ -15,8 +16,16 @@ interface ExerciseActionsSheetProps {
 /** Per-exercise archive / unarchive / delete actions (Phase 3 archive flow). */
 export function ExerciseActionsSheet(props: ExerciseActionsSheetProps): ReactNode {
   const theme = useTheme();
+  const router = useRouter();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const exercise = props.exercise;
+
+  const openReport = (): void => {
+    if (!exercise) return;
+    const id = exercise.id;
+    props.onClose();
+    router.push(`/workouts/exercise/${id}`);
+  };
 
   const runAndClose = async (action: Promise<void>, message: string): Promise<void> => {
     await action;
@@ -35,6 +44,8 @@ export function ExerciseActionsSheet(props: ExerciseActionsSheetProps): ReactNod
               {exercise.defaultUnilateral ? ' · unilateral' : ''}
               {exercise.isCustom ? ' · custom' : ''}
             </Text>
+
+            <Button label="View report" onPress={openReport} />
 
             {exercise.isArchived ? (
               <Button

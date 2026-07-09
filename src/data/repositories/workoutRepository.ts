@@ -5,6 +5,7 @@ import { todayIso } from '@/core/utils';
 import {
   summarizeExerciseHistory,
   type ExercisePreview,
+  type ExerciseSetRow,
   type HistorySetRow,
   type LoadType,
   type UnilateralCounting,
@@ -266,6 +267,53 @@ export const workoutRepository = {
   async getExercisePreview(exerciseId: string, loadType: LoadType): Promise<ExercisePreview> {
     const rows = await this.getExerciseHistory(exerciseId);
     return summarizeExerciseHistory(rows, loadType);
+  },
+
+  /**
+   * Full working-history rows for an exercise (with per-entry unilateral counting)
+   * plus its name/load type — the raw input the domain turns into PRs (§3.7) and
+   * the Exercise Report (§5.5). Returns null when the exercise does not exist.
+   */
+  async getExerciseSetHistory(
+    exerciseId: string,
+  ): Promise<{ name: string; loadType: LoadType; rows: ExerciseSetRow[] } | null> {
+    const db = getDb();
+    const exerciseRows = await db
+      .select({ name: exercises.name, loadType: exercises.loadType })
+      .from(exercises)
+      .where(eq(exercises.id, exerciseId));
+    const exercise = exerciseRows[0];
+    if (!exercise) return null;
+
+    const rows = await db
+      .select({
+        workoutId: workouts.id,
+        date: workouts.date,
+        workoutOrder: workouts.createdAt,
+        counting: workoutExercises.unilateralCounting,
+        weightKg: sets.weightKg,
+        reps: sets.reps,
+        isWarmup: sets.isWarmup,
+      })
+      .from(sets)
+      .innerJoin(workoutExercises, eq(sets.workoutExerciseId, workoutExercises.id))
+      .innerJoin(workouts, eq(workoutExercises.workoutId, workouts.id))
+      .where(eq(workoutExercises.exerciseId, exerciseId))
+      .orderBy(desc(workouts.createdAt), asc(sets.position));
+
+    return {
+      name: exercise.name,
+      loadType: exercise.loadType as LoadType,
+      rows: rows.map((r) => ({
+        workoutId: r.workoutId,
+        date: r.date,
+        workoutOrder: r.workoutOrder,
+        weightKg: r.weightKg,
+        reps: r.reps,
+        warmup: r.isWarmup === 1,
+        counting: r.counting as UnilateralCounting,
+      })),
+    };
   },
 
   /** Edits a saved set; derived views recompute via the change-bus (ARCHITECTURE rule 8). */

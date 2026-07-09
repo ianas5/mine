@@ -18,6 +18,7 @@ import { WorkoutSummarySheet } from '../components/WorkoutSummarySheet';
 import { useDefaultBodyweight } from '../hooks/useDefaultBodyweight';
 import { useElapsed } from '../hooks/useElapsed';
 import { sessionToStatExercises, sessionToWorkoutInput } from '../logic/sessionMapping';
+import { computeSessionPRs, NO_PRS, type SessionPrs } from '../logic/sessionPRs';
 import { useRestActions } from '../stores/useRestTimerStore';
 import { useSessionActions, useSessionStore } from '../stores/useSessionStore';
 
@@ -41,6 +42,7 @@ export function ActiveWorkoutScreen(): ReactNode {
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [sessionPrs, setSessionPrs] = useState<SessionPrs>(NO_PRS);
 
   if (!active) {
     return (
@@ -64,6 +66,14 @@ export function ActiveWorkoutScreen(): ReactNode {
     router.back();
   };
 
+  // Compute PRs from history BEFORE the durable write (prior = the saved sets, not
+  // yet including this session), then open the summary. Trustworthy, never cached.
+  const openSummary = async (): Promise<void> => {
+    const prs = await computeSessionPRs(useSessionStore.getState(), bodyweightKg);
+    setSessionPrs(prs);
+    setSummaryOpen(true);
+  };
+
   const onSave = async (): Promise<void> => {
     setSaving(true);
     try {
@@ -71,7 +81,11 @@ export function ActiveWorkoutScreen(): ReactNode {
         sessionToWorkoutInput(useSessionStore.getState(), Date.now()),
       );
       setSummaryOpen(false);
-      showToast('Workout saved', 'success');
+      const n = sessionPrs.totalCount;
+      showToast(
+        n > 0 ? `Workout saved · ${n} ${n === 1 ? 'PR' : 'PRs'}` : 'Workout saved',
+        'success',
+      );
       leave();
     } catch {
       showToast('Could not save workout');
@@ -120,7 +134,7 @@ export function ActiveWorkoutScreen(): ReactNode {
           accessibilityLabel="Workout name"
           style={{ ...theme.type.heading, color: theme.color.textPrimary, flex: 1 }}
         />
-        <Button label="Finish" size="md" onPress={() => setSummaryOpen(true)} />
+        <Button label="Finish" size="md" onPress={() => void openSummary()} />
       </View>
 
       <View
@@ -202,6 +216,7 @@ export function ActiveWorkoutScreen(): ReactNode {
         exercises={exercises}
         bodyweightKg={bodyweightKg}
         elapsedMs={elapsedMs}
+        prCount={sessionPrs.totalCount}
         saving={saving}
         onSave={() => void onSave()}
         onDiscard={requestDiscard}

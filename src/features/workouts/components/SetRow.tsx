@@ -7,6 +7,7 @@ import type { LoadType } from '@/domain/fitness';
 
 import { useRestActions } from '../stores/useRestTimerStore';
 import { useSessionActions, type SessionSet } from '../stores/useSessionStore';
+import { PrBadge } from './PrBadge';
 import { SetValueControl } from './SetValueControl';
 
 interface SetRowProps {
@@ -14,6 +15,8 @@ interface SetRowProps {
   readonly index: number;
   readonly set: SessionSet;
   readonly loadType: LoadType;
+  /** Optimistic: this set sets a new running weight/e1RM best (UI_UX §4.1, P15). */
+  readonly isPr: boolean;
 }
 
 /** One logged set — big controls, warm-up toggle, and a one-tap complete (✓). */
@@ -21,14 +24,16 @@ export function SetRow(props: SetRowProps): ReactNode {
   const theme = useTheme();
   const actions = useSessionActions();
   const rest = useRestActions();
-  const { set, loadType, exerciseLocalId } = props;
+  const { set, loadType, exerciseLocalId, isPr } = props;
 
   const showWeight = loadType !== 'bodyweight' && loadType !== 'timed';
   const repsIsSeconds = loadType === 'timed';
 
   const complete = (): void => {
     const becomingDone = !set.done;
-    if (becomingDone) triggerHaptic('light');
+    // A PR completion gets the success haptic (delight registry); an ordinary set
+    // gets light. Un-checking a set is silent.
+    if (becomingDone) triggerHaptic(isPr ? 'success' : 'light');
     actions.toggleSetDone(exerciseLocalId, set.localId);
     // Auto-start rest only when a WORKING set is completed (UI_UX §4.2) — warm-ups
     // and un-checking a set never start a rest.
@@ -93,6 +98,8 @@ export function SetRow(props: SetRowProps): ReactNode {
         unit={repsIsSeconds ? 'SEC' : 'REPS'}
         accessibilityLabel={`Set ${props.index + 1} ${repsIsSeconds ? 'seconds' : 'reps'}`}
       />
+
+      {set.done && isPr ? <PrBadge /> : null}
 
       <Pressable
         onPress={complete}
