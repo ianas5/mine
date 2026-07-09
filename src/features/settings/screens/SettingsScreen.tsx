@@ -16,6 +16,7 @@ import {
 } from '@/core/ui';
 import type { Settings } from '@/domain/models';
 
+import { BackupSection } from '../components/BackupSection';
 import { useSettings } from '../hooks/useSettings';
 
 const THEME_OPTIONS = ['System', 'Dark', 'Light'] as const;
@@ -65,6 +66,8 @@ export function SettingsScreen(): ReactNode {
       ) : (
         <LoadedSettings settings={settings} update={update} />
       )}
+
+      <BackupSection />
     </Screen>
   );
 }

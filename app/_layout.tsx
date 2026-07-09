@@ -16,6 +16,8 @@ import { ToastHost } from '@/core/ui';
 import { PhotoSweeper } from '@/features/measurements/components/PhotoSweeper';
 import { SessionKeeper } from '@/features/workouts/components/SessionKeeper';
 // Composition root: data-layer artifacts are injected here so core never imports data.
+import { setArchiveStore } from '@/data/backup';
+import { expoArchiveStore } from '@/data/backup/expoArchiveStore';
 import { expoPhotoStore } from '@/data/photos/expoPhotoStore';
 import { setPhotoStore } from '@/data/photos/photoStore';
 import { seedDatabase } from '@/data/seed/seedDatabase';
@@ -23,8 +25,9 @@ import migrations from '@/data/schema/migrations/migrations';
 
 void SplashScreen.preventAutoHideAsync();
 
-// Wire the real filesystem-backed photo store once (like the SQLite handle).
+// Wire the real filesystem-backed stores once (like the SQLite handle).
 setPhotoStore(expoPhotoStore);
+setArchiveStore(expoArchiveStore);
 
 export default function RootLayout(): ReactNode {
   const [fontsLoaded] = useFonts({
