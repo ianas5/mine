@@ -11,8 +11,10 @@ expo-env.d.ts
 # Native builds
 /ios/
 /android/
+/build/
 *.apk
 *.aab
+*.ipa
 *.ipa
 
 # Metro
