@@ -83,7 +83,8 @@ export const darkColors: ColorTokens = {
   border: '#26292E',
   textPrimary: '#F2F3F5',
   textSecondary: '#9BA0A8',
-  textTertiary: '#5C6066',
+  // WCAG AA on surface (4.71:1) — accessibility correction, ratified F-E1 (was #5C6066, 2.84:1).
+  textTertiary: '#7E838A',
   accent: '#FF6A3D',
   accentSoft: 'rgba(255, 106, 61, 0.12)',
   positive: '#3ECF8E',
@@ -100,7 +101,8 @@ export const lightColors: ColorTokens = {
   border: '#E4E5E9',
   textPrimary: '#17181A',
   textSecondary: '#5D6167',
-  textTertiary: '#9A9EA5',
+  // WCAG AA on surface (4.84:1) — accessibility correction, ratified F-E1 (was #9A9EA5, 2.69:1).
+  textTertiary: '#6E7278',
   accent: '#E85320',
   accentSoft: 'rgba(232, 83, 32, 0.10)',
   positive: '#1F9D66',

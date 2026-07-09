@@ -32,7 +32,7 @@ Anti-goals: clutter, gamified confetti, emoji as interface, rainbow dashboards, 
 | `border` | `#26292E` | `#E4E5E9` | hairlines, card edges |
 | `textPrimary` | `#F2F3F5` | `#17181A` | headings, values |
 | `textSecondary` | `#9BA0A8` | `#5D6167` | labels, captions |
-| `textTertiary` | `#5C6066` | `#9A9EA5` | placeholders, disabled |
+| `textTertiary` | `#7E838A` | `#6E7278` | placeholders, disabled |
 | `accent` | `#FF6A3D` | `#E85320` | primary actions, active tab, focus |
 | `accentSoft` | `#FF6A3D` @ 12% | `#E85320` @ 10% | selected chips, highlights |
 | `positive` | `#3ECF8E` | `#1F9D66` | improving, hits, PRs |
@@ -183,3 +183,4 @@ Each primitive: purpose, variants, and non-negotiable behavior. Props contracts 
 ## Changelog
 
 - 2026-07-08 — v1 baseline frozen (final decisions: accent `#FF6A3D`, Inter, Lucide, Victory Native XL; Feel & Feedback clause and principle citations added per approved refinements).
+- 2026-07-09 — §2.2 `textTertiary` darkened/lightened for WCAG AA (Phase 22 CP-E finding F-E1, ratified): dark `#5C6066 → #7E838A` (2.84 → 4.71:1 on surface), light `#9A9EA5 → #6E7278` (2.69 → 4.84:1). An accessibility correction only — no other token or design change; the §2.2 contrast rule (text ≥ 4.5:1) now holds for every token.
