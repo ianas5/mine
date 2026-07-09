@@ -10,6 +10,8 @@ import {
 } from '@/domain/fitness';
 import type { Exercise } from '@/domain/models';
 
+import type { SessionDraft } from '../schemas/sessionDraftSchema';
+
 export interface SessionSet {
   readonly localId: string;
   readonly weightKg: number;
@@ -30,6 +32,8 @@ export interface SessionExercise {
 
 export interface SessionState {
   readonly active: boolean;
+  /** True only for a session rehydrated from a crash draft — drives the recovery banner. */
+  readonly recovered: boolean;
   readonly name: string;
   readonly startedAt: number | null;
   readonly exercises: readonly SessionExercise[];
@@ -45,6 +49,8 @@ interface SetPatch {
 
 interface SessionActions {
   readonly start: (startedAt: number, name?: string) => void;
+  readonly restore: (draft: SessionDraft) => void;
+  readonly acknowledgeRecovery: () => void;
   readonly setName: (name: string) => void;
   readonly addExercise: (exercise: Exercise, prefill?: readonly PreviewSet[]) => void;
   readonly removeExercise: (exerciseLocalId: string) => void;
@@ -62,7 +68,13 @@ const localId = (prefix: string): string => `${prefix}${(seq += 1)}`;
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(Math.max(value, min), max);
 
-const INITIAL = { active: false, name: '', startedAt: null as number | null, exercises: [] };
+const INITIAL = {
+  active: false,
+  recovered: false,
+  name: '',
+  startedAt: null as number | null,
+  exercises: [],
+};
 
 function mapExercise(
   state: SessionState,
@@ -75,7 +87,36 @@ function mapExercise(
 export const useSessionStore = create<SessionState>((set, get) => ({
   ...INITIAL,
   actions: {
-    start: (startedAt, name = 'Workout') => set({ active: true, name, startedAt, exercises: [] }),
+    start: (startedAt, name = 'Workout') =>
+      set({ active: true, recovered: false, name, startedAt, exercises: [] }),
+
+    // Rehydrate a crash-recovered session (ARCHITECTURE §7.1). localIds are minted
+    // fresh through the same counter so ids created after recovery never collide.
+    restore: (draft) =>
+      set({
+        active: true,
+        recovered: true,
+        name: draft.name,
+        startedAt: draft.startedAt,
+        exercises: draft.exercises.map((ex) => ({
+          localId: localId('ex'),
+          exerciseId: ex.exerciseId,
+          name: ex.name,
+          loadType: ex.loadType,
+          unilateralCounting: ex.unilateralCounting,
+          sets: ex.sets.map((s) => ({
+            localId: localId('set'),
+            weightKg: s.weightKg,
+            reps: s.reps,
+            rpe: s.rpe,
+            warmup: s.warmup,
+            done: s.done,
+          })),
+        })),
+      }),
+
+    // Dismiss the recovery banner without ending the session (the workout stays live).
+    acknowledgeRecovery: () => set({ recovered: false }),
 
     setName: (name) => set({ name }),
 

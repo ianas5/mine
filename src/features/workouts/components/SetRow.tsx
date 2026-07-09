@@ -5,6 +5,7 @@ import { Pressable, Text, View } from 'react-native';
 import { triggerHaptic, useTheme } from '@/core/theme';
 import type { LoadType } from '@/domain/fitness';
 
+import { useRestActions } from '../stores/useRestTimerStore';
 import { useSessionActions, type SessionSet } from '../stores/useSessionStore';
 import { SetValueControl } from './SetValueControl';
 
@@ -19,14 +20,19 @@ interface SetRowProps {
 export function SetRow(props: SetRowProps): ReactNode {
   const theme = useTheme();
   const actions = useSessionActions();
+  const rest = useRestActions();
   const { set, loadType, exerciseLocalId } = props;
 
   const showWeight = loadType !== 'bodyweight' && loadType !== 'timed';
   const repsIsSeconds = loadType === 'timed';
 
   const complete = (): void => {
-    if (!set.done) triggerHaptic('light');
+    const becomingDone = !set.done;
+    if (becomingDone) triggerHaptic('light');
     actions.toggleSetDone(exerciseLocalId, set.localId);
+    // Auto-start rest only when a WORKING set is completed (UI_UX §4.2) — warm-ups
+    // and un-checking a set never start a rest.
+    if (becomingDone && !set.warmup) rest.start(exerciseLocalId, Date.now());
   };
 
   return (

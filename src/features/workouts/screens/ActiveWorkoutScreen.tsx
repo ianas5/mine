@@ -13,10 +13,12 @@ import { workoutRepository } from '@/data/repositories/workoutRepository';
 
 import { ActiveExerciseCard } from '../components/ActiveExerciseCard';
 import { ExercisePickerSheet } from '../components/ExercisePickerSheet';
+import { RestTimerBar } from '../components/RestTimerBar';
 import { WorkoutSummarySheet } from '../components/WorkoutSummarySheet';
 import { useDefaultBodyweight } from '../hooks/useDefaultBodyweight';
 import { useElapsed } from '../hooks/useElapsed';
 import { sessionToStatExercises, sessionToWorkoutInput } from '../logic/sessionMapping';
+import { useRestActions } from '../stores/useRestTimerStore';
 import { useSessionActions, useSessionStore } from '../stores/useSessionStore';
 
 /** The active workout — the heart of the app (Phase 4). Fast logging, clear progress. */
@@ -25,6 +27,7 @@ export function ActiveWorkoutScreen(): ReactNode {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const actions = useSessionActions();
+  const restActions = useRestActions();
 
   const active = useSessionStore((s) => s.active);
   const name = useSessionStore((s) => s.name);
@@ -56,6 +59,7 @@ export function ActiveWorkoutScreen(): ReactNode {
     computeWorkoutStats(sessionToStatExercises(exercises), bodyweightKg).workingSetCount > 0;
 
   const leave = (): void => {
+    restActions.reset();
     actions.discard();
     router.back();
   };
@@ -140,6 +144,10 @@ export function ActiveWorkoutScreen(): ReactNode {
         <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
           {exercises.length} exercises · {doneSets}/{totalSets} sets done
         </Text>
+      </View>
+
+      <View style={{ paddingHorizontal: theme.space.lg, paddingBottom: theme.space.sm }}>
+        <RestTimerBar />
       </View>
 
       <ScrollView

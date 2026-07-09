@@ -1,13 +1,26 @@
 import { Tabs } from 'expo-router';
+// expo-router does not re-export the default tab bar at its top level; this is the
+// canonical component behind Tabs, imported so a custom `tabBar` can dock the
+// session bar directly above it (content reflows above both — no floating overlay).
+import { BottomTabBar } from 'expo-router/build/react-navigation/bottom-tabs';
+import type { BottomTabBarProps } from 'expo-router/build/react-navigation/bottom-tabs';
 import { ChartLine, Dumbbell, LayoutDashboard, Ruler, UtensilsCrossed } from 'lucide-react-native';
 import type { ReactNode } from 'react';
+import { View } from 'react-native';
 
 import { useTheme } from '@/core/theme';
+import { SessionBar } from '@/features/workouts/components/SessionBar';
 
 export default function TabsLayout(): ReactNode {
   const theme = useTheme();
   return (
     <Tabs
+      tabBar={(props: BottomTabBarProps) => (
+        <View>
+          <SessionBar />
+          <BottomTabBar {...props} />
+        </View>
+      )}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: theme.color.accent,

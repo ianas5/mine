@@ -13,6 +13,7 @@ import { useEffect, type ReactNode } from 'react';
 import { DbGate } from '@/core/db';
 import { ThemeProvider } from '@/core/theme';
 import { ToastHost } from '@/core/ui';
+import { SessionKeeper } from '@/features/workouts/components/SessionKeeper';
 // Composition root: data-layer artifacts are injected here so core never imports data.
 import { seedDatabase } from '@/data/seed/seedDatabase';
 import migrations from '@/data/schema/migrations/migrations';
@@ -40,6 +41,8 @@ export default function RootLayout(): ReactNode {
   return (
     <ThemeProvider>
       <DbGate migrations={migrations} afterMigrate={seedDatabase}>
+        {/* Crash-safety engine: recovery on launch + live draft checkpointing (§7.1). */}
+        <SessionKeeper />
         <StatusBar style="auto" />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />

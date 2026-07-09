@@ -67,7 +67,19 @@ export const exerciseRepository = {
         updatedAt: now,
       });
     } catch (cause) {
-      if (cause instanceof Error && /UNIQUE|constraint/i.test(cause.message)) {
+      // Read the driver message/code WITHOUT gating on `instanceof Error`: the
+      // SQLite driver's error type binds `Error` to whichever module realm loaded
+      // the native addon first, so `instanceof` is unreliable across Jest's
+      // per-file realms and would let a genuine UNIQUE violation escape unmapped.
+      const detail =
+        typeof cause === 'object' && cause !== null && 'message' in cause
+          ? String((cause as { message: unknown }).message)
+          : String(cause);
+      const code =
+        typeof cause === 'object' && cause !== null && 'code' in cause
+          ? String((cause as { code: unknown }).code)
+          : '';
+      if (/UNIQUE|constraint/i.test(detail) || code.startsWith('SQLITE_CONSTRAINT')) {
         throw new DuplicateExerciseNameError(input.name.trim());
       }
       throw cause;

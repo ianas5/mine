@@ -110,6 +110,23 @@ export const workoutExercises = sqliteTable(
 );
 export type WorkoutExerciseRow = typeof workoutExercises.$inferSelect;
 
+/**
+ * `workout_drafts` — crash-safe active-session checkpoint (DATABASE §3.4,
+ * ARCHITECTURE §7.1). Deliberately a single-row JSON blob (`id = 1`): a recovery
+ * snapshot of the in-memory session, rewritten on debounce/background and deleted
+ * on finish/discard. Zod-validated before resume; excluded from every backup path.
+ */
+export const workoutDrafts = sqliteTable(
+  'workout_drafts',
+  {
+    id: integer('id').primaryKey(),
+    payload: text('payload').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [check('workout_drafts_single_row', sql`${table.id} = 1`)],
+);
+export type WorkoutDraftRow = typeof workoutDrafts.$inferSelect;
+
 /** `sets` — one performed set (DATABASE §3.4). `reps` holds seconds for timed exercises. */
 export const sets = sqliteTable(
   'sets',

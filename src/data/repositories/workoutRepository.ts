@@ -12,7 +12,10 @@ import {
 import type { Workout, WorkoutExercise } from '@/domain/models';
 
 import { newId } from '../id';
-import { exercises, sets, workoutExercises, workouts } from '../schema/tables';
+import { exercises, sets, workoutDrafts, workoutExercises, workouts } from '../schema/tables';
+
+/** The single-row id for the crash-safe draft (DATABASE §3.4: `id = 1`). */
+const DRAFT_ID = 1;
 
 export interface SetEditPatch {
   readonly weightKg?: number;
@@ -98,10 +101,45 @@ export const workoutRepository = {
           });
         }
       }
+
+      // Finish is a single durable write that also clears the draft in the SAME
+      // transaction (ARCHITECTURE §7.1.2): the saved workout and the vanished
+      // draft commit together, so a crash can never leave both — or neither.
+      await db.delete(workoutDrafts).where(eq(workoutDrafts.id, DRAFT_ID));
     });
 
     emitTableChanges('workouts');
     return workoutId;
+  },
+
+  /**
+   * Writes the crash-safe checkpoint (ARCHITECTURE §7.1). Upsert of the single
+   * draft row; high-frequency, so it does NOT touch the change-bus. The payload
+   * is an opaque JSON string owned by the workouts feature — the repository does
+   * not interpret it (keeping the session shape out of the data layer).
+   */
+  async checkpointDraft(payload: string): Promise<void> {
+    await getDb()
+      .insert(workoutDrafts)
+      .values({ id: DRAFT_ID, payload, updatedAt: Date.now() })
+      .onConflictDoUpdate({
+        target: workoutDrafts.id,
+        set: { payload, updatedAt: Date.now() },
+      });
+  },
+
+  /** Loads the raw draft payload for recovery, or null when none exists. */
+  async loadDraft(): Promise<string | null> {
+    const rows = await getDb()
+      .select({ payload: workoutDrafts.payload })
+      .from(workoutDrafts)
+      .where(eq(workoutDrafts.id, DRAFT_ID));
+    return rows[0]?.payload ?? null;
+  },
+
+  /** Removes the draft (on explicit discard, or after recovering an invalid one). */
+  async discardDraft(): Promise<void> {
+    await getDb().delete(workoutDrafts).where(eq(workoutDrafts.id, DRAFT_ID));
   },
 
   /** Loads a full workout tree (joins exercise name/load type) or null. */
