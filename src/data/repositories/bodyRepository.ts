@@ -30,6 +30,15 @@ export const bodyRepository = {
     return rows.map(rowToSnapshot);
   },
 
+  /** Dates that have a snapshot, newest first — the compare-view date pickers (§5.4). */
+  async snapshotDates(): Promise<IsoDate[]> {
+    const rows = await getDb()
+      .select({ date: bodySnapshots.date })
+      .from(bodySnapshots)
+      .orderBy(desc(bodySnapshots.date));
+    return rows.map((r) => r.date);
+  },
+
   /** Weigh-ins (date + weight) newest first — the input to the delta'd weight log. */
   async getWeightLog(): Promise<{ date: IsoDate; weightKg: number }[]> {
     const rows = await getDb()

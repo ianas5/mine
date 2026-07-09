@@ -1,7 +1,13 @@
-import { Settings, TrendingDown, TrendingUp } from 'lucide-react-native';
+import {
+  ArrowLeftRight,
+  ChevronRight,
+  Settings,
+  TrendingDown,
+  TrendingUp,
+} from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { useState, type ReactNode } from 'react';
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
 import { useTheme } from '@/core/theme';
 import { Button, Card, EmptyState, IconButton, Screen, Section, Skeleton } from '@/core/ui';
@@ -152,6 +158,28 @@ export function MeasurementsScreen(): ReactNode {
                 ))}
               </Card>
             </Section>
+          ) : null}
+
+          {data.snapshots.length >= 2 ? (
+            <Pressable
+              onPress={() => router.push('/measurements/compare')}
+              accessibilityRole="button"
+              accessibilityLabel="Compare two dates"
+              style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+            >
+              <Card style={{ flexDirection: 'row', alignItems: 'center', gap: theme.space.md }}>
+                <ArrowLeftRight color={theme.color.accent} size={22} strokeWidth={1.75} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ ...theme.type.body, color: theme.color.textPrimary }}>
+                    Compare
+                  </Text>
+                  <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
+                    See the change between any two dates
+                  </Text>
+                </View>
+                <ChevronRight color={theme.color.textTertiary} size={20} />
+              </Card>
+            </Pressable>
           ) : null}
         </View>
       )}

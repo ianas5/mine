@@ -16,3 +16,11 @@ export {
   type FieldLatest,
   type WeightLogEntry,
 } from './snapshot';
+export {
+  compareSnapshots,
+  BODY_DIRECTION,
+  BODY_STABILITY,
+  type BodyDirection,
+  type ChangeDirection,
+  type FieldComparison,
+} from './comparison';
