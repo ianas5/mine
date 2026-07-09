@@ -13,12 +13,18 @@ import { useEffect, type ReactNode } from 'react';
 import { DbGate } from '@/core/db';
 import { ThemeProvider } from '@/core/theme';
 import { ToastHost } from '@/core/ui';
+import { PhotoSweeper } from '@/features/measurements/components/PhotoSweeper';
 import { SessionKeeper } from '@/features/workouts/components/SessionKeeper';
 // Composition root: data-layer artifacts are injected here so core never imports data.
+import { expoPhotoStore } from '@/data/photos/expoPhotoStore';
+import { setPhotoStore } from '@/data/photos/photoStore';
 import { seedDatabase } from '@/data/seed/seedDatabase';
 import migrations from '@/data/schema/migrations/migrations';
 
 void SplashScreen.preventAutoHideAsync();
+
+// Wire the real filesystem-backed photo store once (like the SQLite handle).
+setPhotoStore(expoPhotoStore);
 
 export default function RootLayout(): ReactNode {
   const [fontsLoaded] = useFonts({
@@ -43,6 +49,8 @@ export default function RootLayout(): ReactNode {
       <DbGate migrations={migrations} afterMigrate={seedDatabase}>
         {/* Crash-safety engine: recovery on launch + live draft checkpointing (§7.1). */}
         <SessionKeeper />
+        {/* Reconcile photo files vs metadata on launch (DATABASE §3.6 orphan sweep). */}
+        <PhotoSweeper />
         <StatusBar style="auto" />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />

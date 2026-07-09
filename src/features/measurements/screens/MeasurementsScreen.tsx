@@ -1,6 +1,7 @@
 import {
   ArrowLeftRight,
   ChevronRight,
+  Images,
   Settings,
   TrendingDown,
   TrendingUp,
@@ -106,6 +107,26 @@ export function MeasurementsScreen(): ReactNode {
           <Button label="Measurements" variant="secondary" onPress={() => setMeasureOpen(true)} />
         </View>
       </View>
+
+      <Pressable
+        onPress={() => router.push('/measurements/photos')}
+        accessibilityRole="button"
+        accessibilityLabel="Progress photos"
+        style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1, marginBottom: theme.space.lg })}
+      >
+        <Card style={{ flexDirection: 'row', alignItems: 'center', gap: theme.space.md }}>
+          <Images color={theme.color.accent} size={22} strokeWidth={1.75} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ ...theme.type.body, color: theme.color.textPrimary }}>
+              Progress photos
+            </Text>
+            <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
+              Capture and compare your visual progress
+            </Text>
+          </View>
+          <ChevronRight color={theme.color.textTertiary} size={20} />
+        </Card>
+      </Pressable>
 
       {data === undefined ? (
         <View style={{ gap: theme.space.md }}>

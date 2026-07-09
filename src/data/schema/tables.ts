@@ -336,3 +336,30 @@ export const bodySnapshots = sqliteTable('body_snapshots', {
   updatedAt: integer('updated_at').notNull(),
 });
 export type BodySnapshotRow = typeof bodySnapshots.$inferSelect;
+
+const PHOTO_ANGLES = ['front', 'side', 'back'] as const;
+
+/**
+ * `progress_photos` — metadata only; image bytes live on the filesystem
+ * (ARCHITECTURE §12, DATABASE §3.6). `file_name` is the relative name under
+ * `<documentDirectory>/photos/`; the file/row pair is kept consistent by the
+ * repository (file-first on save, row-first on delete) + a startup orphan sweep.
+ */
+export const progressPhotos = sqliteTable(
+  'progress_photos',
+  {
+    id: text('id').primaryKey(),
+    date: text('date').notNull(),
+    angle: text('angle').notNull(),
+    fileName: text('file_name').notNull().unique(),
+    width: integer('width'),
+    height: integer('height'),
+    notes: text('notes'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    index('progress_photos_date').on(table.date),
+    check('progress_photos_angle', oneOf('angle', PHOTO_ANGLES)),
+  ],
+);
+export type ProgressPhotoRow = typeof progressPhotos.$inferSelect;
