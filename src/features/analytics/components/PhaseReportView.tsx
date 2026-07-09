@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Text, View } from 'react-native';
 
 import { useTheme } from '@/core/theme';
-import { Card, StatTile, type StatTone } from '@/core/ui';
+import { Card, SettleIn, StatTile, type StatTone } from '@/core/ui';
 import { formatKg } from '@/core/utils';
 import {
   type KeyExerciseStrength,
@@ -35,27 +35,36 @@ function dayLabel(span: number, weeks: number): string {
 
 /** Renders a full Phase Report (ANALYTICS §5.4) — a coach's read of the block, not a
  * spreadsheet: the intent verdict leads, then body change, training quality, nutrition. */
-export function PhaseReportView(props: { readonly report: PhaseReport }): ReactNode {
+export function PhaseReportView(props: {
+  readonly report: PhaseReport;
+  /** Set when arriving straight from completing the phase — the report *is* the reward, so
+   * its identity header lands with a quiet settle (delight registry #3). */
+  readonly celebrate?: boolean;
+}): ReactNode {
   const theme = useTheme();
   const { report } = props;
   const { phase, training } = report;
 
+  const header = (
+    <View style={{ gap: theme.space.xs }}>
+      <Text style={{ ...theme.type.micro, color: theme.color.textSecondary }}>
+        {PHASE_TYPE_LABELS[phase.type].toUpperCase()}
+        {report.ongoing ? ' · ONGOING' : ''}
+      </Text>
+      <Text style={{ ...theme.type.title, color: theme.color.textPrimary }}>{phase.name}</Text>
+      <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
+        {phase.startDate} → {report.ongoing ? 'today' : phase.endDate} ·{' '}
+        {dayLabel(report.spanDays, training.weeks)}
+      </Text>
+      <Text style={{ ...theme.type.caption, color: theme.color.textTertiary }}>
+        Goal: {PHASE_INTENT[phase.type].summary}
+      </Text>
+    </View>
+  );
+
   return (
     <View style={{ gap: theme.space.xl }}>
-      <View style={{ gap: theme.space.xs }}>
-        <Text style={{ ...theme.type.micro, color: theme.color.textSecondary }}>
-          {PHASE_TYPE_LABELS[phase.type].toUpperCase()}
-          {report.ongoing ? ' · ONGOING' : ''}
-        </Text>
-        <Text style={{ ...theme.type.title, color: theme.color.textPrimary }}>{phase.name}</Text>
-        <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
-          {phase.startDate} → {report.ongoing ? 'today' : phase.endDate} ·{' '}
-          {dayLabel(report.spanDays, training.weeks)}
-        </Text>
-        <Text style={{ ...theme.type.caption, color: theme.color.textTertiary }}>
-          Goal: {PHASE_INTENT[phase.type].summary}
-        </Text>
-      </View>
+      {props.celebrate ? <SettleIn>{header}</SettleIn> : header}
 
       <IntentBanner verdict={report.nutrition.intent} />
 

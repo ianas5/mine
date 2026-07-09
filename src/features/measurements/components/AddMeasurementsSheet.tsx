@@ -1,16 +1,26 @@
 import { useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 
-import { useTheme } from '@/core/theme';
+import { triggerHaptic, useTheme } from '@/core/theme';
 import { Button, Input, Sheet, showToast } from '@/core/ui';
 import { todayIso } from '@/core/utils';
-import { BODY_FIELDS, BODY_FIELD_META, type BodyField, type FieldLatest } from '@/domain/body';
+import {
+  BODY_FIELDS,
+  BODY_FIELD_META,
+  bestFieldValues,
+  isFieldBest,
+  type BodyField,
+  type BodySnapshot,
+  type FieldLatest,
+} from '@/domain/body';
 import { bodyRepository, type MeasurementPatch } from '@/data/repositories/bodyRepository';
 
 interface AddMeasurementsSheetProps {
   readonly visible: boolean;
   readonly latest: Record<BodyField, FieldLatest | null>;
   readonly expanded: ReadonlySet<BodyField>;
+  /** Prior history — used to detect a "best yet" measurement (delight registry #4). */
+  readonly snapshots: readonly BodySnapshot[];
   readonly onClose: () => void;
 }
 
@@ -48,8 +58,20 @@ export function AddMeasurementsSheet(props: AddMeasurementsSheetProps): ReactNod
       close();
       return;
     }
+    // A "best yet" in the improving direction earns the one gentle moment (§5.4 #4);
+    // a routine save just confirms. Detect before writing, against prior history.
+    const bests = bestFieldValues(props.snapshots);
+    const best = (Object.keys(patch) as BodyField[]).find((f) =>
+      isFieldBest(f, bests[f] ?? null, patch[f]!),
+    );
     await bodyRepository.saveSnapshot(todayIso(), patch);
-    showToast('Measurements saved', 'success');
+    if (best !== undefined) {
+      triggerHaptic('light');
+      const meta = BODY_FIELD_META[best];
+      showToast(`New best — ${meta.label} ${patch[best]}${meta.unit ? ` ${meta.unit}` : ''}`);
+    } else {
+      showToast('Measurements saved');
+    }
     close();
   };
 

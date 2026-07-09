@@ -2,7 +2,7 @@ import { useMemo, type ReactNode } from 'react';
 import { Text, View } from 'react-native';
 
 import { useTheme } from '@/core/theme';
-import { Button, Sheet } from '@/core/ui';
+import { Button, useCountUp, SettleIn, Sheet } from '@/core/ui';
 import { formatElapsed } from '@/core/utils';
 import { computeWorkoutStats } from '@/domain/fitness';
 
@@ -29,6 +29,12 @@ export function WorkoutSummarySheet(props: WorkoutSummarySheetProps): ReactNode 
     [props.exercises, props.bodyweightKg],
   );
 
+  // Count the summary numbers up briefly when the sheet opens (delight registry #2).
+  const setsUp = Math.round(useCountUp(stats.workingSetCount, { enabled: props.visible }));
+  const volumeUp = Math.round(
+    useCountUp(Math.round(stats.totalVolumeKg), { enabled: props.visible }),
+  );
+
   const stat = (value: string, label: string): ReactNode => (
     <View style={{ flex: 1, alignItems: 'center', gap: theme.space.xs }}>
       <Text
@@ -49,25 +55,27 @@ export function WorkoutSummarySheet(props: WorkoutSummarySheetProps): ReactNode 
       <View style={{ gap: theme.space.xl }}>
         <View style={{ flexDirection: 'row' }}>
           {stat(formatElapsed(props.elapsedMs), 'DURATION')}
-          {stat(String(stats.workingSetCount), 'WORKING SETS')}
-          {stat(`${Math.round(stats.totalVolumeKg).toLocaleString()}`, 'VOLUME KG')}
+          {stat(String(setsUp), 'WORKING SETS')}
+          {stat(volumeUp.toLocaleString(), 'VOLUME KG')}
         </View>
         {props.prCount > 0 ? (
-          <View
-            style={{
-              alignItems: 'center',
-              paddingVertical: theme.space.md,
-              borderRadius: theme.radius.md,
-              backgroundColor: theme.color.accentSoft,
-            }}
-          >
-            <Text style={{ ...theme.type.heading, color: theme.color.accent }}>
-              {props.prCount} new {props.prCount === 1 ? 'PR' : 'PRs'}
-            </Text>
-            <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
-              A new personal record this session
-            </Text>
-          </View>
+          <SettleIn>
+            <View
+              style={{
+                alignItems: 'center',
+                paddingVertical: theme.space.md,
+                borderRadius: theme.radius.md,
+                backgroundColor: theme.color.accentSoft,
+              }}
+            >
+              <Text style={{ ...theme.type.heading, color: theme.color.accent }}>
+                {props.prCount} new {props.prCount === 1 ? 'PR' : 'PRs'}
+              </Text>
+              <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
+                A new personal record this session
+              </Text>
+            </View>
+          </SettleIn>
         ) : null}
         {stats.volumeLowConfidence ? (
           <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>

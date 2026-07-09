@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { AccessibilityInfo, Animated, type DimensionValue } from 'react-native';
+import { Animated, type DimensionValue } from 'react-native';
 
-import { useTheme } from '@/core/theme';
+import { useReducedMotion, useTheme } from '@/core/theme';
 
 interface SkeletonProps {
   readonly width?: DimensionValue;
@@ -13,11 +13,7 @@ interface SkeletonProps {
 export function Skeleton(props: SkeletonProps): ReactNode {
   const theme = useTheme();
   const [opacity] = useState(() => new Animated.Value(0.5));
-  const [reduceMotion, setReduceMotion] = useState(false);
-
-  useEffect(() => {
-    void AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
-  }, []);
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
     if (reduceMotion) {

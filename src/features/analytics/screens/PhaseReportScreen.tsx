@@ -15,7 +15,7 @@ import { usePhaseReport } from '../hooks/usePhases';
 export function PhaseReportScreen(): ReactNode {
   const theme = useTheme();
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, celebrate } = useLocalSearchParams<{ id: string; celebrate?: string }>();
   const report = usePhaseReport(id ?? null);
 
   const [editing, setEditing] = useState(false);
@@ -69,7 +69,7 @@ export function PhaseReportScreen(): ReactNode {
       ) : report === null ? (
         <EmptyState title="This phase no longer exists." />
       ) : (
-        <PhaseReportView report={report} />
+        <PhaseReportView report={report} celebrate={celebrate === '1'} />
       )}
 
       {report ? (

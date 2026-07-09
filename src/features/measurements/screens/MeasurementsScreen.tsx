@@ -230,6 +230,7 @@ export function MeasurementsScreen(): ReactNode {
           visible={showMeasure}
           latest={data.latest}
           expanded={frequentlyLoggedFields(data.snapshots)}
+          snapshots={data.snapshots}
           onClose={closeMeasure}
         />
       ) : null}

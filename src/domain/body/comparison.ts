@@ -65,6 +65,41 @@ export interface FieldComparison {
   readonly direction: ChangeDirection;
 }
 
+/**
+ * The best value recorded for each directional field across history (delight registry —
+ * "measurement best"). Best = lowest for `lower` fields, highest for `higher`; neutral
+ * fields (weight, BMI — no fixed good direction) are excluded. Pure over snapshots.
+ */
+export function bestFieldValues(
+  snapshots: readonly BodySnapshot[],
+): Partial<Record<BodyField, number>> {
+  const best: Partial<Record<BodyField, number>> = {};
+  for (const snapshot of snapshots) {
+    for (const field of BODY_FIELDS) {
+      const dir = BODY_DIRECTION[field];
+      if (dir === 'neutral') continue;
+      const value = snapshot[field];
+      if (value === null) continue;
+      const current = best[field];
+      if (current === undefined || (dir === 'lower' ? value < current : value > current)) {
+        best[field] = value;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Whether `value` is a new best for `field` in its good direction (FITNESS_DOMAIN §5.3) —
+ * strictly beating the prior best. A field with no prior best, or a neutral-direction field
+ * (weight/BMI), is never a "best yet" (there is nothing to beat, or no direction to beat in).
+ */
+export function isFieldBest(field: BodyField, priorBest: number | null, value: number): boolean {
+  const dir = BODY_DIRECTION[field];
+  if (dir === 'neutral' || priorBest === null) return false;
+  return dir === 'lower' ? value < priorBest : value > priorBest;
+}
+
 const round1 = (value: number): number => Math.round(value * 10) / 10;
 
 /** A field's value for comparison; BMI resolves entered-else-derived (§5.2). */

@@ -169,7 +169,7 @@ export function PhasesScreen(): ReactNode {
         onConfirm={() => {
           const id = completed?.id;
           setCompleted(null);
-          if (id) router.push(reportHref(id));
+          if (id) router.push(`/analytics/phase/${id}?celebrate=1` as Href);
         }}
         onCancel={() => setCompleted(null)}
       />

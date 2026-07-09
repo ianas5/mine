@@ -18,3 +18,5 @@ export { ChartFrame } from './ChartFrame';
 export { Sparkline } from './Sparkline';
 export { ProgressBar } from './ProgressBar';
 export { InsightCard, type InsightCardTone } from './InsightCard';
+export { SettleIn } from './SettleIn';
+export { useCountUp, countUpValue } from './countUp';

@@ -18,6 +18,8 @@ export {
 } from './snapshot';
 export {
   compareSnapshots,
+  bestFieldValues,
+  isFieldBest,
   BODY_DIRECTION,
   BODY_STABILITY,
   type BodyDirection,
