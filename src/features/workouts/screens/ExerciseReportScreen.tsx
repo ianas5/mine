@@ -3,12 +3,34 @@ import { ArrowLeft } from 'lucide-react-native';
 import type { ReactNode } from 'react';
 import { Text, View } from 'react-native';
 
-import { useTheme } from '@/core/theme';
-import { Card, EmptyState, IconButton, Screen, Skeleton } from '@/core/ui';
+import { useTheme, type Theme } from '@/core/theme';
+import {
+  Card,
+  EmptyState,
+  IconButton,
+  Screen,
+  Skeleton,
+  Sparkline,
+  type StatTone,
+} from '@/core/ui';
 import { formatKg, formatRelativeDate } from '@/core/utils';
-import type { ExerciseReport } from '@/domain/analytics';
+import type { ExerciseReport, ExerciseTrend, TrendClassification } from '@/domain/analytics';
 
 import { useExerciseReport } from '../hooks/useExerciseReport';
+
+const CLASSIFICATION_TONE: Record<TrendClassification, StatTone> = {
+  improving: 'positive',
+  declining: 'negative',
+  stable: 'neutral',
+  neutral: 'neutral',
+};
+
+function toneColor(theme: Theme, tone: StatTone): string {
+  if (tone === 'positive') return theme.color.positive;
+  if (tone === 'negative') return theme.color.danger;
+  if (tone === 'attention') return theme.color.attention;
+  return theme.color.textSecondary;
+}
 
 const kg = (value: number | null): string => (value === null ? '—' : `${formatKg(value)} kg`);
 /** e1RM displays to the nearest 0.5 kg (FITNESS_DOMAIN §3.5); raw is stored elsewhere. */
@@ -55,18 +77,18 @@ export function ExerciseReportScreen(): ReactNode {
       ) : view.report.totalWorkingSets === 0 ? (
         <EmptyState title="No working sets logged yet — the report fills in as you train." />
       ) : (
-        <LoadedReport name={view.name} report={view.report} />
+        <LoadedReport report={view.report} trend={view.trend} />
       )}
     </Screen>
   );
 }
 
 function LoadedReport(props: {
-  readonly name: string;
   readonly report: ExerciseReport;
+  readonly trend: ExerciseTrend;
 }): ReactNode {
   const theme = useTheme();
-  const { report } = props;
+  const { report, trend } = props;
 
   const cell = (label: string, value: string): ReactNode => (
     <View style={{ flex: 1, gap: theme.space.xs }}>
@@ -132,15 +154,57 @@ function LoadedReport(props: {
         </Card>
       </View>
 
+      <StrengthTrend trend={trend} />
+    </View>
+  );
+}
+
+/** e1RM strength trend (ANALYTICS §5.1/§5.5): sparkline + progression rate, or the
+ * honest "needs more data" state — never a fabricated line. */
+function StrengthTrend(props: { readonly trend: ExerciseTrend }): ReactNode {
+  const theme = useTheme();
+  const { series, trend } = props.trend;
+
+  if (trend.status !== 'ok') {
+    return (
       <Card style={{ gap: theme.space.xs }}>
         <Text style={{ ...theme.type.bodyStrong, color: theme.color.textPrimary }}>
           Strength trend
         </Text>
         <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
-          The e1RM trend chart and progression rate arrive in a later update. Until then, no trend
-          line is shown rather than an estimated one.
+          {trend.needed}.
         </Text>
       </Card>
-    </View>
+    );
+  }
+
+  const tone = CLASSIFICATION_TONE[trend.value.classification];
+  const rate = trend.value.slopePerWeek;
+  const sign = rate > 0 ? '+' : '';
+  return (
+    <Card style={{ gap: theme.space.sm }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <Text style={{ ...theme.type.bodyStrong, color: theme.color.textPrimary }}>
+          Strength trend
+        </Text>
+        <Sparkline
+          values={series.map((p) => p.value)}
+          color={toneColor(theme, tone)}
+          accessibilityLabel="e1RM trend sparkline"
+        />
+      </View>
+      <Text style={{ ...theme.type.caption, color: toneColor(theme, tone) }}>
+        e1RM {trend.value.classification} · {sign}
+        {formatKg(Math.round(rate * 2) / 2)} kg/week over{' '}
+        {trend.value.deltaOverWindow >= 0 ? '+' : ''}
+        {Math.round(trend.value.deltaOverWindow)} kg total
+      </Text>
+    </Card>
   );
 }

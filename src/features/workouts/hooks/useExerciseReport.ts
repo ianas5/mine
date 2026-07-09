@@ -1,14 +1,22 @@
 import { useEffect, useState } from 'react';
 
 import { useTableVersion } from '@/core/db';
+import { todayIso } from '@/core/utils';
 import { workoutRepository } from '@/data/repositories/workoutRepository';
-import { computeExerciseReport, type ExerciseReport } from '@/domain/analytics';
+import {
+  computeExerciseReport,
+  computeExerciseTrend,
+  type ExerciseReport,
+  type ExerciseTrend,
+} from '@/domain/analytics';
 
 import { useDefaultBodyweight } from './useDefaultBodyweight';
 
 export interface ExerciseReportView {
   readonly name: string;
   readonly report: ExerciseReport;
+  /** e1RM strength trend + sparkline series (ANALYTICS §5.1/§5.5). */
+  readonly trend: ExerciseTrend;
 }
 
 /**
@@ -31,6 +39,7 @@ export function useExerciseReport(exerciseId: string): ExerciseReportView | null
           : {
               name: history.name,
               report: computeExerciseReport(history.rows, history.loadType, bodyweightKg),
+              trend: computeExerciseTrend(history.rows, history.loadType, bodyweightKg, todayIso()),
             },
       );
     });

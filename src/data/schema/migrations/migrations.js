@@ -10,6 +10,7 @@ import m0005 from './0005_classy_morbius.sql';
 import m0006 from './0006_lethal_frank_castle.sql';
 import m0007 from './0007_sticky_agent_brand.sql';
 import m0008 from './0008_lame_inertia.sql';
+import m0009 from './0009_striped_donald_blake.sql';
 
 export default {
   journal,
@@ -23,5 +24,6 @@ export default {
     m0006,
     m0007,
     m0008,
+    m0009,
   },
 };

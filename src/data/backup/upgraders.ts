@@ -16,7 +16,13 @@ import { CURRENT_SCHEMA_VERSION } from './schemaVersion';
 type Upgrader = (data: Record<string, unknown>) => Record<string, unknown>;
 
 const UPGRADERS: Readonly<Record<number, Upgrader>> = {
-  // 9: (data) => ({ ...data, phases: [] }),   // example — added in Phase 19
+  // v9 → v10 (migration 0009): settings gained `target_weight_kg`. An older backup's
+  // settings object has no such key; default it to null (no goal set) so the current
+  // Zod shape validates. Nested inside `data.settings`, which is a single object.
+  9: (data) => {
+    const settings = (data.settings ?? {}) as Record<string, unknown>;
+    return { ...data, settings: { targetWeightKg: null, ...settings } };
+  },
 };
 
 /**

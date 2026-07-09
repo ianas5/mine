@@ -86,8 +86,14 @@ function LoadedSettings(props: LoadedSettingsProps): ReactNode {
   const [bodyweightText, setBodyweightText] = useState(() =>
     props.settings.defaultBodyweightKg === null ? '' : String(props.settings.defaultBodyweightKg),
   );
+  const [targetWeightText, setTargetWeightText] = useState(() =>
+    props.settings.targetWeightKg === null ? '' : String(props.settings.targetWeightKg),
+  );
 
-  const commitNumber = (raw: string, field: 'heightCm' | 'defaultBodyweightKg'): void => {
+  const commitNumber = (
+    raw: string,
+    field: 'heightCm' | 'defaultBodyweightKg' | 'targetWeightKg',
+  ): void => {
     const parsed = Number.parseFloat(raw);
     props.update({ [field]: Number.isFinite(parsed) && parsed > 0 ? parsed : null });
   };
@@ -138,8 +144,18 @@ function LoadedSettings(props: LoadedSettingsProps): ReactNode {
             unit="KG"
             placeholder="—"
           />
+          <Input
+            label="Goal weight"
+            value={targetWeightText}
+            onChangeText={setTargetWeightText}
+            onBlur={() => commitNumber(targetWeightText, 'targetWeightKg')}
+            keyboardType="decimal-pad"
+            unit="KG"
+            placeholder="—"
+          />
           <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
-            Used for bodyweight exercises and derived BMI when set.
+            Bodyweight and height feed bodyweight exercises and derived BMI. A goal weight gives
+            your weight trend a direction and an ETA.
           </Text>
         </View>
       </Section>

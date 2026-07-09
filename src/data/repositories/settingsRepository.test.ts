@@ -23,6 +23,7 @@ describe('settingsRepository (real SQLite via migrations)', () => {
       weeklyWorkoutTarget: 4,
       defaultBodyweightKg: null,
       heightCm: null,
+      targetWeightKg: null,
       waterCupMl: 250,
     });
   });

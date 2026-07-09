@@ -23,6 +23,7 @@ const settingsRow = z.object({
   weeklyWorkoutTarget: int,
   defaultBodyweightKg: real.nullable(),
   heightCm: real.nullable(),
+  targetWeightKg: real.nullable(),
   waterCupMl: int,
   createdAt: int,
   updatedAt: int,

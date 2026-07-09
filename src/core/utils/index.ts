@@ -6,5 +6,6 @@ export {
   isoWeekday,
   weekdayLabel,
   addDaysIso,
+  daysBetweenIso,
 } from './date';
 export { formatKg } from './number';

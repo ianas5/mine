@@ -64,12 +64,23 @@ describe('parseAndUpgradeEnvelope', () => {
     );
   });
 
-  it('refuses an older schema with no upgrader path as unsupported-schema', () => {
+  it('upgrades a v9 backup (settings without targetWeightKg) to the current shape', () => {
+    // v9 predates target_weight_kg (migration 0009); its settings object omits the key.
+    const v9 = JSON.parse(makeEnvelopeJson(sampleBackupData())) as {
+      schemaVersion: number;
+      data: { settings: Record<string, unknown> };
+    };
+    v9.schemaVersion = 9;
+    delete v9.data.settings.targetWeightKg;
+
+    const envelope = parseAndUpgradeEnvelope(JSON.stringify(v9));
+    expect(envelope.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(envelope.data.settings.targetWeightKg).toBeNull(); // defaulted, not guessed
+  });
+
+  it('refuses a schema older than any upgrader path as unsupported-schema', () => {
     expectImportError(
-      () =>
-        parseAndUpgradeEnvelope(
-          makeEnvelopeJson(sampleBackupData(), { schemaVersion: CURRENT_SCHEMA_VERSION - 1 }),
-        ),
+      () => parseAndUpgradeEnvelope(makeEnvelopeJson(sampleBackupData(), { schemaVersion: 8 })),
       'unsupported-schema',
     );
   });

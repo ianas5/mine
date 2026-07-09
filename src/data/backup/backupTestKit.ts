@@ -17,6 +17,7 @@ export function sampleBackupData(): BackupData {
       weeklyWorkoutTarget: 4,
       defaultBodyweightKg: 80,
       heightCm: 180,
+      targetWeightKg: 75,
       waterCupMl: 250,
       createdAt: 1,
       updatedAt: 1,

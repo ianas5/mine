@@ -7,6 +7,7 @@ export function rowToSettings(row: SettingsRow): Settings {
     weeklyWorkoutTarget: row.weeklyWorkoutTarget,
     defaultBodyweightKg: row.defaultBodyweightKg,
     heightCm: row.heightCm,
+    targetWeightKg: row.targetWeightKg,
     waterCupMl: row.waterCupMl,
   };
 }

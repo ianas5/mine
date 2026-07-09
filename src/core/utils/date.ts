@@ -17,6 +17,13 @@ export function addDaysIso(iso: IsoDate, days: number): IsoDate {
   return todayIso(d);
 }
 
+/** Whole calendar days from `from` to `to` (device-local; negative if `to` precedes `from`). */
+export function daysBetweenIso(from: IsoDate, to: IsoDate): number {
+  const a = new Date(`${from}T00:00:00`);
+  const b = new Date(`${to}T00:00:00`);
+  return Math.round((b.getTime() - a.getTime()) / 86_400_000);
+}
+
 /** ISO weekday for a date: 0 = Monday … 6 = Sunday (DATABASE §3.3 templates.weekday). */
 export function isoWeekday(iso: IsoDate): number {
   const jsDay = new Date(`${iso}T00:00:00`).getDay(); // 0 = Sunday … 6 = Saturday

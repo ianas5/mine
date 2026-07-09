@@ -31,6 +31,9 @@ export const settings = sqliteTable(
     weeklyWorkoutTarget: integer('weekly_workout_target').notNull().default(4),
     defaultBodyweightKg: real('default_bodyweight_kg'),
     heightCm: real('height_cm'),
+    // Goal weight (kg) that gives weight trend/distance-to-target a direction to judge
+    // against (FITNESS_DOMAIN §5.3, ANALYTICS §5.3). Null = no goal set.
+    targetWeightKg: real('target_weight_kg'),
     waterCupMl: integer('water_cup_ml').notNull().default(250),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),

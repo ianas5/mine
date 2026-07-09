@@ -9,6 +9,17 @@ import {
   type LoadType,
 } from '@/domain/fitness';
 
+import { computeTrend, type Trend } from './trend';
+import type { MetricResult } from './metricResult';
+import { sortByDate, type SeriesPoint } from './timeSeries';
+
+/**
+ * Stability deadband (kg) for the e1RM strength trend. FITNESS_DOMAIN §6.4 fixes
+ * deadbands for body metrics only; strength (§3.5/§5.1) has none, so this is an
+ * analytics-level constant (a new metric's threshold, not a redefinition of §6.4).
+ */
+export const E1RM_STABILITY_KG = 2.5;
+
 /**
  * The Exercise Report data contract (ANALYTICS §5.5), all-time. Trend and
  * progression rate are time-series analytics deferred to Phase 15 (stated
@@ -88,4 +99,57 @@ export function computeExerciseReport(
     avgEffectiveLoadKg: loadCount > 0 ? loadSum / loadCount : null,
     lastPerformed,
   };
+}
+
+/**
+ * The per-workout best-e1RM series (ANALYTICS §5.1 "strength trend"): one point per
+ * workout = the best e1RM among its e1RM-eligible working sets. Reuses
+ * `computeExerciseBests` per workout so it matches the report's `bestE1rmKg` exactly.
+ * Ascending by date; workouts with no eligible set contribute no point.
+ */
+export function bestE1rmSeries(
+  rows: readonly ExerciseSetRow[],
+  loadType: LoadType,
+  bodyweightKg: number | null,
+): SeriesPoint[] {
+  const byWorkout = new Map<string, { date: IsoDate; rows: ExerciseSetRow[] }>();
+  for (const row of rows) {
+    const bucket = byWorkout.get(row.workoutId);
+    if (bucket) bucket.rows.push(row);
+    else byWorkout.set(row.workoutId, { date: row.date, rows: [row] });
+  }
+
+  const series: SeriesPoint[] = [];
+  for (const { date, rows: workoutRows } of byWorkout.values()) {
+    const best = computeExerciseBests(workoutRows, loadType, bodyweightKg).bestE1rmKg;
+    if (best !== null) series.push({ date, value: best });
+  }
+  return sortByDate(series);
+}
+
+export interface ExerciseTrend {
+  /** Per-workout best e1RM, ascending — the sparkline series. */
+  readonly series: SeriesPoint[];
+  /** Regression trend; `slopePerWeek` is the progression rate (kg/week) when `ok`. */
+  readonly trend: MetricResult<Trend>;
+}
+
+/**
+ * The e1RM strength trend for an exercise (closes the Phase 7 trend debt). Higher e1RM
+ * is better (§5.3); below the §6.4 minimums it returns `insufficient-data` — the report
+ * shows the series' latest with no fabricated slope.
+ */
+export function computeExerciseTrend(
+  rows: readonly ExerciseSetRow[],
+  loadType: LoadType,
+  bodyweightKg: number | null,
+  today: IsoDate,
+): ExerciseTrend {
+  const series = bestE1rmSeries(rows, loadType, bodyweightKg);
+  const trend = computeTrend(
+    series,
+    { stabilityThreshold: E1RM_STABILITY_KG, goodDirection: 'higher', pointNoun: 'sessions' },
+    { key: 'all', startDate: series[0]?.date ?? null, endDate: today, days: null },
+  );
+  return { series, trend };
 }

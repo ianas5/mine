@@ -6,6 +6,8 @@ export interface Settings {
   readonly defaultBodyweightKg: number | null;
   /** For derived BMI (FITNESS_DOMAIN §5.2). Null = unset. */
   readonly heightCm: number | null;
+  /** Goal weight in kg — gives weight trend a direction to judge (FITNESS_DOMAIN §5.3). Null = no goal. */
+  readonly targetWeightKg: number | null;
   /** Water logging increment (FITNESS_DOMAIN §4.1). */
   readonly waterCupMl: number;
 }
