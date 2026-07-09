@@ -8,6 +8,18 @@ export function todayIso(now: Date = new Date()): IsoDate {
   return `${y}-${m}-${d}`;
 }
 
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+/** Humanized recency: `Today`, `Yesterday`, or `Mon · 4d ago` (FITNESS_DOMAIN §2.3 dates). */
+export function formatRelativeDate(iso: IsoDate, now: Date = new Date()): string {
+  const d = new Date(`${iso}T00:00:00`);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.round((today.getTime() - d.getTime()) / 86_400_000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  return `${WEEKDAYS[d.getDay()] ?? ''} · ${days}d ago`;
+}
+
 /** Formats an elapsed duration as `M:SS` (or `H:MM:SS` past an hour). */
 export function formatElapsed(ms: EpochMs): string {
   const total = Math.max(0, Math.floor(ms / 1000));

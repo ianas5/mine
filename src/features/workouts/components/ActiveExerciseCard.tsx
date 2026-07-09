@@ -5,7 +5,9 @@ import { Pressable, Text, View } from 'react-native';
 import { useTheme } from '@/core/theme';
 import { Card, Chip } from '@/core/ui';
 
+import { useExercisePreview } from '../hooks/useExercisePreview';
 import { useSessionActions, type SessionExercise } from '../stores/useSessionStore';
+import { ExerciseHistoryPanel } from './ExerciseHistoryPanel';
 import { SetRow } from './SetRow';
 
 interface ActiveExerciseCardProps {
@@ -18,6 +20,7 @@ export function ActiveExerciseCard(props: ActiveExerciseCardProps): ReactNode {
   const actions = useSessionActions();
   const { exercise } = props;
   const isUnilateral = exercise.unilateralCounting !== 'none';
+  const preview = useExercisePreview(exercise.exerciseId, exercise.loadType);
 
   return (
     <Card style={{ gap: theme.space.sm }}>
@@ -50,6 +53,8 @@ export function ActiveExerciseCard(props: ActiveExerciseCardProps): ReactNode {
           />
         </View>
       ) : null}
+
+      <ExerciseHistoryPanel preview={preview} loadType={exercise.loadType} />
 
       <View>
         {exercise.sets.map((set, index) => (

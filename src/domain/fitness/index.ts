@@ -29,3 +29,5 @@ export {
 export type { RawSet, UnilateralCounting } from './sets';
 export { computeWorkoutStats, isCountableWorkout } from './workoutStats';
 export type { StatExercise, WorkoutStats } from './workoutStats';
+export { summarizeExerciseHistory } from './exerciseHistory';
+export type { ExercisePreview, HistorySetRow, PreviewSet } from './exerciseHistory';

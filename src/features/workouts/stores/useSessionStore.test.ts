@@ -39,6 +39,20 @@ describe('useSessionStore', () => {
     expect(state().exercises[1]?.unilateralCounting).toBe('single_doubled');
   });
 
+  it('prefills sets from history when adding an exercise', () => {
+    state().actions.start(1000);
+    state().actions.addExercise(exercise(), [
+      { weightKg: 80, reps: 8 },
+      { weightKg: 80, reps: 8 },
+      { weightKg: 75, reps: 10 },
+    ]);
+
+    const sets = state().exercises[0]!.sets;
+    expect(sets).toHaveLength(3);
+    expect(sets[0]).toMatchObject({ weightKg: 80, reps: 8, done: false });
+    expect(sets[2]).toMatchObject({ weightKg: 75, reps: 10 });
+  });
+
   it('inherits the previous set values when adding a set', () => {
     state().actions.start(1000);
     state().actions.addExercise(exercise());

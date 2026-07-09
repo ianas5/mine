@@ -75,6 +75,12 @@ export function ActiveWorkoutScreen(): ReactNode {
     }
   };
 
+  // Prefill the added exercise with last time's sets so repeats need zero typing (Phase 5).
+  const addExerciseWithHistory = async (exercise: Exercise): Promise<void> => {
+    const preview = await workoutRepository.getExercisePreview(exercise.id, exercise.loadType);
+    actions.addExercise(exercise, preview.last?.sets);
+  };
+
   const requestDiscard = (): void => {
     setSummaryOpen(false);
     if (hasWorkingSets) {
@@ -181,7 +187,7 @@ export function ActiveWorkoutScreen(): ReactNode {
       <ExercisePickerSheet
         visible={pickerOpen}
         onClose={() => setPickerOpen(false)}
-        onPick={(exercise: Exercise) => actions.addExercise(exercise)}
+        onPick={(exercise: Exercise) => void addExerciseWithHistory(exercise)}
       />
       <WorkoutSummarySheet
         visible={summaryOpen}

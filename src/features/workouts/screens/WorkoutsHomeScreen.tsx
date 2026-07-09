@@ -4,8 +4,9 @@ import type { ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { useTheme } from '@/core/theme';
-import { Button, Card, Screen } from '@/core/ui';
+import { Button, Card, Screen, Section } from '@/core/ui';
 
+import { RecentWorkoutList } from '../components/RecentWorkoutList';
 import { useSessionActions, useSessionStore } from '../stores/useSessionStore';
 
 /** Workouts home — start a session or manage the catalog (grows in Phases 5/8). */
@@ -92,6 +93,12 @@ export function WorkoutsHomeScreen(): ReactNode {
           <ChevronRight color={theme.color.textTertiary} size={20} />
         </Card>
       </Pressable>
+
+      <View style={{ marginTop: theme.space.xl }}>
+        <Section title="Recent">
+          <RecentWorkoutList />
+        </Section>
+      </View>
     </Screen>
   );
 }

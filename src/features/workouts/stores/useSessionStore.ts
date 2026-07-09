@@ -5,6 +5,7 @@ import {
   REPS_MAX,
   RPE_MAX,
   type LoadType,
+  type PreviewSet,
   type UnilateralCounting,
 } from '@/domain/fitness';
 import type { Exercise } from '@/domain/models';
@@ -45,7 +46,7 @@ interface SetPatch {
 interface SessionActions {
   readonly start: (startedAt: number, name?: string) => void;
   readonly setName: (name: string) => void;
-  readonly addExercise: (exercise: Exercise) => void;
+  readonly addExercise: (exercise: Exercise, prefill?: readonly PreviewSet[]) => void;
   readonly removeExercise: (exerciseLocalId: string) => void;
   readonly setCounting: (exerciseLocalId: string, counting: UnilateralCounting) => void;
   readonly addSet: (exerciseLocalId: string) => void;
@@ -78,29 +79,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     setName: (name) => set({ name }),
 
-    addExercise: (exercise) =>
-      set((state) => ({
-        exercises: [
-          ...state.exercises,
-          {
-            localId: localId('ex'),
-            exerciseId: exercise.id,
-            name: exercise.name,
-            loadType: exercise.loadType,
-            unilateralCounting: exercise.defaultUnilateral ? 'single_doubled' : 'none',
-            sets: [
-              {
+    // Prefill from last time's working sets (Phase 5) so a repeated exercise is
+    // logged with zero typing — tap ✓ down the list. Falls back to one empty set.
+    addExercise: (exercise, prefill) =>
+      set((state) => {
+        const source = prefill && prefill.length > 0 ? prefill : [{ weightKg: 0, reps: 0 }];
+        return {
+          exercises: [
+            ...state.exercises,
+            {
+              localId: localId('ex'),
+              exerciseId: exercise.id,
+              name: exercise.name,
+              loadType: exercise.loadType,
+              unilateralCounting: exercise.defaultUnilateral ? 'single_doubled' : 'none',
+              sets: source.map((s) => ({
                 localId: localId('set'),
-                weightKg: 0,
-                reps: 0,
+                weightKg: s.weightKg,
+                reps: s.reps,
                 rpe: null,
                 warmup: false,
                 done: false,
-              },
-            ],
-          },
-        ],
-      })),
+              })),
+            },
+          ],
+        };
+      }),
 
     removeExercise: (exerciseLocalId) =>
       set((state) => ({

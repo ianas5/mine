@@ -1,12 +1,24 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 
 import { emitTableChanges, getDb, runInTransaction } from '@/core/db';
 import { todayIso } from '@/core/utils';
-import type { LoadType, UnilateralCounting } from '@/domain/fitness';
+import {
+  summarizeExerciseHistory,
+  type ExercisePreview,
+  type HistorySetRow,
+  type LoadType,
+  type UnilateralCounting,
+} from '@/domain/fitness';
 import type { Workout, WorkoutExercise } from '@/domain/models';
 
 import { newId } from '../id';
 import { exercises, sets, workoutExercises, workouts } from '../schema/tables';
+
+export interface SetEditPatch {
+  readonly weightKg?: number;
+  readonly reps?: number;
+  readonly warmup?: boolean;
+}
 
 export interface NewSetInput {
   readonly weightKg: number;
@@ -167,6 +179,73 @@ export const workoutRepository = {
     await getDb()
       .delete(workouts)
       .where(and(eq(workouts.id, id)));
+    emitTableChanges('workouts');
+  },
+
+  /** Most recent workouts (full trees), newest first — powers the history list. */
+  async listRecent(limit = 20): Promise<Workout[]> {
+    const idRows = await getDb()
+      .select({ id: workouts.id })
+      .from(workouts)
+      .orderBy(desc(workouts.date), desc(workouts.createdAt))
+      .limit(limit);
+    const result: Workout[] = [];
+    for (const { id } of idRows) {
+      const workout = await this.getById(id);
+      if (workout) result.push(workout);
+    }
+    return result;
+  },
+
+  /** All logged sets of an exercise across history, newest workout first (for the preview). */
+  async getExerciseHistory(exerciseId: string): Promise<HistorySetRow[]> {
+    const rows = await getDb()
+      .select({
+        workoutId: workouts.id,
+        date: workouts.date,
+        workoutOrder: workouts.createdAt,
+        position: sets.position,
+        weightKg: sets.weightKg,
+        reps: sets.reps,
+        isWarmup: sets.isWarmup,
+      })
+      .from(sets)
+      .innerJoin(workoutExercises, eq(sets.workoutExerciseId, workoutExercises.id))
+      .innerJoin(workouts, eq(workoutExercises.workoutId, workouts.id))
+      .where(eq(workoutExercises.exerciseId, exerciseId))
+      .orderBy(desc(workouts.createdAt), asc(sets.position));
+    return rows.map((r) => ({
+      workoutId: r.workoutId,
+      date: r.date,
+      workoutOrder: r.workoutOrder,
+      weightKg: r.weightKg,
+      reps: r.reps,
+      warmup: r.isWarmup === 1,
+    }));
+  },
+
+  /** Last / Best / Best e1RM for an exercise (FITNESS_DOMAIN §3, computed in the domain). */
+  async getExercisePreview(exerciseId: string, loadType: LoadType): Promise<ExercisePreview> {
+    const rows = await this.getExerciseHistory(exerciseId);
+    return summarizeExerciseHistory(rows, loadType);
+  },
+
+  /** Edits a saved set; derived views recompute via the change-bus (ARCHITECTURE rule 8). */
+  async updateSet(setId: string, patch: SetEditPatch): Promise<void> {
+    await getDb()
+      .update(sets)
+      .set({
+        ...(patch.weightKg !== undefined && { weightKg: patch.weightKg }),
+        ...(patch.reps !== undefined && { reps: patch.reps }),
+        ...(patch.warmup !== undefined && { isWarmup: patch.warmup ? 1 : 0 }),
+      })
+      .where(eq(sets.id, setId));
+    emitTableChanges('workouts');
+  },
+
+  /** Deletes a single saved set. */
+  async deleteSet(setId: string): Promise<void> {
+    await getDb().delete(sets).where(eq(sets.id, setId));
     emitTableChanges('workouts');
   },
 } as const;
