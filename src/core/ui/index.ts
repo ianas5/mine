@@ -16,3 +16,4 @@ export { Sheet } from './Sheet';
 export { StatTile, type StatTone } from './StatTile';
 export { ChartFrame } from './ChartFrame';
 export { Sparkline } from './Sparkline';
+export { ProgressBar } from './ProgressBar';

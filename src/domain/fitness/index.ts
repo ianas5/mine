@@ -35,3 +35,11 @@ export { computeExerciseBests, detectNewPRs, EMPTY_BESTS } from './personalRecor
 export type { ExerciseBests, ExerciseSetRow, PrEvent, PrKind } from './personalRecords';
 export { suggestTemplate } from './templateSuggestion';
 export type { RecentTemplateUse, TemplateSuggestion } from './templateSuggestion';
+export {
+  weekStartIso,
+  countableWorkoutsByWeek,
+  currentWeekProgress,
+  weekConsistencyPercent,
+  weeklyStreak,
+  type WeekProgress,
+} from './consistency';

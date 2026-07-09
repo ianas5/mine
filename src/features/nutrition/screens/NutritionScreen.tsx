@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ChevronLeft, ChevronRight, SlidersHorizontal, UtensilsCrossed } from 'lucide-react-native';
 import { useState, type ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
@@ -23,6 +23,15 @@ export function NutritionScreen(): ReactNode {
   const [logOpen, setLogOpen] = useState(false);
   const day = useNutritionDay(date);
   const cupMl = useWaterCupMl();
+
+  // A dashboard quick action (?open=meal) drives the sheet open directly — no effect
+  // (UI_UX §7.2, 1 tap to the sheet). Closing clears the intent so a repeat tap re-fires.
+  const { open } = useLocalSearchParams<{ open?: string }>();
+  const showLog = logOpen || open === 'meal';
+  const closeLog = (): void => {
+    setLogOpen(false);
+    if (open === 'meal') router.setParams({ open: undefined });
+  };
 
   return (
     <Screen scroll>
@@ -109,12 +118,12 @@ export function NutritionScreen(): ReactNode {
       )}
 
       <LogMealSheet
-        visible={logOpen}
+        visible={showLog}
         date={date}
         nowHour={new Date().getHours()}
-        onClose={() => setLogOpen(false)}
+        onClose={closeLog}
         onCreateFood={() => {
-          setLogOpen(false);
+          closeLog();
           router.push('/nutrition/foods/new');
         }}
       />

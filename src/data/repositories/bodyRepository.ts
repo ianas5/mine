@@ -30,6 +30,21 @@ export const bodyRepository = {
     return rows.map(rowToSnapshot);
   },
 
+  /**
+   * The most recent weigh-in (kg), or null when none exists. FITNESS_DOMAIN §5.2 makes
+   * the latest weigh-in the canonical bodyweight source (preferred over the manual
+   * settings fallback for bodyweight-load volume).
+   */
+  async getLatestWeightKg(): Promise<number | null> {
+    const rows = await getDb()
+      .select({ weightKg: bodySnapshots.weightKg })
+      .from(bodySnapshots)
+      .where(isNotNull(bodySnapshots.weightKg))
+      .orderBy(desc(bodySnapshots.date))
+      .limit(1);
+    return rows[0]?.weightKg ?? null;
+  },
+
   /** Dates that have a snapshot, newest first — the compare-view date pickers (§5.4). */
   async snapshotDates(): Promise<IsoDate[]> {
     const rows = await getDb()

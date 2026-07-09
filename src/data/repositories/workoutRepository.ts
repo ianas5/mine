@@ -1,8 +1,9 @@
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, gte } from 'drizzle-orm';
 
 import { emitTableChanges, getDb, runInTransaction } from '@/core/db';
-import { todayIso } from '@/core/utils';
+import { todayIso, type IsoDate } from '@/core/utils';
 import {
+  isWorkingSet,
   summarizeExerciseHistory,
   type ExercisePreview,
   type ExerciseSetRow,
@@ -213,6 +214,44 @@ export const workoutRepository = {
       .from(workouts)
       .where(eq(workouts.date, date));
     return rows.length;
+  },
+
+  /**
+   * Dates of **countable** workouts (≥ 1 working set, §3.8) since a date — one entry
+   * per countable workout (two on a day → two entries). SQL only fetches the rows;
+   * the domain `isWorkingSet` (which needs load type, not just the warm-up flag)
+   * decides countability, so no domain semantics leak into SQL (ANALYTICS rule 9).
+   * Feeds the dashboard streak + weekly-consistency (§3.8).
+   */
+  async getCountableWorkoutDatesSince(sinceIso: IsoDate): Promise<IsoDate[]> {
+    const rows = await getDb()
+      .select({
+        workoutId: workouts.id,
+        date: workouts.date,
+        loadType: exercises.loadType,
+        weightKg: sets.weightKg,
+        reps: sets.reps,
+        isWarmup: sets.isWarmup,
+      })
+      .from(sets)
+      .innerJoin(workoutExercises, eq(sets.workoutExerciseId, workoutExercises.id))
+      .innerJoin(exercises, eq(workoutExercises.exerciseId, exercises.id))
+      .innerJoin(workouts, eq(workoutExercises.workoutId, workouts.id))
+      .where(gte(workouts.date, sinceIso));
+
+    const countable = new Map<string, IsoDate>();
+    for (const r of rows) {
+      if (countable.has(r.workoutId)) continue;
+      if (
+        isWorkingSet(
+          { weightKg: r.weightKg, reps: r.reps, warmup: r.isWarmup === 1 },
+          r.loadType as LoadType,
+        )
+      ) {
+        countable.set(r.workoutId, r.date);
+      }
+    }
+    return [...countable.values()];
   },
 
   /** Deletes a workout and its cascade tree. */

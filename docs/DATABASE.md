@@ -48,6 +48,7 @@ id                     INTEGER PK CHECK (id = 1)      — enforced single row
 weekly_workout_target  INTEGER NOT NULL DEFAULT 4     — FITNESS_DOMAIN §3.8
 default_bodyweight_kg  REAL NULL                      — fallback for bodyweight loads (§3.4)
 height_cm              REAL NULL                      — for derived BMI (§5.2)
+target_weight_kg       REAL NULL                      — goal weight for weight trend/ETA (§5.3)
 water_cup_ml           INTEGER NOT NULL DEFAULT 250   — water increment (§4.1)
 created_at, updated_at INTEGER NOT NULL
 ```
@@ -442,3 +443,4 @@ Change-bus contract: every write emits the owning table name(s) (ARCHITECTURE §
 ## Changelog
 
 - 2026-07-08 — v1 baseline frozen (safety-export wording refinement applied; `phases` table + `phaseRepository` added per approved ANALYTICS_ENGINE amendment; table count corrected to sixteen).
+- 2026-07-09 — §3.1 `settings.target_weight_kg REAL NULL` added (Phase 15 ratified amendment): schema alignment for the weight trend/distance-to-target goal already referenced by FITNESS_DOMAIN §5.3 and ANALYTICS §5.3. Migration 0009; backup `schemaVersion` → 10 with a v9→v10 upgrader.

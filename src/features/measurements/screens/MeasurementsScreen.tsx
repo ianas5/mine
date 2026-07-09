@@ -6,7 +6,7 @@ import {
   TrendingDown,
   TrendingUp,
 } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState, type ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
@@ -52,6 +52,20 @@ export function MeasurementsScreen(): ReactNode {
   const heightCm = useBodyHeightCm();
   const [weightOpen, setWeightOpen] = useState(false);
   const [measureOpen, setMeasureOpen] = useState(false);
+
+  // Dashboard quick actions (?open=weight | measure) drive the sheet open directly — no
+  // effect (UI_UX §7.2, 1 tap). Closing clears the intent so a repeat tap re-fires.
+  const { open } = useLocalSearchParams<{ open?: string }>();
+  const showWeight = weightOpen || open === 'weight';
+  const showMeasure = measureOpen || open === 'measure';
+  const closeWeight = (): void => {
+    setWeightOpen(false);
+    if (open === 'weight') router.setParams({ open: undefined });
+  };
+  const closeMeasure = (): void => {
+    setMeasureOpen(false);
+    if (open === 'measure') router.setParams({ open: undefined });
+  };
 
   const lastWeight = data?.latest.weightKg?.value ?? null;
   const bmi = data?.latest.bmi?.value ?? deriveBmi(lastWeight, heightCm);
@@ -207,16 +221,16 @@ export function MeasurementsScreen(): ReactNode {
 
       <AddWeightSheet
         key={`w-${lastWeight ?? 'none'}`}
-        visible={weightOpen}
+        visible={showWeight}
         lastWeightKg={lastWeight}
-        onClose={() => setWeightOpen(false)}
+        onClose={closeWeight}
       />
       {data ? (
         <AddMeasurementsSheet
-          visible={measureOpen}
+          visible={showMeasure}
           latest={data.latest}
           expanded={frequentlyLoggedFields(data.snapshots)}
-          onClose={() => setMeasureOpen(false)}
+          onClose={closeMeasure}
         />
       ) : null}
     </Screen>
