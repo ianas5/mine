@@ -3,7 +3,12 @@ import { asc, desc, eq, gte, lte } from 'drizzle-orm';
 import { emitTableChanges, getDb } from '@/core/db';
 import type { IsoDate } from '@/core/utils';
 import type { DailyNutrition } from '@/domain/analytics';
-import type { MealSlot, ServingUnit } from '@/domain/nutrition';
+import {
+  aggregateFoodUsage,
+  orderFoodPicks,
+  type MealSlot,
+  type ServingUnit,
+} from '@/domain/nutrition';
 import type { Food, MealEntry, NutritionTarget } from '@/domain/models';
 
 import { newId } from '../id';
@@ -92,20 +97,6 @@ function rowToEntry(r: typeof mealEntries.$inferSelect): MealEntry {
   };
 }
 
-const mostFrequent = (slots: readonly (MealSlot | null)[]): MealSlot | null => {
-  const counts = new Map<MealSlot, number>();
-  for (const s of slots) if (s !== null) counts.set(s, (counts.get(s) ?? 0) + 1);
-  let best: MealSlot | null = null;
-  let bestCount = 0;
-  for (const [slot, count] of counts) {
-    if (count > bestCount) {
-      bestCount = count;
-      best = slot;
-    }
-  }
-  return best;
-};
-
 export const nutritionRepository = {
   /** Non-archived foods, alphabetical (the base catalog behind search). */
   async listFoods(): Promise<Food[]> {
@@ -124,9 +115,10 @@ export const nutritionRepository = {
   },
 
   /**
-   * Foods for the Log Meal sheet (UI_UX §4.3): most-used first with quick meals
-   * pinned, each carrying its last-used portion and most-frequent slot as smart
-   * defaults. Frequency/last-used are computed over a recent window of entries.
+   * Foods for the Log Meal sheet (UI_UX §4.3/§5.2): most-used first with quick meals
+   * pinned, each carrying its last-used portion and habitual slot as smart defaults.
+   * SQL retrieves the recent window; the ranking/last-used/most-frequent heuristic is
+   * the pure `domain/nutrition` function — the repository only fetches and delegates.
    */
   async getFoodPicks(): Promise<FoodPick[]> {
     const db = getDb();
@@ -142,48 +134,15 @@ export const nutritionRepository = {
       .orderBy(desc(mealEntries.loggedAt))
       .limit(PICKER_WINDOW);
 
-    interface Usage {
-      count: number;
-      lastAmount: number | null;
-      lastLoggedAt: number;
-      slots: (MealSlot | null)[];
-    }
-    const usage = new Map<string, Usage>();
-    for (const r of recent) {
-      if (r.foodId === null) continue;
-      const u = usage.get(r.foodId);
-      if (u) {
-        u.count += 1;
-        u.slots.push(r.slot as MealSlot | null);
-      } else {
-        // First seen = most recent (rows are newest-first) → its amount is "last used".
-        usage.set(r.foodId, {
-          count: 1,
-          lastAmount: r.loggedAmount,
-          lastLoggedAt: r.loggedAt,
-          slots: [r.slot as MealSlot | null],
-        });
-      }
-    }
-
-    return foodList
-      .map((food) => {
-        const u = usage.get(food.id);
-        return {
-          food,
-          lastAmount: u?.lastAmount ?? null,
-          slot: u ? mostFrequent(u.slots) : null,
-          useCount: u?.count ?? 0,
-        };
-      })
-      .sort((a, b) => {
-        if (a.food.isQuickMeal !== b.food.isQuickMeal) return a.food.isQuickMeal ? -1 : 1;
-        if (a.useCount !== b.useCount) return b.useCount - a.useCount;
-        const aLast = usage.get(a.food.id)?.lastLoggedAt ?? 0;
-        const bLast = usage.get(b.food.id)?.lastLoggedAt ?? 0;
-        if (aLast !== bLast) return bLast - aLast;
-        return a.food.name.localeCompare(b.food.name);
-      });
+    const usage = aggregateFoodUsage(
+      recent.map((r) => ({
+        foodId: r.foodId,
+        loggedAmount: r.loggedAmount,
+        slot: r.slot as MealSlot | null,
+        loggedAt: r.loggedAt,
+      })),
+    );
+    return orderFoodPicks(foodList, usage);
   },
 
   async createFood(input: FoodInput): Promise<string> {

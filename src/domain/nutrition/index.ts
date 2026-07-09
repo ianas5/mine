@@ -22,3 +22,12 @@ export {
   type MacroStatus,
   type DayAdherence,
 } from './adherence';
+export {
+  mostFrequentSlot,
+  aggregateFoodUsage,
+  orderFoodPicks,
+  type MealUsageRow,
+  type FoodUsage,
+  type RankableFood,
+  type FoodPickOf,
+} from './foodPicks';
