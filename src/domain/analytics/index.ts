@@ -56,6 +56,29 @@ export {
   type MuscleAnalyticsInput,
   type ExerciseRef,
 } from './muscleAnalytics';
+export { computeRecompSignal, type RecompSignal } from './recomp';
+export {
+  evaluateInsights,
+  selectDashboardInsights,
+  stampCooldowns,
+  RULES,
+  type Insight,
+  type InsightContext,
+  type InsightCategory,
+  type InsightTone,
+  type InsightEvidence,
+  type CooldownMap,
+} from './insights';
+export {
+  computeNutritionAnalytics,
+  proteinMissStreak,
+  trailingSignals,
+  calorieSkew,
+  type NutritionAnalytics,
+  type NutritionAnalyticsInput,
+  type DailyNutrition,
+  type AdherenceStat,
+} from './nutritionAnalytics';
 export {
   computeBodyAnalytics,
   WEIGHT_STABILITY_KG,

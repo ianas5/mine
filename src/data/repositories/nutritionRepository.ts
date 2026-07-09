@@ -1,11 +1,21 @@
-import { asc, desc, eq, lte } from 'drizzle-orm';
+import { asc, desc, eq, gte, lte } from 'drizzle-orm';
 
 import { emitTableChanges, getDb } from '@/core/db';
+import type { IsoDate } from '@/core/utils';
+import type { DailyNutrition } from '@/domain/analytics';
 import type { MealSlot, ServingUnit } from '@/domain/nutrition';
 import type { Food, MealEntry, NutritionTarget } from '@/domain/models';
 
 import { newId } from '../id';
 import { foods, mealEntries, nutritionTargets, waterDays } from '../schema/tables';
+
+const toTargetMacros = (t: NutritionTarget) => ({
+  kcal: t.kcal,
+  proteinG: t.proteinG,
+  carbG: t.carbG,
+  fatG: t.fatG,
+  waterMl: t.waterMl,
+});
 
 export interface TargetInput {
   readonly kcal: number;
@@ -241,6 +251,63 @@ export const nutritionRepository = {
       .where(eq(mealEntries.date, date))
       .orderBy(asc(mealEntries.loggedAt));
     return rows.map(rowToEntry);
+  },
+
+  /**
+   * Per-day nutrition since a date for the analytics calculators (§5.2): summed meal-entry
+   * macros + water + the target resolved through the single canonical path (targets are
+   * resolved here in-repo, never in the engine — DATABASE rule 13). One row per date that
+   * has meal entries or water; `logged` marks days with ≥ 1 meal entry.
+   */
+  async getDailyNutritionSince(sinceIso: IsoDate): Promise<DailyNutrition[]> {
+    const db = getDb();
+    const [entryRows, waterRows, targets] = await Promise.all([
+      db
+        .select({
+          date: mealEntries.date,
+          kcal: mealEntries.kcal,
+          proteinG: mealEntries.proteinG,
+          carbG: mealEntries.carbG,
+          fatG: mealEntries.fatG,
+        })
+        .from(mealEntries)
+        .where(gte(mealEntries.date, sinceIso)),
+      db
+        .select({ date: waterDays.date, ml: waterDays.ml })
+        .from(waterDays)
+        .where(gte(waterDays.date, sinceIso)),
+      this.listTargets(), // newest-first by effective_from
+    ]);
+
+    const totals = new Map<
+      string,
+      { kcal: number; proteinG: number; carbG: number; fatG: number }
+    >();
+    for (const r of entryRows) {
+      const t = totals.get(r.date) ?? { kcal: 0, proteinG: 0, carbG: 0, fatG: 0 };
+      totals.set(r.date, {
+        kcal: t.kcal + r.kcal,
+        proteinG: t.proteinG + r.proteinG,
+        carbG: t.carbG + r.carbG,
+        fatG: t.fatG + r.fatG,
+      });
+    }
+    const water = new Map<string, number>(waterRows.map((r) => [r.date, r.ml]));
+    // Resolve target per date against the same greatest-effective_from ≤ date rule.
+    const targetFor = (date: string): NutritionTarget | null =>
+      targets.find((t) => t.effectiveFrom <= date) ?? null;
+
+    const dates = new Set<string>([...totals.keys(), ...water.keys()]);
+    return [...dates].sort().map((date) => {
+      const target = targetFor(date);
+      return {
+        date: date as IsoDate,
+        totals: totals.get(date) ?? { kcal: 0, proteinG: 0, carbG: 0, fatG: 0 },
+        target: target ? toTargetMacros(target) : null,
+        waterMl: water.get(date) ?? null,
+        logged: totals.has(date),
+      };
+    });
   },
 
   /** Logs a meal entry with its macros already snapshotted (scaled per §4.2). */

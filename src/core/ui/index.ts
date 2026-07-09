@@ -17,3 +17,4 @@ export { StatTile, type StatTone } from './StatTile';
 export { ChartFrame } from './ChartFrame';
 export { Sparkline } from './Sparkline';
 export { ProgressBar } from './ProgressBar';
+export { InsightCard, type InsightCardTone } from './InsightCard';

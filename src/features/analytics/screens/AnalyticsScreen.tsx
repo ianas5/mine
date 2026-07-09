@@ -23,6 +23,8 @@ import {
   type TrendClassification,
 } from '@/domain/analytics';
 
+import { InsightList } from '../components/InsightList';
+import { NutritionSection } from '../components/NutritionSection';
 import { TrainingSection } from '../components/TrainingSection';
 import { TrendChart } from '../components/TrendChart';
 import { useBodyAnalytics, type BodyAnalyticsView } from '../hooks/useBodyAnalytics';
@@ -69,6 +71,10 @@ export function AnalyticsScreen(): ReactNode {
       </Text>
 
       <View style={{ marginBottom: theme.space.lg }}>
+        <InsightList />
+      </View>
+
+      <View style={{ marginBottom: theme.space.lg }}>
         <SegmentedControl
           options={RANGE_OPTIONS}
           selectedIndex={rangeIndex}
@@ -90,14 +96,8 @@ export function AnalyticsScreen(): ReactNode {
         <TrainingSection range={range} />
       </View>
 
-      <View style={{ marginTop: theme.space.xl, gap: theme.space.sm }}>
-        <Text style={{ ...theme.type.micro, color: theme.color.textSecondary }}>NUTRITION</Text>
-        <Card>
-          <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
-            Nutrition analytics arrive in the next update. Nothing is estimated until the data
-            supports it.
-          </Text>
-        </Card>
+      <View style={{ marginTop: theme.space.xl }}>
+        <NutritionSection range={range} />
       </View>
     </Screen>
   );

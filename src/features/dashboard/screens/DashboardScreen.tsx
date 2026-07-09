@@ -14,7 +14,8 @@ import type { ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { useTheme, type Theme } from '@/core/theme';
-import { Card, IconButton, ProgressBar, Screen, Skeleton } from '@/core/ui';
+import { Card, IconButton, InsightCard, ProgressBar, Screen, Skeleton } from '@/core/ui';
+import { insightEvidenceHref, useInsights } from '@/data/analytics/useInsights';
 
 import { Ring } from '../components/Ring';
 import { useDashboard, type DashboardData } from '../hooks/useDashboard';
@@ -65,7 +66,8 @@ export function DashboardScreen(props: DashboardScreenProps): ReactNode {
             </>
           )}
 
-          {/* Insight slot — empty-capable; insights arrive in Phase 18, hidden in Focus Mode. */}
+          {/* Insight slot (ANALYTICS §6.5) — top-3, hidden during Focus Mode (§5.1). */}
+          {active ? null : <InsightSlot />}
 
           <StreakLine data={data} />
         </View>
@@ -380,6 +382,28 @@ function QuickActions(props: { readonly focus: boolean }): ReactNode {
           </Pressable>
         );
       })}
+    </View>
+  );
+}
+
+function InsightSlot(): ReactNode {
+  const theme = useTheme();
+  const router = useRouter();
+  const insights = useInsights();
+  if (!insights || insights.dashboard.length === 0) return null;
+
+  return (
+    <View style={{ gap: theme.space.sm }}>
+      {insights.dashboard.map((insight) => (
+        <InsightCard
+          key={insight.instanceKey}
+          tone={insight.tone}
+          title={insight.title}
+          body={insight.body}
+          onPress={() => router.push(insightEvidenceHref(insight.evidence) as Href)}
+          onDismiss={() => insights.dismiss(insight.instanceKey, insight.classification)}
+        />
+      ))}
     </View>
   );
 }
