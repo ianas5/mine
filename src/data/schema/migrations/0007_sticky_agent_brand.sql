@@ -1,0 +1,22 @@
+CREATE TABLE `body_snapshots` (
+	`date` text PRIMARY KEY NOT NULL,
+	`weight_kg` real,
+	`body_fat_pct` real,
+	`muscle_mass_kg` real,
+	`visceral_fat` real,
+	`bmi` real,
+	`neck_cm` real,
+	`chest_cm` real,
+	`waist_cm` real,
+	`hips_cm` real,
+	`left_arm_cm` real,
+	`right_arm_cm` real,
+	`left_forearm_cm` real,
+	`right_forearm_cm` real,
+	`left_thigh_cm` real,
+	`right_thigh_cm` real,
+	`left_calf_cm` real,
+	`right_calf_cm` real,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
+);

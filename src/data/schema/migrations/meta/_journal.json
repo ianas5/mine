@@ -50,6 +50,13 @@
       "when": 1783588614112,
       "tag": "0006_lethal_frank_castle",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1783589390871,
+      "tag": "0007_sticky_agent_brand",
+      "breakpoints": true
     }
   ]
 }

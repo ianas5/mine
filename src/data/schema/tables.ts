@@ -306,3 +306,33 @@ export const waterDays = sqliteTable('water_days', {
   updatedAt: integer('updated_at').notNull(),
 });
 export type WaterDayRow = typeof waterDays.$inferSelect;
+
+/**
+ * `body_snapshots` — one per date, field-merged (DATABASE §3.6, FITNESS_DOMAIN
+ * §5.1). Every field is optional; bilateral sites are stored per side, never
+ * collapsed. Saving updates only the fields present in the input; clearing a field
+ * is a separate, deliberate action (the repository enforces the merge contract).
+ */
+export const bodySnapshots = sqliteTable('body_snapshots', {
+  date: text('date').primaryKey(),
+  weightKg: real('weight_kg'),
+  bodyFatPct: real('body_fat_pct'),
+  muscleMassKg: real('muscle_mass_kg'),
+  visceralFat: real('visceral_fat'),
+  bmi: real('bmi'),
+  neckCm: real('neck_cm'),
+  chestCm: real('chest_cm'),
+  waistCm: real('waist_cm'),
+  hipsCm: real('hips_cm'),
+  leftArmCm: real('left_arm_cm'),
+  rightArmCm: real('right_arm_cm'),
+  leftForearmCm: real('left_forearm_cm'),
+  rightForearmCm: real('right_forearm_cm'),
+  leftThighCm: real('left_thigh_cm'),
+  rightThighCm: real('right_thigh_cm'),
+  leftCalfCm: real('left_calf_cm'),
+  rightCalfCm: real('right_calf_cm'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+export type BodySnapshotRow = typeof bodySnapshots.$inferSelect;
