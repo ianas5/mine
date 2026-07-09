@@ -71,6 +71,13 @@
       "when": 1783595656133,
       "tag": "0009_striped_donald_blake",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1783602589876,
+      "tag": "0010_brief_raider",
+      "breakpoints": true
     }
   ]
 }

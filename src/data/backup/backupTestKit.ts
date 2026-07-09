@@ -48,6 +48,18 @@ export function sampleBackupData(): BackupData {
         updatedAt: 1,
       },
     ],
+    phases: [
+      {
+        id: 'ph1',
+        name: 'Winter Cut',
+        type: 'cutting',
+        startDate: '2026-01-01',
+        endDate: null,
+        notes: null,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ],
     templates: [
       {
         id: 'tp1',

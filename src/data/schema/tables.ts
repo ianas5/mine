@@ -10,6 +10,7 @@ import {
 } from 'drizzle-orm/sqlite-core';
 
 import { LOAD_TYPES, MUSCLE_GROUPS } from '@/domain/fitness';
+import { PHASE_TYPES } from '@/domain/models';
 import { MEAL_SLOTS, SERVING_UNITS } from '@/domain/nutrition';
 
 const UNILATERAL_COUNTING = ['none', 'single_doubled', 'per_side'] as const;
@@ -339,6 +340,33 @@ export const bodySnapshots = sqliteTable('body_snapshots', {
   updatedAt: integer('updated_at').notNull(),
 });
 export type BodySnapshotRow = typeof bodySnapshots.$inferSelect;
+
+/**
+ * `phases` — user-declared training phases (DATABASE §3.7, ANALYTICS_ENGINE §5.4).
+ * Never auto-detected. The no-overlap and single-ongoing (`end_date IS NULL`)
+ * invariants are enforced in `phaseRepository` within a transaction — not the schema,
+ * which only guards the ordering (`end_date >= start_date`) and the type enum. In
+ * backups. Index on `(start_date)` for phase lookup and overlap checks.
+ */
+export const phases = sqliteTable(
+  'phases',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    type: text('type').notNull(),
+    startDate: text('start_date').notNull(),
+    endDate: text('end_date'),
+    notes: text('notes'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    index('phases_start').on(table.startDate),
+    check('phases_type', oneOf('type', PHASE_TYPES)),
+    check('phases_dates', sql`${table.endDate} IS NULL OR ${table.endDate} >= ${table.startDate}`),
+  ],
+);
+export type PhaseRow = typeof phases.$inferSelect;
 
 const PHOTO_ANGLES = ['front', 'side', 'back'] as const;
 

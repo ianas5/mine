@@ -58,6 +58,20 @@ export {
 } from './muscleAnalytics';
 export { computeRecompSignal, type RecompSignal } from './recomp';
 export {
+  computePhaseReport,
+  PHASE_MIN_DAYS,
+  PHASE_MIN_SNAPSHOTS,
+  type PhaseReport,
+  type PhaseReportInput,
+  type PhaseBodyDeltas,
+  type PhaseTrainingSummary,
+  type PhaseNutritionSummary,
+  type PhaseIntentVerdict,
+  type PhaseWeeklyRates,
+  type PhasePr,
+  type IntentAlignment,
+} from './phaseAnalytics';
+export {
   evaluateInsights,
   selectDashboardInsights,
   stampCooldowns,

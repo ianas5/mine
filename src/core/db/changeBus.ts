@@ -6,7 +6,7 @@ import { useSyncExternalStore } from 'react';
  * an emitter keyed by table name — no query keys, no staleness policies.
  */
 export type TableName =
-  'settings' | 'exercises' | 'workouts' | 'programs' | 'nutrition' | 'body' | 'photos';
+  'settings' | 'exercises' | 'workouts' | 'programs' | 'nutrition' | 'body' | 'photos' | 'phases';
 
 type Listener = () => void;
 

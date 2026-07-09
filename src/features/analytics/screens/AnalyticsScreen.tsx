@@ -23,6 +23,7 @@ import {
   type TrendClassification,
 } from '@/domain/analytics';
 
+import { CurrentPhaseCard } from '../components/CurrentPhaseCard';
 import { InsightList } from '../components/InsightList';
 import { NutritionSection } from '../components/NutritionSection';
 import { TrainingSection } from '../components/TrainingSection';
@@ -72,6 +73,10 @@ export function AnalyticsScreen(): ReactNode {
 
       <View style={{ marginBottom: theme.space.lg }}>
         <InsightList />
+      </View>
+
+      <View style={{ marginBottom: theme.space.lg }}>
+        <CurrentPhaseCard />
       </View>
 
       <View style={{ marginBottom: theme.space.lg }}>

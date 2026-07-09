@@ -23,6 +23,10 @@ const UPGRADERS: Readonly<Record<number, Upgrader>> = {
     const settings = (data.settings ?? {}) as Record<string, unknown>;
     return { ...data, settings: { targetWeightKg: null, ...settings } };
   },
+  // v10 → v11 (migration 0010): the `phases` table was added (Phase 19). An older
+  // backup has no `phases` array; default it to empty (no declared phases) so the
+  // current Zod shape validates. Phases are additive — no existing data changes.
+  10: (data) => ({ phases: [], ...data }),
 };
 
 /**

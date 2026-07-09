@@ -183,6 +183,17 @@ const bodySnapshotRow = z.object({
   updatedAt: int,
 });
 
+const phaseRow = z.object({
+  id: str,
+  name: str,
+  type: str,
+  startDate: str,
+  endDate: str.nullable(),
+  notes: str.nullable(),
+  createdAt: int,
+  updatedAt: int,
+});
+
 const progressPhotoRow = z.object({
   id: str,
   date: str,
@@ -199,6 +210,7 @@ export const backupDataSchema = z.object({
   settings: settingsRow,
   exercises: z.array(exerciseRow),
   programs: z.array(programRow),
+  phases: z.array(phaseRow),
   templates: z.array(templateRow),
   templateExercises: z.array(templateExerciseRow),
   workouts: z.array(workoutRow),

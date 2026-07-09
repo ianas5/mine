@@ -7,6 +7,7 @@ import {
   foods,
   mealEntries,
   nutritionTargets,
+  phases,
   programs,
   progressPhotos,
   sets,
@@ -30,11 +31,13 @@ const ALL_TABLES: readonly TableName[] = [
   'nutrition',
   'body',
   'photos',
+  'phases',
 ];
 
 // Child → parent: safe delete order under foreign_keys = ON (a row is removed only
 // after everything referencing it is already gone).
 const DELETE_ORDER: readonly SQLiteTable[] = [
+  phases,
   progressPhotos,
   bodySnapshots,
   waterDays,
@@ -81,6 +84,7 @@ export async function replaceAllData(data: BackupData): Promise<void> {
     await insertAll(settings, [data.settings]);
     await insertAll(exercises, data.exercises);
     await insertAll(programs, data.programs);
+    await insertAll(phases, data.phases);
     await insertAll(templates, data.templates);
     await insertAll(templateExercises, data.templateExercises);
     await insertAll(workouts, data.workouts);

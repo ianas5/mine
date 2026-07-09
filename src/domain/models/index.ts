@@ -5,3 +5,5 @@ export type { Program, Template, TemplateExercise, TemplateTarget } from './prog
 export type { Food, MealEntry, NutritionTarget } from './nutrition';
 export type { BodySnapshot } from '@/domain/body';
 export type { ProgressPhoto } from './media';
+export type { Phase, PhaseType, PhaseIntent, WeightIntent } from './phase';
+export { PHASE_TYPES, PHASE_TYPE_LABELS, PHASE_INTENT } from './phase';

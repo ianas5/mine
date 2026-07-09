@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 import { ArrowLeft } from 'lucide-react-native';
 import { useState, type ReactNode } from 'react';
 import { Text, View } from 'react-native';
@@ -8,6 +8,7 @@ import {
   Card,
   IconButton,
   Input,
+  ListRow,
   Screen,
   Section,
   SegmentedControl,
@@ -66,6 +67,17 @@ export function SettingsScreen(): ReactNode {
       ) : (
         <LoadedSettings settings={settings} update={update} />
       )}
+
+      <Section title="Training phases">
+        <Card>
+          <ListRow
+            title="Phases"
+            subtitle="Declare cuts, bulks and recomps; review a block against its intent"
+            chevron
+            onPress={() => router.push('/analytics/phases' as Href)}
+          />
+        </Card>
+      </Section>
 
       <BackupSection />
     </Screen>
