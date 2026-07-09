@@ -1,0 +1,100 @@
+# Build an UNSIGNED iOS .ipa on GitHub's macOS runners, for free-Apple-ID sideloading
+# (Sideloadly / AltStore). No Apple account, no secrets, no local Xcode required.
+# Stays on Expo SDK 57 — this only generates the native iOS project and compiles it;
+# it never changes app code, features, or architecture.
+#
+# See docs/IOS_SIDELOAD.md for how to trigger, download, and install.
+name: iOS unsigned IPA
+
+on:
+  # 1) Manual button — appears under Actions once this file is on the default branch (main).
+  workflow_dispatch:
+  # 2) Tag trigger — works from ANY branch immediately: push a tag like `ios-build-1`.
+  push:
+    tags:
+      - 'ios-build-*'
+
+# One build at a time; a newer run cancels an older queued one.
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-15 # modern Xcode 16 — required for Expo SDK 57 / React Native 0.81
+    timeout-minutes: 60
+    env:
+      CI: '1'
+      EXPO_NO_TELEMETRY: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Show toolchain
+        run: |
+          node --version
+          xcodebuild -version
+          pod --version
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Generate the native iOS project (Expo prebuild — no code changes)
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        working-directory: ios
+        run: pod install
+
+      - name: Resolve workspace + scheme
+        id: xcode
+        run: |
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -n1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "Building workspace=$WORKSPACE scheme=$SCHEME"
+
+      - name: Archive (Release, code signing disabled)
+        run: |
+          xcodebuild \
+            -workspace "${{ steps.xcode.outputs.workspace }}" \
+            -scheme "${{ steps.xcode.outputs.scheme }}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            archive
+
+      - name: Package the .app into an unsigned .ipa
+        run: |
+          set -euo pipefail
+          APP_PATH=$(ls -d "$RUNNER_TEMP"/App.xcarchive/Products/Applications/*.app | head -n1)
+          echo "App: $APP_PATH"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
+          mkdir -p build
+          ( cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/build/Fitness-unsigned.ipa" Payload )
+          ls -lh build/Fitness-unsigned.ipa
+
+      - name: Upload the IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fitness-unsigned-ipa
+          path: build/Fitness-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
