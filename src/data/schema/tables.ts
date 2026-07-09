@@ -276,3 +276,33 @@ export const mealEntries = sqliteTable(
   ],
 );
 export type MealEntryRow = typeof mealEntries.$inferSelect;
+
+/**
+ * `nutrition_targets` — time-versioned daily goals (DATABASE §3.5, FITNESS_DOMAIN
+ * §4.1). The active target for a date is the row with the greatest
+ * `effective_from ≤ date`; resolution is implemented **once** in
+ * `nutritionRepository`. The UNIQUE index doubles as the lookup index.
+ */
+export const nutritionTargets = sqliteTable('nutrition_targets', {
+  id: text('id').primaryKey(),
+  effectiveFrom: text('effective_from').notNull().unique(),
+  kcal: integer('kcal').notNull(),
+  proteinG: real('protein_g').notNull(),
+  carbG: real('carb_g').notNull(),
+  fatG: real('fat_g').notNull(),
+  waterMl: integer('water_ml'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+export type NutritionTargetRow = typeof nutritionTargets.$inferSelect;
+
+/**
+ * `water_days` — cumulative daily water (DATABASE §3.5, §2.5 daily-keyed). An
+ * absent row is *unlogged*; a row with `ml = 0` is a real logged zero.
+ */
+export const waterDays = sqliteTable('water_days', {
+  date: text('date').primaryKey(),
+  ml: integer('ml').notNull().default(0),
+  updatedAt: integer('updated_at').notNull(),
+});
+export type WaterDayRow = typeof waterDays.$inferSelect;

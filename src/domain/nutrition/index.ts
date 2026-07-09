@@ -15,3 +15,10 @@ export {
   type MacroSet,
   type FoodMacros,
 } from './macros';
+export {
+  dayAdherence,
+  remainingMacros,
+  type TargetMacros,
+  type MacroStatus,
+  type DayAdherence,
+} from './adherence';

@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { ChevronLeft, ChevronRight, UtensilsCrossed } from 'lucide-react-native';
+import { ChevronLeft, ChevronRight, SlidersHorizontal, UtensilsCrossed } from 'lucide-react-native';
 import { useState, type ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
@@ -10,7 +10,9 @@ import { addDaysIso, formatRelativeDate, todayIso } from '@/core/utils';
 import { LogMealSheet } from '../components/LogMealSheet';
 import { MacroSummary } from '../components/MacroSummary';
 import { MealEntryRow } from '../components/MealEntryRow';
+import { WaterCard } from '../components/WaterCard';
 import { useNutritionDay } from '../hooks/useNutritionDay';
+import { useWaterCupMl } from '../hooks/useWaterCupMl';
 
 /** Nutrition day view (UI_UX §4.3) — totals, the day's entries, and the Log Meal loop. */
 export function NutritionScreen(): ReactNode {
@@ -20,6 +22,7 @@ export function NutritionScreen(): ReactNode {
   const [date, setDate] = useState(today);
   const [logOpen, setLogOpen] = useState(false);
   const day = useNutritionDay(date);
+  const cupMl = useWaterCupMl();
 
   return (
     <Screen scroll>
@@ -60,7 +63,19 @@ export function NutritionScreen(): ReactNode {
         </View>
       ) : (
         <View style={{ gap: theme.space.lg }}>
-          <MacroSummary totals={day.totals} />
+          <MacroSummary
+            totals={day.totals}
+            target={day.target}
+            remaining={day.remaining}
+            adherence={day.adherence}
+          />
+
+          <WaterCard
+            date={date}
+            waterMl={day.waterMl}
+            targetMl={day.target?.waterMl ?? null}
+            cupMl={cupMl}
+          />
 
           <Button label="Log Meal" onPress={() => setLogOpen(true)} />
 
@@ -74,23 +89,22 @@ export function NutritionScreen(): ReactNode {
             </Card>
           )}
 
-          <Pressable
+          <NavRow
+            icon={<SlidersHorizontal color={theme.color.accent} size={22} strokeWidth={1.75} />}
+            title="Targets"
+            subtitle={
+              day.target
+                ? 'Update your daily goals from a date'
+                : 'Set daily goals to see remaining'
+            }
+            onPress={() => router.push('/nutrition/targets')}
+          />
+          <NavRow
+            icon={<UtensilsCrossed color={theme.color.accent} size={22} strokeWidth={1.75} />}
+            title="Foods"
+            subtitle="Create and edit reusable foods and quick meals"
             onPress={() => router.push('/nutrition/foods')}
-            accessibilityRole="button"
-            accessibilityLabel="Manage foods"
-            style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
-          >
-            <Card style={{ flexDirection: 'row', alignItems: 'center', gap: theme.space.md }}>
-              <UtensilsCrossed color={theme.color.accent} size={22} strokeWidth={1.75} />
-              <View style={{ flex: 1 }}>
-                <Text style={{ ...theme.type.body, color: theme.color.textPrimary }}>Foods</Text>
-                <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
-                  Create and edit reusable foods and quick meals
-                </Text>
-              </View>
-              <ChevronRight color={theme.color.textTertiary} size={20} />
-            </Card>
-          </Pressable>
+          />
         </View>
       )}
 
@@ -105,5 +119,33 @@ export function NutritionScreen(): ReactNode {
         }}
       />
     </Screen>
+  );
+}
+
+function NavRow(props: {
+  readonly icon: ReactNode;
+  readonly title: string;
+  readonly subtitle: string;
+  readonly onPress: () => void;
+}): ReactNode {
+  const theme = useTheme();
+  return (
+    <Pressable
+      onPress={props.onPress}
+      accessibilityRole="button"
+      accessibilityLabel={props.title}
+      style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+    >
+      <Card style={{ flexDirection: 'row', alignItems: 'center', gap: theme.space.md }}>
+        {props.icon}
+        <View style={{ flex: 1 }}>
+          <Text style={{ ...theme.type.body, color: theme.color.textPrimary }}>{props.title}</Text>
+          <Text style={{ ...theme.type.caption, color: theme.color.textSecondary }}>
+            {props.subtitle}
+          </Text>
+        </View>
+        <ChevronRight color={theme.color.textTertiary} size={20} />
+      </Card>
+    </Pressable>
   );
 }

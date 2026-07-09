@@ -16,6 +16,17 @@ export interface Food {
   readonly isArchived: boolean;
 }
 
+/** A time-versioned set of daily targets (DATABASE §3.5, FITNESS_DOMAIN §4.1). */
+export interface NutritionTarget {
+  readonly id: string;
+  readonly effectiveFrom: IsoDate;
+  readonly kcal: number;
+  readonly proteinG: number;
+  readonly carbG: number;
+  readonly fatG: number;
+  readonly waterMl: number | null;
+}
+
 /** One logged food at a portion, with macros snapshotted at log time (§4.1). */
 export interface MealEntry {
   readonly id: string;

@@ -1,11 +1,19 @@
-import { asc, desc, eq } from 'drizzle-orm';
+import { asc, desc, eq, lte } from 'drizzle-orm';
 
 import { emitTableChanges, getDb } from '@/core/db';
 import type { MealSlot, ServingUnit } from '@/domain/nutrition';
-import type { Food, MealEntry } from '@/domain/models';
+import type { Food, MealEntry, NutritionTarget } from '@/domain/models';
 
 import { newId } from '../id';
-import { foods, mealEntries } from '../schema/tables';
+import { foods, mealEntries, nutritionTargets, waterDays } from '../schema/tables';
+
+export interface TargetInput {
+  readonly kcal: number;
+  readonly proteinG: number;
+  readonly carbG: number;
+  readonly fatG: number;
+  readonly waterMl: number | null;
+}
 
 export interface FoodInput {
   readonly name: string;
@@ -288,5 +296,109 @@ export const nutritionRepository = {
       .where(eq(mealEntries.foodId, id))
       .limit(1);
     return rows.length > 0;
+  },
+
+  // ── Targets ────────────────────────────────────────────────────────────────
+  // THE single, canonical target-resolution path (DATABASE §3.5). Every consumer —
+  // day view, remaining, adherence, and future analytics — resolves targets here
+  // and nowhere else. Do not re-implement "greatest effective_from ≤ date".
+
+  /** The active target for a date: the row with the greatest `effective_from ≤ date`, or null. */
+  async resolveTargetForDate(date: string): Promise<NutritionTarget | null> {
+    const rows = await getDb()
+      .select()
+      .from(nutritionTargets)
+      .where(lte(nutritionTargets.effectiveFrom, date))
+      .orderBy(desc(nutritionTargets.effectiveFrom))
+      .limit(1);
+    const row = rows[0];
+    return row
+      ? {
+          id: row.id,
+          effectiveFrom: row.effectiveFrom,
+          kcal: row.kcal,
+          proteinG: row.proteinG,
+          carbG: row.carbG,
+          fatG: row.fatG,
+          waterMl: row.waterMl,
+        }
+      : null;
+  },
+
+  /** All target eras, newest first (the read-only history in the editor, UI_UX §4.7). */
+  async listTargets(): Promise<NutritionTarget[]> {
+    const rows = await getDb()
+      .select()
+      .from(nutritionTargets)
+      .orderBy(desc(nutritionTargets.effectiveFrom));
+    return rows.map((row) => ({
+      id: row.id,
+      effectiveFrom: row.effectiveFrom,
+      kcal: row.kcal,
+      proteinG: row.proteinG,
+      carbG: row.carbG,
+      fatG: row.fatG,
+      waterMl: row.waterMl,
+    }));
+  },
+
+  /** "Set new targets from <date>" — writes/updates the era row for that date (§4.7). */
+  async setTarget(effectiveFrom: string, input: TargetInput): Promise<void> {
+    const now = Date.now();
+    await getDb()
+      .insert(nutritionTargets)
+      .values({
+        id: newId('nt'),
+        effectiveFrom,
+        kcal: input.kcal,
+        proteinG: input.proteinG,
+        carbG: input.carbG,
+        fatG: input.fatG,
+        waterMl: input.waterMl,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: nutritionTargets.effectiveFrom,
+        set: {
+          kcal: input.kcal,
+          proteinG: input.proteinG,
+          carbG: input.carbG,
+          fatG: input.fatG,
+          waterMl: input.waterMl,
+          updatedAt: now,
+        },
+      });
+    emitTableChanges('nutrition');
+  },
+
+  async deleteTarget(id: string): Promise<void> {
+    await getDb().delete(nutritionTargets).where(eq(nutritionTargets.id, id));
+    emitTableChanges('nutrition');
+  },
+
+  // ── Water ──────────────────────────────────────────────────────────────────
+
+  /** Logged water for a date in ml, or null when the day is unlogged (0 ≠ absent, §2.4). */
+  async getWater(date: string): Promise<number | null> {
+    const rows = await getDb().select().from(waterDays).where(eq(waterDays.date, date));
+    return rows[0]?.ml ?? null;
+  },
+
+  /** Adds (or removes, when negative) water for a date, floored at 0; logs the day. */
+  async addWater(date: string, deltaMl: number): Promise<void> {
+    const current = (await this.getWater(date)) ?? 0;
+    const next = Math.max(0, current + deltaMl);
+    await this.setWater(date, next);
+  },
+
+  /** Sets the day's water to an exact value (a logged 0 is a real value, not absence). */
+  async setWater(date: string, ml: number): Promise<void> {
+    const now = Date.now();
+    await getDb()
+      .insert(waterDays)
+      .values({ date, ml: Math.max(0, ml), updatedAt: now })
+      .onConflictDoUpdate({ target: waterDays.date, set: { ml: Math.max(0, ml), updatedAt: now } });
+    emitTableChanges('nutrition');
   },
 } as const;
