@@ -76,10 +76,6 @@ export function AnalyticsScreen(): ReactNode {
       </View>
 
       <View style={{ marginBottom: theme.space.lg }}>
-        <CurrentPhaseCard />
-      </View>
-
-      <View style={{ marginBottom: theme.space.lg }}>
         <SegmentedControl
           options={RANGE_OPTIONS}
           selectedIndex={rangeIndex}
@@ -88,21 +84,26 @@ export function AnalyticsScreen(): ReactNode {
         />
       </View>
 
-      {view === undefined ? (
-        <View style={{ gap: theme.space.md }}>
-          <Skeleton height={220} />
-          <Skeleton height={120} />
-        </View>
-      ) : (
-        <BodySection view={view} />
-      )}
-
-      <View style={{ marginTop: theme.space.xl }}>
-        <TrainingSection range={range} />
-      </View>
+      {/* UI_UX §8 fixed section order: Training → Nutrition → Body → Phases. */}
+      <TrainingSection range={range} />
 
       <View style={{ marginTop: theme.space.xl }}>
         <NutritionSection range={range} />
+      </View>
+
+      <View style={{ marginTop: theme.space.xl }}>
+        {view === undefined ? (
+          <View style={{ gap: theme.space.md }}>
+            <Skeleton height={220} />
+            <Skeleton height={120} />
+          </View>
+        ) : (
+          <BodySection view={view} />
+        )}
+      </View>
+
+      <View style={{ marginTop: theme.space.xl }}>
+        <CurrentPhaseCard />
       </View>
     </Screen>
   );
