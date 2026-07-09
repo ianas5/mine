@@ -65,6 +65,17 @@ describe('computeExerciseBests (FITNESS_DOMAIN §3.7)', () => {
     expect(bests.heaviestWeightKg).toBe(50); // single side
     expect(bests.bestSetVolumeKg).toBe(1000); // 50 × 10 × 2
   });
+
+  it('a timed exercise sets no weight/e1RM/volume records (edge 8)', () => {
+    // `timed` reps are seconds; effectiveLoad is 0, so nothing feeds a load record.
+    const rows = [row('w1', 0, 60), row('w2', 0, 90, { order: 2 })];
+    expect(computeExerciseBests(rows, 'timed', null)).toEqual({
+      heaviestWeightKg: null,
+      bestE1rmKg: null,
+      bestSetVolumeKg: null,
+      bestSessionVolumeKg: null,
+    });
+  });
 });
 
 describe('detectNewPRs (strictly greater; §3.7)', () => {
@@ -106,6 +117,11 @@ describe('detectNewPRs (strictly greater; §3.7)', () => {
     // A never-lifted load sets a weight PR, not a noisy rep PR.
     const newLoad = detectNewPRs(prior, [row('c', 120, 8)], 'external', null);
     expect(newLoad.some((e) => e.kind === 'repAtLoad')).toBe(false);
+  });
+
+  it('reports no PRs for a timed exercise, even beating a longer hold (edge 8)', () => {
+    const priorTimed = [row('w1', 0, 60)];
+    expect(detectNewPRs(priorTimed, [row('c', 0, 120)], 'timed', null)).toEqual([]);
   });
 
   it('recedes: deleting the record-holding history lowers the bar (recompute)', () => {
