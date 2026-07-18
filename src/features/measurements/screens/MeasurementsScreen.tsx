@@ -90,6 +90,11 @@ export function MeasurementsScreen(): ReactNode {
             {meta.unit ? ` ${meta.unit}` : ''}
           </Text>
         </Text>
+        {/* The date this value was recorded, so a current reading can be compared
+            against a later one (UI_UX §4.4 — measurements are dated, not just latest). */}
+        <Text style={{ ...theme.type.micro, color: theme.color.textTertiary }}>
+          {formatRelativeDate(latest.date)}
+        </Text>
       </View>
     );
   };
@@ -169,6 +174,16 @@ export function MeasurementsScreen(): ReactNode {
                     >
                       {bmi.toFixed(1)}
                     </Text>
+                    {(() => {
+                      // Entered BMI carries its own date; a derived one is dated by the
+                      // weight it was computed from.
+                      const bmiDate = data.latest.bmi?.date ?? data.latest.weightKg?.date ?? null;
+                      return bmiDate ? (
+                        <Text style={{ ...theme.type.micro, color: theme.color.textTertiary }}>
+                          {formatRelativeDate(bmiDate)}
+                        </Text>
+                      ) : null;
+                    })()}
                   </View>
                 ) : null}
               </View>
