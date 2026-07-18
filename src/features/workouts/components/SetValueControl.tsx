@@ -65,9 +65,12 @@ export function SetValueControl(props: SetValueControlProps): ReactNode {
       onPressOut={stop}
       accessibilityRole="button"
       accessibilityLabel={`${label} ${props.accessibilityLabel}`}
+      // Visual 40px keeps a weight+reps row from overflowing (so the complete ✓ stays
+      // on-screen); hitSlop restores a ≥44px touch target for standing gym use.
+      hitSlop={theme.space.xs}
       style={({ pressed }) => ({
-        width: 48,
-        height: 48,
+        width: 40,
+        height: 44,
         alignItems: 'center',
         justifyContent: 'center',
         borderRadius: theme.radius.md,
@@ -79,9 +82,19 @@ export function SetValueControl(props: SetValueControlProps): ReactNode {
     </Pressable>
   );
 
+  // flex:1 + minWidth:0 lets two controls share the row and shrink to fit, leaving
+  // room for the complete ✓ instead of pushing it off the screen edge.
   return (
-    <View style={{ alignItems: 'center', gap: theme.space.xs }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.space.sm }}>
+    <View style={{ flex: 1, minWidth: 0, alignItems: 'center', gap: theme.space.xs }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          alignSelf: 'stretch',
+          justifyContent: 'center',
+          gap: theme.space.xs,
+        }}
+      >
         {button(-1, <Minus color={theme.color.textPrimary} size={22} />, 'Decrease')}
         <TextInput
           value={display}
@@ -99,10 +112,11 @@ export function SetValueControl(props: SetValueControlProps): ReactNode {
           selectTextOnFocus
           accessibilityLabel={props.accessibilityLabel}
           style={{
-            ...theme.type.title,
+            ...theme.type.heading,
             color: theme.color.textPrimary,
             fontVariant: ['tabular-nums'],
-            minWidth: 64,
+            flex: 1,
+            minWidth: 0,
             textAlign: 'center',
             paddingVertical: theme.space.xs,
           }}

@@ -63,8 +63,7 @@ export function SetRow(props: SetRowProps): ReactNode {
       style={{
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: theme.space.sm,
+        gap: theme.space.xs,
         paddingVertical: theme.space.sm,
         opacity: set.done ? 0.6 : 1,
       }}
@@ -79,6 +78,7 @@ export function SetRow(props: SetRowProps): ReactNode {
         style={{
           width: 28,
           height: 28,
+          flexShrink: 0,
           borderRadius: theme.radius.full,
           alignItems: 'center',
           justifyContent: 'center',
@@ -129,8 +129,9 @@ export function SetRow(props: SetRowProps): ReactNode {
         }
         accessibilityState={{ checked: set.done }}
         style={{
-          width: 48,
-          height: 48,
+          width: 44,
+          height: 44,
+          flexShrink: 0,
           borderRadius: theme.radius.md,
           alignItems: 'center',
           justifyContent: 'center',

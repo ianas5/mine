@@ -30,8 +30,7 @@ export function DetailSetRow(props: DetailSetRowProps): ReactNode {
       style={{
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: theme.space.sm,
+        gap: theme.space.xs,
         paddingVertical: theme.space.sm,
       }}
     >
@@ -47,6 +46,7 @@ export function DetailSetRow(props: DetailSetRowProps): ReactNode {
         style={{
           width: 28,
           height: 28,
+          flexShrink: 0,
           borderRadius: theme.radius.full,
           alignItems: 'center',
           justifyContent: 'center',
@@ -98,7 +98,13 @@ export function DetailSetRow(props: DetailSetRowProps): ReactNode {
         accessibilityRole="button"
         accessibilityLabel={`Delete set ${props.index + 1}`}
         hitSlop={theme.space.sm}
-        style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
+        style={{
+          width: 44,
+          height: 44,
+          flexShrink: 0,
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
       >
         <Trash2 color={theme.color.textTertiary} size={20} />
       </Pressable>
