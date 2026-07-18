@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Fitness",
+    "name": "FitMe",
     "slug": "personal-fitness-tracker",
     "version": "0.1.0",
     "orientation": "portrait",
@@ -38,8 +38,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Fitness adds progress photos you pick from your library.",
-          "cameraPermission": "Fitness uses the camera to capture progress photos.",
+          "photosPermission": "FitMe adds progress photos you pick from your library.",
+          "cameraPermission": "FitMe uses the camera to capture progress photos.",
           "microphonePermission": false
         }
       ]
