@@ -1,6 +1,6 @@
 import { Check } from 'lucide-react-native';
 import type { ReactNode } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 
 import { triggerHaptic, useTheme } from '@/core/theme';
 import type { LoadType } from '@/domain/fitness';
@@ -42,6 +42,22 @@ export function SetRow(props: SetRowProps): ReactNode {
     if (becomingDone && !set.warmup) rest.start(exerciseLocalId, Date.now(), restSeconds);
   };
 
+  // Long-press the set-number circle to delete a mistaken set. The row is already
+  // width-tight for weight+reps exercises, so a dedicated delete column won't fit —
+  // a guarded long-press keeps the layout intact. A confirm prevents fat-finger loss
+  // of a logged set mid-workout.
+  const confirmRemove = (): void => {
+    triggerHaptic('warning');
+    Alert.alert(`Delete set ${props.index + 1}?`, 'This removes it from the current workout.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => actions.removeSet(exerciseLocalId, set.localId),
+      },
+    ]);
+  };
+
   return (
     <View
       style={{
@@ -55,8 +71,10 @@ export function SetRow(props: SetRowProps): ReactNode {
     >
       <Pressable
         onPress={() => actions.updateSet(exerciseLocalId, set.localId, { warmup: !set.warmup })}
+        onLongPress={confirmRemove}
         accessibilityRole="button"
         accessibilityLabel={set.warmup ? 'Warm-up set' : 'Working set'}
+        accessibilityHint="Long press to delete this set"
         accessibilityState={{ selected: set.warmup }}
         style={{
           width: 28,

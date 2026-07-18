@@ -28,8 +28,9 @@ export interface Template {
   readonly programId: string | null;
   readonly name: string;
   readonly position: number;
-  /** 0 = Monday … 6 = Sunday, or null when unscheduled. */
-  readonly weekday: number | null;
+  /** Scheduled days (0 = Monday … 6 = Sunday); empty when unscheduled. A session may
+   * repeat on several weekdays. Always sorted ascending, de-duplicated. */
+  readonly weekdays: readonly number[];
   readonly notes: string | null;
   readonly exercises: readonly TemplateExercise[];
 }

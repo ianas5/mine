@@ -96,8 +96,12 @@ export const templates = sqliteTable(
     programId: text('program_id').references(() => programs.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     position: integer('position').notNull().default(0),
-    // 0 = Monday … 6 = Sunday; enables the weekday-scheduled suggestion (§3.8/§5.2).
+    // Legacy single-day column (0 = Monday … 6 = Sunday), superseded by `weekdays`.
+    // Kept for backfill provenance; no longer read or written by the repository.
     weekday: integer('weekday'),
+    // JSON array of scheduled days (0 = Monday … 6 = Sunday), e.g. '[0,2,4]'. Empty
+    // '[]' = unscheduled. Lets one session repeat on several weekdays (§3.8/§5.2).
+    weekdays: text('weekdays').notNull().default('[]'),
     notes: text('notes'),
     isArchived: integer('is_archived').notNull().default(0),
     createdAt: integer('created_at').notNull(),

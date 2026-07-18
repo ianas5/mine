@@ -9,4 +9,4 @@
  * — bumped in the same commit as a new migration — and guarded against drift by
  * `schemaVersion.test.ts`, which asserts it matches the migration journal length.
  */
-export const CURRENT_SCHEMA_VERSION = 11;
+export const CURRENT_SCHEMA_VERSION = 12;

@@ -67,6 +67,7 @@ export function sampleBackupData(): BackupData {
         name: 'Push',
         position: 0,
         weekday: 0,
+        weekdays: '[0]',
         notes: null,
         isArchived: 0,
         createdAt: 1,

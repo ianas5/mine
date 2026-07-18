@@ -58,11 +58,7 @@ export function useTrainingAnalytics(range: RangeKey): TrainingAnalyticsView | u
       ]);
 
       const scheduledWeekdays = [
-        ...new Set(
-          (activeProgram?.templates ?? [])
-            .map((t) => t.weekday)
-            .filter((w): w is number => w !== null),
-        ),
+        ...new Set((activeProgram?.templates ?? []).flatMap((t) => t.weekdays)),
       ];
 
       if (!live) return;

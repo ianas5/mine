@@ -175,11 +175,7 @@ export function useInsights(): InsightsView | undefined {
         ]);
 
       const window90 = rangeWindow('90d', today);
-      const scheduledWeekdays = [
-        ...new Set(
-          (program?.templates ?? []).map((t) => t.weekday).filter((w): w is number => w !== null),
-        ),
-      ];
+      const scheduledWeekdays = [...new Set((program?.templates ?? []).flatMap((t) => t.weekdays))];
       const common = {
         workouts,
         weighIns,

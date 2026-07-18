@@ -74,7 +74,7 @@ function LoadedProgram(props: {
   const addSession = async (): Promise<void> => {
     const id = await programRepository.createTemplate(program.id, {
       name: 'New session',
-      weekday: null,
+      weekdays: [],
       notes: null,
       exercises: [],
     });
@@ -175,7 +175,9 @@ function TemplateRow(props: {
   const theme = useTheme();
   const { template } = props;
   const meta = [
-    template.weekday !== null ? weekdayLabel(template.weekday) : 'Any day',
+    template.weekdays.length > 0
+      ? template.weekdays.map((d) => weekdayLabel(d).slice(0, 3)).join(', ')
+      : 'Any day',
     `${template.exercises.length} ${template.exercises.length === 1 ? 'exercise' : 'exercises'}`,
   ].join(' · ');
 

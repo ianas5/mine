@@ -12,6 +12,7 @@ import m0007 from './0007_sticky_agent_brand.sql';
 import m0008 from './0008_lame_inertia.sql';
 import m0009 from './0009_striped_donald_blake.sql';
 import m0010 from './0010_brief_raider.sql';
+import m0011 from './0011_multi_weekday.sql';
 
 export default {
   journal,
@@ -27,5 +28,6 @@ export default {
     m0008,
     m0009,
     m0010,
+    m0011,
   },
 };

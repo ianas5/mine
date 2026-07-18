@@ -29,10 +29,10 @@ interface EditingExercise {
 
 const nullIfZero = (value: number): number | null => (value === 0 ? null : value);
 
-function toInput(name: string, weekday: number | null, list: EditingExercise[]): TemplateInput {
+function toInput(name: string, weekdays: number[], list: EditingExercise[]): TemplateInput {
   return {
     name,
-    weekday,
+    weekdays,
     notes: null,
     exercises: list.map((e): TemplateExerciseInput => ({
       exerciseId: e.exerciseId,
@@ -56,7 +56,7 @@ export function TemplateEditorScreen(): ReactNode {
 
   const [loaded, setLoaded] = useState(false);
   const [name, setName] = useState('');
-  const [weekday, setWeekday] = useState<number | null>(null);
+  const [weekdays, setWeekdays] = useState<number[]>([]);
   const [exercises, setExercises] = useState<EditingExercise[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -65,7 +65,7 @@ export function TemplateEditorScreen(): ReactNode {
     void programRepository.getTemplate(templateId).then((template) => {
       if (!live || !template) return;
       setName(template.name);
-      setWeekday(template.weekday);
+      setWeekdays([...template.weekdays]);
       setExercises(
         template.exercises.map((te) => ({
           exerciseId: te.exerciseId,
@@ -101,8 +101,13 @@ export function TemplateEditorScreen(): ReactNode {
       },
     ]);
 
+  const toggleWeekday = (day: number): void =>
+    setWeekdays((list) =>
+      list.includes(day) ? list.filter((d) => d !== day) : [...list, day].sort((a, b) => a - b),
+    );
+
   const save = async (): Promise<void> => {
-    await programRepository.updateTemplate(templateId, toInput(name, weekday, exercises));
+    await programRepository.updateTemplate(templateId, toInput(name, weekdays, exercises));
     showToast('Template saved', 'success');
     router.back();
   };
@@ -157,15 +162,16 @@ export function TemplateEditorScreen(): ReactNode {
           />
 
           <View style={{ gap: theme.space.sm }}>
-            <Text style={{ ...theme.type.micro, color: theme.color.textSecondary }}>WEEKDAY</Text>
+            <Text style={{ ...theme.type.micro, color: theme.color.textSecondary }}>
+              WEEKDAYS · REPEATS ON EACH SELECTED DAY
+            </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: theme.space.xs }}>
-              <Chip label="None" selected={weekday === null} onPress={() => setWeekday(null)} />
               {[0, 1, 2, 3, 4, 5, 6].map((d) => (
                 <Chip
                   key={d}
                   label={weekdayLabel(d).slice(0, 3)}
-                  selected={weekday === d}
-                  onPress={() => setWeekday(d)}
+                  selected={weekdays.includes(d)}
+                  onPress={() => toggleWeekday(d)}
                 />
               ))}
             </View>

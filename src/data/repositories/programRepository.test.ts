@@ -11,7 +11,7 @@ const SQUAT = 'ex_seed_back-squat';
 
 const benchTemplate: TemplateInput = {
   name: 'Push A',
-  weekday: 0,
+  weekdays: [0],
   notes: null,
   exercises: [
     {
@@ -55,13 +55,22 @@ describe('programRepository (real SQLite)', () => {
     const templateId = await programRepository.createTemplate(programId, benchTemplate);
 
     const template = await programRepository.getTemplate(templateId);
-    expect(template?.weekday).toBe(0);
+    expect(template?.weekdays).toEqual([0]);
     expect(template?.exercises).toHaveLength(1);
     expect(template?.exercises[0]).toMatchObject({
       exerciseId: BENCH,
       name: 'Barbell Bench Press',
       target: { sets: 3, repMin: 8, repMax: 10, rpe: 8, restSeconds: 120 },
     });
+  });
+
+  it('stores multiple weekdays and returns them sorted and de-duplicated', async () => {
+    const templateId = await programRepository.createTemplate(null, {
+      ...benchTemplate,
+      weekdays: [4, 0, 4, 2], // unsorted, with a duplicate
+    });
+    const template = await programRepository.getTemplate(templateId);
+    expect(template?.weekdays).toEqual([0, 2, 4]);
   });
 
   it('editing a template never rewrites a past workout (a plan is not history)', async () => {
@@ -88,7 +97,7 @@ describe('programRepository (real SQLite)', () => {
     // Now the plan changes completely: different exercise, different targets.
     await programRepository.updateTemplate(templateId, {
       name: 'Push A (revised)',
-      weekday: 2,
+      weekdays: [2, 4],
       notes: null,
       exercises: [
         {

@@ -20,12 +20,33 @@ export interface TemplateExerciseInput {
 
 export interface TemplateInput {
   readonly name: string;
-  readonly weekday: number | null;
+  readonly weekdays: readonly number[];
   readonly notes: string | null;
   readonly exercises: readonly TemplateExerciseInput[];
 }
 
 const num = (value: number | null): number | null => (value === null ? null : value);
+
+/** Parse the stored `weekdays` JSON into a clean, sorted, de-duplicated 0–6 list.
+ * Tolerant of malformed rows (returns [] rather than throwing on import). */
+function parseWeekdays(raw: string): number[] {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return [];
+    const days = value.filter((d): d is number => Number.isInteger(d) && d >= 0 && d <= 6);
+    return [...new Set(days)].sort((a, b) => a - b);
+  } catch {
+    return [];
+  }
+}
+
+/** Serialize a weekday list for storage — normalized the same way as on read. */
+function serializeWeekdays(days: readonly number[]): string {
+  const clean = [...new Set(days.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort(
+    (a, b) => a - b,
+  );
+  return JSON.stringify(clean);
+}
 
 async function loadTemplateExercises(templateId: string): Promise<TemplateExercise[]> {
   const rows = await getDb()
@@ -75,7 +96,7 @@ function toTemplate(
     programId: row.programId,
     name: row.name,
     position: row.position,
-    weekday: row.weekday,
+    weekdays: parseWeekdays(row.weekdays),
     notes: row.notes,
     exercises: exerciseList,
   };
@@ -253,7 +274,7 @@ export const programRepository = {
         programId,
         name: input.name.trim() || 'Session',
         position: existing.length,
-        weekday: input.weekday,
+        weekdays: serializeWeekdays(input.weekdays),
         notes: input.notes,
         isArchived: 0,
         createdAt: now,
@@ -276,7 +297,7 @@ export const programRepository = {
         .update(templates)
         .set({
           name: input.name.trim() || 'Session',
-          weekday: input.weekday,
+          weekdays: serializeWeekdays(input.weekdays),
           notes: input.notes,
           updatedAt: Date.now(),
         })

@@ -107,7 +107,7 @@ export function useDashboard(): DashboardData | undefined {
 
       // Today's workout state
       const doneToday = countableDates.includes(today);
-      const scheduled = activeProgram?.templates.find((t) => t.weekday === weekday) ?? null;
+      const scheduled = activeProgram?.templates.find((t) => t.weekdays.includes(weekday)) ?? null;
       const decision = suggestTemplate(
         weekday,
         scheduled ? scheduled.id : null,
@@ -130,9 +130,10 @@ export function useDashboard(): DashboardData | undefined {
           : 'rest';
 
       // Streak (§3.8)
-      const scheduledWeekdayCount = (activeProgram?.templates ?? []).filter(
-        (t) => t.weekday !== null,
-      ).length;
+      const scheduledWeekdayCount = (activeProgram?.templates ?? []).reduce(
+        (sum, t) => sum + t.weekdays.length,
+        0,
+      );
       const planned = plannedPerWeek(scheduledWeekdayCount, settings.weeklyWorkoutTarget);
       const streak = {
         weeks: weeklyStreak(countableDates, today, settings.weeklyWorkoutTarget),

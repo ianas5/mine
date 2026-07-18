@@ -42,8 +42,8 @@ export function StartSection(): ReactNode {
       {suggestion?.kind === 'template'
         ? suggestionCard(
             suggestion.template.name,
-            suggestion.template.weekday !== null
-              ? `Scheduled for ${weekdayLabel(suggestion.template.weekday)} · tap to start`
+            suggestion.template.weekdays.length > 0
+              ? `Scheduled ${suggestion.template.weekdays.map((d) => weekdayLabel(d).slice(0, 3)).join(', ')} · tap to start`
               : 'Tap to start with your targets',
             () => void startFromTemplate(suggestion.template),
           )

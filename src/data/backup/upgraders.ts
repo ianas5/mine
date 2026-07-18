@@ -27,6 +27,21 @@ const UPGRADERS: Readonly<Record<number, Upgrader>> = {
   // backup has no `phases` array; default it to empty (no declared phases) so the
   // current Zod shape validates. Phases are additive — no existing data changes.
   10: (data) => ({ phases: [], ...data }),
+  // v11 → v12 (migration 0011): templates gained `weekdays` (JSON array), superseding
+  // the single `weekday`. Mirror the SQL backfill: derive `weekdays` from `weekday`
+  // ('[n]' when set, '[]' when null) so each old template row keeps its scheduled day.
+  11: (data) => {
+    const templates = Array.isArray(data.templates) ? data.templates : [];
+    return {
+      ...data,
+      templates: templates.map((row) => {
+        const template = (row ?? {}) as Record<string, unknown>;
+        const weekday = template.weekday;
+        const weekdays = typeof weekday === 'number' ? `[${weekday}]` : '[]';
+        return { weekdays, ...template };
+      }),
+    };
+  },
 };
 
 /**

@@ -59,6 +59,7 @@ const templateRow = z.object({
   name: str,
   position: int,
   weekday: int.nullable(),
+  weekdays: str,
   notes: str.nullable(),
   isArchived: flag,
   createdAt: int,

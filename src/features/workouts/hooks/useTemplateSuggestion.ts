@@ -35,7 +35,7 @@ export function useTemplateSuggestion(): ResolvedSuggestion | undefined {
 
       const activeProgram = await programRepository.getActiveProgram();
       // Templates come ordered by position, so find() yields the first scheduled today.
-      const scheduled = activeProgram?.templates.find((t) => t.weekday === weekday) ?? null;
+      const scheduled = activeProgram?.templates.find((t) => t.weekdays.includes(weekday)) ?? null;
 
       const recent = await programRepository.getRecentTemplateUses(daysAgoIso(LOOKBACK_DAYS));
       const lastWorkouts = await workoutRepository.listRecent(1);
