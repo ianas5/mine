@@ -237,13 +237,20 @@ function Release-ComObjectSafe {
 # Transient objects (Range, CodeModule, VBComponent, Property, TextFrame, TextRange,
 # temporary collection members) follow acquire -> use -> release -> $var = $null inside
 # the narrowest possible scope. Failures are recorded rather than hidden.
-$transientFailures = New-Object System.Collections.ArrayList
+# Transient release failures are attributed to the Excel instance that was live when
+# they occurred, so they can gate that instance's lifecycle test. TESTS 01-12 run against
+# instance 1; $transientOwner flips to 2 when instance 2 is created in TEST 13.
+$transientFailures1 = New-Object System.Collections.ArrayList
+$transientFailures2 = New-Object System.Collections.ArrayList
+$transientOwner     = 1
 
 function Release-Transient {
     param($Obj, [string]$Label)
     $rec = Release-ComObjectSafe -Obj $Obj -Label $Label
     if ($rec.Status -eq 'FAIL') {
-        $null = $script:transientFailures.Add(($rec.Label + ' :: ' + $rec.Error))
+        $line = $rec.Label + ' :: ' + $rec.Error
+        if ($script:transientOwner -eq 2) { $null = $script:transientFailures2.Add($line) }
+        else                              { $null = $script:transientFailures1.Add($line) }
     }
 }
 
@@ -351,13 +358,13 @@ function Add-SubStep {
 function Set-CellText {
     param($Sheet, [string]$Address, [string]$Value)
     $rng = $Sheet.Range($Address)
-    try { $rng.Value2 = $Value } finally { Release-Transient $rng 'Range' }
+    try { $rng.Value2 = $Value } finally { Release-Transient $rng 'Range'; $rng = $null }
 }
 
 function Get-CellText {
     param($Sheet, [string]$Address)
     $rng = $Sheet.Range($Address)
-    try { return [string]$rng.Value2 } finally { Release-Transient $rng 'Range' }
+    try { return [string]$rng.Value2 } finally { Release-Transient $rng 'Range'; $rng = $null }
 }
 
 # Three legitimate numeric write mechanisms, tried in order. Returns the name of the one
@@ -379,7 +386,7 @@ function Set-CellNumber {
 
         throw ("all numeric write mechanisms failed for " + $Address + " -> " + ($attempts -join ' || '))
     } finally {
-        Release-Transient $rng 'Range'
+        Release-Transient $rng 'Range'; $rng = $null
     }
 }
 
@@ -393,7 +400,7 @@ function Get-CellNumber {
     } catch {
         return [double]::NaN
     } finally {
-        Release-Transient $rng 'Range'
+        Release-Transient $rng 'Range'; $rng = $null
     }
 }
 
@@ -409,7 +416,7 @@ function Get-ComponentSource {
     } catch {
         return ''
     } finally {
-        if ($null -ne $cm) { Release-Transient $cm 'CodeModule' }
+        if ($null -ne $cm) { Release-Transient $cm 'CodeModule'; $cm = $null }
     }
 }
 
@@ -825,7 +832,7 @@ try {
                 if ([double]::IsNaN($v)) { throw 'H1 read back as non-numeric / empty' }
                 if ([math]::Abs($v - 12345) -gt 0.000000001) { throw ("H1 read back as {0}, expected 12345" -f $v) }
                 $rngc = $ws.Range('H1')
-                try { $null = $rngc.ClearContents() } finally { Release-Transient $rngc 'Range(H1)' }
+                try { $null = $rngc.ClearContents() } finally { Release-Transient $rngc 'Range(H1)'; $rngc = $null }
                 Add-SubStep $steps '02N.2' 'Numeric probe read back and cleared' 'PASS' ("value={0}" -f $v)
             } catch {
                 $failedAt = '02N.2'; $failErr = (Format-Err $_)
@@ -921,8 +928,8 @@ try {
             Add-Result '05' ('Standard module injection (' + $STD_MODULE_NAME + ')') 'PASS' ("CodeModule.CountOfLines={0}" -f $lines)
             Set-Cap '05' $true
         } catch {
-            if ($null -ne $cm)   { Release-Transient $cm 'CodeModule' }
-            if ($null -ne $comp) { Release-Transient $comp 'VBComponent' }
+            if ($null -ne $cm)   { Release-Transient $cm 'CodeModule';   $cm   = $null }
+            if ($null -ne $comp) { Release-Transient $comp 'VBComponent'; $comp = $null }
             Add-Result '05' ('Standard module injection (' + $STD_MODULE_NAME + ')') 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '05' $false
         }
@@ -944,8 +951,8 @@ try {
             Add-Result '06' ('Class module injection (' + $CLS_MODULE_NAME + ')') 'PASS' ("CodeModule.CountOfLines={0}" -f $lines)
             Set-Cap '06' $true
         } catch {
-            if ($null -ne $cm)   { Release-Transient $cm 'CodeModule' }
-            if ($null -ne $comp) { Release-Transient $comp 'VBComponent' }
+            if ($null -ne $cm)   { Release-Transient $cm 'CodeModule';   $cm   = $null }
+            if ($null -ne $comp) { Release-Transient $comp 'VBComponent'; $comp = $null }
             Add-Result '06' ('Class module injection (' + $CLS_MODULE_NAME + ')') 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '06' $false
         }
@@ -966,7 +973,12 @@ try {
                 $c = $vbcomps.Item($i)
                 $isDoc = ([int]$c.Type -eq $vbext_ct_Document)
                 $nm    = [string]$c.Name
-                if ($isDoc -and ($nm -ne $sheetCodeName)) { $twComp = $c; break }
+                if ($isDoc -and ($nm -ne $sheetCodeName)) {
+                    # Ownership transfer: $twComp becomes the sole named owner.
+                    $twComp = $c
+                    $c = $null
+                    break
+                }
                 Release-Transient $c 'VBComponent'
                 $c = $null
             }
@@ -984,8 +996,9 @@ try {
             Add-Result '07' 'ThisWorkbook document-module injection' 'PASS' ("component='{0}'; lines={1}; marker present" -f $twName, $cnt)
             Set-Cap '07' $true
         } catch {
-            if ($null -ne $twCm)   { Release-Transient $twCm 'CodeModule(ThisWorkbook)' }
-            if ($null -ne $twComp) { Release-Transient $twComp 'VBComponent(ThisWorkbook)' }
+            if ($null -ne $twCm)   { Release-Transient $twCm 'CodeModule(ThisWorkbook)';   $twCm   = $null }
+            if ($null -ne $twComp) { Release-Transient $twComp 'VBComponent(ThisWorkbook)'; $twComp = $null }
+            if ($null -ne $c)      { Release-Transient $c 'VBComponent';                    $c      = $null }
             Add-Result '07' 'ThisWorkbook document-module injection' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '07' $false
         }
@@ -1014,7 +1027,12 @@ try {
                     $pn = [int]$props.Count
                     for ($i = 1; $i -le $pn; $i++) {
                         $p = $props.Item($i)
-                        if ([string]$p.Name -eq '_CodeName') { $prop = $p; break }
+                        if ([string]$p.Name -eq '_CodeName') {
+                            # Ownership transfer: $prop becomes the sole named owner.
+                            $prop = $p
+                            $p = $null
+                            break
+                        }
                         Release-Transient $p 'Property'
                         $p = $null
                     }
@@ -1072,10 +1090,11 @@ try {
                 Set-Cap '08' $false
             }
         } catch {
-            if ($null -ne $wsCm)  { Release-Transient $wsCm 'CodeModule(worksheet)' }
-            if ($null -ne $prop)  { Release-Transient $prop 'Property(_CodeName)' }
-            if ($null -ne $props) { Release-Transient $props 'Properties' }
-            if ($null -ne $comp)  { Release-Transient $comp 'VBComponent' }
+            if ($null -ne $wsCm)  { Release-Transient $wsCm 'CodeModule(worksheet)'; $wsCm  = $null }
+            if ($null -ne $prop)  { Release-Transient $prop 'Property(_CodeName)';  $prop  = $null }
+            if ($null -ne $p)     { Release-Transient $p 'Property';               $p     = $null }
+            if ($null -ne $props) { Release-Transient $props 'Properties';         $props = $null }
+            if ($null -ne $comp)  { Release-Transient $comp 'VBComponent';         $comp  = $null }
             Add-Result '08' 'Worksheet CodeName + worksheet document-module injection' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag) + "`r`n" + ($sub -join "`r`n"))
             Set-Cap '08' $false
         }
@@ -1091,14 +1110,21 @@ try {
             $shp = $shapes.AddShape($msoShapeRoundedRectangle, 20, 70, 150, 34)
             $shp.Name = $SHAPE_NAME
 
-            # Transient chained objects: acquired explicitly, released immediately.
+            # Optional shape caption. Failing to set the caption is non-fatal, but the
+            # transient COM cleanup must never be skipped, so it runs in finally. Any
+            # release exception is still recorded through the transient diagnostics.
+            $tf2 = $null
+            $tr  = $null
             try {
                 $tf2 = $shp.TextFrame2
                 $tr  = $tf2.TextRange
                 $tr.Text = 'Run Smoke Macro'
-                Release-Transient $tr 'TextRange';  $tr  = $null
-                Release-Transient $tf2 'TextFrame2'; $tf2 = $null
-            } catch { }
+            } catch {
+                # caption is cosmetic; ignore the failure to set it
+            } finally {
+                if ($null -ne $tr)  { Release-Transient $tr  'TextRange';  $tr  = $null }
+                if ($null -ne $tf2) { Release-Transient $tf2 'TextFrame2'; $tf2 = $null }
+            }
 
             $shp.OnAction = $MACRO_NAME
             $readBack = [string]$shp.OnAction
@@ -1261,7 +1287,12 @@ try {
         }
 
         $ledgerTxt = Format-ReleaseLedger $rel1
-        $lifecycleClean = (($rel1.Failed.Count -eq 0) -and $rel1.WorkbookClosed -and $rel1.QuitCalled -and (-not $fatal))
+        if ($transientFailures1.Count -gt 0) {
+            $ledgerTxt = $ledgerTxt + "`r`n      instance-1 transient release exceptions: " + ($transientFailures1 -join '; ')
+        }
+        # A ReleaseComObject exception anywhere against instance 1 fails the lifecycle,
+        # even if Excel eventually exits. A non-zero return count is NOT a failure.
+        $lifecycleClean = (($rel1.Failed.Count -eq 0) -and ($transientFailures1.Count -eq 0) -and $rel1.WorkbookClosed -and $rel1.QuitCalled -and (-not $fatal))
 
         if ($lifecycleClean -and $rel1.NaturalExit) {
             Add-Result '12' 'Explicit COM release, close workbook, quit Excel' 'PASS' ("`r`n" + $ledgerTxt)
@@ -1269,6 +1300,8 @@ try {
         } else {
             $why = 'Lifecycle did not complete cleanly.'
             if ($fatal) { $why = $fatal }
+            elseif ($transientFailures1.Count -gt 0) { $why = ("{0} transient ReleaseComObject call(s) against instance 1 raised an exception." -f $transientFailures1.Count) }
+            elseif ($rel1.Failed.Count -gt 0) { $why = ("ReleaseComObject failed for: {0}" -f ($rel1.Failed -join ', ')) }
             elseif (-not $rel1.NaturalExit) { $why = ("Excel pid {0} did not exit naturally within 20s after Quit()." -f $id1.ProcessId) }
             Add-Result '12' 'Explicit COM release, close workbook, quit Excel' 'FAIL' ($why + "`r`n" + $ledgerTxt + "`r`n      " + (Get-ComDiag))
             Set-Cap '12' $false
@@ -1291,6 +1324,9 @@ try {
         try {
             $preExisting2 = @()
             try { $preExisting2 = @(Get-Process -Name 'excel' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id) } catch { }
+
+            # Every transient acquired from here on belongs to instance 2.
+            $transientOwner = 2
 
             $excel2 = New-Object -ComObject Excel.Application
             $excel2.Visible       = $false
@@ -1499,7 +1535,10 @@ try {
         }
 
         $ledgerTxt2 = Format-ReleaseLedger $rel2
-        $clean2 = (($rel2.Failed.Count -eq 0) -and $rel2.WorkbookClosed -and $rel2.QuitCalled -and (-not $fatal2))
+        if ($transientFailures2.Count -gt 0) {
+            $ledgerTxt2 = $ledgerTxt2 + "`r`n      instance-2 transient release exceptions: " + ($transientFailures2 -join '; ')
+        }
+        $clean2 = (($rel2.Failed.Count -eq 0) -and ($transientFailures2.Count -eq 0) -and $rel2.WorkbookClosed -and $rel2.QuitCalled -and (-not $fatal2))
 
         if ($clean2 -and $rel2.NaturalExit) {
             Add-Result '15' 'Explicit COM release, final close and quit (instance 2)' 'PASS' ("`r`n" + $ledgerTxt2)
@@ -1507,6 +1546,8 @@ try {
         } else {
             $why2 = 'Lifecycle did not complete cleanly.'
             if ($fatal2) { $why2 = $fatal2 }
+            elseif ($transientFailures2.Count -gt 0) { $why2 = ("{0} transient ReleaseComObject call(s) against instance 2 raised an exception." -f $transientFailures2.Count) }
+            elseif ($rel2.Failed.Count -gt 0) { $why2 = ("ReleaseComObject failed for: {0}" -f ($rel2.Failed -join ', ')) }
             elseif (-not $rel2.NaturalExit) { $why2 = ("Excel pid {0} did not exit naturally within 20s after Quit()." -f $id2.ProcessId) }
             Add-Result '15' 'Explicit COM release, final close and quit (instance 2)' 'FAIL' ($why2 + "`r`n" + $ledgerTxt2 + "`r`n      " + (Get-ComDiag))
             Set-Cap '15' $false
@@ -1589,7 +1630,15 @@ finally {
         if ($r.Status -eq 'FAIL' -or $r.Status -eq 'BLOCKED') { $root = $r; break }
     }
 
-    if ($null -eq $root) {
+    # A COM release exception anywhere - including one raised in the cleanup path after
+    # the last test reported - must prevent a READY verdict.
+    $comReleaseExceptions = $transientFailures1.Count + $transientFailures2.Count
+    if ($null -ne $rel1) { $comReleaseExceptions = $comReleaseExceptions + $rel1.Failed.Count }
+    if ($null -ne $rel2) { $comReleaseExceptions = $comReleaseExceptions + $rel2.Failed.Count }
+
+    if ($null -eq $root -and $comReleaseExceptions -gt 0) {
+        $verdict = ("FAILED $DASH {0} COM release exception(s) recorded - see the COM LIFECYCLE section" -f $comReleaseExceptions)
+    } elseif ($null -eq $root) {
         $verdict = 'READY FOR PCCM STAGE B'
     } elseif ($root.Id -eq '01' -and $root.Status -eq 'BLOCKED') {
         $verdict = "BLOCKED $DASH EXCEL COM UNAVAILABLE"
@@ -1632,9 +1681,16 @@ finally {
     $null = $sb.AppendLine((Format-ReleaseLedger $rel1))
     $null = $sb.AppendLine('  Instance 2:')
     $null = $sb.AppendLine((Format-ReleaseLedger $rel2))
-    if ($transientFailures.Count -gt 0) {
-        $null = $sb.AppendLine('  Transient release failures:')
-        foreach ($tf in $transientFailures) { $null = $sb.AppendLine(('      ' + $tf)) }
+    if ($transientFailures1.Count -gt 0) {
+        $null = $sb.AppendLine('  Instance-1 transient release exceptions:')
+        foreach ($tf in $transientFailures1) { $null = $sb.AppendLine(('      ' + $tf)) }
+    }
+    if ($transientFailures2.Count -gt 0) {
+        $null = $sb.AppendLine('  Instance-2 transient release exceptions:')
+        foreach ($tf in $transientFailures2) { $null = $sb.AppendLine(('      ' + $tf)) }
+    }
+    if ($transientFailures1.Count -eq 0 -and $transientFailures2.Count -eq 0) {
+        $null = $sb.AppendLine('  Transient release exceptions: none')
     }
     $null = $sb.AppendLine('')
     $null = $sb.AppendLine('CLEANUP')
