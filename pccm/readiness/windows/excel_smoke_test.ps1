@@ -695,7 +695,7 @@ try {
         if ($failedAt -eq '') {
             try {
                 $workbooks = $excel.Workbooks
-                Add-SubStep $steps '02.1' 'Workbooks collection acquired' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
+                Add-SubStep $steps '02.1' 'Workbooks collection acquired' 'PASS' 'Application.Workbooks acquired into $workbooks'
             } catch {
                 $failedAt = '02.1'; $failErr = (Format-Err $_)
                 Add-SubStep $steps '02.1' 'Workbooks collection acquired' 'FAIL' $failErr
@@ -706,7 +706,7 @@ try {
         if ($failedAt -eq '') {
             try {
                 $wb = $workbooks.Add()
-                Add-SubStep $steps '02.2' 'Workbook created' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
+                Add-SubStep $steps '02.2' 'Workbook created' 'PASS' ("Workbooks.Add() -> `$wb; Workbooks.Count={0}" -f [int]$workbooks.Count)
             } catch {
                 $failedAt = '02.2'; $failErr = (Format-Err $_)
                 Add-SubStep $steps '02.2' 'Workbook created' 'FAIL' $failErr
@@ -717,7 +717,7 @@ try {
         if ($failedAt -eq '') {
             try {
                 $worksheets = $wb.Worksheets
-                Add-SubStep $steps '02.3' 'Worksheets collection acquired' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
+                Add-SubStep $steps '02.3' 'Worksheets collection acquired' 'PASS' ("Worksheets.Count={0}" -f [int]$worksheets.Count)
             } catch {
                 $failedAt = '02.3'; $failErr = (Format-Err $_)
                 Add-SubStep $steps '02.3' 'Worksheets collection acquired' 'FAIL' $failErr
@@ -747,7 +747,7 @@ try {
         if ($failedAt -eq '') {
             try {
                 $ws = $worksheets.Item(1)
-                Add-SubStep $steps '02.5' 'Worksheet acquired via Worksheets.Item(1)' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
+                Add-SubStep $steps '02.5' 'Worksheet acquired via Worksheets.Item(1)' 'PASS' ("Worksheet.Name='{0}'" -f [string]$ws.Name)
             } catch {
                 $failedAt = '02.5'; $failErr = (Format-Err $_)
                 Add-SubStep $steps '02.5' 'Worksheet acquired via Worksheets.Item(1)' 'FAIL' $failErr
