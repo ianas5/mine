@@ -48,8 +48,6 @@ Three details worth knowing:
 - **Numeric cell writes are their own test (02N)**, because the chart needs numeric data
   but workbook creation does not. A number-marshalling problem is now reported as exactly
   that, and only the chart test is skipped as a result.
-
-
 - **TEST 08 has two sub-checks** and both must pass. PCCM needs worksheet document-module
   code for its output-sheet activation logic, so proving CodeName assignment alone is not
   enough. The report records which of the two legitimate CodeName mechanisms succeeded.
