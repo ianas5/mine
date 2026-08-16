@@ -6,12 +6,17 @@ will need.
 
 It takes under a minute to run and writes a single text report that you send back.
 
-> **Status: run 1 completed, run 2 pending.** On the first Windows execution TEST 01
-> passed - Excel COM automation, version/build/bitness detection and process-identity
-> capture all worked - and TEST 02 failed with a PowerShell/COM type-marshalling error
-> that has been diagnosed and patched. This is a script defect, not an Excel or
-> environment problem. **No Excel setting needs to change.** This revision adds
-> substep-level reporting so run 2 pinpoints the exact statement if anything still fails.
+> **Status: runs 1 and 2 completed; run 3 pending.** Run 2 proved every substantive
+> Stage B capability on the target machine - COM automation, workbook creation, numeric
+> and text cell writes, genuine `.xlsm` save, VBProject access, standard/class/
+> ThisWorkbook/worksheet module injection, CodeName assignment, Shape + OnAction,
+> ChartObject and VBA macro execution all passed (TESTS 01-11).
+>
+> The only remaining failure was **TEST 12, a defect in this script's own COM release
+> algorithm** - it de-duplicated references by comparing against objects it had already
+> released, and a released RCW cannot be touched again. That has been rewritten as a
+> two-phase plan-then-release algorithm. **Nothing about Excel, its settings or the
+> environment needs to change.**
 
 ---
 
@@ -31,10 +36,10 @@ It takes under a minute to run and writes a single text report that you send bac
 | 09 | Shape/button creation with `OnAction` wired to a macro |
 | 10 | Native `ChartObject` creation (requires 02N) |
 | 11 | Macro execution through automation |
-| 12 | Explicit COM release, then save, close and quit - Excel must exit without being forced |
+| 12 | Two-phase COM release, then save, close and quit - Excel must exit naturally, never forced |
 | 13 | Reopen the saved `.xlsm` in a fresh Excel instance |
 | 14 | Everything above survived the round trip, verified by reading persisted VBA **source**, not just component names |
-| 15 | Explicit COM release, final close and quit - again without force |
+| 15 | Two-phase COM release, final close and quit - again exiting naturally |
 
 Every test reports **PASS**, **FAIL**, **BLOCKED** or **SKIPPED**, with the underlying COM
 error message and HRESULT where one occurred.
@@ -81,9 +86,11 @@ COM errors. The final verdict names the **first root cause**, not a downstream s
 
 ### About cleanup
 
-The script attempts a clean shutdown: it releases every COM reference it owns, leaf before
-parent, before calling `Application.Quit()`, and then waits for the process to exit on its
-own. It also includes a guarded emergency cleanup path that runs even if a test fails.
+The script attempts a clean shutdown. It first builds a release plan over every COM
+reference it owns - de-duplicating while all references are still valid - and only then
+releases them, leaf before parent, before calling `Application.Quit()`. It then waits for
+the process to exit on its own. Nothing that has been released is ever inspected again.
+A guarded emergency cleanup path runs even if a test fails.
 
 **It will not force-terminate an Excel process unless it can verify that the process
 belongs to this smoke test** - all three of: the process id was derived from the script's
@@ -179,7 +186,7 @@ Everything is created in `smoke_output\` beside the script:
 |------|---------|
 | `smoke_test_report.txt` | **Return this one.** Always the current run. |
 | `PCCM_Excel_COM_Smoke_Test.xlsm` | Disposable test workbook from the current run |
-| `previous_<timestamp>\` | Each earlier run's report and workbook, moved aside automatically. Run 1's evidence is preserved here. |
+| `previous_<timestamp>\` | Each earlier run's report and workbook, moved aside automatically. The run 1 and run 2 evidence is preserved here. |
 
 A previous run's report and workbook are **never overwritten**. If files from an earlier
 run are present, they are moved into a `previous_<timestamp>\` folder before the new run

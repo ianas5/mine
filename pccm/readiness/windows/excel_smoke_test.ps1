@@ -249,11 +249,28 @@ function Register-ComRef {
 
 # Releases the stack LIFO. Acquisition order is parent -> child, so reverse order is
 # leaf -> parent as required.
-function Clear-ComRefStack {
+# ---------------------------------------------------------------------------
+# Two-phase COM release.
+#
+# INVARIANT: no algorithmic operation may touch an RCW after FinalReleaseComObject
+# has been called on it. FinalReleaseComObject separates the RCW from its underlying
+# COM object; any later use - including reading it back out of a collection to compare
+# references - raises InvalidComObjectException. The previous single-pass algorithm
+# added each object to a $released list and then final-released it, so the very next
+# iteration's ReferenceEquals comparison touched a separated RCW and aborted the whole
+# traversal after the first object. That is corrected here by completing every
+# de-duplication decision BEFORE any release occurs.
+# ---------------------------------------------------------------------------
+
+# PHASE A - build the release plan while every RCW is still valid.
+# Walks the stack LIFO, so the resulting plan is already ordered leaf-before-parent.
+# ReferenceEquals is safe here precisely because nothing has been released yet.
+# Releases nothing.
+function Build-ComReleasePlan {
     param($Stack)
-    $released   = New-Object System.Collections.ArrayList
-    $unreleased = New-Object System.Collections.ArrayList
-    $count = 0
+    $plan       = New-Object System.Collections.ArrayList
+    $dupCount   = 0
+    $skipped    = New-Object System.Collections.ArrayList
     for ($i = $Stack.Count - 1; $i -ge 0; $i--) {
         $entry = $null; $o = $null; $lbl = '<unknown>'
         try {
@@ -261,67 +278,106 @@ function Clear-ComRefStack {
             $lbl   = [string]$entry.Label
             $o     = $entry.Obj
         } catch {
-            $null = $unreleased.Add(("<stack entry {0} unreadable: {1}>" -f $i, $_.Exception.Message))
+            $null = $skipped.Add(("<stack entry {0} unreadable: {1}>" -f $i, $_.Exception.Message))
             continue
         }
-        if ($null -ne $o) {
-            $dup = $false
-            for ($j = 0; $j -lt $released.Count; $j++) {
-                if ([Object]::ReferenceEquals($released[$j], $o)) { $dup = $true; break }
-            }
-            if (-not $dup) {
-                $null = $released.Add($o)
-                # Per-item guard: one uncooperative RCW must not abort the whole pass.
-                $okRel = $false
-                try { $okRel = [bool](Remove-ComObjectRef $o) } catch { $okRel = $false }
-                if ($okRel) { $count++ } else { $null = $unreleased.Add($lbl) }
-            }
+        if ($null -eq $o) { continue }
+        $isDup = $false
+        for ($j = 0; $j -lt $plan.Count; $j++) {
+            if ([Object]::ReferenceEquals($plan[$j].Obj, $o)) { $isDup = $true; break }
         }
-        try { $entry.Obj = $null } catch { }
+        if ($isDup) { $dupCount++ }
+        else { $null = $plan.Add([pscustomobject]@{ Label = $lbl; Obj = $o }) }
     }
-    try { $Stack.Clear() } catch { }
-    return ([pscustomobject]@{ Released = $count; Unreleased = @($unreleased.ToArray()) })
+    return ([pscustomobject]@{
+        Plan           = $plan
+        DuplicateCount = $dupCount
+        Skipped        = @($skipped.ToArray())
+    })
 }
 
-# Wrapper that preserves the evidence. A failure here is recorded, never swallowed:
-# it distinguishes "nothing was ever registered" from "release itself malfunctioned".
+# PHASE B lives inside this wrapper. It always returns a result object normally, even
+# when an individual release fails, so a partial ReleasedCount can never be discarded.
 function Invoke-ComStackRelease {
     param($Stack, [string]$Label)
     $res = [pscustomobject]@{
-        Label = $Label; CountBefore = -1; Released = 0
-        Completed = $false; Error = ''; Unreleased = @()
+        Label               = $Label
+        RegisteredCount     = -1
+        UniqueCount         = 0
+        DuplicateCount      = 0
+        ReleasedCount       = 0
+        FailedReleaseLabels = @()
+        Completed           = $false
+        Error               = ''
     }
-    try { $res.CountBefore = [int]$Stack.Count }
-    catch { $res.Error = 'could not read stack count: ' + $_.Exception.Message }
+    $failed = New-Object System.Collections.ArrayList
+
+    # ---- PHASE A: plan only, nothing released ----------------------------
+    $plan = $null
     try {
-        $r = Clear-ComRefStack $Stack
-        $res.Released   = [int]$r.Released
-        $res.Unreleased = @($r.Unreleased)
-        $res.Completed  = $true
+        $res.RegisteredCount = [int]$Stack.Count
+        $built = Build-ComReleasePlan $Stack
+        $plan  = $built.Plan
+        $res.UniqueCount    = [int]$plan.Count
+        $res.DuplicateCount = [int]$built.DuplicateCount
+        foreach ($sk in @($built.Skipped)) { $null = $failed.Add($sk) }
     } catch {
-        $res.Completed = $false
-        $res.Error = Format-Err $_
-        try {
-            $left = New-Object System.Collections.ArrayList
-            for ($i = 0; $i -lt $Stack.Count; $i++) {
-                if ($null -ne $Stack[$i].Obj) { $null = $left.Add([string]$Stack[$i].Label) }
-            }
-            $res.Unreleased = @($left.ToArray())
-        } catch { }
+        $res.Error = 'release plan build failed: ' + (Format-Err $_)
+        $null = $failed.Add('<plan build failed - nothing was released>')
+        $res.FailedReleaseLabels = @($failed.ToArray())
+        return $res
     }
+
+    # ---- PHASE B: release only, never inspect a released RCW again -------
+    try {
+        for ($k = 0; $k -lt $plan.Count; $k++) {
+            $lbl = '<unknown>'
+            $obj = $null
+            try {
+                $item = $plan[$k]
+                $lbl  = [string]$item.Label
+                $obj  = $item.Obj
+                $item.Obj = $null      # the plan drops its reference BEFORE release
+            } catch {
+                $null = $failed.Add(("<plan entry {0} unreadable>" -f $k))
+                continue
+            }
+            $okRel = $false
+            try { $okRel = [bool](Remove-ComObjectRef $obj) } catch { $okRel = $false }
+            $obj = $null               # sole remaining reference dropped; never touched again
+            if ($okRel) { $res.ReleasedCount = $res.ReleasedCount + 1 }
+            else { $null = $failed.Add($lbl) }
+        }
+        $res.Completed = $true
+    } catch {
+        # Completed=$false means the traversal itself did not finish. ReleasedCount
+        # still holds the true partial count because it is mutated in place.
+        $res.Completed = $false
+        $res.Error = 'release traversal failed: ' + (Format-Err $_)
+    }
+
+    $res.FailedReleaseLabels = @($failed.ToArray())
+
+    # The stack is emptied without reading any entry, so no released RCW is touched.
+    try { $Stack.Clear() } catch { }
     return $res
 }
 
 function Format-ReleaseResult {
     param($Res, [string]$Name)
     if ($null -eq $Res) { return ("  {0}: release never attempted (instance was not created)." -f $Name) }
-    if ($Res.Completed -and @($Res.Unreleased).Count -eq 0 -and -not $Res.Error) {
-        return ("  {0}: registered {1}, released {2}, release completed OK" -f $Name, $Res.CountBefore, $Res.Released)
+    $clean = ($Res.Completed -and @($Res.FailedReleaseLabels).Count -eq 0 -and -not $Res.Error)
+    if ($clean) {
+        return ("  {0}: registered {1}, unique {2}, duplicates {3}, released {4}, traversal completed OK" -f `
+                $Name, $Res.RegisteredCount, $Res.UniqueCount, $Res.DuplicateCount, $Res.ReleasedCount)
     }
     $out = New-Object System.Collections.ArrayList
-    $null = $out.Add(("  {0}: registered {1}, released {2}, completed={3}" -f $Name, $Res.CountBefore, $Res.Released, $Res.Completed))
+    $null = $out.Add(("  {0}: registered {1}, unique {2}, duplicates {3}, released {4}, traversal completed={5}" -f `
+                     $Name, $Res.RegisteredCount, $Res.UniqueCount, $Res.DuplicateCount, $Res.ReleasedCount, $Res.Completed))
     if ($Res.Error) { $null = $out.Add(("      exception: {0}" -f $Res.Error)) }
-    if (@($Res.Unreleased).Count -gt 0) { $null = $out.Add(("      NOT released: {0}" -f (@($Res.Unreleased) -join ', '))) }
+    if (@($Res.FailedReleaseLabels).Count -gt 0) {
+        $null = $out.Add(("      release FAILED for: {0}" -f (@($Res.FailedReleaseLabels) -join ', ')))
+    }
     return ($out -join "`r`n")
 }
 
@@ -605,7 +661,8 @@ $env_info['Excel pid source']  = 'n/a'
 # State
 # ---------------------------------------------------------------------------
 $excel = $null; $workbooks = $null; $wb = $null; $worksheets = $null; $ws = $null
-$vbproj = $null; $vbcomps = $null; $shapes = $null; $chartObjects = $null
+$vbproj = $null; $vbcomps = $null; $shapes = $null; $shp = $null
+$chartObjects = $null; $co = $null; $cht = $null
 $excel2 = $null; $workbooks2 = $null; $wb2 = $null; $worksheets2 = $null; $ws2 = $null
 $vbproj2 = $null; $vbcomps2 = $null
 
@@ -1184,10 +1241,17 @@ try {
             if (Get-Cap '03') { $wb.Save() }
             $wb.Close($false)
 
-            # Release EVERY first-instance child reference this script still owns,
-            # leaf before parent, BEFORE Application.Quit().
-            $shapes = $null; $chartObjects = $null; $vbcomps = $null; $vbproj = $null
+            # Drop every first-instance local alias BEFORE the release pass, so that no
+            # accidental RCW use can occur after release. The COM stack still holds its
+            # own references and remains the owner used to release them; it is NOT
+            # cleared here, because the release plan is built from it.
+            $cht = $null; $co = $null; $chartObjects = $null
+            $shp = $null; $shapes = $null
+            $vbcomps = $null; $vbproj = $null
             $ws = $null; $worksheets = $null; $wb = $null; $workbooks = $null
+
+            # Release EVERY first-instance child reference, leaf before parent,
+            # BEFORE Application.Quit().
             $script:rel1 = Invoke-ComStackRelease -Stack $comStack1 -Label 'instance 1'
 
             $excel.Quit()
@@ -1201,18 +1265,19 @@ try {
             $inst1Finished = $true
             $exited = Wait-ExcelExit -Identity $id1 -TimeoutSeconds 20
             $relTxt = Format-ReleaseResult $script:rel1 'instance 1'
+            $relClean = ($script:rel1.Completed -and @($script:rel1.FailedReleaseLabels).Count -eq 0 -and $script:rel1.ReleasedCount -eq $script:rel1.UniqueCount)
 
-            if (-not $script:rel1.Completed -or @($script:rel1.Unreleased).Count -gt 0) {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ("The COM release pass did not complete cleanly, which is a lifecycle defect regardless of whether the process exited (exited=" + $exited + ").`r`n" + $relTxt)
+            if (-not $relClean) {
+                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ("The COM release pass did not complete cleanly. That is a lifecycle defect regardless of whether the process exited (natural exit observed: " + $exited + ").`r`n" + $relTxt)
                 Set-Cap '12' $false
             } elseif ($exited) {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'PASS' (("released {0} of {1} registered COM references before Quit; pid {2} exited without force." -f $script:rel1.Released, $script:rel1.CountBefore, $id1.ProcessId))
+                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'PASS' ((("released {0} of {1} unique COM references ({2} registered, {3} duplicates) before Quit; pid {4} exited naturally, no force-stop required." -f $script:rel1.ReleasedCount, $script:rel1.UniqueCount, $script:rel1.RegisteredCount, $script:rel1.DuplicateCount, $id1.ProcessId)))
                 Set-Cap '12' $true
             } elseif ($null -eq $id1 -or $id1.ProcessId -le 0) {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ("Quit() returned but no process identity was captured, so clean exit could not be verified.`r`n" + $relTxt)
+                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ("Quit() returned but no process identity was captured, so natural exit could not be verified.`r`n" + $relTxt)
                 Set-Cap '12' $false
             } else {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' (("Quit() returned but Excel pid {0} is still running after 20s, so a COM reference is still held somewhere. The emergency cleanup path will handle the process; this test remains FAIL.`r`n" -f $id1.ProcessId) + $relTxt)
+                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ((("Every planned COM reference was released, but Excel pid {0} is still running after 20s, so something still holds a reference. The emergency cleanup path will handle the process; this test remains FAIL.`r`n" -f $id1.ProcessId) + $relTxt))
                 Set-Cap '12' $false
             }
         } catch {
@@ -1384,9 +1449,12 @@ try {
         try {
             $wb2.Close($false)
 
-            # Release EVERY second-instance child reference before Quit().
+            # Drop every second-instance local alias BEFORE the release pass. The COM
+            # stack still owns the references and is not cleared here.
             $vbcomps2 = $null; $vbproj2 = $null; $ws2 = $null; $worksheets2 = $null
             $wb2 = $null; $workbooks2 = $null
+
+            # Release EVERY second-instance child reference before Quit().
             $script:rel2 = Invoke-ComStackRelease -Stack $comStack2 -Label 'instance 2'
 
             $excel2.Quit()
@@ -1399,18 +1467,19 @@ try {
             $inst2Finished = $true
             $exited = Wait-ExcelExit -Identity $id2 -TimeoutSeconds 20
             $relTxt = Format-ReleaseResult $script:rel2 'instance 2'
+            $relClean = ($script:rel2.Completed -and @($script:rel2.FailedReleaseLabels).Count -eq 0 -and $script:rel2.ReleasedCount -eq $script:rel2.UniqueCount)
 
-            if (-not $script:rel2.Completed -or @($script:rel2.Unreleased).Count -gt 0) {
-                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ("The COM release pass did not complete cleanly, which is a lifecycle defect regardless of whether the process exited (exited=" + $exited + ").`r`n" + $relTxt)
+            if (-not $relClean) {
+                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ("The COM release pass did not complete cleanly. That is a lifecycle defect regardless of whether the process exited (natural exit observed: " + $exited + ").`r`n" + $relTxt)
                 Set-Cap '15' $false
             } elseif ($exited) {
-                Add-Result '15' 'Release COM, final close and quit' 'PASS' (("released {0} of {1} registered COM references before Quit; pid {2} exited without force." -f $script:rel2.Released, $script:rel2.CountBefore, $id2.ProcessId))
+                Add-Result '15' 'Release COM, final close and quit' 'PASS' ((("released {0} of {1} unique COM references ({2} registered, {3} duplicates) before Quit; pid {4} exited naturally, no force-stop required." -f $script:rel2.ReleasedCount, $script:rel2.UniqueCount, $script:rel2.RegisteredCount, $script:rel2.DuplicateCount, $id2.ProcessId)))
                 Set-Cap '15' $true
             } elseif ($null -eq $id2 -or $id2.ProcessId -le 0) {
-                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ("Quit() returned but no process identity was captured, so clean exit could not be verified.`r`n" + $relTxt)
+                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ("Quit() returned but no process identity was captured, so natural exit could not be verified.`r`n" + $relTxt)
                 Set-Cap '15' $false
             } else {
-                Add-Result '15' 'Release COM, final close and quit' 'FAIL' (("Quit() returned but Excel pid {0} is still running after 20s. The emergency cleanup path will handle the process; this test remains FAIL.`r`n" -f $id2.ProcessId) + $relTxt)
+                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ((("Every planned COM reference was released, but Excel pid {0} is still running after 20s. The emergency cleanup path will handle the process; this test remains FAIL.`r`n" -f $id2.ProcessId) + $relTxt))
                 Set-Cap '15' $false
             }
         } catch {
@@ -1433,7 +1502,9 @@ finally {
 
     if (-not $inst1Finished) {
         try { if ($null -ne $wb) { $wb.Close($false) } } catch { }
-        $shapes = $null; $chartObjects = $null; $vbcomps = $null; $vbproj = $null
+        $cht = $null; $co = $null; $chartObjects = $null
+        $shp = $null; $shapes = $null
+        $vbcomps = $null; $vbproj = $null
         $ws = $null; $worksheets = $null; $wb = $null; $workbooks = $null
         $script:rel1 = Invoke-ComStackRelease -Stack $comStack1 -Label 'instance 1'
         if ($null -ne $excel) {
