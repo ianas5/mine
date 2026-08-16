@@ -27,6 +27,11 @@
           and process StartTime unchanged. If identity cannot be proven, the process is
           left alone and the user is asked to close it manually.
 
+    RUN 2 INSTRUMENTATION
+        TEST 02 is split into reported substeps, numeric cell writes are a separate test
+        (02N), and the COM release path reports registered/released counts, completion
+        state and any exception instead of swallowing it.
+
     COM LIFECYCLE
         Every COM object this script obtains is either released immediately after last use
         or registered on a per-instance stack released LIFO (leaf before parent) before
@@ -202,18 +207,43 @@ function Remove-ComObjectRef {
     try { [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($Obj); return $true } catch { return $false }
 }
 
-$comStack1      = New-Object System.Collections.ArrayList
-$comStack2      = New-Object System.Collections.ArrayList
-$comStackActive = $comStack1
-$comReleased1   = 0
-$comReleased2   = 0
+$comStack1        = New-Object System.Collections.ArrayList
+$comStack2        = New-Object System.Collections.ArrayList
+$comStackActive   = $comStack1
+$comTrackWarnings = New-Object System.Collections.ArrayList
+$rel1             = $null
+$rel2             = $null
+
+# Diagnostic readers. These read ArrayList.Count only and never touch a COM object, so
+# they cannot alter COM ownership.
+function Get-ComStackCount {
+    param([int]$Which)
+    try {
+        if ($Which -eq 2) { return [int]$script:comStack2.Count }
+        return [int]$script:comStack1.Count
+    } catch { return -1 }
+}
+function Get-ComDiag {
+    return ("COM stack 1 count: {0}; COM stack 2 count: {1}" -f (Get-ComStackCount 1), (Get-ComStackCount 2))
+}
 
 # Registers a long-lived COM reference for LIFO release. Returns nothing: returning a COM
 # object from a PowerShell function can cause the pipeline to enumerate COM collections.
 function Register-ComRef {
     param($Obj, [string]$Label)
-    if ($null -ne $Obj -and $null -ne $script:comStackActive) {
-        $null = $script:comStackActive.Add([pscustomobject]@{ Obj = $Obj; Label = $Label })
+    if ($null -eq $Obj) {
+        $null = $script:comTrackWarnings.Add(("Register-ComRef received null for '{0}'" -f $Label))
+        return
+    }
+    if ($null -eq $script:comStackActive) {
+        $null = $script:comTrackWarnings.Add(("no active COM stack when registering '{0}'" -f $Label))
+        return
+    }
+    $before = [int]$script:comStackActive.Count
+    $null = $script:comStackActive.Add([pscustomobject]@{ Obj = $Obj; Label = $Label })
+    $after = [int]$script:comStackActive.Count
+    if ($after -ne ($before + 1)) {
+        $null = $script:comTrackWarnings.Add(("stack did not grow registering '{0}': before={1} after={2}" -f $Label, $before, $after))
     }
 }
 
@@ -221,11 +251,19 @@ function Register-ComRef {
 # leaf -> parent as required.
 function Clear-ComRefStack {
     param($Stack)
-    $released = New-Object System.Collections.ArrayList
+    $released   = New-Object System.Collections.ArrayList
+    $unreleased = New-Object System.Collections.ArrayList
     $count = 0
     for ($i = $Stack.Count - 1; $i -ge 0; $i--) {
-        $entry = $Stack[$i]
-        $o = $entry.Obj
+        $entry = $null; $o = $null; $lbl = '<unknown>'
+        try {
+            $entry = $Stack[$i]
+            $lbl   = [string]$entry.Label
+            $o     = $entry.Obj
+        } catch {
+            $null = $unreleased.Add(("<stack entry {0} unreadable: {1}>" -f $i, $_.Exception.Message))
+            continue
+        }
         if ($null -ne $o) {
             $dup = $false
             for ($j = 0; $j -lt $released.Count; $j++) {
@@ -233,25 +271,123 @@ function Clear-ComRefStack {
             }
             if (-not $dup) {
                 $null = $released.Add($o)
-                if (Remove-ComObjectRef $o) { $count++ }
+                # Per-item guard: one uncooperative RCW must not abort the whole pass.
+                $okRel = $false
+                try { $okRel = [bool](Remove-ComObjectRef $o) } catch { $okRel = $false }
+                if ($okRel) { $count++ } else { $null = $unreleased.Add($lbl) }
             }
         }
-        $entry.Obj = $null
+        try { $entry.Obj = $null } catch { }
     }
-    $Stack.Clear()
-    return $count
+    try { $Stack.Clear() } catch { }
+    return ([pscustomobject]@{ Released = $count; Unreleased = @($unreleased.ToArray()) })
+}
+
+# Wrapper that preserves the evidence. A failure here is recorded, never swallowed:
+# it distinguishes "nothing was ever registered" from "release itself malfunctioned".
+function Invoke-ComStackRelease {
+    param($Stack, [string]$Label)
+    $res = [pscustomobject]@{
+        Label = $Label; CountBefore = -1; Released = 0
+        Completed = $false; Error = ''; Unreleased = @()
+    }
+    try { $res.CountBefore = [int]$Stack.Count }
+    catch { $res.Error = 'could not read stack count: ' + $_.Exception.Message }
+    try {
+        $r = Clear-ComRefStack $Stack
+        $res.Released   = [int]$r.Released
+        $res.Unreleased = @($r.Unreleased)
+        $res.Completed  = $true
+    } catch {
+        $res.Completed = $false
+        $res.Error = Format-Err $_
+        try {
+            $left = New-Object System.Collections.ArrayList
+            for ($i = 0; $i -lt $Stack.Count; $i++) {
+                if ($null -ne $Stack[$i].Obj) { $null = $left.Add([string]$Stack[$i].Label) }
+            }
+            $res.Unreleased = @($left.ToArray())
+        } catch { }
+    }
+    return $res
+}
+
+function Format-ReleaseResult {
+    param($Res, [string]$Name)
+    if ($null -eq $Res) { return ("  {0}: release never attempted (instance was not created)." -f $Name) }
+    if ($Res.Completed -and @($Res.Unreleased).Count -eq 0 -and -not $Res.Error) {
+        return ("  {0}: registered {1}, released {2}, release completed OK" -f $Name, $Res.CountBefore, $Res.Released)
+    }
+    $out = New-Object System.Collections.ArrayList
+    $null = $out.Add(("  {0}: registered {1}, released {2}, completed={3}" -f $Name, $Res.CountBefore, $Res.Released, $Res.Completed))
+    if ($Res.Error) { $null = $out.Add(("      exception: {0}" -f $Res.Error)) }
+    if (@($Res.Unreleased).Count -gt 0) { $null = $out.Add(("      NOT released: {0}" -f (@($Res.Unreleased) -join ', '))) }
+    return ($out -join "`r`n")
+}
+
+# Substep reporter, so one large try/catch can never hide the failing statement.
+function Add-SubStep {
+    param($List, [string]$Id, [string]$Text, [string]$Status, [string]$Info = '')
+    $line = ("      {0,-7} [{1,-7}] {2}" -f $Id, $Status, $Text)
+    if ($Info) { $line = $line + ' :: ' + $Info }
+    $null = $List.Add($line)
+    $c = 'DarkGray'
+    if ($Status -eq 'FAIL') { $c = 'Red' } elseif ($Status -eq 'PASS') { $c = 'DarkGreen' }
+    Write-Host $line -ForegroundColor $c
 }
 
 # Cell access helpers, so Range RCWs never accumulate through chained property access.
-function Set-CellValue {
-    param($Sheet, [string]$Address, $Value)
+# Text and numeric writes are DELIBERATELY separate and strongly typed. The previous
+# helper took an untyped $Value, which handed a boxed Int32 to the COM binder for the
+# numeric writes; Excel stores every number as a Double, so [double] is both the correct
+# and the safest type to marshal.
+function Set-CellText {
+    param($Sheet, [string]$Address, [string]$Value)
     $rng = $Sheet.Range($Address)
     try { $rng.Value2 = $Value } finally { [void](Remove-ComObjectRef $rng) }
 }
+
 function Get-CellText {
     param($Sheet, [string]$Address)
     $rng = $Sheet.Range($Address)
     try { return [string]$rng.Value2 } finally { [void](Remove-ComObjectRef $rng) }
+}
+
+# Three legitimate numeric write mechanisms, tried in order. Returns the name of the one
+# that succeeded so the report records it, mirroring the TEST 08 CodeName pattern.
+function Set-CellNumber {
+    param($Sheet, [string]$Address, [double]$Value)
+    $rng = $Sheet.Range($Address)
+    $attempts = New-Object System.Collections.ArrayList
+    try {
+        try { $rng.Value2 = $Value; return 'Range.Value2 <- [double]' }
+        catch { $null = $attempts.Add('Range.Value2 <- [double] :: ' + (Format-Err $_)) }
+
+        try { $rng.Value = $Value; return 'Range.Value <- [double]' }
+        catch { $null = $attempts.Add('Range.Value <- [double] :: ' + (Format-Err $_)) }
+
+        $txt = $Value.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+        try { $rng.Formula = $txt; return 'Range.Formula <- invariant [string]' }
+        catch { $null = $attempts.Add('Range.Formula <- invariant [string] :: ' + (Format-Err $_)) }
+
+        throw ("all numeric write mechanisms failed for " + $Address + " -> " + ($attempts -join ' || '))
+    } finally {
+        [void](Remove-ComObjectRef $rng)
+    }
+}
+
+function Get-CellNumber {
+    param($Sheet, [string]$Address)
+    $rng = $Sheet.Range($Address)
+    try {
+        $v = $rng.Value2
+        if ($null -eq $v) { return [double]::NaN }
+        return [double]$v
+    } catch {
+        return [double]::NaN
+    } finally {
+        [void](Remove-ComObjectRef $rng)
+    }
 }
 
 # Reads a VBComponent's source. Returns a plain string; the CodeModule RCW is released here.
@@ -528,46 +664,190 @@ try {
     }
 
     # =======================================================================
-    # TEST 02 - Workbook creation
+    # TEST 02 - Workbook and worksheet creation
+    #   Split into reported substeps. Each substep has its own try/catch so the exact
+    #   failing statement is named instead of being hidden by one large handler.
+    #   Numeric cell writes are deliberately NOT here - see TEST 02N.
     # =======================================================================
-    if (Test-Prereq '02' 'Workbook creation + SmokeTest sheet' @('01')) {
-        try {
-            $workbooks = $excel.Workbooks
-            Register-ComRef $workbooks 'Application.Workbooks'
+    if (Test-Prereq '02' 'Workbook and worksheet creation' @('01')) {
+        $steps = New-Object System.Collections.ArrayList
+        $failedAt = ''
+        $failErr  = ''
 
-            $wb = $workbooks.Add()
-            Register-ComRef $wb 'Workbook'
-
-            $worksheets = $wb.Worksheets
-            Register-ComRef $worksheets 'Workbook.Worksheets'
-
-            # Application.SheetsInNewWorkbook is a persisted user preference and is NOT touched.
-            while ([int]$worksheets.Count -gt 1) {
-                $extra = $worksheets.Item([int]$worksheets.Count)
-                $extra.Delete()
-                [void](Remove-ComObjectRef $extra)
-                $extra = $null
+        # --- 02.1 Workbooks collection acquired -----------------------------
+        if ($failedAt -eq '') {
+            try {
+                $workbooks = $excel.Workbooks
+                Register-ComRef $workbooks 'Application.Workbooks'
+                Add-SubStep $steps '02.1' 'Workbooks collection acquired' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
+            } catch {
+                $failedAt = '02.1'; $failErr = (Format-Err $_)
+                Add-SubStep $steps '02.1' 'Workbooks collection acquired' 'FAIL' $failErr
             }
+        }
 
-            $ws = $worksheets.Item(1)
-            Register-ComRef $ws 'Worksheet(SmokeTest)'
-            $ws.Name = 'SmokeTest'
-
-            Set-CellValue $ws 'A1' 'PCCM disposable Excel COM smoke test'
-            Set-CellValue $ws 'A2' 'Macro marker cell ->'
-            Set-CellValue $ws 'B2' 'PENDING'
-            Set-CellValue $ws 'D1' 'Year'
-            Set-CellValue $ws 'E1' 'Value'
-            for ($i = 1; $i -le 5; $i++) {
-                Set-CellValue $ws ('D' + ($i + 1)) (2028 + $i - 1)
-                Set-CellValue $ws ('E' + ($i + 1)) ($i * 10)
+        # --- 02.2 Workbook created ------------------------------------------
+        if ($failedAt -eq '') {
+            try {
+                $wb = $workbooks.Add()
+                Register-ComRef $wb 'Workbook'
+                Add-SubStep $steps '02.2' 'Workbook created' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
+            } catch {
+                $failedAt = '02.2'; $failErr = (Format-Err $_)
+                Add-SubStep $steps '02.2' 'Workbook created' 'FAIL' $failErr
             }
+        }
 
-            Add-Result '02' 'Workbook creation + SmokeTest sheet' 'PASS' ("Worksheets.Count={0}; name='{1}'" -f [int]$worksheets.Count, [string]$ws.Name)
+        # --- 02.3 Worksheets collection acquired ----------------------------
+        if ($failedAt -eq '') {
+            try {
+                $worksheets = $wb.Worksheets
+                Register-ComRef $worksheets 'Workbook.Worksheets'
+                Add-SubStep $steps '02.3' 'Worksheets collection acquired' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
+            } catch {
+                $failedAt = '02.3'; $failErr = (Format-Err $_)
+                Add-SubStep $steps '02.3' 'Worksheets collection acquired' 'FAIL' $failErr
+            }
+        }
+
+        # --- 02.4 Reduced to a single worksheet -----------------------------
+        # Application.SheetsInNewWorkbook is a persisted user preference and is NOT touched.
+        if ($failedAt -eq '') {
+            $initialSheets = -1
+            try {
+                $initialSheets = [int]$worksheets.Count
+                while ([int]$worksheets.Count -gt 1) {
+                    $extra = $worksheets.Item([int]$worksheets.Count)
+                    $extra.Delete()
+                    [void](Remove-ComObjectRef $extra)
+                    $extra = $null
+                }
+                Add-SubStep $steps '02.4' 'Reduced to a single worksheet' 'PASS' ("initial={0}; final={1}" -f $initialSheets, [int]$worksheets.Count)
+            } catch {
+                $failedAt = '02.4'; $failErr = (Format-Err $_)
+                Add-SubStep $steps '02.4' 'Reduced to a single worksheet' 'FAIL' (("initial={0}; " -f $initialSheets) + $failErr)
+            }
+        }
+
+        # --- 02.5 Worksheet acquired ----------------------------------------
+        if ($failedAt -eq '') {
+            try {
+                $ws = $worksheets.Item(1)
+                Register-ComRef $ws 'Worksheet(SmokeTest)'
+                Add-SubStep $steps '02.5' 'Worksheet acquired via Worksheets.Item(1)' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
+            } catch {
+                $failedAt = '02.5'; $failErr = (Format-Err $_)
+                Add-SubStep $steps '02.5' 'Worksheet acquired via Worksheets.Item(1)' 'FAIL' $failErr
+            }
+        }
+
+        # --- 02.6 Worksheet renamed -----------------------------------------
+        if ($failedAt -eq '') {
+            try {
+                $ws.Name = 'SmokeTest'
+                $nameBack = [string]$ws.Name
+                if ($nameBack -ne 'SmokeTest') { throw ("rename read back as '{0}'" -f $nameBack) }
+                Add-SubStep $steps '02.6' 'Worksheet renamed to SmokeTest' 'PASS' ("Worksheet.Name='{0}'" -f $nameBack)
+            } catch {
+                $failedAt = '02.6'; $failErr = (Format-Err $_)
+                Add-SubStep $steps '02.6' 'Worksheet renamed to SmokeTest' 'FAIL' $failErr
+            }
+        }
+
+        # --- 02.7 Text cell write/read round-trip ---------------------------
+        if ($failedAt -eq '') {
+            $cell = ''
+            try {
+                $cell = 'A1'; Set-CellText $ws 'A1' 'PCCM disposable Excel COM smoke test'
+                $cell = 'A2'; Set-CellText $ws 'A2' 'Macro marker cell ->'
+                $cell = 'B2'; Set-CellText $ws 'B2' 'PENDING'
+                $cell = 'B2 read-back'
+                $rb = Get-CellText $ws 'B2'
+                if ($rb -ne 'PENDING') { throw ("text round-trip mismatch: B2='{0}', expected 'PENDING'" -f $rb) }
+                Add-SubStep $steps '02.7' 'Text cell write/read round-trip' 'PASS' ("A1, A2, B2 written; B2 read back as '{0}'" -f $rb)
+            } catch {
+                $failedAt = '02.7'; $failErr = (Format-Err $_)
+                Add-SubStep $steps '02.7' 'Text cell write/read round-trip' 'FAIL' (("at {0}: " -f $cell) + $failErr)
+            }
+        }
+
+        $detail = "`r`n" + ($steps -join "`r`n")
+        if ($failedAt -eq '') {
+            Add-Result '02' 'Workbook and worksheet creation' 'PASS' $detail
             Set-Cap '02' $true
-        } catch {
-            Add-Result '02' 'Workbook creation + SmokeTest sheet' 'FAIL' (Format-Err $_)
+        } else {
+            Add-Result '02' 'Workbook and worksheet creation' 'FAIL' ($detail + "`r`n      failing substep: " + $failedAt + "`r`n      " + (Get-ComDiag))
             Set-Cap '02' $false
+        }
+    }
+
+    # =======================================================================
+    # TEST 02N - Numeric cell write/read round-trip (chart source data)
+    #   Separated from TEST 02 because the chart needs numeric data but workbook
+    #   creation does not. A numeric-marshalling problem must not be reported as a
+    #   failure of the workbook creation capability.
+    #   Id '02N' sorts between '02' and '03', so report order is preserved.
+    # =======================================================================
+    if (Test-Prereq '02N' 'Numeric cell write/read round-trip (chart source data)' @('02')) {
+        $steps = New-Object System.Collections.ArrayList
+        $failedAt = ''
+        $failErr  = ''
+        $numMech  = 'none'
+
+        # --- 02N.1 single numeric probe -------------------------------------
+        if ($failedAt -eq '') {
+            try {
+                $numMech = Set-CellNumber $ws 'H1' 12345
+                Add-SubStep $steps '02N.1' 'Numeric probe written to H1' 'PASS' ("mechanism: {0}" -f $numMech)
+            } catch {
+                $failedAt = '02N.1'; $failErr = (Format-Err $_)
+                Add-SubStep $steps '02N.1' 'Numeric probe written to H1' 'FAIL' $failErr
+            }
+        }
+
+        # --- 02N.2 numeric read-back ----------------------------------------
+        if ($failedAt -eq '') {
+            try {
+                $v = Get-CellNumber $ws 'H1'
+                if ([double]::IsNaN($v)) { throw 'H1 read back as non-numeric / empty' }
+                if ([math]::Abs($v - 12345) -gt 0.000000001) { throw ("H1 read back as {0}, expected 12345" -f $v) }
+                $rngc = $ws.Range('H1')
+                try { $null = $rngc.ClearContents() } finally { [void](Remove-ComObjectRef $rngc) }
+                Add-SubStep $steps '02N.2' 'Numeric probe read back and cleared' 'PASS' ("value={0}" -f $v)
+            } catch {
+                $failedAt = '02N.2'; $failErr = (Format-Err $_)
+                Add-SubStep $steps '02N.2' 'Numeric probe read back and cleared' 'FAIL' $failErr
+            }
+        }
+
+        # --- 02N.3 chart source block D1:E6 ---------------------------------
+        if ($failedAt -eq '') {
+            $cell = ''
+            try {
+                $cell = 'D1/E1'
+                Set-CellText $ws 'D1' 'Year'
+                Set-CellText $ws 'E1' 'Value'
+                for ($i = 1; $i -le 5; $i++) {
+                    $cell = ('D{0}' -f ($i + 1)); [void](Set-CellNumber $ws $cell (2027 + $i))
+                    $cell = ('E{0}' -f ($i + 1)); [void](Set-CellNumber $ws $cell ($i * 10))
+                }
+                $cell = 'D6 read-back'
+                $chk = Get-CellNumber $ws 'D6'
+                if ([double]::IsNaN($chk) -or [math]::Abs($chk - 2032) -gt 0.000000001) { throw ("D6 read back as {0}, expected 2032" -f $chk) }
+                Add-SubStep $steps '02N.3' 'Chart source block D1:E6 populated' 'PASS' ("D6 read back as {0}" -f $chk)
+            } catch {
+                $failedAt = '02N.3'; $failErr = (Format-Err $_)
+                Add-SubStep $steps '02N.3' 'Chart source block D1:E6 populated' 'FAIL' (("at {0}: " -f $cell) + $failErr)
+            }
+        }
+
+        $detail = "`r`n" + ($steps -join "`r`n")
+        if ($failedAt -eq '') {
+            Add-Result '02N' 'Numeric cell write/read round-trip (chart source data)' 'PASS' $detail
+            Set-Cap '02N' $true
+        } else {
+            Add-Result '02N' 'Numeric cell write/read round-trip (chart source data)' 'FAIL' ($detail + "`r`n      failing substep: " + $failedAt + "`r`n      " + (Get-ComDiag))
+            Set-Cap '02N' $false
         }
     }
 
@@ -582,7 +862,7 @@ try {
             Add-Result '03' 'Save as macro-enabled .xlsm' 'PASS' ("FileFormat={0}; {1} bytes" -f [int]$wb.FileFormat, $sz)
             Set-Cap '03' $true
         } catch {
-            Add-Result '03' 'Save as macro-enabled .xlsm' 'FAIL' (Format-Err $_)
+            Add-Result '03' 'Save as macro-enabled .xlsm' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '03' $false
         }
     }
@@ -608,7 +888,7 @@ try {
             if (Test-TrustAccessError $msg) {
                 Add-Result '04' 'VBProject / VBComponents access' 'BLOCKED' ('Trust access to the VBA project object model is DISABLED. ' + $msg)
             } else {
-                Add-Result '04' 'VBProject / VBComponents access' 'FAIL' $msg
+                Add-Result '04' 'VBProject / VBComponents access' 'FAIL' ($msg + ' | ' + (Get-ComDiag))
             }
             Set-Cap '04' $false
         }
@@ -632,7 +912,7 @@ try {
         } catch {
             if ($null -ne $cm)   { [void](Remove-ComObjectRef $cm) }
             if ($null -ne $comp) { [void](Remove-ComObjectRef $comp) }
-            Add-Result '05' ('Standard module injection (' + $STD_MODULE_NAME + ')') 'FAIL' (Format-Err $_)
+            Add-Result '05' ('Standard module injection (' + $STD_MODULE_NAME + ')') 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '05' $false
         }
     }
@@ -655,7 +935,7 @@ try {
         } catch {
             if ($null -ne $cm)   { [void](Remove-ComObjectRef $cm) }
             if ($null -ne $comp) { [void](Remove-ComObjectRef $comp) }
-            Add-Result '06' ('Class module injection (' + $CLS_MODULE_NAME + ')') 'FAIL' (Format-Err $_)
+            Add-Result '06' ('Class module injection (' + $CLS_MODULE_NAME + ')') 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '06' $false
         }
     }
@@ -695,7 +975,7 @@ try {
         } catch {
             if ($null -ne $twCm)   { [void](Remove-ComObjectRef $twCm) }
             if ($null -ne $twComp) { [void](Remove-ComObjectRef $twComp) }
-            Add-Result '07' 'ThisWorkbook document-module injection' 'FAIL' (Format-Err $_)
+            Add-Result '07' 'ThisWorkbook document-module injection' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '07' $false
         }
     }
@@ -777,7 +1057,7 @@ try {
                 Add-Result '08' 'Worksheet CodeName + worksheet document-module injection' 'PASS' $detail
                 Set-Cap '08' $true
             } else {
-                Add-Result '08' 'Worksheet CodeName + worksheet document-module injection' 'FAIL' $detail
+                Add-Result '08' 'Worksheet CodeName + worksheet document-module injection' 'FAIL' ($detail + "`r`n      " + (Get-ComDiag))
                 Set-Cap '08' $false
             }
         } catch {
@@ -785,7 +1065,7 @@ try {
             if ($null -ne $prop)  { [void](Remove-ComObjectRef $prop) }
             if ($null -ne $props) { [void](Remove-ComObjectRef $props) }
             if ($null -ne $comp)  { [void](Remove-ComObjectRef $comp) }
-            Add-Result '08' 'Worksheet CodeName + worksheet document-module injection' 'FAIL' ((Format-Err $_) + "`r`n" + ($sub -join "`r`n"))
+            Add-Result '08' 'Worksheet CodeName + worksheet document-module injection' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag) + "`r`n" + ($sub -join "`r`n"))
             Set-Cap '08' $false
         }
     }
@@ -817,7 +1097,7 @@ try {
             Add-Result '09' 'Shape creation + OnAction assignment' 'PASS' ("name='{0}'; OnAction='{1}'" -f $SHAPE_NAME, $readBack)
             Set-Cap '09' $true
         } catch {
-            Add-Result '09' 'Shape creation + OnAction assignment' 'FAIL' (Format-Err $_)
+            Add-Result '09' 'Shape creation + OnAction assignment' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '09' $false
         }
     }
@@ -825,7 +1105,7 @@ try {
     # =======================================================================
     # TEST 10 - Chart  (independent of the VBA project)
     # =======================================================================
-    if (Test-Prereq '10' 'ChartObject creation' @('02')) {
+    if (Test-Prereq '10' 'ChartObject creation' @('02','02N')) {
         try {
             $chartObjects = $ws.ChartObjects()
             Register-ComRef $chartObjects 'Worksheet.ChartObjects'
@@ -846,7 +1126,7 @@ try {
             Add-Result '10' 'ChartObject creation' 'PASS' ("ChartObjects.Count={0}; name='chtSmokeTest'; ChartType={1}" -f $cnt, [int]$cht.ChartType)
             Set-Cap '10' $true
         } catch {
-            Add-Result '10' 'ChartObject creation' 'FAIL' (Format-Err $_)
+            Add-Result '10' 'ChartObject creation' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '10' $false
         }
     }
@@ -875,11 +1155,11 @@ try {
                     Add-Result '11' ('Macro execution (' + $MACRO_NAME + ')') 'PASS' ("SmokeTest!B2='{0}'" -f $val)
                     Set-Cap '11' $true
                 } else {
-                    Add-Result '11' ('Macro execution (' + $MACRO_NAME + ')') 'FAIL' ("Macro ran without error but SmokeTest!B2='{0}', expected '{1}'." -f $val, $MARKER_MACRO)
+                    Add-Result '11' ('Macro execution (' + $MACRO_NAME + ')') 'FAIL' (("Macro ran without error but SmokeTest!B2='{0}', expected '{1}'." -f $val, $MARKER_MACRO) + ' | ' + (Get-ComDiag))
                     Set-Cap '11' $false
                 }
             } catch {
-                Add-Result '11' ('Macro execution (' + $MACRO_NAME + ')') 'FAIL' (Format-Err $_)
+                Add-Result '11' ('Macro execution (' + $MACRO_NAME + ')') 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
                 Set-Cap '11' $false
             }
         } else {
@@ -887,7 +1167,7 @@ try {
             if ((Test-MacroPolicyError $runErr1) -or (Test-MacroPolicyError $runErr2)) {
                 Add-Result '11' ('Macro execution (' + $MACRO_NAME + ')') 'BLOCKED' ('Macro execution appears blocked by an Excel macro security policy. This is distinct from VBProject trust access, which passed at TEST 04. ' + $combined)
             } else {
-                Add-Result '11' ('Macro execution (' + $MACRO_NAME + ')') 'FAIL' $combined
+                Add-Result '11' ('Macro execution (' + $MACRO_NAME + ')') 'FAIL' ($combined + ' | ' + (Get-ComDiag))
             }
             Set-Cap '11' $false
         }
@@ -908,7 +1188,7 @@ try {
             # leaf before parent, BEFORE Application.Quit().
             $shapes = $null; $chartObjects = $null; $vbcomps = $null; $vbproj = $null
             $ws = $null; $worksheets = $null; $wb = $null; $workbooks = $null
-            $script:comReleased1 = Clear-ComRefStack $comStack1
+            $script:rel1 = Invoke-ComStackRelease -Stack $comStack1 -Label 'instance 1'
 
             $excel.Quit()
             [void](Remove-ComObjectRef $excel)
@@ -920,19 +1200,23 @@ try {
 
             $inst1Finished = $true
             $exited = Wait-ExcelExit -Identity $id1 -TimeoutSeconds 20
+            $relTxt = Format-ReleaseResult $script:rel1 'instance 1'
 
-            if ($exited) {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'PASS' ("{0} COM references released before Quit; pid {1} exited without force." -f $script:comReleased1, $id1.ProcessId)
+            if (-not $script:rel1.Completed -or @($script:rel1.Unreleased).Count -gt 0) {
+                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ("The COM release pass did not complete cleanly, which is a lifecycle defect regardless of whether the process exited (exited=" + $exited + ").`r`n" + $relTxt)
+                Set-Cap '12' $false
+            } elseif ($exited) {
+                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'PASS' (("released {0} of {1} registered COM references before Quit; pid {2} exited without force." -f $script:rel1.Released, $script:rel1.CountBefore, $id1.ProcessId))
                 Set-Cap '12' $true
             } elseif ($null -eq $id1 -or $id1.ProcessId -le 0) {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ("{0} COM references released and Quit() returned, but no process identity was captured, so clean exit could not be verified." -f $script:comReleased1)
+                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ("Quit() returned but no process identity was captured, so clean exit could not be verified.`r`n" + $relTxt)
                 Set-Cap '12' $false
             } else {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ("{0} COM references released and Quit() returned, but Excel pid {1} is still running after 20s. A COM reference is still held somewhere. The emergency cleanup path will handle the process; this test remains FAIL." -f $script:comReleased1, $id1.ProcessId)
+                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' (("Quit() returned but Excel pid {0} is still running after 20s, so a COM reference is still held somewhere. The emergency cleanup path will handle the process; this test remains FAIL.`r`n" -f $id1.ProcessId) + $relTxt)
                 Set-Cap '12' $false
             }
         } catch {
-            Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' (Format-Err $_)
+            Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '12' $false
         }
     }
@@ -961,7 +1245,7 @@ try {
             Add-Result '13' 'Reopen saved .xlsm in a fresh instance' 'PASS' ("pid {0} via {1}; opened '{2}'" -f $id2.ProcessId, $id2.Source, [string]$wb2.Name)
             Set-Cap '13' $true
         } catch {
-            Add-Result '13' 'Reopen saved .xlsm in a fresh instance' 'FAIL' (Format-Err $_)
+            Add-Result '13' 'Reopen saved .xlsm in a fresh instance' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '13' $false
         }
     }
@@ -1084,11 +1368,11 @@ try {
                 Add-Result '14' 'Persistence verification after reopen' 'PASS' $detail
                 Set-Cap '14' $true
             } else {
-                Add-Result '14' 'Persistence verification after reopen' 'FAIL' $detail
+                Add-Result '14' 'Persistence verification after reopen' 'FAIL' ($detail + "`r`n      " + (Get-ComDiag))
                 Set-Cap '14' $false
             }
         } catch {
-            Add-Result '14' 'Persistence verification after reopen' 'FAIL' ((Format-Err $_) + "`r`n" + ($sub -join "`r`n"))
+            Add-Result '14' 'Persistence verification after reopen' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag) + "`r`n" + ($sub -join "`r`n"))
             Set-Cap '14' $false
         }
     }
@@ -1103,7 +1387,7 @@ try {
             # Release EVERY second-instance child reference before Quit().
             $vbcomps2 = $null; $vbproj2 = $null; $ws2 = $null; $worksheets2 = $null
             $wb2 = $null; $workbooks2 = $null
-            $script:comReleased2 = Clear-ComRefStack $comStack2
+            $script:rel2 = Invoke-ComStackRelease -Stack $comStack2 -Label 'instance 2'
 
             $excel2.Quit()
             [void](Remove-ComObjectRef $excel2)
@@ -1114,19 +1398,23 @@ try {
 
             $inst2Finished = $true
             $exited = Wait-ExcelExit -Identity $id2 -TimeoutSeconds 20
+            $relTxt = Format-ReleaseResult $script:rel2 'instance 2'
 
-            if ($exited) {
-                Add-Result '15' 'Release COM, final close and quit' 'PASS' ("{0} COM references released before Quit; pid {1} exited without force." -f $script:comReleased2, $id2.ProcessId)
+            if (-not $script:rel2.Completed -or @($script:rel2.Unreleased).Count -gt 0) {
+                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ("The COM release pass did not complete cleanly, which is a lifecycle defect regardless of whether the process exited (exited=" + $exited + ").`r`n" + $relTxt)
+                Set-Cap '15' $false
+            } elseif ($exited) {
+                Add-Result '15' 'Release COM, final close and quit' 'PASS' (("released {0} of {1} registered COM references before Quit; pid {2} exited without force." -f $script:rel2.Released, $script:rel2.CountBefore, $id2.ProcessId))
                 Set-Cap '15' $true
             } elseif ($null -eq $id2 -or $id2.ProcessId -le 0) {
-                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ("{0} COM references released and Quit() returned, but no process identity was captured, so clean exit could not be verified." -f $script:comReleased2)
+                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ("Quit() returned but no process identity was captured, so clean exit could not be verified.`r`n" + $relTxt)
                 Set-Cap '15' $false
             } else {
-                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ("{0} COM references released and Quit() returned, but Excel pid {1} is still running after 20s. The emergency cleanup path will handle the process; this test remains FAIL." -f $script:comReleased2, $id2.ProcessId)
+                Add-Result '15' 'Release COM, final close and quit' 'FAIL' (("Quit() returned but Excel pid {0} is still running after 20s. The emergency cleanup path will handle the process; this test remains FAIL.`r`n" -f $id2.ProcessId) + $relTxt)
                 Set-Cap '15' $false
             }
         } catch {
-            Add-Result '15' 'Release COM, final close and quit' 'FAIL' (Format-Err $_)
+            Add-Result '15' 'Release COM, final close and quit' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '15' $false
         }
     }
@@ -1147,7 +1435,7 @@ finally {
         try { if ($null -ne $wb) { $wb.Close($false) } } catch { }
         $shapes = $null; $chartObjects = $null; $vbcomps = $null; $vbproj = $null
         $ws = $null; $worksheets = $null; $wb = $null; $workbooks = $null
-        try { $script:comReleased1 = Clear-ComRefStack $comStack1 } catch { }
+        $script:rel1 = Invoke-ComStackRelease -Stack $comStack1 -Label 'instance 1'
         if ($null -ne $excel) {
             try { $excel.Quit() } catch { }
             [void](Remove-ComObjectRef $excel)
@@ -1158,7 +1446,7 @@ finally {
         try { if ($null -ne $wb2) { $wb2.Close($false) } } catch { }
         $vbcomps2 = $null; $vbproj2 = $null; $ws2 = $null; $worksheets2 = $null
         $wb2 = $null; $workbooks2 = $null
-        try { $script:comReleased2 = Clear-ComRefStack $comStack2 } catch { }
+        $script:rel2 = Invoke-ComStackRelease -Stack $comStack2 -Label 'instance 2'
         if ($null -ne $excel2) {
             try { $excel2.Quit() } catch { }
             [void](Remove-ComObjectRef $excel2)
@@ -1221,8 +1509,12 @@ finally {
     $null = $sb.AppendLine('')
     $null = $sb.AppendLine('COM LIFECYCLE')
     $null = $sb.AppendLine('-------------')
-    $null = $sb.AppendLine(('  Instance 1 COM references released before Quit : {0}' -f $comReleased1))
-    $null = $sb.AppendLine(('  Instance 2 COM references released before Quit : {0}' -f $comReleased2))
+    $null = $sb.AppendLine((Format-ReleaseResult $rel1 'Instance 1'))
+    $null = $sb.AppendLine((Format-ReleaseResult $rel2 'Instance 2'))
+    if ($comTrackWarnings.Count -gt 0) {
+        $null = $sb.AppendLine('  COM tracking warnings:')
+        foreach ($w in $comTrackWarnings) { $null = $sb.AppendLine(('      ' + $w)) }
+    }
     $null = $sb.AppendLine('')
     $null = $sb.AppendLine('CLEANUP')
     $null = $sb.AppendLine('-------')

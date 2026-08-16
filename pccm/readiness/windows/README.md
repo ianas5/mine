@@ -6,9 +6,12 @@ will need.
 
 It takes under a minute to run and writes a single text report that you send back.
 
-> **Status: not yet executed anywhere.** The script has been statically reviewed on Linux
-> but has never run against a real Excel installation. Its behaviour - including its
-> cleanup behaviour - is a design intention, not a demonstrated fact, until you run it.
+> **Status: run 1 completed, run 2 pending.** On the first Windows execution TEST 01
+> passed - Excel COM automation, version/build/bitness detection and process-identity
+> capture all worked - and TEST 02 failed with a PowerShell/COM type-marshalling error
+> that has been diagnosed and patched. This is a script defect, not an Excel or
+> environment problem. **No Excel setting needs to change.** This revision adds
+> substep-level reporting so run 2 pinpoints the exact statement if anything still fails.
 
 ---
 
@@ -17,7 +20,8 @@ It takes under a minute to run and writes a single text report that you send bac
 | Test | Capability |
 |------|------------|
 | 01 | Excel COM automation can be instantiated; version / build / bitness detected |
-| 02 | Workbook creation with a `SmokeTest` worksheet |
+| 02 | Workbook creation with a `SmokeTest` worksheet (reported as substeps 02.1-02.7) |
+| 02N | Numeric cell write/read round-trip - the chart's source data |
 | 03 | Save in genuine macro-enabled `.xlsm` format |
 | 04 | `Workbook.VBProject` / `VBComponents` access |
 | 05 | Standard module injection (`modSmokeTest`) |
@@ -25,7 +29,7 @@ It takes under a minute to run and writes a single text report that you send bac
 | 07 | `ThisWorkbook` document-module code injection |
 | 08 | Worksheet CodeName assignment (`shSmokeTest`) **and** worksheet document-module code injection |
 | 09 | Shape/button creation with `OnAction` wired to a macro |
-| 10 | Native `ChartObject` creation |
+| 10 | Native `ChartObject` creation (requires 02N) |
 | 11 | Macro execution through automation |
 | 12 | Explicit COM release, then save, close and quit - Excel must exit without being forced |
 | 13 | Reopen the saved `.xlsm` in a fresh Excel instance |
@@ -35,7 +39,16 @@ It takes under a minute to run and writes a single text report that you send bac
 Every test reports **PASS**, **FAIL**, **BLOCKED** or **SKIPPED**, with the underlying COM
 error message and HRESULT where one occurred.
 
-Two details worth knowing:
+Three details worth knowing:
+
+- **TEST 02 reports substeps.** Each of acquiring the Workbooks collection, creating the
+  workbook, acquiring Worksheets, reducing to one sheet, acquiring the sheet, renaming it
+  and the text write/read round-trip is reported separately with its own error handling,
+  so a failure names the exact operation rather than "workbook creation failed".
+- **Numeric cell writes are their own test (02N)**, because the chart needs numeric data
+  but workbook creation does not. A number-marshalling problem is now reported as exactly
+  that, and only the chart test is skipped as a result.
+
 
 - **TEST 08 has two sub-checks** and both must pass. PCCM needs worksheet document-module
   code for its output-sheet activation logic, so proving CodeName assignment alone is not
@@ -168,7 +181,7 @@ Everything is created in `smoke_output\` beside the script:
 |------|---------|
 | `smoke_test_report.txt` | **Return this one.** Always the current run. |
 | `PCCM_Excel_COM_Smoke_Test.xlsm` | Disposable test workbook from the current run |
-| `previous_<timestamp>\` | The prior run's report and workbook, moved aside automatically |
+| `previous_<timestamp>\` | Each earlier run's report and workbook, moved aside automatically. Run 1's evidence is preserved here. |
 
 A previous run's report and workbook are **never overwritten**. If files from an earlier
 run are present, they are moved into a `previous_<timestamp>\` folder before the new run
