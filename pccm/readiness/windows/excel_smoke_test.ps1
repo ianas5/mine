@@ -192,193 +192,144 @@ function Test-MacroPolicyError {
 }
 
 # ===========================================================================
-# COM lifecycle
+# COM lifecycle - EXPLICIT NAMED OWNERSHIP
 # ===========================================================================
-# Single release helper. FinalReleaseComObject is used deliberately: every RCW here is
-# created and owned exclusively by this short-lived script, held by exactly one variable,
-# and released once. Under those conditions final release is the reliable way to drive the
-# RCW count to zero. The bulk pass de-duplicates by reference identity so a shared RCW can
-# never be final-released twice, and no object is released while another live variable
-# still points at it.
-function Remove-ComObjectRef {
-    param($Obj)
-    if ($null -eq $Obj) { return $false }
-    try { if (-not [System.Runtime.InteropServices.Marshal]::IsComObject($Obj)) { return $false } } catch { return $false }
-    try { [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($Obj); return $true } catch { return $false }
-}
-
-$comStack1        = New-Object System.Collections.ArrayList
-$comStack2        = New-Object System.Collections.ArrayList
-$comStackActive   = $comStack1
-$comTrackWarnings = New-Object System.Collections.ArrayList
-$rel1             = $null
-$rel2             = $null
-
-# Diagnostic readers. These read ArrayList.Count only and never touch a COM object, so
-# they cannot alter COM ownership.
-function Get-ComStackCount {
-    param([int]$Which)
-    try {
-        if ($Which -eq 2) { return [int]$script:comStack2.Count }
-        return [int]$script:comStack1.Count
-    } catch { return -1 }
-}
-function Get-ComDiag {
-    return ("COM stack 1 count: {0}; COM stack 2 count: {1}" -f (Get-ComStackCount 1), (Get-ComStackCount 2))
-}
-
-# Registers a long-lived COM reference for LIFO release. Returns nothing: returning a COM
-# object from a PowerShell function can cause the pipeline to enumerate COM collections.
-function Register-ComRef {
-    param($Obj, [string]$Label)
-    if ($null -eq $Obj) {
-        $null = $script:comTrackWarnings.Add(("Register-ComRef received null for '{0}'" -f $Label))
-        return
-    }
-    if ($null -eq $script:comStackActive) {
-        $null = $script:comTrackWarnings.Add(("no active COM stack when registering '{0}'" -f $Label))
-        return
-    }
-    $before = [int]$script:comStackActive.Count
-    $null = $script:comStackActive.Add([pscustomobject]@{ Obj = $Obj; Label = $Label })
-    $after = [int]$script:comStackActive.Count
-    if ($after -ne ($before + 1)) {
-        $null = $script:comTrackWarnings.Add(("stack did not grow registering '{0}': before={1} after={2}" -f $Label, $before, $after))
-    }
-}
-
-# Releases the stack LIFO. Acquisition order is parent -> child, so reverse order is
-# leaf -> parent as required.
-# ---------------------------------------------------------------------------
-# Two-phase COM release.
+# Policy for this script and for the future PCCM Stage B bootstrap:
 #
-# INVARIANT: no algorithmic operation may touch an RCW after FinalReleaseComObject
-# has been called on it. FinalReleaseComObject separates the RCW from its underlying
-# COM object; any later use - including reading it back out of a collection to compare
-# references - raises InvalidComObjectException. The previous single-pass algorithm
-# added each object to a $released list and then final-released it, so the very next
-# iteration's ReferenceEquals comparison touched a separated RCW and aborted the whole
-# traversal after the first object. That is corrected here by completing every
-# de-duplication decision BEFORE any release occurs.
-# ---------------------------------------------------------------------------
+#   * Marshal.FinalReleaseComObject is PROHIBITED. Only Marshal.ReleaseComObject
+#     is used. The purpose of this test is to validate disciplined COM ownership,
+#     not to forcibly zero an RCW's entire managed reference count.
+#   * ReleaseComObject's integer return is REPORTED, never interpreted as failure
+#     on its own, and never looped until zero.
+#   * There is no generic COM stack, release plan, object graph or de-duplication
+#     framework. The COM graph here is small, fixed and known, so every long-lived
+#     object has an explicitly named variable with an explicit release point.
+#   * Diagnostic collections hold plain data ONLY - labels, integers, strings and
+#     booleans. They never hold an Excel RCW.
+#   * The acceptance criterion is actual clean Excel shutdown, not a reference count.
+# ===========================================================================
 
-# PHASE A - build the release plan while every RCW is still valid.
-# Walks the stack LIFO, so the resulting plan is already ordered leaf-before-parent.
-# ReferenceEquals is safe here precisely because nothing has been released yet.
-# Releases nothing.
-function Build-ComReleasePlan {
-    param($Stack)
-    $plan       = New-Object System.Collections.ArrayList
-    $dupCount   = 0
-    $skipped    = New-Object System.Collections.ArrayList
-    for ($i = $Stack.Count - 1; $i -ge 0; $i--) {
-        $entry = $null; $o = $null; $lbl = '<unknown>'
-        try {
-            $entry = $Stack[$i]
-            $lbl   = [string]$entry.Label
-            $o     = $entry.Obj
-        } catch {
-            $null = $skipped.Add(("<stack entry {0} unreadable: {1}>" -f $i, $_.Exception.Message))
-            continue
-        }
-        if ($null -eq $o) { continue }
-        $isDup = $false
-        for ($j = 0; $j -lt $plan.Count; $j++) {
-            if ([Object]::ReferenceEquals($plan[$j].Obj, $o)) { $isDup = $true; break }
-        }
-        if ($isDup) { $dupCount++ }
-        else { $null = $plan.Add([pscustomobject]@{ Label = $lbl; Obj = $o }) }
+# Records only plain diagnostic data. Never stores the COM object.
+# The caller MUST null its own variable afterwards - PowerShell parameter binding
+# cannot null a caller's variable.
+function Release-ComObjectSafe {
+    param($Obj, [string]$Label)
+    $rec = [pscustomobject]@{ Label = $Label; Status = 'SKIPPED'; Count = -1; Error = '' }
+    if ($null -eq $Obj) { $rec.Error = 'reference was already null'; return $rec }
+    $isCom = $false
+    try {
+        $isCom = [System.Runtime.InteropServices.Marshal]::IsComObject($Obj)
+    } catch {
+        $rec.Status = 'FAIL'; $rec.Error = 'IsComObject threw: ' + (Format-Err $_); return $rec
     }
-    return ([pscustomobject]@{
-        Plan           = $plan
-        DuplicateCount = $dupCount
-        Skipped        = @($skipped.ToArray())
-    })
+    if (-not $isCom) { $rec.Error = 'not a COM object'; return $rec }
+    try {
+        $n = [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Obj)
+        $rec.Count  = [int]$n
+        $rec.Status = 'PASS'
+    } catch {
+        $rec.Status = 'FAIL'
+        $rec.Error  = Format-Err $_
+    }
+    return $rec
 }
 
-# PHASE B lives inside this wrapper. It always returns a result object normally, even
-# when an individual release fails, so a partial ReleasedCount can never be discarded.
-function Invoke-ComStackRelease {
-    param($Stack, [string]$Label)
-    $res = [pscustomobject]@{
-        Label               = $Label
-        RegisteredCount     = -1
-        UniqueCount         = 0
-        DuplicateCount      = 0
-        ReleasedCount       = 0
-        FailedReleaseLabels = @()
-        Completed           = $false
-        Error               = ''
+# Transient objects (Range, CodeModule, VBComponent, Property, TextFrame, TextRange,
+# temporary collection members) follow acquire -> use -> release -> $var = $null inside
+# the narrowest possible scope. Failures are recorded rather than hidden.
+$transientFailures = New-Object System.Collections.ArrayList
+
+function Release-Transient {
+    param($Obj, [string]$Label)
+    $rec = Release-ComObjectSafe -Obj $Obj -Label $Label
+    if ($rec.Status -eq 'FAIL') {
+        $null = $script:transientFailures.Add(($rec.Label + ' :: ' + $rec.Error))
     }
-    $failed = New-Object System.Collections.ArrayList
-
-    # ---- PHASE A: plan only, nothing released ----------------------------
-    $plan = $null
-    try {
-        $res.RegisteredCount = [int]$Stack.Count
-        $built = Build-ComReleasePlan $Stack
-        $plan  = $built.Plan
-        $res.UniqueCount    = [int]$plan.Count
-        $res.DuplicateCount = [int]$built.DuplicateCount
-        foreach ($sk in @($built.Skipped)) { $null = $failed.Add($sk) }
-    } catch {
-        $res.Error = 'release plan build failed: ' + (Format-Err $_)
-        $null = $failed.Add('<plan build failed - nothing was released>')
-        $res.FailedReleaseLabels = @($failed.ToArray())
-        return $res
-    }
-
-    # ---- PHASE B: release only, never inspect a released RCW again -------
-    try {
-        for ($k = 0; $k -lt $plan.Count; $k++) {
-            $lbl = '<unknown>'
-            $obj = $null
-            try {
-                $item = $plan[$k]
-                $lbl  = [string]$item.Label
-                $obj  = $item.Obj
-                $item.Obj = $null      # the plan drops its reference BEFORE release
-            } catch {
-                $null = $failed.Add(("<plan entry {0} unreadable>" -f $k))
-                continue
-            }
-            $okRel = $false
-            try { $okRel = [bool](Remove-ComObjectRef $obj) } catch { $okRel = $false }
-            $obj = $null               # sole remaining reference dropped; never touched again
-            if ($okRel) { $res.ReleasedCount = $res.ReleasedCount + 1 }
-            else { $null = $failed.Add($lbl) }
-        }
-        $res.Completed = $true
-    } catch {
-        # Completed=$false means the traversal itself did not finish. ReleasedCount
-        # still holds the true partial count because it is mutated in place.
-        $res.Completed = $false
-        $res.Error = 'release traversal failed: ' + (Format-Err $_)
-    }
-
-    $res.FailedReleaseLabels = @($failed.ToArray())
-
-    # The stack is emptied without reading any entry, so no released RCW is touched.
-    try { $Stack.Clear() } catch { }
-    return $res
 }
 
-function Format-ReleaseResult {
-    param($Res, [string]$Name)
-    if ($null -eq $Res) { return ("  {0}: release never attempted (instance was not created)." -f $Name) }
-    $clean = ($Res.Completed -and @($Res.FailedReleaseLabels).Count -eq 0 -and -not $Res.Error)
-    if ($clean) {
-        return ("  {0}: registered {1}, unique {2}, duplicates {3}, released {4}, traversal completed OK" -f `
-                $Name, $Res.RegisteredCount, $Res.UniqueCount, $Res.DuplicateCount, $Res.ReleasedCount)
+# Shutdown ledger. Plain data only: strings, integers and booleans.
+function New-ReleaseLedger {
+    param([string]$Name)
+    return [pscustomobject]@{
+        Name              = $Name
+        Lines             = (New-Object System.Collections.ArrayList)
+        Failed            = (New-Object System.Collections.ArrayList)
+        Attempted         = 0
+        Succeeded         = 0
+        WorkbookClosed    = $false
+        QuitCalled        = $false
+        NaturalExit       = $false
+        EmergencyRequired = $false
     }
+}
+
+# Releases one named object and records a plain-text line such as
+#   Chart | PASS | ReleaseComObject returned 0
+# The caller must set its variable to $null immediately after calling this.
+function Invoke-NamedRelease {
+    param($Ledger, $Obj, [string]$Label)
+    $rec = Release-ComObjectSafe -Obj $Obj -Label $Label
+    if ($rec.Status -eq 'PASS') {
+        $Ledger.Attempted = $Ledger.Attempted + 1
+        $Ledger.Succeeded = $Ledger.Succeeded + 1
+        $null = $Ledger.Lines.Add(("      {0,-24} | PASS    | ReleaseComObject returned {1}" -f $rec.Label, $rec.Count))
+    } elseif ($rec.Status -eq 'FAIL') {
+        $Ledger.Attempted = $Ledger.Attempted + 1
+        $null = $Ledger.Failed.Add($rec.Label)
+        $null = $Ledger.Lines.Add(("      {0,-24} | FAIL    | {1}" -f $rec.Label, $rec.Error))
+    } else {
+        $null = $Ledger.Lines.Add(("      {0,-24} | SKIPPED | {1}" -f $rec.Label, $rec.Error))
+    }
+}
+
+function Format-ReleaseLedger {
+    param($Ledger)
+    if ($null -eq $Ledger) { return '      (no shutdown was attempted for this instance)' }
     $out = New-Object System.Collections.ArrayList
-    $null = $out.Add(("  {0}: registered {1}, unique {2}, duplicates {3}, released {4}, traversal completed={5}" -f `
-                     $Name, $Res.RegisteredCount, $Res.UniqueCount, $Res.DuplicateCount, $Res.ReleasedCount, $Res.Completed))
-    if ($Res.Error) { $null = $out.Add(("      exception: {0}" -f $Res.Error)) }
-    if (@($Res.FailedReleaseLabels).Count -gt 0) {
-        $null = $out.Add(("      release FAILED for: {0}" -f (@($Res.FailedReleaseLabels) -join ', ')))
-    }
+    foreach ($l in $Ledger.Lines) { $null = $out.Add($l) }
+    $failTxt = '(none)'
+    if ($Ledger.Failed.Count -gt 0) { $failTxt = ($Ledger.Failed -join ', ') }
+    $null = $out.Add(("      releases attempted : {0}" -f $Ledger.Attempted))
+    $null = $out.Add(("      releases succeeded : {0}" -f $Ledger.Succeeded))
+    $null = $out.Add(("      failed labels      : {0}" -f $failTxt))
+    $null = $out.Add(("      Workbook.Close     : {0}" -f $Ledger.WorkbookClosed))
+    $null = $out.Add(("      Application.Quit   : {0}" -f $Ledger.QuitCalled))
+    $null = $out.Add(("      natural PID exit   : {0}" -f $Ledger.NaturalExit))
+    $null = $out.Add(("      emergency required : {0}" -f $Ledger.EmergencyRequired))
     return ($out -join "`r`n")
+}
+
+# Diagnostic snapshot of which named handles are still held. Tests references for
+# null only; it never invokes a member on a COM object, so it cannot affect ownership.
+function Get-ComDiag {
+    $h1 = New-Object System.Collections.ArrayList
+    if ($null -ne $script:excel)        { $null = $h1.Add('excel') }
+    if ($null -ne $script:workbooks)    { $null = $h1.Add('workbooks') }
+    if ($null -ne $script:wb)           { $null = $h1.Add('wb') }
+    if ($null -ne $script:worksheets)   { $null = $h1.Add('worksheets') }
+    if ($null -ne $script:ws)           { $null = $h1.Add('ws') }
+    if ($null -ne $script:vbproj)       { $null = $h1.Add('vbproj') }
+    if ($null -ne $script:vbcomps)      { $null = $h1.Add('vbcomps') }
+    if ($null -ne $script:shapes)       { $null = $h1.Add('shapes') }
+    if ($null -ne $script:shp)          { $null = $h1.Add('shp') }
+    if ($null -ne $script:chartObjects) { $null = $h1.Add('chartObjects') }
+    if ($null -ne $script:co)           { $null = $h1.Add('co') }
+    if ($null -ne $script:cht)          { $null = $h1.Add('cht') }
+    $h2 = New-Object System.Collections.ArrayList
+    if ($null -ne $script:excel2)         { $null = $h2.Add('excel2') }
+    if ($null -ne $script:workbooks2)     { $null = $h2.Add('workbooks2') }
+    if ($null -ne $script:wb2)            { $null = $h2.Add('wb2') }
+    if ($null -ne $script:worksheets2)    { $null = $h2.Add('worksheets2') }
+    if ($null -ne $script:ws2)            { $null = $h2.Add('ws2') }
+    if ($null -ne $script:vbproj2)        { $null = $h2.Add('vbproj2') }
+    if ($null -ne $script:vbcomps2)       { $null = $h2.Add('vbcomps2') }
+    if ($null -ne $script:shapes2)        { $null = $h2.Add('shapes2') }
+    if ($null -ne $script:shape2)         { $null = $h2.Add('shape2') }
+    if ($null -ne $script:chartObjects2)  { $null = $h2.Add('chartObjects2') }
+    if ($null -ne $script:chartObject2)   { $null = $h2.Add('chartObject2') }
+    $t1 = '(none)'; if ($h1.Count -gt 0) { $t1 = ($h1 -join ', ') }
+    $t2 = '(none)'; if ($h2.Count -gt 0) { $t2 = ($h2 -join ', ') }
+    return ("held instance-1 handles: {0}; held instance-2 handles: {1}" -f $t1, $t2)
 }
 
 # Substep reporter, so one large try/catch can never hide the failing statement.
@@ -400,13 +351,13 @@ function Add-SubStep {
 function Set-CellText {
     param($Sheet, [string]$Address, [string]$Value)
     $rng = $Sheet.Range($Address)
-    try { $rng.Value2 = $Value } finally { [void](Remove-ComObjectRef $rng) }
+    try { $rng.Value2 = $Value } finally { Release-Transient $rng 'Range' }
 }
 
 function Get-CellText {
     param($Sheet, [string]$Address)
     $rng = $Sheet.Range($Address)
-    try { return [string]$rng.Value2 } finally { [void](Remove-ComObjectRef $rng) }
+    try { return [string]$rng.Value2 } finally { Release-Transient $rng 'Range' }
 }
 
 # Three legitimate numeric write mechanisms, tried in order. Returns the name of the one
@@ -428,7 +379,7 @@ function Set-CellNumber {
 
         throw ("all numeric write mechanisms failed for " + $Address + " -> " + ($attempts -join ' || '))
     } finally {
-        [void](Remove-ComObjectRef $rng)
+        Release-Transient $rng 'Range'
     }
 }
 
@@ -442,7 +393,7 @@ function Get-CellNumber {
     } catch {
         return [double]::NaN
     } finally {
-        [void](Remove-ComObjectRef $rng)
+        Release-Transient $rng 'Range'
     }
 }
 
@@ -458,7 +409,7 @@ function Get-ComponentSource {
     } catch {
         return ''
     } finally {
-        if ($null -ne $cm) { [void](Remove-ComObjectRef $cm) }
+        if ($null -ne $cm) { Release-Transient $cm 'CodeModule' }
     }
 }
 
@@ -660,11 +611,20 @@ $env_info['Excel pid source']  = 'n/a'
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
+# Explicit named ownership. Every long-lived COM handle has a name here and an
+# explicit release point in TEST 12 (instance 1) or TEST 15 (instance 2).
 $excel = $null; $workbooks = $null; $wb = $null; $worksheets = $null; $ws = $null
-$vbproj = $null; $vbcomps = $null; $shapes = $null; $shp = $null
+$vbproj = $null; $vbcomps = $null
+$shapes = $null; $shp = $null
 $chartObjects = $null; $co = $null; $cht = $null
+
 $excel2 = $null; $workbooks2 = $null; $wb2 = $null; $worksheets2 = $null; $ws2 = $null
 $vbproj2 = $null; $vbcomps2 = $null
+$shapes2 = $null; $shape2 = $null
+$chartObjects2 = $null; $chartObject2 = $null
+
+$rel1 = $null
+$rel2 = $null
 
 $id1 = $null
 $id2 = $null
@@ -735,7 +695,6 @@ try {
         if ($failedAt -eq '') {
             try {
                 $workbooks = $excel.Workbooks
-                Register-ComRef $workbooks 'Application.Workbooks'
                 Add-SubStep $steps '02.1' 'Workbooks collection acquired' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
             } catch {
                 $failedAt = '02.1'; $failErr = (Format-Err $_)
@@ -747,7 +706,6 @@ try {
         if ($failedAt -eq '') {
             try {
                 $wb = $workbooks.Add()
-                Register-ComRef $wb 'Workbook'
                 Add-SubStep $steps '02.2' 'Workbook created' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
             } catch {
                 $failedAt = '02.2'; $failErr = (Format-Err $_)
@@ -759,7 +717,6 @@ try {
         if ($failedAt -eq '') {
             try {
                 $worksheets = $wb.Worksheets
-                Register-ComRef $worksheets 'Workbook.Worksheets'
                 Add-SubStep $steps '02.3' 'Worksheets collection acquired' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
             } catch {
                 $failedAt = '02.3'; $failErr = (Format-Err $_)
@@ -776,7 +733,7 @@ try {
                 while ([int]$worksheets.Count -gt 1) {
                     $extra = $worksheets.Item([int]$worksheets.Count)
                     $extra.Delete()
-                    [void](Remove-ComObjectRef $extra)
+                    Release-Transient $extra 'Worksheet(extra)'
                     $extra = $null
                 }
                 Add-SubStep $steps '02.4' 'Reduced to a single worksheet' 'PASS' ("initial={0}; final={1}" -f $initialSheets, [int]$worksheets.Count)
@@ -790,7 +747,6 @@ try {
         if ($failedAt -eq '') {
             try {
                 $ws = $worksheets.Item(1)
-                Register-ComRef $ws 'Worksheet(SmokeTest)'
                 Add-SubStep $steps '02.5' 'Worksheet acquired via Worksheets.Item(1)' 'PASS' ("stack1={0}" -f (Get-ComStackCount 1))
             } catch {
                 $failedAt = '02.5'; $failErr = (Format-Err $_)
@@ -869,7 +825,7 @@ try {
                 if ([double]::IsNaN($v)) { throw 'H1 read back as non-numeric / empty' }
                 if ([math]::Abs($v - 12345) -gt 0.000000001) { throw ("H1 read back as {0}, expected 12345" -f $v) }
                 $rngc = $ws.Range('H1')
-                try { $null = $rngc.ClearContents() } finally { [void](Remove-ComObjectRef $rngc) }
+                try { $null = $rngc.ClearContents() } finally { Release-Transient $rngc 'Range(H1)' }
                 Add-SubStep $steps '02N.2' 'Numeric probe read back and cleared' 'PASS' ("value={0}" -f $v)
             } catch {
                 $failedAt = '02N.2'; $failErr = (Format-Err $_)
@@ -931,11 +887,9 @@ try {
         try {
             $vbproj = $wb.VBProject
             if ($null -eq $vbproj) { throw 'Workbook.VBProject returned null without raising an error.' }
-            Register-ComRef $vbproj 'Workbook.VBProject'
 
             $vbcomps = $vbproj.VBComponents
             if ($null -eq $vbcomps) { throw 'VBProject.VBComponents returned null.' }
-            Register-ComRef $vbcomps 'VBProject.VBComponents'
 
             $n = [int]$vbcomps.Count
             Add-Result '04' 'VBProject / VBComponents access' 'PASS' ("VBComponents.Count={0}" -f $n)
@@ -962,13 +916,13 @@ try {
             $cm = $comp.CodeModule
             $cm.AddFromString($vbaStdModule)
             $lines = [int]$cm.CountOfLines
-            [void](Remove-ComObjectRef $cm);   $cm = $null
-            [void](Remove-ComObjectRef $comp); $comp = $null
+            Release-Transient $cm 'CodeModule';   $cm = $null
+            Release-Transient $comp 'VBComponent'; $comp = $null
             Add-Result '05' ('Standard module injection (' + $STD_MODULE_NAME + ')') 'PASS' ("CodeModule.CountOfLines={0}" -f $lines)
             Set-Cap '05' $true
         } catch {
-            if ($null -ne $cm)   { [void](Remove-ComObjectRef $cm) }
-            if ($null -ne $comp) { [void](Remove-ComObjectRef $comp) }
+            if ($null -ne $cm)   { Release-Transient $cm 'CodeModule' }
+            if ($null -ne $comp) { Release-Transient $comp 'VBComponent' }
             Add-Result '05' ('Standard module injection (' + $STD_MODULE_NAME + ')') 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '05' $false
         }
@@ -985,13 +939,13 @@ try {
             $cm = $comp.CodeModule
             $cm.AddFromString($vbaClassModule)
             $lines = [int]$cm.CountOfLines
-            [void](Remove-ComObjectRef $cm);   $cm = $null
-            [void](Remove-ComObjectRef $comp); $comp = $null
+            Release-Transient $cm 'CodeModule';   $cm = $null
+            Release-Transient $comp 'VBComponent'; $comp = $null
             Add-Result '06' ('Class module injection (' + $CLS_MODULE_NAME + ')') 'PASS' ("CodeModule.CountOfLines={0}" -f $lines)
             Set-Cap '06' $true
         } catch {
-            if ($null -ne $cm)   { [void](Remove-ComObjectRef $cm) }
-            if ($null -ne $comp) { [void](Remove-ComObjectRef $comp) }
+            if ($null -ne $cm)   { Release-Transient $cm 'CodeModule' }
+            if ($null -ne $comp) { Release-Transient $comp 'VBComponent' }
             Add-Result '06' ('Class module injection (' + $CLS_MODULE_NAME + ')') 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '06' $false
         }
@@ -1013,7 +967,7 @@ try {
                 $isDoc = ([int]$c.Type -eq $vbext_ct_Document)
                 $nm    = [string]$c.Name
                 if ($isDoc -and ($nm -ne $sheetCodeName)) { $twComp = $c; break }
-                [void](Remove-ComObjectRef $c)
+                Release-Transient $c 'VBComponent'
                 $c = $null
             }
             if ($null -eq $twComp) { throw 'Could not locate the ThisWorkbook document module among the VBComponents.' }
@@ -1023,15 +977,15 @@ try {
             $twCm.AddFromString($vbaThisWorkbook)
             $cnt = [int]$twCm.CountOfLines
             $src = [string]$twCm.Lines(1, $cnt)
-            [void](Remove-ComObjectRef $twCm);   $twCm = $null
-            [void](Remove-ComObjectRef $twComp); $twComp = $null
+            Release-Transient $twCm 'CodeModule(ThisWorkbook)';   $twCm = $null
+            Release-Transient $twComp 'VBComponent(ThisWorkbook)'; $twComp = $null
 
             if ($src -notmatch [regex]::Escape($MARKER_THISWORKBOOK)) { throw 'Marker text not found in ThisWorkbook code module after injection.' }
             Add-Result '07' 'ThisWorkbook document-module injection' 'PASS' ("component='{0}'; lines={1}; marker present" -f $twName, $cnt)
             Set-Cap '07' $true
         } catch {
-            if ($null -ne $twCm)   { [void](Remove-ComObjectRef $twCm) }
-            if ($null -ne $twComp) { [void](Remove-ComObjectRef $twComp) }
+            if ($null -ne $twCm)   { Release-Transient $twCm 'CodeModule(ThisWorkbook)' }
+            if ($null -ne $twComp) { Release-Transient $twComp 'VBComponent(ThisWorkbook)' }
             Add-Result '07' 'ThisWorkbook document-module injection' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
             Set-Cap '07' $false
         }
@@ -1061,19 +1015,19 @@ try {
                     for ($i = 1; $i -le $pn; $i++) {
                         $p = $props.Item($i)
                         if ([string]$p.Name -eq '_CodeName') { $prop = $p; break }
-                        [void](Remove-ComObjectRef $p)
+                        Release-Transient $p 'Property'
                         $p = $null
                     }
                 }
                 if ($null -ne $prop) {
                     $prop.Value = $TARGET_CODENAME
-                    [void](Remove-ComObjectRef $prop); $prop = $null
+                    Release-Transient $prop 'Property(_CodeName)'; $prop = $null
                 }
-                [void](Remove-ComObjectRef $props); $props = $null
+                Release-Transient $props 'Properties'; $props = $null
             } catch {
                 $null = $sub.Add(('08.1 mechanism "_CodeName property" raised: ' + (Format-Err $_)))
-                if ($null -ne $prop)  { [void](Remove-ComObjectRef $prop);  $prop = $null }
-                if ($null -ne $props) { [void](Remove-ComObjectRef $props); $props = $null }
+                if ($null -ne $prop)  { Release-Transient $prop 'Property(_CodeName)';  $prop = $null }
+                if ($null -ne $props) { Release-Transient $props 'Properties'; $props = $null }
             }
 
             if ([string]$ws.CodeName -eq $TARGET_CODENAME) {
@@ -1099,15 +1053,15 @@ try {
                 $wsCm.AddFromString($vbaWorksheetModule)
                 $cnt = [int]$wsCm.CountOfLines
                 $src = [string]$wsCm.Lines(1, $cnt)
-                [void](Remove-ComObjectRef $wsCm); $wsCm = $null
+                Release-Transient $wsCm 'CodeModule(worksheet)'; $wsCm = $null
                 $ok2 = ($src -match [regex]::Escape($MARKER_WORKSHEET))
                 $null = $sub.Add(("08.2 [{0}] worksheet document-module code: lines={1}; marker '{2}' {3}" -f $(if ($ok2) {'PASS'} else {'FAIL'}), $cnt, $MARKER_WORKSHEET, $(if ($ok2) {'present'} else {'NOT FOUND'})))
             } catch {
-                if ($null -ne $wsCm) { [void](Remove-ComObjectRef $wsCm); $wsCm = $null }
+                if ($null -ne $wsCm) { Release-Transient $wsCm 'CodeModule(worksheet)'; $wsCm = $null }
                 $null = $sub.Add(('08.2 [FAIL] worksheet document-module code: ' + (Format-Err $_)))
             }
 
-            [void](Remove-ComObjectRef $comp); $comp = $null
+            Release-Transient $comp 'VBComponent'; $comp = $null
 
             $detail = "`r`n" + ($sub -join "`r`n")
             if ($ok1 -and $ok2) {
@@ -1118,10 +1072,10 @@ try {
                 Set-Cap '08' $false
             }
         } catch {
-            if ($null -ne $wsCm)  { [void](Remove-ComObjectRef $wsCm) }
-            if ($null -ne $prop)  { [void](Remove-ComObjectRef $prop) }
-            if ($null -ne $props) { [void](Remove-ComObjectRef $props) }
-            if ($null -ne $comp)  { [void](Remove-ComObjectRef $comp) }
+            if ($null -ne $wsCm)  { Release-Transient $wsCm 'CodeModule(worksheet)' }
+            if ($null -ne $prop)  { Release-Transient $prop 'Property(_CodeName)' }
+            if ($null -ne $props) { Release-Transient $props 'Properties' }
+            if ($null -ne $comp)  { Release-Transient $comp 'VBComponent' }
             Add-Result '08' 'Worksheet CodeName + worksheet document-module injection' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag) + "`r`n" + ($sub -join "`r`n"))
             Set-Cap '08' $false
         }
@@ -1133,10 +1087,8 @@ try {
     if (Test-Prereq '09' 'Shape creation + OnAction assignment' @('02')) {
         try {
             $shapes = $ws.Shapes
-            Register-ComRef $shapes 'Worksheet.Shapes'
 
             $shp = $shapes.AddShape($msoShapeRoundedRectangle, 20, 70, 150, 34)
-            Register-ComRef $shp 'Shape(btnSmokeTest)'
             $shp.Name = $SHAPE_NAME
 
             # Transient chained objects: acquired explicitly, released immediately.
@@ -1144,8 +1096,8 @@ try {
                 $tf2 = $shp.TextFrame2
                 $tr  = $tf2.TextRange
                 $tr.Text = 'Run Smoke Macro'
-                [void](Remove-ComObjectRef $tr);  $tr  = $null
-                [void](Remove-ComObjectRef $tf2); $tf2 = $null
+                Release-Transient $tr 'TextRange';  $tr  = $null
+                Release-Transient $tf2 'TextFrame2'; $tf2 = $null
             } catch { }
 
             $shp.OnAction = $MACRO_NAME
@@ -1165,18 +1117,15 @@ try {
     if (Test-Prereq '10' 'ChartObject creation' @('02','02N')) {
         try {
             $chartObjects = $ws.ChartObjects()
-            Register-ComRef $chartObjects 'Worksheet.ChartObjects'
 
             $co = $chartObjects.Add(280, 20, 320, 200)
-            Register-ComRef $co 'ChartObject'
             $co.Name = 'chtSmokeTest'
 
             $cht = $co.Chart
-            Register-ComRef $cht 'Chart'
 
             $srcRange = $ws.Range('D1:E6')
             $cht.SetSourceData($srcRange)
-            [void](Remove-ComObjectRef $srcRange); $srcRange = $null
+            Release-Transient $srcRange 'Range(chart source)'; $srcRange = $null
 
             $cht.ChartType = $xlColumnClustered
             $cnt = [int]$chartObjects.Count
@@ -1231,70 +1180,117 @@ try {
     }
 
     # =======================================================================
-    # TEST 12 - Save, release all first-instance COM children, close, quit
-    #           Clean exit must be achieved by proper release, not by force.
+    # TEST 12 - Explicit instance-1 shutdown sequence
+    #   Every long-lived handle is released by name, leaf before parent, using
+    #   Marshal.ReleaseComObject only. Workbook.Close precedes the Workbook release;
+    #   Application.Quit precedes the Application release. GC runs only after all
+    #   explicit releases, as a backstop rather than the ownership strategy.
+    #   No ordering adjustment to the specified sequence was required: releasing a
+    #   Worksheet RCW before closing the Workbook only drops this script's managed
+    #   reference and does not disturb Excel's own object, so the sequence stands.
     # =======================================================================
-    if (Test-Prereq '12' 'Save, release COM, close workbook, quit Excel' @('02')) {
+    if (Test-Prereq '12' 'Explicit COM release, close workbook, quit Excel' @('02')) {
+        $rel1 = New-ReleaseLedger 'instance 1'
+        $script:rel1 = $rel1
+        $fatal = ''
         try {
-            # Save only if TEST 03 established a file on disk. Calling Save() on a workbook
-            # that was never saved would try to resolve a default path rather than ours.
+            # 1. Save. Only if TEST 03 established a file on disk.
             if (Get-Cap '03') { $wb.Save() }
-            $wb.Close($false)
 
-            # Drop every first-instance local alias BEFORE the release pass, so that no
-            # accidental RCW use can occur after release. The COM stack still holds its
-            # own references and remains the owner used to release them; it is NOT
-            # cleared here, because the release plan is built from it.
-            $cht = $null; $co = $null; $chartObjects = $null
-            $shp = $null; $shapes = $null
-            $vbcomps = $null; $vbproj = $null
-            $ws = $null; $worksheets = $null; $wb = $null; $workbooks = $null
+            # 2-10. Release the long-lived children, leaf before parent.
+            Invoke-NamedRelease $rel1 $cht          'Chart';                 $cht          = $null
+            Invoke-NamedRelease $rel1 $co           'ChartObject';           $co           = $null
+            Invoke-NamedRelease $rel1 $chartObjects 'ChartObjects';          $chartObjects = $null
+            Invoke-NamedRelease $rel1 $shp          'Shape';                 $shp          = $null
+            Invoke-NamedRelease $rel1 $shapes       'Shapes';                $shapes       = $null
+            Invoke-NamedRelease $rel1 $vbcomps      'VBComponents';          $vbcomps      = $null
+            Invoke-NamedRelease $rel1 $vbproj       'VBProject';             $vbproj       = $null
+            Invoke-NamedRelease $rel1 $ws           'Worksheet';             $ws           = $null
+            Invoke-NamedRelease $rel1 $worksheets   'Worksheets';            $worksheets   = $null
 
-            # Release EVERY first-instance child reference, leaf before parent,
-            # BEFORE Application.Quit().
-            $script:rel1 = Invoke-ComStackRelease -Stack $comStack1 -Label 'instance 1'
+            # 11. Close the workbook BEFORE releasing it.
+            try {
+                $wb.Close($false)
+                $rel1.WorkbookClosed = $true
+            } catch {
+                $rel1.WorkbookClosed = $false
+                $fatal = 'Workbook.Close failed: ' + (Format-Err $_)
+            }
 
-            $excel.Quit()
-            [void](Remove-ComObjectRef $excel)
-            $excel = $null
+            # 12-13. Release the workbook, then the collection that owns it.
+            Invoke-NamedRelease $rel1 $wb        'Workbook';                 $wb        = $null
+            Invoke-NamedRelease $rel1 $workbooks 'Workbooks';                $workbooks = $null
 
-            # GC is a final aid only, never the ownership strategy.
+            # 14. Quit BEFORE releasing the Application.
+            try {
+                $excel.Quit()
+                $rel1.QuitCalled = $true
+            } catch {
+                $rel1.QuitCalled = $false
+                if (-not $fatal) { $fatal = 'Application.Quit failed: ' + (Format-Err $_) }
+            }
+
+            # 15. Release the Application.
+            Invoke-NamedRelease $rel1 $excel 'Application';                  $excel = $null
+
+            # 16. GC only after every explicit release.
             [GC]::Collect(); [GC]::WaitForPendingFinalizers()
             [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
             $inst1Finished = $true
-            $exited = Wait-ExcelExit -Identity $id1 -TimeoutSeconds 20
-            $relTxt = Format-ReleaseResult $script:rel1 'instance 1'
-            $relClean = ($script:rel1.Completed -and @($script:rel1.FailedReleaseLabels).Count -eq 0 -and $script:rel1.ReleasedCount -eq $script:rel1.UniqueCount)
 
-            if (-not $relClean) {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ("The COM release pass did not complete cleanly. That is a lifecycle defect regardless of whether the process exited (natural exit observed: " + $exited + ").`r`n" + $relTxt)
-                Set-Cap '12' $false
-            } elseif ($exited) {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'PASS' ((("released {0} of {1} unique COM references ({2} registered, {3} duplicates) before Quit; pid {4} exited naturally, no force-stop required." -f $script:rel1.ReleasedCount, $script:rel1.UniqueCount, $script:rel1.RegisteredCount, $script:rel1.DuplicateCount, $id1.ProcessId)))
-                Set-Cap '12' $true
-            } elseif ($null -eq $id1 -or $id1.ProcessId -le 0) {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ("Quit() returned but no process identity was captured, so natural exit could not be verified.`r`n" + $relTxt)
-                Set-Cap '12' $false
-            } else {
-                Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ((("Every planned COM reference was released, but Excel pid {0} is still running after 20s, so something still holds a reference. The emergency cleanup path will handle the process; this test remains FAIL.`r`n" -f $id1.ProcessId) + $relTxt))
-                Set-Cap '12' $false
-            }
+            # 17. Verify the exact HWND-derived pid exits naturally.
+            $rel1.NaturalExit = Wait-ExcelExit -Identity $id1 -TimeoutSeconds 20
         } catch {
-            Add-Result '12' 'Save, release COM, close workbook, quit Excel' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
+            if (-not $fatal) { $fatal = Format-Err $_ }
+            $inst1Finished = $true
+        }
+
+        # ---- containment: instance 1 must be gone before TEST 13 starts -------
+        $contained = $rel1.NaturalExit
+        if (-not $rel1.NaturalExit) {
+            $note = Invoke-EmergencyExcelCleanup -Identity $id1 -Label 'instance 1 (TEST 12 containment)'
+            Add-CleanupNote $note
+            $rel1.EmergencyRequired = $true
+            $contained = $false
+            try {
+                if ($null -ne $id1 -and $id1.ProcessId -gt 0) {
+                    $contained = ($null -eq (Get-Process -Id $id1.ProcessId -ErrorAction SilentlyContinue))
+                }
+            } catch { $contained = $false }
+        }
+
+        $ledgerTxt = Format-ReleaseLedger $rel1
+        $lifecycleClean = (($rel1.Failed.Count -eq 0) -and $rel1.WorkbookClosed -and $rel1.QuitCalled -and (-not $fatal))
+
+        if ($lifecycleClean -and $rel1.NaturalExit) {
+            Add-Result '12' 'Explicit COM release, close workbook, quit Excel' 'PASS' ("`r`n" + $ledgerTxt)
+            Set-Cap '12' $true
+        } else {
+            $why = 'Lifecycle did not complete cleanly.'
+            if ($fatal) { $why = $fatal }
+            elseif (-not $rel1.NaturalExit) { $why = ("Excel pid {0} did not exit naturally within 20s after Quit()." -f $id1.ProcessId) }
+            Add-Result '12' 'Explicit COM release, close workbook, quit Excel' 'FAIL' ($why + "`r`n" + $ledgerTxt + "`r`n      " + (Get-ComDiag))
             Set-Cap '12' $false
+        }
+
+        # TEST 12 stays FAIL above. This separate flag only records that instance 1 is
+        # safely gone, so persistence evidence can still be collected in TESTS 13-14.
+        $contCap = $rel1.WorkbookClosed -and $contained
+        if ($null -ne $id1) { $contCap = $contCap -and ($id1.Source -eq 'HWND') }
+        Set-Cap '12C' ([bool]$contCap)
+        if (-not (Get-Cap '12') -and $contCap) {
+            Add-CleanupNote 'instance 1: TEST 12 failed but the process was safely contained, so TESTS 13-15 continued with a fresh instance.'
         }
     }
 
     # =======================================================================
     # TEST 13 - Reopen in a fresh Excel instance
     # =======================================================================
-    if (Test-Prereq '13' 'Reopen saved .xlsm in a fresh instance' @('03','12')) {
+    if (Test-Prereq '13' 'Reopen saved .xlsm in a fresh instance' @('03','12C')) {
         try {
             $preExisting2 = @()
             try { $preExisting2 = @(Get-Process -Name 'excel' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id) } catch { }
-
-            $comStackActive = $comStack2
 
             $excel2 = New-Object -ComObject Excel.Application
             $excel2.Visible       = $false
@@ -1302,10 +1298,8 @@ try {
             $id2 = Get-ExcelIdentity -ExcelApp $excel2 -PreExistingPids $preExisting2
 
             $workbooks2 = $excel2.Workbooks
-            Register-ComRef $workbooks2 'Application2.Workbooks'
 
             $wb2 = $workbooks2.Open($wbPath)
-            Register-ComRef $wb2 'Workbook2'
 
             Add-Result '13' 'Reopen saved .xlsm in a fresh instance' 'PASS' ("pid {0} via {1}; opened '{2}'" -f $id2.ProcessId, $id2.Source, [string]$wb2.Name)
             Set-Cap '13' $true
@@ -1336,9 +1330,7 @@ try {
 
             # --- worksheet + CodeName -------------------------------------------
             $worksheets2 = $wb2.Worksheets
-            Register-ComRef $worksheets2 'Workbook2.Worksheets'
             $ws2 = $worksheets2.Item('SmokeTest')
-            Register-ComRef $ws2 'Worksheet2(SmokeTest)'
 
             $cn = [string]$ws2.CodeName
             if (-not (Add-Check 'Worksheet CodeName persisted' ($cn -eq $TARGET_CODENAME) ("Worksheet.CodeName='{0}', expected '{1}'" -f $cn, $TARGET_CODENAME))) { $allOk = $false }
@@ -1350,28 +1342,33 @@ try {
 
             # --- shape + OnAction -----------------------------------------------
             $shpOk = $false; $shpInfo = 'shape not found'
-            $shapes2 = $null; $shp2 = $null
             try {
                 $shapes2 = $ws2.Shapes
-                $shp2 = $shapes2.Item($SHAPE_NAME)
-                $oa = [string]$shp2.OnAction
+                $shape2 = $shapes2.Item($SHAPE_NAME)
+                $oa = [string]$shape2.OnAction
                 $shpOk = ($oa -like ('*' + $MACRO_NAME + '*'))
                 $shpInfo = ("OnAction='{0}'" -f $oa)
             } catch { $shpInfo = (Format-Err $_) }
-            if ($null -ne $shp2)    { [void](Remove-ComObjectRef $shp2);    $shp2 = $null }
-            if ($null -ne $shapes2) { [void](Remove-ComObjectRef $shapes2); $shapes2 = $null }
+            if ($null -ne $shape2)    { Release-Transient $shape2 'Shape2';    $shape2 = $null }
+            if ($null -ne $shapes2) { Release-Transient $shapes2 'Shapes2'; $shapes2 = $null }
             if (-not (Add-Check 'Shape present with OnAction intact' $shpOk $shpInfo)) { $allOk = $false }
 
             # --- chart ------------------------------------------------------------
             $chOk = $false; $chInfo = ''
-            $chartObjects2 = $null
             try {
                 $chartObjects2 = $ws2.ChartObjects()
                 $n = [int]$chartObjects2.Count
-                $chOk = ($n -ge 1)
-                $chInfo = ("ChartObjects.Count={0}" -f $n)
+                if ($n -ge 1) {
+                    $chartObject2 = $chartObjects2.Item(1)
+                    $chName = [string]$chartObject2.Name
+                    $chOk = ($chName -eq 'chtSmokeTest')
+                    $chInfo = ("ChartObjects.Count={0}; name='{1}'" -f $n, $chName)
+                } else {
+                    $chInfo = 'ChartObjects.Count=0'
+                }
             } catch { $chInfo = (Format-Err $_) }
-            if ($null -ne $chartObjects2) { [void](Remove-ComObjectRef $chartObjects2); $chartObjects2 = $null }
+            if ($null -ne $chartObject2)  { Release-Transient $chartObject2  'ChartObject2';  $chartObject2  = $null }
+            if ($null -ne $chartObjects2) { Release-Transient $chartObjects2 'ChartObjects2'; $chartObjects2 = $null }
             if (-not (Add-Check 'ChartObject persisted' $chOk $chInfo)) { $allOk = $false }
 
             # --- VBA project: component presence AND source-marker persistence ----
@@ -1382,9 +1379,8 @@ try {
             try {
                 $vbproj2 = $wb2.VBProject
                 if ($null -ne $vbproj2) {
-                    Register-ComRef $vbproj2 'Workbook2.VBProject'
                     $vbcomps2 = $vbproj2.VBComponents
-                    if ($null -ne $vbcomps2) { Register-ComRef $vbcomps2 'VBProject2.VBComponents'; $vbOk = $true }
+                    if ($null -ne $vbcomps2) { $vbOk = $true }
                 }
             } catch { }
             if (-not (Add-Check 'VBProject accessible after reopen' $vbOk '')) { $allOk = $false }
@@ -1417,7 +1413,7 @@ try {
                         $twInfo = ("component='{0}'; source {1} chars; marker '{2}' {3}" -f $nm, $src.Length, $MARKER_THISWORKBOOK, $(if ($twOk) {'present'} else {'NOT FOUND'}))
                     }
 
-                    [void](Remove-ComObjectRef $c)
+                    Release-Transient $c 'VBComponent'
                     $c = $null
                 }
             }
@@ -1427,6 +1423,13 @@ try {
             if (-not (Add-Check ($CLS_MODULE_NAME + ' source marker persisted') $clsOk   $clsInfo))   { $allOk = $false }
             if (-not (Add-Check 'ThisWorkbook source marker persisted'          $twOk    $twInfo))    { $allOk = $false }
             if (-not (Add-Check 'Worksheet document-module source marker persisted' $wsModOk $wsModInfo)) { $allOk = $false }
+
+            # Objects only needed for persistence verification are released here rather
+            # than held until TEST 15. $wb2 / $workbooks2 / $excel2 remain for shutdown.
+            Release-Transient $vbcomps2    'VBComponents2'; $vbcomps2    = $null
+            Release-Transient $vbproj2     'VBProject2';    $vbproj2     = $null
+            Release-Transient $ws2         'Worksheet2';    $ws2         = $null
+            Release-Transient $worksheets2 'Worksheets2';   $worksheets2 = $null
 
             $detail = "`r`n" + ($sub -join "`r`n")
             if ($allOk) {
@@ -1443,47 +1446,69 @@ try {
     }
 
     # =======================================================================
-    # TEST 15 - Release second-instance COM children, close, quit
+    # TEST 15 - Explicit instance-2 shutdown sequence
+    #   Independent of instance 1: only the *2 names are touched. Handles that
+    #   TEST 14 already released report SKIPPED, which is the expected outcome.
     # =======================================================================
-    if (Test-Prereq '15' 'Release COM, final close and quit' @('13')) {
+    if (Test-Prereq '15' 'Explicit COM release, final close and quit (instance 2)' @('13')) {
+        $rel2 = New-ReleaseLedger 'instance 2'
+        $script:rel2 = $rel2
+        $fatal2 = ''
         try {
-            $wb2.Close($false)
+            # Leaf before parent. Most of these are already null from TEST 14.
+            Invoke-NamedRelease $rel2 $chartObject2  'ChartObject2';  $chartObject2  = $null
+            Invoke-NamedRelease $rel2 $chartObjects2 'ChartObjects2'; $chartObjects2 = $null
+            Invoke-NamedRelease $rel2 $shape2        'Shape2';        $shape2        = $null
+            Invoke-NamedRelease $rel2 $shapes2       'Shapes2';       $shapes2       = $null
+            Invoke-NamedRelease $rel2 $vbcomps2      'VBComponents2'; $vbcomps2      = $null
+            Invoke-NamedRelease $rel2 $vbproj2       'VBProject2';    $vbproj2       = $null
+            Invoke-NamedRelease $rel2 $ws2           'Worksheet2';    $ws2           = $null
+            Invoke-NamedRelease $rel2 $worksheets2   'Worksheets2';   $worksheets2   = $null
 
-            # Drop every second-instance local alias BEFORE the release pass. The COM
-            # stack still owns the references and is not cleared here.
-            $vbcomps2 = $null; $vbproj2 = $null; $ws2 = $null; $worksheets2 = $null
-            $wb2 = $null; $workbooks2 = $null
+            # Close BEFORE releasing the workbook.
+            try {
+                $wb2.Close($false)
+                $rel2.WorkbookClosed = $true
+            } catch {
+                $rel2.WorkbookClosed = $false
+                $fatal2 = 'Workbook.Close failed: ' + (Format-Err $_)
+            }
 
-            # Release EVERY second-instance child reference before Quit().
-            $script:rel2 = Invoke-ComStackRelease -Stack $comStack2 -Label 'instance 2'
+            Invoke-NamedRelease $rel2 $wb2        'Workbook2';  $wb2        = $null
+            Invoke-NamedRelease $rel2 $workbooks2 'Workbooks2'; $workbooks2 = $null
 
-            $excel2.Quit()
-            [void](Remove-ComObjectRef $excel2)
-            $excel2 = $null
+            # Quit BEFORE releasing the Application.
+            try {
+                $excel2.Quit()
+                $rel2.QuitCalled = $true
+            } catch {
+                $rel2.QuitCalled = $false
+                if (-not $fatal2) { $fatal2 = 'Application.Quit failed: ' + (Format-Err $_) }
+            }
+
+            Invoke-NamedRelease $rel2 $excel2 'Application2'; $excel2 = $null
 
             [GC]::Collect(); [GC]::WaitForPendingFinalizers()
             [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
             $inst2Finished = $true
-            $exited = Wait-ExcelExit -Identity $id2 -TimeoutSeconds 20
-            $relTxt = Format-ReleaseResult $script:rel2 'instance 2'
-            $relClean = ($script:rel2.Completed -and @($script:rel2.FailedReleaseLabels).Count -eq 0 -and $script:rel2.ReleasedCount -eq $script:rel2.UniqueCount)
-
-            if (-not $relClean) {
-                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ("The COM release pass did not complete cleanly. That is a lifecycle defect regardless of whether the process exited (natural exit observed: " + $exited + ").`r`n" + $relTxt)
-                Set-Cap '15' $false
-            } elseif ($exited) {
-                Add-Result '15' 'Release COM, final close and quit' 'PASS' ((("released {0} of {1} unique COM references ({2} registered, {3} duplicates) before Quit; pid {4} exited naturally, no force-stop required." -f $script:rel2.ReleasedCount, $script:rel2.UniqueCount, $script:rel2.RegisteredCount, $script:rel2.DuplicateCount, $id2.ProcessId)))
-                Set-Cap '15' $true
-            } elseif ($null -eq $id2 -or $id2.ProcessId -le 0) {
-                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ("Quit() returned but no process identity was captured, so natural exit could not be verified.`r`n" + $relTxt)
-                Set-Cap '15' $false
-            } else {
-                Add-Result '15' 'Release COM, final close and quit' 'FAIL' ((("Every planned COM reference was released, but Excel pid {0} is still running after 20s. The emergency cleanup path will handle the process; this test remains FAIL.`r`n" -f $id2.ProcessId) + $relTxt))
-                Set-Cap '15' $false
-            }
+            $rel2.NaturalExit = Wait-ExcelExit -Identity $id2 -TimeoutSeconds 20
         } catch {
-            Add-Result '15' 'Release COM, final close and quit' 'FAIL' ((Format-Err $_) + ' | ' + (Get-ComDiag))
+            if (-not $fatal2) { $fatal2 = Format-Err $_ }
+            $inst2Finished = $true
+        }
+
+        $ledgerTxt2 = Format-ReleaseLedger $rel2
+        $clean2 = (($rel2.Failed.Count -eq 0) -and $rel2.WorkbookClosed -and $rel2.QuitCalled -and (-not $fatal2))
+
+        if ($clean2 -and $rel2.NaturalExit) {
+            Add-Result '15' 'Explicit COM release, final close and quit (instance 2)' 'PASS' ("`r`n" + $ledgerTxt2)
+            Set-Cap '15' $true
+        } else {
+            $why2 = 'Lifecycle did not complete cleanly.'
+            if ($fatal2) { $why2 = $fatal2 }
+            elseif (-not $rel2.NaturalExit) { $why2 = ("Excel pid {0} did not exit naturally within 20s after Quit()." -f $id2.ProcessId) }
+            Add-Result '15' 'Explicit COM release, final close and quit (instance 2)' 'FAIL' ($why2 + "`r`n" + $ledgerTxt2 + "`r`n      " + (Get-ComDiag))
             Set-Cap '15' $false
         }
     }
@@ -1495,41 +1520,64 @@ catch {
 finally {
     # =======================================================================
     # Cleanup. Runs whatever happened above, and only ever touches the Excel
-    # instances this script created.
+    # instances this script created. Uses the same explicit named-release
+    # discipline; there is no generic release framework anywhere in this script.
     # =======================================================================
     Write-Host ''
     Write-Host '  Cleaning up...' -ForegroundColor DarkGray
 
     if (-not $inst1Finished) {
-        try { if ($null -ne $wb) { $wb.Close($false) } } catch { }
-        $cht = $null; $co = $null; $chartObjects = $null
-        $shp = $null; $shapes = $null
-        $vbcomps = $null; $vbproj = $null
-        $ws = $null; $worksheets = $null; $wb = $null; $workbooks = $null
-        $script:rel1 = Invoke-ComStackRelease -Stack $comStack1 -Label 'instance 1'
-        if ($null -ne $excel) {
-            try { $excel.Quit() } catch { }
-            [void](Remove-ComObjectRef $excel)
-            $excel = $null
-        }
+        if ($null -eq $rel1) { $rel1 = New-ReleaseLedger 'instance 1 (cleanup path)' }
+        Invoke-NamedRelease $rel1 $cht          'Chart';        $cht          = $null
+        Invoke-NamedRelease $rel1 $co           'ChartObject';  $co           = $null
+        Invoke-NamedRelease $rel1 $chartObjects 'ChartObjects'; $chartObjects = $null
+        Invoke-NamedRelease $rel1 $shp          'Shape';        $shp          = $null
+        Invoke-NamedRelease $rel1 $shapes       'Shapes';       $shapes       = $null
+        Invoke-NamedRelease $rel1 $vbcomps      'VBComponents'; $vbcomps      = $null
+        Invoke-NamedRelease $rel1 $vbproj       'VBProject';    $vbproj       = $null
+        Invoke-NamedRelease $rel1 $ws           'Worksheet';    $ws           = $null
+        Invoke-NamedRelease $rel1 $worksheets   'Worksheets';   $worksheets   = $null
+        try { if ($null -ne $wb) { $wb.Close($false); $rel1.WorkbookClosed = $true } } catch { }
+        Invoke-NamedRelease $rel1 $wb        'Workbook';  $wb        = $null
+        Invoke-NamedRelease $rel1 $workbooks 'Workbooks'; $workbooks = $null
+        try { if ($null -ne $excel) { $excel.Quit(); $rel1.QuitCalled = $true } } catch { }
+        Invoke-NamedRelease $rel1 $excel 'Application'; $excel = $null
+        $script:rel1 = $rel1
     }
+
     if (-not $inst2Finished) {
-        try { if ($null -ne $wb2) { $wb2.Close($false) } } catch { }
-        $vbcomps2 = $null; $vbproj2 = $null; $ws2 = $null; $worksheets2 = $null
-        $wb2 = $null; $workbooks2 = $null
-        $script:rel2 = Invoke-ComStackRelease -Stack $comStack2 -Label 'instance 2'
-        if ($null -ne $excel2) {
-            try { $excel2.Quit() } catch { }
-            [void](Remove-ComObjectRef $excel2)
-            $excel2 = $null
-        }
+        if ($null -eq $rel2) { $rel2 = New-ReleaseLedger 'instance 2 (cleanup path)' }
+        Invoke-NamedRelease $rel2 $chartObject2  'ChartObject2';  $chartObject2  = $null
+        Invoke-NamedRelease $rel2 $chartObjects2 'ChartObjects2'; $chartObjects2 = $null
+        Invoke-NamedRelease $rel2 $shape2        'Shape2';        $shape2        = $null
+        Invoke-NamedRelease $rel2 $shapes2       'Shapes2';       $shapes2       = $null
+        Invoke-NamedRelease $rel2 $vbcomps2      'VBComponents2'; $vbcomps2      = $null
+        Invoke-NamedRelease $rel2 $vbproj2       'VBProject2';    $vbproj2       = $null
+        Invoke-NamedRelease $rel2 $ws2           'Worksheet2';    $ws2           = $null
+        Invoke-NamedRelease $rel2 $worksheets2   'Worksheets2';   $worksheets2   = $null
+        try { if ($null -ne $wb2) { $wb2.Close($false); $rel2.WorkbookClosed = $true } } catch { }
+        Invoke-NamedRelease $rel2 $wb2        'Workbook2';  $wb2        = $null
+        Invoke-NamedRelease $rel2 $workbooks2 'Workbooks2'; $workbooks2 = $null
+        try { if ($null -ne $excel2) { $excel2.Quit(); $rel2.QuitCalled = $true } } catch { }
+        Invoke-NamedRelease $rel2 $excel2 'Application2'; $excel2 = $null
+        $script:rel2 = $rel2
     }
 
     [GC]::Collect(); [GC]::WaitForPendingFinalizers()
     [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
-    if ($null -ne $id1) { Add-CleanupNote (Invoke-EmergencyExcelCleanup -Identity $id1 -Label 'instance 1') }
-    if ($null -ne $id2) { Add-CleanupNote (Invoke-EmergencyExcelCleanup -Identity $id2 -Label 'instance 2') }
+    # Emergency cleanup. Never converts a lifecycle FAIL into a PASS: every Add-Result
+    # call has already been made by this point.
+    if ($null -ne $id1) {
+        $n1 = Invoke-EmergencyExcelCleanup -Identity $id1 -Label 'instance 1'
+        Add-CleanupNote $n1
+        if ($n1 -match 'force-stopped' -and $null -ne $rel1) { $rel1.EmergencyRequired = $true }
+    }
+    if ($null -ne $id2) {
+        $n2 = Invoke-EmergencyExcelCleanup -Identity $id2 -Label 'instance 2'
+        Add-CleanupNote $n2
+        if ($n2 -match 'force-stopped' -and $null -ne $rel2) { $rel2.EmergencyRequired = $true }
+    }
 
     # -----------------------------------------------------------------------
     # Verdict: the FIRST root cause in test order, never a downstream symptom.
@@ -1578,13 +1626,15 @@ finally {
         }
     }
     $null = $sb.AppendLine('')
-    $null = $sb.AppendLine('COM LIFECYCLE')
-    $null = $sb.AppendLine('-------------')
-    $null = $sb.AppendLine((Format-ReleaseResult $rel1 'Instance 1'))
-    $null = $sb.AppendLine((Format-ReleaseResult $rel2 'Instance 2'))
-    if ($comTrackWarnings.Count -gt 0) {
-        $null = $sb.AppendLine('  COM tracking warnings:')
-        foreach ($w in $comTrackWarnings) { $null = $sb.AppendLine(('      ' + $w)) }
+    $null = $sb.AppendLine('COM LIFECYCLE (explicit named releases, Marshal.ReleaseComObject only)')
+    $null = $sb.AppendLine('---------------------------------------------------------------------')
+    $null = $sb.AppendLine('  Instance 1:')
+    $null = $sb.AppendLine((Format-ReleaseLedger $rel1))
+    $null = $sb.AppendLine('  Instance 2:')
+    $null = $sb.AppendLine((Format-ReleaseLedger $rel2))
+    if ($transientFailures.Count -gt 0) {
+        $null = $sb.AppendLine('  Transient release failures:')
+        foreach ($tf in $transientFailures) { $null = $sb.AppendLine(('      ' + $tf)) }
     }
     $null = $sb.AppendLine('')
     $null = $sb.AppendLine('CLEANUP')

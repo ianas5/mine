@@ -6,16 +6,15 @@ will need.
 
 It takes under a minute to run and writes a single text report that you send back.
 
-> **Status: runs 1 and 2 completed; run 3 pending.** Run 2 proved every substantive
-> Stage B capability on the target machine - COM automation, workbook creation, numeric
-> and text cell writes, genuine `.xlsm` save, VBProject access, standard/class/
-> ThisWorkbook/worksheet module injection, CodeName assignment, Shape + OnAction,
-> ChartObject and VBA macro execution all passed (TESTS 01-11).
+> **Status: runs 1 and 2 completed; run 3 pending review.** Run 2 proved every
+> substantive Stage B capability on the target machine - COM automation, workbook
+> creation, text and numeric cell writes, genuine `.xlsm` save, VBProject access,
+> standard/class/ThisWorkbook/worksheet module injection, CodeName assignment,
+> Shape + OnAction, ChartObject and VBA macro execution all passed (TESTS 01-11).
 >
 > The only remaining failure was **TEST 12, a defect in this script's own COM release
-> algorithm** - it de-duplicated references by comparing against objects it had already
-> released, and a released RCW cannot be touched again. That has been rewritten as a
-> two-phase plan-then-release algorithm. **Nothing about Excel, its settings or the
+> code**. The COM lifecycle has since been rebuilt around explicit named ownership
+> using `Marshal.ReleaseComObject` only. **Nothing about Excel, its settings or the
 > environment needs to change.**
 
 ---
@@ -36,10 +35,10 @@ It takes under a minute to run and writes a single text report that you send bac
 | 09 | Shape/button creation with `OnAction` wired to a macro |
 | 10 | Native `ChartObject` creation (requires 02N) |
 | 11 | Macro execution through automation |
-| 12 | Two-phase COM release, then save, close and quit - Excel must exit naturally, never forced |
+| 12 | Explicit named COM release, then save, close and quit - Excel must exit naturally, never forced |
 | 13 | Reopen the saved `.xlsm` in a fresh Excel instance |
 | 14 | Everything above survived the round trip, verified by reading persisted VBA **source**, not just component names |
-| 15 | Two-phase COM release, final close and quit - again exiting naturally |
+| 15 | Explicit named COM release for the second instance, closing and quitting naturally |
 
 Every test reports **PASS**, **FAIL**, **BLOCKED** or **SKIPPED**, with the underlying COM
 error message and HRESULT where one occurred.
@@ -86,11 +85,21 @@ COM errors. The final verdict names the **first root cause**, not a downstream s
 
 ### About cleanup
 
-The script attempts a clean shutdown. It first builds a release plan over every COM
-reference it owns - de-duplicating while all references are still valid - and only then
-releases them, leaf before parent, before calling `Application.Quit()`. It then waits for
-the process to exit on its own. Nothing that has been released is ever inspected again.
-A guarded emergency cleanup path runs even if a test fails.
+The script attempts a clean shutdown using **explicit named ownership**. Every long-lived
+COM object has its own named variable and its own release point, released leaf before
+parent with `Marshal.ReleaseComObject` - never `FinalReleaseComObject`, which would
+forcibly zero an object's entire managed reference count and prove nothing about
+ownership discipline. `Workbook.Close` runs before the workbook is released and
+`Application.Quit` before the application is released; garbage collection runs only
+afterwards, as a backstop rather than the strategy. Short-lived objects (ranges, code
+modules, components, properties) are released immediately in the scope that acquired
+them. The reference count returned by each release is reported for information and is
+never treated as pass or fail on its own - the acceptance criterion is that the Excel
+process exits on its own. A guarded emergency cleanup path runs even if a test fails.
+
+If TEST 12 cannot achieve a natural exit but the workbook was saved and closed and the
+process was safely contained, TESTS 13-15 still run against a fresh Excel instance so
+the persistence evidence is collected. TEST 12 remains FAIL in that case.
 
 **It will not force-terminate an Excel process unless it can verify that the process
 belongs to this smoke test** - all three of: the process id was derived from the script's
