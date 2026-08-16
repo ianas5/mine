@@ -1,0 +1,9 @@
+# PCCM Stage A (Linux/Python) build dependencies.
+# Pinned to the exact versions used to produce the Phase 1 skeleton.
+#
+#   python3 -m pip install -r pccm/requirements.txt
+#
+# Stage B (Windows/Excel COM) has NO Python dependency: it uses Windows
+# PowerShell 5.1 and Excel COM only.
+openpyxl==3.1.5
+PyYAML==6.0.1

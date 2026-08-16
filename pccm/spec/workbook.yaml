@@ -1,0 +1,398 @@
+# =============================================================================
+# PCCM - Workbook Structural Manifest
+# =============================================================================
+# This file is the STRUCTURAL AUTHORITY for the generated workbook. The builder
+# reads it; it does not hardcode sheet names, order, visibility or presentation.
+#
+# Scope: Phase 1 (Source Foundation + Workbook Skeleton).
+# It defines structure and presentation only. No business rules, no calculation
+# logic and no later-phase table schemas belong in this file yet.
+#
+# Authority for functional design: docs/ARCHITECTURE-LOCK Revision B.
+# =============================================================================
+
+manifest_version: "1.0.0"
+
+model:
+  name: "Probabilistic Cost & Contingency Model"
+  short_name: "PCCM"
+  model_version: "0.1.0"
+  build_phase: "Phase 1 - Source Foundation + Workbook Skeleton"
+  reporting_currency: "SAR"      # locked model constant
+
+workbook:
+  skeleton_filename: "PCCM_skeleton.xlsx"
+  active_sheet: "Dashboard"      # must be a visible sheet
+  # Architectural lock. The loader asserts the sheet list below matches this
+  # exactly, in this order, so manifest drift fails the build loudly.
+  locked_sheet_order:
+    - "Dashboard"
+    - "Setup"
+    - "Config"
+    - "Cost Lines"
+    - "Risk Register"
+    - "Inflation"
+    - "Cost Profiling"
+    - "Risk Profiling"
+    - "Model Check"
+    - "Results"
+    - "Sensitivity"
+    - "Methodology"
+    - "_Calc"
+    - "_SimData"
+
+# -----------------------------------------------------------------------------
+# Centralised presentation tokens. Nothing else in the builder defines a font,
+# size or colour literal.
+# -----------------------------------------------------------------------------
+presentation:
+  font_family: "Calibri"
+  sizes:
+    title: 16
+    subtitle: 10
+    section: 11
+    label: 10
+    value: 10
+    note: 9
+  colors:
+    title: "1F2933"
+    subtitle: "5A6673"
+    section: "1F2933"
+    label: "3E4C59"
+    value: "1F2933"
+    note: "7B8794"
+    rule: "CBD2D9"
+  row_heights:
+    title: 24
+    subtitle: 15
+    spacer: 8
+    section: 18
+    default: 15
+  layout:
+    title_row: 2
+    subtitle_row: 3
+    rule_row: 4
+    body_start_row: 6
+    label_column: "B"
+    value_column: "D"
+
+# -----------------------------------------------------------------------------
+# Sheets, in locked order.
+#
+# block types:
+#   section - a heading, an optional note, and optional labelled rows
+#   note    - a standalone explanatory line
+# -----------------------------------------------------------------------------
+sheets:
+
+  - name: "Dashboard"
+    codename: "shDashboard"
+    visibility: "visible"
+    role: "output"
+    purpose: "Executive decision summary. Read-only; every figure originates on Results."
+    show_gridlines: false
+    title: "Dashboard"
+    subtitle: "Executive summary - populated after a simulation run"
+    freeze_panes: null
+    column_widths: { A: 3, B: 34, C: 3, D: 22, E: 3, F: 22, G: 3, H: 22 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. No results, charts or formulas are implemented yet."
+      - type: section
+        title: "Run Status"
+        note: "Model status, run identity and staleness banner."
+      - type: section
+        title: "Headline Figures"
+        note: "Base estimate, expected risk exposure, selected Px total, contingency."
+      - type: section
+        title: "Statistical Summary"
+        note: "Mean, standard deviation, P10 / P50 / selected Px / P90, nominal and PV."
+      - type: section
+        title: "Charts"
+        note: "S-curve, distribution histogram, mean annual cash flow, top sensitivity drivers."
+      - type: section
+        title: "Basis and Assumptions"
+        note: "Deterministic basis, escalation base year, FX convention, discounting convention."
+
+  - name: "Setup"
+    codename: "shSetup"
+    visibility: "visible"
+    role: "input"
+    purpose: "Project-level parameters and FX rates."
+    show_gridlines: false
+    title: "Setup"
+    subtitle: "Project parameters - labels only in Phase 1; no validation or calculation yet"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. These are labelled placeholders and drive nothing."
+      - type: section
+        title: "Project Definition"
+        rows:
+          - label: "Project Name"
+          - label: "Project Duration (Years)"
+          - label: "Project Start Year"
+          - label: "Base Year"
+      - type: section
+        title: "Reporting Basis"
+        rows:
+          - label: "Reporting Currency"
+            value: "SAR"
+            locked: true
+            note: "Locked reporting basis for all outputs."
+      - type: section
+        title: "Analysis Settings"
+        rows:
+          - label: "Selected Confidence Level"
+          - label: "Monte Carlo Iterations"
+          - label: "Discount Rate"
+          - label: "Random Seed"
+      - type: section
+        title: "FX Rates"
+        note: "Reserved. Convention will be SAR per 1 unit of the source currency."
+
+  - name: "Config"
+    codename: "shConfig"
+    visibility: "visible"
+    role: "admin"
+    purpose: "User-maintainable list masters. Visible and auditable, not hidden."
+    show_gridlines: false
+    title: "Config"
+    subtitle: "Reserved sections for configurable lists - not wired to validation in Phase 1"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. Sections are reserved; no data validation is applied yet."
+      - type: section
+        title: "Categories"
+        note: "Reserved for user-defined cost and risk categories."
+      - type: section
+        title: "Currencies / FX"
+        note: "Reserved. The currency master list is the FX table, so a currency cannot exist without a rate."
+      - type: section
+        title: "Units of Measure"
+        note: "Reserved for user-defined units of measure."
+      - type: section
+        title: "Inflation Profile Names"
+        note: "Reserved. Profile names are fully user-maintainable without code changes."
+      - type: section
+        title: "Distribution Names"
+        note: "Locked model constants."
+        list:
+          - "Triangular"
+          - "Beta-PERT"
+          - "Uniform"
+      - type: section
+        title: "Confidence Levels"
+        note: "Locked model constants."
+        list:
+          - "P50"
+          - "P55"
+          - "P60"
+          - "P65"
+          - "P70"
+          - "P75"
+          - "P80"
+          - "P85"
+          - "P90"
+          - "P95"
+
+  - name: "Cost Lines"
+    codename: "shCostLines"
+    visibility: "visible"
+    role: "input"
+    purpose: "Base cost input. Uncertainty is entered at unit-cost level only."
+    show_gridlines: false
+    title: "Cost Lines"
+    subtitle: "Base cost input - table schema is deferred to a later phase"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. No table, columns, IDs or formulas are implemented yet."
+      - type: section
+        title: "Cost Line Input Area"
+        note: "Reserved for the cost line table and its Add / Delete controls."
+
+  - name: "Risk Register"
+    codename: "shRiskRegister"
+    visibility: "visible"
+    role: "input"
+    purpose: "Discrete risk input. Every risk entered is included in the simulation."
+    show_gridlines: false
+    title: "Risk Register"
+    subtitle: "Risk input - table schema is deferred to a later phase"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. No table, columns, IDs or formulas are implemented yet."
+      - type: section
+        title: "Risk Input Area"
+        note: "Reserved for the risk register table and its Add / Delete controls."
+
+  - name: "Inflation"
+    codename: "shInflation"
+    visibility: "visible"
+    role: "input"
+    purpose: "Annual escalation rates by inflation profile."
+    show_gridlines: false
+    title: "Inflation"
+    subtitle: "Annual escalation profiles - year grid is deferred to a later phase"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. The year grid is derived from the applied timeline, which is not implemented yet."
+      - type: section
+        title: "Annual Escalation Profiles"
+        note: "Reserved for the profile-by-year rate grid."
+
+  - name: "Cost Profiling"
+    codename: "shCostProfiling"
+    visibility: "visible"
+    role: "input"
+    purpose: "Annual percentage allocation of each cost line across project years."
+    show_gridlines: false
+    title: "Cost Profiling"
+    subtitle: "Cost line annual allocation - year columns are deferred to a later phase"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. Rows are generated from the cost line table, which is not implemented yet."
+      - type: section
+        title: "Cost Line Annual Allocation"
+        note: "Reserved for the percentage grid. Each active row will be required to total 100%."
+
+  - name: "Risk Profiling"
+    codename: "shRiskProfiling"
+    visibility: "visible"
+    role: "input"
+    purpose: "Annual percentage allocation of each risk across project years."
+    show_gridlines: false
+    title: "Risk Profiling"
+    subtitle: "Risk annual allocation - year columns are deferred to a later phase"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. Rows are generated from the risk register, which is not implemented yet."
+      - type: section
+        title: "Risk Annual Allocation"
+        note: "Reserved for the percentage grid. Each active row will be required to total 100%."
+
+  - name: "Model Check"
+    codename: "shModelCheck"
+    visibility: "visible"
+    role: "output"
+    purpose: "Validation register and the gate that blocks simulation on ERROR."
+    show_gridlines: false
+    title: "Model Check"
+    subtitle: "Validation register - no rules are implemented in Phase 1"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. No checks, severities or overall status logic exist yet."
+      - type: section
+        title: "Overall Model Status"
+        note: "Reserved for the aggregate PASS / WARNING / ERROR status."
+      - type: section
+        title: "Validation Results"
+        note: "Reserved for the check register: id, group, severity, result, offending IDs, guidance."
+
+  - name: "Results"
+    codename: "shResults"
+    visibility: "visible"
+    role: "output"
+    purpose: "Full statistical output, cash flow and the analytical reconciliation bridge."
+    show_gridlines: false
+    title: "Results"
+    subtitle: "Simulation output - no statistics are implemented in Phase 1"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. No percentiles, moments or cash flows are implemented yet."
+      - type: section
+        title: "Run Stamp"
+        note: "Reserved for model version, run id, timestamp, iterations, seed and applied timeline."
+      - type: section
+        title: "Summary Statistics"
+        note: "Reserved for the percentile ladder, mean, standard deviation and dispersion."
+      - type: section
+        title: "Annual Cash Flow"
+        note: "Reserved for mean annual cash flow split base cost / risk / total, nominal and PV."
+      - type: section
+        title: "Reconciliation"
+        note: "Reserved for the analytical bridge from deterministic base estimate to selected Px."
+
+  - name: "Sensitivity"
+    codename: "shSensitivity"
+    visibility: "visible"
+    role: "output"
+    purpose: "Driver ranking by Spearman rank correlation against total project cost."
+    show_gridlines: false
+    title: "Sensitivity"
+    subtitle: "Ranked drivers - no correlation analysis is implemented in Phase 1"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. No driver data, correlations or tornado chart exist yet."
+      - type: section
+        title: "Ranked Drivers"
+        note: "Reserved for driver id, type, name, Spearman rho, absolute rho, rank and direction."
+
+  - name: "Methodology"
+    codename: "shMethodology"
+    visibility: "visible"
+    role: "reference"
+    purpose: "In-workbook documentation of the calculation methodology and assumptions."
+    show_gridlines: false
+    title: "Methodology"
+    subtitle: "In-workbook documentation - written progressively as each phase lands"
+    freeze_panes: "A6"
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 62 }
+    blocks:
+      - type: section
+        title: "Model Description"
+        note: "PCCM is a probabilistic cost model for a single project. It combines deterministic cost estimating, three-point estimating and Monte Carlo simulation to produce a total project cost distribution and a defensible contingency at a stated confidence level."
+      - type: section
+        title: "Build Metadata"
+        note: "Recorded at build time. None of these values is a computational input."
+        metadata: true
+      - type: section
+        title: "Methodology Sections"
+        note: "Reserved for escalation, FX, profiling, discounting, distributions, percentile method, contingency definitions, sensitivity method and stated limitations."
+
+  - name: "_Calc"
+    codename: "shCalc"
+    visibility: "hidden"
+    role: "technical"
+    purpose: "Derived factor tables. Hidden but not very hidden, so an auditor can inspect it."
+    show_gridlines: true
+    title: "_Calc"
+    subtitle: "Internal calculation workspace"
+    freeze_panes: null
+    column_widths: { A: 3, B: 34, C: 2, D: 26 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. Internal workspace; intentionally empty."
+
+  - name: "_SimData"
+    codename: "shSimData"
+    visibility: "veryHidden"
+    role: "technical"
+    purpose: "Raw iteration output. Machine data with no audit value in raw form."
+    show_gridlines: true
+    title: "_SimData"
+    subtitle: "Internal simulation workspace"
+    freeze_panes: null
+    column_widths: { A: 3, B: 34, C: 2, D: 26 }
+    blocks:
+      - type: note
+        text: "Phase 1 skeleton. Internal workspace; intentionally empty."

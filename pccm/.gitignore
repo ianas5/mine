@@ -1,0 +1,8 @@
+# Generated build artifacts. The workbook is a build output, never a source.
+build/
+
+# Disposable readiness-test output (Windows machine).
+readiness/windows/smoke_output/
+
+__pycache__/
+*.py[cod]
