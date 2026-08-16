@@ -738,10 +738,17 @@ try {
             try {
                 $initialSheets = [int]$worksheets.Count
                 while ([int]$worksheets.Count -gt 1) {
-                    $extra = $worksheets.Item([int]$worksheets.Count)
-                    $extra.Delete()
-                    Release-Transient $extra 'Worksheet(extra)'
+                    # Guaranteed cleanup: if Delete() throws, the release/null still runs.
                     $extra = $null
+                    try {
+                        $extra = $worksheets.Item([int]$worksheets.Count)
+                        $extra.Delete()
+                    } finally {
+                        if ($null -ne $extra) {
+                            Release-Transient $extra 'Worksheet(extra)'
+                            $extra = $null
+                        }
+                    }
                 }
                 Add-SubStep $steps '02.4' 'Reduced to a single worksheet' 'PASS' ("initial={0}; final={1}" -f $initialSheets, [int]$worksheets.Count)
             } catch {
@@ -1025,6 +1032,7 @@ try {
                 try { $prop = $props.Item('_CodeName') } catch { $prop = $null }
                 if ($null -eq $prop) {
                     $pn = [int]$props.Count
+                    $p = $null
                     for ($i = 1; $i -le $pn; $i++) {
                         $p = $props.Item($i)
                         if ([string]$p.Name -eq '_CodeName') {
@@ -1044,8 +1052,9 @@ try {
                 Release-Transient $props 'Properties'; $props = $null
             } catch {
                 $null = $sub.Add(('08.1 mechanism "_CodeName property" raised: ' + (Format-Err $_)))
-                if ($null -ne $prop)  { Release-Transient $prop 'Property(_CodeName)';  $prop = $null }
-                if ($null -ne $props) { Release-Transient $props 'Properties'; $props = $null }
+                if ($null -ne $p)     { Release-Transient $p 'Property';                $p     = $null }
+                if ($null -ne $prop)  { Release-Transient $prop 'Property(_CodeName)';  $prop  = $null }
+                if ($null -ne $props) { Release-Transient $props 'Properties';          $props = $null }
             }
 
             if ([string]$ws.CodeName -eq $TARGET_CODENAME) {
@@ -1149,9 +1158,17 @@ try {
 
             $cht = $co.Chart
 
-            $srcRange = $ws.Range('D1:E6')
-            $cht.SetSourceData($srcRange)
-            Release-Transient $srcRange 'Range(chart source)'; $srcRange = $null
+            # Guaranteed cleanup: if SetSourceData throws, the range is still released.
+            $srcRange = $null
+            try {
+                $srcRange = $ws.Range('D1:E6')
+                $cht.SetSourceData($srcRange)
+            } finally {
+                if ($null -ne $srcRange) {
+                    Release-Transient $srcRange 'Range(chart source)'
+                    $srcRange = $null
+                }
+            }
 
             $cht.ChartType = $xlColumnClustered
             $cnt = [int]$chartObjects.Count
@@ -1429,28 +1446,36 @@ try {
             if ($vbOk) {
                 $n = [int]$vbcomps2.Count
                 for ($i = 1; $i -le $n; $i++) {
-                    $c = $vbcomps2.Item($i)
-                    $nm = [string]$c.Name
-                    $tp = [int]$c.Type
-                    $names += $nm
-                    $src = Get-ComponentSource $c
-
-                    if ($nm -eq $STD_MODULE_NAME) {
-                        $modOk = ($src -match [regex]::Escape($MARKER_MODULE))
-                        $modInfo = ("source {0} chars; marker '{1}' {2}" -f $src.Length, $MARKER_MODULE, $(if ($modOk) {'present'} else {'NOT FOUND'}))
-                    } elseif ($nm -eq $CLS_MODULE_NAME) {
-                        $clsOk = ($src -match [regex]::Escape($MARKER_CLASS))
-                        $clsInfo = ("source {0} chars; marker '{1}' {2}" -f $src.Length, $MARKER_CLASS, $(if ($clsOk) {'present'} else {'NOT FOUND'}))
-                    } elseif ($tp -eq $vbext_ct_Document -and $nm -eq $cn) {
-                        $wsModOk = ($src -match [regex]::Escape($MARKER_WORKSHEET))
-                        $wsModInfo = ("component='{0}'; source {1} chars; marker '{2}' {3}" -f $nm, $src.Length, $MARKER_WORKSHEET, $(if ($wsModOk) {'present'} else {'NOT FOUND'}))
-                    } elseif ($tp -eq $vbext_ct_Document) {
-                        $twOk = ($src -match [regex]::Escape($MARKER_THISWORKBOOK))
-                        $twInfo = ("component='{0}'; source {1} chars; marker '{2}' {3}" -f $nm, $src.Length, $MARKER_THISWORKBOOK, $(if ($twOk) {'present'} else {'NOT FOUND'}))
-                    }
-
-                    Release-Transient $c 'VBComponent'
+                    # Guaranteed cleanup: any throw between acquisition and release still
+                    # releases and nulls this iteration's component.
                     $c = $null
+                    try {
+                        $c = $vbcomps2.Item($i)
+                        $nm = [string]$c.Name
+                        $tp = [int]$c.Type
+                        $names += $nm
+                        $src = Get-ComponentSource $c
+
+                        if ($nm -eq $STD_MODULE_NAME) {
+                            $modOk = ($src -match [regex]::Escape($MARKER_MODULE))
+                            $modInfo = ("source {0} chars; marker '{1}' {2}" -f $src.Length, $MARKER_MODULE, $(if ($modOk) {'present'} else {'NOT FOUND'}))
+                        } elseif ($nm -eq $CLS_MODULE_NAME) {
+                            $clsOk = ($src -match [regex]::Escape($MARKER_CLASS))
+                            $clsInfo = ("source {0} chars; marker '{1}' {2}" -f $src.Length, $MARKER_CLASS, $(if ($clsOk) {'present'} else {'NOT FOUND'}))
+                        } elseif ($tp -eq $vbext_ct_Document -and $nm -eq $cn) {
+                            $wsModOk = ($src -match [regex]::Escape($MARKER_WORKSHEET))
+                            $wsModInfo = ("component='{0}'; source {1} chars; marker '{2}' {3}" -f $nm, $src.Length, $MARKER_WORKSHEET, $(if ($wsModOk) {'present'} else {'NOT FOUND'}))
+                        } elseif ($tp -eq $vbext_ct_Document) {
+                            $twOk = ($src -match [regex]::Escape($MARKER_THISWORKBOOK))
+                            $twInfo = ("component='{0}'; source {1} chars; marker '{2}' {3}" -f $nm, $src.Length, $MARKER_THISWORKBOOK, $(if ($twOk) {'present'} else {'NOT FOUND'}))
+                        }
+
+                    } finally {
+                        if ($null -ne $c) {
+                            Release-Transient $c 'VBComponent'
+                            $c = $null
+                        }
+                    }
                 }
             }
 
