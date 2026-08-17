@@ -49,7 +49,9 @@ from pccm_builder.calc_loader import (  # noqa: E402
     LOCKED_ANNUAL_HEADERS,
     LOCKED_ATTEMPT_RESULT,
     LOCKED_AUTHORITY_REFERENCES,
+    LOCKED_CALC_CONTRACT_VERSION,
     LOCKED_CONDITIONING_TERMS,
+    LOCKED_TABLE_KEYS,
     LOCKED_TABLES,
     LOCKED_TOLERANCES,
     LOCKED_CALC_STATE_ROWS,
@@ -1138,6 +1140,448 @@ def test_an_unexpected_authority_reference_is_rejected() -> None:
         )
 
     _rejected(mutate, "an unexpected authority reference")
+
+
+# ---------------------------------------------------------------------------
+# REVISION-E DESIGN PARITY
+#
+# A THIRD, INDEPENDENT COPY of the accepted design, transcribed by hand from
+# docs/phase5_plan.md sections 16.3-16.4 and 15.
+#
+# It deliberately does NOT read LOCKED_TABLES, LOCKED_CALC_STATE,
+# LOCKED_CALC_TOTALS, LOCKED_TOLERANCES or LOCKED_TABLE_KEYS. A guard built by
+# copying the first YAML implementation only proves the YAML matches itself: the
+# contract and the lock could drift away from the plan together and still confirm
+# each other. These literals are what the plan says, and BOTH the contract and the
+# loader's copy are checked against them.
+# ---------------------------------------------------------------------------
+EM_DASH = "—"
+"""The plan's own notation for "no unit applies". Not "name", not "key" - a
+categorical identifier has no physical unit, and inventing a pseudo-unit invents a
+business meaning the plan does not have."""
+
+PLAN_TABLE_KEYS = {
+    "calc_years": "tblCalcYears",
+    "calc_inflation_factors": "tblCalcInflationFactors",
+    "calc_fx": "tblCalcFX",
+    "calc_drivers": "tblCalcDrivers",
+    "calc_annual": "tblCalcAnnual",
+}
+
+# (header, value_type, number_format, units)
+PLAN_YEARS = (
+    ("Project Index", "integer", "0", "index, from 1"),
+    ("Calendar Year", "integer", "0", "year"),
+    ("Discount Factor", "double", "0.000000", "dimensionless"),
+)
+PLAN_INFLATION = (
+    ("Inflation Profile", "text", "@", "key"),
+    ("Calendar Year", "integer", "0", "year"),
+    ("Annual Rate", "double", "0.00%", "rate"),
+    ("Cumulative Inflation Factor", "double", "0.000000", "dimensionless"),
+)
+PLAN_FX = (
+    ("Currency", "text", "@", "key"),
+    ("FX to SAR", "double", "0.000000", "SAR per unit"),
+    ("Referenced By", "integer", "0", "driver count"),
+)
+PLAN_DRIVERS = (
+    ("Permanent ID", "text", "@", "key"),
+    ("Driver Kind", "text", "@", "Cost Line / Risk"),
+    ("Distribution", "text", "@", EM_DASH),
+    ("Central Basis", "text", "@", "ML / Midpoint"),
+    ("Currency", "text", "@", EM_DASH),
+    ("FX to SAR", "double", "0.000000", "SAR per unit"),
+    ("Inflation Profile", "text", "@", EM_DASH),
+    ("Quantity", "double", "#,##0.00", "units"),
+    ("Probability", "double", "0.0%", "fraction"),
+    ("Central Value", "double", "#,##0.00", "source currency"),
+    ("Mean Value", "double", "#,##0.00", "source currency"),
+    ("Knom", "double", "0.000000", "SAR per source unit"),
+    ("Kpv", "double", "0.000000", "SAR per source unit"),
+    ("Deterministic Nominal", "double", "#,##0.00", "SAR"),
+    ("Deterministic PV", "double", "#,##0.00", "SAR"),
+    ("Mean-Basis Nominal", "double", "#,##0.00", "SAR"),
+    ("Mean-Basis PV", "double", "#,##0.00", "SAR"),
+    ("Uncertainty Mean Shift Nominal", "double", "#,##0.00", "SAR"),
+    ("Uncertainty Mean Shift PV", "double", "#,##0.00", "SAR"),
+    ("Expected Risk Nominal", "double", "#,##0.00", "SAR"),
+    ("Expected Risk PV", "double", "#,##0.00", "SAR"),
+)
+PLAN_ANNUAL = (
+    ("Project Index", "integer", "0", "index"),
+    ("Calendar Year", "integer", "0", "year"),
+    ("Base Cost Nominal", "double", "#,##0.00", "SAR"),
+    ("Expected Risk Nominal", "double", "#,##0.00", "SAR"),
+    ("Total Nominal", "double", "#,##0.00", "SAR"),
+    ("Base Cost PV", "double", "#,##0.00", "SAR"),
+    ("Expected Risk PV", "double", "#,##0.00", "SAR"),
+    ("Total PV", "double", "#,##0.00", "SAR"),
+)
+PLAN_SCHEMAS = {
+    "tblCalcYears": PLAN_YEARS,
+    "tblCalcInflationFactors": PLAN_INFLATION,
+    "tblCalcFX": PLAN_FX,
+    "tblCalcDrivers": PLAN_DRIVERS,
+    "tblCalcAnnual": PLAN_ANNUAL,
+}
+
+# Which driver kinds populate each tblCalcDrivers column, from the plan's
+# "Cost Line" / "Risk" columns: "blank" means the kind does not populate it.
+PLAN_DRIVER_APPLIES = (
+    ("Permanent ID", ("cost_line", "risk")),
+    ("Driver Kind", ("cost_line", "risk")),
+    ("Distribution", ("cost_line", "risk")),
+    ("Central Basis", ("cost_line", "risk")),
+    ("Currency", ("cost_line", "risk")),
+    ("FX to SAR", ("cost_line", "risk")),
+    ("Inflation Profile", ("cost_line", "risk")),
+    ("Quantity", ("cost_line",)),
+    ("Probability", ("risk",)),
+    ("Central Value", ("cost_line",)),
+    ("Mean Value", ("cost_line", "risk")),
+    ("Knom", ("cost_line", "risk")),
+    ("Kpv", ("cost_line", "risk")),
+    ("Deterministic Nominal", ("cost_line",)),
+    ("Deterministic PV", ("cost_line",)),
+    ("Mean-Basis Nominal", ("cost_line",)),
+    ("Mean-Basis PV", ("cost_line",)),
+    ("Uncertainty Mean Shift Nominal", ("cost_line",)),
+    ("Uncertainty Mean Shift PV", ("cost_line",)),
+    ("Expected Risk Nominal", ("risk",)),
+    ("Expected Risk PV", ("risk",)),
+)
+
+# (row, group, label, value_type, number_format, initial)
+PLAN_CALC_STATE = (
+    (13, "snapshot", "Last Successful Stamp", "timestamp", "yyyy-mm-dd hh:mm:ss", None),
+    (14, "snapshot", "Last Successful Fingerprint", "text", "@", None),
+    (15, "snapshot", "Fingerprint Version", "integer", "0", None),
+    (16, "snapshot", "Last Successful Applied Timeline", "text", "@", None),
+    (17, "attempt", "Last Attempt Result", "enum", "@", "NONE"),
+    (18, "attempt", "Last Attempt Detail", "text", "@", None),
+    (19, "derived", "Calculation Status (last evaluated)", "enum", "@", "NOT CALCULATED"),
+    (20, "derived", "Status Evaluated At", "timestamp", "yyyy-mm-dd hh:mm:ss", None),
+)
+
+# (row, measure, basis, label) - all `#,##0.00`, all SAR, none seeded.
+PLAN_CALC_TOTALS = (
+    (23, "A", "nominal", f"Escalated Deterministic Base {EM_DASH} Nominal"),
+    (24, "A", "pv", f"Escalated Deterministic Base {EM_DASH} PV"),
+    (25, "B", "nominal", f"Uncertainty Mean Shift {EM_DASH} Nominal"),
+    (26, "B", "pv", f"Uncertainty Mean Shift {EM_DASH} PV"),
+    (27, "C", "nominal", f"Mean-Basis Base Cost {EM_DASH} Nominal"),
+    (28, "C", "pv", f"Mean-Basis Base Cost {EM_DASH} PV"),
+    (29, "D", "nominal", f"Expected Risk / EMV {EM_DASH} Nominal"),
+    (30, "D", "pv", f"Expected Risk / EMV {EM_DASH} PV"),
+    (31, "E", "nominal", f"Analytical Mean Total {EM_DASH} Nominal"),
+    (32, "E", "pv", f"Analytical Mean Total {EM_DASH} PV"),
+)
+
+PLAN_TOLERANCES = {
+    "profiling_sum_absolute": 1e-9,
+    "identity_absolute_floor": 1e-6,
+    "identity_relative_coefficient": 1e-12,
+    "conditioning_scale_floor": 1.0,
+    "fx_rate_strictly_positive": True,
+    "growth_factor_strictly_positive": True,
+}
+
+PLAN_ANCHORS = {
+    "tblCalcYears": ("H", "J", 15),
+    "tblCalcInflationFactors": ("M", "P", 15),
+    "tblCalcFX": ("S", "U", 15),
+    "tblCalcDrivers": ("X", "AR", 15),
+    "tblCalcAnnual": ("AU", "BB", 15),
+}
+
+
+def test_parity_the_contract_matches_the_accepted_plan_table_schemas() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    for table_name, expected in PLAN_SCHEMAS.items():
+        table = calc.table_by_name(table_name)
+        actual = tuple(
+            (c.header, c.value_type, c.number_format, c.units) for c in table.columns
+        )
+        assert actual == expected, table_name
+
+
+def test_parity_the_loader_lock_matches_the_accepted_plan_table_schemas() -> None:
+    """The independent guard must encode Revision E, not the first YAML draft."""
+    for table_name, expected in PLAN_SCHEMAS.items():
+        schema = LOCKED_TABLES[table_name]
+        actual = tuple(
+            (c.header, c.value_type, c.number_format, c.units) for c in schema.columns
+        )
+        assert actual == expected, table_name
+        first, last, header_row = PLAN_ANCHORS[table_name]
+        assert (schema.first_column, schema.last_column, schema.header_row) == (
+            first,
+            last,
+            header_row,
+        )
+
+
+def test_parity_categorical_driver_columns_carry_no_unit() -> None:
+    """Distribution, Currency and Inflation Profile are categorical identifiers.
+
+    The plan records their unit as an em dash. Earlier drafts wrote "name" and
+    "key", which read as units and are not.
+    """
+    calc = load_calc_contract(CALC_PATH)
+    drivers = calc.table_by_name("tblCalcDrivers")
+    for key in ("distribution", "currency", "inflation_profile"):
+        column = next(c for c in drivers.columns if c.key == key)
+        assert column.units == EM_DASH, key
+        assert column.units not in ("name", "key")
+
+
+def test_parity_driver_applies_to_matches_the_plan_kind_columns() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    drivers = calc.table_by_name("tblCalcDrivers")
+    actual = tuple((c.header, c.applies_to) for c in drivers.columns)
+    assert actual == PLAN_DRIVER_APPLIES
+
+
+def test_parity_the_contract_matches_the_accepted_plan_calc_state() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    actual = tuple(
+        (f.row, f.group, f.label, f.value_type, f.number_format, f.initial)
+        for f in calc.calc_state.fields
+    )
+    assert actual == PLAN_CALC_STATE
+
+
+def test_parity_the_contract_matches_the_accepted_plan_calc_totals() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    actual = tuple((f.row, f.measure, f.basis, f.label) for f in calc.calc_totals.fields)
+    assert actual == PLAN_CALC_TOTALS
+    for field in calc.calc_totals.fields:
+        assert field.value_type == "double"
+        assert field.number_format == "#,##0.00"
+        assert field.units == "SAR"
+        assert field.initial is None
+
+
+def test_parity_headline_labels_use_the_plan_em_dash() -> None:
+    """The contract owns labels, and the plan's separator is an em dash."""
+    calc = load_calc_contract(CALC_PATH)
+    for field in calc.calc_totals.fields:
+        assert EM_DASH in field.label, field.key
+        assert f" - {field.basis.upper()}" not in field.label.upper()
+    # "Mean-Basis" keeps its ordinary hyphen; only the separator is an em dash.
+    c_nom = calc.calc_totals.field_by_key("c_nom")
+    assert c_nom.label == f"Mean-Basis Base Cost {EM_DASH} Nominal"
+    assert "Mean-Basis" in c_nom.label
+
+
+def test_parity_the_table_mapping_keys_match_the_plan() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    assert {key: table.table_name for key, table in calc.tables.items()} == PLAN_TABLE_KEYS
+
+
+def test_parity_the_tolerances_match_the_plan() -> None:
+    tolerances = load_calc_contract(CALC_PATH).tolerances
+    for name, expected in PLAN_TOLERANCES.items():
+        assert getattr(tolerances, name) == expected, name
+
+
+# ---------------------------------------------------------------------------
+# the contract document's own identity
+# ---------------------------------------------------------------------------
+def test_the_contract_declares_the_supported_document_version() -> None:
+    assert load_calc_contract(CALC_PATH).version == "1.0.0"
+    assert LOCKED_CALC_CONTRACT_VERSION == "1.0.0"
+
+
+def test_an_unsupported_contract_version_is_rejected() -> None:
+    """A loader for 1.0.0 must not silently consume another format.
+
+    All three were accepted at commit d0c9bca.
+    """
+    for version in ("1.0.1", "2.0.0", "0.9.0", "9.9.9", "foo", "1.0", ""):
+
+        def mutate(data: dict[str, Any], v: str = version) -> None:
+            data["calc_contract_version"] = v
+
+        _rejected(mutate, f"contract version {version!r}")
+
+
+def test_the_contract_version_and_fp_version_are_separate_domains() -> None:
+    """Different questions: which document format, versus which digest encoding."""
+    calc = load_calc_contract(CALC_PATH)
+    assert calc.version == "1.0.0"
+    assert calc.fingerprint_version == 1
+    assert LOCKED_CALC_CONTRACT_VERSION != str(LOCKED_FP_VERSION)
+
+
+# ---------------------------------------------------------------------------
+# the table mapping keys are part of the contract
+# ---------------------------------------------------------------------------
+def test_the_five_table_mapping_keys_are_locked() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    assert set(calc.tables) == set(LOCKED_TABLE_KEYS) == set(PLAN_TABLE_KEYS)
+    assert LOCKED_TABLE_KEYS == PLAN_TABLE_KEYS
+
+
+def test_renaming_any_table_mapping_key_is_rejected() -> None:
+    """Accepted at d0c9bca: `calc_fx` -> `foo` left the ListObject name intact, so
+    every consumer addressing the block semantically would break silently."""
+    for key in PLAN_TABLE_KEYS:
+
+        def mutate(data: dict[str, Any], k: str = key) -> None:
+            data["tables"][f"{k}_renamed"] = data["tables"].pop(k)
+
+        _rejected(mutate, f"table mapping key {key!r} renamed")
+
+
+def test_the_two_specific_renames_review_demonstrated_are_rejected() -> None:
+    def rename_fx(data: dict[str, Any]) -> None:
+        data["tables"]["foo"] = data["tables"].pop("calc_fx")
+
+    def rename_years(data: dict[str, Any]) -> None:
+        data["tables"]["years2"] = data["tables"].pop("calc_years")
+
+    _rejected(rename_fx, "tables.calc_fx renamed to foo")
+    _rejected(rename_years, "tables.calc_years renamed to years2")
+
+
+def test_a_missing_table_mapping_key_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        del data["tables"]["calc_drivers"]
+
+    _rejected(mutate, "a table mapping key removed")
+
+
+def test_a_semantic_key_pointed_at_the_wrong_listobject_is_rejected() -> None:
+    """Both halves of the pair are locked, and so is the pairing."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        data["tables"]["calc_fx"]["table_name"] = "tblCalcAnnual"
+        data["tables"]["calc_annual"]["table_name"] = "tblCalcFX"
+
+    _rejected(mutate, "two semantic keys swapped onto each other's ListObjects")
+
+
+# ---------------------------------------------------------------------------
+# no silently ignored machine-readable fields
+# ---------------------------------------------------------------------------
+REMOVED_REDUNDANT_FIELDS = (
+    ("phase4_reservation.owning_contract", ["phase4_reservation"], "owning_contract"),
+    ("fingerprint.version_written_by", ["fingerprint"], "version_written_by"),
+    ("fingerprint.mathematics_owner", ["fingerprint"], "mathematics_owner"),
+    ("calc_state.commit_range", ["scalar_blocks", "calc_state"], "commit_range"),
+    ("calc_state.snapshot_range", ["scalar_blocks", "calc_state"], "snapshot_range"),
+    ("calc_state.attempt_range", ["scalar_blocks", "calc_state"], "attempt_range"),
+    ("calc_state.derived_range", ["scalar_blocks", "calc_state"], "derived_range"),
+    ("calc_totals.value_range", ["scalar_blocks", "calc_totals"], "value_range"),
+    ("calc_totals.units", ["scalar_blocks", "calc_totals"], "units"),
+    ("calc_fx.fx_convention_owner", ["tables", "calc_fx"], "fx_convention_owner"),
+)
+"""Machine-readable fields that were present, unparsed and unvalidated at d0c9bca.
+
+Every one could be changed to contradict the locked design with the loader
+reporting success. Each is now REMOVED from the YAML - the explanation survives as
+a comment, which cannot be mistaken for data - and reintroducing any of them is
+refused as an unsupported key."""
+
+
+def test_the_redundant_machine_readable_fields_are_gone_from_the_contract() -> None:
+    data = _base()
+    for label, trail, key in REMOVED_REDUNDANT_FIELDS:
+        node = data
+        for step in trail:
+            node = node[step]
+        assert key not in node, f"{label} is still present in the contract"
+
+
+def test_reintroducing_any_removed_redundant_field_is_rejected() -> None:
+    """The replacement for mutation tests: the fields cannot come back silently."""
+    for label, trail, key in REMOVED_REDUNDANT_FIELDS:
+
+        def mutate(data: dict[str, Any], t: list[str] = trail, k: str = key) -> None:
+            node = data
+            for step in t:
+                node = node[step]
+            node[k] = "anything at all"
+
+        _rejected(mutate, f"{label} reintroduced")
+
+
+def test_the_derived_ranges_are_still_available_from_the_parsed_contract() -> None:
+    """Removed from YAML because they are DERIVABLE, not because they are unwanted."""
+    calc = load_calc_contract(CALC_PATH)
+    assert calc.calc_state.value_range() == "C13:C20"
+    assert calc.calc_totals.value_range() == "C23:C32"
+    snapshot = [f.row for f in calc.calc_state.fields if f.group == "snapshot"]
+    attempt = [f.row for f in calc.calc_state.fields if f.group == "attempt"]
+    derived = [f.row for f in calc.calc_state.fields if f.group == "derived"]
+    assert (snapshot, attempt, derived) == ([13, 14, 15, 16], [17, 18], [19, 20])
+
+
+# ---------------------------------------------------------------------------
+# unknown keys anywhere are refused
+# ---------------------------------------------------------------------------
+def test_an_unknown_top_level_key_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        data["extra_section"] = {"anything": 1}
+
+    _rejected(mutate, "an unknown top-level key")
+
+
+def test_an_unknown_sheet_key_is_rejected() -> None:
+    """`sheet: {foo: bar}` was silently accepted at d0c9bca."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        data["sheet"]["foo"] = "bar"
+
+    _rejected(mutate, "sheet.foo")
+
+
+def test_an_unknown_key_in_every_mapping_level_is_rejected() -> None:
+    levels: list[tuple[str, Callable[[dict[str, Any]], dict[str, Any]]]] = [
+        ("root", lambda d: d),
+        ("sheet", lambda d: d["sheet"]),
+        ("phase4_reservation", lambda d: d["phase4_reservation"]),
+        ("fingerprint", lambda d: d["fingerprint"]),
+        ("state_labels", lambda d: d["state_labels"]),
+        ("scalar_blocks.calc_state", lambda d: d["scalar_blocks"]["calc_state"]),
+        ("scalar_blocks.calc_totals", lambda d: d["scalar_blocks"]["calc_totals"]),
+        ("calc_state field", lambda d: d["scalar_blocks"]["calc_state"]["fields"][0]),
+        ("calc_totals field", lambda d: d["scalar_blocks"]["calc_totals"]["fields"][0]),
+        ("table", lambda d: d["tables"]["calc_fx"]),
+        ("table column", lambda d: d["tables"]["calc_fx"]["columns"][0]),
+        ("tolerances", lambda d: d["tolerances"]),
+        ("authority reference", lambda d: d["authority_references"][0]),
+    ]
+    for label, locate in levels:
+
+        def mutate(data: dict[str, Any], where: Any = locate) -> None:
+            where(data)["pccm_unknown_key"] = "x"
+
+        _rejected(mutate, f"an unknown key in {label}")
+
+
+def test_a_typo_in_a_required_key_is_not_silently_dropped() -> None:
+    """The practical case: a misspelling leaves the real key missing AND adds an
+    unknown one. Either failure is enough; both must be reported, not ignored."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        block = data["scalar_blocks"]["calc_state"]
+        block["value_colum"] = block.pop("value_column")
+
+    _rejected(mutate, "a misspelled required key")
+
+
+def test_documentary_notes_remain_permitted_where_they_are_declared() -> None:
+    """Notes are an explicit exception, not evidence that anything goes."""
+    calc = load_calc_contract(CALC_PATH)
+    assert any(f.note for f in calc.calc_state.fields)
+
+    data = _base()
+    data["scalar_blocks"]["calc_state"]["fields"][0]["note"] = "a revised explanation"
+    with tempfile.TemporaryDirectory(prefix="pccm-note-") as tmp:
+        load_calc_contract(_write(data, tmp))   # must NOT raise
 
 
 # ---------------------------------------------------------------------------

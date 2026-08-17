@@ -81,7 +81,9 @@ phase4_reservation:
   cells:
     - "C10"
     - "C11"
-  owning_contract: "structure_contract.yaml"
+  # Owned by structure_contract.yaml (identity.counters). Recorded as a comment,
+  # not as data: the authority_references block below is the one machine-readable
+  # statement of every boundary, and a second copy could drift from it.
   note: "Phase-4 permanent-ID counters. Frozen. Phase 5 reads nothing here and writes nothing here."
 
 # -----------------------------------------------------------------------------
@@ -101,8 +103,12 @@ phase4_reservation:
 # -----------------------------------------------------------------------------
 fingerprint:
   version: 1
-  version_written_by: "successful commit only"
-  mathematics_owner: "builder/pccm_builder/calc_fingerprint.py"
+  # WRITTEN BY A SUCCESSFUL COMMIT ONLY - _Calc!C15 stays blank until then. That
+  # rule is enforced by the locked calc_state design (initial: null on row 15),
+  # so restating it here as data would be a second, unchecked copy.
+  #
+  # The MATHEMATICS lives in builder/pccm_builder/calc_fingerprint.py. That is a
+  # boundary statement, and boundaries are declared once, in authority_references.
 
 # -----------------------------------------------------------------------------
 # Calculation-state label sets - the two ORTHOGONAL axes.
@@ -154,10 +160,10 @@ scalar_blocks:
     note_column: "E"
     first_row: 13
     last_row: 20
-    commit_range: "C13:C20"
-    snapshot_range: "C13:C16"
-    attempt_range: "C17:C18"
-    derived_range: "C19:C20"
+    # Derived, never declared: the commit range is value_column + first_row ..
+    # last_row (C13:C20), and the three group ranges follow from the locked row
+    # groups below (snapshot C13:C16, attempt C17:C18, derived C19:C20). Writing
+    # them out again would let the ranges and the rows disagree.
     fields:
       - key: "last_successful_stamp"
         row: 13
@@ -247,14 +253,14 @@ scalar_blocks:
     note_column: "E"
     first_row: 23
     last_row: 32
-    value_range: "C23:C32"
-    units: "SAR"
+    # value_range derives from value_column + first_row .. last_row (C23:C32).
+    # Units are declared per field below; every one of the ten is SAR.
     fields:
       - key: "a_nom"
         row: 23
         measure: "A"
         basis: "nominal"
-        label: "Escalated Deterministic Base - Nominal"
+        label: "Escalated Deterministic Base — Nominal"
         value_type: "double"
         number_format: "#,##0.00"
         units: "SAR"
@@ -263,7 +269,7 @@ scalar_blocks:
         row: 24
         measure: "A"
         basis: "pv"
-        label: "Escalated Deterministic Base - PV"
+        label: "Escalated Deterministic Base — PV"
         value_type: "double"
         number_format: "#,##0.00"
         units: "SAR"
@@ -272,7 +278,7 @@ scalar_blocks:
         row: 25
         measure: "B"
         basis: "nominal"
-        label: "Uncertainty Mean Shift - Nominal"
+        label: "Uncertainty Mean Shift — Nominal"
         value_type: "double"
         number_format: "#,##0.00"
         units: "SAR"
@@ -281,7 +287,7 @@ scalar_blocks:
         row: 26
         measure: "B"
         basis: "pv"
-        label: "Uncertainty Mean Shift - PV"
+        label: "Uncertainty Mean Shift — PV"
         value_type: "double"
         number_format: "#,##0.00"
         units: "SAR"
@@ -290,7 +296,7 @@ scalar_blocks:
         row: 27
         measure: "C"
         basis: "nominal"
-        label: "Mean-Basis Base Cost - Nominal"
+        label: "Mean-Basis Base Cost — Nominal"
         value_type: "double"
         number_format: "#,##0.00"
         units: "SAR"
@@ -299,7 +305,7 @@ scalar_blocks:
         row: 28
         measure: "C"
         basis: "pv"
-        label: "Mean-Basis Base Cost - PV"
+        label: "Mean-Basis Base Cost — PV"
         value_type: "double"
         number_format: "#,##0.00"
         units: "SAR"
@@ -308,7 +314,7 @@ scalar_blocks:
         row: 29
         measure: "D"
         basis: "nominal"
-        label: "Expected Risk / EMV - Nominal"
+        label: "Expected Risk / EMV — Nominal"
         value_type: "double"
         number_format: "#,##0.00"
         units: "SAR"
@@ -317,7 +323,7 @@ scalar_blocks:
         row: 30
         measure: "D"
         basis: "pv"
-        label: "Expected Risk / EMV - PV"
+        label: "Expected Risk / EMV — PV"
         value_type: "double"
         number_format: "#,##0.00"
         units: "SAR"
@@ -326,7 +332,7 @@ scalar_blocks:
         row: 31
         measure: "E"
         basis: "nominal"
-        label: "Analytical Mean Total - Nominal"
+        label: "Analytical Mean Total — Nominal"
         value_type: "double"
         number_format: "#,##0.00"
         units: "SAR"
@@ -335,7 +341,7 @@ scalar_blocks:
         row: 32
         measure: "E"
         basis: "pv"
-        label: "Analytical Mean Total - PV"
+        label: "Analytical Mean Total — PV"
         value_type: "double"
         number_format: "#,##0.00"
         units: "SAR"
@@ -421,8 +427,8 @@ tables:
     last_column: "U"
     row_rule: "one row per referenced currency"
     # The FX CONVENTION - 1 unit of source currency = X SAR - is owned by
-    # input_contract.yaml and is referenced, not restated, here.
-    fx_convention_owner: "input_contract.yaml"
+    # input_contract.yaml. That boundary is declared once, in
+    # authority_references; it is not repeated here as data.
     columns:
       - key: "currency"
         header: "Currency"
@@ -474,7 +480,7 @@ tables:
         header: "Distribution"
         value_type: "text"
         number_format: "@"
-        units: "name"
+        units: "—"
         applies_to: ["cost_line", "risk"]
       - key: "central_basis"
         header: "Central Basis"
@@ -486,7 +492,7 @@ tables:
         header: "Currency"
         value_type: "text"
         number_format: "@"
-        units: "key"
+        units: "—"
         applies_to: ["cost_line", "risk"]
       - key: "fx_to_sar"
         header: "FX to SAR"
@@ -498,7 +504,7 @@ tables:
         header: "Inflation Profile"
         value_type: "text"
         number_format: "@"
-        units: "key"
+        units: "—"
         applies_to: ["cost_line", "risk"]
       - key: "quantity"
         header: "Quantity"

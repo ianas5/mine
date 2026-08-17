@@ -66,7 +66,27 @@ def _checked(fn, *args):
 # ---------------------------------------------------------------------------
 # The accepted Revision-E layout - LOCKED HERE, not in the contract
 # ---------------------------------------------------------------------------
+LOCKED_CALC_CONTRACT_VERSION = "1.0.0"
+"""The contract-document format this loader implements.
+
+A loader written for 1.0.0 must not silently consume a document that declares
+itself to be some other format: the declaration is the document's own statement
+about which parser it expects, and honouring it is the only way a future format
+change can be made visible rather than silently misread.
+
+This is a DIFFERENT VERSION DOMAIN from the fingerprint's `FP_VERSION`, which
+identifies the canonical encoding that produced a stored digest. The two move
+independently and neither implies the other."""
+
 LOCKED_SHEET = "_Calc"
+
+NO_UNIT = "—"
+"""The accepted Revision-E notation for "no unit applies", used verbatim.
+
+A categorical identifier - a distribution name, a currency code, a profile name -
+has no physical unit. Recording one anyway ("name", "key") invents a business
+meaning the plan does not have, so the plan's own em dash is carried through
+rather than replaced by a pseudo-unit."""
 
 LOCKED_PHASE4_FIRST_ROW = 1
 LOCKED_PHASE4_LAST_ROW = 11
@@ -203,16 +223,17 @@ LOCKED_TABLES: dict[str, TableSchema] = {
             ColumnSchema(
                 "driver_kind", "Driver Kind", "text", "@", "Cost Line / Risk", ("cost_line", "risk")
             ),
-            ColumnSchema("distribution", "Distribution", "text", "@", "name", ("cost_line", "risk")),
+            ColumnSchema("distribution", "Distribution", "text", "@", NO_UNIT, ("cost_line", "risk")),
             ColumnSchema(
                 "central_basis", "Central Basis", "text", "@", "ML / Midpoint", ("cost_line", "risk")
             ),
-            ColumnSchema("currency", "Currency", "text", "@", "key", ("cost_line", "risk")),
+            ColumnSchema("currency", "Currency", "text", "@", NO_UNIT, ("cost_line", "risk")),
             ColumnSchema(
                 "fx_to_sar", "FX to SAR", "double", "0.000000", "SAR per unit", ("cost_line", "risk")
             ),
             ColumnSchema(
-                "inflation_profile", "Inflation Profile", "text", "@", "key", ("cost_line", "risk")
+                "inflation_profile", "Inflation Profile", "text", "@", NO_UNIT,
+                ("cost_line", "risk"),
             ),
             ColumnSchema("quantity", "Quantity", "double", "#,##0.00", "units", ("cost_line",)),
             ColumnSchema("probability", "Probability", "double", "0.0%", "fraction", ("risk",)),
@@ -297,6 +318,21 @@ loader compares the whole schema, attribute by attribute, so any such edit fails
 the build instead of quietly redefining what the audit table means.
 """
 
+LOCKED_TABLE_KEYS: dict[str, str] = {
+    "calc_years": "tblCalcYears",
+    "calc_inflation_factors": "tblCalcInflationFactors",
+    "calc_fx": "tblCalcFX",
+    "calc_drivers": "tblCalcDrivers",
+    "calc_annual": "tblCalcAnnual",
+}
+"""YAML mapping key -> ListObject name.
+
+The mapping keys are part of the contract, not incidental YAML structure: a
+consumer addresses a block by its SEMANTIC key (`tables.calc_fx`) rather than by
+the Excel object name, so renaming a key breaks every such consumer while leaving
+the workbook identical. Both halves of each pair are locked, and so is the pairing
+between them - `calc_fx` must name `tblCalcFX` and nothing else."""
+
 LOCKED_TABLE_ANCHORS: dict[str, tuple[str, str, int, int]] = {
     name: (schema.first_column, schema.last_column, schema.header_row, schema.width)
     for name, schema in LOCKED_TABLES.items()
@@ -348,25 +384,25 @@ text would make the audit trail unsortable and uncomparable."""
 LOCKED_CALC_STATE_GROUPS = ("snapshot", "attempt", "derived")
 
 LOCKED_CALC_TOTALS: tuple[TotalRow, ...] = (
-    TotalRow(23, "a_nom", "Escalated Deterministic Base - Nominal",
+    TotalRow(23, "a_nom", "Escalated Deterministic Base — Nominal",
              "double", "#,##0.00", "SAR", "A", "nominal", None),
-    TotalRow(24, "a_pv", "Escalated Deterministic Base - PV",
+    TotalRow(24, "a_pv", "Escalated Deterministic Base — PV",
              "double", "#,##0.00", "SAR", "A", "pv", None),
-    TotalRow(25, "b_nom", "Uncertainty Mean Shift - Nominal",
+    TotalRow(25, "b_nom", "Uncertainty Mean Shift — Nominal",
              "double", "#,##0.00", "SAR", "B", "nominal", None),
-    TotalRow(26, "b_pv", "Uncertainty Mean Shift - PV",
+    TotalRow(26, "b_pv", "Uncertainty Mean Shift — PV",
              "double", "#,##0.00", "SAR", "B", "pv", None),
-    TotalRow(27, "c_nom", "Mean-Basis Base Cost - Nominal",
+    TotalRow(27, "c_nom", "Mean-Basis Base Cost — Nominal",
              "double", "#,##0.00", "SAR", "C", "nominal", None),
-    TotalRow(28, "c_pv", "Mean-Basis Base Cost - PV",
+    TotalRow(28, "c_pv", "Mean-Basis Base Cost — PV",
              "double", "#,##0.00", "SAR", "C", "pv", None),
-    TotalRow(29, "d_nom", "Expected Risk / EMV - Nominal",
+    TotalRow(29, "d_nom", "Expected Risk / EMV — Nominal",
              "double", "#,##0.00", "SAR", "D", "nominal", None),
-    TotalRow(30, "d_pv", "Expected Risk / EMV - PV",
+    TotalRow(30, "d_pv", "Expected Risk / EMV — PV",
              "double", "#,##0.00", "SAR", "D", "pv", None),
-    TotalRow(31, "e_nom", "Analytical Mean Total - Nominal",
+    TotalRow(31, "e_nom", "Analytical Mean Total — Nominal",
              "double", "#,##0.00", "SAR", "E", "nominal", None),
-    TotalRow(32, "e_pv", "Analytical Mean Total - PV",
+    TotalRow(32, "e_pv", "Analytical Mean Total — PV",
              "double", "#,##0.00", "SAR", "E", "pv", None),
 )
 """Ten headline values, each measure's Nominal row immediately followed by its PV
@@ -466,6 +502,90 @@ _LITERAL_RE = {
     literal: re.compile(rf"(?<![0-9A-Za-z_.]){literal}(?![0-9A-Za-z_.])")
     for literal in FORBIDDEN_HASH_LITERALS
 }
+
+# ---------------------------------------------------------------------------
+# Allowed keys - a machine-readable field is parsed, or it does not exist
+# ---------------------------------------------------------------------------
+# THERE IS NO THIRD CATEGORY. A key in this contract is either part of the
+# contract - parsed, represented on `CalcContract`, and validated - or it is not
+# permitted at all. A field that is present but silently discarded is the worst of
+# both: the YAML reads as authoritative while the loader ignores it, so it can
+# contradict the locked design indefinitely without anyone noticing.
+#
+# Documentary `note` keys are the one deliberate exception, and they are permitted
+# EXPLICITLY, per level. Their presence is a decision, not evidence that arbitrary
+# keys are tolerated. Everything else that is prose belongs in a YAML comment,
+# which cannot be mistaken for data.
+ALLOWED_ROOT_KEYS = frozenset(
+    {
+        "calc_contract_version",
+        "sheet",
+        "phase4_reservation",
+        "fingerprint",
+        "state_labels",
+        "scalar_blocks",
+        "tables",
+        "tolerances",
+        "authority_references",
+    }
+)
+ALLOWED_SHEET_KEYS = frozenset({"name", "required_visibility"})
+ALLOWED_RESERVATION_KEYS = frozenset({"first_row", "last_row", "cells", "note"})
+ALLOWED_FINGERPRINT_KEYS = frozenset({"version"})
+ALLOWED_STATE_LABEL_KEYS = frozenset({"derived_status", "attempt_result"})
+ALLOWED_SCALAR_BLOCK_KEYS = frozenset(
+    {"label_column", "value_column", "note_column", "first_row", "last_row", "fields"}
+)
+ALLOWED_CALC_STATE_FIELD_KEYS = frozenset(
+    {"key", "row", "group", "label", "value_type", "number_format", "enum", "initial", "note"}
+)
+ALLOWED_CALC_TOTALS_FIELD_KEYS = frozenset(
+    {"key", "row", "measure", "basis", "label", "value_type", "number_format", "units",
+     "initial", "note"}
+)
+ALLOWED_TABLE_KEYS = frozenset(
+    {"table_name", "header_row", "first_column", "last_column", "row_rule", "columns"}
+)
+ALLOWED_TABLE_COLUMN_KEYS = frozenset(
+    {"key", "header", "value_type", "number_format", "units", "applies_to", "note"}
+)
+ALLOWED_TOLERANCE_KEYS = frozenset(
+    {
+        "profiling_sum_absolute",
+        "identity_absolute_floor",
+        "identity_relative_coefficient",
+        "conditioning_scale_floor",
+        "fx_rate_strictly_positive",
+        "growth_factor_strictly_positive",
+        "conditioning_terms",
+    }
+)
+ALLOWED_AUTHORITY_REFERENCE_KEYS = frozenset({"concept", "owner", "locator"})
+
+ALLOWED_SCALAR_FIELD_KEYS_BY_BLOCK = {
+    "calc_state": ALLOWED_CALC_STATE_FIELD_KEYS,
+    "calc_totals": ALLOWED_CALC_TOTALS_FIELD_KEYS,
+}
+
+
+def _reject_unknown_keys(mapping: Any, allowed: frozenset[str], where: str) -> None:
+    """Fail on any key this loader does not parse.
+
+    A typo must not disappear during parsing, and neither must an unsupported
+    extension. The calculation contract is intended to become the representation a
+    later emitter consumes, so a key it does not understand is a defect now rather
+    than a surprise then.
+    """
+    if not isinstance(mapping, dict):
+        raise CalcContractError(f"{where}: must be a mapping")
+    unknown = sorted(set(map(str, mapping)) - allowed)
+    if unknown:
+        raise CalcContractError(
+            f"{where}: unsupported key(s) {unknown}. Every machine-readable field in this "
+            f"contract is parsed and validated; there is no 'present but ignored' category. "
+            f"Supported here: {sorted(allowed)}. Prose belongs in a YAML comment, which cannot "
+            "be mistaken for data."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -635,13 +755,31 @@ def load_calc_contract(path: str | Path) -> CalcContract:
         raise CalcContractError(f"{path}: contract root must be a mapping")
 
     where = str(path)
+    _reject_unknown_keys(raw, ALLOWED_ROOT_KEYS, where)
+
+    # The document's own statement of which format it is. Checked FIRST: parsing a
+    # document of an unknown format under 1.0.0 rules is how a format change turns
+    # into a silent misreading instead of a build failure.
     version = _req_str(raw, "calc_contract_version", where)
+    if version != LOCKED_CALC_CONTRACT_VERSION:
+        raise CalcContractError(
+            f"{path}: this loader implements calculation-contract version "
+            f"{LOCKED_CALC_CONTRACT_VERSION!r}; the document declares {version!r}. A loader "
+            "must not silently consume a document claiming to be another format. (This is a "
+            "different version domain from the fingerprint's FP_VERSION.)"
+        )
+
     sheet_block = _req(raw, "sheet", where)
     reservation = _req(raw, "phase4_reservation", where)
     fingerprint = _req(raw, "fingerprint", where)
     labels = _req(raw, "state_labels", where)
     raw_blocks = _req(raw, "scalar_blocks", where)
     raw_tables = _req(raw, "tables", where)
+
+    _reject_unknown_keys(sheet_block, ALLOWED_SHEET_KEYS, f"{where}: sheet")
+    _reject_unknown_keys(reservation, ALLOWED_RESERVATION_KEYS, f"{where}: phase4_reservation")
+    _reject_unknown_keys(fingerprint, ALLOWED_FINGERPRINT_KEYS, f"{where}: fingerprint")
+    _reject_unknown_keys(labels, ALLOWED_STATE_LABEL_KEYS, f"{where}: state_labels")
 
     contract = CalcContract(
         version=version,
@@ -690,6 +828,7 @@ def load_calc_contract(path: str | Path) -> CalcContract:
 # ---------------------------------------------------------------------------
 def _parse_scalar_block(key: str, entry: Any, where: str) -> ScalarBlock:
     entry = _as_mapping(entry, where)
+    _reject_unknown_keys(entry, ALLOWED_SCALAR_BLOCK_KEYS, where)
     raw_fields = _req(entry, "fields", where)
     if not isinstance(raw_fields, list) or not raw_fields:
         raise CalcContractError(f"{where}: fields must be a non-empty list")
@@ -707,14 +846,18 @@ def _parse_scalar_block(key: str, entry: Any, where: str) -> ScalarBlock:
         first_row=_positive_int(entry, "first_row", where),
         last_row=_positive_int(entry, "last_row", where),
         fields=tuple(
-            _parse_scalar_field(item, f"{where}: fields[{i}]")
+            _parse_scalar_field(key, item, f"{where}: fields[{i}]")
             for i, item in enumerate(raw_fields)
         ),
     )
 
 
-def _parse_scalar_field(entry: Any, where: str) -> ScalarField:
+def _parse_scalar_field(block_key: str, entry: Any, where: str) -> ScalarField:
     entry = _as_mapping(entry, where)
+    allowed = ALLOWED_SCALAR_FIELD_KEYS_BY_BLOCK.get(block_key)
+    if allowed is None:
+        raise CalcContractError(f"{where}: unknown scalar block {block_key!r}")
+    _reject_unknown_keys(entry, allowed, where)
     value_type = _req_str(entry, "value_type", where)
     if value_type not in VALID_VALUE_TYPES:
         raise CalcContractError(
@@ -742,6 +885,7 @@ def _parse_scalar_field(entry: Any, where: str) -> ScalarField:
 
 def _parse_table(key: str, entry: Any, where: str) -> CalcTable:
     entry = _as_mapping(entry, where)
+    _reject_unknown_keys(entry, ALLOWED_TABLE_KEYS, where)
     table_name = _req_str(entry, "table_name", where)
     if not TABLE_NAME_RE.match(table_name):
         raise CalcContractError(
@@ -770,6 +914,7 @@ def _parse_table(key: str, entry: Any, where: str) -> CalcTable:
 
 def _parse_table_column(entry: Any, where: str) -> TableColumn:
     entry = _as_mapping(entry, where)
+    _reject_unknown_keys(entry, ALLOWED_TABLE_COLUMN_KEYS, where)
     value_type = _req_str(entry, "value_type", where)
     if value_type not in VALID_VALUE_TYPES:
         raise CalcContractError(
@@ -798,6 +943,7 @@ def _parse_table_column(entry: Any, where: str) -> TableColumn:
 def _parse_tolerances(entry: Any, where: str) -> Tolerances:
     where = f"{where}: tolerances"
     entry = _as_mapping(entry, where)
+    _reject_unknown_keys(entry, ALLOWED_TOLERANCE_KEYS, where)
     terms = _as_mapping(_req(entry, "conditioning_terms", where), f"{where}: conditioning_terms")
     return Tolerances(
         profiling_sum_absolute=_positive_float(entry, "profiling_sum_absolute", where),
@@ -818,6 +964,8 @@ def _parse_references(entry: Any, where: str) -> tuple[AuthorityReference, ...]:
     where = f"{where}: authority_references"
     if not isinstance(entry, list) or not entry:
         raise CalcContractError(f"{where}: must be a non-empty list")
+    for index, item in enumerate(entry):
+        _reject_unknown_keys(item, ALLOWED_AUTHORITY_REFERENCE_KEYS, f"{where}[{index}]")
     return tuple(
         AuthorityReference(
             concept=_req_str(item, "concept", f"{where}[{i}]"),
@@ -1083,6 +1231,8 @@ def _validate_calc_totals_fields(block: ScalarBlock, path: Path) -> None:
 
 
 def _validate_tables(contract: CalcContract, path: Path) -> None:
+    _validate_table_keys(contract, path)
+
     declared = {t.table_name for t in contract.all_tables}
     missing = sorted(set(LOCKED_TABLE_ANCHORS) - declared)
     if missing:
@@ -1134,6 +1284,36 @@ def _validate_tables(contract: CalcContract, path: Path) -> None:
     for table_name in sorted(LOCKED_TABLES):
         _validate_locked_schema(contract, table_name, path)
     _validate_driver_kind_coverage(contract.table_by_name("tblCalcDrivers"), path)
+
+
+def _validate_table_keys(contract: CalcContract, path: Path) -> None:
+    """The YAML mapping keys are part of the contract, not incidental structure.
+
+    A consumer addresses a block by its SEMANTIC key - `tables.calc_fx` - not by
+    the Excel object name, so renaming a key breaks every such consumer while the
+    workbook stays byte-identical. Both the key set and the key -> ListObject
+    pairing are locked, so `calc_fx` cannot come to mean `tblCalcAnnual`.
+    """
+    declared = list(contract.tables)
+    missing = sorted(set(LOCKED_TABLE_KEYS) - set(declared))
+    if missing:
+        raise CalcContractError(
+            f"{path}: required table mapping key(s) missing under 'tables': {missing}"
+        )
+    unexpected = sorted(set(declared) - set(LOCKED_TABLE_KEYS))
+    if unexpected:
+        raise CalcContractError(
+            f"{path}: unexpected table mapping key(s) under 'tables': {unexpected}. The "
+            f"accepted layout declares exactly {sorted(LOCKED_TABLE_KEYS)}."
+        )
+    for key, expected_name in LOCKED_TABLE_KEYS.items():
+        actual_name = contract.tables[key].table_name
+        if actual_name != expected_name:
+            raise CalcContractError(
+                f"{path}: tables.{key} must declare ListObject {expected_name!r}, not "
+                f"{actual_name!r}. The semantic key and the Excel name are locked together; "
+                "either one alone could be re-pointed at the wrong block."
+            )
 
 
 def _validate_locked_schema(contract: CalcContract, table_name: str, path: Path) -> None:

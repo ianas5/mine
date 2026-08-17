@@ -1,17 +1,29 @@
 # Phase 5 — Gate A — Step 1: contract and fingerprint foundation
 
-**Status: PATCHED after independent review — ready for re-review.**
+**Status: PATCHED TWICE after independent review — ready for re-review.**
 
-Independent review reproduced the original submission (618/618, 181/181, 366 code
-units, `50B6EB0E26857EA7`), accepted the fingerprint constants, reduction vectors
-and reference digest, and found **three blocking defects** plus one packaging
-cleanup and one inaccurate test comment. All are fixed; §11 records them in full.
+Two review rounds, both recorded here.
 
-**No design value changed.** The ten numeric literals, the eight probe digests,
-the four reduction vectors, `50B6EB0E26857EA7`, every anchor and every schema are
-untouched. The patch makes the *validation* match what the documentation already
-claimed, and makes the separator normalisation faithful to its own stated
-contract.
+**Round 1** (§11) — three blocking defects: the validator did not lock the
+accepted schema, separator normalisation was textual rather than positional, and a
+required authority reference could silently disappear. Plus a packaging cleanup and
+an inaccurate test comment.
+
+**Round 2** (§12) — the three round-1 blockers confirmed fixed, and one remaining
+class found: **the contract document's own identity was not locked, and part of its
+machine-readable content was silently ignored.** Round 2 also found two places
+where the locked design had copied the first YAML draft rather than the accepted
+Revision-E plan.
+
+**No mathematical design changed in either round.** The ten numeric literals, the
+eight probe digests, the four reduction vectors, `50B6EB0E26857EA7`, the
+Double-only reducer, every `_Calc` anchor, the tolerance values, the
+authority-reference set and the status-axis semantics are untouched.
+
+Round 2 does change two **presentation/audit** values, and only to bring the
+contract *into* line with the accepted plan: three `tblCalcDrivers` columns carried
+pseudo-units, and the ten `calc_totals` labels used an ASCII hyphen where the plan
+uses an em dash. §12.5 records the full parity audit.
 
 The first implementation step of Phase 5. It builds the two things every later
 Phase-5 step will be measured against — the physical-layout contract and the
@@ -20,16 +32,18 @@ engine, the workbook emission and all VBA remain deliberately unwritten.
 
 ---
 
-## 0. The five statements this step must make explicitly
+## 0. The statements this step must make explicitly
 
 > **NO VBA WAS IMPLEMENTED.**
-> **NO WORKBOOK PHASE-5 BLOCK WAS EMITTED.**
-> **NO WINDOWS HARNESS WAS MODIFIED.**
+> **NO PHASE-5 WORKBOOK BLOCK WAS EMITTED.**
+> **NO WINDOWS HARNESS LOGIC WAS MODIFIED.**
 > **NO WINDOWS TEST WAS RUN.**
+> **STEP 2 HAS NOT BEGUN.**
 > **PHASE 6 HAS NOT BEGUN.**
 
 Nothing in `src/vba/`, `bootstrap/windows/`, `readiness/windows/` or the Phase-4
-workbook artifacts was touched. The Phase-4 source freeze holds.
+workbook artifacts was touched, in this round or either previous one. No `.ps1`
+file was edited at all. The Phase-4 source freeze holds.
 
 ---
 
@@ -68,11 +82,11 @@ the layout is locked before anything is built against it.
 | File | Change |
 |---|---|
 | `docs/phase5_plan.md` | **modified** — four errata applied in place, plus the §24.1 Gate-B requirement and a §0 errata register |
-| `spec/calc_contract.yaml` | **new** — 5th authority: `_Calc` physical layout and tolerance constants |
-| `builder/pccm_builder/calc_loader.py` | **new** — loader, layout validator, authority-boundary validator, cross-contract validator |
+| `spec/calc_contract.yaml` | **new** — 5th authority: `_Calc` physical layout and tolerance constants. Round 2: ten redundant machine-readable fields removed (now comments); Revision-E parity of three driver units and ten totals labels |
+| `builder/pccm_builder/calc_loader.py` | **new** — loader, full locked-design guard, authority-boundary validator, document-version lock, table-key lock, unknown-key policy, cross-contract validator |
 | `builder/pccm_builder/calc_fingerprint.py` | **new** — fingerprint reference implementation; sole owner of the hash mathematics |
 | `builder/pccm_builder/__init__.py` | **modified** — exports `load_calc_contract` and `CalcContractError`; docstring records that the fifth contract is validated but not yet projected |
-| `tests/test_phase5_calc_contract_validation.py` | **new** — 110 tests |
+| `tests/test_phase5_calc_contract_validation.py` | **new** — 135 tests |
 | `tests/test_phase5_fingerprint.py` | **new** — 52 tests |
 | `tools/package_review.py` | **new** — blob-exact review packaging (§11.4) |
 
@@ -265,7 +279,7 @@ for Windows Gate B (§24.1). The test's own docstring says so.
 Run from a clean tree on Linux, Python 3.11.
 
 ```
-python -m pytest pccm/tests/ -q        664 passed, 0 failed
+python -m pytest pccm/tests/ -q        689 passed, 0 failed
 python pccm/builder/build_stage_a.py   181 passed, 0 failed   (post-build verification)
 ```
 
@@ -273,22 +287,22 @@ Stage-A verification is **still 181/181** because Step 1 still does not emit the
 calculation contract into the workbook. The patch changed validation, not
 emission.
 
-| Module | Pre-Phase-5 | Step 1 | Step 1 patched |
-|---|---|---|---|
-| `test_phase1_manifest_validation.py` | 10 | 10 | **10** |
-| `test_phase1_structure.py` | 21 | 21 | **21** |
-| `test_phase2_contract_validation.py` | 42 | 42 | **42** |
-| `test_phase2_inputs.py` | 40 | 40 | **40** |
-| `test_phase3_driver_contract_validation.py` | 31 | 31 | **31** |
-| `test_phase3_drivers.py` | 28 | 28 | **28** |
-| `test_phase3_verifier_intersection.py` | 12 | 12 | **12** |
-| `test_phase4_oracle.py` | 68 | 68 | **68** |
-| `test_phase4_stage_b_source.py` | 155 | 155 | **155** |
-| `test_phase4_structure.py` | 43 | 43 | **43** |
-| `test_phase4_structure_contract_validation.py` | 52 | 52 | **52** |
-| `test_phase5_calc_contract_validation.py` | — | 74 | **110** |
-| `test_phase5_fingerprint.py` | — | 42 | **52** |
-| **total** | **502** | **618** | **664** |
+| Module | Pre-Phase-5 | Step 1 | Round-1 patch | Round-2 patch |
+|---|---|---|---|---|
+| `test_phase1_manifest_validation.py` | 10 | 10 | 10 | **10** |
+| `test_phase1_structure.py` | 21 | 21 | 21 | **21** |
+| `test_phase2_contract_validation.py` | 42 | 42 | 42 | **42** |
+| `test_phase2_inputs.py` | 40 | 40 | 40 | **40** |
+| `test_phase3_driver_contract_validation.py` | 31 | 31 | 31 | **31** |
+| `test_phase3_drivers.py` | 28 | 28 | 28 | **28** |
+| `test_phase3_verifier_intersection.py` | 12 | 12 | 12 | **12** |
+| `test_phase4_oracle.py` | 68 | 68 | 68 | **68** |
+| `test_phase4_stage_b_source.py` | 155 | 155 | 155 | **155** |
+| `test_phase4_structure.py` | 43 | 43 | 43 | **43** |
+| `test_phase4_structure_contract_validation.py` | 52 | 52 | 52 | **52** |
+| `test_phase5_calc_contract_validation.py` | — | 74 | 110 | **135** |
+| `test_phase5_fingerprint.py` | — | 42 | 52 | **52** |
+| **total** | **502** | **618** | **664** | **689** |
 
 **Every Phase 1–4 count is unchanged and no Phase 1–4 assertion was weakened,
 removed or relaxed.** No Step-1 assertion was weakened either: the 74 contract
@@ -554,18 +568,194 @@ symbols present in both trees and exercises the defects directly.
 
 ---
 
-## 12. Next step — NOT started
+## 12. Independent review round 2 — contract identity and ignored fields
+
+Round 2 confirmed the three round-1 blockers fixed, reproduced 664/664, 181/181,
+366 code units and `50B6EB0E26857EA7`, and independently ran a further **300,000**
+Double-reducer parity cases against exact integer modulus with **zero** mismatches.
+
+One class of defect remained, in two halves: **the contract could lie about what it
+is, and part of what it says was never read.**
+
+### 12.1 The document's own identity was not locked
+
+`calc_contract_version: "1.0.0"` was parsed as a non-empty string and then ignored.
+A loader written for 1.0.0 accepted `"9.9.9"`, `"2.0.0"` and `"foo"`.
+
+That is the same failure as the round-1 blockers, applied to the document header:
+the declaration exists to say which parser the document expects, and honouring it is
+the only way a future format change becomes a build failure instead of a silent
+misreading.
+
+**Fixed.** `LOCKED_CALC_CONTRACT_VERSION = "1.0.0"`, checked **first**, before any
+other parsing. Seven versions are asserted rejected — `1.0.1`, `2.0.0`, `0.9.0`,
+`9.9.9`, `foo`, `1.0`, empty — and `1.0.0` accepted.
+
+**This is a different version domain from `FP_VERSION`.** One says which document
+format this is; the other says which canonical encoding produced a stored digest.
+They move independently, and a test asserts they are not conflated.
+
+### 12.2 The table mapping keys were not part of the contract
+
+The five `table_name` values were locked; the YAML mapping keys above them were not.
+`tables.calc_fx` → `foo` and `tables.calc_years` → `years2` were both accepted with
+the ListObject names untouched.
+
+That matters because a consumer addresses a block by its **semantic key**, not by
+the Excel object name — so a rename breaks every such consumer while the workbook
+stays byte-identical.
+
+**Fixed.** `LOCKED_TABLE_KEYS` locks the five keys **and the key → ListObject
+pairing**:
+
+```
+calc_years              -> tblCalcYears
+calc_inflation_factors  -> tblCalcInflationFactors
+calc_fx                 -> tblCalcFX
+calc_drivers            -> tblCalcDrivers
+calc_annual             -> tblCalcAnnual
+```
+
+Tests: each of the five renamed, the two specific renames review demonstrated, a
+missing key, and two keys swapped onto each other's ListObjects — the case that
+locking either half alone would miss.
+
+### 12.3 Machine-readable fields that were silently ignored
+
+Ten fields were present in the YAML, absent from `CalcContract`, and never
+validated. Review changed all ten and the loader accepted every one. Same failure
+class as round 1: the YAML reads as authoritative while the loader discards part of
+it.
+
+**The rule now enforced.** A machine-readable field is **parsed and validated**, or
+it **does not exist**. There is no third category.
+
+**Decision: removed, not retained.** All ten were redundant — each value is either
+derivable from data already present, or a boundary already declared once in
+`authority_references`:
+
+| Removed field | Why it was redundant |
+|---|---|
+| `calc_state.commit_range` | `value_column` + `first_row`..`last_row` → `C13:C20` |
+| `calc_state.snapshot_range` / `attempt_range` / `derived_range` | follow from the locked row groups |
+| `calc_totals.value_range` | `value_column` + `first_row`..`last_row` → `C23:C32` |
+| `calc_totals.units` | every one of the ten fields already declares `SAR` |
+| `phase4_reservation.owning_contract` | boundary already in `authority_references` |
+| `fingerprint.mathematics_owner` | boundary already in `authority_references` |
+| `fingerprint.version_written_by` | enforced by the locked `initial: null` on row 15 |
+| `calc_fx.fx_convention_owner` | boundary already in `authority_references` |
+
+Each explanation survives **as a YAML comment**, which cannot be mistaken for data.
+The derived ranges remain available from the parsed contract
+(`calc_state.value_range()` → `C13:C20`), and a test asserts so — they were removed
+for being derivable, not for being unwanted.
+
+Their mutation tests are replaced, as instructed, by tests proving **reintroduction
+is refused** as an unsupported key.
+
+### 12.4 Unknown keys are refused everywhere
+
+`sheet: {foo: bar}` was silently accepted. Fail-loud allowed-key validation now
+covers every mapping level: root, `sheet`, `phase4_reservation`, `fingerprint`,
+`state_labels`, each scalar block, each scalar field (with per-block key sets, since
+a `calc_state` row and a `calc_totals` row legitimately carry different fields),
+each table, each table column, `tolerances`, and each authority-reference entry.
+
+Documentary `note` keys remain permitted — **explicitly, per level**. Their presence
+is a decision, not evidence that arbitrary keys are tolerated, and a test asserts a
+note can still be edited freely.
+
+A dedicated test covers the practical case: a misspelled required key
+(`value_colum`) leaves the real key missing *and* adds an unknown one, and must not
+pass either way.
+
+### 12.5 Revision-E parity audit
+
+The locked design had been built by transcribing the first YAML implementation.
+That is exactly the drift a design regression guard is supposed to prevent, so the
+plan was re-read column by column. **Two discrepancies, both confirmed; nothing
+else in the five schemas, eight state rows or ten totals rows differed.**
+
+**`tblCalcDrivers` pseudo-units.** Plan §16.4 records the unit of `Distribution`,
+`Currency` and `Inflation Profile` as `—`. The contract said `"name"`, `"key"` and
+`"key"`. These are categorical identifiers; a unit invents a meaning the plan does
+not have. All three now carry the plan's own em dash, exposed as `NO_UNIT` in the
+loader.
+
+Note the distinction the plan draws and the fix preserves: `Currency` in
+**`tblCalcFX`** *is* that table's key and keeps `units: key`; `Currency` in
+**`tblCalcDrivers`** is a categorical attribute and carries `—`. Same for
+`Inflation Profile` across `tblCalcInflationFactors` and `tblCalcDrivers`.
+
+**`calc_totals` labels.** The plan writes `Escalated Deterministic Base — Nominal`
+with an em dash (U+2014); the contract used an ASCII hyphen-minus. The contract owns
+labels, so all ten were aligned to the plan's wording. `Mean-Basis` keeps its
+ordinary hyphen — only the separator before *Nominal* / *PV* is an em dash.
+
+Presentation and audit semantics only. No calculation changes.
+
+**The parity test.** A **third independent copy** of the design now lives in the
+test module — `PLAN_TABLE_KEYS`, `PLAN_YEARS`, `PLAN_INFLATION`, `PLAN_FX`,
+`PLAN_DRIVERS`, `PLAN_ANNUAL`, `PLAN_DRIVER_APPLIES`, `PLAN_CALC_STATE`,
+`PLAN_CALC_TOTALS`, `PLAN_TOLERANCES`, `PLAN_ANCHORS` — transcribed by hand from
+the plan and reading **nothing** from `LOCKED_TABLES`. Both the contract *and* the
+loader's lock are asserted against it, so the two cannot drift away from the plan
+together and still confirm each other.
+
+### 12.6 Negative controls against `d0c9bca`
+
+Both trees driven through the same 29 mutations. `d0c9bca` is the round-1 commit.
+
+| | `d0c9bca` | patched |
+|---|---|---|
+| unsupported contract versions accepted | 4 / 4 | **0 / 4** |
+| table mapping keys renamable | 5 / 5 | **0 / 5** |
+| ignored fields changeable / reintroducible | 10 / 10 | **0 / 10** |
+| unknown keys accepted | 10 / 10 | **0 / 10** |
+| **total undetected** | **29 / 29** | **0 / 29** |
+| driver columns carrying a pseudo-unit | 3 | **0** |
+| `calc_totals` labels not using the plan em dash | 10 / 10 | **0 / 10** |
+
+As in round 1, the new test modules cannot simply be run against the old commit —
+they import symbols the patch introduces — so the comparison above imports only
+symbols present in both trees and exercises each defect directly.
+
+### 12.7 Packaging — unchanged
+
+The raw-git-blob packaging of §11.4 is kept. Review confirmed the PowerShell
+difference is line endings only, with identical content after normalisation, and
+recorded no semantic Phase-4 defect. No `.ps1` file was edited in either round.
+
+### 12.8 What round 2 did not touch
+
+Unchanged and re-asserted by the existing tests: the fingerprint constants,
+`FP_VERSION`, the canonical grammar, the UTF-16 rules, the ten numeric vectors, the
+eight collision vectors, `50B6EB0E26857EA7`, the Double-only reducer, the four
+reduction vectors, positional decimal normalisation, the six-triple
+authority-reference set, the tolerance values and conditioning mathematics, the
+`_Calc` anchors, and the status-axis semantics.
+
+No round-1 test was weakened or removed. The 135 contract tests contain all 110
+from round 1.
+
+---
+
+## 13. Next step — NOT started
 
 Gate-A Step 2, whatever the review scopes it to be. Nothing beyond this document's
 §1 has been written, and **Gate-A Step 2 was not begun**.
 
-The patch stayed entirely inside Gate-A Step 1. Restating it for this round:
+Both patch rounds stayed entirely inside Gate-A Step 1. Restating it:
 
 > **NO VBA WAS IMPLEMENTED.**
-> **NO WORKBOOK PHASE-5 BLOCK WAS EMITTED.**
+> **NO PHASE-5 WORKBOOK BLOCK WAS EMITTED.**
 > **NO WINDOWS HARNESS LOGIC WAS MODIFIED** — no `.ps1` file was edited at all;
 > the packaging change reads git blobs and touches no PowerShell.
 > **NO WINDOWS TEST WAS RUN.**
+> **STEP 2 HAS NOT BEGUN.**
 > **PHASE 6 HAS NOT BEGUN.**
 
-**PHASE 5 GATE A STEP 1 PATCH READY FOR INDEPENDENT REVIEW**
+Stage-A verification remains **181 / 181**: Step 1 still does not emit the
+calculation contract into the workbook, and `build_stage_a.py` is unchanged.
+
+**PHASE 5 GATE A STEP 1 FINAL PATCH READY FOR INDEPENDENT REVIEW**
