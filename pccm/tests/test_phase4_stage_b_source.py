@@ -1707,6 +1707,158 @@ def test_46i_every_com_acquisition_reaches_an_exception_safe_release() -> None:
     )
 
 
+# Helpers whose result is a COLLECTION: zero items is a valid outcome, and a
+# PowerShell function returning an empty collection emits ZERO pipeline objects. The
+# assignment therefore lands $null however the helper wrote its return, and under
+# Set-StrictMode reading .Count on $null raises PropertyNotFoundException. That is
+# not theoretical: it ended the first real Gate-B run, on the SUCCESS path, because
+# zero transient release failures is exactly what produces it.
+COLLECTION_HELPERS = (
+    "Get-TransientFailures",
+    "Get-PreExistingExcelPids",
+    "Get-IdColumnValues",
+    "Get-TableBody",
+    "Get-TableColumnNames",
+)
+
+# Of those, the one that returns a JAGGED collection. Caller-side @(...) cannot
+# repair this one alone -- the helper must also suppress enumeration on output.
+JAGGED_COLLECTION_HELPERS = ("Get-TableBody",)
+
+
+def _ps_function_body(path: Path, name: str) -> str:
+    """The body of one PowerShell function, delimited by brace depth."""
+    lines = _ps_structural_lines(path)
+    raw = _ps_code(path).splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if re.match(rf"\s*function\s+{re.escape(name)}\b", line)),
+        None,
+    )
+    assert start is not None, f"{path.name}: no function {name}"
+    depth, opened, end = 0, False, len(lines)
+    for index in range(start, len(lines)):
+        for char in lines[index]:
+            if char == "{":
+                depth += 1
+                opened = True
+            elif char == "}":
+                depth -= 1
+        if opened and depth == 0:
+            end = index + 1
+            break
+    return "\n".join(raw[start:end])
+
+
+def test_46l_the_transient_failure_report_materialises_its_collection() -> None:
+    """The exact defect that ended the first Gate-B run, pinned in both scripts."""
+    for path in (BUILD_PS1, HARNESS_PS1):
+        code = _ps_code(path)
+        assert "$transient = @(Get-TransientFailures)" in code, (
+            f"{path.name}: Get-TransientFailures must be materialised at the caller"
+        )
+        assert "$transient = Get-TransientFailures" not in code, (
+            f"{path.name}: the unmaterialised call is still present"
+        )
+        assert "$transient.Count" in code, (
+            f"{path.name}: the report must still test the count"
+        )
+
+
+def test_46m_every_collection_helper_is_materialised_at_every_caller() -> None:
+    """The rule, applied uniformly rather than at the one site that happened to fire.
+
+    Fixing only the reported call site would leave the same latent failure at every
+    other caller, waiting for the run where that particular collection comes back
+    empty. Every call to a collection-returning helper is wrapped at the caller.
+    """
+    names = "|".join(COLLECTION_HELPERS)
+    call = re.compile(rf"(?<![\w-])({names})\b")
+    problems = []
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        for number, line in enumerate(_ps_structural_lines(path), 1):
+            if re.search(r"^\s*function\s+", line):
+                continue
+            for match in call.finditer(line):
+                start = match.start()
+                # Accept `@(Helper` -- the call is materialised right here.
+                if line[max(0, start - 2) : start] == "@(":
+                    continue
+                problems.append(f"{path.name}:{number}: {line.strip()[:72]}")
+    assert not problems, (
+        "collection helper called without caller-side @(...):\n  " + "\n  ".join(problems)
+    )
+
+
+def test_46n_no_collection_result_reaches_count_unmaterialised() -> None:
+    """The specific shape the strict-mode exception needs: assign bare, then .Count.
+
+    Stated as its own test because it is the failure mode, not merely a style rule,
+    and because it stays meaningful even if the helper inventory above changes.
+    """
+    names = "|".join(COLLECTION_HELPERS)
+    bare = re.compile(rf"^\s*\$(\w+)\s*=\s*(?!@\()({names})\b")
+    problems = []
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        lines = _ps_structural_lines(path)
+        for number, line in enumerate(lines, 1):
+            match = bare.match(line)
+            if not match:
+                continue
+            variable = match.group(1)
+            window = "\n".join(lines[number - 1 : number + 40])
+            if re.search(rf"\${variable}\s*\.\s*Count\b", window):
+                problems.append(
+                    f"{path.name}:{number}: ${variable} = {match.group(2)} then ${variable}.Count"
+                )
+    assert not problems, (
+        "unmaterialised collection reaching .Count (PropertyNotFoundException under "
+        "Set-StrictMode):\n  " + "\n  ".join(problems)
+    )
+
+
+def test_46o_a_jagged_collection_helper_suppresses_output_enumeration() -> None:
+    """@(...) at the caller is necessary but NOT sufficient for a jagged return.
+
+    `return $rows` with one row emits that row's inner array as the single pipeline
+    object, and the caller's @(...) then enumerates THAT -- so a one-row table
+    arrives as N rows of one cell each. Only `return ,$rows` keeps the outer array
+    intact, after which the caller's @(...) unwraps exactly one level.
+
+    This was not the defect that fired on Windows; it is the same class, found by
+    auditing for it, and unreachable today only because no table is one row long.
+    """
+    for helper in JAGGED_COLLECTION_HELPERS:
+        body = _ps_function_body(HARNESS_PS1, helper)
+        returns = [line.strip() for line in body.splitlines() if line.strip().startswith("return")]
+        assert returns, f"{helper}: no return statement found"
+        assert all(r.startswith("return ,") for r in returns), (
+            f"{helper}: every return must suppress enumeration with a unary comma, got {returns}"
+        )
+    # And the flat helpers deliberately do NOT use the comma: one string emitted is
+    # one string, which @(...) turns into a one-element array.
+    for helper in ("Get-IdColumnValues", "Get-TableColumnNames"):
+        body = _ps_function_body(HARNESS_PS1, helper)
+        assert "return ," not in body, f"{helper} is flat and needs no unary comma"
+
+
+def test_46p_scalar_helpers_were_not_swept_up_in_the_rewrite() -> None:
+    """The instruction was to materialise at collection call sites, not to rewrite
+    every helper. A scalar helper wrapped in @(...) would quietly turn a string into
+    a one-element array and break every comparison against it."""
+    code = _ps_code(HARNESS_PS1) + _ps_code(BUILD_PS1) + _ps_code(LIFECYCLE_PS1)
+    for scalar in ("Get-NamedValue", "Get-TrustAccessGuidance", "Get-TableRowCount"):
+        assert f"@({scalar}" not in code, (
+            f"{scalar} returns a scalar and must not be materialised as a collection"
+        )
+    # Get-TrustAccessGuidance builds a list but joins it into one string, which is
+    # why it is correctly absent from COLLECTION_HELPERS.
+    guidance = _ps_function_body(LIFECYCLE_PS1, "Get-TrustAccessGuidance")
+    assert "-join" in guidance, (
+        "Get-TrustAccessGuidance must still return a single joined string"
+    )
+    assert "Get-TrustAccessGuidance" not in COLLECTION_HELPERS
+
+
 def test_46k_every_powershell_block_is_balanced() -> None:
     """The Windows scripts cannot be parsed here, so blocks are counted instead.
 

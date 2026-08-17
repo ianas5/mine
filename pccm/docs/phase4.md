@@ -776,9 +776,14 @@ See `bootstrap/windows/README.md`.
 
 ## Known limitations
 
-1. **The Windows runtime is unproven.** The Linux tests establish that the rules
-   are coherent and that the source is internally consistent. They cannot execute
-   VBA. Only Gate B closes this.
+1. **The structural runtime is unproven.** The Linux tests establish that the
+   rules are coherent and that the source is internally consistent. They cannot
+   execute VBA. Only Gate B closes this, and **scenarios B onward have not yet
+   run** — Gate-B run 1 reached them and stopped at a PowerShell reporting bug in
+   the bootstrap's final block. See `docs/phase4_gate_b_run1.md` for what that run
+   did prove on the target machine (the two-stage build, CodeName assignment,
+   module import, button persistence and natural COM shutdown of two separate
+   Excel instances) and for the defect and its fix.
 
    There is no VBA compiler here, so every compile-time rule the tests do not
    encode is a Gate-B blocker waiting to happen. One shipped:

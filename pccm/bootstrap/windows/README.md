@@ -40,7 +40,10 @@ through without a PowerShell edit.
 The functional test runs the bootstrap itself, against a temporary copy under
 `%TEMP%`, so it never touches `build/`.
 
-**Do not run either until Phase-4 Gate-A source review has been approved.**
+Gate-A source review is approved. Gate-B run 1 completed the whole bootstrap on
+the target machine and then threw in its final reporting block; the structural
+runtime scenarios B onward have **not** run. That defect is fixed and the package
+is ready for one rerun — see `../../docs/phase4_gate_b_run1.md`.
 
 ## Prerequisite
 
@@ -63,6 +66,13 @@ Unchanged from the run that closed the readiness gate:
 - Leaf before parent; `Workbook.Close` before releasing the workbook;
   `Application.Quit` before releasing the application.
 - Diagnostic collections hold plain data only, never an RCW.
+- **Collections are materialised at the caller**, not inside the helper. A
+  PowerShell function returning an empty collection emits zero pipeline objects,
+  so `$x = Get-Something` lands `$null` and `Set-StrictMode` turns `$x.Count` into
+  a `PropertyNotFoundException`. Every caller writes `@(Get-Something)`. A helper
+  returning a *jagged* collection additionally returns `,$rows`, because `@(...)`
+  at the caller cannot repair a one-row result on its own. Scalar helpers are left
+  alone. This ended Gate-B run 1 — see `../../docs/phase4_gate_b_run1.md`.
 - **Ownership starts at the assignment, not at the first successful use.** Every
   acquired object reaches a release on the exception path as well as the success
   path. An inline early release is allowed only when the enclosing `finally` also

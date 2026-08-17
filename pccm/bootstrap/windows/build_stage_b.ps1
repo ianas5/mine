@@ -136,7 +136,7 @@ try {
 # ===========================================================================
 # 2-7. Build instance
 # ===========================================================================
-$preExisting = Get-PreExistingExcelPids
+$preExisting = @(Get-PreExistingExcelPids)
 
 # Explicit named ownership. Every long-lived COM object has its own variable and
 # its own release point; there is no stack and no release plan.
@@ -349,7 +349,7 @@ $id2 = $null
 $rel2 = $null
 
 if ($buildOk) {
-    $preExisting2 = Get-PreExistingExcelPids
+    $preExisting2 = @(Get-PreExistingExcelPids)
     try {
         $excel2 = New-Object -ComObject Excel.Application
         $id2 = Get-ExcelIdentity -ExcelApp $excel2 -PreExistingPids $preExisting2
@@ -462,7 +462,12 @@ if ($buildOk) {
 # ===========================================================================
 # Report
 # ===========================================================================
-$transient = Get-TransientFailures
+# @(...) AT THE CALLER, not inside the helper. A PowerShell function that returns an
+# empty collection emits ZERO pipeline objects, so the assignment lands $null however
+# the helper wrote the return -- and under Set-StrictMode reading .Count on $null
+# raises PropertyNotFoundException. That fired on the first real Gate-B run, on the
+# SUCCESS path specifically, because zero transient failures is what produces it.
+$transient = @(Get-TransientFailures)
 if ($transient.Count -gt 0) {
     Add-Step 'Transient COM releases' 'FAIL' ($transient -join '; ')
 } else {

@@ -4,7 +4,10 @@
     against a real Excel instance and produces a human-readable report.
 
 .DESCRIPTION
-    DO NOT RUN THIS UNTIL PHASE-4 GATE-A SOURCE REVIEW HAS BEEN APPROVED.
+    Gate-A source review is approved. Gate-B run 1 completed the whole Stage-B
+    bootstrap on the target machine -- both Excel instances shut down naturally --
+    and then threw in the bootstrap's final reporting block, so scenarios B onward
+    have NOT yet run. That defect is fixed; see docs/phase4_gate_b_run1.md.
 
     The harness never touches the real build output. It copies the Stage-A build
     into a temporary directory, runs the Stage-B bootstrap there, and drives that
@@ -275,7 +278,9 @@ function Get-TableBody {
         $los = $ws.ListObjects
         $lo = $los.Item($TableName)
         $body = $lo.DataBodyRange
-        if ($null -eq $body) { return $rows }
+        # ,$rows -- see the note on the final return. An empty body is a valid
+        # outcome and must reach the caller as an empty collection, not as $null.
+        if ($null -eq $body) { return ,$rows }
 
         # Row and column counts are read through named, released objects rather than
         # through $body.Rows.Count, which would mint an unowned Range on every
@@ -310,7 +315,19 @@ function Get-TableBody {
         if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';      $ws              = $null }
         if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';     $localWorksheets = $null }
     }
-    return $rows
+    # ,$rows -- the unary comma, and it is load-bearing. This is a JAGGED array, and
+    # caller-side @(...) alone cannot repair it:
+    #
+    #   `return $rows` with ONE row emits that row's inner string[] as the single
+    #   pipeline object, and @(...) at the caller then enumerates THAT -- so a
+    #   one-row table arrives as N rows of one cell each. The zero-row case is the
+    #   familiar $null. Only the comma stops the outer array being enumerated on
+    #   output; the caller's @(...) then unwraps exactly one level and gets $rows
+    #   back intact, for zero, one or many rows alike.
+    #
+    # The flat helpers (Get-IdColumnValues, Get-TableColumnNames) need no comma:
+    # one string emitted is one string, and @(...) makes it a one-element array.
+    return ,$rows
 }
 
 function Set-TableCell {
@@ -521,7 +538,7 @@ function Get-TableColumnWidth {
 
 function Get-TableRowCount {
     param($Workbook, [string]$SheetName, [string]$TableName)
-    return (Get-TableBody -Workbook $Workbook -SheetName $SheetName -TableName $TableName).Count
+    return @(Get-TableBody -Workbook $Workbook -SheetName $SheetName -TableName $TableName).Count
 }
 
 function Add-ConfigProfile {
@@ -566,14 +583,14 @@ function Get-RegisterInfo {
 function Get-IdColumnValues {
     param($Workbook, $Info)
     $out = @()
-    foreach ($row in (Get-TableBody -Workbook $Workbook -SheetName $Info.sheet -TableName $Info.table_name)) {
+    foreach ($row in @(Get-TableBody -Workbook $Workbook -SheetName $Info.sheet -TableName $Info.table_name)) {
         if ($row[0] -ne '') { $out += $row[0] }
     }
     return $out
 }
 
 if ($buildOk) {
-  $preExisting = Get-PreExistingExcelPids
+  $preExisting = @(Get-PreExistingExcelPids)
   try {
     $excel = New-Object -ComObject Excel.Application
     $id = Get-ExcelIdentity -ExcelApp $excel -PreExistingPids $preExisting
@@ -607,17 +624,17 @@ if ($buildOk) {
         $excel.Run('PCCM_AddCostLine') | Out-Null
         $excel.Run('PCCM_AddCostLine') | Out-Null
         $excel.Run('PCCM_AddCostLine') | Out-Null
-        $afterThree = Get-IdColumnValues -Workbook $wb -Info $costReg
+        $afterThree = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
         $null = Add-Check $list 'three adds issue CL-001, CL-002, CL-003' `
             (($afterThree -join ',') -eq (($expected[0..2]) -join ',')) ("got " + ($afterThree -join ','))
 
         $excel.Run('PCCM_DeleteCostLineById', $expected[1]) | Out-Null
-        $afterDelete = Get-IdColumnValues -Workbook $wb -Info $costReg
+        $afterDelete = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
         $null = Add-Check $list 'deleting CL-002 leaves CL-001 and CL-003' `
             (($afterDelete -join ',') -eq (($expected[0], $expected[2]) -join ',')) ("got " + ($afterDelete -join ','))
 
         $excel.Run('PCCM_AddCostLine') | Out-Null
-        $afterFourth = Get-IdColumnValues -Workbook $wb -Info $costReg
+        $afterFourth = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
         $null = Add-Check $list 'the next add issues CL-004, NOT the deleted CL-002' `
             (($afterFourth -join ',') -eq (($expected[0], $expected[2], $expected[3]) -join ',')) ("got " + ($afterFourth -join ','))
         $null = Add-Check $list 'CL-002 was not reused' ($afterFourth -notcontains $expected[1])
@@ -640,7 +657,7 @@ if ($buildOk) {
         # Give each identified row a distinct, sortable marker in the Description
         # column, and a distinct profiling percentage in project year 1 if a grid
         # exists yet.
-        $before = Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name
+        $before = @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)
         $markers = @{}
         $rowIndex = 0
         foreach ($row in $before) {
@@ -658,7 +675,7 @@ if ($buildOk) {
         Invoke-TableSort -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name `
             -KeyColumnIndex 3 -Order 2
 
-        $after = Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name
+        $after = @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)
         $orderBefore = @(); foreach ($row in $before) { if ($row[0] -ne '') { $orderBefore += $row[0] } }
         $orderAfter  = @(); foreach ($row in $after)  { if ($row[0] -ne '') { $orderAfter  += $row[0] } }
 
@@ -681,9 +698,9 @@ if ($buildOk) {
 
         # Profiling ownership must follow the ID, not the row position.
         $excel.Run('PCCM_AddCostLine') | Out-Null
-        $excel.Run('PCCM_DeleteCostLineById', (Get-IdColumnValues -Workbook $wb -Info $costReg)[-1]) | Out-Null
+        $excel.Run('PCCM_DeleteCostLineById', @(Get-IdColumnValues -Workbook $wb -Info $costReg)[-1]) | Out-Null
         $profileIds = @()
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
             if ($row[0] -ne '') { $profileIds += $row[0] }
         }
         $null = Add-Check $list 'the profiling grid follows the reordered register by ID' `
@@ -709,7 +726,7 @@ if ($buildOk) {
 
         $excel.Run('PCCM_AddRisk') | Out-Null
         $excel.Run('PCCM_AddRisk') | Out-Null
-        $afterTwo = Get-IdColumnValues -Workbook $wb -Info $riskReg
+        $afterTwo = @(Get-IdColumnValues -Workbook $wb -Info $riskReg)
         $null = Add-Check $list 'two adds issue R-001 and R-002' `
             (($afterTwo -join ',') -eq (($expected[0], $expected[1]) -join ',')) ("got " + ($afterTwo -join ','))
         $null = Add-Check $list 'the risk sequence is independent of the cost sequence' `
@@ -717,7 +734,7 @@ if ($buildOk) {
 
         $excel.Run('PCCM_DeleteRiskById', $expected[1]) | Out-Null
         $excel.Run('PCCM_AddRisk') | Out-Null
-        $afterReadd = Get-IdColumnValues -Workbook $wb -Info $riskReg
+        $afterReadd = @(Get-IdColumnValues -Workbook $wb -Info $riskReg)
         $null = Add-Check $list 'R-002 is not reused after deletion' `
             (($afterReadd -join ',') -eq (($expected[0], $expected[2]) -join ',')) ("got " + ($afterReadd -join ','))
 
@@ -741,7 +758,7 @@ if ($buildOk) {
         $list = New-Checklist
         Add-ConfigProfile -Workbook $wb -ProfileName $testProfile -RowIndex 1
         $names = @()
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName 'Config' -TableName 'tblInflationProfiles')) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName 'Config' -TableName 'tblInflationProfiles')) {
             if ($row[0] -ne '') { $names += $row[0] }
         }
         $null = Add-Check $list 'the test profile is in the Config master' ($names -contains $testProfile)
@@ -762,8 +779,8 @@ if ($buildOk) {
 
             # Capture the state this step starts from, so preservation claims are
             # checked against the workbook's own previous values.
-            $costBefore = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
-            $inflBefore = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+            $costBefore = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
+            $inflBefore = @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
             $appliedBefore = @(
                 (Get-NamedValue -Workbook $wb -DefinedName 'nmBaseYear_Applied'),
                 (Get-NamedValue -Workbook $wb -DefinedName 'nmStartYear_Applied'),
@@ -787,7 +804,7 @@ if ($buildOk) {
                             -RowIndex 2 -ColumnIndex ($fixedCost + 1) -Value $null
                     }
                 }
-                $costBefore = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
+                $costBefore = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
             }
             # Seed DISTINCT rates against the named profile's actual calendar-year
             # headers, so preservation can be asserted per calendar year rather than
@@ -805,7 +822,7 @@ if ($buildOk) {
                     Set-TableCell -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name `
                         -RowIndex $profileRow -ColumnIndex ($fixedInfl + $y + 1) -Value $rate
                 }
-                $inflBefore = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+                $inflBefore = @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
                 for ($y = 0; $y -lt $inflYearsBefore.Count; $y++) {
                     # Plain data: (Profile Name, Calendar Year) -> value.
                     $ratesBefore[$inflYearsBefore[$y]] = $inflBefore[$profileRow - 1][$fixedInfl + $y]
@@ -877,8 +894,8 @@ if ($buildOk) {
                     ($inflHeaders.Count -eq $fixedInfl) ("column count " + $inflHeaders.Count)
             }
 
-            $costAfter = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
-            $inflAfter = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+            $costAfter = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
+            $inflAfter = @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
 
             if ($step.expect_rejected -or (-not $step.confirm)) {
                 # Nothing may have moved.
@@ -987,9 +1004,9 @@ if ($buildOk) {
     # -------------------------------------------------------------------
     try {
         $list = New-Checklist
-        $costIds = Get-IdColumnValues -Workbook $wb -Info $costReg
+        $costIds = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
         $profileIds = @()
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
             if ($row[0] -ne '') { $profileIds += $row[0] }
         }
         $null = Add-Check $list 'every identified cost line has exactly one profiling row' `
@@ -1000,7 +1017,7 @@ if ($buildOk) {
 
         $excel.Run('PCCM_AddCostLine') | Out-Null
         $afterAdd = @()
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
             if ($row[0] -ne '') { $afterAdd += $row[0] }
         }
         $null = Add-Check $list 'adding a driver creates exactly one matching profiling row' `
@@ -1009,7 +1026,7 @@ if ($buildOk) {
         $victim = $afterAdd[$afterAdd.Count - 1]
         $excel.Run('PCCM_DeleteCostLineById', $victim) | Out-Null
         $afterDelete = @()
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
             if ($row[0] -ne '') { $afterDelete += $row[0] }
         }
         $null = Add-Check $list 'deleting a driver removes its profiling row' ($afterDelete -notcontains $victim)
@@ -1062,7 +1079,7 @@ if ($buildOk) {
                 $seeded[$id] = [math]::Round(0.01 + ($step * 0.07), 4)
             }
             $gridRow = 0
-            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
                 $gridRow++
                 if ($row[0] -ne '' -and $seeded.ContainsKey($row[0])) {
                     Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
@@ -1075,7 +1092,7 @@ if ($buildOk) {
             # every later comparison is a value comparison.
             $before = @{}
             $positionalBefore = @()
-            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
                 if ($row[0] -ne '') {
                     $before[$row[0]] = [string]$row[$yearColumn - 1]
                     $positionalBefore += [string]$row[$yearColumn - 1]
@@ -1093,7 +1110,7 @@ if ($buildOk) {
             # Nothing is edited in place: whole rows move.
             $rank = $orderBefore.Count
             $registerRow = 0
-            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
                 $registerRow++
                 if ($row[0] -ne '') {
                     Set-TableCell -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name `
@@ -1128,7 +1145,7 @@ if ($buildOk) {
             # --- 9. every percentage still belongs to ITS OWN ID -------------
             $after = @{}
             $positionalAfter = @()
-            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
                 if ($row[0] -ne '') {
                     $after[$row[0]] = [string]$row[$yearColumn - 1]
                     $positionalAfter += [string]$row[$yearColumn - 1]
@@ -1173,8 +1190,8 @@ if ($buildOk) {
     # -------------------------------------------------------------------
     try {
         $list = New-Checklist
-        $costBefore = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
-        $inflBefore = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+        $costBefore = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
+        $inflBefore = @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
         $appliedBefore = @(
             (Get-NamedValue -Workbook $wb -DefinedName 'nmBaseYear_Applied'),
             (Get-NamedValue -Workbook $wb -DefinedName 'nmStartYear_Applied'),
@@ -1198,8 +1215,8 @@ if ($buildOk) {
             (($appliedBefore -join '/') -eq ($appliedAfter -join '/')) `
             ("before " + ($appliedBefore -join '/') + ", after " + ($appliedAfter -join '/'))
 
-        $costAfter = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
-        $inflAfter = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+        $costAfter = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
+        $inflAfter = @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
         $null = Add-Check $list 'the cost profiling grid was logically restored' `
             ((($costBefore | ForEach-Object { $_ -join '|' }) -join ';') -eq (($costAfter | ForEach-Object { $_ -join '|' }) -join ';'))
         $null = Add-Check $list 'the inflation grid was logically restored' `
@@ -1262,7 +1279,7 @@ if ($buildOk) {
             ((@($ids | Select-Object -Unique)).Count -eq $ids.Count)
 
         $profileIds = @()
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
             if ($row[0] -ne '') { $profileIds += $row[0] }
         }
         $null = Add-Check $list 'the grown driver has exactly one profiling row' `
@@ -1273,7 +1290,7 @@ if ($buildOk) {
         # rather than assumed.
         $grownRow = 0
         $rowIdx = 0
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
             $rowIdx++
             if ($row[0] -eq $newId) { $grownRow = $rowIdx }
         }
@@ -1296,9 +1313,9 @@ if ($buildOk) {
         $null = Add-Check $list 'every validated user column keeps its Data Validation on the grown row' $validationOk
 
         # Dynamic year cells must also read as editable input, not as locked cells.
-        if ((Get-TableColumnNames -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name).Count -gt $fixedCost) {
+        if (@(Get-TableColumnNames -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name).Count -gt $fixedCost) {
             $gridRow = 0; $rowIdx = 0
-            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
                 $rowIdx++
                 if ($row[0] -eq $newId) { $gridRow = $rowIdx }
             }
@@ -1335,7 +1352,7 @@ if ($buildOk) {
         $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
         $excel.Run('PCCM_ApplyTimeline') | Out-Null
 
-        $inflRows = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+        $inflRows = @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
         $targetRow = 0; $rowIdx = 0
         foreach ($row in $inflRows) { $rowIdx++; if ($row[0] -eq $profileName) { $targetRow = $rowIdx } }
         $null = Add-Check $list 'the new Config profile gained an inflation row' ($targetRow -gt 0)
@@ -1343,7 +1360,7 @@ if ($buildOk) {
         if ($targetRow -gt 0 -and $inflRows[0].Count -gt $fixedInfl) {
             Set-TableCell -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name `
                 -RowIndex $targetRow -ColumnIndex ($fixedInfl + 1) -Value 0.042
-            $inflBefore = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+            $inflBefore = @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
 
             # Remove the profile from Config. The timeline is NOT touched.
             Clear-ConfigProfile -Workbook $wb -RowIndex $profileRow
@@ -1359,7 +1376,7 @@ if ($buildOk) {
             $null = Add-Check $list 'the confirmation counts the rates that would be lost' `
                 ($prompt -match 'inflation rates lost')
 
-            $inflAfterCancel = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+            $inflAfterCancel = @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
             $null = Add-Check $list 'cancelling leaves the inflation row and all its rates unchanged' `
                 ((($inflBefore | ForEach-Object { $_ -join '|' }) -join ';') -eq (($inflAfterCancel | ForEach-Object { $_ -join '|' }) -join ';'))
 
@@ -1367,7 +1384,7 @@ if ($buildOk) {
             $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
             $excel.Run('PCCM_ApplyTimeline') | Out-Null
             $remaining = @()
-            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)) {
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)) {
                 if ($row[0] -ne '') { $remaining += $row[0] }
             }
             $null = Add-Check $list 'accepting removes the obsolete inflation row' ($remaining -notcontains $profileName)
@@ -1391,7 +1408,7 @@ if ($buildOk) {
         if ($appliedDuration -ge 2) {
             $ids = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
             $gridRow = 0; $rowIdx = 0
-            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
                 $rowIdx++; if ($row[0] -eq $ids[0]) { $gridRow = $rowIdx }
             }
             # Zero the tail first, so ONLY the pasted text can make this destructive.
@@ -1416,7 +1433,7 @@ if ($buildOk) {
                 'blank and numeric zero are not data; anything else is'
             $null = Add-Check $list 'the affected permanent ID is named' ($prompt -match [regex]::Escape($ids[0]))
 
-            $stillThere = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
+            $stillThere = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
             $null = Add-Check $list 'cancelling leaves the pasted value in place' `
                 ($stillThere[$gridRow - 1][$fixedCost + [int]$appliedDuration - 1] -eq 'PASTED TEXT')
 
@@ -1496,8 +1513,8 @@ if ($buildOk) {
     # -------------------------------------------------------------------
     try {
         $list = New-Checklist
-        $registerBefore = Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name
-        $gridBefore = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
+        $registerBefore = @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)
+        $gridBefore = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
         $counterBefore = Get-NamedValue -Workbook $wb -DefinedName 'nmCounterCostLine'
         $idsBefore = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
 
@@ -1508,8 +1525,8 @@ if ($buildOk) {
         $outcome = [string]$excel.Run('PCCM_AutomationResult')
         $null = Add-Check $list 'the injected Add failure was reported' ($outcome -like 'FAIL|*') ("outcome '$outcome'")
 
-        $registerAfter = Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name
-        $gridAfter = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
+        $registerAfter = @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)
+        $gridAfter = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
         $null = Add-Check $list 'the driver table row count was restored' ($registerAfter.Count -eq $registerBefore.Count) `
             ("before " + $registerBefore.Count + " / after " + $registerAfter.Count)
         $null = Add-Check $list 'the profiling row count was restored' ($gridAfter.Count -eq $gridBefore.Count)
@@ -1544,8 +1561,8 @@ if ($buildOk) {
     # -------------------------------------------------------------------
     try {
         $list = New-Checklist
-        $registerBefore = Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name
-        $gridBefore = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
+        $registerBefore = @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)
+        $gridBefore = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
         $counterBefore = Get-NamedValue -Workbook $wb -DefinedName 'nmCounterCostLine'
         $victim = @(Get-IdColumnValues -Workbook $wb -Info $costReg)[0]
 
@@ -1554,13 +1571,13 @@ if ($buildOk) {
         $outcome = [string]$excel.Run('PCCM_AutomationResult')
         $null = Add-Check $list 'the injected Delete failure was reported' ($outcome -like 'FAIL|*') ("outcome '$outcome'")
 
-        $registerAfter = Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name
-        $gridAfter = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
+        $registerAfter = @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)
+        $gridAfter = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
         $null = Add-Check $list 'the driver table row count was restored' ($registerAfter.Count -eq $registerBefore.Count) `
             ("before " + $registerBefore.Count + " / after " + $registerAfter.Count)
         $null = Add-Check $list 'the profiling row count was restored' ($gridAfter.Count -eq $gridBefore.Count)
         $null = Add-Check $list 'the deleted identifier is back' `
-            ((Get-IdColumnValues -Workbook $wb -Info $costReg) -contains $victim)
+            (@(Get-IdColumnValues -Workbook $wb -Info $costReg) -contains $victim)
         $null = Add-Check $list 'the register values were restored' `
             ((($registerBefore | ForEach-Object { $_ -join '|' }) -join ';') -eq (($registerAfter | ForEach-Object { $_ -join '|' }) -join ';'))
         $null = Add-Check $list 'the ID counter was restored' `
@@ -1569,7 +1586,7 @@ if ($buildOk) {
         # The recreated row matters most here: Delete removed a real ListRow and the
         # rollback had to put it back, formatting and validation included.
         $restoredRow = 0; $rowIdx = 0
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
             $rowIdx++; if ($row[0] -eq $victim) { $restoredRow = $rowIdx }
         }
         if ($restoredRow -gt 0) {
@@ -1675,7 +1692,7 @@ if ($buildOk) {
         # --- T1: a driver row with content but no ID ----------------------
         $freeRow = 0
         $rowIdx = 0
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
             $rowIdx++
             if ($row[0] -eq '' -and $freeRow -eq 0) { $freeRow = $rowIdx }
         }
@@ -1685,7 +1702,7 @@ if ($buildOk) {
             $lastId = @(Get-IdColumnValues -Workbook $wb -Info $costReg)[-1]
             $excel.Run('PCCM_DeleteCostLineById', $lastId) | Out-Null
             $rowIdx = 0
-            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
                 $rowIdx++
                 if ($row[0] -eq '' -and $freeRow -eq 0) { $freeRow = $rowIdx }
             }
@@ -1699,7 +1716,7 @@ if ($buildOk) {
         $null = Add-Check $list 'Add is refused while a driver orphan exists' ($outcome -like 'FAIL|*') $outcome
         $null = Add-Check $list 'no identifier was allocated' `
             ((Get-NamedValue -Workbook $wb -DefinedName 'nmCounterCostLine') -eq $countBefore)
-        $body = Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name
+        $body = @(Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)
         $null = Add-Check $list 'the orphan row is untouched' ($body[$freeRow - 1][2] -eq 'ORPHAN DESCRIPTION')
         $null = Add-Check $list 'the orphan row still has no ID' ($body[$freeRow - 1][0] -eq '')
 
@@ -1708,17 +1725,17 @@ if ($buildOk) {
 
         # --- T2: a profiling row with a percentage but no ID --------------
         $gridFree = 0; $rowIdx = 0
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
             $rowIdx++
             if ($row[0] -eq '' -and $gridFree -eq 0) { $gridFree = $rowIdx }
         }
-        if ($gridFree -gt 0 -and (Get-TableColumnNames -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name).Count -gt $fixedCost) {
+        if ($gridFree -gt 0 -and @(Get-TableColumnNames -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name).Count -gt $fixedCost) {
             Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
                 -RowIndex $gridFree -ColumnIndex ($fixedCost + 1) -Value 0.25
             $excel.Run('PCCM_ApplyTimeline') | Out-Null
             $outcome = [string]$excel.Run('PCCM_AutomationResult')
             $null = Add-Check $list 'Apply is refused while a profiling orphan exists' ($outcome -like 'FAIL|*') $outcome
-            $after = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
+            $after = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
             $null = Add-Check $list 'the orphan profiling value is untouched' `
                 ([double]$after[$gridFree - 1][$fixedCost] -eq 0.25)
             Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
@@ -1727,17 +1744,17 @@ if ($buildOk) {
 
         # --- T3: an inflation row with a rate but no profile name ---------
         $inflFree = 0; $rowIdx = 0
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)) {
             $rowIdx++
             if ($row[0] -eq '' -and $inflFree -eq 0) { $inflFree = $rowIdx }
         }
-        if ($inflFree -gt 0 -and (Get-TableColumnNames -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name).Count -gt $fixedInfl) {
+        if ($inflFree -gt 0 -and @(Get-TableColumnNames -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name).Count -gt $fixedInfl) {
             Set-TableCell -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name `
                 -RowIndex $inflFree -ColumnIndex ($fixedInfl + 1) -Value 0.077
             $excel.Run('PCCM_ApplyTimeline') | Out-Null
             $outcome = [string]$excel.Run('PCCM_AutomationResult')
             $null = Add-Check $list 'Apply is refused while an inflation orphan exists' ($outcome -like 'FAIL|*') $outcome
-            $after = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+            $after = @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
             $null = Add-Check $list 'the orphan inflation rate is untouched' `
                 ([double]$after[$inflFree - 1][$fixedInfl] -eq 0.077)
             Set-TableCell -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name `
@@ -1788,7 +1805,7 @@ if ($buildOk) {
         $null = Add-Check $list 'no identifier was allocated' `
             (@(Get-IdColumnValues -Workbook $wb -Info $riskReg).Count -eq 0)
         $profileIds = @()
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $riskGrid.sheet -TableName $riskGrid.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $riskGrid.sheet -TableName $riskGrid.table_name)) {
             if ($row[0] -ne '') { $profileIds += $row[0] }
         }
         $null = Add-Check $list 'no profiling row was created' ($profileIds.Count -eq 0)
@@ -1840,7 +1857,7 @@ if ($buildOk) {
             $headers = @(Get-TableColumnNames -Workbook $wb -SheetName $grid.sheet -TableName $grid.table_name)
             $fixed = $grid.fixed_columns.Count
             if ($headers.Count -gt $fixed) {
-                $rows = Get-TableBody -Workbook $wb -SheetName $grid.sheet -TableName $grid.table_name
+                $rows = @(Get-TableBody -Workbook $wb -SheetName $grid.sheet -TableName $grid.table_name)
                 $keyed = 0; $unkeyed = 0; $rowIdx = 0
                 foreach ($row in $rows) {
                     $rowIdx++
@@ -1864,7 +1881,7 @@ if ($buildOk) {
 
         $inflHeaders = @(Get-TableColumnNames -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
         if ($inflHeaders.Count -gt $fixedInfl) {
-            $rows = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+            $rows = @(Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
             $named = 0; $unnamed = 0; $rowIdx = 0
             foreach ($row in $rows) {
                 $rowIdx++
@@ -1928,7 +1945,7 @@ if ($buildOk) {
             ([string]::IsNullOrWhiteSpace($report)) $report
 
         $profBefore = 0
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
             if ($row[0] -ne '') { $profBefore++ }
         }
 
@@ -1947,7 +1964,7 @@ if ($buildOk) {
         $null = Add-Check $list 'the ceiling identifier was never issued' `
             ($idsAfter -notcontains $ceilingId)
         $profAfter = 0
-        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+        foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
             if ($row[0] -ne '') { $profAfter++ }
         }
         $null = Add-Check $list 'no profiling row was created' ($profAfter -eq $profBefore)
@@ -2012,7 +2029,11 @@ if ($buildOk) {
 # ===========================================================================
 # Report
 # ===========================================================================
-$transient = Get-TransientFailures
+# @(...) at the caller: an empty collection returned from a function emits zero
+# pipeline objects, so this lands $null, and Set-StrictMode turns .Count on $null
+# into a PropertyNotFoundException. Same defect as build_stage_b.ps1, and it would
+# have fired here too -- after every scenario had already passed.
+$transient = @(Get-TransientFailures)
 if ($transient.Count -gt 0) {
     Add-Result 'Y' 'Transient COM releases' 'FAIL' ($transient -join '; ')
 } else {
