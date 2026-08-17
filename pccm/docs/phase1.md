@@ -42,6 +42,8 @@ workbook is a *generated build artifact*.
 ## Repository layout
 
     pccm/
+      VERSION                         model version (matches spec model_version)
+      requirements.txt                pinned Stage A dependencies
       spec/workbook.yaml              structural manifest (the authority)
       builder/
         build_skeleton.py             entry point
@@ -50,8 +52,9 @@ workbook is a *generated build artifact*.
           styling.py                  centralised presentation tokens
           skeleton.py                 workbook + sheet creation, population
           verify.py                   structural verification, structural digest
+          __init__.py                 public API: exactly the 6 objects the entry point and tests use
       tests/
-        test_phase1_structure.py      18 required structural checks + reproducibility
+        test_phase1_structure.py      18 required structural checks, reproducibility, FX ownership
         test_phase1_manifest_validation.py   invalid manifests must be rejected
         oracle/                       (empty) Python reference implementation
         fixtures/                     (empty) expected-value vectors
@@ -95,6 +98,26 @@ Both run standalone (no pytest required) and are also pytest-collectable.
 intended CodeNames **independently of the manifest**. The manifest is the
 builder's authority; the test is the architecture-conformance check, so manifest
 drift fails even when the build itself succeeds.
+
+---
+
+## FX source of truth
+
+One authority each, fixed before Phase 2 so the boundary cannot drift:
+
+| Concern | Owner | Notes |
+|---|---|---|
+| Currency **master list** | **Config** → *Currencies* | user-maintainable; holds no rates |
+| **FX rates** | **Setup** → *FX Rates* | convention: **1 unit of the source currency = X SAR** |
+
+Cost Lines and Risks will later select a currency from the Config master list; the
+corresponding rate is resolved from Setup. There is no FX forecasting and no FX
+uncertainty in this model.
+
+`test_21_fx_single_source_of_truth` enforces this: Config must contain the
+*Currencies* section, must not mention FX at all, and must contain no numeric
+value (so it can never quietly become a rate table); Setup must contain the *FX
+Rates* section and state the convention.
 
 ---
 

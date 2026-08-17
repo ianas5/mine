@@ -81,7 +81,7 @@ REQUIRED_SETUP_LABELS = [
 
 REQUIRED_CONFIG_SECTIONS = [
     "Categories",
-    "Currencies / FX",
+    "Currencies",
     "Units of Measure",
     "Inflation Profile Names",
     "Distribution Names",
@@ -296,6 +296,42 @@ def test_19_structurally_reproducible() -> None:
     second = _build("repro_b", timestamp="2000-01-01 00:00:00 UTC")
     assert structural_digest(first) == structural_digest(second), (
         "two builds of the same source produced different workbook structure"
+    )
+
+
+def test_21_fx_single_source_of_truth() -> None:
+    """Setup owns FX rates; Config owns the currency master list and no rates.
+
+    Guards the Phase 2 boundary: exactly one FX authority. Config must never
+    grow a rate table, so it is asserted to contain no FX token and no numeric
+    value at all.
+    """
+    workbook = load_workbook(_artifact())
+    config_sheet = workbook["Config"]
+    config = _strings(config_sheet)
+    setup = _strings(workbook["Setup"])
+
+    # Config owns the currency master list...
+    assert "Currencies" in config, "Config is missing the Currencies section"
+    assert "Currencies / FX" not in config, "Config still uses the ambiguous 'Currencies / FX'"
+
+    # ...and owns no FX authority.
+    fx_mentions = sorted(v for v in config if "fx" in v.lower())
+    assert not fx_mentions, f"Config must not mention FX: {fx_mentions}"
+
+    numeric = [
+        f"{cell.coordinate}={cell.value!r}"
+        for row in config_sheet.iter_rows()
+        for cell in row
+        if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool)
+    ]
+    assert not numeric, f"Config contains numeric values (possible rate area): {numeric}"
+
+    # Setup is the single source of truth for FX rates, and states the convention.
+    assert "FX Rates" in setup, "Setup is missing the FX Rates section"
+    assert "FX Rates" not in config, "FX Rates must not appear on Config"
+    assert any("1 unit of the source currency = X SAR" in v for v in setup), (
+        "Setup does not state the SAR-per-source-unit FX convention"
     )
 
 

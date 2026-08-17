@@ -150,13 +150,13 @@ sheets:
           - label: "Random Seed"
       - type: section
         title: "FX Rates"
-        note: "Reserved. Convention will be SAR per 1 unit of the source currency."
+        note: "Reserved. Setup is the single source of truth for FX rates. Convention: 1 unit of the source currency = X SAR. No FX forecasting and no FX uncertainty."
 
   - name: "Config"
     codename: "shConfig"
     visibility: "visible"
     role: "admin"
-    purpose: "User-maintainable list masters. Visible and auditable, not hidden."
+    purpose: "User-maintainable list masters, including the currency master list. Visible and auditable, not hidden. Owns no FX rates."
     show_gridlines: false
     title: "Config"
     subtitle: "Reserved sections for configurable lists - not wired to validation in Phase 1"
@@ -169,8 +169,8 @@ sheets:
         title: "Categories"
         note: "Reserved for user-defined cost and risk categories."
       - type: section
-        title: "Currencies / FX"
-        note: "Reserved. The currency master list is the FX table, so a currency cannot exist without a rate."
+        title: "Currencies"
+        note: "Reserved for the user-maintainable currency master list. Exchange rates are entered on Setup, not here."
       - type: section
         title: "Units of Measure"
         note: "Reserved for user-defined units of measure."
