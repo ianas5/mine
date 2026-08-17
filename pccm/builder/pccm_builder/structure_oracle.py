@@ -337,8 +337,64 @@ def sync_rows(
 
 
 # ---------------------------------------------------------------------------
+# unkeyed structural data
+# ---------------------------------------------------------------------------
+def orphan_rows(rows: Sequence[tuple[object, Sequence[object]]]) -> list[int]:
+    """1-based indices of rows that hold data but carry no key.
+
+    A structural row is owned by its key -- a permanent ID, or an inflation profile
+    name. Synchronisation rebuilds rows from those keys and clears the tail, so a row
+    whose key is blank but whose other cells are not is data the next structural
+    operation would silently erase. It is also invisible to every destructive
+    assessment, because all of them are keyed.
+
+    This is a STRUCTURAL fault, reported and never repaired.
+    """
+    found: list[int] = []
+    for index, (key, cells) in enumerate(rows, start=1):
+        keyed = key is not None and str(key).strip() != ""
+        if not keyed and any(is_data(cell) for cell in cells):
+            found.append(index)
+    return found
+
+
+# ---------------------------------------------------------------------------
 # permanent identity
 # ---------------------------------------------------------------------------
+def read_counter(raw: object, ceiling: int) -> tuple[bool, int]:
+    """(valid, value) for a stored persistent counter.
+
+    A counter must be present, whole, non-negative and within the implementation's
+    representational ceiling. An invalid one must NEVER silently become zero: the
+    counter is the model's record of every identifier ever issued, and current rows
+    cannot testify about deleted history.
+
+        CL-001 issued -> deleted -> no IDs remain -> counter corrupted
+        -> a zero fallback plus a zero highest-issued validates cleanly
+        -> the next allocation reissues CL-001.
+    """
+    if raw is None:
+        return (False, 0)
+    if isinstance(raw, bool):
+        return (False, 0)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return (False, 0)
+        try:
+            raw = float(text)
+        except ValueError:
+            return (False, 0)
+    if not isinstance(raw, (int, float)):
+        return (False, 0)
+    if raw != int(raw):
+        return (False, 0)
+    value = int(raw)
+    if value < 0 or value > ceiling:
+        return (False, 0)
+    return (True, value)
+
+
 def allocate_id(counter: int, prefix: str, pad_width: int) -> tuple[str, int]:
     """Allocate the next permanent identifier. Returns (id, advanced counter).
 

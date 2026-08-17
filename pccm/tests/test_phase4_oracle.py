@@ -25,6 +25,8 @@ from pccm_builder.stage_b_emit import oracle_limits  # noqa: E402
 from pccm_builder.structure_oracle import (  # noqa: E402
     DestructiveImpact,
     is_data,
+    orphan_rows,
+    read_counter,
     removed_profiles,
     sync_profiling_values,
     Timeline,
@@ -485,6 +487,63 @@ def test_38_a_counter_behind_its_highest_issued_id_would_reuse_one() -> None:
     assert len(surviving) == 2, "a correct counter is deliberately ahead of the row count"
     reused, _ = allocate_id(len(surviving), "CL-", 3)
     assert reused == "CL-003", "counting rows instead of reading the counter reissues an ID"
+
+
+# ===========================================================================
+# unkeyed structural data
+# ===========================================================================
+def test_38a_a_row_with_data_but_no_key_is_an_orphan() -> None:
+    rows = [("CL-001", [0.5, 0.5]), ("", [0.25, 0.0]), (None, [0.0, 0.0])]
+    assert orphan_rows(rows) == [2], "only the row with data and no key"
+
+
+def test_38b_a_blank_row_is_not_an_orphan() -> None:
+    assert orphan_rows([("", [None, None]), ("", ["", "  "])]) == []
+
+
+def test_38c_zero_is_not_owned_data_but_text_is() -> None:
+    assert orphan_rows([("", [0, 0.0])]) == [], "reserved rows may legitimately hold nothing"
+    assert orphan_rows([("", ["oops"])]) == [1]
+
+
+def test_38d_orphans_are_reported_by_one_based_index() -> None:
+    rows = [("A", [1]), ("", [1]), ("", [1])]
+    assert orphan_rows(rows) == [2, 3]
+
+
+# ===========================================================================
+# counter integrity
+# ===========================================================================
+def test_38e_a_valid_counter_reads_as_valid() -> None:
+    assert read_counter(7, 2_147_483_647) == (True, 7)
+    assert read_counter(0, 2_147_483_647) == (True, 0)
+
+
+def test_38f_an_invalid_counter_is_never_silently_zero() -> None:
+    """The reachable reuse path: no IDs remain, so nothing else can catch it."""
+    ceiling = 2_147_483_647
+    for corrupt in (None, "", "   ", "corrupt", 1.5, -1, ceiling + 1, True):
+        valid, value = read_counter(corrupt, ceiling)
+        assert valid is False, f"{corrupt!r} was accepted as a counter"
+        assert value == 0, "the value is meaningless when invalid, and must not be used"
+
+
+def test_38g_history_cannot_be_inferred_from_current_rows() -> None:
+    """CL-001 issued then deleted: the register is empty but history is not."""
+    surviving: list[str] = []
+    assert highest_sequence(surviving, "CL-") == 0
+    valid, _ = read_counter("corrupt", 2_147_483_647)
+    assert valid is False
+    # With a silent zero fallback both signals would read 0 and the next allocation
+    # would reissue CL-001, which is exactly what refusing prevents.
+    assert allocate_id(0, "CL-", 3)[0] == "CL-001"
+
+
+def test_38h_the_ceiling_is_representational_and_refuses_cleanly() -> None:
+    ceiling = 2_147_483_647
+    valid, value = read_counter(ceiling, ceiling)
+    assert (valid, value) == (True, ceiling)
+    assert read_counter(ceiling + 1, ceiling) == (False, 0)
 
 
 # ===========================================================================

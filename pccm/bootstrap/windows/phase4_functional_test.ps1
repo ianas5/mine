@@ -39,8 +39,16 @@
           accepted, with the timeline unchanged throughout
       O   Non-numeric content in a removed profiling cell counts as data loss
       P   Oversized pasted timeline values rejected without a VBA overflow
-      Q   Add failure after row mutation: rows, values and counter restored
-      R   Delete failure after row mutation: rows, values and counter restored
+      Q   Add failure after row mutation: rows, values, counter and the Phase-3
+          input contract restored
+      R   Delete failure after row mutation: the deleted ListRow recreated with its
+          fills and Data Validation intact
+      S   Application state RESTORED to its prior values, on success and on failure
+      T   Unkeyed structural data refuses Add and Apply, in all three grids
+      U   Counter integrity: an invalid counter refuses allocation, including the
+          historical case where every identifier has been deleted
+      V   Generated year cells equal the contract input_fill exactly; unkeyed rows
+          are model-controlled
 
     Safety, unchanged from the readiness gate: no security setting is altered, no
     registry key is touched, no Trusted Location is added, and no Excel process
@@ -203,6 +211,21 @@ function Set-NamedValue {
     }
 }
 
+function Set-NamedValueText {
+    param($Workbook, [string]$DefinedName, [string]$Text)
+    $names = $null; $nm = $null; $rng = $null
+    try {
+        $names = $Workbook.Names
+        $nm = $names.Item($DefinedName)
+        $rng = $nm.RefersToRange
+        $rng.Value2 = $Text
+    } finally {
+        if ($null -ne $rng)   { Release-Transient $rng   'Range(name)'; $rng   = $null }
+        if ($null -ne $nm)    { Release-Transient $nm    'Name';        $nm    = $null }
+        if ($null -ne $names) { Release-Transient $names 'Names';       $names = $null }
+    }
+}
+
 function Get-TableColumnNames {
     param($Workbook, [string]$SheetName, [string]$TableName)
     $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $cols = $null
@@ -316,6 +339,7 @@ function Invoke-TableSort {
     param($Workbook, [string]$SheetName, [string]$TableName, [int]$KeyColumnIndex, [int]$Order)
     $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null
     $sortObj = $null; $sortFields = $null; $body = $null; $keyRange = $null
+    $sortField = $null
     try {
         $localWorksheets = $Workbook.Worksheets
         $ws = $localWorksheets.Item($SheetName)
@@ -326,10 +350,15 @@ function Invoke-TableSort {
         $sortObj = $lo.Sort
         $sortFields = $sortObj.SortFields
         $sortFields.Clear()
-        $null = $sortFields.Add($keyRange, 0, $Order)
+        # SortFields.Add returns a SortField. Assigning it to $null still mints the
+        # RCW and then discards ownership of it, which is the same defect as a bare
+        # discarded return: it is captured, released once and nulled.
+        $sortField = $sortFields.Add($keyRange, 0, $Order)
+        Release-Transient $sortField 'SortField'; $sortField = $null
         $sortObj.Apply()
         $sortFields.Clear()
     } finally {
+        if ($null -ne $sortField)       { Release-Transient $sortField       'SortField';   $sortField       = $null }
         if ($null -ne $sortFields)      { Release-Transient $sortFields      'SortFields';  $sortFields      = $null }
         if ($null -ne $sortObj)         { Release-Transient $sortObj         'Sort';        $sortObj         = $null }
         if ($null -ne $keyRange)        { Release-Transient $keyRange        'Range(key)';  $keyRange        = $null }
@@ -402,6 +431,82 @@ function Test-TableCellValidation {
         if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
     }
     return $present
+}
+
+# Asserts the Phase-3 input contract on ONE driver row: fills and Data Validation.
+# Used after growth and after every rollback, because a row that comes back with the
+# right values but no validation and no input language is restored in name only.
+function Add-DriverRowContractChecks {
+    param($List, $Workbook, $Register, [int]$RowIndex, $Manifest, [string]$Label)
+    $idFill = Get-TableCellFill -Workbook $Workbook -SheetName $Register.sheet `
+        -TableName $Register.table_name -RowIndex $RowIndex -ColumnIndex 1
+    $userFill = Get-TableCellFill -Workbook $Workbook -SheetName $Register.sheet `
+        -TableName $Register.table_name -RowIndex $RowIndex -ColumnIndex 2
+    $null = Add-Check $List "$Label ID cell keeps the model-controlled fill" `
+        ($idFill -eq $Manifest.presentation.locked_fill) ("fill " + $idFill)
+    $null = Add-Check $List "$Label user cells keep the editable input fill" `
+        ($userFill -eq $Manifest.presentation.input_fill) ("fill " + $userFill)
+    $null = Add-Check $List "$Label ID cell carries NO user Data Validation" `
+        (-not (Test-TableCellValidation -Workbook $Workbook -SheetName $Register.sheet `
+            -TableName $Register.table_name -RowIndex $RowIndex -ColumnIndex 1))
+
+    $validated = $Manifest.driver_validation_columns.($Register.key)
+    $ok = $true
+    foreach ($key in $validated) {
+        $columnIndex = [array]::IndexOf($Register.columns, $key) + 1
+        if (-not (Test-TableCellValidation -Workbook $Workbook -SheetName $Register.sheet `
+                -TableName $Register.table_name -RowIndex $RowIndex -ColumnIndex $columnIndex)) {
+            $ok = $false
+        }
+    }
+    $null = Add-Check $List "$Label every validated user column still has its Data Validation" $ok
+}
+
+# Number format and fill of one grid cell, so the snapshot's presentation claims can
+# be checked after a rollback rather than taken on trust.
+function Get-TableCellFormat {
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowIndex, [int]$ColumnIndex)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $body = $null; $cell = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $body = $lo.DataBodyRange
+        $cell = $body.Cells($RowIndex, $ColumnIndex)
+        return [string]$cell.NumberFormat
+    } finally {
+        if ($null -ne $cell)            { Release-Transient $cell            'Range(cell)'; $cell            = $null }
+        if ($null -ne $body)            { Release-Transient $body            'Range(body)'; $body            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+}
+
+function Get-TableColumnWidth {
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$ColumnIndex)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null
+    $cols = $null; $col = $null; $range = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $cols = $lo.ListColumns
+        $col = $cols.Item($ColumnIndex)
+        $range = $col.Range
+        return [double]$range.ColumnWidth
+    } finally {
+        if ($null -ne $range)           { Release-Transient $range           'Range(col)';  $range           = $null }
+        if ($null -ne $col)             { Release-Transient $col             'ListColumn';  $col             = $null }
+        if ($null -ne $cols)            { Release-Transient $cols            'ListColumns'; $cols            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
 }
 
 function Get-TableRowCount {
@@ -613,6 +718,30 @@ if ($buildOk) {
     }
 
     # -------------------------------------------------------------------
+    # D0. Seed a REAL, KEYED Inflation Profile before the timeline scenarios
+    # -------------------------------------------------------------------
+    # Inflation ownership is keyed by (Profile Name, Calendar Year). Writing a rate
+    # into a row whose Profile Name is blank produces nothing the model owns:
+    # CountRateLosses skips it, SetYearColumns never captures it, SyncProfileRows
+    # clears it. Without a genuine named profile the D-J scenarios could not prove
+    # calendar-year preservation at all, and the destructive Base-Year step had no
+    # real rate to threaten.
+    $testProfile = 'P4 Timeline Test Profile'
+    try {
+        $list = New-Checklist
+        Add-ConfigProfile -Workbook $wb -ProfileName $testProfile -RowIndex 1
+        $names = @()
+        foreach ($row in (Get-TableBody -Workbook $wb -SheetName 'Config' -TableName 'tblInflationProfiles')) {
+            if ($row[0] -ne '') { $names += $row[0] }
+        }
+        $null = Add-Check $list 'the test profile is in the Config master' ($names -contains $testProfile)
+        Add-Result 'D0' 'Seed a keyed Inflation Profile for the timeline scenarios' `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'D0' 'Seed a keyed Inflation Profile' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
     # D - J. Timeline scenarios, driven from the oracle-derived fixture
     # -------------------------------------------------------------------
     $stepIndex = 0
@@ -650,10 +779,27 @@ if ($buildOk) {
                 }
                 $costBefore = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
             }
-            if ($inflBefore.Count -gt 0 -and $inflBefore[0].Count -gt $fixedInfl) {
-                Set-TableCell -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name `
-                    -RowIndex 1 -ColumnIndex ($fixedInfl + 1) -Value 0.035
+            # Seed DISTINCT rates against the named profile's actual calendar-year
+            # headers, so preservation can be asserted per calendar year rather than
+            # per column position.
+            $inflHeadersBefore = @(Get-TableColumnNames -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
+            $inflYearsBefore = @($inflHeadersBefore | Select-Object -Skip $fixedInfl)
+            $profileRow = 0
+            $rowIdx = 0
+            foreach ($row in $inflBefore) { $rowIdx++; if ($row[0] -eq $testProfile) { $profileRow = $rowIdx } }
+
+            $ratesBefore = @{}
+            if ($profileRow -gt 0 -and $inflYearsBefore.Count -gt 0) {
+                for ($y = 0; $y -lt $inflYearsBefore.Count; $y++) {
+                    $rate = 0.01 + (0.001 * $y)
+                    Set-TableCell -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name `
+                        -RowIndex $profileRow -ColumnIndex ($fixedInfl + $y + 1) -Value $rate
+                }
                 $inflBefore = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+                for ($y = 0; $y -lt $inflYearsBefore.Count; $y++) {
+                    # Plain data: (Profile Name, Calendar Year) -> value.
+                    $ratesBefore[$inflYearsBefore[$y]] = $inflBefore[$profileRow - 1][$fixedInfl + $y]
+                }
             }
 
             Set-NamedValue -Workbook $wb -DefinedName 'nmBaseYear_Entered'       -Value $step.entered.base_year
@@ -770,16 +916,43 @@ if ($buildOk) {
                     $blankSurvived 'structural synchronisation must not repair invalid user data'
             }
 
-            # Inflation rates survive by calendar year, not by column index.
-            if ((-not $step.expect_rejected) -and $step.confirm -and $inflBefore.Count -gt 0) {
-                $survivedOk = $true
-                foreach ($year in @($step.transition.added_inflation_years)) {
-                    $idx = [array]::IndexOf($inflYears, $year)
-                    if ($idx -ge 0) {
-                        if ($inflAfter[0][$fixedInfl + $idx] -ne '') { $survivedOk = $false }
+            # Inflation rates survive by CALENDAR YEAR, never by column index. The
+            # comparison is against the captured (Profile Name, Calendar Year) map.
+            if ((-not $step.expect_rejected) -and $step.confirm -and $ratesBefore.Count -gt 0) {
+                $afterRow = 0; $rowIdx = 0
+                foreach ($row in $inflAfter) { $rowIdx++; if ($row[0] -eq $testProfile) { $afterRow = $rowIdx } }
+                $null = Add-Check $list 'the named inflation profile still has its row' ($afterRow -gt 0)
+
+                if ($afterRow -gt 0) {
+                    $survivorsOk = $true
+                    $survivorCount = 0
+                    foreach ($year in $inflYears) {
+                        $idx = [array]::IndexOf($inflYears, $year)
+                        $actual = $inflAfter[$afterRow - 1][$fixedInfl + $idx]
+                        if ($ratesBefore.ContainsKey($year)) {
+                            # This calendar year survived the intersection.
+                            $survivorCount++
+                            if ($actual -ne $ratesBefore[$year]) { $survivorsOk = $false }
+                        }
                     }
+                    $null = Add-Check $list 'every surviving calendar year keeps EXACTLY its own rate' `
+                        $survivorsOk ("checked $survivorCount surviving year(s) by calendar key")
+
+                    $newBlank = $true
+                    foreach ($year in @($step.transition.added_inflation_years)) {
+                        $idx = [array]::IndexOf($inflYears, $year)
+                        if ($idx -ge 0) {
+                            if ($inflAfter[$afterRow - 1][$fixedInfl + $idx] -ne '') { $newBlank = $false }
+                        }
+                    }
+                    $null = Add-Check $list 'newly required inflation years arrive BLANK, never zero' $newBlank
+
+                    $goneOk = $true
+                    foreach ($year in @($step.transition.removed_inflation_years)) {
+                        if ($inflYears -contains $year) { $goneOk = $false }
+                    }
+                    $null = Add-Check $list 'calendar years leaving the span are gone from the headers' $goneOk
                 }
-                $null = Add-Check $list 'newly required inflation years arrive BLANK, never zero' $survivedOk
             }
 
             $report = [string]$excel.Run('PCCM_StructuralReport')
@@ -882,8 +1055,23 @@ if ($buildOk) {
         $report = [string]$excel.Run('PCCM_StructuralReport')
         $null = Add-Check $list 'the restored workbook still passes structural revalidation' ([string]::IsNullOrWhiteSpace($report)) $report
 
-        $null = Add-Check $list 'application state was restored (ScreenUpdating is on)' ([bool]$excel.ScreenUpdating)
-        $null = Add-Check $list 'application state was restored (EnableEvents is on)' ([bool]$excel.EnableEvents)
+        # The snapshot claims to preserve number format, width and the input-language
+        # treatment of every year cell. After a failed reshape, prove it did.
+        if ($costAfter.Count -gt 0 -and $costAfter[0].Count -gt $fixedCost) {
+            $keyedRow = 0; $rowIdx = 0
+            foreach ($row in $costAfter) { $rowIdx++; if ($row[0] -ne '' -and $keyedRow -eq 0) { $keyedRow = $rowIdx } }
+            if ($keyedRow -gt 0) {
+                $null = Add-Check $list 'a restored profiling year cell keeps its number format' `
+                    ((Get-TableCellFormat -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
+                        -RowIndex $keyedRow -ColumnIndex ($fixedCost + 1)) -eq $costGrid.year_number_format)
+                $null = Add-Check $list 'a restored profiling year cell keeps a positive column width' `
+                    ((Get-TableColumnWidth -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
+                        -ColumnIndex ($fixedCost + 1)) -gt 0)
+                $null = Add-Check $list 'a restored profiling year cell on a KEYED row is editable-input styled' `
+                    ((Get-TableCellFill -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
+                        -RowIndex $keyedRow -ColumnIndex ($fixedCost + 1)) -eq $manifest.presentation.input_fill)
+            }
+        }
 
         Add-Result 'L' 'Runtime failure containment and logical restore' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
@@ -961,8 +1149,9 @@ if ($buildOk) {
             }
             if ($gridRow -gt 0) {
                 $yearFill = Get-TableCellFill -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name -RowIndex $gridRow -ColumnIndex ($fixedCost + 1)
-                $null = Add-Check $list 'a generated profiling year cell is visually an editable input' `
-                    ($yearFill -ne $manifest.presentation.locked_fill) ("fill " + $yearFill)
+                $null = Add-Check $list 'a generated profiling year cell equals the contract input_fill' `
+                    ($yearFill -eq $manifest.presentation.input_fill) `
+                    ("expected " + $manifest.presentation.input_fill + ", got " + $yearFill)
             }
         }
 
@@ -1179,6 +1368,10 @@ if ($buildOk) {
         $null = Add-Check $list 'no identifier issued by the failed Add survives' `
             (($idsAfter -join ',') -eq ($idsBefore -join ','))
 
+        # The row that survived the rollback must still honour the Phase-3 contract.
+        Add-DriverRowContractChecks -List $list -Workbook $wb -Register $costReg `
+            -RowIndex 1 -Manifest $manifest -Label 'after Add rollback the restored row'
+
         $excel.Run('PCCM_AutomationEnd') | Out-Null
         $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
         $report = [string]$excel.Run('PCCM_StructuralReport')
@@ -1218,17 +1411,315 @@ if ($buildOk) {
         $null = Add-Check $list 'the ID counter was restored' `
             ((Get-NamedValue -Workbook $wb -DefinedName 'nmCounterCostLine') -eq $counterBefore)
 
+        # The recreated row matters most here: Delete removed a real ListRow and the
+        # rollback had to put it back, formatting and validation included.
+        $restoredRow = 0; $rowIdx = 0
+        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
+            $rowIdx++; if ($row[0] -eq $victim) { $restoredRow = $rowIdx }
+        }
+        if ($restoredRow -gt 0) {
+            Add-DriverRowContractChecks -List $list -Workbook $wb -Register $costReg `
+                -RowIndex $restoredRow -Manifest $manifest -Label 'after Delete rollback the recreated row'
+        }
+
         $excel.Run('PCCM_AutomationEnd') | Out-Null
         $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
         $report = [string]$excel.Run('PCCM_StructuralReport')
         $null = Add-Check $list 'the restored workbook still passes structural revalidation' `
             ([string]::IsNullOrWhiteSpace($report)) $report
-        $null = Add-Check $list 'application state was restored (ScreenUpdating is on)' ([bool]$excel.ScreenUpdating)
 
         Add-Result 'R' 'Delete failure after row mutation: full logical restore' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Result 'R' 'Delete failure after row mutation' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # S. Application state is RESTORED, not forced to a convenient default
+    # -------------------------------------------------------------------
+    # The requirement is restoration of the caller's prior state. Asserting
+    # ScreenUpdating = True proves nothing if the caller had it False to begin with.
+    try {
+        $list = New-Checklist
+
+        # A deliberately unusual pre-operation state, none of it the default.
+        $excel.ScreenUpdating = $false
+        $excel.EnableEvents   = $false
+        $excel.DisplayAlerts  = $false
+        $excel.Calculation    = -4135          # xlCalculationManual
+        $excel.StatusBar      = 'PCCM harness sentinel'
+
+        $before = [pscustomobject]@{
+            ScreenUpdating = [bool]$excel.ScreenUpdating
+            EnableEvents   = [bool]$excel.EnableEvents
+            DisplayAlerts  = [bool]$excel.DisplayAlerts
+            Calculation    = [int]$excel.Calculation
+            StatusBar      = [string]$excel.StatusBar
+        }
+
+        # --- a SUCCESSFUL structural operation ---------------------------
+        $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+        $excel.Run('PCCM_AddCostLine') | Out-Null
+        $outcome = [string]$excel.Run('PCCM_AutomationResult')
+        $null = Add-Check $list 'the successful operation reported success' ($outcome -like 'OK|*') $outcome
+
+        $null = Add-Check $list 'ScreenUpdating restored to its prior value' ([bool]$excel.ScreenUpdating -eq $before.ScreenUpdating)
+        $null = Add-Check $list 'EnableEvents restored to its prior value'   ([bool]$excel.EnableEvents   -eq $before.EnableEvents)
+        $null = Add-Check $list 'DisplayAlerts restored to its prior value'  ([bool]$excel.DisplayAlerts  -eq $before.DisplayAlerts)
+        $null = Add-Check $list 'Calculation restored to its prior value'    ([int]$excel.Calculation     -eq $before.Calculation) `
+            ("before " + $before.Calculation + " / after " + [int]$excel.Calculation)
+        $null = Add-Check $list 'StatusBar restored to its prior value'      ([string]$excel.StatusBar    -eq $before.StatusBar) `
+            ("read '" + [string]$excel.StatusBar + "'")
+
+        # --- an INJECTED-FAILURE operation --------------------------------
+        $excel.ScreenUpdating = $false
+        $excel.EnableEvents   = $false
+        $excel.StatusBar      = 'PCCM harness sentinel 2'
+        $before2 = [pscustomobject]@{
+            ScreenUpdating = [bool]$excel.ScreenUpdating
+            EnableEvents   = [bool]$excel.EnableEvents
+            DisplayAlerts  = [bool]$excel.DisplayAlerts
+            Calculation    = [int]$excel.Calculation
+            StatusBar      = [string]$excel.StatusBar
+        }
+        $excel.Run('PCCM_AutomationBegin', $true, 'add.after_write_id') | Out-Null
+        $excel.Run('PCCM_AddCostLine') | Out-Null
+        $outcome = [string]$excel.Run('PCCM_AutomationResult')
+        $null = Add-Check $list 'the injected failure was reported' ($outcome -like 'FAIL|*') $outcome
+
+        $null = Add-Check $list 'ScreenUpdating restored after failure' ([bool]$excel.ScreenUpdating -eq $before2.ScreenUpdating)
+        $null = Add-Check $list 'EnableEvents restored after failure'   ([bool]$excel.EnableEvents   -eq $before2.EnableEvents)
+        $null = Add-Check $list 'DisplayAlerts restored after failure'  ([bool]$excel.DisplayAlerts  -eq $before2.DisplayAlerts)
+        $null = Add-Check $list 'Calculation restored after failure'    ([int]$excel.Calculation     -eq $before2.Calculation)
+        $null = Add-Check $list 'StatusBar restored after failure'      ([string]$excel.StatusBar    -eq $before2.StatusBar)
+
+        # Hand the workbook back in a normal state for the sections that follow.
+        $excel.Run('PCCM_AutomationEnd') | Out-Null
+        $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+        $excel.ScreenUpdating = $true
+        $excel.EnableEvents   = $true
+        $excel.DisplayAlerts  = $false
+        $excel.Calculation    = -4105          # xlCalculationAutomatic
+        $excel.StatusBar      = $false
+
+        Add-Result 'S' 'Application state is restored to its prior values, on success and on failure' `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'S' 'Application state restoration' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # T. Unkeyed structural data blocks every mutating operation
+    # -------------------------------------------------------------------
+    # An unkeyed row is invisible to every destructive assessment, because all of
+    # them are keyed. Synchronisation would erase it with no warning, so the
+    # operation is refused instead.
+    try {
+        $list = New-Checklist
+
+        # --- T1: a driver row with content but no ID ----------------------
+        $freeRow = 0
+        $rowIdx = 0
+        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
+            $rowIdx++
+            if ($row[0] -eq '' -and $freeRow -eq 0) { $freeRow = $rowIdx }
+        }
+        if ($freeRow -eq 0) {
+            # Every reserved row is identified; grow one so an orphan can be placed.
+            $excel.Run('PCCM_AddCostLine') | Out-Null
+            $lastId = @(Get-IdColumnValues -Workbook $wb -Info $costReg)[-1]
+            $excel.Run('PCCM_DeleteCostLineById', $lastId) | Out-Null
+            $rowIdx = 0
+            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
+                $rowIdx++
+                if ($row[0] -eq '' -and $freeRow -eq 0) { $freeRow = $rowIdx }
+            }
+        }
+        $countBefore = Get-NamedValue -Workbook $wb -DefinedName 'nmCounterCostLine'
+        Set-TableCell -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name `
+            -RowIndex $freeRow -ColumnIndex 3 -Value 'ORPHAN DESCRIPTION'
+
+        $excel.Run('PCCM_AddCostLine') | Out-Null
+        $outcome = [string]$excel.Run('PCCM_AutomationResult')
+        $null = Add-Check $list 'Add is refused while a driver orphan exists' ($outcome -like 'FAIL|*') $outcome
+        $null = Add-Check $list 'no identifier was allocated' `
+            ((Get-NamedValue -Workbook $wb -DefinedName 'nmCounterCostLine') -eq $countBefore)
+        $body = Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name
+        $null = Add-Check $list 'the orphan row is untouched' ($body[$freeRow - 1][2] -eq 'ORPHAN DESCRIPTION')
+        $null = Add-Check $list 'the orphan row still has no ID' ($body[$freeRow - 1][0] -eq '')
+
+        Set-TableCell -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name `
+            -RowIndex $freeRow -ColumnIndex 3 -Value $null
+
+        # --- T2: a profiling row with a percentage but no ID --------------
+        $gridFree = 0; $rowIdx = 0
+        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+            $rowIdx++
+            if ($row[0] -eq '' -and $gridFree -eq 0) { $gridFree = $rowIdx }
+        }
+        if ($gridFree -gt 0 -and (Get-TableColumnNames -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name).Count -gt $fixedCost) {
+            Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
+                -RowIndex $gridFree -ColumnIndex ($fixedCost + 1) -Value 0.25
+            $excel.Run('PCCM_ApplyTimeline') | Out-Null
+            $outcome = [string]$excel.Run('PCCM_AutomationResult')
+            $null = Add-Check $list 'Apply is refused while a profiling orphan exists' ($outcome -like 'FAIL|*') $outcome
+            $after = Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name
+            $null = Add-Check $list 'the orphan profiling value is untouched' `
+                ([double]$after[$gridFree - 1][$fixedCost] -eq 0.25)
+            Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
+                -RowIndex $gridFree -ColumnIndex ($fixedCost + 1) -Value $null
+        }
+
+        # --- T3: an inflation row with a rate but no profile name ---------
+        $inflFree = 0; $rowIdx = 0
+        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)) {
+            $rowIdx++
+            if ($row[0] -eq '' -and $inflFree -eq 0) { $inflFree = $rowIdx }
+        }
+        if ($inflFree -gt 0 -and (Get-TableColumnNames -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name).Count -gt $fixedInfl) {
+            Set-TableCell -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name `
+                -RowIndex $inflFree -ColumnIndex ($fixedInfl + 1) -Value 0.077
+            $excel.Run('PCCM_ApplyTimeline') | Out-Null
+            $outcome = [string]$excel.Run('PCCM_AutomationResult')
+            $null = Add-Check $list 'Apply is refused while an inflation orphan exists' ($outcome -like 'FAIL|*') $outcome
+            $after = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+            $null = Add-Check $list 'the orphan inflation rate is untouched' `
+                ([double]$after[$inflFree - 1][$fixedInfl] -eq 0.077)
+            Set-TableCell -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name `
+                -RowIndex $inflFree -ColumnIndex ($fixedInfl + 1) -Value $null
+        }
+
+        $excel.Run('PCCM_AddCostLine') | Out-Null
+        $outcome = [string]$excel.Run('PCCM_AutomationResult')
+        $null = Add-Check $list 'once the orphans are cleared, Add succeeds again' ($outcome -like 'OK|*') $outcome
+
+        Add-Result 'T' 'Unkeyed structural data refuses every mutating operation' `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'T' 'Unkeyed structural data' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # U. A corrupt ID counter must never allow reuse
+    # -------------------------------------------------------------------
+    # The dangerous case is HISTORICAL, not "counter below a current row": if every
+    # identified Risk is deleted and the counter is then corrupted, current rows say
+    # nothing, and a silent fallback to zero would reissue R-001.
+    try {
+        $list = New-Checklist
+        $counterBefore = Get-NamedValue -Workbook $wb -DefinedName 'nmCounterRisk'
+
+        foreach ($id in @(Get-IdColumnValues -Workbook $wb -Info $riskReg)) {
+            $excel.Run('PCCM_DeleteRiskById', $id) | Out-Null
+        }
+        $remaining = @(Get-IdColumnValues -Workbook $wb -Info $riskReg)
+        $null = Add-Check $list 'every identified Risk was deleted' ($remaining.Count -eq 0)
+        $null = Add-Check $list 'the counter survived the deletions' `
+            ((Get-NamedValue -Workbook $wb -DefinedName 'nmCounterRisk') -eq $counterBefore)
+
+        $report = [string]$excel.Run('PCCM_StructuralReport')
+        $null = Add-Check $list 'a valid counter with zero rows is not a fault' `
+            ([string]::IsNullOrWhiteSpace($report)) $report
+
+        # Corrupt the counter to text.
+        Set-NamedValueText -Workbook $wb -DefinedName 'nmCounterRisk' -Text 'corrupt'
+        $report = [string]$excel.Run('PCCM_StructuralReport')
+        $null = Add-Check $list 'structural revalidation reports the invalid counter' `
+            ($report -match 'counter_integrity') $report
+
+        $excel.Run('PCCM_AddRisk') | Out-Null
+        $outcome = [string]$excel.Run('PCCM_AutomationResult')
+        $null = Add-Check $list 'Add Risk is refused while the counter is invalid' ($outcome -like 'FAIL|*') $outcome
+        $null = Add-Check $list 'no identifier was allocated' `
+            (@(Get-IdColumnValues -Workbook $wb -Info $riskReg).Count -eq 0)
+        $profileIds = @()
+        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $riskGrid.sheet -TableName $riskGrid.table_name)) {
+            if ($row[0] -ne '') { $profileIds += $row[0] }
+        }
+        $null = Add-Check $list 'no profiling row was created' ($profileIds.Count -eq 0)
+
+        # Blank is equally invalid, and equally must not read as zero.
+        Set-NamedValue -Workbook $wb -DefinedName 'nmCounterRisk' -Value $null
+        $excel.Run('PCCM_AddRisk') | Out-Null
+        $outcome = [string]$excel.Run('PCCM_AutomationResult')
+        $null = Add-Check $list 'a BLANK counter is refused too, never treated as zero' ($outcome -like 'FAIL|*') $outcome
+
+        # Restore, and prove the sequence continues from history rather than restarting.
+        Set-NamedValue -Workbook $wb -DefinedName 'nmCounterRisk' -Value ([double]$counterBefore)
+        $excel.Run('PCCM_AddRisk') | Out-Null
+        $issued = @(Get-IdColumnValues -Workbook $wb -Info $riskReg)
+        $null = Add-Check $list 'the restored counter continues history and does not reuse R-001' `
+            ($issued.Count -eq 1 -and $issued[0] -ne 'R-001') ("issued " + ($issued -join ','))
+
+        Add-Result 'U' 'Counter integrity: an invalid counter refuses allocation and blocks reuse' `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'U' 'Counter integrity' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # V. Generated year cells carry the EXACT editable-input treatment
+    # -------------------------------------------------------------------
+    # "not the locked fill" is not an assertion. Equality against the contract's
+    # input_fill is.
+    try {
+        $list = New-Checklist
+        $inputFill  = $manifest.presentation.input_fill
+        $lockedFill = $manifest.presentation.locked_fill
+
+        foreach ($grid in @($costGrid, $riskGrid)) {
+            $headers = @(Get-TableColumnNames -Workbook $wb -SheetName $grid.sheet -TableName $grid.table_name)
+            $fixed = $grid.fixed_columns.Count
+            if ($headers.Count -gt $fixed) {
+                $rows = Get-TableBody -Workbook $wb -SheetName $grid.sheet -TableName $grid.table_name
+                $keyed = 0; $unkeyed = 0; $rowIdx = 0
+                foreach ($row in $rows) {
+                    $rowIdx++
+                    if ($row[0] -ne '' -and $keyed -eq 0) { $keyed = $rowIdx }
+                    if ($row[0] -eq '' -and $unkeyed -eq 0) { $unkeyed = $rowIdx }
+                }
+                if ($keyed -gt 0) {
+                    $fill = Get-TableCellFill -Workbook $wb -SheetName $grid.sheet -TableName $grid.table_name `
+                        -RowIndex $keyed -ColumnIndex ($fixed + 1)
+                    $null = Add-Check $list ($grid.table_name + ': a project-year cell on an IDENTIFIED row equals input_fill') `
+                        ($fill -eq $inputFill) ("expected " + $inputFill + ", got " + $fill)
+                }
+                if ($unkeyed -gt 0) {
+                    $fill = Get-TableCellFill -Workbook $wb -SheetName $grid.sheet -TableName $grid.table_name `
+                        -RowIndex $unkeyed -ColumnIndex ($fixed + 1)
+                    $null = Add-Check $list ($grid.table_name + ': a year cell on an UNKEYED reserved row is model-controlled') `
+                        ($fill -eq $lockedFill) ("expected " + $lockedFill + ", got " + $fill)
+                }
+            }
+        }
+
+        $inflHeaders = @(Get-TableColumnNames -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name)
+        if ($inflHeaders.Count -gt $fixedInfl) {
+            $rows = Get-TableBody -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name
+            $named = 0; $unnamed = 0; $rowIdx = 0
+            foreach ($row in $rows) {
+                $rowIdx++
+                if ($row[0] -ne '' -and $named -eq 0) { $named = $rowIdx }
+                if ($row[0] -eq '' -and $unnamed -eq 0) { $unnamed = $rowIdx }
+            }
+            if ($named -gt 0) {
+                $fill = Get-TableCellFill -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name `
+                    -RowIndex $named -ColumnIndex ($fixedInfl + 1)
+                $null = Add-Check $list 'tblInflation: a calendar-year cell on a NAMED profile row equals input_fill' `
+                    ($fill -eq $inputFill) ("expected " + $inputFill + ", got " + $fill)
+            }
+            if ($unnamed -gt 0) {
+                $fill = Get-TableCellFill -Workbook $wb -SheetName $inflGrid.sheet -TableName $inflGrid.table_name `
+                    -RowIndex $unnamed -ColumnIndex ($fixedInfl + 1)
+                $null = Add-Check $list 'tblInflation: a year cell on an UNNAMED row is model-controlled' `
+                    ($fill -eq $lockedFill) ("expected " + $lockedFill + ", got " + $fill)
+            }
+        }
+
+        Add-Result 'V' 'Generated year cells carry the exact contract input-language treatment' `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'V' 'Generated year cell presentation' 'FAIL' (Format-Err $_)
     }
 
     $excel.Run('PCCM_AutomationEnd') | Out-Null

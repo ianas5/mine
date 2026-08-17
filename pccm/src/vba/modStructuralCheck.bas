@@ -30,6 +30,7 @@ Public Function ValidateStructure() As String
     problems = problems & CheckIdPatterns("cost", ID_PREFIX_COST_LINE, TBL_COST_LINES)
     problems = problems & CheckIdPatterns("risk", ID_PREFIX_RISK, TBL_RISK_REGISTER)
     problems = problems & CheckCounters()
+    problems = problems & CheckOrphanRows()
     problems = problems & CheckInflationHeaders()
     problems = problems & CheckInflationProfiles()
     ValidateStructure = problems
@@ -305,22 +306,107 @@ End Function
 ' A counter that has fallen below an identifier it already issued would reissue
 ' that identifier. The test is 'at least the highest issued', never 'equals the
 ' number of rows': deletion leaves the counter deliberately ahead of the count.
+' The counter is the model's historical memory. Two independent faults:
+'
+'   integrity      the stored value is missing, blank, non-whole or beyond the
+'                  representable range. Reported even when the register holds ZERO
+'                  identifiers, because current rows cannot testify about deleted
+'                  history -- that is exactly the case where a silent fallback to 0
+'                  would let the next Add reissue a deleted identifier.
+'   not behind     a valid counter that has fallen below an identifier it already
+'                  issued would reissue that identifier next time.
 Private Function CheckCounters() As String
     Dim problems As String
     Dim kinds As Variant, i As Long
     kinds = Array("cost", "risk")
+
     For i = LBound(kinds) To UBound(kinds)
-        Dim counterValue As Long, highest As Long
-        counterValue = modDrivers.ReadCounter(CStr(kinds(i)))
-        highest = modDrivers.HighestIssued(CStr(kinds(i)))
-        If counterValue < highest Then
-            problems = problems & Fault(CHK_COUNTERS_NOT_BEHIND, _
-                "the " & kinds(i) & " counter is " & counterValue & _
-                " but identifier number " & highest & " has already been issued; the next " & _
-                "allocation would reuse an identifier.")
+        Dim kind As String
+        kind = CStr(kinds(i))
+
+        Dim counterValue As Long
+        If Not modDrivers.TryReadCounter(kind, counterValue) Then
+            problems = problems & Fault(CHK_COUNTER_INTEGRITY, _
+                "the " & kind & " ID counter at " & modDrivers.CounterName(kind) & _
+                " is missing, blank, not a whole number, or beyond the representable " & _
+                "range 0-" & ID_COUNTER_MAX & ". It records every identifier ever " & _
+                "issued, including deleted ones, so allocation cannot safely continue.")
+        Else
+            Dim highest As Long, unrepresentable As Long
+            highest = modDrivers.HighestIssued(kind, unrepresentable)
+            If counterValue < highest Then
+                problems = problems & Fault(CHK_COUNTERS_NOT_BEHIND, _
+                    "the " & kind & " counter is " & counterValue & _
+                    " but identifier number " & highest & " has already been issued; the " & _
+                    "next allocation would reuse an identifier.")
+            End If
+            If counterValue = ID_COUNTER_MAX Then
+                problems = problems & Fault(CHK_COUNTER_INTEGRITY, _
+                    "the " & kind & " counter has reached " & ID_COUNTER_MAX & _
+                    ", the largest sequence this implementation can represent. No further " & _
+                    "identifier can be allocated. This is a representation ceiling, not a " & _
+                    "business limit.")
+            End If
+            If unrepresentable > 0 Then
+                problems = problems & Fault(CHK_ID_PATTERN, _
+                    unrepresentable & " " & kind & " identifier(s) carry a sequence beyond " & _
+                    "the representable range 0-" & ID_COUNTER_MAX & " and are corrupt.")
+            End If
         End If
     Next i
+
     CheckCounters = problems
+End Function
+
+' ---------------------------------------------------------------------------
+' INVARIANT: no unkeyed structural row may hold owned data.
+'
+' Synchronisation rebuilds rows from their keys and clears the tail, so a row whose
+' key is blank but whose other cells are not is data the next structural operation
+' would silently erase. It is also invisible to every destructive assessment,
+' because those are keyed too.
+Private Function CheckOrphanRows() As String
+    Dim problems As String
+    problems = problems & OrphanFault(modDrivers.RegisterTable("cost"), _
+                                      modDrivers.IdColumn("cost"), TBL_COST_LINES)
+    problems = problems & OrphanFault(modDrivers.RegisterTable("risk"), _
+                                      modDrivers.IdColumn("risk"), TBL_RISK_REGISTER)
+    problems = problems & OrphanFault(modProfiling.ProfilingTable(modProfiling.CostKind()), _
+                                      1, TBL_COST_PROFILING)
+    problems = problems & OrphanFault(modProfiling.ProfilingTable(modProfiling.RiskKind()), _
+                                      1, TBL_RISK_PROFILING)
+    problems = problems & OrphanFault(modWorkbook.Lo(SH_INFLATION, TBL_INFLATION), _
+                                      1, TBL_INFLATION)
+    CheckOrphanRows = problems
+End Function
+
+Private Function OrphanFault(ByVal Target As ListObject, ByVal KeyColumn As Long, _
+                             ByVal TableName As String) As String
+    Dim rows() As Long, count As Long
+    count = modWorkbook.OrphanRows(Target, KeyColumn, rows)
+    If count = 0 Then Exit Function
+    OrphanFault = Fault(CHK_NO_ORPHAN_STRUCTURAL_DATA, _
+                        modWorkbook.DescribeOrphans(TableName, rows, count))
+End Function
+
+' ---------------------------------------------------------------------------
+' The focused PRE-MUTATION safety gate.
+'
+' Deliberately NOT a full ValidateStructure: running that before Apply would block
+' the intended "a Config profile was removed, Apply will synchronise it away"
+' workflow, which is a legitimate operation the destructive prompt already covers.
+'
+' This targets only corruption that a structural operation would SILENTLY ERASE,
+' which no confirmation could ever have warned about because it is unkeyed.
+Public Function PreMutationCheck() As String
+    Dim problems As String
+    problems = CheckOrphanRows()
+    If Len(problems) > 0 Then
+        PreMutationCheck = "Unkeyed structural data was found. The operation was " & _
+                           "refused because synchronisation would have deleted it " & _
+                           "without warning:" & vbCrLf & problems & _
+                           "Give each of those rows its key, or clear them, then try again."
+    End If
 End Function
 
 ' ---------------------------------------------------------------------------

@@ -187,8 +187,111 @@ Public Function SafeLong(ByVal Value As Double) As Long
     SafeLong = CLng(Value)
 End Function
 
+' Error-safe. A pasted Excel error value in a key or name cell would otherwise raise
+' a Type mismatch inside CStr, crashing the very code that is trying to INSPECT the
+' corruption. An error cell yields a deterministic, non-blank marker instead, so it
+' can never be mistaken for a blank key and never disappears silently.
 Public Function TextOf(ByVal Target As Range) As String
+    If IsError(Target.Value) Then
+        TextOf = ERROR_CELL_MARKER
+        Exit Function
+    End If
+    On Error GoTo Unreadable
     TextOf = Trim$(CStr(Target.Value & ""))
+    Exit Function
+Unreadable:
+    TextOf = ERROR_CELL_MARKER
+End Function
+
+Public Function IsErrorText(ByVal Text As String) As Boolean
+    IsErrorText = (Text = ERROR_CELL_MARKER)
+End Function
+
+' ---------------------------------------------------------------------------
+' Input-language treatment for RUNTIME-generated cells
+' ---------------------------------------------------------------------------
+' A year column created at runtime sits beside model-controlled fixed columns, and
+' relying on Excel table-format propagation to give it the editable-input fill is
+' not deterministic enough. The fill is applied explicitly, from the contract-emitted
+' FILL_INPUT / FILL_LOCKED constants, so a generated editable region is never
+' visually ambiguous.
+'
+' Keyed-ness decides the treatment:
+'
+'   row HAS a key      -> editable input. The user owns these percentages/rates.
+'   row has NO key     -> model-controlled. An unkeyed reserved row must not invite
+'                         input, because the model cannot own what it cannot key,
+'                         and anything typed there becomes orphan data.
+Public Sub PaintYearCells(ByVal Target As ListObject, ByVal FirstYearColumn As Long, _
+                          ByVal YearCount As Long, ByVal KeyColumn As Long)
+    If YearCount < 1 Then Exit Sub
+    Dim r As Long, c As Long, rowCount As Long
+    Dim keyed As Boolean
+    rowCount = BodyRowCount(Target)
+    For r = 1 To rowCount
+        keyed = (Len(TextOf(CellIn(Target, r, KeyColumn))) > 0)
+        For c = FirstYearColumn To FirstYearColumn + YearCount - 1
+            If keyed Then
+                CellIn(Target, r, c).Interior.Color = FILL_INPUT
+            Else
+                CellIn(Target, r, c).Interior.Color = FILL_LOCKED
+            End If
+        Next c
+    Next r
+End Sub
+
+' ---------------------------------------------------------------------------
+' Orphan structural data
+' ---------------------------------------------------------------------------
+' INVARIANT: no unkeyed structural row may contain owned data.
+'
+' A structural row is owned by its key -- a permanent ID, or an inflation profile
+' name. Synchronisation rebuilds rows from those keys and clears the tail, so a row
+' whose key is blank but whose other cells are not is data the next structural
+' operation would silently erase. It is also invisible to every destructive
+' assessment, because those are keyed too.
+'
+' This is a STRUCTURAL fault, not a Model Check business rule, and it is REPORTED,
+' never repaired.
+Public Function OrphanRows(ByVal Target As ListObject, ByVal KeyColumn As Long, _
+                           ByRef Rows() As Long) As Long
+    Dim r As Long, c As Long, rowCount As Long, colCount As Long, found As Long
+    rowCount = BodyRowCount(Target)
+    colCount = Target.ListColumns.Count
+    ReDim Rows(1 To IIf(rowCount < 1, 1, rowCount))
+
+    For r = 1 To rowCount
+        If Len(TextOf(CellIn(Target, r, KeyColumn))) = 0 Then
+            For c = 1 To colCount
+                If c <> KeyColumn Then
+                    If Not IsEmptyCell(CellIn(Target, r, c)) Then
+                        found = found + 1
+                        Rows(found) = r
+                        Exit For
+                    End If
+                End If
+            Next c
+        End If
+    Next r
+    OrphanRows = found
+End Function
+
+Public Function DescribeOrphans(ByVal TableName As String, ByRef Rows() As Long, _
+                                ByVal Count As Long) As String
+    If Count = 0 Then Exit Function
+    Dim i As Long, list As String
+    For i = 1 To Count
+        If i > 5 Then
+            list = list & ", ..."
+            Exit For
+        End If
+        If Len(list) > 0 Then list = list & ", "
+        list = list & CStr(Rows(i))
+    Next i
+    DescribeOrphans = TableName & " row(s) " & list & _
+                      " hold data but carry no key. Structural synchronisation would " & _
+                      "erase that data, and no destructive assessment can see it because " & _
+                      "every assessment is keyed."
 End Function
 
 ' ---------------------------------------------------------------------------
@@ -212,6 +315,7 @@ Public Type TableSnapshot
     ColumnCount   As Long
     Headers()     As Variant
     Values()      As Variant
+    Fills()       As Variant
     NumberFormats() As Variant
     ColumnWidths()  As Variant
 End Type
@@ -227,6 +331,7 @@ Public Function SnapshotTable(ByVal Target As ListObject) As TableSnapshot
     ReDim s.NumberFormats(1 To s.ColumnCount)
     ReDim s.ColumnWidths(1 To s.ColumnCount)
     ReDim s.Values(1 To IIf(s.RowCount < 1, 1, s.RowCount), 1 To s.ColumnCount)
+    ReDim s.Fills(1 To IIf(s.RowCount < 1, 1, s.RowCount), 1 To s.ColumnCount)
 
     For c = 1 To s.ColumnCount
         s.Headers(c) = Target.HeaderRowRange.Cells(1, c).Value
@@ -241,6 +346,9 @@ Public Function SnapshotTable(ByVal Target As ListObject) As TableSnapshot
     For r = 1 To s.RowCount
         For c = 1 To s.ColumnCount
             s.Values(r, c) = Target.DataBodyRange.Cells(r, c).Value
+            ' Per cell, not per column: within one year column an identified row is
+            ' editable while an unkeyed reserved row is model-controlled.
+            s.Fills(r, c) = Target.DataBodyRange.Cells(r, c).Interior.Color
         Next c
     Next r
 
@@ -302,7 +410,7 @@ Public Sub RestoreTable(ByVal Target As ListObject, ByRef Snapshot As TableSnaps
         End If
     Next c
 
-    ' --- contents --------------------------------------------------------
+    ' --- contents and per-cell treatment ---------------------------------
     For r = 1 To Snapshot.RowCount
         For c = 1 To Snapshot.ColumnCount
             If IsEmpty(Snapshot.Values(r, c)) Then
@@ -310,6 +418,10 @@ Public Sub RestoreTable(ByVal Target As ListObject, ByRef Snapshot As TableSnaps
             Else
                 Target.DataBodyRange.Cells(r, c).Value = Snapshot.Values(r, c)
             End If
+            ' A recreated row must come back with its input language intact, or the
+            ' workbook is restored in name only: the user could not tell which cells
+            ' they still own.
+            Target.DataBodyRange.Cells(r, c).Interior.Color = Snapshot.Fills(r, c)
         Next c
     Next r
 End Sub

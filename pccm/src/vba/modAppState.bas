@@ -59,27 +59,113 @@ Public Sub BeginOperation()
     Application.Calculation = xlCalculationManual
 End Sub
 
-Public Sub RestoreAppState(ByRef Snapshot As AppStateSnapshot)
-    If Not Snapshot.Captured Then Exit Sub
-    On Error Resume Next
-    Application.Calculation = Snapshot.Calculation
-    Application.DisplayAlerts = Snapshot.DisplayAlerts
-    Application.EnableEvents = Snapshot.EnableEvents
-    Application.ScreenUpdating = Snapshot.ScreenUpdating
-    Application.StatusBar = Snapshot.StatusBar
-    On Error GoTo 0
-End Sub
+' Restores every captured property and REPORTS whether all of them succeeded.
+'
+' Returns "" on complete success, otherwise a description of every property that
+' could not be restored. It attempts them ALL rather than stopping at the first
+' failure: leaving ScreenUpdating off because DisplayAlerts failed first would be
+' the worst possible outcome.
+'
+' A successful structural mutation followed by a failed application-state
+' restoration is NOT a successful operation, and the caller surfaces it as an
+' unsafe-cleanup failure.
+Public Function RestoreAppState(ByRef Snapshot As AppStateSnapshot) As String
+    If Not Snapshot.Captured Then
+        RestoreAppState = "no application state was captured; nothing could be restored"
+        Exit Function
+    End If
 
-' Forces a full recalculation of the structural-state formulas after the applied
-' triple changes, while calculation is still manual.
-Public Sub RecalculateStructuralState()
-    On Error Resume Next
+    Dim failures As String
+    failures = failures & TryRestoreCalculation(Snapshot.Calculation)
+    failures = failures & TryRestoreDisplayAlerts(Snapshot.DisplayAlerts)
+    failures = failures & TryRestoreEnableEvents(Snapshot.EnableEvents)
+    failures = failures & TryRestoreScreenUpdating(Snapshot.ScreenUpdating)
+    failures = failures & TryRestoreStatusBar(Snapshot.StatusBar)
+    RestoreAppState = failures
+End Function
+
+' One property per function, each with its own handler, so a failure is attributed
+' precisely and never prevents the remaining properties from being restored.
+Private Function TryRestoreCalculation(ByVal Value As XlCalculation) As String
+    On Error GoTo Failed
+    Application.Calculation = Value
+    Exit Function
+Failed:
+    TryRestoreCalculation = "    Calculation: " & Err.Description & vbCrLf
+End Function
+
+Private Function TryRestoreDisplayAlerts(ByVal Value As Boolean) As String
+    On Error GoTo Failed
+    Application.DisplayAlerts = Value
+    Exit Function
+Failed:
+    TryRestoreDisplayAlerts = "    DisplayAlerts: " & Err.Description & vbCrLf
+End Function
+
+Private Function TryRestoreEnableEvents(ByVal Value As Boolean) As String
+    On Error GoTo Failed
+    Application.EnableEvents = Value
+    Exit Function
+Failed:
+    TryRestoreEnableEvents = "    EnableEvents: " & Err.Description & vbCrLf
+End Function
+
+Private Function TryRestoreScreenUpdating(ByVal Value As Boolean) As String
+    On Error GoTo Failed
+    Application.ScreenUpdating = Value
+    Exit Function
+Failed:
+    TryRestoreScreenUpdating = "    ScreenUpdating: " & Err.Description & vbCrLf
+End Function
+
+Private Function TryRestoreStatusBar(ByVal Value As Variant) As String
+    On Error GoTo Failed
+    Application.StatusBar = Value
+    Exit Function
+Failed:
+    TryRestoreStatusBar = "    StatusBar: " & Err.Description & vbCrLf
+End Function
+
+' Recalculates the structural-state formulas after the applied triple changes,
+' while calculation is still manual. Returns "" on success, otherwise a
+' description.
+'
+' A recalculation failure is NOT swallowed. On the success path the caller turns it
+' into a controlled failure; on the cleanup path the caller appends it to the
+' restore report WITHOUT hiding the original error that caused the rollback.
+Public Function RecalculateStructuralState() As String
+    On Error GoTo Failed
     ThisWorkbook.Worksheets(SH_SETUP).Calculate
     ThisWorkbook.Worksheets(SH_COST_PROFILING).Calculate
     ThisWorkbook.Worksheets(SH_RISK_PROFILING).Calculate
     ThisWorkbook.Worksheets(SH_INFLATION).Calculate
-    On Error GoTo 0
-End Sub
+    Exit Function
+Failed:
+    RecalculateStructuralState = "structural-state recalculation failed. Error " & _
+                                 Err.Number & ": " & Err.Description
+End Function
+
+' The shared end-of-operation cleanup. Recalculates, restores application state, and
+' returns "" only when BOTH succeeded. Every command routes its cleanup through here
+' so no path can quietly skip either half.
+Public Function FinishOperation(ByRef Snapshot As AppStateSnapshot) As String
+    Dim problems As String
+    Dim recalcProblem As String
+
+    recalcProblem = RecalculateStructuralState()
+    If Len(recalcProblem) > 0 Then
+        problems = problems & "  " & recalcProblem & vbCrLf
+    End If
+
+    Dim restoreProblem As String
+    restoreProblem = RestoreAppState(Snapshot)
+    If Len(restoreProblem) > 0 Then
+        problems = problems & "  application state could not be fully restored:" & vbCrLf & _
+                   restoreProblem
+    End If
+
+    FinishOperation = problems
+End Function
 
 ' ---------------------------------------------------------------------------
 ' Results

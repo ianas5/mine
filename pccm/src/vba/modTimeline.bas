@@ -307,6 +307,21 @@ Public Sub PCCM_ApplyTimeline()
 
     snapshot = modAppState.CaptureAppState()
 
+    ' Controlled handling is installed BEFORE the first read. Prevalidation, reading
+    ' the two triples, the destructive assessment and the confirmation all inspect
+    ' user-controlled cells, so malformed workbook contents can raise there. Nothing
+    ' has been modified yet at that point, so AssessmentFailure needs no rollback --
+    ' but it must still report cleanly rather than surface a raw VBA dialog.
+    On Error GoTo AssessmentFailure
+
+    ' --- 0. refuse to mutate over unkeyed structural data --------------------
+    problems = modStructuralCheck.PreMutationCheck()
+    If Len(problems) > 0 Then
+        modAppState.Announce modAppState.Failed( _
+            "Apply / Update Timeline was refused. Nothing has been changed.", problems)
+        Exit Sub
+    End If
+
     ' --- 1. prevalidate, before anything at all is touched -------------------
     problems = PrevalidateEntered()
     If Len(problems) > 0 Then
@@ -327,6 +342,7 @@ Public Sub PCCM_ApplyTimeline()
         Exit Sub
     End If
 
+    ' From here a failure CAN leave a partial change, so the rollback handler takes over.
     On Error GoTo Failure
     modAppState.BeginOperation
 
@@ -375,10 +391,39 @@ Public Sub PCCM_ApplyTimeline()
                   "Structural revalidation failed:" & vbCrLf & problems
     End If
 
-    modAppState.RecalculateStructuralState
-    modAppState.RestoreAppState snapshot
+    ' Cleanup is part of the operation. A structural change that completed but whose
+    ' application state could not be restored is NOT a success.
+    Dim cleanup As String
+    cleanup = modAppState.FinishOperation(snapshot)
+    If Len(cleanup) > 0 Then
+        modAppState.Announce modAppState.Failed( _
+            "Timeline applied, but the workbook was NOT left in a safe state.", _
+            "The structural change succeeded:" & vbCrLf & "  " & DescribeTriple(newT) & _
+            vbCrLf & vbCrLf & "Cleanup did not complete:" & vbCrLf & cleanup & vbCrLf & _
+            "Check Excel's calculation mode, alerts, events and screen updating " & _
+            "before continuing.")
+        Exit Sub
+    End If
+
     modAppState.Announce modAppState.Succeeded( _
         "Timeline applied: " & DescribeTriple(newT) & ".")
+    Exit Sub
+
+AssessmentFailure:
+    ' Raised while inspecting the workbook, before anything was modified.
+    Dim assessReason As String
+    assessReason = "Error " & Err.Number & ": " & Err.Description
+    Dim assessCleanup As String
+    assessCleanup = modAppState.FinishOperation(snapshot)
+    modAppState.RecordResult "FAIL|" & assessReason
+    If Not modAppState.gAutomationActive Then
+        modAppState.ReportFailure "Apply / Update Timeline", assessReason, _
+            "The failure occurred while inspecting the workbook, before any change was " & _
+            "made, so nothing needed to be rolled back. The applied timeline and every " & _
+            "grid are exactly as they were." & _
+            IIf(Len(assessCleanup) > 0, vbCrLf & vbCrLf & "Cleanup also reported:" & _
+                vbCrLf & assessCleanup, "")
+    End If
     Exit Sub
 
 Failure:
@@ -392,8 +437,15 @@ Failure:
         restoreNote = "Nothing had been modified when the failure occurred."
     End If
 
-    modAppState.RecalculateStructuralState
-    modAppState.RestoreAppState snapshot
+    ' Cleanup failures are APPENDED to the report. They never replace or hide the
+    ' original error that caused the rollback.
+    Dim failureCleanup As String
+    failureCleanup = modAppState.FinishOperation(snapshot)
+    If Len(failureCleanup) > 0 Then
+        restoreNote = restoreNote & vbCrLf & vbCrLf & _
+                      "Cleanup ALSO reported problems:" & vbCrLf & failureCleanup
+    End If
+
     modAppState.RecordResult "FAIL|" & reason & "|" & restoreNote
     If Not modAppState.gAutomationActive Then
         modAppState.ReportFailure "Apply / Update Timeline", reason, restoreNote

@@ -418,15 +418,97 @@ dedicated function that reports either the successful restoration or
 There is deliberately **no** generic transaction framework, **no** undo journal
 and **no** workbook snapshot system. Logical restoration is the requirement.
 
-**Data Validation and styling on a runtime-created row are assumed to come from
-Excel Table propagation, and that assumption is not accepted on trust.** Gate-B
-section M asserts, on a row created by `ListRows.Add` beyond the reserved capacity,
-that the ID cell keeps the model-controlled fill and carries no validation, that
-user cells keep the editable fill, and that every validated column still has its
-rule. If propagation does not deliver that, Gate B will say so.
+**Data Validation and driver-row styling on a runtime-created row are assumed to
+come from Excel Table propagation, and that assumption is not accepted on trust.**
+Gate-B section M asserts, on a row created by `ListRows.Add` beyond the reserved
+capacity, that the ID cell keeps the model-controlled fill and carries no
+validation, that user cells keep the editable fill, and that every validated
+column still has its rule. Sections Q and R re-assert the same contract on the row
+that survives an Add rollback and on the row **recreated** by a Delete rollback.
+If propagation does not deliver that, Gate B will say so.
+
+**Generated year cells do not rely on propagation at all.** A year column created
+at runtime sits beside model-controlled fixed columns, so `PaintYearCells` applies
+the input language explicitly, from the contract-emitted `FILL_INPUT` /
+`FILL_LOCKED` constants — no colour is written into the VBA or the PowerShell, and
+`test_26m` fails if one is. Keyed-ness decides the treatment:
+
+| Row | Treatment |
+|---|---|
+| has a key | editable input — the user owns these percentages and rates |
+| has no key | model-controlled — an unkeyed reserved row must not invite input the model cannot own, because anything typed there becomes orphan data |
+
+The snapshot captures fills **per cell**, not per column, precisely because
+keyed-ness varies by row within one year column, so a rolled-back row comes back
+with its input language intact rather than restored in name only.
 
 The counter is restored **only** on a failed operation, which issued no surviving
 identifier. A successful delete never restores it.
+
+---
+
+## Unkeyed structural data
+
+**INVARIANT: no unkeyed structural row may hold owned data.**
+
+A structural row is owned by its key — a permanent ID, or an inflation profile
+name. Synchronisation rebuilds rows from those keys and clears the tail, so a row
+whose key is blank but whose other cells are not is data the next structural
+operation would **silently erase**. It is invisible to every destructive
+assessment, because all of them are keyed.
+
+Three classes, all detected:
+
+| Table | Orphan |
+|---|---|
+| Cost Lines / Risk Register | ID blank, any other field non-blank |
+| Cost / Risk Profiling | ID blank, any trace or year cell non-blank |
+| Inflation | Profile Name blank, any annual rate non-blank |
+
+This is a **structural** fault, not a Model Check business rule. It is reported,
+never repaired, under the contract key `no_orphan_structural_data`.
+
+Every mutating command — Apply / Update Timeline, Add and Delete for both
+registers — runs `modStructuralCheck.PreMutationCheck` first and refuses to
+proceed while an orphan exists. That gate is deliberately **not** a full
+`ValidateStructure`: running the whole validator here would block the legitimate
+"a Config profile was removed, Apply will synchronise it away" workflow, which the
+destructive prompt already covers. It targets only corruption that would be
+erased with no warning at all.
+
+`FirstFreeRow` now scans the **whole** register before choosing a row. Returning
+at the first blank row meant an orphan at row 1 was recorded and then ignored
+because row 2 happened to be free: the add proceeded and the orphan survived,
+unowned.
+
+---
+
+## Counter integrity
+
+The persistent counter is the model's **historical memory** of what has been
+issued. A corrupt counter must never silently become zero, because of one
+specific reachable path:
+
+    CL-001 issued -> CL-001 deleted -> no IDs remain in the register
+    -> the counter is corrupted to blank or text
+    -> a zero fallback plus a highest-issued of 0 validates cleanly
+    -> the next Add reissues CL-001.
+
+Current rows cannot testify about deleted history. So:
+
+- `TryReadCounter` returns validity explicitly; a counter must be present, whole,
+  non-negative and within the representational ceiling.
+- `AllocateId` **refuses** when the counter is invalid, and refuses **cleanly at
+  the ceiling** rather than overflowing on `counter + 1`.
+- `modStructuralCheck` reports an invalid counter under `counter_integrity`,
+  **independently of the row count** — including when the register holds zero
+  identifiers, which is exactly the dangerous case.
+- An ID whose numeric tail cannot be represented is reported as corrupt rather
+  than skipped by `HighestIssued`.
+
+The ceiling is an **implementation representation limit**, not a business
+maximum. The generated module says so; the earlier comment wrongly denied it was
+a ceiling at all.
 
 ---
 
@@ -461,6 +543,60 @@ bounded:
 
 It checks nothing about business validity: a row that does not total 100%, a
 missing inflation rate and a blank unit cost all pass here.
+
+---
+
+## Application state
+
+Structural commands quieten the UI and must put it back **exactly as they found
+it** — restoration of the caller's prior state, not coercion to a convenient
+default.
+
+`RestoreAppState` returns a report rather than suppressing failures. It attempts
+**all five** properties — `Calculation`, `DisplayAlerts`, `EnableEvents`,
+`ScreenUpdating`, `StatusBar` — each in its own handler, so one failure never
+prevents the others: leaving `ScreenUpdating` off because `DisplayAlerts` failed
+first would be the worst outcome available.
+
+`RecalculateStructuralState` likewise returns a description instead of swallowing
+the error.
+
+Both are routed through one `FinishOperation`, and the consequences are explicit:
+
+| Path | Behaviour |
+|---|---|
+| success | a cleanup failure makes the operation **FAIL** with "the workbook was NOT left in a safe state". A structural change that completed but was not cleaned up is not a success. |
+| rollback | a cleanup failure is **appended** to the restore report, never replacing or hiding the original error that caused the rollback. |
+
+`On Error Resume Next` now appears in exactly four procedures, all documented
+narrow probes: `modWorkbook.LoExists`, `modWorkbook.NameExists`, the cosmetic
+cursor move in `modDrivers.AddDriver`, and the non-mutating `Application.Intersect`
+probe in `modDrivers.SelectedId`. `test_26a` fails if it appears anywhere else.
+
+---
+
+## Error containment at the command boundary
+
+`On Error GoTo` is installed from the **first line** of each command, not after
+assessment. Prevalidation, reading the two triples, the destructive assessment and
+the confirmation all inspect user-controlled cells, so malformed contents can
+raise there — and did so outside any handler.
+
+Two handlers, because the two situations differ:
+
+| Handler | When | Rollback |
+|---|---|---|
+| `AssessmentFailure` | before any mutation | none needed; nothing moved |
+| `Failure` | after mutation began | the logical restore path |
+
+Both report cleanly and both run `FinishOperation`. Malformed workbook contents
+never surface an ordinary VBA runtime dialog.
+
+`modWorkbook.TextOf` is error-safe: a pasted Excel error value in a key or name
+cell used to raise a Type mismatch inside `CStr`, crashing the very code that was
+trying to **inspect** the corruption. An error cell now yields a deterministic
+non-blank marker, so it can never be mistaken for a blank key and never disappears
+silently.
 
 ---
 

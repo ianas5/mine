@@ -47,24 +47,79 @@ Public Function FormatId(ByVal Kind As String, ByVal Sequence As Long) As String
     FormatId = IdPrefix(Kind) & digits
 End Function
 
-' Counters live in cells a paste can reach, so the read is bounded before
-' conversion. A corrupt or oversized counter reads as 0 here and is reported by
-' modStructuralCheck as "behind its highest issued identifier", which is exactly
-' what it would be.
-Public Function ReadCounter(ByVal Kind As String) As Long
-    ReadCounter = modWorkbook.ReadLongInRange(CounterName(Kind), 0, ID_COUNTER_MAX, 0)
+' The persistent counter is the model's HISTORICAL MEMORY of what has been issued.
+' A corrupt counter must never silently become zero.
+'
+' Falling back to 0 was unsafe in a specific and reachable way:
+'
+'   CL-001 issued -> CL-001 deleted -> no IDs remain in the register
+'   -> counter corrupted to blank or text
+'   -> ReadCounter returns 0, HighestIssued from current rows is also 0
+'   -> validation passes, and the next Add reissues CL-001.
+'
+' Current rows cannot testify about deleted history, so an invalid counter is now an
+' explicit failure rather than a value.
+Public Function TryReadCounter(ByVal Kind As String, ByRef Value As Long) As Boolean
+    Value = 0
+    Dim raw As Variant, d As Double
+    raw = modWorkbook.ReadValue(CounterName(Kind))
+    If IsEmpty(raw) Then Exit Function
+    If Not modWorkbook.IsWholeInRange(raw, 0, ID_COUNTER_MAX, d) Then Exit Function
+    Value = modWorkbook.SafeLong(d)
+    TryReadCounter = True
 End Function
 
-' Advances the counter and returns the identifier it just issued. The counter is
-' persisted immediately so a later failure cannot hand the same number out twice.
+Public Function CounterIsValid(ByVal Kind As String) As Boolean
+    Dim value As Long
+    CounterIsValid = TryReadCounter(Kind, value)
+End Function
+
+' Convenience for reporting only. Callers that ALLOCATE must use TryReadCounter and
+' refuse when it returns False.
+Public Function ReadCounter(ByVal Kind As String) As Long
+    Dim value As Long
+    If TryReadCounter(Kind, value) Then ReadCounter = value
+End Function
+
+' Advances the counter and returns the identifier it just issued.
+'
+' Refuses outright when the stored counter is invalid, and refuses CLEANLY at the
+' representational ceiling rather than overflowing on counter + 1. The ceiling is an
+' implementation limit of the VBA Long, not a business maximum on identifiers.
 Public Function AllocateId(ByVal Kind As String) As String
+    Dim current As Long
+    If Not TryReadCounter(Kind, current) Then
+        Err.Raise vbObjectError + 5020, "modDrivers.AllocateId", _
+                  "The persistent " & KindLabel(Kind) & " ID counter at " & _
+                  CounterName(Kind) & " is missing, blank or not a whole number within " & _
+                  "0-" & ID_COUNTER_MAX & ". It is the model's record of every identifier " & _
+                  "ever issued, including deleted ones, so allocation cannot continue " & _
+                  "without it: guessing would risk reissuing an identifier that has " & _
+                  "already been used. Restore the counter and try again."
+    End If
+    If current >= ID_COUNTER_MAX Then
+        Err.Raise vbObjectError + 5021, "modDrivers.AllocateId", _
+                  "The " & KindLabel(Kind) & " ID counter has reached " & ID_COUNTER_MAX & _
+                  ", the largest sequence this implementation can represent. No " & _
+                  "identifier was allocated. This is a representation ceiling, not a " & _
+                  "limit on how many drivers the model may hold."
+    End If
+
     Dim nextSequence As Long
-    nextSequence = ReadCounter(Kind) + 1
+    nextSequence = current + 1
+    ' Persisted immediately so a later failure cannot hand the same number out twice.
     modWorkbook.WriteValue CounterName(Kind), nextSequence
     AllocateId = FormatId(Kind, nextSequence)
 End Function
 
-Public Function HighestIssued(ByVal Kind As String) As Long
+' The largest sequence present in the CURRENT rows. Zero when there are none, which
+' says nothing about history -- that is what the persistent counter is for.
+'
+' Unrepresentable tails are reported through Unrepresentable rather than skipped: an
+' ID such as CL-99999999999 is corrupt, and silently ignoring it would let it sit in
+' the register unnoticed.
+Public Function HighestIssued(ByVal Kind As String, _
+                              Optional ByRef Unrepresentable As Long) As Long
     Dim register As ListObject
     Dim r As Long, rowCount As Long, idCol As Long, best As Long
     Dim prefix As String, idText As String, tail As String
@@ -74,6 +129,7 @@ Public Function HighestIssued(ByVal Kind As String) As Long
     idCol = IdColumn(Kind)
     rowCount = modWorkbook.BodyRowCount(register)
     prefix = IdPrefix(Kind)
+    Unrepresentable = 0
 
     For r = 1 To rowCount
         idText = modWorkbook.TextOf(modWorkbook.CellIn(register, r, idCol))
@@ -84,11 +140,22 @@ Public Function HighestIssued(ByVal Kind As String) As Long
                 ' must not overflow the scan that exists to detect exactly that corruption.
                 If modWorkbook.IsWholeInRange(tail, 0, ID_COUNTER_MAX, seq) Then
                     If modWorkbook.SafeLong(seq) > best Then best = modWorkbook.SafeLong(seq)
+                ElseIf IsAllDigitsText(tail) Then
+                    Unrepresentable = Unrepresentable + 1
                 End If
             End If
         End If
     Next r
     HighestIssued = best
+End Function
+
+Public Function IsAllDigitsText(ByVal Text As String) As Boolean
+    Dim i As Long
+    If Len(Text) = 0 Then Exit Function
+    For i = 1 To Len(Text)
+        If Mid$(Text, i, 1) < "0" Or Mid$(Text, i, 1) > "9" Then Exit Function
+    Next i
+    IsAllDigitsText = True
 End Function
 
 ' ---------------------------------------------------------------------------
@@ -150,6 +217,11 @@ Private Function FirstFreeRow(ByVal Kind As String, ByRef OrphanRow As Long) As 
     colCount = register.ListColumns.Count
     OrphanRow = 0
 
+    ' The WHOLE register is scanned before a row is chosen. Returning at the first
+    ' blank row meant an orphan at row 1 was recorded and then ignored because row 2
+    ' happened to be free -- the operation proceeded and the orphan survived,
+    ' unowned and invisible to every keyed assessment.
+    Dim firstBlank As Long
     For r = 1 To rowCount
         If Len(modWorkbook.TextOf(modWorkbook.CellIn(register, r, idCol))) = 0 Then
             hasContent = False
@@ -164,12 +236,15 @@ Private Function FirstFreeRow(ByVal Kind As String, ByRef OrphanRow As Long) As 
             If hasContent Then
                 ' Do not silently take ownership of somebody's typing.
                 If OrphanRow = 0 Then OrphanRow = r
-            Else
-                FirstFreeRow = r
-                Exit Function
+            ElseIf firstBlank = 0 Then
+                firstBlank = r
             End If
         End If
     Next r
+
+    ' An orphan anywhere blocks the operation, even when a blank row is available.
+    If OrphanRow > 0 Then Exit Function
+    FirstFreeRow = firstBlank
 End Function
 
 ' ---------------------------------------------------------------------------
@@ -183,7 +258,7 @@ Public Function AddDriver(ByVal Kind As String) As OperationResult
     Set register = RegisterTable(Kind)
     targetRow = FirstFreeRow(Kind, orphanRow)
 
-    If targetRow = 0 And orphanRow > 0 Then
+    If orphanRow > 0 Then
         AddDriver = modAppState.Failed( _
             "Add " & KindLabel(Kind) & " could not continue.", _
             "Row " & orphanRow & " of " & register.Name & " already contains data but has " & _
@@ -362,6 +437,18 @@ Public Sub RunDriverOperation(ByVal Kind As String, ByVal IsAdd As Boolean, _
     Dim captured As Boolean
 
     snapshot = modAppState.CaptureAppState()
+
+    ' Controlled handling before the first read, and the unkeyed-data gate before
+    ' any mutation. Nothing has changed yet, so this path needs no rollback.
+    On Error GoTo AssessmentFailure
+    problems = modStructuralCheck.PreMutationCheck()
+    If Len(problems) > 0 Then
+        modAppState.Announce modAppState.Failed( _
+            IIf(IsAdd, "Add ", "Delete ") & KindLabel(Kind) & _
+            " was refused. Nothing has been changed.", problems)
+        Exit Sub
+    End If
+
     On Error GoTo Failure
     modAppState.BeginOperation
 
@@ -384,9 +471,32 @@ Public Sub RunDriverOperation(ByVal Kind As String, ByVal IsAdd As Boolean, _
         End If
     End If
 
-    modAppState.RecalculateStructuralState
-    modAppState.RestoreAppState snapshot
+    Dim cleanup As String
+    cleanup = modAppState.FinishOperation(snapshot)
+    If Len(cleanup) > 0 Then
+        modAppState.Announce modAppState.Failed( _
+            IIf(IsAdd, "Add ", "Delete ") & KindLabel(Kind) & _
+            " completed, but the workbook was NOT left in a safe state.", _
+            "Cleanup did not complete:" & vbCrLf & cleanup)
+        Exit Sub
+    End If
+
     modAppState.Announce result
+    Exit Sub
+
+AssessmentFailure:
+    Dim assessReason As String
+    assessReason = "Error " & Err.Number & ": " & Err.Description
+    Dim assessCleanup As String
+    assessCleanup = modAppState.FinishOperation(snapshot)
+    modAppState.RecordResult "FAIL|" & assessReason
+    If Not modAppState.gAutomationActive Then
+        modAppState.ReportFailure IIf(IsAdd, "Add ", "Delete ") & KindLabel(Kind), assessReason, _
+            "The failure occurred before any change was made, so nothing needed to be " & _
+            "rolled back." & _
+            IIf(Len(assessCleanup) > 0, vbCrLf & vbCrLf & "Cleanup also reported:" & _
+                vbCrLf & assessCleanup, "")
+    End If
     Exit Sub
 
 Failure:
@@ -399,8 +509,13 @@ Failure:
         restoreNote = "Nothing had been modified when the failure occurred."
     End If
 
-    modAppState.RecalculateStructuralState
-    modAppState.RestoreAppState snapshot
+    Dim failureCleanup As String
+    failureCleanup = modAppState.FinishOperation(snapshot)
+    If Len(failureCleanup) > 0 Then
+        restoreNote = restoreNote & vbCrLf & vbCrLf & _
+                      "Cleanup ALSO reported problems:" & vbCrLf & failureCleanup
+    End If
+
     modAppState.RecordResult "FAIL|" & reason & "|" & restoreNote
     If Not modAppState.gAutomationActive Then
         modAppState.ReportFailure IIf(IsAdd, "Add ", "Delete ") & KindLabel(Kind), reason, restoreNote

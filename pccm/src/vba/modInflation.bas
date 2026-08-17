@@ -147,6 +147,9 @@ Public Sub SetYearColumns(ByVal FirstYear As Variant, ByVal YearCount As Long)
             End If
         Next y
     Next r
+
+    ' Explicit input-language treatment, never left to table-format propagation.
+    modWorkbook.PaintYearCells target, fixedCols + 1, YearCount, 1
 End Sub
 
 Public Sub ClearYearColumns()
@@ -324,6 +327,9 @@ Public Sub SyncProfileRows()
             modWorkbook.CellIn(target, r, c).ClearContents
         Next c
     Next r
+
+    ' Row keyed-ness has just changed; reapply the treatment.
+    modWorkbook.PaintYearCells target, fixedCols + 1, yearCols, 1
 End Sub
 
 ' ---------------------------------------------------------------------------

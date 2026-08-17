@@ -176,13 +176,13 @@ def render_constants_module(
         const(f"NM_COUNTER_{upper}", counter.defined_name)
         const(f"ID_PREFIX_{upper}", counter.prefix)
         const(f"ID_PAD_{upper}", counter.pad_width, "minimum display width, not a maximum")
-    lines.append(
-        "' The largest sequence a VBA Long can represent. This is a REPRESENTATIONAL"
-    )
-    lines.append(
-        "' bound used to reject a corrupt or pasted counter before conversion, not a"
-    )
-    lines.append("' maximum on how many identifiers the model may issue.")
+    lines.append("' The largest sequence a VBA Long can represent.")
+    lines.append("'")
+    lines.append("' This is an IMPLEMENTATION REPRESENTATION CEILING, not a business maximum.")
+    lines.append("' The model imposes no limit on how many identifiers may be issued, but this")
+    lines.append("' implementation cannot represent a sequence beyond this value, so allocation")
+    lines.append("' refuses CLEANLY at the ceiling rather than overflowing, and a stored counter")
+    lines.append("' or an ID tail beyond it is reported as corrupt rather than silently ignored.")
     const("ID_COUNTER_MAX", VBA_LONG_MAX)
     lines.append("")
 
@@ -239,6 +239,23 @@ def render_constants_module(
         f"Public Const PROFILE_INITIAL_VALUE As Double = "
         f"{structure.profiling_grids[0].year_column.initial_value}"
     )
+    lines.append("")
+
+    # --- presentation -------------------------------------------------------
+    lines.append("' A year column generated at RUNTIME must carry the SAME editable-input")
+    lines.append("' treatment as every other user-owned cell. Relying on Excel table-format")
+    lines.append("' propagation next to a model-controlled fixed column is not deterministic")
+    lines.append("' enough, so the fill is applied explicitly -- from the contract, never from")
+    lines.append("' a colour written into the VBA.")
+    const("ERROR_CELL_MARKER", "#ERROR!",
+          "deterministic marker for a cell holding an Excel error value")
+    lines.append("")
+
+    section("Input-language fills, as Excel Interior.Color (BGR) values")
+    const("FILL_INPUT", _bgr(spec.presentation["colors"]["input_fill"]),
+          f'#{spec.presentation["colors"]["input_fill"]}')
+    const("FILL_LOCKED", _bgr(spec.presentation["colors"]["locked_fill"]),
+          f'#{spec.presentation["colors"]["locked_fill"]}')
     lines.append("")
 
     # --- messages -----------------------------------------------------------
@@ -379,6 +396,13 @@ def build_manifest(
 
 
 # ---------------------------------------------------------------------------
+def _bgr(hex_rgb: str) -> int:
+    """Excel Interior.Color is a BGR long, not an RGB hex string."""
+    value = hex_rgb.lstrip("#")
+    red, green, blue = (int(value[i:i + 2], 16) for i in (0, 2, 4))
+    return (blue << 16) | (green << 8) | red
+
+
 def _ident(text: str) -> str:
     """A VBA-safe upper-snake identifier fragment."""
     out = []

@@ -367,7 +367,55 @@ def test_24_the_counter_is_never_decremented_on_deletion() -> None:
     assert "counterBefore" in code, "the counter is restored only on a failed operation"
     for pattern in ("- 1", "-1"):
         assert f"WriteValue CounterName(Kind), ReadCounter(Kind) {pattern}" not in code
-    assert "nextSequence = ReadCounter(Kind) + 1" in code
+    assert "nextSequence = current + 1" in code
+
+
+def test_24a_allocation_refuses_an_invalid_counter() -> None:
+    """A corrupt counter must never silently become zero.
+
+    CL-001 issued, CL-001 deleted, counter corrupted: current rows hold no ID, so a
+    fallback of 0 plus a highest-issued of 0 would validate cleanly and the next Add
+    would reissue CL-001. Current rows cannot testify about deleted history.
+    """
+    module = next(m for m in _handwritten_modules() if m.name == "modDrivers")
+    code = module.code
+    assert "TryReadCounter" in code
+    assert "If Not TryReadCounter(Kind, current) Then" in code, (
+        "AllocateId must refuse rather than assume a value"
+    )
+    assert "ReadLongInRange(CounterName(Kind), 0, ID_COUNTER_MAX, 0)" not in code, (
+        "the silent zero fallback must be gone from the allocation path"
+    )
+
+
+def test_24b_allocation_refuses_cleanly_at_the_representation_ceiling() -> None:
+    code = next(m for m in _handwritten_modules() if m.name == "modDrivers").code
+    ceiling = code.index("If current >= ID_COUNTER_MAX Then")
+    increment = code.index("nextSequence = current + 1")
+    assert ceiling < increment, "the ceiling guard must precede counter + 1"
+
+
+def test_24c_the_ceiling_is_described_as_a_representation_limit() -> None:
+    text = _generated_module_text()
+    assert "IMPLEMENTATION REPRESENTATION CEILING" in text
+    assert "not a maximum on how many identifiers the model may issue" not in text, (
+        "the old comment denied that the Long bound is a ceiling at all"
+    )
+
+
+def test_24d_structural_check_reports_an_invalid_counter_independently() -> None:
+    code = next(m for m in _handwritten_modules() if m.name == "modStructuralCheck").code
+    assert "CHK_COUNTER_INTEGRITY" in code
+    assert "TryReadCounter" in code, (
+        "the check must test the stored counter itself, not infer it from row count"
+    )
+
+
+def test_24e_a_malformed_id_tail_is_reported_not_ignored() -> None:
+    code = next(m for m in _handwritten_modules() if m.name == "modDrivers").code
+    assert "Unrepresentable" in code, (
+        "an ID whose sequence cannot be represented must be surfaced, not skipped"
+    )
 
 
 def test_25_a_new_inflation_year_is_never_seeded_with_zero() -> None:
@@ -382,6 +430,182 @@ def test_25_a_new_inflation_year_is_never_seeded_with_zero() -> None:
 def test_26_profiling_growth_seeds_zero_at_the_tail() -> None:
     module = next(m for m in _handwritten_modules() if m.name == "modProfiling")
     assert "PROFILE_INITIAL_VALUE" in module.code
+
+
+# ===========================================================================
+# application state, orphan data and error containment
+# ===========================================================================
+# `On Error Resume Next` is permitted ONLY in these procedures, each of which is a
+# narrow existence probe or a non-mutating cosmetic step. Anywhere else it hides a
+# failure the user needs to know about.
+ON_ERROR_RESUME_NEXT_WHITELIST = {
+    "modWorkbook": ["LoExists", "NameExists"],
+    "modDrivers": ["AddDriver", "SelectedId"],
+}
+
+
+def test_26a_on_error_resume_next_appears_only_where_whitelisted() -> None:
+    """The suppression that hid application-state restoration failures.
+
+    RestoreAppState and RecalculateStructuralState both used it, so a failure to put
+    Calculation, DisplayAlerts, EnableEvents, ScreenUpdating or StatusBar back was
+    invisible and the operation still reported success.
+    """
+    procedure = re.compile(
+        r"^\s*(?:(?:Public|Private|Friend)\s+)?(?:Static\s+)?(?:Sub|Function|Property\s+\w+)\s+(\w+)",
+        re.I,
+    )
+    problems = []
+    for module in _handwritten_modules():
+        current = "(module level)"
+        for number, line in enumerate(module.code_without_string_removal.splitlines(), 1):
+            match = procedure.match(line)
+            if match:
+                current = match.group(1)
+            if "On Error Resume Next" in line:
+                allowed = ON_ERROR_RESUME_NEXT_WHITELIST.get(module.name, [])
+                if current not in allowed:
+                    problems.append(f"{module.name}.{current} (line {number})")
+    assert not problems, (
+        "On Error Resume Next outside the documented whitelist:\n  " + "\n  ".join(problems)
+    )
+
+
+def test_26b_application_state_restoration_reports_every_failure() -> None:
+    code = next(m for m in _handwritten_modules() if m.name == "modAppState").code
+    assert "Public Function RestoreAppState" in code, "it must return a report, not be a Sub"
+    for prop in ("Calculation", "DisplayAlerts", "EnableEvents", "ScreenUpdating", "StatusBar"):
+        assert f"TryRestore{prop}" in code, f"{prop} has no individually reported restore"
+    # All five are attempted; none short-circuits the rest.
+    body = code[code.index("Public Function RestoreAppState"):code.index("Private Function TryRestoreCalculation")]
+    assert body.count("failures = failures &") == 5
+
+
+def test_26c_recalculation_failure_is_not_swallowed() -> None:
+    code = next(m for m in _handwritten_modules() if m.name == "modAppState").code
+    assert "Public Function RecalculateStructuralState() As String" in code
+    assert "FinishOperation" in code, "one cleanup path both commands must route through"
+
+
+def test_26d_a_failed_cleanup_makes_the_operation_fail() -> None:
+    """A structural change that completed but was not cleaned up is not a success."""
+    for name in ("modTimeline", "modDrivers"):
+        code = next(m for m in _handwritten_modules() if m.name == name).code
+        assert "cleanup = modAppState.FinishOperation(snapshot)" in code, name
+        assert "NOT left in a safe state" in next(
+            m for m in _handwritten_modules() if m.name == name
+        ).code_without_string_removal, name
+
+
+def test_26e_cleanup_failures_never_hide_the_original_error() -> None:
+    for name in ("modTimeline", "modDrivers"):
+        text = next(m for m in _handwritten_modules() if m.name == name).code_without_string_removal
+        assert "Cleanup ALSO reported problems" in text, name
+        assert "restoreNote = restoreNote &" in text, (
+            f"{name} must append the cleanup report, not replace the restore note"
+        )
+
+
+def test_26f_controlled_error_handling_starts_at_the_top_of_each_command() -> None:
+    """Assessment reads user-controlled cells and can raise before any mutation."""
+    timeline = next(m for m in _handwritten_modules() if m.name == "modTimeline").code
+    handler = timeline.index("On Error GoTo AssessmentFailure")
+    prevalidate = timeline.index("problems = PrevalidateEntered()")
+    summary = timeline.index("summary = BuildSummary(")
+    confirm = timeline.index("modAppState.AskConfirm(summary")
+    mutation = timeline.index("On Error GoTo Failure")
+    assert handler < prevalidate < summary < confirm < mutation, (
+        "handling must be installed before prevalidation, assessment and confirmation"
+    )
+    drivers = next(m for m in _handwritten_modules() if m.name == "modDrivers").code
+    assert drivers.index("On Error GoTo AssessmentFailure") < drivers.index("On Error GoTo Failure")
+
+
+def test_26g_textof_is_error_safe() -> None:
+    """Inspecting corruption must not crash on the bad cell it is inspecting."""
+    code = next(m for m in _handwritten_modules() if m.name == "modWorkbook").code
+    body = code[code.index("Public Function TextOf"):code.index("Public Function IsErrorText")]
+    assert "IsError(Target.Value)" in body, "TextOf must handle an error value first"
+    assert "ERROR_CELL_MARKER" in body, "an error cell needs a deterministic non-blank marker"
+    assert "ERROR_CELL_MARKER" in _generated_module_text()
+
+
+def test_26h_the_orphan_invariant_exists_and_is_contract_declared() -> None:
+    structure = _specs()[3]
+    keys = {c["key"] for c in structure.structural_checks}
+    assert "no_orphan_structural_data" in keys
+    assert "counter_integrity" in keys
+    check = next(m for m in _handwritten_modules() if m.name == "modStructuralCheck").code
+    assert "CHK_NO_ORPHAN_STRUCTURAL_DATA" in check
+    workbook = next(m for m in _handwritten_modules() if m.name == "modWorkbook").code
+    assert "Public Function OrphanRows" in workbook
+
+
+def test_26i_every_mutating_command_runs_the_pre_mutation_gate() -> None:
+    """Apply, Add and Delete all pass through the same targeted safety check."""
+    for name in ("modTimeline", "modDrivers"):
+        code = next(m for m in _handwritten_modules() if m.name == name).code
+        assert "modStructuralCheck.PreMutationCheck()" in code, name
+    check = next(m for m in _handwritten_modules() if m.name == "modStructuralCheck").code
+    start = check.index("Public Function PreMutationCheck")
+    gate = check[start:check.index("End Function", start)]
+    assert "CheckOrphanRows()" in gate
+    assert "ValidateStructure()" not in gate, (
+        "a full validation here would block the legitimate 'Config profile removed, "
+        "Apply will synchronise it' workflow"
+    )
+
+
+def test_26j_the_orphan_check_covers_all_five_structural_tables() -> None:
+    check = next(m for m in _handwritten_modules() if m.name == "modStructuralCheck").code
+    body = check[check.index("Private Function CheckOrphanRows"):check.index("Private Function OrphanFault")]
+    for table in ("TBL_COST_LINES", "TBL_RISK_REGISTER", "TBL_COST_PROFILING",
+                  "TBL_RISK_PROFILING", "TBL_INFLATION"):
+        assert table in body, f"{table} is not covered by the orphan invariant"
+
+
+def test_26k_add_refuses_when_an_orphan_exists_even_if_a_blank_row_follows() -> None:
+    code = next(m for m in _handwritten_modules() if m.name == "modDrivers").code
+    body = code[code.index("Private Function FirstFreeRow"):code.index("Public Function AddDriver")]
+    assert "If OrphanRow > 0 Then Exit Function" in body, (
+        "an orphan anywhere must block the add, not merely be recorded"
+    )
+    assert "firstBlank" in body, "the whole register must be scanned before a row is chosen"
+    assert "If orphanRow > 0 Then" in code, (
+        "AddDriver must fail on any orphan, not only when no free row was found"
+    )
+
+
+def test_26l_year_cells_get_the_input_treatment_explicitly() -> None:
+    """Propagation is not relied on for a runtime-generated editable region."""
+    workbook = next(m for m in _handwritten_modules() if m.name == "modWorkbook").code
+    assert "Public Sub PaintYearCells" in workbook
+    assert "FILL_INPUT" in workbook and "FILL_LOCKED" in workbook
+    for name in ("modProfiling", "modInflation"):
+        code = next(m for m in _handwritten_modules() if m.name == name).code
+        assert code.count("modWorkbook.PaintYearCells") >= 2, (
+            f"{name} must repaint after reshaping AND after row synchronisation"
+        )
+    text = _generated_module_text()
+    assert "FILL_INPUT As Long" in text and "FILL_LOCKED As Long" in text
+
+
+def test_26m_no_colour_literal_appears_in_vba_or_powershell() -> None:
+    """The fills come from the presentation source authority, not from the code."""
+    spec = _specs()[0]
+    for colour in (spec.presentation["colors"]["input_fill"],
+                   spec.presentation["colors"]["locked_fill"]):
+        for module in _handwritten_modules():
+            assert colour not in module.raw, f"{module.name} hardcodes #{colour}"
+        for path in (BUILD_PS1, HARNESS_PS1):
+            assert colour not in _ps_code(path), f"{path.name} hardcodes #{colour}"
+
+
+def test_26n_the_snapshot_preserves_per_cell_presentation() -> None:
+    code = next(m for m in _handwritten_modules() if m.name == "modWorkbook").code
+    assert "Fills()" in code, "a restored row must come back with its input language"
+    assert "s.Fills(r, c) = Target.DataBodyRange.Cells(r, c).Interior.Color" in code
+    assert "Interior.Color = Snapshot.Fills(r, c)" in code
 
 
 # ===========================================================================
@@ -496,6 +720,11 @@ def test_37_the_harness_covers_every_required_scenario() -> None:
         "# P. An oversized pasted timeline value is rejected cleanly",
         "# Q. Add failure after row mutation has begun",
         "# R. Delete failure after row mutation has begun",
+        "# D0. Seed a REAL, KEYED Inflation Profile before the timeline scenarios",
+        "# S. Application state is RESTORED, not forced to a convenient default",
+        "# T. Unkeyed structural data blocks every mutating operation",
+        "# U. A corrupt ID counter must never allow reuse",
+        "# V. Generated year cells carry the EXACT editable-input treatment",
     ):
         assert marker in code, f"the harness is missing section: {marker}"
 
@@ -577,7 +806,7 @@ def test_44b_the_harness_drives_the_register_past_its_reserved_capacity() -> Non
     assert "the grown row ID cell keeps the model-controlled treatment" in code
     assert "the grown row user cells keep the editable input treatment" in code
     assert "keeps its Data Validation on the grown row" in code
-    assert "a generated profiling year cell is visually an editable input" in code
+    assert "a generated profiling year cell equals the contract input_fill" in code
 
 
 def test_44c_the_harness_covers_the_removed_config_profile_loss_path() -> None:
@@ -609,6 +838,80 @@ def test_44f_the_harness_covers_oversized_pasted_timeline_values() -> None:
     code = _ps(HARNESS_PS1)
     assert "rejected by prevalidation, not by an overflow" in code
     assert "an oversized Start Year is rejected cleanly" in code
+
+
+def test_44g_the_harness_seeds_a_real_keyed_inflation_profile() -> None:
+    """A rate written into a blank-profile row is not a keyed rate at all.
+
+    Inflation ownership is (Profile Name, Calendar Year). Without a named profile
+    in Config, CountRateLosses skips the row, SetYearColumns never captures it and
+    SyncProfileRows clears it -- so the D-J scenarios proved nothing about
+    calendar-year preservation and the destructive Base-Year step had no real rate
+    to threaten.
+    """
+    code = _ps(HARNESS_PS1)
+    assert "$testProfile" in code
+    assert "Add-ConfigProfile" in code
+    assert "the test profile is in the Config master" in code
+    assert "the named inflation profile still has its row" in code
+
+
+def test_44h_inflation_preservation_is_asserted_by_calendar_year() -> None:
+    code = _ps(HARNESS_PS1)
+    assert "$ratesBefore" in code, "a (Profile Name, Calendar Year) map must be captured"
+    assert "every surviving calendar year keeps EXACTLY its own rate" in code
+    assert "calendar years leaving the span are gone from the headers" in code
+    assert "newly required inflation years arrive BLANK, never zero" in code
+
+
+def test_44i_the_harness_proves_prior_application_state_is_restored() -> None:
+    """Restoration of the caller's state, not coercion to a convenient default."""
+    code = _ps(HARNESS_PS1)
+    for prop in ("ScreenUpdating", "EnableEvents", "DisplayAlerts", "Calculation", "StatusBar"):
+        assert f"{prop} restored to its prior value" in code, prop
+        assert f"{prop} restored after failure" in code, prop
+    assert "PCCM harness sentinel" in code, "a non-default StatusBar proves restoration"
+    assert "application state was restored (ScreenUpdating is on)" not in code, (
+        "asserting a convenient default is not asserting restoration"
+    )
+
+
+def test_44j_the_harness_covers_all_three_orphan_classes() -> None:
+    code = _ps(HARNESS_PS1)
+    assert "Add is refused while a driver orphan exists" in code
+    assert "Apply is refused while a profiling orphan exists" in code
+    assert "Apply is refused while an inflation orphan exists" in code
+    assert "once the orphans are cleared, Add succeeds again" in code
+
+
+def test_44k_the_counter_scenario_covers_the_historical_case() -> None:
+    """Deleting every identifier and then corrupting the counter is the danger."""
+    code = _ps(HARNESS_PS1)
+    assert "every identified Risk was deleted" in code
+    assert "a valid counter with zero rows is not a fault" in code
+    assert "Add Risk is refused while the counter is invalid" in code
+    assert "a BLANK counter is refused too, never treated as zero" in code
+    assert "does not reuse R-001" in code
+
+
+def test_44l_year_cell_presentation_is_asserted_by_equality() -> None:
+    code = _ps(HARNESS_PS1)
+    assert "equals input_fill" in code
+    assert "-ne $manifest.presentation.locked_fill" not in _ps_code(HARNESS_PS1), (
+        "'not the locked fill' is not an assertion that it IS the input fill"
+    )
+    assert "a year cell on an UNKEYED reserved row is model-controlled" in code
+    assert "tblInflation: a calendar-year cell on a NAMED profile row equals input_fill" in code
+
+
+def test_44m_rollback_reasserts_the_phase3_input_contract() -> None:
+    code = _ps(HARNESS_PS1)
+    assert "Add-DriverRowContractChecks" in code
+    assert "after Add rollback the restored row" in code
+    assert "after Delete rollback the recreated row" in code
+    assert "a restored profiling year cell keeps its number format" in code
+    assert "a restored profiling year cell keeps a positive column width" in code
+    assert "a restored profiling year cell on a KEYED row is editable-input styled" in code
 
 
 # ===========================================================================
@@ -759,19 +1062,48 @@ def test_46a_no_chained_com_member_access_exists() -> None:
     assert not problems, "chained COM member access:\n  " + "\n  ".join(problems)
 
 
+# Excel members that RETURN a COM object. Discarding the return leaks an RCW
+# whether the call is bare, assigned to $null, or piped away.
+OBJECT_RETURNING_MEMBERS = (
+    "Import", "Add", "AddShape", "Open", "Item", "Cells", "Range", "Columns",
+    "Rows", "ListRows", "ListColumns", "Offset", "Resize", "Find",
+)
+
+
 def test_46b_no_object_returning_com_call_is_left_unowned() -> None:
-    """VBComponents.Import returns a VBComponent. Discarding it leaks an RCW."""
-    pattern = re.compile(rf"^\${_com_root_pattern()}\.(Import|Add|AddShape|Open|Item)\(")
+    """Discarding an object-returning call leaks an RCW, however it is discarded.
+
+    The earlier sweep only matched a bare statement, so it missed
+    `$null = $sortFields.Add(...)` -- SortFields.Add returns a SortField, and
+    assigning it to $null mints the RCW and then throws ownership away.
+    """
+    members = "|".join(OBJECT_RETURNING_MEMBERS)
+    discarded = re.compile(
+        rf"(?:^|\|\s*|\$null\s*=\s*)\${_com_root_pattern()}\.({members})\("
+    )
     problems = []
     for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
         for number, line in enumerate(_ps_code(path).splitlines(), 1):
-            if pattern.match(line.strip()):
-                problems.append(f"{path.name}:{number}: {line.strip()[:70]}")
+            stripped = line.strip()
+            if discarded.search(stripped):
+                problems.append(f"{path.name}:{number}: {stripped[:80]}")
     assert not problems, "unowned COM return value:\n  " + "\n  ".join(problems)
-    assert "$imported = $vbcomps.Import($file)" in _ps_code(BUILD_PS1), (
-        "the Import return must be captured in a named transient"
+
+
+def test_46b1_the_known_object_returning_calls_are_captured_and_released() -> None:
+    """Named regressions for the two that were actually found unowned."""
+    build = _ps_code(BUILD_PS1)
+    assert "$imported = $vbcomps.Import($file)" in build
+    assert "Release-Transient $imported" in build
+
+    harness = _ps_code(HARNESS_PS1)
+    assert "$sortField = $sortFields.Add(" in harness, (
+        "SortFields.Add returns a SortField and must be captured"
     )
-    assert "Release-Transient $imported" in _ps_code(BUILD_PS1)
+    assert "Release-Transient $sortField" in harness
+    assert "$null = $sortFields.Add(" not in harness, (
+        "assigning an object-returning call to $null is not ownership"
+    )
 
 
 def test_46c_no_foreach_iterates_a_com_collection() -> None:

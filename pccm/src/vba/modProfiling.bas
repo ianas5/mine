@@ -105,6 +105,9 @@ Public Sub SetYearColumns(ByVal Kind As String, ByVal StartYear As Variant, _
         target.ListColumns(fixedCols + i).Name = CStr(CLng(StartYear) + i - 1)
         target.HeaderRowRange.Cells(1, fixedCols + i).NumberFormat = headerFormat
     Next i
+
+    ' Explicit input-language treatment, never left to table-format propagation.
+    modWorkbook.PaintYearCells target, fixedCols + 1, NewCount, 1
 End Sub
 
 ' Removes every project-year column. Used when the applied timeline is cleared.
@@ -263,6 +266,10 @@ Public Sub SyncRows(ByVal Kind As String)
             modWorkbook.CellIn(target, r, c).ClearContents
         Next c
     Next r
+
+    ' Row keyed-ness has just changed, so the treatment is reapplied: a row that
+    ' gained an ID becomes editable, a row that lost one becomes model-controlled.
+    modWorkbook.PaintYearCells target, fixedCols + 1, yearCols, 1
 End Sub
 
 ' Removes the profiling row owned by one permanent ID. Identity is the operation
