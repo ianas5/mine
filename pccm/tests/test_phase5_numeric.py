@@ -394,6 +394,53 @@ def test_the_allowance_matches_the_locked_formula_computed_directly() -> None:
         assert abs(identity_allowance(terms, 1e-6, 1e-12) - expected) <= expected * 1e-15, terms
 
 
+def test_a_conditioning_term_too_small_to_scale_does_not_refuse_the_allowance() -> None:
+    """CONDITIONING METADATA HAS ITS OWN UNDERFLOW POLICY.
+
+    `1e-12 * 2e-312` rounds to exactly zero. Under the model-arithmetic rule that
+    is a refusal — and it was, which rejected a model whose economic outputs are
+    perfectly representable, purely because the tolerance bookkeeping could not
+    hold a term far too small to affect the answer.
+
+    The locked allowance for this input has no ambiguity at all:
+
+        conditioning scale = max(1, 2e-312) = 1
+        relative allowance = 1e-12
+        final allowance    = max(1e-6, 1e-12) = 1e-6
+    """
+    assert 1e-12 * 2e-312 == 0.0                      # the scaled term really does vanish
+    assert identity_allowance([2e-312], 1e-6, 1e-12, 1.0) == 1e-6
+    assert identity_allowance([5e-324], 1e-6, 1e-12, 1.0) == 1e-6
+    assert identity_allowance([2e-312, 1e-320, 4e-315], 1e-6, 1e-12, 1.0) == 1e-6
+
+
+def test_a_vanishing_conditioning_term_cannot_move_a_scale_that_does_matter() -> None:
+    """Mixing huge and vanishing terms: the dropped amount is far under one ulp."""
+    big_only = identity_allowance([1e18], 1e-6, 1e-12, 1.0)
+    with_tiny = identity_allowance([1e18, 2e-312, 5e-324], 1e-6, 1e-12, 1.0)
+    assert with_tiny == big_only == 1e-12 * 1e18
+
+
+def test_the_conditioning_exception_does_not_weaken_model_arithmetic() -> None:
+    """The relaxed rule is scoped to conditioning metadata and nowhere else.
+
+    An economic value or factor that collapses to zero is still refused, because
+    there it would delete a real contribution with no error anywhere.
+    """
+    _refuses(lambda: safe_multiply(1e-200, 1e-200), "economic underflow")
+    _refuses(lambda: safe_divide(1e-200, 1e200), "factor underflow")
+    _refuses(lambda: safe_product([1e-200, 1e-200]), "product underflow")
+
+
+def test_conditioning_overflow_is_still_refused() -> None:
+    """A conditioning scale beyond Double makes the allowance itself
+    unrepresentable, so any comparison against it would be meaningless."""
+    _refuses(
+        lambda: identity_allowance([1e308] * 40, 1e-6, 1.0, 1.0),
+        "overflowing conditioning scale",
+    )
+
+
 def test_the_boundary_where_the_relative_allowance_meets_the_absolute_floor() -> None:
     """`1e-12 * scale` equals `1e-6` exactly at `scale = 1e6`."""
     assert identity_allowance([1e6 - 1.0], 1e-6, 1e-12) == 1e-6      # below: floor binds

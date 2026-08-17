@@ -398,8 +398,36 @@ def scaled_magnitude(
     Called while the corresponding contribution is being accumulated, so the
     conditioning magnitude is a by-product of the calculation rather than a second
     pass that could disagree with it.
+
+    --------------------------------------------------------------------------
+    UNDERFLOW POLICY HERE IS DELIBERATELY DIFFERENT FROM MODEL ARITHMETIC
+    --------------------------------------------------------------------------
+    `safe_multiply` refuses a non-zero product that rounds to exactly zero,
+    because an economic value or a factor that silently collapses would delete a
+    real contribution with no error anywhere. That rule is right for MODEL
+    arithmetic and wrong here.
+
+    This is INTERNAL TOLERANCE-SCALING METADATA, and losing a scaled term to
+    underflow cannot change the answer it feeds:
+
+      * `coefficient * |term|` only underflows when `|term|` is below roughly
+        `5e-312`;
+      * the conditioning scale has a floor of `scale_floor` (locked at 1), so the
+        relative allowance is at least `coefficient * 1 = 1e-12`;
+      * a dropped term is therefore at most about `5e-324` against a quantity of
+        at least `1e-12` - more than three hundred orders of magnitude below the
+        value it would have to move. Even in a model mixing huge and tiny terms,
+        the dropped amount is far under one ulp of the sum.
+
+    Refusing here would reject a model whose economic outputs are perfectly
+    representable, purely because the tolerance bookkeeping could not represent a
+    term too small to matter. Overflow is still refused: a conditioning scale that
+    exceeds Double makes the allowance itself unrepresentable, and any comparison
+    against it would be meaningless.
     """
-    scaled = safe_multiply(relative_coefficient, abs(float(term)), where)
+    operands = _require_operands(where, relative_coefficient, abs(float(term)))
+    scaled = operands[0] * operands[1]
+    _require_result(where, scaled, "conditioning scaling")
     return safe_accumulate(accumulator, scaled, where)
 
 

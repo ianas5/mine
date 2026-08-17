@@ -405,6 +405,56 @@ def _canonical_names(names: Sequence[str]) -> tuple[str, ...]:
     return tuple(sorted(set(names), key=utf16_sort_key))
 
 
+def _identifier(value: object, where: str) -> str:
+    """A required user-entered text identifier: a currency, a profile, a
+    distribution name.
+
+    EXACT, NEVER REPAIRED. A non-blank identifier is used exactly as entered:
+    `" USD "` is not silently trimmed into `"USD"`, because Config keys are exact
+    and quietly rewriting user data to make a lookup succeed would be inventing
+    an answer. It either resolves as entered or it is refused.
+
+    `bool` is excluded before `str`, and every non-text value is refused here
+    rather than allowed to reach the UTF-16 ordering helper - which would raise a
+    raw `AttributeError` on `None` or an `int` and escape the failure contract
+    entirely. A required user-editable field must never surface as a Python
+    implementation error.
+    """
+    if value is None:
+        raise ModelInputRefusal(f"{where}: value is blank")
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise ModelInputRefusal(
+            f"{where}: value {value!r} is not text; this field is a required "
+            "identifier and must be entered as text"
+        )
+    if not value.strip():
+        raise ModelInputRefusal(
+            f"{where}: value {value!r} is blank or whitespace only"
+        )
+    return value
+
+
+def _validate_reference_fields(model: CalculationModel) -> None:
+    """Every driver's text reference fields, BEFORE canonical discovery.
+
+    Ordering matters: canonical reference-set discovery and canonical driver
+    ordering both compare UTF-16 code units, so they require text. Validating
+    afterwards would be validating after the crash.
+
+    The permanent ID is checked only for being non-blank text, because the
+    canonical ordering needs that much. Its STRUCTURAL validity - the `CL-`/`R-`
+    prefixes, the pattern, the counter rules - remains owned by Phase 4 and is not
+    re-implemented, re-checked or reopened here.
+    """
+    for driver in (*model.cost_drivers, *model.risk_drivers):
+        kind = "cost line" if isinstance(driver, CostDriver) else "risk"
+        _identifier(driver.permanent_id, f"{kind}: Permanent ID")
+        where = f"{kind} {driver.permanent_id!r}"
+        _identifier(driver.currency, f"{where}: Currency")
+        _identifier(driver.inflation_profile, f"{where}: Inflation Profile")
+        _identifier(driver.distribution, f"{where}: Distribution")
+
+
 def _numeric(value: object, where: str) -> float:
     """Accept a real number; refuse blank, text and booleans alike.
 
@@ -440,11 +490,24 @@ def _referenced_profiles(model: CalculationModel) -> tuple[str, ...]:
 
 
 def resolve_fx(model: CalculationModel) -> dict[str, float]:
-    """Resolve REFERENCED currencies only, plus the global SAR invariant.
+    """Resolve REFERENCED currencies only, after checking the global SAR invariant.
 
-    SAR is checked in every model, including one that references no currency at
-    all and one with no drivers: the reporting currency identity is a global
-    invariant, not a per-driver question.
+    TWO DISTINCT QUESTIONS, deliberately not conflated:
+
+      * *Is the reporting currency sound?* A GLOBAL INVARIANT, checked in every
+        model - including one that references no currency at all, and one with no
+        drivers. `SAR` must appear exactly once and must equal 1.
+      * *Which currencies does this model actually resolve?* Only those a driver
+        references.
+
+    An earlier version seeded the result with `{"SAR": 1.0}` unconditionally, so a
+    USD-only model reported `SAR` as resolved and an empty model reported one
+    resolved currency. That contradicts the locked `tblCalcFX` row rule - "one row
+    per referenced currency" - and the returned mapping is what Step 3 will emit
+    from. Being validated globally does not make a currency referenced.
+
+    The returned mapping is in CANONICAL ORDER, and the SAR check does not disturb
+    it.
     """
     rows_by_currency: dict[str, list[FxRow]] = {}
     for row in model.fx_rows:
@@ -465,9 +528,13 @@ def resolve_fx(model: CalculationModel) -> dict[str, float]:
             f"found {sar_rate!r}"
         )
 
-    resolved = {REPORTING_CURRENCY: 1.0}
+    # The global invariant is now satisfied. What follows answers the SEPARATE
+    # question of which currencies this model resolves, and SAR appears below only
+    # if a driver actually references it.
+    resolved: dict[str, float] = {}
     for currency in _referenced_currencies(model):
         if currency == REPORTING_CURRENCY:
+            resolved[REPORTING_CURRENCY] = 1.0
             continue
         rows = rows_by_currency.get(currency, [])
         if not rows:
@@ -694,6 +761,10 @@ def calculate(model: CalculationModel, tolerances: Tolerances) -> CalculationRes
             f"timeline: Base Year {timeline.base_year} is after Start Year "
             f"{timeline.start_year}; the price base cannot postdate the project"
         )
+
+    # BEFORE any canonical ordering or reference discovery: those compare UTF-16
+    # code units and would raise a raw AttributeError on a non-text field.
+    _validate_reference_fields(model)
 
     discount_rate = _numeric(model.discount_rate, "discount rate")
     if 1.0 + discount_rate <= 0.0:

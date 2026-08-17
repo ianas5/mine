@@ -1197,6 +1197,211 @@ def test_an_independent_rational_derivation_agrees_with_the_oracle() -> None:
 
 
 # ---------------------------------------------------------------------------
+# CONDITIONING METADATA MUST NOT REFUSE A REPRESENTABLE MODEL
+# ---------------------------------------------------------------------------
+def test_a_subnormal_but_representable_model_calculates() -> None:
+    """The scaled conditioning term `1e-12 * 2e-312` rounds to exactly zero.
+
+    Under the model-arithmetic underflow rule that was a refusal, so this model —
+    whose economic outputs are perfectly representable — was rejected because the
+    TOLERANCE BOOKKEEPING could not hold a term far too small to affect the
+    answer. The refusal even named `totals, driver 'CL-001': |A| nominal`.
+    """
+    result = calculate(
+        _model(discount=0.0,
+               costs=(_cost(distribution="Uniform", minimum=2e-312, most_likely=None,
+                            maximum=2e-312, weights=(1.0,), quantity=1),)),
+        TOL,
+    )
+    assert result.totals.a_nom > 0.0
+    assert result.totals.a_nom < 1e-300
+    _close(result.drivers[0].mean_value, 2e-312, note="Uniform midpoint")
+
+    checks = {check.name: check for check in reconcile(result, TOL)}
+    assert checks["I1 nominal: A + B = C"].allowance == TOL.identity_absolute_floor
+    assert_reconciled(result, TOL)
+
+
+def test_the_conditioning_exception_does_not_weaken_model_arithmetic_in_the_oracle() -> None:
+    """Scoped to conditioning metadata: an economic collapse is still refused."""
+    # A valid profile (sums to 1) and a positive Quantity, but the CONTRIBUTION
+    # `1e-200 * 1e-200 * 1` collapses to exactly zero — a real economic value
+    # deleted with no error anywhere, which stays a refusal.
+    message = _refuses(
+        lambda: calculate(
+            _model(discount=0.0,
+                   costs=(_cost(distribution="Uniform", minimum=1e-200, most_likely=None,
+                                maximum=1e-200, weights=(1.0,), quantity=1e-200),)),
+            TOL,
+        ),
+        "an economic contribution collapsing to zero",
+    )
+    assert "underflow" in message.lower()
+    assert "CL-001" in message
+
+
+# ---------------------------------------------------------------------------
+# REFERENCE FIELDS ARE STRUCTURED REFUSALS, NEVER PYTHON ERRORS
+# ---------------------------------------------------------------------------
+_INVALID_IDENTIFIERS = (None, True, False, 123, 1.5, "", "   ", [], {})
+
+
+def test_every_invalid_driver_reference_field_is_a_structured_refusal() -> None:
+    """These reached the UTF-16 ordering helper and escaped as raw
+    `AttributeError` / `TypeError` — a user-editable required field surfacing as a
+    Python implementation error."""
+    for field_name in ("currency", "inflation_profile", "distribution"):
+        for bad in _INVALID_IDENTIFIERS:
+            for build, kind in ((_cost, "cost line"), (_risk, "risk")):
+                driver = dataclasses.replace(build(), **{field_name: bad})
+                key = "costs" if kind == "cost line" else "risks"
+                model = _model(**{key: (driver,)})
+                try:
+                    calculate(model, TOL)
+                except ModelInputRefusal as error:
+                    text = str(error)
+                    assert driver.permanent_id in text, (field_name, bad, text)
+                    assert kind in text, (field_name, bad, text)
+                    continue
+                except Exception as error:  # noqa: BLE001
+                    raise AssertionError(
+                        f"{kind} {field_name}={bad!r}: raw {type(error).__name__}: {error}"
+                    ) from error
+                raise AssertionError(f"{kind} {field_name}={bad!r}: silently accepted")
+
+
+def test_the_refusal_names_the_field_and_the_offending_value() -> None:
+    for field_name, label in (
+        ("currency", "Currency"),
+        ("inflation_profile", "Inflation Profile"),
+        ("distribution", "Distribution"),
+    ):
+        message = _refuses(
+            lambda f=field_name: calculate(
+                _model(costs=(dataclasses.replace(_cost(), **{f: 123}),)), TOL
+            ),
+            f"{field_name} = 123",
+        )
+        assert label in message
+        assert "123" in message
+        assert "CL-001" in message
+
+
+def test_a_blank_reference_field_says_so() -> None:
+    for bad in (None, "", "   "):
+        message = _refuses(
+            lambda b=bad: calculate(_model(costs=(_cost(currency=b),)), TOL),
+            f"currency {bad!r}",
+        )
+        assert "blank" in message
+
+
+def test_a_non_blank_identifier_is_used_exactly_as_entered_never_repaired() -> None:
+    """Config keys are exact. Silently trimming `" USD "` into `"USD"` to make a
+    lookup succeed would be rewriting user data to invent an answer."""
+    padded = " USD "
+    message = _refuses(
+        lambda: calculate(
+            _model(fx=(FxRow("SAR", 1), FxRow("USD", 3.75)),
+                   costs=(_cost(currency=padded),)),
+            TOL,
+        ),
+        "a padded currency silently trimmed",
+    )
+    assert repr(padded) in message or padded in message
+    assert "no row" in message
+
+    # It resolves only if the FX table carries that exact key.
+    exact = calculate(
+        _model(fx=(FxRow("SAR", 1), FxRow(padded, 3.75)), costs=(_cost(currency=padded),)),
+        TOL,
+    )
+    assert set(exact.resolved_fx) == {padded}
+
+
+def test_a_non_text_permanent_id_is_refused_before_canonical_ordering() -> None:
+    """Canonical ordering compares UTF-16 code units and so needs text.
+
+    This is NOT Phase-4 permanent-ID structural validation — the `CL-`/`R-`
+    prefixes, the pattern and the counter rules stay owned by Phase 4 and are not
+    re-checked here. It only stops a non-text field escaping as an
+    `AttributeError`.
+    """
+    for bad in (None, 123, True, "", "  "):
+        message = _refuses(
+            lambda b=bad: calculate(
+                _model(costs=(dataclasses.replace(_cost(), permanent_id=b),)), TOL
+            ),
+            f"permanent id {bad!r}",
+        )
+        assert "Permanent ID" in message
+
+
+# ---------------------------------------------------------------------------
+# resolved_fx IS THE REFERENCED SET - the tblCalcFX row rule
+# ---------------------------------------------------------------------------
+_FX_TABLE = (FxRow("SAR", 1), FxRow("USD", 3.75), FxRow("AED", 0.98))
+
+
+def _fx_model(*currencies: str) -> CalculationModel:
+    costs = tuple(
+        _cost(f"CL-{index:03d}", currency=currency)
+        for index, currency in enumerate(currencies, start=1)
+    )
+    return _model(fx=_FX_TABLE, costs=costs)
+
+
+def test_resolved_fx_contains_exactly_the_referenced_currencies() -> None:
+    """`tblCalcFX` row rule: "one row per referenced currency".
+
+    Being validated globally does not make a currency referenced. An earlier
+    version seeded `{"SAR": 1.0}` unconditionally, so a USD-only model reported
+    SAR as resolved and an empty model reported one resolved currency.
+    """
+    assert set(calculate(_model(fx=_FX_TABLE), TOL).resolved_fx) == set()
+    assert set(calculate(_fx_model("SAR"), TOL).resolved_fx) == {"SAR"}
+    assert set(calculate(_fx_model("USD"), TOL).resolved_fx) == {"USD"}
+    assert set(calculate(_fx_model("USD", "SAR"), TOL).resolved_fx) == {"SAR", "USD"}
+    assert set(calculate(_fx_model("USD", "AED", "SAR"), TOL).resolved_fx) == {
+        "AED", "SAR", "USD"
+    }
+
+
+def test_resolved_fx_carries_the_right_rates() -> None:
+    resolved = calculate(_fx_model("USD", "AED", "SAR"), TOL).resolved_fx
+    assert resolved["SAR"] == 1.0
+    assert resolved["USD"] == 3.75
+    assert resolved["AED"] == 0.98
+
+
+def test_resolved_fx_iterates_in_canonical_order() -> None:
+    """Key ORDER, not only key equality: the SAR check must not disturb it."""
+    result = calculate(_fx_model("USD", "AED", "SAR"), TOL)
+    assert list(result.resolved_fx) == ["AED", "SAR", "USD"]
+
+    # And the order does not follow the order the drivers arrived in.
+    reversed_ = calculate(_fx_model("SAR", "AED", "USD"), TOL)
+    assert list(reversed_.resolved_fx) == ["AED", "SAR", "USD"]
+
+
+def test_the_sar_invariant_is_still_enforced_when_sar_is_unreferenced() -> None:
+    """The global check is unchanged; only the RETURNED SET changed."""
+    for bad_table in (
+        (FxRow("SAR", 2), FxRow("USD", 3.75)),
+        (FxRow("SAR", None), FxRow("USD", 3.75)),
+        (FxRow("USD", 3.75),),
+        (FxRow("SAR", 1), FxRow("SAR", 1), FxRow("USD", 3.75)),
+    ):
+        message = _refuses(
+            lambda t=bad_table: calculate(
+                _model(fx=t, costs=(_cost(currency="USD"),)), TOL
+            ),
+            f"SAR invariant with {bad_table}",
+        )
+        assert "SAR" in message
+
+
+# ---------------------------------------------------------------------------
 # ARCHITECTURE BOUNDARY - executable dependencies, not vocabulary
 # ---------------------------------------------------------------------------
 FORBIDDEN_IMPORTS = frozenset(

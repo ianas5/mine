@@ -1,20 +1,27 @@
 # Phase 5 — Gate A — Step 2: pure analytical oracle and safe numerical semantics
 
-**Status: CORRECTED after independent review — ready for re-review.**
+**Status: CORRECTED TWICE after independent review — ready for re-review.**
 
 Step 1 is accepted and closed. This step locks and tests the pure numerical
 semantics that later Stage-A emission and later VBA must implement. It is
 Linux-only, in-memory, and side-effect free.
 
-Review found **four blocking correctness issues and one test-portability
-defect**, all reproduced and all fixed; §16 records them in full. One of them —
-the conditioning definition — proved that the accepted plan §15 did not satisfy
-its own stated objective, and is the narrow, justified exception to Step 1 being
-closed.
+**Round 1** (§16) — four blocking correctness issues and one test-portability
+defect. One of them, the conditioning definition, proved that the accepted plan
+§15 did not satisfy its own stated objective, and is the narrow, justified
+exception to Step 1 being closed. Erratum C1 is now **accepted**.
 
-**No business rule, formula or tolerance NUMBER changed.** The conditioning
-OPERANDS changed, the evaluation ORDER is now canonical, and two implementation
-defects were corrected.
+**Round 2** (§17) — three remaining blockers, all in the resolution and metadata
+layers rather than the mathematics: conditioning metadata could refuse a
+representable model, driver reference fields leaked raw `AttributeError`, and
+`resolved_fx` did not match the locked `tblCalcFX` row rule.
+
+**No business rule, formula or tolerance NUMBER changed in either round.**
+Round 2 changed **no design at all** — `docs/phase5_plan.md`,
+`spec/calc_contract.yaml`, `calc_loader.py`, `calc_fingerprint.py`,
+`build_stage_a.py`, `src/` and `bootstrap/` are byte-identical to the round-1
+package. Erratum C1, the canonical ordering, the A/B/C/D/E and annual definitions,
+the safe-product strategy and the stable distribution formulas are untouched.
 
 ---
 
@@ -72,13 +79,14 @@ it does not implement the machine.
 |---|---|
 | `builder/pccm_builder/calc_oracle.py` | **new** — data model, resolution/validation, canonical ordering, analytical kernel, contribution-conditioned reconciliation |
 | `builder/pccm_builder/calc_numeric.py` | **new** — safe arithmetic, stable statistics, factor series, tolerance, failure hierarchy |
-| `tests/test_phase5_numeric.py` | **new** — 48 tests |
-| `tests/test_phase5_oracle.py` | **new** — 85 tests |
+| `tests/test_phase5_numeric.py` | **new** — 52 tests |
+| `tests/test_phase5_oracle.py` | **new** — 96 tests |
 | `docs/phase5_gate_a_step2.md` | **new** — this document |
-| `docs/phase5_plan.md` | **modified** — §15 erratum C1 only, plus its §0 register entry |
-| `spec/calc_contract.yaml` | **modified** — `conditioning_terms` names only (erratum C1) |
-| `builder/pccm_builder/calc_loader.py` | **modified** — `LOCKED_CONDITIONING_TERMS` only |
-| `tests/test_phase5_calc_contract_validation.py` | **modified** — the conditioning-term expectations only; count unchanged at 151 |
+| `docs/phase5_plan.md` | **modified in round 1 only** — §15 erratum C1 plus its §0 register entry. Unchanged in round 2 |
+| `spec/calc_contract.yaml` | **modified in round 1 only** — `conditioning_terms` names (erratum C1). Unchanged in round 2 |
+| `builder/pccm_builder/calc_loader.py` | **modified in round 1 only** — `LOCKED_CONDITIONING_TERMS`. Unchanged in round 2 |
+| `tests/test_phase5_calc_contract_validation.py` | **modified in round 1 only** — the conditioning-term expectations; count unchanged at 151 |
+| `tools/package_review.py` | **modified in round 2** — writes `PROVENANCE.txt` into the archive so a review package identifies its own commit |
 
 **Unchanged, and verified unchanged:** `builder/pccm_builder/calc_fingerprint.py`,
 `builder/pccm_builder/__init__.py`, `builder/build_stage_a.py`, all four earlier
@@ -399,37 +407,39 @@ the first submission had believed immune. §16.1 carries the full account.
 Run from a clean extraction, Linux, Python 3.11.
 
 ```
-python -m pytest pccm/tests/ -q        838 passed, 0 failed
+python -m pytest pccm/tests/ -q        853 passed, 0 failed
 python pccm/builder/build_stage_a.py   181 passed, 0 failed
 ```
 
 Standalone:
 
 ```
-python pccm/tests/test_phase5_numeric.py    48 passed, 0 failed
-python pccm/tests/test_phase5_oracle.py     85 passed, 0 failed
+python pccm/tests/test_phase5_numeric.py                 52 passed, 0 failed
+python pccm/tests/test_phase5_oracle.py                  96 passed, 0 failed
+python pccm/tests/test_phase5_calc_contract_validation.py 151 passed, 0 failed
+python pccm/tests/test_phase5_fingerprint.py              52 passed, 0 failed
 ```
 
-| Module | Step 1 final | Step 2 | Step 2 corrected |
-|---|---|---|---|
-| `test_phase1_manifest_validation.py` | 10 | 10 | **10** |
-| `test_phase1_structure.py` | 21 | 21 | **21** |
-| `test_phase2_contract_validation.py` | 42 | 42 | **42** |
-| `test_phase2_inputs.py` | 40 | 40 | **40** |
-| `test_phase3_driver_contract_validation.py` | 31 | 31 | **31** |
-| `test_phase3_drivers.py` | 28 | 28 | **28** |
-| `test_phase3_verifier_intersection.py` | 12 | 12 | **12** |
-| `test_phase4_oracle.py` | 68 | 68 | **68** |
-| `test_phase4_stage_b_source.py` | 155 | 155 | **155** |
-| `test_phase4_structure.py` | 43 | 43 | **43** |
-| `test_phase4_structure_contract_validation.py` | 52 | 52 | **52** |
-| `test_phase5_calc_contract_validation.py` | 151 | 151 | **151** |
-| `test_phase5_fingerprint.py` | 52 | 52 | **52** |
-| `test_phase5_numeric.py` | — | 43 | **48** |
-| `test_phase5_oracle.py` | — | 75 | **85** |
-| **total** | **705** | **823** | **838** |
+| Module | Step 1 final | Step 2 | Round-1 corrected | Round-2 corrected |
+|---|---|---|---|---|
+| `test_phase1_manifest_validation.py` | 10 | 10 | 10 | **10** |
+| `test_phase1_structure.py` | 21 | 21 | 21 | **21** |
+| `test_phase2_contract_validation.py` | 42 | 42 | 42 | **42** |
+| `test_phase2_inputs.py` | 40 | 40 | 40 | **40** |
+| `test_phase3_driver_contract_validation.py` | 31 | 31 | 31 | **31** |
+| `test_phase3_drivers.py` | 28 | 28 | 28 | **28** |
+| `test_phase3_verifier_intersection.py` | 12 | 12 | 12 | **12** |
+| `test_phase4_oracle.py` | 68 | 68 | 68 | **68** |
+| `test_phase4_stage_b_source.py` | 155 | 155 | 155 | **155** |
+| `test_phase4_structure.py` | 43 | 43 | 43 | **43** |
+| `test_phase4_structure_contract_validation.py` | 52 | 52 | 52 | **52** |
+| `test_phase5_calc_contract_validation.py` | 151 | 151 | 151 | **151** |
+| `test_phase5_fingerprint.py` | 52 | 52 | 52 | **52** |
+| `test_phase5_numeric.py` | — | 43 | 48 | **52** |
+| `test_phase5_oracle.py` | — | 75 | 85 | **96** |
+| **total** | **705** | **823** | **838** | **853** |
 
-**Every existing count is unchanged.** No Step-1 test was weakened or removed; the 705 → 838 delta is exactly the 133 new Step-2 tests. The 151 Step-1 contract tests are unchanged in count; only the conditioning-term expectations inside them moved, for erratum C1. Stage-A
+**Every existing count is unchanged.** No Step-1 test was weakened or removed; the 705 → 853 delta is exactly the 148 new Step-2 tests. The 151 Step-1 contract tests are unchanged in count; only the conditioning-term expectations inside them moved, for erratum C1. Stage-A
 verification is unchanged at 181/181 because Step 2 emits nothing.
 
 ---
@@ -484,7 +494,7 @@ tests, because B is also an audit column — only E was invisible.
 
 ---
 
-## 16. Independent review — four blockers and a portability defect
+## 16. Independent review round 1 — four blockers and a portability defect
 
 All five reproduced before fixing, all five fixed.
 
@@ -622,7 +632,151 @@ Each of these fails against the previous Step-2 package:
 
 ---
 
-## 17. Next step — NOT started
+## 17. Independent review round 2 — three blockers
+
+All three reproduced before fixing, all three fixed. **No design changed**: these
+are implementation corrections to already-locked semantics, and neither
+`docs/phase5_plan.md` nor `spec/calc_contract.yaml` needed to move.
+
+### 17.1 BLOCKER — conditioning metadata could refuse a representable model
+
+Erratum C1's contribution-level conditioning multiplies each contribution by the
+relative coefficient before accumulating, which correctly avoids overflow. It did
+so through the general-purpose `safe_multiply`, whose contract refuses a non-zero
+product that rounds to exactly zero.
+
+That rule is right for economic values and factors, and **too strong for internal
+tolerance-scaling metadata.** Reproduced:
+
+```
+identity_allowance([2e-312], 1e-6, 1e-12, 1)
+  -> NumericalRangeRefusal: multiplication of two non-zero values
+     underflowed to exactly zero
+```
+
+and, on a fully valid model — SAR, FX 1, no inflation, zero discount, Uniform
+`Min = Max = 2e-312`, Quantity 1, profile 100% — the whole calculation was refused
+at `totals, driver 'CL-001': |A| nominal`. The economic outputs are perfectly
+representable; only the bookkeeping was not.
+
+The locked allowance for that input is unambiguous:
+
+```
+conditioning scale = max(1, 2e-312) = 1
+relative allowance = 1e-12
+final allowance    = max(1e-6, 1e-12) = 1e-6
+```
+
+**Fixed** by giving the conditioning accumulator its own underflow policy, scoped
+to it alone. `safe_multiply` is **not** weakened. The justification is quantitative
+rather than a convenience:
+
+- `coefficient × |term|` only underflows when `|term|` is below about `5e-312`;
+- the conditioning scale has a floor of 1, so the relative allowance is at least
+  `1e-12`;
+- a dropped term is therefore at most about `5e-324` against a quantity of at
+  least `1e-12` — over three hundred orders of magnitude below what it would have
+  to move. Even mixing huge and vanishing terms, the dropped amount is far under
+  one ulp of the sum.
+
+Overflow is still refused: a conditioning scale beyond Double makes the allowance
+itself unrepresentable, and comparing against it would be meaningless.
+
+Tested: `identity_allowance([2e-312]) == 1e-6`; the full `2e-312` model calculates
+and reconciles; a mixed `[1e18, 2e-312, 5e-324]` scale equals the `[1e18]` scale
+exactly; conditioning overflow still refuses; and **ordinary economic underflow is
+still refused**, both in the primitives and end-to-end in the oracle, so the
+exception cannot silently widen.
+
+### 17.2 BLOCKER — driver reference fields leaked raw `AttributeError`
+
+Canonical reference-set discovery and canonical driver ordering both compare
+UTF-16 code units, so they call `.encode` — and they ran *before* the resolution
+layer could refuse a non-text field. Reproduced for `currency` and
+`inflation_profile` with `None`, `123` and `True`, plus a raw `TypeError` for an
+unhashable `distribution`. A required user-editable field must never surface as a
+Python implementation error.
+
+**Fixed** by validating the text reference fields at the plain-data boundary,
+*before* any canonicalisation. `Currency`, `Inflation Profile` and `Distribution`
+must be non-blank text; `None`, booleans, numbers, empty and whitespace-only
+strings all produce a `ModelInputRefusal` naming the permanent ID, the field and
+the offending value or blank condition.
+
+**Identifiers are used exactly as entered and never repaired.** `" USD "` is not
+trimmed into `"USD"`: it resolves only if the FX table carries that exact key, and
+is otherwise refused. Rewriting user data to make a lookup succeed would be
+inventing an answer.
+
+**One deliberate addition, flagged rather than hidden.** The permanent ID is also
+checked for being non-blank text, because the canonical ordering cannot compare a
+`None`. That is **not** Phase-4 permanent-ID validation: the `CL-`/`R-` prefixes,
+the pattern and the counter rules remain owned by Phase 4 and are neither
+re-implemented nor re-checked here. Without it, a non-text ID would still escape
+as `AttributeError`.
+
+Tested across Cost Lines and Risks, three fields × nine invalid forms, asserting a
+structured refusal every time and that no raw `AttributeError`, `TypeError` or
+`KeyError` escapes.
+
+### 17.3 BLOCKER — `resolved_fx` did not match the `tblCalcFX` row rule
+
+`resolve_fx` seeded its result with `{"SAR": 1.0}` unconditionally, conflating
+*validated globally* with *belongs in the resolved referenced set*. Reproduced:
+
+| Model | Was | Locked row rule |
+|---|---|---|
+| USD-only | `{"SAR": 1.0, "USD": 3.75}` | `{"USD": 3.75}` |
+| empty drivers | `{"SAR": 1.0}` | `{}` |
+
+**Fixed** by separating the two questions explicitly. The global SAR invariant is
+checked exactly as before — missing, duplicated or `≠ 1` all still refuse, in
+every model including one with no drivers and one referencing no foreign currency
+— and the returned mapping is then built from the referenced set alone, in
+canonical order.
+
+No per-driver FX value and no analytical result changed. What changed is that the
+resolution output now matches `"one row per referenced currency"`, before Step 3
+starts consuming the oracle as an emission authority.
+
+Tested: exact key sets for empty, SAR-only, USD-only, SAR+USD and AED+SAR+USD;
+the rates themselves; **canonical key iteration order**, asserted as a list and
+proven independent of driver arrival order; and every existing
+referenced/unreferenced refusal test retained.
+
+### 17.4 Provenance
+
+The review archive carried no git metadata, so a reviewer could not tell which
+commit it came from. `tools/package_review.py` now writes a `PROVENANCE.txt` into
+the archive recording the commit, the tree hash and the file count. It is the only
+entry that is not a repository blob; every other entry remains byte-identical to
+`git cat-file blob`.
+
+### 17.5 Negative controls
+
+All ten new tests were run against the previous package, commit `e947fcd`:
+
+| Control | vs `e947fcd` |
+|---|---|
+| `identity_allowance([2e-312]) == 1e-6` | **fails** |
+| a vanishing term cannot move a scale that matters | **fails** |
+| the `2e-312` model calculates and reconciles | **fails** |
+| every invalid reference field is a structured refusal | **fails** |
+| the refusal names the field and the value | **fails** |
+| a blank reference field says so | **fails** |
+| an identifier is used exactly as entered | **fails** |
+| a non-text permanent ID is refused before ordering | **fails** |
+| `resolved_fx` is exactly the referenced set | **fails** |
+| `resolved_fx` iterates in canonical order | **fails** |
+
+**10 failed, 138 passed** against `e947fcd`; all pass here. The controls proving
+the exception did not widen — economic underflow still refused, conditioning
+overflow still refused — pass against both, which is correct: they assert
+behaviour that must not have changed.
+
+---
+
+## 18. Next step — NOT started
 
 Step 3, whatever review scopes it to be. Nothing beyond §1 of this document has
 been written.
@@ -636,4 +790,4 @@ been written.
 > **STEP 3 HAS NOT BEGUN.**
 > **PHASE 6 HAS NOT BEGUN.**
 
-**PHASE 5 GATE A STEP 2 CORRECTION READY FOR INDEPENDENT REVIEW**
+**PHASE 5 GATE A STEP 2 FINAL PATCH READY FOR INDEPENDENT REVIEW**
