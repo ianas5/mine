@@ -1,0 +1,711 @@
+# =============================================================================
+# PCCM - Calculation Contract
+# =============================================================================
+# Semantic authority for the PHYSICAL SHAPE of the Phase-5 `_Calc` calculation
+# workspace, and for the numeric tolerance constants the reconciliation uses.
+#
+# Authority split:
+#   workbook.yaml           structure and presentation
+#   input_contract.yaml     Setup inputs and Config master lists
+#   driver_contract.yaml    Cost Line and Risk Register schemas
+#   structure_contract.yaml structural runtime
+#   calc_contract.yaml      Phase-5 `_Calc` physical layout               <- this file
+#
+# -----------------------------------------------------------------------------
+# WHAT THIS FILE OWNS
+# -----------------------------------------------------------------------------
+#   * the exact `_Calc` physical anchors of phase5_plan.md Revision E, section 16.3
+#   * the Phase-5 block and ListObject names
+#   * the column schema of every Phase-5 ListObject: order, header, type, number
+#     format and unit
+#   * the scalar block labels, formats and seeded initial values
+#   * the profiling and reconciliation tolerance constants, and the identity
+#     conditioning coefficients
+#   * the calculation-state label sets (the two orthogonal enums)
+#   * FP_VERSION - the fingerprint ALGORITHM VERSION NUMBER only
+#   * the Phase-4 cells and rows on `_Calc` that Phase 5 may not touch
+#
+# -----------------------------------------------------------------------------
+# WHAT THIS FILE DOES NOT OWN - AND MUST NEVER RESTATE
+# -----------------------------------------------------------------------------
+#   * the fingerprint hash mathematics: the base, either modulus, either initial
+#     state, or the recurrence. Those live in ONE place, the Python fingerprint
+#     reference implementation, and are projected into VBA from there. A second
+#     hand-maintained copy in YAML is exactly the drift this architecture exists
+#     to prevent. Only the VERSION NUMBER is here. The loader FAILS if any hash
+#     mathematical constant appears in this file.
+#   * every mathematical formula - the deterministic central value, the
+#     distribution means, EMV, inflation compounding, discounting, Knom/Kpv, the
+#     annual series and the reconciliation identities themselves. Those are owned
+#     by docs/phase5_plan.md and implemented once in the Python oracle.
+#   * the Cost Line / Risk Register INPUT schemas          -> driver_contract.yaml
+#   * the distribution master list                          -> input_contract.yaml
+#   * the FX convention (1 unit of source currency = X SAR) -> input_contract.yaml
+#   * permanent-ID prefixes, patterns and counter rules      -> structure_contract.yaml
+#   * timeline structural rules, limits and the grid layout  -> structure_contract.yaml
+#
+# Where this file needs one of those, it REFERENCES the owning authority by name
+# and the loader validates the reference resolves. It never copies the value.
+#
+# Scope: Phase 5, Gate A, Step 1. Physical layout and tolerance constants only.
+# No Monte Carlo, no RNG, no sampling, no simulation output, no percentile.
+# =============================================================================
+
+calc_contract_version: "1.0.0"
+
+# -----------------------------------------------------------------------------
+# The sheet. Declared by workbook.yaml; referenced here, not redefined.
+# -----------------------------------------------------------------------------
+sheet:
+  name: "_Calc"
+  # Cross-validated against workbook.yaml. `hidden`, never `veryHidden`: an
+  # auditor must be able to unhide and inspect the calculation record.
+  required_visibility: "hidden"
+
+# -----------------------------------------------------------------------------
+# Phase-4 reservation on `_Calc`.
+#
+# Rows 1-11 are Phase-4 territory: the sheet title, subtitle, note, the
+# "Permanent ID Counters" section and the two persistent counters. Phase 5 may
+# not place a block there, and the loader fails if any Phase-5 anchor intersects
+# this reservation.
+#
+# The counter CELLS are listed so the assertion is exact rather than merely
+# row-based. Their defined names, prefixes, patterns and advancement rules belong
+# to structure_contract.yaml and are NOT restated here; the loader cross-checks
+# that these cells are the ones that contract declares.
+# -----------------------------------------------------------------------------
+phase4_reservation:
+  first_row: 1
+  last_row: 11
+  cells:
+    - "C10"
+    - "C11"
+  owning_contract: "structure_contract.yaml"
+  note: "Phase-4 permanent-ID counters. Frozen. Phase 5 reads nothing here and writes nothing here."
+
+# -----------------------------------------------------------------------------
+# Fingerprint ALGORITHM VERSION.
+#
+# This is the only fingerprint value this file carries. It is a version number,
+# not mathematics: it identifies WHICH canonical encoding and recurrence produced
+# a stored digest, so a workbook calculated under a future version 2 can be
+# recognised rather than silently compared.
+#
+# FP_BASE, FP_MOD_1, FP_MOD_2, FP_INIT_1 and FP_INIT_2 are DELIBERATELY ABSENT.
+# They are defined once, in the Python fingerprint reference implementation.
+#
+# Seeding rule: `_Calc!C15` (Fingerprint Version) is BLANK until a successful
+# commit writes this number. A never-calculated workbook must not look as though
+# it holds a partial successful snapshot.
+# -----------------------------------------------------------------------------
+fingerprint:
+  version: 1
+  version_written_by: "successful commit only"
+  mathematics_owner: "builder/pccm_builder/calc_fingerprint.py"
+
+# -----------------------------------------------------------------------------
+# Calculation-state label sets - the two ORTHOGONAL axes.
+#
+# phase5_plan.md sections 11.8 - 11.10. The axes move independently and neither
+# value set may leak into the other:
+#
+#   REFUSED is an ATTEMPT result. It is never a derived status: an invalid model
+#   is INVALID whether or not anyone pressed Calculate.
+#   FAILED is likewise an ATTEMPT result. A rolled-back write leaves the model
+#   STALE, derived from the inputs, not forced from the attempt.
+# -----------------------------------------------------------------------------
+state_labels:
+  derived_status:
+    - "NOT CALCULATED"
+    - "CURRENT"
+    - "STALE"
+    - "INVALID"
+  attempt_result:
+    - "NONE"
+    - "SUCCESS"
+    - "REFUSED"
+    - "FAILED"
+
+# -----------------------------------------------------------------------------
+# Scalar blocks. Fixed height, column B label / C value / E note.
+#
+# Both sit below the Phase-4 reservation, at disjoint row ranges, with rows 21-22
+# and 33 onward left free. Neither can grow, so neither can collide with the
+# other.
+# -----------------------------------------------------------------------------
+scalar_blocks:
+
+  # ---------------------------------------------------------------------------
+  # calc_state - B13:C20, notes in E13:E20.
+  #
+  # ROW ORDER IS LOAD-BEARING. It is what makes the success commit a single
+  # contiguous C13:C20 Range.Value2 assignment (plan section 12.3):
+  #
+  #   C13:C16   snapshot   - provably untouched by a refusal
+  #   C17:C18   attempt    - history, including a refusal or a failure
+  #   C19:C20   derived    - the last evaluated status and when it was evaluated
+  #
+  # Reordering these rows breaks the transaction design, not merely the display.
+  # ---------------------------------------------------------------------------
+  calc_state:
+    label_column: "B"
+    value_column: "C"
+    note_column: "E"
+    first_row: 13
+    last_row: 20
+    commit_range: "C13:C20"
+    snapshot_range: "C13:C16"
+    attempt_range: "C17:C18"
+    derived_range: "C19:C20"
+    fields:
+      - key: "last_successful_stamp"
+        row: 13
+        group: "snapshot"
+        label: "Last Successful Stamp"
+        value_type: "timestamp"
+        number_format: "yyyy-mm-dd hh:mm:ss"
+        initial: null
+        note: "When the last successful calculation committed. Blank until one has."
+
+      - key: "last_successful_fingerprint"
+        row: 14
+        group: "snapshot"
+        label: "Last Successful Fingerprint"
+        value_type: "text"
+        number_format: "@"
+        initial: null
+        note: "16 uppercase hexadecimal characters. Blank means there is no digest; it is never a valid one."
+
+      - key: "fingerprint_version"
+        row: 15
+        group: "snapshot"
+        label: "Fingerprint Version"
+        value_type: "integer"
+        number_format: "0"
+        initial: null
+        note: "The fingerprint algorithm version that produced the stored digest. Blank until a successful commit writes it; never seeded at build time."
+
+      - key: "last_successful_applied_timeline"
+        row: 16
+        group: "snapshot"
+        label: "Last Successful Applied Timeline"
+        value_type: "text"
+        number_format: "@"
+        initial: null
+        note: "base/start/duration in force at the last successful calculation."
+
+      - key: "last_attempt_result"
+        row: 17
+        group: "attempt"
+        label: "Last Attempt Result"
+        value_type: "enum"
+        enum: "attempt_result"
+        number_format: "@"
+        initial: "NONE"
+        note: "NONE before the first explicit calculation attempt. Never overwritten by a status evaluation."
+
+      - key: "last_attempt_detail"
+        row: 18
+        group: "attempt"
+        label: "Last Attempt Detail"
+        value_type: "text"
+        number_format: "@"
+        initial: null
+        note: "Blank after NONE and SUCCESS; the refusal reason after REFUSED; the write or verification detail after FAILED."
+
+      - key: "calculation_status"
+        row: 19
+        group: "derived"
+        label: "Calculation Status (last evaluated)"
+        value_type: "enum"
+        enum: "derived_status"
+        number_format: "@"
+        initial: "NOT CALCULATED"
+        note: "Derived from the current inputs against the stored snapshot. Last evaluated, not live: no change-event handler exists."
+
+      - key: "status_evaluated_at"
+        row: 20
+        group: "derived"
+        label: "Status Evaluated At"
+        value_type: "timestamp"
+        number_format: "yyyy-mm-dd hh:mm:ss"
+        initial: null
+        note: "When the status above was evaluated, so an auditor can see how old the reading is."
+
+  # ---------------------------------------------------------------------------
+  # calc_totals - B23:C32, all SAR.
+  #
+  # Ten values, read row-major from the two-column presentation of plan section
+  # 16.4: each measure's Nominal row is immediately followed by its PV row.
+  # The measure letters A, B, C, D, E are the plan's, and the arithmetic that
+  # produces them is the plan's; only the physical rows are owned here.
+  # ---------------------------------------------------------------------------
+  calc_totals:
+    label_column: "B"
+    value_column: "C"
+    note_column: "E"
+    first_row: 23
+    last_row: 32
+    value_range: "C23:C32"
+    units: "SAR"
+    fields:
+      - key: "a_nom"
+        row: 23
+        measure: "A"
+        basis: "nominal"
+        label: "Escalated Deterministic Base - Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+      - key: "a_pv"
+        row: 24
+        measure: "A"
+        basis: "pv"
+        label: "Escalated Deterministic Base - PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+      - key: "b_nom"
+        row: 25
+        measure: "B"
+        basis: "nominal"
+        label: "Uncertainty Mean Shift - Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+      - key: "b_pv"
+        row: 26
+        measure: "B"
+        basis: "pv"
+        label: "Uncertainty Mean Shift - PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+      - key: "c_nom"
+        row: 27
+        measure: "C"
+        basis: "nominal"
+        label: "Mean-Basis Base Cost - Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+      - key: "c_pv"
+        row: 28
+        measure: "C"
+        basis: "pv"
+        label: "Mean-Basis Base Cost - PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+      - key: "d_nom"
+        row: 29
+        measure: "D"
+        basis: "nominal"
+        label: "Expected Risk / EMV - Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+      - key: "d_pv"
+        row: 30
+        measure: "D"
+        basis: "pv"
+        label: "Expected Risk / EMV - PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+      - key: "e_nom"
+        row: 31
+        measure: "E"
+        basis: "nominal"
+        label: "Analytical Mean Total - Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+      - key: "e_pv"
+        row: 32
+        measure: "E"
+        basis: "pv"
+        label: "Analytical Mean Total - PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+# -----------------------------------------------------------------------------
+# Dynamic ListObjects.
+#
+# GROWTH STRATEGY: column bands, not vertical stacking. Every table has a fixed
+# column schema and an unbounded row count, so each gets its own column band, all
+# anchored at the same header row and growing downward with nothing beneath.
+#
+# Two-column gutters separate the bands, so a widened schema is caught by the
+# build-time overlap assertion rather than by silently overwriting a neighbour.
+#
+# `last_column` is the LOCKED band width from plan section 16.3. The loader
+# asserts the declared column count exactly fills the band: a schema that is one
+# column short or one column long fails the build rather than shifting a
+# neighbour's data.
+#
+# No table is capped at a business maximum. Row counts are described, not fixed.
+# -----------------------------------------------------------------------------
+tables:
+
+  calc_years:
+    table_name: "tblCalcYears"
+    header_row: 15
+    first_column: "H"
+    last_column: "J"
+    row_rule: "one row per applied project year"
+    columns:
+      - key: "project_index"
+        header: "Project Index"
+        value_type: "integer"
+        number_format: "0"
+        units: "index, from 1"
+      - key: "calendar_year"
+        header: "Calendar Year"
+        value_type: "integer"
+        number_format: "0"
+        units: "year"
+      - key: "discount_factor"
+        header: "Discount Factor"
+        value_type: "double"
+        number_format: "0.000000"
+        units: "dimensionless"
+
+  calc_inflation_factors:
+    table_name: "tblCalcInflationFactors"
+    header_row: 15
+    first_column: "M"
+    last_column: "P"
+    row_rule: "one row per referenced inflation profile per factor year, spanning BaseYear .. LastProjectYear inclusive"
+    # The BaseYear row carries a BLANK Annual Rate and a Cumulative Inflation
+    # Factor of 1. That blank is a MODEL-CONTROLLED OUTPUT - no rate exists for
+    # the base year - and is unrelated to the D4 blank-is-refusal rule, which
+    # governs user-entered profiling cells only.
+    columns:
+      - key: "inflation_profile"
+        header: "Inflation Profile"
+        value_type: "text"
+        number_format: "@"
+        units: "key"
+      - key: "calendar_year"
+        header: "Calendar Year"
+        value_type: "integer"
+        number_format: "0"
+        units: "year"
+      - key: "annual_rate"
+        header: "Annual Rate"
+        value_type: "double"
+        number_format: "0.00%"
+        units: "rate"
+      - key: "cumulative_inflation_factor"
+        header: "Cumulative Inflation Factor"
+        value_type: "double"
+        number_format: "0.000000"
+        units: "dimensionless"
+
+  calc_fx:
+    table_name: "tblCalcFX"
+    header_row: 15
+    first_column: "S"
+    last_column: "U"
+    row_rule: "one row per referenced currency"
+    # The FX CONVENTION - 1 unit of source currency = X SAR - is owned by
+    # input_contract.yaml and is referenced, not restated, here.
+    fx_convention_owner: "input_contract.yaml"
+    columns:
+      - key: "currency"
+        header: "Currency"
+        value_type: "text"
+        number_format: "@"
+        units: "key"
+      - key: "fx_to_sar"
+        header: "FX to SAR"
+        value_type: "double"
+        number_format: "0.000000"
+        units: "SAR per unit"
+      - key: "referenced_by"
+        header: "Referenced By"
+        value_type: "integer"
+        number_format: "0"
+        units: "driver count"
+
+  calc_drivers:
+    table_name: "tblCalcDrivers"
+    header_row: 15
+    first_column: "X"
+    last_column: "AR"
+    row_rule: "one row per identified Cost Line and Risk"
+    # AUDIT schema, not an input schema. The Cost Line and Risk Register INPUT
+    # columns are owned by driver_contract.yaml.
+    #
+    # NO COLUMN CARRIES TWO MEANINGS BY DRIVER KIND. A field that does not apply
+    # to a kind is BLANK - never zero, never reused. `applies_to` records which
+    # kinds populate each column, so the blank-vs-zero rule is machine-checkable
+    # rather than prose.
+    #
+    # The audit rows must reconstruct the headline measures by plain column sums
+    # over rows of one kind; that property is asserted by the Phase-5 oracle, and
+    # is why columns 14-21 exist separately rather than being folded together.
+    columns:
+      - key: "permanent_id"
+        header: "Permanent ID"
+        value_type: "text"
+        number_format: "@"
+        units: "key"
+        applies_to: ["cost_line", "risk"]
+      - key: "driver_kind"
+        header: "Driver Kind"
+        value_type: "text"
+        number_format: "@"
+        units: "Cost Line / Risk"
+        applies_to: ["cost_line", "risk"]
+      - key: "distribution"
+        header: "Distribution"
+        value_type: "text"
+        number_format: "@"
+        units: "name"
+        applies_to: ["cost_line", "risk"]
+      - key: "central_basis"
+        header: "Central Basis"
+        value_type: "text"
+        number_format: "@"
+        units: "ML / Midpoint"
+        applies_to: ["cost_line", "risk"]
+      - key: "currency"
+        header: "Currency"
+        value_type: "text"
+        number_format: "@"
+        units: "key"
+        applies_to: ["cost_line", "risk"]
+      - key: "fx_to_sar"
+        header: "FX to SAR"
+        value_type: "double"
+        number_format: "0.000000"
+        units: "SAR per unit"
+        applies_to: ["cost_line", "risk"]
+      - key: "inflation_profile"
+        header: "Inflation Profile"
+        value_type: "text"
+        number_format: "@"
+        units: "key"
+        applies_to: ["cost_line", "risk"]
+      - key: "quantity"
+        header: "Quantity"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "units"
+        applies_to: ["cost_line"]
+      - key: "probability"
+        header: "Probability"
+        value_type: "double"
+        number_format: "0.0%"
+        units: "fraction"
+        applies_to: ["risk"]
+      - key: "central_value"
+        header: "Central Value"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "source currency"
+        applies_to: ["cost_line"]
+      - key: "mean_value"
+        header: "Mean Value"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "source currency"
+        applies_to: ["cost_line", "risk"]
+      - key: "knom"
+        header: "Knom"
+        value_type: "double"
+        number_format: "0.000000"
+        units: "SAR per source unit"
+        applies_to: ["cost_line", "risk"]
+      - key: "kpv"
+        header: "Kpv"
+        value_type: "double"
+        number_format: "0.000000"
+        units: "SAR per source unit"
+        applies_to: ["cost_line", "risk"]
+      - key: "deterministic_nominal"
+        header: "Deterministic Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+        applies_to: ["cost_line"]
+      - key: "deterministic_pv"
+        header: "Deterministic PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+        applies_to: ["cost_line"]
+      - key: "mean_basis_nominal"
+        header: "Mean-Basis Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+        applies_to: ["cost_line"]
+      - key: "mean_basis_pv"
+        header: "Mean-Basis PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+        applies_to: ["cost_line"]
+      - key: "uncertainty_mean_shift_nominal"
+        header: "Uncertainty Mean Shift Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+        applies_to: ["cost_line"]
+      - key: "uncertainty_mean_shift_pv"
+        header: "Uncertainty Mean Shift PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+        applies_to: ["cost_line"]
+      - key: "expected_risk_nominal"
+        header: "Expected Risk Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+        applies_to: ["risk"]
+      - key: "expected_risk_pv"
+        header: "Expected Risk PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+        applies_to: ["risk"]
+
+  calc_annual:
+    table_name: "tblCalcAnnual"
+    header_row: 15
+    first_column: "AU"
+    last_column: "BB"
+    row_rule: "one row per applied project year"
+    # Calendar Year is present so an annual audit row stands on its own, without
+    # a join to tblCalcYears merely to learn which year it describes.
+    columns:
+      - key: "project_index"
+        header: "Project Index"
+        value_type: "integer"
+        number_format: "0"
+        units: "index"
+      - key: "calendar_year"
+        header: "Calendar Year"
+        value_type: "integer"
+        number_format: "0"
+        units: "year"
+      - key: "base_cost_nominal"
+        header: "Base Cost Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+      - key: "expected_risk_nominal"
+        header: "Expected Risk Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+      - key: "total_nominal"
+        header: "Total Nominal"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+      - key: "base_cost_pv"
+        header: "Base Cost PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+      - key: "expected_risk_pv"
+        header: "Expected Risk PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+      - key: "total_pv"
+        header: "Total PV"
+        value_type: "double"
+        number_format: "#,##0.00"
+        units: "SAR"
+
+# -----------------------------------------------------------------------------
+# Numerical tolerance constants.
+#
+# CONSTANTS ONLY. The identities themselves - what A + B = C means, what the
+# annual sums reconcile against - are owned by docs/phase5_plan.md section 15 and
+# implemented once in the Python oracle. This file supplies the numbers those
+# comparisons use, so a tolerance is never a magic literal buried in code.
+#
+# profiling_sum_absolute
+#     Percentages are entered to 2 dp and stored as binary doubles, so across the
+#     200-column structural maximum the accumulated representation error is
+#     bounded by roughly 200 * 2^-52. 1e-9 leaves about four orders of headroom
+#     and is still three orders tighter than a one-in-a-million entry slip.
+#     Exact binary equality is never used.
+#
+# identity_absolute_floor / identity_relative_coefficient
+#     |delta| <= max(floor, coefficient * conditioning_scale) SAR.
+#
+# conditioning_scale_floor
+#     The max(1, ...) floor keeps the scale from dropping below unity for a
+#     genuinely tiny model, so the absolute floor stays the binding constraint
+#     there.
+#
+# conditioning_terms
+#     The scale must reflect the MAGNITUDE OF THE ARITHMETIC PERFORMED, not the
+#     magnitude of its net result: a model holding large positive and large
+#     negative contributions whose net is near zero must not collapse its own
+#     tolerance. Each identity therefore names the absolute terms summed into its
+#     scale. These are term NAMES, not formulas; the arithmetic is the plan's.
+# -----------------------------------------------------------------------------
+tolerances:
+  profiling_sum_absolute: 1.0e-9
+  identity_absolute_floor: 1.0e-6
+  identity_relative_coefficient: 1.0e-12
+  conditioning_scale_floor: 1.0
+  fx_rate_strictly_positive: true
+  growth_factor_strictly_positive: true
+  conditioning_terms:
+    i1: ["abs_a", "abs_b", "abs_c"]
+    i2: ["abs_c", "abs_d", "abs_e"]
+    i3a: ["sum_abs_annual_base", "abs_c"]
+    i3b: ["sum_abs_annual_risk", "abs_d"]
+    i3c: ["sum_abs_annual_total", "abs_e"]
+    i4a: ["sum_abs_annual_base", "abs_c"]
+    i4b: ["sum_abs_annual_risk", "abs_d"]
+    i4c: ["sum_abs_annual_total", "abs_e"]
+
+# -----------------------------------------------------------------------------
+# Authority references.
+#
+# Every value this file needs but does not own. The loader asserts each named
+# contract exists and declares the referenced concept, so a rename in an upstream
+# authority breaks the build here rather than leaving a stale comment behind.
+# -----------------------------------------------------------------------------
+authority_references:
+  - concept: "distribution master list"
+    owner: "input_contract.yaml"
+    locator: "config_tables.distributions"
+  # The convention TEXT is deliberately not repeated here - only its location.
+  - concept: "FX convention"
+    owner: "input_contract.yaml"
+    locator: "conventions.fx_convention"
+  - concept: "Cost Line and Risk Register input schemas"
+    owner: "driver_contract.yaml"
+    locator: "registers"
+  - concept: "permanent-ID prefixes, patterns and counter rules"
+    owner: "structure_contract.yaml"
+    locator: "identity.counters"
+  - concept: "applied timeline and structural limits"
+    owner: "structure_contract.yaml"
+    locator: "timeline"
+  - concept: "_Calc sheet declaration, visibility and column widths"
+    owner: "workbook.yaml"
+    locator: "sheets"

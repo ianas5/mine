@@ -8,13 +8,33 @@ consistency points: the recurrence may not be reduced with VBA's `Mod` or `\`,
 whose operands are `Long`-typed while the intermediate reaches `2.8 × 10¹¹`, so a
 `Double`-only reduction is locked and verified; the final commit assignment is
 brought inside the transaction rather than assumed infallible; the post-failure
-scalar state is described accurately; the callable count is corrected to six; and
-the initial `calc_state` values and the accessors' empty-case behaviour are
-locked.
+scalar state is described accurately; the public entry-point count is corrected to
+six; and the initial `calc_state` values and the accessors' empty-case behaviour
+are locked.
 
 **DESIGN GATE. No code, no VBA, no workbook change, no build artifacts.** Phase 4
 is accepted and closed; nothing in `src/`, `spec/`, `builder/`, `bootstrap/` or
 `tests/` is touched by this document.
+
+---
+
+## 0. Revision E errata — editorial, applied in place
+
+Revision E is **accepted** and the design gate is **closed**. Four errata were
+raised during acceptance. They are **editorial and test-definition corrections**;
+they change no locked design decision, no constant, no vector, no anchor, no
+schema and no expected value. They are applied **in place** in the sections named
+below, and recorded here so a reviewer can see exactly what moved.
+
+| # | Correction | Applied in |
+|---|---|---|
+| **E1** | **Case 33 post-failure state.** Immediately after rollback and **before** failure metadata is written, `C13:C20` is restored exactly. The *final* observable state is `C13:C16` restored exactly, `C17:C20` carrying **new** failed-attempt and derived-status metadata, `C23:C32` restored exactly and all five analytical ListObjects restored exactly. The final acceptance comparison is therefore **`C13:C16` + `C23:C32` + the five analytical ListObjects**, never all of `C13:C20`. | §12.5, §23 case 33, §25.7 |
+| **E2** | **Case 36 `Long` wording.** `281,320,423,161` is **not** equal to `131 × Long.MaxValue`. The exact statements are `131 × 2,147,483,647 = 281,320,357,757` and `281,320,423,161 = 131 × Long.MaxValue + 65,404`; prose may otherwise say "approximately 131 times the signed-`Long` maximum". The reduction vectors and their expected remainders are **unchanged**. | §11.5, §23 case 36 |
+| **E3** | **No executable VBA proof exists on Linux.** No Gate-A acceptance wording may claim that VBA executes, or produces the fingerprint, on Linux. The proof split is locked in §21.0. Gate-A static validation of VBA source is **not** weakened by this erratum — it remains generated/source/static conformance, with **no execution**. | §11.6, §21.0, §21 |
+| **E4** | **Callable terminology.** "six public Phase-5 callables in total" reads as a cap on every `Public` procedure in the phase. The correct phrase is **"six public `PCCM_` automation/API entry points"**. The six are unchanged. This does **not** prohibit numerical helper procedures from being `Public` where cross-module VBA calls require it; it prohibits **additional `PCCM_` endpoints**, none of which may be added in Phase 5 without review. | §11.13, §27, §29 |
+
+One further **Gate-B requirement is locked here and deliberately not implemented
+yet**: direct Windows/VBA vector coverage, specified in §24.1.
 
 ---
 
@@ -511,13 +531,19 @@ Revision D observed correctly that the intermediate is bounded by
 and concluded the recurrence "is therefore exact in VBA arithmetic". That is true
 of the *arithmetic* and false of the *operator*. The VBA language specification
 defines `Mod` on floating-point operands using an **effective integral type of
-`Long`**, and
+`Long`**, and the intermediate is **approximately 131 times the signed-`Long`
+maximum**:
 
 ```
-281,320,423,161  ≈  131 × Long.MaxValue
+131 × 2,147,483,647  =  281,320,357,757
+281,320,423,161      =  131 × Long.MaxValue + 65,404
 ```
 
-is far outside signed 32-bit range. Writing
+*(Erratum E2: `281,320,423,161` is **not** equal to `131 × Long.MaxValue`; the two
+exact statements above replace that claim. The reduction vectors below and their
+expected remainders are unchanged.)*
+
+Either way the intermediate is far outside signed 32-bit range. Writing
 
 ```vb
 h = (h * 131 + u) Mod m          ' WRONG — overflows Long
@@ -612,8 +638,16 @@ N22:1.0000000000000000E+00N22:1.0000000000000000E+00S4:RISKI1:0
 EXPECTED FINGERPRINT = 50B6EB0E26857EA7
 ```
 
-**Python and VBA must both produce this exact literal.** It is a locked test
-vector on both sides of Gate A and is re-asserted on real Excel at Gate B (§24).
+**Python and VBA must both produce this exact literal.** The two proofs live in
+different gates and must not be conflated (erratum E3, §21.0):
+
+- **Gate A / Linux** — the **Python** reference implementation produces
+  `50B6EB0E26857EA7` and is asserted against this literal. The VBA is checked
+  **statically only**: no VBA is executed on Linux, so no Gate-A test may claim
+  that VBA produced this digest.
+- **Gate B / Windows Excel** — real VBA execution produces the digest through
+  `PCCM_CurrentInputFingerprint()`, and parity with the Python literal is asserted
+  on target (§24, §25.6).
 
 ### 11.7 Collision probes — locked test set
 
@@ -785,7 +819,16 @@ PCCM_CalculationFingerprint()      the LAST SUCCESSFUL fingerprint
 PCCM_CurrentInputFingerprint()     the fingerprint of the inputs as they are NOW
 ```
 
-**Six public Phase-5 callables in total: `PCCM_Calculate` plus five accessors.**
+**Six public `PCCM_` automation/API entry points in total: `PCCM_Calculate` plus
+five accessors.**
+
+*(Erratum E4.)* This is a bound on the **`PCCM_` endpoint surface**, not on the
+`Public` keyword. Numerical helper procedures inside `modCalcFactors`,
+`modCalcAnalytical`, `modCalcFingerprint`, `modCalcResolve`, `modCalcCheck` and
+`modCalcReport` may be declared `Public` wherever a cross-module VBA call requires
+it — VBA has no narrower visibility between standard modules. What is prohibited is
+**any additional `PCCM_`-prefixed entry point in Phase 5**, which may not be
+introduced without review.
 
 `PCCM_CalculationRefusal()` from Revision C is **replaced**, not kept. A
 refusal-only accessor cannot report a `FAILED` write, so it could not express the
@@ -1683,6 +1726,30 @@ emitter projects it into `modCalcContract.bas`, exactly as Phases 1–4 already 
 
 ## 21. Gate A — Linux / static
 
+### 21.0 The proof split — LOCKED (erratum E3)
+
+**No VBA is executed on Linux.** There is no VBA interpreter, no Excel and no
+`AscW` on the Gate-A host, so no Gate-A test may claim — in an assertion, a test
+name, a document or a report — that VBA executed, that VBA produced a fingerprint,
+or that VBA arithmetic was observed.
+
+| Gate | Host | What is actually proven |
+|---|---|---|
+| **Gate A** | Linux / Python | the **Python numerical and fingerprint oracle**; fixed literal vectors asserted independently of the implementation under test; **generated / source / static conformance** of the VBA — text, structure, declarations, forbidden constructs, projected constants. **No execution of VBA.** |
+| **Gate B** | Windows / real Excel | **actual VBA execution**; actual canonical numeric encoding under a real locale; actual UTF-16 / `AscW` behaviour including sign normalisation; the actual `Double`-only reducer; actual end-to-end fingerprint parity |
+
+Gate-A **static** validation of VBA source is **not weakened** by this split. Every
+mechanical sweep, source rule and generated-artifact assertion stands, and new ones
+may be added; what is forbidden is describing any of them as runtime proof.
+
+Where a Gate-A test mirrors VBA semantics in Python — the `Double`-only reducer of
+§11.5 is the leading example — the test proves that **the reference semantics are
+self-consistent**, not that VBA implements them. The VBA side of that claim is
+Gate B's, and §24.1 makes it a direct, vector-level requirement rather than an
+inference from one golden digest.
+
+### 21.1 Gate-A deliverables
+
 1. **Pure-Python numerical oracle** — `builder/pccm_builder/calc_oracle.py`,
    implementing §5–§15 and the §11 fingerprint independently, in the
    `structure_oracle.py` pattern: it defines the semantics the VBA must match
@@ -1701,10 +1768,10 @@ emitter projects it into `modCalcContract.bas`, exactly as Phases 1–4 already 
 |---|---|
 | length-prefixed serialisation is collision-free | the eight §11.7 probes — strings containing `:`, `U+001F`, `U+0000`, `U+000A` — must yield eight distinct digests, asserted against the literals |
 | UTF-16 code-unit parity | Python encodes `utf-16-le` and reads 16-bit units; test vectors include a non-BMP character, proving it contributes **two** units, and a character above `U+7FFF`, proving the `AscW` sign normalisation |
-| numeric encoding is locale-invariant | the ten §11.3 literals asserted exactly; plus a test that the normalisation step maps a `,` decimal separator to `.` before hashing |
-| exact hash constants and digest | `FP_BASE`, both moduli, both initial states asserted as literals; the §11.6 stream asserted at **366 code units** and its digest at **`50B6EB0E26857EA7`** |
-| **no native `Mod` or `\` in the reduction** | a source rule over the **executable** hash-recurrence code of `modCalcFingerprint`, not a whole-file word ban — the word "modulus" must remain usable in prose and identifiers |
-| **`Double`-only reduction is exact** | the four §11.5 reduction vectors, every `x` of which exceeds `Long.MaxValue`; plus a randomised sweep asserting the reducer equals exact integer `%` for both moduli, then the full stream re-digested through the reducer to `50B6EB0E26857EA7` |
+| numeric encoding is locale-invariant | the ten §11.3 literals asserted exactly; plus a test that the **Python reference** normalisation step maps a `,` decimal separator to `.` before hashing. This proves the **reference normalisation semantics**; it does **not** prove VBA `Format`/`Str` runtime behaviour under a comma locale, which is reserved for Gate B (§21.0, §24.1) |
+| exact hash constants and digest | `FP_BASE`, both moduli, both initial states asserted as literals; the §11.6 stream asserted at **366 code units** and its digest at **`50B6EB0E26857EA7`** — produced by the **Python** reference implementation (§21.0) |
+| **no native `Mod` or `\` in the reduction** | a **static source rule** over the **executable** hash-recurrence code of `modCalcFingerprint`, not a whole-file word ban — the word "modulus" must remain usable in prose and identifiers. Static conformance only; the VBA is not executed (§21.0) |
+| **the reference `Double`-only reduction is exact** | the four §11.5 reduction vectors, every `x` of which exceeds `Long.MaxValue`; plus a randomised sweep asserting the **Python mirror of the locked VBA reducer** equals exact integer `%` for both moduli, then the full stream re-digested through that mirror to `50B6EB0E26857EA7`. The mirror is a reference oracle, **not** a VBA execution: parity with real VBA arithmetic is proven at Gate B (§21.0, §24.1) |
 | row order excluded | the same drivers in reversed order produce an identical fingerprint |
 | Uniform ML excluded | two Uniform drivers differing **only** in ML produce an identical fingerprint |
 | stable formulas avoid naive overflow | the `1e308` and `1.5e308` cases of §19.2: naive overflows, stable returns the exact mean |
@@ -1815,10 +1882,10 @@ exercise them compactly. Their **behaviour is locked** regardless.
 | **30** | **cancellation-heavy reconciliation** | large positive and negative unit costs whose net is near zero, all representable | identities I1–I4 **hold**; the conditioning scale of §15 keeps the tolerance proportional to the arithmetic performed, not to the near-zero net |
 | **31** | **Base-Year factor row** | `Base 2026, Start 2028, Dur 3` | `tblCalcInflationFactors` contains a `2026` row with **blank rate and cumulative factor `1`**, plus the pre-project rows `2027`, `2028` |
 | **32** | **status reverts to CURRENT** | calculate → break an input → refuse → restore the input exactly → query | derived **`CURRENT`** with no recalculation, while the attempt axis still reads `REFUSED` (§11.11, §25.5) |
-| **33** | **mid-write failure** | injected failure after `tblCalcDrivers` is mutated | full logical rollback; previous snapshot and **both scalar value ranges** intact; no mixed state; attempt result `FAILED`; derived status **`STALE`**, not forced from the attempt (§12.4, §25.7) |
+| **33** | **mid-write failure** | injected failure after `tblCalcDrivers` is mutated | full logical rollback in two observable moments (erratum E1). **After rollback, before failure metadata:** `C13:C20` restored **exactly**, all eight cells. **Final observable state:** `C13:C16` = the previous successful snapshot restored exactly · `C17:C20` = **new** failed-attempt and derived-status metadata · `C23:C32` = the previous totals restored exactly · all five analytical ListObjects restored exactly. **The final acceptance comparison is `C13:C16` + `C23:C32` + the five analytical ListObjects — never all of `C13:C20`,** which would assert the failure was not recorded. No mixed state; attempt result `FAILED`; derived status **`STALE`**, not forced from the attempt (§12.4, §12.5, §25.7) |
 | **34** | **invalid input, no Calculate attempted** | valid success, then break an input and query without calculating | derived **`INVALID`**, attempt result still **`SUCCESS`** — the two axes moving independently (§25.1 row 3) |
 | **35** | **locale-separator injection** | canonical numeric encoder given `,` as the decimal separator | output **byte-identical** to the `.` case; the encoder is a pure function of its arguments (§11.3) |
-| **36** | **reduction beyond `Long`** | `h = 2147483646, u = 65535` for `FP_MOD_1`, and the three other §11.5 vectors | `x = 281,320,423,161` — **131× `Long.MaxValue`** — reduces to **`65404`**; the `Double`-only reducer equals exact integer `%` for both moduli. A native `Mod` implementation fails here |
+| **36** | **reduction beyond `Long`** | `h = 2147483646, u = 65535` for `FP_MOD_1`, and the three other §11.5 vectors | `x = 281,320,423,161` — **approximately 131 times the signed-`Long` maximum**; exactly, `131 × 2,147,483,647 = 281,320,357,757` and `281,320,423,161 = 131 × Long.MaxValue + 65,404` (erratum E2) — reduces to **`65404`**; the `Double`-only reducer equals exact integer `%` for both moduli. A native `Mod` implementation fails here. Reduction vectors and expected remainders unchanged |
 | **37** | **failure at the commit boundary** | injected failure at the final `C13:C20` assignment | the same rollback path as a mid-table failure; `C13:C16` and all analytical blocks restored; attempt `FAILED`; status derived independently (§12.3–§12.5) |
 
 Cases 26–27, 31 and 35 assert **format and audit content**; 28, 32 and 34 assert
@@ -1831,6 +1898,39 @@ rollback**.
 ## 24. Gate B — real Windows / Excel
 
 Extends the accepted `phase4_functional_test.ps1` matrix; it does not replace it.
+
+### 24.1 Direct Windows vector coverage — LOCKED REQUIREMENT, IMPLEMENTED LATER
+
+**Recorded now so it cannot be forgotten; deliberately not implemented in Gate-A
+Step 1.**
+
+The golden-case fingerprint parity of §25.6 is necessary but **not sufficient**. A
+single end-to-end digest can hide a compensating pair of encoder and reducer
+defects, and it exercises none of the extreme vectors the design was built around.
+Real Windows / VBA must therefore exercise the **canonical encoder** and the
+**reducer** *directly*, against the **complete locked vector set**:
+
+| Vector group | What real VBA must reproduce |
+|---|---|
+| **the ten numeric canonical encodings** (§11.3) | `0`, `-0`, `1`, `-1`, `0.1`, `1e-20`, `1e+20`, `0.1+0.2`, the maximum usable `Double`, and the minimum subnormal **where it is safely constructible in VBA** — each asserted against its locked literal |
+| **decimal-separator injection** | the canonical encoder given `.` and given `,`, producing identical output on a real Windows locale — the runtime half of the proof Gate A cannot make (§21.0) |
+| **all four locked reduction vectors** (§11.5) | `(2147483647, 2147483646, 65535) → 65404` · `(2147483629, 2147483628, 65535) → 65404` · `(2147483647, 1234567890, 41) → 667120106` · `(2147483629, 1234567890, 41) → 667121456`, each computed by the real `Double`-only reducer |
+| **UTF-16 code-unit handling** | a code unit above `U+7FFF`, proving `AscW` sign normalisation on target; and a **non-BMP** character, proving it contributes **two** surrogate code units and that length prefixes count **UTF-16 units** |
+| **the complete reference stream** | the §11.6 stream at **366 code units** digesting to **`50B6EB0E26857EA7`** on real Excel |
+
+**Preferred Gate-B design — a transient, test-only VBA diagnostic module.** It is
+imported **only** into the disposable Windows harness working copy, and it may call
+the numerical fingerprint helpers directly so the encoder and reducer are exercised
+without an analytical fixture. Its constraints are absolute:
+
+- it **must not** enter the Stage-B production manifest;
+- it **must not** persist in the accepted workbook;
+- it **must not** create a button or any user-facing surface;
+- it **must not** add a `PCCM_` production API entry point (erratum E4 — the
+  endpoint surface stays at six).
+
+**This module is NOT part of Gate-A Step 1 and must not be written there.** It is
+recorded here as a Gate-B acceptance requirement only.
 
 ### Additive expectations
 
@@ -2091,7 +2191,8 @@ Simulation needs **only** these: no worksheet, no ListObject, no Range.
 9. **`modCalcReport` + the transactional orchestration of §12** —
    snapshot, write, verify, commit-last; `calc_state` maintenance; refusal through
    `modAppState`. `PCCM_Calculate` **and the five accessors** of §11.13 — six
-   public Phase-5 callables in total. **No button.**
+   public `PCCM_` automation/API entry points in total (erratum E4: a bound on the
+   `PCCM_` endpoint surface, not on the `Public` keyword). **No button.**
 10. **Gate-A source review.**
 11. **Gate-B harness extension** — additive module/button assertions, the new
     functional coverage, the fingerprint-parity assertion, the stale/revert
@@ -2115,14 +2216,18 @@ would otherwise be tempted to define by whatever it happens to produce.
    snapshot intact;
 4. every emitted expected value equals its hand-derived literal (§21);
 5. the canonical stream is exactly 366 code units for the reference vector and its
-   digest is **`50B6EB0E26857EA7`** in Python, in VBA on Linux-side tests, and on
-   real Excel; the eight collision probes are distinct; the ten numeric encodings
-   match, locale-invariantly;
+   digest is **`50B6EB0E26857EA7`** — proven at **Gate A** by the Python reference
+   implementation and at **Gate B** by real VBA on real Excel. *(Erratum E3: there
+   is no VBA execution on Linux, so no "VBA on Linux-side tests" proof exists or
+   may be claimed — §21.0.)* The eight collision probes are distinct; the ten
+   numeric encodings match, and the canonical encoder is separator-invariant —
+   proven for the Python reference at Gate A and for real VBA at Gate B (§24.1);
 6. **the modular reduction uses `Double` arithmetic only** — no native `Mod` and
-   no `\` on any pre-reduction intermediate, proven by a source rule over the
-   executable recurrence code; the four §11.5 reduction vectors match exact
-   integer arithmetic for both moduli, and the same reducer reproduces the
-   end-to-end digest;
+   no `\` on any pre-reduction intermediate, proven at Gate A by a **static**
+   source rule over the executable recurrence code; the four §11.5 reduction
+   vectors match exact integer arithmetic for both moduli — in the Python mirror at
+   Gate A, and in the **real VBA reducer** at Gate B (§24.1) — and the same reducer
+   reproduces the end-to-end digest;
 7. identities I1, I2, I3a–c, I4a–c, I5 hold within the §15 tolerances **using the
    per-identity conditioning scales**, with `B` and `E` independently accumulated.
    `A_pv ≤ A_nom` is a conditional diagnostic, **not** a gate;
@@ -2173,7 +2278,14 @@ would otherwise be tempted to define by whatever it happens to produce.
 19. **Phase 5 introduces no RNG implementation, no sampling implementation and no
     simulation output, and makes no use of Iterations, Random Seed or Selected
     Confidence Level in any analytical calculation or in the fingerprint;
-    `_SimData` remains unchanged and unused** (§22).
+    `_SimData` remains unchanged and unused** (§22);
+20. **real Windows / VBA exercises the canonical encoder and the reducer directly
+    against the complete locked vector set** of §24.1 — the ten numeric encodings,
+    both decimal separators, all four reduction vectors, the `> U+7FFF` and
+    non-BMP UTF-16 vectors, and the 366-code-unit reference stream — not merely the
+    golden-case digest. Where a transient test-only diagnostic module provides that
+    access, it does not enter the Stage-B production manifest, does not persist in
+    the accepted workbook, creates no button, and adds no `PCCM_` endpoint.
 
 ---
 
@@ -2196,14 +2308,27 @@ Revision E changed one implementation blocker and four consistency points:
 | the recurrence intermediate declared "exact in VBA arithmetic" — true of the arithmetic, **false of the operator**, since VBA `Mod` and `\` are `Long`-typed and `x` reaches `2.8 × 10¹¹` | a locked `Double`-only reduction — `Fix`, subtract, two one-step corrections — verified against exact integer arithmetic over 300,000 random cases with zero mismatches, reproducing the same digest |
 | the final `C13:C20` assignment treated as infallible | it is a commit **attempt**; its failure takes the same rollback path, and steps 4–7 are all inside the envelope |
 | acceptance implying `C13:C20` equals its old values after a failure | the comparison is **`C13:C16` plus the analytical blocks**; `C17:C20` is correctly published as new |
-| "`PCCM_Calculate` and the four accessors" | **six public callables**: `PCCM_Calculate` plus **five** accessors |
+| "`PCCM_Calculate` and the four accessors" | **six public `PCCM_` automation/API entry points**: `PCCM_Calculate` plus **five** accessors (erratum E4 — a bound on the `PCCM_` endpoint surface, not on the `Public` keyword) |
 | initial `calc_state` values unstated | locked — blanks, `NONE`, `NOT CALCULATED`, and `Fingerprint Version` **blank** until a successful commit |
 | accessor empty cases unstated | locked — `""` for no digest, `NONE` before the first attempt, no sentinel hash strings |
 | "the entire canonical stream, byte for byte" | "UTF-16 code-unit for UTF-16 code-unit" — the hash is defined over code units, never over a byte encoding |
 
 **No open decisions remain.**
 
+### Revision E errata — applied in place, no design change
+
+Four errata (E1–E4) were raised at acceptance and applied editorially; §0 records
+them in full, and each amended passage cites its erratum number. They correct the
+post-failure `calc_state` comparison (E1), the `131 × Long.MaxValue` arithmetic
+(E2), acceptance wording that implied VBA executes on Linux (E3), and the
+"callable" terminology (E4). **No constant, vector, anchor, schema, expected value
+or locked decision changed.** In addition, §24.1 records a locked **Gate-B**
+requirement — direct Windows/VBA vector coverage — which is deliberately **not
+implemented** at Gate-A Step 1.
+
 Model source, workbook artifacts, contracts, bootstrap, harness and Phase-4 tests
-are unchanged by this document. No code has been written.
+are unchanged by this document. No code has been written **by this document**;
+implementation begins at Gate-A Step 1, recorded separately in
+`docs/phase5_gate_a_step1.md`.
 
 **PHASE 5 PLAN REVISION E READY FOR REVIEW**
