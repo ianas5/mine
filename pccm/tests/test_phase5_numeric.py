@@ -15,6 +15,8 @@ Runs standalone or under pytest.
 
 from __future__ import annotations
 
+import ast
+import itertools
 import math
 import sys
 from fractions import Fraction
@@ -23,8 +25,11 @@ from pathlib import Path
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
 
+NUMERIC_PATH = PCCM_ROOT / "builder" / "pccm_builder" / "calc_numeric.py"
+
 from pccm_builder.calc_numeric import (  # noqa: E402
     MAX_DOUBLE,
+    MIN_NORMAL_DOUBLE,
     ModelInputRefusal,
     NumericalRangeRefusal,
     OracleInvariantError,
@@ -39,6 +44,7 @@ from pccm_builder.calc_numeric import (  # noqa: E402
     safe_divide,
     safe_multiply,
     safe_product,
+    safe_signed_sum,
     safe_subtract,
     safe_sum,
     triangular_mean,
@@ -505,6 +511,386 @@ def test_the_failure_hierarchy_separates_refusals_from_internal_defects() -> Non
     assert issubclass(CalculationRefusal, OracleError)
     assert issubclass(OracleInvariantError, OracleError)
     assert not issubclass(OracleInvariantError, CalculationRefusal)
+
+
+# ---------------------------------------------------------------------------
+# Erratum C2 - a representable final Double is never refused for an
+# intermediate that left the range
+# ---------------------------------------------------------------------------
+# A SIGNED SUM whose true total is representable must produce it, even when the
+# canonical left-to-right partial sums are not. `MAX + MAX - MAX` is `MAX`, and
+# refusing it refuses an answer that exists.
+def test_the_four_locked_signed_sum_vectors() -> None:
+    """The vectors the patch is specified against, asserted exactly."""
+    assert safe_signed_sum([MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE]) == MAX_DOUBLE
+    assert safe_signed_sum([MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE, -MAX_DOUBLE, 1.0]) == 1.0
+    assert (
+        safe_signed_sum([MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE, -MAX_DOUBLE, 5e-324]) == 5e-324
+    )
+    _refuses(
+        lambda: safe_signed_sum([MAX_DOUBLE, MAX_DOUBLE]),
+        "a sum with no cancellation and no representable total",
+    )
+
+
+def test_a_sum_that_already_succeeds_is_never_reordered() -> None:
+    """TIER 1 IS THE CONTRACT for every ordinary model.
+
+    The rescue exists to turn a refusal into an answer, not to improve answers.
+    Wherever plain left-to-right accumulation produces a value, `safe_signed_sum`
+    must return THAT value, bit for bit — including where left to right is the
+    less accurate order. Anything else would move the numbers of models that work
+    today, and would make canonical permanent-ID order stop determining the
+    result.
+    """
+    corpus = [
+        [0.1, 0.2, 0.3],
+        [1e16, 1.0, -1e16],                      # left to right loses the 1.0
+        [1e16, -1e16, 1.0],                      # the same terms, and it does not
+        [MAX_DOUBLE, 1.0, -MAX_DOUBLE],          # absorbed, then cancelled to zero
+        [5e-324, 1.0, -1.0],
+        [-3.5, 2.25, 1.0],
+        [1e300, 1e-300],
+    ]
+    for terms in corpus:
+        expected = safe_sum(terms)
+        actual = safe_signed_sum(terms)
+        assert actual == expected and math.copysign(1.0, actual) == math.copysign(
+            1.0, expected
+        ), f"{terms}: tier 1 gave {expected!r} but safe_signed_sum gave {actual!r}"
+
+
+def test_the_rescue_is_reached_only_when_the_canonical_order_produced_nothing() -> None:
+    """`[1e16, 1.0, -1e16]` sums to `0.0` left to right and to `1.0` if reordered.
+
+    Tier 1 succeeds, so `0.0` is the answer. A rescue that ran unconditionally —
+    or that ran on any inaccuracy rather than only on overflow — would return
+    `1.0` here and silently change every model that has ever been calculated.
+    """
+    assert safe_signed_sum([1e16, 1.0, -1e16]) == 0.0
+    assert safe_sum([1e16, 1.0, -1e16]) == 0.0
+
+
+def test_the_rescue_names_the_stage_and_is_deterministic() -> None:
+    message = _refuses(
+        lambda: safe_signed_sum([MAX_DOUBLE, MAX_DOUBLE], "headline totals"),
+        "an unrepresentable signed total",
+    )
+    assert "headline totals" in message
+    vector = [MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE, -MAX_DOUBLE, 5e-324]
+    assert {safe_signed_sum(vector) for _ in range(20)} == {5e-324}
+
+
+def test_a_signed_sum_names_the_term_that_failed() -> None:
+    """Tier-1 messages still identify the driver or year, as §19.4 requires."""
+    message = _refuses(
+        lambda: safe_signed_sum(
+            [MAX_DOUBLE, MAX_DOUBLE], "totals", ["driver 'CL-001'", "driver 'CL-002'"]
+        ),
+        "an unrepresentable signed total",
+    )
+    assert "totals" in message
+
+
+def test_exact_cancellation_returns_positive_zero() -> None:
+    """`+0.0`, not `-0.0`: the sign of a total that cancelled to nothing is not a
+    fact about the model, and a negative zero would propagate into comparisons and
+    audit columns for no reason."""
+    total = safe_signed_sum([MAX_DOUBLE, -MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE])
+    assert total == 0.0 and math.copysign(1.0, total) == 1.0
+
+
+def test_a_negative_signed_total_survives_cancellation() -> None:
+    assert safe_signed_sum([-MAX_DOUBLE, -MAX_DOUBLE, MAX_DOUBLE]) == -MAX_DOUBLE
+    _refuses(
+        lambda: safe_signed_sum([-MAX_DOUBLE, -MAX_DOUBLE]),
+        "an unrepresentable negative signed total",
+    )
+
+
+def test_the_rescue_agrees_with_exact_rational_arithmetic_where_it_fires() -> None:
+    """An INDEPENDENT oracle. `Fraction` is exact and is used only in the test —
+    never in production, where IEEE-754 Double IS the semantic target."""
+    vectors = [
+        [MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE],
+        [MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE, -MAX_DOUBLE, 1.0],
+        [MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE, -MAX_DOUBLE, 5e-324],
+        [MAX_DOUBLE, MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE, -MAX_DOUBLE],
+        [1e308, 1e308, 1e308, -1e308, -1e308, -1e308],
+        [MAX_DOUBLE, 1e308, -MAX_DOUBLE, -1e308, -7.5],
+    ]
+    for terms in vectors:
+        exact = sum((Fraction(t) for t in terms), Fraction(0))
+        assert Fraction(safe_signed_sum(terms)) == exact, f"{terms}: rescue disagrees"
+
+
+def test_a_signed_sum_that_genuinely_exceeds_double_range_is_still_refused() -> None:
+    """The rescue repairs an intermediate that left the range. It must not repair a
+    RESULT that is genuinely outside it — that would be fabrication."""
+    for terms in (
+        [MAX_DOUBLE, MAX_DOUBLE],
+        [MAX_DOUBLE, MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE],
+        [MAX_DOUBLE, MAX_DOUBLE, -1.0],
+        [-MAX_DOUBLE, -MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE],
+    ):
+        _refuses(lambda t=terms: safe_signed_sum(t), f"{terms} has no representable total")
+
+
+def test_a_non_finite_term_is_refused_before_any_tier_runs() -> None:
+    for bad in (math.inf, -math.inf, math.nan, 10**400):
+        _refuses(
+            lambda b=bad: safe_signed_sum([1.0, b, -1.0]),
+            f"{bad!r} is not a usable Double",
+        )
+
+
+# A CONVEX COMBINATION is bracketed by its own points, so it always has a
+# representable answer. Tier 0 returns a zero-uncertainty point exactly, tier 1 is
+# the accepted stable form untouched, tier 2 rescues the rest.
+DEGENERATE_POINTS = (
+    0.0, 1.0, -1.0, 1e-300, -1e-300, 1e-320, 5e-324, -5e-324,
+    1e308, MAX_DOUBLE, -MAX_DOUBLE, math.nextafter(MAX_DOUBLE, 0.0),
+    0.1, -12345.6789,
+)
+
+
+def test_a_distribution_with_zero_uncertainty_returns_its_point_exactly() -> None:
+    """§9, EXACTLY — no last-ulp drift anywhere in the usable Double range.
+
+    `x/3 + x/3 + x/3 != x` for many subnormal `x`, and `x/2 + x/2` cannot even be
+    formed for the smallest one, so the stable forms alone do not give this. A
+    distribution with `Min == ML == Max` has no uncertainty at all, and answering
+    anything but that number is wrong regardless of how small the error is.
+    """
+    for point in DEGENERATE_POINTS:
+        assert triangular_mean(point, point, point) == point, f"triangular at {point!r}"
+        assert beta_pert_mean(point, point, point) == point, f"Beta-PERT at {point!r}"
+        assert midpoint(point, point) == point, f"midpoint at {point!r}"
+
+
+def test_the_degenerate_invariant_is_needed_and_not_incidental() -> None:
+    """Proof that tier 0 is doing work: at these points the stable form drifts."""
+    assert 5e-324 / 3.0 + 5e-324 / 3.0 + 5e-324 / 3.0 != 5e-324
+    assert 5e-324 / 2.0 == 0.0                        # the stable midpoint cannot form
+    assert triangular_mean(5e-324, 5e-324, 5e-324) == 5e-324
+    assert midpoint(5e-324, 5e-324) == 5e-324
+
+
+def test_the_stable_forms_still_carry_a_non_degenerate_overflow() -> None:
+    """Tier 1 is not made redundant by tier 0: with three DIFFERENT huge points the
+    naive numerator still overflows and the stable form still answers."""
+    assert (1e308 + 1.1e308 + 1.2e308) == math.inf
+    assert triangular_mean(1e308, 1.1e308, 1.2e308) == 1.1e308
+    assert beta_pert_mean(1e308, 1.1e308, 1.2e308) == 1.1e308
+
+
+# The boundary corpus of §11. `Decimal`/`Fraction` appear here and nowhere in
+# production.
+BOUNDARY_CORPUS = (
+    MAX_DOUBLE, math.nextafter(MAX_DOUBLE, 0.0), 1e308, 1.0, 1e-300, 1e-320, 5e-324, 0.0,
+    -MAX_DOUBLE, -math.nextafter(MAX_DOUBLE, 0.0), -1e308, -1.0, -1e-300, -1e-320, -5e-324,
+)
+
+# (label, function, exact weights, ulps the RESCUE may differ from correctly
+# rounded). Zero for Triangular and Uniform. One for Beta-PERT, because its
+# numerator `Min + 4*ML + Max` needs two roundings where the other two need one -
+# the same one-ulp class the accepted stable form already carries and which
+# `test_the_mandated_stable_form_is_not_bit_identical_to_the_naive_form` records.
+_STATISTICS = (
+    ("triangular mean", triangular_mean, (Fraction(1, 3), Fraction(1, 3), Fraction(1, 3)), 0),
+    ("Beta-PERT mean", beta_pert_mean, (Fraction(1, 6), Fraction(2, 3), Fraction(1, 6)), 1),
+    ("midpoint", midpoint, (Fraction(1, 2), Fraction(1, 2)), 0),
+)
+
+
+def _ulps_apart(a: float, b: float, limit: int = 64) -> int:
+    if a == b:
+        return 0
+    low, high = (a, b) if a < b else (b, a)
+    distance = 0
+    while low < high and distance < limit:
+        low = math.nextafter(low, math.inf)
+        distance += 1
+    return distance
+
+
+def test_no_convex_statistic_is_refused_when_its_answer_is_representable() -> None:
+    """THE CLASS THIS PATCH EXISTS TO CLOSE, swept over the whole boundary corpus.
+
+    For every combination of boundary points, the exact rational statistic is
+    computed with `Fraction` and rounded once to Double. If that rounding produces
+    a usable non-zero Double, the oracle must produce a value; a refusal there is
+    a refusal of an answer that exists.
+    """
+    for label, function, weights, _ in _STATISTICS:
+        for points in itertools.product(BOUNDARY_CORPUS, repeat=len(weights)):
+            exact = sum(
+                (weight * Fraction(point) for weight, point in zip(weights, points)),
+                Fraction(0),
+            )
+            try:
+                rounded = float(exact)
+            except OverflowError:
+                rounded = None
+            representable = rounded is not None and abs(rounded) <= MAX_DOUBLE
+            try:
+                actual = function(*points)
+            except NumericalRangeRefusal as error:
+                assert not (representable and rounded != 0.0), (
+                    f"{label}{points} refused ({error}) but rounds to {rounded!r}"
+                )
+                continue
+            assert representable, f"{label}{points} returned {actual!r}, which is out of range"
+
+
+def test_the_convex_statistics_are_correctly_rounded_on_the_boundary_corpus() -> None:
+    """Stronger than "not refused": where the exact statistic has an exactly
+    representable Double, that is the Double returned.
+
+    `Fraction` is exact, so `float(exact)` is the correctly rounded answer. This
+    is what pins the rescue's scale-back to a SINGLE rounding: halving one step at
+    a time through the subnormal range rounds twice and lands a unit low, which is
+    enough to turn `5e-324` into `0.0` and a value into a refusal.
+    """
+    rescued = 0
+    for label, function, weights, allowed_ulps in _STATISTICS:
+        for points in itertools.product(BOUNDARY_CORPUS, repeat=len(weights)):
+            exact = sum(
+                (weight * Fraction(point) for weight, point in zip(weights, points)),
+                Fraction(0),
+            )
+            try:
+                rounded = float(exact)
+            except OverflowError:
+                continue
+            if abs(rounded) > MAX_DOUBLE or rounded == 0.0:
+                continue
+            if not _tier_two_fired(function, points):
+                continue                    # tier 1's own rounding is accepted, not tested here
+            rescued += 1
+            try:
+                actual = function(*points)
+            except NumericalRangeRefusal:
+                raise AssertionError(f"{label}{points} refused; exact rounds to {rounded!r}")
+            distance = _ulps_apart(actual, rounded)
+            assert distance <= allowed_ulps, (
+                f"{label}{points}: rescue gave {actual!r}, correctly rounded is "
+                f"{rounded!r} ({distance} ulps, {allowed_ulps} allowed)"
+            )
+    assert rescued > 1000, (
+        f"only {rescued} corpus inputs actually reached the rescue; the sweep would pass "
+        "vacuously"
+    )
+
+
+def _tier_two_fired(function, points) -> bool:
+    """True when the accepted stable form could not produce a value on its own.
+
+    Tier 1's own rounding is accepted and deliberately NOT compared against the
+    exact value (see `test_the_mandated_stable_form_is_not_bit_identical...`);
+    what must be correctly rounded is the rescue, so the check is scoped to the
+    inputs that actually reach it.
+    """
+    from pccm_builder import calc_numeric
+
+    stable_only = {
+        triangular_mean: lambda v: (
+            calc_numeric.safe_accumulate(
+                calc_numeric.safe_accumulate(
+                    calc_numeric.safe_divide(v[0], 3.0), calc_numeric.safe_divide(v[1], 3.0)
+                ),
+                calc_numeric.safe_divide(v[2], 3.0),
+            )
+        ),
+        beta_pert_mean: lambda v: (
+            calc_numeric.safe_accumulate(
+                calc_numeric.safe_accumulate(
+                    calc_numeric.safe_divide(v[0], 6.0),
+                    calc_numeric.safe_multiply(v[1], 2.0 / 3.0),
+                ),
+                calc_numeric.safe_divide(v[2], 6.0),
+            )
+        ),
+        midpoint: lambda v: calc_numeric.safe_accumulate(
+            calc_numeric.safe_divide(v[0], 2.0), calc_numeric.safe_divide(v[1], 2.0)
+        ),
+    }[function]
+    try:
+        stable_only(points)
+    except NumericalRangeRefusal:
+        return True
+    return False
+
+
+def test_a_statistic_with_no_usable_non_zero_double_is_still_refused() -> None:
+    """The other side of §10. `midpoint(5e-324, 0)` is `2.47e-324`, which is below
+    half the smallest subnormal and rounds to zero: there is no usable non-zero
+    Double for it, and the existing underflow contract refuses rather than
+    silently deleting the value."""
+    _refuses(lambda: midpoint(5e-324, 0.0), "a statistic that rounds to zero")
+    _refuses(lambda: triangular_mean(5e-324, 5e-324, -5e-324), "a statistic that rounds to zero")
+    assert float(Fraction(5e-324) / 2) == 0.0
+
+
+def test_the_binade_rescue_uses_only_powers_of_two() -> None:
+    """A STRUCTURAL guard on cross-language reproducibility (§10).
+
+    The rescue must be expressible in VBA with a counting loop and nothing else.
+    `math.frexp`, `math.ldexp`, `Decimal` and `Fraction` in the rescue would each
+    be correct in Python and untranslatable, so none may appear in the module at
+    all.
+    """
+    source = NUMERIC_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    called: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            called.add(node.attr)
+        elif isinstance(node, ast.Name):
+            called.add(node.id)
+    for banned in ("frexp", "ldexp", "fsum", "Decimal", "Fraction", "nextafter"):
+        assert banned not in called, f"calc_numeric.py uses {banned}, which VBA has no form of"
+
+
+def test_the_minimum_normal_double_constant_is_the_ieee_754_value() -> None:
+    assert MIN_NORMAL_DOUBLE == 2.0**-1022
+    assert MIN_NORMAL_DOUBLE / 2.0 != 0.0                      # subnormals exist below it
+    assert math.frexp(MIN_NORMAL_DOUBLE) == (0.5, -1021)
+
+
+# ---------------------------------------------------------------------------
+# NEGATIVE CONTROLS - the tests above must fail if the mechanism is removed
+# ---------------------------------------------------------------------------
+def test_sabotaging_the_signed_sum_rescue_breaks_the_locked_vectors() -> None:
+    """§13. Replace tier 2 with a plain left-to-right re-run and the cancellation
+    vectors must refuse again. A guard that survives its own removal is not a
+    guard."""
+    vectors = (
+        [MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE],
+        [MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE, -MAX_DOUBLE, 1.0],
+        [MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE, -MAX_DOUBLE, 5e-324],
+    )
+    for terms in vectors:
+        assert safe_signed_sum(terms) is not None          # works with the rescue
+        _refuses(lambda t=terms: safe_sum(t), f"{terms} without the rescue")
+
+
+def test_sabotaging_the_degenerate_invariant_breaks_the_exactness_vectors() -> None:
+    """§13. Without tier 0, the stable form drifts or refuses at these points."""
+    saboteur = (5e-324, 1e-320, MAX_DOUBLE, -MAX_DOUBLE)
+    for point in saboteur:
+        assert triangular_mean(point, point, point) == point
+    # The stable form alone, which is what tier 0 replaces:
+    assert 5e-324 / 3.0 * 3.0 != 5e-324
+    assert MAX_DOUBLE / 3.0 + MAX_DOUBLE / 3.0 + MAX_DOUBLE / 3.0 == math.inf
+    assert -MAX_DOUBLE / 3.0 + -MAX_DOUBLE / 3.0 + -MAX_DOUBLE / 3.0 == -math.inf
+
+
+def test_sabotaging_the_binade_rescue_breaks_the_subnormal_statistics() -> None:
+    """§13. Without tier 2, a subnormal Uniform has no midpoint at all."""
+    assert midpoint(5e-324, 1e-323) == 1e-323
+    _refuses(lambda: safe_divide(5e-324, 2.0), "the stable midpoint's own first step")
+    assert float(Fraction(5e-324) / 2 + Fraction(1e-323) / 2) == 1e-323
 
 
 # ---------------------------------------------------------------------------

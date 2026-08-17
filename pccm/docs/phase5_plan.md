@@ -46,6 +46,54 @@ C1 is **not** editorial. It is a numerical correction to an accepted definition
 that did not satisfy its own stated objective, and it is recorded here rather than
 folded silently into a new revision.
 
+### Erratum C2 — raised later, by implementation
+
+| # | Correction | Applied in |
+|---|---|---|
+| **C2** | **A representable final result is never refused because an intermediate left the range.** §19.2 states the objective — "a mathematically equivalent expression avoids an intermediate that can overflow while the final result is representable" — but the stable forms alone do not reach it for two families. **(a) Signed sums**: any sum of validated Doubles whose *final* value is representable must be produced, even where the canonical-order partial sums are not (`MAX + MAX − MAX` is `MAX`). **(b) Convex statistics**: a deterministic central value or distribution mean is a convex combination of its points, so it always lies between `Min` and `Max` and always has a representable answer; it must not be refused because an internal averaging step overflowed or underflowed. **No tolerance, weight, formula or expected value changed**, and the stable forms of the table below remain the required ordinary path. | §19.2, and `docs/phase5_gate_a_step2.md` §18 for the algorithms |
+
+**What C2 locks, precisely.**
+
+1. **Canonical order is the calculation.** The supplied order — ascending
+   permanent ID, project year ascending — is evaluated first, with the existing
+   `SafeAccumulate` semantics. **If it produces a value, that value is the
+   result, bit for bit.** A sum that already works is never reordered, so no
+   model that calculates today produces a different number.
+2. **Cancellation rescue is a second tier, and only for addition overflow.** It
+   runs only where tier 1 produced no value at all. It is not triggered by
+   underflow, by inaccuracy, or by anything else.
+3. **The stable forms of §19.2 remain tier 1 for the convex statistics.** The
+   rescue runs only where that form cannot produce a result.
+4. **A distribution with zero uncertainty returns its point exactly.** `Min ==
+   Max` (Uniform) gives a midpoint of exactly `Min`; `Min == ML == Max`
+   (Triangular, Beta-PERT) gives a mean of exactly `Min`. This holds across the
+   whole usable Double range, including `0`, negatives, `±MAX_DOUBLE` and the
+   smallest subnormal. **No last-ulp drift is acceptable for a distribution with
+   no uncertainty**, and the stable forms alone do not give this: `x/3 + x/3 +
+   x/3 ≠ x` for many subnormal `x`, and `x/2` cannot even be formed for the
+   smallest one.
+5. **A genuine range failure is still a refusal.** Where the *final* result has
+   no usable Double — a signed total that really exceeds the range, a statistic
+   whose exact value rounds to zero — the controlled `NumericalRangeRefusal` of
+   §19.1 stands unchanged. C2 removes refusals of answers that exist; it creates
+   no fabricated values.
+6. **No positivity rule is introduced anywhere.** A negative profile weight, a
+   negative contribution and a negative total all remain legal. What changed is
+   how a sum is computed, not what a model may contain.
+7. **Cross-language reproducibility.** Both rescues are specified as deterministic
+   integer-and-Double algorithms — comparisons, exact power-of-two scaling and
+   counting loops — with a definite order and a definite tie-breaker. No
+   `math.fsum`, `frexp`, `ldexp`, `Decimal` or `Fraction` appears in production;
+   `Decimal` and `Fraction` remain legitimate in independent test oracles only.
+
+C2 applies to the profile-weight sum validation, `Knom` and `Kpv`, the A/B/C/D/E
+accumulations, the annual Base Cost / Expected Risk / Total series, and the
+annual-to-headline reconciliation sums. It does **not** magnitude-sort the normal
+calculation, and it changes nothing in `spec/calc_contract.yaml`.
+
+Like C1, C2 is **not** editorial: it is a numerical correction to an accepted
+definition that did not reach its own stated objective.
+
 ---
 
 ## 1. Phase objective
@@ -1686,6 +1734,16 @@ The same policy governs `Knom` / `Kpv` products, per-driver contributions, annua
 contributions and the A–E accumulators: every multiplication and every addition
 goes through the safe primitives, and no naive intermediate is formed where a
 stable equivalent exists.
+
+> **Erratum C2 applies to this section.** The stable forms above are the required
+> ordinary path and are unchanged. They are, however, not sufficient on their own
+> to reach the objective stated at the top of §19.2: a signed sum can still lose a
+> representable total to its partial sums, and a convex statistic can still be
+> refused for an internal averaging step, even in the stable form. Both are
+> repaired by the two-tier rules recorded in §0 Erratum C2 — canonical order
+> first, rescue only where canonical order produced nothing, and a
+> zero-uncertainty distribution returned exactly. The algorithms are specified for
+> VBA in `docs/phase5_gate_a_step2.md` §18.
 
 ### 19.3 Inflation and discount — iterative, with overflow AND underflow detection
 

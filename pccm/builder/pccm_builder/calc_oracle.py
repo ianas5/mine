@@ -67,6 +67,7 @@ from .calc_numeric import (
     safe_add,
     safe_multiply,
     safe_product,
+    safe_signed_sum,
     safe_subtract,
     scaled_magnitude,
     triangular_mean,
@@ -617,9 +618,15 @@ def _resolve_weights(
             )
         weights.append(_numeric(raw, cell))
 
-    total = 0.0
-    for offset, weight in enumerate(weights):
-        total = safe_accumulate(total, weight, f"{where}, project year {offset + 1}")
+    # Signed: a profile may legitimately contain negative weights (a credit, a
+    # transfer out), and the SUM is what has to be 100%. Checking that sum must
+    # not fail merely because two large opposite-signed weights happen to be
+    # adjacent in project-year order (§19.2, Erratum C2).
+    total = safe_signed_sum(
+        weights,
+        where,
+        labels=[f"project year {offset + 1}" for offset in range(len(weights))],
+    )
     if abs(total - 1.0) > tolerances.profiling_sum_absolute:
         raise ModelInputRefusal(
             f"{where}: weights sum to {total!r}, which is not 100% within "
@@ -720,21 +727,23 @@ def precomputed_factors(
     per-driver multiplier, not a factor of the escalation path. Folding either in
     would double-count them at the contribution step.
     """
-    nominal = 0.0
-    present = 0.0
+    nominal_terms: list[float] = []
+    present_terms: list[float] = []
+    labels: list[str] = []
     for offset, weight in enumerate(weights):
         index = offset + 1
         year_where = f"{where}, project year {index}"
-        nominal = safe_accumulate(
-            nominal, safe_product([weight, inflation_by_index[offset]], year_where), year_where
-        )
-        present = safe_accumulate(
-            present,
+        labels.append(f"project year {index}")
+        nominal_terms.append(safe_product([weight, inflation_by_index[offset]], year_where))
+        present_terms.append(
             safe_product(
                 [weight, inflation_by_index[offset], discount_by_index[offset]], year_where
-            ),
-            year_where,
+            )
         )
+    # Each per-year term is formed in project-year order, exactly as before; only
+    # the ACCUMULATION of the finished terms is signed-sum aware (Erratum C2).
+    nominal = safe_signed_sum(nominal_terms, f"{where}: Knom series", labels)
+    present = safe_signed_sum(present_terms, f"{where}: Kpv series", labels)
     return (
         safe_multiply(fx_rate, nominal, f"{where}: Knom"),
         safe_multiply(fx_rate, present, f"{where}: Kpv"),
@@ -961,53 +970,78 @@ def _accumulate_totals(
     scale measures the arithmetic THAT WAS PERFORMED rather than the total that
     survived it.
     """
-    a_nom = a_pv = b_nom = b_pv = c_nom = c_pv = d_nom = d_pv = e_nom = e_pv = 0.0
-    mag: dict[str, float] = {
-        key: 0.0 for key in
-        ("a_nom", "a_pv", "b_nom", "b_pv", "c_nom", "c_pv", "d_nom", "d_pv", "e_nom", "e_pv")
-    }
+    keys = (
+        "a_nom", "a_pv", "b_nom", "b_pv", "c_nom", "c_pv", "d_nom", "d_pv", "e_nom", "e_pv"
+    )
+    mag: dict[str, float] = {key: 0.0 for key in keys}
     coefficient = tolerances.identity_relative_coefficient
 
-    def record(key: str, value: float, where: str) -> None:
+    # CONTRIBUTIONS, in canonical driver order, one list per measure. Collecting
+    # them before summing changes nothing about WHAT is added or in what order —
+    # `safe_signed_sum` accumulates the list left to right first, exactly as the
+    # previous running total did — but it lets a total whose partial sums step
+    # outside Double range still produce its representable answer instead of a
+    # refusal (Erratum C2). Each measure keeps its own named list so the structural
+    # guards can still see that E is never derived from C and D.
+    a_nom_terms: list[float] = []
+    a_pv_terms: list[float] = []
+    b_nom_terms: list[float] = []
+    b_pv_terms: list[float] = []
+    c_nom_terms: list[float] = []
+    c_pv_terms: list[float] = []
+    d_nom_terms: list[float] = []
+    d_pv_terms: list[float] = []
+    e_nom_terms: list[float] = []
+    e_pv_terms: list[float] = []
+    who: dict[str, list[str]] = {key: [] for key in keys}
+
+    def contribute(
+        key: str, into: list[float], value: float, driver_id: str, where: str
+    ) -> None:
+        into.append(value)
+        who[key].append(f"driver {driver_id!r}")
         mag[key] = scaled_magnitude(mag[key], value, coefficient, where)
 
     for driver in drivers:
-        tag = f"totals, driver {driver.permanent_id!r}"
+        pid = driver.permanent_id
+        tag = f"totals, driver {pid!r}"
         if driver.driver_kind is DriverKind.COST_LINE:
-            a_nom = safe_accumulate(a_nom, driver.deterministic_nominal, f"{tag}: A nom")
-            a_pv = safe_accumulate(a_pv, driver.deterministic_pv, f"{tag}: A pv")
-            b_nom = safe_accumulate(
-                b_nom, driver.uncertainty_mean_shift_nominal, f"{tag}: B nom"
+            contribute("a_nom", a_nom_terms, driver.deterministic_nominal, pid, f"{tag}: |A| nom")
+            contribute("a_pv", a_pv_terms, driver.deterministic_pv, pid, f"{tag}: |A| pv")
+            contribute(
+                "b_nom", b_nom_terms, driver.uncertainty_mean_shift_nominal, pid, f"{tag}: |B| nom"
             )
-            b_pv = safe_accumulate(b_pv, driver.uncertainty_mean_shift_pv, f"{tag}: B pv")
-            c_nom = safe_accumulate(c_nom, driver.mean_basis_nominal, f"{tag}: C nom")
-            c_pv = safe_accumulate(c_pv, driver.mean_basis_pv, f"{tag}: C pv")
-            record("a_nom", driver.deterministic_nominal, f"{tag}: |A| nom")
-            record("a_pv", driver.deterministic_pv, f"{tag}: |A| pv")
-            record("b_nom", driver.uncertainty_mean_shift_nominal, f"{tag}: |B| nom")
-            record("b_pv", driver.uncertainty_mean_shift_pv, f"{tag}: |B| pv")
-            record("c_nom", driver.mean_basis_nominal, f"{tag}: |C| nom")
-            record("c_pv", driver.mean_basis_pv, f"{tag}: |C| pv")
+            contribute(
+                "b_pv", b_pv_terms, driver.uncertainty_mean_shift_pv, pid, f"{tag}: |B| pv"
+            )
+            contribute("c_nom", c_nom_terms, driver.mean_basis_nominal, pid, f"{tag}: |C| nom")
+            contribute("c_pv", c_pv_terms, driver.mean_basis_pv, pid, f"{tag}: |C| pv")
         else:
-            d_nom = safe_accumulate(d_nom, driver.expected_risk_nominal, f"{tag}: D nom")
-            d_pv = safe_accumulate(d_pv, driver.expected_risk_pv, f"{tag}: D pv")
-            record("d_nom", driver.expected_risk_nominal, f"{tag}: |D| nom")
-            record("d_pv", driver.expected_risk_pv, f"{tag}: |D| pv")
+            contribute("d_nom", d_nom_terms, driver.expected_risk_nominal, pid, f"{tag}: |D| nom")
+            contribute("d_pv", d_pv_terms, driver.expected_risk_pv, pid, f"{tag}: |D| pv")
 
-    # E is accumulated in its OWN pass over the same contributions, not derived
-    # from C and D. Two independent journeys to the same number are what I2 tests.
+    # E is collected in its OWN pass over the same contributions, not derived from
+    # C and D. Two independent journeys to the same number are what I2 tests.
     for driver in drivers:
-        tag = f"totals, driver {driver.permanent_id!r}: E"
+        pid = driver.permanent_id
+        tag = f"totals, driver {pid!r}: E"
         if driver.driver_kind is DriverKind.COST_LINE:
-            e_nom = safe_accumulate(e_nom, driver.mean_basis_nominal, f"{tag} nom")
-            e_pv = safe_accumulate(e_pv, driver.mean_basis_pv, f"{tag} pv")
-            record("e_nom", driver.mean_basis_nominal, f"{tag} |E| nom")
-            record("e_pv", driver.mean_basis_pv, f"{tag} |E| pv")
+            contribute("e_nom", e_nom_terms, driver.mean_basis_nominal, pid, f"{tag} |E| nom")
+            contribute("e_pv", e_pv_terms, driver.mean_basis_pv, pid, f"{tag} |E| pv")
         else:
-            e_nom = safe_accumulate(e_nom, driver.expected_risk_nominal, f"{tag} nom")
-            e_pv = safe_accumulate(e_pv, driver.expected_risk_pv, f"{tag} pv")
-            record("e_nom", driver.expected_risk_nominal, f"{tag} |E| nom")
-            record("e_pv", driver.expected_risk_pv, f"{tag} |E| pv")
+            contribute("e_nom", e_nom_terms, driver.expected_risk_nominal, pid, f"{tag} |E| nom")
+            contribute("e_pv", e_pv_terms, driver.expected_risk_pv, pid, f"{tag} |E| pv")
+
+    a_nom = safe_signed_sum(a_nom_terms, "totals: A nom", who["a_nom"])
+    a_pv = safe_signed_sum(a_pv_terms, "totals: A pv", who["a_pv"])
+    b_nom = safe_signed_sum(b_nom_terms, "totals: B nom", who["b_nom"])
+    b_pv = safe_signed_sum(b_pv_terms, "totals: B pv", who["b_pv"])
+    c_nom = safe_signed_sum(c_nom_terms, "totals: C nom", who["c_nom"])
+    c_pv = safe_signed_sum(c_pv_terms, "totals: C pv", who["c_pv"])
+    d_nom = safe_signed_sum(d_nom_terms, "totals: D nom", who["d_nom"])
+    d_pv = safe_signed_sum(d_pv_terms, "totals: D pv", who["d_pv"])
+    e_nom = safe_signed_sum(e_nom_terms, "totals: E nom", who["e_nom"])
+    e_pv = safe_signed_sum(e_pv_terms, "totals: E pv", who["e_pv"])
 
     totals = AnalyticalTotals(a_nom, a_pv, b_nom, b_pv, c_nom, c_pv, d_nom, d_pv, e_nom, e_pv)
     return totals, ReconciliationMagnitudes(relative_coefficient=coefficient, **mag)
@@ -1049,8 +1083,19 @@ def _annual_series(
         mag[key] = scaled_magnitude(mag[key], value, coefficient, where)
 
     for offset, (index, calendar_year) in enumerate(project_years):
-        base_nom = risk_nom = total_nom = 0.0
-        base_pv = risk_pv = total_pv = 0.0
+        # Per-year contribution lists, in canonical driver order. As in
+        # `_accumulate_totals`, the order and the terms are unchanged; only the
+        # accumulation is signed-sum aware, so a year whose contributions cancel
+        # is not refused for a partial sum that left Double range (Erratum C2).
+        base_nom_terms: list[float] = []
+        base_pv_terms: list[float] = []
+        risk_nom_terms: list[float] = []
+        risk_pv_terms: list[float] = []
+        total_nom_terms: list[float] = []
+        total_pv_terms: list[float] = []
+        base_who: list[str] = []
+        risk_who: list[str] = []
+        total_who: list[str] = []
         discount = discounts[index]
 
         for driver in ordered_costs:
@@ -1062,10 +1107,12 @@ def _annual_series(
                 [resolved.mean_value, resolved.quantity, resolved.fx_to_sar, weight, infl], where
             )
             present = safe_product([nominal, discount], f"{where} PV")
-            base_nom = safe_accumulate(base_nom, nominal, f"{where}: base nominal")
-            base_pv = safe_accumulate(base_pv, present, f"{where}: base PV")
-            total_nom = safe_accumulate(total_nom, nominal, f"{where}: total nominal")
-            total_pv = safe_accumulate(total_pv, present, f"{where}: total PV")
+            base_nom_terms.append(nominal)
+            base_pv_terms.append(present)
+            total_nom_terms.append(nominal)
+            total_pv_terms.append(present)
+            base_who.append(f"cost line {driver.permanent_id!r}")
+            total_who.append(f"cost line {driver.permanent_id!r}")
             record("annual_base_nom", nominal, f"{where}: |base| nominal")
             record("annual_base_pv", present, f"{where}: |base| PV")
             record("annual_total_nom", nominal, f"{where}: |total| nominal")
@@ -1081,25 +1128,36 @@ def _annual_series(
                 where,
             )
             present = safe_product([nominal, discount], f"{where} PV")
-            risk_nom = safe_accumulate(risk_nom, nominal, f"{where}: risk nominal")
-            risk_pv = safe_accumulate(risk_pv, present, f"{where}: risk PV")
-            total_nom = safe_accumulate(total_nom, nominal, f"{where}: total nominal")
-            total_pv = safe_accumulate(total_pv, present, f"{where}: total PV")
+            risk_nom_terms.append(nominal)
+            risk_pv_terms.append(present)
+            total_nom_terms.append(nominal)
+            total_pv_terms.append(present)
+            risk_who.append(f"risk {driver.permanent_id!r}")
+            total_who.append(f"risk {driver.permanent_id!r}")
             record("annual_risk_nom", nominal, f"{where}: |risk| nominal")
             record("annual_risk_pv", present, f"{where}: |risk| PV")
             record("annual_total_nom", nominal, f"{where}: |total| nominal")
             record("annual_total_pv", present, f"{where}: |total| PV")
 
+        year = f"annual year {calendar_year}"
+        # The annual TOTAL is summed over its own list of contributions rather than
+        # added from the two series above it, so I3c and I4c stay real checks.
         rows.append(
             AnnualRow(
                 project_index=index,
                 calendar_year=calendar_year,
-                base_cost_nominal=base_nom,
-                expected_risk_nominal=risk_nom,
-                total_nominal=total_nom,
-                base_cost_pv=base_pv,
-                expected_risk_pv=risk_pv,
-                total_pv=total_pv,
+                base_cost_nominal=safe_signed_sum(
+                    base_nom_terms, f"{year}: base nominal", base_who
+                ),
+                expected_risk_nominal=safe_signed_sum(
+                    risk_nom_terms, f"{year}: risk nominal", risk_who
+                ),
+                total_nominal=safe_signed_sum(
+                    total_nom_terms, f"{year}: total nominal", total_who
+                ),
+                base_cost_pv=safe_signed_sum(base_pv_terms, f"{year}: base PV", base_who),
+                expected_risk_pv=safe_signed_sum(risk_pv_terms, f"{year}: risk PV", risk_who),
+                total_pv=safe_signed_sum(total_pv_terms, f"{year}: total PV", total_who),
             )
         )
     return tuple(rows), ReconciliationMagnitudes(relative_coefficient=coefficient, **mag)
@@ -1189,15 +1247,20 @@ def reconcile(result: CalculationResult, tolerances: Tolerances) -> tuple[Identi
          (magnitudes.annual_total_pv, magnitudes.e_pv)),
     )
     for name, values, headline, scaled_terms in series:
-        total = 0.0
-        for value in values:
-            total = safe_accumulate(total, value, name)
+        # Signed: the annual rows being reconciled against a headline can carry
+        # either sign, and the reconciliation must not refuse a model whose
+        # headline it is about to confirm (Erratum C2).
+        total = safe_signed_sum(
+            values, name, [f"project year {row.project_index}" for row in annual]
+        )
         check(name, total, headline, scaled_terms)
 
     for driver in result.drivers:
-        total = 0.0
-        for weight in driver.weights:
-            total = safe_accumulate(total, weight, f"I5 {driver.permanent_id}")
+        total = safe_signed_sum(
+            driver.weights,
+            f"I5 {driver.permanent_id}",
+            [f"project year {i + 1}" for i in range(len(driver.weights))],
+        )
         checks.append(
             IdentityCheck(
                 f"I5 profile sum: {driver.permanent_id}",

@@ -38,11 +38,18 @@ hide exactly the representability failures this module exists to surface.
 from __future__ import annotations
 
 import math
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 MAX_DOUBLE = 1.7976931348623157e308
 """The largest finite IEEE-754 double. Named because §19.5 states it as the bound
 of `IsUsableDouble`, not because Python needs the constant."""
+
+MIN_NORMAL_DOUBLE = 2.2250738585072014e-308
+"""The smallest positive NORMAL double, `2**-1022`.
+
+The boundary below which halving stops being exact, which is the one place the
+binade rescue has to know about (see `_binade_rescue`). Nothing else in the
+module needs it."""
 
 
 # ---------------------------------------------------------------------------
@@ -194,10 +201,98 @@ def safe_accumulate(accumulator: float, term: float, where: str = "accumulation"
 
 
 def safe_sum(terms: Iterable[float], where: str = "sum") -> float:
+    """Strict left-to-right accumulation, checked at every term.
+
+    This is TIER 1 of `safe_signed_sum` and remains available on its own for
+    sums that must not be rescued.
+    """
     total = 0.0
     for index, term in enumerate(terms):
         total = safe_accumulate(total, term, f"{where}[{index}]")
     return total
+
+
+def safe_signed_sum(
+    terms: Sequence[float], where: str = "sum", labels: Sequence[str] | None = None
+) -> float:
+    """A signed sum whose FINAL value is what matters — two tiers.
+
+    **Tier 1 — the canonical order, unchanged.** Accumulate left to right with
+    `safe_accumulate`, naming the exact term that fails. If this succeeds, its
+    result is returned bit-for-bit. **A sum that already works is never
+    reordered**, so no ordinary model's numbers move, and canonical
+    permanent-ID order remains what defines ordinary evaluation.
+
+    **Tier 2 — cancellation rescue, only after tier 1 overflowed.** A partial sum
+    can exceed Double while the true total is perfectly representable:
+    `MAX + MAX - MAX` is `MAX`, but left to right the first addition is already
+    infinite. Refusing that is refusing an answer that exists (§19.2).
+
+    The rescue is deterministic and reproducible in VBA:
+
+    1. every term is validated as a usable finite Double;
+    2. terms are split into positive and negative MAGNITUDES, keeping the
+       original canonical index as a tie-breaker, with exact zeros discarded;
+    3. each bucket is ordered by magnitude;
+    4. the largest opposite-signed magnitudes are repeatedly cancelled:
+       equal magnitudes annihilate exactly, otherwise the residual `|p - n|` is
+       re-inserted on the side that was larger. **This step cannot re-create the
+       overflow being rescued**: it subtracts two non-negative magnitudes, and the
+       residual never exceeds the larger operand;
+    5. once one sign is exhausted, the remaining same-sign magnitudes are summed
+       smallest-first. If THAT overflows, the true signed total genuinely exceeds
+       Double range and a refusal is correct;
+    6. the surviving sign is applied.
+
+    Tier 2 is only reached where tier 1 produced no value at all, so the choice is
+    between an answer and no answer. It is NOT invoked for underflow: a sum cannot
+    underflow to zero except by genuine cancellation, which is a real result.
+
+    `labels` name the terms in tier-1 messages, so a refusal can still say which
+    driver or year was responsible.
+    """
+    values = _require_operands(where, *terms) if terms else ()
+
+    def name(index: int) -> str:
+        if labels is not None and index < len(labels):
+            return f"{where}: {labels[index]}"
+        return f"{where}[{index}]"
+
+    try:
+        total = 0.0
+        for index, value in enumerate(values):
+            total = safe_accumulate(total, value, name(index))
+        return total
+    except NumericalRangeRefusal:
+        pass  # tier 2
+
+    # --- tier 2: deterministic opposite-sign cancellation --------------------
+    # `(magnitude, canonical index)` tuples sort by magnitude first and by the
+    # ORIGINAL canonical position second, so equal magnitudes have one and only
+    # one ordering. Nothing here depends on Python's sort being stable.
+    positives = sorted((abs(v), i) for i, v in enumerate(values) if v > 0.0)
+    negatives = sorted((abs(v), i) for i, v in enumerate(values) if v < 0.0)
+
+    while positives and negatives:
+        p_magnitude, p_index = positives.pop()          # largest positive
+        n_magnitude, n_index = negatives.pop()          # largest negative
+        if p_magnitude == n_magnitude:
+            continue                                    # exact annihilation
+        if p_magnitude > n_magnitude:
+            positives.append((p_magnitude - n_magnitude, p_index))
+            positives.sort()
+        else:
+            negatives.append((n_magnitude - p_magnitude, n_index))
+            negatives.sort()
+
+    remaining = positives if positives else negatives
+    if not remaining:
+        return 0.0                                      # everything annihilated
+    sign = 1.0 if positives else -1.0
+    total = 0.0
+    for magnitude, index in remaining:                  # smallest magnitude first
+        total = safe_accumulate(total, magnitude, f"{where} (cancellation rescue)[{index}]")
+    return total if sign > 0.0 else -total
 
 
 # ---------------------------------------------------------------------------
@@ -263,15 +358,168 @@ def safe_product(factors: Sequence[float], where: str = "product") -> float:
 # ---------------------------------------------------------------------------
 # Stable distribution statistics
 # ---------------------------------------------------------------------------
-# Each division is applied BEFORE accumulation, so a numerator that would overflow
-# is never formed. With Min = ML = Max = 1e308 the naive numerator is 3e308 and
-# there is no result at all; the stable form returns exactly 1e308 (§19.2).
+# Each of these is a CONVEX COMBINATION of its points: the weights are positive
+# and sum to exactly 1, so the true value always lies between Min and Max. That
+# is the whole justification for the machinery below — a statistic that is
+# mathematically bracketed by two representable Doubles has a representable
+# answer, and refusing to produce one is a defect, not caution (§19.2).
+#
+# THREE TIERS, in this order:
+#
+#   Tier 0 — degenerate invariant. If every point is the same number, the
+#            distribution has zero uncertainty and the statistic IS that number.
+#            Returned exactly, with no arithmetic at all, so no last-ulp drift is
+#            possible anywhere in the Double range (including subnormals, where
+#            `x/3 + x/3 + x/3 != x`).
+#   Tier 1 — the accepted stable form, unchanged: divide each point by its
+#            denominator BEFORE accumulating, so an oversized numerator is never
+#            formed. Every ordinary model lands here and its bits do not move.
+#   Tier 2 — binade rescue, reached ONLY when tier 1 raised. Scale every point by
+#            one shared power of two, evaluate the same formula, scale the result
+#            back by the same power of two.
+#
+# Why a power of two: multiplying or dividing a Double by 2 is exact in IEEE-754
+# (it adjusts the exponent and leaves the significand alone) until the subnormal
+# range, so the rescue introduces no error of its own. It also needs nothing more
+# exotic than a counting loop, which is why it is reproducible in VBA — see
+# `docs/phase5_gate_a_step2.md`. `frexp`/`ldexp` are deliberately NOT used.
+def _degenerate_point(values: tuple[float, ...]) -> float | None:
+    """The single point of a zero-uncertainty distribution, or `None`."""
+    first = values[0]
+    for value in values[1:]:
+        if value != first:
+            return None
+    return first
+
+
+def _binade_shift(biggest: float) -> int:
+    """Halvings needed to bring `biggest` into `[1, 2)`; negative means doublings.
+
+    A counting loop, not `frexp`, so the VBA translation is the same loop.
+    """
+    shifts = 0
+    while biggest >= 2.0:
+        biggest = biggest / 2.0
+        shifts += 1
+    while biggest < 1.0:
+        biggest = biggest * 2.0
+        shifts -= 1
+    return shifts
+
+
+def _binade_rescue(
+    values: tuple[float, ...],
+    where: str,
+    formula: "Callable[[tuple[float, ...]], float]",
+) -> float:
+    """Evaluate a convex combination in a binade where it cannot overflow.
+
+    The points are scaled so the LARGEST magnitude sits in `[1, 2)`. Every weight
+    is at most 1 and they sum to 1, so the scaled statistic is bounded by 2 and the
+    numerator `Min + 4*ML + Max` by 12: the intermediate arithmetic that defeated
+    tier 1 cannot recur.
+
+    That is why `formula` is the STRAIGHTFORWARD form — sum, then divide once —
+    rather than the divide-first stable form. Dividing first exists only to keep a
+    numerator inside Double range, which in this binade is not in question, and it
+    costs real accuracy here: with points that nearly cancel, three separately
+    rounded quotients differ from the exact result by far more than one rounding
+    of their exact sum. It is also evaluated with plain operators rather than the
+    refusing primitives, because a scaled point can be subnormal and
+    `subnormal / 3` may round to zero even though its contribution is far below
+    the last bit of the answer — refusing there would reintroduce the very defect
+    being repaired.
+
+    Scaling DOWN can flush a hugely smaller point to zero. That is not a lost
+    contribution: a point more than 2^1074 times smaller than the largest cannot
+    change any bit of a convex combination of them.
+
+    Scaling the result BACK is where a genuine range failure is reported. If
+    doubling overflows, the true statistic really does exceed Double range; if
+    halving collapses a non-zero value to zero, the true statistic really has no
+    usable non-zero Double. Both are correct refusals, and are the distinction
+    §19.2 draws against an intermediate that merely stepped outside the range.
+    """
+    biggest = max(abs(value) for value in values)
+    shifts = _binade_shift(biggest)
+
+    scaled = list(values)
+    for _ in range(abs(shifts)):
+        if shifts > 0:
+            scaled = [value / 2.0 for value in scaled]      # exact; may flush
+        else:
+            scaled = [value * 2.0 for value in scaled]      # exact; cannot overflow
+
+    result = _require_result(where, formula(tuple(scaled)), "rescued convex combination")
+    if result == 0.0:
+        return 0.0
+
+    if shifts > 0:
+        for _ in range(shifts):
+            result = safe_multiply(result, 2.0, f"{where} (binade rescue)")
+        return result
+
+    # Scaling back DOWN, where a naive repeated halving would round twice. Halving
+    # is exact only while the value stays normal; each step taken inside the
+    # subnormal range rounds again, and two roundings can land a bit below the
+    # correctly-rounded answer -- far enough, at the bottom of the range, to turn a
+    # representable statistic into a spurious "underflowed to zero".
+    #
+    # So: halve one step at a time while that is exact, then perform every
+    # remaining step as ONE division, which rounds once. The single divisor is
+    # always small: the exact loop cannot stop above `2**-1021`, so at most ~53
+    # steps can remain before the true answer is below half the smallest subnormal.
+    remaining = -shifts
+    while remaining > 0 and abs(result) / 2.0 >= MIN_NORMAL_DOUBLE:
+        result = result / 2.0                               # exact: still normal
+        remaining -= 1
+    if remaining > 0:
+        if remaining > 1023:                                # cannot arise; see above
+            raise NumericalRangeRefusal(
+                f"{where} (binade rescue): the statistic underflowed to exactly zero"
+            )
+        divisor = 1.0
+        for _ in range(remaining):
+            divisor = divisor * 2.0                         # exact power of two
+        result = result / divisor                           # ONE rounding
+        if result == 0.0:
+            raise NumericalRangeRefusal(
+                f"{where} (binade rescue): the statistic underflowed to exactly zero"
+            )
+    return result
+
+
+def _convex_mean(
+    values: tuple[float, ...],
+    where: str,
+    stable: "Callable[[tuple[float, ...]], float]",
+    formula: "Callable[[tuple[float, ...]], float]",
+) -> float:
+    """Tier 0 -> tier 1 -> tier 2, in that order. See the block comment above."""
+    numbers = _require_operands(where, *values)
+    point = _degenerate_point(numbers)
+    if point is not None:
+        return point
+    try:
+        return stable(numbers)
+    except NumericalRangeRefusal:
+        pass
+    return _binade_rescue(numbers, where, formula)
+
+
 def triangular_mean(minimum: float, most_likely: float, maximum: float) -> float:
     """`Min/3 + ML/3 + Max/3` — never `(Min + ML + Max) / 3`."""
     where = "triangular mean"
-    total = safe_accumulate(0.0, safe_divide(minimum, 3.0, where), where)
-    total = safe_accumulate(total, safe_divide(most_likely, 3.0, where), where)
-    return safe_accumulate(total, safe_divide(maximum, 3.0, where), where)
+
+    def stable(v: tuple[float, ...]) -> float:
+        total = safe_accumulate(0.0, safe_divide(v[0], 3.0, where), where)
+        total = safe_accumulate(total, safe_divide(v[1], 3.0, where), where)
+        return safe_accumulate(total, safe_divide(v[2], 3.0, where), where)
+
+    def formula(v: tuple[float, ...]) -> float:
+        return (v[0] + v[1] + v[2]) / 3.0
+
+    return _convex_mean((minimum, most_likely, maximum), where, stable, formula)
 
 
 def beta_pert_mean(minimum: float, most_likely: float, maximum: float) -> float:
@@ -281,16 +529,30 @@ def beta_pert_mean(minimum: float, most_likely: float, maximum: float) -> float:
     avoidable overflow the stable form exists to prevent.
     """
     where = "Beta-PERT mean"
-    total = safe_accumulate(0.0, safe_divide(minimum, 6.0, where), where)
-    total = safe_accumulate(total, safe_multiply(most_likely, 2.0 / 3.0, where), where)
-    return safe_accumulate(total, safe_divide(maximum, 6.0, where), where)
+
+    def stable(v: tuple[float, ...]) -> float:
+        total = safe_accumulate(0.0, safe_divide(v[0], 6.0, where), where)
+        total = safe_accumulate(total, safe_multiply(v[1], 2.0 / 3.0, where), where)
+        return safe_accumulate(total, safe_divide(v[2], 6.0, where), where)
+
+    def formula(v: tuple[float, ...]) -> float:
+        return (v[0] + 4.0 * v[1] + v[2]) / 6.0
+
+    return _convex_mean((minimum, most_likely, maximum), where, stable, formula)
 
 
 def midpoint(minimum: float, maximum: float) -> float:
     """`Min/2 + Max/2` — never `(Min + Max) / 2`."""
     where = "midpoint"
-    total = safe_accumulate(0.0, safe_divide(minimum, 2.0, where), where)
-    return safe_accumulate(total, safe_divide(maximum, 2.0, where), where)
+
+    def stable(v: tuple[float, ...]) -> float:
+        total = safe_accumulate(0.0, safe_divide(v[0], 2.0, where), where)
+        return safe_accumulate(total, safe_divide(v[1], 2.0, where), where)
+
+    def formula(v: tuple[float, ...]) -> float:
+        return (v[0] + v[1]) / 2.0
+
+    return _convex_mean((minimum, maximum), where, stable, formula)
 
 
 # ---------------------------------------------------------------------------

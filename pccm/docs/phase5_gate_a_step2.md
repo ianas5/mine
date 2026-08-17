@@ -1,6 +1,6 @@
 # Phase 5 — Gate A — Step 2: pure analytical oracle and safe numerical semantics
 
-**Status: CORRECTED TWICE after independent review — ready for re-review.**
+**Status: CORRECTED THREE TIMES after independent review — ready for re-review.**
 
 Step 1 is accepted and closed. This step locks and tests the pure numerical
 semantics that later Stage-A emission and later VBA must implement. It is
@@ -16,12 +16,23 @@ layers rather than the mathematics: conditioning metadata could refuse a
 representable model, driver reference fields leaked raw `AttributeError`, and
 `resolved_fx` did not match the locked `tblCalcFX` row rule.
 
-**No business rule, formula or tolerance NUMBER changed in either round.**
+**Round 3** (§18) — one remaining numerical correctness class: a mathematically
+representable final Double was still sometimes refused because an *intermediate*
+operation overflowed or underflowed, which is precisely what plan §19.2 exists to
+prevent. Repaired by a two-tier signed sum and a three-tier convex statistic, and
+recorded as narrow plan **Erratum C2**. The algorithms both later VBA and any
+independent reimplementation must follow are specified in §18.4 and §18.5.
+
+**No business rule, formula or tolerance NUMBER changed in any round.**
 Round 2 changed **no design at all** — `docs/phase5_plan.md`,
 `spec/calc_contract.yaml`, `calc_loader.py`, `calc_fingerprint.py`,
 `build_stage_a.py`, `src/` and `bootstrap/` are byte-identical to the round-1
 package. Erratum C1, the canonical ordering, the A/B/C/D/E and annual definitions,
 the safe-product strategy and the stable distribution formulas are untouched.
+Round 3 changed two production modules and the two Step-2 test modules, added
+plan Erratum C2, and changed **no contract**: `spec/calc_contract.yaml`,
+`calc_loader.py`, `calc_fingerprint.py`, `build_stage_a.py`, `src/`, `bootstrap/`
+and `tools/` are byte-identical to the round-2 package.
 
 ---
 
@@ -407,40 +418,53 @@ the first submission had believed immune. §16.1 carries the full account.
 Run from a clean extraction, Linux, Python 3.11.
 
 ```
-python -m pytest pccm/tests/ -q        853 passed, 0 failed
+python -m pytest pccm/tests/ -q        879 passed, 0 failed
 python pccm/builder/build_stage_a.py   181 passed, 0 failed
 ```
 
 Standalone:
 
 ```
-python pccm/tests/test_phase5_numeric.py                 52 passed, 0 failed
-python pccm/tests/test_phase5_oracle.py                  96 passed, 0 failed
+python pccm/tests/test_phase5_numeric.py                  73 passed, 0 failed
+python pccm/tests/test_phase5_oracle.py                  101 passed, 0 failed
 python pccm/tests/test_phase5_calc_contract_validation.py 151 passed, 0 failed
 python pccm/tests/test_phase5_fingerprint.py              52 passed, 0 failed
 ```
 
-| Module | Step 1 final | Step 2 | Round-1 corrected | Round-2 corrected |
-|---|---|---|---|---|
-| `test_phase1_manifest_validation.py` | 10 | 10 | 10 | **10** |
-| `test_phase1_structure.py` | 21 | 21 | 21 | **21** |
-| `test_phase2_contract_validation.py` | 42 | 42 | 42 | **42** |
-| `test_phase2_inputs.py` | 40 | 40 | 40 | **40** |
-| `test_phase3_driver_contract_validation.py` | 31 | 31 | 31 | **31** |
-| `test_phase3_drivers.py` | 28 | 28 | 28 | **28** |
-| `test_phase3_verifier_intersection.py` | 12 | 12 | 12 | **12** |
-| `test_phase4_oracle.py` | 68 | 68 | 68 | **68** |
-| `test_phase4_stage_b_source.py` | 155 | 155 | 155 | **155** |
-| `test_phase4_structure.py` | 43 | 43 | 43 | **43** |
-| `test_phase4_structure_contract_validation.py` | 52 | 52 | 52 | **52** |
-| `test_phase5_calc_contract_validation.py` | 151 | 151 | 151 | **151** |
-| `test_phase5_fingerprint.py` | 52 | 52 | 52 | **52** |
-| `test_phase5_numeric.py` | — | 43 | 48 | **52** |
-| `test_phase5_oracle.py` | — | 75 | 85 | **96** |
-| **total** | **705** | **823** | **838** | **853** |
+| Module | Step 1 final | Step 2 | Round-1 | Round-2 | Round-3 |
+|---|---|---|---|---|---|
+| `test_phase1_manifest_validation.py` | 10 | 10 | 10 | 10 | **10** |
+| `test_phase1_structure.py` | 21 | 21 | 21 | 21 | **21** |
+| `test_phase2_contract_validation.py` | 42 | 42 | 42 | 42 | **42** |
+| `test_phase2_inputs.py` | 40 | 40 | 40 | 40 | **40** |
+| `test_phase3_driver_contract_validation.py` | 31 | 31 | 31 | 31 | **31** |
+| `test_phase3_drivers.py` | 28 | 28 | 28 | 28 | **28** |
+| `test_phase3_verifier_intersection.py` | 12 | 12 | 12 | 12 | **12** |
+| `test_phase4_oracle.py` | 68 | 68 | 68 | 68 | **68** |
+| `test_phase4_stage_b_source.py` | 155 | 155 | 155 | 155 | **155** |
+| `test_phase4_structure.py` | 43 | 43 | 43 | 43 | **43** |
+| `test_phase4_structure_contract_validation.py` | 52 | 52 | 52 | 52 | **52** |
+| `test_phase5_calc_contract_validation.py` | 151 | 151 | 151 | 151 | **151** |
+| `test_phase5_fingerprint.py` | 52 | 52 | 52 | 52 | **52** |
+| `test_phase5_numeric.py` | — | 43 | 48 | 52 | **73** |
+| `test_phase5_oracle.py` | — | 75 | 85 | 96 | **101** |
+| **total** | **705** | **823** | **838** | **853** | **879** |
 
-**Every existing count is unchanged.** No Step-1 test was weakened or removed; the 705 → 853 delta is exactly the 148 new Step-2 tests. The 151 Step-1 contract tests are unchanged in count; only the conditioning-term expectations inside them moved, for erratum C1. Stage-A
-verification is unchanged at 181/181 because Step 2 emits nothing.
+**Every existing count is unchanged.** No Step-1 test was weakened or removed;
+the 705 → 879 delta is exactly the 174 new Step-2 tests. The 151 Step-1 contract
+tests are unchanged in count; only the conditioning-term expectations inside them
+moved, for erratum C1. Round 3 added 21 numerical and 5 oracle tests and removed
+none. Stage-A verification is unchanged at 181/181 because Step 2 emits nothing.
+
+**Two round-2 tests were rewritten, not weakened.** The structural guards
+`test_e_is_accumulated_independently_and_not_derived_from_c_and_d` and
+`test_b_is_accumulated_independently_and_not_derived_from_c_and_a` inspect the
+shape of `_accumulate_totals`, and Erratum C2 changed that shape from a running
+`SafeAccumulate` total to a per-measure contribution list summed by
+`SafeSignedSum`. Each guard now checks **both halves** — that the sum is over the
+measure's own list *and* that the list is appended to from the driver pass — so
+each is strictly stronger than before, not looser. Both still fail when the
+derivation `E = C + D` is substituted.
 
 ---
 
@@ -776,7 +800,237 @@ behaviour that must not have changed.
 
 ---
 
-## 18. Next step — NOT started
+## 18. Independent review round 3 — one numerical correctness class
+
+Round 3 confirmed the three round-2 blockers fixed and package provenance
+correct, and raised **one remaining class**:
+
+> A mathematically representable final Double is still sometimes **REFUSED**
+> because an intermediate operation overflows or underflows.
+
+That is exactly the objective plan §19.2 states, so the finding is not a new
+requirement — it is the accepted requirement not being met. It is recorded as
+narrow plan **Erratum C2** (§0 of `docs/phase5_plan.md`), and **no broad revision
+was created**.
+
+### 18.1 The three reproducers, before the patch
+
+All three were reproduced against the round-2 commit `c0eb409` before any code
+was changed.
+
+| | Model | Refusal at `c0eb409` | The answer that exists |
+|---|---|---|---|
+| **A** | three cost lines at `+MAX`, `+MAX`, `−MAX`; degenerate Uniform, SAR, FX 1, inflation 1, discount 0, Qty 1, profile 100% | `NumericalRangeRefusal: totals, driver 'CL-002': A nom` | `A_nom = C_nom = E_nom = MAX_DOUBLE` |
+| **B** | one cost line, five-year profile `[MAX, MAX, −MAX, −MAX, 1]` — sum exactly `1` | `NumericalRangeRefusal: profiling for driver 'CL-001', project year 2` | the profile **is** 100%; `Knom = Kpv = 1` |
+| **C** | `triangular(MAX, MAX, MAX)`; `beta_pert(MAX, MAX, MAX)`; `midpoint(5e-324, 1e-323)` | refusal; `1.7976931348623155e308` (two ulps low); refusal | `MAX`; `MAX`; `1e-323` |
+
+Reproducer B is **not** solved by inventing a profile-weight positivity rule. A
+negative weight remains legal; what changed is that the sum being validated is
+computed so it can be validated at all.
+
+### 18.2 What did NOT change
+
+`spec/calc_contract.yaml` is byte-identical, and **no contract change was
+required**. So are `calc_loader.py`, `calc_fingerprint.py`, `build_stage_a.py`,
+`src/`, `bootstrap/`, `readiness/` and `tools/`. Erratum C1 and its
+contribution-level conditioning, the conditioning terms and coefficients, every
+tolerance number, canonical permanent-ID ordering, referenced-only FX and
+inflation resolution, `resolved_fx` semantics, reference-field validation, the
+two-tier `safe_product`, the discount and inflation underflow rules, D1–D6, the
+A/B/C/D/E and annual definitions, the fingerprint and the Stage-A emitter are all
+untouched.
+
+**Ordinary models are bit-for-bit unchanged.** That is asserted directly, not
+assumed: `test_ordinary_models_are_bit_for_bit_unchanged_by_the_signed_sum`
+recomputes a five-driver mixed model's A, C, D and E totals with plain
+left-to-right `+` over the same contributions in the same order and requires
+exact equality.
+
+### 18.3 Where the rules apply
+
+| Sum | Site |
+|---|---|
+| profile-weight sum validation | `_resolve_weights` |
+| `Knom`, `Kpv` | `precomputed_factors` |
+| A, B, C, D, E | `_accumulate_totals` |
+| annual Base Cost, Expected Risk, Total (nominal and PV) | `_annual_series` |
+| annual-to-headline reconciliation (I3a–I3c, I4a–I4c), I5 profile sums | `reconcile` |
+
+| Statistic | Site |
+|---|---|
+| Triangular mean, Beta-PERT mean, Uniform midpoint | `triangular_mean`, `beta_pert_mean`, `midpoint` |
+
+The normal calculation is **not** magnitude-sorted anywhere.
+
+### 18.4 `SafeSignedSum` — the algorithm later VBA must implement
+
+Two tiers. Deterministic, integer-and-Double only, no library call.
+
+**Tier 1 — the canonical order, unchanged.**
+
+```
+Total = 0
+For i = 0 To n-1
+    Total = SafeAccumulate(Total, Term(i))    ' refuses, naming Term(i)
+Next
+Return Total
+```
+
+If tier 1 returns, **that is the result, bit for bit**. A sum that already works
+is never reordered. Tier 2 is entered **only** when tier 1 raised a
+`NumericalRangeRefusal` — that is, only on addition overflow. Underflow never
+enters tier 2: a sum has no underflow-to-zero rule, because a sum reaching zero is
+genuine cancellation and a real answer.
+
+**Tier 2 — deterministic opposite-sign cancellation.**
+
+1. Validate every term as a usable finite Double (already done by tier 1).
+2. Split the terms into two lists of **magnitudes**, `Pos` and `Neg`, each entry
+   carrying its **original canonical index**. Exact zeros go in neither list.
+3. Sort each list ascending by `(magnitude, canonical index)`. The index is the
+   tie-breaker, so equal magnitudes have exactly one ordering and the result does
+   not depend on sort stability.
+4. While both lists are non-empty, remove the **largest** entry from each:
+   * equal magnitudes → they annihilate exactly, discard both;
+   * otherwise → the residual `larger − smaller` is re-inserted, in sorted
+     position, on the side that was larger, keeping that side's canonical index.
+
+   This step **cannot re-create the overflow being rescued**: it subtracts two
+   non-negative magnitudes, and the residual never exceeds the larger operand. It
+   terminates because each pass removes at least one entry.
+5. One list is now empty. Accumulate the survivors **smallest magnitude first**
+   with `SafeAccumulate`. If *that* overflows, the true signed total genuinely
+   exceeds Double range and the refusal is correct.
+6. Apply the surviving sign. If both lists emptied, return `+0`, never `−0`.
+
+**The locked vectors.**
+
+```
+SafeSignedSum(MAX, MAX, −MAX)                 = MAX
+SafeSignedSum(MAX, MAX, −MAX, −MAX, 1)        = 1
+SafeSignedSum(MAX, MAX, −MAX, −MAX, 5e−324)   = 5e−324
+SafeSignedSum(MAX, MAX)                       -> NumericalRangeRefusal
+```
+
+`math.fsum` is **not** the production contract and is not used: it has no
+equivalent deterministic VBA form.
+
+### 18.5 The convex statistics — three tiers
+
+Each of the three statistics is a **convex combination**: positive weights summing
+to exactly 1, so the true value always lies between `Min` and `Max` and always has
+a representable answer.
+
+**Tier 0 — the degenerate invariant, EXACT.** If every point is the same number,
+return that number with no arithmetic at all.
+
+```
+If Min = ML And ML = Max Then Return Min      ' Triangular, Beta-PERT
+If Min = Max Then Return Min                  ' Uniform
+```
+
+This is not an optimisation. `x/3 + x/3 + x/3 ≠ x` for many subnormal `x`, and
+`x/2` is `0` for the smallest one, so the stable form drifts or refuses on a
+distribution that has no uncertainty at all. Held across `0`, negatives,
+`±MAX_DOUBLE`, `1e-320` and `5e-324`.
+
+**Tier 1 — the accepted stable form of §19.2, unchanged.**
+`Min/3 + ML/3 + Max/3`, `Min/6 + ML·(2/3) + Max/6`, `Min/2 + Max/2`, each division
+before accumulation and each step through the safe primitives. Every ordinary
+model lands here and its bits do not move.
+
+**Tier 2 — binade rescue**, entered only when tier 1 raised.
+
+1. `Biggest = Max(|point|)` over the points.
+2. Count the power-of-two shift that brings `Biggest` into `[1, 2)`:
+   ```
+   Shifts = 0
+   Do While Biggest >= 2 : Biggest = Biggest / 2 : Shifts = Shifts + 1 : Loop
+   Do While Biggest <  1 : Biggest = Biggest * 2 : Shifts = Shifts - 1 : Loop
+   ```
+3. Apply the same shift to every point, one halving or doubling at a time.
+   Halving and doubling by 2 are **exact** in IEEE-754 — they move the exponent
+   and leave the significand alone — so the scaling introduces no error. Scaling
+   down can flush a point more than `2^1074` times smaller than the largest to
+   zero; that point cannot change any bit of a convex combination of them.
+4. Evaluate the **straightforward** form on the scaled points — `(Min + ML +
+   Max)/3`, `(Min + 4·ML + Max)/6`, `(Min + Max)/2` — with plain operators.
+   Divide-first exists only to keep a numerator inside Double range, which in this
+   binade is not in question (the numerator is bounded by 12), and dividing first
+   here would cost real accuracy on nearly-cancelling points. Plain operators
+   rather than the refusing primitives, because a scaled point can be subnormal
+   and `subnormal / 3` may round to zero while contributing far below the last bit
+   of the answer.
+5. Scale the result back by the same shift.
+   * **Doubling** (the overflow direction) is exact; if it overflows, the true
+     statistic really does exceed Double range and the refusal is correct.
+   * **Halving** (the underflow direction) is exact only while the value stays
+     normal. Halve one step at a time while `|result| / 2 >= MIN_NORMAL_DOUBLE`,
+     then perform **every remaining step as one division by `2^remaining`**, which
+     rounds once. The exact loop cannot stop above `2^-1021`, so at most ~53 steps
+     can remain before the true answer is below half the smallest subnormal, and
+     the single divisor is always a small exact power of two. **Repeated halving
+     through the subnormal range rounds twice and lands a unit low** — enough to
+     turn `5e-324` into `0` and a value into a spurious refusal. If the single
+     division reaches exactly zero, the statistic genuinely has no usable non-zero
+     Double and the refusal is correct.
+
+No `frexp`, `ldexp`, `fsum`, `Decimal`, `Fraction` or `nextafter` appears in
+`calc_numeric.py`; a static AST test enforces that, because each would be correct
+in Python and untranslatable to VBA.
+
+### 18.6 Accuracy actually achieved
+
+Swept over the §11 boundary corpus — `MAX_DOUBLE`, `nextafter(MAX_DOUBLE, 0)`,
+`1e308`, `1`, `1e-300`, `1e-320`, `5e-324`, `0` and the negatives of each — against
+an exact `Fraction` oracle used **only in the tests**:
+
+| | Inputs reaching the rescue | Spurious refusals | Worst deviation from correctly rounded |
+|---|---|---|---|
+| Uniform midpoint | 50 | 0 | **0 ulp** |
+| Triangular mean | 1090 | 0 | **0 ulp** |
+| Beta-PERT mean | 826 | 0 | **1 ulp** |
+
+The Beta-PERT ulp is the same class the accepted stable form already carries —
+`(80 + 4·100 + 150)/6` is exactly `105.0` while the mandated
+`Min/6 + ML·(2/3) + Max/6` is `104.99999999999999` — and is recorded, not hidden.
+Its numerator needs two roundings where the other two need one.
+
+Every refusal that remains on the corpus is a case whose exact statistic rounds to
+zero — `midpoint(5e-324, 0)` is `2.47e-324`, below half the smallest subnormal —
+which is the existing §19.3 underflow contract, not a C2 case.
+
+### 18.7 Round-3 negative controls
+
+Each sabotage was applied to a working copy, the suite was run, and the source
+restored.
+
+| Sabotage | Result |
+|---|---|
+| tier 2 of `safe_signed_sum` replaced by a plain left-to-right re-run | **8 failed** — all three locked vectors, the `Fraction` agreement test, and reproducers A and B |
+| tier 0 (degenerate invariant) removed | **2 failed** — `triangular_mean(1e-320, 1e-320, 1e-320)` returns `1.0005e-320` |
+| the binade rescue removed | **4 failed** — every subnormal and `MAX_DOUBLE` statistic refuses again |
+| single-rounding scale-back replaced by repeated halving | **3 failed** — `midpoint(5e-324, 1e-323)` refuses with "underflowed to exactly zero" |
+
+The last of these is the one worth noting: the naive scale-back passes every
+*overflow* vector and fails only in the subnormal tail, which is why the corpus
+sweep against an exact oracle is in the suite rather than a handful of literals.
+
+Positive controls in the suite guard the other direction — that the rescue does
+not fire when it should not, and does not change answers that already existed:
+
+* `test_a_sum_that_already_succeeds_is_never_reordered` — over a corpus including
+  `[1e16, 1.0, -1e16]`, where left-to-right gives `0.0` and a reordering would
+  give `1.0`. `0.0` is the required answer.
+* `test_a_signed_sum_that_genuinely_exceeds_double_range_is_still_refused`.
+* `test_a_statistic_with_no_usable_non_zero_double_is_still_refused`.
+* `test_the_cancelling_profile_is_still_refused_when_a_year_is_unrepresentable` —
+  the same five-year profile with a unit cost of 100 makes project year 1 cost
+  `100 × MAX`, and that is refused, naming the year.
+
+---
+
+## 19. Next step — NOT started
 
 Step 3, whatever review scopes it to be. Nothing beyond §1 of this document has
 been written.
@@ -790,4 +1044,4 @@ been written.
 > **STEP 3 HAS NOT BEGUN.**
 > **PHASE 6 HAS NOT BEGUN.**
 
-**PHASE 5 GATE A STEP 2 FINAL PATCH READY FOR INDEPENDENT REVIEW**
+**PHASE 5 GATE A STEP 2 REPRESENTABLE-RESULT PATCH READY FOR INDEPENDENT REVIEW**

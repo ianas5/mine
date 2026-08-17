@@ -53,6 +53,7 @@ from pathlib import Path
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
 
+from pccm_builder.calc_numeric import MAX_DOUBLE  # noqa: E402
 from pccm_builder.calc_oracle import (  # noqa: E402
     AppliedTimeline,
     CalculationModel,
@@ -1529,35 +1530,70 @@ def test_e_is_accumulated_independently_and_not_derived_from_c_and_d() -> None:
 
     What the derivation destroys is the MEANING of I2: an identity computed by
     definition can never fail, so it stops being a check. The guard is therefore
-    on the shape of `_accumulate_totals`: `e_nom` and `e_pv` must be built by
-    accumulation over the drivers, and must never be assigned from `c_*` or `d_*`.
+    on the shape of `_accumulate_totals`: `e_nom` and `e_pv` must be summed over
+    their OWN contribution lists, those lists must be filled from the drivers, and
+    neither the sum nor the fill may draw on `c_*` or `d_*`.
+
+    Erratum C2 changed the mechanism from a running `safe_accumulate` total to a
+    contribution list summed by `safe_signed_sum`. The guard follows the mechanism
+    and gains a second half: it is no longer enough that the SUM is independent,
+    the LIST it sums must also be appended from the drivers rather than seeded
+    from another measure's list.
     """
     tree = ast.parse(ORACLE_PATH.read_text(encoding="utf-8"))
     function = next(
         node for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_accumulate_totals"
     )
+    forbidden = {
+        "c_nom", "c_pv", "d_nom", "d_pv",
+        "c_nom_terms", "c_pv_terms", "d_nom_terms", "d_pv_terms",
+    }
 
     derived_from: set[str] = set()
-    accumulated: set[str] = set()
+    summed: set[str] = set()
     for node in ast.walk(function):
         if not isinstance(node, ast.Assign):
             continue
         targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
-        if not targets & {"e_nom", "e_pv"}:
+        if not targets & {"e_nom", "e_pv", "e_nom_terms", "e_pv_terms"}:
             continue
         sources = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
-        derived_from |= sources & {"c_nom", "c_pv", "d_nom", "d_pv"}
-        if "safe_accumulate" in sources:
-            accumulated |= targets
+        derived_from |= sources & forbidden
+        if "safe_signed_sum" in sources and sources & {"e_nom_terms", "e_pv_terms"}:
+            summed |= targets & {"e_nom", "e_pv"}
 
     assert not derived_from, (
         f"E is assigned from {sorted(derived_from)}. `E = C + D` is a reconciliation "
         "identity, not the calculation path; deriving it makes I2 unfalsifiable."
     )
-    assert accumulated == {"e_nom", "e_pv"}, (
-        f"E must be built with safe_accumulate over the drivers; accumulated {accumulated}"
+    assert summed == {"e_nom", "e_pv"}, (
+        f"E must be summed by safe_signed_sum over its own term list; summed {summed}"
     )
+    assert _appended_from(function, "e_nom_terms") == {"e_nom_terms"}, (
+        "e_nom_terms must be appended to from the driver pass, not seeded elsewhere"
+    )
+    assert _appended_from(function, "e_pv_terms") == {"e_pv_terms"}, (
+        "e_pv_terms must be appended to from the driver pass, not seeded elsewhere"
+    )
+
+
+def _appended_from(function: ast.FunctionDef, name: str) -> set[str]:
+    """The term lists this function passes to `contribute` under `name`.
+
+    `contribute(key, into, value, ...)` appends `value` to `into`, so a list that
+    is never passed as `into` was never filled from a driver.
+    """
+    found: set[str] = set()
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Name) and node.func.id == "contribute"):
+            continue
+        if len(node.args) >= 2 and isinstance(node.args[1], ast.Name):
+            if node.args[1].id == name:
+                found.add(name)
+    return found
 
 
 def test_b_is_accumulated_independently_and_not_derived_from_c_and_a() -> None:
@@ -1568,16 +1604,20 @@ def test_b_is_accumulated_independently_and_not_derived_from_c_and_a() -> None:
         node for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_accumulate_totals"
     )
+    forbidden = {
+        "a_nom", "a_pv", "c_nom", "c_pv",
+        "a_nom_terms", "a_pv_terms", "c_nom_terms", "c_pv_terms",
+    }
     for node in ast.walk(function):
         if not isinstance(node, ast.Assign):
             continue
         targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
-        if not targets & {"b_nom", "b_pv"}:
+        if not targets & {"b_nom", "b_pv", "b_nom_terms", "b_pv_terms"}:
             continue
         sources = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
-        assert not sources & {"a_nom", "a_pv", "c_nom", "c_pv"}, (
-            f"B is assigned from {sorted(sources & {'a_nom', 'a_pv', 'c_nom', 'c_pv'})}"
-        )
+        assert not sources & forbidden, f"B is assigned from {sorted(sources & forbidden)}"
+    assert _appended_from(function, "b_nom_terms") == {"b_nom_terms"}
+    assert _appended_from(function, "b_pv_terms") == {"b_pv_terms"}
 
 
 def test_the_uncertainty_shift_comes_from_the_driver_not_from_the_totals() -> None:
@@ -1634,6 +1674,171 @@ def test_the_accepted_distribution_names_still_match_the_input_contract() -> Non
         f"upstream distributions {sorted(upstream)} disagree with the adapter "
         f"{sorted(_DISTRIBUTION_ADAPTER)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Erratum C2 - end to end
+# ---------------------------------------------------------------------------
+# The two models that were refused before the patch. Both are valid: every input
+# is a usable Double, every rule is satisfied, and every headline the model asks
+# for is representable. Only the ORDER of the intermediate additions made them
+# fail, which is exactly what §19.2 says must not happen.
+def _degenerate_cost(permanent_id: str, value: object, weights=(1.0,)) -> CostDriver:
+    """A Uniform cost line with `Min == Max`, so its statistic is `value` exactly
+    and the arithmetic under test is the SUM, not the distribution."""
+    return CostDriver(
+        permanent_id, "Uniform", "SAR", "Standard", value, None, value, weights, quantity=1
+    )
+
+
+def test_a_headline_total_that_cancels_to_a_representable_value_is_calculated() -> None:
+    """REPRODUCER A. Three cost lines at `+MAX`, `+MAX`, `-MAX`.
+
+    In canonical permanent-ID order the first addition is `MAX + MAX`, which has no
+    Double. The total the model actually asks for is `MAX`, which does. Before the
+    patch this refused with
+    `NumericalRangeRefusal: totals, driver 'CL-002': A nom`.
+    """
+    model = _model(
+        discount=0.0,
+        costs=(
+            _degenerate_cost("CL-001", MAX_DOUBLE),
+            _degenerate_cost("CL-002", MAX_DOUBLE),
+            _degenerate_cost("CL-003", -MAX_DOUBLE),
+        ),
+    )
+    result = calculate(model, TOL)
+
+    assert result.totals.a_nom == MAX_DOUBLE, f"A_nom is {result.totals.a_nom!r}"
+    assert result.totals.c_nom == MAX_DOUBLE, f"C_nom is {result.totals.c_nom!r}"
+    assert result.totals.e_nom == MAX_DOUBLE, f"E_nom is {result.totals.e_nom!r}"
+    assert result.totals.a_pv == MAX_DOUBLE
+    assert result.totals.b_nom == 0.0, "a degenerate Uniform has no mean shift"
+    assert len(result.annual) == 1
+    assert result.annual[0].base_cost_nominal == MAX_DOUBLE
+    assert result.annual[0].total_nominal == MAX_DOUBLE
+    assert_reconciled(result, TOL)
+
+
+def test_a_profile_whose_weights_cancel_to_one_hundred_percent_is_accepted() -> None:
+    """REPRODUCER B. A five-year profile of `[MAX, MAX, -MAX, -MAX, 1]`.
+
+    The weights sum to exactly `1`, so the profile IS 100%. Validating that sum in
+    project-year order overflows at year 2, and before the patch the model was
+    refused with
+    `NumericalRangeRefusal: profiling for driver 'CL-001', project year 2`.
+
+    NO POSITIVITY RULE IS INVOLVED. A negative profile weight stays legal; what
+    changed is that the sum being checked is computed so it can be checked at all.
+    The same cancellation then has to survive `Knom`, `Kpv`, the annual series and
+    the annual-to-headline reconciliation, so this one model exercises every sum
+    §4 of the patch lists.
+    """
+    weights = (MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE, -MAX_DOUBLE, 1.0)
+    model = _model(
+        base=2026, start=2026, duration=5, discount=0.0,
+        rates={"Standard": {year: 0.0 for year in range(2027, 2031)}},
+        costs=(_degenerate_cost("CL-001", 1.0, weights),),
+    )
+    result = calculate(model, TOL)
+
+    driver = result.drivers[0]
+    assert driver.weights == weights, "the weights are used as supplied, not normalised"
+    assert driver.knom == 1.0, f"Knom is {driver.knom!r}"
+    assert driver.kpv == 1.0, f"Kpv is {driver.kpv!r}"
+    assert result.totals.a_nom == 1.0
+    assert result.totals.c_nom == 1.0
+    # Each annual row is one driver's contribution, so the rows themselves are the
+    # weights. The RECONCILIATION back to the headline is where they cancel.
+    assert [row.base_cost_nominal for row in result.annual] == list(weights)
+    assert_reconciled(result, TOL)
+
+
+def test_the_cancelling_profile_is_still_refused_when_a_year_is_unrepresentable() -> None:
+    """The patch repairs the SUM, not the model. Give the same profile a unit cost
+    of 100 and project year 1 genuinely costs `100 * MAX`, which no Double holds -
+    and that is refused, naming the year."""
+    message = _refuses(
+        lambda: calculate(
+            _model(
+                base=2026, start=2026, duration=5, discount=0.0,
+                rates={"Standard": {year: 0.0 for year in range(2027, 2031)}},
+                costs=(
+                    _degenerate_cost(
+                        "CL-001", 100.0, (MAX_DOUBLE, MAX_DOUBLE, -MAX_DOUBLE, -MAX_DOUBLE, 1.0)
+                    ),
+                ),
+            ),
+            TOL,
+        ),
+        "an annual contribution with no representable value",
+    )
+    assert "annual year 2026" in message and "CL-001" in message
+
+
+def test_a_headline_total_that_genuinely_exceeds_double_range_is_still_refused() -> None:
+    """Two cost lines at `+MAX` with nothing to cancel them. The total really is
+    `2 * MAX`, and inventing a number for it would be worse than refusing."""
+    message = _refuses(
+        lambda: calculate(
+            _model(
+                discount=0.0,
+                costs=(
+                    _degenerate_cost("CL-001", MAX_DOUBLE),
+                    _degenerate_cost("CL-002", MAX_DOUBLE),
+                ),
+            ),
+            TOL,
+        ),
+        "a headline total with no representable value",
+    )
+    assert "totals" in message
+
+
+def test_ordinary_models_are_bit_for_bit_unchanged_by_the_signed_sum() -> None:
+    """THE REGRESSION THAT MATTERS MOST.
+
+    Erratum C2 must move no number that already had one. Canonical order is still
+    tier 1, so for every ordinary model the totals are exactly what a plain
+    left-to-right accumulation of the same contributions in the same order gives.
+    """
+    result = calculate(
+        _model(
+            base=2026, start=2027, duration=3, discount=0.08,
+            rates=_three_year(),
+            fx=(FxRow("SAR", 1), FxRow("USD", 3.75)),
+            costs=(
+                _cost("CL-001", weights=(0.2, 0.5, 0.3)),
+                _cost("CL-002", currency="USD", distribution="Beta-PERT",
+                      weights=(0.5, 0.25, 0.25), quantity=3),
+                _cost("CL-003", distribution="Uniform", most_likely=None,
+                      weights=(0.1, 0.1, 0.8), quantity=7),
+            ),
+            risks=(
+                _risk("R-001", weights=(0.0, 1.0, 0.0)),
+                _risk("R-002", distribution="Uniform", most_likely=None,
+                      weights=(0.34, 0.33, 0.33), probability=0.6),
+            ),
+        ),
+        TOL,
+    )
+    costs = [d for d in result.drivers if d.driver_kind is DriverKind.COST_LINE]
+    risks = [d for d in result.drivers if d.driver_kind is DriverKind.RISK]
+
+    def left_to_right(values) -> float:
+        total = 0.0
+        for value in values:
+            total = total + value
+        return total
+
+    assert result.totals.a_nom == left_to_right([d.deterministic_nominal for d in costs])
+    assert result.totals.c_nom == left_to_right([d.mean_basis_nominal for d in costs])
+    assert result.totals.c_pv == left_to_right([d.mean_basis_pv for d in costs])
+    assert result.totals.d_nom == left_to_right([d.expected_risk_nominal for d in risks])
+    assert result.totals.e_nom == left_to_right(
+        [d.mean_basis_nominal for d in costs] + [d.expected_risk_nominal for d in risks]
+    )
+    assert_reconciled(result, TOL)
 
 
 # ---------------------------------------------------------------------------
