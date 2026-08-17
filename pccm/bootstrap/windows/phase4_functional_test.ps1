@@ -24,6 +24,8 @@
       B   Permanent Cost Line IDs: sequence and non-reuse after deletion
       B2  A REAL ListObject reorder: identity travels with its own row data
       C   Permanent Risk IDs, independently sequenced
+      D0  Seed a REAL, KEYED Inflation Profile, so the timeline scenarios below
+          assert rate preservation against a named profile rather than an unkeyed row
       D   First timeline application
       E   Duration increase
       F   Start-year shift with unchanged duration, and BLANK preservation
@@ -32,6 +34,11 @@
       I   Combined three-way change
       J   Degenerate inflation span
       K   Profiling synchronisation by permanent ID
+      K2  Profiling PERCENTAGES belong to the ID, not the row: with a LIVE timeline,
+          distinct values are seeded per ID, the register is physically reordered by
+          a real sort, synchronisation is re-run, and every value is checked against
+          the identifier it was seeded against. B2 cannot cover this: it runs before
+          the first Apply, when no project-year column exists yet.
       L   Apply failure after mutation: logical restore
       M   Growth beyond the 25 reserved rows, with presentation and Data Validation
           proved on the runtime-created row
@@ -49,6 +56,9 @@
           historical case where every identifier has been deleted
       V   Generated year cells equal the contract input_fill exactly; unkeyed rows
           are model-controlled
+      W   The representation ceiling is EXHAUSTED VALID STATE: a counter at
+          ID_COUNTER_MAX refuses allocation without overflowing counter + 1, while
+          structural revalidation stays clean and Apply Timeline still succeeds
 
     Safety, unchanged from the readiness gate: no security setting is altered, no
     registry key is touched, no Trusted Location is added, and no Excel process
@@ -1011,6 +1021,151 @@ if ($buildOk) {
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Result 'K' 'Profiling synchronisation' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # K2. Profiling PERCENTAGES survive a real reorder, with a LIVE timeline
+    # -------------------------------------------------------------------
+    # B2 performs a real ListObject.Sort, but it runs BEFORE the first timeline is
+    # applied, when the profiling grids have no project-year columns at all. It
+    # therefore proves that identity travels with row data and that profiling rows
+    # stay keyed -- but it cannot prove the thing the permanent-ID design exists for:
+    # that a PROFILED VALUE belongs to an IDENTIFIER, not to a worksheet row.
+    #
+    # This runs after D-J, so year columns exist. Distinct percentages are seeded per
+    # ID, the register is physically reordered, the real synchronisation pathway is
+    # re-run, and every value is checked against the ID it was seeded against.
+    try {
+        $list = New-Checklist
+
+        # --- 1. at least two identified Cost Lines --------------------------
+        while (@(Get-IdColumnValues -Workbook $wb -Info $costReg).Count -lt 2) {
+            $excel.Run('PCCM_AddCostLine') | Out-Null
+        }
+        $ids = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
+        $null = Add-Check $list 'at least two identified Cost Lines exist' ($ids.Count -ge 2) `
+            ($ids -join ',')
+
+        # --- 2. at least one project-year profiling column -------------------
+        $headers = @(Get-TableColumnNames -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
+        $yearColumn = $fixedCost + 1
+        $null = Add-Check $list 'the profiling grid has at least one project-year column' `
+            ($headers.Count -gt $fixedCost) ("headers: " + ($headers -join '|'))
+
+        if ($headers.Count -gt $fixedCost -and $ids.Count -ge 2) {
+            # --- 3. a DISTINCT percentage per ID, same project-year index ----
+            # Generated, not typed in: only the ID-to-value mapping matters.
+            $seeded = @{}
+            $step = 0
+            foreach ($id in $ids) {
+                $step++
+                $seeded[$id] = [math]::Round(0.01 + ($step * 0.07), 4)
+            }
+            $gridRow = 0
+            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+                $gridRow++
+                if ($row[0] -ne '' -and $seeded.ContainsKey($row[0])) {
+                    Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
+                        -RowIndex $gridRow -ColumnIndex $yearColumn -Value $seeded[$row[0]]
+                }
+            }
+
+            # --- 4. capture ID -> percentage as PLAIN DATA -------------------
+            # Read back rather than trusting the write, and hold no live COM object:
+            # every later comparison is a value comparison.
+            $before = @{}
+            $positionalBefore = @()
+            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+                if ($row[0] -ne '') {
+                    $before[$row[0]] = [string]$row[$yearColumn - 1]
+                    $positionalBefore += [string]$row[$yearColumn - 1]
+                }
+            }
+            $distinct = @($before.Values | Select-Object -Unique)
+            $null = Add-Check $list 'every seeded percentage is distinct, so a swap cannot pass' `
+                ($distinct.Count -eq $before.Count) (($before.Values | Sort-Object) -join ',')
+
+            $counterBefore = Get-NamedValue -Workbook $wb -DefinedName 'nmCounterCostLine'
+            $orderBefore = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
+
+            # --- 5. a REAL ListObject.Sort that INVERTS the physical order ---
+            # Markers are written so that an ascending sort reverses the register.
+            # Nothing is edited in place: whole rows move.
+            $rank = $orderBefore.Count
+            $registerRow = 0
+            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name)) {
+                $registerRow++
+                if ($row[0] -ne '') {
+                    Set-TableCell -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name `
+                        -RowIndex $registerRow -ColumnIndex 3 -Value ('ORDER-' + $rank.ToString('D4'))
+                    $rank--
+                }
+            }
+            Invoke-TableSort -Workbook $wb -SheetName $costReg.sheet -TableName $costReg.table_name `
+                -KeyColumnIndex 3 -Order 1
+
+            # --- 6. the REAL synchronisation pathway, values untouched -------
+            # Apply re-runs SetYearColumns and SyncRows against the reordered
+            # register. No entered timeline value is changed, so any movement of a
+            # percentage is synchronisation behaviour, not a timeline edit.
+            $excel.Run('PCCM_ApplyTimeline') | Out-Null
+            $outcome = [string]$excel.Run('PCCM_AutomationResult')
+            $null = Add-Check $list 'the synchronisation pathway ran successfully' `
+                ($outcome -like 'OK|*') $outcome
+
+            # --- 7. the physical order really changed ------------------------
+            $orderAfter = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
+            $null = Add-Check $list 'the register row order actually changed' `
+                (($orderBefore -join ',') -ne ($orderAfter -join ',')) `
+                ("before " + ($orderBefore -join ',') + " / after " + ($orderAfter -join ','))
+
+            # --- 8. every original identifier still exists -------------------
+            $missing = @()
+            foreach ($id in $orderBefore) { if ($orderAfter -notcontains $id) { $missing += $id } }
+            $null = Add-Check $list 'every original permanent ID still exists' `
+                ($missing.Count -eq 0) ("missing " + ($missing -join ','))
+
+            # --- 9. every percentage still belongs to ITS OWN ID -------------
+            $after = @{}
+            $positionalAfter = @()
+            foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+                if ($row[0] -ne '') {
+                    $after[$row[0]] = [string]$row[$yearColumn - 1]
+                    $positionalAfter += [string]$row[$yearColumn - 1]
+                }
+            }
+            $wrong = @()
+            foreach ($id in $orderBefore) {
+                if ($after[$id] -ne $before[$id]) {
+                    $wrong += ("{0}: seeded {1}, now {2}" -f $id, $before[$id], $after[$id])
+                }
+            }
+            $null = Add-Check $list 'every profiling percentage still belongs to its own permanent ID' `
+                ($wrong.Count -eq 0) ($wrong -join '; ')
+
+            # --- 10. and did NOT stay behind with the row position -----------
+            # If a value had followed worksheet position instead of identity, the
+            # positional sequence would be unchanged while the ID order reversed.
+            $null = Add-Check $list 'no percentage followed worksheet row position' `
+                (($positionalBefore -join ',') -ne ($positionalAfter -join ',')) `
+                ("positional before " + ($positionalBefore -join ',') + " / after " + ($positionalAfter -join ','))
+            $null = Add-Check $list 'the profiling grid order follows the reordered register' `
+                ((@($after.Keys | Sort-Object) -join ',') -eq (@($orderAfter | Sort-Object) -join ','))
+
+            # --- 11. the reorder issued nothing ------------------------------
+            $null = Add-Check $list 'the ID counter is unchanged by the reorder' `
+                ((Get-NamedValue -Workbook $wb -DefinedName 'nmCounterCostLine') -eq $counterBefore)
+
+            # --- 12. and the workbook is structurally sound ------------------
+            $report = [string]$excel.Run('PCCM_StructuralReport')
+            $null = Add-Check $list 'structural revalidation is clean after the reorder and sync' `
+                ([string]::IsNullOrWhiteSpace($report)) $report
+        }
+
+        Add-Result 'K2' 'Profiling percentages belong to the ID, not the row, across a real reorder' `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'K2' 'Profiling percentage ownership across a reorder' 'FAIL' (Format-Err $_)
     }
 
     # -------------------------------------------------------------------

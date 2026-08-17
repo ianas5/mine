@@ -383,6 +383,30 @@ Percentages are preserved by **permanent ID + project-year index**, never by
 worksheet row, so a driver-table reorder reorders the grid and transfers nothing
 between rows.
 
+### Proving it needs a live timeline
+
+Gate-B scenario **B2** performs a genuine `ListObject.Sort` of the Cost Lines
+register, but it runs **before the first Apply**, when the profiling grids have no
+project-year columns at all. It therefore proves that a permanent ID travels with
+its own row data, that no ID is regenerated, and that profiling rows stay keyed —
+but with no value in the grid it cannot prove the claim the design exists for:
+that a **profiled value belongs to an identifier, not to a worksheet row**.
+
+Scenario **K2** runs after the timeline scenarios, with year columns present:
+
+1. at least two identified Cost Lines, at least one project-year column;
+2. a **distinct** percentage per ID in the same project-year index — distinctness
+   is asserted, so a swap cannot pass;
+3. the `ID → percentage` map captured as **plain data**, read back from the grid;
+4. a real `ListObject.Sort` that **inverts** the physical register order — whole
+   rows move, nothing is edited in place;
+5. the real synchronisation pathway re-run via `PCCM_ApplyTimeline`, with no
+   entered timeline value changed, so any movement is synchronisation behaviour;
+6. every percentage checked **against the ID it was seeded against**, plus the
+   converse: the positional sequence must have changed, which is what rules out a
+   value that stayed behind with its row;
+7. the counter unchanged by the reorder, and structural revalidation clean.
+
 ---
 
 ## Logical rollback
@@ -755,6 +779,21 @@ See `bootstrap/windows/README.md`.
 1. **The Windows runtime is unproven.** The Linux tests establish that the rules
    are coherent and that the source is internally consistent. They cannot execute
    VBA. Only Gate B closes this.
+
+   There is no VBA compiler here, so every compile-time rule the tests do not
+   encode is a Gate-B blocker waiting to happen. One shipped:
+   `Optional ByRef Unrepresentable As Long` in `HighestIssued` — VBA permits an
+   Optional parameter with no default **only** when its type is Variant, because
+   only Variant can hold Missing. Every caller supplied the argument anyway, so
+   the `Optional` bought nothing and cost a build; it is now required.
+
+   `test_45c` sweeps **every** `Sub`, `Function` and `Property` declaration for
+   that shape, joining line continuations first — almost every declaration here
+   wraps, so a sweep reading only the first physical line would be inert, and
+   `test_45e` fails if the joining stops working. Legitimate forms stay legal: a
+   Variant Optional, explicit or implicit, and a typed Optional that declares a
+   default. This joins the existing block-balance and line-length sweeps as a
+   standing substitute for the compiler.
 2. **Data Validation and styling on a runtime-created row rely on Excel Table
    propagation.** Gate-B section M proves or disproves it; nothing here assumes it.
 3. **Profiling year cells carry no data validation.** A per-cell bound would block

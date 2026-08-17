@@ -125,8 +125,13 @@ End Function
 ' Unrepresentable tails are reported through Unrepresentable rather than skipped: an
 ' ID such as CL-99999999999 is corrupt, and silently ignoring it would let it sit in
 ' the register unnoticed.
+'
+' Unrepresentable is REQUIRED, not Optional. `Optional ByRef Unrepresentable As Long`
+' is a compile error in VBA: a typed Optional parameter must declare a default, and
+' only a Variant Optional may be omitted without one. Every caller supplies the
+' argument anyway, so the optional semantics bought nothing and cost a build.
 Public Function HighestIssued(ByVal Kind As String, _
-                              Optional ByRef Unrepresentable As Long) As Long
+                              ByRef Unrepresentable As Long) As Long
     Dim register As ListObject
     Dim r As Long, rowCount As Long, idCol As Long, best As Long
     Dim prefix As String, idText As String, tail As String

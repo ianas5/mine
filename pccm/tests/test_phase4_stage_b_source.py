@@ -896,8 +896,35 @@ def test_37_the_harness_covers_every_required_scenario() -> None:
         "# U. A corrupt ID counter must never allow reuse",
         "# V. Generated year cells carry the EXACT editable-input treatment",
         "# W. The representation ceiling is EXHAUSTED VALID STATE, not corruption",
+        "# K2. Profiling PERCENTAGES survive a real reorder, with a LIVE timeline",
     ):
         assert marker in code, f"the harness is missing section: {marker}"
+
+
+def test_37a_the_header_matrix_documents_exactly_the_scenarios_that_run() -> None:
+    """The header is the first thing a reviewer reads, and it drifted twice.
+
+    Scenario W existed with no matrix entry. Rather than adding one label and moving
+    on, the matrix is now derived from what the script actually reports, in both
+    directions -- a documented scenario that does not run is as misleading as a
+    scenario that runs undocumented.
+    """
+    text = _ps(HARNESS_PS1)
+    header = text[text.index("Test matrix:") : text.index("Safety, unchanged")]
+    documented = set(re.findall(r"^\s{6}([A-Z]\d?)\s{2,}\S", header, re.MULTILINE))
+    reported = set(re.findall(r"Add-Result '([A-Z]\d?)'", _ps_code(HARNESS_PS1)))
+    # The timeline scenarios are reported from one loop over the oracle fixture as
+    # 'D-J.<n>', so their letters are documented individually but never appear as a
+    # literal Add-Result label.
+    assert "Add-Result ('D-J.' + $stepIndex)" in _ps_code(HARNESS_PS1)
+    reported |= set("DEFGHIJ")
+    # Housekeeping identifiers the matrix deliberately does not list.
+    reported -= {"XX", "Y", "Z"}
+    assert documented == reported, (
+        f"documented but never run: {sorted(documented - reported)}; "
+        f"run but undocumented: {sorted(reported - documented)}"
+    )
+    assert {"K2", "W"} <= documented
 
 
 def test_38_the_harness_hardcodes_no_expected_timeline_value() -> None:
@@ -1104,6 +1131,56 @@ def test_44n_the_harness_drives_the_representation_ceiling_at_runtime() -> None:
     assert "2147483647" not in _ps_code(HARNESS_PS1)
 
 
+def test_44a1_percentage_ownership_is_proved_with_a_live_timeline() -> None:
+    """B2 sorts for real, but before the first Apply -- so there is nothing to own.
+
+    With no project-year column in the profiling grid, B2 can only show that
+    identity travels with row data and that profiling rows stay keyed. The claim
+    the permanent-ID design exists for -- a PROFILED VALUE belongs to an
+    IDENTIFIER, not to a worksheet row -- needs an active timeline.
+    """
+    code = _ps(HARNESS_PS1)
+    marker = "# K2. Profiling PERCENTAGES survive a real reorder"
+    assert marker in code, "the live-timeline reorder scenario does not exist"
+    section = code[code.index(marker) :]
+    section = section[: section.index("# L. Runtime failure containment")]
+
+    # It must run AFTER the timeline scenarios, or it is B2 again.
+    assert code.index("# D - J. Timeline scenarios") < code.index(
+        "# K2. Profiling PERCENTAGES survive a real reorder"
+    ), "K2 must run after a timeline has been applied"
+
+    for check in (
+        "at least two identified Cost Lines exist",
+        "the profiling grid has at least one project-year column",
+        "every seeded percentage is distinct, so a swap cannot pass",
+        "the synchronisation pathway ran successfully",
+        "the register row order actually changed",
+        "every original permanent ID still exists",
+        "every profiling percentage still belongs to its own permanent ID",
+        "no percentage followed worksheet row position",
+        "the profiling grid order follows the reordered register",
+        "the ID counter is unchanged by the reorder",
+        "structural revalidation is clean after the reorder and sync",
+    ):
+        assert check in section, f"the K2 scenario is missing: {check}"
+
+    # A REAL sort of whole rows, not an edit in place.
+    assert "Invoke-TableSort -Workbook $wb -SheetName $costReg.sheet" in section, (
+        "the reorder must be a real ListObject.Sort of the register"
+    )
+    # The real synchronisation pathway, not a hand-written grid rewrite.
+    assert "$excel.Run('PCCM_ApplyTimeline')" in section
+    # The comparison is an ID-to-value map captured as plain data beforehand.
+    assert "$before[$row[0]] = " in section and "$after[$row[0]] = " in section
+    assert "$after[$id] -ne $before[$id]" in section, (
+        "the assertion must compare per identifier, not compare row order"
+    )
+    assert "$positionalBefore" in section and "$positionalAfter" in section, (
+        "position-following must be ruled out explicitly"
+    )
+
+
 def test_44l_year_cell_presentation_is_asserted_by_equality() -> None:
     code = _ps(HARNESS_PS1)
     assert "equals input_fill" in code
@@ -1252,6 +1329,137 @@ def test_45b_no_vba_line_exceeds_the_language_limit() -> None:
         if len(line) > 1023
     ]
     assert not problems, f"lines beyond the VBA limit: {problems}"
+
+
+_VBA_DECLARATION = re.compile(
+    r"^\s*(?:(?:Public|Private|Friend)\s+)?(?:Static\s+)?"
+    r"(?:Sub|Function|Property\s+\w+)\s+(\w+)",
+    re.IGNORECASE,
+)
+
+
+def _vba_declarations() -> list[tuple[str, str, str]]:
+    """(module, procedure, joined declaration) for every Sub/Function/Property.
+
+    Continuations are joined first: a parameter list wrapped across lines is one
+    declaration, and reading only the first physical line would miss every
+    parameter after the underscore.
+    """
+    found = []
+    for module in _all_modules():
+        lines = module.code_without_string_removal.splitlines()
+        index = 0
+        while index < len(lines):
+            match = _VBA_DECLARATION.match(lines[index])
+            if match:
+                declaration = lines[index].rstrip()
+                last = index
+                while declaration.endswith("_"):
+                    last += 1
+                    declaration = declaration[:-1].rstrip() + " " + lines[last].strip()
+                found.append((module.name, match.group(1), " ".join(declaration.split())))
+                index = last
+            index += 1
+    return found
+
+
+def _vba_parameters(declaration: str) -> list[str]:
+    """The parameter list, split on commas that are not inside parentheses."""
+    start = declaration.find("(")
+    if start < 0:
+        return []
+    depth, end = 0, len(declaration)
+    for position in range(start, len(declaration)):
+        if declaration[position] == "(":
+            depth += 1
+        elif declaration[position] == ")":
+            depth -= 1
+            if depth == 0:
+                end = position
+                break
+    inner = declaration[start + 1 : end]
+    parts, depth, current = [], 0, ""
+    for char in inner:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += char
+    if current.strip():
+        parts.append(current)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def test_45c_no_typed_optional_parameter_omits_its_default() -> None:
+    """`Optional ByRef Unrepresentable As Long` does not compile.
+
+    VBA allows an Optional parameter with no default ONLY when its type is Variant,
+    because Variant can hold Missing. A typed Optional must declare a default value.
+    This one shipped as a Gate-B compile blocker that no Linux test could see, so the
+    sweep is permanent and covers every declaration, not just that procedure.
+
+    Legitimate forms stay legal: a Variant Optional (explicit or implicit) and a typed
+    Optional that declares a default.
+    """
+    problems = []
+    for module, procedure, declaration in _vba_declarations():
+        for parameter in _vba_parameters(declaration):
+            if not re.match(r"Optional\b", parameter, re.IGNORECASE):
+                continue
+            if "=" in parameter:
+                continue  # a default is declared
+            type_clause = re.search(r"\bAs\s+(\w+)", parameter, re.IGNORECASE)
+            if type_clause is None:
+                continue  # implicit Variant
+            if type_clause.group(1).lower() == "variant":
+                continue
+            problems.append(f"{module}.{procedure}: {parameter}")
+    assert not problems, (
+        "typed Optional parameter with no default (a VBA compile error):\n  "
+        + "\n  ".join(problems)
+    )
+
+
+def test_45d_highest_issued_takes_a_required_out_parameter() -> None:
+    """Every caller supplies it, so optional semantics bought nothing and cost a build."""
+    declaration = next(
+        text
+        for module, procedure, text in _vba_declarations()
+        if module == "modDrivers" and procedure == "HighestIssued"
+    )
+    parameters = _vba_parameters(declaration)
+    assert parameters == ["ByVal Kind As String", "ByRef Unrepresentable As Long"], parameters
+    # And the corruption count is genuinely consumed, not merely accepted.
+    check = next(m for m in _handwritten_modules() if m.name == "modStructuralCheck").code
+    assert "modDrivers.HighestIssued(kind, unrepresentable)" in check
+
+
+def test_45e_the_declaration_sweep_reads_the_whole_parameter_list() -> None:
+    """A sweep that stopped at the first physical line would pass on anything.
+
+    Almost every Phase-4 declaration wraps, HighestIssued included, so the joining
+    step is the part that can silently make this whole test inert.
+    """
+    declarations = _vba_declarations()
+    assert len(declarations) > 100, f"only {len(declarations)} declarations found"
+    wrapped = [
+        (module, procedure)
+        for module, procedure, text in declarations
+        if len(_vba_parameters(text)) > 1
+    ]
+    assert len(wrapped) > 20, "the parameter splitter is not seeing multi-parameter lists"
+    assert ("modDrivers", "HighestIssued") in wrapped
+    dangling = [
+        f"{module}.{procedure}"
+        for module, procedure, text in declarations
+        if text.rstrip().endswith("_")
+        or any(p.rstrip().endswith("_") for p in _vba_parameters(text))
+    ]
+    assert not dangling, f"a continuation was left unjoined: {dangling}"
 
 
 def test_46a_no_chained_com_member_access_exists() -> None:
