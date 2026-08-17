@@ -1,15 +1,16 @@
 # PCCM — Phase 5 plan: deterministic and analytical calculation engine
 
-**Revision D.** Revision C's mathematics, fingerprint algorithm, safe arithmetic,
-physical layout, reconciliation and gate design are accepted and are preserved
-unchanged — including the hash constants and the reference vector
-`50B6EB0E26857EA7`, independently reproduced at review. This revision resolves the
-remaining internal inconsistencies: derived calculation status and attempt result
-become orthogonal, with `REFUSED` moved off the status axis and `FAILED` added to
-the attempt axis; the success commit becomes one genuinely atomic contiguous range
-assignment; the "byte-identical refusal" wording is corrected; scalar rollback is
-made explicit; the fingerprint kernel is barred from the Excel object model; and
-the collision-probe explanation is corrected against a verified analysis.
+**Revision E.** The fingerprint mathematics is **not** reopened: the constants,
+the canonical encoding, every numeric and collision vector, and the reference
+digest `50B6EB0E26857EA7` are unchanged, and the review reproduced them again.
+This revision fixes one **VBA-language implementation blocker** and four
+consistency points: the recurrence may not be reduced with VBA's `Mod` or `\`,
+whose operands are `Long`-typed while the intermediate reaches `2.8 × 10¹¹`, so a
+`Double`-only reduction is locked and verified; the final commit assignment is
+brought inside the transaction rather than assumed infallible; the post-failure
+scalar state is described accurately; the callable count is corrected to six; and
+the initial `calc_state` values and the accessors' empty-case behaviour are
+locked.
 
 **DESIGN GATE. No code, no VBA, no workbook change, no build artifacts.** Phase 4
 is accepted and closed; nothing in `src/`, `spec/`, `builder/`, `bootstrap/` or
@@ -471,8 +472,8 @@ to choose.
 | `FP_INIT_2` | `1` |
 | `FP_VERSION` | `1` |
 
-**Recurrence.** For each UTF-16 code unit `u` of the stream, in order, with `u`
-normalised to `0 … 65535`:
+**Recurrence — mathematically unchanged.** For each UTF-16 code unit `u` of the
+stream, in order, with `u` normalised to `0 … 65535`:
 
 ```
 h1 = (h1 * 131 + u) mod 2147483647
@@ -481,28 +482,111 @@ h2 = (h2 * 131 + u) mod 2147483629
 
 Both accumulators start at `1`, so a stream beginning with `NUL` is not absorbed.
 
-**Exactness in VBA.** The largest intermediate is
-`(2147483647 − 1) × 131 + 65535 = 281,320,423,161`, far inside the `2⁵³ =
-9,007,199,254,740,992` exact-integer range of a `Double`. The recurrence is
-therefore exact in VBA arithmetic **without** unsigned 64-bit support, and
-reproduces bit-identically in Python.
-
 **Hashed stream.** Tags, lengths, the colon and values are **all** hashed — the
-entire canonical stream, byte for byte, nothing excluded. This is what makes the
-length prefixes structurally meaningful to the digest.
+entire canonical stream, **UTF-16 code-unit for UTF-16 code-unit**, nothing
+excluded. The hash is defined over code units, never over a byte encoding.
 
 **Section ordering — fixed, not sorted:** `HEADER`, `COST`, `RISK`. Phase 6
 appends its sections after these; the analytical sections keep their positions so
 the analytical subset stays comparable across phases.
 
 **Driver-record ordering:** ascending by **Permanent ID**, ordinal comparison on
-UTF-16 code units (`Option Compare Binary` semantics, `StrComp(..., vbBinaryCompare)`).
-Never by row, never by digest.
+UTF-16 code units (`Option Compare Binary` semantics,
+`StrComp(..., vbBinaryCompare)`). Never by row, never by digest.
 
 **Final representation:** `HEX8(h1) & HEX8(h2)` — 16 characters, **uppercase**,
 zero-padded to 8 each.
 
-### 11.5 The locked reference vector
+### 11.5 VBA implementation of the reduction — LOCKED
+
+**The mathematics above is exact in a `Double`. The obvious VBA expression is
+not.**
+
+Revision D observed correctly that the intermediate is bounded by
+
+```
+(2147483647 − 1) × 131 + 65535 = 281,320,423,161  <  2⁵³
+```
+
+and concluded the recurrence "is therefore exact in VBA arithmetic". That is true
+of the *arithmetic* and false of the *operator*. The VBA language specification
+defines `Mod` on floating-point operands using an **effective integral type of
+`Long`**, and
+
+```
+281,320,423,161  ≈  131 × Long.MaxValue
+```
+
+is far outside signed 32-bit range. Writing
+
+```vb
+h = (h * 131 + u) Mod m          ' WRONG — overflows Long
+```
+
+would fail at runtime, or worse, silently mis-reduce. The same objection applies
+to VBA integer division `\`, which is also `Long`-typed.
+
+**LOCKED reduction — `Double` arithmetic only, no `Mod`, no `\`:**
+
+```
+x = h * FP_BASE + u
+q = Fix(x / modulus)
+r = x - q * modulus
+If r >= modulus Then r = r - modulus
+If r < 0        Then r = r + modulus
+h = r
+```
+
+**Preconditions that make this exact for this hash:**
+
+| Precondition | Why it holds |
+|---|---|
+| `0 ≤ h < modulus` | invariant of the loop; `h` starts at `1` |
+| `0 ≤ u ≤ 65535` | UTF-16 code unit after `AscW` sign normalisation |
+| `x` is an integer-valued `Double`, `x < 2⁵³` | max `281,320,423,161` |
+| `q` is a small non-negative integer-valued `Double` | max **`131`** |
+| `q × modulus < 2⁵³` | max `131 × 2147483647 = 281,320,357,757` |
+| `r` is integer-valued, `0 ≤ r < modulus` | guaranteed by the two corrections |
+
+The two corrections are not cosmetic. `x / modulus ≤ 131` carries a relative error
+of at most `2⁻⁵³`, so the absolute error is under `1.5 × 10⁻¹⁴` and `Fix` can be
+off by **at most one** in either direction; the `>=` and `< 0` adjustments absorb
+exactly that.
+
+**No pre-reduction intermediate — `x`, `q × modulus`, or any partial — may be
+converted to `Long`.** Only *after* reduction, where `0 ≤ h < 2³¹`, may the
+accumulator be converted to `Long` if the final hex rendering requires it.
+
+**Verified.** The `Double`-only reducer was checked against exact integer
+arithmetic over both moduli: all boundary combinations of
+`h ∈ {0, 1, 2, m−2, m−1, m/2, …}` with `u ∈ {0, 1, 32768, 65535, …}`, plus
+**300,000** random `(h, u, modulus)` triples. **Zero mismatches.** Running the
+full reference stream through the reducer reproduces the locked digest exactly.
+
+#### Locked reduction vectors
+
+At the maximum recurrence intermediate — the case the `Long`-typed `Mod` would
+fail on:
+
+| Modulus | `h` | `u` | `x = h·131 + u` | `q = Fix(x/m)` | `r = x − q·m` |
+|---|---|---|---|---|---|
+| `FP_MOD_1` `2147483647` | `2147483646` | `65535` | `281320423161` | `131` | **`65404`** |
+| `FP_MOD_2` `2147483629` | `2147483628` | `65535` | `281320420803` | `131` | **`65404`** |
+
+And a non-degenerate mid-range case, so the test set is not only extremes:
+
+| Modulus | `h` | `u` | `x` | `q` | `r` |
+|---|---|---|---|---|---|
+| `FP_MOD_1` | `1234567890` | `41` | `161728393631` | `75` | **`667120106`** |
+| `FP_MOD_2` | `1234567890` | `41` | `161728393631` | `75` | **`667121456`** |
+
+Every `x` above exceeds `Long.MaxValue`, which is the point: these vectors fail
+against a `Mod`-based implementation and pass against the locked one.
+
+**No hash constant changes, and the end-to-end digest is unchanged:
+`50B6EB0E26857EA7`.**
+
+### 11.6 The locked reference vector
 
 Golden case 1 (§23): Base 2026, Start 2026, Duration 1, `r = 0.10`; one Cost Line
 `CL-001`, Triangular, Qty 10, Min 80, Max 150, ML 100, FX 1, inflation vector
@@ -531,7 +615,7 @@ EXPECTED FINGERPRINT = 50B6EB0E26857EA7
 **Python and VBA must both produce this exact literal.** It is a locked test
 vector on both sides of Gate A and is re-asserted on real Excel at Gate B (§24).
 
-### 11.6 Collision probes — locked test set
+### 11.7 Collision probes — locked test set
 
 Field sequences whose *content* contains the characters a delimiter design would
 have collided on. All must produce distinct digests:
@@ -570,7 +654,7 @@ Rows 1–2 do *not* collide under `U+001F` (`A:B␟C` versus `A␟B:C`), and nei
 The eight vectors and their expected digests are unchanged; only the prose was
 wrong.
 
-### 11.7 `calc_state` — two orthogonal axes
+### 11.8 `calc_state` — two orthogonal axes
 
 Revision B conflated four things. Revision C separated the snapshot from the
 attempt but still let `REFUSED` appear on the status axis. **They are now fully
@@ -597,7 +681,7 @@ field cannot report a write failure, and there is no compatibility requirement t
 preserve — no implementation exists yet — so the generic field is simply the
 correct one.
 
-### 11.8 Derived status — LOCKED, four values only
+### 11.9 Derived status — LOCKED, four values only
 
 `PCCM_CalculationStatus()` returns **only**:
 
@@ -610,7 +694,7 @@ STALE            inputs resolve and current fingerprint != last successful finge
 
 **`REFUSED` is not a derived status.** Revision C's first branch —
 *"no last-successful fingerprint and the most recent attempt refused → REFUSED"* —
-mixed the two axes and contradicted the rest of §11.8. It is removed.
+mixed the two axes and contradicted the rest of §11.9. It is removed.
 
 If no successful calculation has **ever** occurred and the first attempt refuses:
 
@@ -624,7 +708,7 @@ The status is `INVALID` because that is what the *inputs* are; the fact that
 someone pressed Calculate and was turned away is *attempt history*, and lives on
 the other axis. No special case is made.
 
-### 11.9 Attempt result — LOCKED, four values
+### 11.10 Attempt result — LOCKED, four values
 
 | Value | Meaning |
 |---|---|
@@ -652,7 +736,7 @@ the *restored* successful snapshot and the current inputs:
 the inputs describe a *new* calculation leaves `STALE` — a successful rollback
 must not make the new inputs look `CURRENT` merely because the rollback worked.
 
-### 11.10 The locked revert-to-CURRENT answer
+### 11.11 The locked revert-to-CURRENT answer
 
 Successful calculation → user makes an input invalid → `PCCM_Calculate` refuses →
 user restores the input *exactly* to the previously successful state → status is
@@ -673,7 +757,7 @@ successful snapshot never erases the record that an attempt was refused.
 fingerprint at all, so claiming "stale" would assert a comparison that was never
 made. `CURRENT` is never returned in that case.
 
-### 11.11 Status is last-evaluated, not live
+### 11.12 Status is last-evaluated, not live
 
 **There are no change events** — no `Worksheet_Change`, no
 `Workbook_SheetChange`, consistent with the Phase-4 rule that structural state is
@@ -686,7 +770,7 @@ spontaneously**, and the block is labelled `Calculation Status (last evaluated)`
 with a `Status Evaluated At` timestamp beside it, so an auditor reading the sheet
 can see how old the reading is.
 
-### 11.12 Callable surface for Gate B
+### 11.13 Callable surface for Gate B
 
 
 Public, invoked by `Application.Run` — **no button** (§17):
@@ -701,6 +785,8 @@ PCCM_CalculationFingerprint()      the LAST SUCCESSFUL fingerprint
 PCCM_CurrentInputFingerprint()     the fingerprint of the inputs as they are NOW
 ```
 
+**Six public Phase-5 callables in total: `PCCM_Calculate` plus five accessors.**
+
 `PCCM_CalculationRefusal()` from Revision C is **replaced**, not kept. A
 refusal-only accessor cannot report a `FAILED` write, so it could not express the
 mid-write scenario the plan already requires; and with no implementation in
@@ -708,8 +794,28 @@ existence there is no compatibility argument for carrying it. The generic attemp
 pair is the whole surface.
 
 The two axes are separately readable, and the two fingerprint accessors stay
-separate, so Gate B can assert all four independently — the stored snapshot
+separate, so Gate B can assert all four values independently — the stored snapshot
 **unchanged** while the current fingerprint has moved (§25).
+
+#### Empty and invalid cases — LOCKED
+
+| Accessor | Boundary behaviour |
+|---|---|
+| `PCCM_CalculationFingerprint()` | `""` when no successful calculation exists; otherwise the 16-character last-successful fingerprint |
+| `PCCM_CurrentInputFingerprint()` | the current 16-character fingerprint when the inputs resolve; **`""` when they cannot** |
+| `PCCM_CalculationAttemptResult()` | `NONE` before the first explicit `PCCM_Calculate` attempt |
+| `PCCM_CalculationAttemptDetail()` | blank for `NONE` and for `SUCCESS` |
+| `PCCM_CalculationStatus()` | never `REFUSED`; see §11.9 |
+
+**No sentinel hash strings are invented.** An empty string means "there is no
+digest", and must never be read as a valid one — in particular, two unresolvable
+states both returning `""` must not be treated as "matching fingerprints", which
+is why §11.9 derives `INVALID` from the *resolution failure*, not from a
+fingerprint comparison.
+
+When the current inputs cannot resolve, the resolution detail remains available
+through the calculation and status failure surface (`modAppState`), so an empty
+fingerprint is never the only thing the user is told.
 
 ---
 
@@ -763,11 +869,11 @@ last-successful fields are one contiguous block, and the four attempt/status
 fields are another, so "unchanged" and "changed" are each a single range
 comparison.
 
-### 12.3 The success commit is ONE range assignment
+### 12.3 The success commit is ONE range assignment — and it is itself fallible
 
-Revision C wrote three fields "last" and then called that *"a single scalar
-write"*. Three writes are not one write, and a failure between them is exactly the
-mixed state the design forbids.
+Revision C wrote three fields "last" and called that *"a single scalar write"*.
+Three writes are not one write, and a failure between them is exactly the mixed
+state the design forbids.
 
 **LOCKED: the success commit is one contiguous `Range.Value2` array assignment.**
 
@@ -787,14 +893,24 @@ C19:C20   Calculation Status (last evaluated) / Status Evaluated At
 
 Option A of the review is taken: **status and `Status Evaluated At` are inside the
 commit block**, so a successful calculation publishes its analytical snapshot, its
-attempt result and its derived status in a single indivisible assignment. There is
-no window in which the snapshot is committed but the status still says `STALE`.
+attempt result and its derived status in a single assignment. There is no window
+in which the snapshot is committed but the status still says `STALE`.
 
-**No workbook mutation is permitted after that assignment that could turn a
-committed success into a reported failure.** The commit is the last write of the
-operation.
+#### The assignment is a COMMIT ATTEMPT, not an infallible act
 
-### 12.4 Rollback of a mid-write failure
+**Revision D over-claimed.** A single `Range.Value2` assignment is indivisible
+from the *model's* point of view — no half-written state is observable — but the
+assignment itself can raise, and its verification can fail. It is therefore
+**inside** the transaction, not outside it:
+
+> If the `C13:C20` assignment raises, or verification of that assignment fails,
+> **the calculation has NOT committed**, and the same rollback path applies.
+
+The commit range remains one assignment, and remains the last success write. The
+correction is only that failure *of* that assignment is explicitly transactional
+rather than sitting outside the rollback envelope.
+
+### 12.4 Rollback — the locked sequence
 
 Write-back covers `tblCalcFX`, `tblCalcYears`, `tblCalcInflationFactors`,
 `tblCalcDrivers`, `tblCalcAnnual`, `calc_totals` and `calc_state`.
@@ -806,7 +922,7 @@ collision-safe header restoration.
 #### Scalar rollback is explicit — those helpers do not cover it
 
 `SnapshotTable` / `RestoreTable` operate on ListObjects. The two scalar blocks
-need their own, stated scope:
+need their own, stated scope.
 
 **Captured before write-back:** the **value cells only** —
 
@@ -824,35 +940,73 @@ territory.
 blanks (restored as blank, never as `0` or `""`) and timestamps. Labels and
 formats are untouched because they were never captured.
 
-#### The sequence
+#### The sequence — LOCKED
 
-1. snapshot the five ListObjects **and** the two scalar value ranges;
-2. write all analytical blocks;
-3. **verify** the written blocks against the in-memory values;
-4. on any failure at 2 or 3: restore every table snapshot **and** both scalar
-   value ranges, then — **after** rollback has completed — record
-   `Last Attempt Result = FAILED` with the failure detail in
-   `Last Attempt Detail`, and re-evaluate the derived status (§11.9);
-5. on success: the single `C13:C20` commit of §12.3.
+```
+1. snapshot the five ListObjects
+2. snapshot calc_totals      C23:C32
+3. snapshot calc_state       C13:C20
+4. write the analytical tables
+5. write calc_totals
+6. verify the analytical tables and calc_totals against the in-memory values
+7. attempt ONE C13:C20 Value2 success-commit assignment, then verify it
+8. if step 7 succeeds:
+       the calculation is COMMITTED
+       no further workbook mutation may make the operation fail
+9. if ANY of steps 4-7 fails:
+       restore the five ListObjects
+       restore C23:C32
+       restore the prior C13:C20
+       ONLY AFTER successful rollback:
+           record the FAILED attempt and the re-derived status in C17:C20
+```
 
-Because the commit is one assignment and it is last, an interruption at any
-earlier point leaves the **previous** success marked — never a half-written one.
+Steps 4–7 are all inside the envelope: a mid-table failure and a failed commit
+assignment take the same path. Step 8 is the only point after which the operation
+cannot be turned into a failure.
 
 **If recording the `FAILED` attempt metadata itself fails**, the Phase-4
 `modAppState` failure surface still reports the failure to the user, and **the
-previous successful snapshot remains authoritative** — it was restored in step 4,
+previous successful snapshot remains authoritative** — it was restored in step 9
 before any attempt metadata was touched. The ordering is deliberate: restoration
 never depends on the success of the bookkeeping that follows it.
 
-### 12.5 Acceptance
+### 12.5 Post-failure state — two distinct moments
 
-A Windows injected-failure scenario (§25) fails **after** one or more `_Calc`
-blocks have been mutated, and proves: previous totals restored · previous driver
-audit rows restored · previous annual rows restored · previous successful
-fingerprint, stamp, version and applied timeline restored · **both scalar value
-ranges** restored · no mixed snapshot survives · `Last Attempt Result = FAILED` ·
-the derived status computed independently (`STALE` when the current inputs
-describe the attempted new calculation) · Excel application state restored.
+Revision D's sequence was right and its acceptance wording was not. After a
+failure there are **two observable moments**, and only the first has `C13:C20`
+wholly restored:
+
+**Moment 1 — immediately after rollback, before failure metadata**
+
+```
+C13:C20   restored EXACTLY to the previous values, all eight cells
+```
+
+**Moment 2 — the final observable state, after the failed attempt is recorded**
+
+| Cells | State |
+|---|---|
+| `C13:C16` | **exactly** the restored last-successful snapshot |
+| `C17` | `FAILED` |
+| `C18` | the failure detail |
+| `C19` | the derived status, from current inputs vs the restored snapshot |
+| `C20` | a new status-evaluation timestamp |
+| `C23:C32` and the five ListObjects | **exactly** restored to the previous successful calculation |
+
+**Acceptance therefore compares `C13:C16` plus the analytical blocks — never all
+of `C13:C20` after failure metadata has been written.** Claiming the latter would
+be asserting that the failure was not recorded.
+
+### 12.6 Acceptance
+
+A Windows injected-failure scenario (§25) proves the path at **both** boundaries —
+a mid-table failure and a failure of the final commit assignment — and asserts:
+previous totals restored · previous driver audit rows restored · previous annual
+rows restored · `C13:C16` and `C23:C32` restored exactly, blanks as blanks · no
+mixed snapshot survives · `Last Attempt Result = FAILED` · the derived status
+computed independently (`STALE` when the current inputs describe the attempted new
+calculation) · Excel application state restored.
 
 This is a **real acceptance requirement**, not a diagnostic.
 
@@ -1065,10 +1219,30 @@ assignment (§12.3). The three groups are kept adjacent and in this order.
 - `C19:C20` is the derived reading.
 - `C13:C20` is the **success commit**, written as one 8×1 array (§12.3).
 
-`REFUSED` no longer appears among the status values (§11.8); it is an attempt
+`REFUSED` no longer appears among the status values (§11.9); it is an attempt
 result. Row 19's label says **"(last evaluated)"** because it is not live
-(§11.11), and row 20 makes that concrete: an auditor can see how old the reading
+(§11.12), and row 20 makes that concrete: an auditor can see how old the reading
 is.
+
+##### Initial values, seeded by Stage A — LOCKED
+
+| Cell | Field | Initial value |
+|---|---|---|
+| `C13` | Last Successful Stamp | **blank** |
+| `C14` | Last Successful Fingerprint | **blank** |
+| `C15` | Fingerprint Version | **blank** |
+| `C16` | Last Successful Applied Timeline | **blank** |
+| `C17` | Last Attempt Result | **`NONE`** |
+| `C18` | Last Attempt Detail | **blank** |
+| `C19` | Calculation Status (last evaluated) | **`NOT CALCULATED`** |
+| `C20` | Status Evaluated At | **blank** |
+
+**`Fingerprint Version` is blank before any successful snapshot exists.**
+`FP_VERSION = 1` is the current algorithm version held in the contract and the
+code; it is written into `C15` **only as part of a successful commit**. Seeding it
+at build time would make a never-calculated workbook look as though it held a
+partial successful snapshot — the same class of mistake as fabricating a zero
+where a blank belongs.
 
 #### `calc_totals` — `B23:C32`, all `#,##0.00` SAR
 
@@ -1486,8 +1660,8 @@ file *and* in two implementations is three copies of one algorithm, and they wil
 drift. Their single source is:
 
 ```
-this document (§11.3–§11.6)  +  the tested Python/VBA implementations
-                             +  the fixed test vectors 50B6EB0E26857EA7 and §11.6
+this document (§11.3–§11.7)  +  the tested Python/VBA implementations
+                             +  the fixed test vectors 50B6EB0E26857EA7 and §11.7
 ```
 
 The contract carries only `FP_VERSION`, because that *is* workbook-representable
@@ -1525,10 +1699,12 @@ emitter projects it into `modCalcContract.bas`, exactly as Phases 1–4 already 
 
 | Proof | How |
 |---|---|
-| length-prefixed serialisation is collision-free | the eight §11.6 probes — strings containing `:`, `U+001F`, `U+0000`, `U+000A` — must yield eight distinct digests, asserted against the literals |
+| length-prefixed serialisation is collision-free | the eight §11.7 probes — strings containing `:`, `U+001F`, `U+0000`, `U+000A` — must yield eight distinct digests, asserted against the literals |
 | UTF-16 code-unit parity | Python encodes `utf-16-le` and reads 16-bit units; test vectors include a non-BMP character, proving it contributes **two** units, and a character above `U+7FFF`, proving the `AscW` sign normalisation |
 | numeric encoding is locale-invariant | the ten §11.3 literals asserted exactly; plus a test that the normalisation step maps a `,` decimal separator to `.` before hashing |
-| exact hash constants and digest | `FP_BASE`, both moduli, both initial states asserted as literals; the §11.5 stream asserted at **366 code units** and its digest at **`50B6EB0E26857EA7`** |
+| exact hash constants and digest | `FP_BASE`, both moduli, both initial states asserted as literals; the §11.6 stream asserted at **366 code units** and its digest at **`50B6EB0E26857EA7`** |
+| **no native `Mod` or `\` in the reduction** | a source rule over the **executable** hash-recurrence code of `modCalcFingerprint`, not a whole-file word ban — the word "modulus" must remain usable in prose and identifiers |
+| **`Double`-only reduction is exact** | the four §11.5 reduction vectors, every `x` of which exceeds `Long.MaxValue`; plus a randomised sweep asserting the reducer equals exact integer `%` for both moduli, then the full stream re-digested through the reducer to `50B6EB0E26857EA7` |
 | row order excluded | the same drivers in reversed order produce an identical fingerprint |
 | Uniform ML excluded | two Uniform drivers differing **only** in ML produce an identical fingerprint |
 | stable formulas avoid naive overflow | the `1e308` and `1.5e308` cases of §19.2: naive overflows, stable returns the exact mean |
@@ -1633,15 +1809,17 @@ exercise them compactly. Their **behaviour is locked** regardless.
 | # | Case | Setup | Expected |
 |---|---|---|---|
 | **26** | **fingerprint reference vector** | golden case 1 | canonical stream of exactly **366** UTF-16 code units; fingerprint **`50B6EB0E26857EA7`** — identical in Python, in VBA, and on real Excel |
-| **27** | **delimiter-hostile field content** | the eight §11.6 probes | eight **distinct** digests, asserted against the §11.6 literals |
+| **27** | **delimiter-hostile field content** | the eight §11.7 probes | eight **distinct** digests, asserted against the §11.7 literals |
 | **28** | **naive-overflow, representable result** | `Min = ML = Max = 1e308`, Triangular and Beta-PERT; midpoint with both `1.5e308` | **accepted**; stable forms return `1e308`, `1e308`, `1.5e308`. A naive implementation overflows and is thereby detected |
 | **29** | **discount factor underflow** | `r = 1e10`, duration ≥ 34 | **controlled refusal** at project year 34, where the factor reaches exactly zero — never silently accepted |
 | **30** | **cancellation-heavy reconciliation** | large positive and negative unit costs whose net is near zero, all representable | identities I1–I4 **hold**; the conditioning scale of §15 keeps the tolerance proportional to the arithmetic performed, not to the near-zero net |
 | **31** | **Base-Year factor row** | `Base 2026, Start 2028, Dur 3` | `tblCalcInflationFactors` contains a `2026` row with **blank rate and cumulative factor `1`**, plus the pre-project rows `2027`, `2028` |
-| **32** | **status reverts to CURRENT** | calculate → break an input → refuse → restore the input exactly → query | derived **`CURRENT`** with no recalculation, while the attempt axis still reads `REFUSED` (§11.10, §25.5) |
+| **32** | **status reverts to CURRENT** | calculate → break an input → refuse → restore the input exactly → query | derived **`CURRENT`** with no recalculation, while the attempt axis still reads `REFUSED` (§11.11, §25.5) |
 | **33** | **mid-write failure** | injected failure after `tblCalcDrivers` is mutated | full logical rollback; previous snapshot and **both scalar value ranges** intact; no mixed state; attempt result `FAILED`; derived status **`STALE`**, not forced from the attempt (§12.4, §25.7) |
 | **34** | **invalid input, no Calculate attempted** | valid success, then break an input and query without calculating | derived **`INVALID`**, attempt result still **`SUCCESS`** — the two axes moving independently (§25.1 row 3) |
 | **35** | **locale-separator injection** | canonical numeric encoder given `,` as the decimal separator | output **byte-identical** to the `.` case; the encoder is a pure function of its arguments (§11.3) |
+| **36** | **reduction beyond `Long`** | `h = 2147483646, u = 65535` for `FP_MOD_1`, and the three other §11.5 vectors | `x = 281,320,423,161` — **131× `Long.MaxValue`** — reduces to **`65404`**; the `Double`-only reducer equals exact integer `%` for both moduli. A native `Mod` implementation fails here |
+| **37** | **failure at the commit boundary** | injected failure at the final `C13:C20` assignment | the same rollback path as a mid-table failure; `C13:C16` and all analytical blocks restored; attempt `FAILED`; status derived independently (§12.3–§12.5) |
 
 Cases 26–27, 31 and 35 assert **format and audit content**; 28, 32 and 34 assert
 **acceptance and correct status** where a naive implementation would fail,
@@ -1685,7 +1863,9 @@ and clean transient COM release.
 | **the full status matrix** | all six rows of §25.1, each asserting derived status, attempt result, attempt detail and snapshot state — including row 3 (invalid input, no Calculate) and row 6 (rollback must not report `CURRENT`) |
 | **status reverts to CURRENT** | the §23 case 32 sequence, driven end to end (§25.5) |
 | **refusal preserves the snapshot** | break an input, `PCCM_Calculate`; assert derived status `INVALID`, attempt result `REFUSED` with a reason, and — comparing the two groups of §12.2 **separately** — that `calc_totals`, all five tables and `C13:C16` are unchanged while `C17:C20` has changed (§25.4) |
-| **mid-write failure and full rollback** | inject a failure after one or more `_Calc` blocks have been mutated; assert previous totals, driver rows, annual rows, fingerprint and stamp all restored, no mixed snapshot, Excel application state restored. Uses the Phase-4 `FailPointCheck` mechanism already proven on target |
+| **mid-write failure and full rollback** | inject a failure after one or more `_Calc` blocks have been mutated; assert previous totals, driver rows, annual rows, `C13:C16` and `C23:C32` all restored, no mixed snapshot, Excel application state restored. Uses the Phase-4 `FailPointCheck` mechanism already proven on target (§25.7) |
+| **commit-boundary failure** | inject a failure at the final `C13:C20` commit assignment; the **same** rollback path must apply, proving the commit attempt is inside the transaction and not outside it (§12.3, §25.7) |
+| **reduction parity on real VBA** | the fingerprint-parity case exercises the `Double`-only reducer end to end on Excel; a `Mod`-based implementation cannot produce `50B6EB0E26857EA7` because it would overflow `Long` first (§11.5) |
 | **Base-Year factor visible** | `tblCalcInflationFactors` contains the `BaseYear` row with blank rate and cumulative factor `1` (§23 case 31) |
 | **cancellation-heavy reconciliation** | a fixture with large offsetting contributions and a near-zero net; identities must hold (§23 case 30) |
 
@@ -1706,7 +1886,7 @@ axes, using the **same canonical semantics intended for later simulation reuse**
 
 ### 25.1 The locked status matrix
 
-Every row asserts **all four** accessors, because the whole point of §11.7 is that
+Every row asserts **all four** accessors, because the whole point of §11.8 is that
 the axes move independently. `snapshot` means the four `C13:C16` cells plus the
 five analytical tables and `calc_totals`.
 
@@ -1798,19 +1978,30 @@ including `AscW` sign normalisation and locale-invariant numeric formatting.
 Inject a failure after one or more `_Calc` blocks have been mutated (§12.4), using
 the Phase-4 `FailPointCheck` mechanism already proven on target. Assert:
 
-- previous totals, driver rows, annual rows restored;
-- **both scalar value ranges** restored — `calc_totals` `C23:C32` and the
-  snapshot block `C13:C16` — including blanks and timestamps;
+- previous totals, driver rows and annual rows restored exactly;
+- `calc_totals` `C23:C32` restored exactly, including blanks;
+- **`C13:C16` restored exactly** — the last-successful snapshot;
+- `C17:C20` correctly **published as new**: `FAILED`, the failure detail, the
+  re-derived status and a fresh evaluation timestamp. **The comparison is
+  `C13:C16`, never all of `C13:C20`** (§12.5) — asserting the latter would be
+  asserting that the failure was never recorded;
 - no mixed snapshot survives;
 - `PCCM_CalculationAttemptResult() = FAILED` with the failure detail;
 - `PCCM_CalculationStatus() = STALE`, derived independently — **not** forced from
   the attempt result;
 - Excel application state restored.
 
+Run this at **both** injection boundaries: after a table has been mutated, and at
+the final `C13:C20` commit assignment (§12.3). Both must take the same path.
+
+If the harness can observe it, also assert **moment 1** of §12.5 — immediately
+after rollback and before failure metadata, all eight `C13:C20` cells equal their
+previous values.
+
 ### 25.8 No change events
 
 No `Worksheet_Change` or `Workbook_SheetChange` handler exists; status is computed
-on demand (§11.11), and a sweep asserts neither handler was introduced. The
+on demand (§11.12), and a sweep asserts neither handler was introduced. The
 `_Calc` status cell is **last-evaluated**, and the harness reads it only after an
 explicit `PCCM_Calculate` or `PCCM_CalculationStatus` call — never treating it as
 live.
@@ -1899,7 +2090,8 @@ Simulation needs **only** these: no worksheet, no ListObject, no Range.
    repairs.
 9. **`modCalcReport` + the transactional orchestration of §12** —
    snapshot, write, verify, commit-last; `calc_state` maintenance; refusal through
-   `modAppState`. `PCCM_Calculate` and the four accessors of §11.10. **No button.**
+   `modAppState`. `PCCM_Calculate` **and the five accessors** of §11.13 — six
+   public Phase-5 callables in total. **No button.**
 10. **Gate-A source review.**
 11. **Gate-B harness extension** — additive module/button assertions, the new
     functional coverage, the fingerprint-parity assertion, the stale/revert
@@ -1926,50 +2118,59 @@ would otherwise be tempted to define by whatever it happens to produce.
    digest is **`50B6EB0E26857EA7`** in Python, in VBA on Linux-side tests, and on
    real Excel; the eight collision probes are distinct; the ten numeric encodings
    match, locale-invariantly;
-6. identities I1, I2, I3a–c, I4a–c, I5 hold within the §15 tolerances **using the
+6. **the modular reduction uses `Double` arithmetic only** — no native `Mod` and
+   no `\` on any pre-reduction intermediate, proven by a source rule over the
+   executable recurrence code; the four §11.5 reduction vectors match exact
+   integer arithmetic for both moduli, and the same reducer reproduces the
+   end-to-end digest;
+7. identities I1, I2, I3a–c, I4a–c, I5 hold within the §15 tolerances **using the
    per-identity conditioning scales**, with `B` and `E` independently accumulated.
    `A_pv ≤ A_nom` is a conditional diagnostic, **not** a gate;
-7. calculation is refused, with a specific message, for every §18 numerical
+8. calculation is refused, with a specific message, for every §18 numerical
    prerequisite and for `STRUCTURE CHANGE PENDING`; **no uncontrolled VBA overflow
    escapes, no overflow becomes a fabricated zero, and no discount factor
    underflows silently to zero**;
-8. the stable formulas of §19.2 return the correct mean where the naive form
+9. the stable formulas of §19.2 return the correct mean where the naive form
    overflows;
-9. `modCalcFactors`, `modCalcAnalytical` and `modCalcFingerprint` contain **none**
+10. `modCalcFactors`, `modCalcAnalytical` and `modCalcFingerprint` contain **none**
    of `Application.`, `ThisWorkbook`, `ActiveWorkbook`, `Worksheets`, `Worksheet`,
    `Range`, `Cells`, `ListObject`, `ListObjects` or `modWorkbook.`, and no
    `On Error Resume Next` exists outside the documented safe primitives — both
    proven by sweep. The canonical numeric encoder is a **pure function of its
    arguments**, including the decimal separator, proven by the separator-injection
    case (§23 case 35);
-10. **the two status axes are orthogonal.** `PCCM_CalculationStatus()` returns only
+11. **the two status axes are orthogonal.** `PCCM_CalculationStatus()` returns only
     `NOT CALCULATED` / `CURRENT` / `STALE` / `INVALID` — never `REFUSED` — and
     `PCCM_CalculationAttemptResult()` returns `NONE` / `SUCCESS` / `REFUSED` /
     `FAILED`. All six rows of the §25.1 matrix hold on real Excel, including an
     invalid input with no attempt (`INVALID` + `SUCCESS`) and a rolled-back write
     failure (`STALE` + `FAILED`);
-11. the fingerprint detects staleness for every covered input and **not** for
+12. the fingerprint detects staleness for every covered input and **not** for
     Description, row order, Selected Confidence Level or unreferenced Config;
     status returns to `CURRENT` when inputs are restored exactly, with no
     recalculation and with the attempt axis unchanged; there is no change-event
     handler anywhere;
-12. **write-back is transactional**: the success commit is **one contiguous
-    `C13:C20` `Range.Value2` assignment**, it is the last write of the operation,
-    and a mid-write failure restores every table **and both scalar value ranges**
-    completely — blanks as blanks — with no mixed state surviving and the attempt
-    recorded as `FAILED` only after rollback has completed;
-13. **a pre-write refusal leaves the last-successful analytical snapshot and
+13. **write-back is transactional**: the success commit is **one contiguous
+    `C13:C20` `Range.Value2` assignment** and the last write of the operation, but
+    it is a commit **attempt** — a failure of that assignment, or of its
+    verification, takes the same rollback path as a mid-table failure. Both
+    injection boundaries restore every table **and both scalar value ranges**
+    completely — blanks as blanks — with no mixed state surviving, and the attempt
+    is recorded as `FAILED` only after rollback has completed. The post-failure
+    comparison of the successful snapshot is **`C13:C16` plus the analytical
+    blocks**, never all of `C13:C20` (§12.5);
+14. **a pre-write refusal leaves the last-successful analytical snapshot and
     `C13:C16` unchanged, while `C17:C20` changes as it must.** The two groups are
     compared separately, and the phrase "workbook byte-identical" is not used of a
     refused attempt;
-14. the `tblCalcDrivers` column sums reconstruct A, B, C and D exactly, and no
+15. the `tblCalcDrivers` column sums reconstruct A, B, C and D exactly, and no
     column carries two meanings by Driver Kind;
-15. the full **35/35** Phase-4 functional matrix still passes; all 8 Phase-4
+16. the full **35/35** Phase-4 functional matrix still passes; all 8 Phase-4
     modules and all 5 Phase-4 buttons persist; Phase-5 modules persist; **no
     Calculate button exists**;
-16. the harness asserts every calculated value with no manual inspection;
-17. Excel shuts down naturally with clean transient COM release;
-18. **Phase 5 introduces no RNG implementation, no sampling implementation and no
+17. the harness asserts every calculated value with no manual inspection;
+18. Excel shuts down naturally with clean transient COM release;
+19. **Phase 5 introduces no RNG implementation, no sampling implementation and no
     simulation output, and makes no use of Iterations, Random Seed or Selected
     Confidence Level in any analytical calculation or in the fingerprint;
     `_SimData` remains unchanged and unused** (§22).
@@ -1978,28 +2179,31 @@ would otherwise be tempted to define by whatever it happens to produce.
 
 ## 29. Decisions
 
-**D1–D6 are locked** (§4), and Revision D leaves them untouched — as it leaves
-the mathematics, the hash constants, the reference vector `50B6EB0E26857EA7`, the
-numeric test vectors, the safe-arithmetic design, the `_Calc` anchors and schemas,
-the cancellation-aware tolerances, the no-button and no-event rules, the
-Phase-4 35/35 requirement and golden cases 1–33.
+**D1–D6 are locked** (§4), and Revision E leaves them untouched — as it leaves
+the deterministic / mean / EMV mathematics, the inflation and discount
+conventions, the referenced-only FX and inflation scope, `Quantity > 0`, the
+profile blank semantics, the length-prefixed canonical encoding, the UTF-16 rules,
+the ten numeric vectors, the eight collision probes, **every hash constant, the
+mathematical recurrence and `50B6EB0E26857EA7`**, the safe-arithmetic design, the
+cancellation-aware tolerances, the `_Calc` anchors and schemas, the two orthogonal
+status axes, the snapshot/rollback philosophy, the no-button and no-event rules,
+the Phase-4 35/35 requirement and golden cases 1–35.
 
-Revision D changed only what was internally inconsistent:
+Revision E changed one implementation blocker and four consistency points:
 
 | Was | Now |
 |---|---|
-| `REFUSED` appeared on both the status and attempt axes | status is `NOT CALCULATED` / `CURRENT` / `STALE` / `INVALID`; attempt is `NONE` / `SUCCESS` / `REFUSED` / `FAILED` |
-| no attempt value could express a write failure | `FAILED`, with the derived status computed independently |
-| `Last Refusal Reason` | `Last Attempt Detail` — a refusal-only field cannot report a failure |
-| three "last" writes called *"a single scalar write"* | one contiguous `C13:C20` `Range.Value2` assignment |
-| *"workbook byte-identical"* on refusal | the snapshot block unchanged, the attempt block changed, compared separately |
-| scalar rollback implied by table helpers | scalar **value** ranges captured and restored explicitly; labels and formats never touched |
-| `Application.International` inside the fingerprint kernel | the separator is passed in; `Application.` is added to the purity sweep |
-| a wrong claim about which probe rows collide | corrected against a verified analysis: `U+001F` collides on 4↔5, colon on 1↔2 and 1↔4 |
+| the recurrence intermediate declared "exact in VBA arithmetic" — true of the arithmetic, **false of the operator**, since VBA `Mod` and `\` are `Long`-typed and `x` reaches `2.8 × 10¹¹` | a locked `Double`-only reduction — `Fix`, subtract, two one-step corrections — verified against exact integer arithmetic over 300,000 random cases with zero mismatches, reproducing the same digest |
+| the final `C13:C20` assignment treated as infallible | it is a commit **attempt**; its failure takes the same rollback path, and steps 4–7 are all inside the envelope |
+| acceptance implying `C13:C20` equals its old values after a failure | the comparison is **`C13:C16` plus the analytical blocks**; `C17:C20` is correctly published as new |
+| "`PCCM_Calculate` and the four accessors" | **six public callables**: `PCCM_Calculate` plus **five** accessors |
+| initial `calc_state` values unstated | locked — blanks, `NONE`, `NOT CALCULATED`, and `Fingerprint Version` **blank** until a successful commit |
+| accessor empty cases unstated | locked — `""` for no digest, `NONE` before the first attempt, no sentinel hash strings |
+| "the entire canonical stream, byte for byte" | "UTF-16 code-unit for UTF-16 code-unit" — the hash is defined over code units, never over a byte encoding |
 
 **No open decisions remain.**
 
 Model source, workbook artifacts, contracts, bootstrap, harness and Phase-4 tests
 are unchanged by this document. No code has been written.
 
-**PHASE 5 PLAN REVISION D READY FOR REVIEW**
+**PHASE 5 PLAN REVISION E READY FOR REVIEW**
