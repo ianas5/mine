@@ -36,6 +36,16 @@ below, and recorded here so a reviewer can see exactly what moved.
 One further **Gate-B requirement is locked here and deliberately not implemented
 yet**: direct Windows/VBA vector coverage, specified in §24.1.
 
+### Erratum C1 — raised later, by implementation
+
+| # | Correction | Applied in |
+|---|---|---|
+| **C1** | **Reconciliation conditioning is on the UNDERLYING CONTRIBUTIONS**, not on the headline totals or the annual row aggregates. Gate-A Step 2 proved both of the former insufficient: each is an already-cancelled number, and each made a correct calculation on a valid model report a false internal-invariant failure. **No tolerance number changed** — only the operands. The allowance is also restated as `max(floor, coefficient × max(scale_floor, scale))`, a maximum rather than a sum. | §15, and the `conditioning_terms` names in `spec/calc_contract.yaml` |
+
+C1 is **not** editorial. It is a numerical correction to an accepted definition
+that did not satisfy its own stated objective, and it is recorded here rather than
+folded silently into a new revision.
+
 ---
 
 ## 1. Phase objective
@@ -1156,22 +1166,89 @@ floating-point accumulation error across hundreds of large terms would be report
 as a bookkeeping mismatch.
 
 The scale must reflect the **magnitude of the arithmetic performed**, not the
-magnitude of its net result. Per identity:
+magnitude of its net result.
+
+#### ERRATUM C1 — conditioning is on CONTRIBUTIONS, not on totals or aggregates
+
+*Raised by Gate-A Step 2 and applied here. This is a narrow numerical correction
+to the conditioning OPERANDS only. No tolerance number changes, no business rule
+changes, and no change to A / B / C / D / E themselves.*
+
+Revision E named the scales as follows, and **both halves were proven
+insufficient by implementation**:
+
+| Identity | Superseded scale | Why it fails |
+|---|---|---|
+| I1 `A + B = C` | `max(1, \|A\| + \|B\| + \|C\|)` | A, B and C are already-cancelled **totals** |
+| I2 `C + D = E` | `max(1, \|C\| + \|D\| + \|E\|)` | same |
+| I3 / I4 | `max(1, Σ_y \|annual aggregate\| + \|headline\|)` | the annual **row aggregate** has already cancelled *within* the year |
+
+Both were demonstrated on valid models — ordered three-point sets, positive
+Quantity, weights summing to 1 — that a correct calculation then reported as
+failing:
+
+```
+HEADLINE.  Three cost lines, two of them exact mirrors:
+             CL-001  Min 0      ML 1e17   Max 4e17
+             CL-002  Min 10     ML 30     Max 110
+             CL-003  Min -4e17  ML -1e17  Max 0
+           A = 32, B = 16, C = 64, so |A|+|B|+|C| = 112 and the scale
+           collapses to the 1e-6 floor. But the accumulation ran through
+           partial sums of 1e17, where ONE ULP IS ALREADY 16 SAR.
+           I1 difference = -16   ->  reported as failing.
+
+ANNUAL.    Duration 2, one currency, zero inflation, zero discount:
+             CL-001  1e16   profile 100% / 0%
+             CL-002  1      profile   0% / 100%
+             CL-003  -1e16  profile 100% / 0%
+           Year 1 aggregate = 0 (the two 1e16 contributions annihilate),
+           year 2 aggregate = 1, so Σ_y |annual| = 1 — yet the annual
+           arithmetic processed about 2e16.
+           I3a difference = 1   ->  reported as failing.
+```
+
+**The corrected scales sum the UNDERLYING CONTRIBUTIONS**, per driver and per
+driver per year, before any aggregation. For each cost driver `i` let `A_i`,
+`B_i`, `C_i` be its deterministic, uncertainty-mean-shift and mean-basis
+contributions; for each risk `j` let `D_j` be its expected-risk contribution; and
+let `E_k` be the contribution actually accumulated into `E` (`C_i` for a cost
+line, `D_j` for a risk):
 
 | Identity | Conditioning scale |
 |---|---|
-| I1 `A + B = C` | `max(1, \|A\| + \|B\| + \|C\|)` |
-| I2 `C + D = E` | `max(1, \|C\| + \|D\| + \|E\|)` |
-| I3a / I4a | `max(1, Σ_y \|annual base\| + \|C\|)` |
-| I3b / I4b | `max(1, Σ_y \|annual risk\| + \|D\|)` |
-| I3c / I4c | `max(1, Σ_y \|annual total\| + \|E\|)` |
+| I1 `A + B = C` | `max(1, Σ_i \|A_i\| + Σ_i \|B_i\| + Σ_i \|C_i\|)` |
+| I2 `C + D = E` | `max(1, Σ_i \|C_i\| + Σ_j \|D_j\| + Σ_k \|E_k\|)` |
+| I3a / I4a | `max(1, Σ_y Σ_i \|base_{i,y}\| + Σ_i \|C_i\|)` |
+| I3b / I4b | `max(1, Σ_y Σ_j \|risk_{j,y}\| + Σ_j \|D_j\|)` |
+| I3c / I4c | `max(1, Σ_y (Σ_i \|base_{i,y}\| + Σ_j \|risk_{j,y}\|) + Σ_k \|E_k\|)` |
 
-Nominal and PV each use their own scale. Summing **absolute** annual
-contributions is the point: it is the only term that still grows when the signed
-annual values cancel.
+Nominal and PV identities each use their own basis's contribution magnitudes.
+**`Σ_y |annual aggregate_y|` must not be used as a substitute**: cancellation may
+already have happened inside that aggregate, which is exactly the annual failure
+above.
 
-The `max(1, …)` floor keeps the scale from going below unity for a genuinely tiny
-model, so the `1e-6` absolute floor remains the binding constraint there.
+`max(1, …)` keeps the scale from going below unity for a genuinely tiny model, so
+the `1e-6` absolute floor remains the binding constraint there.
+
+**Unchanged by this erratum:** `profiling_sum_absolute = 1e-9`,
+`identity_absolute_floor = 1e-6`, `identity_relative_coefficient = 1e-12`,
+`conditioning_scale_floor = 1`. `spec/calc_contract.yaml` carries the corrected
+term NAMES; the arithmetic remains the plan's.
+
+#### The allowance is a maximum, not a sum
+
+For the avoidance of the implementation ambiguity Step 2 found:
+
+```
+allowance = max( absolute_floor, coefficient * max(scale_floor, conditioning_scale) )
+```
+
+The inner operation is a **maximum**. Adding `coefficient × scale_floor` to the
+scaled scale would widen every allowance slightly, and a tolerance may not be
+loosened by accident. The scaled form — distributing the coefficient across the
+terms rather than multiplying their sum — remains required, because the raw
+conditioning sum can exceed `Double` while the tolerance itself is perfectly
+representable.
 
 The objective is stated deliberately: **tolerate normal floating-point
 accumulation error without hiding a real bookkeeping mismatch.** A conditioning

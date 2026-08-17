@@ -1,10 +1,20 @@
 # Phase 5 — Gate A — Step 2: pure analytical oracle and safe numerical semantics
 
-**Status: ready for independent review.**
+**Status: CORRECTED after independent review — ready for re-review.**
 
 Step 1 is accepted and closed. This step locks and tests the pure numerical
 semantics that later Stage-A emission and later VBA must implement. It is
 Linux-only, in-memory, and side-effect free.
+
+Review found **four blocking correctness issues and one test-portability
+defect**, all reproduced and all fixed; §16 records them in full. One of them —
+the conditioning definition — proved that the accepted plan §15 did not satisfy
+its own stated objective, and is the narrow, justified exception to Step 1 being
+closed.
+
+**No business rule, formula or tolerance NUMBER changed.** The conditioning
+OPERANDS changed, the evaluation ORDER is now canonical, and two implementation
+defects were corrected.
 
 ---
 
@@ -60,17 +70,19 @@ it does not implement the machine.
 
 | File | Change |
 |---|---|
-| `builder/pccm_builder/calc_oracle.py` | **new** — data model, resolution/validation, analytical kernel, reconciliation |
+| `builder/pccm_builder/calc_oracle.py` | **new** — data model, resolution/validation, canonical ordering, analytical kernel, contribution-conditioned reconciliation |
 | `builder/pccm_builder/calc_numeric.py` | **new** — safe arithmetic, stable statistics, factor series, tolerance, failure hierarchy |
-| `tests/test_phase5_numeric.py` | **new** — 43 tests |
-| `tests/test_phase5_oracle.py` | **new** — 75 tests |
+| `tests/test_phase5_numeric.py` | **new** — 48 tests |
+| `tests/test_phase5_oracle.py` | **new** — 85 tests |
 | `docs/phase5_gate_a_step2.md` | **new** — this document |
+| `docs/phase5_plan.md` | **modified** — §15 erratum C1 only, plus its §0 register entry |
+| `spec/calc_contract.yaml` | **modified** — `conditioning_terms` names only (erratum C1) |
+| `builder/pccm_builder/calc_loader.py` | **modified** — `LOCKED_CONDITIONING_TERMS` only |
+| `tests/test_phase5_calc_contract_validation.py` | **modified** — the conditioning-term expectations only; count unchanged at 151 |
 
-**Unchanged, and verified unchanged:** `spec/calc_contract.yaml`,
-`builder/pccm_builder/calc_loader.py`, `builder/pccm_builder/calc_fingerprint.py`,
+**Unchanged, and verified unchanged:** `builder/pccm_builder/calc_fingerprint.py`,
 `builder/pccm_builder/__init__.py`, `builder/build_stage_a.py`, all four earlier
-specifications, every Phase 1–4 source and test, every `.ps1`, and
-`docs/phase5_plan.md`.
+specifications, every Phase 1–4 source and test, and every `.ps1`.
 
 The oracle is **not exported from `pccm_builder/__init__.py`**. That is
 deliberate: exporting it would suggest the build consumes it, and the build does
@@ -108,8 +120,11 @@ IdentityCheck      name · left · right · difference · allowance · holds
 **Load-bearing semantics, not naming choices:**
 
 - **identity is the permanent ID** — `profile_weights` travel *with* their driver;
-- **row position is not data** — it is not an input to anything, and a test proves
-  reordering the driver sequence changes no value at all;
+- **row position is not data** — it is not an input to anything, and every
+  accumulation runs in **canonical order**: ascending permanent ID, ordinal on
+  UTF-16 code units, using the comparison imported from `calc_fingerprint`. All
+  six permutations of an order-sensitive fixture are asserted to give an identical
+  complete `CalculationResult` (§16.2);
 - **applied timeline only** — entered-but-not-applied values never reach here;
 - **`fx_rows` is a sequence, not a mapping** — a duplicated currency has to be
   representable before it can be refused;
@@ -370,47 +385,12 @@ Tier 2 of `safe_product` is not associative-equivalent to tier 1. Mitigated by
 running tier 2 only after tier 1 has produced no value at all, and by making the
 order deterministic. **Carried forward as a VBA requirement** (§7).
 
-### 12.4 The locked I1 / I2 conditioning scale does not cover cross-driver cancellation
+### 12.4 The locked conditioning scale did not meet its own objective
 
-**This one is a finding about the accepted plan, not about Step-2 code, and it is
-reported rather than corrected.**
-
-Plan §15 states the objective:
-
-> "The scale must reflect the **magnitude of the arithmetic performed**, not the
-> magnitude of its net result."
-
-The locked annual scales achieve it — `Sum_y |annual| + |headline|` keeps growing
-when signed annual values cancel. The locked I1 and I2 scales,
-`max(1, |A| + |B| + |C|)` and `max(1, |C| + |D| + |E|)`, are sums of the
-**headline totals**, so when the totals themselves cancel across drivers the scale
-collapses to the `1e-6` floor while the accumulation error does not.
-
-Reproducer, all inputs valid — ordered three-point sets, positive Quantity,
-weights summing to 1:
-
-```
-CL-001   Min 0      ML 1e17   Max 4e17      (central 1e17, mean ~1.667e17)
-CL-002   Min 10     ML 30     Max 110       (central 30,   mean 50)
-CL-003   Min -4e17  ML -1e17  Max 0         (exact mirror of CL-001)
-```
-
-```
-A = 32.0    B = 16.0    C = 64.0
-A + B - C = -16.0        allowance = 1e-06        I1 REPORTED AS FAILING
-```
-
-One ulp at a partial sum of `1e17` is already 16 SAR, so the residue is
-arithmetic, not a defect in the model or the calculation. The locked scale sizes
-the tolerance by the near-zero *result* instead.
-
-**Step 2 implements the accepted definition exactly and does not alter it.** The
-behaviour is captured by
-`test_finding_headline_cancellation_can_exceed_the_locked_i1_allowance`, which
-asserts the current outcome so it cannot change unnoticed and **must be updated if
-review amends §15**. Whether to amend it — for example by conditioning I1/I2 on
-the summed absolute driver contributions, as the annual identities already do — is
-a design decision for review, not for this step.
+Reported in the first Step-2 submission as a finding about the accepted plan
+rather than about this code, and **now corrected by review as plan §15 erratum
+C1**. Review additionally proved the same defect in the annual identities, which
+the first submission had believed immune. §16.1 carries the full account.
 
 ---
 
@@ -419,38 +399,37 @@ a design decision for review, not for this step.
 Run from a clean extraction, Linux, Python 3.11.
 
 ```
-python -m pytest pccm/tests/ -q        823 passed, 0 failed
+python -m pytest pccm/tests/ -q        838 passed, 0 failed
 python pccm/builder/build_stage_a.py   181 passed, 0 failed
 ```
 
 Standalone:
 
 ```
-python pccm/tests/test_phase5_numeric.py    43 passed, 0 failed
-python pccm/tests/test_phase5_oracle.py     75 passed, 0 failed
+python pccm/tests/test_phase5_numeric.py    48 passed, 0 failed
+python pccm/tests/test_phase5_oracle.py     85 passed, 0 failed
 ```
 
-| Module | Step 1 final | Step 2 |
-|---|---|---|
-| `test_phase1_manifest_validation.py` | 10 | **10** |
-| `test_phase1_structure.py` | 21 | **21** |
-| `test_phase2_contract_validation.py` | 42 | **42** |
-| `test_phase2_inputs.py` | 40 | **40** |
-| `test_phase3_driver_contract_validation.py` | 31 | **31** |
-| `test_phase3_drivers.py` | 28 | **28** |
-| `test_phase3_verifier_intersection.py` | 12 | **12** |
-| `test_phase4_oracle.py` | 68 | **68** |
-| `test_phase4_stage_b_source.py` | 155 | **155** |
-| `test_phase4_structure.py` | 43 | **43** |
-| `test_phase4_structure_contract_validation.py` | 52 | **52** |
-| `test_phase5_calc_contract_validation.py` | 151 | **151** |
-| `test_phase5_fingerprint.py` | 52 | **52** |
-| `test_phase5_numeric.py` | — | **43** |
-| `test_phase5_oracle.py` | — | **75** |
-| **total** | **705** | **823** |
+| Module | Step 1 final | Step 2 | Step 2 corrected |
+|---|---|---|---|
+| `test_phase1_manifest_validation.py` | 10 | 10 | **10** |
+| `test_phase1_structure.py` | 21 | 21 | **21** |
+| `test_phase2_contract_validation.py` | 42 | 42 | **42** |
+| `test_phase2_inputs.py` | 40 | 40 | **40** |
+| `test_phase3_driver_contract_validation.py` | 31 | 31 | **31** |
+| `test_phase3_drivers.py` | 28 | 28 | **28** |
+| `test_phase3_verifier_intersection.py` | 12 | 12 | **12** |
+| `test_phase4_oracle.py` | 68 | 68 | **68** |
+| `test_phase4_stage_b_source.py` | 155 | 155 | **155** |
+| `test_phase4_structure.py` | 43 | 43 | **43** |
+| `test_phase4_structure_contract_validation.py` | 52 | 52 | **52** |
+| `test_phase5_calc_contract_validation.py` | 151 | 151 | **151** |
+| `test_phase5_fingerprint.py` | 52 | 52 | **52** |
+| `test_phase5_numeric.py` | — | 43 | **48** |
+| `test_phase5_oracle.py` | — | 75 | **85** |
+| **total** | **705** | **823** | **838** |
 
-**Every existing count is unchanged.** No Step-1 test was weakened, repointed or
-removed; the 705 → 823 delta is exactly the 118 new Step-2 tests. Stage-A
+**Every existing count is unchanged.** No Step-1 test was weakened or removed; the 705 → 838 delta is exactly the 133 new Step-2 tests. The 151 Step-1 contract tests are unchanged in count; only the conditioning-term expectations inside them moved, for erratum C1. Stage-A
 verification is unchanged at 181/181 because Step 2 emits nothing.
 
 ---
@@ -505,7 +484,145 @@ tests, because B is also an audit column — only E was invisible.
 
 ---
 
-## 16. Next step — NOT started
+## 16. Independent review — four blockers and a portability defect
+
+All five reproduced before fixing, all five fixed.
+
+### 16.1 BLOCKER — conditioning must use underlying contributions (plan erratum C1)
+
+The first submission reported that the locked I1 scale `max(1, |A|+|B|+|C|)` does
+not cover cross-driver cancellation, and pinned the behaviour. **Review went
+further and proved the annual scales fail the same way** — which the first
+submission had explicitly claimed they did not.
+
+| | Reproducer | Residue | Scale collapsed to | Verdict before |
+|---|---|---|---|---|
+| headline | three cost lines, two exact mirrors, ML `1e17` | 16 SAR | `1e-6` floor | I1 **false failure** |
+| annual | `1e16` / `1` / `-1e16`, profiles `100/0`, `0/100`, `100/0` | 1 SAR | `1e-6` floor | I3a **false failure** |
+
+Both are already-cancelled numbers: the headline totals cancel across drivers,
+and the annual row aggregate cancels *within* the year — `Σ_y |annual aggregate|`
+is `1` where the annual arithmetic processed `2e16`.
+
+**Corrected.** Every scale now sums the scaled absolute magnitudes of the
+**underlying per-driver and per-driver-per-year contributions**, captured during
+accumulation by `ReconciliationMagnitudes` so they cannot describe a different
+calculation from the one being checked. Nominal and PV each condition on their own
+basis. `Σ_y |annual aggregate_y|` is not used anywhere.
+
+The magnitudes are stored already multiplied by the relative coefficient, so the
+raw contribution sum — which can exceed Double where the tolerance cannot — is
+never formed. `reconcile` refuses magnitudes captured at a different coefficient
+rather than silently mixing scales.
+
+**No tolerance number changed**: `1e-9`, `1e-6`, `1e-12`, `1`. Plan §15 and the
+`conditioning_terms` names in `spec/calc_contract.yaml` carry the correction;
+Step-1 §14 records the narrow reopening.
+
+### 16.2 BLOCKER — row order changed numerical results
+
+`row position is not data` was true of the inputs and false of the arithmetic:
+the accumulators ran in incoming tuple order, and floating-point addition is not
+associative. Reproduced exactly as reported —
+
+```
+CL-001 = 1e16, CL-002 = 1, CL-003 = -1e16
+order (001, 002, 003)  ->  A = C = E = 0
+order (001, 003, 002)  ->  A = C = E = 1
+```
+
+Row order is **excluded from the calculation fingerprint**, so two workbooks with
+the same fingerprint could disagree on the answer because someone sorted a
+ListObject.
+
+**Corrected.** `canonical_order` sorts drivers by ascending permanent ID, ordinal
+on UTF-16 code units, using `utf16_sort_key` **imported from `calc_fingerprint`**
+rather than reimplemented — two copies of an ordering rule are two chances to
+disagree. It is applied to cost and risk calculation, A–E accumulation, annual
+contribution accumulation, audit output order, and reference-set discovery (whose
+order is observable through the inflation-factor audit rows).
+
+This is **not** magnitude ordering. Magnitude-balanced evaluation remains only
+`safe_product`'s tier-2 rescue for a single short product.
+
+Tested across **all six permutations**, comparing the **complete**
+`CalculationResult` — totals, annual rows, driver audit tuple, inflation-factor
+tuple, resolved FX, discount factors and conditioning magnitudes. A companion test
+asserts the fixture really is order-sensitive when summed naively, so the
+permutation test cannot pass vacuously.
+
+### 16.3 BLOCKER — `identity_allowance` did not implement its own formula
+
+It computed `c*scale_floor + Σ(c*|term|)` where the contract says
+`max(floor, c * max(scale_floor, Σ|terms|))`. Reproduced: `[1e6]` returned
+`1.000001e-6` where the locked value is `1e-6`.
+
+**Corrected** to `allowance_from_scaled`: `max(scaled_floor, scaled_terms)`, then
+`max(absolute_floor, …)`. Still overflow-safe — the coefficient is still
+distributed across the terms, never applied to their sum. The test that pinned the
+additive form is replaced, and boundary tests were added around `scale = 1e6`,
+where the relative allowance and the absolute floor coincide exactly.
+
+### 16.4 BLOCKER — a huge Python integer leaked a raw `OverflowError`
+
+`is_usable_double(10**400)` raised `OverflowError`, because `float()` of an
+arbitrary-precision `int` raises rather than returning `inf`. A predicate that
+raises is not a predicate, and the escape bypassed the whole failure contract.
+
+**Corrected**: the conversion is guarded, `is_usable_double(10**400)` is `False`,
+and a huge integer anywhere in the model — Quantity, FX rate, discount rate, Min,
+a profile weight, an inflation rate, Probability — produces a structured refusal
+naming the subject. Seven such inputs are asserted.
+
+### 16.5 Reconciliation now uses the safe primitives
+
+`A + B` and `left - right` were raw expressions, a second unchecked arithmetic
+path beside the kernel's. They now go through `safe_add` / `safe_subtract` /
+`safe_accumulate`, so an unrepresentable reconciliation surfaces through the
+established controlled mechanism instead of putting `inf` into an `IdentityCheck`.
+
+### 16.6 Test-portability defect — the fresh-interpreter boundary test
+
+Review's environment preloaded `numpy`, `random` and `secrets` through site
+startup *before* the oracle was imported, so the test failed on an environment
+fact rather than an oracle dependency. It conflated "present before the import"
+with "loaded because of the import".
+
+**Corrected** by launching the subprocess with **`python -S`**, which disables
+site processing entirely. Verified both ways: with a `sitecustomize.py` that
+imports all three, a plain interpreter reports **85 preloaded modules** and `-S`
+reports **none**, and the full suite passes under that environment. `-S` is also
+the stronger claim — the pure modules run on a bare interpreter.
+
+The AST import and reference tests are unchanged and were not weakened; a sabotage
+adding `import random` to the oracle still fails both tests.
+
+### 16.7 The pinned false-failure test is gone
+
+`test_finding_headline_cancellation_can_exceed_the_locked_i1_allowance` is
+removed. It asserted `valid model -> I1 fails`, which was honest evidence before
+review decided the correction and is wrong to keep afterwards. Two regressions
+replace it — `test_erratum_c1_headline_cross_driver_cancellation_reconciles` and
+`test_erratum_c1_annual_within_year_cancellation_reconciles` — each asserting that
+the same model now calculates, that the rounding residue is still real and
+non-zero, that the allowance exceeds it, and that `assert_reconciled` passes.
+
+### 16.8 Regression controls
+
+Each of these fails against the previous Step-2 package:
+
+| Control | Before | After |
+|---|---|---|
+| adversarial reorder `1e16 / 1 / -1e16`, six permutations | two distinct results | one result |
+| headline cross-driver cancellation | I1 false failure | reconciles |
+| annual within-year cancellation | I3a false failure, 1 SAR | reconciles |
+| `identity_allowance([1e6])` | `1.000001e-6` | `1e-6` |
+| `is_usable_double(10**400)` | raw `OverflowError` | `False` |
+| boundary test under a preloading environment | fails | passes |
+
+---
+
+## 17. Next step — NOT started
 
 Step 3, whatever review scopes it to be. Nothing beyond §1 of this document has
 been written.
@@ -519,4 +636,4 @@ been written.
 > **STEP 3 HAS NOT BEGUN.**
 > **PHASE 6 HAS NOT BEGUN.**
 
-**PHASE 5 GATE A STEP 2 READY FOR INDEPENDENT REVIEW**
+**PHASE 5 GATE A STEP 2 CORRECTION READY FOR INDEPENDENT REVIEW**

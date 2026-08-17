@@ -28,10 +28,20 @@ classification honest.
 holds the model, the resolution rules and the analytical mathematics.
 
 --------------------------------------------------------------------------------
-IDENTITY IS THE PERMANENT ID
+IDENTITY IS THE PERMANENT ID, AND SO IS THE EVALUATION ORDER
 --------------------------------------------------------------------------------
 Profiling weights are carried WITH their driver and keyed by permanent ID. Row
-position is not data, is never an input here, and cannot influence any result.
+position is not data and is never an input here.
+
+That is not enough on its own. Floating-point addition is not associative, so
+accumulating the same contributions in a different sequence can give a different
+total - and row order IS excluded from the calculation fingerprint, so two
+workbooks with the SAME fingerprint could otherwise disagree on the answer purely
+because someone sorted a ListObject.
+
+Every accumulation therefore runs in a CANONICAL ORDER: ascending permanent ID,
+ordinal on UTF-16 code units, using the same comparison the fingerprint uses. The
+mathematics is unchanged; only the evaluation sequence is pinned.
 """
 
 from __future__ import annotations
@@ -40,22 +50,25 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Sequence
 
+from .calc_fingerprint import utf16_sort_key
 from .calc_numeric import (
     CalculationRefusal,
     ModelInputRefusal,
     NumericalRangeRefusal,
     OracleError,
     OracleInvariantError,
+    allowance_from_scaled,
     beta_pert_mean,
     compound_inflation_factors,
     discount_factor_series,
-    identity_allowance,
     is_usable_double,
     midpoint,
     safe_accumulate,
+    safe_add,
     safe_multiply,
     safe_product,
     safe_subtract,
+    scaled_magnitude,
     triangular_mean,
 )
 
@@ -77,6 +90,7 @@ __all__ = [
     "NumericalRangeRefusal",
     "OracleError",
     "OracleInvariantError",
+    "ReconciliationMagnitudes",
     "RiskDriver",
     "Tolerances",
     "assert_reconciled",
@@ -84,6 +98,7 @@ __all__ = [
     "central_basis_label",
     "central_value",
     "expected_value",
+    "canonical_order",
     "precomputed_factors",
     "reconcile",
     "resolve_fx",
@@ -292,6 +307,47 @@ class AnalyticalTotals:
 
 
 @dataclass(frozen=True)
+class ReconciliationMagnitudes:
+    """Conditioning magnitudes, captured WHILE the contributions are accumulated.
+
+    Every field is already multiplied by the relative coefficient, so the raw sum
+    of contributions - which can exceed Double where the tolerance does not - is
+    never formed.
+
+    WHY UNDERLYING CONTRIBUTIONS AND NOT AGGREGATES. Plan §15 requires the scale
+    to reflect "the magnitude of the arithmetic performed, not the magnitude of
+    its net result". Summing `|A| + |B| + |C|` measures the *results*, and so does
+    summing `|annual aggregate_y|`: both are already-cancelled numbers. A model can
+    run its accumulation through `1e17` and end at `A = 32`, or process `2e16` of
+    annual contributions and leave an annual aggregate of `1`. Conditioning on
+    either would size the tolerance by what survived rather than by what happened,
+    and report ordinary Double rounding as a bookkeeping mismatch.
+
+    These are therefore sums over the PER-DRIVER and PER-DRIVER-PER-YEAR
+    contributions, before any aggregation. This is internal reconciliation
+    metadata; it is NOT a `_Calc` audit column and is not written anywhere.
+    """
+
+    relative_coefficient: float
+    a_nom: float = 0.0
+    a_pv: float = 0.0
+    b_nom: float = 0.0
+    b_pv: float = 0.0
+    c_nom: float = 0.0
+    c_pv: float = 0.0
+    d_nom: float = 0.0
+    d_pv: float = 0.0
+    e_nom: float = 0.0
+    e_pv: float = 0.0
+    annual_base_nom: float = 0.0
+    annual_base_pv: float = 0.0
+    annual_risk_nom: float = 0.0
+    annual_risk_pv: float = 0.0
+    annual_total_nom: float = 0.0
+    annual_total_pv: float = 0.0
+
+
+@dataclass(frozen=True)
 class CalculationResult:
     totals: AnalyticalTotals
     annual: tuple[AnnualRow, ...]
@@ -299,6 +355,7 @@ class CalculationResult:
     inflation_factors: tuple[InflationFactorRow, ...]
     discount_factors: Mapping[int, float]
     resolved_fx: Mapping[str, float]
+    magnitudes: ReconciliationMagnitudes
 
 
 @dataclass(frozen=True)
@@ -317,6 +374,37 @@ class IdentityCheck:
 # ---------------------------------------------------------------------------
 # Layer 1 - resolution and validation
 # ---------------------------------------------------------------------------
+def canonical_order(drivers: Sequence[_DriverBase]) -> tuple[_DriverBase, ...]:
+    """Ascending permanent ID, ordinal on UTF-16 code units.
+
+    THE CANONICAL COMPUTATIONAL ORDER. Floating-point addition is not associative,
+    so the sequence in which contributions are accumulated is part of the answer,
+    not an implementation detail. Row order is deliberately excluded from the
+    calculation fingerprint, so two workbooks with the same fingerprint must not be
+    able to produce different totals because someone sorted a ListObject.
+
+    The comparison is imported from `calc_fingerprint` rather than reimplemented:
+    the fingerprint already had to define ordinal UTF-16 ordering to match VBA's
+    `StrComp(..., vbBinaryCompare)`, and two copies of an ordering rule are two
+    chances to disagree.
+
+    This is NOT magnitude ordering. Magnitude-balanced evaluation exists only as
+    `safe_product`'s tier-2 rescue for a single short product, and never decides
+    the order drivers are processed in.
+    """
+    return tuple(sorted(drivers, key=lambda driver: utf16_sort_key(driver.permanent_id)))
+
+
+def _canonical_names(names: Sequence[str]) -> tuple[str, ...]:
+    """Deterministic ordering for discovered currencies and profiles.
+
+    Their order is observable - it decides the order of the inflation-factor audit
+    rows - so it is pinned by the same rule rather than left to whichever driver
+    happened to be first in the worksheet.
+    """
+    return tuple(sorted(set(names), key=utf16_sort_key))
+
+
 def _numeric(value: object, where: str) -> float:
     """Accept a real number; refuse blank, text and booleans alike.
 
@@ -335,21 +423,20 @@ def _numeric(value: object, where: str) -> float:
 def _referenced_currencies(model: CalculationModel) -> tuple[str, ...]:
     """Built from the IDENTIFIED DRIVERS, before `tblFXRates` is touched.
 
-    This ordering is the whole referenced-only rule: a Config row for a currency
-    nobody uses cannot block a valid model, because resolution never asks about
-    it.
+    That ordering of operations is the whole referenced-only rule: a Config row
+    for a currency nobody uses cannot block a valid model, because resolution
+    never asks about it. The RESULT is returned in canonical order, because it is
+    observable downstream.
     """
-    seen: dict[str, None] = {}
-    for driver in (*model.cost_drivers, *model.risk_drivers):
-        seen.setdefault(driver.currency, None)
-    return tuple(seen)
+    return _canonical_names(
+        [driver.currency for driver in (*model.cost_drivers, *model.risk_drivers)]
+    )
 
 
 def _referenced_profiles(model: CalculationModel) -> tuple[str, ...]:
-    seen: dict[str, None] = {}
-    for driver in (*model.cost_drivers, *model.risk_drivers):
-        seen.setdefault(driver.inflation_profile, None)
-    return tuple(seen)
+    return _canonical_names(
+        [driver.inflation_profile for driver in (*model.cost_drivers, *model.risk_drivers)]
+    )
 
 
 def resolve_fx(model: CalculationModel) -> dict[str, float]:
@@ -645,8 +732,13 @@ def calculate(model: CalculationModel, tolerances: Tolerances) -> CalculationRes
 
     drivers: list[DriverFactors] = []
 
+    # CANONICAL ORDER, not worksheet order: everything below accumulates, and
+    # floating-point addition is not associative.
+    ordered_costs = canonical_order(model.cost_drivers)
+    ordered_risks = canonical_order(model.risk_drivers)
+
     # --- cost lines ---------------------------------------------------------
-    for driver in model.cost_drivers:
+    for driver in ordered_costs:
         where = f"cost line {driver.permanent_id!r}"
         kind = _resolve_distribution(driver)
         minimum, most_likely, maximum = _resolve_three_point(driver, kind)
@@ -699,7 +791,7 @@ def calculate(model: CalculationModel, tolerances: Tolerances) -> CalculationRes
         )
 
     # --- risks --------------------------------------------------------------
-    for driver in model.risk_drivers:
+    for driver in ordered_risks:
         where = f"risk {driver.permanent_id!r}"
         kind = _resolve_distribution(driver)
         minimum, most_likely, maximum = _resolve_three_point(driver, kind)
@@ -748,8 +840,11 @@ def calculate(model: CalculationModel, tolerances: Tolerances) -> CalculationRes
             )
         )
 
-    totals = _accumulate_totals(drivers)
-    annual = _annual_series(model, drivers, factors_by_profile, discounts, project_years)
+    totals, totals_magnitudes = _accumulate_totals(drivers, tolerances)
+    annual, annual_magnitudes = _annual_series(
+        ordered_costs, ordered_risks, drivers, factors_by_profile, discounts,
+        project_years, tolerances,
+    )
     return CalculationResult(
         totals=totals,
         annual=annual,
@@ -757,20 +852,53 @@ def calculate(model: CalculationModel, tolerances: Tolerances) -> CalculationRes
         inflation_factors=tuple(inflation_rows),
         discount_factors=dict(discounts),
         resolved_fx=dict(resolved_fx),
+        magnitudes=_merge_magnitudes(totals_magnitudes, annual_magnitudes),
     )
 
 
-def _accumulate_totals(drivers: Sequence[DriverFactors]) -> AnalyticalTotals:
-    """Five measures, each accumulated in its OWN pass.
+def _merge_magnitudes(
+    totals: ReconciliationMagnitudes, annual: ReconciliationMagnitudes
+) -> ReconciliationMagnitudes:
+    """Combine the two capture passes into one record."""
+    if totals.relative_coefficient != annual.relative_coefficient:
+        raise OracleInvariantError("conditioning magnitudes captured at different coefficients")
+    return ReconciliationMagnitudes(
+        relative_coefficient=totals.relative_coefficient,
+        a_nom=totals.a_nom, a_pv=totals.a_pv,
+        b_nom=totals.b_nom, b_pv=totals.b_pv,
+        c_nom=totals.c_nom, c_pv=totals.c_pv,
+        d_nom=totals.d_nom, d_pv=totals.d_pv,
+        e_nom=totals.e_nom, e_pv=totals.e_pv,
+        annual_base_nom=annual.annual_base_nom, annual_base_pv=annual.annual_base_pv,
+        annual_risk_nom=annual.annual_risk_nom, annual_risk_pv=annual.annual_risk_pv,
+        annual_total_nom=annual.annual_total_nom, annual_total_pv=annual.annual_total_pv,
+    )
+
+
+def _accumulate_totals(
+    drivers: Sequence[DriverFactors], tolerances: Tolerances
+) -> tuple[AnalyticalTotals, ReconciliationMagnitudes]:
+    """Five measures, each accumulated in its OWN pass, in canonical driver order.
 
     `B = C - A` and `E = C + D` are NOT the calculation path. They are
     reconciliation identities, and an identity computed by definition checks
     nothing. Accumulating each measure independently is what makes I1 and I2 real.
 
     Each accumulation is checked at every driver, so a failure names the driver
-    rather than reporting that a total came out infinite.
+    rather than reporting that a total came out infinite. Alongside each
+    contribution its scaled absolute magnitude is captured, so the conditioning
+    scale measures the arithmetic THAT WAS PERFORMED rather than the total that
+    survived it.
     """
     a_nom = a_pv = b_nom = b_pv = c_nom = c_pv = d_nom = d_pv = e_nom = e_pv = 0.0
+    mag: dict[str, float] = {
+        key: 0.0 for key in
+        ("a_nom", "a_pv", "b_nom", "b_pv", "c_nom", "c_pv", "d_nom", "d_pv", "e_nom", "e_pv")
+    }
+    coefficient = tolerances.identity_relative_coefficient
+
+    def record(key: str, value: float, where: str) -> None:
+        mag[key] = scaled_magnitude(mag[key], value, coefficient, where)
 
     for driver in drivers:
         tag = f"totals, driver {driver.permanent_id!r}"
@@ -783,9 +911,17 @@ def _accumulate_totals(drivers: Sequence[DriverFactors]) -> AnalyticalTotals:
             b_pv = safe_accumulate(b_pv, driver.uncertainty_mean_shift_pv, f"{tag}: B pv")
             c_nom = safe_accumulate(c_nom, driver.mean_basis_nominal, f"{tag}: C nom")
             c_pv = safe_accumulate(c_pv, driver.mean_basis_pv, f"{tag}: C pv")
+            record("a_nom", driver.deterministic_nominal, f"{tag}: |A| nom")
+            record("a_pv", driver.deterministic_pv, f"{tag}: |A| pv")
+            record("b_nom", driver.uncertainty_mean_shift_nominal, f"{tag}: |B| nom")
+            record("b_pv", driver.uncertainty_mean_shift_pv, f"{tag}: |B| pv")
+            record("c_nom", driver.mean_basis_nominal, f"{tag}: |C| nom")
+            record("c_pv", driver.mean_basis_pv, f"{tag}: |C| pv")
         else:
             d_nom = safe_accumulate(d_nom, driver.expected_risk_nominal, f"{tag}: D nom")
             d_pv = safe_accumulate(d_pv, driver.expected_risk_pv, f"{tag}: D pv")
+            record("d_nom", driver.expected_risk_nominal, f"{tag}: |D| nom")
+            record("d_pv", driver.expected_risk_pv, f"{tag}: |D| pv")
 
     # E is accumulated in its OWN pass over the same contributions, not derived
     # from C and D. Two independent journeys to the same number are what I2 tests.
@@ -794,21 +930,28 @@ def _accumulate_totals(drivers: Sequence[DriverFactors]) -> AnalyticalTotals:
         if driver.driver_kind is DriverKind.COST_LINE:
             e_nom = safe_accumulate(e_nom, driver.mean_basis_nominal, f"{tag} nom")
             e_pv = safe_accumulate(e_pv, driver.mean_basis_pv, f"{tag} pv")
+            record("e_nom", driver.mean_basis_nominal, f"{tag} |E| nom")
+            record("e_pv", driver.mean_basis_pv, f"{tag} |E| pv")
         else:
             e_nom = safe_accumulate(e_nom, driver.expected_risk_nominal, f"{tag} nom")
             e_pv = safe_accumulate(e_pv, driver.expected_risk_pv, f"{tag} pv")
+            record("e_nom", driver.expected_risk_nominal, f"{tag} |E| nom")
+            record("e_pv", driver.expected_risk_pv, f"{tag} |E| pv")
 
-    return AnalyticalTotals(a_nom, a_pv, b_nom, b_pv, c_nom, c_pv, d_nom, d_pv, e_nom, e_pv)
+    totals = AnalyticalTotals(a_nom, a_pv, b_nom, b_pv, c_nom, c_pv, d_nom, d_pv, e_nom, e_pv)
+    return totals, ReconciliationMagnitudes(relative_coefficient=coefficient, **mag)
 
 
 def _annual_series(
-    model: CalculationModel,
+    ordered_costs: Sequence[CostDriver],
+    ordered_risks: Sequence[RiskDriver],
     drivers: Sequence[DriverFactors],
     factors_by_profile: Mapping[str, Mapping[int, float]],
     discounts: Mapping[int, float],
     project_years: Sequence[tuple[int, int]],
-) -> tuple[AnnualRow, ...]:
-    """Six series per applied project year, on the MEAN basis.
+    tolerances: Tolerances,
+) -> tuple[tuple[AnnualRow, ...], ReconciliationMagnitudes]:
+    """Six series per applied project year, on the MEAN basis, in canonical order.
 
     Annual Base Cost uses the distribution expected value, not the deterministic
     ML/Midpoint basis: the locked Results requirement is that annual cash flow is
@@ -816,16 +959,30 @@ def _annual_series(
 
     The annual TOTAL is accumulated in its own pass rather than added from the two
     series above it, so I3c and I4c are real checks and not arithmetic identities.
+
+    Conditioning magnitudes are captured PER DRIVER PER YEAR, before the row
+    aggregate exists. Conditioning on the aggregate would be conditioning on a
+    number that has already cancelled - the annual aggregate can be `1` where the
+    contributions that produced it were `1e16` apart.
     """
     by_id = {driver.permanent_id: driver for driver in drivers}
     rows: list[AnnualRow] = []
+    coefficient = tolerances.identity_relative_coefficient
+    mag: dict[str, float] = {
+        key: 0.0 for key in
+        ("annual_base_nom", "annual_base_pv", "annual_risk_nom", "annual_risk_pv",
+         "annual_total_nom", "annual_total_pv")
+    }
+
+    def record(key: str, value: float, where: str) -> None:
+        mag[key] = scaled_magnitude(mag[key], value, coefficient, where)
 
     for offset, (index, calendar_year) in enumerate(project_years):
         base_nom = risk_nom = total_nom = 0.0
         base_pv = risk_pv = total_pv = 0.0
         discount = discounts[index]
 
-        for driver in model.cost_drivers:
+        for driver in ordered_costs:
             resolved = by_id[driver.permanent_id]
             where = f"annual year {calendar_year}, cost line {driver.permanent_id!r}"
             infl = factors_by_profile[driver.inflation_profile][calendar_year]
@@ -838,8 +995,12 @@ def _annual_series(
             base_pv = safe_accumulate(base_pv, present, f"{where}: base PV")
             total_nom = safe_accumulate(total_nom, nominal, f"{where}: total nominal")
             total_pv = safe_accumulate(total_pv, present, f"{where}: total PV")
+            record("annual_base_nom", nominal, f"{where}: |base| nominal")
+            record("annual_base_pv", present, f"{where}: |base| PV")
+            record("annual_total_nom", nominal, f"{where}: |total| nominal")
+            record("annual_total_pv", present, f"{where}: |total| PV")
 
-        for driver in model.risk_drivers:
+        for driver in ordered_risks:
             resolved = by_id[driver.permanent_id]
             where = f"annual year {calendar_year}, risk {driver.permanent_id!r}"
             infl = factors_by_profile[driver.inflation_profile][calendar_year]
@@ -853,6 +1014,10 @@ def _annual_series(
             risk_pv = safe_accumulate(risk_pv, present, f"{where}: risk PV")
             total_nom = safe_accumulate(total_nom, nominal, f"{where}: total nominal")
             total_pv = safe_accumulate(total_pv, present, f"{where}: total PV")
+            record("annual_risk_nom", nominal, f"{where}: |risk| nominal")
+            record("annual_risk_pv", present, f"{where}: |risk| PV")
+            record("annual_total_nom", nominal, f"{where}: |total| nominal")
+            record("annual_total_pv", present, f"{where}: |total| PV")
 
         rows.append(
             AnnualRow(
@@ -866,55 +1031,97 @@ def _annual_series(
                 total_pv=total_pv,
             )
         )
-    return tuple(rows)
+    return tuple(rows), ReconciliationMagnitudes(relative_coefficient=coefficient, **mag)
 
 
 # ---------------------------------------------------------------------------
 # Reconciliation
 # ---------------------------------------------------------------------------
 def reconcile(result: CalculationResult, tolerances: Tolerances) -> tuple[IdentityCheck, ...]:
-    """I1 - I5, with cancellation-aware conditioning scales.
+    """I1 - I5, conditioned on the UNDERLYING CONTRIBUTIONS.
 
-    Each scale sums the ABSOLUTE magnitudes THAT identity accumulates, so a model
-    whose large positive and negative contributions cancel does not collapse its
-    own tolerance to the floor and report ordinary accumulation error as a
-    bookkeeping mismatch.
+    Plan §15 erratum C1. Every scale sums the scaled absolute magnitudes of the
+    per-driver (and per-driver-per-year) contributions that the identity
+    accumulated - never the headline totals, and never the annual row aggregates.
+    Both of those are already-cancelled numbers, and conditioning on them sizes
+    the tolerance by what survived instead of by what happened.
+
+    The magnitudes were captured during accumulation, so they cannot describe a
+    different calculation from the one being checked.
+
+    All arithmetic here goes through the safe primitives. A reconciliation that
+    quietly produced `inf` and then compared it would be reporting nonsense.
     """
     totals = result.totals
+    magnitudes = result.magnitudes
+    if magnitudes.relative_coefficient != tolerances.identity_relative_coefficient:
+        raise OracleInvariantError(
+            f"conditioning magnitudes were captured at coefficient "
+            f"{magnitudes.relative_coefficient!r} but reconciliation was asked for "
+            f"{tolerances.identity_relative_coefficient!r}; the scales would describe a "
+            "different tolerance from the one requested"
+        )
+
     checks: list[IdentityCheck] = []
 
-    def check(name: str, left: float, right: float, terms: Sequence[float]) -> None:
-        allowance = identity_allowance(
-            terms,
+    def check(name: str, left: float, right: float, scaled_terms: Sequence[float]) -> None:
+        scaled = 0.0
+        for term in scaled_terms:
+            scaled = safe_accumulate(scaled, term, f"{name}: conditioning scale")
+        allowance = allowance_from_scaled(
+            scaled,
             tolerances.identity_absolute_floor,
             tolerances.identity_relative_coefficient,
             tolerances.conditioning_scale_floor,
         )
-        checks.append(IdentityCheck(name, left, right, left - right, allowance))
+        difference = safe_subtract(left, right, f"{name}: difference")
+        checks.append(IdentityCheck(name, left, right, difference, allowance))
 
-    check("I1 nominal: A + B = C", totals.a_nom + totals.b_nom, totals.c_nom,
-          (totals.a_nom, totals.b_nom, totals.c_nom))
-    check("I1 PV: A + B = C", totals.a_pv + totals.b_pv, totals.c_pv,
-          (totals.a_pv, totals.b_pv, totals.c_pv))
-    check("I2 nominal: C + D = E", totals.c_nom + totals.d_nom, totals.e_nom,
-          (totals.c_nom, totals.d_nom, totals.e_nom))
-    check("I2 PV: C + D = E", totals.c_pv + totals.d_pv, totals.e_pv,
-          (totals.c_pv, totals.d_pv, totals.e_pv))
+    check(
+        "I1 nominal: A + B = C",
+        safe_add(totals.a_nom, totals.b_nom, "I1 nominal"),
+        totals.c_nom,
+        (magnitudes.a_nom, magnitudes.b_nom, magnitudes.c_nom),
+    )
+    check(
+        "I1 PV: A + B = C",
+        safe_add(totals.a_pv, totals.b_pv, "I1 PV"),
+        totals.c_pv,
+        (magnitudes.a_pv, magnitudes.b_pv, magnitudes.c_pv),
+    )
+    check(
+        "I2 nominal: C + D = E",
+        safe_add(totals.c_nom, totals.d_nom, "I2 nominal"),
+        totals.e_nom,
+        (magnitudes.c_nom, magnitudes.d_nom, magnitudes.e_nom),
+    )
+    check(
+        "I2 PV: C + D = E",
+        safe_add(totals.c_pv, totals.d_pv, "I2 PV"),
+        totals.e_pv,
+        (magnitudes.c_pv, magnitudes.d_pv, magnitudes.e_pv),
+    )
 
     annual = result.annual
     series = (
-        ("I3a nominal base", [r.base_cost_nominal for r in annual], totals.c_nom),
-        ("I3b nominal risk", [r.expected_risk_nominal for r in annual], totals.d_nom),
-        ("I3c nominal total", [r.total_nominal for r in annual], totals.e_nom),
-        ("I4a PV base", [r.base_cost_pv for r in annual], totals.c_pv),
-        ("I4b PV risk", [r.expected_risk_pv for r in annual], totals.d_pv),
-        ("I4c PV total", [r.total_pv for r in annual], totals.e_pv),
+        ("I3a nominal base", [r.base_cost_nominal for r in annual], totals.c_nom,
+         (magnitudes.annual_base_nom, magnitudes.c_nom)),
+        ("I3b nominal risk", [r.expected_risk_nominal for r in annual], totals.d_nom,
+         (magnitudes.annual_risk_nom, magnitudes.d_nom)),
+        ("I3c nominal total", [r.total_nominal for r in annual], totals.e_nom,
+         (magnitudes.annual_total_nom, magnitudes.e_nom)),
+        ("I4a PV base", [r.base_cost_pv for r in annual], totals.c_pv,
+         (magnitudes.annual_base_pv, magnitudes.c_pv)),
+        ("I4b PV risk", [r.expected_risk_pv for r in annual], totals.d_pv,
+         (magnitudes.annual_risk_pv, magnitudes.d_pv)),
+        ("I4c PV total", [r.total_pv for r in annual], totals.e_pv,
+         (magnitudes.annual_total_pv, magnitudes.e_pv)),
     )
-    for name, values, headline in series:
+    for name, values, headline, scaled_terms in series:
         total = 0.0
         for value in values:
             total = safe_accumulate(total, value, name)
-        check(name, total, headline, [*values, headline])
+        check(name, total, headline, scaled_terms)
 
     for driver in result.drivers:
         total = 0.0
@@ -925,7 +1132,7 @@ def reconcile(result: CalculationResult, tolerances: Tolerances) -> tuple[Identi
                 f"I5 profile sum: {driver.permanent_id}",
                 total,
                 1.0,
-                total - 1.0,
+                safe_subtract(total, 1.0, f"I5 {driver.permanent_id}"),
                 tolerances.profiling_sum_absolute,
             )
         )

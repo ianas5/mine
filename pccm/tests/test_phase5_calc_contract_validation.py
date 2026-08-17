@@ -892,7 +892,10 @@ def test_r15_giving_an_identity_the_wrong_conditioning_terms_is_rejected() -> No
     """I1 is `A + B = C`; sizing its tolerance by |D| and |E| is meaningless."""
 
     def mutate(data: dict[str, Any]) -> None:
-        data["tolerances"]["conditioning_terms"]["i1"] = ["abs_d", "abs_e"]
+        data["tolerances"]["conditioning_terms"]["i1"] = [
+            "sum_abs_d_driver_contributions",
+            "sum_abs_e_driver_contributions",
+        ]
 
     _rejected(mutate, "conditioning_terms.i1 replaced with another identity's terms")
 
@@ -1708,7 +1711,7 @@ def test_a_contradictory_duplicate_tolerance_is_rejected() -> None:
 def test_a_contradictory_duplicate_conditioning_term_is_rejected() -> None:
     message = _rejected_text(
         _duplicate_before(
-            '    i1: ["abs_a", "abs_b", "abs_c"]\n', '    i1: ["abs_d", "abs_e"]\n'
+            "    i1:\n", '    i1: ["sum_abs_d_driver_contributions"]\n'
         ),
         "contradictory duplicate conditioning term",
     )
@@ -1736,7 +1739,7 @@ def test_duplicate_keys_are_rejected_at_every_nesting_level() -> None:
         ("a table", "    header_row: 15\n", "    header_row: 16\n"),
         ("a table column", '        header: "Project Index"\n', '        header: "Project No"\n'),
         ("tolerances", "  identity_absolute_floor: 1.0e-6\n", "  identity_absolute_floor: 1.0e-3\n"),
-        ("conditioning_terms", '    i2: ["abs_c", "abs_d", "abs_e"]\n', None),
+        ("conditioning_terms", "    i2:\n", None),
         ("an authority reference", '    owner: "input_contract.yaml"\n', None),
     ]
     accepted: list[str] = []
@@ -1809,7 +1812,11 @@ def test_ordinary_yaml_semantics_are_unchanged_by_the_strict_loader() -> None:
     assert calc.tolerances.profiling_sum_absolute == 1e-9             # float scalar
     assert calc.tolerances.fx_rate_strictly_positive is True          # bool scalar
     assert calc.calc_state.field_by_key("last_successful_stamp").initial is None  # null
-    assert calc.tolerances.conditioning_terms["i1"] == ("abs_a", "abs_b", "abs_c")
+    assert calc.tolerances.conditioning_terms["i1"] == (
+        "sum_abs_a_driver_contributions",
+        "sum_abs_b_driver_contributions",
+        "sum_abs_c_driver_contributions",
+    )
 
 
 def test_malformed_yaml_is_reported_as_a_contract_error() -> None:
@@ -1934,15 +1941,26 @@ def test_every_identity_declares_a_cancellation_safe_conditioning_scale() -> Non
 def test_the_exact_conditioning_terms_of_each_identity() -> None:
     """Each identity's scale sums ITS OWN absolute magnitudes."""
     tolerances = load_calc_contract(CALC_PATH).tolerances
+    # ERRATUM C1: contribution-level, not headline totals or annual aggregates.
+    # Both of those are already-cancelled numbers, and Gate-A Step 2 proved each
+    # produced a false internal-invariant failure on a correct calculation.
     expected = {
-        "i1": ("abs_a", "abs_b", "abs_c"),
-        "i2": ("abs_c", "abs_d", "abs_e"),
-        "i3a": ("sum_abs_annual_base", "abs_c"),
-        "i3b": ("sum_abs_annual_risk", "abs_d"),
-        "i3c": ("sum_abs_annual_total", "abs_e"),
-        "i4a": ("sum_abs_annual_base", "abs_c"),
-        "i4b": ("sum_abs_annual_risk", "abs_d"),
-        "i4c": ("sum_abs_annual_total", "abs_e"),
+        "i1": ("sum_abs_a_driver_contributions", "sum_abs_b_driver_contributions",
+               "sum_abs_c_driver_contributions"),
+        "i2": ("sum_abs_c_driver_contributions", "sum_abs_d_driver_contributions",
+               "sum_abs_e_driver_contributions"),
+        "i3a": ("sum_abs_annual_base_driver_contributions",
+                "sum_abs_c_driver_contributions"),
+        "i3b": ("sum_abs_annual_risk_driver_contributions",
+                "sum_abs_d_driver_contributions"),
+        "i3c": ("sum_abs_annual_total_driver_contributions",
+                "sum_abs_e_driver_contributions"),
+        "i4a": ("sum_abs_annual_base_driver_contributions",
+                "sum_abs_c_driver_contributions"),
+        "i4b": ("sum_abs_annual_risk_driver_contributions",
+                "sum_abs_d_driver_contributions"),
+        "i4c": ("sum_abs_annual_total_driver_contributions",
+                "sum_abs_e_driver_contributions"),
     }
     assert tolerances.conditioning_terms == expected
     assert LOCKED_CONDITIONING_TERMS == expected
@@ -1971,14 +1989,17 @@ def test_every_identity_conditioning_term_set_is_individually_locked() -> None:
     for identity in LOCKED_CONDITIONING_TERMS:
 
         def mutate(data: dict[str, Any], k: str = identity) -> None:
-            data["tolerances"]["conditioning_terms"][k] = ["abs_a", "abs_e"]
+            data["tolerances"]["conditioning_terms"][k] = [
+                "sum_abs_a_driver_contributions",
+                "sum_abs_e_driver_contributions",
+            ]
 
         _rejected(mutate, f"conditioning terms for {identity} replaced")
 
 
 def test_a_single_term_conditioning_scale_is_rejected() -> None:
     def mutate(data: dict[str, Any]) -> None:
-        data["tolerances"]["conditioning_terms"]["i1"] = ["abs_c"]
+        data["tolerances"]["conditioning_terms"]["i1"] = ["sum_abs_c_driver_contributions"]
 
     _rejected(mutate, "a conditioning scale driven by the net result alone")
 

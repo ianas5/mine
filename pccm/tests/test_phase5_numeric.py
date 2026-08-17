@@ -370,14 +370,84 @@ def test_the_allowance_survives_terms_whose_raw_sum_overflows() -> None:
     assert abs(allowance - 4.5e296) < 1e290
 
 
-def test_the_locked_tolerance_constants_are_not_loosened_by_the_stable_form() -> None:
+def test_the_allowance_is_a_maximum_not_a_sum() -> None:
+    """The locked formula is
+
+        max(absolute_floor, coefficient * max(scale_floor, sum |terms|))
+
+    and the inner operation is a MAXIMUM. An earlier implementation added
+    `coefficient * scale_floor` to the scaled sum, returning `1.000001e-6` for
+    `[1e6]` where the contract says exactly `1e-6`. Small, but a tolerance may
+    never be loosened by accident.
+    """
+    assert identity_allowance([1e6], 1e-6, 1e-12) == 1e-6
+    assert identity_allowance([1e6], 1e-6, 1e-12) != 1e-6 + 1e-12
     assert identity_allowance([], 1e-6, 1e-12) == 1e-6
-    assert identity_allowance([1e18], 1e-6, 1e-12) == 1e-12 * 1.0 + 1e-12 * 1e18
+    assert identity_allowance([1e18], 1e-6, 1e-12) == 1e-12 * 1e18
+
+
+def test_the_allowance_matches_the_locked_formula_computed_directly() -> None:
+    """An independent evaluation of the same formula, term by term."""
+    for terms in ([], [1.0], [1e6], [1e9, -1e9], [1e15, 2e15, 3e15], [-4.5, 0.0, 12.25]):
+        scale = max(1.0, sum(abs(t) for t in terms))
+        expected = max(1e-6, 1e-12 * scale)
+        assert abs(identity_allowance(terms, 1e-6, 1e-12) - expected) <= expected * 1e-15, terms
+
+
+def test_the_boundary_where_the_relative_allowance_meets_the_absolute_floor() -> None:
+    """`1e-12 * scale` equals `1e-6` exactly at `scale = 1e6`."""
+    assert identity_allowance([1e6 - 1.0], 1e-6, 1e-12) == 1e-6      # below: floor binds
+    assert identity_allowance([1e6], 1e-6, 1e-12) == 1e-6            # at: they coincide
+    above = identity_allowance([1e6 + 1e6], 1e-6, 1e-12)
+    assert above > 1e-6                                              # beyond: relative binds
+    assert abs(above - 2e-6) < 1e-18
+
+
+def test_the_scale_floor_binds_only_below_unity() -> None:
+    """`max(scale_floor, sum|terms|)` — for an empty or tiny model the floor of 1
+    applies, and `1e-12 * 1` is still far under the absolute floor."""
+    assert identity_allowance([], 1e-6, 1e-12, 1.0) == 1e-6
+    assert identity_allowance([0.5], 1e-6, 1e-12, 1.0) == 1e-6
+    # With a raised scale floor the relative term can overtake the absolute one.
+    assert identity_allowance([], 1e-6, 1e-12, 1e9) == 1e-3
 
 
 # ---------------------------------------------------------------------------
 # Failure classification
 # ---------------------------------------------------------------------------
+def test_a_python_integer_too_large_for_a_double_is_not_usable() -> None:
+    """`float(10**400)` RAISES `OverflowError` rather than returning `inf`.
+
+    A predicate that raises is not a predicate, and a raw `OverflowError` escaping
+    the kernel would bypass the entire failure contract. The pure oracle accepts
+    plain Python numbers, so it has to answer "no" and let the caller turn that
+    into a structured refusal.
+    """
+    huge = 10 ** 400
+    try:
+        float(huge)
+    except OverflowError:
+        pass
+    else:
+        raise AssertionError("this Python no longer overflows on the test value")
+
+    assert is_usable_double(huge) is False
+    assert is_usable_double(-huge) is False
+    assert is_usable_double(10 ** 309) is False
+    assert is_usable_double(10 ** 300) is True
+
+
+def test_the_primitives_refuse_a_huge_integer_rather_than_raising() -> None:
+    huge = 10 ** 400
+    for call in (
+        lambda: safe_add(1.0, huge),
+        lambda: safe_multiply(1.0, huge),
+        lambda: safe_divide(huge, 2.0),
+        lambda: safe_product([2.0, huge]),
+    ):
+        _refuses(call, "huge integer operand")
+
+
 def test_the_failure_hierarchy_separates_refusals_from_internal_defects() -> None:
     """A refusal is a statement about the model; an invariant failure is a
     statement about the implementation. They must never be confused."""

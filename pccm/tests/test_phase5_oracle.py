@@ -42,6 +42,8 @@ Runs standalone or under pytest.
 from __future__ import annotations
 
 import ast
+import dataclasses
+import itertools
 import subprocess
 import sys
 import textwrap
@@ -547,27 +549,17 @@ def test_case_30_cancellation_heavy_reconciliation_holds() -> None:
     assert_reconciled(result, TOL)
 
 
-def test_finding_headline_cancellation_can_exceed_the_locked_i1_allowance() -> None:
-    """PINNED FINDING — reported to review, NOT silently corrected.
+def test_erratum_c1_headline_cross_driver_cancellation_reconciles() -> None:
+    """ERRATUM C1 regression — formerly a PINNED FALSE FAILURE.
 
-    Plan §15 states the objective: "The scale must reflect the MAGNITUDE OF THE
-    ARITHMETIC PERFORMED, not the magnitude of its net result." The locked I1 and
-    I2 scales are `max(1, |A| + |B| + |C|)` and `max(1, |C| + |D| + |E|)` — sums
-    of the HEADLINE TOTALS. That achieves the objective for the annual identities,
-    whose scale sums `|annual|` term by term, but not for I1/I2 when the totals
-    themselves cancel across drivers.
+    Step 2 originally reported this valid model as failing I1, because the locked
+    conditioning scale was `max(1, |A| + |B| + |C|)` — the HEADLINE TOTALS, which
+    are already-cancelled numbers. Two of the three drivers are exact mirrors, so
+    A, B and C collapse to a few tens of SAR while the accumulation ran through
+    partial sums of `1e17`, where one ulp is already 16 SAR.
 
-    The model below is entirely valid: three cost lines, ordered three-point sets,
-    positive Quantity, weights summing to 1. Two of them are exact mirrors, so A,
-    B and C all collapse to a few tens of SAR while the accumulation ran through
-    partial sums of 1e17 — where one unit in the last place is already 16 SAR. The
-    conditioning scale therefore falls back to the 1e-6 floor and I1 is reported
-    as failing, even though nothing is wrong with the model OR the calculation.
-
-    THIS TEST ASSERTS THE CURRENT BEHAVIOUR so it cannot change unnoticed. It is
-    not an endorsement: if review amends the locked conditioning definition, this
-    test must fail and be updated with it. Step 2 implements the accepted
-    definition exactly and does not alter it.
+    Review corrected the plan: the scale now sums the UNDERLYING PER-DRIVER
+    contributions. The same model must now calculate and reconcile.
     """
     costs = (
         _cost("CL-001", minimum=0.0, most_likely=1e17, maximum=4e17, weights=(1.0,), quantity=1),
@@ -578,24 +570,93 @@ def test_finding_headline_cancellation_can_exceed_the_locked_i1_allowance() -> N
     )
     result = calculate(_model(discount=0.0, costs=costs), TOL)
 
-    # The model was accepted: this is not a refusal, and no input is at fault.
-    totals = result.totals
-    assert abs(totals.a_nom) < 1e3 and abs(totals.c_nom) < 1e3
-
+    # The headline totals really have cancelled to almost nothing...
+    assert abs(result.totals.a_nom) < 1e3 and abs(result.totals.c_nom) < 1e3
     checks = {check.name: check for check in reconcile(result, TOL)}
     i1 = checks["I1 nominal: A + B = C"]
-    assert i1.allowance == TOL.identity_absolute_floor, (
-        "the headline scale collapsed to the floor, which is the finding"
-    )
-    assert abs(i1.difference) > i1.allowance
-    assert not i1.holds
+    assert abs(i1.difference) > 1.0, "the rounding residue is real, not zero"
 
+    # ...but the conditioning scale reflects the 1e17 arithmetic that produced them.
+    assert i1.allowance > abs(i1.difference)
+    assert i1.allowance > TOL.identity_absolute_floor
+    assert i1.holds
+    assert_reconciled(result, TOL)
+
+
+def test_erratum_c1_annual_within_year_cancellation_reconciles() -> None:
+    """ERRATUM C1 regression — the annual half, independently reproduced by review.
+
+    The former annual scale summed `|annual aggregate_y|`, which is also already
+    cancelled: within year 1 the `+1e16` and `-1e16` contributions annihilate, so
+    the aggregate is `0` and the whole scale collapses to `1` — even though the
+    annual arithmetic processed about `2e16`. I3a was reported as failing by 1 SAR.
+    """
+    costs = (
+        _cost("CL-001", distribution="Uniform", minimum=1e16, most_likely=None, maximum=1e16,
+              weights=(1.0, 0.0), quantity=1),
+        _cost("CL-002", distribution="Uniform", minimum=1.0, most_likely=None, maximum=1.0,
+              weights=(0.0, 1.0), quantity=1),
+        _cost("CL-003", distribution="Uniform", minimum=-1e16, most_likely=None, maximum=-1e16,
+              weights=(1.0, 0.0), quantity=1),
+    )
+    result = calculate(
+        _model(base=2026, start=2026, duration=2, discount=0.0,
+               rates={"Standard": {2027: 0.0}}, costs=costs),
+        TOL,
+    )
+    assert result.totals.c_nom == 0.0
+    assert [row.base_cost_nominal for row in result.annual] == [0.0, 1.0]
+
+    checks = {check.name: check for check in reconcile(result, TOL)}
+    i3a = checks["I3a nominal base"]
+    assert abs(i3a.difference) == 1.0, "the 1 SAR residue is the reported one"
+    assert i3a.allowance > 1.0, (
+        "the annual scale must reflect the per-driver-per-year contributions, "
+        "not the cancelled row aggregate"
+    )
+    assert i3a.holds
+    assert_reconciled(result, TOL)
+
+
+def test_erratum_c1_the_conditioning_scale_is_captured_during_accumulation() -> None:
+    """The magnitudes describe the calculation that actually ran.
+
+    They are captured alongside each contribution, so `reconcile` cannot be
+    checking one calculation against another calculation's scale.
+    """
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               costs=(_cost("CL-001", weights=(0.2, 0.5, 0.3)),),
+               risks=(_risk("R-001", weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    magnitudes = result.magnitudes
+    assert magnitudes.relative_coefficient == TOL.identity_relative_coefficient
+    # Every scaled magnitude is the coefficient times a positive contribution sum.
+    for field_name in ("a_nom", "c_nom", "d_nom", "e_nom", "annual_base_nom",
+                       "annual_risk_nom", "annual_total_nom"):
+        assert getattr(magnitudes, field_name) > 0.0, field_name
+    # E's magnitude covers cost AND risk contributions, so it exceeds either alone.
+    assert magnitudes.e_nom > magnitudes.c_nom
+    assert magnitudes.e_nom > magnitudes.d_nom
+    assert magnitudes.annual_total_nom > magnitudes.annual_base_nom
+
+
+def test_reconciliation_refuses_magnitudes_captured_at_a_different_coefficient() -> None:
+    """A guard against exactly the mistake the capture design prevents."""
+    result = calculate(_model(costs=(_cost(),)), TOL)
+    other = Tolerances(
+        profiling_sum_absolute=1e-9,
+        identity_absolute_floor=1e-6,
+        identity_relative_coefficient=1e-9,      # different from the capture
+        conditioning_scale_floor=1.0,
+    )
     try:
-        assert_reconciled(result, TOL)
+        reconcile(result, other)
     except OracleInvariantError as error:
-        assert "I1 nominal" in str(error)
+        assert "coefficient" in str(error)
         return
-    raise AssertionError("the pinned finding no longer reproduces; review §15 and update")
+    raise AssertionError("a mismatched conditioning coefficient was accepted")
 
 
 def test_case_31_the_base_year_inflation_row_is_explicit() -> None:
@@ -737,7 +798,12 @@ def test_a_blank_profile_weight_is_refused_and_is_not_zero() -> None:
 
 
 def test_profile_weights_travel_with_the_permanent_id_not_the_row() -> None:
-    """Reordering the driver sequence changes nothing at all."""
+    """Reordering the driver sequence changes nothing at all.
+
+    Retained, but no longer sufficient on its own: these values are tame enough
+    that reordering the accumulation could not have changed the answer anyway.
+    The adversarial fixture below is the real test.
+    """
     a = _cost("CL-001", weights=(0.2, 0.5, 0.3), quantity=10)
     b = _cost("CL-002", weights=(0.6, 0.1, 0.3), quantity=4, maximum=200)
     forward = calculate(
@@ -750,6 +816,98 @@ def test_profile_weights_travel_with_the_permanent_id_not_the_row() -> None:
     assert {d.permanent_id: d.knom for d in forward.drivers} == {
         d.permanent_id: d.knom for d in reversed_.drivers
     }
+
+
+# The adversarial fixture: three exactly-representable values whose ACCUMULATION
+# ORDER decides the answer. `1e16 + 1 - 1e16` is `0`, because 1 is below the ulp
+# of 1e16; `1e16 - 1e16 + 1` is `1`. Row order is excluded from the calculation
+# fingerprint, so two workbooks with the SAME fingerprint must not be able to
+# disagree about which of those is the answer.
+_ADVERSARIAL = (
+    _cost("CL-001", distribution="Uniform", minimum=1e16, most_likely=None, maximum=1e16,
+          weights=(1.0,), quantity=1),
+    _cost("CL-002", distribution="Uniform", minimum=1.0, most_likely=None, maximum=1.0,
+          weights=(1.0,), quantity=1),
+    _cost("CL-003", distribution="Uniform", minimum=-1e16, most_likely=None, maximum=-1e16,
+          weights=(1.0,), quantity=1),
+)
+
+
+def test_the_adversarial_fixture_really_is_order_sensitive_when_summed_naively() -> None:
+    """Guards the guard: if this fixture were not order-sensitive, the permutation
+    test below would prove nothing."""
+    assert (1e16 + 1.0) - 1e16 == 0.0
+    assert (1e16 - 1e16) + 1.0 == 1.0
+
+
+def test_row_order_cannot_change_any_result_under_all_six_permutations() -> None:
+    """CANONICAL COMPUTATIONAL ORDER — the complete result, not just the totals.
+
+    Before canonical ordering, order `(001, 002, 003)` gave `A = C = E = 0` and
+    order `(001, 003, 002)` gave `A = C = E = 1` for these same three drivers with
+    the same permanent IDs, values and profiles.
+    """
+    results = []
+    for permutation in itertools.permutations(_ADVERSARIAL):
+        results.append(calculate(_model(discount=0.0, costs=permutation), TOL))
+
+    assert len(results) == 6
+    first = results[0]
+    for other in results[1:]:
+        assert other.totals == first.totals
+        assert other.annual == first.annual
+        assert other.drivers == first.drivers
+        assert other.inflation_factors == first.inflation_factors
+        assert other.resolved_fx == first.resolved_fx
+        assert other.discount_factors == first.discount_factors
+        assert other.magnitudes == first.magnitudes
+        assert other == first, "the complete CalculationResult must be identical"
+
+
+def test_the_canonical_order_is_ascending_permanent_id() -> None:
+    """Audit output order is canonical too, not the order rows arrived in."""
+    for permutation in itertools.permutations(_ADVERSARIAL):
+        result = calculate(_model(discount=0.0, costs=permutation), TOL)
+        assert [d.permanent_id for d in result.drivers] == ["CL-001", "CL-002", "CL-003"]
+
+
+def test_the_canonical_order_uses_utf16_ordinal_comparison() -> None:
+    """The same comparison the fingerprint uses, so the two cannot drift apart."""
+    from pccm_builder.calc_fingerprint import utf16_sort_key
+    from pccm_builder.calc_oracle import canonical_order
+
+    astral, private_use = "\U00010000", "\ue000"
+    drivers = [_cost(private_use), _cost(astral)]
+    assert [d.permanent_id for d in canonical_order(drivers)] == [astral, private_use]
+    assert sorted([private_use, astral]) == [private_use, astral]      # Python disagrees
+    assert sorted([private_use, astral], key=utf16_sort_key) == [astral, private_use]
+
+
+def test_mixed_cost_and_risk_models_are_canonically_ordered_too() -> None:
+    costs = (_cost("CL-003"), _cost("CL-001"), _cost("CL-002"))
+    risks = (_risk("R-002"), _risk("R-001"))
+    result = calculate(_model(costs=costs, risks=risks), TOL)
+    assert [d.permanent_id for d in result.drivers] == [
+        "CL-001", "CL-002", "CL-003", "R-001", "R-002"
+    ]
+
+
+def test_the_inflation_audit_order_does_not_follow_row_order() -> None:
+    """Reference-set discovery is observable through the audit rows, so it is
+    canonical rather than first-driver-wins."""
+    rates = {"Alpha": {2027: 0.05}, "Zulu": {2027: 0.05}}
+    forward = calculate(
+        _model(base=2026, start=2027, duration=1, rates=rates,
+               costs=(_cost("CL-001", profile="Zulu"), _cost("CL-002", profile="Alpha"))),
+        TOL,
+    )
+    reversed_ = calculate(
+        _model(base=2026, start=2027, duration=1, rates=rates,
+               costs=(_cost("CL-002", profile="Alpha"), _cost("CL-001", profile="Zulu"))),
+        TOL,
+    )
+    assert forward.inflation_factors == reversed_.inflation_factors
+    assert [row.profile for row in forward.inflation_factors][0] == "Alpha"
 
 
 def test_a_wrong_length_profile_is_refused() -> None:
@@ -874,6 +1032,35 @@ def test_an_empty_driver_set_is_not_refused() -> None:
     assert_reconciled(result, TOL)
 
 
+def test_a_python_integer_too_large_for_a_double_is_a_structured_refusal() -> None:
+    """`float(10**400)` raises `OverflowError`, and a raw `OverflowError` escaping
+    the oracle would bypass the whole failure contract.
+
+    The pure oracle accepts plain Python numbers, so it must honour its own API:
+    every one of these produces a `ModelInputRefusal` naming the subject, never a
+    conversion error.
+    """
+    huge = 10 ** 400
+    for label, model in (
+        ("Quantity", _model(costs=(_cost(quantity=huge),))),
+        ("FX rate", _model(fx=(FxRow("SAR", 1), FxRow("USD", huge)),
+                           costs=(_cost(currency="USD"),))),
+        ("discount rate", _model(discount=huge, costs=(_cost(),))),
+        ("Min", _model(costs=(_cost(minimum=-huge),))),
+        ("profile weight", _model(costs=(_cost(weights=(huge,)),))),
+        ("inflation rate", _model(base=2026, start=2027, duration=1,
+                                  rates={"Standard": {2027: huge}}, costs=(_cost(),))),
+        ("Probability", _model(risks=(_risk(probability=huge),))),
+    ):
+        try:
+            calculate(model, TOL)
+        except OverflowError as error:      # noqa: PERF203 - the point of the test
+            raise AssertionError(f"{label}: raw OverflowError escaped: {error}") from error
+        except (ModelInputRefusal, NumericalRangeRefusal):
+            continue
+        raise AssertionError(f"{label}: a huge integer was silently accepted")
+
+
 def test_a_base_year_after_the_start_year_is_refused() -> None:
     message = _refuses(
         lambda: calculate(_model(base=2030, start=2026, costs=(_cost(),)), TOL),
@@ -940,19 +1127,23 @@ def test_all_reconciliation_identities_hold_on_a_mixed_model() -> None:
 
 def test_reconciliation_failure_is_an_internal_invariant_error_not_a_refusal() -> None:
     """A user must never be told their model is invalid because the calculation
-    disagreed with itself."""
+    disagreed with itself.
+
+    The failure is simulated by corrupting a total AFTER a successful, accepted
+    calculation - which is exactly the situation the class distinction exists for:
+    the inputs were fine, the calculation ran, and two quantities that must agree
+    no longer do.
+    """
     result = calculate(_model(costs=(_cost(),)), TOL)
-    impossible = Tolerances(
-        profiling_sum_absolute=1e-9,
-        identity_absolute_floor=-1.0,          # forces every identity to fail
-        identity_relative_coefficient=-1.0,
-        conditioning_scale_floor=1.0,
+    corrupted = dataclasses.replace(
+        result, totals=dataclasses.replace(result.totals, c_nom=result.totals.c_nom + 1000.0)
     )
     try:
-        assert_reconciled(result, impossible)
+        assert_reconciled(corrupted, TOL)
     except OracleInvariantError as error:
         assert not isinstance(error, (ModelInputRefusal, NumericalRangeRefusal))
         assert "reconciliation failed" in str(error)
+        assert "I1 nominal" in str(error)
         return
     raise AssertionError("a failing identity did not raise an invariant error")
 
@@ -1071,9 +1262,19 @@ def test_prose_about_later_phases_does_not_trip_the_boundary_test() -> None:
 
 
 def test_the_oracle_runs_with_no_excel_library_importable() -> None:
-    """The strongest form: load both modules in a fresh interpreter, WITHOUT the
-    `pccm_builder` package (whose `__init__` legitimately imports openpyxl), run a
-    calculation, and assert no forbidden module was ever loaded."""
+    """The strongest form: load the pure modules in a fresh interpreter, WITHOUT
+    the `pccm_builder` package (whose `__init__` legitimately imports openpyxl),
+    run a calculation, and assert no forbidden module was ever loaded.
+
+    RUN WITH `-S`. Site initialisation can import third-party packages before any
+    of our code executes - a `.pth` file, a sitecustomize hook, a vendored
+    distribution - and review found an environment where `numpy`, `random` and
+    `secrets` were already in `sys.modules` at interpreter start. Counting those
+    against the oracle would conflate "present before the import" with "loaded
+    because of the import", which is not what this test claims. Disabling site
+    processing makes the claim exact and the result portable, and it is also the
+    stronger statement: the two modules run on a bare interpreter.
+    """
     script = textwrap.dedent(
         f"""
         import importlib.util, sys, types
@@ -1081,7 +1282,7 @@ def test_the_oracle_runs_with_no_excel_library_importable() -> None:
         pkg = types.ModuleType("pccm5")
         pkg.__path__ = [builder]
         sys.modules["pccm5"] = pkg
-        for name in ("calc_numeric", "calc_oracle"):
+        for name in ("calc_numeric", "calc_fingerprint", "calc_oracle"):
             spec = importlib.util.spec_from_file_location(
                 f"pccm5.{{name}}", builder + "/" + name + ".py"
             )
@@ -1102,12 +1303,12 @@ def test_the_oracle_runs_with_no_excel_library_importable() -> None:
         result = oracle.calculate(model, tolerances)
         assert result.totals.a_nom == 1000.0, result.totals.a_nom
         loaded = {{m for m in sys.modules if m.split(".")[0] in {sorted(FORBIDDEN_IMPORTS)!r}}}
-        assert not loaded, sorted(loaded)
+        assert not loaded, "forbidden modules present: " + repr(sorted(loaded))
         print("OK")
         """
     )
     completed = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+        [sys.executable, "-S", "-c", script], capture_output=True, text=True, check=False
     )
     assert completed.returncode == 0, completed.stderr
     assert "OK" in completed.stdout

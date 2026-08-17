@@ -851,7 +851,43 @@ the status semantics, any Phase-4 source, or any PowerShell.
 
 ---
 
-## 14. Next step — NOT started
+## 14. Narrow reopening — conditioning erratum C1
+
+**Step 1 was accepted and closed. It was reopened once, narrowly, and only
+because a later regression proved it necessary.**
+
+Gate-A Step 2 demonstrated that the accepted plan §15 conditioning definitions do
+not satisfy their own stated objective. `spec/calc_contract.yaml` owns the
+`conditioning_terms` representation, so the corrected operand names had to land
+here. **Nothing else in Step 1 was touched.**
+
+| Identity | Was | Now |
+|---|---|---|
+| `i1` | `abs_a`, `abs_b`, `abs_c` | `sum_abs_a_driver_contributions`, `sum_abs_b_driver_contributions`, `sum_abs_c_driver_contributions` |
+| `i2` | `abs_c`, `abs_d`, `abs_e` | `sum_abs_c_driver_contributions`, `sum_abs_d_driver_contributions`, `sum_abs_e_driver_contributions` |
+| `i3a` / `i4a` | `sum_abs_annual_base`, `abs_c` | `sum_abs_annual_base_driver_contributions`, `sum_abs_c_driver_contributions` |
+| `i3b` / `i4b` | `sum_abs_annual_risk`, `abs_d` | `sum_abs_annual_risk_driver_contributions`, `sum_abs_d_driver_contributions` |
+| `i3c` / `i4c` | `sum_abs_annual_total`, `abs_e` | `sum_abs_annual_total_driver_contributions`, `sum_abs_e_driver_contributions` |
+
+The old names meant already-cancelled numbers — the headline totals, and the
+annual row aggregates. The new ones mean the underlying per-driver and
+per-driver-per-year contributions, before aggregation. Plan §15 erratum C1 carries
+the reasoning and both reproducers.
+
+**No tolerance number changed.** `1e-9`, `1e-6`, `1e-12` and `1` are exactly as
+accepted; `LOCKED_TOLERANCES` is untouched.
+
+Updated for the erratum, and only for it: `spec/calc_contract.yaml`
+(`conditioning_terms` and its explanatory comment), `calc_loader.py`
+(`LOCKED_CONDITIONING_TERMS`), and the contract regression and Revision-E parity
+tests that assert those names. Every other Step-1 lock — the document version, the
+semantic table keys, the unknown-key policy, the full schema locks, the
+authority-reference set, the hash-mathematics exclusion, the strict YAML loader —
+is unchanged, and the contract test count is unchanged at **151**.
+
+---
+
+## 15. Next step — NOT started
 
 Gate-A Step 2, whatever the review scopes it to be. Nothing beyond this document's
 §1 has been written, and **Gate-A Step 2 was not begun**.

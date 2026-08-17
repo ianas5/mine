@@ -101,10 +101,20 @@ def is_usable_double(value: object) -> bool:
 
     A backstop applied to every value before it leaves the kernel, not the
     mechanism that catches failures (§19.5).
+
+    THE CONVERSION ITSELF CAN FAIL. Python's `int` is arbitrary-precision, so
+    `float(10**400)` raises `OverflowError` rather than returning `inf` - and a
+    predicate that raises is not a predicate. The pure oracle accepts plain Python
+    numbers, so it must answer "no" for a value that cannot become a Double at
+    all, and let the caller turn that into a structured refusal. Leaking a raw
+    `OverflowError` would bypass the whole failure contract.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError, TypeError):
+        return False
     if math.isnan(number) or math.isinf(number):
         return False
     return abs(number) <= MAX_DOUBLE
@@ -375,6 +385,54 @@ def discount_factor_series(discount_rate: float, duration: int) -> dict[int, flo
 # ---------------------------------------------------------------------------
 # Cancellation-aware tolerance
 # ---------------------------------------------------------------------------
+def scaled_magnitude(
+    accumulator: float, term: float, relative_coefficient: float, where: str
+) -> float:
+    """Accumulate `coefficient * |term|` into a running conditioning magnitude.
+
+    The coefficient is DISTRIBUTED OVER THE TERMS rather than applied to their
+    sum. The two are the same number, but the raw sum of contributions can exceed
+    Double while `1e-12 x sum` is perfectly representable, and only the
+    distributed form avoids forming that intermediate.
+
+    Called while the corresponding contribution is being accumulated, so the
+    conditioning magnitude is a by-product of the calculation rather than a second
+    pass that could disagree with it.
+    """
+    scaled = safe_multiply(relative_coefficient, abs(float(term)), where)
+    return safe_accumulate(accumulator, scaled, where)
+
+
+def allowance_from_scaled(
+    scaled_terms: float,
+    absolute_floor: float,
+    relative_coefficient: float,
+    scale_floor: float = 1.0,
+) -> float:
+    """The locked allowance, from an already-scaled conditioning magnitude.
+
+    ```
+    scaled_floor       = coefficient * scale_floor
+    relative_allowance = max(scaled_floor, scaled_terms)
+    allowance          = max(absolute_floor, relative_allowance)
+    ```
+
+    NOTE THE TWO `max` OPERATIONS. The locked formula is
+
+        max(absolute_floor, coefficient * max(scale_floor, sum |terms|))
+
+    and the inner `max` is a **maximum**, not an addition. An earlier
+    implementation added `coefficient * scale_floor` to the scaled sum, which
+    silently widened every allowance - `identity_allowance([1e6])` returned
+    `1.000001e-6` where the contract says `1e-6`. Small, but this is a contract
+    implementation and not a heuristic, and a tolerance may never be loosened by
+    accident.
+    """
+    scaled_floor = safe_multiply(relative_coefficient, scale_floor, "conditioning floor")
+    relative_allowance = max(scaled_floor, scaled_terms)
+    return max(absolute_floor, relative_allowance)
+
+
 def identity_allowance(
     terms: Sequence[float],
     absolute_floor: float,
@@ -383,21 +441,15 @@ def identity_allowance(
 ) -> float:
     """`max(absolute_floor, coefficient * max(scale_floor, sum |terms|))`, stably.
 
-    The conditioning scale must reflect the MAGNITUDE OF THE ARITHMETIC PERFORMED,
-    not of its net result, or a model whose large positive and negative
-    contributions cancel would collapse its own tolerance to the floor and report
-    ordinary accumulation error as a bookkeeping mismatch.
-
-    THE STABILITY POINT: the raw sum `|A| + |B| + |C|` can exceed Double while the
-    tolerance `1e-12 * scale` is perfectly representable. The coefficient is
-    therefore DISTRIBUTED OVER THE TERMS - `c*|A| + c*|B| + c*|C|` - which is the
-    same number and never forms the overflowing intermediate. Neither the `1e-6`
-    floor nor the `1e-12` coefficient is loosened to achieve that.
+    Convenience wrapper over `scaled_magnitude` + `allowance_from_scaled` for
+    callers that hold the raw terms. The analytical oracle does not: it captures
+    the scaled magnitudes DURING accumulation, because the terms that matter are
+    the underlying per-driver and per-year contributions, not the already-summed
+    headline or annual aggregates they collapse into.
     """
-    allowance = safe_multiply(relative_coefficient, scale_floor, "conditioning floor")
+    scaled = 0.0
     for index, term in enumerate(terms):
-        scaled = safe_multiply(
-            relative_coefficient, abs(float(term)), f"conditioning term[{index}]"
+        scaled = scaled_magnitude(
+            scaled, term, relative_coefficient, f"conditioning term[{index}]"
         )
-        allowance = safe_accumulate(allowance, scaled, f"conditioning allowance[{index}]")
-    return max(absolute_floor, allowance)
+    return allowance_from_scaled(scaled, absolute_floor, relative_coefficient, scale_floor)

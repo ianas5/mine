@@ -504,21 +504,65 @@ raising `conditioning_scale_floor` above 1 would widen every identity tolerance 
 once. Exact equality is the only check that catches those."""
 
 LOCKED_CONDITIONING_TERMS: dict[str, tuple[str, ...]] = {
-    "i1": ("abs_a", "abs_b", "abs_c"),
-    "i2": ("abs_c", "abs_d", "abs_e"),
-    "i3a": ("sum_abs_annual_base", "abs_c"),
-    "i3b": ("sum_abs_annual_risk", "abs_d"),
-    "i3c": ("sum_abs_annual_total", "abs_e"),
-    "i4a": ("sum_abs_annual_base", "abs_c"),
-    "i4b": ("sum_abs_annual_risk", "abs_d"),
-    "i4c": ("sum_abs_annual_total", "abs_e"),
+    "i1": (
+        "sum_abs_a_driver_contributions",
+        "sum_abs_b_driver_contributions",
+        "sum_abs_c_driver_contributions",
+    ),
+    "i2": (
+        "sum_abs_c_driver_contributions",
+        "sum_abs_d_driver_contributions",
+        "sum_abs_e_driver_contributions",
+    ),
+    "i3a": (
+        "sum_abs_annual_base_driver_contributions",
+        "sum_abs_c_driver_contributions",
+    ),
+    "i3b": (
+        "sum_abs_annual_risk_driver_contributions",
+        "sum_abs_d_driver_contributions",
+    ),
+    "i3c": (
+        "sum_abs_annual_total_driver_contributions",
+        "sum_abs_e_driver_contributions",
+    ),
+    "i4a": (
+        "sum_abs_annual_base_driver_contributions",
+        "sum_abs_c_driver_contributions",
+    ),
+    "i4b": (
+        "sum_abs_annual_risk_driver_contributions",
+        "sum_abs_d_driver_contributions",
+    ),
+    "i4c": (
+        "sum_abs_annual_total_driver_contributions",
+        "sum_abs_e_driver_contributions",
+    ),
 }
 """Which absolute magnitudes each identity's conditioning scale sums.
 
-The terms are the identity's OWN, and swapping them silently rescales the wrong
-comparison: giving I1 (`A + B = C`) the terms of I2 would size its tolerance by
-quantities that identity never touches. A generic "at least two terms" rule cannot
-see that, so the exact sets are locked."""
+ERRATUM C1 (plan §15), raised by Gate-A Step 2 and applied as a narrow reopening
+of this otherwise closed contract.
+
+The original terms named the HEADLINE TOTALS (`abs_a`, `abs_b`, `abs_c`) and the
+ANNUAL ROW AGGREGATES (`sum_abs_annual_base`). Step 2 demonstrated that both are
+already-cancelled numbers, so conditioning on them measures what SURVIVED the
+arithmetic rather than what the arithmetic DID - the opposite of the objective
+§15 states. A valid model accumulating through `1e17` ends at `A = 32, B = 16,
+C = 64` and was reported as failing I1; a valid model processing `2e16` of annual
+contributions leaves an annual aggregate of `1` and was reported as failing I3a.
+
+These names therefore mean the UNDERLYING PER-DRIVER and PER-DRIVER-PER-YEAR
+contributions, before aggregation. Nominal and PV identities each condition on
+their own basis's contribution magnitudes.
+
+NO TOLERANCE NUMBER CHANGED. The floor is still `1e-6`, the coefficient `1e-12`,
+the scale floor `1`. Only the operands moved.
+
+The terms are still the identity's OWN: giving I1 (`A + B = C`) the terms of I2
+would size its tolerance by quantities it never touches, so the exact sets remain
+locked.
+"""
 
 LOCKED_AUTHORITY_REFERENCES: tuple[tuple[str, str, str], ...] = (
     ("distribution master list", "input_contract.yaml", "config_tables.distributions"),

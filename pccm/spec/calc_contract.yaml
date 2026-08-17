@@ -670,6 +670,26 @@ tables:
 #     negative contributions whose net is near zero must not collapse its own
 #     tolerance. Each identity therefore names the absolute terms summed into its
 #     scale. These are term NAMES, not formulas; the arithmetic is the plan's.
+#
+#     ERRATUM C1, plan section 15. The original terms named the HEADLINE TOTALS
+#     (abs_a, abs_b, abs_c) and the ANNUAL ROW AGGREGATES (sum_abs_annual_base).
+#     Gate-A Step 2 proved both insufficient, because both are already-cancelled
+#     numbers:
+#
+#       * a valid model can accumulate through 1e17 and end at A = 32, B = 16,
+#         C = 64, so |A| + |B| + |C| collapses to the floor while the residue of
+#         ordinary Double rounding is 16 SAR;
+#       * a valid model can process 2e16 of annual contributions and leave an
+#         annual aggregate of 1, so Sum_y |annual aggregate_y| collapses too.
+#
+#     Both reported a false internal-invariant failure on a correct calculation.
+#     The terms below therefore name the UNDERLYING PER-DRIVER and
+#     PER-DRIVER-PER-YEAR CONTRIBUTIONS, before any aggregation. Nominal and PV
+#     identities each use their own basis's contribution magnitudes.
+#
+#     NO TOLERANCE NUMBER CHANGED: the floor is still 1e-6, the coefficient still
+#     1e-12, the scale floor still 1. Only the operands were corrected to fulfil
+#     the objective that was already accepted.
 # -----------------------------------------------------------------------------
 tolerances:
   profiling_sum_absolute: 1.0e-9
@@ -679,14 +699,35 @@ tolerances:
   fx_rate_strictly_positive: true
   growth_factor_strictly_positive: true
   conditioning_terms:
-    i1: ["abs_a", "abs_b", "abs_c"]
-    i2: ["abs_c", "abs_d", "abs_e"]
-    i3a: ["sum_abs_annual_base", "abs_c"]
-    i3b: ["sum_abs_annual_risk", "abs_d"]
-    i3c: ["sum_abs_annual_total", "abs_e"]
-    i4a: ["sum_abs_annual_base", "abs_c"]
-    i4b: ["sum_abs_annual_risk", "abs_d"]
-    i4c: ["sum_abs_annual_total", "abs_e"]
+    i1:
+      - "sum_abs_a_driver_contributions"
+      - "sum_abs_b_driver_contributions"
+      - "sum_abs_c_driver_contributions"
+    i2:
+      - "sum_abs_c_driver_contributions"
+      - "sum_abs_d_driver_contributions"
+      - "sum_abs_e_driver_contributions"
+    i3a:
+      - "sum_abs_annual_base_driver_contributions"
+      - "sum_abs_c_driver_contributions"
+    i3b:
+      - "sum_abs_annual_risk_driver_contributions"
+      - "sum_abs_d_driver_contributions"
+    i3c:
+      - "sum_abs_annual_total_driver_contributions"
+      - "sum_abs_e_driver_contributions"
+    # I4a/b/c are the PV identities. They name the same CONCEPTS as I3a/b/c and
+    # evaluate them on PV contribution magnitudes, exactly as I3 evaluates them on
+    # nominal ones. Each basis conditions on its own arithmetic.
+    i4a:
+      - "sum_abs_annual_base_driver_contributions"
+      - "sum_abs_c_driver_contributions"
+    i4b:
+      - "sum_abs_annual_risk_driver_contributions"
+      - "sum_abs_d_driver_contributions"
+    i4c:
+      - "sum_abs_annual_total_driver_contributions"
+      - "sum_abs_e_driver_contributions"
 
 # -----------------------------------------------------------------------------
 # Authority references.
