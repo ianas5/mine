@@ -1,16 +1,23 @@
 # PCCM — Phase 5 plan: deterministic and analytical calculation engine
 
-**DESIGN GATE. No code, no VBA, no workbook change.** Phase 4 is accepted and
-closed; nothing in `src/`, `spec/`, `builder/`, `bootstrap/` or `tests/` is
-touched by this document.
+**Revision B.** Revision A's mathematical core was accepted in principle. This
+revision locks D1–D6, replaces the insufficient fingerprint design, corrects the
+FX/inflation blocking scope, strengthens the reconciliation identities, removes an
+identity that was not universally true, locks the physical `_Calc` layout, adds
+numerical finiteness guarantees, scopes the new contract's authority, and removes
+the user-facing Calculate button.
+
+**DESIGN GATE. No code, no VBA, no workbook change, no build artifacts.** Phase 4
+is accepted and closed; nothing in `src/`, `spec/`, `builder/`, `bootstrap/` or
+`tests/` is touched by this document.
 
 ---
 
 ## 1. Phase objective
 
 Convert a structurally valid workbook into reproducible **SAR nominal and PV cost
-measures**, analytically and deterministically, and do it in a form the later
-Monte Carlo phase can reuse without touching a worksheet inside an iteration loop.
+measures**, analytically and deterministically, in a form the later Monte Carlo
+phase reuses without touching a worksheet inside an iteration loop.
 
 Phase 5 produces numbers. It produces no random numbers.
 
@@ -22,12 +29,11 @@ Phase 5 produces numbers. It produces no random numbers.
 |---|---|---|
 | 1–3 | Workbook skeleton, Setup/Config inputs, driver registers | closed |
 | **4** | **Structural runtime** — permanent IDs, timeline application, profiling and inflation synchronisation, add/delete, rollback, Stage-B runtime harness | **closed** |
-| **5** | **Calculation / `_Calc` factor engine** — FX resolution, inflation factors, discount factors, profiling weights, `Knom` / `Kpv`, deterministic base, mean-basis base, expected risk, analytical annual cash flow | **this phase** |
+| **5** | **Calculation / `_Calc` factor engine** — FX resolution, inflation factors, discount factors, profiling weights, `Knom` / `Kpv`, deterministic base, mean-basis base, expected risk, analytical annual cash flow, calculation fingerprint | **this phase** |
 | 6+ | RNG (MRG32k3a), sampling, simulation, percentiles, contingency, sensitivity, Results, Dashboard, Model Check UI | not started |
 
-Phase 5 is **not** the RNG / Monte Carlo validation gate. The word "mean" appears
-throughout this document in its **analytical** sense — the mathematical expected
-value of a distribution — never as a simulation output.
+Phase 5 is **not** the RNG / Monte Carlo validation gate. "Mean" throughout means
+the **analytical** expected value of a distribution, never a simulation output.
 
 ---
 
@@ -35,64 +41,127 @@ value of a distribution — never as a simulation output.
 
 ### In scope
 
-- resolved FX to SAR, per driver
-- annual inflation factors, calendar-year anchored
-- annual discount factors, project-year indexed
-- cost-line profiling weights by permanent ID
-- risk profiling weights by permanent ID
-- precomputed nominal factor `Knom` per driver
-- precomputed PV factor `Kpv` per driver
-- Escalated Deterministic Base Estimate — Nominal SAR
-- Escalated Deterministic Base Estimate — PV SAR
-- Mean-Basis Base Cost — Nominal SAR
-- Mean-Basis Base Cost — PV SAR
-- Expected Risk / EMV — Nominal SAR
-- Expected Risk / EMV — PV SAR
-- analytical mean total reconciliation inputs
-- per-year analytical cash-flow components (mean basis + expected risk)
-- refusal behaviour when any required numerical input is invalid
-- a worksheet-independent numerical kernel the simulation phase will reuse
+Resolved FX to SAR · annual inflation factors · annual discount factors · cost and
+risk profiling weights by permanent ID · `Knom` / `Kpv` per driver · Escalated
+Deterministic Base Estimate (Nominal, PV) · Mean-Basis Base Cost (Nominal, PV) ·
+Expected Risk / EMV (Nominal, PV) · analytical mean total reconciliation inputs ·
+per-year analytical cash-flow components · the **Calculation Input Fingerprint**
+and CURRENT/STALE detection · refusal behaviour on every invalid numerical input ·
+a worksheet-independent numerical kernel the simulation phase reuses.
 
 ### Out of scope — explicitly
 
 MRG32k3a implementation · seed derivation · RNG stream identity · random variate
-generation · Bernoulli occurrence simulation · Triangular sampling · Beta-PERT
-sampling · Uniform sampling · simulation iterations · percentile ladder ·
-P10/P50/P90 · Selected Px calculation · contingency · histogram · CDF ·
-sensitivity / Spearman · `_SimData` iteration storage · Dashboard finalisation ·
-Results finalisation · Model Check final UI · annual percentiles · selected-Px
-annual profiles · simulation reconciliation.
-
-No Monte Carlo output is permitted in Phase 5.
+generation · Bernoulli occurrence simulation · Triangular / Beta-PERT / Uniform
+sampling · simulation iterations · percentile ladder · P10/P50/P90 · Selected Px ·
+contingency · histogram · CDF · sensitivity / Spearman · `_SimData` iteration
+storage · Dashboard finalisation · Results finalisation · Model Check UI and
+warning aggregation · annual percentiles · selected-Px annual profiles ·
+simulation reconciliation · **any user-facing Calculate button** (§8 / §16).
 
 ---
 
-## 4. Mathematical definitions
+## 4. Locked decisions D1–D6
 
-Locked, and preserved exactly.
+These were open in Revision A. They are now **locked**.
 
-### 4.1 Deterministic central value — risks excluded
+### D1 — Uniform with a populated Most Likely
 
-Per Cost Line, from its distribution:
+**Calculation succeeds. Most Likely is ignored numerically for Uniform.**
 
-| Distribution | Deterministic central unit cost |
+No Phase-5 warning or result-note mechanism is created for this. The locked
+driver contract already states the position:
+
+> `note: "Not used by the Uniform distribution. Greyed by conditional formatting
+> when Distribution = Uniform; that is presentation only, not input enforcement."`
+
+For calculation:
+
+```
+Uniform central = (Min + Max) / 2
+Uniform mean    = (Min + Max) / 2
+Uniform ML      = EXCLUDED from the calculation fingerprint, because it is unused
+```
+
+A future Model Check may raise a WARNING that a Uniform driver carries a populated
+ML. That aggregation is **out of scope for Phase 5**.
+
+### D2 — Inflation rate lower bound
+
+**`rate > −1`**, equivalently `1 + rate > 0`. No additional business floor.
+`rate = −1` or lower is **refused**.
+
+### D3 — Discount rate sign
+
+**`r > −1`.** Negative discount rates are allowed. No business minimum or maximum
+is invented. `r = −1` or lower is **refused**.
+
+### D4 — Blank profiling cells
+
+**Any blank project-year profiling cell on an identified driver makes that profile
+numerically incomplete, and calculation is refused** — even when the numeric cells
+present happen to sum to 100%.
+
+```
+numeric 0  =  an explicit allocation of zero   → valid
+blank      =  nothing has been stated          → refusal
+```
+
+Blank is not zero. Profiling year cells are **born as `0`**
+(`initial_value: 0` in the structure contract), so a blank is a deliberate
+clearing, never an unfilled default.
+
+### D5 — Discounting terminology
+
+Arithmetic locked:
+
+```
+discount factor(t) = 1 / (1 + r)^(t − 1)      Project Year 1 = period 0
+```
+
+Methodology wording locked to: **"Discounted from the start of the project;
+Project Year 1 = period 0."** The phrase *"end-of-year discounting"* is not used
+anywhere in the model, the code or the documentation.
+
+This matches the locked input contract, quoted for the record:
+
+> `project_start_year` — `note: "Whole calendar year. Discounting will treat this
+> as period 0."`
+
+### D6 — Precision and Phase-5 display
+
+**All calculation and all stored numerical values use full VBA `Double`
+precision. No calculation-rounding occurs anywhere.**
+
+| Phase-5 `_Calc` audit value | Number format |
 |---|---|
-| Triangular | `ML` |
-| Beta-PERT | `ML` |
-| Uniform | `(Min + Max) / 2` |
+| SAR amounts | `#,##0.00` |
+| factors (`Knom`, `Kpv`, inflation, discount, weights) | `0.000000` — at least six decimals, contract-defined |
+| rates | `0.00%` |
+| calendar year, project index | `0` |
 
-Then:
+Rounding is a **display** property of `_Calc` audit cells only. The final
+Dashboard / Results presentation format is **not** locked here; it belongs to the
+later presentation phase.
 
-```
-central unit cost × Quantity × FX to SAR × profiled inflation
-```
+---
 
-Headline label: **Escalated Deterministic Base Estimate (Nominal SAR)**, with a
-PV counterpart. The row-level basis must visibly read **ML / Midpoint**.
+## 5. Mathematical definitions
 
-**This is never called "mean".**
+### 5.1 Deterministic central value — risks excluded
 
-### 4.2 Distribution expected value — the mean basis
+| Distribution | Deterministic central | Central Basis label (§10) |
+|---|---|---|
+| Triangular | `ML` | `ML` |
+| Beta-PERT | `ML` | `ML` |
+| Uniform | `(Min + Max) / 2` | `Midpoint` |
+
+Then `central × Quantity × FX × profiled inflation`.
+
+Headline label: **Escalated Deterministic Base Estimate (Nominal SAR)**, with a PV
+counterpart. **Never called "mean".**
+
+### 5.2 Distribution expected value — the mean basis
 
 | Distribution | Expected value |
 |---|---|
@@ -101,215 +170,255 @@ PV counterpart. The row-level basis must visibly read **ML / Midpoint**.
 | Uniform | `(Min + Max) / 2` |
 
 Applied to Quantity, FX, profile, inflation and discounting → **Mean-Basis Base
-Cost**, Nominal and PV. It exists primarily to reconcile against the later
-simulation mean.
+Cost**, Nominal and PV. The two bases coincide for Uniform and differ for
+Triangular and Beta-PERT.
 
-Note the two bases coincide for Uniform and differ for Triangular and Beta-PERT.
-That is expected and is itself an oracle case (§22, case 7).
+### 5.3 Expected Risk / EMV
 
-### 4.3 Expected Risk / EMV
-
-Per risk: `Probability × Expected Severity`, where expected severity uses the same
-three formulas above on `impact_min` / `impact_most_likely` / `impact_max`. Then
-FX × risk profile × inflation, and discounting for PV.
+Per risk: `Probability × Expected Severity`, expected severity by the same three
+formulas on `impact_min` / `impact_most_likely` / `impact_max`, then
+`× FX × risk profile × inflation`, and discounted for PV.
 
 **All entered risks are included analytically.** No selection, no filtering.
-`Probability` is stored as a fraction in `[0, 1]` (`0.0%` display format,
-validated `between 0 and 1`), so it is used directly with no ÷100.
-
-Occurrence probability lives on the Risk Register and is **entirely separate**
-from the risk profiling allocation percentages, which distribute severity across
-project years.
+`Probability` is stored as a fraction in `[0, 1]` and used directly.
 
 ---
 
-## 5. Inflation convention
-
-Base Year is the price base. `Base Year ≤ Start Year`.
-
-For spend in calendar year `Y`:
+## 6. Inflation convention
 
 ```
-inflation_factor(Y) = 1                                  if Y = BaseYear
-                    = Π  (1 + rate_k)   for k = BaseYear+1 … Y   otherwise
+inflation_factor(Y) = 1                                    if Y = BaseYear
+                    = Π (1 + rate_k),  k = BaseYear+1 … Y   otherwise
 ```
 
-Worked example — Base 2026, spend 2029:
+Base 2026, spend 2029 → `(1+r₂₀₂₇)(1+r₂₀₂₈)(1+r₂₀₂₉)`. If `BaseYear = StartYear`
+the first project-year factor is **1** (empty product).
 
-```
-(1 + rate_2027) × (1 + rate_2028) × (1 + rate_2029)
-```
+Consistent with the Phase-4 structural span already implemented:
 
-If `BaseYear = StartYear`, the first project-year factor is **1** (empty product).
+> `nmInflFirstYear = BaseYear_Applied + 1` — "Escalation applies from the year
+> after the applied base year." `nmInflLastYear = nmLastYear_Applied`.
 
-This is exactly consistent with the locked structural span already implemented in
-Phase 4:
+When `BaseYear < StartYear` the span deliberately includes calendar years before
+the project starts; those rates are required and are generated by Apply.
 
-> `nmInflFirstYear` — `=IF(nmBaseYear_Applied="","",nmBaseYear_Applied+1)`
-> "Escalation applies from the year after the applied base year."
-> `nmInflLastYear` — `=IF(nmLastYear_Applied="","",nmLastYear_Applied)`
+Profiles are **calendar-year anchored**. A start-year shift uses the rates of the
+new calendar years; values never move positionally — proven on target.
 
-So the required rate span is `BaseYear+1 … LastProjectYear`, and when
-`BaseYear < StartYear` that span deliberately includes calendar years **before**
-the project starts. Those rates are required and are generated by Apply.
-
-Inflation profiles are **calendar-year anchored**. A start-year shift uses the
-rates of the new calendar years; values never move positionally. Phase 4 proved
-this on target.
-
-**A missing required rate never becomes zero.** The structure contract seeds
-inflation year cells as `initial_value: null` precisely so that an unmade
-assumption cannot be fabricated as 0%:
-
-> "BLANK, never zero. A new annual escalation assumption the user has not made
-> must not be fabricated as 0%."
-
-Phase 5 **refuses** rather than manufacturing a value.
+**A missing required rate never becomes zero.** Inflation year cells are seeded
+`null` precisely so an unmade assumption cannot be fabricated as 0%. Phase 5
+refuses.
 
 ---
 
-## 6. Discounting convention
+## 7. Discounting
 
-Uses `inpDiscountRate` (Setup C20, `required: true`, `0.00%`).
-
-```
-PV factor for project-year index t  =  1 / (1 + DiscountRate)^(t - 1),  t starting at 1
-```
-
-so project year 1 → `1`, year 2 → `1/(1+r)`, year 3 → `1/(1+r)²`.
-
-### Conflict check against the locked architecture
-
-The locked `input_contract.yaml` says of Project Start Year:
-
-> `note: "Whole calendar year. Discounting will treat this as period 0."`
-
-Project year 1 **is** the Project Start Year, and exponent `t-1 = 0` there. The
-locked contract and the requested convention **agree**. No conflict, and no new
-timing convention has been chosen silently.
-
-### One terminological flag — not a numerical one
-
-The request labels this *"end-of-project-year discounting from the project
-start"*. Arithmetically, discounting year 1's cash flow by zero periods is a
-**start-of-period** (beginning-of-year) convention; a true end-of-year convention
-would give year 1 a factor of `1/(1+r)¹`. The **arithmetic requested is
-unambiguous and is what this plan adopts** — exponent `t-1`, matching the locked
-"period 0" note. Only the label is inconsistent, and the Methodology sheet should
-say *"discounted from the start of the project, Project Year 1 = period 0"*
-rather than "end-of-year". Raised in §26 as a documentation decision, not a
-calculation decision.
+Per D5. `inpDiscountRate` (Setup C20, `required: true`, `0.00%`), `r > −1`.
 
 ---
 
-## 7. FX resolution
+## 8. FX resolution — referenced currencies only
 
-Locked convention: **1 source-currency unit = X SAR**. Constant across the
-project. No FX uncertainty.
+Locked convention: **1 source-currency unit = X SAR**, constant, no uncertainty.
 
-- `SAR` must resolve to exactly `1`. This is a model invariant already enforced at
-  build time: `tblFXRates` row 1 is the locked seed `["SAR", 1]`.
-- Every currency referenced by a Cost Line or Risk must resolve to **exactly one**
-  valid positive rate in `tblFXRates`.
-- A missing non-SAR rate is **never** defaulted to 1.
-- Duplicate currency rows → refusal. Zero, negative or non-numeric rate → refusal.
-- Blank rate cell for a referenced currency → refusal.
+| Rule | Scope |
+|---|---|
+| `SAR` resolves to exactly `1` | **global invariant**, always enforced (build-time locked seed row `["SAR", 1]`) |
+| exactly one valid positive rate per currency | **referenced currencies only** |
+| missing / blank / duplicate / non-numeric / `≤ 0` rate | refusal — **only if referenced** |
 
-Resolution is a lookup by currency **name**, matching how the Setup FX table is
-keyed. Rate cells are `#,##0.000000` with a `> 0` cell rule, but the cell rule
-allows blanks and can be bypassed by paste — so Phase 5 revalidates.
+A currency is **referenced** when it appears in the `currency` column of an
+identified Cost Line or Risk.
+
+**An invalid, duplicate or incomplete FX row for an entirely unreferenced currency
+must not block an otherwise valid analytical calculation.** This aligns with the
+locked stale-input principle that unreferenced configuration changes do not make
+results stale — and it falls out naturally, because the fingerprint (§11) records
+only *resolved* FX per driver.
+
+The same rule applies to inflation:
+
+- only inflation profiles **referenced** by identified drivers must resolve;
+- for each referenced profile, **every** required calendar year
+  (`BaseYear+1 … LastProjectYear`) must carry a valid rate;
+- an unused Config profile with incomplete assumptions does **not** block.
+
+Both rules live in the resolution layer (`modCalcResolve`), which builds its
+reference set from the driver registers before touching `tblFXRates` or
+`tblInflation`.
 
 ---
 
-## 8. Profiling semantics
+## 9. Profiling semantics
 
 Weights are applied **by permanent ID**, never by row position — proven on target
-by Gate-B scenarios `B2` and `K2`.
+by Gate-B `B2` and `K2`.
 
-For every identified driver:
+For every identified driver, `Σ (weights over applied project years) = 100%`
+within tolerance (§14), **and** no cell in that row may be blank (D4).
 
-```
-Σ (profile weights over the applied project years) = 100%
-```
-
-is required **before** any numerical result is produced.
-
-### Blank versus numeric zero
-
-These are different, and the difference is load-bearing:
-
-| Cell state | Meaning | Phase 5 |
-|---|---|---|
-| numeric `0` | the user has stated that this year carries **no** spend | valid; contributes 0 to the sum |
-| blank | the user has stated **nothing** about this year | see §26 decision D4 |
-
-The structure contract seeds profiling year cells with `initial_value: 0`, so a
-freshly generated grid is complete and sums to 0% until the user fills it. A
-blank in a profiling grid therefore means a cell that was **deliberately cleared**
-— it is not the birth state. Inflation is the opposite: seeded `null`, because an
-unmade escalation assumption must not be fabricated.
-
-A row of all-blanks sums to 0% and is refused by the 100% rule regardless. The
-open question is only a row that reaches 100% **with** blanks present (§26, D4).
-
-### Applied timeline only
-
-The engine uses the project-year columns of the **APPLIED** timeline
-(`nmStartYear_Applied`, `nmDuration_Applied`, `nmYearCount_Applied`). Entered-but-
-not-applied values must never drive calculation.
-
-If `nmStructuralState` reads `STRUCTURE CHANGE PENDING`, calculation is
-**invalid / stale / not runnable** and is refused. Same for
-`No timeline applied`. Both labels come from the manifest
-(`state_labels.pending`, `state_labels.not_applied`), not from restated strings.
+The engine uses the project-year columns of the **APPLIED** timeline only.
+Entered-but-not-applied values never drive calculation. If `nmStructuralState`
+reads `STRUCTURE CHANGE PENDING` or `No timeline applied`, calculation is refused.
+Both labels come from the manifest (`state_labels`), never restated.
 
 ---
 
-## 9. Precomputed factors `Knom` and `Kpv`
-
-Per driver `i`, over applied project years `y = 1 … N`:
+## 10. Precomputed factors and the per-driver audit record
 
 ```
 Knom_i = FX_i × Σ_y ( w_{i,y} × infl_y )
 Kpv_i  = FX_i × Σ_y ( w_{i,y} × infl_y × disc_y )
 ```
 
-where `infl_y` is the inflation factor of the **calendar** year of project year
-`y` under the driver's inflation profile, and `disc_y = 1/(1+r)^(y-1)`.
-
-Then:
-
 ```
-Cost line, nominal = unit_cost × Quantity × Knom
-Cost line, PV      = unit_cost × Quantity × Kpv
-Risk,  nominal     = severity  × Knom
-Risk,  PV          = severity  × Kpv
+Cost line, nominal = unit_cost × Quantity × Knom     Risk, nominal = severity × Knom
+Cost line, PV      = unit_cost × Quantity × Kpv      Risk, PV      = severity × Kpv
 ```
 
-`unit_cost` is the deterministic central value, the distribution mean, or (later)
-a sampled draw — the factor is identical in all three cases. Probability is
-handled **separately**: multiplied in for analytical EMV, and replaced by a
-Bernoulli draw in Monte Carlo. It is deliberately **not** folded into `Kpv`.
+Probability is handled **separately** — multiplied in for analytical EMV, replaced
+by a Bernoulli draw in Monte Carlo. It is deliberately **not** folded into `Kpv`.
 
-This is the whole point of the optimisation: the kernel resolves worksheets once
-and never traverses them inside a simulation loop.
+### Central Basis is an explicit audit field
+
+The per-driver audit record carries a **`Central Basis`** column with the literal
+value `ML` or `Midpoint` (§5.1). An auditor must not have to infer the basis from
+the Distribution column.
 
 ---
 
-## 10–12. The three headline measures
+## 11. Calculation Input Fingerprint
+
+Revision A's applied-triple fingerprint was **insufficient**: a calculation goes
+stale with no timeline change at all — a changed Quantity, Probability,
+Distribution, Min/ML/Max, Currency, FX, Inflation Profile, inflation rate,
+profiling percentage or Discount Rate all invalidate stored results while the
+applied triple is untouched.
+
+Phase 5 therefore introduces the **analytical subset of the locked computational
+fingerprint design**, as one canonical mechanism that Phase 6+ extends rather than
+replaces.
+
+### 11.1 Covered inputs
+
+**Header scalars**
+
+```
+Applied Base Year · Applied Start Year · Applied Duration · Discount Rate
+```
+
+**Per identified Cost Line**
+
+```
+Permanent ID · Distribution · Quantity · Min · Max
+ML  — ONLY when the distribution uses ML (Triangular, Beta-PERT). Excluded for Uniform (D1)
+resolved FX · resolved inflation-factor vector · profiling-weight vector
+```
+
+**Per identified Risk**
+
+```
+Permanent ID · Distribution · Probability · Min · Max
+ML  — ONLY when the distribution uses ML
+resolved FX · resolved inflation-factor vector · profiling-weight vector
+```
+
+### 11.2 Exclusions — inherited from the locked stale-results design
+
+Driver **row order** · per-driver digests **sorted by Permanent ID** · descriptive
+fields · Category · Description · Risk Owner · UOM · Selected Confidence Level ·
+Iterations · Random Seed · **unreferenced Config data** (a consequence of
+recording *resolved* FX and inflation vectors rather than raw tables).
+
+### 11.3 Canonical mechanism
+
+One reusable mechanism, designed for extension:
+
+1. **Canonical field encoding.** Text fields verbatim. Numeric fields as a
+   round-trip-exact 17-significant-digit form, format string
+   `"0.0000000000000000E+00"`, so VBA and the Python oracle produce byte-identical
+   input. A shared test vector pins this on both sides (§20).
+2. **Per-driver digest.** Fields joined with a reserved separator (`U+001F`, which
+   cannot appear in a workbook string), then hashed.
+3. **Ordering.** Per-driver digests are **sorted by Permanent ID**, not by digest
+   and not by row — so a reorder cannot change the result.
+4. **Fold.** Header scalars, then the sorted per-driver digests, folded into one
+   global digest, rendered as fixed-width hex.
+5. **Extension point.** The fold takes a *named section list*. Phase 6 appends
+   simulation-only sections (Iterations, Seed, RNG stream identity) **without
+   altering the analytical sections**, so the analytical subset stays comparable
+   across phases. There is exactly one fingerprint format, versioned by a
+   `fingerprint_version` field stored alongside it.
+
+**Hash choice.** A double-modulus polynomial hash (base 131, two distinct 31-bit
+primes) computed entirely in `Double`. Maximum intermediate `2³¹ × 131 ≈ 2.8×10¹¹`,
+well inside the `2⁵³` exact-integer range of a `Double`, so it is exact in VBA
+without unsigned 64-bit arithmetic and reproduces identically in Python. Two
+independent moduli give ~62 bits of separation — ample for change detection, and
+not a security primitive.
+
+### 11.4 `calc_state`
+
+Stores at least:
+
+| Field | Purpose |
+|---|---|
+| `fingerprint` | the input fingerprint of the last **successful** calculation |
+| `fingerprint_version` | so a format change is detectable, never silently mis-compared |
+| `stamp` | calculation timestamp |
+| `applied_timeline` | the applied triple used |
+| `status` | `NOT CALCULATED` / `CURRENT` / `STALE` / `REFUSED` |
+| `refusal_reason` | populated only when `status = REFUSED` |
+
+### 11.5 Status is computed on demand — no events
+
+**No `Worksheet_Change` and no `Workbook_SheetChange` handler is permitted**, in
+keeping with the Phase-4 rule that structural state is never maintained by hidden
+automation.
+
+Status is derived when asked, by recomputing the current input fingerprint and
+comparing it with the stored one:
+
+```
+no stored fingerprint          → NOT CALCULATED
+stored, and recomputed matches → CURRENT
+stored, and recomputed differs → STALE
+last attempt refused           → REFUSED  (with refusal_reason)
+```
+
+**Matching applied timelines alone never yields CURRENT.** The whole fingerprint
+must match.
+
+If the current inputs are themselves invalid, recomputation cannot produce a
+fingerprint; status reports `STALE` with the resolution failure as the reason,
+never `CURRENT`.
+
+### 11.6 Callable surface for Gate B
+
+Public, invoked by `Application.Run` — **no button** (§16):
+
+```
+PCCM_Calculate                  orchestration; refuses cleanly
+PCCM_CalculationStatus()        NOT CALCULATED | CURRENT | STALE | REFUSED
+PCCM_CalculationFingerprint()   the STORED fingerprint
+PCCM_CurrentInputFingerprint()  the fingerprint of the inputs as they are NOW
+PCCM_CalculationRefusal()       the refusal reason, or empty
+```
+
+The two fingerprint accessors are separate deliberately: Gate B must be able to
+show the stored one **unchanged** while the current one has moved (§24 step 7).
+
+---
+
+## 12. The three headline measures
 
 Let `Q_i` = Quantity, `c_i` = deterministic central, `m_i` = distribution mean,
 `p_j` = probability, `s_j` = expected severity.
 
 ```
-A_nom = Σ_i  c_i · Q_i · Knom_i          Escalated Deterministic Base — Nominal
-A_pv  = Σ_i  c_i · Q_i · Kpv_i           Escalated Deterministic Base — PV
-
-C_nom = Σ_i  m_i · Q_i · Knom_i          Mean-Basis Base Cost — Nominal
-C_pv  = Σ_i  m_i · Q_i · Kpv_i           Mean-Basis Base Cost — PV
-
-D_nom = Σ_j  p_j · s_j · Knom_j          Expected Risk / EMV — Nominal
-D_pv  = Σ_j  p_j · s_j · Kpv_j           Expected Risk / EMV — PV
+A_nom = Σ_i c_i·Q_i·Knom_i     A_pv = Σ_i c_i·Q_i·Kpv_i     Escalated Deterministic Base
+C_nom = Σ_i m_i·Q_i·Knom_i     C_pv = Σ_i m_i·Q_i·Kpv_i     Mean-Basis Base Cost
+D_nom = Σ_j p_j·s_j·Knom_j     D_pv = Σ_j p_j·s_j·Kpv_j     Expected Risk / EMV
 ```
 
 ---
@@ -319,134 +428,592 @@ D_pv  = Σ_j  p_j · s_j · Kpv_j           Expected Risk / EMV — PV
 Per applied project year `y`, six values:
 
 ```
-Base Cost   — Nominal      Σ_i  m_i · Q_i · FX_i · w_{i,y} · infl_{i,y}
-Expected Risk — Nominal    Σ_j  p_j · s_j · FX_j · w_{j,y} · infl_{j,y}
-Total       — Nominal      the two above
-Base Cost   — PV           same, × disc_y
-Expected Risk — PV         same, × disc_y
-Total       — PV           the two above
+Base Cost — Nominal        Σ_i m_i·Q_i·FX_i·w_{i,y}·infl_{i,y}
+Expected Risk — Nominal    Σ_j p_j·s_j·FX_j·w_{j,y}·infl_{j,y}
+Total — Nominal            the two above
+Base Cost — PV             same × disc_y
+Expected Risk — PV         same × disc_y
+Total — PV                 the two above
 ```
 
-**Base Cost in the annual cash flow uses the distribution expected value `m_i`,
-not the deterministic ML/Midpoint basis `c_i`.** The locked Results requirement is
-that annual cash flow is mean-only, so the annual series is *Mean-Basis Base Cost
-+ Expected Risk*. The deterministic basis has no annual series.
-
-By construction `Σ_y (annual nominal total) = C_nom + D_nom`, and likewise for PV
-— an internal identity worth auditing (§14).
+**Annual Base Cost uses the distribution expected value `m_i`, not the
+deterministic ML/Midpoint basis.** The locked Results requirement is that annual
+cash flow is mean-only, so the annual series is *Mean-Basis Base Cost + Expected
+Risk*. The deterministic basis has no annual series.
 
 No annual percentiles. No selected-Px annual profile.
 
 ---
 
-## 14. Reconciliation identities
+## 14. Reconciliation identities and tolerances
 
-Locked relationship:
-
-```
-A  Escalated Deterministic Base
-+ B  Uncertainty Mean Shift
-= C  Mean-Basis Base Cost
-
-C  + D  Expected Risk  =  E  Analytical Mean Total
-```
-
-### A design point worth stating plainly
-
-If `B` is *defined* as `C − A`, then `A + B = C` is a tautology and auditing it
-proves nothing. To make it a real check, Phase 5 computes `B` **independently**:
+`B` and `E` are **independently accumulated**, not derived, so the identities are
+real checks rather than tautologies:
 
 ```
-B_nom = Σ_i (m_i − c_i) · Q_i · Knom_i          B_pv = Σ_i (m_i − c_i) · Q_i · Kpv_i
+B_nom = Σ_i (m_i − c_i)·Q_i·Knom_i      B_pv = Σ_i (m_i − c_i)·Q_i·Kpv_i
+E_nom = Σ_i m_i·Q_i·Knom_i + Σ_j p_j·s_j·Knom_j     (accumulated in its own pass)
 ```
 
-accumulated in its own pass, and then audits `|A + B − C| ≤ tol`. The same applies
-to `E`: it is accumulated independently per driver rather than as `C + D`, so
-`|C + D − E| ≤ tol` is a genuine identity.
+| # | Identity |
+|---|---|
+| I1 | `A + B = C` — Nominal and PV |
+| I2 | `C + D = E` — Nominal and PV |
+| **I3a** | `Σ_y annual Mean-Basis Base Nominal = C_nom` |
+| **I3b** | `Σ_y annual Expected Risk Nominal = D_nom` |
+| **I3c** | `Σ_y annual Total Nominal = E_nom` |
+| **I4a** | `Σ_y annual Mean-Basis Base PV = C_pv` |
+| **I4b** | `Σ_y annual Expected Risk PV = D_pv` |
+| **I4c** | `Σ_y annual Total PV = E_pv` |
+| I5 | `Σ_y w_{i,y} = 1` per driver — profiling validation |
 
-Audited identities, Nominal and PV each:
+Splitting the annual reconciliation into base / risk / total is strictly stronger
+than checking the total alone: a base amount misclassified as risk would cancel in
+a total-only check.
 
-| # | Identity | Why it can fail |
+### `A_pv ≤ A_nom` is NOT an identity — removed from acceptance
+
+Revision A listed it. It is **not** universally true: no locked contract imposes a
+non-negative Unit Cost rule, so a negative deterministic contribution reverses the
+inequality, and `r < 0` is explicitly allowed (D3). Inventing a non-negativity
+rule to rescue it would be inventing a business rule.
+
+It is retained **only as a conditional diagnostic**, reported and never gating:
+when every deterministic nominal contribution is `≥ 0` **and** `r ≥ 0`, a
+violation of `A_pv ≤ A_nom` indicates a discount factor applied with the wrong
+sign or index. **It is not a Phase-5 validity gate.**
+
+### Tolerances
+
+| Purpose | Tolerance | Rationale |
 |---|---|---|
-| I1 | `A + B = C` | a distribution mean/central mismatch, or a driver counted in one pass and not the other |
-| I2 | `C + D = E` | a risk or cost line missing from one accumulation |
-| I3 | `Σ_y annual_total = E` | a profiling weight applied in the total but not in the annual split |
-| I4 | `Σ_y w_{i,y} = 1` per driver | profiling validation |
-| I5 | `A_pv ≤ A_nom` when `r ≥ 0` and all `infl ≥ 0` | a discount factor applied with the wrong sign or index |
+| profiling sum = 100% | `\|Σw − 1\| ≤ 1e-9` absolute | percentages are entered to 2 dp and stored as binary doubles; across the 200-column structural maximum the accumulated representation error is bounded by roughly `200 × 2⁻⁵² ≈ 4.4e-14`. `1e-9` gives ~4 orders of headroom and is still 3 orders tighter than a 1-in-a-million entry slip. Exact binary equality is never used. |
+| identities I1–I4 | `\|Δ\| ≤ max(1e-6 SAR, 1e-12 × scale)`, `scale = max(\|A\|,\|C\|,\|E\|)` | absolute floor for small models, relative term for large ones; a pure relative test degenerates at zero, a pure absolute test fails at billions |
+| FX positivity | `rate > 0`, no epsilon | present and positive, or refused |
+| `1 + rate > 0`, `1 + r > 0` | strict | D2, D3 |
 
-`Simulation Mean ≈ E` and `Selected Px − E` are **later** phases. Not implemented,
-not asserted, no statistical tolerance invented here.
+No Monte Carlo statistical tolerance is invented here.
 
 ---
 
-## 15. Workbook / `_Calc` design
+## 15. Physical `_Calc` layout — locked
 
 `_Calc` is `hidden` (not veryHidden) so an auditor can inspect it. `_SimData`
-remains `veryHidden` and is untouched by Phase 5. User-facing input sheets stay
-clean — Phase 5 writes to none of them.
+remains `veryHidden` and **untouched and unused** by Phase 5. No user-facing input
+sheet is written by Phase 5.
 
-`_Calc` must not become a dumping ground. Each block is declared in a contract
-(proposed: `spec/calc_contract.yaml`, a fifth authority in the established
-pattern) with **purpose, ownership, source inputs, output units, update trigger,
-validation rule** — the six fields required, per block.
+### 15.1 Phase-4 reservation
 
-Proposed blocks:
+The frozen sheet currently occupies **rows 1–11** in columns B, C, E:
 
-| Block | Purpose | Owner | Source inputs | Output units | Update trigger | Validation |
-|---|---|---|---|---|---|---|
-| existing counters (C10, C11) | permanent-ID counters | Phase 4 | — | integer | Add | Phase 4's `counter_integrity` |
-| `calc_state` | last calculation stamp, applied-triple fingerprint, refusal reason | Phase 5 | applied triple, structural state | text/integer | Calculate | fingerprint matches applied triple |
-| `calc_years` | per applied project year: calendar year, inflation factor per profile, discount factor | Phase 5 | applied triple, `tblInflation`, `inpDiscountRate` | factor, dimensionless | Calculate | every required factor resolved and finite |
-| `calc_fx` | resolved rate per referenced currency | Phase 5 | `tblFXRates`, driver currencies | SAR per unit | Calculate | exactly one positive rate per referenced currency; SAR = 1 |
-| `calc_drivers` | per permanent ID: `Knom`, `Kpv`, central, mean, quantity/probability | Phase 5 | registers, profiling grids, `calc_years`, `calc_fx` | SAR-factor / SAR | Calculate | profile sums to 100%; distribution valid |
-| `calc_totals` | A, B, C, D, E — Nominal and PV | Phase 5 | `calc_drivers` | SAR | Calculate | identities I1–I3 within tolerance |
-| `calc_annual` | six series over applied project years | Phase 5 | `calc_drivers`, `calc_years` | SAR | Calculate | I3 |
+```
+B2  title            B3  subtitle          B6  note
+B8  "Permanent ID Counters"
+B10 "Cost Line ID Counter"  C10 counter (nmCounterCostLine)  E10 note
+B11 "Risk ID Counter"       C11 counter (nmCounterRisk)      E11 note
+```
 
-**Auditability, not computation.** These blocks are a *written record* of what the
-in-memory kernel computed. Nothing reads them back to compute anything else; that
-would recreate the worksheet dependency the design exists to avoid.
+**Rows 1–11 are Phase-4 territory and are not touched.** `_Calc!C10:C11` is
+declared reserved in the new contract so no Phase-5 block can be placed there, and
+a build-time assertion fails if any Phase-5 block overlaps rows 1–11 or the
+counter cells.
 
-Everything on `_Calc` is model-controlled and carries the locked visual treatment,
-consistent with Phases 1–4.
+### 15.2 Growth strategy — column bands, not vertical stacking
+
+Every Phase-5 table has a **fixed column schema** and an **unbounded row count**.
+Stacking them vertically would make a growing table collide with the block below,
+so each dynamic ListObject is given its **own column band**, all anchored at the
+same header row, growing downward with nothing beneath it.
+
+**No block is capped at 200 Cost Lines or 100 Risks.** Those are design targets,
+not business maxima — consistent with the Phase-4 refusal to encode 25 years.
+
+### 15.3 Locked layout
+
+All blocks anchor at **header row 15**; scalar blocks occupy fixed rows in the
+B:C band below the Phase-4 area.
+
+| Block | Kind | Anchor | Columns | Rows | Growth | Visible when unhidden | Owner |
+|---|---|---|---|---|---|---|---|
+| *(Phase-4 counters)* | scalars | `B8:E11` | B, C, E | fixed | none | yes | **Phase 4 — reserved** |
+| `calc_state` | scalars | `B13` label / `C13` value, 6 rows | B, C, E | 6, fixed | none | yes | Phase 5 |
+| `calc_totals` | scalars | `B21` label / `C21` value, 10 rows | B, C, E | 10, fixed | none | yes | Phase 5 |
+| `tblCalcYears` | ListObject | header `H15` | 3 | applied year count | vertical | yes | Phase 5 |
+| `tblCalcInflationFactors` | ListObject | header `M15` | 4 | referenced profiles × required years | vertical | yes | Phase 5 |
+| `tblCalcFX` | ListObject | header `S15` | 3 | referenced currencies | vertical | yes | Phase 5 |
+| `tblCalcDrivers` | ListObject | header `X15` | 16 | identified cost lines + risks | vertical | yes | Phase 5 |
+| `tblCalcAnnual` | ListObject | header `AQ15` | 7 | applied year count | vertical | yes | Phase 5 |
+
+Column letters are illustrative of the **band pattern**; the contract owns the
+exact anchors, and a build-time assertion proves no two bands overlap given their
+schemas. What is locked is the **shape**: fixed-width, vertically growing, one
+band each, none above another.
+
+### 15.4 Schemas
+
+**`calc_state`** — `B13:C18`, labels in B, values in C, notes in E
+
+| Row | Label | Value | Format |
+|---|---|---|---|
+| 13 | Calculation Status | `NOT CALCULATED` / `CURRENT` / `STALE` / `REFUSED` | `@` |
+| 14 | Calculation Stamp | timestamp of last successful calculation | `yyyy-mm-dd hh:mm:ss` |
+| 15 | Input Fingerprint | stored fingerprint, hex | `@` |
+| 16 | Fingerprint Version | integer | `0` |
+| 17 | Applied Timeline Used | `base/start/duration` | `@` |
+| 18 | Refusal Reason | empty unless `REFUSED` | `@` |
+
+**`calc_totals`** — `B21:C30`, labels in B, values in C, all `#,##0.00` SAR
+
+```
+A_nom  Escalated Deterministic Base — Nominal      A_pv  … PV
+B_nom  Uncertainty Mean Shift — Nominal            B_pv  … PV
+C_nom  Mean-Basis Base Cost — Nominal              C_pv  … PV
+D_nom  Expected Risk / EMV — Nominal               D_pv  … PV
+E_nom  Analytical Mean Total — Nominal             E_pv  … PV
+```
+
+**`tblCalcYears`**
+
+| Column | Type | Format | Units |
+|---|---|---|---|
+| Project Index | integer | `0` | index, from 1 |
+| Calendar Year | integer | `0` | year |
+| Discount Factor | double | `0.000000` | dimensionless |
+
+**`tblCalcInflationFactors`** — long form, as required
+
+| Column | Type | Format | Units |
+|---|---|---|---|
+| Inflation Profile | text | `@` | key |
+| Calendar Year | integer | `0` | year |
+| Annual Rate | double | `0.00%` | rate |
+| Cumulative Inflation Factor | double | `0.000000` | dimensionless |
+
+Long form is what makes this scale with a dynamic profile count without a
+variable-width profile-by-year block colliding with its neighbours.
+
+**`tblCalcFX`**
+
+| Column | Type | Format | Units |
+|---|---|---|---|
+| Currency | text | `@` | key |
+| FX to SAR | double | `0.000000` | SAR per unit |
+| Referenced By | integer | `0` | driver count |
+
+**`tblCalcDrivers`** — one row per identified Cost Line and Risk
+
+| Column | Type | Format | Units |
+|---|---|---|---|
+| Permanent ID | text | `@` | key |
+| Driver Kind | text | `@` | `Cost Line` / `Risk` |
+| Distribution | text | `@` | — |
+| **Central Basis** | text | `@` | `ML` / `Midpoint` (§10) |
+| Currency | text | `@` | — |
+| FX to SAR | double | `0.000000` | SAR per unit |
+| Inflation Profile | text | `@` | — |
+| Quantity | double | `#,##0.00` | units (`1` for risks) |
+| Probability | double | `0.0%` | fraction (`1` for cost lines) |
+| Central Value | double | `#,##0.00` | source currency |
+| Mean Value | double | `#,##0.00` | source currency |
+| Knom | double | `0.000000` | SAR per source unit |
+| Kpv | double | `0.000000` | SAR per source unit |
+| Deterministic Nominal | double | `#,##0.00` | SAR |
+| Mean-Basis Nominal | double | `#,##0.00` | SAR |
+| Mean-Basis PV | double | `#,##0.00` | SAR |
+
+**`tblCalcAnnual`**
+
+| Column | Type | Format | Units |
+|---|---|---|---|
+| Project Index | integer | `0` | index |
+| Base Cost Nominal · Expected Risk Nominal · Total Nominal | double | `#,##0.00` | SAR |
+| Base Cost PV · Expected Risk PV · Total PV | double | `#,##0.00` | SAR |
+
+### 15.5 Update trigger and validation
+
+Every block: **trigger** = `PCCM_Calculate`; **validation** = the numerical
+prerequisites of §17 plus the identities of §14; **ownership** = Phase 5;
+**units** as tabulated.
+
+`_Calc` is a **written record of what the in-memory kernel computed**. Nothing
+reads it back to compute anything else — that would recreate the worksheet
+dependency the whole design exists to avoid. **No per-iteration data is ever
+written here.**
 
 ---
 
 ## 16. VBA / numerical module boundaries
 
 The hard rule: **mathematical functions must not read worksheet cells.**
-Structural and presentation modules may; numerical functions receive resolved
-numeric inputs and return resolved numeric outputs. This is what lets Phase 6 call
-the same functions 100,000 times without an Excel round trip.
 
-Existing Phase-4 modules are unchanged. Proposed additions:
-
-| Module | Layer | Responsibility | May touch worksheets |
+| Module | Layer | Responsibility | Worksheets |
 |---|---|---|---|
-| `modCalcContract` | generated | Phase-5 constants projected from `calc_contract.yaml` — block addresses, tolerances, labels | n/a (constants) |
-| `modCalcResolve` | resolution | reads Setup, registers, profiling grids, `tblFXRates`, `tblInflation`; produces plain numeric arrays and Types | **yes** |
+| `modCalcContract` | generated | Phase-5 constants projected from `calc_contract.yaml` | n/a |
+| `modCalcResolve` | resolution | builds the referenced-currency and referenced-profile sets from the registers, then reads Setup, profiling grids, `tblFXRates`, `tblInflation` into plain numeric structures | **yes** |
 | `modCalcFactors` | numerical | `InflationFactors`, `DiscountFactors`, `BuildKnom`, `BuildKpv` | **no** |
-| `modCalcAnalytical` | numerical | `TriangularMean`, `PertMean`, `UniformMean`, `DeterministicCentral`, `ExpectedRisk`, the A/B/C/D/E accumulations, the annual series | **no** |
-| `modCalcReport` | presentation | writes `_Calc` blocks, reports refusals through the Phase-4 `modAppState` result surface | **yes** |
-| `modCalcCheck` | validation | Phase-5 numerical prerequisites; returns a report, never repairs | **yes** (reads only) |
+| `modCalcAnalytical` | numerical | `TriangularMean`, `PertMean`, `UniformMean`, `DeterministicCentral`, `ExpectedRisk`, A–E accumulations, annual series | **no** |
+| `modCalcFingerprint` | numerical | canonical encoding, per-driver digest, sort by ID, fold (§11.3) | **no** |
+| `modCalcCheck` | validation | Phase-5 numerical prerequisites; reports, never repairs | **yes**, read only |
+| `modCalcReport` | presentation | writes the `_Calc` blocks; reports refusal through the Phase-4 `modAppState` surface | **yes** |
 
-The names `modCalcFactors` / `modCalcAnalytical` from the request are adopted
-because they fit the existing `modXxx` convention and the existing
-report-never-repair split (`modStructuralCheck`). `modCalcResolve` and
-`modCalcReport` are added because the resolution/calculation boundary the request
-demands needs a *named* place to live on each side of it — folding resolution into
-`modCalcFactors` would breach the rule the request sets.
+`modCalcFingerprint` is numerical deliberately: the fingerprint must be computable
+from resolved data alone, so Phase 6 can extend it without a worksheet.
 
-A static test will enforce the boundary: **no worksheet-touching identifier**
-(`ThisWorkbook`, `Worksheets`, `Range`, `ListObjects`, `Cells`, `modWorkbook.*`)
-may appear in `modCalcFactors` or `modCalcAnalytical`. That is mechanically
-checkable on Linux and becomes a permanent sweep, in the style already
-established.
+**A static sweep enforces the boundary:** no worksheet identifier (`ThisWorkbook`,
+`Worksheets`, `Range`, `ListObjects`, `Cells`, `modWorkbook.*`) may appear in
+`modCalcFactors`, `modCalcAnalytical` or `modCalcFingerprint`. Mechanically
+checkable on Linux, permanent, in the established style.
+
+### No user-facing Calculate button
+
+**LOCKED for Phase 5: `PCCM_Calculate` — yes. Calculate button — no.**
+
+A standalone Calculate button was not part of the locked Dashboard command set,
+and adding user-facing workflow before Results, Model Check and Run Simulation
+exist would clutter the UI. The Windows harness invokes `PCCM_Calculate` directly
+through `Application.Run`. Later phases call the same orchestration from Run
+Check / Run Simulation / output-refresh pathways.
+
+**The workbook keeps exactly the five Phase-4 buttons.** Gate B proves it (§23).
 
 ---
 
-## 17. Data structures for later simulation reuse
+## 17. Validity and failure behaviour
 
-Resolved once, held in memory, reused per iteration:
+Phase 5 refuses; it never manufactures a value and never repairs.
+
+### Structural prerequisites — owned by Phase 4, invoked not duplicated
+
+`STRUCTURE CHANGE PENDING` · no timeline applied · non-empty
+`modStructuralCheck.ValidateStructure()` · duplicate permanent ID · orphan
+profiling row · profiling ID missing from register · register ID missing from
+profiling. Phase 5 calls the existing gate and quotes its report.
+
+### Phase-5 numerical prerequisites — owned here
+
+| Check | Refusal |
+|---|---|
+| Base Year > Start Year | yes |
+| Discount Rate blank / non-numeric | yes |
+| `1 + r ≤ 0` (D3) | yes |
+| **referenced** currency missing from `tblFXRates` | yes |
+| **referenced** currency duplicated in `tblFXRates` | yes |
+| **referenced** FX rate `≤ 0`, blank or non-numeric | yes |
+| SAR ≠ 1 | yes (global invariant) |
+| unreferenced currency invalid / duplicated | **no — must not block** |
+| **referenced** inflation profile missing | yes |
+| required inflation year blank for a **referenced** profile | yes |
+| inflation rate non-numeric | yes |
+| `1 + rate ≤ 0` (D2) | yes |
+| unreferenced profile incomplete | **no — must not block** |
+| profiling cell non-numeric | yes |
+| **any blank profiling cell** on an identified driver (D4) | yes |
+| profiling sum ≠ 100% within tolerance | yes |
+| distribution missing or not one of the three | yes |
+| `Min ≤ ML ≤ Max` violated (Triangular, Beta-PERT) | yes |
+| `Min ≤ Max` violated (Uniform) | yes |
+| Uniform with a populated ML (D1) | **no — succeeds, ML ignored** |
+| Quantity missing or non-numeric | yes |
+| **Quantity ≤ 0** | **yes** — see below |
+| Probability missing, non-numeric, or outside `[0,1]` | yes |
+| any numerical result non-finite (§18) | yes |
+
+**Quantity positivity.** The locked driver contract says:
+
+> `note: "Deterministic. Fixed during simulation. No positivity rule here; that is
+> a Model Check rule."`
+
+That governs the **cell rule**, and no cell rule is added. But Phase 5 must be able
+to refuse an invalid numerical calculation independently of a Model Check UI that
+does not exist, so **`Quantity` must be numeric and `> 0`** is a Phase-5 numerical
+prerequisite. The same predicate is later aggregated by Model Check — one
+predicate, two consumers, no duplicated UI logic.
+
+**No positivity rule is invented for Min / ML / Max**, because no locked contract
+requires one. Only the three-point ordering rules apply.
+
+Refusals are reported through the Phase-4 `modAppState` result surface, so there is
+one refusal mechanism, not two.
+
+---
+
+## 18. Numerical finiteness and overflow protection
+
+`rate > −1` alone does not guarantee representable arithmetic, and there is
+deliberately no business upper bound on rates or costs. **No VBA runtime overflow
+may escape as an uncontrolled error, and no overflow may silently become a
+fabricated zero.**
+
+A single predicate, `IsUsableDouble(v)` — not NaN, not ±∞, `|v| ≤ 1.7e308` — is
+applied after **every** stage:
+
+| Stage | Guard |
+|---|---|
+| inflation compounding | each cumulative factor checked as it is built; a product that overflows refuses at the profile and calendar year that caused it |
+| discount factor | checked for overflow **and for underflow to exactly 0** — underflow is silent, and a zero discount factor would quietly delete a year's PV. Refused when `r > −1` yet the factor collapses |
+| `Knom` / `Kpv` | checked after each accumulation step, not only at the end |
+| central / expected value | checked after evaluation |
+| driver contribution | checked per driver |
+| annual accumulators | checked per year, per series |
+| A / B / C / D / E accumulators | checked after each driver is added |
+
+Checking **during** accumulation rather than only at the end is deliberate: it
+names the driver, profile or year responsible, instead of reporting that a total
+is infinite.
+
+Refusal carries a specific **numerical-range message** naming the stage and the
+input. **No arbitrary business cap is invented to avoid implementing safe
+arithmetic.**
+
+---
+
+## 19. `calc_contract.yaml` — scoped authority
+
+Accepted, with its authority narrowly bounded so no duplicate source of truth is
+created.
+
+**It owns:** `_Calc` physical layout · block and table names · column schemas ·
+labels · display formats · units · numerical tolerances · calculation-state
+labels · the fingerprint version and separator · reserved-cell declarations.
+
+**It must NOT restate:** driver schemas (`driver_contract.yaml`) · the
+distribution list (`input_contract.yaml`, `tblDistributions`) · timeline
+structural limits (`structure_contract.yaml`) · the FX convention
+(`input_contract.yaml`) · permanent-ID rules (`structure_contract.yaml`) ·
+Phase-4 structure rules. These are **referenced or projected** from the existing
+authorities, and the loader asserts the projection matches.
+
+**Mathematical semantics are not defined in YAML.** A formula written once in YAML
+and again in VBA/Python is two sources of truth that will diverge. The division is:
+
+```
+this document + the tested numerical oracle   define the numerical semantics
+calc_contract.yaml                            defines their workbook representation
+```
+
+---
+
+## 20. Gate A — Linux / static
+
+1. **Pure-Python numerical oracle** — `builder/pccm_builder/calc_oracle.py`,
+   implementing §5–§14 independently, in the `structure_oracle.py` pattern: it
+   defines the semantics the VBA must match **and** emits the expected values the
+   Windows harness asserts, so the two cannot drift.
+2. **Golden-case tests** — §22, every value hand-derived and written as a literal
+   in the test.
+3. **Oracle-independence test** — see below.
+4. **Fingerprint test vectors** — a fixed input set with a hand-checked canonical
+   encoding and expected digest, so the VBA and Python implementations are pinned
+   to the same bytes, including the numeric format string and the separator.
+5. **Contract validation** for `calc_contract.yaml`, including the authority
+   boundary (§19) and non-overlap of `_Calc` bands and the Phase-4 reservation.
+6. **Source sweeps**, extending the existing mechanical ones:
+   - no worksheet identifier in `modCalcFactors` / `modCalcAnalytical` /
+     `modCalcFingerprint`;
+   - **no simulation dependency** — see §21 for how this is tested;
+   - VBA block balance, line length, declaration-section placement, `Optional`
+     defaults, applied to the new modules;
+   - every emitted constant referenced; no structural literal restated.
+7. **Post-build verification** extended with the `_Calc` block layout.
+
+### Golden oracle independence
+
+The architecture is deliberately:
+
+```
+hand-derived literals  →(verify)→  Python oracle  →(emit)→  phase5_cases.json  →(assert)→  Windows/VBA
+```
+
+A static test asserts that **every expected value emitted into
+`phase5_cases.json` equals its separately hard-coded hand-derived literal**. The
+JSON must not become self-validating merely because the oracle produced it.
+
+For refusal cases the harness verifies:
+
+- the specific refusal **class/message**, not merely that something failed;
+- **no partial analytical totals** were written;
+- the previous successful calculation snapshot was **not overwritten** as though
+  the failed calculation had succeeded;
+- `calc_state.status` reflects the invalid/refused state.
+
+Gate A ends with a source review, exactly as Phase 4 did.
+
+---
+
+## 21. Simulation-artefact acceptance wording — corrected
+
+Revision A's *"no Monte Carlo artefact exists anywhere in the phase"* was too
+broad: the frozen workbook already legitimately contains `inpMonteCarloIterations`,
+`inpRandomSeed`, `inpSelectedConfidenceLevel` and the `_SimData` sheet, all from
+the locked architecture.
+
+**Replacement criterion:**
+
+> Phase 5 introduces no RNG implementation, no sampling implementation and no
+> simulation output, and makes no use of Iterations, Random Seed or Selected
+> Confidence Level in any analytical calculation or in the Phase-5 calculation
+> fingerprint. `_SimData` remains unchanged and unused.
+
+**Sweeps test dependencies, not vocabulary.** Fragile word-matching on `Sample` or
+`Iteration` in a comment is replaced by:
+
+- no Phase-5 module reads `inpMonteCarloIterations`, `inpRandomSeed` or
+  `inpSelectedConfidenceLevel` — checked against the **generated constant names**,
+  in code with comments and strings stripped;
+- no Phase-5 module references `_SimData` or `shSimData`;
+- no Phase-5 module calls `Rnd`, `Randomize` or `Timer`;
+- the fingerprint field list (§11.1) contains none of the three excluded inputs —
+  asserted against the oracle's field list, not against prose.
+
+---
+
+## 22. Golden and refusal matrix
+
+Cases 1–15 are unchanged from Revision A and remain hand-derived. Cases 16–25 lock
+the behaviour required by D1–D4 and §17–§18.
+
+Shared unless overridden: Triangular `Min 80 / ML 100 / Max 150`, `Quantity 10`,
+SAR, one profile at 100%.
+
+| # | Case | Setup | Hand-derived expected |
+|---|---|---|---|
+| 1 | SAR, no inflation, one project year | Base 2026, Start 2026, Dur 1; inflation span empty (`2027 > 2026`); `r = 10%` | `infl = 1`, `disc₁ = 1`, `Knom = Kpv = 1`; `A = 1000`, `C = 1100`, `B = 100` |
+| 2 | foreign currency | as 1, USD `FX = 3.75`, unit cost 100, Qty 4 | `Knom = 3.75`; `A = 100×4×3.75 = 1500 SAR` |
+| 3 | multi-year profiling, compounded inflation | Base 2026, Start 2027, Dur 3; rates 5%; profile `20/50/30` | `f = 1.05, 1.1025, 1.157625`; `Knom = 0.21+0.55125+0.3472875 = ` **`1.1085375`**; `A_nom = ` **`1108.5375`** |
+| 4 | PV across multiple years | 3 with `r = 10%` | `Kpv = 0.21+0.501136363636+0.287014462810 = ` **`0.998150826446`**; `A_pv = ` **`998.150826446`**; `C_pv = ` **`1097.965909091`** |
+| 5 | Triangular deterministic vs mean | `80/100/150` | central `100`, mean **`110`**; on case 3 `C_nom = ` **`1219.39125`**, `B_nom = ` **`110.85375`** |
+| 6 | Beta-PERT deterministic vs mean | `80/100/150`, λ=4 | central `100`, mean `(80+400+150)/6 = ` **`105`** |
+| 7 | Uniform midpoint = mean | `Min 80 / Max 150` | central `115`, mean `115`; **`B = 0`** for this driver |
+| 8 | risk EMV, `P < 1` | `P = 30%`, severity `100/200/450`, case-1 factors | mean severity `250`; `D = ` **`75`** |
+| 9 | multi-year risk profile | risk of 8 on case-3 factors | `D_nom = ` **`83.1403125`**; `D_pv = ` **`74.8613119835`** |
+| 10 | Base Year = Start Year | Base 2027, Start 2027, Dur 2; rate 2028 = 5% | `infl(2027) = 1`, `infl(2028) = 1.05` |
+| 11 | Base Year earlier than Start Year | case 3 | project year 1 (2027) already carries `1.05` |
+| 12 | zero inflation | rates `0%` | every `infl = 1`; `Knom = FX` |
+| 13 | negative but valid inflation | rate `−2%`, three years | `0.98, 0.9604, 0.941192` (D2) |
+| 14 | blank required inflation rate | case 3, 2028 blank | **refusal**, naming profile and year 2028 |
+| 15 | profile sum ≠ 100% | case 3, profile `20/50/20` | **refusal**, naming the permanent ID and the sum |
+| **16** | **Quantity = 0** | case 1 with `Qty 0` | **refusal** (§17) |
+| **17** | **Quantity < 0** | case 1 with `Qty −5` | **refusal** |
+| **18** | **Discount Rate = −100%** | `r = −1` | **refusal** — `1 + r = 0` (D3) |
+| **19** | **Discount Rate negative but > −100%** | case 3 with `r = −5%` | **accepted**; `disc = 1, 1/0.95, 1/0.9025`, so `A_pv > A_nom` — correct, and why I5 is not a gate (§14) |
+| **20** | **Inflation Rate = −100%** | one required year at `−100%` | **refusal** — `1 + rate = 0` (D2) |
+| **21** | **Inflation Rate negative but > −100%** | case 13 | **accepted** |
+| **22** | **Uniform with populated ML** | `Min 80 / ML 999 / Max 150` | **accepted**; central = mean = `115`; ML ignored **and excluded from the fingerprint** (D1) |
+| **23** | **100%-summing profile containing a blank** | Dur 3, weights `50% / blank / 50%` | **refusal** (D4) — sums to 100% and is still refused |
+| **24** | **Double overflow** | inflation `1e300%` compounded over several years, or an extreme unit cost | **controlled refusal** with a numerical-range message naming the stage; no uncontrolled VBA error, no fabricated zero (§18) |
+| **25** | **unreferenced incomplete FX / Config row** | valid SAR-only model + a duplicate, blank-rate `EUR` row referenced by nothing | **does NOT block**; calculation succeeds and the fingerprint is unaffected (§8) |
+
+Cases 14–18, 20, 23 and 24 assert a **refusal**, not a number, and must produce no
+partial result. Cases 19, 21, 22 and 25 assert **acceptance** where a naive
+implementation would over-block.
+
+Cases 16–25 need not each be a separate full fixture; the Gate-B matrix may
+exercise them compactly. Their **behaviour is locked** regardless.
+
+---
+
+## 23. Gate B — real Windows / Excel
+
+Extends the accepted `phase4_functional_test.ps1` matrix; it does not replace it.
+
+### Additive expectations
+
+Phase 5 adds VBA modules, so the bootstrap and harness expectations become
+**additive without weakening Phase 4**. Gate B proves:
+
+| Claim | How |
+|---|---|
+| all 8 original Phase-4 modules still persist | the reopen-and-verify step reads the module list from the manifest, which now declares Phase-4 **and** Phase-5 modules; the Phase-4 eight are asserted present **by name** |
+| all Phase-5 modules persist | same list, new names asserted present by name |
+| all 5 Phase-4 command buttons still persist | asserted by shape name from the manifest, exactly as today |
+| **no Phase-5 button was added** | the manifest's button count is asserted `= 5`, and the sheet's shape inventory is asserted to contain **no** shape whose `OnAction` is `PCCM_Calculate` (§16) |
+| the VBA project still compiles | `A1` unchanged — still the first `Application.Run` of the run |
+
+**The full 35/35 Phase-4 functional matrix remains mandatory** and must pass before
+any Phase-5 scenario is considered accepted.
+
+### New Phase-5 functional coverage
+
+FX resolution (foreign currency and the SAR identity) · inflation compounding
+(`Base = Start` and `Base < Start`) · discount factors at indices 1, 2, 3 ·
+profiling factor application by permanent ID · deterministic base (Nominal, PV) ·
+mean-basis base (Nominal, PV) · expected risk (Nominal, PV) · all six annual
+series · identities I1–I5 asserted in the workbook · refusal on every §17
+numerical prerequisite · refusal on `STRUCTURE CHANGE PENDING` · the §24 stale
+fingerprint sequence · clean shutdown and clean transient COM release.
+
+Every expected value comes from `build/phase5_cases.json`. **The harness asserts
+every calculated value; the user inspects no cells manually.**
+
+Phase-4 harness disciplines carry over unchanged and are non-negotiable:
+caller-side `@(...)`, one pipeline object per row, container factories emitted
+non-enumerated, `catch` attached to its `try`, keyed-only fixtures, failure-safe
+cleanup, per-scenario clean-structure prerequisites, `$excelIdentity`.
+
+---
+
+## 24. Gate-B stale-fingerprint scenario
+
+An explicit Windows functional oracle for the fingerprint, using the **same
+canonical semantics intended for later simulation reuse**.
+
+**Primary sequence**
+
+1. establish a valid analytical fixture;
+2. `PCCM_Calculate`;
+3. assert `PCCM_CalculationStatus() = CURRENT`;
+4. capture headline values **and** `PCCM_CalculationFingerprint()`;
+5. change Quantity **or** one profiling weight, **without** touching the timeline
+   and **without** recalculating;
+6. assert `PCCM_CalculationStatus() = STALE`;
+7. assert `PCCM_CalculationFingerprint()` is **still the old value** — the stored
+   snapshot is identifiable as the old one — while
+   `PCCM_CurrentInputFingerprint()` has changed;
+8. `PCCM_Calculate`;
+9. assert status `CURRENT`;
+10. assert the stored fingerprint **changed**;
+11. assert the affected analytical value changed **to the oracle value**.
+
+**Non-staleness proofs** — each must leave status `CURRENT` with the stored
+fingerprint unchanged:
+
+- changing a **Description**;
+- changing **row order** (a real `ListObject.Sort`, as `B2`/`K2` already do);
+- changing **Selected Confidence Level**;
+- changing an **unreferenced** FX row or Config value.
+
+**Refusal-state proof** — make an input invalid, run `PCCM_Calculate`, assert
+status `REFUSED` with a specific reason, assert no partial totals were written and
+that the previous successful snapshot was not overwritten (§20).
+
+No `Worksheet_Change` or `Workbook_SheetChange` handler exists; status is computed
+on demand (§11.5), and a sweep asserts neither handler was introduced.
+
+---
+
+## 25. Performance
+
+Design target: **200 Cost Lines, 100 Risks, 25 project years, 100,000
+iterations** — targets, not caps (§15.2).
+
+| Quantity | Complexity |
+|---|---|
+| resolution (worksheet reads) | `O(D × N)` = 7,500 cells, **once** |
+| `Knom` / `Kpv` build | `O(D × N)` = 7,500 multiply-adds, **once** |
+| fingerprint | `O(D × N)` encode + `O(D log D)` sort, **once per status query** |
+| analytical totals A–E | `O(D)` = 300 |
+| annual series | `O(D × N)` = 7,500 |
+| later, per simulation iteration | `O(D)` = 300 — **no worksheet access** |
+
+Memory: `DriverFactors` ≈ 26 KB; per-driver weight arrays `300 × 25 × 8 B = 60 KB`;
+`YearFactors` negligible. **Under 100 KB resident**, which is why the simulation
+phase can hold it all for an entire run.
+
+The decisive property: at 100,000 iterations the kernel performs ~30 million
+multiply-adds and **zero** Excel round trips. A worksheet-reading design would
+perform ~750 million COM calls.
+
+### Structures carried into Phase 6
 
 ```vb
 Type DriverFactors            ' one per Cost Line and per Risk
@@ -457,299 +1024,94 @@ Type DriverFactors            ' one per Cost Line and per Risk
     Quantity      As Double   ' 1 for risks
     Probability   As Double   ' 1 for cost lines
     DistKind      As Long     ' Triangular | BetaPert | Uniform
+    CentralBasis  As String   ' "ML" | "Midpoint"
     MinValue      As Double
     MostLikely    As Double
     MaxValue      As Double
-    Central       As Double   ' ML or midpoint
-    MeanValue     As Double   ' distribution expected value
+    Central       As Double
+    MeanValue     As Double
 End Type
 
-Type YearFactors              ' one per applied project year
+Type YearFactors
     ProjectIndex  As Long
     CalendarYear  As Long
     DiscountF     As Double
 End Type
 ```
 
-plus, for the annual split, a per-driver `Double` array of
-`w_{i,y} × infl_{i,y}` of length `N` — the only per-year storage the kernel needs.
-
-Simulation later needs **only** `DriverFactors` and that weight array: no
-worksheet, no ListObject, no Range. `MinValue`/`MostLikely`/`MaxValue` are carried
-so the sampler has its parameters without re-reading anything.
+plus one `Double` array per driver of `w_{i,y} × infl_{i,y}`, length `N`.
+Simulation needs **only** these: no worksheet, no ListObject, no Range.
 
 ---
 
-## 18. Validity and failure behaviour
+## 26. Implementation sequence
 
-Phase 5 refuses; it never manufactures a value and never repairs.
+1. **`spec/calc_contract.yaml`** — the fifth authority, scoped per §19: `_Calc`
+   physical layout (§15), tolerances, labels, formats, fingerprint version and
+   separator, reserved-cell declarations. Loader + validator, fail-loud, including
+   the band non-overlap and Phase-4 reservation assertions.
+2. **`builder/pccm_builder/calc_oracle.py`** — pure-Python implementation of
+   §5–§14 and the §11.3 fingerprint. **Golden-case tests written first**, from the
+   hand derivations in §22, plus the oracle-independence test (§20).
+3. **Stage-A emission** — `_Calc` blocks per the contract; `modCalcContract.bas`
+   generated; `build/phase5_cases.json` emitted. Post-build verification extended
+   to the new blocks.
+4. **`modCalcFactors`, `modCalcAnalytical`, `modCalcFingerprint`** — the pure
+   numerical kernel, with the no-worksheet sweep and the §18 finiteness guards
+   active from the first commit, and the fingerprint test vectors passing against
+   the Python side.
+5. **`modCalcResolve`** — reference-set construction, then worksheet → numeric
+   structures, honouring the referenced-only rule of §8.
+6. **`modCalcCheck`** — Phase-5 numerical prerequisites (§17); reports, never
+   repairs.
+7. **`modCalcReport` + `PCCM_Calculate` and the four status accessors (§11.6)** —
+   orchestration, `_Calc` write-back, `calc_state` maintenance, refusal through
+   `modAppState`. **No button.**
+8. **Gate-A source review.**
+9. **Gate-B harness extension** — additive module/button assertions (§23), the new
+   functional coverage, and the stale-fingerprint scenario (§24). On approval, the
+   Windows run.
 
-### Structural prerequisites — already owned by Phase 4, re-checked only by asking
-
-Phase 5 calls the existing gate rather than duplicating it:
-
-- structural state is `STRUCTURE CHANGE PENDING` → refuse
-- no timeline applied → refuse
-- `modStructuralCheck.ValidateStructure()` non-empty → refuse and quote it
-- duplicate permanent ID · orphan profiling row · profiling ID missing from
-  register · register ID missing from profiling — **all Phase 4**, surfaced by the
-  same call
-
-### Phase-5 numerical prerequisites — new, and owned here
-
-| Check | Refusal |
-|---|---|
-| Base Year > Start Year | yes |
-| Discount Rate blank or non-numeric | yes |
-| Discount Rate makes `1 + r ≤ 0` | yes |
-| referenced currency missing from `tblFXRates` | yes |
-| duplicate currency in `tblFXRates` | yes |
-| FX rate ≤ 0, blank or non-numeric | yes |
-| SAR ≠ 1 | yes |
-| referenced inflation profile missing from `tblInflation` | yes |
-| required inflation year missing (blank) | yes |
-| inflation rate non-numeric | yes |
-| inflation rate makes `1 + rate ≤ 0` | yes (§26 D2) |
-| cost profile non-numeric | yes |
-| cost profile ≠ 100% within tolerance | yes |
-| risk profile non-numeric or ≠ 100% | yes |
-| distribution missing or not one of the three | yes |
-| `Min ≤ ML ≤ Max` violated (Triangular, Beta-PERT) | yes |
-| `Min ≤ Max` violated (Uniform) | yes |
-| Uniform with a populated ML | §26 D1 |
-| Quantity missing or non-numeric | yes |
-| Probability missing, non-numeric, or outside `[0,1]` | yes |
-
-Later, Model Check aggregates all of this. **Phase 5 must be able to refuse an
-invalid calculation independently**, and does — through the Phase-4 result surface
-(`modAppState.Failed` / `Announce`), so refusal reporting is one mechanism, not
-two.
+Steps 1–8 are Linux-only. No Windows execution before Gate A is approved.
 
 ---
 
-## 19. Numerical tolerances
-
-| Purpose | Tolerance | Rationale |
-|---|---|---|
-| profiling sum = 100% | `|Σw − 1| ≤ 1e-9` absolute | percentages are entered to 2 dp and stored as binary doubles; over the 200-column structural maximum the accumulated representation error is bounded by roughly `200 × 2⁻⁵² ≈ 4.4e-14`. `1e-9` is ~4 orders of magnitude of headroom and still four orders tighter than a 1-in-a-million data-entry slip (`1e-6`). Exact binary equality is never used. |
-| reconciliation identities I1–I3 | `|Δ| ≤ max(1e-6 SAR, 1e-12 × scale)` | absolute floor for small models, relative term for large ones, where `scale = max(|A|,|C|,|E|)`. A pure relative test degenerates at zero; a pure absolute test fails at billions. |
-| FX positivity | `rate > 0`, no epsilon | a rate is either present and positive or it is refused |
-| `1 + rate > 0` | strict | a factor of zero or below is not a price relationship |
-
-No Monte Carlo statistical tolerance is invented here. That belongs with the phase
-that produces a sampling distribution.
-
----
-
-## 20. Gate A — Linux / static
-
-Phase 4 established that static tests cannot prove Excel behaviour, and equally
-that they catch a great deal before Windows time is spent. Gate A covers:
-
-1. **A pure-Python numerical oracle** (`builder/pccm_builder/calc_oracle.py`) that
-   implements every formula in §4–§13 independently, in the established
-   `structure_oracle.py` pattern: it both defines the semantics the VBA must match
-   **and** generates the expected values the Windows harness asserts, so the two
-   cannot drift.
-2. **Golden case tests** — §22, every value hand-derived and written in the test,
-   never produced by the code under test.
-3. **Contract validation** for `calc_contract.yaml`, in the pattern of the four
-   existing contract validators.
-4. **Source sweeps**, extending the existing mechanical ones:
-   - no worksheet identifier in `modCalcFactors` / `modCalcAnalytical`
-   - no Phase-6 construct (`Rnd`, `MRG`, `Percentile`, `Iteration`, `Sample`)
-     anywhere in Phase-5 VBA
-   - VBA block balance, line length, declaration-section placement, `Optional`
-     defaults — the existing sweeps applied to the new modules
-   - every emitted constant referenced, no structural literal restated
-5. **Post-build verification** extended with the `_Calc` block layout.
-
-Gate A ends with a source review, exactly as Phase 4 did.
-
----
-
-## 21. Gate B — real Windows / Excel
-
-Extends the accepted `phase4_functional_test.ps1` matrix rather than replacing it:
-the whole Phase-4 matrix must continue to pass, and new scenarios are appended.
-
-Functional validation of:
-
-- FX resolution, including a foreign currency and the SAR identity
-- inflation compounding, including `BaseYear = StartYear` and `BaseYear < StartYear`
-- discount factors at project-year indices 1, 2, 3
-- profiling factor application by permanent ID
-- deterministic base, Nominal and PV
-- mean-basis base, Nominal and PV
-- expected risk, Nominal and PV
-- analytical annual cash flow, all six series
-- reconciliation identities I1–I3 asserted in the workbook
-- calculation refusal on every §18 numerical prerequisite
-- calculation refusal when `STRUCTURE CHANGE PENDING`
-- clean Excel shutdown and clean transient COM release
-
-Every expected value comes from `build/phase5_cases.json`, emitted by the oracle —
-the harness hardcodes no number, exactly as `phase4_scenarios.json` works today.
-**The harness asserts every calculated value; the user inspects no cells manually.**
-
-The Phase-4 harness disciplines carry over unchanged and are non-negotiable:
-caller-side `@(...)`, one pipeline object per row, container factories emitted
-non-enumerated, `catch` attached to its `try`, keyed-only fixtures, failure-safe
-cleanup, per-scenario clean-structure prerequisites, and `$excelIdentity`.
-
----
-
-## 22. Golden hand-calculated cases
-
-Every expected value below is derived by hand and stated here. The oracle must
-reproduce these; they are not generated from it.
-
-Shared unless overridden: Triangular `Min 80 / ML 100 / Max 150`, `Quantity 10`,
-currency SAR, one profile at 100%.
-
-| # | Case | Setup | Hand-derived expected |
-|---|---|---|---|
-| 1 | SAR, no inflation, one project year | Base 2026, Start 2026, Dur 1; inflation span empty (`2027 > 2026`); profile `100%`; `r = 10%` | `infl = 1`, `disc₁ = 1`, `Knom = Kpv = 1`. `A = 100×10 = 1000`. `C = 110×10 = 1100`. `B = 100`. `A_pv = 1000`, `C_pv = 1100` |
-| 2 | foreign currency | as case 1, currency USD, `FX = 3.75`, unit cost 100 USD, Qty 4 | `Knom = 3.75`; `A = 100 × 4 × 3.75 = 1500 SAR` |
-| 3 | multi-year profiling, compounded inflation | Base 2026, Start 2027, Dur 3; rates 2027/28/29 = 5%; profile `20/50/30` | `f = 1.05, 1.1025, 1.157625`. `Knom = 0.2(1.05)+0.5(1.1025)+0.3(1.157625) = 0.21+0.55125+0.3472875 = ` **`1.1085375`**. `A_nom = 100×10×Knom = ` **`1108.5375`** |
-| 4 | PV across multiple years | case 3 with `r = 10%`; `disc = 1, 1/1.1, 1/1.21` | `Kpv = 0.21 + 0.501136363636 + 0.287014462810 = ` **`0.998150826446`**. `A_pv = ` **`998.150826446`**. `C_pv = 110×10×Kpv = ` **`1097.965909091`** |
-| 5 | Triangular deterministic vs mean | `80/100/150` | central `100`; mean `(80+100+150)/3 = ` **`110`**. On case 3: `C_nom = 110×10×1.1085375 = ` **`1219.39125`**; `B_nom = 10×10×1.1085375 = ` **`110.85375`** |
-| 6 | Beta-PERT deterministic vs mean | `80/100/150`, λ = 4 | central `100`; mean `(80+400+150)/6 = 630/6 = ` **`105`** |
-| 7 | Uniform midpoint = Uniform mean | `Min 80 / Max 150` | central `(80+150)/2 = 115`; mean `115`. **`B = 0` for this driver** — the two bases coincide |
-| 8 | risk EMV, probability < 1 | `P = 30%`, Triangular severity `100/200/450`, case-1 factors | mean severity `(100+200+450)/3 = 250`; `D = 0.30 × 250 × 1 = ` **`75`** |
-| 9 | multi-year risk profile | risk of case 8 on case-3 factors | `D_nom = 75 × 1.1085375 = ` **`83.1403125`**; `D_pv = 75 × 0.998150826446 = ` **`74.8613119835`** |
-| 10 | Base Year = Start Year | Base 2027, Start 2027, Dur 2; rate 2028 = 5% | `infl(2027) = 1`, `infl(2028) = 1.05` — **first project year factor is 1** |
-| 11 | Base Year earlier than Start Year | case 3 | first project year (2027) already carries `1.05`, because 2027 = Base+1 |
-| 12 | zero inflation | rates all `0%` | every `infl = 1`; `Knom = FX`; `Kpv = FX × Σ(w·disc)` |
-| 13 | negative but valid inflation | rate `−2%` for three years | `0.98, 0.9604, 0.941192` — arithmetically sound while `1+rate > 0` (§26 D2) |
-| 14 | blank required inflation rate | case 3 with 2028 blank | **refusal**, naming the profile and calendar year 2028. No value produced |
-| 15 | profile sum ≠ 100% | case 3 with profile `20/50/20` (= 90%) | **refusal**, naming the permanent ID and the sum. No value produced |
-
-Cases 14 and 15 assert a **refusal**, not a number — the failure surface is part of
-the contract, and cases that refuse must produce no partial result.
-
----
-
-## 23. Performance
-
-Design target: **200 Cost Lines, 100 Risks, 25 project years, 100,000 iterations.**
-
-Phase 5 runs no iterations, but its output shape determines Phase 6's cost.
-
-| Quantity | Complexity |
-|---|---|
-| resolution (worksheet reads) | `O(D × N)` = 300 × 25 = 7,500 cells, **once** |
-| `Knom` / `Kpv` build | `O(D × N)` = 7,500 multiply-adds, **once** |
-| analytical totals A–E | `O(D)` = 300 |
-| annual series | `O(D × N)` = 7,500 |
-| later, per simulation iteration | `O(D)` = 300 — **no worksheet access** |
-
-Memory: `DriverFactors` is ~11 fields × 300 ≈ 26 KB; the per-driver weight arrays
-are `300 × 25 × 8 B = 60 KB`; `YearFactors` is negligible. **Well under 100 KB
-resident**, which is why the simulation phase can keep it all in memory for the
-entire run.
-
-The decisive property: at 100,000 iterations the kernel performs ~30 million
-multiply-adds and **zero** Excel round trips. A worksheet-reading design would
-perform ~750 million COM calls, which is the difference between seconds and hours.
-
----
-
-## 24. Implementation sequence inside Phase 5
-
-1. `spec/calc_contract.yaml` — the fifth authority; block layout, tolerances,
-   labels, refusal messages. Loader + validator, fail-loud, in the established
-   pattern.
-2. `builder/pccm_builder/calc_oracle.py` — pure-Python implementation of §4–§13.
-   Golden-case tests written **first**, from the hand derivations in §22.
-3. Stage-A emission — `_Calc` blocks per the contract; `modCalcContract.bas`
-   generated; `build/phase5_cases.json` emitted from the oracle. Post-build
-   verification extended.
-4. `modCalcFactors` + `modCalcAnalytical` — the pure numerical kernel, with the
-   no-worksheet sweep active from the first commit.
-5. `modCalcResolve` — worksheet → numeric structures.
-6. `modCalcCheck` — Phase-5 numerical prerequisites; reports, never repairs.
-7. `modCalcReport` + a `PCCM_Calculate` command button — orchestration, `_Calc`
-   write-back, refusal reporting through `modAppState`.
-8. Gate-A source review.
-9. Gate-B harness extension and, on approval, the Windows run.
-
-Steps 1–8 are Linux-only. No Windows execution is requested before Gate A is
-approved — the discipline that Phase 4 established and that this plan keeps.
-
----
-
-## 25. Acceptance criteria
-
-Phase 5 is complete when **all** hold:
+## 27. Acceptance criteria
 
 1. every Phase 1–4 Linux/static test still passes, none weakened;
 2. post-build verification passes, extended to the `_Calc` blocks;
-3. every golden case in §22 passes against the oracle **and** on Windows, with the
-   refusal cases producing no partial result;
-4. reconciliation identities I1–I3 hold within §19 tolerances, Nominal and PV,
-   with `B` and `E` computed independently;
-5. calculation is refused, with a specific message, for every §18 numerical
-   prerequisite and for `STRUCTURE CHANGE PENDING`;
-6. `modCalcFactors` and `modCalcAnalytical` contain no worksheet access, proven by
-   sweep;
-7. the Gate-B harness asserts every calculated value with no manual inspection,
-   and the full Phase-4 matrix still passes;
-8. Excel shuts down naturally with clean transient COM release;
-9. no Monte Carlo artefact exists anywhere in the phase.
+3. every golden case in §22 passes against the oracle **and** on Windows, with
+   refusal cases producing no partial result and leaving the previous successful
+   snapshot intact;
+4. every emitted expected value equals its hand-derived literal (§20);
+5. identities I1, I2, I3a–c, I4a–c, I5 hold within §14 tolerances, with `B` and
+   `E` independently accumulated. **`A_pv ≤ A_nom` is a conditional diagnostic,
+   not a gate**;
+6. calculation is refused, with a specific message, for every §17 numerical
+   prerequisite and for `STRUCTURE CHANGE PENDING`; no uncontrolled VBA overflow
+   escapes and no overflow becomes a fabricated zero (§18);
+7. `modCalcFactors`, `modCalcAnalytical` and `modCalcFingerprint` contain no
+   worksheet access, proven by sweep;
+8. the fingerprint detects staleness for every covered input and **not** for
+   Description, row order, Selected Confidence Level or unreferenced Config
+   (§24), with no change-event handler anywhere;
+9. the full **35/35** Phase-4 functional matrix still passes; all 8 Phase-4
+   modules and all 5 Phase-4 buttons persist; Phase-5 modules persist; **no
+   Calculate button exists**;
+10. the harness asserts every calculated value with no manual inspection;
+11. Excel shuts down naturally with clean transient COM release;
+12. **Phase 5 introduces no RNG implementation, no sampling implementation and no
+    simulation output, and makes no use of Iterations, Random Seed or Selected
+    Confidence Level in any analytical calculation or in the fingerprint;
+    `_SimData` remains unchanged and unused** (§21).
 
 ---
 
-## 26. Unresolved decisions — required before implementation
+## 28. Decisions
 
-These are stated rather than silently chosen.
-
-**D1 — Uniform with a populated ML.** The Uniform central value and mean are both
-`(Min+Max)/2`; `most_likely` is unused. Is a populated ML for a Uniform driver
-(a) refused, (b) an advisory that still calculates, or (c) silently ignored?
-*Recommendation: (b) — advisory, not refusal.* The value is harmless
-arithmetically, refusing it would block a user who switched distribution mid-entry,
-and silence would hide a likely mistake. Model Check is the natural home for the
-advisory; Phase 5 would surface it as a note alongside a successful result.
-
-**D2 — Inflation rate lower bound.** Deflation is legitimate. Is any rate with
-`1 + rate > 0` accepted (so `−99.9%` is valid), or is there a business floor?
-*Recommendation: accept any rate with `1 + rate > 0`, refuse at or below.* No
-business floor is invented. Case 13 depends on this answer.
-
-**D3 — Discount rate sign.** `inpDiscountRate` has no validation and no business
-bound (locked: "No business minimum or maximum is imposed yet"). Is a negative
-discount rate accepted? *Recommendation: accept while `1 + r > 0`, consistent with
-D2.* Then `A_pv > A_nom`, which is arithmetically correct and would break identity
-I5 as stated — so I5 must be conditioned on `r ≥ 0`, as written in §14.
-
-**D4 — Blank profiling cell in a row that otherwise sums to 100%.** Options:
-(a) refuse — blank is not a stated zero; (b) treat as zero for the sum, since the
-row already sums correctly. *Recommendation: (a) refuse.* Phase 4 deliberately
-preserves a blank as invalid-but-surviving data specifically so a later phase can
-report it, and profiling cells are **born as `0`**, so a blank is a deliberate
-clearing rather than an unfilled default. Treating it as zero would erase the
-distinction Phase 4 was built to keep. This is the one recommendation most worth
-challenging, because it makes a row that "looks right" refuse.
-
-**D5 — "End-of-year" label versus `t−1` arithmetic** (§6). The arithmetic is
-settled and matches the locked "period 0" note; only the Methodology wording is
-open. *Recommendation: describe it as "discounted from the start of the project;
-Project Year 1 = period 0", and avoid the phrase "end-of-year".*
-
-**D6 — Rounding and display precision of headline SAR measures.** Not specified
-anywhere in the locked contracts. *Recommendation: compute and store at full
-double precision, round only for display, and define the display format in
-`calc_contract.yaml` rather than in VBA.*
-
-None of D1–D6 blocks the design. Each changes a specific, named behaviour, and
-each is small enough to settle at review.
-
----
-
-## Status
+**D1–D6 are locked** (§4). No open decisions remain.
 
 Model source, workbook artifacts, contracts, bootstrap, harness and Phase-4 tests
-are unchanged by this document.
+are unchanged by this document. No code has been written.
 
-**PHASE 5 PLAN READY FOR REVIEW**
+**PHASE 5 PLAN REVISION B READY FOR REVIEW**
