@@ -32,6 +32,7 @@ class SheetSpec:
     show_gridlines: bool
     title: str
     subtitle: str | None
+    body: str | None
     freeze_panes: str | None
     column_widths: dict[str, float]
     blocks: list[dict[str, Any]] = field(default_factory=list)
@@ -59,8 +60,13 @@ class WorkbookSpec:
         return self.workbook["active_sheet"]
 
     @property
-    def skeleton_filename(self) -> str:
-        return self.workbook["skeleton_filename"]
+    def stage_a_filename(self) -> str:
+        return self.workbook["stage_a_filename"]
+
+    @property
+    def contract_sheets(self) -> list[str]:
+        """Sheets whose body is generated from the input contract, not from blocks."""
+        return [s.name for s in self.sheets if s.body == "contract"]
 
     def sheet(self, name: str) -> SheetSpec:
         for s in self.sheets:
@@ -102,7 +108,7 @@ def load_spec(path: str | Path) -> WorkbookSpec:
 
     for key in ("name", "short_name", "model_version", "build_phase", "reporting_currency"):
         _require_str(model, key, f"{path}: model")
-    for key in ("skeleton_filename", "active_sheet"):
+    for key in ("stage_a_filename", "active_sheet"):
         _require_str(workbook, key, f"{path}: workbook")
     for key in ("font_family", "sizes", "colors", "row_heights", "layout"):
         _require(presentation, key, f"{path}: presentation")
@@ -159,9 +165,20 @@ def _parse_sheet(entry: Any, index: int, path: Path) -> SheetSpec:
         if not isinstance(width, (int, float)) or width <= 0:
             raise SpecError(f"{where}: width for column {column} must be a positive number")
 
+    body = entry.get("body")
+    if body is not None and body != "contract":
+        raise SpecError(f"{where}: body {body!r} must be omitted or 'contract'")
+
     blocks = entry.get("blocks") or []
     if not isinstance(blocks, list):
         raise SpecError(f"{where}: blocks must be a list")
+    if body == "contract" and blocks:
+        raise SpecError(
+            f"{where}: a contract-bodied sheet must not also declare blocks; "
+            "the input contract is its single layout authority"
+        )
+    if body is None and not blocks:
+        raise SpecError(f"{where}: sheet has neither blocks nor body: 'contract'")
     for position, block in enumerate(blocks):
         _validate_block(block, f"{where}: blocks[{position}]")
 
@@ -174,6 +191,7 @@ def _parse_sheet(entry: Any, index: int, path: Path) -> SheetSpec:
         show_gridlines=show_gridlines,
         title=_require_str(entry, "title", where),
         subtitle=entry.get("subtitle"),
+        body=body,
         freeze_panes=entry.get("freeze_panes"),
         column_widths={str(k): float(v) for k, v in widths.items()},
         blocks=blocks,

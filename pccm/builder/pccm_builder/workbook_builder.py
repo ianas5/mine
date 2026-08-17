@@ -1,12 +1,16 @@
-"""Create the PCCM workbook skeleton from the manifest.
+"""Create the PCCM Stage A workbook from the manifest and the input contract.
 
-Responsibilities are deliberately split:
-    build_workbook  - workbook and sheet creation, visibility, active sheet
-    _apply_presentation - column widths, gridlines, freeze panes
-    _populate_sheet - Phase 1 titles, sections and placeholders
-    BuildMetadata   - the values stamped into the workbook at build time
+Responsibilities are deliberately split across modules:
+    workbook_builder  orchestration: sheets, visibility, active sheet, metadata
+    contract_render   Setup and Config bodies (inputs, tables)
+    names             defined names
+    validation        data validation
+    styling           presentation tokens
+    spec_loader       structural manifest
+    contract_loader   input contract
+    verify            structural verification
 
-No business rule, calculation or later-phase table schema belongs in this module.
+No business rule or calculation belongs in any of them.
 """
 
 from __future__ import annotations
@@ -19,10 +23,14 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
+from .contract_loader import InputContract
+from .contract_render import render_config, render_setup
+from .names import apply_defined_names
 from .spec_loader import SheetSpec, WorkbookSpec
 from .styling import StyleBook
+from .validation import apply_validation
 
-BUILDER_VERSION = "0.1.0"
+BUILDER_VERSION = "0.2.0"
 DEFAULT_SHEET_TITLE = "Sheet"
 TIMESTAMP_ENV_VAR = "PCCM_BUILD_TIMESTAMP"
 
@@ -43,15 +51,17 @@ class BuildMetadata:
     builder_version: str
     build_timestamp: str
     manifest_version: str
+    contract_version: str
 
     @classmethod
-    def create(cls, spec: WorkbookSpec) -> "BuildMetadata":
+    def create(cls, spec: WorkbookSpec, contract: InputContract) -> "BuildMetadata":
         return cls(
             model_version=spec.model["model_version"],
             build_phase=spec.model["build_phase"],
             builder_version=BUILDER_VERSION,
             build_timestamp=resolve_build_timestamp(),
             manifest_version=spec.manifest_version,
+            contract_version=contract.contract_version,
         )
 
     def as_rows(self) -> list[tuple[str, str]]:
@@ -61,6 +71,7 @@ class BuildMetadata:
             ("Builder Version", self.builder_version),
             ("Build Timestamp (UTC)", self.build_timestamp),
             ("Source Manifest Version", self.manifest_version),
+            ("Input Contract Version", self.contract_version),
         ]
 
 
@@ -77,10 +88,14 @@ def resolve_build_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def build_workbook(spec: WorkbookSpec) -> tuple[Workbook, BuildMetadata]:
-    """Create the workbook described by *spec*."""
+def build_workbook(
+    spec: WorkbookSpec, contract: InputContract
+) -> tuple[Workbook, BuildMetadata]:
+    """Create the Stage A workbook described by *spec* and *contract*."""
+    _assert_consistent(spec, contract)
+
     styles = StyleBook(spec.presentation)
-    metadata = BuildMetadata.create(spec)
+    metadata = BuildMetadata.create(spec, contract)
 
     workbook = Workbook()
     default_sheet = workbook.active
@@ -88,7 +103,14 @@ def build_workbook(spec: WorkbookSpec) -> tuple[Workbook, BuildMetadata]:
     for sheet_spec in spec.sheets:
         worksheet = workbook.create_sheet(title=sheet_spec.name)
         _apply_presentation(worksheet, sheet_spec, styles)
-        _populate_sheet(worksheet, sheet_spec, styles, metadata)
+        _write_header(worksheet, sheet_spec, styles)
+        if sheet_spec.body == "contract":
+            if sheet_spec.name == contract.setup_sheet:
+                render_setup(worksheet, contract, styles)
+            else:
+                render_config(worksheet, contract, styles)
+        else:
+            _populate_blocks(worksheet, sheet_spec, styles, metadata)
 
     # Remove openpyxl's default sheet only after the real sheets exist, so the
     # workbook is never momentarily empty.
@@ -103,8 +125,33 @@ def build_workbook(spec: WorkbookSpec) -> tuple[Workbook, BuildMetadata]:
     for sheet_spec in spec.sheets:
         workbook[sheet_spec.name].sheet_state = sheet_spec.visibility
 
+    apply_defined_names(workbook, contract)
+    apply_validation({name: workbook[name] for name in workbook.sheetnames}, contract)
+
     _apply_document_properties(workbook, spec, metadata)
     return workbook, metadata
+
+
+def _assert_consistent(spec: WorkbookSpec, contract: InputContract) -> None:
+    """The two specifications must agree about which sheets the contract owns."""
+    declared = set(spec.contract_sheets)
+    used = contract.contract_sheets
+    if declared != used:
+        raise RuntimeError(
+            "manifest and input contract disagree about contract-bodied sheets: "
+            f"manifest says {sorted(declared)}, contract targets {sorted(used)}"
+        )
+    known = set(spec.sheet_names)
+    for table in contract.all_tables:
+        if table.sheet not in known:
+            raise RuntimeError(
+                f"input contract table {table.table_name!r} targets unknown sheet {table.sheet!r}"
+            )
+    for input_spec in contract.inputs.values():
+        if input_spec.sheet not in known:
+            raise RuntimeError(
+                f"input {input_spec.key!r} targets unknown sheet {input_spec.sheet!r}"
+            )
 
 
 def _apply_document_properties(
@@ -135,15 +182,10 @@ def _apply_presentation(
         worksheet.freeze_panes = sheet_spec.freeze_panes
 
 
-def _populate_sheet(
-    worksheet: Worksheet,
-    sheet_spec: SheetSpec,
-    styles: StyleBook,
-    metadata: BuildMetadata,
-) -> None:
+def _write_header(worksheet: Worksheet, sheet_spec: SheetSpec, styles: StyleBook) -> None:
+    """Title, subtitle and the thin rule. Common to every sheet."""
     layout = styles.layout
     label_col = layout.label_column
-    value_col = layout.value_column
 
     _write(worksheet, f"{label_col}{layout.title_row}", sheet_spec.title, styles.title)
     worksheet.row_dimensions[layout.title_row].height = styles.row_height("title")
@@ -161,6 +203,18 @@ def _populate_sheet(
     for column in _rule_columns(sheet_spec):
         worksheet[f"{column}{layout.rule_row}"].border = styles.rule
     worksheet.row_dimensions[layout.rule_row].height = styles.row_height("spacer")
+
+
+def _populate_blocks(
+    worksheet: Worksheet,
+    sheet_spec: SheetSpec,
+    styles: StyleBook,
+    metadata: BuildMetadata,
+) -> None:
+    """Sheets whose body comes from the manifest rather than the input contract."""
+    layout = styles.layout
+    label_col = layout.label_column
+    value_col = layout.value_column
 
     row = layout.body_start_row
     for block in sheet_spec.blocks:

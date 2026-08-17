@@ -1,0 +1,347 @@
+# =============================================================================
+# PCCM - Input Contract
+# =============================================================================
+# Semantic authority for model INPUTS: what each input means, where it lives,
+# what defined name addresses it, how it is formatted and validated, and whether
+# a user may edit it.
+#
+# Division of authority:
+#   workbook.yaml       structure and presentation (sheets, order, visibility,
+#                       style tokens, non-input sheet shells)
+#   input_contract.yaml inputs, list masters, tables, defined names, validation
+#
+# Scope: Phase 2 (Functional Setup & Configuration Layer). Setup and Config only.
+# Cost Lines, Risk Register, Inflation, Profiling and all calculations are later
+# phases and deliberately absent.
+#
+# Addresses are explicit so they are auditable and testable. The builder writes
+# exactly where this file says; nothing derives an input address in Python.
+# =============================================================================
+
+contract_version: "1.0.0"
+
+conventions:
+  input_prefix: "inp"     # scalar model inputs
+  list_prefix: "lst"      # list masters usable as validation sources
+  table_prefix: "tbl"     # Excel Tables
+  fx_convention: "1 unit of source currency = X SAR"
+
+# -----------------------------------------------------------------------------
+# Scalar Setup inputs. Keyed by semantic key.
+#
+#   editable: true   the user owns this cell
+#   editable: false  model-controlled; locked value, styled differently
+# -----------------------------------------------------------------------------
+inputs:
+
+  project_name:
+    sheet: "Setup"
+    label: "Project Name"
+    defined_name: "inpProjectName"
+    label_cell: "B9"
+    cell: "C9"
+    type: "text"
+    required: true
+    editable: true
+    default: null
+    number_format: "@"
+    validation: null
+    note: "Free text. Descriptive only; never used in a calculation."
+
+  duration_years:
+    sheet: "Setup"
+    label: "Project Duration (Years)"
+    defined_name: "inpDurationYears"
+    label_cell: "B10"
+    cell: "C10"
+    type: "integer"
+    required: true
+    editable: true
+    default: null
+    number_format: "0"
+    validation:
+      kind: "whole"
+      operator: "greaterThanOrEqual"
+      formula1: "1"
+      prompt_title: "Project Duration"
+      prompt: "Whole number of project years, 1 or more."
+      error_title: "Invalid duration"
+      error: "Project Duration must be a whole number of 1 or more."
+    note: "No upper cap is imposed here. The >25-year advisory belongs to Model Check."
+
+  project_start_year:
+    sheet: "Setup"
+    label: "Project Start Year"
+    defined_name: "inpProjectStartYear"
+    label_cell: "B11"
+    cell: "C11"
+    type: "integer"
+    required: true
+    editable: true
+    default: null
+    number_format: "0"
+    validation: null
+    note: "Whole calendar year. Discounting will treat this as period 0."
+
+  base_year:
+    sheet: "Setup"
+    label: "Base Year"
+    defined_name: "inpBaseYear"
+    label_cell: "B12"
+    cell: "C12"
+    type: "integer"
+    required: true
+    editable: true
+    default: null
+    number_format: "0"
+    validation: null
+    note: "Price base year of all entered values. Base Year <= Start Year is enforced by Model Check, not here."
+
+  reporting_currency:
+    sheet: "Setup"
+    label: "Reporting Currency"
+    defined_name: "inpReportingCurrency"
+    label_cell: "B15"
+    cell: "C15"
+    type: "text"
+    required: true
+    editable: false
+    default: "SAR"
+    number_format: "@"
+    validation: null
+    note: "Model-controlled. All outputs are reported in SAR; this is not a user-selectable reporting currency."
+
+  selected_confidence_level:
+    sheet: "Setup"
+    label: "Selected Confidence Level"
+    defined_name: "inpSelectedConfidenceLevel"
+    label_cell: "B18"
+    cell: "C18"
+    type: "text"
+    required: true
+    editable: true
+    default: "P50"
+    number_format: "@"
+    validation:
+      kind: "list"
+      source: "lstConfidenceLevels"
+      prompt_title: "Confidence Level"
+      prompt: "Reporting selector for the total project cost distribution."
+      error_title: "Invalid confidence level"
+      error: "Select a confidence level from the Config list."
+    note: "Reporting selector only. It does not drive simulation execution."
+
+  monte_carlo_iterations:
+    sheet: "Setup"
+    label: "Monte Carlo Iterations"
+    defined_name: "inpMonteCarloIterations"
+    label_cell: "B19"
+    cell: "C19"
+    type: "integer"
+    required: true
+    editable: true
+    default: 10000
+    number_format: "#,##0"
+    validation:
+      kind: "whole"
+      operator: "greaterThanOrEqual"
+      formula1: "1000"
+      prompt_title: "Iterations"
+      prompt: "Whole number, minimum 1000. 10000 or more is recommended."
+      error_title: "Invalid iteration count"
+      error: "Monte Carlo Iterations must be a whole number of at least 1000."
+    note: "1000 is the locked hard minimum. No upper limit is imposed; the <10000 advisory belongs to Model Check."
+
+  discount_rate:
+    sheet: "Setup"
+    label: "Discount Rate"
+    defined_name: "inpDiscountRate"
+    label_cell: "B20"
+    cell: "C20"
+    type: "percentage"
+    required: true
+    editable: true
+    default: null
+    number_format: "0.00%"
+    validation: null
+    note: "Annual rate used for present-value reporting. No business minimum or maximum is imposed yet."
+
+  random_seed:
+    sheet: "Setup"
+    label: "Random Seed"
+    defined_name: "inpRandomSeed"
+    label_cell: "B21"
+    cell: "C21"
+    type: "integer"
+    required: false
+    editable: true
+    default: null
+    number_format: "0"
+    validation: null
+    note: "Optional. Blank means a new random sequence. The admissible domain is fixed when the RNG is implemented."
+
+# -----------------------------------------------------------------------------
+# Setup sheet body layout. Section headings and the FX block.
+# -----------------------------------------------------------------------------
+setup_layout:
+  sheet: "Setup"
+  intro:
+    row: 6
+    text: "Phase 2. Setup inputs are functional and named. No calculations are wired to them yet."
+  sections:
+    - title: "Project Definition"
+      row: 8
+      inputs: ["project_name", "duration_years", "project_start_year", "base_year"]
+    - title: "Reporting Basis"
+      row: 14
+      inputs: ["reporting_currency"]
+    - title: "Analysis Settings"
+      row: 17
+      inputs: ["selected_confidence_level", "monte_carlo_iterations", "discount_rate", "random_seed"]
+    - title: "FX Rates"
+      row: 23
+      note_row: 24
+      note: "Setup is the single source of truth for FX rates. No FX forecasting, no FX uncertainty, no year-by-year profile."
+      convention_row: 25
+      table: "fx_rates"
+
+# -----------------------------------------------------------------------------
+# The FX rate table. Setup only. Config must never hold a rate.
+# -----------------------------------------------------------------------------
+tables:
+
+  fx_rates:
+    sheet: "Setup"
+    table_name: "tblFXRates"
+    header_row: 27
+    first_column: "B"
+    data_rows: 12
+    editable: true
+    purpose: "User-entered FX rates. Currency is chosen from the Config master list."
+    columns:
+      - header: "Currency"
+        number_format: "@"
+        validation:
+          kind: "list"
+          source: "lstCurrencies"
+          prompt_title: "Currency"
+          prompt: "Select a currency from the Config master list."
+          error_title: "Unknown currency"
+          error: "Currency must come from the Config currency master list."
+      - header: "FX to SAR"
+        number_format: "#,##0.000000"
+        validation:
+          kind: "decimal"
+          operator: "greaterThan"
+          formula1: "0"
+          allow_blank: true
+          prompt_title: "FX to SAR"
+          prompt: "1 unit of the source currency = this many SAR. Must be positive."
+          error_title: "Invalid FX rate"
+          error: "FX rate must be a positive number, or left blank."
+    seed_rows:
+      - ["SAR", 1]      # reporting-currency identity
+
+# -----------------------------------------------------------------------------
+# Config list masters. Each becomes an Excel Table plus a range defined name.
+#
+#   editable: true   user-maintainable; seeded only where the model requires it
+#   editable: false  locked model constants
+# -----------------------------------------------------------------------------
+config_layout:
+  sheet: "Config"
+  intro:
+    row: 6
+    text: "Phase 2. Config owns the list masters. Locked constants are shown in a distinct style and must not be edited."
+
+config_tables:
+
+  - key: "categories"
+    section: "Categories"
+    section_row: 8
+    note_row: 9
+    note: "User-maintainable. Cost and risk categories. No categories are invented by the model."
+    table_name: "tblCategories"
+    defined_name: "lstCategories"
+    header_row: 11
+    first_column: "B"
+    data_rows: 10
+    editable: true
+    column_header: "Category"
+    number_format: "@"
+    values: []
+
+  - key: "currencies"
+    section: "Currencies"
+    section_row: 24
+    note_row: 25
+    note: "User-maintainable currency master list. Holds no rates: FX rates are entered on Setup."
+    table_name: "tblCurrencies"
+    defined_name: "lstCurrencies"
+    header_row: 27
+    first_column: "B"
+    data_rows: 10
+    editable: true
+    column_header: "Currency"
+    number_format: "@"
+    values: ["SAR"]
+
+  - key: "uom"
+    section: "Units of Measure"
+    section_row: 40
+    note_row: 41
+    note: "User-maintainable. No unit list is imposed by the model."
+    table_name: "tblUOM"
+    defined_name: "lstUOM"
+    header_row: 43
+    first_column: "B"
+    data_rows: 10
+    editable: true
+    column_header: "Unit of Measure"
+    number_format: "@"
+    values: []
+
+  - key: "inflation_profiles"
+    section: "Inflation Profile Names"
+    section_row: 56
+    note_row: 57
+    note: "User-maintainable profile names only. Annual rates belong to the Inflation sheet in a later phase."
+    table_name: "tblInflationProfiles"
+    defined_name: "lstInflationProfiles"
+    header_row: 59
+    first_column: "B"
+    data_rows: 10
+    editable: true
+    column_header: "Inflation Profile"
+    number_format: "@"
+    values: []
+
+  - key: "distributions"
+    section: "Distribution Names"
+    section_row: 72
+    note_row: 73
+    note: "Locked model constants. Do not edit."
+    table_name: "tblDistributions"
+    defined_name: "lstDistributions"
+    header_row: 75
+    first_column: "B"
+    data_rows: 3
+    editable: false
+    column_header: "Distribution"
+    number_format: "@"
+    values: ["Triangular", "Beta-PERT", "Uniform"]
+
+  - key: "confidence_levels"
+    section: "Confidence Levels"
+    section_row: 81
+    note_row: 82
+    note: "Locked model constants. Do not edit."
+    table_name: "tblConfidenceLevels"
+    defined_name: "lstConfidenceLevels"
+    header_row: 84
+    first_column: "B"
+    data_rows: 10
+    editable: false
+    column_header: "Confidence Level"
+    number_format: "@"
+    values: ["P50", "P55", "P60", "P65", "P70", "P75", "P80", "P85", "P90", "P95"]

@@ -23,9 +23,15 @@ sys.path.insert(0, str(PCCM_ROOT / "builder"))
 
 from openpyxl import load_workbook  # noqa: E402
 
-from pccm_builder import build_workbook, load_spec, structural_digest  # noqa: E402
+from pccm_builder import (  # noqa: E402
+    build_workbook,
+    load_contract,
+    load_spec,
+    structural_digest,
+)
 
 SPEC_PATH = PCCM_ROOT / "spec" / "workbook.yaml"
+CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
 
 # --- Architecture Lock Revision B -------------------------------------------
 LOCKED_SHEET_ORDER = [
@@ -110,7 +116,8 @@ def _build(name: str, timestamp: str = "1970-01-01 00:00:00 UTC") -> Path:
     os.environ["PCCM_BUILD_TIMESTAMP"] = timestamp
     try:
         spec = load_spec(SPEC_PATH)
-        workbook, _ = build_workbook(spec)
+        contract = load_contract(CONTRACT_PATH)
+        workbook, _ = build_workbook(spec, contract)
         path = Path(_TEMPDIR.name) / f"{name}.xlsx"
         workbook.save(path)
         workbook.close()
@@ -252,6 +259,9 @@ def test_14_config_shell_contains_reserved_sections() -> None:
     values = _strings(workbook["Config"])
     missing = [name for name in REQUIRED_CONFIG_SECTIONS if name not in values]
     assert not missing, f"missing Config sections: {missing}"
+    # Phase 2: the reserved sections are now backed by real Excel Tables.
+    tables = set(getattr(workbook["Config"], "tables", {}))
+    assert tables, "Config sections are not backed by Excel Tables"
     for item in LOCKED_DISTRIBUTIONS + LOCKED_CONFIDENCE_LEVELS:
         assert item in values, f"Config is missing locked constant {item!r}"
 
@@ -267,17 +277,34 @@ def test_15_no_vba_project_present() -> None:
 
 
 def test_16_no_calculation_formulas_introduced() -> None:
+    """No formulas at any phase. Tables and defined names are Phase 2 infrastructure,
+    so they are asserted to be *exactly* the contract's, not merely absent."""
+    contract = load_contract(CONTRACT_PATH)
     workbook = load_workbook(_artifact())
-    offenders = []
-    for worksheet in workbook.worksheets:
-        for row in worksheet.iter_rows():
-            for cell in row:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    offenders.append(f"{worksheet.title}!{cell.coordinate}")
+
+    offenders = [
+        f"{ws.title}!{cell.coordinate}"
+        for ws in workbook.worksheets
+        for row in ws.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str) and cell.value.startswith("=")
+    ]
     assert not offenders, f"formulas present: {offenders[:10]}"
-    assert len(list(workbook.defined_names)) == 0, "defined names present"
-    for worksheet in workbook.worksheets:
-        assert not getattr(worksheet, "tables", {}), f"{worksheet.title} declares a table"
+
+    expected_names = set(contract.input_defined_names) | set(contract.list_defined_names)
+    assert set(workbook.defined_names) == expected_names, (
+        f"unexpected {sorted(set(workbook.defined_names) - expected_names)}, "
+        f"missing {sorted(expected_names - set(workbook.defined_names))}"
+    )
+
+    expected_tables = {t.table_name for t in contract.all_tables}
+    found_tables = {
+        name for ws in workbook.worksheets for name in getattr(ws, "tables", {})
+    }
+    assert found_tables == expected_tables, (
+        f"unexpected {sorted(found_tables - expected_tables)}, "
+        f"missing {sorted(expected_tables - found_tables)}"
+    )
 
 
 def test_17_no_external_links_or_connections() -> None:
@@ -300,38 +327,48 @@ def test_19_structurally_reproducible() -> None:
 
 
 def test_21_fx_single_source_of_truth() -> None:
-    """Setup owns FX rates; Config owns the currency master list and no rates.
+    """Exactly one FX-rate owner: Setup. Config owns the currency master only.
 
-    Guards the Phase 2 boundary: exactly one FX authority. Config must never
-    grow a rate table, so it is asserted to contain no FX token and no numeric
-    value at all.
+    Asserted at the architectural boundary - which table holds a rate column -
+    rather than by a blanket rule such as "Config may contain no number", which
+    would wrongly block legitimate future configuration metadata.
     """
+    contract = load_contract(CONTRACT_PATH)
     workbook = load_workbook(_artifact())
-    config_sheet = workbook["Config"]
-    config = _strings(config_sheet)
-    setup = _strings(workbook["Setup"])
+
+    config_tables = getattr(workbook["Config"], "tables", {})
+    setup_tables = getattr(workbook["Setup"], "tables", {})
 
     # Config owns the currency master list...
-    assert "Currencies" in config, "Config is missing the Currencies section"
-    assert "Currencies / FX" not in config, "Config still uses the ambiguous 'Currencies / FX'"
+    assert "tblCurrencies" in config_tables, "Config is missing tblCurrencies"
+    currencies = next(t for t in contract.all_tables if t.table_name == "tblCurrencies")
+    assert currencies.sheet == "Config"
 
-    # ...and owns no FX authority.
-    fx_mentions = sorted(v for v in config if "fx" in v.lower())
-    assert not fx_mentions, f"Config must not mention FX: {fx_mentions}"
-
-    numeric = [
-        f"{cell.coordinate}={cell.value!r}"
-        for row in config_sheet.iter_rows()
-        for cell in row
-        if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool)
+    # ...with no FX or rate column of any kind.
+    rate_columns = [
+        c.header for c in currencies.columns
+        if "fx" in c.header.lower() or "rate" in c.header.lower() or "sar" in c.header.lower()
     ]
-    assert not numeric, f"Config contains numeric values (possible rate area): {numeric}"
+    assert not rate_columns, f"tblCurrencies has rate-like columns: {rate_columns}"
+    assert len(currencies.columns) == 1, "tblCurrencies must hold the currency code only"
 
-    # Setup is the single source of truth for FX rates, and states the convention.
-    assert "FX Rates" in setup, "Setup is missing the FX Rates section"
-    assert "FX Rates" not in config, "FX Rates must not appear on Config"
-    assert any("1 unit of the source currency = X SAR" in v for v in setup), (
-        "Setup does not state the SAR-per-source-unit FX convention"
+    # Setup owns the FX rates.
+    assert "tblFXRates" in setup_tables, "Setup is missing tblFXRates"
+    fx = next(t for t in contract.all_tables if t.table_name == "tblFXRates")
+    assert fx.sheet == "Setup"
+    assert "FX to SAR" in [c.header for c in fx.columns], "tblFXRates lacks the 'FX to SAR' column"
+
+    # Exactly one rate-bearing table exists anywhere in the workbook.
+    rate_tables = [
+        t.table_name for t in contract.all_tables
+        if any("fx" in c.header.lower() or "rate" in c.header.lower() for c in t.columns)
+    ]
+    assert rate_tables == ["tblFXRates"], f"more than one FX-rate table: {rate_tables}"
+
+    # The convention is stated on Setup.
+    setup_values = _strings(workbook["Setup"])
+    assert any(contract.fx_convention in v for v in setup_values), (
+        f"Setup does not state the FX convention {contract.fx_convention!r}"
     )
 
 

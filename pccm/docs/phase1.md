@@ -1,6 +1,6 @@
 # PCCM — Phase 1: Source Foundation + Workbook Skeleton
 
-**Status: complete, pending review.**
+**Status: accepted and closed.** Phase 2 builds on this; see `phase2.md`.
 
 Phase 1 establishes a reproducible, source-controlled foundation and generates
 the structural workbook shell that every later phase builds on. It deliberately
@@ -15,11 +15,13 @@ remains authoritative. This document does not restate it.
 
 | Stage | Runs on | Produces | Status |
 |---|---|---|---|
-| **A** | Linux + Python 3.11 + openpyxl | `PCCM_skeleton.xlsx` — sheets, order, visibility, presentation, structural shells | **This phase** |
+| **A** | Linux + Python 3.11 + openpyxl | the Stage A `.xlsx` — sheets, order, visibility, presentation, structural shells | **This phase** |
 | **B** | Windows + Excel COM (PowerShell 5.1) | the final `.xlsm` — VBA import, CodeName assignment, Excel-runtime objects, save/reopen/verify | Later phase |
 
-Stage B viability is already proven independently: the Excel COM readiness gate
-passed all 15 tests on the target machine (`pccm/readiness/windows/`). That
+Stage B viability is already proven independently on the target machine
+(`pccm/readiness/windows/`): TEST 01-15 plus the independent TEST 02N all passed
+(16 PASS result entries), with both Excel instances exiting naturally and no
+emergency cleanup required. That
 readiness script is a disposable diagnostic and is **not** production build code;
 the production bootstrap will live in `pccm/bootstrap/windows/`.
 
@@ -46,11 +48,11 @@ workbook is a *generated build artifact*.
       requirements.txt                pinned Stage A dependencies
       spec/workbook.yaml              structural manifest (the authority)
       builder/
-        build_skeleton.py             entry point
+        build_stage_a.py              entry point (was build_skeleton.py in Phase 1)
         pccm_builder/
           spec_loader.py              parse + validate the manifest; fails loudly
           styling.py                  centralised presentation tokens
-          skeleton.py                 workbook + sheet creation, population
+          workbook_builder.py         workbook + sheet creation, population
           verify.py                   structural verification, structural digest
           __init__.py                 public API: exactly the 6 objects the entry point and tests use
       tests/
@@ -67,10 +69,11 @@ workbook is a *generated build artifact*.
 ## Build
 
     python3 -m pip install -r pccm/requirements.txt
-    python3 pccm/builder/build_skeleton.py
+    python3 pccm/builder/build_stage_a.py
 
-Produces `pccm/build/PCCM_skeleton.xlsx` and runs structural verification against
-the manifest that produced it. Non-zero exit on a specification error (2) or a
+Produces the Stage A workbook and runs structural verification against the
+specifications that produced it. (Phase 2 renamed the artifact to
+`PCCM_stageA.xlsx`.) Non-zero exit on a specification error (2) or a
 verification failure (1).
 
 Options: `--spec PATH`, `--out PATH`, `--quiet`.
@@ -79,7 +82,7 @@ Options: `--spec PATH`, `--out PATH`, `--quiet`.
 
 Set `PCCM_BUILD_TIMESTAMP` to pin the build stamp:
 
-    PCCM_BUILD_TIMESTAMP="2026-01-01 00:00:00 UTC" python3 pccm/builder/build_skeleton.py
+    PCCM_BUILD_TIMESTAMP="2026-01-01 00:00:00 UTC" python3 pccm/builder/build_stage_a.py
 
 Two builds of the same source then produce structurally identical workbooks.
 Reproducibility is asserted **logically**, by comparing a normalised structural
@@ -114,10 +117,9 @@ Cost Lines and Risks will later select a currency from the Config master list; t
 corresponding rate is resolved from Setup. There is no FX forecasting and no FX
 uncertainty in this model.
 
-`test_21_fx_single_source_of_truth` enforces this: Config must contain the
-*Currencies* section, must not mention FX at all, and must contain no numeric
-value (so it can never quietly become a rate table); Setup must contain the *FX
-Rates* section and state the convention.
+`test_21_fx_single_source_of_truth` enforces this. Phase 2 made the assertion
+semantic rather than blanket: it now checks which table owns a rate column, so
+legitimate future numeric configuration metadata cannot trip it. See `phase2.md`.
 
 ---
 
@@ -128,7 +130,7 @@ Three version concepts are kept distinct and must not be conflated:
 | Concept | Meaning | Where |
 |---|---|---|
 | **Model version** | version of the model design | `spec/workbook.yaml` → `model.model_version`; `pccm/VERSION` |
-| **Builder version** | version of this build tooling | `pccm_builder/skeleton.py` → `BUILDER_VERSION` |
+| **Builder version** | version of this build tooling | `pccm_builder/workbook_builder.py` → `BUILDER_VERSION` |
 | **Manifest version** | version of the specification format | `spec/workbook.yaml` → `manifest_version` |
 
 Separately, **run metadata** (run id, seed, iterations, timestamp of a Monte
@@ -153,7 +155,7 @@ asserted by the tests:
 - Dynamic timeline logic (Apply / Update Timeline)
 - Stale-result fingerprinting
 - Dashboard formulas and charts
-- Excel Tables, defined names, data validation, conditional formatting
+- Excel Tables, defined names, data validation (**delivered in Phase 2**), conditional formatting
 - Add/Delete Cost Line and Risk macros, buttons and shapes
 - Worksheet protection
 - Runtime CodeName assignment

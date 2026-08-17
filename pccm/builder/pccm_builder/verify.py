@@ -12,6 +12,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from .contract_loader import InputContract
 from .spec_loader import WorkbookSpec
 
 
@@ -39,8 +40,10 @@ class VerificationResult:
         return "\n".join(lines)
 
 
-def verify_workbook(path: str | Path, spec: WorkbookSpec) -> VerificationResult:
-    """Verify the workbook at *path* against *spec*."""
+def verify_workbook(
+    path: str | Path, spec: WorkbookSpec, contract: InputContract | None = None
+) -> VerificationResult:
+    """Verify the workbook at *path* against the manifest and the input contract."""
     path = Path(path)
     result = VerificationResult()
 
@@ -118,16 +121,27 @@ def verify_workbook(path: str | Path, spec: WorkbookSpec) -> VerificationResult:
             not _formula_cells(workbook),
             "; ".join(_formula_cells(workbook)[:5]),
         )
+        expected_names = set(contract.input_defined_names) | set(contract.list_defined_names) \
+            if contract is not None else set()
+        found_names = set(workbook.defined_names)
         result.check(
-            "workbook defines no defined names",
-            len(list(workbook.defined_names)) == 0,
-            ", ".join(list(workbook.defined_names)),
+            "only contract-declared defined names exist",
+            found_names == expected_names,
+            f"unexpected {sorted(found_names - expected_names)}, "
+            f"missing {sorted(expected_names - found_names)}",
         )
+        expected_tables = (
+            {t.table_name for t in contract.all_tables} if contract is not None else set()
+        )
+        found_tables = {name for _, name in _tables(workbook)}
         result.check(
-            "no worksheet declares an Excel table",
-            not _tables(workbook),
-            "; ".join(_tables(workbook)),
+            "only contract-declared Excel Tables exist",
+            found_tables == expected_tables,
+            f"expected {sorted(expected_tables)}, found {sorted(found_tables)}",
         )
+
+        if contract is not None:
+            _verify_contract(result, workbook, contract)
     finally:
         workbook.close()
 
@@ -152,12 +166,80 @@ def _formula_cells(workbook) -> list[str]:
     return found
 
 
-def _tables(workbook) -> list[str]:
-    found: list[str] = []
+def _tables(workbook) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
     for worksheet in workbook.worksheets:
         for name in getattr(worksheet, "tables", {}):
-            found.append(f"{worksheet.title}!{name}")
+            found.append((worksheet.title, name))
     return found
+
+
+def _verify_contract(result: VerificationResult, workbook, contract: InputContract) -> None:
+    """Every contract promise must be observable in the built artifact."""
+    for spec in contract.inputs.values():
+        worksheet = workbook[spec.sheet]
+        result.check(
+            f"input {spec.key!r} label at {spec.sheet}!{spec.label_cell}",
+            worksheet[spec.label_cell].value == spec.label,
+            f"found {worksheet[spec.label_cell].value!r}",
+        )
+        result.check(
+            f"input {spec.key!r} default at {spec.sheet}!{spec.cell}",
+            worksheet[spec.cell].value == spec.default,
+            f"expected {spec.default!r}, found {worksheet[spec.cell].value!r}",
+        )
+        reference = contract.input_defined_names[spec.defined_name]
+        result.check(
+            f"defined name {spec.defined_name} -> {spec.sheet}!{spec.cell}",
+            workbook.defined_names[spec.defined_name].attr_text == reference,
+            f"found {workbook.defined_names[spec.defined_name].attr_text!r}",
+        )
+
+    for table in contract.all_tables:
+        worksheet = workbook[table.sheet]
+        tables = getattr(worksheet, "tables", {})
+        if not result.check(
+            f"table {table.table_name} exists on {table.sheet}", table.table_name in tables
+        ):
+            continue
+        result.check(
+            f"table {table.table_name} ref is {table.ref}",
+            tables[table.table_name].ref == table.ref,
+            f"found {tables[table.table_name].ref}",
+        )
+        for index, column in enumerate(table.columns):
+            address = f"{table.column_letter(index)}{table.header_row}"
+            result.check(
+                f"table {table.table_name} header {column.header!r} at {address}",
+                worksheet[address].value == column.header,
+                f"found {worksheet[address].value!r}",
+            )
+        for offset, seed in enumerate(table.seed_rows):
+            for index, value in enumerate(seed):
+                address = f"{table.column_letter(index)}{table.first_data_row + offset}"
+                result.check(
+                    f"table {table.table_name} seed {address} = {value!r}",
+                    worksheet[address].value == value,
+                    f"found {worksheet[address].value!r}",
+                )
+        if table.defined_name:
+            result.check(
+                f"defined name {table.defined_name} covers {table.table_name} data body",
+                workbook.defined_names[table.defined_name].attr_text
+                == table.absolute_data_range(),
+                f"found {workbook.defined_names[table.defined_name].attr_text!r}",
+            )
+
+    validations = {
+        f"{ws.title}!{dv.sqref}": dv
+        for ws in workbook.worksheets
+        for dv in ws.data_validations.dataValidation
+    }
+    result.check(
+        "data validation rules were created",
+        len(validations) > 0,
+        f"found {len(validations)}",
+    )
 
 
 def structural_digest(path: str | Path) -> str:

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,25 @@ class StyleBook:
         self.note = Font(name=family, size=sizes["note"], italic=True, color=colors["note"])
         self.list_item = Font(name=family, size=sizes["value"], color=colors["value"])
 
+        # --- Phase 2: input language -------------------------------------
+        self.input_font = Font(name=family, size=sizes["value"], color=colors["value"])
+        self.input_fill = PatternFill("solid", fgColor=colors["input_fill"])
+        input_side = Side(style="thin", color=colors["input_border"])
+        self.input_border = Border(
+            left=input_side, right=input_side, top=input_side, bottom=input_side
+        )
+
+        self.locked_font = Font(name=family, size=sizes["value"], bold=True, color=colors["locked_text"])
+        self.locked_fill = PatternFill("solid", fgColor=colors["locked_fill"])
+        locked_side = Side(style="thin", color=colors["locked_border"])
+        self.locked_border = Border(
+            left=locked_side, right=locked_side, top=locked_side, bottom=locked_side
+        )
+
+        self.table_header_font = Font(name=family, size=sizes["value"], bold=True, color=colors["section"])
+        self.table_header_fill = PatternFill("solid", fgColor=colors["header_fill"])
+        self.table_style_name = presentation["table_style"]
+
         self.rule = Border(bottom=Side(style="thin", color=colors["rule"]))
         self.left = Alignment(horizontal="left", vertical="center")
         self.left_wrap = Alignment(horizontal="left", vertical="center", wrap_text=False)
@@ -54,6 +73,23 @@ class StyleBook:
             label_column=str(layout["label_column"]),
             value_column=str(layout["value_column"]),
         )
+
+    def apply_input(self, cell) -> None:
+        """Editable user input: pale fill, thin border."""
+        cell.font = self.input_font
+        cell.fill = self.input_fill
+        cell.border = self.input_border
+
+    def apply_locked(self, cell) -> None:
+        """Model-controlled or locked constant: grey fill, bold, distinct border."""
+        cell.font = self.locked_font
+        cell.fill = self.locked_fill
+        cell.border = self.locked_border
+
+    def apply_table_header(self, cell) -> None:
+        cell.font = self.table_header_font
+        cell.fill = self.table_header_fill
+        cell.border = self.rule
 
     def row_height(self, key: str) -> float:
         try:
