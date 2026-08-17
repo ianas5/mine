@@ -1,8 +1,8 @@
 # Phase 5 — Gate A — Step 1: contract and fingerprint foundation
 
-**Status: PATCHED TWICE after independent review — ready for re-review.**
+**Status: PATCHED THREE TIMES after independent review — ready for re-review.**
 
-Two review rounds, both recorded here.
+Three review rounds, all recorded here.
 
 **Round 1** (§11) — three blocking defects: the validator did not lock the
 accepted schema, separator normalisation was textual rather than positional, and a
@@ -15,7 +15,7 @@ machine-readable content was silently ignored.** Round 2 also found two places
 where the locked design had copied the first YAML draft rather than the accepted
 Revision-E plan.
 
-**No mathematical design changed in either round.** The ten numeric literals, the
+**No mathematical design changed in any round.** The ten numeric literals, the
 eight probe digests, the four reduction vectors, `50B6EB0E26857EA7`, the
 Double-only reducer, every `_Calc` anchor, the tolerance values, the
 authority-reference set and the status-axis semantics are untouched.
@@ -24,6 +24,12 @@ Round 2 does change two **presentation/audit** values, and only to bring the
 contract *into* line with the accepted plan: three `tblCalcDrivers` columns carried
 pseudo-units, and the ten `calc_totals` labels used an ASCII hyphen where the plan
 uses an em dash. §12.5 records the full parity audit.
+
+**Round 3** (§13) — one blocking defect *below* every guard built so far: PyYAML
+resolved duplicate mapping keys silently, before validation, so a contract could
+declare two competing values for one field and pass every check. Fixed with a
+strict safe loader at the parser boundary. `spec/calc_contract.yaml` is unchanged
+by round 3 — no design value moved.
 
 The first implementation step of Phase 5. It builds the two things every later
 Phase-5 step will be measured against — the physical-layout contract and the
@@ -83,10 +89,10 @@ the layout is locked before anything is built against it.
 |---|---|
 | `docs/phase5_plan.md` | **modified** — four errata applied in place, plus the §24.1 Gate-B requirement and a §0 errata register |
 | `spec/calc_contract.yaml` | **new** — 5th authority: `_Calc` physical layout and tolerance constants. Round 2: ten redundant machine-readable fields removed (now comments); Revision-E parity of three driver units and ten totals labels |
-| `builder/pccm_builder/calc_loader.py` | **new** — loader, full locked-design guard, authority-boundary validator, document-version lock, table-key lock, unknown-key policy, cross-contract validator |
+| `builder/pccm_builder/calc_loader.py` | **new** — strict YAML loader (duplicate-key rejection), full locked-design guard, authority-boundary validator, document-version lock, table-key lock, unknown-key policy, cross-contract validator |
 | `builder/pccm_builder/calc_fingerprint.py` | **new** — fingerprint reference implementation; sole owner of the hash mathematics |
 | `builder/pccm_builder/__init__.py` | **modified** — exports `load_calc_contract` and `CalcContractError`; docstring records that the fifth contract is validated but not yet projected |
-| `tests/test_phase5_calc_contract_validation.py` | **new** — 135 tests |
+| `tests/test_phase5_calc_contract_validation.py` | **new** — 151 tests |
 | `tests/test_phase5_fingerprint.py` | **new** — 52 tests |
 | `tools/package_review.py` | **new** — blob-exact review packaging (§11.4) |
 
@@ -210,7 +216,7 @@ otherwise.
 
 ## 6. Tests added
 
-### `tests/test_phase5_fingerprint.py` — 42 tests
+### `tests/test_phase5_fingerprint.py` — 52 tests
 
 Every expected value is an **independent literal** transcribed from the plan.
 Nothing is derived from the implementation under test.
@@ -235,7 +241,7 @@ Nothing is derived from the implementation under test.
 - the hash constants as literals; both moduli prime and distinct; a simulated
   `Long`-wrapped reduction proving it cannot reach the reference digest.
 
-### `tests/test_phase5_calc_contract_validation.py` — 74 tests
+### `tests/test_phase5_calc_contract_validation.py` — 151 tests
 
 Fail-loud negative tests in the established pattern — mutate a copy, assert
 `CalcContractError`. Covering: every accepted anchor · band width equals schema
@@ -279,7 +285,7 @@ for Windows Gate B (§24.1). The test's own docstring says so.
 Run from a clean tree on Linux, Python 3.11.
 
 ```
-python -m pytest pccm/tests/ -q        689 passed, 0 failed
+python -m pytest pccm/tests/ -q        705 passed, 0 failed
 python pccm/builder/build_stage_a.py   181 passed, 0 failed   (post-build verification)
 ```
 
@@ -287,22 +293,22 @@ Stage-A verification is **still 181/181** because Step 1 still does not emit the
 calculation contract into the workbook. The patch changed validation, not
 emission.
 
-| Module | Pre-Phase-5 | Step 1 | Round-1 patch | Round-2 patch |
-|---|---|---|---|---|
-| `test_phase1_manifest_validation.py` | 10 | 10 | 10 | **10** |
-| `test_phase1_structure.py` | 21 | 21 | 21 | **21** |
-| `test_phase2_contract_validation.py` | 42 | 42 | 42 | **42** |
-| `test_phase2_inputs.py` | 40 | 40 | 40 | **40** |
-| `test_phase3_driver_contract_validation.py` | 31 | 31 | 31 | **31** |
-| `test_phase3_drivers.py` | 28 | 28 | 28 | **28** |
-| `test_phase3_verifier_intersection.py` | 12 | 12 | 12 | **12** |
-| `test_phase4_oracle.py` | 68 | 68 | 68 | **68** |
-| `test_phase4_stage_b_source.py` | 155 | 155 | 155 | **155** |
-| `test_phase4_structure.py` | 43 | 43 | 43 | **43** |
-| `test_phase4_structure_contract_validation.py` | 52 | 52 | 52 | **52** |
-| `test_phase5_calc_contract_validation.py` | — | 74 | 110 | **135** |
-| `test_phase5_fingerprint.py` | — | 42 | 52 | **52** |
-| **total** | **502** | **618** | **664** | **689** |
+| Module | Pre-Phase-5 | Step 1 | Round-1 patch | Round-2 patch | Round-3 patch |
+|---|---|---|---|---|---|
+| `test_phase1_manifest_validation.py` | 10 | 10 | 10 | 10 | **10** |
+| `test_phase1_structure.py` | 21 | 21 | 21 | 21 | **21** |
+| `test_phase2_contract_validation.py` | 42 | 42 | 42 | 42 | **42** |
+| `test_phase2_inputs.py` | 40 | 40 | 40 | 40 | **40** |
+| `test_phase3_driver_contract_validation.py` | 31 | 31 | 31 | 31 | **31** |
+| `test_phase3_drivers.py` | 28 | 28 | 28 | 28 | **28** |
+| `test_phase3_verifier_intersection.py` | 12 | 12 | 12 | 12 | **12** |
+| `test_phase4_oracle.py` | 68 | 68 | 68 | 68 | **68** |
+| `test_phase4_stage_b_source.py` | 155 | 155 | 155 | 155 | **155** |
+| `test_phase4_structure.py` | 43 | 43 | 43 | 43 | **43** |
+| `test_phase4_structure_contract_validation.py` | 52 | 52 | 52 | 52 | **52** |
+| `test_phase5_calc_contract_validation.py` | — | 74 | 110 | 135 | **151** |
+| `test_phase5_fingerprint.py` | — | 42 | 52 | 52 | **52** |
+| **total** | **502** | **618** | **664** | **689** | **705** |
 
 **Every Phase 1–4 count is unchanged and no Phase 1–4 assertion was weakened,
 removed or relaxed.** No Step-1 assertion was weakened either: the 74 contract
@@ -313,7 +319,7 @@ each accompanied by a new test proving the cross-validation resolver still refus
 the same input on its own terms, so both guards are covered instead of one.
 
 Both new modules also run standalone (`python tests/test_phase5_*.py`), matching
-the existing convention: 52 passed / 0 failed and 110 passed / 0 failed.
+the existing convention: **52 passed / 0 failed** and **151 passed / 0 failed**.
 
 **No Windows run was performed.**
 
@@ -740,12 +746,117 @@ from round 1.
 
 ---
 
-## 13. Next step — NOT started
+## 13. Independent review round 3 — the parser boundary
+
+Round 3 confirmed every earlier finding fixed and reproduced 689/689, 181/181,
+135/135 contract, 52/52 fingerprint. **One blocking defect remained, below every
+guard built so far.**
+
+### 13.1 The finding — duplicate YAML keys were resolved before validation
+
+`yaml.safe_load` accepts a mapping key declared more than once and silently keeps
+the last. It does so **at parse time**, before any validator runs, so every lock
+added in rounds 1 and 2 is defeated by writing the field twice:
+
+```yaml
+units: "USD"
+units: "SAR per unit"
+```
+
+A human reading the contract sees `USD`. The validator only ever receives
+`SAR per unit`, compares it against the locked design, and reports success.
+
+That is worse than an unvalidated field. An unvalidated field is merely
+unchecked; this one **actively misleads its reader** while passing every check.
+And it is general: the same trick hides a loosened tolerance, a re-pointed
+semantic table key, a changed `header_row`, or a second `calc_contract_version`.
+
+Reproduced against `06aa1ae`: **20 of 20** duplicate-key mutations accepted, at
+every nesting level from the document root to an individual table column.
+
+### 13.2 The fix — a strict safe loader at the parser boundary
+
+`_StrictYamlLoader` derives from `yaml.SafeLoader` and overrides
+`construct_mapping` to refuse a key that has already appeared in **that same
+mapping**. `load_calc_contract` parses through `_strict_safe_load` **first**,
+before anything else, because every guard downstream assumes each field was
+declared exactly once — and that assumption belongs to the parser.
+
+**Recursive by construction.** PyYAML calls `construct_mapping` for every mapping
+node at every depth, so one override covers the root, `sheet`,
+`phase4_reservation`, `fingerprint`, `state_labels`, `scalar_blocks`, an
+individual scalar block, an individual scalar field, `tables`, an individual
+table, an individual table column, `tolerances`, `conditioning_terms` and an
+`authority_references` item — without fourteen one-off checks that could drift
+apart.
+
+Detection runs on the **raw node**, before `flatten_mapping`, so it sees exactly
+what the file says rather than a post-merge view.
+
+**Safe loading is preserved**: no arbitrary Python object construction, no unsafe
+tags, and scalar, list, null, boolean and nested-mapping semantics unchanged. A
+test constructs an `!!python/object/apply` tag and asserts it is refused; another
+asserts the ordinary semantics still parse identically.
+
+**Neither first-wins nor last-wins.** Both orderings are asserted rejected, so no
+implicit resolution rule exists to rely on. The error names the key, the source
+file, and the line and column of **both** declarations.
+
+### 13.3 It is an ADDITIONAL guard, not a replacement
+
+Every round-1 and round-2 validator still runs and still fires. A dedicated test
+re-asserts twelve of them after the strict loader is in place: the version lock,
+the semantic table-key lock, unknown-key rejection, the table schema lock, the
+`calc_state` and `calc_totals` locks, exact tolerances, conditioning terms, the
+authority-reference set, hash-mathematics exclusion, the Phase-4 reservation and
+the status-axis lock.
+
+### 13.4 Negative controls against `06aa1ae`
+
+| | `06aa1ae` | patched |
+|---|---|---|
+| duplicate-key mutations accepted | **20 / 20** | **0 / 20** |
+| unmodified contract still loads | yes | yes |
+
+The twenty span all fourteen required levels. Ten of them use **contradictory**
+values — `USD` against `SAR per unit`, `1e-3` against `1e-9`, `header_row: 16`
+against `15`, `i1: [abs_d, abs_e]` against the correct terms — because two
+identical values would only prove detection exists, whereas two different values
+are the actual hazard.
+
+**A correction to my own first attempt.** Two of the twenty cases originally
+duplicated a `- key:` line. That starts a **new list item**, not a duplicate
+mapping key, and was caught by the existing schema-count check rather than by the
+new guard — so it proved nothing about duplicate detection and would have
+overstated coverage. Both were re-anchored to a key *inside* the field and column
+mappings (`row:` and `header:`), which is what the requirement actually asks for.
+The same correction was applied to the corresponding entries in the test suite.
+
+### 13.5 Documentation counts corrected
+
+§6's per-module headings still carried the counts from the first Step-1 revision
+(42 and 74), and §7's standalone line carried the round-1 figures (52 and 110).
+Both were true when written and misleading as current state. Every current-state
+count is now the actual post-patch value; the progression table in §7 keeps the
+historical columns, explicitly labelled by round.
+
+### 13.6 What round 3 did not touch
+
+`spec/calc_contract.yaml` is **unchanged** — no design value moved. Nor did the
+fingerprint constants, `FP_VERSION`, the canonical encoding, the UTF-16 semantics,
+the numeric literals, the collision vectors, `50B6EB0E26857EA7`, the Double-only
+reducer, positional decimal normalisation, the authority-reference set, the
+Revision-E schemas, the tolerances, the conditioning scales, the `_Calc` anchors,
+the status semantics, any Phase-4 source, or any PowerShell.
+
+---
+
+## 14. Next step — NOT started
 
 Gate-A Step 2, whatever the review scopes it to be. Nothing beyond this document's
 §1 has been written, and **Gate-A Step 2 was not begun**.
 
-Both patch rounds stayed entirely inside Gate-A Step 1. Restating it:
+All three patch rounds stayed entirely inside Gate-A Step 1. Restating it:
 
 > **NO VBA WAS IMPLEMENTED.**
 > **NO PHASE-5 WORKBOOK BLOCK WAS EMITTED.**
@@ -758,4 +869,4 @@ Both patch rounds stayed entirely inside Gate-A Step 1. Restating it:
 Stage-A verification remains **181 / 181**: Step 1 still does not emit the
 calculation contract into the workbook, and `build_stage_a.py` is unchanged.
 
-**PHASE 5 GATE A STEP 1 FINAL PATCH READY FOR INDEPENDENT REVIEW**
+**PHASE 5 GATE A STEP 1 STRICT-YAML PATCH READY FOR INDEPENDENT REVIEW**

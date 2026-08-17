@@ -1585,6 +1585,278 @@ def test_documentary_notes_remain_permitted_where_they_are_declared() -> None:
 
 
 # ---------------------------------------------------------------------------
+# THE PARSER BOUNDARY - duplicate mapping keys
+#
+# PyYAML resolves a duplicate key silently, last-one-wins, BEFORE any validator
+# runs. Every guard above therefore assumes each field was declared exactly once,
+# and that assumption has to be checked at the parser.
+#
+# These tests work on the RAW CONTRACT TEXT, because `yaml.safe_dump` cannot emit
+# a duplicate key: the defect only exists in hand-written YAML, so only
+# hand-written YAML can reproduce it.
+# ---------------------------------------------------------------------------
+def _raw_contract() -> str:
+    return CALC_PATH.read_text(encoding="utf-8")
+
+
+def _rejected_text(text: str, reason: str) -> str:
+    """The given contract TEXT must be refused. Returns the error message."""
+    with tempfile.TemporaryDirectory(prefix="pccm-dupkey-") as tmp:
+        path = Path(tmp) / "duplicated.yaml"
+        path.write_text(text, encoding="utf-8")
+        try:
+            load_calc_contract(path)
+        except CalcContractError as error:
+            return str(error)
+        except Exception as error:  # noqa: BLE001
+            raise AssertionError(
+                f"{reason}: raised {type(error).__name__} instead of CalcContractError"
+            ) from error
+    raise AssertionError(f"{reason}: silently accepted")
+
+
+def _duplicate_before(anchor: str, injected: str | None = None) -> str:
+    """Insert a competing declaration immediately before the line `anchor`.
+
+    `injected` defaults to a verbatim copy of the anchor line. Passing a DIFFERENT
+    value is the important case: two identical values only prove detection exists,
+    whereas two different values are the real hazard - a reader sees the first, the
+    parser keeps the last.
+    """
+    text = _raw_contract()
+    assert text.count(anchor) >= 1, f"anchor not found in the contract: {anchor!r}"
+    index = text.index(anchor)
+    duplicate = anchor if injected is None else injected
+    return text[:index] + duplicate + text[index:]
+
+
+def test_the_unmodified_contract_still_loads_under_the_strict_parser() -> None:
+    """The guard must not reject the real document."""
+    calc = load_calc_contract(CALC_PATH)
+    assert calc.version == "1.0.0"
+    assert len(calc.all_tables) == 5
+
+
+def test_a_duplicate_root_key_is_rejected() -> None:
+    message = _rejected_text(
+        _duplicate_before('calc_contract_version: "1.0.0"\n'),
+        "a duplicated root key",
+    )
+    assert "duplicate key" in message
+    assert "calc_contract_version" in message
+
+
+def test_the_duplicate_key_message_names_the_key_the_file_and_both_lines() -> None:
+    message = _rejected_text(
+        _duplicate_before('calc_contract_version: "1.0.0"\n'),
+        "a duplicated root key",
+    )
+    assert "duplicate key" in message
+    assert "'calc_contract_version'" in message
+    assert "duplicated.yaml" in message          # the source file
+    assert message.count("line ") >= 2           # both declarations located
+
+
+def test_a_duplicate_semantic_table_key_is_rejected() -> None:
+    """`tables: {calc_fx: ..., calc_fx: ...}` - the second block wins silently."""
+    message = _rejected_text(
+        _duplicate_before("  calc_fx:\n"), "a duplicated semantic table key"
+    )
+    assert "'calc_fx'" in message
+
+
+def test_a_duplicate_nested_table_property_is_rejected() -> None:
+    message = _rejected_text(
+        _duplicate_before('    table_name: "tblCalcFX"\n'),
+        "a duplicated table_name",
+    )
+    assert "'table_name'" in message
+
+
+def test_a_contradictory_duplicate_units_declaration_is_rejected() -> None:
+    """THE REAL HAZARD: a reader sees `USD`, the validator only ever sees the
+    second value, checks it against the locked design, and reports success."""
+    message = _rejected_text(
+        _duplicate_before('        units: "SAR per unit"\n', '        units: "USD"\n'),
+        "contradictory duplicate units",
+    )
+    assert "'units'" in message
+
+
+def test_a_contradictory_duplicate_number_format_is_rejected() -> None:
+    message = _rejected_text(
+        _duplicate_before(
+            '        number_format: "yyyy-mm-dd hh:mm:ss"\n',
+            '        number_format: "0"\n',
+        ),
+        "contradictory duplicate number_format",
+    )
+    assert "'number_format'" in message
+
+
+def test_a_contradictory_duplicate_tolerance_is_rejected() -> None:
+    """A loosened tolerance hidden behind the locked one."""
+    message = _rejected_text(
+        _duplicate_before(
+            "  profiling_sum_absolute: 1.0e-9\n", "  profiling_sum_absolute: 1.0e-3\n"
+        ),
+        "contradictory duplicate tolerance",
+    )
+    assert "'profiling_sum_absolute'" in message
+
+
+def test_a_contradictory_duplicate_conditioning_term_is_rejected() -> None:
+    message = _rejected_text(
+        _duplicate_before(
+            '    i1: ["abs_a", "abs_b", "abs_c"]\n', '    i1: ["abs_d", "abs_e"]\n'
+        ),
+        "contradictory duplicate conditioning term",
+    )
+    assert "'i1'" in message
+
+
+def test_duplicate_keys_are_rejected_at_every_nesting_level() -> None:
+    """Recursive by construction: PyYAML calls `construct_mapping` for every
+    mapping node, so one guard covers every depth rather than fourteen one-off
+    checks."""
+    levels: list[tuple[str, str, str | None]] = [
+        ("root", 'calc_contract_version: "1.0.0"\n', None),
+        ("sheet", '  required_visibility: "hidden"\n', None),
+        ("phase4_reservation", "  first_row: 1\n", "  first_row: 2\n"),
+        ("fingerprint", "  version: 1\n", "  version: 2\n"),
+        ("state_labels", "  derived_status:\n", None),
+        ("scalar_blocks", "  calc_state:\n", None),
+        ("a scalar block", '    label_column: "B"\n', '    label_column: "D"\n'),
+        # NOTE: the anchor for a field or a column must be a key INSIDE its
+        # mapping. Duplicating the `- key:` line would start a new list item, not
+        # a duplicate mapping key, and would be caught by the schema count instead
+        # - proving nothing about this guard.
+        ("a scalar field", '        row: 13\n', "        row: 14\n"),
+        ("tables", "  calc_years:\n", None),
+        ("a table", "    header_row: 15\n", "    header_row: 16\n"),
+        ("a table column", '        header: "Project Index"\n', '        header: "Project No"\n'),
+        ("tolerances", "  identity_absolute_floor: 1.0e-6\n", "  identity_absolute_floor: 1.0e-3\n"),
+        ("conditioning_terms", '    i2: ["abs_c", "abs_d", "abs_e"]\n', None),
+        ("an authority reference", '    owner: "input_contract.yaml"\n', None),
+    ]
+    accepted: list[str] = []
+    for label, anchor, injected in levels:
+        text = _duplicate_before(anchor, injected)
+        with tempfile.TemporaryDirectory(prefix="pccm-dupkey-") as tmp:
+            path = Path(tmp) / "duplicated.yaml"
+            path.write_text(text, encoding="utf-8")
+            try:
+                load_calc_contract(path)
+            except CalcContractError:
+                continue
+            except Exception as error:  # noqa: BLE001
+                raise AssertionError(
+                    f"{label}: raised {type(error).__name__} instead of CalcContractError"
+                ) from error
+        accepted.append(label)
+    assert not accepted, "duplicate keys silently accepted at: " + ", ".join(accepted)
+
+
+def test_a_duplicate_is_caught_even_where_the_two_values_are_identical() -> None:
+    """Detection must not depend on the values differing."""
+    _rejected_text(
+        _duplicate_before('  required_visibility: "hidden"\n'),
+        "two identical declarations of the same key",
+    )
+
+
+def test_the_strict_loader_neither_takes_first_nor_last() -> None:
+    """Both orderings are refused, so no implicit resolution rule exists.
+
+    Ordering matters to the hazard: last-wins means the WRONG value is the one a
+    human reads, first-wins means it is the one the validator checks. Neither is
+    an acceptable answer, so both arrangements must fail.
+    """
+    anchor = '        units: "SAR per unit"\n'
+    original = _raw_contract()
+    assert anchor in original
+
+    for order in (
+        ('        units: "USD"\n', anchor),          # wrong value read first
+        (anchor, '        units: "USD"\n'),          # wrong value parsed last
+    ):
+        text = original.replace(anchor, "".join(order), 1)
+        assert text.count('        units: "USD"\n') == 1
+        _rejected_text(text, f"duplicate units in order {order}")
+
+
+def test_the_strict_loader_is_still_a_safe_loader() -> None:
+    """No arbitrary Python object construction, no unsafe tags."""
+    text = _raw_contract().replace(
+        'calc_contract_version: "1.0.0"',
+        'calc_contract_version: !!python/object/apply:os.system ["echo unsafe"]',
+    )
+    with tempfile.TemporaryDirectory(prefix="pccm-unsafe-") as tmp:
+        path = Path(tmp) / "unsafe.yaml"
+        path.write_text(text, encoding="utf-8")
+        try:
+            load_calc_contract(path)
+        except CalcContractError:
+            return
+    raise AssertionError("an unsafe YAML tag was constructed")
+
+
+def test_ordinary_yaml_semantics_are_unchanged_by_the_strict_loader() -> None:
+    """Scalars, lists and nested mappings still parse exactly as before."""
+    calc = load_calc_contract(CALC_PATH)
+    assert calc.phase4_cells == ("C10", "C11")                       # list of scalars
+    assert calc.derived_status_labels[0] == "NOT CALCULATED"          # list of strings
+    assert calc.tolerances.profiling_sum_absolute == 1e-9             # float scalar
+    assert calc.tolerances.fx_rate_strictly_positive is True          # bool scalar
+    assert calc.calc_state.field_by_key("last_successful_stamp").initial is None  # null
+    assert calc.tolerances.conditioning_terms["i1"] == ("abs_a", "abs_b", "abs_c")
+
+
+def test_malformed_yaml_is_reported_as_a_contract_error() -> None:
+    with tempfile.TemporaryDirectory(prefix="pccm-badyaml-") as tmp:
+        path = Path(tmp) / "broken.yaml"
+        path.write_text("sheet:\n  name: '_Calc\n", encoding="utf-8")
+        try:
+            load_calc_contract(path)
+        except CalcContractError:
+            return
+    raise AssertionError("malformed YAML was silently accepted")
+
+
+def test_the_strict_parser_does_not_replace_the_schema_validators() -> None:
+    """It is an ADDITIONAL boundary guard. Every earlier check must still fire."""
+    checks: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
+        ("version lock", lambda d: d.__setitem__("calc_contract_version", "2.0.0")),
+        ("semantic table key lock",
+         lambda d: d["tables"].__setitem__("foo", d["tables"].pop("calc_fx"))),
+        ("unknown key rejection", lambda d: d["sheet"].__setitem__("foo", "bar")),
+        ("table schema lock",
+         lambda d: _column(d, "tblCalcFX", "fx_to_sar").__setitem__("header", "Rate")),
+        ("calc_state lock",
+         lambda d: _state_field(d, "last_successful_stamp").__setitem__("value_type", "text")),
+        ("calc_totals lock",
+         lambda d: _totals_field(d, "a_nom").__setitem__("number_format", "0")),
+        ("exact tolerances",
+         lambda d: d["tolerances"].__setitem__("identity_absolute_floor", 1e-3)),
+        ("conditioning terms",
+         lambda d: d["tolerances"]["conditioning_terms"].__setitem__("i1", ["abs_d", "abs_e"])),
+        ("authority-reference set",
+         lambda d: d.__setitem__(
+             "authority_references",
+             [r for r in d["authority_references"] if r["concept"] != "FX convention"],
+         )),
+        ("hash-mathematics exclusion",
+         lambda d: d["fingerprint"].__setitem__("note", "modulus 2147483647")),
+        ("Phase-4 reservation",
+         lambda d: d["phase4_reservation"].__setitem__("last_row", 9)),
+        ("status axis lock",
+         lambda d: d["state_labels"]["derived_status"].append("REFUSED")),
+    ]
+    for label, mutate in checks:
+        _rejected(mutate, f"{label} no longer fires")
+
+
+# ---------------------------------------------------------------------------
 # the sheet
 # ---------------------------------------------------------------------------
 def test_the_calc_sheet_is_hidden_not_very_hidden() -> None:

@@ -53,6 +53,77 @@ class CalcContractError(ContractError):
     """
 
 
+# ---------------------------------------------------------------------------
+# The parser boundary - duplicate mapping keys are a contract defect
+# ---------------------------------------------------------------------------
+class _DuplicateMappingKey(Exception):
+    """Internal signal from the strict loader; converted to CalcContractError."""
+
+    def __init__(self, key: Any, first: Any, second: Any) -> None:
+        super().__init__(key)
+        self.key = key
+        self.first = first
+        self.second = second
+
+
+class _StrictYamlLoader(yaml.SafeLoader):
+    """`SafeLoader` that refuses a mapping key declared more than once.
+
+    PyYAML resolves duplicate keys silently - the last one wins - and it does so
+    BEFORE any schema validation runs. Everything the calculation contract locks is
+    therefore defeatable by writing the field twice:
+
+        units: "USD"
+        units: "SAR per unit"
+
+    A reader sees `USD`; the validator only ever sees `SAR per unit`, checks it
+    against the locked design, and reports success. That is worse than an
+    unvalidated field, because the document actively misleads its reader.
+
+    This is a PARSER-BOUNDARY guard and nothing else. It adds no schema knowledge,
+    replaces no validator, and leaves safe-loading intact: no arbitrary Python
+    object construction, no unsafe tags, and unchanged scalar, list and mapping
+    semantics. It only refuses to choose between two competing declarations.
+
+    Detection is on the RAW node, before `flatten_mapping`, so it sees exactly what
+    the file says. It applies recursively by construction: PyYAML calls
+    `construct_mapping` for every mapping node at every depth, so a duplicate
+    inside one table column is caught by the same code as a duplicate at the root.
+    """
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> dict[Any, Any]:
+        seen: dict[Any, Any] = {}
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in seen
+            except TypeError:
+                # Unhashable key: not a duplicate question. The parent constructor
+                # reports it in its own terms.
+                continue
+            if duplicate:
+                raise _DuplicateMappingKey(key, seen[key], key_node.start_mark)
+            seen[key] = key_node.start_mark
+        return super().construct_mapping(node, deep=deep)
+
+
+def _strict_safe_load(text: str, path: Path) -> Any:
+    """Parse the calculation contract, refusing duplicate keys at any depth."""
+    try:
+        return yaml.load(text, _StrictYamlLoader)  # noqa: S506 - strict SafeLoader subclass
+    except _DuplicateMappingKey as duplicate:
+        raise CalcContractError(
+            f"{path}: duplicate key {duplicate.key!r} in the same mapping - first declared at "
+            f"line {duplicate.first.line + 1}, column {duplicate.first.column + 1}, again at "
+            f"line {duplicate.second.line + 1}, column {duplicate.second.column + 1}. "
+            "A contract must not contain two competing values for one field: YAML would "
+            "silently keep the last, so a reader and the validator could be looking at "
+            "different declarations. Neither first-wins nor last-wins is acceptable here."
+        ) from duplicate
+    except yaml.YAMLError as error:
+        raise CalcContractError(f"{path}: is not valid YAML: {error}") from error
+
+
 def _checked(fn, *args):
     """Run a central bound validator, reporting failures as a calc-contract fault."""
     try:
@@ -750,7 +821,10 @@ def load_calc_contract(path: str | Path) -> CalcContract:
         raise CalcContractError(f"calculation contract not found: {path}")
 
     raw_text = path.read_text(encoding="utf-8")
-    raw = yaml.safe_load(raw_text)
+    # Strict parse FIRST. A duplicate key is resolved by PyYAML before any
+    # validator could see it, so every guard below assumes each field was declared
+    # exactly once - and that assumption has to be checked at the parser, not after.
+    raw = _strict_safe_load(raw_text, path)
     if not isinstance(raw, dict):
         raise CalcContractError(f"{path}: contract root must be a mapping")
 
