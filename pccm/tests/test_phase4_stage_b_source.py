@@ -1482,6 +1482,205 @@ def test_44n10_the_excel_identity_variable_is_never_clobbered() -> None:
     assert not re.search(r"foreach\s*\(\s*\$id\s+in\b", harness)
 
 
+def test_44o1_no_fixture_writes_into_an_unkeyed_profiling_row() -> None:
+    """A test fixture must not itself break the invariant under test.
+
+    O neutralised the tail project year by looping every physical body row of both
+    profiling grids and writing numeric zero -- including the UNKEYED reserved
+    rows. That is exactly the orphan the model refuses: blank key plus data
+    elsewhere in the row. At run 5 PreMutationCheck stopped Apply before the
+    destructive assessment ran, so O reported a missing prompt while the real cause
+    was its own fixture, and the residue skipped P, Q, R, S, T, U and W.
+
+    Numeric zero is non-destructive only in a KEYED cell. Every profiling or
+    register write must therefore sit under a permanent-ID guard -- except the
+    deliberate orphan fixtures in T, which are the whole point of that scenario.
+    """
+    lines = _ps_structural_lines(HARNESS_PS1)
+    raw = _ps_code(HARNESS_PS1).splitlines()
+    commented = _ps(HARNESS_PS1).splitlines()
+
+    # Which scenario each line belongs to. Read from the COMMENTED source, since
+    # _ps_code blanks comment lines; both keep the same line numbering.
+    sections: list[tuple[int, str]] = []
+    for number, line in enumerate(commented, 1):
+        match = re.match(r"\s*# ([A-Z]{1,3}\d?)\. ", line)
+        if match:
+            sections.append((number, match.group(1)))
+    assert len(sections) > 15, f"only {len(sections)} scenario markers found"
+
+    # Helper bodies are generic utilities; the permanent-ID guard belongs at the
+    # CALL SITE, so a write inside a function definition is not judged here.
+    in_function: set[int] = set()
+    index = 0
+    while index < len(lines):
+        if re.match(r"\s*function\s+[\w-]+", lines[index]):
+            depth, opened, end = 0, False, index
+            for scan in range(index, len(lines)):
+                for char in lines[scan]:
+                    if char == "{":
+                        depth += 1
+                        opened = True
+                    elif char == "}":
+                        depth -= 1
+                end = scan
+                if opened and depth == 0:
+                    break
+            in_function.update(range(index + 1, end + 2))
+            index = end
+        index += 1
+
+    def scenario_at(number: int) -> str:
+        current = "setup"
+        for start, name in sections:
+            if start <= number:
+                current = name
+            else:
+                break
+        return current
+
+    # A write is guarded when a permanent-ID test governs it: either an explicit
+    # key test in the enclosing lines, or a row index resolved by matching a key.
+    guard = re.compile(
+        r"\$row\[0\]\s*-ne\s*''"          # the row is identified
+        r"|\$row\[0\]\s*-eq\s+\$"          # ... or matched against a specific id
+        r"|ContainsKey\(\$row\[0\]\)"
+        r"|\$seedRow\s*-gt\s*0|\$blankRow\s*-gt\s*0|\$gridRow\s*-gt\s*0"
+        r"|\$profileRow\s*-gt\s*0|\$targetRow\s*-gt\s*0"
+        r"|\$key\s*-ne\s*''"
+    )
+    unguarded = []
+    for number, line in enumerate(lines, 1):
+        if "Set-TableCell -Workbook" not in line:
+            continue
+        if number in in_function:
+            continue
+        scenario = scenario_at(number)
+        if scenario == "T":
+            continue  # the deliberate orphan fixtures
+        window = "\n".join(raw[max(0, number - 12) : number + 1])
+        if not guard.search(window):
+            unguarded.append(f"{scenario} @ {number}: {raw[number - 1].strip()[:70]}")
+    assert not unguarded, (
+        "structural-table write with no permanent-ID guard:\n  " + "\n  ".join(unguarded)
+    )
+
+    # And the exact run-5 shape is rejected by name: a blind loop over every body
+    # row of a profiling grid, writing a value.
+    blind = re.compile(
+        r"for \(\$r = 1; \$r -le \(Get-TableRowCount[^)]*(?:costGrid|riskGrid)"
+    )
+    assert not blind.search(_ps_code(HARNESS_PS1)), (
+        "a blind row loop over a profiling grid is how run 5 wrote into reserved rows"
+    )
+
+
+def test_44o2_the_o_fixture_is_keyed_only_and_uses_each_grids_own_width() -> None:
+    """Per-grid fixed column counts, not the coincidence that both are two."""
+    code = _ps(HARNESS_PS1)
+    section = code[code.index("# O. Non-numeric content") : code.index("# P. An oversized")]
+    assert "$fixedRisk  = $riskGrid.fixed_columns.Count" in _ps_code(HARNESS_PS1), (
+        "the Risk grid must be indexed by its own contract-derived fixed count"
+    )
+    assert "$oTailCost = $fixedCost + $oDuration" in section
+    assert "$oTailRisk = $fixedRisk + $oDuration" in section
+    assert "$fixedCost + [int]$appliedDuration" not in section, (
+        "the old shared-width indexing must be gone"
+    )
+    # Both zeroing loops are keyed-only.
+    zeroing = section[section.index("neutralise the tail year") :]
+    zeroing = zeroing[: zeroing.index("the one genuinely destructive cell")]
+    assert zeroing.count("if ($row[0] -ne '') {") == 2, (
+        "both profiling grids must be zeroed under a permanent-ID guard"
+    )
+    assert "-Value 0" in zeroing
+
+
+def test_44o3_the_o_fixture_is_proved_structurally_clean_before_apply() -> None:
+    """PASTED TEXT in a KEYED cell is business-invalid but not a structural orphan.
+
+    O needs the workbook coherent so Apply reaches the destructive assessment
+    rather than stopping at PreMutationCheck -- which is what the missing prompt
+    was really telling us at run 5.
+    """
+    code = _ps(HARNESS_PS1)
+    section = code[code.index("# O. Non-numeric content") : code.index("# P. An oversized")]
+    assert "the O fixture is structurally clean before the destructive assessment" in section
+    apply_at = section.index("$excel.Run('PCCM_ApplyTimeline')")
+    check_at = section.index("the O fixture is structurally clean before the destructive assessment")
+    paste_at = section.index("-Value 'PASTED TEXT'")
+    duration_at = section.index("Set-NamedValue -Workbook $wb -DefinedName 'nmDuration_Entered'")
+    assert paste_at < check_at and duration_at < check_at, (
+        "the fixture must be complete before it is checked"
+    )
+    assert check_at < apply_at, "the check must precede Apply"
+
+
+def test_44o4_the_o_outcome_is_asserted_not_inferred_from_the_prompt() -> None:
+    """Reading only the prompt hid why it was empty: a refusal reports itself in
+    the outcome, and reporting 'no prompt' for a refused operation names the wrong
+    defect."""
+    code = _ps(HARNESS_PS1)
+    section = code[code.index("# O. Non-numeric content") : code.index("# P. An oversized")]
+    assert "$outcome = [string]$excel.Run('PCCM_AutomationResult')" in section
+    assert "the operation reached the confirmation and was cancelled" in section
+    assert "($outcome -eq 'OK|cancelled')" in section, (
+        "the cancellation contract must be exact"
+    )
+    outcome_at = section.index("the operation reached the confirmation and was cancelled")
+    prompt_at = section.index("text in a removed profiling cell triggers a destructive warning")
+    assert outcome_at < prompt_at, "the outcome must be reported before the prompt claims"
+    assert "PERMANENTLY DELETED" in section
+    assert "the affected permanent ID is named" in section
+
+
+def test_44o5_the_o_fixture_is_failure_safe_and_restores_exact_values() -> None:
+    """Run 5 proved a scenario's disposable data outliving a FAILED run
+    contaminates every later independent scenario."""
+    code = _ps(HARNESS_PS1)
+    section = code[code.index("# O. Non-numeric content") : code.index("# P. An oversized")]
+    assert "} finally {" in section, "cleanup must run on the failure path too"
+    cleanup = section[section.index("--- CLEANUP, WHATEVER HAPPENED") :]
+
+    # Captured by permanent ID, never by physical row position.
+    assert "$oTouchedCost[[string]$row[0]] = $value" in section
+    assert "$oTouchedRisk[[string]$row[0]] = $value" in section
+    # A blank comes back blank, never as numeric zero.
+    assert "if ($original -eq '') {" in cleanup and "-Value $null" in cleanup
+    assert "-Value ([double]$original)" in cleanup
+    # Entered timeline restored, and no synchronisation called just to erase residue.
+    assert "Sync-EnteredTimelineToApplied" in cleanup
+    assert "PCCM_ApplyTimeline" not in cleanup, (
+        "a structural synchronisation must not be used to clean up fixture residue"
+    )
+    # Cleanup failure keeps the gate failed, and is noted.
+    assert "the O fixture cleanup completed without error" in cleanup
+    assert "Add-Note ('O cleanup problems: '" in cleanup
+    assert "structural revalidation is clean after O fixture cleanup" in cleanup
+    # The result is reported AFTER cleanup, so cleanup failures reach the verdict.
+    assert cleanup.index("the O fixture cleanup completed without error") < cleanup.index(
+        "Add-Result 'O'"
+    )
+
+
+def test_44o6_o_proves_the_unkeyed_rows_were_never_touched() -> None:
+    """The strong claim is that O never writes to them -- not that it tidies up
+    afterwards."""
+    code = _ps(HARNESS_PS1)
+    section = code[code.index("# O. Non-numeric content") : code.index("# P. An oversized")]
+    assert "the reserved unkeyed profiling rows start blank" in section
+    assert "the fixture wrote to no unkeyed profiling row" in section
+    assert "every unkeyed profiling tail cell is unchanged after cleanup" in section
+    # Captured before the fixture is built, and checked twice.
+    capture_at = section.index("$oUnkeyedCost[$rowIdx] = $value")
+    build_at = section.index("neutralise the tail year")
+    first_check = section.index("the fixture wrote to no unkeyed profiling row")
+    last_check = section.index("every unkeyed profiling tail cell is unchanged after cleanup")
+    assert capture_at < build_at < first_check < last_check
+    # And the later independent gates are still there.
+    assert "Test-CleanStructure -ExcelApp $excel -ScenarioId 'P'" in _ps_code(HARNESS_PS1)
+
+
 def test_44l_year_cell_presentation_is_asserted_by_equality() -> None:
     code = _ps(HARNESS_PS1)
     assert "equals input_fill" in code

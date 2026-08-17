@@ -13,8 +13,18 @@
     first Application.Run; run 4 compiled and ran the whole structural harness,
     16 passed and 18 failed, of which ONE was a real model defect -- collision-
     unsafe ListObject header renaming -- and the rest were cascades and
-    harness-precondition faults. All are fixed; see docs/phase4_gate_b_run1.md
-    through run4.md.
+    harness-precondition faults; run 5 passed 27, failed 1 and skipped 7, with
+    D-J.1 through D-J.10 all passing, which proves the collision-safe header
+    correction on real Excel. The one failure was scenario O's own fixture writing
+    numeric zero into UNKEYED reserved profiling rows -- the orphan the model is
+    designed to refuse -- which stopped Apply at PreMutationCheck and left residue
+    that correctly skipped the seven scenarios after it. All are fixed; see
+    docs/phase4_gate_b_run1.md through run5.md.
+
+    A FIXTURE MUST NOT BREAK THE INVARIANT IT IS TESTING. Numeric zero is
+    non-destructive data only in a KEYED profiling cell; an unkeyed row must stay
+    entirely blank. Every scenario write into a structural table is guarded by a
+    permanent ID, except T's deliberate orphan fixtures.
 
     RESULT HYGIENE, added after run 4. A failure must be attributable to the thing
     it tests. Three mechanisms enforce that, and none of them stops the run:
@@ -952,6 +962,11 @@ if ($buildOk) {
     $costReg    = Get-RegisterInfo 'cost_lines'
     $riskReg    = Get-RegisterInfo 'risk_register'
     $fixedCost  = $costGrid.fixed_columns.Count
+    # Each grid's OWN contract-derived fixed count. The two profiling grids happen
+    # to have two fixed columns each today, and O was using $fixedCost to index the
+    # Risk grid on that coincidence. A schema divergence would have silently moved
+    # the write one column sideways.
+    $fixedRisk  = $riskGrid.fixed_columns.Count
     $fixedInfl  = $inflGrid.fixed_columns.Count
 
     # -------------------------------------------------------------------
@@ -1238,20 +1253,33 @@ if ($buildOk) {
 
             # Seed non-zero percentages once a grid exists, so a later shrink has
             # real data to threaten and the destructive path is genuinely exercised.
-            if ($costBefore.Count -gt 0 -and $costBefore[0].Count -gt $fixedCost) {
+            # Row 1 happens to be identified by this point, but the fixture must not
+            # rest on that: a write into an UNKEYED profiling row is the orphan the
+            # model refuses, and assuming a row is keyed is how O poisoned run 5.
+            $seedRow = 0
+            $rowIdx = 0
+            foreach ($row in $costBefore) {
+                $rowIdx++
+                if ($row[0] -ne '' -and $seedRow -eq 0) { $seedRow = $rowIdx }
+            }
+            if ($seedRow -gt 0 -and $costBefore[0].Count -gt $fixedCost) {
                 for ($c = 1; $c -le ($costBefore[0].Count - $fixedCost); $c++) {
                     Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
-                        -RowIndex 1 -ColumnIndex ($fixedCost + $c) -Value (0.1 * $c)
+                        -RowIndex $seedRow -ColumnIndex ($fixedCost + $c) -Value (0.1 * $c)
                 }
                 # Deliberately leave one identified row's first project year BLANK.
                 # It is invalid data, and it must SURVIVE every structural operation
                 # so Model Check can report it later. Silently filling it with 0%
                 # would repair user data inside a structural synchronisation.
-                if ($costBefore.Count -ge 2) {
-                    if ($costBefore[1][0] -ne '') {
-                        Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
-                            -RowIndex 2 -ColumnIndex ($fixedCost + 1) -Value $null
-                    }
+                $blankRow = 0
+                $rowIdx = 0
+                foreach ($row in $costBefore) {
+                    $rowIdx++
+                    if ($row[0] -ne '' -and $rowIdx -ne $seedRow -and $blankRow -eq 0) { $blankRow = $rowIdx }
+                }
+                if ($blankRow -gt 0) {
+                    Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
+                        -RowIndex $blankRow -ColumnIndex ($fixedCost + 1) -Value $null
                 }
                 $costBefore = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
             }
@@ -1933,9 +1961,30 @@ if ($buildOk) {
     # -------------------------------------------------------------------
     # O. Non-numeric content in a removed profiling cell is a data loss
     # -------------------------------------------------------------------
+    # THE FIXTURE MUST NOT ITSELF BREAK THE INVARIANT UNDER TEST.
+    #
+    # O neutralises the tail project year so that ONLY the pasted text can make the
+    # shrink destructive. It used to do that by looping every physical body row of
+    # both profiling grids and writing numeric zero -- including the UNKEYED
+    # reserved rows. That is exactly the orphan the model is designed to refuse:
+    # blank key plus data elsewhere in the row. At run 5 PreMutationCheck saw the
+    # zeros in tblRiskProfiling rows 3..N, refused Apply before the destructive
+    # assessment ever ran, and O reported a missing prompt while the real cause was
+    # its own fixture. The residue then skipped P, Q, R, S, T, U and W.
+    #
+    # Numeric zero is non-destructive data only in a KEYED profiling cell. An
+    # unkeyed profiling row must stay entirely blank, and this fixture never writes
+    # to one.
+    $list = New-Checklist
+    $oTouchedCost   = @{}    # permanent ID -> ORIGINAL tail value, as plain data
+    $oTouchedRisk   = @{}
+    $oUnkeyedCost   = @{}    # row index -> ORIGINAL tail value, for the untouched proof
+    $oUnkeyedRisk   = @{}
+    $oTailCost      = 0
+    $oTailRisk      = 0
+    $oDuration      = 0
+    $oFixtureBuilt  = $false
     try {
-        $list = New-Checklist
-
         # --- preconditions this scenario owns -------------------------------
         # O tests destruction of the FINAL profiling year during a shrink, so it
         # needs Applied Duration >= 2. D-J.9 deliberately ends at duration 1 and
@@ -1973,48 +2022,208 @@ if ($buildOk) {
         $appliedDuration = [double](Get-NamedValue -Workbook $wb -DefinedName 'nmDuration_Applied')
         $null = Add-Check $list 'the applied duration is long enough to shrink' `
             ($appliedDuration -ge 2) ("duration $appliedDuration")
+
         if ($appliedDuration -ge 2) {
+            $oDuration = [int]$appliedDuration
+            # Each grid indexed by ITS OWN contract-derived fixed column count.
+            $oTailCost = $fixedCost + $oDuration
+            $oTailRisk = $fixedRisk + $oDuration
+
+            # --- capture, BEFORE touching anything ---------------------------
+            # Keyed cells are captured against their PERMANENT ID, never against a
+            # physical row position: a later operation may move the row.
+            $rowIdx = 0
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+                $rowIdx++
+                $value = ''
+                if ($oTailCost -le $row.Count) { $value = [string]$row[$oTailCost - 1] }
+                if ($row[0] -ne '') { $oTouchedCost[[string]$row[0]] = $value }
+                else                { $oUnkeyedCost[$rowIdx] = $value }
+            }
+            $rowIdx = 0
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $riskGrid.sheet -TableName $riskGrid.table_name)) {
+                $rowIdx++
+                $value = ''
+                if ($oTailRisk -le $row.Count) { $value = [string]$row[$oTailRisk - 1] }
+                if ($row[0] -ne '') { $oTouchedRisk[[string]$row[0]] = $value }
+                else                { $oUnkeyedRisk[$rowIdx] = $value }
+            }
+            $null = Add-Check $list 'the reserved unkeyed profiling rows start blank' `
+                ((@($oUnkeyedCost.Values | Where-Object { $_ -ne '' }).Count -eq 0) -and
+                 (@($oUnkeyedRisk.Values | Where-Object { $_ -ne '' }).Count -eq 0)) `
+                ("cost " + ($oUnkeyedCost.Values -join '|') + " / risk " + ($oUnkeyedRisk.Values -join '|'))
+
+            # --- neutralise the tail year, KEYED ROWS ONLY --------------------
+            $oFixtureBuilt = $true
+            $rowIdx = 0
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+                $rowIdx++
+                if ($row[0] -ne '') {
+                    Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
+                        -RowIndex $rowIdx -ColumnIndex $oTailCost -Value 0
+                }
+            }
+            $rowIdx = 0
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $riskGrid.sheet -TableName $riskGrid.table_name)) {
+                $rowIdx++
+                if ($row[0] -ne '') {
+                    Set-TableCell -Workbook $wb -SheetName $riskGrid.sheet -TableName $riskGrid.table_name `
+                        -RowIndex $rowIdx -ColumnIndex $oTailRisk -Value 0
+                }
+            }
+
+            # --- the one genuinely destructive cell ---------------------------
             $ids = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
             $gridRow = 0; $rowIdx = 0
             foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
                 $rowIdx++; if ($row[0] -eq $ids[0]) { $gridRow = $rowIdx }
             }
-            # Zero the tail first, so ONLY the pasted text can make this destructive.
-            for ($r = 1; $r -le (Get-TableRowCount -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name); $r++) {
-                Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
-                    -RowIndex $r -ColumnIndex ($fixedCost + [int]$appliedDuration) -Value 0
-            }
-            for ($r = 1; $r -le (Get-TableRowCount -Workbook $wb -SheetName $riskGrid.sheet -TableName $riskGrid.table_name); $r++) {
-                Set-TableCell -Workbook $wb -SheetName $riskGrid.sheet -TableName $riskGrid.table_name `
-                    -RowIndex $r -ColumnIndex ($fixedCost + [int]$appliedDuration) -Value 0
-            }
+            $null = Add-Check $list 'the target keyed profiling row was located' ($gridRow -gt 0) ("id " + $ids[0])
             Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
-                -RowIndex $gridRow -ColumnIndex ($fixedCost + [int]$appliedDuration) -Value 'PASTED TEXT'
+                -RowIndex $gridRow -ColumnIndex $oTailCost -Value 'PASTED TEXT'
 
             Set-NamedValue -Workbook $wb -DefinedName 'nmDuration_Entered' -Value ($appliedDuration - 1)
+
+            # --- THE FIXTURE ITSELF MUST BE STRUCTURALLY CLEAN ----------------
+            # PASTED TEXT in a KEYED profiling cell is business-invalid, but it is
+            # not a structural orphan. O needs the workbook coherent so that Apply
+            # reaches CountDataBeyond rather than stopping at PreMutationCheck --
+            # which is precisely what happened at run 5, and what the missing
+            # prompt was really telling us.
+            $fixtureReport = [string]$excel.Run('PCCM_StructuralReport')
+            $null = Add-Check $list 'the O fixture is structurally clean before the destructive assessment' `
+                ([string]::IsNullOrWhiteSpace($fixtureReport)) $fixtureReport
+
+            # --- unkeyed rows must be untouched by the fixture ----------------
+            $violations = @()
+            $rowIdx = 0
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+                $rowIdx++
+                if ($oUnkeyedCost.ContainsKey($rowIdx)) {
+                    $now = ''
+                    if ($oTailCost -le $row.Count) { $now = [string]$row[$oTailCost - 1] }
+                    if ($now -ne $oUnkeyedCost[$rowIdx]) {
+                        $violations += ("cost row {0}: was '{1}', now '{2}'" -f $rowIdx, $oUnkeyedCost[$rowIdx], $now)
+                    }
+                }
+            }
+            $rowIdx = 0
+            foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $riskGrid.sheet -TableName $riskGrid.table_name)) {
+                $rowIdx++
+                if ($oUnkeyedRisk.ContainsKey($rowIdx)) {
+                    $now = ''
+                    if ($oTailRisk -le $row.Count) { $now = [string]$row[$oTailRisk - 1] }
+                    if ($now -ne $oUnkeyedRisk[$rowIdx]) {
+                        $violations += ("risk row {0}: was '{1}', now '{2}'" -f $rowIdx, $oUnkeyedRisk[$rowIdx], $now)
+                    }
+                }
+            }
+            $null = Add-Check $list 'the fixture wrote to no unkeyed profiling row' `
+                ($violations.Count -eq 0) ($violations -join '; ')
+
+            # --- the destructive assessment, CANCELLED ------------------------
             $excel.Run('PCCM_AutomationBegin', $false, '') | Out-Null
             $excel.Run('PCCM_ApplyTimeline') | Out-Null
-            $prompt = [string]$excel.Run('PCCM_AutomationPrompt')
+            $outcome = [string]$excel.Run('PCCM_AutomationResult')
+            $prompt  = [string]$excel.Run('PCCM_AutomationPrompt')
 
+            # THE OUTCOME FIRST. Reading only the prompt hid the real reason it was
+            # empty: a refusal reports itself here, and reporting "no prompt" for a
+            # refused operation names the wrong defect.
+            $null = Add-Check $list 'the operation reached the confirmation and was cancelled' `
+                ($outcome -eq 'OK|cancelled') ("outcome '$outcome'")
             $null = Add-Check $list 'text in a removed profiling cell triggers a destructive warning' `
                 ($prompt -match 'PERMANENTLY DELETED') `
-                'blank and numeric zero are not data; anything else is'
-            $null = Add-Check $list 'the affected permanent ID is named' ($prompt -match [regex]::Escape($ids[0]))
+                ("blank and numeric zero are not data; anything else is. prompt: '" + $prompt + "'")
+            $null = Add-Check $list 'the affected permanent ID is named' `
+                ($prompt -match [regex]::Escape($ids[0])) ("prompt: '" + $prompt + "'")
 
             $stillThere = @(Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)
             $null = Add-Check $list 'cancelling leaves the pasted value in place' `
-                ($stillThere[$gridRow - 1][$fixedCost + [int]$appliedDuration - 1] -eq 'PASTED TEXT')
+                ($stillThere[$gridRow - 1][$oTailCost - 1] -eq 'PASTED TEXT')
+        }
+    } catch {
+        $null = Add-Check $list 'the scenario ran without an unexpected error' $false (Format-Err $_)
+    } finally {
+        # --- CLEANUP, WHATEVER HAPPENED ------------------------------------
+        # Run 5 proved that a scenario's disposable data outliving a FAILED run
+        # contaminates every later independent scenario. Only the cells this
+        # scenario deliberately changed are restored, to their EXACT captured
+        # values -- a blank comes back blank, never as numeric zero -- and no
+        # structural synchronisation is called merely to erase residue.
+        $restoreProblems = @()
+        try {
+            if ($oFixtureBuilt) {
+                foreach ($pair in @(
+                    @{ Grid = $costGrid; Tail = $oTailCost; Captured = $oTouchedCost; Label = 'cost' },
+                    @{ Grid = $riskGrid; Tail = $oTailRisk; Captured = $oTouchedRisk; Label = 'risk' }
+                )) {
+                    $rowIdx = 0
+                    foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $pair.Grid.sheet -TableName $pair.Grid.table_name)) {
+                        $rowIdx++
+                        $key = [string]$row[0]
+                        if ($key -ne '' -and $pair.Captured.ContainsKey($key)) {
+                            $original = [string]$pair.Captured[$key]
+                            if ($original -eq '') {
+                                Set-TableCell -Workbook $wb -SheetName $pair.Grid.sheet -TableName $pair.Grid.table_name `
+                                    -RowIndex $rowIdx -ColumnIndex $pair.Tail -Value $null
+                            } else {
+                                Set-TableCell -Workbook $wb -SheetName $pair.Grid.sheet -TableName $pair.Grid.table_name `
+                                    -RowIndex $rowIdx -ColumnIndex $pair.Tail -Value ([double]$original)
+                            }
+                        }
+                    }
+                }
+            }
+            $syncBack = @(Sync-EnteredTimelineToApplied -Workbook $wb)
+            foreach ($problem in $syncBack) { $restoreProblems += $problem }
+        } catch {
+            $restoreProblems += ('restore threw: ' + (Format-Err $_))
+        }
 
-            # Clean up so later sections start from a numeric grid.
-            Set-TableCell -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name `
-                -RowIndex $gridRow -ColumnIndex ($fixedCost + [int]$appliedDuration) -Value 0
-            Set-NamedValue -Workbook $wb -DefinedName 'nmDuration_Entered' -Value $appliedDuration
+        # Every touched permanent ID is back to exactly what it held.
+        if ($oFixtureBuilt) {
+            $notRestored = @()
+            foreach ($pair in @(
+                @{ Grid = $costGrid; Tail = $oTailCost; Captured = $oTouchedCost; Unkeyed = $oUnkeyedCost; Label = 'cost' },
+                @{ Grid = $riskGrid; Tail = $oTailRisk; Captured = $oTouchedRisk; Unkeyed = $oUnkeyedRisk; Label = 'risk' }
+            )) {
+                $rowIdx = 0
+                foreach ($row in @(Get-TableBody -Workbook $wb -SheetName $pair.Grid.sheet -TableName $pair.Grid.table_name)) {
+                    $rowIdx++
+                    $now = ''
+                    if ($pair.Tail -le $row.Count) { $now = [string]$row[$pair.Tail - 1] }
+                    $key = [string]$row[0]
+                    if ($key -ne '' -and $pair.Captured.ContainsKey($key)) {
+                        if ($now -ne [string]$pair.Captured[$key]) {
+                            $notRestored += ("{0} {1}: was '{2}', now '{3}'" -f $pair.Label, $key, $pair.Captured[$key], $now)
+                        }
+                    } elseif ($key -eq '' -and $pair.Unkeyed.ContainsKey($rowIdx)) {
+                        if ($now -ne [string]$pair.Unkeyed[$rowIdx]) {
+                            $notRestored += ("{0} unkeyed row {1}: was '{2}', now '{3}'" -f $pair.Label, $rowIdx, $pair.Unkeyed[$rowIdx], $now)
+                        }
+                    }
+                }
+            }
+            $null = Add-Check $list 'every touched profiling cell was restored to its exact original value' `
+                ($notRestored.Count -eq 0) ($notRestored -join '; ')
+            $null = Add-Check $list 'every unkeyed profiling tail cell is unchanged after cleanup' `
+                (@($notRestored | Where-Object { $_ -like '*unkeyed*' }).Count -eq 0)
+        }
+
+        $null = Add-Check $list 'the O fixture cleanup completed without error' `
+            ($restoreProblems.Count -eq 0) ($restoreProblems -join '; ')
+        if ($restoreProblems.Count -gt 0) { Add-Note ('O cleanup problems: ' + ($restoreProblems -join '; ')) }
+
+        $afterReport = [string]$excel.Run('PCCM_StructuralReport')
+        $null = Add-Check $list 'structural revalidation is clean after O fixture cleanup' `
+            ([string]::IsNullOrWhiteSpace($afterReport)) $afterReport
+        if (-not [string]::IsNullOrWhiteSpace($afterReport)) {
+            Add-Note ('O left structural residue behind: ' + $afterReport)
         }
 
         Add-Result 'O' 'Non-numeric profiling content counts as destructive data loss' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
-    } catch {
-        Add-Result 'O' 'Non-numeric profiling content' 'FAIL' (Format-Err $_)
     }
 
     # -------------------------------------------------------------------

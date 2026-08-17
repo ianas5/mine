@@ -40,8 +40,9 @@ through without a PowerShell edit.
 The functional test runs the bootstrap itself, against a temporary copy under
 `%TEMP%`, so it never touches `build/`.
 
-Gate-A source review is approved. Two Gate-B runs have happened on the target and
-**no structural runtime scenario has run yet**:
+Gate-A source review is approved. Five Gate-B runs have happened on the target.
+Everything up to and including scenario `N` now passes; the seven independent
+scenarios `P`, `Q`, `R`, `S`, `T`, `U`, `W` have **not yet run**:
 
 - **run 1** completed the whole bootstrap — including natural shutdown of two
   Excel instances — then threw in its final reporting block
@@ -55,9 +56,15 @@ Gate-A source review is approved. Two Gate-B runs have happened on the target an
 - **run 4** compiled and ran the whole structural harness — 16 passed, 18 failed.
   **One** real model defect (collision-unsafe ListObject header renaming); the
   rest were cascades and harness-precondition faults
-  (`../../docs/phase4_gate_b_run4.md`).
+  (`../../docs/phase4_gate_b_run4.md`);
+- **run 5** — 27 passed, 1 failed, 7 skipped. `D-J.1`…`D-J.10` all passed, so the
+  collision-safe header correction is **proven on real Excel**. The one failure,
+  `O`, was its own fixture writing numeric zero into unkeyed reserved rows — the
+  orphan the model is designed to refuse — and its residue correctly skipped the
+  seven scenarios after it (`../../docs/phase4_gate_b_run5.md`).
 
-All are fixed and the package is ready for one rerun.
+All are fixed and the package is ready for one rerun. The model source is
+unchanged by the run-5 patch.
 
 Importing a VBA module is **not** compiling it. Scenario A can be entirely green
 while the project does not build; Excel compiles on the first `Application.Run`,
@@ -90,6 +97,10 @@ Unchanged from the run that closed the readiness gate:
   a `PropertyNotFoundException`. Every caller writes `@(Get-Something)`. Scalar
   helpers are left alone. This ended Gate-B run 1 — see
   `../../docs/phase4_gate_b_run1.md`.
+- **A test fixture must not break the invariant it is testing.** Numeric zero is
+  non-destructive data only in a KEYED profiling cell; an unkeyed row must stay
+  entirely blank. Every scenario write into a structural table is guarded by a
+  permanent ID, except `T`'s deliberate orphan fixtures. This failed Gate-B run 5.
 - **A container factory is not an element producer.** `New-Checklist` returns ONE
   mutable `ArrayList`, emitted with `Write-Output -NoEnumerate`; wrapping it in
   `@(...)` would satisfy the rule above and break every caller, because `@(...)`
