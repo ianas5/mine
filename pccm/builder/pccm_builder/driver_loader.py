@@ -360,7 +360,13 @@ def _validate_forbidden_headers(contract: DriverContract, path: Path) -> None:
 
 
 def _validate_ownership(contract: DriverContract, path: Path) -> None:
-    """ID columns are model-controlled and carry no user validation."""
+    """Exactly one model-controlled column per register: the leading identifier.
+
+    Ownership is asserted positionally, not inferred from whether a column happens
+    to declare validation. A user field with no validation of its own -- Description,
+    Quantity, Risk Owner, any of the three-point parameters -- would otherwise be
+    able to drift to ``editable: false`` and silently leave the user's control.
+    """
     for register in contract.all_registers:
         identity = register.columns[0]
         if not identity.header.endswith("ID"):
@@ -380,10 +386,12 @@ def _validate_ownership(contract: DriverContract, path: Path) -> None:
                 "declares data validation; a model-controlled column must not."
             )
         for column in register.columns[1:]:
-            if not column.editable and column.validation is not None:
+            if not column.editable:
                 raise DriverContractError(
-                    f"{path}: {register.table_name} column {column.header!r} is "
-                    "model-controlled but declares user data validation"
+                    f"{path}: {register.table_name} column {column.header!r} is declared "
+                    "model-controlled (editable: false). A driver register has exactly one "
+                    f"model-controlled column -- the leading identifier {identity.header!r} "
+                    "-- and every column after it is a user-owned input."
                 )
 
 

@@ -11,8 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.utils.cell import range_boundaries
 
-from .contract_loader import InputContract
+from .contract_loader import EXCEL_MAX_COLUMN, EXCEL_MAX_ROW, InputContract
 from .driver_loader import DriverContract
 from .spec_loader import WorkbookSpec
 
@@ -182,6 +183,63 @@ def _tables(workbook) -> list[tuple[str, str]]:
     return found
 
 
+# ---------------------------------------------------------------------------
+# Data-validation coverage
+#
+# Whether a validation touches a protected cell is a question about Excel
+# rectangles, not about text. Comparing range strings answers a different and
+# much weaker question: 'B12:B36' not in {'B12', 'B12:B20', 'B20:B36'} is true
+# while every one of those ranges covers protected identity cells. Ranges are
+# therefore reduced to integer bounds and tested for rectangle overlap.
+# ---------------------------------------------------------------------------
+def _rect(reference) -> tuple[int, int, int, int]:
+    """(min_col, min_row, max_col, max_row) for a range string or CellRange.
+
+    An open reference such as ``B:B`` or ``12:12`` parses with a missing bound;
+    those are widened to the sheet edge so an unbounded range still intersects
+    everything it actually covers.
+    """
+    bounds = getattr(reference, "bounds", None)
+    if bounds is None:
+        bounds = range_boundaries(str(reference))
+    min_col, min_row, max_col, max_row = bounds
+    return (
+        min_col or 1,
+        min_row or 1,
+        max_col or EXCEL_MAX_COLUMN,
+        max_row or EXCEL_MAX_ROW,
+    )
+
+
+def _overlaps(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    return a[0] <= b[2] and a[2] >= b[0] and a[1] <= b[3] and a[3] >= b[1]
+
+
+def intersecting_validation_ranges(worksheet, target_range) -> list[str]:
+    """Every data-validation range on *worksheet* that overlaps *target_range*.
+
+    Iterates the ranges of each ``DataValidation.sqref`` -- so a multi-area
+    validation is handled area by area -- and compares bounds. It never
+    enumerates individual cells, so testing a large target costs nothing.
+    """
+    target = _rect(target_range)
+    found: list[str] = []
+    for dv in worksheet.data_validations.dataValidation:
+        for cell_range in dv.sqref.ranges:
+            if _overlaps(_rect(cell_range), target):
+                found.append(str(cell_range))
+    return found
+
+
+def data_validation_intersects(worksheet, target_range) -> bool:
+    """True if ANY data validation on *worksheet* covers ANY cell of *target_range*.
+
+    Accepts a single cell (``B12``), a contiguous range (``B12:B36``) or a
+    ``CellRange``, and handles a validation whose sqref holds several areas.
+    """
+    return bool(intersecting_validation_ranges(worksheet, target_range))
+
+
 def _verify_contract(result: VerificationResult, workbook, contract: InputContract) -> None:
     """Every contract promise must be observable in the built artifact."""
     for spec in contract.inputs.values():
@@ -256,30 +314,20 @@ def _verify_contract(result: VerificationResult, workbook, contract: InputContra
         for ws in workbook.worksheets
         for dv in ws.data_validations.dataValidation
     }
-    # No validation may target a locked identity row.
+    # No validation may touch ANY cell of a locked identity row. Partial and
+    # multi-area coverage counts: attaching a user input rule to a cell the user
+    # does not own misrepresents ownership however small the overlap.
     for table in contract.all_tables:
         if not table.locked_seed_rows:
             continue
         worksheet = workbook[table.sheet]
-        locked_rows = range(table.first_data_row, table.first_user_row)
-        targeted = {
-            str(cell)
-            for dv in worksheet.data_validations.dataValidation
-            for rng in dv.sqref.ranges
-            for cell in rng.cells
-        }
-        offenders = [
-            f"{table.column_letter(i)}{row}"
-            for row in locked_rows
-            for i in range(len(table.columns))
-            if (table.column_letter(i), row) in {
-                (c.split("$")[0] if "$" in c else "".join(ch for ch in c if ch.isalpha()),
-                 int("".join(ch for ch in c if ch.isdigit())))
-                for c in targeted
-            }
-        ]
+        locked = (
+            f"{table.column_letter(0)}{table.first_data_row}:"
+            f"{table.column_letter(len(table.columns) - 1)}{table.first_user_row - 1}"
+        )
+        offenders = intersecting_validation_ranges(worksheet, locked)
         result.check(
-            f"no data validation targets {table.table_name} locked identity rows",
+            f"no data validation intersects {table.table_name} locked identity rows ({locked})",
             not offenders,
             ", ".join(offenders),
         )
@@ -339,16 +387,16 @@ def _verify_drivers(result: VerificationResult, workbook, drivers: DriverContrac
             ", ".join(populated[:5]),
         )
 
-        targeted = {
-            str(rng)
-            for dv in worksheet.data_validations.dataValidation
-            for rng in dv.sqref.ranges
-        }
+        # Any overlap fails: a single ID cell, a partial run of the column, or one
+        # area of a multi-area sqref is as much a breach of ownership as the whole
+        # column would be.
         identity_range = register.data_range(0)
+        offenders = intersecting_validation_ranges(worksheet, identity_range)
         result.check(
-            f"{register.table_name} identity column carries no data validation",
-            identity_range not in targeted,
-            f"found validation on {identity_range}",
+            f"no data validation intersects {register.table_name} identity column "
+            f"({identity_range})",
+            not offenders,
+            ", ".join(offenders),
         )
 
 

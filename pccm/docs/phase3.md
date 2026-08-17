@@ -149,6 +149,60 @@ validation. The loader rejects an editable identity column outright.
 
 ---
 
+## Column ownership is positional, not inferred
+
+Each register has **exactly one** model-controlled column — the leading identifier
+— and **every column after it is a user-owned input**. The loader asserts that
+positionally.
+
+The earlier rule rejected only `editable: false` *combined with* a declared
+validation, which meant ownership was in effect inferred from whether a column
+happened to carry a rule. Every column that legitimately has no validation —
+Description, Quantity, Risk Name, Risk Owner, and all six three-point parameters —
+could therefore have drifted to `editable: false` and silently left the user's
+control while still building cleanly. Ownership is now stated, not deduced.
+
+The independent conformance suite asserts the same thing from the other side. It
+declares each column as `(key, header, type, user_owned)` and checks all four,
+rather than re-declaring headers alone and then reading ownership back out of the
+contract under test. A header is the weakest part of a column to pin: `Quantity`
+can keep its caption while its semantic key or type drifts underneath, and the
+calculation phases will bind to the key and the type.
+
+---
+
+## Verifying that no validation touches a protected cell
+
+Whether a data validation covers a model-controlled cell is a question about
+**Excel rectangles**, and the verifier now answers it that way, through one shared
+helper:
+
+    data_validation_intersects(worksheet, target_range)
+
+It reduces each area of every `DataValidation.sqref` and the target to integer
+bounds (`min_col, min_row, max_col, max_row`) and tests rectangle overlap. It
+compares no strings, enumerates no cells — testing a 25-row column costs the same
+as testing one cell — and handles a single cell, a contiguous range, and a
+multi-area sqref alike. Open references such as `B:B` widen to the sheet edge
+rather than parsing to a partial bound.
+
+It is used for **both** protected regions: the locked Setup/Config identity rows
+and the two driver identity columns.
+
+**Any** overlap fails. Attaching a user-input rule to a cell the user does not own
+misrepresents ownership no matter how small the overlap, so a single ID cell, a
+partial run of the column, a range that merely crosses the column horizontally,
+and one offending area inside an otherwise innocent multi-area validation all fail
+identically.
+
+`test_phase3_verifier_intersection.py` proves the gate itself, not just the helper:
+each test builds the real workbook, injects one specific offending validation,
+saves it, and runs the actual `verify_workbook` path, asserting it fails and names
+the right check — plus two tests proving a rule outside every protected range
+leaves the gate green.
+
+---
+
 ## Uniform / Most Likely status
 
 Uniform has no Most Likely parameter. Phase 3:
@@ -192,6 +246,7 @@ phase by phase. There is no parallel workbook.
     python3 pccm/tests/test_phase2_contract_validation.py
     python3 pccm/tests/test_phase3_drivers.py
     python3 pccm/tests/test_phase3_driver_contract_validation.py
+    python3 pccm/tests/test_phase3_verifier_intersection.py
 
 ---
 

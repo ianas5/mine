@@ -23,6 +23,7 @@ PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
 
 from openpyxl import load_workbook  # noqa: E402
+from openpyxl.utils.cell import range_boundaries  # noqa: E402
 
 from pccm_builder import (  # noqa: E402
     build_workbook,
@@ -36,34 +37,44 @@ CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
 DRIVERS_PATH = PCCM_ROOT / "spec" / "driver_contract.yaml"
 
 # --- Architecture Lock Revision B: locked driver schemas --------------------
-COST_LINE_COLUMNS = [
-    "Cost Line ID",
-    "Category",
-    "Description",
-    "UOM",
-    "Quantity",
-    "Currency",
-    "Inflation Profile",
-    "Unit Cost Min",
-    "Unit Cost Most Likely",
-    "Unit Cost Max",
-    "Distribution",
+# Declared as (semantic key, header, type, user_owned). A header alone is not a
+# sufficient lock: a contract could keep 'Quantity' visible while its key or type
+# drifted underneath, and the calculation phases bind to the key and the type, not
+# to the caption. Ownership is declared here too, so it is asserted rather than
+# read back out of the contract under test.
+COST_LINE_SCHEMA = [
+    ("cost_line_id",         "Cost Line ID",          "text",       False),
+    ("category",             "Category",              "text",       True),
+    ("description",          "Description",           "text",       True),
+    ("uom",                  "UOM",                   "text",       True),
+    ("quantity",             "Quantity",              "decimal",    True),
+    ("currency",             "Currency",              "text",       True),
+    ("inflation_profile",    "Inflation Profile",     "text",       True),
+    ("unit_cost_min",        "Unit Cost Min",         "decimal",    True),
+    ("unit_cost_most_likely", "Unit Cost Most Likely", "decimal",   True),
+    ("unit_cost_max",        "Unit Cost Max",         "decimal",    True),
+    ("distribution",         "Distribution",          "text",       True),
 ]
 
-RISK_COLUMNS = [
-    "Risk ID",
-    "Risk Name",
-    "Description",
-    "Category",
-    "Probability",
-    "Currency",
-    "Inflation Profile",
-    "Impact Min",
-    "Impact Most Likely",
-    "Impact Max",
-    "Distribution",
-    "Risk Owner",
+RISK_SCHEMA = [
+    ("risk_id",            "Risk ID",            "text",       False),
+    ("risk_name",          "Risk Name",          "text",       True),
+    ("description",        "Description",        "text",       True),
+    ("category",           "Category",           "text",       True),
+    ("probability",        "Probability",        "percentage", True),
+    ("currency",           "Currency",           "text",       True),
+    ("inflation_profile",  "Inflation Profile",  "text",       True),
+    ("impact_min",         "Impact Min",         "decimal",    True),
+    ("impact_most_likely", "Impact Most Likely", "decimal",    True),
+    ("impact_max",         "Impact Max",         "decimal",    True),
+    ("distribution",       "Distribution",       "text",       True),
+    ("risk_owner",         "Risk Owner",         "text",       True),
 ]
+
+SCHEMAS = {"cost_lines": COST_LINE_SCHEMA, "risk_register": RISK_SCHEMA}
+
+COST_LINE_COLUMNS = [entry[1] for entry in COST_LINE_SCHEMA]
+RISK_COLUMNS = [entry[1] for entry in RISK_SCHEMA]
 
 COST_TABLE = "tblCostLines"
 RISK_TABLE = "tblRiskRegister"
@@ -140,11 +151,36 @@ def _tokens() -> dict:
         return yaml.safe_load(handle)["presentation"]["colors"]
 
 
-def _dv_covering(worksheet, target: str):
+# Rectangle comparison, deliberately reimplemented here rather than imported from
+# verify.py: this suite is the independent check on the artifact, so it must not
+# share the mechanism it is holding to account.
+def _bounds(reference) -> tuple[int, int, int, int]:
+    return range_boundaries(str(reference))
+
+
+def _dv_ranges(worksheet):
     for dv in worksheet.data_validations.dataValidation:
-        if target in str(dv.sqref):
+        for cell_range in dv.sqref.ranges:
+            yield dv, _bounds(str(cell_range))
+
+
+def _dv_covering(worksheet, target: str):
+    """The validation whose area fully contains *target*, or None."""
+    t_min_col, t_min_row, t_max_col, t_max_row = _bounds(target)
+    for dv, (c1, r1, c2, r2) in _dv_ranges(worksheet):
+        if c1 <= t_min_col and c2 >= t_max_col and r1 <= t_min_row and r2 >= t_max_row:
             return dv
     return None
+
+
+def _dv_intersecting(worksheet, target: str) -> list[str]:
+    """Every validation area overlapping *target*, even partially."""
+    t_min_col, t_min_row, t_max_col, t_max_row = _bounds(target)
+    return [
+        f"{dv.type}@{dv.sqref}"
+        for dv, (c1, r1, c2, r2) in _dv_ranges(worksheet)
+        if c1 <= t_max_col and c2 >= t_min_col and r1 <= t_max_row and r2 >= t_min_row
+    ]
 
 
 # --- 1-4. tables and schemas ------------------------------------------------
@@ -207,28 +243,37 @@ def test_07_id_columns_are_model_controlled_styled() -> None:
 
 
 def test_08_id_columns_carry_no_data_validation() -> None:
+    """No validation may touch an ID cell -- not even one cell of the column."""
     workbook = _wb()
     for key, sheet in (("cost_lines", COST_SHEET), ("risk_register", RISK_SHEET)):
         register = _register(key)
         assert register.columns[0].validation is None
-        assert _dv_covering(workbook[sheet], register.data_range(0)) is None, (
-            f"{register.table_name} identity column has data validation"
+        offenders = _dv_intersecting(workbook[sheet], register.data_range(0))
+        assert not offenders, (
+            f"{register.table_name} identity column is covered by validation: {offenders}"
         )
 
 
-def test_09_user_input_columns_use_editable_styling() -> None:
+def test_09_column_styling_follows_the_declared_ownership() -> None:
+    """Ownership comes from the independent lock above, never from the contract.
+
+    Reading ``column.editable`` to decide which styling to expect would make the
+    test agree with any contract, including one that had quietly demoted a user
+    field to model-controlled.
+    """
     workbook = _wb()
-    editable = _tokens()["input_fill"].upper()
+    tokens = _tokens()
+    fills = {True: tokens["input_fill"].upper(), False: tokens["locked_fill"].upper()}
     for key, sheet in (("cost_lines", COST_SHEET), ("risk_register", RISK_SHEET)):
         register = _register(key)
         worksheet = workbook[sheet]
-        for index, column in enumerate(register.columns):
-            if not column.editable:
-                continue
+        for index, (_key, header, _type, user_owned) in enumerate(SCHEMAS[key]):
             letter = register.column_letter(index)
             for row in range(register.first_data_row, register.last_data_row + 1):
-                assert _fill_rgb(worksheet[f"{letter}{row}"]) == editable, (
-                    f"{register.table_name}.{column.header} {letter}{row} is not editable-styled"
+                assert _fill_rgb(worksheet[f"{letter}{row}"]) == fills[user_owned], (
+                    f"{register.table_name}.{header} {letter}{row} is styled as "
+                    f"{'model-controlled' if user_owned else 'editable'}, "
+                    f"contradicting the locked ownership model"
                 )
 
 
@@ -282,14 +327,16 @@ def test_17_no_validation_imposes_min_ml_max_ordering() -> None:
             assert register.columns[index].validation is None, (
                 f"{register.table_name}.{column_key} declares validation"
             )
-            assert _dv_covering(workbook[register.sheet], register.data_range(index)) is None
+            assert not _dv_intersecting(
+                workbook[register.sheet], register.data_range(index)
+            ), f"{register.table_name}.{column_key} is covered by validation"
 
 
 def test_18_no_quantity_constraint_invented() -> None:
     register = _register("cost_lines")
     index = register.column_index_of("quantity")
     assert register.columns[index].validation is None
-    assert _dv_covering(_wb()[COST_SHEET], register.data_range(index)) is None
+    assert not _dv_intersecting(_wb()[COST_SHEET], register.data_range(index))
 
 
 def test_19_no_cost_total_user_input_column() -> None:
@@ -421,8 +468,54 @@ def test_30_conditional_formatting_is_presentation_only() -> None:
                 f"{register.table_name}.{cf.target_column} has data validation; the "
                 "Uniform greying must remain presentation-only"
             )
-            assert _dv_covering(worksheet, register.data_range(index)) is None
+            assert not _dv_intersecting(worksheet, register.data_range(index))
             assert column.editable, "the Most Likely cell must remain user-editable"
+
+
+# --- 31-32. semantic schema and ownership lock ------------------------------
+def test_31_semantic_keys_and_types_match_the_locked_schema() -> None:
+    """Headers alone are not the lock: key and type are what later phases bind to."""
+    drivers = _drivers()
+    for register_key, schema in SCHEMAS.items():
+        register = drivers.registers[register_key]
+        assert len(register.columns) == len(schema), (
+            f"{register.table_name} has {len(register.columns)} columns, "
+            f"the lock declares {len(schema)}"
+        )
+        for index, (key, header, type_, user_owned) in enumerate(schema):
+            column = register.columns[index]
+            assert column.key == key, (
+                f"{register.table_name} column {index} key is {column.key!r}, "
+                f"the lock declares {key!r}"
+            )
+            assert column.header == header, (
+                f"{register.table_name}.{key} header is {column.header!r}, "
+                f"the lock declares {header!r}"
+            )
+            assert column.type == type_, (
+                f"{register.table_name}.{key} type is {column.type!r}, "
+                f"the lock declares {type_!r}"
+            )
+            assert column.editable is user_owned, (
+                f"{register.table_name}.{key} ownership drifted: editable="
+                f"{column.editable}, the lock declares user_owned={user_owned}"
+            )
+
+
+def test_32_exactly_the_first_column_is_model_controlled() -> None:
+    """One model-controlled column per register, and it is the identifier."""
+    drivers = _drivers()
+    for register_key, schema in SCHEMAS.items():
+        register = drivers.registers[register_key]
+        model_controlled = [c.key for c in register.columns if not c.editable]
+        assert model_controlled == [schema[0][0]], (
+            f"{register.table_name} model-controlled columns are {model_controlled}; "
+            f"exactly [{schema[0][0]!r}] is permitted"
+        )
+        assert all(c.editable for c in register.columns[1:]), (
+            f"{register.table_name} has a non-editable column after the identifier"
+        )
+        assert register.columns[0].header.endswith("ID")
 
 
 def _run_all() -> int:

@@ -170,6 +170,47 @@ def test_rejects_editable_id_column() -> None:
     )
 
 
+def test_rejects_model_controlled_user_column_without_validation() -> None:
+    """Ownership drift must fail even where there is no validation to notice it by.
+
+    Description declares no validation of its own, so a rule keyed on 'not editable
+    AND has validation' would let it silently leave the user's control.
+    """
+    _rejected(
+        lambda d: d["registers"]["cost_lines"]["columns"][
+            _index_of(d, "cost_lines", "Description")
+        ].__setitem__("editable", False),
+        "a user cost-line field demoted to model-controlled",
+    )
+
+
+def test_rejects_model_controlled_quantity_column() -> None:
+    _rejected(
+        lambda d: d["registers"]["cost_lines"]["columns"][
+            _index_of(d, "cost_lines", "Quantity")
+        ].__setitem__("editable", False),
+        "Quantity demoted to model-controlled",
+    )
+
+
+def test_rejects_model_controlled_risk_owner_column() -> None:
+    _rejected(
+        lambda d: d["registers"]["risk_register"]["columns"][
+            _index_of(d, "risk_register", "Risk Owner")
+        ].__setitem__("editable", False),
+        "Risk Owner demoted to model-controlled",
+    )
+
+
+def test_rejects_model_controlled_three_point_parameter() -> None:
+    _rejected(
+        lambda d: d["registers"]["risk_register"]["columns"][
+            _index_of(d, "risk_register", "Impact Most Likely")
+        ].__setitem__("editable", False),
+        "a three-point parameter demoted to model-controlled",
+    )
+
+
 def test_rejects_validation_on_the_id_column() -> None:
     _rejected(
         lambda d: d["registers"]["risk_register"]["columns"][0].__setitem__(
