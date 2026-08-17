@@ -383,6 +383,24 @@ Percentages are preserved by **permanent ID + project-year index**, never by
 worksheet row, so a driver-table reorder reorders the grid and transfers nothing
 between rows.
 
+### Header renaming is collision-safe
+
+Excel requires ListObject column names to be unique and does **not** refuse a
+collision — it silently appends a digit. A single sequential rename therefore
+corrupts any **overlapping** block, which is the common case: shifting the start
+year asks `2028…2032 → 2030…2034`, and renaming the first column to `2030` meets a
+column still named `2030`. Gate-B run 4 came back with `20272, 20282, 20292,
+20302`.
+
+`modWorkbook.SetHeaderBlock` is the **only** header-renaming path in the model:
+desired names validated for uniqueness, deterministic temporary names checked
+against every current name, every desired name and each other, a first pass to
+vacate, a second to place, and an exact case-sensitive verification that raises
+rather than accepting Excel's auto-disambiguation. `modProfiling.SetYearColumns`,
+`modInflation.SetYearColumns` and `modWorkbook.RestoreTable` all go through it —
+the rollback most of all, since a restore that corrupts the headers it is putting
+back is not a restore. See `docs/phase4_gate_b_run4.md`.
+
 ### Proving it needs a live timeline
 
 Gate-B scenario **B2** performs a genuine `ListObject.Sort` of the Cost Lines

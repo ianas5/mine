@@ -142,17 +142,17 @@ $preExisting = @(Get-PreExistingExcelPids)
 # its own release point; there is no stack and no release plan.
 $excel = $null; $workbooks = $null; $wb = $null; $worksheets = $null
 $vbproj = $null; $vbcomps = $null
-$id1 = $null
+$buildExcelIdentity = $null
 $rel1 = $null
 $buildOk = $false
 
 try {
     $excel = New-Object -ComObject Excel.Application
-    $id1 = Get-ExcelIdentity -ExcelApp $excel -PreExistingPids $preExisting
+    $buildExcelIdentity = Get-ExcelIdentity -ExcelApp $excel -PreExistingPids $preExisting
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
     $excel.AskToUpdateLinks = $false
-    Add-Step 'Open an owned Excel instance' 'PASS' ("pid {0} (identity source {1})" -f $id1.ProcessId, $id1.Source)
+    Add-Step 'Open an owned Excel instance' 'PASS' ("pid {0} (identity source {1})" -f $buildExcelIdentity.ProcessId, $buildExcelIdentity.Source)
 
     $workbooks = $excel.Workbooks
     $wb = $workbooks.Open($stageAPath)
@@ -325,17 +325,17 @@ try {
     [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
     [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
 
-    $rel1.NaturalExit = Wait-ExcelExit -Identity $id1
+    $rel1.NaturalExit = Wait-ExcelExit -Identity $buildExcelIdentity
     if (-not $rel1.NaturalExit) {
         $rel1.EmergencyRequired = $true
-        Add-Note (Invoke-EmergencyExcelCleanup -Identity $id1 -Label 'build instance')
+        Add-Note (Invoke-EmergencyExcelCleanup -Identity $buildExcelIdentity -Label 'build instance')
     }
 } catch {
     Add-Note ('Shutdown of the build instance raised: ' + (Format-Err $_))
 }
 
 if ($rel1.NaturalExit -and $rel1.Failed.Count -eq 0) {
-    Add-Step 'Build instance closed naturally' 'PASS' ("pid {0} exited without a forced stop" -f $id1.ProcessId)
+    Add-Step 'Build instance closed naturally' 'PASS' ("pid {0} exited without a forced stop" -f $buildExcelIdentity.ProcessId)
 } else {
     Add-Step 'Build instance closed naturally' 'FAIL' ("natural exit={0}; failed releases={1}" -f $rel1.NaturalExit, (($rel1.Failed | Select-Object -Unique) -join ', '))
 }
@@ -345,14 +345,14 @@ if ($rel1.NaturalExit -and $rel1.Failed.Count -eq 0) {
 # ===========================================================================
 $excel2 = $null; $workbooks2 = $null; $wb2 = $null; $worksheets2 = $null
 $vbproj2 = $null; $vbcomps2 = $null
-$id2 = $null
+$verifyExcelIdentity = $null
 $rel2 = $null
 
 if ($buildOk) {
     $preExisting2 = @(Get-PreExistingExcelPids)
     try {
         $excel2 = New-Object -ComObject Excel.Application
-        $id2 = Get-ExcelIdentity -ExcelApp $excel2 -PreExistingPids $preExisting2
+        $verifyExcelIdentity = Get-ExcelIdentity -ExcelApp $excel2 -PreExistingPids $preExisting2
         $excel2.Visible = $false
         $excel2.DisplayAlerts = $false
         $excel2.AskToUpdateLinks = $false
@@ -441,17 +441,17 @@ if ($buildOk) {
         [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
         [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
 
-        $rel2.NaturalExit = Wait-ExcelExit -Identity $id2
+        $rel2.NaturalExit = Wait-ExcelExit -Identity $verifyExcelIdentity
         if (-not $rel2.NaturalExit) {
             $rel2.EmergencyRequired = $true
-            Add-Note (Invoke-EmergencyExcelCleanup -Identity $id2 -Label 'verification instance')
+            Add-Note (Invoke-EmergencyExcelCleanup -Identity $verifyExcelIdentity -Label 'verification instance')
         }
     } catch {
         Add-Note ('Shutdown of the verification instance raised: ' + (Format-Err $_))
     }
 
     if ($rel2.NaturalExit -and $rel2.Failed.Count -eq 0) {
-        Add-Step 'Verification instance closed naturally' 'PASS' ("pid {0} exited without a forced stop" -f $id2.ProcessId)
+        Add-Step 'Verification instance closed naturally' 'PASS' ("pid {0} exited without a forced stop" -f $verifyExcelIdentity.ProcessId)
     } else {
         Add-Step 'Verification instance closed naturally' 'FAIL' ("natural exit={0}; failed releases={1}" -f $rel2.NaturalExit, (($rel2.Failed | Select-Object -Unique) -join ', '))
     }

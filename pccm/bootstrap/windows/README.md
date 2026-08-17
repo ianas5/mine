@@ -51,9 +51,13 @@ Gate-A source review is approved. Two Gate-B runs have happened on the target an
 - **run 3** passed both preflights and the whole bootstrap, then hit
   `Compile error: Variable not defined` on the first `Application.Run` — a real
   VBA source defect, module-level declarations written after the first executable
-  procedure (`../../docs/phase4_gate_b_run3.md`).
+  procedure (`../../docs/phase4_gate_b_run3.md`);
+- **run 4** compiled and ran the whole structural harness — 16 passed, 18 failed.
+  **One** real model defect (collision-unsafe ListObject header renaming); the
+  rest were cascades and harness-precondition faults
+  (`../../docs/phase4_gate_b_run4.md`).
 
-All three defects are fixed and the package is ready for one rerun.
+All are fixed and the package is ready for one rerun.
 
 Importing a VBA module is **not** compiling it. Scenario A can be entirely green
 while the project does not build; Excel compiles on the first `Application.Run`,

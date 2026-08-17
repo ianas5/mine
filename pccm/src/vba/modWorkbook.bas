@@ -44,6 +44,135 @@ Public Type TableSnapshot
 End Type
 
 ' ---------------------------------------------------------------------------
+' Collision-safe header renaming
+' ---------------------------------------------------------------------------
+' Excel requires ListObject column names to be UNIQUE, and it does NOT report a
+' collision -- it silently disambiguates by appending a digit. A single sequential
+' pass therefore corrupts any OVERLAPPING rename, which is precisely the common
+' case here: shifting the project start year from 2028 to 2030 asks
+'
+'     2028 2029 2030 2031 2032   ->   2030 2031 2032 2033 2034
+'
+' and renaming column 1 to "2030" while column 3 is still "2030" produced the
+' corruption the target machine reported at Gate-B run 4: 20272, 20282, 20292,
+' 20302. Excel had appended a "2" to each collided name.
+'
+' The two-pass rename below is the ONLY header-renaming path in the model. Every
+' caller goes through it: modProfiling.SetYearColumns, modInflation.SetYearColumns
+' and RestoreTable. Rollback needs it as much as the forward path does -- a
+' restore that corrupts the headers it is putting back is not a rollback.
+Private Const HEADER_TEMP_PREFIX As String = "PCCM_TMP_HDR_"
+
+' Renames Count columns starting at FirstColumn to exactly FinalNames, which must
+' be a 1-based String array. Raises rather than accepting an approximate result.
+Public Sub SetHeaderBlock(ByVal Target As ListObject, ByVal FirstColumn As Long, _
+                          ByRef FinalNames() As String)
+    Dim total As Long, i As Long, j As Long, suffix As Long
+    Dim temps() As String
+    Dim candidate As String
+
+    total = UBound(FinalNames) - LBound(FinalNames) + 1
+    If total <= 0 Then Exit Sub
+    If FirstColumn < 1 Or FirstColumn + total - 1 > Target.ListColumns.Count Then
+        Err.Raise vbObjectError + 5030, "modWorkbook.SetHeaderBlock", _
+                  "Header block " & FirstColumn & ".." & (FirstColumn + total - 1) & _
+                  " lies outside " & Target.Name & ", which has " & _
+                  Target.ListColumns.Count & " column(s)."
+    End If
+
+    ' --- 2. the desired names must be usable -----------------------------
+    For i = 1 To total
+        If Len(Trim$(FinalNames(i))) = 0 Then
+            Err.Raise vbObjectError + 5031, "modWorkbook.SetHeaderBlock", _
+                      "Header " & i & " of " & Target.Name & " would be blank."
+        End If
+        For j = i + 1 To total
+            If StrComp(FinalNames(i), FinalNames(j), vbTextCompare) = 0 Then
+                Err.Raise vbObjectError + 5032, "modWorkbook.SetHeaderBlock", _
+                          "Headers " & i & " and " & j & " of " & Target.Name & _
+                          " would both be '" & FinalNames(i) & "'. Excel requires " & _
+                          "unique column names, so this rename can never succeed."
+            End If
+        Next j
+    Next i
+
+    ' A name already held by a column OUTSIDE the block is equally impossible, and
+    ' this operation is not allowed to rename that column to make room.
+    For i = 1 To Target.ListColumns.Count
+        If i < FirstColumn Or i > FirstColumn + total - 1 Then
+            For j = 1 To total
+                If StrComp(Target.ListColumns(i).Name, FinalNames(j), vbTextCompare) = 0 Then
+                    Err.Raise vbObjectError + 5033, "modWorkbook.SetHeaderBlock", _
+                              "Column " & i & " of " & Target.Name & " is already " & _
+                              "named '" & FinalNames(j) & "', which is outside the " & _
+                              "block being renamed."
+                End If
+            Next j
+        End If
+    Next i
+
+    ' --- 3. deterministic temporary names --------------------------------
+    ' Not random. Each candidate is checked against every CURRENT column name,
+    ' every DESIRED name and every temporary name already chosen, and gains an
+    ' incrementing suffix until it is unique on all three counts.
+    ReDim temps(1 To total)
+    For i = 1 To total
+        suffix = 0
+        Do
+            candidate = HEADER_TEMP_PREFIX & CStr(FirstColumn + i - 1)
+            If suffix > 0 Then candidate = candidate & "_" & CStr(suffix)
+            suffix = suffix + 1
+        Loop While HeaderNameInUse(Target, candidate) _
+                Or NameInArray(FinalNames, candidate, total) _
+                Or NameInArray(temps, candidate, i - 1)
+        temps(i) = candidate
+    Next i
+
+    ' --- 4. first pass: vacate every name in the block --------------------
+    For i = 1 To total
+        Target.ListColumns(FirstColumn + i - 1).Name = temps(i)
+    Next i
+
+    ' --- 5. second pass: no desired name can collide now ------------------
+    For i = 1 To total
+        Target.ListColumns(FirstColumn + i - 1).Name = FinalNames(i)
+    Next i
+
+    ' --- 6/7. verify EXACTLY, never trust auto-disambiguation -------------
+    For i = 1 To total
+        If StrComp(Target.ListColumns(FirstColumn + i - 1).Name, FinalNames(i), _
+                   vbBinaryCompare) <> 0 Then
+            Err.Raise vbObjectError + 5034, "modWorkbook.SetHeaderBlock", _
+                      "Column " & (FirstColumn + i - 1) & " of " & Target.Name & _
+                      " is named '" & Target.ListColumns(FirstColumn + i - 1).Name & _
+                      "' after the rename; '" & FinalNames(i) & "' was requested. " & _
+                      "Excel altered the name rather than accepting it."
+        End If
+    Next i
+End Sub
+
+Private Function HeaderNameInUse(ByVal Target As ListObject, ByVal Candidate As String) As Boolean
+    Dim i As Long
+    For i = 1 To Target.ListColumns.Count
+        If StrComp(Target.ListColumns(i).Name, Candidate, vbTextCompare) = 0 Then
+            HeaderNameInUse = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function NameInArray(ByRef Names() As String, ByVal Candidate As String, _
+                             ByVal UpTo As Long) As Boolean
+    Dim i As Long
+    For i = 1 To UpTo
+        If StrComp(Names(i), Candidate, vbTextCompare) = 0 Then
+            NameInArray = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+' ---------------------------------------------------------------------------
 ' Sheets and tables
 ' ---------------------------------------------------------------------------
 Public Function Sh(ByVal SheetName As String) As Worksheet
@@ -411,9 +540,23 @@ Public Sub RestoreTable(ByVal Target As ListObject, ByRef Snapshot As TableSnaps
                   " column(s); the snapshot recorded " & Snapshot.ColumnCount & "."
     End If
 
+    ' --- headers, collision-safely -----------------------------------------
+    ' Writing header cells one at a time is the same collision-unsafe rename as a
+    ' sequential ListColumn.Name loop: restoring 2030..2034 back to 2028..2032
+    ' overlaps, and Excel would silently disambiguate. A rollback that corrupts the
+    ' headers it is putting back is not a rollback, so it goes through the same
+    ' two-pass primitive the forward path uses.
+    If Snapshot.ColumnCount > 0 Then
+        Dim restoredHeaders() As String
+        ReDim restoredHeaders(1 To Snapshot.ColumnCount)
+        For c = 1 To Snapshot.ColumnCount
+            restoredHeaders(c) = CStr(Snapshot.Headers(c))
+        Next c
+        SetHeaderBlock Target, 1, restoredHeaders
+    End If
+
     ' --- presentation, before contents so formats apply to the values ----
     For c = 1 To Snapshot.ColumnCount
-        Target.HeaderRowRange.Cells(1, c).Value = Snapshot.Headers(c)
         Target.ListColumns(c).Range.ColumnWidth = Snapshot.ColumnWidths(c)
         If Snapshot.RowCount > 0 Then
             Target.ListColumns(c).DataBodyRange.NumberFormat = Snapshot.NumberFormats(c)

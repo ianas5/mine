@@ -1047,7 +1047,10 @@ def test_44b_the_harness_drives_the_register_past_its_reserved_capacity() -> Non
     assert "the ListObject itself grew" in code
     assert "the grown row ID cell keeps the model-controlled treatment" in code
     assert "the grown row user cells keep the editable input treatment" in code
-    assert "keeps its Data Validation on the grown row" in code
+    # Validation on the grown row is checked against the calibrated Stage-A
+    # baseline, through the shared contract helper, not by an ad-hoc probe.
+    assert "-Label 'the grown row'" in code
+    assert "-Baseline $costValidationBaseline" in code
     assert "a generated profiling year cell equals the contract input_fill" in code
 
 
@@ -1217,12 +1220,257 @@ def test_44a1_percentage_ownership_is_proved_with_a_live_timeline() -> None:
     assert "$excel.Run('PCCM_ApplyTimeline')" in section
     # The comparison is an ID-to-value map captured as plain data beforehand.
     assert "$before[$row[0]] = " in section and "$after[$row[0]] = " in section
-    assert "$after[$id] -ne $before[$id]" in section, (
+    assert "$after[$driverId] -ne $before[$driverId]" in section, (
         "the assertion must compare per identifier, not compare row order"
     )
     assert "$positionalBefore" in section and "$positionalAfter" in section, (
         "position-following must be ruled out explicitly"
     )
+
+
+# ===========================================================================
+# harness result hygiene
+#
+# Gate-B run 4 reported 18 failures from a handful of causes: one rolled-back
+# timeline poisoned five dependent oracle comparisons, one invalid entered triple
+# left behind by a deliberate test failed three later scenarios, and one leftover
+# Config fixture failed seven more. A failure must be attributable to the thing it
+# is testing.
+# ===========================================================================
+def test_44n1_a_broken_timeline_chain_skips_its_dependents() -> None:
+    """D-J is a sequential state machine, and its oracle says so.
+
+    D-J.5's expected headers are computed from the state D-J.4 was supposed to
+    leave. Once a step fails, every later comparison is against a state the
+    workbook never reached, and reporting those as independent behavioural defects
+    is simply untrue.
+    """
+    code = _ps(HARNESS_PS1)
+    assert "$chainBrokenAt = ''" in _ps_code(HARNESS_PS1)
+    assert "if ($chainBrokenAt -ne '') {" in _ps_code(HARNESS_PS1)
+    assert "'SKIP'" in code[code.index("$chainBrokenAt") :], "dependents must be SKIPped"
+    assert "the timeline chain prerequisite failed at" in code
+    # Set on any failed step, including one that threw.
+    assert _ps_code(HARNESS_PS1).count("$chainBrokenAt = 'D-J.' + $stepIndex") == 2, (
+        "the chain must break on a failed checklist AND on an exception"
+    )
+    # And the run does NOT stop globally: independent scenarios still execute.
+    assert code.index("$chainBrokenAt") < code.index("# K. Profiling synchronisation")
+    assert "# W. The representation ceiling" in code
+
+
+def test_44n2_every_timeline_step_asserts_its_outcome_contract() -> None:
+    """A rejected Apply looked identical to an accepted one until a later header
+    comparison failed, so the reported defect was the header, not the rejection."""
+    code = _ps(HARNESS_PS1)
+    assert "prevalidation rejected the entered timeline" in code
+    assert "the cancelled change reported OK|cancelled" in code
+    assert "the accepted change reported OK, not a rejection" in code
+    # The exact VBA outcome is printed in every case.
+    assert _ps_code(HARNESS_PS1).count('("outcome \'$outcome\'")') >= 3
+
+
+def test_44n3_scenarios_that_need_a_valid_timeline_normalise_it_first() -> None:
+    """D-J.10 deliberately leaves an INVALID entered triple behind.
+
+    Every later scenario that calls Apply for its own purposes was rejected before
+    it tested anything -- K2, N and W each failed at run 4 with 'Base Year 2040 is
+    later than Project Start Year 2035'. Normalisation is explicit and per
+    scenario; it is NOT applied globally, because the entered/applied difference is
+    exactly what D-J tests.
+    """
+    code = _ps_code(HARNESS_PS1)
+    helper = _ps_function_body(HARNESS_PS1, "Sync-EnteredTimelineToApplied")
+    for pair in (
+        ("nmBaseYear_Applied", "nmBaseYear_Entered"),
+        ("nmStartYear_Applied", "nmStartYear_Entered"),
+        ("nmDuration_Applied", "nmDuration_Entered"),
+    ):
+        assert pair[0] in helper and pair[1] in helper, pair
+    assert "$readBack -ne $applied" in helper, "the copy must be verified, not assumed"
+
+    # Called by each scenario that needs it, and reported as a check so a failed
+    # normalisation is visible rather than silent.
+    assert code.count("Sync-EnteredTimelineToApplied -Workbook $wb") >= 5
+    assert "the entered timeline was normalised to the applied one" in _ps(HARNESS_PS1)
+    for marker in ("# K2. Profiling PERCENTAGES", "# N. An Inflation Profile removed",
+                   "# T. Unkeyed structural data", "# W. The representation ceiling"):
+        section = _ps(HARNESS_PS1)[_ps(HARNESS_PS1).index(marker) :][:6000]
+        assert "Sync-EnteredTimelineToApplied" in section, f"{marker} does not normalise"
+
+    # NOT global: the D-J loop must never normalise, or it would erase its own test.
+    timeline = _ps(HARNESS_PS1)
+    timeline = timeline[timeline.index("# D - J. Timeline scenarios") : timeline.index("# K. Profiling")]
+    assert "Sync-EnteredTimelineToApplied" not in timeline
+
+
+def test_44n4_scenario_o_establishes_its_own_duration_baseline() -> None:
+    """O tests destruction of the FINAL profiling year during a shrink, so it needs
+    Applied Duration >= 2. D-J.9 deliberately ends at duration 1 and D-J.10 is
+    rejected, so inheriting the previous timeline made O impossible to pass in a
+    perfectly correct workbook."""
+    code = _ps(HARNESS_PS1)
+    section = code[code.index("# O. Non-numeric content") : code.index("# P. An oversized")]
+    assert "$candidate.expect.applied.duration -ge 2" in section, (
+        "the baseline must come from the ORACLE FIXTURE, not be invented here"
+    )
+    assert "Set-AppliedTimeline" in section
+    for check in (
+        "the fixture offers a valid baseline with duration >= 2",
+        "the baseline timeline applied successfully",
+        "the applied triple is the requested baseline",
+        "entered equals applied before the shrink",
+        "the baseline workbook is structurally clean",
+    ):
+        assert check in section, f"O is missing its prerequisite check: {check}"
+    assert "PASTED TEXT" in section
+    assert section.index("the baseline workbook is structurally clean") < section.index("PASTED TEXT"), (
+        "the baseline must be established BEFORE the destructive fixture is seeded"
+    )
+
+
+def test_44n5_the_temporary_config_profile_is_always_cleaned_up() -> None:
+    """N failed part way at run 4, left 'HARNESS TEMP PROFILE' in Config with no
+    matching inflation row, and that one orphan failed every scenario after it."""
+    code = _ps(HARNESS_PS1)
+    section = code[code.index("# N. An Inflation Profile removed") : code.index("# O. Non-numeric content")]
+    assert "} finally {" in section, "the fixture must be removed on the failure path too"
+    cleanup = section[section.index("} finally {") :]
+    assert "Clear-ConfigProfile" in cleanup
+    assert "PCCM_ApplyTimeline" in cleanup, "the removal must be synchronised, not just written"
+    assert "PCCM_StructuralReport" in cleanup, "residue must be detected and noted"
+    # The profile name is declared outside the try, so the finally can see it.
+    assert section.index("$profileName = 'HARNESS TEMP PROFILE'") < section.index("try {")
+
+
+def test_44n6_independent_scenarios_check_their_prerequisites() -> None:
+    """A scenario contaminated by an earlier one is reported as contaminated."""
+    code = _ps_code(HARNESS_PS1)
+    guard = _ps_function_body(HARNESS_PS1, "Test-CleanStructure")
+    assert "PCCM_StructuralReport" in guard
+    assert "'SKIP'" in guard, "contamination is a SKIP, not another behavioural failure"
+    assert "return $false" in guard and "return $true" in guard
+    for scenario in ("P", "Q", "R", "S", "T", "U", "W"):
+        assert f"Test-CleanStructure -ExcelApp $excel -ScenarioId '{scenario}'" in code, (
+            f"scenario {scenario} does not check that it starts clean"
+        )
+
+
+def test_44n7_the_reorder_scenario_compares_order_not_membership() -> None:
+    """Sorting both sides proved membership only: at run 4 Apply was rejected, the
+    grid never synchronised, and the assertion passed anyway."""
+    code = _ps(HARNESS_PS1)
+    section = code[code.index("# K2. Profiling PERCENTAGES") : code.index("# L. Runtime failure")]
+    assert "$profileOrderAfter" in section
+    assert "($profileOrderAfter -join ',') -eq ($orderAfter -join ',')" in section, (
+        "the exact sequence must be compared, with neither side sorted"
+    )
+    assert "the profiling grid order follows the reordered register EXACTLY" in section
+    assert "$after.Keys | Sort-Object" not in section, "the sorted-set comparison must be gone"
+
+
+def test_44n8_the_orphan_fixture_is_a_real_blank_row() -> None:
+    """Add-then-Delete cannot make a free row: DeleteDriver removes the ListRow, so
+    the table returns to the same count and the fixture wrote at row index zero."""
+    code = _ps(HARNESS_PS1)
+    section = code[code.index("# T. Unkeyed structural data") : code.index("# U. A corrupt ID counter")]
+    assert "Add-BlankTableRow" in section, "the fixture must add a blank row directly"
+    # Only the CREATION of the fixture is constrained -- calling Add afterwards is
+    # the point of the scenario, since Add is what must be refused.
+    code_only = _ps_code(HARNESS_PS1)
+    creation = code_only[code_only.index("$fixtureRow = Add-BlankTableRow") :]
+    creation = creation[: creation.index("ORPHAN DESCRIPTION")]
+    assert "PCCM_AddCostLine" not in creation, (
+        "the corruption fixture must not allocate a permanent ID"
+    )
+    assert "PCCM_DeleteCostLineById" not in creation, (
+        "Add-then-Delete is exactly what could not produce a free row"
+    )
+    for check in (
+        "a blank register row was added for the corruption fixture",
+        "the fixture row exists in the table body",
+        "the fixture row has no permanent ID",
+        "every cell of the fixture row is blank",
+        "Add is refused while a driver orphan exists",
+        "the orphan row is untouched",
+    ):
+        assert check in section, f"the T1 fixture is missing: {check}"
+    assert "Remove-TableRow" in section, "the fixture row must be removed afterwards"
+    # And the helper owns its COM leaf-before-parent, like every other reader.
+    adder = _ps_function_body(HARNESS_PS1, "Add-BlankTableRow")
+    assert "Release-Transient $added" in adder and "Release-Transient $rows" in adder
+
+
+def test_44n9_validation_is_compared_against_a_calibrated_baseline() -> None:
+    """The old check read $cell.Validation and treated "no exception" as "there is
+    a user restriction". Excel returns a Validation object either way, and a Type
+    of xlValidateInputOnly restricts nothing."""
+    code = _ps(HARNESS_PS1)
+    assert "Test-TableCellValidation" not in _ps_code(HARNESS_PS1), (
+        "the assumption-based probe must be gone, not merely unused"
+    )
+    fingerprint = _ps_function_body(HARNESS_PS1, "Get-ValidationFingerprint")
+    assert "$validation.Type" in fingerprint
+    assert "$validation.Formula1" in fingerprint and "$validation.Formula2" in fingerprint
+
+    section = code[code.index("# A2. Data Validation baseline") : code.index("# B. Permanent Cost Line IDs")]
+    assert "-RowIndex 1" in section, "the baseline comes from an untouched Stage-A row"
+    assert section.index("Get-RowValidationFingerprints") < code.index("PCCM_AddCostLine"), (
+        "the baseline must be captured before any driver is added"
+    )
+    assert "the fingerprint distinguishes a validated column from the ID column" in section, (
+        "a baseline of 'nothing anywhere' would make every later comparison vacuous"
+    )
+
+    # Applied to the grown row and to both rollback rows.
+    assert _ps_code(HARNESS_PS1).count("-Baseline $costValidationBaseline") == 3
+    assert "ID cell has no constraining user validation, matching the model-controlled baseline" in code, (
+        "the ID assertion must be phrased as the contract states it"
+    )
+    assert "carries NO user Data Validation" not in code, (
+        "the old phrasing encoded the wrong assumption"
+    )
+    # Coverage is not weakened: the validated user columns are still named.
+    assert "every validated user column keeps its baseline Data Validation" in code
+
+
+def test_44n10_the_excel_identity_variable_is_never_clobbered() -> None:
+    """$id held the Excel process identity AND was reused as a foreach iterator.
+
+    PowerShell loop variables are not block-scoped, so by shutdown $id was a driver
+    identifier string, and Wait-ExcelExit / $id.ProcessId failed with
+    PropertyNotFoundException at run 4.
+    """
+    for path in (BUILD_PS1, HARNESS_PS1):
+        code = _ps_code(path)
+        identities = set(re.findall(r"\$(\w+)\s*=\s*Get-ExcelIdentity", code))
+        assert identities, f"{path.name}: no Excel identity is captured"
+        for name in identities:
+            assert "identity" in name.lower(), (
+                f"{path.name}: ${name} holds the Excel identity but is not named for it"
+            )
+            assert not re.search(rf"foreach\s*\(\s*\${name}\s+in\b", code), (
+                f"{path.name}: ${name} is reused as a loop iterator"
+            )
+            others = [
+                line.strip()
+                for line in code.splitlines()
+                if re.match(rf"\s*\${name}\s*=", line)
+                and "Get-ExcelIdentity" not in line
+                and "= $null" not in line
+            ]
+            assert not others, f"{path.name}: ${name} is overwritten by {others}"
+        # Every consumer uses the identity variable, not a bare $id.
+        for consumer in ("Wait-ExcelExit -Identity", "Invoke-EmergencyExcelCleanup -Identity"):
+            for line in code.splitlines():
+                if consumer in line:
+                    assert re.search(r"-Identity\s+\$\w*[Ii]dentity\b", line), line.strip()
+
+    # And the loops that caused it now carry semantic names.
+    harness = _ps_code(HARNESS_PS1)
+    assert re.search(r"foreach\s*\(\s*\$driverId\s+in\b", harness)
+    assert re.search(r"foreach\s*\(\s*\$riskId\s+in\b", harness)
+    assert not re.search(r"foreach\s*\(\s*\$id\s+in\b", harness)
 
 
 def test_44l_year_cell_presentation_is_asserted_by_equality() -> None:
@@ -1702,6 +1950,165 @@ def test_45e_the_declaration_sweep_reads_the_whole_parameter_list() -> None:
         or any(p.rstrip().endswith("_") for p in _vba_parameters(text))
     ]
     assert not dangling, f"a continuation was left unjoined: {dangling}"
+
+
+# ===========================================================================
+# collision-safe header renaming
+#
+# Excel requires ListObject column names to be unique and does NOT refuse a
+# collision -- it silently appends a digit. A single sequential pass therefore
+# corrupts any OVERLAPPING rename, which is the common case here: shifting the
+# start year asks 2028..2032 -> 2030..2034, and the target machine came back with
+# 20272, 20282, 20292, 20302 at Gate-B run 4.
+# ===========================================================================
+def _rename_sequentially(current: list[str], final: list[str]) -> list[str]:
+    """A MODEL of Excel's behaviour, not an implementation of the fix.
+
+    Renaming to a name another column still holds does not fail; Excel appends a
+    digit. This exists so the two-pass algorithm can be shown to be necessary
+    rather than asserted to be.
+    """
+    names = list(current)
+    for index, wanted in enumerate(final):
+        taken = {n for i, n in enumerate(names) if i != index}
+        candidate, suffix = wanted, 1
+        while candidate in taken:
+            suffix += 1
+            candidate = f"{wanted}{suffix}"
+        names[index] = candidate
+    return names
+
+
+def _rename_two_pass(current: list[str], final: list[str]) -> list[str]:
+    """The algorithm the VBA implements: vacate every name, then place them."""
+    names = list(current)
+    temps = []
+    for index in range(len(final)):
+        suffix, candidate = 0, f"PCCM_TMP_HDR_{index + 1}"
+        while candidate in names or candidate in final or candidate in temps:
+            suffix += 1
+            candidate = f"PCCM_TMP_HDR_{index + 1}_{suffix}"
+        temps.append(candidate)
+    for index, temp in enumerate(temps):
+        names = _rename_sequentially(names, [temp if i == index else n for i, n in enumerate(names)])
+    for index, wanted in enumerate(final):
+        names = _rename_sequentially(names, [wanted if i == index else n for i, n in enumerate(names)])
+    return names
+
+
+def test_45j_a_sequential_rename_provably_corrupts_an_overlapping_block() -> None:
+    """The defect, demonstrated rather than described.
+
+    If this ever stops failing, the model of Excel's behaviour has drifted and the
+    two-pass test below would be proving nothing.
+    """
+    before = ["2028", "2029", "2030", "2031", "2032"]
+    after = ["2030", "2031", "2032", "2033", "2034"]
+    corrupted = _rename_sequentially(before, after)
+    assert corrupted != after, "a sequential rename of an overlapping block must corrupt"
+    assert any(name not in after for name in corrupted), corrupted
+
+    # Whether a sequential pass collides is DIRECTION-DEPENDENT, and that is the
+    # trap: shifting the same block back DOWN, left to right, happens to vacate
+    # each target before it is needed, so it survives by luck.
+    assert _rename_sequentially(after, before) == before
+
+    # Luck runs out on any rollback that is not a monotonic downward shift. A
+    # reversal -- which RestoreTable can face, since it restores a whole header row
+    # to whatever the snapshot held -- collides immediately.
+    reversal = _rename_sequentially(["2028", "2029", "2030"], ["2030", "2029", "2028"])
+    assert reversal != ["2030", "2029", "2028"], reversal
+
+
+def test_45k_the_two_pass_rename_is_correct_in_both_directions() -> None:
+    """Forward shift, rollback shift, full reversal and a no-op all land exactly."""
+    cases = [
+        (["2028", "2029", "2030", "2031", "2032"], ["2030", "2031", "2032", "2033", "2034"]),
+        (["2030", "2031", "2032", "2033", "2034"], ["2028", "2029", "2030", "2031", "2032"]),
+        (["2028", "2029", "2030"], ["2030", "2029", "2028"]),
+        (["2028", "2029", "2030"], ["2028", "2029", "2030"]),
+        (["2035"], ["2036"]),
+    ]
+    for before, after in cases:
+        assert _rename_two_pass(before, after) == after, (before, after)
+
+
+def test_45l_one_collision_safe_primitive_exists_and_is_the_only_renamer() -> None:
+    """Three paths mutated headers; one primitive now does it for all of them."""
+    workbook = next(m for m in _handwritten_modules() if m.name == "modWorkbook")
+    body = workbook.code[workbook.code.index("Public Sub SetHeaderBlock") :]
+    body = body[: body.index("End Sub")]
+
+    # The required algorithm, step by step.
+    assert "ReDim temps(1 To total)" in body, "temporary names must be materialised"
+    assert "HEADER_TEMP_PREFIX" in body, "deterministic temporary names, not random"
+    assert "Rnd" not in body and "Random" not in body
+    assert "HeaderNameInUse(Target, candidate)" in body, "checked against current names"
+    assert "NameInArray(FinalNames, candidate, total)" in body, "checked against desired names"
+    assert "NameInArray(temps, candidate, i - 1)" in body, "checked against each other"
+    first_pass = body.index("Target.ListColumns(FirstColumn + i - 1).Name = temps(i)")
+    second_pass = body.index("Target.ListColumns(FirstColumn + i - 1).Name = FinalNames(i)")
+    verify = body.index("vbBinaryCompare")
+    assert first_pass < second_pass < verify, "vacate, then place, then verify"
+    assert "StrComp" in body[verify - 200 : verify + 200]
+    assert "Err.Raise" in body[verify:], "a differing final name must raise, not be accepted"
+
+    # Duplicate desired names can never succeed, so they are refused up front.
+    assert "would both be" in workbook.code_without_string_removal
+
+    # AND NO OTHER RENAMER SURVIVES. Both a ListColumn.Name assignment and a header
+    # CELL write rename a column, and both collide the same way.
+    problems = []
+    for module in _handwritten_modules():
+        for number, line in enumerate(module.code.splitlines(), 1):
+            if re.search(r"ListColumns\([^)]*\)\.Name\s*=", line) and module.name != "modWorkbook":
+                problems.append(f"{module.name}:{number}: {line.strip()[:60]}")
+            if re.search(r"HeaderRowRange\.Cells\([^)]*\)\.Value\s*=", line):
+                problems.append(f"{module.name}:{number}: {line.strip()[:60]}")
+    assert not problems, (
+        "an independent header rename survives outside the primitive:\n  "
+        + "\n  ".join(problems)
+    )
+    # Inside modWorkbook the only two assignments are the primitive's own passes.
+    renames = [
+        line.strip()
+        for line in workbook.code.splitlines()
+        if re.search(r"ListColumns\([^)]*\)\.Name\s*=", line)
+    ]
+    assert len(renames) == 2, renames
+
+
+def test_45m_all_three_header_mutating_paths_use_the_primitive() -> None:
+    """Profiling, inflation and ROLLBACK. The rollback is not an afterthought:
+    restoring 2030..2034 to 2028..2032 overlaps exactly as badly, and a restore
+    that corrupts the headers it is putting back is not a restore."""
+    for name, marker in (
+        ("modProfiling", "modWorkbook.SetHeaderBlock target, fixedCols + 1, wantedHeaders"),
+        ("modInflation", "modWorkbook.SetHeaderBlock target, fixedCols + 1, wantedHeaders"),
+        ("modWorkbook", "SetHeaderBlock Target, 1, restoredHeaders"),
+    ):
+        code = next(m for m in _handwritten_modules() if m.name == name).code
+        assert marker in code, f"{name} does not route its rename through the primitive"
+
+    restore = next(m for m in _handwritten_modules() if m.name == "modWorkbook").code
+    restore = restore[restore.index("Public Sub RestoreTable") :]
+    restore = restore[: restore.index("End Sub")]
+    assert "SetHeaderBlock Target, 1, restoredHeaders" in restore
+    assert "Target.HeaderRowRange.Cells(1, c).Value = Snapshot.Headers(c)" not in restore, (
+        "the per-cell header write is the same collision-unsafe rename"
+    )
+
+
+def test_45n_the_harness_reports_header_residue_by_position() -> None:
+    """Exact equality per position, with no assumption about the bad suffix."""
+    code = _ps(HARNESS_PS1)
+    assert "every header is EXACTLY the requested value, with no rename residue" in code
+    assert "-cne [string]$pair.Expected[$h]" in _ps_code(HARNESS_PS1), (
+        "the comparison must be exact and case-sensitive, per position"
+    )
+    assert "'2'" not in _ps_code(HARNESS_PS1).replace("'20", "'XX"), (
+        "no particular collision suffix may be hardcoded as the only bad outcome"
+    )
 
 
 def test_46a_no_chained_com_member_access_exists() -> None:

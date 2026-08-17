@@ -128,10 +128,20 @@ Public Sub SetYearColumns(ByVal FirstYear As Variant, ByVal YearCount As Long)
 
     ' Relabel, then re-place every surviving rate by its calendar year. Any year
     ' with no captured rate stays blank - including newly required years.
-    For y = 1 To YearCount
-        target.ListColumns(fixedCols + y).Name = CStr(CLng(FirstYear) + y - 1)
-        target.HeaderRowRange.Cells(1, fixedCols + y).NumberFormat = GRID_INFLATION_HEADER_FORMAT
-    Next y
+    ' Collision-safe, through the one primitive. The inflation span slides with the
+    ' timeline, so its calendar-year headers overlap on almost every change, and a
+    ' sequential rename would leave Excel's silent disambiguation behind.
+    If YearCount > 0 Then
+        Dim wantedHeaders() As String
+        ReDim wantedHeaders(1 To YearCount)
+        For y = 1 To YearCount
+            wantedHeaders(y) = CStr(CLng(FirstYear) + y - 1)
+        Next y
+        modWorkbook.SetHeaderBlock target, fixedCols + 1, wantedHeaders
+        For y = 1 To YearCount
+            target.HeaderRowRange.Cells(1, fixedCols + y).NumberFormat = GRID_INFLATION_HEADER_FORMAT
+        Next y
+    End If
 
     For r = 1 To rowCount
         Dim rowName As String

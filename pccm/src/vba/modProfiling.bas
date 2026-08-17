@@ -101,10 +101,22 @@ Public Sub SetYearColumns(ByVal Kind As String, ByVal StartYear As Variant, _
     Loop
 
     ' Relabel. Headers are display only; no value moves because of a relabel.
-    For i = 1 To NewCount
-        target.ListColumns(fixedCols + i).Name = CStr(CLng(StartYear) + i - 1)
-        target.HeaderRowRange.Cells(1, fixedCols + i).NumberFormat = headerFormat
-    Next i
+    '
+    ' Collision-safe, through the one primitive: a start-year shift asks for
+    ' 2028..2032 -> 2030..2034, and a sequential rename would meet a column still
+    ' called 2030. Excel does not refuse that -- it appends a digit, and the target
+    ' machine reported exactly that corruption at Gate-B run 4.
+    If NewCount > 0 Then
+        Dim wantedHeaders() As String
+        ReDim wantedHeaders(1 To NewCount)
+        For i = 1 To NewCount
+            wantedHeaders(i) = CStr(CLng(StartYear) + i - 1)
+        Next i
+        modWorkbook.SetHeaderBlock target, fixedCols + 1, wantedHeaders
+        For i = 1 To NewCount
+            target.HeaderRowRange.Cells(1, fixedCols + i).NumberFormat = headerFormat
+        Next i
+    End If
 
     ' Explicit input-language treatment, never left to table-format propagation.
     modWorkbook.PaintYearCells target, fixedCols + 1, NewCount, 1
