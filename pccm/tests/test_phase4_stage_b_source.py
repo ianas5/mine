@@ -1950,7 +1950,7 @@ def test_46o2_the_preflight_proves_the_shape_before_excel_starts() -> None:
     run if it fails, rather than comparing wrong shapes for twenty scenarios.
     """
     code = _ps(HARNESS_PS1)
-    section = "# Preflight: collection shape, BEFORE Excel is started"
+    section = "# PRE. Collection shape, BEFORE Excel is started"
     assert section in code, "the harness has no collection-shape preflight"
 
     # It must run before anything starts Excel: the bootstrap is invoked in A.
@@ -1985,6 +1985,148 @@ def test_46o2_the_preflight_proves_the_shape_before_excel_starts() -> None:
     assert "Write-Output" not in probe, (
         "the probe must not reimplement emission; it goes through Write-RowObject"
     )
+
+
+# Two contracts that look alike in PowerShell and are not the same thing. Every
+# helper that touches a collection belongs to exactly one of them.
+#
+#   ELEMENT PRODUCER  emits zero, one or many VALUES. The caller materialises with
+#                     @(...). Get-TransientFailures, Get-TableBody, Write-RowObject.
+#   CONTAINER FACTORY returns ONE object, which may be empty at birth. The caller
+#                     keeps it and mutates it. New-Checklist, New-ReleaseLedger.
+#
+# Conflating them is what ended Gate-B run 2: `return (New-Object ArrayList)` reads
+# as a factory but behaves as a producer, because an ArrayList is enumerable and an
+# EMPTY enumerable emits zero pipeline objects.
+CONTAINER_FACTORIES = ("New-Checklist", "New-ReleaseLedger")
+
+
+def test_46q_the_checklist_factory_returns_one_mutable_arraylist() -> None:
+    """`return (New-Object System.Collections.ArrayList)` returns nothing at all.
+
+    An ArrayList is enumerable, and an empty enumerable emits ZERO pipeline objects,
+    so `$list = New-Checklist` assigned $null and the first `$List.Add(...)` threw
+    "You cannot call a method on a null-valued expression" -- in the preflight,
+    before Excel started, on run 2. It is a factory, not a producer: it must hand
+    back the object itself.
+    """
+    body = _ps_function_body(HARNESS_PS1, "New-Checklist")
+    assert "Write-Output -NoEnumerate $list" in body, (
+        "the factory must emit the ArrayList itself, not enumerate it"
+    )
+    assert "return (New-Object System.Collections.ArrayList)" not in body, (
+        "returning the new ArrayList directly emits zero objects while it is empty"
+    )
+    assert not re.search(r"(?<![\w-])return\s+\$list\b", body), (
+        "`return $list` enumerates the empty ArrayList and emits nothing"
+    )
+    assert "New-Object System.Collections.ArrayList" in body, (
+        "callers rely on mutable .Add(); a plain array would not do"
+    )
+
+
+def test_46q1_every_checklist_call_site_receives_the_mutable_object() -> None:
+    """21 call sites, and each must get the ArrayList, not a copy of its elements.
+
+    `@(New-Checklist)` would satisfy the collection-materialisation rule and break
+    every caller: @(...) yields an object[] of the ArrayList's elements, which has
+    no .Add(). The two rules apply to different helpers and must not cross.
+    """
+    lines = _ps_structural_lines(HARNESS_PS1)
+    sites = [n for n, line in enumerate(lines, 1) if re.search(r"=\s*New-Checklist\b", line)]
+    assert len(sites) >= 21, f"only {len(sites)} checklist call sites found"
+    wrapped = [
+        f"{n}: {lines[n - 1].strip()[:60]}"
+        for n in sites
+        if re.search(r"=\s*@\(\s*New-Checklist", lines[n - 1])
+    ]
+    assert not wrapped, (
+        "a checklist must not be materialised as a collection -- the caller needs "
+        "the mutable object:\n  " + "\n  ".join(wrapped)
+    )
+    # And every one of them is used through .Add(), via Add-Check.
+    add_check = _ps_function_body(HARNESS_PS1, "Add-Check")
+    assert "$List.Add(" in add_check, "Add-Check must mutate the checklist in place"
+
+
+def test_46q2_no_other_factory_returns_an_enumerable_empty_container() -> None:
+    """The general rule, so the next factory of this shape is caught on Linux.
+
+    A function that builds a container and hands it back must either emit it
+    non-enumerated, or wrap it in something that is not enumerable -- a
+    PSCustomObject, which is what New-ReleaseLedger does.
+    """
+    problems = []
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        for name in re.findall(r"^\s*function\s+([\w-]+)", _ps_code(path), re.MULTILINE):
+            body = _ps_function_body(path, name)
+            if "New-Object System.Collections.ArrayList" not in body:
+                continue
+            returns_container = re.search(
+                r"(?<![\w-])return\s+(\$\w+\s*$|\(New-Object System\.Collections\.ArrayList\))",
+                body,
+                re.MULTILINE,
+            )
+            if not returns_container:
+                continue  # it returns a string, a count, or nothing
+            if "Write-Output -NoEnumerate" in body or "[pscustomobject]" in body:
+                continue
+            problems.append(f"{path.name}: {name} returns an enumerable container")
+    assert not problems, (
+        "container factory that emits nothing when empty:\n  " + "\n  ".join(problems)
+    )
+    # The two known factories, classified explicitly so the distinction is recorded.
+    checklist = _ps_function_body(HARNESS_PS1, "New-Checklist")
+    ledger = _ps_function_body(LIFECYCLE_PS1, "New-ReleaseLedger")
+    assert "Write-Output -NoEnumerate" in checklist
+    assert "[pscustomobject]@{" in ledger, (
+        "New-ReleaseLedger is safe because a PSCustomObject is not enumerable"
+    )
+    assert "Write-Output" not in ledger, "it is already scalar and should stay so"
+
+
+def test_46q3_the_factory_probe_runs_before_any_checklist_is_used() -> None:
+    """Test infrastructure must not rest on an untested prerequisite.
+
+    The row-shape preflight builds its findings in a checklist, so it cannot also
+    be what proves the checklist factory works: when the factory returned $null,
+    the first Add-Check threw before a single row-shape check had run.
+    """
+    code = _ps(HARNESS_PS1)
+    marker = "# PRE0. Checklist factory, BEFORE anything that uses a checklist"
+    assert marker in code, "there is no checklist-factory prerequisite probe"
+    probe_at = code.index(marker)
+
+    # Before the row-shape preflight, and before the first Add-Check anywhere.
+    assert probe_at < code.index("# PRE. Collection shape"), (
+        "the factory probe must precede the preflight that uses a checklist"
+    )
+    first_add_check = _ps_code(HARNESS_PS1).index("Add-Check $list")
+    assert _ps_code(HARNESS_PS1).index("$probeChecklist = New-Checklist") < first_add_check
+    assert probe_at < code.index("New-Object -ComObject Excel.Application")
+
+    probe = code[probe_at : code.index("# PRE. Collection shape")]
+    # It must not use the machinery it is testing. Checked against CODE, since the
+    # probe's own commentary names Add-Check when explaining why it avoids it.
+    executable = _ps_code(HARNESS_PS1)
+    probe_code = executable[
+        executable.index("$probeChecklist = New-Checklist") : executable.index("$list = New-Checklist")
+    ]
+    assert "Add-Check" not in probe_code, (
+        "the probe cannot use Add-Check: that is the thing that fails when the "
+        "factory is broken"
+    )
+    for proof in (
+        "$null -eq $probeChecklist",                       # non-null
+        "-is [System.Collections.ArrayList]",              # correct type
+        "$probeChecklist.Add('sentinel')",                 # .Add() succeeds
+        "$probeChecklist.Count -ne 1",                     # Count becomes 1
+        "$probeChecklist[0] -ne 'sentinel'",               # the value survives
+        "$probeChecklist.Clear()",                         # left clean for real use
+    ):
+        assert proof in probe, f"the factory probe is missing: {proof}"
+    assert "exit 1" in probe, "a broken factory must abort before Excel is started"
+    assert "Add-Result 'PRE0'" in probe
 
 
 def test_46p_scalar_helpers_were_not_swept_up_in_the_rewrite() -> None:

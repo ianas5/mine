@@ -40,10 +40,16 @@ through without a PowerShell edit.
 The functional test runs the bootstrap itself, against a temporary copy under
 `%TEMP%`, so it never touches `build/`.
 
-Gate-A source review is approved. Gate-B run 1 completed the whole bootstrap on
-the target machine and then threw in its final reporting block; the structural
-runtime scenarios B onward have **not** run. That defect is fixed and the package
-is ready for one rerun — see `../../docs/phase4_gate_b_run1.md`.
+Gate-A source review is approved. Two Gate-B runs have happened on the target and
+**no structural runtime scenario has run yet**:
+
+- **run 1** completed the whole bootstrap — including natural shutdown of two
+  Excel instances — then threw in its final reporting block
+  (`../../docs/phase4_gate_b_run1.md`);
+- **run 2** aborted in the preflight, before Excel was started, on a broken
+  checklist factory (`../../docs/phase4_gate_b_run2.md`).
+
+Both defects are fixed and the package is ready for one rerun.
 
 ## Prerequisite
 
@@ -72,6 +78,11 @@ Unchanged from the run that closed the readiness gate:
   a `PropertyNotFoundException`. Every caller writes `@(Get-Something)`. Scalar
   helpers are left alone. This ended Gate-B run 1 — see
   `../../docs/phase4_gate_b_run1.md`.
+- **A container factory is not an element producer.** `New-Checklist` returns ONE
+  mutable `ArrayList`, emitted with `Write-Output -NoEnumerate`; wrapping it in
+  `@(...)` would satisfy the rule above and break every caller, because `@(...)`
+  yields an `object[]` with no `.Add()`. `New-ReleaseLedger` is safe by returning
+  a `PSCustomObject`, which is not enumerable. This ended Gate-B run 2.
 - **A producer of rows emits one pipeline object per row**, through
   `Write-RowObject` (`Write-Output -NoEnumerate`). Not `return $rows`, which
   unrolls a single row into its cells, and not `return ,$rows`, which emits the

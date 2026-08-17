@@ -4,10 +4,12 @@
     against a real Excel instance and produces a human-readable report.
 
 .DESCRIPTION
-    Gate-A source review is approved. Gate-B run 1 completed the whole Stage-B
-    bootstrap on the target machine -- both Excel instances shut down naturally --
-    and then threw in the bootstrap's final reporting block, so scenarios B onward
-    have NOT yet run. That defect is fixed; see docs/phase4_gate_b_run1.md.
+    Gate-A source review is approved. Two Gate-B runs have happened on the target
+    and NO structural runtime scenario has run yet: run 1 completed the whole
+    Stage-B bootstrap -- both Excel instances shut down naturally -- then threw in
+    the bootstrap's final reporting block; run 2 aborted in the preflight, before
+    Excel was started, on a broken checklist factory. Both defects are fixed; see
+    docs/phase4_gate_b_run1.md and docs/phase4_gate_b_run2.md.
 
     The harness never touches the real build output. It copies the Stage-A build
     into a temporary directory, runs the Stage-B bootstrap there, and drives that
@@ -22,6 +24,9 @@
     actually means.
 
     Test matrix:
+      PRE0 Checklist factory: New-Checklist must hand back ONE MUTABLE ArrayList,
+          proved without using a checklist or Add-Check, because PRE below builds
+          its findings in one. Runs first; a failure aborts the run
       PRE Collection-shape preflight, pure PowerShell, BEFORE Excel is started:
           the table-row emission contract must give 0/1/N rows with row boundaries
           intact, or the run aborts without creating an Excel process
@@ -109,7 +114,27 @@ function Add-Result {
 
 function Add-Note { param([string]$Text) $null = $notes.Add($Text) }
 
-function New-Checklist { return (New-Object System.Collections.ArrayList) }
+# A FACTORY, not a producer of elements. Two different contracts have been
+# conflated here before, so this one is stated plainly:
+#
+#   Get-TransientFailures / Get-TableBody  emit zero, one or many VALUES; the
+#                                          caller materialises with @(...).
+#   New-Checklist                          returns ONE MUTABLE OBJECT, which
+#                                          happens to be empty at birth.
+#
+# `return (New-Object System.Collections.ArrayList)` looks like the second but
+# behaves like the first: an ArrayList is enumerable, an EMPTY enumerable emits
+# ZERO pipeline objects, so `$list = New-Checklist` assigned $null and the very
+# first $List.Add(...) threw "You cannot call a method on a null-valued
+# expression". That ended Gate-B run 2, in the preflight, before Excel started.
+#
+# -NoEnumerate emits the ArrayList itself, so the caller gets the real mutable
+# object and .Add() keeps working. Converting the checklist to a plain array
+# would not fix it either -- every caller relies on .Add().
+function New-Checklist {
+    $list = New-Object System.Collections.ArrayList
+    Write-Output -NoEnumerate $list
+}
 
 function Add-Check {
     param($List, [string]$Text, [bool]$Condition, [string]$Detail = '')
@@ -157,7 +182,44 @@ function Write-FabricatedRows {
 }
 
 # ===========================================================================
-# Preflight: collection shape, BEFORE Excel is started
+# PRE0. Checklist factory, BEFORE anything that uses a checklist
+# ===========================================================================
+# The row-shape preflight below builds its findings in a checklist, so it cannot
+# also be what proves the checklist factory works: when New-Checklist returned
+# $null, the first Add-Check threw before a single row-shape check had run. Test
+# infrastructure must not rest on an untested prerequisite.
+#
+# So this probe uses NO checklist and NO Add-Check. It throws, and the catch
+# reports it. It is deliberately the first executable thing in the script.
+try {
+    $probeChecklist = New-Checklist
+    if ($null -eq $probeChecklist) {
+        throw 'New-Checklist returned null for an empty checklist. An ArrayList is enumerable, and an empty enumerable emits zero pipeline objects: the factory must emit the object itself with Write-Output -NoEnumerate.'
+    }
+    if (-not ($probeChecklist -is [System.Collections.ArrayList])) {
+        throw ("New-Checklist returned " + $probeChecklist.GetType().FullName + ", expected System.Collections.ArrayList. Callers rely on mutable .Add() semantics.")
+    }
+    $null = $probeChecklist.Add('sentinel')
+    if ($probeChecklist.Count -ne 1) {
+        throw ("New-Checklist did not return one mutable ArrayList object: Count is " + $probeChecklist.Count + " after one Add.")
+    }
+    if ($probeChecklist[0] -ne 'sentinel') {
+        throw ("The checklist did not retain the value that was added: got '" + [string]$probeChecklist[0] + "'.")
+    }
+    $probeChecklist.Clear()
+    Add-Result 'PRE0' 'Checklist factory returns one mutable ArrayList (no Excel, no checklist)' 'PASS' `
+        '  ok   non-null, ArrayList, Add succeeded, Count 1, sentinel survived, cleared'
+} catch {
+    Add-Result 'PRE0' 'Checklist factory' 'FAIL' (Format-Err $_)
+    Write-Host ''
+    Write-Host 'PHASE-4 FUNCTIONAL TEST ABORTED before Excel was started:' -ForegroundColor Red
+    Write-Host 'the checklist factory is broken, so every scenario would fail on its' -ForegroundColor Red
+    Write-Host 'first check rather than on anything it was written to test.' -ForegroundColor Red
+    exit 1
+}
+
+# ===========================================================================
+# PRE. Collection shape, BEFORE Excel is started
 # ===========================================================================
 # Linux cannot execute PowerShell, so the static tests can only read the source.
 # The actual pipeline semantics -- how many objects a function emits, and whether a
