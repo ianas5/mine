@@ -29,10 +29,12 @@ from .driver_loader import DriverContract, validate_against_input_contract
 from .driver_render import render_register
 from .names import apply_defined_names
 from .spec_loader import SheetSpec, WorkbookSpec
+from .structure_loader import StructureContract, validate_structure_against
+from .structure_render import render_applied_timeline, render_grid, render_identity
 from .styling import StyleBook
 from .validation import apply_validation
 
-BUILDER_VERSION = "0.3.0"
+BUILDER_VERSION = "0.4.0"
 DEFAULT_SHEET_TITLE = "Sheet"
 TIMESTAMP_ENV_VAR = "PCCM_BUILD_TIMESTAMP"
 
@@ -55,10 +57,15 @@ class BuildMetadata:
     manifest_version: str
     contract_version: str
     driver_contract_version: str
+    structure_contract_version: str
 
     @classmethod
     def create(
-        cls, spec: WorkbookSpec, contract: InputContract, drivers: DriverContract
+        cls,
+        spec: WorkbookSpec,
+        contract: InputContract,
+        drivers: DriverContract,
+        structure: StructureContract,
     ) -> "BuildMetadata":
         return cls(
             model_version=spec.model["model_version"],
@@ -68,6 +75,7 @@ class BuildMetadata:
             manifest_version=spec.manifest_version,
             contract_version=contract.contract_version,
             driver_contract_version=drivers.version,
+            structure_contract_version=structure.version,
         )
 
     def as_rows(self) -> list[tuple[str, str]]:
@@ -79,6 +87,7 @@ class BuildMetadata:
             ("Source Manifest Version", self.manifest_version),
             ("Input Contract Version", self.contract_version),
             ("Driver Contract Version", self.driver_contract_version),
+            ("Structure Contract Version", self.structure_contract_version),
         ]
 
 
@@ -96,13 +105,16 @@ def resolve_build_timestamp() -> str:
 
 
 def build_workbook(
-    spec: WorkbookSpec, contract: InputContract, drivers: DriverContract
+    spec: WorkbookSpec,
+    contract: InputContract,
+    drivers: DriverContract,
+    structure: StructureContract,
 ) -> tuple[Workbook, BuildMetadata]:
-    """Create the Stage A workbook from the manifest and both contracts."""
-    _assert_consistent(spec, contract, drivers)
+    """Create the Stage A workbook from the manifest and all three contracts."""
+    _assert_consistent(spec, contract, drivers, structure)
 
     styles = StyleBook(spec.presentation)
-    metadata = BuildMetadata.create(spec, contract, drivers)
+    metadata = BuildMetadata.create(spec, contract, drivers, structure)
 
     workbook = Workbook()
     default_sheet = workbook.active
@@ -114,10 +126,20 @@ def build_workbook(
         if sheet_spec.body == "contract":
             if sheet_spec.name == contract.setup_sheet:
                 render_setup(worksheet, contract, styles)
+                # Setup carries two authorities: the input contract owns the entered
+                # inputs and the FX table, the structure contract appends the applied
+                # timeline below them. The loaders prove the two areas cannot overlap.
+                render_applied_timeline(worksheet, structure, styles)
             else:
                 render_config(worksheet, contract, styles)
         elif sheet_spec.body == "drivers":
             render_register(worksheet, drivers.register_for_sheet(sheet_spec.name), styles)
+        elif sheet_spec.body == "structure":
+            grid = structure.grid_for_sheet(sheet_spec.name)
+            if grid is not None:
+                render_grid(worksheet, grid, structure, styles)
+            else:
+                render_identity(worksheet, structure, styles)
         else:
             _populate_blocks(worksheet, sheet_spec, styles, metadata)
 
@@ -134,7 +156,7 @@ def build_workbook(
     for sheet_spec in spec.sheets:
         workbook[sheet_spec.name].sheet_state = sheet_spec.visibility
 
-    apply_defined_names(workbook, contract)
+    apply_defined_names(workbook, contract, structure)
     apply_validation(
         {name: workbook[name] for name in workbook.sheetnames}, contract, drivers
     )
@@ -144,7 +166,10 @@ def build_workbook(
 
 
 def _assert_consistent(
-    spec: WorkbookSpec, contract: InputContract, drivers: DriverContract | None = None
+    spec: WorkbookSpec,
+    contract: InputContract,
+    drivers: DriverContract | None = None,
+    structure: StructureContract | None = None,
 ) -> None:
     """The specifications must agree before anything is rendered."""
     # Cross-spec: the reporting currency is declared in both files. They must not
@@ -194,6 +219,32 @@ def _assert_consistent(
                 f"{register.sheet!r}"
             )
     validate_against_input_contract(drivers, contract)
+
+    if structure is None:
+        return
+
+    declared_structure = set(spec.structure_sheets)
+    if declared_structure != structure.owned_sheets:
+        raise RuntimeError(
+            "manifest and structure contract disagree about structure-bodied sheets: "
+            f"manifest says {sorted(declared_structure)}, "
+            f"structure contract owns {sorted(structure.owned_sheets)}"
+        )
+    for sheet in sorted(structure.owned_sheets | {structure.setup_sheet}):
+        if sheet not in known:
+            raise RuntimeError(f"structure contract targets unknown sheet {sheet!r}")
+    if structure.setup_sheet != contract.setup_sheet:
+        raise RuntimeError(
+            "manifest and structure contract disagree about the Setup sheet: the applied "
+            f"timeline targets {structure.setup_sheet!r}, the input contract owns "
+            f"{contract.setup_sheet!r}"
+        )
+    for button in structure.buttons:
+        if button.sheet not in known:
+            raise RuntimeError(
+                f"button {button.shape_name!r} targets unknown sheet {button.sheet!r}"
+            )
+    validate_structure_against(structure, contract, drivers)
 
 
 def _apply_document_properties(

@@ -1,6 +1,6 @@
 # PCCM — Phase 3: Cost Lines & Risk Register Input Layer
 
-**Status: complete, pending review.**
+**Status: accepted and closed.** Phase 4 builds on this; see `phase4.md`.
 
 Phase 3 establishes the two authoritative **driver registers** — the things that
 contribute uncertainty to total project cost. Still Stage A `.xlsx`; no VBA, no

@@ -27,6 +27,7 @@ from pccm_builder import (  # noqa: E402
     build_workbook,
     load_contract,
     load_driver_contract,
+    load_structure_contract,
     load_spec,
     structural_digest,
 )
@@ -34,6 +35,7 @@ from pccm_builder import (  # noqa: E402
 SPEC_PATH = PCCM_ROOT / "spec" / "workbook.yaml"
 CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
 DRIVERS_PATH = PCCM_ROOT / "spec" / "driver_contract.yaml"
+STRUCTURE_PATH = PCCM_ROOT / "spec" / "structure_contract.yaml"
 
 # --- Architecture Lock Revision B -------------------------------------------
 LOCKED_SHEET_ORDER = [
@@ -120,7 +122,8 @@ def _build(name: str, timestamp: str = "1970-01-01 00:00:00 UTC") -> Path:
         spec = load_spec(SPEC_PATH)
         contract = load_contract(CONTRACT_PATH)
         drivers = load_driver_contract(DRIVERS_PATH)
-        workbook, _ = build_workbook(spec, contract, drivers)
+        structure = load_structure_contract(STRUCTURE_PATH)
+        workbook, _ = build_workbook(spec, contract, drivers, structure)
         path = Path(_TEMPDIR.name) / f"{name}.xlsx"
         workbook.save(path)
         workbook.close()
@@ -150,6 +153,32 @@ def _strings(worksheet) -> set[str]:
 # ---------------------------------------------------------------------------
 # 1-3, 8. sheet inventory
 # ---------------------------------------------------------------------------
+def _permitted_formula_cells() -> dict:
+    """The exact cells the structure contract is allowed to write a formula into.
+
+    Phases 1-3 forbade every formula. Phase 4 permits structural-state display only
+    -- Structure Change Pending, the derived applied-timeline cells and each grid's
+    "timeline not yet applied" message -- and the contract enumerates them. The
+    regression intent is unchanged: any formula outside this enumerated set is still
+    a failure, and a business calculation would land outside it.
+    """
+    structure = load_structure_contract(STRUCTURE_PATH)
+    return structure.formula_cells
+
+
+def _unexpected_formulas(workbook) -> list[str]:
+    permitted = _permitted_formula_cells()
+    return [
+        f"{ws.title}!{cell.coordinate}"
+        for ws in workbook.worksheets
+        for row in ws.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str)
+        and cell.value.startswith("=")
+        and cell.coordinate not in permitted.get(ws.title, set())
+    ]
+
+
 def test_01_exactly_fourteen_worksheets() -> None:
     workbook = load_workbook(_artifact())
     assert len(workbook.sheetnames) == 14, f"found {len(workbook.sheetnames)}"
@@ -280,21 +309,19 @@ def test_15_no_vba_project_present() -> None:
 
 
 def test_16_no_calculation_formulas_introduced() -> None:
-    """No formulas at any phase. Tables and defined names are Phase 2 infrastructure,
-    so they are asserted to be *exactly* the contract's, not merely absent."""
+    """Phase-aware. Tables and defined names are asserted to be *exactly* the
+    contracts', not merely absent, and the only formulas tolerated are the
+    structural-state displays the structure contract enumerates."""
     contract = load_contract(CONTRACT_PATH)
+    structure = load_structure_contract(STRUCTURE_PATH)
     workbook = load_workbook(_artifact())
 
-    offenders = [
-        f"{ws.title}!{cell.coordinate}"
-        for ws in workbook.worksheets
-        for row in ws.iter_rows()
-        for cell in row
-        if isinstance(cell.value, str) and cell.value.startswith("=")
-    ]
-    assert not offenders, f"formulas present: {offenders[:10]}"
+    offenders = _unexpected_formulas(workbook)
+    assert not offenders, f"formulas outside the permitted structural cells: {offenders[:10]}"
 
     expected_names = set(contract.input_defined_names) | set(contract.list_defined_names)
+    expected_names |= set(structure.defined_names)
+    expected_names |= set(structure.alias_defined_names(contract))
     assert set(workbook.defined_names) == expected_names, (
         f"unexpected {sorted(set(workbook.defined_names) - expected_names)}, "
         f"missing {sorted(expected_names - set(workbook.defined_names))}"
@@ -303,6 +330,7 @@ def test_16_no_calculation_formulas_introduced() -> None:
     drivers = load_driver_contract(DRIVERS_PATH)
     expected_tables = {t.table_name for t in contract.all_tables}
     expected_tables |= {r.table_name for r in drivers.all_registers}
+    expected_tables |= {g.table_name for g in structure.all_grids}
     found_tables = {
         name for ws in workbook.worksheets for name in getattr(ws, "tables", {})
     }

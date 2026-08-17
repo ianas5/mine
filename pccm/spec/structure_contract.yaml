@@ -1,0 +1,517 @@
+# =============================================================================
+# PCCM - Structure Contract
+# =============================================================================
+# Semantic authority for STRUCTURAL RUNTIME: the applied timeline, the derived
+# structural state, the profiling and inflation grids, permanent-ID identity, the
+# persistent counters, and the Stage-B command surface.
+#
+# Authority split:
+#   workbook.yaml           structure and presentation
+#   input_contract.yaml     Setup inputs and Config master lists
+#   driver_contract.yaml    Cost Line and Risk Register schemas
+#   structure_contract.yaml structural runtime                    <- this file
+#
+# This file is the ONLY place these values are written. Python reads it, the
+# generated modConstants.bas is emitted from it, and the Windows bootstrap and
+# functional harness read the names they need from the generated artifacts rather
+# than restating them. Nothing here may be duplicated in VBA, PowerShell or Python.
+#
+# Scope: Phase 4. Structure only. No cost, risk, escalation, FX, NPV, EMV,
+# simulation, RNG, Model Check, sensitivity or results logic appears here.
+# =============================================================================
+
+structure_contract_version: "1.0.0"
+
+# -----------------------------------------------------------------------------
+# Structural limits.
+#
+# These are STRUCTURAL GENERATION GUARDS, not business maxima. The 25-year figure
+# in the Architecture design is a benchmark target and is deliberately encoded
+# nowhere: a 40-year project is a legitimate model.
+#
+# max_generated_year_columns is not an independent invented cap. It is exactly the
+# width of the supported calendar-year window (max_year - min_year + 1), and the
+# loader asserts that identity, so the guard cannot drift away from the year
+# boundary it is derived from.
+# -----------------------------------------------------------------------------
+limits:
+  min_year: 1900
+  max_year: 2200
+  max_generated_year_columns: 301
+
+# -----------------------------------------------------------------------------
+# Entered vs applied timeline.
+#
+# The ENTERED triple is the accepted Phase-2 Setup input cells. They are not moved,
+# renamed or re-owned: the inp* defined names remain the single semantic source for
+# each entered value. The nm*_Entered names below are CONTRACT-DECLARED ALIASES over
+# those same cells, so structural VBA reads a stable canonical name instead of a
+# hardcoded Setup coordinate. The loader asserts each alias resolves to exactly the
+# same reference as the input it aliases.
+#
+# The APPLIED triple is separate, model-controlled state. Entered values have no
+# structural effect until Apply / Update Timeline succeeds.
+# -----------------------------------------------------------------------------
+timeline:
+
+  entered_aliases:
+    - defined_name: "nmBaseYear_Entered"
+      input_key: "base_year"
+    - defined_name: "nmStartYear_Entered"
+      input_key: "project_start_year"
+    - defined_name: "nmDuration_Entered"
+      input_key: "duration_years"
+
+  applied_block:
+    sheet: "Setup"
+    section: "Applied Timeline"
+    section_row: 43
+    note_row: 44
+    note: "Model-controlled. These values change only when Apply / Update Timeline succeeds. Editing the entered values above has no structural effect until then."
+    label_column: "B"
+    value_column: "C"
+    note_column: "E"
+
+  # The applied triple. Written by structural runtime only; blank until first apply.
+  applied:
+    - key: "applied_base_year"
+      label: "Applied Base Year"
+      defined_name: "nmBaseYear_Applied"
+      label_cell: "B46"
+      cell: "C46"
+      number_format: "0"
+      note: "Price base year actually in force for the generated inflation span."
+
+    - key: "applied_start_year"
+      label: "Applied Start Year"
+      defined_name: "nmStartYear_Applied"
+      label_cell: "B47"
+      cell: "C47"
+      number_format: "0"
+      note: "Calendar year of project year 1 in the generated profiling grids."
+
+    - key: "applied_duration"
+      label: "Applied Duration (Years)"
+      defined_name: "nmDuration_Applied"
+      label_cell: "B48"
+      cell: "C48"
+      number_format: "0"
+      note: "Number of project years actually generated in the profiling grids."
+
+  # Derived structural state. Formulas, not stored values, so they cannot go stale
+  # against the applied triple. Section 25 of the Phase-4 scope permits exactly
+  # this class of formula: structural state display, never business calculation.
+  derived:
+    - key: "applied_last_year"
+      label: "Applied Last Project Year"
+      defined_name: "nmLastYear_Applied"
+      label_cell: "B50"
+      cell: "C50"
+      number_format: "0"
+      formula: '=IF(OR(nmStartYear_Applied="",nmDuration_Applied=""),"",nmStartYear_Applied+nmDuration_Applied-1)'
+      note: "Applied Start Year + Applied Duration - 1."
+
+    - key: "applied_year_count"
+      label: "Applied Project Year Count"
+      defined_name: "nmYearCount_Applied"
+      label_cell: "B51"
+      cell: "C51"
+      number_format: "0"
+      formula: '=IF(nmDuration_Applied="","",nmDuration_Applied)'
+      note: "Number of project-year columns the profiling grids must currently carry."
+
+    - key: "inflation_first_year"
+      label: "Inflation First Required Year"
+      defined_name: "nmInflFirstYear"
+      label_cell: "B53"
+      cell: "C53"
+      number_format: "0"
+      formula: '=IF(nmBaseYear_Applied="","",nmBaseYear_Applied+1)'
+      note: "Escalation applies from the year after the applied base year."
+
+    - key: "inflation_last_year"
+      label: "Inflation Last Required Year"
+      defined_name: "nmInflLastYear"
+      label_cell: "B54"
+      cell: "C54"
+      number_format: "0"
+      formula: '=IF(nmLastYear_Applied="","",nmLastYear_Applied)'
+      note: "Equal to the applied last project year. An empty span is legitimate when it precedes the first required year."
+
+# -----------------------------------------------------------------------------
+# Structural state indicator.
+#
+# A worksheet formula, deliberately NOT a Worksheet_Change handler: the flag must
+# update the instant an entered value is edited, and an event handler would make
+# structural state depend on hidden automation. Section 27 of the Phase-4 scope
+# forbids using input events as a shortcut for structural behaviour.
+#
+# Three honest states. "Timeline current" is not claimed before anything has been
+# applied, and blank == blank must not read as agreement.
+# -----------------------------------------------------------------------------
+structural_state:
+  sheet: "Setup"
+  label: "Structural State"
+  defined_name: "nmStructuralState"
+  label_cell: "B41"
+  cell: "C41"
+  number_format: "@"
+  note_column: "E"
+  note: "Structural state of the workbook. Recomputed by Excel; no macro maintains it."
+  labels:
+    not_applied: "No timeline applied"
+    pending: "STRUCTURE CHANGE PENDING"
+    current: "Timeline current"
+  formula: >-
+    =IF(AND(nmBaseYear_Applied="",nmStartYear_Applied="",nmDuration_Applied=""),
+    IF(AND(nmBaseYear_Entered="",nmStartYear_Entered="",nmDuration_Entered=""),
+    "No timeline applied","STRUCTURE CHANGE PENDING"),
+    IF(AND(nmBaseYear_Entered=nmBaseYear_Applied,nmStartYear_Entered=nmStartYear_Applied,
+    nmDuration_Entered=nmDuration_Applied),"Timeline current","STRUCTURE CHANGE PENDING"))
+
+# -----------------------------------------------------------------------------
+# Permanent identity.
+#
+# Sequence counters are persistent workbook state, held on _Calc and addressed by
+# defined name. They are advanced on allocation and NEVER decremented on deletion,
+# so an identifier is never reused.
+# -----------------------------------------------------------------------------
+identity:
+  sheet: "_Calc"
+  intro_row: 6
+  intro: "Internal structural workspace. These counters are persistent model state: they advance on allocation and are never decremented, so a permanent identifier is never reused after deletion."
+  section: "Permanent ID Counters"
+  section_row: 8
+  label_column: "B"
+  value_column: "C"
+  note_column: "E"
+
+  counters:
+    - key: "cost_line"
+      label: "Cost Line ID Counter"
+      defined_name: "nmCounterCostLine"
+      label_cell: "B10"
+      cell: "C10"
+      number_format: "0"
+      initial: 0
+      prefix: "CL-"
+      pad_width: 3
+      # Pad width is a MINIMUM display width, not a range limit. CL-1000 is valid.
+      pattern: "^CL-[0-9]{3,}$"
+      driver_register: "cost_lines"
+      note: "Advanced by Add Cost Line. Never decremented by Delete Cost Line."
+
+    - key: "risk"
+      label: "Risk ID Counter"
+      defined_name: "nmCounterRisk"
+      label_cell: "B11"
+      cell: "C11"
+      number_format: "0"
+      initial: 0
+      prefix: "R-"
+      pad_width: 3
+      pattern: "^R-[0-9]{3,}$"
+      driver_register: "risk_register"
+      note: "Advanced by Add Risk. Never decremented by Delete Risk. Independent of the cost line counter."
+
+# -----------------------------------------------------------------------------
+# Structural grids.
+#
+# Each grid materialises in Stage A with its FIXED columns only. Project-year and
+# calendar-year columns do not exist until a valid timeline is applied: fabricating
+# year columns before an apply would invent a timeline the user never entered.
+#
+# reserved_rows is initial capacity, exactly as in the driver contract. For the two
+# profiling grids the loader asserts it equals the reserved capacity of the driver
+# register the grid mirrors, so the two cannot drift apart.
+# -----------------------------------------------------------------------------
+grids:
+
+  cost_profiling:
+    sheet: "Cost Profiling"
+    table_name: "tblCostProfiling"
+    kind: "profiling"
+    driver_register: "cost_lines"
+    key_driver_column: "cost_line_id"
+    section: "Cost Line Annual Allocation"
+    section_row: 8
+    note_row: 9
+    note: "One row per identified cost line, keyed by permanent Cost Line ID. Percentages are preserved by permanent ID and project-year index, never by worksheet row."
+    intro_row: 6
+    intro: "Phase 4. Rows are synchronised from the Cost Line register by permanent ID. Project-year columns are generated by Apply / Update Timeline."
+    state_message_row: 10
+    header_row: 12
+    first_column: "B"
+    reserved_rows: 25
+    freeze_panes: "D13"
+
+    fixed_columns:
+      - key: "cost_line_id"
+        header: "Cost Line ID"
+        source_driver_column: "cost_line_id"
+        number_format: "@"
+        width: 14
+        note: "Permanent key. Model-controlled; the join between this grid and the register."
+      - key: "description"
+        header: "Description"
+        source_driver_column: "description"
+        number_format: "@"
+        width: 42
+        note: "Trace copy, refreshed by structural synchronisation. Editing it here changes nothing: the register owns the description."
+
+    year_column:
+      header_format: "0"
+      number_format: "0%"
+      width: 11
+      initial_value: 0
+      # Percentages are user input. No cell rule is imposed: the 100% requirement is
+      # a Model Check rule, and a per-cell bound would block ordinary partial entry.
+      validation: null
+
+  risk_profiling:
+    sheet: "Risk Profiling"
+    table_name: "tblRiskProfiling"
+    kind: "profiling"
+    driver_register: "risk_register"
+    key_driver_column: "risk_id"
+    section: "Risk Annual Allocation"
+    section_row: 8
+    note_row: 9
+    note: "One row per identified risk, keyed by permanent Risk ID. Occurrence probability lives on the Risk Register and is entirely separate from these allocation percentages."
+    intro_row: 6
+    intro: "Phase 4. Rows are synchronised from the Risk Register by permanent ID. Project-year columns are generated by Apply / Update Timeline."
+    state_message_row: 10
+    header_row: 12
+    first_column: "B"
+    reserved_rows: 25
+    freeze_panes: "D13"
+
+    fixed_columns:
+      - key: "risk_id"
+        header: "Risk ID"
+        source_driver_column: "risk_id"
+        number_format: "@"
+        width: 12
+        note: "Permanent key. Model-controlled; the join between this grid and the register."
+      - key: "risk_name"
+        header: "Risk Name"
+        source_driver_column: "risk_name"
+        number_format: "@"
+        width: 30
+        note: "Trace copy, refreshed by structural synchronisation. The register owns the name."
+
+    year_column:
+      header_format: "0"
+      number_format: "0%"
+      width: 11
+      initial_value: 0
+      validation: null
+
+  inflation:
+    sheet: "Inflation"
+    table_name: "tblInflation"
+    kind: "inflation"
+    source_list_table: "tblInflationProfiles"
+    section: "Annual Escalation Profiles"
+    section_row: 8
+    note_row: 9
+    note: "One row per inflation profile name from Config, keyed by profile name. Rates are anchored to CALENDAR year, not to column position."
+    intro_row: 6
+    intro: "Phase 4. Rows are synchronised from the Config profile master by name. Calendar-year columns are generated by Apply / Update Timeline."
+    state_message_row: 10
+    header_row: 12
+    first_column: "B"
+    reserved_rows: 10
+    freeze_panes: "C13"
+
+    fixed_columns:
+      - key: "profile_name"
+        header: "Inflation Profile"
+        source_list_column: "Inflation Profile"
+        number_format: "@"
+        width: 24
+        note: "Permanent key. Model-controlled; synchronised from the Config profile master by name."
+
+    year_column:
+      header_format: "0"
+      number_format: "0.00%"
+      width: 11
+      # BLANK, never zero. A new annual escalation assumption the user has not made
+      # must not be fabricated as 0%. A missing rate becomes a blocking Model Check
+      # condition in a later phase; silently seeding zero would hide it forever.
+      initial_value: null
+      validation: null
+
+# -----------------------------------------------------------------------------
+# Structural state messages rendered above each grid.
+#
+# Formulas, so they clear themselves the moment a timeline is applied and reappear
+# if the applied state is ever cleared. Nothing maintains them at runtime.
+# -----------------------------------------------------------------------------
+state_messages:
+  not_applied: "Timeline not yet applied. Project-year columns are generated by Apply / Update Timeline on Setup."
+  inflation_empty_span: "No inflation years are required for the applied timeline. This is legitimate when Base Year = Start Year and Duration = 1."
+  profiling_formula: >-
+    =IF(nmYearCount_Applied="","Timeline not yet applied. Project-year columns are
+    generated by Apply / Update Timeline on Setup.","")
+  inflation_formula: >-
+    =IF(nmYearCount_Applied="","Timeline not yet applied. Project-year columns are
+    generated by Apply / Update Timeline on Setup.",IF(nmInflFirstYear>nmInflLastYear,
+    "No inflation years are required for the applied timeline. This is legitimate
+    when Base Year = Start Year and Duration = 1.",""))
+
+# -----------------------------------------------------------------------------
+# Stage-B command surface.
+#
+# entry_point is the public VBA procedure bound to the shape's OnAction. Both the
+# bootstrap and the functional harness read these definitions from the generated
+# constants module rather than restating them.
+# -----------------------------------------------------------------------------
+buttons:
+  shape_prefix: "btnPCCM"
+  width: 150
+  height: 28
+
+  definitions:
+    - key: "apply_timeline"
+      sheet: "Setup"
+      shape_name: "btnPCCMApplyTimeline"
+      caption: "Apply / Update Timeline"
+      entry_point: "PCCM_ApplyTimeline"
+      anchor_cell: "E43"
+
+    - key: "add_cost_line"
+      sheet: "Cost Lines"
+      shape_name: "btnPCCMAddCostLine"
+      caption: "Add Cost Line"
+      entry_point: "PCCM_AddCostLine"
+      anchor_cell: "N6"
+
+    - key: "delete_cost_line"
+      sheet: "Cost Lines"
+      shape_name: "btnPCCMDeleteCostLine"
+      caption: "Delete Cost Line"
+      entry_point: "PCCM_DeleteCostLine"
+      anchor_cell: "N9"
+
+    - key: "add_risk"
+      sheet: "Risk Register"
+      shape_name: "btnPCCMAddRisk"
+      caption: "Add Risk"
+      entry_point: "PCCM_AddRisk"
+      anchor_cell: "O6"
+
+    - key: "delete_risk"
+      sheet: "Risk Register"
+      shape_name: "btnPCCMDeleteRisk"
+      caption: "Delete Risk"
+      entry_point: "PCCM_DeleteRisk"
+      anchor_cell: "O9"
+
+# -----------------------------------------------------------------------------
+# VBA module inventory.
+#
+# The bootstrap imports exactly this set. modConstants is GENERATED from this
+# contract into build/vba/ at Stage-A build time; every other module is hand
+# written under src/vba/. A module present on disk but absent here, or vice versa,
+# fails the Linux inventory test.
+# -----------------------------------------------------------------------------
+vba:
+  source_dir: "src/vba"
+  generated_dir: "build/vba"
+  generated_module: "modConstants"
+
+  modules:
+    - name: "modConstants"
+      generated: true
+      responsibility: "Contract-derived names, addresses, prefixes, limits and messages. The single VBA source for every structural literal."
+    - name: "modWorkbook"
+      generated: false
+      responsibility: "Low-level workbook access primitives: sheets, defined names, list objects and blank handling. Holds no structural policy."
+    - name: "modAppState"
+      generated: false
+      responsibility: "Application state save/restore, structured failure reporting and user confirmation prompts."
+    - name: "modTimeline"
+      generated: false
+      responsibility: "Apply / Update Timeline: prevalidation, one combined old-to-new delta, orchestration and logical restore."
+    - name: "modDrivers"
+      generated: false
+      responsibility: "Permanent ID allocation and the Add / Delete Cost Line and Risk operations."
+    - name: "modProfiling"
+      generated: false
+      responsibility: "Profiling grid structure: year columns by project-year index, row synchronisation by permanent ID."
+    - name: "modInflation"
+      generated: false
+      responsibility: "Inflation grid structure: year columns by calendar year, profile rows synchronised by name."
+    - name: "modStructuralCheck"
+      generated: false
+      responsibility: "Focused Phase-4 structural revalidation. Not the future Model Check engine."
+
+  # Public procedures the buttons bind to. Every one must exist in the source and be
+  # referenced by exactly one button definition.
+  entry_points:
+    - "PCCM_ApplyTimeline"
+    - "PCCM_AddCostLine"
+    - "PCCM_DeleteCostLine"
+    - "PCCM_AddRisk"
+    - "PCCM_DeleteRisk"
+
+  # Public PCCM_ procedures that are NOT buttons. They exist so the Windows
+  # functional harness can drive a confirmation path and an injected failure without
+  # a human clicking a dialog, and can ask the workbook for its structural report.
+  # They are inert until automation is explicitly begun, and the static tests assert
+  # no other PCCM_ procedure exists, so an orphan macro cannot appear unnoticed.
+  harness_procedures:
+    - "PCCM_AutomationBegin"
+    - "PCCM_AutomationEnd"
+    - "PCCM_AutomationResult"
+    - "PCCM_AutomationPrompt"
+    - "PCCM_StructuralReport"
+    - "PCCM_DeleteCostLineById"
+    - "PCCM_DeleteRiskById"
+
+  # Constructs that must NOT appear anywhere in Phase-4 VBA. The Linux static tests
+  # assert their absence, so a later phase's functionality cannot leak in early.
+  forbidden_constructs:
+    - "Worksheet_Change"
+    - "Workbook_SheetChange"
+    - "Worksheet_Calculate"
+    - "Workbook_Open"
+    - "Rnd("
+    - "Randomize"
+    - "MRG32k3a"
+    - "NPV"
+    - "Percentile"
+    - "RunSimulation"
+    - "FinalReleaseComObject"
+
+# -----------------------------------------------------------------------------
+# Structural revalidation.
+#
+# A focused post-operation gate, NOT the Model Check engine. Each rule is a hard
+# structural invariant: a failure makes the macro operation fail. The validator
+# reports; it never repairs.
+# -----------------------------------------------------------------------------
+structural_checks:
+  - key: "applied_triple_consistent"
+    description: "The applied triple is wholly blank or wholly populated, integer, and within the supported year window."
+  - key: "profiling_column_count"
+    description: "Each profiling grid carries exactly Applied Project Year Count year columns."
+  - key: "profiling_year_headers"
+    description: "Profiling year headers run from Applied Start Year to Applied Last Project Year with no gap."
+  - key: "cost_profiling_ids_match"
+    description: "Cost Profiling IDs match the identified Cost Lines one for one."
+  - key: "risk_profiling_ids_match"
+    description: "Risk Profiling IDs match the identified Risks one for one."
+  - key: "no_duplicate_ids"
+    description: "No permanent identifier appears twice in a register or in a profiling grid."
+  - key: "id_pattern"
+    description: "Every permanent identifier matches its declared prefix and pattern."
+  - key: "inflation_year_headers"
+    description: "Inflation calendar-year headers match the required applied span exactly."
+  - key: "inflation_profile_rows"
+    description: "Inflation rows match the current Config profile names, by name."
+  - key: "counters_not_behind"
+    description: "Each counter is greater than or equal to the highest sequence number it has issued."
+  - key: "grid_shape"
+    description: "No grid or table is left in a malformed state: header row intact, table reference consistent with its rendered extent."

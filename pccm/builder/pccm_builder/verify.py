@@ -16,6 +16,7 @@ from openpyxl.utils.cell import range_boundaries
 from .contract_loader import EXCEL_MAX_COLUMN, EXCEL_MAX_ROW, InputContract
 from .driver_loader import DriverContract
 from .spec_loader import WorkbookSpec
+from .structure_loader import StructureContract
 
 
 @dataclass
@@ -47,8 +48,9 @@ def verify_workbook(
     spec: WorkbookSpec,
     contract: InputContract | None = None,
     drivers: DriverContract | None = None,
+    structure: StructureContract | None = None,
 ) -> VerificationResult:
-    """Verify the workbook at *path* against the manifest and the input contract."""
+    """Verify the workbook at *path* against the manifest and every contract."""
     path = Path(path)
     result = VerificationResult()
 
@@ -121,13 +123,25 @@ def verify_workbook(
             active is not None and active.sheet_state == "visible",
         )
 
+        # Phase-aware, and deliberately not relaxed to "some formulas are fine".
+        # Phase 4 permits structural-state display only, and the permitted cells are
+        # enumerated by the structure contract, so any other formula still fails.
+        permitted = structure.formula_cells if structure is not None else {}
+        unexpected = [
+            found
+            for found in _formula_cells(workbook)
+            if found.split("!", 1)[1] not in permitted.get(found.split("!", 1)[0], set())
+        ]
         result.check(
-            "no worksheet contains a formula",
-            not _formula_cells(workbook),
-            "; ".join(_formula_cells(workbook)[:5]),
+            "no worksheet contains a formula outside the contract-permitted structural cells",
+            not unexpected,
+            "; ".join(unexpected[:5]),
         )
         expected_names = set(contract.input_defined_names) | set(contract.list_defined_names) \
             if contract is not None else set()
+        if structure is not None and contract is not None:
+            expected_names |= set(structure.defined_names)
+            expected_names |= set(structure.alias_defined_names(contract))
         found_names = set(workbook.defined_names)
         result.check(
             "only contract-declared defined names exist",
@@ -140,6 +154,8 @@ def verify_workbook(
         )
         if drivers is not None:
             expected_tables |= {r.table_name for r in drivers.all_registers}
+        if structure is not None:
+            expected_tables |= {g.table_name for g in structure.all_grids}
         found_tables = {name for _, name in _tables(workbook)}
         result.check(
             "only contract-declared Excel Tables exist",
@@ -151,6 +167,8 @@ def verify_workbook(
             _verify_contract(result, workbook, contract)
         if drivers is not None:
             _verify_drivers(result, workbook, drivers)
+        if structure is not None and contract is not None:
+            _verify_structure(result, workbook, structure, contract)
     finally:
         workbook.close()
 
@@ -397,6 +415,143 @@ def _verify_drivers(result: VerificationResult, workbook, drivers: DriverContrac
             f"({identity_range})",
             not offenders,
             ", ".join(offenders),
+        )
+
+
+def _verify_structure(
+    result: VerificationResult,
+    workbook,
+    structure: StructureContract,
+    contract: InputContract,
+) -> None:
+    """Every structural-runtime promise must be observable in the artifact."""
+    setup = workbook[structure.setup_sheet]
+
+    # --- applied timeline: blank state, derived formulas ---------------------
+    for field_ in structure.applied:
+        cell = setup[field_.cell]
+        result.check(
+            f"applied field {field_.key!r} at {structure.setup_sheet}!{field_.cell} is blank "
+            "(no timeline is applied in Stage A)",
+            cell.value is None,
+            f"found {cell.value!r}",
+        )
+        result.check(
+            f"applied field {field_.key!r} label at {field_.label_cell}",
+            setup[field_.label_cell].value == field_.label,
+            f"found {setup[field_.label_cell].value!r}",
+        )
+    for field_ in structure.derived:
+        cell = setup[field_.cell]
+        result.check(
+            f"derived field {field_.key!r} carries its structural formula",
+            cell.value == field_.formula,
+            f"found {cell.value!r}",
+        )
+
+    state = structure.structural_state
+    result.check(
+        "structural state indicator carries its formula",
+        workbook[state.sheet][state.cell].value == state.formula,
+        f"found {workbook[state.sheet][state.cell].value!r}",
+    )
+    result.check(
+        "no macro is required to maintain the structural state indicator",
+        str(workbook[state.sheet][state.cell].value).startswith("="),
+    )
+
+    # --- defined names -------------------------------------------------------
+    for name, reference in structure.defined_names.items():
+        result.check(
+            f"structural defined name {name} -> {reference}",
+            name in workbook.defined_names
+            and workbook.defined_names[name].attr_text == reference,
+            f"found {workbook.defined_names[name].attr_text!r}"
+            if name in workbook.defined_names
+            else "missing",
+        )
+    for name, reference in structure.alias_defined_names(contract).items():
+        result.check(
+            f"entered alias {name} addresses the same cell as its inp* name ({reference})",
+            name in workbook.defined_names
+            and workbook.defined_names[name].attr_text == reference,
+            f"found {workbook.defined_names[name].attr_text!r}"
+            if name in workbook.defined_names
+            else "missing",
+        )
+    for alias in structure.entered_aliases:
+        spec = contract.inputs[alias.input_key]
+        result.check(
+            f"the accepted input name {spec.defined_name} still exists alongside "
+            f"{alias.defined_name}",
+            spec.defined_name in workbook.defined_names,
+        )
+
+    # --- permanent-ID counters ----------------------------------------------
+    identity = workbook[structure.identity_sheet]
+    for counter in structure.counters:
+        result.check(
+            f"counter {counter.key!r} seeded at {structure.identity_sheet}!{counter.cell}",
+            identity[counter.cell].value == counter.initial,
+            f"expected {counter.initial!r}, found {identity[counter.cell].value!r}",
+        )
+
+    # --- grids ---------------------------------------------------------------
+    for grid in structure.all_grids:
+        worksheet = workbook[grid.sheet]
+        tables = getattr(worksheet, "tables", {})
+        if not result.check(
+            f"grid table {grid.table_name} exists on {grid.sheet}", grid.table_name in tables
+        ):
+            continue
+        result.check(
+            f"grid table {grid.table_name} ref is {grid.ref} (fixed columns only)",
+            tables[grid.table_name].ref == grid.ref,
+            f"found {tables[grid.table_name].ref}",
+        )
+        result.check(
+            f"grid {grid.table_name} has {len(grid.fixed_columns)} fixed columns in order",
+            [
+                worksheet[f"{grid.column_letter(i)}{grid.header_row}"].value
+                for i in range(len(grid.fixed_columns))
+            ]
+            == grid.headers,
+        )
+        # No year column may exist before a timeline is applied: a generated year
+        # column would assert a timeline the user has not entered.
+        beyond = grid.column_letter(len(grid.fixed_columns))
+        result.check(
+            f"grid {grid.table_name} has no generated year column yet (first free column "
+            f"{beyond} is empty)",
+            worksheet[f"{beyond}{grid.header_row}"].value is None,
+            f"found {worksheet[f'{beyond}{grid.header_row}'].value!r}",
+        )
+        populated = [
+            f"{grid.column_letter(i)}{row}"
+            for i in range(len(grid.fixed_columns))
+            for row in range(grid.first_data_row, grid.last_data_row + 1)
+            if worksheet[f"{grid.column_letter(i)}{row}"].value is not None
+        ]
+        result.check(
+            f"grid {grid.table_name} reserved rows are blank",
+            not populated,
+            ", ".join(populated[:5]),
+        )
+        offenders = intersecting_validation_ranges(
+            worksheet, f"{grid.first_column}{grid.first_data_row}:"
+            f"{grid.last_fixed_column}{grid.last_data_row}"
+        )
+        result.check(
+            f"no data validation intersects {grid.table_name}, whose fixed columns are all "
+            "model-controlled",
+            not offenders,
+            ", ".join(offenders),
+        )
+        key = "inflation_formula" if grid.kind == "inflation" else "profiling_formula"
+        result.check(
+            f"grid {grid.sheet} shows its structural state message",
+            worksheet[f"B{grid.state_message_row}"].value == structure.state_messages[key],
+            f"found {worksheet[f'B{grid.state_message_row}'].value!r}",
         )
 
 

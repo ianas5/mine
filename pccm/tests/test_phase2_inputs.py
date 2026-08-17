@@ -26,12 +26,14 @@ from pccm_builder import (  # noqa: E402
     build_workbook,
     load_contract,
     load_driver_contract,
+    load_structure_contract,
     load_spec,
 )
 
 SPEC_PATH = PCCM_ROOT / "spec" / "workbook.yaml"
 CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
 DRIVERS_PATH = PCCM_ROOT / "spec" / "driver_contract.yaml"
+STRUCTURE_PATH = PCCM_ROOT / "spec" / "structure_contract.yaml"
 
 # --- locked Phase 2 decisions ----------------------------------------------
 SETUP_INPUTS = {
@@ -76,7 +78,10 @@ def _artifact() -> Path:
     os.environ["PCCM_BUILD_TIMESTAMP"] = "1970-01-01 00:00:00 UTC"
     try:
         workbook, _ = build_workbook(
-            load_spec(SPEC_PATH), load_contract(CONTRACT_PATH), load_driver_contract(DRIVERS_PATH)
+            load_spec(SPEC_PATH),
+            load_contract(CONTRACT_PATH),
+            load_driver_contract(DRIVERS_PATH),
+            load_structure_contract(STRUCTURE_PATH),
         )
         path = Path(_TEMPDIR.name) / "stage_a.xlsx"
         workbook.save(path)
@@ -103,6 +108,32 @@ def _dv_for(worksheet, address: str):
         if address in str(dv.sqref):
             return dv
     return None
+
+
+def _permitted_formula_cells() -> dict:
+    """The exact cells the structure contract is allowed to write a formula into.
+
+    Phases 1-3 forbade every formula. Phase 4 permits structural-state display only
+    -- Structure Change Pending, the derived applied-timeline cells and each grid's
+    "timeline not yet applied" message -- and the contract enumerates them. The
+    regression intent is unchanged: any formula outside this enumerated set is still
+    a failure, and a business calculation would land outside it.
+    """
+    structure = load_structure_contract(STRUCTURE_PATH)
+    return structure.formula_cells
+
+
+def _unexpected_formulas(workbook) -> list[str]:
+    permitted = _permitted_formula_cells()
+    return [
+        f"{ws.title}!{cell.coordinate}"
+        for ws in workbook.worksheets
+        for row in ws.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str)
+        and cell.value.startswith("=")
+        and cell.coordinate not in permitted.get(ws.title, set())
+    ]
 
 
 # --- 1-2. Setup inputs and defined names -----------------------------------
@@ -302,27 +333,28 @@ def test_19c_no_unsupported_validation_invented() -> None:
 
 # --- 20-23. nothing from a later phase --------------------------------------
 def test_20_only_expected_tables_exist() -> None:
-    """Phase 3 added the two driver registers. Later-phase sheets remain bare."""
+    """Phase-aware. Phase 3 added the driver registers, Phase 4 the structural
+    grids. Sheets belonging to still-unimplemented phases must remain bare."""
     drivers = load_driver_contract(DRIVERS_PATH)
+    structure = load_structure_contract(STRUCTURE_PATH)
     workbook = _wb()
-    for sheet in ("Inflation", "Cost Profiling", "Risk Profiling", "Model Check",
-                  "Results", "Sensitivity", "Dashboard", "Methodology", "_Calc", "_SimData"):
+    for sheet in ("Model Check", "Results", "Sensitivity", "Dashboard",
+                  "Methodology", "_Calc", "_SimData"):
         assert not getattr(workbook[sheet], "tables", {}), f"{sheet} already declares a table"
     all_tables = {n for ws in workbook.worksheets for n in getattr(ws, "tables", {})}
-    expected = set(CONFIG_TABLES) | {FX_TABLE} | {r.table_name for r in drivers.all_registers}
+    expected = (
+        set(CONFIG_TABLES)
+        | {FX_TABLE}
+        | {r.table_name for r in drivers.all_registers}
+        | {g.table_name for g in structure.all_grids}
+    )
     assert all_tables == expected, f"unexpected tables: {all_tables ^ expected}"
 
 
 def test_21_no_formulas_or_business_calculations() -> None:
     workbook = _wb()
-    offenders = [
-        f"{ws.title}!{cell.coordinate}"
-        for ws in workbook.worksheets
-        for row in ws.iter_rows()
-        for cell in row
-        if isinstance(cell.value, str) and cell.value.startswith("=")
-    ]
-    assert not offenders, f"formulas present: {offenders[:10]}"
+    offenders = _unexpected_formulas(workbook)
+    assert not offenders, f"formulas outside the permitted structural cells: {offenders[:10]}"
 
 
 def test_22_no_vba_project() -> None:
@@ -541,14 +573,8 @@ def test_37_locked_cells_use_locked_treatment_not_input_treatment() -> None:
 
 def test_38_no_model_check_logic_or_formulas_introduced() -> None:
     workbook = _wb()
-    offenders = [
-        f"{ws.title}!{c.coordinate}"
-        for ws in workbook.worksheets
-        for row in ws.iter_rows()
-        for c in row
-        if isinstance(c.value, str) and c.value.startswith("=")
-    ]
-    assert not offenders, f"formulas present: {offenders[:10]}"
+    offenders = _unexpected_formulas(workbook)
+    assert not offenders, f"formulas outside the permitted structural cells: {offenders[:10]}"
     assert not getattr(workbook["Model Check"], "tables", {}), "Model Check has a table"
     assert not list(workbook["Model Check"].data_validations.dataValidation), (
         "Model Check has data validation"

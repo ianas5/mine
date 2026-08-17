@@ -15,7 +15,7 @@ import yaml
 
 VALID_VISIBILITY = ("visible", "hidden", "veryHidden")
 VALID_BLOCK_TYPES = ("section", "note")
-VALID_BODIES = ("contract", "drivers")
+VALID_BODIES = ("contract", "drivers", "structure")
 CODENAME_RE = re.compile(r"^sh[A-Z][A-Za-z0-9]*$")
 
 
@@ -73,6 +73,11 @@ class WorkbookSpec:
     def driver_sheets(self) -> list[str]:
         """Sheets whose body is generated from the driver contract."""
         return [s.name for s in self.sheets if s.body == "drivers"]
+
+    @property
+    def structure_sheets(self) -> list[str]:
+        """Sheets whose body is generated from the structure contract."""
+        return [s.name for s in self.sheets if s.body == "structure"]
 
     def sheet(self, name: str) -> SheetSpec:
         for s in self.sheets:

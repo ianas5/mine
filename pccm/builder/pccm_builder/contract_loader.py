@@ -207,6 +207,35 @@ class InputContract:
     def inputs_for_sheet(self, sheet: str) -> list[InputSpec]:
         return [i for i in self.inputs.values() if i.sheet == sheet]
 
+    def occupied_rows(self, sheet: str) -> set[int]:
+        """Every row on *sheet* this contract claims: inputs, sections and tables.
+
+        Later contracts extend the same sheet (Phase 4 appends the applied timeline
+        block to Setup) and must be able to prove they land clear of this one rather
+        than assume it.
+        """
+        rows: set[int] = set()
+        for spec in self.inputs_for_sheet(sheet):
+            rows.add(_row(spec.label_cell))
+            rows.add(_row(spec.cell))
+        if sheet == self.setup_sheet:
+            rows.add(self.setup_intro["row"])
+            for section in self.setup_sections:
+                rows.add(section.row)
+                for attribute in ("note_row", "convention_row"):
+                    value = getattr(section, attribute, None)
+                    if value:
+                        rows.add(value)
+        if sheet == self.config_sheet:
+            rows.add(self.config_intro["row"])
+        for table in self.tables_for_sheet(sheet):
+            if table.section_row:
+                rows.add(table.section_row)
+            if table.note_row:
+                rows.add(table.note_row)
+            rows.update(range(table.header_row, table.last_data_row + 1))
+        return rows
+
     def tables_for_sheet(self, sheet: str) -> list[TableSpec]:
         return [t for t in self.all_tables if t.sheet == sheet]
 

@@ -27,6 +27,7 @@ from pccm_builder import (  # noqa: E402
     build_workbook,
     load_contract,
     load_driver_contract,
+    load_structure_contract,
     load_spec,
 )
 from pccm_builder.driver_loader import validate_against_input_contract  # noqa: E402
@@ -34,6 +35,7 @@ from pccm_builder.driver_loader import validate_against_input_contract  # noqa: 
 SPEC_PATH = PCCM_ROOT / "spec" / "workbook.yaml"
 CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
 DRIVERS_PATH = PCCM_ROOT / "spec" / "driver_contract.yaml"
+STRUCTURE_PATH = PCCM_ROOT / "spec" / "structure_contract.yaml"
 
 
 def _base() -> dict[str, Any]:
@@ -255,7 +257,8 @@ def test_rejects_unknown_sheet() -> None:
     with tempfile.TemporaryDirectory(prefix="pccm-baddriver-") as tmp:
         drivers = load_driver_contract(_write(data, tmp))
         try:
-            build_workbook(load_spec(SPEC_PATH), load_contract(CONTRACT_PATH), drivers)
+            build_workbook(load_spec(SPEC_PATH), load_contract(CONTRACT_PATH), drivers,
+                           load_structure_contract(STRUCTURE_PATH))
         except RuntimeError:
             return
     raise AssertionError("a register targeting an unknown sheet was accepted")
@@ -349,7 +352,8 @@ def test_rejects_reporting_currency_drift_between_specs() -> None:
             yaml.safe_dump(spec_data, handle, sort_keys=False)
         spec = load_spec(path)
         try:
-            build_workbook(spec, load_contract(CONTRACT_PATH), load_driver_contract(DRIVERS_PATH))
+            build_workbook(spec, load_contract(CONTRACT_PATH), load_driver_contract(DRIVERS_PATH),
+                           load_structure_contract(STRUCTURE_PATH))
         except RuntimeError as error:
             assert "reporting currency" in str(error).lower()
             return

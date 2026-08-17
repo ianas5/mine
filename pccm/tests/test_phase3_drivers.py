@@ -29,12 +29,14 @@ from pccm_builder import (  # noqa: E402
     build_workbook,
     load_contract,
     load_driver_contract,
+    load_structure_contract,
     load_spec,
 )
 
 SPEC_PATH = PCCM_ROOT / "spec" / "workbook.yaml"
 CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
 DRIVERS_PATH = PCCM_ROOT / "spec" / "driver_contract.yaml"
+STRUCTURE_PATH = PCCM_ROOT / "spec" / "structure_contract.yaml"
 
 # --- Architecture Lock Revision B: locked driver schemas --------------------
 # Declared as (semantic key, header, type, user_owned). A header alone is not a
@@ -108,7 +110,10 @@ def _artifact() -> Path:
     os.environ["PCCM_BUILD_TIMESTAMP"] = "1970-01-01 00:00:00 UTC"
     try:
         workbook, _ = build_workbook(
-            load_spec(SPEC_PATH), load_contract(CONTRACT_PATH), load_driver_contract(DRIVERS_PATH)
+            load_spec(SPEC_PATH),
+            load_contract(CONTRACT_PATH),
+            load_driver_contract(DRIVERS_PATH),
+            load_structure_contract(STRUCTURE_PATH),
         )
         path = Path(_TEMPDIR.name) / "stage_a.xlsx"
         workbook.save(path)
@@ -180,6 +185,32 @@ def _dv_intersecting(worksheet, target: str) -> list[str]:
         f"{dv.type}@{dv.sqref}"
         for dv, (c1, r1, c2, r2) in _dv_ranges(worksheet)
         if c1 <= t_max_col and c2 >= t_min_col and r1 <= t_max_row and r2 >= t_min_row
+    ]
+
+
+def _permitted_formula_cells() -> dict:
+    """The exact cells the structure contract is allowed to write a formula into.
+
+    Phases 1-3 forbade every formula. Phase 4 permits structural-state display only
+    -- Structure Change Pending, the derived applied-timeline cells and each grid's
+    "timeline not yet applied" message -- and the contract enumerates them. The
+    regression intent is unchanged: any formula outside this enumerated set is still
+    a failure, and a business calculation would land outside it.
+    """
+    structure = load_structure_contract(STRUCTURE_PATH)
+    return structure.formula_cells
+
+
+def _unexpected_formulas(workbook) -> list[str]:
+    permitted = _permitted_formula_cells()
+    return [
+        f"{ws.title}!{cell.coordinate}"
+        for ws in workbook.worksheets
+        for row in ws.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str)
+        and cell.value.startswith("=")
+        and cell.coordinate not in permitted.get(ws.title, set())
     ]
 
 
@@ -371,14 +402,8 @@ def test_21_no_row_number_formula_used_for_identity() -> None:
 
 def test_22_no_formulas_or_business_calculations() -> None:
     workbook = _wb()
-    offenders = [
-        f"{ws.title}!{c.coordinate}"
-        for ws in workbook.worksheets
-        for row in ws.iter_rows()
-        for c in row
-        if isinstance(c.value, str) and c.value.startswith("=")
-    ]
-    assert not offenders, f"formulas present: {offenders[:10]}"
+    offenders = _unexpected_formulas(workbook)
+    assert not offenders, f"formulas outside the permitted structural cells: {offenders[:10]}"
 
 
 def test_23_no_vba_project() -> None:

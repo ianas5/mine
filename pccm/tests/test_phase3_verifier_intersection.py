@@ -31,6 +31,7 @@ from pccm_builder import (  # noqa: E402
     build_workbook,
     load_contract,
     load_driver_contract,
+    load_structure_contract,
     load_spec,
     verify_workbook,
 )
@@ -39,11 +40,17 @@ from pccm_builder.verify import data_validation_intersects  # noqa: E402
 SPEC_PATH = PCCM_ROOT / "spec" / "workbook.yaml"
 CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
 DRIVERS_PATH = PCCM_ROOT / "spec" / "driver_contract.yaml"
+STRUCTURE_PATH = PCCM_ROOT / "spec" / "structure_contract.yaml"
 
 
 # ---------------------------------------------------------------------------
 def _specs():
-    return load_spec(SPEC_PATH), load_contract(CONTRACT_PATH), load_driver_contract(DRIVERS_PATH)
+    return (
+        load_spec(SPEC_PATH),
+        load_contract(CONTRACT_PATH),
+        load_driver_contract(DRIVERS_PATH),
+        load_structure_contract(STRUCTURE_PATH),
+    )
 
 
 def _inject(worksheet, *refs: str) -> None:
@@ -56,15 +63,15 @@ def _inject(worksheet, *refs: str) -> None:
 
 def _verify_with(mutate: Callable | None = None):
     """Build, optionally corrupt, save, then run the real post-build verifier."""
-    spec, contract, drivers = _specs()
-    workbook, _ = build_workbook(spec, contract, drivers)
+    spec, contract, drivers, structure = _specs()
+    workbook, _ = build_workbook(spec, contract, drivers, structure)
     if mutate is not None:
         mutate(workbook)
     with tempfile.TemporaryDirectory(prefix="pccm-verifier-") as tmp:
         path = Path(tmp) / "stage_a.xlsx"
         workbook.save(path)
         workbook.close()
-        return verify_workbook(path, spec, contract, drivers)
+        return verify_workbook(path, spec, contract, drivers, structure)
 
 
 def _failure_mentioning(result, *fragments: str) -> str:
@@ -98,7 +105,7 @@ def test_01_clean_build_passes_verification() -> None:
 # locked Setup / Config identity rows
 # ---------------------------------------------------------------------------
 def test_02_validation_on_the_locked_currency_cell_is_caught() -> None:
-    _, contract, _ = _specs()
+    _, contract, _, _ = _specs()
     table = contract.table_by_name("tblCurrencies")
     target = _cell_of(table, 0)  # the locked SAR cell
 
@@ -108,7 +115,7 @@ def test_02_validation_on_the_locked_currency_cell_is_caught() -> None:
 
 
 def test_03_validation_on_the_locked_fx_identity_cell_is_caught() -> None:
-    _, contract, _ = _specs()
+    _, contract, _, _ = _specs()
     table = contract.table_by_name("tblFXRates")
     target = _cell_of(table, 1)  # the '1' of the locked SAR|1 identity
 
@@ -119,7 +126,7 @@ def test_03_validation_on_the_locked_fx_identity_cell_is_caught() -> None:
 
 def test_04_validation_spanning_locked_and_user_rows_is_caught() -> None:
     """A range that starts in the locked row and runs into user rows still fails."""
-    _, contract, _ = _specs()
+    _, contract, _, _ = _specs()
     table = contract.table_by_name("tblFXRates")
     target = f"{_cell_of(table, 0)}:{table.column_letter(0)}{table.last_data_row}"
 
@@ -132,7 +139,7 @@ def test_04_validation_spanning_locked_and_user_rows_is_caught() -> None:
 # ---------------------------------------------------------------------------
 def test_05_validation_on_a_single_cost_line_id_cell_is_caught() -> None:
     """The exact case an equality test on the full range string cannot see."""
-    _, _, drivers = _specs()
+    _, _, drivers, _ = _specs()
     register = drivers.registers["cost_lines"]
     target = f"{_identity_letter(register)}{register.first_data_row}"   # B12
 
@@ -142,7 +149,7 @@ def test_05_validation_on_a_single_cost_line_id_cell_is_caught() -> None:
 
 
 def test_06_validation_on_a_partial_cost_line_id_range_is_caught() -> None:
-    _, _, drivers = _specs()
+    _, _, drivers, _ = _specs()
     register = drivers.registers["cost_lines"]
     letter = _identity_letter(register)
     letter_range = f"{letter}{register.first_data_row}:{letter}{register.first_data_row + 8}"
@@ -154,7 +161,7 @@ def test_06_validation_on_a_partial_cost_line_id_range_is_caught() -> None:
 
 def test_07_validation_on_a_trailing_risk_id_range_is_caught() -> None:
     """Overlap at the tail of the column, not the head."""
-    _, _, drivers = _specs()
+    _, _, drivers, _ = _specs()
     register = drivers.registers["risk_register"]
     letter = _identity_letter(register)
     target = f"{letter}{register.last_data_row - 4}:{letter}{register.last_data_row}"
@@ -166,7 +173,7 @@ def test_07_validation_on_a_trailing_risk_id_range_is_caught() -> None:
 
 def test_08_multi_area_sqref_touching_the_id_column_is_caught() -> None:
     """One offending area inside an otherwise innocent multi-area validation."""
-    _, _, drivers = _specs()
+    _, _, drivers, _ = _specs()
     register = drivers.registers["risk_register"]
     letter = _identity_letter(register)
     offending = f"{letter}{register.first_data_row + 3}:{letter}{register.first_data_row + 5}"
@@ -178,7 +185,7 @@ def test_08_multi_area_sqref_touching_the_id_column_is_caught() -> None:
 
 def test_09_validation_crossing_the_id_column_horizontally_is_caught() -> None:
     """A wide range that merely passes through the ID column still overlaps it."""
-    _, _, drivers = _specs()
+    _, _, drivers, _ = _specs()
     register = drivers.registers["cost_lines"]
     row = register.first_data_row + 2
     target = f"{register.column_letter(0)}{row}:{register.column_letter(3)}{row}"
@@ -192,7 +199,7 @@ def test_09_validation_crossing_the_id_column_horizontally_is_caught() -> None:
 # ---------------------------------------------------------------------------
 def test_10_unrelated_validation_does_not_fail_the_gate() -> None:
     """A rule outside every protected range must leave the whole gate green."""
-    _, _, drivers = _specs()
+    _, _, drivers, _ = _specs()
     register = drivers.registers["cost_lines"]
     outside = f"{register.column_letter(len(register.columns) + 2)}{register.last_data_row + 5}"
 
@@ -215,8 +222,8 @@ def test_11_the_real_user_validations_are_not_false_positives() -> None:
 # helper semantics (in addition to, never instead of, the gate tests above)
 # ---------------------------------------------------------------------------
 def test_12_helper_handles_cells_ranges_and_multi_area_sqrefs() -> None:
-    spec, contract, drivers = _specs()
-    workbook, _ = build_workbook(spec, contract, drivers)
+    spec, contract, drivers, structure = _specs()
+    workbook, _ = build_workbook(spec, contract, drivers, structure)
     try:
         worksheet = workbook[drivers.registers["cost_lines"].sheet]
         _inject(worksheet, "P4", "R10:T14")
