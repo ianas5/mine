@@ -22,6 +22,9 @@
     actually means.
 
     Test matrix:
+      PRE Collection-shape preflight, pure PowerShell, BEFORE Excel is started:
+          the table-row emission contract must give 0/1/N rows with row boundaries
+          intact, or the run aborts without creating an Excel process
       A   Stage-B build: .xlsm, FileFormat 52, 14 CodeNames, modules, five buttons,
           natural COM shutdown
       B   Permanent Cost Line IDs: sequence and non-reuse after deletion
@@ -125,6 +128,92 @@ Write-Host ''
 Write-Host 'PCCM - Phase 4 Windows functional test' -ForegroundColor Cyan
 Write-Host '======================================' -ForegroundColor Cyan
 Write-Host ''
+
+# ===========================================================================
+# The row-emission idiom
+# ===========================================================================
+# THE single place a table row is put on the pipeline. Get-TableBody calls it, and
+# so does the preflight below -- deliberately the same mechanism, because a probe
+# with its own copy of the idiom can pass while the real reader is broken.
+#
+# -NoEnumerate is the whole point: without it PowerShell unrolls the row array and
+# emits its cells as separate objects, so the caller sees cells where it expects
+# rows. With it, one row goes out as one object, whatever its length.
+function Write-RowObject {
+    param([object[]]$Row)
+    Write-Output -NoEnumerate $Row
+}
+
+# The same loop shape Get-TableBody uses, over fabricated values instead of cells.
+# It exists so the preflight can exercise the emission contract with no Excel and
+# no COM at all.
+function Write-FabricatedRows {
+    param([int]$RowCount, [int]$CellCount)
+    for ($r = 1; $r -le $RowCount; $r++) {
+        $line = @()
+        for ($c = 1; $c -le $CellCount; $c++) { $line += ("r{0}c{1}" -f $r, $c) }
+        Write-RowObject $line
+    }
+}
+
+# ===========================================================================
+# Preflight: collection shape, BEFORE Excel is started
+# ===========================================================================
+# Linux cannot execute PowerShell, so the static tests can only read the source.
+# The actual pipeline semantics -- how many objects a function emits, and whether a
+# row survives as a row -- can only be observed here. Two wrong shapes have already
+# shipped past a source review, so this runs first, costs nothing, and stops the
+# run before a single Excel process is created if the contract is broken.
+try {
+    $list = New-Checklist
+
+    $zero = @(Write-FabricatedRows -RowCount 0 -CellCount 3)
+    $null = Add-Check $list 'zero rows: the caller collection is empty' `
+        ($zero.Count -eq 0) ("Count " + $zero.Count)
+
+    $one = @(Write-FabricatedRows -RowCount 1 -CellCount 3)
+    $null = Add-Check $list 'one row: the caller collection holds exactly one row' `
+        ($one.Count -eq 1) ("Count " + $one.Count)
+    $oneOk = $false
+    if ($one.Count -eq 1) {
+        $oneOk = (@($one[0]).Count -eq 3)
+        $null = Add-Check $list 'one row: that row still has its three cells' `
+            $oneOk ("row Count " + @($one[0]).Count)
+        $null = Add-Check $list 'one row: the cell values are unchanged' `
+            ((@($one[0]) -join ',') -eq 'r1c1,r1c2,r1c3') (@($one[0]) -join ',')
+    }
+
+    $two = @(Write-FabricatedRows -RowCount 2 -CellCount 3)
+    $null = Add-Check $list 'two rows: the caller collection holds exactly two rows' `
+        ($two.Count -eq 2) ("Count " + $two.Count)
+    if ($two.Count -eq 2) {
+        $null = Add-Check $list 'two rows: each element is one row, boundaries preserved' `
+            ((@($two[0]) -join ',') -eq 'r1c1,r1c2,r1c3' -and `
+             (@($two[1]) -join ',') -eq 'r2c1,r2c2,r2c3') `
+            ("[0] " + (@($two[0]) -join ',') + " / [1] " + (@($two[1]) -join ','))
+    }
+
+    # The failure mode this replaced: `return ,$rows` would make Count 1 here, with
+    # element 0 being the whole collection. Named so a regression is unmistakable.
+    $null = Add-Check $list 'the whole collection is never emitted as one object' `
+        ($two.Count -ne 1) "the producer emitted the entire table as a single object"
+
+    $preflightOk = Test-ChecklistOk $list
+    Add-Result 'PRE' 'Collection shape preflight (pure PowerShell, no Excel)' `
+        $(if ($preflightOk) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    if (-not $preflightOk) {
+        Write-Host ''
+        Write-Host 'PHASE-4 FUNCTIONAL TEST ABORTED before Excel was started:' -ForegroundColor Red
+        Write-Host 'the table-row emission contract is wrong, so every scenario would' -ForegroundColor Red
+        Write-Host 'compare the wrong shape. Fix Write-RowObject / Get-TableBody first.' -ForegroundColor Red
+        exit 1
+    }
+} catch {
+    Add-Result 'PRE' 'Collection shape preflight' 'FAIL' (Format-Err $_)
+    Write-Host ''
+    Write-Host 'PHASE-4 FUNCTIONAL TEST ABORTED before Excel was started.' -ForegroundColor Red
+    exit 1
+}
 
 # ===========================================================================
 # Prepare a disposable copy of the build
@@ -265,22 +354,42 @@ function Get-TableColumnNames {
     return $out
 }
 
-# Reads the whole data body of a table as a jagged array of strings, so a later
-# comparison is a plain value comparison and never a live COM read.
+# Reads the data body of a table as a sequence of row arrays, so a later comparison
+# is a plain value comparison and never a live COM read.
+#
+# ONE PIPELINE OBJECT PER TABLE ROW. That is the producer contract, and it is the
+# only shape that gives the caller stable zero/one/many semantics:
+#
+#   0 rows -> 0 objects emitted -> caller's @(...) has Count 0
+#   1 row  -> 1 row-array object -> Count 1, and [0] is that row
+#   N rows -> N row-array objects -> Count N, each element one row
+#
+# Two wrong shapes were tried before this one, and both are named here because each
+# looks correct in isolation:
+#
+#   `return $rows`   PowerShell enumerates a collection on output, so ONE row is
+#                    emitted as its own cells and the caller sees N rows of one
+#                    cell each; zero rows emits nothing and lands $null.
+#   `return ,$rows`  the unary comma emits the WHOLE jagged array as a SINGLE
+#                    object, so the caller's @(...) wraps that one object and ends
+#                    up one level too deep: Count 1, and [0] is the entire table.
+#                    Every `foreach ($row in ...)` then sees the table, not a row.
+#
+# Emitting each row through Write-RowObject is what makes the caller's @(...) do
+# exactly one job -- normalising 0/1/N -- rather than trying to repair nesting.
 function Get-TableBody {
     param($Workbook, [string]$SheetName, [string]$TableName)
     $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $body = $null
     $rowsObj = $null; $colsObj = $null
-    $rows = @()
     try {
         $localWorksheets = $Workbook.Worksheets
         $ws = $localWorksheets.Item($SheetName)
         $los = $ws.ListObjects
         $lo = $los.Item($TableName)
         $body = $lo.DataBodyRange
-        # ,$rows -- see the note on the final return. An empty body is a valid
-        # outcome and must reach the caller as an empty collection, not as $null.
-        if ($null -eq $body) { return ,$rows }
+        # An empty body is a valid outcome: emit NOTHING. The caller's @(...) turns
+        # zero pipeline objects into an empty collection, which is exactly right.
+        if ($null -eq $body) { return }
 
         # Row and column counts are read through named, released objects rather than
         # through $body.Rows.Count, which would mint an unowned Range on every
@@ -304,7 +413,7 @@ function Get-TableBody {
                     if ($null -ne $cell) { Release-Transient $cell 'Range(cell)'; $cell = $null }
                 }
             }
-            $rows += ,$line
+            Write-RowObject $line
         }
     } finally {
         if ($null -ne $rowsObj)         { Release-Transient $rowsObj         'Range(rows)';    $rowsObj         = $null }
@@ -315,19 +424,7 @@ function Get-TableBody {
         if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';      $ws              = $null }
         if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';     $localWorksheets = $null }
     }
-    # ,$rows -- the unary comma, and it is load-bearing. This is a JAGGED array, and
-    # caller-side @(...) alone cannot repair it:
-    #
-    #   `return $rows` with ONE row emits that row's inner string[] as the single
-    #   pipeline object, and @(...) at the caller then enumerates THAT -- so a
-    #   one-row table arrives as N rows of one cell each. The zero-row case is the
-    #   familiar $null. Only the comma stops the outer array being enumerated on
-    #   output; the caller's @(...) then unwraps exactly one level and gets $rows
-    #   back intact, for zero, one or many rows alike.
-    #
-    # The flat helpers (Get-IdColumnValues, Get-TableColumnNames) need no comma:
-    # one string emitted is one string, and @(...) makes it a one-element array.
-    return ,$rows
+    # No trailing return: every row has already been emitted, one object each.
 }
 
 function Set-TableCell {

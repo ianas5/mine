@@ -911,8 +911,8 @@ def test_37a_the_header_matrix_documents_exactly_the_scenarios_that_run() -> Non
     """
     text = _ps(HARNESS_PS1)
     header = text[text.index("Test matrix:") : text.index("Safety, unchanged")]
-    documented = set(re.findall(r"^\s{6}([A-Z]\d?)\s{2,}\S", header, re.MULTILINE))
-    reported = set(re.findall(r"Add-Result '([A-Z]\d?)'", _ps_code(HARNESS_PS1)))
+    documented = set(re.findall(r"^\s{6}([A-Z]{1,3}\d?)\s+\S", header, re.MULTILINE))
+    reported = set(re.findall(r"Add-Result '([A-Z]{1,3}\d?)'", _ps_code(HARNESS_PS1)))
     # The timeline scenarios are reported from one loop over the oracle fixture as
     # 'D-J.<n>', so their letters are documented individually but never appear as a
     # literal Add-Result label.
@@ -924,7 +924,7 @@ def test_37a_the_header_matrix_documents_exactly_the_scenarios_that_run() -> Non
         f"documented but never run: {sorted(documented - reported)}; "
         f"run but undocumented: {sorted(reported - documented)}"
     )
-    assert {"K2", "W"} <= documented
+    assert {"K2", "W", "PRE"} <= documented
 
 
 def test_38_the_harness_hardcodes_no_expected_timeline_value() -> None:
@@ -1241,7 +1241,7 @@ def test_46_every_powershell_helper_invoked_is_defined_somewhere() -> None:
         "Copy-Item", "Join-Path", "Split-Path", "New-Object", "Add-Type",
         "Select-Object", "Where-Object", "ForEach-Object", "ConvertFrom-Json",
         "Set-StrictMode", "Get-CimInstance", "Out-Null", "Write-Verbose",
-        "Sort-Object", "Measure-Object", "Select-String",
+        "Sort-Object", "Measure-Object", "Select-String", "Write-Output",
     }
     problems = []
     for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
@@ -1816,29 +1816,175 @@ def test_46n_no_collection_result_reaches_count_unmaterialised() -> None:
     )
 
 
-def test_46o_a_jagged_collection_helper_suppresses_output_enumeration() -> None:
-    """@(...) at the caller is necessary but NOT sufficient for a jagged return.
+def test_46o_the_row_producer_emits_one_object_per_table_row() -> None:
+    """The producer contract: 0 rows -> 0 objects, 1 row -> 1 row, N rows -> N rows.
 
-    `return $rows` with one row emits that row's inner array as the single pipeline
-    object, and the caller's @(...) then enumerates THAT -- so a one-row table
-    arrives as N rows of one cell each. Only `return ,$rows` keeps the outer array
-    intact, after which the caller's @(...) unwraps exactly one level.
+    Two wrong shapes shipped before this one, and each looked right in isolation:
 
-    This was not the defect that fired on Windows; it is the same class, found by
-    auditing for it, and unreachable today only because no table is one row long.
+      `return $rows`   PowerShell enumerates a collection on output, so ONE row
+                       goes out as its own cells and the caller sees N rows of one
+                       cell each.
+      `return ,$rows`  the unary comma emits the WHOLE jagged array as a SINGLE
+                       object, so the caller's @(...) wraps that and lands one
+                       level too deep: Count 1, element 0 the entire table. Every
+                       `foreach ($row in ...)` then binds $row to the table.
+
+    Neither is repairable at the caller, and neither is what `@(...)` is for --
+    @(...) normalises 0/1/N, it does not fix nesting. So the producer emits each
+    row itself, and this test pins that rather than the shape it replaced.
     """
     for helper in JAGGED_COLLECTION_HELPERS:
         body = _ps_function_body(HARNESS_PS1, helper)
-        returns = [line.strip() for line in body.splitlines() if line.strip().startswith("return")]
-        assert returns, f"{helper}: no return statement found"
-        assert all(r.startswith("return ,") for r in returns), (
-            f"{helper}: every return must suppress enumeration with a unary comma, got {returns}"
+        assert "return ,$rows" not in body, (
+            f"{helper}: `return ,$rows` emits the whole table as one object"
         )
-    # And the flat helpers deliberately do NOT use the comma: one string emitted is
-    # one string, which @(...) turns into a one-element array.
+        assert "return $rows" not in body, (
+            f"{helper}: `return $rows` unrolls a single row into its cells"
+        )
+        assert "$rows +=" not in body and "$rows = @()" not in body, (
+            f"{helper}: rows must be emitted, not accumulated into a jagged array"
+        )
+        # A null DataBodyRange emits nothing at all.
+        assert "if ($null -eq $body) { return }" in body, (
+            f"{helper}: an empty body must emit zero objects, not an empty array"
+        )
+        # Each completed row goes out with non-enumerating row semantics.
+        assert "Write-RowObject $line" in body, (
+            f"{helper}: each row must be emitted through the shared row-emission idiom"
+        )
+        emitting = [
+            line.strip()
+            for line in body.splitlines()
+            if "Write-RowObject" in line or re.search(r"(?<![\w-])return\b", line)
+        ]
+        assert emitting == ["if ($null -eq $body) { return }", "Write-RowObject $line"], (
+            f"{helper}: unexpected output statements {emitting}"
+        )
+
+    # The shared idiom, and the reason it is shared.
+    idiom = _ps_function_body(HARNESS_PS1, "Write-RowObject")
+    assert "Write-Output -NoEnumerate $Row" in idiom, (
+        "the row must be written without enumeration, or its cells are emitted "
+        "as separate objects"
+    )
+
+    # A STREAMING producer has a new failure mode a collecting one did not: any
+    # statement whose value is not consumed joins the output, and an extra object
+    # between two rows would shift every later comparison by one. Every line in the
+    # body must therefore be an assignment, a control construct, or one of the two
+    # calls known to emit nothing.
+    for helper in JAGGED_COLLECTION_HELPERS:
+        leaks = []
+        for line in _ps_function_body(HARNESS_PS1, helper).splitlines():
+            statement = line.strip()
+            if not statement or statement in ("{", "}", "} else {"):
+                continue
+            if statement.startswith("}"):
+                statement = statement.lstrip("} ").strip()
+                if not statement:
+                    continue
+            if re.match(
+                r"(function|param|if|for|foreach|while|do|try|finally|catch|else|return)\b",
+                statement,
+            ):
+                continue
+            if "=" in statement:
+                continue
+            if re.match(r"(Release-Transient|Write-RowObject)\b", statement):
+                continue
+            leaks.append(statement[:70])
+        assert not leaks, (
+            f"{helper} streams its output, so an unconsumed statement would be "
+            f"emitted between rows:\n  " + "\n  ".join(leaks)
+        )
+
+    # And the release helper it calls must itself be silent, for the same reason.
+    release = _ps_function_body(LIFECYCLE_PS1, "Release-Transient")
+    assert "$rec = Release-ComObjectSafe" in release, (
+        "Release-Transient must consume its inner call's return value"
+    )
+    assert "$null = $script:transientFailures.Add(" in release, (
+        "ArrayList.Add returns an index; discarding it keeps the helper silent"
+    )
+
+    # The flat helpers deliberately keep collecting and returning: one string
+    # emitted is one string, which @(...) turns into a one-element array.
     for helper in ("Get-IdColumnValues", "Get-TableColumnNames"):
         body = _ps_function_body(HARNESS_PS1, helper)
         assert "return ," not in body, f"{helper} is flat and needs no unary comma"
+        assert "Write-RowObject" not in body, f"{helper} emits values, not rows"
+
+
+def test_46o1_no_caller_expects_the_whole_table_as_one_object() -> None:
+    """The nested shape leaves a fingerprint at the caller: [0] used as the table.
+
+    If a caller had been adjusted to the wrong producer -- `$body[0]` meaning the
+    whole table, or `$body.Count -eq 1` standing for 'the table' -- fixing the
+    producer would silently break it. Every consumer must read rows[n] = cells.
+    """
+    lines = _ps_structural_lines(HARNESS_PS1)
+    table_vars = set()
+    for line in lines:
+        match = re.match(r"\s*\$(\w+)\s*=\s*@\(Get-TableBody\b", line)
+        if match:
+            table_vars.add(match.group(1))
+    assert table_vars, "no Get-TableBody consumers found"
+
+    problems = []
+    for number, line in enumerate(lines, 1):
+        for variable in table_vars:
+            # `foreach ($x in $var[0])` would be iterating the table's first row as
+            # if it were the table itself.
+            if re.search(rf"foreach\s*\(\s*\$\w+\s+in\s+\${variable}\[0\]", line):
+                problems.append(f"{number}: {line.strip()[:70]}")
+    assert not problems, (
+        "caller compensating for a nested producer shape:\n  " + "\n  ".join(problems)
+    )
+
+
+def test_46o2_the_preflight_proves_the_shape_before_excel_starts() -> None:
+    """Linux cannot execute PowerShell; only the target can observe pipeline shape.
+
+    Two wrong shapes got past source review, so the harness proves the contract
+    itself, with fabricated arrays, no COM, and no Excel process -- and aborts the
+    run if it fails, rather than comparing wrong shapes for twenty scenarios.
+    """
+    code = _ps(HARNESS_PS1)
+    section = "# Preflight: collection shape, BEFORE Excel is started"
+    assert section in code, "the harness has no collection-shape preflight"
+
+    # It must run before anything starts Excel: the bootstrap is invoked in A.
+    assert code.index(section) < code.index("# A. Stage-B build"), (
+        "the preflight must run before the Stage-B bootstrap starts Excel"
+    )
+    assert code.index(section) < code.index("New-Object -ComObject Excel.Application")
+
+    for check in (
+        "zero rows: the caller collection is empty",
+        "one row: the caller collection holds exactly one row",
+        "one row: that row still has its three cells",
+        "one row: the cell values are unchanged",
+        "two rows: the caller collection holds exactly two rows",
+        "two rows: each element is one row, boundaries preserved",
+        "the whole collection is never emitted as one object",
+    ):
+        assert check in code, f"the preflight is missing: {check}"
+
+    # A failed preflight must stop the run, not merely be recorded.
+    preflight = code[code.index(section) : code.index("# Prepare a disposable copy")]
+    assert "if (-not $preflightOk) {" in preflight and "exit 1" in preflight, (
+        "a failed preflight must abort before Excel is started"
+    )
+
+    # ONE mechanism, exercised by both. A probe with its own copy of the idiom can
+    # pass while the real reader is broken.
+    probe = _ps_function_body(HARNESS_PS1, "Write-FabricatedRows")
+    assert "Write-RowObject $line" in probe, (
+        "the probe must exercise the same emission idiom as Get-TableBody"
+    )
+    assert "Write-Output" not in probe, (
+        "the probe must not reimplement emission; it goes through Write-RowObject"
+    )
 
 
 def test_46p_scalar_helpers_were_not_swept_up_in_the_rewrite() -> None:

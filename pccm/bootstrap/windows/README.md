@@ -69,10 +69,15 @@ Unchanged from the run that closed the readiness gate:
 - **Collections are materialised at the caller**, not inside the helper. A
   PowerShell function returning an empty collection emits zero pipeline objects,
   so `$x = Get-Something` lands `$null` and `Set-StrictMode` turns `$x.Count` into
-  a `PropertyNotFoundException`. Every caller writes `@(Get-Something)`. A helper
-  returning a *jagged* collection additionally returns `,$rows`, because `@(...)`
-  at the caller cannot repair a one-row result on its own. Scalar helpers are left
-  alone. This ended Gate-B run 1 — see `../../docs/phase4_gate_b_run1.md`.
+  a `PropertyNotFoundException`. Every caller writes `@(Get-Something)`. Scalar
+  helpers are left alone. This ended Gate-B run 1 — see
+  `../../docs/phase4_gate_b_run1.md`.
+- **A producer of rows emits one pipeline object per row**, through
+  `Write-RowObject` (`Write-Output -NoEnumerate`). Not `return $rows`, which
+  unrolls a single row into its cells, and not `return ,$rows`, which emits the
+  whole table as one object and leaves the caller's `@(...)` one level too deep.
+  The harness proves this on the target with a pure-PowerShell preflight before
+  Excel is started, and aborts the run if the shape is wrong.
 - **Ownership starts at the assignment, not at the first successful use.** Every
   acquired object reaches a release on the exception path as well as the success
   path. An inline early release is allowed only when the enclosing `finally` also
