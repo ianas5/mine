@@ -100,11 +100,20 @@ def _ps(path: Path) -> str:
 
 
 def _ps_code(path: Path) -> str:
-    """PowerShell with block comments, line comments and trailing comments removed."""
-    text = re.sub(r"<#.*?#>", "", _ps(path), flags=re.DOTALL)
+    """PowerShell with block comments, line comments and trailing comments removed.
+
+    LINE NUMBERING IS PRESERVED. Comments are blanked in place rather than deleted,
+    because every sweep built on this reports a line number, and a sweep that sends
+    the reader to the wrong line is worth much less than one that does not. The
+    block comment is replaced by its own newlines for the same reason.
+    """
+    text = re.sub(
+        r"<#.*?#>", lambda m: "\n" * m.group(0).count("\n"), _ps(path), flags=re.DOTALL
+    )
     lines = []
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
+            lines.append("")
             continue
         lines.append(line.split(" #")[0])
     return "\n".join(lines)
@@ -2796,6 +2805,63 @@ def test_46p_scalar_helpers_were_not_swept_up_in_the_rewrite() -> None:
     assert "Get-TrustAccessGuidance" not in COLLECTION_HELPERS
 
 
+_PS_KEYWORDS = (
+    "try", "catch", "finally", "if", "elseif", "else", "foreach", "for", "while",
+    "do", "switch", "function", "filter", "trap", "param", "process", "begin", "end",
+)
+# Braces are their OWN tokens and can never be swallowed by an adjacent run of
+# non-space characters: `[pscustomobject]@{` must yield a `{`, not one opaque blob.
+_PS_TOKEN = re.compile(
+    r"[{}]|(?<![\w-])(" + "|".join(_PS_KEYWORDS) + r")(?![\w-])|[^\s{}]+",
+    re.IGNORECASE,
+)
+
+
+def _ps_block_frames(path: Path) -> tuple[list[tuple[int, str, str, str]], list[str]]:
+    """Walk the script's blocks, tracking WHAT each brace opened.
+
+    Returns (problems, unclosed). A problem is a `catch` or `finally` that does not
+    follow the closing brace of the construct it must attach to.
+
+    This is deliberately a lightweight keyword-aware scanner, not a PowerShell
+    grammar: it answers one question -- does each catch/finally attach to its try?
+    """
+    problems: list[tuple[int, str, str, str]] = []
+    stack: list[str] = []
+    pending: str | None = None
+    just_closed: str | None = None
+    for number, line in enumerate(_ps_structural_lines(path), 1):
+        for match in _PS_TOKEN.finditer(line):
+            token = match.group(0)
+            lowered = token.lower()
+            if token == "{":
+                # `@{` is a HASHTABLE LITERAL, not a block, and must not consume the
+                # keyword a following body brace is waiting for. In
+                #     foreach ($p in @( @{...}, @{...} )) { ... }
+                # the literal would otherwise steal the `foreach` label.
+                if match.start() > 0 and line[match.start() - 1] == "@":
+                    stack.append("hashtable")
+                else:
+                    stack.append(pending or "block")
+                    pending = None
+                just_closed = None
+            elif token == "}":
+                just_closed = stack.pop() if stack else "UNDERFLOW"
+                pending = None
+            elif lowered in ("catch", "finally"):
+                allowed = ("try",) if lowered == "catch" else ("try", "catch")
+                if just_closed not in allowed:
+                    problems.append((number, lowered, just_closed or "nothing", line.strip()[:60]))
+                pending = lowered
+                just_closed = None
+            elif lowered in _PS_KEYWORDS:
+                pending = lowered
+                just_closed = None
+            else:
+                just_closed = None
+    return problems, stack
+
+
 def test_46k_every_powershell_block_is_balanced() -> None:
     """The Windows scripts cannot be parsed here, so blocks are counted instead.
 
@@ -2813,6 +2879,123 @@ def test_46k_every_powershell_block_is_balanced() -> None:
                     depth -= 1
                     assert depth >= 0, f"{path.name}:{number}: closes a block that never opened"
         assert depth == 0, f"{path.name}: {depth} block(s) left open"
+
+
+def test_46k1_every_catch_and_finally_attaches_to_its_try() -> None:
+    """BALANCED BRACES DO NOT IMPLY A VALID TRY/CATCH RELATIONSHIP.
+
+    Wrapping seven scenario bodies in a prerequisite `if` produced
+
+        try {
+            if (Test-CleanStructure ...) {
+                ...
+            } catch {          <- this `}` closes the IF; catch attaches to nothing
+                ...
+        }
+        }
+
+    which balances perfectly and is a parse error. PowerShell parses the whole
+    script before executing anything, so it would have stopped the harness before
+    PRE0 -- and test_46k passed on it.
+    """
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        problems, unclosed = _ps_block_frames(path)
+        rendered = [
+            f"{path.name}:{number}: `{keyword}` follows a closed `{closed}`, not a try"
+            f"  |  {text}"
+            for number, keyword, closed, text in problems
+        ]
+        assert not rendered, "misattached catch/finally:\n  " + "\n  ".join(rendered)
+        assert not unclosed, f"{path.name}: blocks left open: {unclosed}"
+
+
+def test_46k2_every_guarded_scenario_has_the_required_shape() -> None:
+    """The seven scenarios wrapped in the clean-structure guard, checked by name.
+
+    Required, exactly:
+
+        try {
+            if (Test-CleanStructure -ExcelApp $excel -ScenarioId '<ID>') {
+                ...
+            }
+        } catch {
+            Add-Result '<ID>' ... 'FAIL' (Format-Err $_)
+        }
+
+    The catch belongs to the try, never to the if; a contaminated prerequisite is
+    a SKIP that Test-CleanStructure has already emitted, never a FAIL.
+    """
+    lines = _ps_structural_lines(HARNESS_PS1)
+    raw = _ps_code(HARNESS_PS1).splitlines()
+    # The scenario id lives inside quotes, so it is read from the comment-stripped
+    # source rather than the string-blanked one. Both keep line numbers aligned.
+    guards = [
+        (number, match.group(1))
+        for number, line in enumerate(raw, 1)
+        if (match := re.search(r"Test-CleanStructure -ExcelApp \$excel -ScenarioId '(\w+)'", line))
+    ]
+    assert {sid for _, sid in guards} == {"P", "Q", "R", "S", "T", "U", "W"}, guards
+
+    for number, scenario in guards:
+        # 1. exactly one enclosing try, opened before the guard.
+        opener = number - 1
+        while opener > 0 and lines[opener - 1].strip() != "try {":
+            opener -= 1
+        assert opener > 0, f"{scenario}: no enclosing `try {{` found"
+        assert number - opener < 12, f"{scenario}: the guard is not directly inside its try"
+
+        # Walk from the try, tracking what each brace opened.
+        depth, frames, index = 0, [], opener - 1
+        guard_closed_at = try_closed_at = catch_at = None
+        while index < len(lines):
+            line = lines[index]
+            for match in _PS_TOKEN.finditer(line):
+                token = match.group(0)
+                if token == "{":
+                    if match.start() > 0 and line[match.start() - 1] == "@":
+                        frames.append("hashtable")
+                    else:
+                        frames.append("block")
+                    depth += 1
+                elif token == "}":
+                    depth -= 1
+                    frames.pop()
+                    # 2. the guard `if` closes first, at depth 1 inside the try.
+                    if depth == 1 and guard_closed_at is None and index + 1 > number:
+                        guard_closed_at = index + 1
+                    # 3. then the try itself closes.
+                    elif depth == 0 and try_closed_at is None:
+                        try_closed_at = index + 1
+                elif token.lower() == "catch" and try_closed_at is not None and catch_at is None:
+                    # 4. and only THEN does its catch begin.
+                    catch_at = index + 1
+            if catch_at is not None:
+                break
+            index += 1
+
+        assert guard_closed_at is not None, f"{scenario}: the guard `if` is never closed"
+        assert try_closed_at is not None, f"{scenario}: the enclosing `try` is never closed"
+        assert catch_at is not None, f"{scenario}: the try has no catch"
+        assert guard_closed_at < try_closed_at <= catch_at, (
+            f"{scenario}: guard closes at {guard_closed_at}, try at {try_closed_at}, "
+            f"catch at {catch_at} -- the catch must follow the TRY's closing brace"
+        )
+
+        # 5. no catch is attached immediately after the inner if block.
+        assert "catch" not in lines[guard_closed_at - 1].lower(), (
+            f"{scenario}:{guard_closed_at}: a catch is attached to the guard `if`"
+        )
+
+        # 6. exactly one catch for this try, and it reports a FAIL for this scenario.
+        body = "\n".join(raw[opener - 1 : catch_at + 3])
+        assert body.count("} catch {") == 1, f"{scenario}: more than one catch on its try"
+        assert f"Add-Result '{scenario}'" in "\n".join(raw[catch_at - 1 : catch_at + 2]), (
+            f"{scenario}: the catch does not report a FAIL for its own scenario"
+        )
+        # Contamination stays a SKIP: the guard emits it, the scenario body simply
+        # does not run.
+        guard_body = _ps_function_body(HARNESS_PS1, "Test-CleanStructure")
+        assert "'SKIP'" in guard_body and "'FAIL'" not in guard_body
 
 
 def test_46j_the_two_exception_path_leaks_are_closed_by_name() -> None:

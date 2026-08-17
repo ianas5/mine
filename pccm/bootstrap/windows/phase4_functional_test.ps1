@@ -2075,9 +2075,9 @@ if ($buildOk) {
 
             Add-Result 'P' 'Oversized pasted timeline values are rejected without overflow' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
-        } catch {
-            Add-Result 'P' 'Oversized pasted timeline values' 'FAIL' (Format-Err $_)
-    }
+        }
+    } catch {
+        Add-Result 'P' 'Oversized pasted timeline values' 'FAIL' (Format-Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2130,9 +2130,9 @@ if ($buildOk) {
 
             Add-Result 'Q' 'Add failure after row mutation: full logical restore' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
-        } catch {
-            Add-Result 'Q' 'Add failure after row mutation' 'FAIL' (Format-Err $_)
-    }
+        }
+    } catch {
+        Add-Result 'Q' 'Add failure after row mutation' 'FAIL' (Format-Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2187,9 +2187,9 @@ if ($buildOk) {
 
             Add-Result 'R' 'Delete failure after row mutation: full logical restore' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
-        } catch {
-            Add-Result 'R' 'Delete failure after row mutation' 'FAIL' (Format-Err $_)
-    }
+        }
+    } catch {
+        Add-Result 'R' 'Delete failure after row mutation' 'FAIL' (Format-Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2267,9 +2267,9 @@ if ($buildOk) {
 
             Add-Result 'S' 'Application state is restored to its prior values, on success and on failure' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
-        } catch {
-            Add-Result 'S' 'Application state restoration' 'FAIL' (Format-Err $_)
-    }
+        }
+    } catch {
+        Add-Result 'S' 'Application state restoration' 'FAIL' (Format-Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2389,9 +2389,9 @@ if ($buildOk) {
 
             Add-Result 'T' 'Unkeyed structural data refuses every mutating operation' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
-        } catch {
-            Add-Result 'T' 'Unkeyed structural data' 'FAIL' (Format-Err $_)
-    }
+        }
+    } catch {
+        Add-Result 'T' 'Unkeyed structural data' 'FAIL' (Format-Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2467,9 +2467,9 @@ if ($buildOk) {
 
             Add-Result 'U' 'Counter integrity: an invalid counter refuses allocation and blocks reuse' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
-        } catch {
-            Add-Result 'U' 'Counter integrity' 'FAIL' (Format-Err $_)
-    }
+        }
+    } catch {
+        Add-Result 'U' 'Counter integrity' 'FAIL' (Format-Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2623,9 +2623,9 @@ if ($buildOk) {
 
             Add-Result 'W' 'Representation ceiling: refused allocation, valid structure' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
-        } catch {
-            Add-Result 'W' 'Representation ceiling' 'FAIL' (Format-Err $_)
-    }
+        }
+    } catch {
+        Add-Result 'W' 'Representation ceiling' 'FAIL' (Format-Err $_)
     }
 
     $excel.Run('PCCM_AutomationEnd') | Out-Null
