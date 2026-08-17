@@ -1,6 +1,17 @@
 # Phase 5 — Gate A — Step 1: contract and fingerprint foundation
 
-**Status: ready for independent review.**
+**Status: PATCHED after independent review — ready for re-review.**
+
+Independent review reproduced the original submission (618/618, 181/181, 366 code
+units, `50B6EB0E26857EA7`), accepted the fingerprint constants, reduction vectors
+and reference digest, and found **three blocking defects** plus one packaging
+cleanup and one inaccurate test comment. All are fixed; §11 records them in full.
+
+**No design value changed.** The ten numeric literals, the eight probe digests,
+the four reduction vectors, `50B6EB0E26857EA7`, every anchor and every schema are
+untouched. The patch makes the *validation* match what the documentation already
+claimed, and makes the separator normalisation faithful to its own stated
+contract.
 
 The first implementation step of Phase 5. It builds the two things every later
 Phase-5 step will be measured against — the physical-layout contract and the
@@ -61,8 +72,9 @@ the layout is locked before anything is built against it.
 | `builder/pccm_builder/calc_loader.py` | **new** — loader, layout validator, authority-boundary validator, cross-contract validator |
 | `builder/pccm_builder/calc_fingerprint.py` | **new** — fingerprint reference implementation; sole owner of the hash mathematics |
 | `builder/pccm_builder/__init__.py` | **modified** — exports `load_calc_contract` and `CalcContractError`; docstring records that the fifth contract is validated but not yet projected |
-| `tests/test_phase5_calc_contract_validation.py` | **new** — 74 tests |
-| `tests/test_phase5_fingerprint.py` | **new** — 42 tests |
+| `tests/test_phase5_calc_contract_validation.py` | **new** — 110 tests |
+| `tests/test_phase5_fingerprint.py` | **new** — 52 tests |
+| `tools/package_review.py` | **new** — blob-exact review packaging (§11.4) |
 
 Unchanged: `spec/workbook.yaml`, `spec/input_contract.yaml`,
 `spec/driver_contract.yaml`, `spec/structure_contract.yaml`, every file under
@@ -253,32 +265,41 @@ for Windows Gate B (§24.1). The test's own docstring says so.
 Run from a clean tree on Linux, Python 3.11.
 
 ```
-python -m pytest pccm/tests/ -q        618 passed, 0 failed
+python -m pytest pccm/tests/ -q        664 passed, 0 failed
 python pccm/builder/build_stage_a.py   181 passed, 0 failed   (post-build verification)
 ```
 
-| Module | Before | After |
-|---|---|---|
-| `test_phase1_manifest_validation.py` | 10 | **10** |
-| `test_phase1_structure.py` | 21 | **21** |
-| `test_phase2_contract_validation.py` | 42 | **42** |
-| `test_phase2_inputs.py` | 40 | **40** |
-| `test_phase3_driver_contract_validation.py` | 31 | **31** |
-| `test_phase3_drivers.py` | 28 | **28** |
-| `test_phase3_verifier_intersection.py` | 12 | **12** |
-| `test_phase4_oracle.py` | 68 | **68** |
-| `test_phase4_stage_b_source.py` | 155 | **155** |
-| `test_phase4_structure.py` | 43 | **43** |
-| `test_phase4_structure_contract_validation.py` | 52 | **52** |
-| `test_phase5_calc_contract_validation.py` | — | **74** |
-| `test_phase5_fingerprint.py` | — | **42** |
-| **total** | **502** | **618** |
+Stage-A verification is **still 181/181** because Step 1 still does not emit the
+calculation contract into the workbook. The patch changed validation, not
+emission.
+
+| Module | Pre-Phase-5 | Step 1 | Step 1 patched |
+|---|---|---|---|
+| `test_phase1_manifest_validation.py` | 10 | 10 | **10** |
+| `test_phase1_structure.py` | 21 | 21 | **21** |
+| `test_phase2_contract_validation.py` | 42 | 42 | **42** |
+| `test_phase2_inputs.py` | 40 | 40 | **40** |
+| `test_phase3_driver_contract_validation.py` | 31 | 31 | **31** |
+| `test_phase3_drivers.py` | 28 | 28 | **28** |
+| `test_phase3_verifier_intersection.py` | 12 | 12 | **12** |
+| `test_phase4_oracle.py` | 68 | 68 | **68** |
+| `test_phase4_stage_b_source.py` | 155 | 155 | **155** |
+| `test_phase4_structure.py` | 43 | 43 | **43** |
+| `test_phase4_structure_contract_validation.py` | 52 | 52 | **52** |
+| `test_phase5_calc_contract_validation.py` | — | 74 | **110** |
+| `test_phase5_fingerprint.py` | — | 42 | **52** |
+| **total** | **502** | **618** | **664** |
 
 **Every Phase 1–4 count is unchanged and no Phase 1–4 assertion was weakened,
-removed or relaxed.** The 502 → 618 delta is exactly the 116 new Phase-5 tests.
+removed or relaxed.** No Step-1 assertion was weakened either: the 74 contract
+tests became 110 and the 42 fingerprint tests became 52, all by addition. Two
+Step-1 tests were **re-pointed, not relaxed** — the two authority-reference cases
+now assert rejection at load time (where the new set lock fires first) and are
+each accompanied by a new test proving the cross-validation resolver still refuses
+the same input on its own terms, so both guards are covered instead of one.
 
 Both new modules also run standalone (`python tests/test_phase5_*.py`), matching
-the existing convention: 42 passed / 0 failed and 74 passed / 0 failed.
+the existing convention: 52 passed / 0 failed and 110 passed / 0 failed.
 
 **No Windows run was performed.**
 
@@ -300,6 +321,10 @@ and the source was restored.
 | the `< 0` correction removed from the mirror | **1 failed** |
 | `tblCalcDrivers` band widened to `X:AS` in the real contract | **27 failed** |
 | `FP_VERSION` bumped to `2` in the real contract | **31 failed** |
+
+The patch adds a second, larger set covering the three review blockers — 21
+contract mutations and 8 separators, run against both the pre-patch and patched
+trees. See §11.6.
 
 ### A note on the two reducer corrections
 
@@ -358,9 +383,189 @@ source exists yet for Phase 5; when it does, every mechanical sweep applies.
 
 ---
 
-## 11. Next step — NOT started
+## 11. Independent review round 1 — three blockers, fixed
+
+### 11.1 Blocker 1 — the validator did not lock the accepted schema
+
+**The finding.** §3 of this document claimed the contract owns and locks the exact
+schemas, labels, value types, number formats, units, `applies_to` semantics,
+tolerance constants and conditioning definitions. The loader locked far less: the
+five anchors, the two header lists, and shape rules that only asked whether a
+value was *syntactically plausible*. Everything else could be edited freely and the
+build still reported success.
+
+Review demonstrated fifteen accepted mutations. Re-run against `f6a35fe` as part
+of this patch, **all fifteen were confirmed accepted**, along with six more.
+
+**The fix.** `calc_loader.py` now holds the accepted Revision-E design in full, as
+locked constants in the loader — `LOCKED_TABLES` (five `TableSchema` values
+carrying anchors, `row_rule` and a `ColumnSchema` per column with `key`, `header`,
+`value_type`, `number_format`, `units` and `applies_to`), `LOCKED_CALC_STATE`
+(eight `StateRow` values), `LOCKED_CALC_TOTALS` (ten `TotalRow` values),
+`LOCKED_TOLERANCES` and `LOCKED_CONDITIONING_TERMS`. Validation compares the
+contract against them **attribute by attribute**, naming every differing attribute
+in the error.
+
+`LOCKED_TABLE_ANCHORS`, `LOCKED_DRIVER_HEADERS` and `LOCKED_ANNUAL_HEADERS` are now
+*derived* from `LOCKED_TABLES`, so the anchors and the schemas cannot disagree with
+each other.
+
+**This creates no second runtime source of truth.** `calc_contract.yaml` remains
+the only representation that later workbook emission will consume. The loader's
+copy is a **design regression guard** that never feeds emission — the same
+relationship `structure_oracle.py` already has with the structure contract.
+
+**The tests.** Fifteen named regressions, one per demonstrated mutation
+(`test_r1_…` … `test_r15_…`), plus four exhaustive per-attribute sweeps:
+
+| Sweep | Coverage |
+|---|---|
+| every attribute of every table column | 39 columns × 6 attributes across all five tables |
+| every table `row_rule` | 5 |
+| every attribute of every `calc_state` row | 8 rows × 6 attributes |
+| every attribute of every `calc_totals` row | 10 rows × 7 attributes |
+
+Each sweep alters one attribute at a time and asserts the loader refuses it,
+reporting by name every attribute that was silently accepted. That is the general
+guard; the fifteen named tests are the specific ones review found.
+
+### 11.2 Blocker 2 — separator normalisation was textual, not positional
+
+**The finding.** `canonical_number()` replaced **every** occurrence of the
+separator. That is safe only while the separator happens not to occur elsewhere in
+scientific notation — and `E`, `+`, `-` and every digit do occur elsewhere. The API
+accepted any one-character separator, so the contract it advertised was wider than
+the one it honoured.
+
+Confirmed against `f6a35fe`:
+
+```
+canonical_number(1.23, "E")  ->  1.2300000000000000.+00
+canonical_number(1.23, "+")  ->  1.2300000000000000E.00
+canonical_number(1.23, "0")  ->  1.23..............E+..
+canonical_number(1.23, "1")  ->  ..2300000000000000E+00
+```
+
+The digit cases are worse than the two review quoted: a global replace of a digit
+destroys the significand itself.
+
+**The fix — positional normalisation, as preferred.** The accepted form is fixed:
+optional `-`, one digit, the decimal marker, sixteen fractional digits, `E`, the
+exponent sign, at least two exponent digits. The marker's **index** therefore
+follows from the form, and exactly one character is rewritten. Two new named
+operations make the step explicit and independently testable:
+
+- `apply_decimal_separator(text, sep)` — models what a host formatter under that
+  locale would have produced;
+- `normalise_decimal_separator(text, sep)` — the inverse, and the operation the VBA
+  encoder must perform on whatever its formatter returned.
+
+Both locate the marker through `_HOST_FORM_RE`, which matches the marker as *any*
+single character and is unambiguous because the fraction is fixed at exactly
+sixteen digits: the exponent marker is the `E` that follows those sixteen digits,
+wherever else an `E` may appear.
+
+**The accepted domain is stated, not assumed.** A separator must be exactly one
+**UTF-16 code unit** — measured in code units, not Python code points, so an astral
+character is refused with a clear message rather than silently mishandled. No
+locale decimal separator lives outside the BMP; the constraint is checked rather
+than relied upon.
+
+**Nothing else moved.** The ten numeric literals and `50B6EB0E26857EA7` are
+unchanged, and `.` and `,` behave exactly as before.
+
+**The tests.** Six new fingerprint tests: all twelve hostile separators against
+thirteen values; the two exact reproductions asserted by literal *and* asserted
+**not** to equal the malformed pre-patch output; digit separators against the
+mantissa; a `-` separator against the leading sign; `apply`/`normalise` proven
+inverse and proven to touch at most one character; and refusal of malformed host
+strings, a mismatched marker, and an out-of-domain separator.
+
+### 11.3 Blocker 3 — a required authority reference could silently disappear
+
+**The finding.** Cross-validation resolved the references that were present. It
+never checked that the required set was **complete**. Deleting the FX-convention
+reference left a contract that loaded and cross-validated cleanly while no longer
+declaring one of the boundaries Step 1 exists to protect.
+
+**The fix.** `LOCKED_AUTHORITY_REFERENCES` locks the exact six
+`(concept, owner, locator)` triples, and `_validate_authority_reference_set` runs
+at **load** time: none missing, none extra, none duplicated, no concept claimed
+twice, no rename. The resolver still runs at cross-validation, so a locator is
+checked both for being *declared* and for *resolving*.
+
+Only boundary metadata is locked here. The referenced values stay owned by the
+upstream contracts.
+
+**The tests.** Ten new cases: remove the FX reference; remove the distribution
+reference; remove each of the six in turn; duplicate one; one concept under two
+owners; change an owner; change a locator; rename a concept; add an unexpected
+reference. Plus two resolver-level tests reached by replacement, so the second
+guard is proven independently of the first.
+
+### 11.4 Packaging — blob-exact review archives
+
+**The finding.** `bootstrap/windows/com_lifecycle.ps1` and
+`phase4_functional_test.ps1` differed by raw hash from the accepted Phase-4
+package while being identical after LF/CRLF normalisation. **Not a Phase-4 source
+change** — a packaging artefact, and recorded as such.
+
+**Root cause, confirmed.** `pccm/.gitattributes` declares `*.ps1 text eol=crlf`
+(VBA's `CodeModule.AddFromString` needs CRLF). Git stores those files with LF and
+converts on checkout — and `git archive`, used to build the Step-1 ZIP, applies the
+same conversion. The archive therefore carried CRLF while the tracked bytes are LF.
+Compounding it, a file rewritten in place by tooling can remain LF in the working
+tree while git still reports it clean, because the attribute normalises the
+comparison — which is why the working tree held one CRLF `.ps1` and two LF ones.
+
+**The fix.** `tools/package_review.py` reads each blob straight from the git object
+store and writes those exact bytes into the archive: no smudge filter, no eol
+conversion, no working-tree read, deterministic timestamps, file modes preserved.
+Verified: all 71 tracked files in the package are byte-identical to
+`git cat-file blob`, and the three PowerShell files now carry their tracked
+md5s — `2e6338de…`, `62bd4964…`, `c949cd91…`.
+
+**No PowerShell logic was modified.** No `.ps1` file was edited at all.
+
+### 11.5 Test comment correction
+
+The `Mod` negative control described a VBA `Mod` implementation as wrapping the
+intermediate into signed 32-bit range. The verified failure mode is an
+overflow / coercion failure, not a guaranteed wrap. The test keeps its purpose and
+now says what it actually shows: *even a hypothetical signed-`Long` wrap produces
+the wrong digest, and real VBA must never reach this path because the native `Mod`
+and `\` operators are prohibited in the recurrence and a static source rule
+enforces that.*
+
+### 11.6 Negative controls for the patch
+
+Both trees were driven through the same 21 contract mutations and the same 8
+separators. `f6a35fe` is the pre-patch commit; the patched tree is this one.
+
+| | pre-patch `f6a35fe` | patched |
+|---|---|---|
+| contract design changes accepted undetected | **21 / 21** | **0 / 21** |
+| separators mis-encoded | **4 / 8** | **0 / 8** |
+
+Running the new test modules against `f6a35fe` fails at import, because they
+reference symbols the patch introduces. That is a collection failure, not evidence,
+which is why the behavioural comparison above was run instead: it imports only
+symbols present in both trees and exercises the defects directly.
+
+---
+
+## 12. Next step — NOT started
 
 Gate-A Step 2, whatever the review scopes it to be. Nothing beyond this document's
 §1 has been written, and **Gate-A Step 2 was not begun**.
 
-**PHASE 5 GATE A STEP 1 READY FOR INDEPENDENT REVIEW**
+The patch stayed entirely inside Gate-A Step 1. Restating it for this round:
+
+> **NO VBA WAS IMPLEMENTED.**
+> **NO WORKBOOK PHASE-5 BLOCK WAS EMITTED.**
+> **NO WINDOWS HARNESS LOGIC WAS MODIFIED** — no `.ps1` file was edited at all;
+> the packaging change reads git blobs and touches no PowerShell.
+> **NO WINDOWS TEST WAS RUN.**
+> **PHASE 6 HAS NOT BEGUN.**
+
+**PHASE 5 GATE A STEP 1 PATCH READY FOR INDEPENDENT REVIEW**

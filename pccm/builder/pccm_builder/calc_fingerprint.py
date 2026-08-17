@@ -32,6 +32,7 @@ execution, and no test may describe it as one.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Callable, Iterable, Iterator, Sequence
 
@@ -123,6 +124,86 @@ def normalise_code_unit(unit: int) -> int:
 # ---------------------------------------------------------------------------
 # Canonical numeric encoding
 # ---------------------------------------------------------------------------
+_HOST_FORM_RE = re.compile(
+    r"""
+    ^
+    (?P<sign>-?)                 # optional leading minus
+    (?P<lead>[0-9])              # exactly one digit before the decimal marker
+    (?P<marker>.)                # the decimal marker, WHATEVER character it is
+    (?P<frac>[0-9]{16})          # exactly sixteen fractional digits
+    E                            # the exponent marker
+    (?P<exp_sign>[+-])           # the exponent sign, always present
+    (?P<exp>[0-9]{2,})           # at least two exponent digits
+    $
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+"""The accepted scientific form, matched STRUCTURALLY.
+
+`marker` is `.` - any single character - and never the separator itself, so the
+pattern still parses a host string whose separator is `E`, `+`, `-` or a digit.
+The fixed sixteen-digit fraction is what keeps that unambiguous: the exponent
+marker is the `E` that follows exactly sixteen digits, wherever else an `E` may
+appear."""
+
+
+def _decimal_marker_index(text: str) -> int:
+    """The index of the mantissa decimal marker, by POSITION not by character.
+
+    Searching for the separator is what makes a global replace unsafe: `E`, `+`,
+    `-` and every digit already occur elsewhere in scientific notation, so a
+    search-and-replace corrupts the exponent marker, the exponent sign or the
+    mantissa itself. The position, by contrast, is fixed by the form: optional
+    sign, one digit, then the marker.
+    """
+    match = _HOST_FORM_RE.match(text)
+    if match is None:
+        raise FingerprintError(
+            f"not in the accepted scientific form (optional '-', one digit, decimal marker, "
+            f"16 fractional digits, 'E', exponent sign, >=2 exponent digits): {text!r}"
+        )
+    return len(match.group("sign")) + 1
+
+
+def apply_decimal_separator(text: str, decimal_separator: str) -> str:
+    """Rewrite the mantissa decimal marker to `decimal_separator`, and nothing else.
+
+    Models what a host formatter under that locale would have handed back. Only the
+    single marker character is touched; the exponent marker, the exponent sign, the
+    leading sign and every digit are left exactly where they are.
+    """
+    index = _decimal_marker_index(text)
+    return text[:index] + decimal_separator + text[index + 1 :]
+
+
+def normalise_decimal_separator(text: str, decimal_separator: str) -> str:
+    """Rewrite the mantissa decimal marker back to `.`, and nothing else.
+
+    The inverse of `apply_decimal_separator`, and the operation the VBA encoder
+    must perform on whatever its host formatter produced.
+    """
+    index = _decimal_marker_index(text)
+    if text[index] != decimal_separator:
+        raise FingerprintError(
+            f"expected the decimal marker at index {index} to be "
+            f"{decimal_separator!r}, found {text[index]!r} in {text!r}"
+        )
+    return text[:index] + "." + text[index + 1 :]
+
+
+def _check_separator(decimal_separator: str) -> None:
+    if not isinstance(decimal_separator, str):
+        raise FingerprintError(f"decimal separator must be a string, got {decimal_separator!r}")
+    if utf16_length(decimal_separator) != 1:
+        # Measured in UTF-16 code units, not Python code points: an astral
+        # character is one code point but two units, and no locale decimal
+        # separator is outside the BMP. Stating the constraint beats assuming it.
+        raise FingerprintError(
+            f"decimal separator must be exactly one UTF-16 code unit, got "
+            f"{decimal_separator!r} ({utf16_length(decimal_separator)} units)"
+        )
+
+
 def canonical_number(value: float, decimal_separator: str = ".") -> str:
     """The canonical text of a Double.
 
@@ -138,9 +219,19 @@ def canonical_number(value: float, decimal_separator: str = ".") -> str:
     is what turns that into a testable pure function rather than an assumption
     about the machine the code happens to run on.
 
-    NOTE ON PROOF SCOPE: passing `.` and `,` here proves the REFERENCE
-    normalisation semantics. It does NOT prove VBA `Format`/`Str` runtime
-    behaviour under a comma locale - that proof is Gate B's (plan section 24.1).
+    THE NORMALISATION IS POSITIONAL, NOT TEXTUAL. An earlier version replaced every
+    occurrence of the separator, which is only safe while the separator happens not
+    to occur elsewhere in scientific notation. It does occur elsewhere for `E`, for
+    `+`, for `-` and for every digit, and those inputs produced malformed output.
+    The decimal marker's POSITION is fixed by the accepted form - optional sign,
+    one digit, marker - so the marker is located by index and exactly one character
+    is rewritten. Any single UTF-16 code unit is therefore a safe separator, and
+    the exponent marker, exponent sign and digits are untouchable by construction.
+
+    NOTE ON PROOF SCOPE: passing `.` and `,` - or any other separator - here proves
+    the REFERENCE normalisation semantics. It does NOT prove VBA `Format`/`Str`
+    runtime behaviour under a foreign locale; that proof is Gate B's (plan
+    section 24.1).
     """
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise FingerprintError(f"not a numeric value: {value!r}")
@@ -151,19 +242,14 @@ def canonical_number(value: float, decimal_separator: str = ".") -> str:
         # Covers -0.0, which compares equal to 0.0 but formats with a sign.
         number = 0.0
 
+    _check_separator(decimal_separator)
     text = f"{number:.{_SIGNIFICAND_DIGITS_AFTER_POINT}E}"
 
     # Model what the host formatter would have handed back, then normalise it.
     # Both steps are needed: normalising a string that never carried the foreign
     # separator would prove nothing.
-    if decimal_separator != ".":
-        if len(decimal_separator) != 1:
-            raise FingerprintError(
-                f"decimal separator must be a single character, got {decimal_separator!r}"
-            )
-        text = text.replace(".", decimal_separator)
-        text = text.replace(decimal_separator, ".")
-    return text
+    hosted = apply_decimal_separator(text, decimal_separator)
+    return normalise_decimal_separator(hosted, decimal_separator)
 
 
 # ---------------------------------------------------------------------------

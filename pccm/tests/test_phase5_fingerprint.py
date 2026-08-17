@@ -34,7 +34,10 @@ from __future__ import annotations
 
 import random
 import sys
+from decimal import ROUND_HALF_EVEN, Decimal, getcontext
 from pathlib import Path
+
+getcontext().prec = 80
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
@@ -50,6 +53,7 @@ from pccm_builder.calc_fingerprint import (  # noqa: E402
     STREAM_TAG,
     DriverRecord,
     FingerprintError,
+    apply_decimal_separator,
     build_canonical_stream,
     canonical_number,
     encode_record,
@@ -58,6 +62,7 @@ from pccm_builder.calc_fingerprint import (  # noqa: E402
     fingerprint_probe,
     integer_field,
     normalise_code_unit,
+    normalise_decimal_separator,
     number_field,
     reduce_double_only,
     reduce_exact,
@@ -281,9 +286,56 @@ def test_row_order_does_not_change_the_stream() -> None:
 # ---------------------------------------------------------------------------
 # canonical numeric encoding
 # ---------------------------------------------------------------------------
+def _decimal_oracle(value: float) -> str:
+    """The canonical form, derived INDEPENDENTLY of the implementation under test.
+
+    `Decimal(float)` is the EXACT binary value of the Double - no formatting, no
+    rounding by `%E`. Rescaling it to one leading digit and quantising the
+    significand to sixteen fractional places with banker's rounding reproduces the
+    accepted 17-significant-digit form from first principles.
+
+    This exists so the ten locked literals are independently CONFIRMED rather than
+    merely transcribed: a transcription error is invisible to a test that compares
+    the implementation against a literal copied out of that same implementation.
+    """
+    if value == 0.0:
+        value = 0.0                       # collapses -0.0
+    exact = Decimal(value)
+    sign = "-" if exact < 0 else ""
+    exact = -exact if exact < 0 else exact
+    if exact == 0:
+        leading, significand = 0, Decimal(0)
+    else:
+        _, digits, exponent = exact.as_tuple()
+        leading = len(digits) + exponent - 1
+        step = Decimal(1).scaleb(-16)
+        significand = exact.scaleb(-leading).quantize(step, rounding=ROUND_HALF_EVEN)
+        if significand >= 10:             # rounding carried, e.g. 9.99..95 -> 10.0
+            leading += 1
+            significand = exact.scaleb(-leading).quantize(step, rounding=ROUND_HALF_EVEN)
+    exponent_sign = "+" if leading >= 0 else "-"
+    return f"{sign}{significand:.16f}E{exponent_sign}{abs(leading):02d}"
+
+
 def test_the_ten_locked_numeric_encodings() -> None:
     for value, expected in NUMERIC_VECTORS:
         assert canonical_number(value) == expected, f"{value!r} encoded wrongly"
+
+
+def test_the_ten_locked_literals_are_confirmed_by_an_independent_oracle() -> None:
+    """Exact binary arithmetic, not the encoder that produced them."""
+    for value, expected in NUMERIC_VECTORS:
+        assert _decimal_oracle(value) == expected, f"locked literal wrong for {value!r}"
+
+
+def test_the_hostile_separator_probe_literals_are_confirmed_by_the_same_oracle() -> None:
+    """The probes added for the separator regression get the same treatment."""
+    for value, expected in (
+        (1.23, "1.2300000000000000E+00"),
+        (-1.23, "-1.2300000000000000E+00"),
+        (-9.87e-5, "-9.8700000000000000E-05"),
+    ):
+        assert _decimal_oracle(value) == expected
 
 
 def test_negative_zero_normalises_to_positive_zero() -> None:
@@ -305,6 +357,96 @@ def test_canonical_numbers_are_separator_invariant() -> None:
         assert canonical_number(value, ",") == expected
         assert canonical_number(value, ",") == canonical_number(value, ".")
         assert "," not in canonical_number(value, ",")
+
+
+def test_the_encoder_survives_a_separator_that_occurs_elsewhere_in_the_number() -> None:
+    """HOSTILE-SEPARATOR REGRESSION.
+
+    The encoder previously replaced EVERY occurrence of the separator, which is
+    safe only while the separator happens not to appear elsewhere in scientific
+    notation. It does appear elsewhere for `E`, `+`, `-` and every digit, and at
+    commit f6a35fe those inputs produced malformed output, e.g.
+
+        canonical_number(1.23, "E")  ->  1.2300000000000000.+00
+        canonical_number(1.23, "+")  ->  1.2300000000000000E.00
+
+    The separator is now located POSITIONALLY, so every one of these must produce
+    the identical locked canonical form.
+    """
+    hostile = [".", ",", "٫", "E", "+", "-", "0", "1", "9", " ", "'", " "]
+    probes = list(NUMERIC_VECTORS) + [
+        (1.23, "1.2300000000000000E+00"),
+        (-1.23, "-1.2300000000000000E+00"),
+        (-9.87e-5, "-9.8700000000000000E-05"),
+    ]
+    for separator in hostile:
+        for value, expected in probes:
+            assert canonical_number(value, separator) == expected, (value, separator)
+
+
+def test_the_hostile_separators_that_broke_the_previous_encoder() -> None:
+    """The two exact reproductions from independent review, asserted by literal."""
+    assert canonical_number(1.23, "E") == "1.2300000000000000E+00"
+    assert canonical_number(1.23, "+") == "1.2300000000000000E+00"
+    assert canonical_number(1.23, "E") != "1.2300000000000000.+00"
+    assert canonical_number(1.23, "+") != "1.2300000000000000E.00"
+
+
+def test_a_digit_separator_does_not_corrupt_the_mantissa() -> None:
+    """A digit is the worst case for a textual replace: every mantissa digit is a
+    candidate match, so a global replace mangles the significand itself."""
+    for digit in "0123456789":
+        assert canonical_number(0.1, digit) == "1.0000000000000001E-01"
+        assert canonical_number(1e20, digit) == "1.0000000000000000E+20"
+
+
+def test_a_minus_separator_does_not_disturb_the_leading_sign() -> None:
+    """The marker sits at index 1 of an unsigned number and index 2 of a signed
+    one, so the leading sign is never the character being rewritten."""
+    assert canonical_number(-1.0, "-") == "-1.0000000000000000E+00"
+    assert canonical_number(1.0, "-") == "1.0000000000000000E+00"
+    assert canonical_number(-1e-20, "-") == "-9.9999999999999995E-21"
+
+
+def test_apply_and_normalise_are_inverses_and_touch_exactly_one_character() -> None:
+    canonical = "1.2300000000000000E+00"
+    for separator in (",", "E", "+", "-", "7", "٫"):
+        hosted = apply_decimal_separator(canonical, separator)
+        assert len(hosted) == len(canonical)
+        assert sum(1 for a, b in zip(hosted, canonical) if a != b) <= 1
+        assert hosted[1] == separator
+        assert normalise_decimal_separator(hosted, separator) == canonical
+
+
+def test_normalisation_refuses_a_string_that_is_not_in_the_accepted_form() -> None:
+    """The positional rule is only sound for the accepted form, so the form is
+    verified rather than assumed."""
+    for malformed in ("1.23E+00", "1.2300000000000000E00", "abc", "1.2300000000000000E+0"):
+        try:
+            normalise_decimal_separator(malformed, ".")
+        except FingerprintError:
+            continue
+        raise AssertionError(f"malformed host string accepted: {malformed!r}")
+
+
+def test_normalisation_refuses_a_marker_that_is_not_the_declared_separator() -> None:
+    try:
+        normalise_decimal_separator("1.2300000000000000E+00", ",")
+    except FingerprintError:
+        return
+    raise AssertionError("a mismatched decimal marker was accepted")
+
+
+def test_the_separator_domain_is_stated_not_assumed() -> None:
+    """Exactly one UTF-16 code unit. An astral character is one Python code point
+    but two units, and no locale decimal separator lives outside the BMP - so the
+    constraint is checked and reported, never silently relied upon."""
+    for bad in ("", "..", ".,", "\U0001f600"):
+        try:
+            canonical_number(1.0, bad)
+        except FingerprintError:
+            continue
+        raise AssertionError(f"invalid decimal separator accepted: {bad!r}")
 
 
 def test_non_finite_values_are_refused_not_encoded() -> None:
@@ -572,11 +714,18 @@ def test_the_double_only_mirror_keeps_the_locked_shape() -> None:
 
 
 def test_a_long_typed_reduction_would_not_reproduce_the_digest() -> None:
-    """The failure mode the locked reduction exists to prevent.
+    """A negative control for the reduction, labelled precisely.
 
-    A VBA `Mod` implementation wraps the intermediate into signed 32-bit range
-    before reducing. Simulated here, it produces a different digest - so the
-    reference digest is itself evidence that no `Mod` crept in.
+    The VERIFIED VBA failure mode for `x Mod m` at this magnitude is an
+    overflow / coercion failure, not a guaranteed silent wrap: the language
+    defines `Mod` on floating-point operands using an effective integral type of
+    `Long`, and the intermediate is roughly 131 times the signed-`Long` maximum.
+
+    The wrap simulated below is therefore HYPOTHETICAL, and that is the whole
+    claim being made: even a hypothetical signed-`Long` wrap produces the wrong
+    digest. Real VBA must never reach this path at all, because the native `Mod`
+    and `\\` operators are prohibited in the recurrence (plan section 11.5) and a
+    static source rule enforces it.
     """
 
     def long_wrapped(accumulator: int, unit: int, modulus: int) -> int:

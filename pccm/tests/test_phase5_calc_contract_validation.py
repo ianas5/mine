@@ -48,6 +48,10 @@ from pccm_builder import (  # noqa: E402
 from pccm_builder.calc_loader import (  # noqa: E402
     LOCKED_ANNUAL_HEADERS,
     LOCKED_ATTEMPT_RESULT,
+    LOCKED_AUTHORITY_REFERENCES,
+    LOCKED_CONDITIONING_TERMS,
+    LOCKED_TABLES,
+    LOCKED_TOLERANCES,
     LOCKED_CALC_STATE_ROWS,
     LOCKED_CALC_TOTALS_ROWS,
     LOCKED_DERIVED_STATUS,
@@ -65,9 +69,20 @@ STRUCTURE_PATH = PCCM_ROOT / "spec" / "structure_contract.yaml"
 CALC_PATH = PCCM_ROOT / "spec" / "calc_contract.yaml"
 
 
+_BASE_CACHE: dict[str, Any] | None = None
+
+
 def _base() -> dict[str, Any]:
-    with CALC_PATH.open("r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+    """A fresh copy of the real contract, parsed once.
+
+    The per-attribute sweeps mutate several hundred copies; re-parsing the YAML for
+    each one dominated the suite's runtime and proved nothing extra.
+    """
+    global _BASE_CACHE
+    if _BASE_CACHE is None:
+        with CALC_PATH.open("r", encoding="utf-8") as handle:
+            _BASE_CACHE = yaml.safe_load(handle)
+    return copy.deepcopy(_BASE_CACHE)
 
 
 def _write(data: dict[str, Any], tmp: str, name: str = "broken.yaml") -> Path:
@@ -139,8 +154,16 @@ def _state_field(data: dict[str, Any], key: str) -> dict[str, Any]:
     return next(f for f in data["scalar_blocks"]["calc_state"]["fields"] if f["key"] == key)
 
 
+def _totals_field(data: dict[str, Any], key: str) -> dict[str, Any]:
+    return next(f for f in data["scalar_blocks"]["calc_totals"]["fields"] if f["key"] == key)
+
+
 def _table(data: dict[str, Any], table_name: str) -> dict[str, Any]:
     return next(t for t in data["tables"].values() if t["table_name"] == table_name)
+
+
+def _column(data: dict[str, Any], table_name: str, key: str) -> dict[str, Any]:
+    return next(c for c in _table(data, table_name)["columns"] if c["key"] == key)
 
 
 # ---------------------------------------------------------------------------
@@ -681,18 +704,42 @@ def test_every_authority_reference_resolves_in_its_owner() -> None:
     )
 
 
-def test_a_dangling_authority_reference_fails_cross_validation() -> None:
+def test_a_dangling_authority_reference_is_rejected() -> None:
+    """Caught twice: the set lock at load time, the resolver at cross-validation."""
+
     def mutate(data: dict[str, Any]) -> None:
         data["authority_references"][0]["locator"] = "config_tables.no_such_table"
 
-    _rejected_cross(mutate, "an authority reference that no longer resolves")
+    _rejected(mutate, "an authority reference that no longer resolves")
 
 
-def test_an_authority_reference_to_a_stranger_file_fails_cross_validation() -> None:
+def test_a_dangling_locator_still_fails_the_resolver_on_its_own() -> None:
+    """The load-time set lock now fires first, so the resolver is reached by
+    replacement. It must still refuse a locator that does not resolve."""
+    calc = load_calc_contract(CALC_PATH)
+    references = list(calc.authority_references)
+    references[0] = dataclasses.replace(references[0], locator="config_tables.no_such_table")
+    _rejected_cross_replace(
+        authority_references=tuple(references),
+        reason="a locator that does not resolve in its owning contract",
+    )
+
+
+def test_an_authority_reference_to_a_stranger_file_is_rejected() -> None:
     def mutate(data: dict[str, Any]) -> None:
         data["authority_references"][0]["owner"] = "somewhere_else.yaml"
 
-    _rejected_cross(mutate, "an authority reference outside the four accepted contracts")
+    _rejected(mutate, "an authority reference outside the four accepted contracts")
+
+
+def test_a_stranger_owner_still_fails_the_resolver_on_its_own() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    references = list(calc.authority_references)
+    references[0] = dataclasses.replace(references[0], owner="somewhere_else.yaml")
+    _rejected_cross_replace(
+        authority_references=tuple(references),
+        reason="an owner outside the four accepted specifications",
+    )
 
 
 def test_a_table_name_colliding_with_another_contract_fails_cross_validation() -> None:
@@ -709,6 +756,388 @@ def test_a_table_name_colliding_with_another_contract_fails_cross_validation() -
     _rejected_cross_replace(
         tables=tables, reason="a Phase-5 table name already owned by another contract"
     )
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER 1 regression - the exact mutations independent review demonstrated
+#
+# Every one of these was ACCEPTED by the loader at commit f6a35fe. Each changes
+# the accepted Revision-E design while moving no anchor and breaking no syntactic
+# rule, which is precisely why a "looks structurally valid" check cannot see them.
+# ---------------------------------------------------------------------------
+def test_r1_renaming_a_years_column_header_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        _column(data, "tblCalcYears", "project_index")["header"] = "Project Number"
+
+    _rejected(mutate, "tblCalcYears Project Index header renamed")
+
+
+def test_r2_changing_a_years_column_number_format_is_rejected() -> None:
+    """An index shown to two decimal places is not the accepted design."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        _column(data, "tblCalcYears", "project_index")["number_format"] = "0.00"
+
+    _rejected(mutate, "tblCalcYears Project Index number_format changed")
+
+
+def test_r3_renaming_the_fx_rate_header_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        _column(data, "tblCalcFX", "fx_to_sar")["header"] = "Rate"
+
+    _rejected(mutate, "tblCalcFX 'FX to SAR' header renamed")
+
+
+def test_r4_changing_the_fx_units_is_rejected() -> None:
+    """`SAR per unit` IS the FX convention made visible in the audit table."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        _column(data, "tblCalcFX", "fx_to_sar")["units"] = "USD"
+
+    _rejected(mutate, "tblCalcFX units changed to USD")
+
+
+def test_r5_downgrading_a_timestamp_to_text_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        _state_field(data, "last_successful_stamp")["value_type"] = "text"
+
+    _rejected(mutate, "calc_state Last Successful Stamp value_type downgraded to text")
+
+
+def test_r6_replacing_a_timestamp_format_with_at_is_rejected() -> None:
+    """A stamp stored as `@` is unsortable and uncomparable."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        _state_field(data, "last_successful_stamp")["number_format"] = "@"
+
+    _rejected(mutate, "calc_state Last Successful Stamp number_format replaced with @")
+
+
+def test_r7_relabelling_a_headline_total_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        data["scalar_blocks"]["calc_totals"]["fields"][0]["label"] = "Some Other Total"
+
+    _rejected(mutate, "calc_totals first label replaced with arbitrary text")
+
+
+def test_r8_changing_a_headline_total_number_format_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        data["scalar_blocks"]["calc_totals"]["fields"][0]["number_format"] = "0"
+
+    _rejected(mutate, "calc_totals first number_format changed to 0")
+
+
+def test_r9_widening_quantity_to_risk_rows_is_rejected() -> None:
+    """Quantity is a Cost Line field. Letting a Risk row carry one would make the
+    column mean two different things by kind - the exact rule §16.4 forbids."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        _column(data, "tblCalcDrivers", "quantity")["applies_to"] = ["cost_line", "risk"]
+
+    _rejected(mutate, "tblCalcDrivers Quantity widened to risk rows")
+
+
+def test_r10_widening_expected_risk_to_cost_lines_is_rejected() -> None:
+    """`D_nom = SUM(Expected Risk Nominal) over RISK rows`. Widening the column
+    silently changes what that sum means."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        _column(data, "tblCalcDrivers", "expected_risk_nominal")["applies_to"] = [
+            "cost_line",
+            "risk",
+        ]
+
+    _rejected(mutate, "tblCalcDrivers Expected Risk Nominal widened to cost lines")
+
+
+def test_r11_narrowing_knom_away_from_risk_rows_is_rejected() -> None:
+    """Knom applies to both kinds: a Risk's expected value is escalated too."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        _column(data, "tblCalcDrivers", "knom")["applies_to"] = ["cost_line"]
+
+    _rejected(mutate, "tblCalcDrivers Knom narrowed away from risk rows")
+
+
+def test_r12_loosening_the_profiling_tolerance_is_rejected() -> None:
+    """1e-3 would let a profile summing to 99.9% pass as 100%."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        data["tolerances"]["profiling_sum_absolute"] = 1e-3
+
+    _rejected(mutate, "profiling_sum_absolute loosened from 1e-9 to 1e-3")
+
+
+def test_r13_loosening_the_identity_floor_is_rejected() -> None:
+    """1e-3 SAR would let a real bookkeeping mismatch pass as rounding."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        data["tolerances"]["identity_absolute_floor"] = 1e-3
+
+    _rejected(mutate, "identity_absolute_floor loosened from 1e-6 to 1e-3")
+
+
+def test_r14_raising_the_conditioning_floor_is_rejected() -> None:
+    """A floor of 10 widens every identity tolerance at once."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        data["tolerances"]["conditioning_scale_floor"] = 10
+
+    _rejected(mutate, "conditioning_scale_floor raised from 1.0 to 10")
+
+
+def test_r15_giving_an_identity_the_wrong_conditioning_terms_is_rejected() -> None:
+    """I1 is `A + B = C`; sizing its tolerance by |D| and |E| is meaningless."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        data["tolerances"]["conditioning_terms"]["i1"] = ["abs_d", "abs_e"]
+
+    _rejected(mutate, "conditioning_terms.i1 replaced with another identity's terms")
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER 1 - exhaustive per-attribute sweep
+#
+# The fifteen cases above are the ones review happened to try. This sweep is the
+# general guard: EVERY attribute of EVERY locked column and EVERY locked scalar
+# row must be individually load-bearing.
+# ---------------------------------------------------------------------------
+def _altered(attribute: str, current: Any) -> Any:
+    """A different, still-syntactically-plausible value for one attribute."""
+    if attribute == "key":
+        return f"{current}_x"
+    if attribute == "header":
+        return f"{current} X"
+    if attribute == "label":
+        return f"{current} (revised)"
+    if attribute == "value_type":
+        return "text" if current != "text" else "double"
+    if attribute == "number_format":
+        return "0.0000" if current != "0.0000" else "0.00"
+    if attribute == "units":
+        return "widgets"
+    if attribute == "measure":
+        return "Z"
+    if attribute == "basis":
+        return "nominal" if current != "nominal" else "pv"
+    if attribute == "enum":
+        return "derived_status" if current != "derived_status" else "attempt_result"
+    if attribute == "initial":
+        return None if current is not None else "SEEDED"
+    if attribute == "applies_to":
+        options = [["cost_line"], ["risk"], ["cost_line", "risk"]]
+        return next(o for o in options if o != list(current or []))
+    if attribute == "row_rule":
+        return f"{current} (revised)"
+    raise AssertionError(f"no alteration defined for {attribute!r}")
+
+
+def _sweep(targets: list[tuple[str, Callable[[dict[str, Any]], dict[str, Any]], list[str]]]) -> None:
+    """Every listed attribute of every listed entry must be individually locked."""
+    accepted: list[str] = []
+    for label, locate, attributes in targets:
+        for attribute in attributes:
+            data = copy.deepcopy(_base())
+            entry = locate(data)
+            if attribute not in entry:
+                continue
+            entry[attribute] = _altered(attribute, entry[attribute])
+            with tempfile.TemporaryDirectory(prefix="pccm-sweep-") as tmp:
+                try:
+                    load_calc_contract(_write(data, tmp))
+                except CalcContractError:
+                    continue
+                except Exception as error:  # noqa: BLE001
+                    raise AssertionError(
+                        f"{label}.{attribute}: raised {type(error).__name__} instead of "
+                        "CalcContractError"
+                    ) from error
+            accepted.append(f"{label}.{attribute}")
+    assert not accepted, "silently accepted design changes: " + ", ".join(accepted)
+
+
+COLUMN_ATTRIBUTES = ["key", "header", "value_type", "number_format", "units", "applies_to"]
+
+
+def test_every_attribute_of_every_table_column_is_locked() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    targets = []
+    for table in calc.all_tables:
+        for column in table.columns:
+            targets.append(
+                (
+                    f"{table.table_name}.{column.key}",
+                    (
+                        lambda data, t=table.table_name, k=column.key: _column(data, t, k)
+                    ),
+                    COLUMN_ATTRIBUTES,
+                )
+            )
+    assert len(targets) == 39, f"expected 39 locked columns across five tables, got {len(targets)}"
+    _sweep(targets)
+
+
+def test_every_table_row_rule_is_locked() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    _sweep(
+        [
+            (t.table_name, (lambda data, n=t.table_name: _table(data, n)), ["row_rule"])
+            for t in calc.all_tables
+        ]
+    )
+
+
+def test_every_attribute_of_every_calc_state_row_is_locked() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    _sweep(
+        [
+            (
+                f"calc_state.{f.key}",
+                (lambda data, k=f.key: _state_field(data, k)),
+                ["key", "label", "value_type", "number_format", "enum", "initial"],
+            )
+            for f in calc.calc_state.fields
+        ]
+    )
+
+
+def test_every_attribute_of_every_calc_totals_row_is_locked() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    _sweep(
+        [
+            (
+                f"calc_totals.{f.key}",
+                (lambda data, k=f.key: _totals_field(data, k)),
+                ["key", "label", "value_type", "number_format", "units", "measure", "basis"],
+            )
+            for f in calc.calc_totals.fields
+        ]
+    )
+
+
+def test_an_applies_to_added_to_a_non_driver_table_is_rejected() -> None:
+    """`applies_to` is meaningful only on the driver audit table."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        _column(data, "tblCalcAnnual", "total_pv")["applies_to"] = ["cost_line"]
+
+    _rejected(mutate, "applies_to declared on a table that has no driver kinds")
+
+
+def test_the_locked_design_matches_the_contract_exactly() -> None:
+    """The loader's copy and the contract agree today - the positive direction."""
+    calc = load_calc_contract(CALC_PATH)
+    for name, schema in LOCKED_TABLES.items():
+        table = calc.table_by_name(name)
+        assert table.row_rule == schema.row_rule
+        assert len(table.columns) == len(schema.columns)
+        for expected, got in zip(schema.columns, table.columns):
+            assert (got.key, got.header, got.value_type, got.number_format, got.units) == (
+                expected.key,
+                expected.header,
+                expected.value_type,
+                expected.number_format,
+                expected.units,
+            )
+            assert got.applies_to == expected.applies_to
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER 3 regression - the required authority-reference set is complete
+# ---------------------------------------------------------------------------
+def test_the_six_required_authority_references_are_declared() -> None:
+    calc = load_calc_contract(CALC_PATH)
+    declared = tuple((r.concept, r.owner, r.locator) for r in calc.authority_references)
+    assert declared == LOCKED_AUTHORITY_REFERENCES
+    assert len(declared) == 6
+
+
+def test_removing_the_fx_convention_reference_is_rejected() -> None:
+    """Accepted at f6a35fe: the boundary simply stopped being declared."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        data["authority_references"] = [
+            r for r in data["authority_references"] if r["concept"] != "FX convention"
+        ]
+
+    _rejected(mutate, "the FX convention authority reference removed")
+
+
+def test_removing_the_distribution_reference_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        data["authority_references"] = [
+            r
+            for r in data["authority_references"]
+            if r["concept"] != "distribution master list"
+        ]
+
+    _rejected(mutate, "the distribution authority reference removed")
+
+
+def test_removing_any_single_authority_reference_is_rejected() -> None:
+    for index in range(len(LOCKED_AUTHORITY_REFERENCES)):
+
+        def mutate(data: dict[str, Any], i: int = index) -> None:
+            del data["authority_references"][i]
+
+        _rejected(mutate, f"authority reference {index} removed")
+
+
+def test_duplicating_an_authority_reference_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        data["authority_references"].append(copy.deepcopy(data["authority_references"][0]))
+
+    _rejected(mutate, "a duplicated authority reference")
+
+
+def test_a_concept_declared_twice_with_different_owners_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        clone = copy.deepcopy(data["authority_references"][0])
+        clone["owner"] = "workbook.yaml"
+        clone["locator"] = "sheets"
+        data["authority_references"].append(clone)
+
+    _rejected(mutate, "one concept claimed by two owners")
+
+
+def test_changing_an_authority_owner_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        entry = next(r for r in data["authority_references"] if r["concept"] == "FX convention")
+        entry["owner"] = "structure_contract.yaml"
+
+    _rejected(mutate, "an authority reference pointed at a different owner")
+
+
+def test_changing_an_authority_locator_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        entry = next(r for r in data["authority_references"] if r["concept"] == "FX convention")
+        entry["locator"] = "conventions.input_prefix"
+
+    _rejected(mutate, "an authority reference redirected to a different locator")
+
+
+def test_renaming_a_concept_is_rejected() -> None:
+    """A rename looks like a documentation tidy-up and silently replaces a
+    boundary: the set would still have six entries."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        entry = next(r for r in data["authority_references"] if r["concept"] == "FX convention")
+        entry["concept"] = "currency handling"
+
+    _rejected(mutate, "a renamed authority concept")
+
+
+def test_an_unexpected_authority_reference_is_rejected() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        data["authority_references"].append(
+            {
+                "concept": "something else entirely",
+                "owner": "workbook.yaml",
+                "locator": "presentation",
+            }
+        )
+
+    _rejected(mutate, "an unexpected authority reference")
 
 
 # ---------------------------------------------------------------------------
@@ -756,6 +1185,15 @@ def test_the_locked_tolerance_constants() -> None:
     assert tolerances.conditioning_scale_floor == 1.0
     assert tolerances.fx_rate_strictly_positive is True
     assert tolerances.growth_factor_strictly_positive is True
+    # The same six values as the loader's locked copy, so the two cannot drift.
+    assert LOCKED_TOLERANCES == {
+        "profiling_sum_absolute": 1e-9,
+        "identity_absolute_floor": 1e-6,
+        "identity_relative_coefficient": 1e-12,
+        "conditioning_scale_floor": 1.0,
+        "fx_rate_strictly_positive": True,
+        "growth_factor_strictly_positive": True,
+    }
 
 
 def test_every_identity_declares_a_cancellation_safe_conditioning_scale() -> None:
@@ -775,6 +1213,51 @@ def test_every_identity_declares_a_cancellation_safe_conditioning_scale() -> Non
     for identity, terms in tolerances.conditioning_terms.items():
         assert len(terms) >= 2, identity
         assert all(term.startswith(("abs_", "sum_abs_")) for term in terms), identity
+
+
+def test_the_exact_conditioning_terms_of_each_identity() -> None:
+    """Each identity's scale sums ITS OWN absolute magnitudes."""
+    tolerances = load_calc_contract(CALC_PATH).tolerances
+    expected = {
+        "i1": ("abs_a", "abs_b", "abs_c"),
+        "i2": ("abs_c", "abs_d", "abs_e"),
+        "i3a": ("sum_abs_annual_base", "abs_c"),
+        "i3b": ("sum_abs_annual_risk", "abs_d"),
+        "i3c": ("sum_abs_annual_total", "abs_e"),
+        "i4a": ("sum_abs_annual_base", "abs_c"),
+        "i4b": ("sum_abs_annual_risk", "abs_d"),
+        "i4c": ("sum_abs_annual_total", "abs_e"),
+    }
+    assert tolerances.conditioning_terms == expected
+    assert LOCKED_CONDITIONING_TERMS == expected
+
+
+def test_every_tolerance_constant_is_individually_locked() -> None:
+    """A tolerance edit is a numerical-design change, not a tuning knob."""
+    changes: dict[str, Any] = {
+        "profiling_sum_absolute": 1e-3,
+        "identity_absolute_floor": 1e-3,
+        "identity_relative_coefficient": 1e-9,
+        "conditioning_scale_floor": 10,
+        "fx_rate_strictly_positive": False,
+        "growth_factor_strictly_positive": False,
+    }
+    assert set(changes) == set(LOCKED_TOLERANCES)
+    for name, value in changes.items():
+
+        def mutate(data: dict[str, Any], k: str = name, v: Any = value) -> None:
+            data["tolerances"][k] = v
+
+        _rejected(mutate, f"tolerance {name} changed")
+
+
+def test_every_identity_conditioning_term_set_is_individually_locked() -> None:
+    for identity in LOCKED_CONDITIONING_TERMS:
+
+        def mutate(data: dict[str, Any], k: str = identity) -> None:
+            data["tolerances"]["conditioning_terms"][k] = ["abs_a", "abs_e"]
+
+        _rejected(mutate, f"conditioning terms for {identity} replaced")
 
 
 def test_a_single_term_conditioning_scale_is_rejected() -> None:

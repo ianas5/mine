@@ -80,16 +80,231 @@ LOCKED_CALC_TOTALS_ROWS = (23, 32)
 other. `calc_state`'s eight rows are what make the success commit a single
 contiguous `C13:C20` assignment."""
 
+
+@dataclass(frozen=True)
+class ColumnSchema:
+    """One locked ListObject column of the accepted Revision-E design."""
+
+    key: str
+    header: str
+    value_type: str
+    number_format: str
+    units: str
+    applies_to: tuple[str, ...] | None
+
+
+@dataclass(frozen=True)
+class TableSchema:
+    """One locked Phase-5 ListObject: where it sits and exactly what it holds."""
+
+    first_column: str
+    last_column: str
+    header_row: int
+    row_rule: str
+    columns: tuple[ColumnSchema, ...]
+
+    @property
+    def width(self) -> int:
+        return len(self.columns)
+
+
+@dataclass(frozen=True)
+class StateRow:
+    """One locked `calc_state` row."""
+
+    row: int
+    group: str
+    key: str
+    label: str
+    value_type: str
+    number_format: str
+    enum: str | None
+    initial: Any
+
+
+@dataclass(frozen=True)
+class TotalRow:
+    """One locked `calc_totals` row."""
+
+    row: int
+    key: str
+    label: str
+    value_type: str
+    number_format: str
+    units: str
+    measure: str
+    basis: str
+    initial: Any
+
+
+LOCKED_TABLES: dict[str, TableSchema] = {
+    # -- tblCalcYears --------------------------------------------------------
+    "tblCalcYears": TableSchema(
+        first_column="H",
+        last_column="J",
+        header_row=15,
+        row_rule="one row per applied project year",
+        columns=(
+            ColumnSchema("project_index", "Project Index", "integer", "0", "index, from 1", None),
+            ColumnSchema("calendar_year", "Calendar Year", "integer", "0", "year", None),
+            ColumnSchema(
+                "discount_factor", "Discount Factor", "double", "0.000000", "dimensionless", None
+            ),
+        ),
+    ),
+    # -- tblCalcInflationFactors ---------------------------------------------
+    "tblCalcInflationFactors": TableSchema(
+        first_column="M",
+        last_column="P",
+        header_row=15,
+        row_rule=(
+            "one row per referenced inflation profile per factor year, spanning "
+            "BaseYear .. LastProjectYear inclusive"
+        ),
+        columns=(
+            ColumnSchema("inflation_profile", "Inflation Profile", "text", "@", "key", None),
+            ColumnSchema("calendar_year", "Calendar Year", "integer", "0", "year", None),
+            ColumnSchema("annual_rate", "Annual Rate", "double", "0.00%", "rate", None),
+            ColumnSchema(
+                "cumulative_inflation_factor",
+                "Cumulative Inflation Factor",
+                "double",
+                "0.000000",
+                "dimensionless",
+                None,
+            ),
+        ),
+    ),
+    # -- tblCalcFX -----------------------------------------------------------
+    "tblCalcFX": TableSchema(
+        first_column="S",
+        last_column="U",
+        header_row=15,
+        row_rule="one row per referenced currency",
+        columns=(
+            ColumnSchema("currency", "Currency", "text", "@", "key", None),
+            ColumnSchema("fx_to_sar", "FX to SAR", "double", "0.000000", "SAR per unit", None),
+            ColumnSchema("referenced_by", "Referenced By", "integer", "0", "driver count", None),
+        ),
+    ),
+    # -- tblCalcDrivers ------------------------------------------------------
+    # 21 columns. No column carries two meanings by Driver Kind: a field that does
+    # not apply to a kind is BLANK, never zero and never reused. `applies_to` is
+    # part of the locked design, not decoration - widening it would quietly permit
+    # a Risk row to carry a Quantity, and narrowing it would break the column-sum
+    # reconstruction of A, B, C and D from the audit rows alone.
+    "tblCalcDrivers": TableSchema(
+        first_column="X",
+        last_column="AR",
+        header_row=15,
+        row_rule="one row per identified Cost Line and Risk",
+        columns=(
+            ColumnSchema("permanent_id", "Permanent ID", "text", "@", "key", ("cost_line", "risk")),
+            ColumnSchema(
+                "driver_kind", "Driver Kind", "text", "@", "Cost Line / Risk", ("cost_line", "risk")
+            ),
+            ColumnSchema("distribution", "Distribution", "text", "@", "name", ("cost_line", "risk")),
+            ColumnSchema(
+                "central_basis", "Central Basis", "text", "@", "ML / Midpoint", ("cost_line", "risk")
+            ),
+            ColumnSchema("currency", "Currency", "text", "@", "key", ("cost_line", "risk")),
+            ColumnSchema(
+                "fx_to_sar", "FX to SAR", "double", "0.000000", "SAR per unit", ("cost_line", "risk")
+            ),
+            ColumnSchema(
+                "inflation_profile", "Inflation Profile", "text", "@", "key", ("cost_line", "risk")
+            ),
+            ColumnSchema("quantity", "Quantity", "double", "#,##0.00", "units", ("cost_line",)),
+            ColumnSchema("probability", "Probability", "double", "0.0%", "fraction", ("risk",)),
+            ColumnSchema(
+                "central_value", "Central Value", "double", "#,##0.00", "source currency",
+                ("cost_line",),
+            ),
+            ColumnSchema(
+                "mean_value", "Mean Value", "double", "#,##0.00", "source currency",
+                ("cost_line", "risk"),
+            ),
+            ColumnSchema(
+                "knom", "Knom", "double", "0.000000", "SAR per source unit", ("cost_line", "risk")
+            ),
+            ColumnSchema(
+                "kpv", "Kpv", "double", "0.000000", "SAR per source unit", ("cost_line", "risk")
+            ),
+            ColumnSchema(
+                "deterministic_nominal", "Deterministic Nominal", "double", "#,##0.00", "SAR",
+                ("cost_line",),
+            ),
+            ColumnSchema(
+                "deterministic_pv", "Deterministic PV", "double", "#,##0.00", "SAR", ("cost_line",)
+            ),
+            ColumnSchema(
+                "mean_basis_nominal", "Mean-Basis Nominal", "double", "#,##0.00", "SAR",
+                ("cost_line",),
+            ),
+            ColumnSchema(
+                "mean_basis_pv", "Mean-Basis PV", "double", "#,##0.00", "SAR", ("cost_line",)
+            ),
+            ColumnSchema(
+                "uncertainty_mean_shift_nominal", "Uncertainty Mean Shift Nominal", "double",
+                "#,##0.00", "SAR", ("cost_line",),
+            ),
+            ColumnSchema(
+                "uncertainty_mean_shift_pv", "Uncertainty Mean Shift PV", "double", "#,##0.00",
+                "SAR", ("cost_line",),
+            ),
+            ColumnSchema(
+                "expected_risk_nominal", "Expected Risk Nominal", "double", "#,##0.00", "SAR",
+                ("risk",),
+            ),
+            ColumnSchema(
+                "expected_risk_pv", "Expected Risk PV", "double", "#,##0.00", "SAR", ("risk",)
+            ),
+        ),
+    ),
+    # -- tblCalcAnnual -------------------------------------------------------
+    # Calendar Year is present so an annual audit row stands on its own, without a
+    # join to tblCalcYears merely to learn which year it describes.
+    "tblCalcAnnual": TableSchema(
+        first_column="AU",
+        last_column="BB",
+        header_row=15,
+        row_rule="one row per applied project year",
+        columns=(
+            ColumnSchema("project_index", "Project Index", "integer", "0", "index", None),
+            ColumnSchema("calendar_year", "Calendar Year", "integer", "0", "year", None),
+            ColumnSchema(
+                "base_cost_nominal", "Base Cost Nominal", "double", "#,##0.00", "SAR", None
+            ),
+            ColumnSchema(
+                "expected_risk_nominal", "Expected Risk Nominal", "double", "#,##0.00", "SAR", None
+            ),
+            ColumnSchema("total_nominal", "Total Nominal", "double", "#,##0.00", "SAR", None),
+            ColumnSchema("base_cost_pv", "Base Cost PV", "double", "#,##0.00", "SAR", None),
+            ColumnSchema(
+                "expected_risk_pv", "Expected Risk PV", "double", "#,##0.00", "SAR", None
+            ),
+            ColumnSchema("total_pv", "Total PV", "double", "#,##0.00", "SAR", None),
+        ),
+    ),
+}
+"""The accepted Revision-E ListObject design, in full.
+
+LOCKED HERE, NOT IN THE CONTRACT. The contract encodes this layout; the loader
+holds the independent copy that the contract is checked against. Anchors alone are
+not enough: a header, a number format, a unit or an `applies_to` set can be edited
+without moving a single column, and every one of those is a design change. The
+loader compares the whole schema, attribute by attribute, so any such edit fails
+the build instead of quietly redefining what the audit table means.
+"""
+
 LOCKED_TABLE_ANCHORS: dict[str, tuple[str, str, int, int]] = {
-    "tblCalcYears": ("H", "J", 15, 3),
-    "tblCalcInflationFactors": ("M", "P", 15, 4),
-    "tblCalcFX": ("S", "U", 15, 3),
-    "tblCalcDrivers": ("X", "AR", 15, 21),
-    "tblCalcAnnual": ("AU", "BB", 15, 8),
+    name: (schema.first_column, schema.last_column, schema.header_row, schema.width)
+    for name, schema in LOCKED_TABLES.items()
 }
 """table name -> (first column, last column, header row, column count).
 
-Column bands rather than vertical stacking: every table has an unbounded row
+Derived from LOCKED_TABLES so the anchors and the schemas cannot disagree with each
+other. Column bands rather than vertical stacking: every table has an unbounded row
 count, so stacking them would make a growing table collide with the block below.
 Two-column gutters separate the bands so that a widened schema is caught by the
 overlap assertion instead of silently overwriting a neighbour."""
@@ -103,64 +318,124 @@ never appear on the derived-status axis: a model is INVALID whether or not anyon
 pressed Calculate, and a rolled-back write leaves it STALE, derived from the
 inputs rather than forced from the attempt."""
 
-LOCKED_CALC_STATE_FIELDS: tuple[tuple[int, str, str, str, Any], ...] = (
-    (13, "snapshot", "last_successful_stamp", "Last Successful Stamp", None),
-    (14, "snapshot", "last_successful_fingerprint", "Last Successful Fingerprint", None),
-    (15, "snapshot", "fingerprint_version", "Fingerprint Version", None),
-    (16, "snapshot", "last_successful_applied_timeline", "Last Successful Applied Timeline", None),
-    (17, "attempt", "last_attempt_result", "Last Attempt Result", "NONE"),
-    (18, "attempt", "last_attempt_detail", "Last Attempt Detail", None),
-    (19, "derived", "calculation_status", "Calculation Status (last evaluated)", "NOT CALCULATED"),
-    (20, "derived", "status_evaluated_at", "Status Evaluated At", None),
+LOCKED_CALC_STATE: tuple[StateRow, ...] = (
+    StateRow(13, "snapshot", "last_successful_stamp", "Last Successful Stamp",
+             "timestamp", "yyyy-mm-dd hh:mm:ss", None, None),
+    StateRow(14, "snapshot", "last_successful_fingerprint", "Last Successful Fingerprint",
+             "text", "@", None, None),
+    StateRow(15, "snapshot", "fingerprint_version", "Fingerprint Version",
+             "integer", "0", None, None),
+    StateRow(16, "snapshot", "last_successful_applied_timeline",
+             "Last Successful Applied Timeline", "text", "@", None, None),
+    StateRow(17, "attempt", "last_attempt_result", "Last Attempt Result",
+             "enum", "@", "attempt_result", "NONE"),
+    StateRow(18, "attempt", "last_attempt_detail", "Last Attempt Detail",
+             "text", "@", None, None),
+    StateRow(19, "derived", "calculation_status", "Calculation Status (last evaluated)",
+             "enum", "@", "derived_status", "NOT CALCULATED"),
+    StateRow(20, "derived", "status_evaluated_at", "Status Evaluated At",
+             "timestamp", "yyyy-mm-dd hh:mm:ss", None, None),
 )
-"""(row, group, key, label, seeded initial value).
+"""Row order is load-bearing, not cosmetic: `C13:C16` is the snapshot, `C17:C18`
+the attempt and `C19:C20` the derived reading, and only that grouping makes the
+success commit one contiguous `C13:C20` assignment.
 
-Row order is load-bearing, not cosmetic. `Fingerprint Version` is seeded BLANK:
-writing the algorithm version at build time would make a never-calculated workbook
-look as though it held a partial successful snapshot."""
+`Fingerprint Version` is seeded BLANK. Writing the algorithm version at build time
+would make a never-calculated workbook look as though it held a partial successful
+snapshot. The two timestamp rows carry a real date format, not `@`: storing them as
+text would make the audit trail unsortable and uncomparable."""
 
 LOCKED_CALC_STATE_GROUPS = ("snapshot", "attempt", "derived")
 
-LOCKED_DRIVER_HEADERS = (
-    "Permanent ID",
-    "Driver Kind",
-    "Distribution",
-    "Central Basis",
-    "Currency",
-    "FX to SAR",
-    "Inflation Profile",
-    "Quantity",
-    "Probability",
-    "Central Value",
-    "Mean Value",
-    "Knom",
-    "Kpv",
-    "Deterministic Nominal",
-    "Deterministic PV",
-    "Mean-Basis Nominal",
-    "Mean-Basis PV",
-    "Uncertainty Mean Shift Nominal",
-    "Uncertainty Mean Shift PV",
-    "Expected Risk Nominal",
-    "Expected Risk PV",
+LOCKED_CALC_TOTALS: tuple[TotalRow, ...] = (
+    TotalRow(23, "a_nom", "Escalated Deterministic Base - Nominal",
+             "double", "#,##0.00", "SAR", "A", "nominal", None),
+    TotalRow(24, "a_pv", "Escalated Deterministic Base - PV",
+             "double", "#,##0.00", "SAR", "A", "pv", None),
+    TotalRow(25, "b_nom", "Uncertainty Mean Shift - Nominal",
+             "double", "#,##0.00", "SAR", "B", "nominal", None),
+    TotalRow(26, "b_pv", "Uncertainty Mean Shift - PV",
+             "double", "#,##0.00", "SAR", "B", "pv", None),
+    TotalRow(27, "c_nom", "Mean-Basis Base Cost - Nominal",
+             "double", "#,##0.00", "SAR", "C", "nominal", None),
+    TotalRow(28, "c_pv", "Mean-Basis Base Cost - PV",
+             "double", "#,##0.00", "SAR", "C", "pv", None),
+    TotalRow(29, "d_nom", "Expected Risk / EMV - Nominal",
+             "double", "#,##0.00", "SAR", "D", "nominal", None),
+    TotalRow(30, "d_pv", "Expected Risk / EMV - PV",
+             "double", "#,##0.00", "SAR", "D", "pv", None),
+    TotalRow(31, "e_nom", "Analytical Mean Total - Nominal",
+             "double", "#,##0.00", "SAR", "E", "nominal", None),
+    TotalRow(32, "e_pv", "Analytical Mean Total - PV",
+             "double", "#,##0.00", "SAR", "E", "pv", None),
 )
-"""21 columns, in order. No column carries two meanings by Driver Kind: a field
-that does not apply to a kind is blank, never zero and never reused. That is what
-lets A, B, C and D be reconstructed from the audit rows by plain column sums."""
+"""Ten headline values, each measure's Nominal row immediately followed by its PV
+row. All SAR, all `#,##0.00`, none seeded: a seeded 0 would be a fabricated
+result."""
 
-LOCKED_ANNUAL_HEADERS = (
-    "Project Index",
-    "Calendar Year",
-    "Base Cost Nominal",
-    "Expected Risk Nominal",
-    "Total Nominal",
-    "Base Cost PV",
-    "Expected Risk PV",
-    "Total PV",
+LOCKED_DRIVER_HEADERS = tuple(c.header for c in LOCKED_TABLES["tblCalcDrivers"].columns)
+"""21 columns, in order. Derived from the full locked schema above."""
+
+LOCKED_ANNUAL_HEADERS = tuple(c.header for c in LOCKED_TABLES["tblCalcAnnual"].columns)
+"""8 columns, in order. Derived from the full locked schema above."""
+
+LOCKED_TOLERANCES: dict[str, Any] = {
+    "profiling_sum_absolute": 1e-9,
+    "identity_absolute_floor": 1e-6,
+    "identity_relative_coefficient": 1e-12,
+    "conditioning_scale_floor": 1.0,
+    "fx_rate_strictly_positive": True,
+    "growth_factor_strictly_positive": True,
+}
+"""A TOLERANCE EDIT IS A NUMERICAL-DESIGN CHANGE.
+
+Each of these was argued for in the plan and must not pass merely because it is
+still a positive number. Loosening `profiling_sum_absolute` from `1e-9` to `1e-3`
+would let a profile that sums to 99.9% through as if it summed to 100%; loosening
+`identity_absolute_floor` would let a real bookkeeping mismatch pass as rounding;
+raising `conditioning_scale_floor` above 1 would widen every identity tolerance at
+once. Exact equality is the only check that catches those."""
+
+LOCKED_CONDITIONING_TERMS: dict[str, tuple[str, ...]] = {
+    "i1": ("abs_a", "abs_b", "abs_c"),
+    "i2": ("abs_c", "abs_d", "abs_e"),
+    "i3a": ("sum_abs_annual_base", "abs_c"),
+    "i3b": ("sum_abs_annual_risk", "abs_d"),
+    "i3c": ("sum_abs_annual_total", "abs_e"),
+    "i4a": ("sum_abs_annual_base", "abs_c"),
+    "i4b": ("sum_abs_annual_risk", "abs_d"),
+    "i4c": ("sum_abs_annual_total", "abs_e"),
+}
+"""Which absolute magnitudes each identity's conditioning scale sums.
+
+The terms are the identity's OWN, and swapping them silently rescales the wrong
+comparison: giving I1 (`A + B = C`) the terms of I2 would size its tolerance by
+quantities that identity never touches. A generic "at least two terms" rule cannot
+see that, so the exact sets are locked."""
+
+LOCKED_AUTHORITY_REFERENCES: tuple[tuple[str, str, str], ...] = (
+    ("distribution master list", "input_contract.yaml", "config_tables.distributions"),
+    ("FX convention", "input_contract.yaml", "conventions.fx_convention"),
+    ("Cost Line and Risk Register input schemas", "driver_contract.yaml", "registers"),
+    (
+        "permanent-ID prefixes, patterns and counter rules",
+        "structure_contract.yaml",
+        "identity.counters",
+    ),
+    ("applied timeline and structural limits", "structure_contract.yaml", "timeline"),
+    (
+        "_Calc sheet declaration, visibility and column widths",
+        "workbook.yaml",
+        "sheets",
+    ),
 )
-"""8 columns. Calendar Year is present so an annual audit row stands on its own,
-without a join to tblCalcYears merely to learn which year it describes."""
+"""(concept, owner, locator) - the COMPLETE required set, exactly.
 
+Checking only that the references present resolve is not enough: a reference can
+be deleted, and then the boundary it documented simply stops being declared. These
+six are the authority boundaries Step 1 exists to protect, so the set is locked -
+none missing, none extra, none duplicated, none renamed. The referenced VALUES
+remain owned upstream; only the boundary metadata is locked here."""
 # ---------------------------------------------------------------------------
 # The authority boundary - hash mathematics may not appear in the contract
 # ---------------------------------------------------------------------------
@@ -404,6 +679,7 @@ def load_calc_contract(path: str | Path) -> CalcContract:
     _validate_no_overlap(contract, path)
     _validate_state_labels(contract, path)
     _validate_fingerprint(contract, path)
+    _validate_authority_reference_set(contract, path)
     _validate_tolerances(contract, path)
     _validate_excel_bounds(contract, path)
     return contract
@@ -670,21 +946,50 @@ def _validate_block_rows(block: ScalarBlock, locked: tuple[int, int], path: Path
 
 
 def _validate_calc_state_fields(block: ScalarBlock, path: Path) -> None:
-    """Row order is load-bearing: it is what makes the commit one assignment."""
-    actual = tuple((f.row, f.group, f.key, f.label, f.initial) for f in block.fields)
-    if actual != LOCKED_CALC_STATE_FIELDS:
-        for expected, got in zip(LOCKED_CALC_STATE_FIELDS, actual):
-            if expected != got:
-                raise CalcContractError(
-                    f"{path}: calc_state row {expected[0]} must be "
-                    f"group={expected[1]!r} key={expected[2]!r} label={expected[3]!r} "
-                    f"initial={expected[4]!r}, but the contract declares "
-                    f"group={got[1]!r} key={got[2]!r} label={got[3]!r} initial={got[4]!r}. "
-                    "The row order is load-bearing: C13:C16 is the snapshot, C17:C18 the "
-                    "attempt and C19:C20 the derived reading, and only that grouping makes "
-                    "the success commit one contiguous C13:C20 assignment."
+    """Every attribute of every row, against the accepted design.
+
+    Row order is load-bearing, and so is everything else on the row: a
+    `timestamp` downgraded to `text`, or a date format replaced by `@`, changes
+    what the audit trail can be sorted and compared by without moving anything.
+    """
+    if len(block.fields) != len(LOCKED_CALC_STATE):
+        raise CalcContractError(
+            f"{path}: calc_state must declare exactly {len(LOCKED_CALC_STATE)} rows, "
+            f"got {len(block.fields)}"
+        )
+    for expected, got in zip(LOCKED_CALC_STATE, block.fields):
+        actual = StateRow(
+            row=got.row,
+            group=got.group,
+            key=got.key,
+            label=got.label,
+            value_type=got.value_type,
+            number_format=got.number_format,
+            enum=got.enum,
+            initial=got.initial,
+        )
+        if actual != expected:
+            differing = [
+                f"{name}: expected {getattr(expected, name)!r}, declared {getattr(actual, name)!r}"
+                for name in (
+                    "row",
+                    "group",
+                    "key",
+                    "label",
+                    "value_type",
+                    "number_format",
+                    "enum",
+                    "initial",
                 )
-        raise CalcContractError(f"{path}: calc_state fields do not match the accepted layout")
+                if getattr(expected, name) != getattr(actual, name)
+            ]
+            raise CalcContractError(
+                f"{path}: calc_state row {expected.row} ({expected.key}) does not match the "
+                f"accepted Revision-E design:\n  " + "\n  ".join(differing) + "\n"
+                "The row order is load-bearing - C13:C16 is the snapshot, C17:C18 the attempt "
+                "and C19:C20 the derived reading - and so are the labels, types and formats an "
+                "auditor reads them by."
+            )
 
     version_field = block.field_by_key("fingerprint_version")
     if version_field.initial is not None:
@@ -714,16 +1019,50 @@ def _validate_calc_state_fields(block: ScalarBlock, path: Path) -> None:
 
 
 def _validate_calc_totals_fields(block: ScalarBlock, path: Path) -> None:
-    expected_measures = ("A", "A", "B", "B", "C", "C", "D", "D", "E", "E")
-    expected_bases = ("nominal", "pv") * 5
-    measures = tuple(f.measure for f in block.fields)
-    bases = tuple(f.basis for f in block.fields)
-    if measures != expected_measures or bases != expected_bases:
+    """Every attribute of every row, against the accepted design.
+
+    A relabelled or reformatted headline total is a design change even though the
+    number in the cell is unaffected: the label is what says which of the five
+    measures an auditor is looking at, and `#,##0.00` is what says it is money.
+    """
+    if len(block.fields) != len(LOCKED_CALC_TOTALS):
         raise CalcContractError(
-            f"{path}: calc_totals must carry the five measures A-E, each as a Nominal row "
-            f"immediately followed by its PV row. Got measures {list(measures)} and bases "
-            f"{list(bases)}."
+            f"{path}: calc_totals must declare exactly {len(LOCKED_CALC_TOTALS)} rows, "
+            f"got {len(block.fields)}"
         )
+    for expected, got in zip(LOCKED_CALC_TOTALS, block.fields):
+        actual = TotalRow(
+            row=got.row,
+            key=got.key,
+            label=got.label,
+            value_type=got.value_type,
+            number_format=got.number_format,
+            units=got.units,
+            measure=got.measure,
+            basis=got.basis,
+            initial=got.initial,
+        )
+        if actual != expected:
+            differing = [
+                f"{name}: expected {getattr(expected, name)!r}, declared {getattr(actual, name)!r}"
+                for name in (
+                    "row",
+                    "key",
+                    "label",
+                    "value_type",
+                    "number_format",
+                    "units",
+                    "measure",
+                    "basis",
+                    "initial",
+                )
+                if getattr(expected, name) != getattr(actual, name)
+            ]
+            raise CalcContractError(
+                f"{path}: calc_totals row {expected.row} ({expected.key}) does not match the "
+                f"accepted Revision-E design:\n  " + "\n  ".join(differing)
+            )
+
     for entry in block.fields:
         if entry.value_type != "double":
             raise CalcContractError(
@@ -792,20 +1131,57 @@ def _validate_tables(contract: CalcContract, path: Path) -> None:
                 f"{path}: {table.table_name} has duplicate column headers: {duplicates}"
             )
 
-    _validate_locked_schema(contract, "tblCalcDrivers", LOCKED_DRIVER_HEADERS, path)
-    _validate_locked_schema(contract, "tblCalcAnnual", LOCKED_ANNUAL_HEADERS, path)
+    for table_name in sorted(LOCKED_TABLES):
+        _validate_locked_schema(contract, table_name, path)
     _validate_driver_kind_coverage(contract.table_by_name("tblCalcDrivers"), path)
 
 
-def _validate_locked_schema(
-    contract: CalcContract, table_name: str, locked: tuple[str, ...], path: Path
-) -> None:
+def _validate_locked_schema(contract: CalcContract, table_name: str, path: Path) -> None:
+    """The FULL schema of one table, attribute by attribute.
+
+    Headers alone are not the schema. A number format decides whether a discount
+    factor is shown to six places or rounded to two; a unit decides whether a
+    column of money is SAR or something else; a value type decides whether a
+    calendar year is a number or text. Each is a design change that leaves the
+    column count and every anchor untouched, so each is compared here.
+    """
+    locked = LOCKED_TABLES[table_name]
     table = contract.table_by_name(table_name)
-    if tuple(table.headers) != locked:
+
+    if table.row_rule != locked.row_rule:
         raise CalcContractError(
-            f"{path}: {table_name} must declare exactly these {len(locked)} columns, in order:\n"
-            f"  expected: {list(locked)}\n"
-            f"  declared: {table.headers}"
+            f"{path}: {table_name} row rule does not match the accepted design.\n"
+            f"  expected: {locked.row_rule!r}\n"
+            f"  declared: {table.row_rule!r}\n"
+            "The row rule states which rows the table is required to contain; changing it "
+            "changes what a complete audit table is."
+        )
+    if len(table.columns) != len(locked.columns):
+        raise CalcContractError(
+            f"{path}: {table_name} must declare exactly {len(locked.columns)} columns, "
+            f"got {len(table.columns)}"
+        )
+
+    for index, (expected, got) in enumerate(zip(locked.columns, table.columns), start=1):
+        actual = ColumnSchema(
+            key=got.key,
+            header=got.header,
+            value_type=got.value_type,
+            number_format=got.number_format,
+            units=got.units,
+            applies_to=got.applies_to,
+        )
+        if actual == expected:
+            continue
+        differing = [
+            f"{name}: expected {getattr(expected, name)!r}, declared {getattr(actual, name)!r}"
+            for name in ("key", "header", "value_type", "number_format", "units", "applies_to")
+            if getattr(expected, name) != getattr(actual, name)
+        ]
+        raise CalcContractError(
+            f"{path}: {table_name} column {index} ({expected.header!r}) does not match the "
+            f"accepted Revision-E design:\n  " + "\n  ".join(differing) + "\n"
+            "The contract encodes the accepted schema; it does not get to choose a new one."
         )
 
 
@@ -937,8 +1313,98 @@ def _validate_fingerprint(contract: CalcContract, path: Path) -> None:
         )
 
 
+def _validate_authority_reference_set(contract: CalcContract, path: Path) -> None:
+    """The COMPLETE required reference set - none missing, extra, duplicated or renamed.
+
+    Resolving the references that happen to be present is not enough. A reference
+    can simply be deleted, and then the boundary it declared stops being declared
+    at all: the contract would still load, still cross-validate, and would no
+    longer record that the FX convention is owned by `input_contract.yaml`. These
+    six boundaries are what Step 1 exists to protect, so the set itself is locked.
+
+    Only the boundary METADATA is locked here. The referenced values stay owned by
+    the upstream contracts, and `validate_calc_against` still resolves each locator
+    against the file that owns it.
+    """
+    declared = tuple((r.concept, r.owner, r.locator) for r in contract.authority_references)
+
+    duplicates = sorted({r for r in declared if declared.count(r) > 1})
+    if duplicates:
+        raise CalcContractError(
+            f"{path}: duplicate authority reference(s): {duplicates}. Each boundary is declared "
+            "exactly once."
+        )
+    concepts = [r[0] for r in declared]
+    repeated = sorted({c for c in concepts if concepts.count(c) > 1})
+    if repeated:
+        raise CalcContractError(
+            f"{path}: authority concept(s) {repeated} declared more than once, with differing "
+            "owners or locators. A concept has exactly one owning authority."
+        )
+
+    if declared == LOCKED_AUTHORITY_REFERENCES:
+        return
+
+    expected_set = set(LOCKED_AUTHORITY_REFERENCES)
+    declared_set = set(declared)
+    missing = sorted(expected_set - declared_set)
+    unexpected = sorted(declared_set - expected_set)
+    detail = []
+    if missing:
+        detail.append(f"  missing: {missing}")
+    if unexpected:
+        detail.append(f"  unexpected: {unexpected}")
+    if not detail:
+        detail.append(
+            f"  order differs:\n    expected {list(LOCKED_AUTHORITY_REFERENCES)}\n"
+            f"    declared {list(declared)}"
+        )
+    raise CalcContractError(
+        f"{path}: the authority-reference set does not match the accepted Revision-E "
+        f"boundaries.\n" + "\n".join(detail) + "\n"
+        "Every value the calculation contract borrows must name the specification that owns "
+        "it. A deleted reference silently drops that boundary; a renamed concept or a moved "
+        "locator silently redirects it."
+    )
+
+
 def _validate_tolerances(contract: CalcContract, path: Path) -> None:
+    """Exact equality first, then the structural rules.
+
+    A tolerance edit is a NUMERICAL-DESIGN change. Every one of these values was
+    argued for in the plan, and none of them may pass merely because it is still a
+    positive number that satisfies the general shape rules below.
+    """
     tolerances = contract.tolerances
+
+    for name, expected in LOCKED_TOLERANCES.items():
+        declared = getattr(tolerances, name)
+        if isinstance(expected, bool) or isinstance(declared, bool):
+            matches = declared is expected
+        else:
+            matches = declared == expected
+        if not matches:
+            raise CalcContractError(
+                f"{path}: tolerance {name} is locked at {expected!r}; the contract declares "
+                f"{declared!r}. Loosening a tolerance changes which models the reconciliation "
+                "accepts, so it is a design change and cannot pass validation as an edit."
+            )
+
+    if tuple(sorted(tolerances.conditioning_terms)) != tuple(sorted(LOCKED_CONDITIONING_TERMS)):
+        raise CalcContractError(
+            f"{path}: conditioning terms must be declared for exactly "
+            f"{sorted(LOCKED_CONDITIONING_TERMS)}, got {sorted(tolerances.conditioning_terms)}"
+        )
+    for identity, expected_terms in LOCKED_CONDITIONING_TERMS.items():
+        declared_terms = tolerances.conditioning_terms[identity]
+        if declared_terms != expected_terms:
+            raise CalcContractError(
+                f"{path}: identity {identity} conditioning terms are locked as "
+                f"{list(expected_terms)}; the contract declares {list(declared_terms)}. The scale "
+                "must sum the absolute magnitudes THAT IDENTITY accumulates - borrowing another "
+                "identity's terms sizes the tolerance by quantities it never touches."
+            )
+
     if tolerances.identity_absolute_floor <= tolerances.identity_relative_coefficient:
         raise CalcContractError(
             f"{path}: the identity absolute floor ({tolerances.identity_absolute_floor}) must "
@@ -955,13 +1421,6 @@ def _validate_tolerances(contract: CalcContract, path: Path) -> None:
         raise CalcContractError(
             f"{path}: FX rates and growth factors are checked STRICTLY positive, with no "
             "epsilon. A zero rate is a refusal, not a rounding question."
-        )
-    expected = {"i1", "i2", "i3a", "i3b", "i3c", "i4a", "i4b", "i4c"}
-    declared = set(tolerances.conditioning_terms)
-    if declared != expected:
-        raise CalcContractError(
-            f"{path}: conditioning terms must be declared for exactly {sorted(expected)}, got "
-            f"{sorted(declared)}"
         )
     for identity, terms in tolerances.conditioning_terms.items():
         if len(terms) < 2:
