@@ -183,6 +183,10 @@ def render_constants_module(
     lines.append("' implementation cannot represent a sequence beyond this value, so allocation")
     lines.append("' refuses CLEANLY at the ceiling rather than overflowing, and a stored counter")
     lines.append("' or an ID tail beyond it is reported as corrupt rather than silently ignored.")
+    lines.append("'")
+    lines.append("' A counter sitting exactly AT this value is VALID, exhausted state: no further")
+    lines.append("' identifier can be allocated, but the existing structure stays sound and")
+    lines.append("' structural revalidation must remain clean.")
     const("ID_COUNTER_MAX", VBA_LONG_MAX)
     lines.append("")
 
@@ -373,6 +377,11 @@ def build_manifest(
             "min_year": structure.limits.min_year,
             "max_year": structure.limits.max_year,
             "max_generated_year_columns": structure.limits.max_generated_year_columns,
+            # The representation ceiling, from the SAME source as the VBA constant, so
+            # the functional harness can drive a counter to it without restating the
+            # number. It is emitted as a limit, not as a business maximum: a counter
+            # sitting at it is valid, exhausted state.
+            "id_counter_max": VBA_LONG_MAX,
         },
         "state_labels": dict(structure.structural_state.labels),
         # Presentation tokens, so the functional harness can assert that a row or a

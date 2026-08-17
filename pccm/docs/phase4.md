@@ -506,9 +506,54 @@ Current rows cannot testify about deleted history. So:
 - An ID whose numeric tail cannot be represented is reported as corrupt rather
   than skipped by `HighestIssued`.
 
-The ceiling is an **implementation representation limit**, not a business
-maximum. The generated module says so; the earlier comment wrongly denied it was
-a ceiling at all.
+### The snapshot must be raw
+
+Refusing to allocate was only half the protection. The **rollback** reintroduced
+the whole defect through a different door:
+
+    R-001 issued -> every Risk deleted -> the counter is corrupted to text
+    -> the operation snapshot reads it through a lossy Long accessor as 0
+    -> AllocateId correctly refuses, and the operation rolls back
+    -> the rollback writes the snapshotted 0 back
+    -> the corrupt HISTORICAL counter is now a valid zero, and R-001 is reissuable.
+
+So the snapshot is taken **raw and restored byte for byte**:
+
+- `RawCounter` returns a `Variant` and performs no conversion; the snapshot field
+  is `Variant`, and `TryRestoreDriver` takes `ByVal CounterBefore As Variant`.
+- `ReadCounter()` — the lossy accessor — has been **removed entirely**, not merely
+  bypassed. Its only caller was the snapshot. Leaving it in place would let any
+  future caller reopen the same hole, so `test_24f` fails if an accessor of that
+  shape reappears in any module.
+- Callers that **allocate** use `TryReadCounter` and refuse invalid state. Callers
+  that **snapshot** use `RawCounter`. There is no third option.
+
+A failed Add against a corrupt counter therefore leaves the counter still corrupt,
+and a failed Add against a blank counter leaves it still blank. Gate-B scenario U
+reads the counter back after each refusal and asserts exactly that.
+
+### The ceiling is valid state, not corruption
+
+The ceiling is an **implementation representation limit**, not a business maximum,
+and a counter sitting **at** it is valid, exhausted state:
+
+- allocation refuses, before evaluating `counter + 1`, because
+  `ID_COUNTER_MAX + 1` overflows a VBA `Long` at runtime. The guard is `>=`, so
+  the ceiling value itself never reaches the increment (`test_24i`);
+- **structural revalidation stays clean.** Reporting the ceiling as a
+  `counter_integrity` fault was wrong in a way that reached far beyond
+  allocation: revalidation runs after Apply and after Delete, and a fault there
+  rolls the whole operation back — so an exhausted Cost Line sequence would have
+  blocked Apply Timeline, Delete Risk and every other unrelated structural
+  operation. `test_24h` fails if the check compares against `ID_COUNTER_MAX`
+  again.
+
+Exhausted means "no further identifier can be allocated". It says nothing about
+whether the existing structure is coherent. Comments that claimed there was "no
+artificial ID maximum anywhere" have been corrected — `test_24j` fails on that
+wording in any module, generated or hand-written. The manifest publishes
+`limits.id_counter_max` from the same constant the VBA uses, so Gate-B scenario W
+drives the ceiling without restating the number.
 
 ---
 
@@ -582,6 +627,19 @@ assessment. Prevalidation, reading the two triples, the destructive assessment a
 the confirmation all inspect user-controlled cells, so malformed contents can
 raise there — and did so outside any handler.
 
+The boundary is the **first statement of the command**, and three things sat
+before it:
+
+| Was outside the handler | Why it is fallible | Now |
+|---|---|---|
+| `CaptureAppState()` | it reads six `Application` properties | the handler is installed first; `test_26f1` asserts the ordering in both commands |
+| `SelectedId(Kind)` as a call argument | VBA evaluates arguments **before** entering the callee, so a selection off the table, or an error value in the ID cell, escaped before `RunDriverOperation` installed anything | resolved inside `RunDeleteCommand`, a protected shell, under its own handler (`test_26f3`) |
+| cleanup after a failed capture | calling the restore routine claims a snapshot existed, and writes the zero-valued struct back onto `Application` | `stateCaptured` records whether capture succeeded; every cleanup path goes through `FinishIfCaptured`, which reports "application state was never captured" instead (`test_26f2`) |
+
+The `…ById` entry points the harness drives bypass selection entirely, so a
+headless run never depends on a Windows selection state that automation does not
+set.
+
 Two handlers, because the two situations differ:
 
 | Handler | When | Rollback |
@@ -652,8 +710,30 @@ enforced against statically:
   `$body.Rows.Count` mint intermediate RCWs that nothing owns. Every one is now an
   explicitly named, explicitly released transient.
 
+A third class was found on review: **ownership starts at the assignment, not at
+the first successful use.** Two objects were acquired and then released *inline on
+the success path*, so an exception in between skipped the release:
+
+- the pre-existing `VBComponent` removed before a module is re-imported —
+  `$vbcomps.Remove($existing)` can throw;
+- the pre-existing `Shape` deleted before a button is recreated —
+  `$existing.Delete()` can throw, and the enclosing `finally` released `$tr`,
+  `$tf`, `$shp`, `$anchor`, `$shapes` and `$ws` but not `$existing`.
+
+Both now release from a `finally`, and the Shape releases **before `$shapes`, its
+parent**, keeping leaf-before-parent intact on the exception path too.
+
+An inline release is still legitimate as an early hand-back — `$rowsObj`,
+`$colsObj` and `$sortField` in the harness — but **only** when the enclosing
+`finally` also releases the same variable if it is still non-null. That is the
+rule the sweep enforces, rather than banning early release outright.
+
 `test_46a`–`test_46g` sweep both scripts for chained access, unowned returns,
 `foreach` over a COM collection, and any release that does not null its variable.
+`test_46h` fails on any release that sits only on the success path, `test_46i`
+fails on any COM acquisition that never reaches an exception-safe release,
+`test_46j` pins the two defects above by name, and `test_46k` balances every
+PowerShell block — the parse error that would otherwise surface only on Windows.
 
 See `bootstrap/windows/README.md`.
 

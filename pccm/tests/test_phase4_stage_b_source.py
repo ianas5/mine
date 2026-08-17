@@ -418,6 +418,74 @@ def test_24e_a_malformed_id_tail_is_reported_not_ignored() -> None:
     )
 
 
+def test_24f_no_counter_accessor_maps_invalid_state_to_a_value() -> None:
+    """A lossy accessor is dangerous by existing, not only by being called.
+
+    ReadCounter() returned 0 for a missing, blank or non-numeric counter. Allocation
+    refused invalid state correctly, but the operation SNAPSHOT read through the lossy
+    accessor -- so a rollback wrote 0 back over corrupt text and turned it into valid,
+    exhausted-from-zero state. Any future caller of such an accessor would reopen the
+    same hole, so the accessor itself is banned, not just that one call site.
+    """
+    lossy = re.compile(r"(?<!Try)\bReadCounter\s*\(")
+    problems = []
+    for module in _handwritten_modules():
+        for number, line in enumerate(module.code.splitlines(), 1):
+            if lossy.search(line):
+                problems.append(f"{module.name}:{number}: {line.strip()[:70]}")
+    assert not problems, (
+        "a lossy counter accessor exists again:\n  " + "\n  ".join(problems)
+    )
+
+
+def test_24g_the_operation_snapshot_stores_the_counter_raw() -> None:
+    """The snapshot must be byte-for-byte, so corruption comes back as corruption."""
+    code = next(m for m in _handwritten_modules() if m.name == "modDrivers").code
+    assert "Public Function RawCounter(ByVal Kind As String) As Variant" in code, (
+        "the snapshot needs a Variant accessor that performs no conversion"
+    )
+    assert "Dim counterBefore As Variant" in code, (
+        "typing the snapshot as Long would convert corrupt text into a valid number"
+    )
+    assert "counterBefore = RawCounter(Kind)" in code
+    assert "Dim counterBefore As Long" not in code
+    restore = code[code.index("Private Function TryRestoreDriver"):]
+    assert "ByVal CounterBefore As Variant" in restore, (
+        "the restore parameter must be Variant too, or the conversion just moves"
+    )
+    assert "modWorkbook.WriteValue CounterName(Kind), CounterBefore" in restore
+
+
+def test_24h_a_counter_at_the_ceiling_is_not_a_structural_fault() -> None:
+    """Exhausted is valid state. Reporting it as corruption would break every
+    unrelated structural operation: revalidation runs after Apply and after Delete,
+    and a fault there rolls the whole operation back."""
+    code = next(m for m in _handwritten_modules() if m.name == "modStructuralCheck").code
+    assert ">= ID_COUNTER_MAX" not in code and "= ID_COUNTER_MAX" not in code, (
+        "the structural check must not treat the representation ceiling as a fault"
+    )
+    assert "CHK_COUNTER_INTEGRITY" in code, "an INVALID counter is still a fault"
+
+
+def test_24i_the_runtime_never_evaluates_the_ceiling_plus_one() -> None:
+    """ID_COUNTER_MAX + 1 overflows a VBA Long at runtime; the guard must precede it."""
+    code = next(m for m in _handwritten_modules() if m.name == "modDrivers").code
+    assert "If current >= ID_COUNTER_MAX Then" in code, (
+        "a > test would let the ceiling value itself reach current + 1"
+    )
+    assert "If current > ID_COUNTER_MAX Then" not in code
+    assert "ID_COUNTER_MAX + 1" not in code
+
+
+def test_24j_no_comment_still_denies_the_ceiling() -> None:
+    """The ceiling is real. Source that claims otherwise misleads the next reader."""
+    for module in _handwritten_modules():
+        assert "no artificial ID maximum anywhere" not in module.raw, module.name
+    assert "no artificial ID maximum anywhere" not in _generated_module_text()
+    generated = _generated_module_text()
+    assert "A counter sitting exactly AT this value is VALID, exhausted state" in generated
+
+
 def test_25_a_new_inflation_year_is_never_seeded_with_zero() -> None:
     module = next(m for m in _handwritten_modules() if m.name == "modInflation")
     assert "PROFILE_INITIAL_VALUE" not in module.code, (
@@ -491,7 +559,12 @@ def test_26d_a_failed_cleanup_makes_the_operation_fail() -> None:
     """A structural change that completed but was not cleaned up is not a success."""
     for name in ("modTimeline", "modDrivers"):
         code = next(m for m in _handwritten_modules() if m.name == name).code
-        assert "cleanup = modAppState.FinishOperation(snapshot)" in code, name
+        # The success path runs cleanup through the capture gate, and the gate's
+        # report is what decides whether the operation reports success.
+        assert "cleanup = FinishIfCaptured(snapshot, stateCaptured)" in code, name
+        assert "If Len(cleanup) > 0 Then" in code, (
+            f"{name}: a non-empty cleanup report must change the outcome"
+        )
         assert "NOT left in a safe state" in next(
             m for m in _handwritten_modules() if m.name == name
         ).code_without_string_removal, name
@@ -519,6 +592,103 @@ def test_26f_controlled_error_handling_starts_at_the_top_of_each_command() -> No
     )
     drivers = next(m for m in _handwritten_modules() if m.name == "modDrivers").code
     assert drivers.index("On Error GoTo AssessmentFailure") < drivers.index("On Error GoTo Failure")
+
+
+def test_26f1_the_handler_is_installed_before_application_state_is_captured() -> None:
+    """CaptureAppState is itself fallible: it reads six Application properties.
+
+    Installing the handler after the capture left a window where a failure escaped as
+    a raw VBA runtime error -- the uncontrolled dialog the whole containment design
+    exists to prevent. The true command boundary is the first statement of the
+    command, before anything fallible.
+    """
+    for name in ("modTimeline", "modDrivers"):
+        code = next(m for m in _handwritten_modules() if m.name == name).code
+        handler = code.index("On Error GoTo AssessmentFailure")
+        capture = code.index("snapshot = modAppState.CaptureAppState()")
+        assert handler < capture, (
+            f"{name}: the error handler must be installed before CaptureAppState"
+        )
+
+
+def test_26f2_cleanup_never_claims_a_snapshot_that_was_never_captured() -> None:
+    """If capture failed there is no prior state, and saying it was restored is a lie.
+
+    Calling the restore routine on an uninitialised snapshot would also write whatever
+    the zero-valued struct happens to hold back onto Application.
+    """
+    for name in ("modTimeline", "modDrivers"):
+        code = next(m for m in _handwritten_modules() if m.name == name).code
+        assert "Dim stateCaptured As Boolean" in code, f"{name}: capture success is not tracked"
+        assert "stateCaptured = True" in code
+        assert "Private Function FinishIfCaptured(" in code, (
+            f"{name}: cleanup must be gated on whether a snapshot exists"
+        )
+        # FinishOperation is reachable from exactly one place: inside the gate.
+        calls = [
+            line.strip()
+            for line in code.splitlines()
+            if "modAppState.FinishOperation(" in line
+        ]
+        assert calls == ["FinishIfCaptured = modAppState.FinishOperation(Snapshot)"], (
+            f"{name}: FinishOperation must be called only from FinishIfCaptured, "
+            f"found {calls}"
+        )
+        gate = code[code.index("Private Function FinishIfCaptured("):]
+        gate = gate[: gate.index("End Function")]
+        assert "If Not StateCaptured Then" in gate, (
+            f"{name}: the gate must test the captured flag before restoring anything"
+        )
+        assert "never captured" in next(
+            m for m in _handwritten_modules() if m.name == name
+        ).code_without_string_removal, (
+            f"{name}: the report must say a snapshot never existed, not imply one did"
+        )
+        for marker in ("cleanup = ", "assessCleanup = ", "failureCleanup = "):
+            assert marker + "FinishIfCaptured(snapshot, stateCaptured)" in code, (
+                f"{name}: a cleanup path bypasses the gate ({marker.strip()})"
+            )
+
+
+def test_26f3_delete_resolves_its_identity_inside_the_protected_shell() -> None:
+    """`RunDriverOperation Kind, False, SelectedId(Kind)` is not equivalent.
+
+    VBA evaluates the argument BEFORE entering the callee, so a failure to resolve the
+    selection -- selection off the table, an error value in the ID cell -- escaped
+    before any handler was installed. Resolution has to happen inside a shell that is
+    already protected.
+    """
+    code = next(m for m in _handwritten_modules() if m.name == "modDrivers").code
+    assert "Public Sub RunDeleteCommand(ByVal Kind As String)" in code
+    shell = code[code.index("Public Sub RunDeleteCommand"):]
+    shell = shell[: shell.index("End Sub")]
+    assert shell.index("On Error GoTo ResolveFailed") < shell.index("SelectedId(Kind)"), (
+        "the handler must cover the selection lookup"
+    )
+    offenders = [
+        line.strip()
+        for line in code.splitlines()
+        if "SelectedId(" in line and "RunDriverOperation" in line
+    ]
+    assert not offenders, (
+        "SelectedId must never be evaluated as a call argument:\n  " + "\n  ".join(offenders)
+    )
+    for button in ("PCCM_DeleteCostLine", "PCCM_DeleteRisk"):
+        body = code[code.index(f"Public Sub {button}()"):]
+        body = body[: body.index("End Sub")]
+        assert "RunDeleteCommand" in body, f"{button} must go through the protected shell"
+        assert "SelectedId" not in body, f"{button} resolves identity outside the shell"
+
+
+def test_26f4_the_by_id_entry_points_bypass_selection_entirely() -> None:
+    """The harness drives Delete by permanent ID, so a headless run never depends on
+    a Windows selection state that automation does not set."""
+    code = next(m for m in _handwritten_modules() if m.name == "modDrivers").code
+    for entry in ("PCCM_DeleteCostLineById", "PCCM_DeleteRiskById"):
+        body = code[code.index(f"Public Sub {entry}("):]
+        body = body[: body.index("End Sub")]
+        assert "SelectedId" not in body, f"{entry} must not consult the selection"
+        assert "RunDriverOperation" in body
 
 
 def test_26g_textof_is_error_safe() -> None:
@@ -725,6 +895,7 @@ def test_37_the_harness_covers_every_required_scenario() -> None:
         "# T. Unkeyed structural data blocks every mutating operation",
         "# U. A corrupt ID counter must never allow reuse",
         "# V. Generated year cells carry the EXACT editable-input treatment",
+        "# W. The representation ceiling is EXHAUSTED VALID STATE, not corruption",
     ):
         assert marker in code, f"the harness is missing section: {marker}"
 
@@ -892,6 +1063,45 @@ def test_44k_the_counter_scenario_covers_the_historical_case() -> None:
     assert "Add Risk is refused while the counter is invalid" in code
     assert "a BLANK counter is refused too, never treated as zero" in code
     assert "does not reuse R-001" in code
+
+
+def test_44k1_the_counter_scenario_proves_corruption_is_not_laundered() -> None:
+    """The refusal is only half of it. The ROLLBACK is where reuse was reintroduced.
+
+    A failed Add rolls the driver operation back, and the rollback restores the
+    counter it snapshotted. Asserting only that Add was refused passed against source
+    that then wrote a laundered 0 over the corrupt text. The counter itself has to be
+    read back afterwards.
+    """
+    code = _ps(HARNESS_PS1)
+    assert "the corrupt counter is STILL the same corrupt text after the failed Add" in code
+    assert "-ceq 'corrupt'" in code, (
+        "the readback must be case-sensitive and exact, not merely non-numeric"
+    )
+    assert "and structural revalidation still reports it as invalid" in code
+    assert "the blank counter is STILL blank after the failed Add, not restored as 0" in code
+
+
+def test_44n_the_harness_drives_the_representation_ceiling_at_runtime() -> None:
+    """The ceiling has two halves that pull apart: refuse allocation, stay valid."""
+    code = _ps(HARNESS_PS1)
+    for check in (
+        "the ceiling identifier is not already in the register",
+        "a counter AT the ceiling is not reported as a structural fault",
+        "Add is refused cleanly at the ceiling, with no overflow",
+        "the refusal names the ceiling as a representation limit",
+        "the counter is unchanged: nothing was allocated",
+        "no register row was keyed",
+        "the ceiling identifier was never issued",
+        "no profiling row was created",
+        "Apply Timeline still succeeds while the sequence is exhausted",
+        "the counter was restored for the remaining scenarios",
+    ):
+        assert check in code, f"the ceiling scenario is missing: {check}"
+    assert "$manifest.limits.id_counter_max" in _ps_code(HARNESS_PS1), (
+        "the ceiling must come from the manifest, not be typed into the harness"
+    )
+    assert "2147483647" not in _ps_code(HARNESS_PS1)
 
 
 def test_44l_year_cell_presentation_is_asserted_by_equality() -> None:
@@ -1152,6 +1362,195 @@ def test_46g_named_releases_also_null_their_variable() -> None:
     assert not problems, "released without nulling:\n  " + "\n  ".join(problems)
 
 
+# Excel members that RETURN a COM object as a PROPERTY read rather than a call.
+# Together with OBJECT_RETURNING_MEMBERS these are every acquisition shape in the
+# two scripts, and each one mints an RCW the script then owns.
+OBJECT_RETURNING_PROPERTIES = (
+    "Worksheets", "Workbooks", "Shapes", "Names", "RefersToRange", "DataBodyRange",
+    "HeaderRowRange", "ListObjects", "ListRows", "ListColumns", "VBProject",
+    "VBComponents", "Properties", "Interior", "Validation", "Sort", "SortFields",
+    "TextFrame2", "TextRange", "Font",
+)
+
+
+def _ps_structural_lines(path: Path) -> list[str]:
+    """PowerShell lines with string CONTENTS blanked, preserving lines and columns.
+
+    Brace tracking cannot run over raw source: a format string such as "{0} sheets"
+    contributes braces that are not blocks. Blanking in place rather than deleting
+    keeps every line number and column offset usable in a failure message.
+    """
+    out = []
+    for line in _ps_code(path).splitlines():
+        chars = list(line)
+        quote = ""
+        for index, char in enumerate(chars):
+            if quote:
+                chars[index] = " " if char != quote else char
+                if char == quote:
+                    quote = ""
+            elif char in ("'", '"'):
+                quote = char
+        out.append("".join(chars))
+    return out
+
+
+def _ps_finally_marks(lines: list[str]) -> list[list[tuple[int, bool]]]:
+    """Per line, the brace transitions and whether each lands inside a finally body.
+
+    A release written inline in the normal flow is skipped when an earlier statement
+    throws. A release written in a `finally` runs either way. Telling the two apart
+    needs real brace tracking, including a `finally { ... }` written on one line.
+    """
+    marks: list[list[tuple[int, bool]]] = []
+    stack: list[bool] = []
+    pending = False
+    token = re.compile(r"[{}]|(?<![\w-])finally(?![\w-])")
+    for line in lines:
+        per: list[tuple[int, bool]] = []
+        for match in token.finditer(line):
+            found = match.group(0)
+            if found == "finally":
+                pending = True
+                continue
+            if found == "{":
+                stack.append(pending)
+                pending = False
+            elif stack:
+                stack.pop()
+            per.append((match.start(), any(stack)))
+        marks.append(per)
+    return marks
+
+
+def _inside_finally(marks: list[list[tuple[int, bool]]], index: int, column: int) -> bool:
+    state = False
+    for earlier in marks[:index]:
+        if earlier:
+            state = earlier[-1][1]
+    for position, after in marks[index]:
+        if position < column:
+            state = after
+        else:
+            break
+    return state
+
+
+def _ps_release_map(path: Path) -> tuple[set[str], dict[str, int]]:
+    """(variables released in a finally, variables released only inline)."""
+    lines = _ps_structural_lines(path)
+    marks = _ps_finally_marks(lines)
+    in_finally: set[str] = set()
+    inline: dict[str, int] = {}
+    pattern = re.compile(r"(?<![\w-])Release-Transient\s+\$(\w+)")
+    for index, line in enumerate(lines):
+        for match in pattern.finditer(line):
+            variable = match.group(1)
+            if _inside_finally(marks, index, match.start()):
+                in_finally.add(variable)
+            else:
+                inline.setdefault(variable, index + 1)
+    return in_finally, inline
+
+
+def test_46h_no_com_release_sits_only_on_the_success_path() -> None:
+    """Every inline release needs a guarded backstop in the enclosing finally.
+
+    An inline release is a legitimate early hand-back only when the enclosing finally
+    also releases the same variable if it is still non-null. Without that backstop the
+    RCW leaks the moment anything between acquisition and release throws -- which is
+    exactly how the pre-existing VBComponent and Shape leaked.
+    """
+    problems = []
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        in_finally, inline = _ps_release_map(path)
+        for variable, number in sorted(inline.items()):
+            if variable not in in_finally:
+                problems.append(
+                    f"{path.name}:{number}: ${variable} is released inline with no "
+                    "release in the enclosing finally"
+                )
+    assert not problems, "COM release on the success path only:\n  " + "\n  ".join(problems)
+
+
+def test_46i_every_com_acquisition_reaches_an_exception_safe_release() -> None:
+    """Ownership starts at the assignment, not at the first successful use."""
+    members = "|".join(OBJECT_RETURNING_MEMBERS + OBJECT_RETURNING_PROPERTIES)
+    acquisition = re.compile(
+        rf"^\s*\$(\w+)\s*=\s*\${_com_root_pattern()}\.({members})\b"
+    )
+    problems = []
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        in_finally, _ = _ps_release_map(path)
+        ledger = set(
+            re.findall(r"(?<![\w-])Invoke-NamedRelease\s+\$\w+\s+\$(\w+)", _ps_code(path))
+        )
+        raw = _ps_code(path).splitlines()
+        for number, line in enumerate(_ps_structural_lines(path), 1):
+            match = acquisition.match(line)
+            if not match:
+                continue
+            variable = match.group(1)
+            if variable in in_finally or variable in ledger:
+                continue
+            problems.append(f"{path.name}:{number}: {raw[number - 1].strip()[:70]}")
+    assert not problems, (
+        "COM object acquired with no exception-safe release:\n  " + "\n  ".join(problems)
+    )
+
+
+def test_46k_every_powershell_block_is_balanced() -> None:
+    """The Windows scripts cannot be parsed here, so blocks are counted instead.
+
+    An unclosed try, finally, function or foreach is a parse error that would only
+    surface on Windows, after this review gate -- the same reason the VBA block
+    sweep exists.
+    """
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        depth = 0
+        for number, line in enumerate(_ps_structural_lines(path), 1):
+            for char in line:
+                if char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    assert depth >= 0, f"{path.name}:{number}: closes a block that never opened"
+        assert depth == 0, f"{path.name}: {depth} block(s) left open"
+
+
+def test_46j_the_two_exception_path_leaks_are_closed_by_name() -> None:
+    """Named regressions for the two defects the sweep above was written from."""
+    build = _ps_code(BUILD_PS1)
+
+    # A. the pre-existing VBComponent removed before a module is re-imported.
+    replace = build[build.index("$existing = $vbcomps.Item($moduleName)") :]
+    replace = replace[: replace.index("$imported = $vbcomps.Import($file)")]
+    assert "$vbcomps.Remove($existing)" in replace
+    assert "} finally {" in replace, (
+        "Remove() can throw; the acquire/use path needs a finally"
+    )
+    remove_at = replace.index("$vbcomps.Remove($existing)")
+    finally_at = replace.index("} finally {")
+    assert remove_at < finally_at, "the finally must follow the use, not precede it"
+    assert "Release-Transient $existing 'VBComponent(existing)'; $existing = $null" in (
+        replace[finally_at:]
+    ), "the VBComponent must be released from the finally"
+
+    # B. the pre-existing Shape deleted before a button is recreated.
+    button = build[build.index("$existing = $shapes.Item($button.shape_name)") :]
+    button = button[: button.index("Add-Step 'Create the Phase-4 command buttons'")]
+    delete_at = button.index("$existing.Delete()")
+    tail = button[delete_at:]
+    assert "Release-Transient $existing" not in tail[: tail.index("} finally {")], (
+        "an inline release after Delete() is skipped when Delete() throws"
+    )
+    cleanup = button[button.index("} finally {") :]
+    assert "Release-Transient $existing 'Shape(existing)'" in cleanup
+    assert cleanup.index("Release-Transient $existing") < cleanup.index(
+        "Release-Transient $shapes"
+    ), "leaf before parent: the Shape must release before the Shapes collection"
+
+
 def test_46e_the_generated_module_resolves_from_the_supplied_build_dir() -> None:
     """The disposable harness build must test its OWN generated modConstants.bas.
 
@@ -1190,6 +1589,21 @@ def test_48_the_manifest_matches_the_contracts() -> None:
     spec, contract, drivers, structure = _specs()
     expected = build_manifest(spec, contract, drivers, structure)
     assert _manifest() == json.loads(json.dumps(expected))
+
+
+def test_48a_the_manifest_publishes_the_representation_ceiling() -> None:
+    """One source for the ceiling: the VBA constant and the harness read the same
+    number, so a change to it cannot leave the functional test asserting the old one."""
+    from pccm_builder.stage_b_emit import VBA_LONG_MAX
+
+    limits = _manifest()["limits"]
+    assert limits["id_counter_max"] == VBA_LONG_MAX
+    assert f"Public Const ID_COUNTER_MAX As Long = {VBA_LONG_MAX}" in _generated_module_text()
+    # It is a limit of the implementation, and the other two limits are unrelated
+    # to it: the calendar window and the generation guard stay exactly as locked.
+    assert limits["min_year"] == 1900
+    assert limits["max_year"] == 2200
+    assert limits["max_generated_year_columns"] == 200
 
 
 def test_49_the_manifest_declares_the_macro_enabled_file_format() -> None:

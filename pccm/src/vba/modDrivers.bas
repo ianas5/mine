@@ -14,8 +14,11 @@ Option Explicit
 '     else. Never from a row number, never from a row count.
 '   * Deletion NEVER decrements the counter, so an identifier is never reused:
 '     Add, Add, Delete CL-002, Add yields CL-003 and not CL-002.
-'   * Pad width is a minimum display width. CL-999 is followed by CL-1000; there
-'     is no artificial ID maximum anywhere.
+'   * Pad width is a minimum display width and nothing more: CL-999 is followed by
+'     CL-1000, so there is no three-digit cap. The VBA implementation does have a
+'     representational sequence ceiling (ID_COUNTER_MAX); reaching it stops NEW
+'     allocation and is not a limit on how many drivers the model may currently hold,
+'     nor a reason to call the existing structure invalid.
 '   * Reordering the register moves rows, not identity: an ID travels with its
 '     row data because it lives in that row.
 ' ===========================================================================
@@ -69,16 +72,20 @@ Public Function TryReadCounter(ByVal Kind As String, ByRef Value As Long) As Boo
     TryReadCounter = True
 End Function
 
-Public Function CounterIsValid(ByVal Kind As String) As Boolean
-    Dim value As Long
-    CounterIsValid = TryReadCounter(Kind, value)
-End Function
-
-' Convenience for reporting only. Callers that ALLOCATE must use TryReadCounter and
-' refuse when it returns False.
-Public Function ReadCounter(ByVal Kind As String) As Long
-    Dim value As Long
-    If TryReadCounter(Kind, value) Then ReadCounter = value
+' There is deliberately NO ReadCounter()-style accessor that maps invalid state to
+' zero. One existed, and its only caller was the operation snapshot, where it did
+' exactly the damage the counter-integrity protection was added to prevent:
+'
+'   R-001 issued -> every Risk deleted -> counter corrupted to text
+'   -> the snapshot read it through the lossy accessor as 0
+'   -> AllocateId correctly refused
+'   -> rollback wrote the snapshotted 0 back
+'   -> the corrupt historical counter became a valid zero, and R-001 could be reissued.
+'
+' Callers that ALLOCATE use TryReadCounter and refuse invalid state. Callers that
+' SNAPSHOT use RawCounter and restore the value byte for byte.
+Public Function RawCounter(ByVal Kind As String) As Variant
+    RawCounter = modWorkbook.ReadValue(CounterName(Kind))
 End Function
 
 ' Advances the counter and returns the identifier it just issued.
@@ -406,11 +413,39 @@ Public Sub PCCM_AddRisk()
 End Sub
 
 Public Sub PCCM_DeleteCostLine()
-    RunDriverOperation KIND_COST, False, SelectedId(KIND_COST)
+    RunDeleteCommand KIND_COST
 End Sub
 
 Public Sub PCCM_DeleteRisk()
-    RunDriverOperation KIND_RISK, False, SelectedId(KIND_RISK)
+    RunDeleteCommand KIND_RISK
+End Sub
+
+' Selection resolution happens INSIDE a protected shell, never as an argument
+' expression evaluated before the command is entered.
+'
+' Writing `RunDriverOperation Kind, False, SelectedId(Kind)` looked equivalent but is
+' not: VBA evaluates SelectedId BEFORE entering RunDriverOperation, so a failure
+' while resolving the register, its DataBodyRange, the selection intersection or the
+' selected identifier escaped the shared command handler entirely and surfaced as a
+' raw VBA dialog.
+Public Sub RunDeleteCommand(ByVal Kind As String)
+    Dim permanentId As String
+    On Error GoTo ResolveFailed
+    permanentId = SelectedId(Kind)
+    On Error GoTo 0
+
+    RunDriverOperation Kind, False, permanentId
+    Exit Sub
+
+ResolveFailed:
+    Dim reason As String
+    reason = "Error " & Err.Number & ": " & Err.Description
+    modAppState.RecordResult "FAIL|" & reason
+    If Not modAppState.gAutomationActive Then
+        modAppState.ReportFailure "Delete " & KindLabel(Kind), reason, _
+            "The failure occurred while working out which row is selected, before the " & _
+            "operation started. Nothing has been changed."
+    End If
 End Sub
 
 ' --- harness-callable surface ----------------------------------------------
@@ -432,15 +467,22 @@ Public Sub RunDriverOperation(ByVal Kind As String, ByVal IsAdd As Boolean, _
     Dim snapshot As AppStateSnapshot
     Dim result As OperationResult
     Dim registerBefore As TableSnapshot, profilingBefore As TableSnapshot
-    Dim counterBefore As Long
+    ' RAW, not Long. A corrupt counter must come back corrupt: converting it to a
+    ' number here would let the rollback launder corruption into a valid zero.
+    Dim counterBefore As Variant
     Dim problems As String
     Dim captured As Boolean
+    Dim stateCaptured As Boolean
 
-    snapshot = modAppState.CaptureAppState()
-
-    ' Controlled handling before the first read, and the unkeyed-data gate before
-    ' any mutation. Nothing has changed yet, so this path needs no rollback.
+    ' The handler is installed BEFORE the first fallible operation, and capturing
+    ' application state is itself fallible. stateCaptured records whether a snapshot
+    ' actually exists, so no cleanup path can claim to restore one that does not.
     On Error GoTo AssessmentFailure
+    snapshot = modAppState.CaptureAppState()
+    stateCaptured = True
+
+    ' The unkeyed-data gate, before any mutation. Nothing has changed yet, so this
+    ' path needs no rollback.
     problems = modStructuralCheck.PreMutationCheck()
     If Len(problems) > 0 Then
         modAppState.Announce modAppState.Failed( _
@@ -454,7 +496,7 @@ Public Sub RunDriverOperation(ByVal Kind As String, ByVal IsAdd As Boolean, _
 
     registerBefore = modWorkbook.SnapshotTable(RegisterTable(Kind))
     profilingBefore = modWorkbook.SnapshotTable(modProfiling.ProfilingTable(Kind))
-    counterBefore = ReadCounter(Kind)
+    counterBefore = RawCounter(Kind)
     captured = True
 
     If IsAdd Then
@@ -472,7 +514,7 @@ Public Sub RunDriverOperation(ByVal Kind As String, ByVal IsAdd As Boolean, _
     End If
 
     Dim cleanup As String
-    cleanup = modAppState.FinishOperation(snapshot)
+    cleanup = FinishIfCaptured(snapshot, stateCaptured)
     If Len(cleanup) > 0 Then
         modAppState.Announce modAppState.Failed( _
             IIf(IsAdd, "Add ", "Delete ") & KindLabel(Kind) & _
@@ -488,7 +530,7 @@ AssessmentFailure:
     Dim assessReason As String
     assessReason = "Error " & Err.Number & ": " & Err.Description
     Dim assessCleanup As String
-    assessCleanup = modAppState.FinishOperation(snapshot)
+    assessCleanup = FinishIfCaptured(snapshot, stateCaptured)
     modAppState.RecordResult "FAIL|" & assessReason
     If Not modAppState.gAutomationActive Then
         modAppState.ReportFailure IIf(IsAdd, "Add ", "Delete ") & KindLabel(Kind), assessReason, _
@@ -510,7 +552,7 @@ Failure:
     End If
 
     Dim failureCleanup As String
-    failureCleanup = modAppState.FinishOperation(snapshot)
+    failureCleanup = FinishIfCaptured(snapshot, stateCaptured)
     If Len(failureCleanup) > 0 Then
         restoreNote = restoreNote & vbCrLf & vbCrLf & _
                       "Cleanup ALSO reported problems:" & vbCrLf & failureCleanup
@@ -522,6 +564,19 @@ Failure:
     End If
 End Sub
 
+' Cleanup, but only when a snapshot genuinely exists. If CaptureAppState itself
+' failed there is nothing to restore, and saying otherwise would be a false claim.
+Private Function FinishIfCaptured(ByRef Snapshot As AppStateSnapshot, _
+                                  ByVal StateCaptured As Boolean) As String
+    If Not StateCaptured Then
+        FinishIfCaptured = "  application state was never captured, so nothing could be " & _
+                           "restored. Check Excel's calculation mode, alerts, events and " & _
+                           "screen updating before continuing." & vbCrLf
+        Exit Function
+    End If
+    FinishIfCaptured = modAppState.FinishOperation(Snapshot)
+End Function
+
 ' Restores exactly the blocks an Add or Delete may modify, and REPORTS the outcome.
 ' The register and profiling snapshots carry row count as well as column count, so a
 ' failed Add that had already grown the table cannot leave an extra row behind and a
@@ -532,11 +587,14 @@ End Sub
 Private Function TryRestoreDriver(ByVal Kind As String, _
                                   ByRef RegisterBefore As TableSnapshot, _
                                   ByRef ProfilingBefore As TableSnapshot, _
-                                  ByVal CounterBefore As Long) As String
+                                  ByVal CounterBefore As Variant) As String
     On Error GoTo RestoreFailed
 
     modWorkbook.RestoreTable RegisterTable(Kind), RegisterBefore
     modWorkbook.RestoreTable modProfiling.ProfilingTable(Kind), ProfilingBefore
+    ' Exactly as it was: Empty stays Empty, text stays that text, a number stays that
+    ' number. Restoring anything else would destroy the corruption the operation
+    ' refused to act on, and re-enable identifier reuse.
     modWorkbook.WriteValue CounterName(Kind), CounterBefore
 
     TryRestoreDriver = "The register, its profiling grid and the ID counter have been " & _

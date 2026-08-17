@@ -212,13 +212,21 @@ try {
     # duplicating (Excel would otherwise create modConstants1).
     foreach ($file in $moduleFiles) {
         $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($file)
+        # The acquire/use path is wrapped. With the release written inline after
+        # $vbcomps.Remove($existing), a throw from Remove skipped it and left an owned
+        # VBComponent RCW alive on the exception path -- the same unowned-intermediate
+        # failure the readiness gate ruled out, just reached through an error path.
+        # Once acquired, $existing is released and nulled whatever happens next.
         $existing = $null
         try {
-            $existing = $vbcomps.Item($moduleName)
-        } catch { $existing = $null }
-        if ($null -ne $existing) {
-            $vbcomps.Remove($existing)
-            Release-Transient $existing 'VBComponent(existing)'; $existing = $null
+            try {
+                $existing = $vbcomps.Item($moduleName)
+            } catch { $existing = $null }
+            if ($null -ne $existing) {
+                $vbcomps.Remove($existing)
+            }
+        } finally {
+            if ($null -ne $existing) { Release-Transient $existing 'VBComponent(existing)'; $existing = $null }
         }
         # Import returns the VBComponent it created. Discarding that return left an
         # unowned RCW alive, which is exactly the invisible-intermediate pattern the
@@ -257,9 +265,11 @@ try {
             try {
                 $existing = $shapes.Item($button.shape_name)
             } catch { $existing = $null }
+            # No inline release here: $existing.Delete() can throw, and an inline
+            # release would then be skipped, leaking the Shape RCW. It is released in
+            # the enclosing finally instead -- before $shapes, its parent.
             if ($null -ne $existing) {
                 $existing.Delete()
-                Release-Transient $existing 'Shape(existing)'; $existing = $null
             }
             $anchor = $ws.Range($button.anchor_cell)
             $shp = $shapes.AddShape(5, [double]$anchor.Left, [double]$anchor.Top, [double]$button.width, [double]$button.height)
@@ -277,6 +287,8 @@ try {
             if ($null -ne $tf)     { Release-Transient $tf     'TextFrame2'; $tf     = $null }
             if ($null -ne $shp)    { Release-Transient $shp    'Shape';      $shp    = $null }
             if ($null -ne $anchor) { Release-Transient $anchor 'Range';      $anchor = $null }
+            # Leaf before parent: the pre-existing Shape releases before $shapes.
+            if ($null -ne $existing) { Release-Transient $existing 'Shape(existing)'; $existing = $null }
             if ($null -ne $shapes) { Release-Transient $shapes 'Shapes';     $shapes = $null }
             if ($null -ne $ws)     { Release-Transient $ws     'Worksheet';  $ws     = $null }
         }

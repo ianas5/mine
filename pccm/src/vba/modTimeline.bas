@@ -303,16 +303,18 @@ Public Sub PCCM_ApplyTimeline()
     Dim inflationBefore As TableSnapshot
     Dim appliedBase As Variant, appliedStart As Variant, appliedDuration As Variant
     Dim captured As Boolean
+    Dim stateCaptured As Boolean
     Dim result As OperationResult
 
-    snapshot = modAppState.CaptureAppState()
-
-    ' Controlled handling is installed BEFORE the first read. Prevalidation, reading
-    ' the two triples, the destructive assessment and the confirmation all inspect
-    ' user-controlled cells, so malformed workbook contents can raise there. Nothing
-    ' has been modified yet at that point, so AssessmentFailure needs no rollback --
-    ' but it must still report cleanly rather than surface a raw VBA dialog.
+    ' Controlled handling is installed BEFORE the FIRST fallible operation, and
+    ' capturing application state is itself fallible. Prevalidation, reading the two
+    ' triples, the destructive assessment and the confirmation all inspect
+    ' user-controlled cells, so malformed workbook contents can raise there too.
+    ' Nothing has been modified at any of those points, so AssessmentFailure needs no
+    ' rollback -- but it must still report cleanly rather than surface a raw VBA dialog.
     On Error GoTo AssessmentFailure
+    snapshot = modAppState.CaptureAppState()
+    stateCaptured = True
 
     ' --- 0. refuse to mutate over unkeyed structural data --------------------
     problems = modStructuralCheck.PreMutationCheck()
@@ -394,7 +396,7 @@ Public Sub PCCM_ApplyTimeline()
     ' Cleanup is part of the operation. A structural change that completed but whose
     ' application state could not be restored is NOT a success.
     Dim cleanup As String
-    cleanup = modAppState.FinishOperation(snapshot)
+    cleanup = FinishIfCaptured(snapshot, stateCaptured)
     If Len(cleanup) > 0 Then
         modAppState.Announce modAppState.Failed( _
             "Timeline applied, but the workbook was NOT left in a safe state.", _
@@ -414,7 +416,7 @@ AssessmentFailure:
     Dim assessReason As String
     assessReason = "Error " & Err.Number & ": " & Err.Description
     Dim assessCleanup As String
-    assessCleanup = modAppState.FinishOperation(snapshot)
+    assessCleanup = FinishIfCaptured(snapshot, stateCaptured)
     modAppState.RecordResult "FAIL|" & assessReason
     If Not modAppState.gAutomationActive Then
         modAppState.ReportFailure "Apply / Update Timeline", assessReason, _
@@ -440,7 +442,7 @@ Failure:
     ' Cleanup failures are APPENDED to the report. They never replace or hide the
     ' original error that caused the rollback.
     Dim failureCleanup As String
-    failureCleanup = modAppState.FinishOperation(snapshot)
+    failureCleanup = FinishIfCaptured(snapshot, stateCaptured)
     If Len(failureCleanup) > 0 Then
         restoreNote = restoreNote & vbCrLf & vbCrLf & _
                       "Cleanup ALSO reported problems:" & vbCrLf & failureCleanup
@@ -451,6 +453,19 @@ Failure:
         modAppState.ReportFailure "Apply / Update Timeline", reason, restoreNote
     End If
 End Sub
+
+' Cleanup, but only when a snapshot genuinely exists. If CaptureAppState itself
+' failed there is nothing to restore, and saying otherwise would be a false claim.
+Private Function FinishIfCaptured(ByRef Snapshot As AppStateSnapshot, _
+                                  ByVal StateCaptured As Boolean) As String
+    If Not StateCaptured Then
+        FinishIfCaptured = "  application state was never captured, so nothing could be " & _
+                           "restored. Check Excel's calculation mode, alerts, events and " & _
+                           "screen updating before continuing." & vbCrLf
+        Exit Function
+    End If
+    FinishIfCaptured = modAppState.FinishOperation(Snapshot)
+End Function
 
 ' Restores exactly the blocks Apply may modify, and REPORTS whether it succeeded.
 ' Deliberately not On Error Resume Next: a restore that could not complete is the

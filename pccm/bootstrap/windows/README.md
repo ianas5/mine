@@ -15,7 +15,7 @@ once here, in `com_lifecycle.ps1`.
 |---|---|
 | `com_lifecycle.ps1` | The COM ownership policy, dot-sourced by both scripts below. One implementation, so they cannot drift apart. |
 | `build_stage_b.ps1` | `.xlsx` → `.xlsm`: CodeNames, VBA import, buttons, save, reopen in a fresh instance, verify. |
-| `phase4_functional_test.ps1` | Phase-4 functional test matrix A–L, run against a disposable copy. |
+| `phase4_functional_test.ps1` | Phase-4 functional test matrix A–W, run against a disposable copy. |
 
 ## Inputs
 
@@ -63,6 +63,10 @@ Unchanged from the run that closed the readiness gate:
 - Leaf before parent; `Workbook.Close` before releasing the workbook;
   `Application.Quit` before releasing the application.
 - Diagnostic collections hold plain data only, never an RCW.
+- **Ownership starts at the assignment, not at the first successful use.** Every
+  acquired object reaches a release on the exception path as well as the success
+  path. An inline early release is allowed only when the enclosing `finally` also
+  releases the same variable if it is still non-null.
 - The acceptance criterion is **actual clean Excel shutdown**. A forced stop is an
   emergency path, only ever applied to a process this script created and can still
   positively identify by HWND-derived PID, process name and start time — and it is

@@ -1637,12 +1637,26 @@ if ($buildOk) {
             if ($row[0] -ne '') { $profileIds += $row[0] }
         }
         $null = Add-Check $list 'no profiling row was created' ($profileIds.Count -eq 0)
+        # THE ROLLBACK MUST NOT LAUNDER CORRUPTION INTO ZERO. The failed Add rolls the
+        # driver operation back, and the rollback restores the counter it snapshotted.
+        # If that snapshot were taken through a lossy numeric accessor, the corrupt text
+        # would come back as a VALID 0 -- and R-001 would be reissuable on the next Add.
+        # The counter must still read as exactly the corrupt text that was written.
+        $afterCorrupt = [string](Get-NamedValue -Workbook $wb -DefinedName 'nmCounterRisk')
+        $null = Add-Check $list 'the corrupt counter is STILL the same corrupt text after the failed Add' `
+            ($afterCorrupt -ceq 'corrupt') ("counter now reads '" + $afterCorrupt + "'")
+        $report = [string]$excel.Run('PCCM_StructuralReport')
+        $null = Add-Check $list 'and structural revalidation still reports it as invalid' `
+            ($report -match 'counter_integrity') $report
 
         # Blank is equally invalid, and equally must not read as zero.
         Set-NamedValue -Workbook $wb -DefinedName 'nmCounterRisk' -Value $null
         $excel.Run('PCCM_AddRisk') | Out-Null
         $outcome = [string]$excel.Run('PCCM_AutomationResult')
         $null = Add-Check $list 'a BLANK counter is refused too, never treated as zero' ($outcome -like 'FAIL|*') $outcome
+        $afterBlank = [string](Get-NamedValue -Workbook $wb -DefinedName 'nmCounterRisk')
+        $null = Add-Check $list 'the blank counter is STILL blank after the failed Add, not restored as 0' `
+            ($afterBlank -eq '') ("counter now reads '" + $afterBlank + "'")
 
         # Restore, and prove the sequence continues from history rather than restarting.
         Set-NamedValue -Workbook $wb -DefinedName 'nmCounterRisk' -Value ([double]$counterBefore)
@@ -1720,6 +1734,83 @@ if ($buildOk) {
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Result 'V' 'Generated year cell presentation' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # W. The representation ceiling is EXHAUSTED VALID STATE, not corruption
+    # -------------------------------------------------------------------
+    # Two things have to be true at once, and they pull in opposite directions:
+    #
+    #   * allocation must refuse, and must refuse BEFORE evaluating counter + 1,
+    #     because ID_COUNTER_MAX + 1 overflows a VBA Long at runtime;
+    #   * the workbook is NOT broken. A counter at the ceiling says the sequence is
+    #     spent, not that the structure is incoherent -- so structural revalidation
+    #     must stay clean, or Apply and Delete would be rolled back for every
+    #     unrelated structural operation merely because the sequence ran out.
+    try {
+        $list = New-Checklist
+        $ceiling = [double]$manifest.limits.id_counter_max
+        $costCounter = $null
+        foreach ($c in $manifest.counters) { if ($c.key -eq 'cost_line') { $costCounter = $c } }
+        $counterName = [string]$costCounter.defined_name
+        $counterBefore = Get-NamedValue -Workbook $wb -DefinedName $counterName
+
+        # Composed from the manifest prefix and pad width, not typed in: the harness
+        # restates no identifier format of its own.
+        $digits = [string][long]$ceiling
+        while ($digits.Length -lt [int]$costCounter.pad_width) { $digits = '0' + $digits }
+        $ceilingId = [string]$costCounter.prefix + $digits
+
+        # The ceiling identifier must not already be present, or a refusal could be
+        # attributed to a duplicate rather than to the ceiling itself.
+        $idsBefore = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
+        $null = Add-Check $list 'the ceiling identifier is not already in the register' `
+            ($idsBefore -notcontains $ceilingId) $ceilingId
+
+        Set-NamedValue -Workbook $wb -DefinedName $counterName -Value $ceiling
+        $report = [string]$excel.Run('PCCM_StructuralReport')
+        $null = Add-Check $list 'a counter AT the ceiling is not reported as a structural fault' `
+            ([string]::IsNullOrWhiteSpace($report)) $report
+
+        $profBefore = 0
+        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+            if ($row[0] -ne '') { $profBefore++ }
+        }
+
+        $excel.Run('PCCM_AddCostLine') | Out-Null
+        $outcome = [string]$excel.Run('PCCM_AutomationResult')
+        $null = Add-Check $list 'Add is refused cleanly at the ceiling, with no overflow' `
+            ($outcome -like 'FAIL|*') $outcome
+        $null = Add-Check $list 'the refusal names the ceiling as a representation limit' `
+            ($outcome -match 'representation') $outcome
+
+        $null = Add-Check $list 'the counter is unchanged: nothing was allocated' `
+            ([double](Get-NamedValue -Workbook $wb -DefinedName $counterName) -eq $ceiling)
+        $idsAfter = @(Get-IdColumnValues -Workbook $wb -Info $costReg)
+        $null = Add-Check $list 'no register row was keyed' `
+            ($idsAfter.Count -eq $idsBefore.Count) ("before " + $idsBefore.Count + ", after " + $idsAfter.Count)
+        $null = Add-Check $list 'the ceiling identifier was never issued' `
+            ($idsAfter -notcontains $ceilingId)
+        $profAfter = 0
+        foreach ($row in (Get-TableBody -Workbook $wb -SheetName $costGrid.sheet -TableName $costGrid.table_name)) {
+            if ($row[0] -ne '') { $profAfter++ }
+        }
+        $null = Add-Check $list 'no profiling row was created' ($profAfter -eq $profBefore)
+
+        # An unrelated structural operation must still work while the counter is spent.
+        $excel.Run('PCCM_ApplyTimeline') | Out-Null
+        $outcome = [string]$excel.Run('PCCM_AutomationResult')
+        $null = Add-Check $list 'Apply Timeline still succeeds while the sequence is exhausted' `
+            ($outcome -like 'OK|*') $outcome
+
+        Set-NamedValue -Workbook $wb -DefinedName $counterName -Value ([double]$counterBefore)
+        $null = Add-Check $list 'the counter was restored for the remaining scenarios' `
+            ([double](Get-NamedValue -Workbook $wb -DefinedName $counterName) -eq [double]$counterBefore)
+
+        Add-Result 'W' 'Representation ceiling: refused allocation, valid structure' `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'W' 'Representation ceiling' 'FAIL' (Format-Err $_)
     }
 
     $excel.Run('PCCM_AutomationEnd') | Out-Null

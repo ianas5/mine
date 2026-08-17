@@ -308,13 +308,16 @@ End Function
 ' number of rows': deletion leaves the counter deliberately ahead of the count.
 ' The counter is the model's historical memory. Two independent faults:
 '
-'   integrity      the stored value is missing, blank, non-whole or beyond the
-'                  representable range. Reported even when the register holds ZERO
-'                  identifiers, because current rows cannot testify about deleted
+'   integrity      the stored value is missing, blank, non-whole, negative or beyond
+'                  the representable domain. Reported even when the register holds
+'                  ZERO identifiers, because current rows cannot testify about deleted
 '                  history -- that is exactly the case where a silent fallback to 0
 '                  would let the next Add reissue a deleted identifier.
 '   not behind     a valid counter that has fallen below an identifier it already
 '                  issued would reissue that identifier next time.
+'
+' A counter exactly AT the representation ceiling is neither. It is valid, exhausted
+' state: allocation stops, and the workbook stays structurally sound.
 Private Function CheckCounters() As String
     Dim problems As String
     Dim kinds As Variant, i As Long
@@ -340,13 +343,12 @@ Private Function CheckCounters() As String
                     " but identifier number " & highest & " has already been issued; the " & _
                     "next allocation would reuse an identifier.")
             End If
-            If counterValue = ID_COUNTER_MAX Then
-                problems = problems & Fault(CHK_COUNTER_INTEGRITY, _
-                    "the " & kind & " counter has reached " & ID_COUNTER_MAX & _
-                    ", the largest sequence this implementation can represent. No further " & _
-                    "identifier can be allocated. This is a representation ceiling, not a " & _
-                    "business limit.")
-            End If
+            ' A counter sitting exactly at the representation ceiling is VALID state,
+            ' not corruption. It means no further identifier can be ALLOCATED -- which
+            ' AllocateId refuses cleanly -- and says nothing about whether the existing
+            ' structure is coherent. Reporting it as a fault here would fail structural
+            ' revalidation, and therefore roll back Apply and Delete, blocking every
+            ' unrelated structural operation merely because the sequence is exhausted.
             If unrepresentable > 0 Then
                 problems = problems & Fault(CHK_ID_PATTERN, _
                     unrepresentable & " " & kind & " identifier(s) carry a sequence beyond " & _
