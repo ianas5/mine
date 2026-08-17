@@ -799,6 +799,20 @@ See `bootstrap/windows/README.md`.
    Variant Optional, explicit or implicit, and a typed Optional that declares a
    default. This joins the existing block-balance and line-length sweeps as a
    standing substitute for the compiler.
+
+   A second compile-time rule reached the target before it was encoded, at Gate-B
+   run 3: VBA has no "module-level statement anywhere in the file". Everything
+   before the first executable procedure is the declaration section, and a
+   `Public` variable, `Const`, `Type` or `Enum` written after it is a compile
+   error under `Option Explicit`. Five automation globals in `modAppState` and
+   `modWorkbook.TableSnapshot` were both in that position. `test_45f`–`test_45i`
+   now sweep every module for it, on logical statements, without flagging
+   procedure-local declarations. See `docs/phase4_gate_b_run3.md`.
+
+   **Importing a VBA module is not compiling it.** Gate-B scenario A imports eight
+   modules, saves, reopens in a fresh process and verifies persistence — all of
+   which passed on run 3 while the project did not build. Excel compiles on the
+   first `Application.Run`, which scenario `A1` now names.
 2. **Data Validation and styling on a runtime-created row rely on Excel Table
    propagation.** Gate-B section M proves or disproves it; nothing here assumes it.
 3. **Profiling year cells carry no data validation.** A per-cell bound would block

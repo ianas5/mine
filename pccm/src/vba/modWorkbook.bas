@@ -13,6 +13,37 @@ Option Explicit
 ' ===========================================================================
 
 ' ---------------------------------------------------------------------------
+' Logical-rollback snapshot type
+' ---------------------------------------------------------------------------
+' Declared HERE, not beside the procedures that use it. Everything before the
+' first executable procedure is the module's declaration section; a Type after
+' that point is a compile error under Option Explicit, the same defect that
+' ended Gate-B run 3 in modAppState.
+'
+' A snapshot is plain data: one table's shape, presentation and contents. It is NOT
+' a workbook copy, an undo journal or a transaction log. It exists so one operation
+' can put back exactly the block it was about to change.
+'
+' Shape means BOTH dimensions. Restoring only the column count was not enough: a
+' failed Add that had already grown the table left an extra row behind, a failed
+' Delete left a missing one, and a profiling synchronisation that changed row shape
+' survived the rollback.
+'
+' Presentation is captured too, because a rolled-back year column that came back
+' without its number format and width would leave the workbook technically correct
+' and practically unusable.
+Public Type TableSnapshot
+    Captured      As Boolean
+    RowCount      As Long
+    ColumnCount   As Long
+    Headers()     As Variant
+    Values()      As Variant
+    Fills()       As Variant
+    NumberFormats() As Variant
+    ColumnWidths()  As Variant
+End Type
+
+' ---------------------------------------------------------------------------
 ' Sheets and tables
 ' ---------------------------------------------------------------------------
 Public Function Sh(ByVal SheetName As String) As Worksheet
@@ -297,29 +328,8 @@ End Function
 ' ---------------------------------------------------------------------------
 ' Snapshots for logical restore
 ' ---------------------------------------------------------------------------
-' A snapshot is plain data: one table's shape, presentation and contents. It is NOT
-' a workbook copy, an undo journal or a transaction log. It exists so one operation
-' can put back exactly the block it was about to change.
-'
-' Shape means BOTH dimensions. Restoring only the column count was not enough: a
-' failed Add that had already grown the table left an extra row behind, a failed
-' Delete left a missing one, and a profiling synchronisation that changed row shape
-' survived the rollback.
-'
-' Presentation is captured too, because a rolled-back year column that came back
-' without its number format and width would leave the workbook technically correct
-' and practically unusable.
-Public Type TableSnapshot
-    Captured      As Boolean
-    RowCount      As Long
-    ColumnCount   As Long
-    Headers()     As Variant
-    Values()      As Variant
-    Fills()       As Variant
-    NumberFormats() As Variant
-    ColumnWidths()  As Variant
-End Type
-
+' The TableSnapshot type these procedures use is declared at the top of this
+' module, in the declaration section, where VBA requires it.
 Public Function SnapshotTable(ByVal Target As ListObject) As TableSnapshot
     Dim s As TableSnapshot
     Dim r As Long, c As Long

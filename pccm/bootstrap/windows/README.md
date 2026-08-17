@@ -47,9 +47,17 @@ Gate-A source review is approved. Two Gate-B runs have happened on the target an
   Excel instances — then threw in its final reporting block
   (`../../docs/phase4_gate_b_run1.md`);
 - **run 2** aborted in the preflight, before Excel was started, on a broken
-  checklist factory (`../../docs/phase4_gate_b_run2.md`).
+  checklist factory (`../../docs/phase4_gate_b_run2.md`);
+- **run 3** passed both preflights and the whole bootstrap, then hit
+  `Compile error: Variable not defined` on the first `Application.Run` — a real
+  VBA source defect, module-level declarations written after the first executable
+  procedure (`../../docs/phase4_gate_b_run3.md`).
 
-Both defects are fixed and the package is ready for one rerun.
+All three defects are fixed and the package is ready for one rerun.
+
+Importing a VBA module is **not** compiling it. Scenario A can be entirely green
+while the project does not build; Excel compiles on the first `Application.Run`,
+which is what scenario `A1` now names.
 
 ## Prerequisite
 

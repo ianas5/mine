@@ -107,6 +107,39 @@ def strip_strings(source: str) -> str:
     return re.sub(r'"(?:[^"]|"")*"', '""', source)
 
 
+def logical_statements(source: str) -> list[tuple[int, str]]:
+    """(first line number, joined statement) for each LOGICAL VBA statement.
+
+    VBA continues a statement across physical lines with a trailing underscore, and
+    the declarations this project has got wrong are exactly the wrapped ones. Any
+    per-physical-line analysis silently misreads them, so the joining happens once,
+    here, and every caller works on logical statements.
+
+    Comments are expected to have been stripped by the caller; blank lines are
+    dropped.
+    """
+    statements: list[tuple[int, str]] = []
+    buffer = ""
+    start = 0
+    for number, line in enumerate(source.splitlines(), 1):
+        text = line.rstrip()
+        if not buffer:
+            start = number
+        if buffer.endswith("_"):
+            buffer = buffer[:-1].rstrip() + " " + text.strip()
+        else:
+            buffer = buffer + text if buffer else text
+        if buffer.rstrip().endswith("_"):
+            continue
+        stripped = buffer.strip()
+        if stripped:
+            statements.append((start, stripped))
+        buffer = ""
+    if buffer.strip():
+        statements.append((start, buffer.strip()))
+    return statements
+
+
 def load_modules(directories: list[Path]) -> list[VbaModule]:
     """Every .bas module found in *directories*, sorted by name."""
     modules: list[VbaModule] = []

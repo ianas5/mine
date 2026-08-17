@@ -35,6 +35,31 @@ End Type
 Private Const MSG_TITLE As String = "PCCM"
 
 ' ---------------------------------------------------------------------------
+' Windows functional-harness state.
+' ---------------------------------------------------------------------------
+' The harness must be able to exercise the destructive-confirmation path without
+' a human clicking a dialog, and to inject a controlled mid-operation failure to
+' prove logical restore. Both are inert unless PCCM_AutomationBegin explicitly
+' enables automation, both are reset by ClearAutomation, and neither can be
+' reached from the UI.
+'
+' THESE BELONG IN THE DECLARATION SECTION, and that is not a style preference.
+' VBA has no "module-level statement anywhere in the file": everything before the
+' first executable procedure is the declaration section, and everything after it
+' is procedure bodies. These five sat after ConfirmDestructiveChange, so under
+' Option Explicit the compiler reached PCCM_AutomationBegin with gAutomationActive
+' undefined and stopped with "Compile error: Variable not defined". That is what
+' ended Gate-B run 3, on the harness's very first VBA call.
+'
+' Public, deliberately: modTimeline and modDrivers reference
+' modAppState.gAutomationActive by qualified name.
+Public gAutomationActive          As Boolean
+Public gAutomationConfirmReply    As Boolean
+Public gAutomationLastPrompt      As String
+Public gAutomationFailAfterStage  As String
+Public gAutomationLastResult      As String
+
+' ---------------------------------------------------------------------------
 ' Application state
 ' ---------------------------------------------------------------------------
 Public Function CaptureAppState() As AppStateSnapshot
@@ -232,16 +257,8 @@ End Function
 ' ---------------------------------------------------------------------------
 ' Automation hooks for the Windows functional harness.
 ' ---------------------------------------------------------------------------
-' The harness must be able to exercise the destructive-confirmation path without
-' a human clicking a dialog, and to inject a controlled mid-operation failure to
-' prove logical restore. Both are inert unless explicitly set, both are reset by
-' ClearAutomation, and neither can be reached from the UI.
-Public gAutomationActive          As Boolean
-Public gAutomationConfirmReply    As Boolean
-Public gAutomationLastPrompt      As String
-Public gAutomationFailAfterStage  As String
-Public gAutomationLastResult      As String
-
+' The five gAutomation* variables these procedures use are declared at the top of
+' this module, in the declaration section, where VBA requires them.
 Public Sub ClearAutomation()
     gAutomationActive = False
     gAutomationConfirmReply = False

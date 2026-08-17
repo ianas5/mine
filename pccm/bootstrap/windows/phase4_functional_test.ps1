@@ -8,8 +8,10 @@
     and NO structural runtime scenario has run yet: run 1 completed the whole
     Stage-B bootstrap -- both Excel instances shut down naturally -- then threw in
     the bootstrap's final reporting block; run 2 aborted in the preflight, before
-    Excel was started, on a broken checklist factory. Both defects are fixed; see
-    docs/phase4_gate_b_run1.md and docs/phase4_gate_b_run2.md.
+    Excel was started, on a broken checklist factory; run 3 passed both preflights
+    and the whole bootstrap, then hit a real VBA compile error on the first
+    Application.Run. All three are fixed; see docs/phase4_gate_b_run1.md,
+    docs/phase4_gate_b_run2.md and docs/phase4_gate_b_run3.md.
 
     The harness never touches the real build output. It copies the Stage-A build
     into a temporary directory, runs the Stage-B bootstrap there, and drives that
@@ -32,6 +34,10 @@
           intact, or the run aborts without creating an Excel process
       A   Stage-B build: .xlsm, FileFormat 52, 14 CodeNames, modules, five buttons,
           natural COM shutdown
+      A1  VBA automation surface callable. The FIRST Application.Run of the run,
+          and therefore the moment Excel first COMPILES the VBA project: modules
+          import and persist without being compiled, so A can pass while the
+          project does not build. A named boundary, not a VBA compiler
       B   Permanent Cost Line IDs: sequence and non-reuse after deletion
       B2  A REAL ListObject reorder: identity travels with its own row data
       C   Permanent Risk IDs, independently sequenced
@@ -769,9 +775,48 @@ if ($buildOk) {
     $fixedCost  = $costGrid.fixed_columns.Count
     $fixedInfl  = $inflGrid.fixed_columns.Count
 
-    # Automation on: confirmations are answered by the harness, not by a human.
-    # No failure stage is armed, so every operation runs its real path.
-    $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+    # -------------------------------------------------------------------
+    # A1. The VBA automation surface is callable
+    # -------------------------------------------------------------------
+    # THE FIRST Application.Run OF THE RUN, AND THEREFORE THE MOMENT EXCEL FIRST
+    # COMPILES THE VBA PROJECT. Modules import and persist without being compiled,
+    # so scenario A can pass while the project does not build at all -- and on run 3
+    # it did: A was green and the first Run raised "Compile error: Variable not
+    # defined" for gAutomationActive.
+    #
+    # This step exists to give that moment a NAME. Without it the compile failure
+    # arrives inside scenario B and reads as a permanent-ID defect, which is the
+    # wrong place to start looking. It claims nothing more: exercising three entry
+    # points is not a VBA compiler, and the scenarios below are what prove
+    # behaviour.
+    #
+    # Errors are deliberately NOT suppressed here. A compile error must surface as
+    # a FAIL with Excel's own message, never be stepped over.
+    try {
+        $list = New-Checklist
+
+        # Automation on: confirmations are answered by the harness, not by a human.
+        # No failure stage is armed, so every operation runs its real path.
+        $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+        $null = Add-Check $list 'PCCM_AutomationBegin is callable (the VBA project compiles)' $true
+
+        $probe = [string]$excel.Run('PCCM_AutomationResult')
+        $null = Add-Check $list 'PCCM_AutomationResult is callable and starts empty' `
+            ([string]::IsNullOrEmpty($probe)) ("returned '" + $probe + "'")
+
+        $excel.Run('PCCM_AutomationEnd') | Out-Null
+        $null = Add-Check $list 'PCCM_AutomationEnd is callable' $true
+
+        # Re-arm for the scenarios below; the round trip above left it off.
+        $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+        $null = Add-Check $list 'automation re-armed for the structural scenarios' $true
+
+        Add-Result 'A1' 'VBA automation surface callable' `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'A1' 'VBA automation surface callable' 'FAIL' (Format-Err $_)
+        throw
+    }
 
     # -------------------------------------------------------------------
     # B. Permanent Cost Line IDs

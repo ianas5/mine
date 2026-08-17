@@ -40,7 +40,11 @@ from pccm_builder import (  # noqa: E402
     load_structure_contract,
 )
 from pccm_builder.stage_b_emit import build_manifest, render_constants_module  # noqa: E402
-from pccm_builder.vba_source import contains_construct, load_modules  # noqa: E402
+from pccm_builder.vba_source import (  # noqa: E402
+    contains_construct,
+    load_modules,
+    logical_statements,
+)
 
 SPEC_PATH = PCCM_ROOT / "spec" / "workbook.yaml"
 CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
@@ -897,6 +901,7 @@ def test_37_the_harness_covers_every_required_scenario() -> None:
         "# V. Generated year cells carry the EXACT editable-input treatment",
         "# W. The representation ceiling is EXHAUSTED VALID STATE, not corruption",
         "# K2. Profiling PERCENTAGES survive a real reorder, with a LIVE timeline",
+        "# A1. The VBA automation surface is callable",
     ):
         assert marker in code, f"the harness is missing section: {marker}"
 
@@ -924,7 +929,46 @@ def test_37a_the_header_matrix_documents_exactly_the_scenarios_that_run() -> Non
         f"documented but never run: {sorted(documented - reported)}; "
         f"run but undocumented: {sorted(reported - documented)}"
     )
-    assert {"K2", "W", "PRE"} <= documented
+    assert {"K2", "W", "PRE", "PRE0", "A1"} <= documented
+
+
+def test_37b_the_first_vba_call_has_its_own_named_boundary() -> None:
+    """Importing a module is not compiling it.
+
+    Scenario A imports eight modules, saves, reopens and verifies they persisted --
+    and passed on run 3 while the VBA project did not build at all. Excel compiles
+    on the first Application.Run, so that call is where a compile error surfaces.
+    Without a named step it surfaces inside scenario B and reads as a permanent-ID
+    defect, which is the wrong place to start looking.
+    """
+    code = _ps(HARNESS_PS1)
+    marker = "# A1. The VBA automation surface is callable"
+    assert marker in code
+    section = code[code.index(marker) : code.index("# B. Permanent Cost Line IDs")]
+
+    # It must be the FIRST Application.Run in the script, not merely an early one.
+    executable = _ps_code(HARNESS_PS1)
+    first_run = executable.index("$excel.Run(")
+    assert executable.index("Add-Result 'A1'") > first_run
+    assert executable[:first_run].count("Add-Result 'B'") == 0
+    assert "PCCM_AutomationBegin" in executable[first_run : first_run + 60], (
+        "the first Application.Run must be the automation-surface probe"
+    )
+
+    # Real entry points, exercised for real.
+    for entry in ("PCCM_AutomationBegin", "PCCM_AutomationResult", "PCCM_AutomationEnd"):
+        assert f"$excel.Run('{entry}'" in section, f"A1 must call {entry}"
+
+    # A compile error must surface, never be stepped over or swallowed.
+    assert "On Error Resume Next" not in section
+    assert "-ErrorAction SilentlyContinue" not in section
+    assert "throw" in section, (
+        "a failed automation surface must stop the run, not let the scenarios "
+        "compare results from a project that never compiled"
+    )
+    assert "Add-Result 'A1'" in section and "Format-Err $_" in section, (
+        "Excel's own compile message must be reported"
+    )
 
 
 def test_38_the_harness_hardcodes_no_expected_timeline_value() -> None:
@@ -1392,6 +1436,204 @@ def _vba_parameters(declaration: str) -> list[str]:
     if current.strip():
         parts.append(current)
     return [p.strip() for p in parts if p.strip()]
+
+
+_VBA_PROCEDURE_START = re.compile(
+    r"^(?:(?:Public|Private|Friend)\s+)?(?:Static\s+)?"
+    r"(?:Sub|Function|Property\s+(?:Get|Let|Set))\s+\w+",
+    re.IGNORECASE,
+)
+_VBA_PROCEDURE_END = re.compile(r"^End\s+(?:Sub|Function|Property)\b", re.IGNORECASE)
+
+# Module-level declaration forms. `Dim` at module level is legal VBA and belongs in
+# the declaration section too; inside a procedure it is the ordinary local form and
+# must NOT be flagged, which is why this is driven by procedure boundaries rather
+# than by the keyword alone.
+_VBA_MODULE_DECLARATION = re.compile(
+    r"^(?:"
+    r"(?:Public|Private|Global|Dim)\s+"
+    r"(?!Sub\b|Function\b|Property\b|Declare\b|Type\b|Enum\b|Const\b)\w+"
+    r"|(?:Public\s+|Private\s+)?Const\s+\w+"
+    r"|(?:Public\s+|Private\s+)?(?:Type|Enum)\s+\w+"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _declaration_section_offenders(module) -> list[tuple[int, str]]:
+    """Module-level declarations that appear AFTER the first executable procedure."""
+    offenders: list[tuple[int, str]] = []
+    first_procedure_seen = False
+    inside_procedure = False
+    for number, statement in logical_statements(module.code_without_string_removal):
+        if _VBA_PROCEDURE_START.match(statement):
+            first_procedure_seen = True
+            inside_procedure = True
+            continue
+        if _VBA_PROCEDURE_END.match(statement):
+            inside_procedure = False
+            continue
+        if inside_procedure:
+            continue  # Dim / Const / Static inside a procedure are ordinary locals
+        if first_procedure_seen and _VBA_MODULE_DECLARATION.match(statement):
+            offenders.append((number, statement))
+    return offenders
+
+
+def test_45f_every_module_level_declaration_is_in_the_declaration_section() -> None:
+    """VBA has no "module-level statement anywhere in the file".
+
+    Everything before the first executable procedure is the declaration section;
+    everything after it is procedure bodies. A Public variable, Const, Type or Enum
+    written after that point is not merely untidy -- under Option Explicit the
+    compiler reaches the procedure that uses it with the name undefined and stops.
+
+    That is what ended Gate-B run 3, on the harness's FIRST VBA call: the five
+    gAutomation* globals sat after ConfirmDestructiveChange, and VBA raised
+    "Compile error: Variable not defined" on gAutomationActive. This sweep is the
+    standing substitute for the compiler that cannot run on Linux.
+    """
+    problems = []
+    for module in _all_modules():
+        if "option explicit" not in module.code.lower():
+            continue
+        for number, statement in _declaration_section_offenders(module):
+            problems.append(f"{module.name}:{number}: {statement[:70]}")
+    assert not problems, (
+        "module-level declaration after the first executable procedure "
+        "(Compile error: Variable not defined):\n  " + "\n  ".join(problems)
+    )
+
+
+def test_45g_procedure_local_declarations_are_not_flagged() -> None:
+    """The sweep must not be a grep for `Dim` -- locals are the common case.
+
+    A sweep that flagged procedure-local Dim, Const or Static would be unusable and
+    would be deleted, which is a worse outcome than not having it. This proves the
+    procedure-boundary tracking works, on real source and on a constructed module
+    that is deliberately legal.
+    """
+    workbook = next(m for m in _all_modules() if m.name == "modWorkbook")
+    locals_found = [
+        statement
+        for _, statement in logical_statements(workbook.code_without_string_removal)
+        if re.match(r"(Dim|Const|Static)\s+\w+", statement, re.IGNORECASE)
+    ]
+    assert len(locals_found) >= 15, (
+        f"expected many procedure-local declarations, found {len(locals_found)}"
+    )
+    assert not _declaration_section_offenders(workbook)
+
+    class _Fake:
+        name = "modFake"
+        code = "option explicit"
+        code_without_string_removal = (
+            "Option Explicit\n"
+            "Public gFlag As Boolean\n"
+            "Private Const K As Long = 1\n"
+            "Public Type T\n"
+            "    A As Long\n"
+            "End Type\n"
+            "Public Sub S()\n"
+            "    Dim local As Long\n"
+            "    Const inner As Long = 2\n"
+            "    Static kept As Long\n"
+            "    local = inner + kept\n"
+            "End Sub\n"
+            "Public Function F() As Long\n"
+            "    Dim other As String\n"
+            "    F = 1\n"
+            "End Function\n"
+        )
+
+    assert _declaration_section_offenders(_Fake()) == [], (
+        "legal procedure-local declarations were flagged"
+    )
+
+    class _Broken(_Fake):
+        name = "modBroken"
+        code_without_string_removal = _Fake.code_without_string_removal + (
+            "Public gLate As Boolean\n"
+            "Public Const LATE_K As Long = 3\n"
+            "Public Type TLate\n"
+            "    B As Long\n"
+            "End Type\n"
+        )
+
+    caught = [statement for _, statement in _declaration_section_offenders(_Broken())]
+    assert caught == [
+        "Public gLate As Boolean",
+        "Public Const LATE_K As Long = 3",
+        "Public Type TLate",
+    ], caught
+
+
+def test_45h_the_sweep_joins_line_continuations() -> None:
+    """A wrapped declaration is still one declaration.
+
+    Per-physical-line analysis reads the tail of a wrapped statement as a statement
+    of its own, which both misses real offenders and invents false ones.
+    """
+    statements = logical_statements(
+        "Public gWrapped _\n"
+        "    As Boolean\n"
+        "Public Sub S()\n"
+        "End Sub\n"
+        "Public gAfter _\n"
+        "    As Long\n"
+    )
+    assert (1, "Public gWrapped As Boolean") in statements
+    assert (5, "Public gAfter As Long") in statements
+
+    class _Wrapped:
+        name = "modWrapped"
+        code = "option explicit"
+        code_without_string_removal = (
+            "Option Explicit\n"
+            "Public Sub S()\n"
+            "End Sub\n"
+            "Public gAfter _\n"
+            "    As Long\n"
+        )
+
+    assert [s for _, s in _declaration_section_offenders(_Wrapped())] == [
+        "Public gAfter As Long"
+    ]
+
+
+def test_45i_the_automation_globals_are_in_the_declaration_section() -> None:
+    """The five that actually failed, pinned by name and by position."""
+    module = next(m for m in _handwritten_modules() if m.name == "modAppState")
+    statements = logical_statements(module.code_without_string_removal)
+    first_procedure = next(
+        number for number, statement in statements if _VBA_PROCEDURE_START.match(statement)
+    )
+    expected = [
+        "gAutomationActive",
+        "gAutomationConfirmReply",
+        "gAutomationLastPrompt",
+        "gAutomationFailAfterStage",
+        "gAutomationLastResult",
+    ]
+    for name in expected:
+        declarations = [
+            number
+            for number, statement in statements
+            if re.match(rf"Public\s+{name}\s+As\s+\w+$", statement)
+        ]
+        assert len(declarations) == 1, (
+            f"{name} is declared {len(declarations)} times; it must be declared once"
+        )
+        assert declarations[0] < first_procedure, (
+            f"{name} is declared at line {declarations[0]}, after the first "
+            f"executable procedure at line {first_procedure}"
+        )
+    # Public, not Private: modTimeline and modDrivers reference them by module name.
+    for other in ("modTimeline", "modDrivers"):
+        code = next(m for m in _handwritten_modules() if m.name == other).code
+        assert "modAppState.gAutomation" in code, (
+            f"{other} references the automation state, so it must stay Public"
+        )
 
 
 def test_45c_no_typed_optional_parameter_omits_its_default() -> None:
