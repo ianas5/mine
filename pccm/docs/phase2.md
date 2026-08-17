@@ -59,6 +59,45 @@ Deliberate restraint, each of these being a Model Check or RNG concern later:
 
 ---
 
+## Model invariants: the SAR identity
+
+Three values are **not user data**. They are part of the model and are declared in
+`input_contract.yaml → model_invariants`:
+
+| Invariant | Where |
+|---|---|
+| Reporting Currency = `SAR` | `inpReportingCurrency`, model-controlled |
+| Currency master contains `SAR` | `tblCurrencies` data row 1 |
+| FX identity is exactly `SAR \| 1` | `tblFXRates` data row 1 |
+
+Row-level ownership is expressed by `locked_seed_rows: N` on a table: the first
+*N* data rows are model-controlled. Those rows get the **locked** visual treatment
+and are **excluded from user data validation** — attaching an input rule to a cell
+the user does not own would misrepresent who controls it.
+
+Concretely, for the FX table at rows 28–39: locked identity `B28:C28`; user
+currency validation `B29:B39`; user FX validation `C29:C39`. None of those
+addresses is hardcoded — all are derived from the table spec.
+
+Users still add and manage every other currency and rate. Uniqueness of
+user-entered currencies is **not** enforced here; that is Model Check's job.
+
+The loader validates each declared identity against the named table's locked seed
+rows, so removing, unlocking or altering one fails the build rather than the
+review.
+
+## Excel address bounds
+
+A reference is not valid merely because it parses: `XFE1` and `A1048577` both
+match a naive pattern and are both outside the grid. A central validator
+(`check_cell`, `check_row`, `check_column`) enforces the real limits — maximum row
+**1,048,576**, maximum column **XFD (16,384)** — over every contract-owned
+coordinate: input label and value cells, table first and last column, table header
+and last data row, and every section, note, convention and intro row.
+
+It runs **before rendering**, so an out-of-grid address fails as `ContractError`
+with a precise message rather than as an incidental openpyxl exception.
+
 ## Config ownership
 
 Six Excel Tables, each with a range defined name for validation:
@@ -66,7 +105,7 @@ Six Excel Tables, each with a range defined name for validation:
 | Section | Table | Defined name | Kind | Seeded |
 |---|---|---|---|---|
 | Categories | `tblCategories` | `lstCategories` | user-maintainable | — |
-| Currencies | `tblCurrencies` | `lstCurrencies` | user-maintainable | `SAR` |
+| Currencies | `tblCurrencies` | `lstCurrencies` | user-maintainable, **row 1 locked** | `SAR` (model invariant) |
 | Units of Measure | `tblUOM` | `lstUOM` | user-maintainable | — |
 | Inflation Profile Names | `tblInflationProfiles` | `lstInflationProfiles` | user-maintainable | — |
 | Distribution Names | `tblDistributions` | `lstDistributions` | **locked constant** | Triangular, Beta-PERT, Uniform |
@@ -86,7 +125,7 @@ Inflation sheet in a later phase.
 **Setup owns FX rates. Config owns the currency master list. Nothing else.**
 
 `tblFXRates` on Setup, columns `Currency` and `FX to SAR`, twelve reserved rows,
-with `SAR = 1` seeded as the reporting-currency identity. The convention is
+with `SAR = 1` as a **locked model invariant** in data row 1 (see above). The convention is
 printed beside the table:
 
 > Convention: 1 unit of source currency = X SAR
@@ -136,7 +175,7 @@ colour.
 | Kind | Treatment |
 |---|---|
 | Editable input | pale warm fill `FFFBEF`, thin `D8C9A3` border |
-| Model-controlled / locked constant | grey fill `EFF1F4`, **bold**, `C2CAD3` border |
+| Model-controlled / locked constant / locked seed row | grey fill `EFF1F4`, **bold**, `C2CAD3` border |
 | Table header | `E2E6EB` fill, bold, rule beneath |
 | Section heading | bold, no fill |
 | Note | small italic grey |

@@ -17,6 +17,11 @@ import yaml
 from openpyxl.utils import get_column_letter
 
 CELL_RE = re.compile(r"^([A-Z]{1,3})([1-9][0-9]{0,6})$")
+
+# Excel worksheet limits. A reference is not valid merely because it matches the
+# regex above: XFE1 and A1048577 both match and are both outside the grid.
+EXCEL_MAX_ROW = 1_048_576
+EXCEL_MAX_COLUMN = 16_384          # XFD
 DEFINED_NAME_RE = re.compile(r"^(inp|lst)[A-Z][A-Za-z0-9]*$")
 TABLE_NAME_RE = re.compile(r"^tbl[A-Z][A-Za-z0-9]*$")
 
@@ -26,6 +31,40 @@ VALID_VALIDATION_KINDS = ("list", "whole", "decimal")
 
 class ContractError(Exception):
     """Raised when the input contract is invalid."""
+
+
+def check_row(row: Any, where: str) -> int:
+    """Central row-bound validator. Raises ContractError outside the Excel grid."""
+    if not isinstance(row, int) or isinstance(row, bool) or row < 1:
+        raise ContractError(f"{where}: row {row!r} must be a positive integer")
+    if row > EXCEL_MAX_ROW:
+        raise ContractError(
+            f"{where}: row {row} exceeds the Excel maximum of {EXCEL_MAX_ROW}"
+        )
+    return row
+
+
+def check_column(letter: Any, where: str) -> str:
+    """Central column-bound validator."""
+    if not isinstance(letter, str) or not letter.isalpha() or not letter.isupper():
+        raise ContractError(f"{where}: column {letter!r} must be an upper-case column letter")
+    index = _column_index(letter)
+    if index > EXCEL_MAX_COLUMN:
+        raise ContractError(
+            f"{where}: column {letter} (index {index}) exceeds the Excel maximum of "
+            f"XFD ({EXCEL_MAX_COLUMN})"
+        )
+    return letter
+
+
+def check_cell(address: Any, where: str) -> str:
+    """Central cell-reference validator: syntax AND Excel grid bounds."""
+    if not isinstance(address, str) or not CELL_RE.match(address):
+        raise ContractError(f"{where}: {address!r} is not a valid cell reference")
+    match = CELL_RE.match(address)
+    check_column(match.group(1), f"{where} ({address})")
+    check_row(int(match.group(2)), f"{where} ({address})")
+    return address
 
 
 @dataclass(frozen=True)
@@ -62,6 +101,7 @@ class TableSpec:
     data_rows: int
     editable: bool
     columns: list[TableColumnSpec]
+    locked_seed_rows: int = 0
     seed_rows: list[list[Any]] = field(default_factory=list)
     defined_name: str | None = None
     section: str | None = None
@@ -92,9 +132,28 @@ class TableSpec:
     def column_letter(self, index: int) -> str:
         return get_column_letter(self.first_col_index + index)
 
+    @property
+    def first_user_row(self) -> int:
+        """First data row the user owns. Locked identity rows come before it."""
+        return self.first_data_row + self.locked_seed_rows
+
+    def is_locked_row(self, offset: int) -> bool:
+        """offset is 0-based within the data body."""
+        return (not self.editable) or offset < self.locked_seed_rows
+
     def data_range(self, index: int = 0) -> str:
         letter = self.column_letter(index)
         return f"{letter}{self.first_data_row}:{letter}{self.last_data_row}"
+
+    def user_data_range(self, index: int = 0) -> str | None:
+        """Range of user-owned rows only, or None if the table has none.
+
+        Data validation targets this, never the locked identity rows.
+        """
+        if not self.editable or self.first_user_row > self.last_data_row:
+            return None
+        letter = self.column_letter(index)
+        return f"{letter}{self.first_user_row}:{letter}{self.last_data_row}"
 
     def absolute_data_range(self, index: int = 0) -> str:
         letter = self.column_letter(index)
@@ -116,6 +175,7 @@ class SectionSpec:
 class InputContract:
     contract_version: str
     conventions: dict[str, Any]
+    model_invariants: dict[str, Any]
     inputs: dict[str, InputSpec]
     setup_sheet: str
     setup_intro: dict[str, Any]
@@ -129,6 +189,16 @@ class InputContract:
     @property
     def fx_convention(self) -> str:
         return self.conventions["fx_convention"]
+
+    @property
+    def reporting_currency(self) -> str:
+        return self.model_invariants["reporting_currency"]
+
+    def table_by_name(self, name: str) -> TableSpec | None:
+        for table in self.all_tables:
+            if table.table_name == name:
+                return table
+        return None
 
     @property
     def contract_sheets(self) -> set[str]:
@@ -175,6 +245,12 @@ def load_contract(path: str | Path) -> InputContract:
     for key in ("input_prefix", "list_prefix", "table_prefix", "fx_convention"):
         _req_str(conventions, key, f"{where}: conventions")
 
+    invariants = _req(raw, "model_invariants", where)
+    _req_str(invariants, "reporting_currency", f"{where}: model_invariants")
+    identities = _req(invariants, "locked_identities", f"{where}: model_invariants")
+    if not isinstance(identities, list) or not identities:
+        raise ContractError(f"{where}: model_invariants.locked_identities must be a non-empty list")
+
     inputs = _parse_inputs(_req(raw, "inputs", where), path)
     tables = _parse_tables(_req(raw, "tables", where), path)
     config_tables = _parse_config_tables(_req(raw, "config_tables", where), path)
@@ -188,6 +264,7 @@ def load_contract(path: str | Path) -> InputContract:
     contract = InputContract(
         contract_version=contract_version,
         conventions=conventions,
+        model_invariants=invariants,
         inputs=inputs,
         setup_sheet=setup_sheet,
         setup_intro=_req(setup_layout, "intro", f"{where}: setup_layout"),
@@ -204,6 +281,8 @@ def load_contract(path: str | Path) -> InputContract:
     _validate_validation_sources(contract, path)
     _validate_no_cell_collisions(contract, path)
     _validate_seed_rows(contract, path)
+    _validate_excel_bounds(contract, path)
+    _validate_model_invariants(contract, path)
     return contract
 
 
@@ -226,9 +305,7 @@ def _parse_inputs(raw: Any, path: Path) -> dict[str, InputSpec]:
             raise ContractError(f"{where}: type {type_!r} must be one of {VALID_TYPES}")
 
         for cell_key in ("label_cell", "cell"):
-            value = _req_str(entry, cell_key, where)
-            if not CELL_RE.match(value):
-                raise ContractError(f"{where}: {cell_key} {value!r} is not a valid cell reference")
+            check_cell(_req_str(entry, cell_key, where), f"{where}: {cell_key}")
 
         for flag in ("required", "editable"):
             if not isinstance(entry.get(flag), bool):
@@ -277,6 +354,7 @@ def _parse_tables(raw: Any, path: Path) -> dict[str, TableSpec]:
             data_rows=_positive_int(entry, "data_rows", where),
             editable=_bool(entry, "editable", where),
             columns=columns,
+            locked_seed_rows=_locked_seed_rows(entry, where),
             seed_rows=entry.get("seed_rows") or [],
         )
     return result
@@ -332,6 +410,7 @@ def _parse_config_tables(raw: Any, path: Path) -> list[TableSpec]:
                         validation=None,
                     )
                 ],
+                locked_seed_rows=_locked_seed_rows(entry, where),
                 seed_rows=[[value] for value in values],
                 defined_name=defined_name,
                 section=_req_str(entry, "section", where),
@@ -500,6 +579,107 @@ def _validate_seed_rows(contract: InputContract, path: Path) -> None:
             raise ContractError(
                 f"{path}: {table.table_name} has more seed rows than data_rows"
             )
+        if table.locked_seed_rows > len(table.seed_rows):
+            raise ContractError(
+                f"{path}: {table.table_name} locks {table.locked_seed_rows} seed row(s) "
+                f"but declares only {len(table.seed_rows)}; a locked row must carry a "
+                "model-declared value"
+            )
+        if not table.editable and table.locked_seed_rows:
+            raise ContractError(
+                f"{path}: {table.table_name} is wholly locked (editable: false), so "
+                "locked_seed_rows is meaningless and must be omitted"
+            )
+
+
+def _validate_excel_bounds(contract: InputContract, path: Path) -> None:
+    """Every contract-owned coordinate must lie inside the Excel grid.
+
+    Runs before any rendering, so an out-of-grid address fails as ContractError
+    rather than as an incidental exception from openpyxl.
+    """
+    for spec in contract.inputs.values():
+        check_cell(spec.label_cell, f"{path}: input {spec.key!r} label_cell")
+        check_cell(spec.cell, f"{path}: input {spec.key!r} cell")
+
+    check_row(contract.setup_intro.get("row"), f"{path}: setup_layout.intro")
+    check_row(contract.config_intro.get("row"), f"{path}: config_layout.intro")
+
+    for section in contract.setup_sections:
+        where = f"{path}: setup section {section.title!r}"
+        check_row(section.row, where)
+        if section.note_row is not None:
+            check_row(section.note_row, f"{where} note_row")
+        if section.convention_row is not None:
+            check_row(section.convention_row, f"{where} convention_row")
+
+    for table in contract.all_tables:
+        where = f"{path}: table {table.table_name}"
+        check_column(table.first_column, f"{where} first_column")
+        check_row(table.header_row, f"{where} header_row")
+        # The far corner matters, not just the anchor.
+        last_index = table.first_col_index + len(table.columns) - 1
+        if last_index > EXCEL_MAX_COLUMN:
+            raise ContractError(
+                f"{where}: {len(table.columns)} columns starting at {table.first_column} "
+                f"reach column index {last_index}, beyond the Excel maximum of "
+                f"XFD ({EXCEL_MAX_COLUMN})"
+            )
+        check_row(table.last_data_row, f"{where} last data row (header_row + data_rows)")
+        if table.section_row is not None:
+            check_row(table.section_row, f"{where} section_row")
+        if table.note_row is not None:
+            check_row(table.note_row, f"{where} note_row")
+
+
+def _validate_model_invariants(contract: InputContract, path: Path) -> None:
+    """Values the user does not own must be present, locked and exactly right."""
+    currency = contract.reporting_currency
+
+    reporting = next(
+        (spec for spec in contract.inputs.values() if spec.default == currency
+         and not spec.editable and spec.type == "text"),
+        None,
+    )
+    if reporting is None:
+        raise ContractError(
+            f"{path}: no model-controlled input carries the reporting currency "
+            f"{currency!r}; the reporting-currency identity is not enforced"
+        )
+
+    for index, identity in enumerate(contract.model_invariants["locked_identities"]):
+        where = f"{path}: model_invariants.locked_identities[{index}]"
+        if not isinstance(identity, dict):
+            raise ContractError(f"{where}: must be a mapping")
+        table_name = _req_str(identity, "table", where)
+        row = _req(identity, "row", where)
+        values = _req(identity, "values", where)
+        if not isinstance(row, int) or isinstance(row, bool) or row < 1:
+            raise ContractError(f"{where}: row must be a positive integer")
+        if not isinstance(values, list) or not values:
+            raise ContractError(f"{where}: values must be a non-empty list")
+        if values[0] != currency:
+            raise ContractError(
+                f"{where}: identity must begin with the reporting currency "
+                f"{currency!r}, found {values[0]!r}"
+            )
+
+        table = contract.table_by_name(table_name)
+        if table is None:
+            raise ContractError(f"{where}: unknown table {table_name!r}")
+        if table.locked_seed_rows < row:
+            raise ContractError(
+                f"{where}: {table_name} declares locked_seed_rows="
+                f"{table.locked_seed_rows}, so row {row} is not model-controlled"
+            )
+        if len(table.seed_rows) < row:
+            raise ContractError(f"{where}: {table_name} has no seed row {row}")
+        actual = table.seed_rows[row - 1]
+        if list(actual) != list(values):
+            raise ContractError(
+                f"{where}: {table_name} row {row} is {actual!r}, "
+                f"but the model invariant requires {values!r}"
+            )
 
 
 def _validate_validation_block(validation: Any, where: str) -> None:
@@ -545,11 +725,15 @@ def _bool(mapping: dict[str, Any], key: str, where: str) -> bool:
     return value
 
 
-def _column(mapping: dict[str, Any], where: str) -> str:
-    value = _req_str(mapping, "first_column", where)
-    if not value.isalpha() or not value.isupper():
-        raise ContractError(f"{where}: first_column {value!r} must be an upper-case column letter")
+def _locked_seed_rows(mapping: dict[str, Any], where: str) -> int:
+    value = mapping.get("locked_seed_rows", 0)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ContractError(f"{where}: locked_seed_rows must be a non-negative integer")
     return value
+
+
+def _column(mapping: dict[str, Any], where: str) -> str:
+    return check_column(_req_str(mapping, "first_column", where), f"{where}: first_column")
 
 
 def _table_name(mapping: dict[str, Any], where: str) -> str:

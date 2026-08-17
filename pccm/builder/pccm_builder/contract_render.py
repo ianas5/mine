@@ -89,10 +89,12 @@ def _render_table(worksheet: Worksheet, table: TableSpec, styles: StyleBook) -> 
             if offset < len(table.seed_rows):
                 cell.value = table.seed_rows[offset][index]
             cell.number_format = column.number_format
-            if table.editable:
-                styles.apply_input(cell)
-            else:
+            # Locked rows are model invariants (e.g. the SAR identity) or a wholly
+            # locked constant list. Either way the user does not own them.
+            if table.is_locked_row(offset):
                 styles.apply_locked(cell)
+            else:
+                styles.apply_input(cell)
 
     excel_table = Table(displayName=table.table_name, ref=table.ref)
     excel_table.tableStyleInfo = TableStyleInfo(

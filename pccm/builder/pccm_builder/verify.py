@@ -230,11 +230,51 @@ def _verify_contract(result: VerificationResult, workbook, contract: InputContra
                 f"found {workbook.defined_names[table.defined_name].attr_text!r}",
             )
 
+    # Model invariants: the declared identity values must be exactly right.
+    for identity in contract.model_invariants["locked_identities"]:
+        table = contract.table_by_name(identity["table"])
+        worksheet = workbook[table.sheet]
+        row = table.first_data_row + identity["row"] - 1
+        for index, value in enumerate(identity["values"]):
+            address = f"{table.column_letter(index)}{row}"
+            result.check(
+                f"model invariant {table.table_name} {address} = {value!r}",
+                worksheet[address].value == value,
+                f"found {worksheet[address].value!r}",
+            )
+
     validations = {
         f"{ws.title}!{dv.sqref}": dv
         for ws in workbook.worksheets
         for dv in ws.data_validations.dataValidation
     }
+    # No validation may target a locked identity row.
+    for table in contract.all_tables:
+        if not table.locked_seed_rows:
+            continue
+        worksheet = workbook[table.sheet]
+        locked_rows = range(table.first_data_row, table.first_user_row)
+        targeted = {
+            str(cell)
+            for dv in worksheet.data_validations.dataValidation
+            for rng in dv.sqref.ranges
+            for cell in rng.cells
+        }
+        offenders = [
+            f"{table.column_letter(i)}{row}"
+            for row in locked_rows
+            for i in range(len(table.columns))
+            if (table.column_letter(i), row) in {
+                (c.split("$")[0] if "$" in c else "".join(ch for ch in c if ch.isalpha()),
+                 int("".join(ch for ch in c if ch.isdigit())))
+                for c in targeted
+            }
+        ]
+        result.check(
+            f"no data validation targets {table.table_name} locked identity rows",
+            not offenders,
+            ", ".join(offenders),
+        )
     result.check(
         "data validation rules were created",
         len(validations) > 0,

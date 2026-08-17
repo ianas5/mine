@@ -252,19 +252,21 @@ def test_17_iterations_validation_enforces_minimum_1000() -> None:
 
 
 def test_18_fx_currency_validation_uses_the_currency_master() -> None:
+    """Targets the user-owned rows only; the locked SAR identity row is excluded."""
     contract = load_contract(CONTRACT_PATH)
     table = next(t for t in contract.all_tables if t.table_name == FX_TABLE)
-    dv = _dv_for(_wb()["Setup"], table.data_range(0))
-    assert dv is not None, "FX Currency column has no data validation"
+    dv = _dv_for(_wb()["Setup"], table.user_data_range(0))
+    assert dv is not None, "FX Currency user rows have no data validation"
     assert dv.type == "list"
     assert dv.formula1 == "=lstCurrencies", f"formula1 is {dv.formula1!r}"
 
 
 def test_19_fx_rate_validation_requires_positive_when_populated() -> None:
+    """Targets the user-owned rows only; the locked SAR = 1 identity is excluded."""
     contract = load_contract(CONTRACT_PATH)
     table = next(t for t in contract.all_tables if t.table_name == FX_TABLE)
-    dv = _dv_for(_wb()["Setup"], table.data_range(1))
-    assert dv is not None, "FX rate column has no data validation"
+    dv = _dv_for(_wb()["Setup"], table.user_data_range(1))
+    assert dv is not None, "FX rate user rows have no data validation"
     assert dv.type == "decimal"
     assert dv.operator == "greaterThan"
     assert dv.formula1 == "0"
@@ -386,6 +388,158 @@ def test_28_setup_is_the_only_fx_rate_owner() -> None:
     ]
     assert not [h for h in config_headers if "fx" in h.lower() or "rate" in h.lower()], (
         f"Config declares a rate-like column: {config_headers}"
+    )
+
+
+# ===========================================================================
+# SAR identity ownership. These values are MODEL invariants, not user data.
+# ===========================================================================
+def _fill_rgb(cell) -> str:
+    rgb = getattr(cell.fill.fgColor, "rgb", None)
+    return str(rgb)[-6:].upper() if rgb else ""
+
+
+def _tokens() -> dict:
+    import yaml
+    with (PCCM_ROOT / "spec" / "workbook.yaml").open(encoding="utf-8") as handle:
+        return yaml.safe_load(handle)["presentation"]["colors"]
+
+
+def test_29_reporting_currency_remains_model_controlled_sar() -> None:
+    contract = load_contract(CONTRACT_PATH)
+    spec = contract.inputs["reporting_currency"]
+    assert contract.reporting_currency == "SAR"
+    assert spec.default == "SAR" and spec.editable is False
+    cell = _wb()["Setup"][spec.cell]
+    assert cell.value == "SAR"
+    assert _fill_rgb(cell) == _tokens()["locked_fill"].upper()
+
+
+def test_30_currency_master_has_locked_sar_identity() -> None:
+    contract = load_contract(CONTRACT_PATH)
+    table = contract.table_by_name("tblCurrencies")
+    assert table.locked_seed_rows == 1, "SAR must be a locked identity row"
+    assert table.seed_rows[0] == ["SAR"]
+    cell = _wb()["Config"][f"{table.column_letter(0)}{table.first_data_row}"]
+    assert cell.value == "SAR"
+    assert _fill_rgb(cell) == _tokens()["locked_fill"].upper(), "SAR identity is not locked-styled"
+
+
+def test_31_user_currency_rows_remain_editable() -> None:
+    contract = load_contract(CONTRACT_PATH)
+    table = contract.table_by_name("tblCurrencies")
+    config = _wb()["Config"]
+    assert table.editable is True
+    assert table.first_user_row == table.first_data_row + 1
+    assert table.first_user_row <= table.last_data_row, "no user-maintainable rows remain"
+    for row in range(table.first_user_row, table.last_data_row + 1):
+        cell = config[f"{table.column_letter(0)}{row}"]
+        assert _fill_rgb(cell) == _tokens()["input_fill"].upper(), f"row {row} is not editable-styled"
+
+
+def test_32_fx_table_has_locked_sar_identity_of_one() -> None:
+    contract = load_contract(CONTRACT_PATH)
+    table = contract.table_by_name("tblFXRates")
+    assert table.locked_seed_rows == 1
+    assert table.seed_rows[0] == ["SAR", 1]
+    setup = _wb()["Setup"]
+    row = table.first_data_row
+    assert setup[f"{table.column_letter(0)}{row}"].value == "SAR"
+    assert setup[f"{table.column_letter(1)}{row}"].value == 1
+
+
+def test_33_user_fx_rows_begin_after_the_locked_seed_row() -> None:
+    contract = load_contract(CONTRACT_PATH)
+    table = contract.table_by_name("tblFXRates")
+    assert table.first_user_row == table.first_data_row + table.locked_seed_rows
+    assert table.user_data_range(0) == f"B{table.first_user_row}:B{table.last_data_row}"
+    assert table.user_data_range(1) == f"C{table.first_user_row}:C{table.last_data_row}"
+
+
+def test_34_fx_validation_does_not_target_the_locked_identity_row() -> None:
+    contract = load_contract(CONTRACT_PATH)
+    table = contract.table_by_name("tblFXRates")
+    setup = _wb()["Setup"]
+    locked = {
+        f"{table.column_letter(i)}{table.first_data_row}" for i in range(len(table.columns))
+    }
+    targeted = {
+        str(cell.coord) if hasattr(cell, "coord") else str(cell)
+        for dv in setup.data_validations.dataValidation
+        for rng in dv.sqref.ranges
+        for cell in rng.cells
+    }
+    targeted = {f"{c[0]}{c[1]}" if isinstance(c, tuple) else c for c in targeted}
+    overlap = locked & _normalised(targeted)
+    assert not overlap, f"validation targets locked identity cells: {sorted(overlap)}"
+
+
+def _normalised(targets: set) -> set:
+    out = set()
+    for item in targets:
+        text = str(item).replace("$", "").replace("(", "").replace(")", "").replace(" ", "")
+        if "," in text:
+            row, col = text.split(",")[0], text.split(",")[1]
+            from openpyxl.utils import get_column_letter
+            out.add(f"{get_column_letter(int(col))}{int(row)}")
+        else:
+            out.add(text)
+    return out
+
+
+def test_35_fx_validation_targets_every_user_row() -> None:
+    contract = load_contract(CONTRACT_PATH)
+    table = contract.table_by_name("tblFXRates")
+    setup = _wb()["Setup"]
+    for index in range(len(table.columns)):
+        expected = table.user_data_range(index)
+        dv = _dv_for(setup, expected)
+        assert dv is not None, f"no validation covering {expected}"
+        assert expected in str(dv.sqref), f"validation sqref is {dv.sqref}, expected {expected}"
+
+
+def test_36_currency_validation_targets_user_rows_only() -> None:
+    contract = load_contract(CONTRACT_PATH)
+    table = contract.table_by_name("tblFXRates")
+    dv = _dv_for(_wb()["Setup"], table.user_data_range(0))
+    assert dv is not None and dv.formula1 == "=lstCurrencies"
+    assert str(table.first_data_row) not in str(dv.sqref).split(":")[0], (
+        "currency validation begins on the locked identity row"
+    )
+
+
+def test_37_locked_cells_use_locked_treatment_not_input_treatment() -> None:
+    contract = load_contract(CONTRACT_PATH)
+    workbook = _wb()
+    tokens = _tokens()
+    for table in contract.all_tables:
+        worksheet = workbook[table.sheet]
+        for offset in range(table.data_rows):
+            row = table.first_data_row + offset
+            for index in range(len(table.columns)):
+                cell = worksheet[f"{table.column_letter(index)}{row}"]
+                expected = (
+                    tokens["locked_fill"] if table.is_locked_row(offset) else tokens["input_fill"]
+                )
+                assert _fill_rgb(cell) == expected.upper(), (
+                    f"{table.table_name} {cell.coordinate}: fill {_fill_rgb(cell)}, "
+                    f"expected {expected.upper()}"
+                )
+
+
+def test_38_no_model_check_logic_or_formulas_introduced() -> None:
+    workbook = _wb()
+    offenders = [
+        f"{ws.title}!{c.coordinate}"
+        for ws in workbook.worksheets
+        for row in ws.iter_rows()
+        for c in row
+        if isinstance(c.value, str) and c.value.startswith("=")
+    ]
+    assert not offenders, f"formulas present: {offenders[:10]}"
+    assert not getattr(workbook["Model Check"], "tables", {}), "Model Check has a table"
+    assert not list(workbook["Model Check"].data_validations.dataValidation), (
+        "Model Check has data validation"
     )
 
 

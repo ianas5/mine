@@ -27,6 +27,27 @@ conventions:
   fx_convention: "1 unit of source currency = X SAR"
 
 # -----------------------------------------------------------------------------
+# Model invariants: values the USER DOES NOT OWN.
+#
+# The reporting currency identity is part of the model, not part of the data a
+# user maintains. It is rendered with the locked visual treatment and carries no
+# user data validation, exactly like the model-controlled Reporting Currency cell.
+# Users still add and manage every OTHER currency and rate.
+#
+# The loader enforces each declared identity against the named table's locked
+# seed rows, so removing or altering one fails the build rather than the review.
+# -----------------------------------------------------------------------------
+model_invariants:
+  reporting_currency: "SAR"
+  locked_identities:
+    - table: "tblCurrencies"
+      row: 1
+      values: ["SAR"]
+    - table: "tblFXRates"
+      row: 1
+      values: ["SAR", 1]
+
+# -----------------------------------------------------------------------------
 # Scalar Setup inputs. Keyed by semantic key.
 #
 #   editable: true   the user owns this cell
@@ -217,7 +238,10 @@ tables:
     first_column: "B"
     data_rows: 12
     editable: true
-    purpose: "User-entered FX rates. Currency is chosen from the Config master list."
+    # Row 1 of the data body is the SAR reporting-currency identity: model
+    # controlled, locked styling, and excluded from user data validation.
+    locked_seed_rows: 1
+    purpose: "User-entered FX rates below the locked SAR identity row. Currency is chosen from the Config master list."
     columns:
       - header: "Currency"
         number_format: "@"
@@ -275,13 +299,15 @@ config_tables:
     section: "Currencies"
     section_row: 24
     note_row: 25
-    note: "User-maintainable currency master list. Holds no rates: FX rates are entered on Setup."
+    note: "User-maintainable currency master list. SAR is the model reporting currency and is locked. Holds no rates: FX rates are entered on Setup."
     table_name: "tblCurrencies"
     defined_name: "lstCurrencies"
     header_row: 27
     first_column: "B"
     data_rows: 10
     editable: true
+    # Row 1 of the data body is the SAR reporting-currency identity.
+    locked_seed_rows: 1
     column_header: "Currency"
     number_format: "@"
     values: ["SAR"]

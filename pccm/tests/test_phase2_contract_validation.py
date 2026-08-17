@@ -180,6 +180,176 @@ def test_rejects_seed_row_of_wrong_width() -> None:
     )
 
 
+# ===========================================================================
+# SAR identity invariants
+# ===========================================================================
+def test_rejects_removing_the_sar_currency_identity() -> None:
+    _rejected(
+        lambda d: d["config_tables"][1].__setitem__("values", ["USD"]),
+        "currency master identity changed away from SAR",
+    )
+
+
+def test_rejects_unlocking_the_sar_currency_identity() -> None:
+    _rejected(
+        lambda d: d["config_tables"][1].__setitem__("locked_seed_rows", 0),
+        "SAR currency identity left user-owned",
+    )
+
+
+def test_rejects_changing_the_fx_identity_rate() -> None:
+    _rejected(
+        lambda d: d["tables"]["fx_rates"].__setitem__("seed_rows", [["SAR", 2]]),
+        "SAR FX identity rate changed away from 1",
+    )
+
+
+def test_rejects_removing_the_fx_identity_row() -> None:
+    _rejected(
+        lambda d: d["tables"]["fx_rates"].__setitem__("seed_rows", []),
+        "SAR FX identity row removed",
+    )
+
+
+def test_rejects_unlocking_the_fx_identity_row() -> None:
+    _rejected(
+        lambda d: d["tables"]["fx_rates"].__setitem__("locked_seed_rows", 0),
+        "SAR FX identity left user-owned",
+    )
+
+
+def test_rejects_identity_not_beginning_with_reporting_currency() -> None:
+    _rejected(
+        lambda d: d["model_invariants"]["locked_identities"][1].__setitem__("values", ["USD", 1]),
+        "declared identity not beginning with the reporting currency",
+    )
+
+
+def test_rejects_identity_targeting_unknown_table() -> None:
+    _rejected(
+        lambda d: d["model_invariants"]["locked_identities"][0].__setitem__("table", "tblNope"),
+        "identity targeting an unknown table",
+    )
+
+
+def test_rejects_editable_reporting_currency_input() -> None:
+    _rejected(
+        lambda d: d["inputs"]["reporting_currency"].__setitem__("editable", True),
+        "reporting currency made user-editable",
+    )
+
+
+def test_rejects_locking_more_rows_than_are_seeded() -> None:
+    _rejected(
+        lambda d: d["config_tables"][1].__setitem__("locked_seed_rows", 3),
+        "locking rows that carry no model-declared value",
+    )
+
+
+def test_rejects_locked_seed_rows_on_a_wholly_locked_table() -> None:
+    _rejected(
+        lambda d: d["config_tables"][4].__setitem__("locked_seed_rows", 1),
+        "locked_seed_rows on an already wholly locked table",
+    )
+
+
+# ===========================================================================
+# Excel address bounds. A reference is not valid merely because it parses.
+# ===========================================================================
+def test_rejects_column_beyond_xfd() -> None:
+    _rejected(
+        lambda d: d["inputs"]["base_year"].__setitem__("cell", "XFE1"),
+        "column XFE is beyond the Excel maximum XFD",
+    )
+
+
+def test_rejects_row_beyond_excel_maximum() -> None:
+    _rejected(
+        lambda d: d["inputs"]["base_year"].__setitem__("cell", "A1048577"),
+        "row 1048577 is beyond the Excel maximum 1048576",
+    )
+
+
+def test_rejects_label_cell_beyond_bounds() -> None:
+    _rejected(
+        lambda d: d["inputs"]["base_year"].__setitem__("label_cell", "A1048577"),
+        "label cell beyond the Excel maximum row",
+    )
+
+
+def test_rejects_two_column_table_starting_at_xfd() -> None:
+    _rejected(
+        lambda d: d["tables"]["fx_rates"].__setitem__("first_column", "XFD"),
+        "a two-column table starting at XFD reaches XFE",
+    )
+
+
+def test_rejects_table_extending_beyond_last_row() -> None:
+    _rejected(
+        lambda d: (
+            d["tables"]["fx_rates"].__setitem__("header_row", 1048570),
+            d["tables"]["fx_rates"].__setitem__("data_rows", 20),
+        ),
+        "header_row + data_rows exceeds the Excel maximum row",
+    )
+
+
+def test_rejects_table_header_row_beyond_bounds() -> None:
+    _rejected(
+        lambda d: d["config_tables"][0].__setitem__("header_row", 1048577),
+        "table header row beyond the Excel maximum",
+    )
+
+
+def test_rejects_section_row_beyond_bounds() -> None:
+    _rejected(
+        lambda d: d["setup_layout"]["sections"][0].__setitem__("row", 1048577),
+        "Setup section row beyond the Excel maximum",
+    )
+
+
+def test_rejects_note_row_beyond_bounds() -> None:
+    _rejected(
+        lambda d: d["config_tables"][0].__setitem__("note_row", 2000000),
+        "Config note row beyond the Excel maximum",
+    )
+
+
+def test_rejects_convention_row_beyond_bounds() -> None:
+    _rejected(
+        lambda d: d["setup_layout"]["sections"][3].__setitem__("convention_row", 1048577),
+        "Setup convention row beyond the Excel maximum",
+    )
+
+
+def test_rejects_intro_row_beyond_bounds() -> None:
+    _rejected(
+        lambda d: d["setup_layout"]["intro"].__setitem__("row", 1048577),
+        "Setup intro row beyond the Excel maximum",
+    )
+
+
+def test_rejects_config_intro_row_beyond_bounds() -> None:
+    _rejected(
+        lambda d: d["config_layout"]["intro"].__setitem__("row", 9999999),
+        "Config intro row beyond the Excel maximum",
+    )
+
+
+def test_bound_validators_accept_the_exact_limits() -> None:
+    """XFD and row 1048576 are inside the grid and must NOT be rejected."""
+    from pccm_builder.contract_loader import check_cell, check_column, check_row
+    assert check_column("XFD", "test") == "XFD"
+    assert check_row(1_048_576, "test") == 1_048_576
+    assert check_cell("XFD1048576", "test") == "XFD1048576"
+    for bad in ("XFE1", "A1048577"):
+        try:
+            check_cell(bad, "test")
+        except ContractError:
+            continue
+        raise AssertionError(f"{bad} was accepted")
+
+
 def test_rejects_missing_contract_file() -> None:
     try:
         load_contract(PCCM_ROOT / "spec" / "does_not_exist.yaml")

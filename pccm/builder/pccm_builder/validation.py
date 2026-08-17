@@ -7,6 +7,10 @@ Base Year <= Start Year, required-ness) belongs to Model Check in a later phase.
 
 Every rule permits a blank cell. A blank required input is a Model Check concern,
 not something to block at the keyboard.
+
+Validation is applied to USER-OWNED rows only. A table's locked seed rows carry
+model invariants such as the SAR FX identity; the user does not own them, so
+attaching user-input validation to them would misrepresent who controls the value.
 """
 
 from __future__ import annotations
@@ -35,10 +39,13 @@ def apply_validation(worksheets: dict[str, Worksheet], contract: InputContract) 
         for index, column in enumerate(table.columns):
             if not column.validation:
                 continue
+            target = table.user_data_range(index)
+            if target is None:
+                # Wholly locked table, or every row is a locked identity row.
+                continue
             dv = _build(column.validation)
             worksheet.add_data_validation(dv)
-            target = table.data_range(index)
-            dv.add(target)         # range string, e.g. B28:B39
+            dv.add(target)         # user-owned rows only, e.g. B29:B39
             applied.append(
                 f"{table.sheet}!{target} ({table.table_name}.{column.header}) "
                 f"<- {_describe(column.validation)}"
