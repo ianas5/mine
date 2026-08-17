@@ -246,7 +246,8 @@ def load_contract(path: str | Path) -> InputContract:
         _req_str(conventions, key, f"{where}: conventions")
 
     invariants = _req(raw, "model_invariants", where)
-    _req_str(invariants, "reporting_currency", f"{where}: model_invariants")
+    for key in ("reporting_currency", "reporting_currency_input", "reporting_currency_defined_name"):
+        _req_str(invariants, key, f"{where}: model_invariants")
     identities = _req(invariants, "locked_identities", f"{where}: model_invariants")
     if not isinstance(identities, list) or not identities:
         raise ContractError(f"{where}: model_invariants.locked_identities must be a non-empty list")
@@ -635,16 +636,31 @@ def _validate_excel_bounds(contract: InputContract, path: Path) -> None:
 def _validate_model_invariants(contract: InputContract, path: Path) -> None:
     """Values the user does not own must be present, locked and exactly right."""
     currency = contract.reporting_currency
+    key = contract.model_invariants["reporting_currency_input"]
+    expected_name = contract.model_invariants["reporting_currency_defined_name"]
 
-    reporting = next(
-        (spec for spec in contract.inputs.values() if spec.default == currency
-         and not spec.editable and spec.type == "text"),
-        None,
-    )
+    # Checked against the NAMED semantic input, not against whichever input
+    # happens to hold the value.
+    reporting = contract.inputs.get(key)
     if reporting is None:
         raise ContractError(
-            f"{path}: no model-controlled input carries the reporting currency "
-            f"{currency!r}; the reporting-currency identity is not enforced"
+            f"{path}: model_invariants.reporting_currency_input is {key!r}, "
+            f"which is not a declared input"
+        )
+    if reporting.editable:
+        raise ContractError(
+            f"{path}: reporting-currency input {key!r} must be model-controlled "
+            "(editable: false)"
+        )
+    if reporting.default != currency:
+        raise ContractError(
+            f"{path}: reporting-currency input {key!r} defaults to "
+            f"{reporting.default!r}, but model_invariants.reporting_currency is {currency!r}"
+        )
+    if reporting.defined_name != expected_name:
+        raise ContractError(
+            f"{path}: reporting-currency input {key!r} uses defined name "
+            f"{reporting.defined_name!r}, but the invariant requires {expected_name!r}"
         )
 
     for index, identity in enumerate(contract.model_invariants["locked_identities"]):

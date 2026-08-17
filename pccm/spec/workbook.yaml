@@ -11,13 +11,13 @@
 # Authority for functional design: docs/ARCHITECTURE-LOCK Revision B.
 # =============================================================================
 
-manifest_version: "1.1.0"
+manifest_version: "1.2.0"
 
 model:
   name: "Probabilistic Cost & Contingency Model"
   short_name: "PCCM"
-  model_version: "0.2.0"
-  build_phase: "Phase 2 - Functional Setup & Configuration Layer"
+  model_version: "0.3.0"
+  build_phase: "Phase 3 - Cost Lines & Risk Register Input Layer"
   reporting_currency: "SAR"      # locked model constant
 
 workbook:
@@ -69,6 +69,7 @@ presentation:
     locked_border: "C2CAD3"
     locked_text: "3E4C59"
     header_fill: "E2E6EB"     # table header
+    not_applicable_fill: "E9EBEE"   # presentation only: cell not applicable for this row
   row_heights:
     title: 24
     subtitle: 15
@@ -150,35 +151,25 @@ sheets:
     codename: "shCostLines"
     visibility: "visible"
     role: "input"
-    purpose: "Base cost input. Uncertainty is entered at unit-cost level only."
+    purpose: "Base cost driver register. Uncertainty is entered at unit-cost level only."
     show_gridlines: false
     title: "Cost Lines"
-    subtitle: "Base cost input - table schema is deferred to a later phase"
-    freeze_panes: "A6"
-    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
-    blocks:
-      - type: note
-        text: "Not implemented yet. No table, columns, IDs or formulas are implemented yet."
-      - type: section
-        title: "Cost Line Input Area"
-        note: "Reserved for the cost line table and its Add / Delete controls."
+    subtitle: "Base cost drivers - schema and validation are functional; no calculation is wired yet"
+    body: "drivers"
+    freeze_panes: "C12"
+    column_widths: { A: 3 }
 
   - name: "Risk Register"
     codename: "shRiskRegister"
     visibility: "visible"
     role: "input"
-    purpose: "Discrete risk input. Every risk entered is included in the simulation."
+    purpose: "Discrete risk driver register. Every risk entered is simulated; there is no Included field."
     show_gridlines: false
     title: "Risk Register"
-    subtitle: "Risk input - table schema is deferred to a later phase"
-    freeze_panes: "A6"
-    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
-    blocks:
-      - type: note
-        text: "Not implemented yet. No table, columns, IDs or formulas are implemented yet."
-      - type: section
-        title: "Risk Input Area"
-        note: "Reserved for the risk register table and its Add / Delete controls."
+    subtitle: "Risk drivers - schema and validation are functional; no occurrence logic is wired yet"
+    body: "drivers"
+    freeze_panes: "C12"
+    column_widths: { A: 3 }
 
   - name: "Inflation"
     codename: "shInflation"

@@ -19,9 +19,14 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .contract_loader import InputContract
+from .driver_loader import DriverContract
 
 
-def apply_validation(worksheets: dict[str, Worksheet], contract: InputContract) -> list[str]:
+def apply_validation(
+    worksheets: dict[str, Worksheet],
+    contract: InputContract,
+    drivers: DriverContract | None = None,
+) -> list[str]:
     """Attach every contract-declared validation. Returns a description per rule."""
     applied: list[str] = []
 
@@ -51,6 +56,33 @@ def apply_validation(worksheets: dict[str, Worksheet], contract: InputContract) 
                 f"<- {_describe(column.validation)}"
             )
 
+    if drivers is not None:
+        applied.extend(_apply_driver_validation(worksheets, drivers))
+
+    return applied
+
+
+def _apply_driver_validation(
+    worksheets: dict[str, Worksheet], drivers: DriverContract
+) -> list[str]:
+    """Driver registers. Model-controlled columns (the IDs) never get a rule."""
+    applied: list[str] = []
+    for register in drivers.all_registers:
+        worksheet = worksheets[register.sheet]
+        for index, column in enumerate(register.columns):
+            if not column.validation:
+                continue
+            if not column.editable:
+                # Belt and braces: the loader already rejects this combination.
+                continue
+            dv = _build(column.validation)
+            worksheet.add_data_validation(dv)
+            target = register.data_range(index)
+            dv.add(target)
+            applied.append(
+                f"{register.sheet}!{target} ({register.table_name}.{column.header}) "
+                f"<- {_describe(column.validation)}"
+            )
     return applied
 
 

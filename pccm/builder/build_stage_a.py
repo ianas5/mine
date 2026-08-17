@@ -27,6 +27,7 @@ from pccm_builder import (  # noqa: E402
     SpecError,
     build_workbook,
     load_contract,
+    load_driver_contract,
     load_spec,
     verify_workbook,
 )
@@ -34,6 +35,7 @@ from pccm_builder import (  # noqa: E402
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SPEC = PCCM_ROOT / "spec" / "workbook.yaml"
 DEFAULT_CONTRACT = PCCM_ROOT / "spec" / "input_contract.yaml"
+DEFAULT_DRIVERS = PCCM_ROOT / "spec" / "driver_contract.yaml"
 DEFAULT_BUILD_DIR = PCCM_ROOT / "build"
 
 
@@ -43,6 +45,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help=f"path to the workbook manifest (default: {DEFAULT_SPEC})")
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT,
                         help=f"path to the input contract (default: {DEFAULT_CONTRACT})")
+    parser.add_argument("--drivers", type=Path, default=DEFAULT_DRIVERS,
+                        help=f"path to the driver contract (default: {DEFAULT_DRIVERS})")
     parser.add_argument("--out", type=Path, default=None,
                         help="output path (default: <pccm>/build/<manifest filename>)")
     parser.add_argument("--quiet", action="store_true", help="suppress progress output")
@@ -56,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     say(f"PCCM Stage A builder {BUILDER_VERSION}")
     say(f"  manifest : {args.spec}")
     say(f"  contract : {args.contract}")
+    say(f"  drivers  : {args.drivers}")
 
     try:
         spec = load_spec(args.spec)
@@ -67,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
     except ContractError as error:
         print(f"INPUT CONTRACT ERROR: {error}", file=sys.stderr)
         return 2
+    try:
+        drivers = load_driver_contract(args.drivers)
+    except ContractError as error:
+        print(f"DRIVER CONTRACT ERROR: {error}", file=sys.stderr)
+        return 2
 
     out_path = args.out or (DEFAULT_BUILD_DIR / spec.stage_a_filename)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,8 +85,13 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  phase    : {spec.model['build_phase']}")
     say(f"  sheets   : {len(spec.sheets)}")
     say(f"  inputs   : {len(contract.inputs)}   tables: {len(contract.all_tables)}")
+    say(f"  drivers  : {len(drivers.all_registers)} registers")
 
-    workbook, metadata = build_workbook(spec, contract)
+    try:
+        workbook, metadata = build_workbook(spec, contract, drivers)
+    except RuntimeError as error:
+        print(f"CROSS-SPECIFICATION ERROR: {error}", file=sys.stderr)
+        return 2
     workbook.save(out_path)
     workbook.close()
 
@@ -85,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     say("")
     say("Structural verification:")
 
-    result = verify_workbook(out_path, spec, contract)
+    result = verify_workbook(out_path, spec, contract, drivers)
     say(result.report())
 
     if not result.ok:

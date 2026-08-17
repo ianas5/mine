@@ -1,6 +1,6 @@
 # PCCM — Phase 2: Functional Setup & Configuration Layer
 
-**Status: complete, pending review.**
+**Status: accepted and closed.** Phase 3 builds on this; see `phase3.md`.
 
 Phase 2 turns Setup and Config from structural placeholders into controlled
 model-input infrastructure. It is still a Stage A `.xlsx`; no VBA, no Stage B.
@@ -19,6 +19,7 @@ Phase 1 is closed; see `phase1.md` for the foundation this builds on.
 |---|---|
 | `spec/workbook.yaml` | structure and presentation: sheets, order, visibility, style tokens, non-input sheet shells |
 | `spec/input_contract.yaml` | **inputs**: semantic keys, labels, cells, defined names, types, defaults, number formats, validation, editability |
+| `spec/driver_contract.yaml` | added in Phase 3: Cost Line and Risk Register schemas |
 
 Setup and Config declare `body: contract` in the manifest and therefore have
 **no blocks**; the input contract is their single layout authority. The loader

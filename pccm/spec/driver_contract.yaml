@@ -1,0 +1,402 @@
+# =============================================================================
+# PCCM - Driver Contract
+# =============================================================================
+# Semantic authority for the two DRIVER REGISTERS: Cost Lines and Risk Register.
+# A "driver" is anything that contributes uncertainty to total project cost.
+#
+# Authority split:
+#   workbook.yaml        structure and presentation
+#   input_contract.yaml  Setup inputs and Config master lists
+#   driver_contract.yaml Cost Line and Risk Register schemas   <- this file
+#
+# Scope: Phase 3. Schema, ownership and validation only.
+# No calculation, no permanent-ID allocation, no VBA. Every validation source
+# named here must resolve to a list defined name declared in input_contract.yaml;
+# the loader cross-checks that before anything is rendered.
+#
+# Column widths live here because a column and its width are one thing; splitting
+# them across two files would guarantee drift as the schema evolves.
+# =============================================================================
+
+driver_contract_version: "1.0.0"
+
+# -----------------------------------------------------------------------------
+# reserved_rows is INITIAL CAPACITY for structural review, not a business limit.
+# Stage A has no Add/Delete macros yet, so the table is materialised with blank
+# rows. Stage B macros will grow these tables beyond this count. The Architecture
+# design targets (200 cost lines, 100 risks) are benchmark figures, NOT caps, and
+# are deliberately not encoded anywhere.
+# -----------------------------------------------------------------------------
+
+registers:
+
+  # ===========================================================================
+  # Cost Lines - base cost drivers. Uncertainty is entered at UNIT COST level.
+  # ===========================================================================
+  cost_lines:
+    sheet: "Cost Lines"
+    table_name: "tblCostLines"
+    section: "Cost Line Register"
+    section_row: 8
+    note_row: 9
+    note: "One row per cost line. Uncertainty is entered at unit-cost level only; quantity is deterministic."
+    intro_row: 6
+    intro: "Phase 3. Schema and validation are functional. No IDs are allocated and no calculation is wired to these rows yet."
+    header_row: 11
+    first_column: "B"
+    reserved_rows: 25
+
+    columns:
+      - key: "cost_line_id"
+        header: "Cost Line ID"
+        type: "text"
+        editable: false          # model-controlled; allocated by Stage B, never by the user
+        required: true           # semantic status for a future Model Check rule
+        number_format: "@"
+        width: 14
+        validation: null
+        note: "Permanent identifier. Blank in Stage A: allocation is a Stage B responsibility and is not implemented."
+
+      - key: "category"
+        header: "Category"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 20
+        validation:
+          kind: "list"
+          source: "lstCategories"
+          prompt_title: "Category"
+          prompt: "Select a category from the Config master list."
+          error_title: "Unknown category"
+          error: "Category must come from the Config category master list."
+
+      - key: "description"
+        header: "Description"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 42
+        validation: null
+        note: "Free text. Descriptions may change at any time without affecting identity."
+
+      - key: "uom"
+        header: "UOM"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 12
+        validation:
+          kind: "list"
+          source: "lstUOM"
+          prompt_title: "Unit of Measure"
+          prompt: "Select a unit from the Config master list."
+          error_title: "Unknown unit"
+          error: "UOM must come from the Config unit master list."
+
+      - key: "quantity"
+        header: "Quantity"
+        type: "decimal"
+        editable: true
+        required: true
+        number_format: "#,##0.00"
+        width: 12
+        validation: null
+        note: "Deterministic. Fixed during simulation. No positivity rule here; that is a Model Check rule."
+
+      - key: "currency"
+        header: "Currency"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 11
+        validation:
+          kind: "list"
+          source: "lstCurrencies"
+          prompt_title: "Currency"
+          prompt: "Select a currency from the Config master list. Its rate is entered on Setup."
+          error_title: "Unknown currency"
+          error: "Currency must come from the Config currency master list."
+
+      - key: "inflation_profile"
+        header: "Inflation Profile"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 20
+        validation:
+          kind: "list"
+          source: "lstInflationProfiles"
+          prompt_title: "Inflation Profile"
+          prompt: "Select the escalation profile that applies to this cost line."
+          error_title: "Unknown profile"
+          error: "Inflation Profile must come from the Config profile master list."
+        note: "Selects the applicable escalation profile name only. No inflation calculation exists yet."
+
+      - key: "unit_cost_min"
+        header: "Unit Cost Min"
+        type: "decimal"
+        editable: true
+        required: true
+        number_format: "#,##0.00"
+        width: 16
+        validation: null
+
+      - key: "unit_cost_most_likely"
+        header: "Unit Cost Most Likely"
+        type: "decimal"
+        editable: true
+        required: false
+        number_format: "#,##0.00"
+        width: 20
+        validation: null
+        note: "Not used by the Uniform distribution. Greyed by conditional formatting when Distribution = Uniform; that is presentation only, not input enforcement."
+
+      - key: "unit_cost_max"
+        header: "Unit Cost Max"
+        type: "decimal"
+        editable: true
+        required: true
+        number_format: "#,##0.00"
+        width: 16
+        validation: null
+        note: "Min <= Most Likely <= Max is NOT enforced by data validation. It is a Model Check rule."
+
+      - key: "distribution"
+        header: "Distribution"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 15
+        validation:
+          kind: "list"
+          source: "lstDistributions"
+          prompt_title: "Distribution"
+          prompt: "Triangular, Beta-PERT or Uniform."
+          error_title: "Unknown distribution"
+          error: "Distribution must come from the Config distribution list."
+
+    # Presentation only. Greys the Most Likely cell when the row's distribution is
+    # Uniform, because Uniform has no Most Likely parameter. It applies no rule to
+    # what may be typed and performs no calculation.
+    conditional_formatting:
+      - purpose: "grey the Most Likely cell when Distribution = Uniform"
+        target_column: "unit_cost_most_likely"
+        when_column: "distribution"
+        equals: "Uniform"
+
+  # ===========================================================================
+  # Risk Register - discrete risk drivers. Every risk entered is simulated.
+  # ===========================================================================
+  risk_register:
+    sheet: "Risk Register"
+    table_name: "tblRiskRegister"
+    section: "Risk Register"
+    section_row: 8
+    note_row: 9
+    note: "One row per risk. There is no Included column: every risk entered is simulated."
+    intro_row: 6
+    intro: "Phase 3. Schema and validation are functional. No IDs are allocated and no occurrence logic is wired to these rows yet."
+    header_row: 11
+    first_column: "B"
+    reserved_rows: 25
+
+    columns:
+      - key: "risk_id"
+        header: "Risk ID"
+        type: "text"
+        editable: false
+        required: true
+        number_format: "@"
+        width: 12
+        validation: null
+        note: "Permanent identifier. Blank in Stage A: allocation is a Stage B responsibility and is not implemented."
+
+      - key: "risk_name"
+        header: "Risk Name"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 30
+        validation: null
+
+      - key: "description"
+        header: "Description"
+        type: "text"
+        editable: true
+        required: false
+        number_format: "@"
+        width: 42
+        validation: null
+
+      - key: "category"
+        header: "Category"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 20
+        validation:
+          kind: "list"
+          source: "lstCategories"
+          prompt_title: "Category"
+          prompt: "Select a category from the Config master list."
+          error_title: "Unknown category"
+          error: "Category must come from the Config category master list."
+
+      - key: "probability"
+        header: "Probability"
+        type: "percentage"
+        editable: true
+        required: true
+        number_format: "0.0%"
+        width: 13
+        validation:
+          kind: "decimal"
+          operator: "between"
+          formula1: "0"
+          formula2: "1"
+          prompt_title: "Probability"
+          prompt: "Probability of occurrence, between 0 and 1 (0% to 100%)."
+          error_title: "Invalid probability"
+          error: "Probability must be between 0 and 1, or left blank."
+        note: "Occurrence is a Bernoulli event in the engine. No simulation exists yet."
+
+      - key: "currency"
+        header: "Currency"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 11
+        validation:
+          kind: "list"
+          source: "lstCurrencies"
+          prompt_title: "Currency"
+          prompt: "Select a currency from the Config master list. Its rate is entered on Setup."
+          error_title: "Unknown currency"
+          error: "Currency must come from the Config currency master list."
+
+      - key: "inflation_profile"
+        header: "Inflation Profile"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 20
+        validation:
+          kind: "list"
+          source: "lstInflationProfiles"
+          prompt_title: "Inflation Profile"
+          prompt: "Select the escalation profile that applies to this risk impact."
+          error_title: "Unknown profile"
+          error: "Inflation Profile must come from the Config profile master list."
+
+      - key: "impact_min"
+        header: "Impact Min"
+        type: "decimal"
+        editable: true
+        required: true
+        number_format: "#,##0.00"
+        width: 15
+
+      - key: "impact_most_likely"
+        header: "Impact Most Likely"
+        type: "decimal"
+        editable: true
+        required: false
+        number_format: "#,##0.00"
+        width: 19
+        note: "Not used by the Uniform distribution. Greyed by conditional formatting when Distribution = Uniform; presentation only."
+
+      - key: "impact_max"
+        header: "Impact Max"
+        type: "decimal"
+        editable: true
+        required: true
+        number_format: "#,##0.00"
+        width: 15
+        note: "Three-point ordering is NOT enforced by data validation. It is a Model Check rule."
+
+      - key: "distribution"
+        header: "Distribution"
+        type: "text"
+        editable: true
+        required: true
+        number_format: "@"
+        width: 15
+        validation:
+          kind: "list"
+          source: "lstDistributions"
+          prompt_title: "Distribution"
+          prompt: "Triangular, Beta-PERT or Uniform."
+          error_title: "Unknown distribution"
+          error: "Distribution must come from the Config distribution list."
+
+      - key: "risk_owner"
+        header: "Risk Owner"
+        type: "text"
+        editable: true
+        required: false
+        number_format: "@"
+        width: 22
+        validation: null
+        note: "Informational only. Never affects any calculation."
+
+    conditional_formatting:
+      - purpose: "grey the Most Likely cell when Distribution = Uniform"
+        target_column: "impact_most_likely"
+        when_column: "distribution"
+        equals: "Uniform"
+
+# -----------------------------------------------------------------------------
+# Locked schema conformance. The loader asserts each register's column headers
+# match this list exactly and in order, so a reordered or renamed schema fails the
+# build rather than the review.
+#
+# Forbidden headers are rejected outright: 'Included' contradicts the locked
+# decision that every entered risk is simulated, and a user-input total
+# contradicts the locked rule that a total is derived from sampled unit cost x
+# deterministic quantity.
+# -----------------------------------------------------------------------------
+locked_schema:
+  cost_lines:
+    - "Cost Line ID"
+    - "Category"
+    - "Description"
+    - "UOM"
+    - "Quantity"
+    - "Currency"
+    - "Inflation Profile"
+    - "Unit Cost Min"
+    - "Unit Cost Most Likely"
+    - "Unit Cost Max"
+    - "Distribution"
+  risk_register:
+    - "Risk ID"
+    - "Risk Name"
+    - "Description"
+    - "Category"
+    - "Probability"
+    - "Currency"
+    - "Inflation Profile"
+    - "Impact Min"
+    - "Impact Most Likely"
+    - "Impact Max"
+    - "Distribution"
+    - "Risk Owner"
+
+forbidden_headers:
+  - "Included"
+  - "Include"
+  - "Total Cost"
+  - "Total"
+  - "Line Total"
+  - "Cost Total"

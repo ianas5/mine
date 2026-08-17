@@ -26,12 +26,14 @@ from openpyxl import load_workbook  # noqa: E402
 from pccm_builder import (  # noqa: E402
     build_workbook,
     load_contract,
+    load_driver_contract,
     load_spec,
     structural_digest,
 )
 
 SPEC_PATH = PCCM_ROOT / "spec" / "workbook.yaml"
 CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
+DRIVERS_PATH = PCCM_ROOT / "spec" / "driver_contract.yaml"
 
 # --- Architecture Lock Revision B -------------------------------------------
 LOCKED_SHEET_ORDER = [
@@ -117,7 +119,8 @@ def _build(name: str, timestamp: str = "1970-01-01 00:00:00 UTC") -> Path:
     try:
         spec = load_spec(SPEC_PATH)
         contract = load_contract(CONTRACT_PATH)
-        workbook, _ = build_workbook(spec, contract)
+        drivers = load_driver_contract(DRIVERS_PATH)
+        workbook, _ = build_workbook(spec, contract, drivers)
         path = Path(_TEMPDIR.name) / f"{name}.xlsx"
         workbook.save(path)
         workbook.close()
@@ -297,7 +300,9 @@ def test_16_no_calculation_formulas_introduced() -> None:
         f"missing {sorted(expected_names - set(workbook.defined_names))}"
     )
 
+    drivers = load_driver_contract(DRIVERS_PATH)
     expected_tables = {t.table_name for t in contract.all_tables}
+    expected_tables |= {r.table_name for r in drivers.all_registers}
     found_tables = {
         name for ws in workbook.worksheets for name in getattr(ws, "tables", {})
     }

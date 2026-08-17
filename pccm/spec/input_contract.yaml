@@ -39,6 +39,11 @@ conventions:
 # -----------------------------------------------------------------------------
 model_invariants:
   reporting_currency: "SAR"
+  # The semantic input that carries the reporting currency. Named explicitly so
+  # the invariant is checked against THIS input, not against "any locked text
+  # input whose default happens to equal SAR".
+  reporting_currency_input: "reporting_currency"
+  reporting_currency_defined_name: "inpReportingCurrency"
   locked_identities:
     - table: "tblCurrencies"
       row: 1

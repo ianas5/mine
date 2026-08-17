@@ -56,6 +56,10 @@ class StyleBook:
             left=locked_side, right=locked_side, top=locked_side, bottom=locked_side
         )
 
+        # Presentation-only marker: a cell that is not applicable for the current
+        # row's distribution. It constrains nothing.
+        self.not_applicable_fill = PatternFill("solid", fgColor=colors["not_applicable_fill"])
+
         self.table_header_font = Font(name=family, size=sizes["value"], bold=True, color=colors["section"])
         self.table_header_fill = PatternFill("solid", fgColor=colors["header_fill"])
         self.table_style_name = presentation["table_style"]

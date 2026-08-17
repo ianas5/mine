@@ -25,12 +25,14 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from .contract_loader import InputContract
 from .contract_render import render_config, render_setup
+from .driver_loader import DriverContract, validate_against_input_contract
+from .driver_render import render_register
 from .names import apply_defined_names
 from .spec_loader import SheetSpec, WorkbookSpec
 from .styling import StyleBook
 from .validation import apply_validation
 
-BUILDER_VERSION = "0.2.0"
+BUILDER_VERSION = "0.3.0"
 DEFAULT_SHEET_TITLE = "Sheet"
 TIMESTAMP_ENV_VAR = "PCCM_BUILD_TIMESTAMP"
 
@@ -52,9 +54,12 @@ class BuildMetadata:
     build_timestamp: str
     manifest_version: str
     contract_version: str
+    driver_contract_version: str
 
     @classmethod
-    def create(cls, spec: WorkbookSpec, contract: InputContract) -> "BuildMetadata":
+    def create(
+        cls, spec: WorkbookSpec, contract: InputContract, drivers: DriverContract
+    ) -> "BuildMetadata":
         return cls(
             model_version=spec.model["model_version"],
             build_phase=spec.model["build_phase"],
@@ -62,6 +67,7 @@ class BuildMetadata:
             build_timestamp=resolve_build_timestamp(),
             manifest_version=spec.manifest_version,
             contract_version=contract.contract_version,
+            driver_contract_version=drivers.version,
         )
 
     def as_rows(self) -> list[tuple[str, str]]:
@@ -72,6 +78,7 @@ class BuildMetadata:
             ("Build Timestamp (UTC)", self.build_timestamp),
             ("Source Manifest Version", self.manifest_version),
             ("Input Contract Version", self.contract_version),
+            ("Driver Contract Version", self.driver_contract_version),
         ]
 
 
@@ -89,13 +96,13 @@ def resolve_build_timestamp() -> str:
 
 
 def build_workbook(
-    spec: WorkbookSpec, contract: InputContract
+    spec: WorkbookSpec, contract: InputContract, drivers: DriverContract
 ) -> tuple[Workbook, BuildMetadata]:
-    """Create the Stage A workbook described by *spec* and *contract*."""
-    _assert_consistent(spec, contract)
+    """Create the Stage A workbook from the manifest and both contracts."""
+    _assert_consistent(spec, contract, drivers)
 
     styles = StyleBook(spec.presentation)
-    metadata = BuildMetadata.create(spec, contract)
+    metadata = BuildMetadata.create(spec, contract, drivers)
 
     workbook = Workbook()
     default_sheet = workbook.active
@@ -109,6 +116,8 @@ def build_workbook(
                 render_setup(worksheet, contract, styles)
             else:
                 render_config(worksheet, contract, styles)
+        elif sheet_spec.body == "drivers":
+            render_register(worksheet, drivers.register_for_sheet(sheet_spec.name), styles)
         else:
             _populate_blocks(worksheet, sheet_spec, styles, metadata)
 
@@ -126,14 +135,29 @@ def build_workbook(
         workbook[sheet_spec.name].sheet_state = sheet_spec.visibility
 
     apply_defined_names(workbook, contract)
-    apply_validation({name: workbook[name] for name in workbook.sheetnames}, contract)
+    apply_validation(
+        {name: workbook[name] for name in workbook.sheetnames}, contract, drivers
+    )
 
     _apply_document_properties(workbook, spec, metadata)
     return workbook, metadata
 
 
-def _assert_consistent(spec: WorkbookSpec, contract: InputContract) -> None:
-    """The two specifications must agree about which sheets the contract owns."""
+def _assert_consistent(
+    spec: WorkbookSpec, contract: InputContract, drivers: DriverContract | None = None
+) -> None:
+    """The specifications must agree before anything is rendered."""
+    # Cross-spec: the reporting currency is declared in both files. They must not
+    # be allowed to drift apart silently.
+    manifest_currency = spec.model["reporting_currency"]
+    if manifest_currency != contract.reporting_currency:
+        raise RuntimeError(
+            "reporting currency disagrees between specifications: "
+            f"workbook.yaml model.reporting_currency={manifest_currency!r}, "
+            f"input_contract.yaml model_invariants.reporting_currency="
+            f"{contract.reporting_currency!r}"
+        )
+
     declared = set(spec.contract_sheets)
     used = contract.contract_sheets
     if declared != used:
@@ -152,6 +176,24 @@ def _assert_consistent(spec: WorkbookSpec, contract: InputContract) -> None:
             raise RuntimeError(
                 f"input {input_spec.key!r} targets unknown sheet {input_spec.sheet!r}"
             )
+
+    if drivers is None:
+        return
+
+    declared_drivers = set(spec.driver_sheets)
+    if declared_drivers != drivers.sheets:
+        raise RuntimeError(
+            "manifest and driver contract disagree about driver-bodied sheets: "
+            f"manifest says {sorted(declared_drivers)}, "
+            f"driver contract targets {sorted(drivers.sheets)}"
+        )
+    for register in drivers.all_registers:
+        if register.sheet not in known:
+            raise RuntimeError(
+                f"driver register {register.table_name!r} targets unknown sheet "
+                f"{register.sheet!r}"
+            )
+    validate_against_input_contract(drivers, contract)
 
 
 def _apply_document_properties(

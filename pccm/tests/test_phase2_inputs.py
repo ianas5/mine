@@ -22,10 +22,16 @@ sys.path.insert(0, str(PCCM_ROOT / "builder"))
 
 from openpyxl import load_workbook  # noqa: E402
 
-from pccm_builder import build_workbook, load_contract, load_spec  # noqa: E402
+from pccm_builder import (  # noqa: E402
+    build_workbook,
+    load_contract,
+    load_driver_contract,
+    load_spec,
+)
 
 SPEC_PATH = PCCM_ROOT / "spec" / "workbook.yaml"
 CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
+DRIVERS_PATH = PCCM_ROOT / "spec" / "driver_contract.yaml"
 
 # --- locked Phase 2 decisions ----------------------------------------------
 SETUP_INPUTS = {
@@ -69,7 +75,9 @@ def _artifact() -> Path:
     previous = os.environ.get("PCCM_BUILD_TIMESTAMP")
     os.environ["PCCM_BUILD_TIMESTAMP"] = "1970-01-01 00:00:00 UTC"
     try:
-        workbook, _ = build_workbook(load_spec(SPEC_PATH), load_contract(CONTRACT_PATH))
+        workbook, _ = build_workbook(
+            load_spec(SPEC_PATH), load_contract(CONTRACT_PATH), load_driver_contract(DRIVERS_PATH)
+        )
         path = Path(_TEMPDIR.name) / "stage_a.xlsx"
         workbook.save(path)
         workbook.close()
@@ -293,12 +301,16 @@ def test_19c_no_unsupported_validation_invented() -> None:
 
 
 # --- 20-23. nothing from a later phase --------------------------------------
-def test_20_no_cost_line_or_risk_tables_yet() -> None:
+def test_20_only_expected_tables_exist() -> None:
+    """Phase 3 added the two driver registers. Later-phase sheets remain bare."""
+    drivers = load_driver_contract(DRIVERS_PATH)
     workbook = _wb()
-    for sheet in ("Cost Lines", "Risk Register", "Inflation", "Cost Profiling", "Risk Profiling"):
+    for sheet in ("Inflation", "Cost Profiling", "Risk Profiling", "Model Check",
+                  "Results", "Sensitivity", "Dashboard", "Methodology", "_Calc", "_SimData"):
         assert not getattr(workbook[sheet], "tables", {}), f"{sheet} already declares a table"
     all_tables = {n for ws in workbook.worksheets for n in getattr(ws, "tables", {})}
-    assert all_tables == set(CONFIG_TABLES) | {FX_TABLE}, f"unexpected tables: {all_tables}"
+    expected = set(CONFIG_TABLES) | {FX_TABLE} | {r.table_name for r in drivers.all_registers}
+    assert all_tables == expected, f"unexpected tables: {all_tables ^ expected}"
 
 
 def test_21_no_formulas_or_business_calculations() -> None:
@@ -512,7 +524,7 @@ def test_37_locked_cells_use_locked_treatment_not_input_treatment() -> None:
     contract = load_contract(CONTRACT_PATH)
     workbook = _wb()
     tokens = _tokens()
-    for table in contract.all_tables:
+    for table in contract.all_tables:   # input-contract tables only
         worksheet = workbook[table.sheet]
         for offset in range(table.data_rows):
             row = table.first_data_row + offset

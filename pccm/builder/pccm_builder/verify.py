@@ -13,6 +13,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from .contract_loader import InputContract
+from .driver_loader import DriverContract
 from .spec_loader import WorkbookSpec
 
 
@@ -41,7 +42,10 @@ class VerificationResult:
 
 
 def verify_workbook(
-    path: str | Path, spec: WorkbookSpec, contract: InputContract | None = None
+    path: str | Path,
+    spec: WorkbookSpec,
+    contract: InputContract | None = None,
+    drivers: DriverContract | None = None,
 ) -> VerificationResult:
     """Verify the workbook at *path* against the manifest and the input contract."""
     path = Path(path)
@@ -133,6 +137,8 @@ def verify_workbook(
         expected_tables = (
             {t.table_name for t in contract.all_tables} if contract is not None else set()
         )
+        if drivers is not None:
+            expected_tables |= {r.table_name for r in drivers.all_registers}
         found_tables = {name for _, name in _tables(workbook)}
         result.check(
             "only contract-declared Excel Tables exist",
@@ -142,6 +148,8 @@ def verify_workbook(
 
         if contract is not None:
             _verify_contract(result, workbook, contract)
+        if drivers is not None:
+            _verify_drivers(result, workbook, drivers)
     finally:
         workbook.close()
 
@@ -280,6 +288,68 @@ def _verify_contract(result: VerificationResult, workbook, contract: InputContra
         len(validations) > 0,
         f"found {len(validations)}",
     )
+
+
+def _verify_drivers(result: VerificationResult, workbook, drivers: DriverContract) -> None:
+    """Every driver-schema promise must be observable in the artifact."""
+    for register in drivers.all_registers:
+        worksheet = workbook[register.sheet]
+        tables = getattr(worksheet, "tables", {})
+        if not result.check(
+            f"table {register.table_name} exists on {register.sheet}",
+            register.table_name in tables,
+        ):
+            continue
+        result.check(
+            f"table {register.table_name} ref is {register.ref}",
+            tables[register.table_name].ref == register.ref,
+            f"found {tables[register.table_name].ref}",
+        )
+        result.check(
+            f"table {register.table_name} has {len(register.columns)} columns in locked order",
+            [
+                worksheet[f"{register.column_letter(i)}{register.header_row}"].value
+                for i in range(len(register.columns))
+            ]
+            == register.headers,
+        )
+        # Identity columns must be genuinely blank: no pre-seeded IDs, no formula.
+        identity = register.columns[0]
+        blanks = [
+            f"{register.column_letter(0)}{row}"
+            for row in range(register.first_data_row, register.last_data_row + 1)
+            if worksheet[f"{register.column_letter(0)}{row}"].value is not None
+        ]
+        result.check(
+            f"{register.table_name} {identity.header!r} column is entirely blank "
+            "(no IDs are allocated in Stage A)",
+            not blanks,
+            ", ".join(blanks[:5]),
+        )
+        # Every data cell must be empty: a driver register carries no seeded data.
+        populated = [
+            f"{register.column_letter(i)}{row}"
+            for i in range(len(register.columns))
+            for row in range(register.first_data_row, register.last_data_row + 1)
+            if worksheet[f"{register.column_letter(i)}{row}"].value is not None
+        ]
+        result.check(
+            f"{register.table_name} reserved rows are blank",
+            not populated,
+            ", ".join(populated[:5]),
+        )
+
+        targeted = {
+            str(rng)
+            for dv in worksheet.data_validations.dataValidation
+            for rng in dv.sqref.ranges
+        }
+        identity_range = register.data_range(0)
+        result.check(
+            f"{register.table_name} identity column carries no data validation",
+            identity_range not in targeted,
+            f"found validation on {identity_range}",
+        )
 
 
 def structural_digest(path: str | Path) -> str:

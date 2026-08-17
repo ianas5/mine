@@ -15,6 +15,7 @@ import yaml
 
 VALID_VISIBILITY = ("visible", "hidden", "veryHidden")
 VALID_BLOCK_TYPES = ("section", "note")
+VALID_BODIES = ("contract", "drivers")
 CODENAME_RE = re.compile(r"^sh[A-Z][A-Za-z0-9]*$")
 
 
@@ -65,8 +66,13 @@ class WorkbookSpec:
 
     @property
     def contract_sheets(self) -> list[str]:
-        """Sheets whose body is generated from the input contract, not from blocks."""
+        """Sheets whose body is generated from the input contract."""
         return [s.name for s in self.sheets if s.body == "contract"]
+
+    @property
+    def driver_sheets(self) -> list[str]:
+        """Sheets whose body is generated from the driver contract."""
+        return [s.name for s in self.sheets if s.body == "drivers"]
 
     def sheet(self, name: str) -> SheetSpec:
         for s in self.sheets:
@@ -166,19 +172,19 @@ def _parse_sheet(entry: Any, index: int, path: Path) -> SheetSpec:
             raise SpecError(f"{where}: width for column {column} must be a positive number")
 
     body = entry.get("body")
-    if body is not None and body != "contract":
-        raise SpecError(f"{where}: body {body!r} must be omitted or 'contract'")
+    if body is not None and body not in VALID_BODIES:
+        raise SpecError(f"{where}: body {body!r} must be omitted or one of {VALID_BODIES}")
 
     blocks = entry.get("blocks") or []
     if not isinstance(blocks, list):
         raise SpecError(f"{where}: blocks must be a list")
-    if body == "contract" and blocks:
+    if body is not None and blocks:
         raise SpecError(
-            f"{where}: a contract-bodied sheet must not also declare blocks; "
-            "the input contract is its single layout authority"
+            f"{where}: a {body}-bodied sheet must not also declare blocks; "
+            "its contract is the single layout authority for that sheet"
         )
     if body is None and not blocks:
-        raise SpecError(f"{where}: sheet has neither blocks nor body: 'contract'")
+        raise SpecError(f"{where}: sheet has neither blocks nor a body contract")
     for position, block in enumerate(blocks):
         _validate_block(block, f"{where}: blocks[{position}]")
 
