@@ -40,62 +40,114 @@ Private Function Fault(ByVal CheckKey As String, ByVal Text As String) As String
 End Function
 
 ' ---------------------------------------------------------------------------
+' Every structural invariant is checked INDEPENDENTLY, so a workbook that violates
+' several is told about all of them. Nothing here performs arithmetic on a value it
+' has not already bounded: inspecting corruption must not itself overflow.
 Private Function CheckAppliedTriple() As String
-    Dim baseYear As Variant, startYear As Variant, duration As Variant
+    Dim rawBase As Variant, rawStart As Variant, rawDuration As Variant
+    Dim baseYear As Double, startYear As Double, duration As Double
+    Dim baseOk As Boolean, startOk As Boolean, durationOk As Boolean
     Dim present As Long, problems As String
 
-    baseYear = modWorkbook.ReadValue(NM_APPLIED_BASE_YEAR)
-    startYear = modWorkbook.ReadValue(NM_APPLIED_START_YEAR)
-    duration = modWorkbook.ReadValue(NM_APPLIED_DURATION)
+    rawBase = modWorkbook.ReadValue(NM_APPLIED_BASE_YEAR)
+    rawStart = modWorkbook.ReadValue(NM_APPLIED_START_YEAR)
+    rawDuration = modWorkbook.ReadValue(NM_APPLIED_DURATION)
 
-    If Not IsEmpty(baseYear) Then present = present + 1
-    If Not IsEmpty(startYear) Then present = present + 1
-    If Not IsEmpty(duration) Then present = present + 1
+    If Not IsEmpty(rawBase) Then present = present + 1
+    If Not IsEmpty(rawStart) Then present = present + 1
+    If Not IsEmpty(rawDuration) Then present = present + 1
 
     ' Wholly blank or wholly populated. A partially applied triple is exactly the
     ' half-applied state this phase exists to make impossible.
-    If present <> 0 And present <> 3 Then
-        problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
-            "the applied timeline is partially populated (" & present & " of 3 values).")
-        CheckAppliedTriple = problems
-        Exit Function
-    End If
     If present = 0 Then Exit Function
-
-    If Not modWorkbook.IsWholeNumber(baseYear) Or Not modWorkbook.IsWholeNumber(startYear) _
-       Or Not modWorkbook.IsWholeNumber(duration) Then
-        problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
-            "an applied timeline value is not a whole number.")
-        CheckAppliedTriple = problems
+    If present <> 3 Then
+        CheckAppliedTriple = Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
+            "the applied timeline is partially populated (" & present & " of 3 values).")
         Exit Function
     End If
 
-    If CLng(duration) < 1 Then
+    ' --- whole-number check, independently per value ------------------------
+    If Not modWorkbook.IsWholeNumber(rawBase) Then
         problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
-            "applied duration " & duration & " is below 1.")
+            "applied Base Year is not a whole number.")
     End If
-    If CLng(baseYear) > CLng(startYear) Then
+    If Not modWorkbook.IsWholeNumber(rawStart) Then
         problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
-            "applied base year " & baseYear & " is later than applied start year " & startYear & ".")
+            "applied Start Year is not a whole number.")
     End If
-    If CLng(baseYear) < LIMIT_MIN_YEAR Or CLng(startYear) > LIMIT_MAX_YEAR Then
+    If Not modWorkbook.IsWholeNumber(rawDuration) Then
         problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
-            "an applied year is outside the supported window " & LIMIT_MIN_YEAR & "-" & LIMIT_MAX_YEAR & ".")
+            "applied Duration is not a whole number.")
+    End If
+
+    ' --- range check, independently per bound -------------------------------
+    baseOk = modWorkbook.IsWholeInRange(rawBase, LIMIT_MIN_YEAR, LIMIT_MAX_YEAR, baseYear)
+    startOk = modWorkbook.IsWholeInRange(rawStart, LIMIT_MIN_YEAR, LIMIT_MAX_YEAR, startYear)
+    durationOk = modWorkbook.IsWholeInRange(rawDuration, 1, LIMIT_MAX_YEAR_COLUMNS, duration)
+
+    If Not baseOk Then
+        If modWorkbook.IsWholeNumber(rawBase) Then
+            problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
+                "applied Base Year is outside the supported calendar-year window " & _
+                LIMIT_MIN_YEAR & "-" & LIMIT_MAX_YEAR & ".")
+        End If
+    End If
+    If Not startOk Then
+        If modWorkbook.IsWholeNumber(rawStart) Then
+            problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
+                "applied Start Year is outside the supported calendar-year window " & _
+                LIMIT_MIN_YEAR & "-" & LIMIT_MAX_YEAR & ".")
+        End If
+    End If
+    If Not durationOk Then
+        If modWorkbook.IsWholeNumber(rawDuration) Then
+            Dim rawDurationValue As Double
+            If modWorkbook.TryReadDouble(rawDuration, rawDurationValue) Then
+                If rawDurationValue < 1 Then
+                    problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
+                        "applied Duration is below 1.")
+                Else
+                    problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
+                        "applied Duration exceeds the structural protection limit of " & _
+                        LIMIT_MAX_YEAR_COLUMNS & " generated project-year columns.")
+                End If
+            End If
+        End If
+    End If
+
+    ' --- relationships, only between values already proven bounded ----------
+    If baseOk And startOk Then
+        If baseYear > startYear Then
+            problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
+                "applied Base Year " & modWorkbook.SafeLong(baseYear) & _
+                " is later than applied Start Year " & modWorkbook.SafeLong(startYear) & ".")
+        End If
+    End If
+    If startOk And durationOk Then
+        Dim lastYear As Long
+        lastYear = modWorkbook.SafeLong(startYear + duration - 1)
+        If lastYear > LIMIT_MAX_YEAR Then
+            problems = problems & Fault(CHK_APPLIED_TRIPLE_CONSISTENT, _
+                "applied Last Project Year " & lastYear & _
+                " is beyond the supported structural year boundary " & LIMIT_MAX_YEAR & ".")
+        End If
     End If
 
     CheckAppliedTriple = problems
 End Function
 
+
 ' ---------------------------------------------------------------------------
 Private Function CheckProfilingShape(ByVal Kind As String, ByVal TableName As String) As String
-    Dim duration As Variant, startYear As Variant
+    Dim startYear As Long
     Dim expected As Long, actual As Long, i As Long
     Dim problems As String
     Dim target As ListObject
 
-    duration = modWorkbook.ReadValue(NM_APPLIED_DURATION)
-    startYear = modWorkbook.ReadValue(NM_APPLIED_START_YEAR)
-    If IsEmpty(duration) Then expected = 0 Else expected = CLng(duration)
+    ' Bounded reads. CheckAppliedTriple has already reported a corrupt triple; this
+    ' check must still inspect the grid shape without overflowing on the same value.
+    expected = modWorkbook.ReadLongInRange(NM_APPLIED_DURATION, 1, LIMIT_MAX_YEAR_COLUMNS, 0)
+    startYear = modWorkbook.ReadLongInRange(NM_APPLIED_START_YEAR, LIMIT_MIN_YEAR, LIMIT_MAX_YEAR, 0)
 
     Set target = modProfiling.ProfilingTable(Kind)
     actual = modProfiling.YearColumnCount(Kind)
@@ -113,24 +165,24 @@ Private Function CheckProfilingShape(ByVal Kind As String, ByVal TableName As St
         fixedCols = modProfiling.FixedColumnCount(Kind)
         For i = 1 To expected
             Dim headerText As String
+            Dim headerYear As Double
             headerText = target.ListColumns(fixedCols + i).Name
-            If Not IsNumeric(headerText) Then
+            If Not modWorkbook.IsWholeInRange(headerText, LIMIT_MIN_YEAR, LIMIT_MAX_YEAR, headerYear) Then
                 problems = problems & Fault(CHK_PROFILING_YEAR_HEADERS, _
-                    TableName & " project-year header " & i & " is '" & headerText & "', not a year.")
-            ElseIf CLng(headerText) <> CLng(startYear) + i - 1 Then
+                    TableName & " project-year header " & i & " is '" & headerText & _
+                    "', not a supported calendar year.")
+            ElseIf modWorkbook.SafeLong(headerYear) <> startYear + i - 1 Then
                 problems = problems & Fault(CHK_PROFILING_YEAR_HEADERS, _
                     TableName & " project-year header " & i & " is " & headerText & _
-                    "; expected " & (CLng(startYear) + i - 1) & ".")
+                    "; expected " & (startYear + i - 1) & ".")
             End If
         Next i
     End If
 
-    ' Header row intact and the table still consistent with its rendered extent.
+    ' Header row intact. The column count is already covered by the year-column check
+    ' above, so it is deliberately NOT reported a second time here.
     If target.HeaderRowRange Is Nothing Then
         problems = problems & Fault(CHK_GRID_SHAPE, TableName & " has lost its header row.")
-    ElseIf target.ListColumns.Count <> modProfiling.FixedColumnCount(Kind) + expected Then
-        problems = problems & Fault(CHK_GRID_SHAPE, _
-            TableName & " column count is inconsistent with its fixed and generated columns.")
     End If
 
     CheckProfilingShape = problems
@@ -200,12 +252,13 @@ End Function
 Private Function CheckIdPatterns(ByVal DriverKind As String, ByVal Prefix As String, _
                                  ByVal TableName As String) As String
     Dim register As ListObject
-    Dim r As Long, rowCount As Long, idCol As Long
+    Dim r As Long, rowCount As Long, idCol As Long, padWidth As Long
     Dim idText As String, tail As String
     Dim problems As String
 
     Set register = modDrivers.RegisterTable(DriverKind)
     idCol = modDrivers.IdColumn(DriverKind)
+    padWidth = modDrivers.IdPad(DriverKind)
     rowCount = modWorkbook.BodyRowCount(register)
 
     For r = 1 To rowCount
@@ -222,6 +275,15 @@ Private Function CheckIdPatterns(ByVal DriverKind As String, ByVal Prefix As Str
                 If Not IsAllDigits(tail) Then
                     problems = problems & Fault(CHK_ID_PATTERN, _
                         TableName & " row " & r & " holds '" & idText & "'; the sequence part must be digits.")
+                ElseIf Len(tail) < padWidth Then
+                    ' Prefix plus digits is not sufficient. The contract fixes a minimum
+                    ' display width, so CL-001 and CL-1000 are both valid identifiers
+                    ' while CL-1 is not: it could only have been produced by something
+                    ' other than the allocator.
+                    problems = problems & Fault(CHK_ID_PATTERN, _
+                        TableName & " row " & r & " holds '" & idText & "'; the sequence must " & _
+                        "be at least " & padWidth & " digits wide (" & Prefix & _
+                        String$(padWidth, "0") & " or longer).")
                 End If
             End If
         End If
@@ -285,11 +347,13 @@ Private Function CheckInflationHeaders() As String
         firstYear = modInflation.RequiredFirstYear()
         For i = 1 To expected
             Dim headerText As String
+            Dim headerYear As Double
             headerText = target.ListColumns(fixedCols + i).Name
-            If Not IsNumeric(headerText) Then
+            If Not modWorkbook.IsWholeInRange(headerText, LIMIT_MIN_YEAR, LIMIT_MAX_YEAR, headerYear) Then
                 problems = problems & Fault(CHK_INFLATION_YEAR_HEADERS, _
-                    TBL_INFLATION & " year header " & i & " is '" & headerText & "', not a year.")
-            ElseIf CLng(headerText) <> CLng(firstYear) + i - 1 Then
+                    TBL_INFLATION & " year header " & i & " is '" & headerText & _
+                    "', not a supported calendar year.")
+            ElseIf modWorkbook.SafeLong(headerYear) <> CLng(firstYear) + i - 1 Then
                 problems = problems & Fault(CHK_INFLATION_YEAR_HEADERS, _
                     TBL_INFLATION & " year header " & i & " is " & headerText & "; expected " & _
                     (CLng(firstYear) + i - 1) & ".")

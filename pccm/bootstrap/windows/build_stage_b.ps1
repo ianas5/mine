@@ -101,8 +101,21 @@ try {
     # Resolve every declared module to a file. A module the contract declares but
     # that is missing on disk stops the build here rather than producing a
     # half-populated VBA project.
+    #
+    # The two directories resolve DIFFERENTLY, and the difference matters:
+    #
+    #   source modules     repository-relative. They are version-controlled input
+    #                      and are the same files whatever build is being assembled.
+    #   generated modules  BUILD-DIRECTORY-relative. modConstants.bas is emitted
+    #                      beside the workbook, the manifest and the scenario fixture
+    #                      it belongs to, so it must come from the SUPPLIED BuildDir.
+    #
+    # Resolving the generated module against the repository root instead meant the
+    # functional harness copied a disposable build to %TEMP% and then imported
+    # modConstants.bas from the real repository build -- testing a different
+    # generated source than the manifest and scenarios sitting beside the workbook.
     $srcDir  = Join-Path $pccmRoot $manifest.vba.source_dir
-    $genDir  = Join-Path $pccmRoot $manifest.vba.generated_dir
+    $genDir  = Join-Path $BuildDir (Split-Path -Leaf $manifest.vba.generated_dir)
     $missing = @()
     foreach ($m in $manifest.vba.modules) {
         $dir = $srcDir
@@ -207,7 +220,15 @@ try {
             $vbcomps.Remove($existing)
             Release-Transient $existing 'VBComponent(existing)'; $existing = $null
         }
-        $vbcomps.Import($file)
+        # Import returns the VBComponent it created. Discarding that return left an
+        # unowned RCW alive, which is exactly the invisible-intermediate pattern the
+        # readiness gate ruled out. It is named, released once, and nulled here.
+        $imported = $null
+        try {
+            $imported = $vbcomps.Import($file)
+        } finally {
+            if ($null -ne $imported) { Release-Transient $imported 'VBComponent(imported)'; $imported = $null }
+        }
     }
     $importedNames = @()
     for ($i = 1; $i -le $vbcomps.Count; $i++) {

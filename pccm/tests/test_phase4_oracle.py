@@ -24,6 +24,9 @@ from pccm_builder.scenarios import build_scenarios  # noqa: E402
 from pccm_builder.stage_b_emit import oracle_limits  # noqa: E402
 from pccm_builder.structure_oracle import (  # noqa: E402
     DestructiveImpact,
+    is_data,
+    removed_profiles,
+    sync_profiling_values,
     Timeline,
     TimelineChange,
     allocate_id,
@@ -121,9 +124,55 @@ def test_12_twenty_five_years_is_not_a_cap() -> None:
         )
 
 
-def test_13_the_generation_guard_is_the_year_window_width() -> None:
+def test_13_the_generated_column_guard_is_the_locked_200() -> None:
+    """Architecture Lock Revision B: generated column count > 200 = ERROR.
+
+    A locked constant in its own right. It is NOT the width of the calendar-year
+    window: deriving it from 1900-2200 silently produced a 301-column guard, and
+    deriving the window from it would equally have imposed a wrong 200-year cap on
+    the inflation span. The two protections bound different things.
+    """
     limits = _limits()
-    assert limits.max_generated_year_columns == limits.max_year - limits.min_year + 1
+    assert limits.max_generated_year_columns == 200
+    assert limits.max_generated_year_columns != limits.max_year - limits.min_year + 1, (
+        "the project-year guard must not be a function of the calendar-year window"
+    )
+
+
+def test_13a_duration_200_is_accepted_when_the_calendar_bound_permits() -> None:
+    limits = _limits()
+    # 2000 + 200 - 1 = 2199, inside the supported calendar-year boundary.
+    assert prevalidate(Timeline(2000, 2000, 200), limits) == []
+
+
+def test_13b_duration_201_is_rejected_before_any_modification() -> None:
+    problems = prevalidate(Timeline(2000, 2000, 201), _limits())
+    assert any("structural protection limit" in p for p in problems), problems
+    assert any("200" in p for p in problems)
+
+
+def test_13c_the_calendar_window_still_bounds_the_inflation_span_independently() -> None:
+    """A 200-year cap must NOT have been imposed on calendar years.
+
+    Base 1900 with a project ending in 2199 requires 299 inflation years. That is
+    far beyond the 200-column project guard and is perfectly legal, because the
+    inflation span is bounded by the calendar window, not by that guard.
+    """
+    limits = _limits()
+    timeline = Timeline(base_year=1900, start_year=2100, duration=100)
+    assert prevalidate(timeline, limits) == []
+    assert len(timeline.inflation_years) == 299
+    assert len(timeline.inflation_years) > limits.max_generated_year_columns
+    assert len(timeline.project_years) <= limits.max_generated_year_columns
+
+
+def test_13d_duration_is_rejected_before_the_last_year_is_computed() -> None:
+    """An oversized duration must not reach the arithmetic that would overflow."""
+    problems = prevalidate(Timeline(2000, 2000, 10_000_000_000), _limits())
+    assert any("structural protection limit" in p for p in problems)
+    assert not any("Last Project Year" in p for p in problems), (
+        "the duration guard must fire first, so the derived year is never computed"
+    )
 
 
 def test_14_prevalidation_reports_every_problem_at_once() -> None:
@@ -164,11 +213,49 @@ def test_18_a_start_year_shift_moves_no_profiling_value() -> None:
     assert before.project_years != after.project_years, "only the headers change"
 
 
-def test_19_only_non_zero_removals_count_as_destruction() -> None:
-    rows = {"CL-001": [0.5, 0.5, 0.0, 0.0]}
-    assert removed_profiling_values(rows, 2) == []
-    rows = {"CL-001": [0.5, 0.3, 0.2, 0.0]}
-    assert removed_profiling_values(rows, 2) == [("CL-001", 3, 0.2)]
+def test_19_blank_and_zero_removals_are_not_destruction() -> None:
+    assert removed_profiling_values({"CL-001": [0.5, 0.5, 0.0, 0.0]}, 2) == []
+    assert removed_profiling_values({"CL-001": [0.5, 0.5, None, None]}, 2) == []
+    assert removed_profiling_values({"CL-001": [0.5, 0.3, 0.2, 0.0]}, 2) == [("CL-001", 3, 0.2)]
+
+
+def test_19a_non_numeric_content_in_a_removed_cell_is_destruction() -> None:
+    """Blank and numeric zero destroy nothing. EVERYTHING else does.
+
+    A percentage pasted as text would otherwise be deleted by a duration reduction
+    with no destructive warning at all.
+    """
+    assert removed_profiling_values({"CL-001": [0.5, 0.5, "30%"]}, 2) == [("CL-001", 3, "30%")]
+    assert removed_profiling_values({"CL-001": [0.5, 0.5, "#REF!"]}, 2) == [("CL-001", 3, "#REF!")]
+    assert removed_profiling_values({"CL-001": [0.5, 0.5, "   "]}, 2) == [], "whitespace is blank"
+
+
+def test_19b_the_loss_predicate_is_explicit_about_each_case() -> None:
+    assert is_data(None) is False
+    assert is_data("") is False
+    assert is_data("  ") is False
+    assert is_data(0) is False
+    assert is_data(0.0) is False
+    assert is_data(0.25) is True
+    assert is_data("text") is True
+    assert is_data("#VALUE!") is True
+
+
+def test_19c_an_existing_blank_survives_synchronisation() -> None:
+    """Structural synchronisation must not repair invalid user data.
+
+    A blank profiling cell is invalid and Model Check has to be able to report it.
+    Filling it with 0% inside a structural operation would hide it forever.
+    """
+    existing = {"CL-001": [None, 0.5, 0.5]}
+    rebuilt = sync_profiling_values(existing, ["CL-001", "CL-002"], 3)
+    assert rebuilt["CL-001"] == [None, 0.5, 0.5], "the blank must survive exactly"
+    assert rebuilt["CL-002"] == [0.0, 0.0, 0.0], "a genuinely new driver starts at 0%"
+
+
+def test_19d_a_genuinely_new_project_year_still_starts_at_zero() -> None:
+    rebuilt = sync_profiling_values({"CL-001": [None, 0.5]}, ["CL-001"], 4)
+    assert rebuilt["CL-001"] == [None, 0.5, 0.0, 0.0]
 
 
 def test_20_destructive_indices_are_one_based_and_match_the_user_view() -> None:
@@ -199,6 +286,66 @@ def test_23_only_non_blank_rates_leaving_the_span_count_as_destruction() -> None
     rates = {"Local": {2027: None, 2028: 0.04}}
     assert removed_inflation_values(rates, [2028]) == []
     assert removed_inflation_values(rates, [2029]) == [("Local", 2028, 0.04)]
+
+
+def test_23a_a_profile_leaving_config_destroys_its_rates() -> None:
+    """The second, INDEPENDENT loss mechanism.
+
+    Deleting a profile from the Config master destroys that row's rates on the next
+    synchronisation even when the timeline is completely unchanged.
+    """
+    rates = {"Local": {2027: 0.03}, "Imported": {2027: 0.05}}
+    unchanged_span = [2027]
+    assert removed_inflation_values(rates, unchanged_span) == [], "no year is leaving"
+    losses = removed_inflation_values(rates, unchanged_span, surviving_profiles=["Local"])
+    assert losses == [("Imported", 2027, 0.05)]
+    assert removed_profiles(rates, ["Local"]) == ["Imported"]
+
+
+def test_23b_a_cell_losing_both_its_profile_and_its_year_is_counted_once() -> None:
+    rates = {"Gone": {2027: 0.05, 2028: 0.06}}
+    losses = removed_inflation_values(rates, [2029], surviving_profiles=[])
+    assert len(losses) == 2, "two cells, each counted once"
+    assert sorted(year for _p, year, _v in losses) == [2027, 2028]
+
+
+def test_23c_omitting_surviving_profiles_suppresses_that_half_of_the_assessment() -> None:
+    """None means 'profiles are not changing', which is not the same as 'none survive'."""
+    rates = {"Local": {2027: 0.03}}
+    assert removed_inflation_values(rates, [2027], surviving_profiles=None) == []
+    assert removed_inflation_values(rates, [2027], surviving_profiles=[]) == [("Local", 2027, 0.03)]
+
+
+def test_23d_assess_reports_removed_profiles_and_their_lost_rates() -> None:
+    change = TimelineChange(old=Timeline(2026, 2028, 3), new=Timeline(2026, 2028, 3))
+    impact = assess(
+        change,
+        {"cost": {"CL-001": [0.5, 0.5, 0.0]}},
+        {"Local": {2027: 0.03}, "Retired": {2027: 0.04}},
+        surviving_profiles=["Local"],
+    )
+    assert change.duration_delta == 0, "the timeline itself is unchanged"
+    assert impact.is_destructive is True, (
+        "a populated profile leaving Config is destructive on its own"
+    )
+    assert impact.removed_profile_names == ["Retired"]
+    assert impact.inflation_loss_count == 1
+
+
+def test_23e_an_empty_removed_profile_is_not_destructive() -> None:
+    change = TimelineChange(old=Timeline(2026, 2028, 3), new=Timeline(2026, 2028, 3))
+    impact = assess(change, {}, {"Retired": {2027: None}}, surviving_profiles=[])
+    assert impact.removed_profile_names == ["Retired"]
+    assert impact.is_destructive is False, "removing an empty row destroys no data"
+
+
+def test_23f_apply_change_drops_rows_whose_profile_has_gone() -> None:
+    change = TimelineChange(old=Timeline(2026, 2028, 2), new=Timeline(2026, 2028, 2))
+    _profiling, inflation = apply_change(
+        change, {}, {"Local": {2027: 0.03}, "Retired": {2027: 0.04}},
+        surviving_profiles=["Local"],
+    )
+    assert list(inflation) == ["Local"]
 
 
 def test_24_an_empty_span_removes_every_rate() -> None:

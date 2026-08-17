@@ -29,25 +29,33 @@ Option Explicit
 ' Applied base year + 1 through applied last project year. Legitimately EMPTY
 ' when base year = start year and duration = 1: there is no year between the
 ' price base and the end of the project, so no escalation assumption is required.
+' The applied triple is written only by a validated Apply, but it lives in cells a
+' paste can reach, so every read below is bounded before conversion. An out-of-range
+' or corrupt applied value yields Empty here and is reported by modStructuralCheck,
+' rather than overflowing inside a span calculation.
 Public Function RequiredFirstYear() As Variant
-    Dim baseYear As Variant
-    baseYear = modWorkbook.ReadValue(NM_APPLIED_BASE_YEAR)
-    If IsEmpty(baseYear) Then
+    Dim baseYear As Double
+    If Not modWorkbook.IsWholeInRange(modWorkbook.ReadValue(NM_APPLIED_BASE_YEAR), _
+                                      LIMIT_MIN_YEAR, LIMIT_MAX_YEAR, baseYear) Then
         RequiredFirstYear = Empty
     Else
-        RequiredFirstYear = CLng(baseYear) + 1
+        RequiredFirstYear = modWorkbook.SafeLong(baseYear) + 1
     End If
 End Function
 
 Public Function RequiredLastYear() As Variant
-    Dim startYear As Variant, duration As Variant
-    startYear = modWorkbook.ReadValue(NM_APPLIED_START_YEAR)
-    duration = modWorkbook.ReadValue(NM_APPLIED_DURATION)
-    If IsEmpty(startYear) Or IsEmpty(duration) Then
+    Dim startYear As Double, duration As Double
+    If Not modWorkbook.IsWholeInRange(modWorkbook.ReadValue(NM_APPLIED_START_YEAR), _
+                                      LIMIT_MIN_YEAR, LIMIT_MAX_YEAR, startYear) Then
         RequiredLastYear = Empty
-    Else
-        RequiredLastYear = CLng(startYear) + CLng(duration) - 1
+        Exit Function
     End If
+    If Not modWorkbook.IsWholeInRange(modWorkbook.ReadValue(NM_APPLIED_DURATION), _
+                                      1, LIMIT_MAX_YEAR_COLUMNS, duration) Then
+        RequiredLastYear = Empty
+        Exit Function
+    End If
+    RequiredLastYear = modWorkbook.SafeLong(startYear) + modWorkbook.SafeLong(duration) - 1
 End Function
 
 Public Function RequiredYearCount() As Long
@@ -91,12 +99,15 @@ Public Sub SetYearColumns(ByVal FirstYear As Variant, ByVal YearCount As Long)
         If Len(profileName) > 0 Then
             For c = 1 To existingCols
                 Dim headerText As String
+                Dim headerYear As Double
                 headerText = target.ListColumns(fixedCols + c).Name
-                If IsNumeric(headerText) Then
+                ' A header cell is editable, so it may hold anything. Bound it before
+                ' converting: an unparseable header simply owns no rate to carry over.
+                If modWorkbook.IsWholeInRange(headerText, LIMIT_MIN_YEAR, LIMIT_MAX_YEAR, headerYear) Then
                     Dim cell As Range
                     Set cell = modWorkbook.CellIn(target, r, fixedCols + c)
                     If Not modWorkbook.IsEmptyCell(cell) Then
-                        held(profileName & "|" & CStr(CLng(headerText))) = cell.Value
+                        held(profileName & "|" & CStr(modWorkbook.SafeLong(headerYear))) = cell.Value
                     End If
                 End If
             Next c
@@ -145,27 +156,45 @@ End Sub
 ' ---------------------------------------------------------------------------
 ' Destructive assessment - runs BEFORE anything is modified
 ' ---------------------------------------------------------------------------
-' Counts the non-blank rates that would leave the required span. A blank leaving
-' the span destroys nothing and is deliberately not counted.
-Public Function CountRatesLeavingSpan(ByVal NewFirstYear As Variant, _
-                                      ByVal NewYearCount As Long, _
-                                      ByRef AffectedProfiles() As String, _
-                                      ByRef AffectedCount As Long) As Long
+' Counts the rates a synchronisation would destroy, and collects representative
+' profile names.
+'
+' TWO INDEPENDENT LOSS MECHANISMS, and a rate is lost if EITHER applies:
+'
+'   * its CALENDAR YEAR leaves the required span, or
+'   * its PROFILE NAME leaves the Config master list.
+'
+' The second is not a timeline change at all: deleting a profile from Config
+' destroys that row's annual rates on the next synchronisation even when Base Year,
+' Start Year and Duration are completely unchanged. Assessing only the first left
+' Apply able to delete a populated profile row with no destructive confirmation.
+'
+' Each (Profile Name, Calendar Year) cell is judged ONCE, so a cell whose profile
+' and whose year both disappear in the same operation is counted once, not twice.
+Public Function CountRateLosses(ByVal NewFirstYear As Variant, _
+                                ByVal NewYearCount As Long, _
+                                ByRef AffectedProfiles() As String, _
+                                ByRef AffectedCount As Long, _
+                                ByRef RemovedProfiles() As String, _
+                                ByRef RemovedCount As Long) As Long
     Dim target As ListObject
     Dim fixedCols As Long, rowCount As Long, existingCols As Long
     Dim r As Long, c As Long, hits As Long
-    Dim seen As Object
+    Dim seen As Object, wanted As Object
 
     Set target = modWorkbook.Lo(SH_INFLATION, TBL_INFLATION)
     fixedCols = GRID_INFLATION_FIXED_COLS
     rowCount = modWorkbook.BodyRowCount(target)
     existingCols = target.ListColumns.Count - fixedCols
     Set seen = CreateObject("Scripting.Dictionary")
+    Set wanted = ProfileNameSet()
 
     ReDim AffectedProfiles(1 To IIf(rowCount < 1, 1, rowCount))
+    ReDim RemovedProfiles(1 To IIf(rowCount < 1, 1, rowCount))
     AffectedCount = 0
+    RemovedCount = 0
 
-    Dim newLast As Long, newFirst As Long
+    Dim newFirst As Long, newLast As Long
     If NewYearCount > 0 Then
         newFirst = CLng(NewFirstYear)
         newLast = newFirst + NewYearCount - 1
@@ -175,22 +204,36 @@ Public Function CountRatesLeavingSpan(ByVal NewFirstYear As Variant, _
         Dim profileName As String
         profileName = modWorkbook.TextOf(modWorkbook.CellIn(target, r, 1))
         If Len(profileName) > 0 Then
+            Dim profileLost As Boolean
+            profileLost = Not wanted.Exists(LCase$(profileName))
+            If profileLost Then
+                RemovedCount = RemovedCount + 1
+                RemovedProfiles(RemovedCount) = profileName
+            End If
+
             For c = 1 To existingCols
                 Dim headerText As String
+                Dim headerYear As Double
                 headerText = target.ListColumns(fixedCols + c).Name
-                If IsNumeric(headerText) Then
-                    Dim yearValue As Long
-                    yearValue = CLng(headerText)
-                    Dim survives As Boolean
-                    survives = (NewYearCount > 0) And (yearValue >= newFirst) And (yearValue <= newLast)
-                    If Not survives Then
-                        If Not modWorkbook.IsEmptyCell(modWorkbook.CellIn(target, r, fixedCols + c)) Then
-                            hits = hits + 1
-                            If Not seen.Exists(profileName) Then
-                                seen.Add profileName, True
-                                AffectedCount = AffectedCount + 1
-                                AffectedProfiles(AffectedCount) = profileName
-                            End If
+                Dim yearLost As Boolean
+                yearLost = True
+                If NewYearCount > 0 Then
+                    If modWorkbook.IsWholeInRange(headerText, LIMIT_MIN_YEAR, LIMIT_MAX_YEAR, headerYear) Then
+                        Dim yearValue As Long
+                        yearValue = modWorkbook.SafeLong(headerYear)
+                        yearLost = (yearValue < newFirst) Or (yearValue > newLast)
+                    End If
+                End If
+
+                ' One decision per cell: judged lost if the profile is going OR the
+                ' year is going, never counted twice when both are.
+                If profileLost Or yearLost Then
+                    If modWorkbook.IsDataCell(modWorkbook.CellIn(target, r, fixedCols + c)) Then
+                        hits = hits + 1
+                        If Not seen.Exists(LCase$(profileName)) Then
+                            seen.Add LCase$(profileName), True
+                            AffectedCount = AffectedCount + 1
+                            AffectedProfiles(AffectedCount) = profileName
                         End If
                     End If
                 End If
@@ -198,42 +241,7 @@ Public Function CountRatesLeavingSpan(ByVal NewFirstYear As Variant, _
         End If
     Next r
 
-    CountRatesLeavingSpan = hits
-End Function
-
-' Counts non-blank rates that would be lost because a profile name has been
-' removed from the Config master. Handled as destructive for the same reason.
-Public Function CountRatesForRemovedProfiles(ByRef AffectedProfiles() As String, _
-                                             ByRef AffectedCount As Long) As Long
-    Dim target As ListObject
-    Dim fixedCols As Long, rowCount As Long, r As Long, c As Long, hits As Long
-    Dim wanted As Object
-
-    Set target = modWorkbook.Lo(SH_INFLATION, TBL_INFLATION)
-    fixedCols = GRID_INFLATION_FIXED_COLS
-    rowCount = modWorkbook.BodyRowCount(target)
-    Set wanted = ProfileNameSet()
-
-    ReDim AffectedProfiles(1 To IIf(rowCount < 1, 1, rowCount))
-    AffectedCount = 0
-
-    For r = 1 To rowCount
-        Dim profileName As String
-        profileName = modWorkbook.TextOf(modWorkbook.CellIn(target, r, 1))
-        If Len(profileName) > 0 Then
-            If Not wanted.Exists(LCase$(profileName)) Then
-                For c = fixedCols + 1 To target.ListColumns.Count
-                    If Not modWorkbook.IsEmptyCell(modWorkbook.CellIn(target, r, c)) Then
-                        hits = hits + 1
-                    End If
-                Next c
-                AffectedCount = AffectedCount + 1
-                AffectedProfiles(AffectedCount) = profileName
-            End If
-        End If
-    Next r
-
-    CountRatesForRemovedProfiles = hits
+    CountRateLosses = hits
 End Function
 
 ' ---------------------------------------------------------------------------

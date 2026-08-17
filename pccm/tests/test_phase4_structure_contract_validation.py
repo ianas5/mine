@@ -92,12 +92,25 @@ def _counter(data: dict[str, Any], key: str) -> dict[str, Any]:
 # ===========================================================================
 # limits
 # ===========================================================================
-def test_rejects_a_generation_guard_detached_from_the_year_window() -> None:
-    """The guard is the width of the supported year window, never a free number."""
-    _rejected(
-        lambda d: d["limits"].__setitem__("max_generated_year_columns", 25),
-        "a structural guard that no longer matches the calendar-year window",
-    )
+def test_rejects_a_generation_guard_other_than_the_locked_two_hundred() -> None:
+    """Architecture Lock Revision B: generated column count > 200 = ERROR.
+
+    301 is the specific wrong value this guard previously held, produced by deriving
+    it from the calendar-year window. It is rejected explicitly.
+    """
+    for wrong in (301, 25, 199, 201, 1000):
+        _rejected(
+            lambda d, value=wrong: d["limits"].__setitem__("max_generated_year_columns", value),
+            f"a project-year generation guard of {wrong}",
+        )
+
+
+def test_the_calendar_window_is_not_forced_to_match_the_column_guard() -> None:
+    """The two protections are independent, and widening one must not require the other."""
+    structure = load_structure_contract(STRUCTURE_PATH)
+    assert structure.limits.max_generated_year_columns == 200
+    assert structure.limits.max_year - structure.limits.min_year + 1 == 301
+    assert structure.limits.max_generated_year_columns != 301
 
 
 def test_rejects_an_inverted_year_window() -> None:

@@ -497,12 +497,63 @@ def test_39_no_later_phase_sheet_gained_a_table() -> None:
 
 
 def test_40_the_structural_limits_are_not_business_maxima() -> None:
-    """25 years and the 200/100 design targets must appear nowhere as a limit."""
+    """25 years must appear nowhere as a limit."""
     raw = STRUCTURE_PATH.read_text(encoding="utf-8")
     structure = _structure()
     assert structure.limits.max_generated_year_columns != 25
     for token in ("max_duration", "max_years", "max_cost_lines", "max_risks", "duration_cap"):
         assert token not in raw, f"the structure contract declares a hard limit key {token!r}"
+
+
+def test_41_the_two_structural_protections_are_independent() -> None:
+    """The calendar-year window and the project-year column guard bound different things.
+
+    Architecture Lock Revision B fixes "Generated column count > 200 = ERROR" for
+    generated PROJECT-YEAR columns. The 1900-2200 window separately bounds Base Year,
+    Start Year, Last Project Year and therefore the inflation span. Deriving either
+    from the other is what produced the wrong 301-column guard.
+    """
+    limits = _structure().limits
+    assert limits.max_generated_year_columns == 200
+    assert limits.min_year == 1900 and limits.max_year == 2200
+    assert limits.max_generated_year_columns != limits.max_year - limits.min_year + 1
+
+
+def test_42_the_contract_rejects_a_derived_generation_guard() -> None:
+    """The loader must refuse any value other than the locked 200."""
+    import copy
+    import tempfile
+    import yaml
+    from pccm_builder import StructureContractError
+    data = yaml.safe_load(STRUCTURE_PATH.read_text(encoding="utf-8"))
+    for wrong in (301, 25, 199, 201):
+        broken = copy.deepcopy(data)
+        broken["limits"]["max_generated_year_columns"] = wrong
+        with tempfile.TemporaryDirectory(prefix="pccm-limit-") as tmp:
+            path = Path(tmp) / "structure.yaml"
+            path.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
+            try:
+                load_structure_contract(path)
+            except StructureContractError as error:
+                assert "200" in str(error)
+                continue
+        raise AssertionError(f"a generation guard of {wrong} was accepted")
+
+
+def test_43_the_emitted_constants_carry_the_locked_two_hundred() -> None:
+    import tempfile
+    from pccm_builder import emit_stage_b
+    with tempfile.TemporaryDirectory(prefix="pccm-emit-") as tmp:
+        artifacts = emit_stage_b(
+            Path(tmp),
+            load_spec(SPEC_PATH),
+            load_contract(CONTRACT_PATH),
+            load_driver_contract(DRIVERS_PATH),
+            _structure(),
+        )
+        text = artifacts.module_path.read_text(encoding="utf-8")
+    assert "LIMIT_MAX_YEAR_COLUMNS As Long = 200" in text
+    assert "301" not in text, "the derived guard must be gone from the generated module"
 
 
 def _run_all() -> int:

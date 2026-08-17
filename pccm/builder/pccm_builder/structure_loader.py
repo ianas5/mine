@@ -663,6 +663,18 @@ def _parse_buttons(entry: Any, where: str) -> list[ButtonSpec]:
 # ---------------------------------------------------------------------------
 # validation
 # ---------------------------------------------------------------------------
+ARCHITECTURE_MAX_GENERATED_YEAR_COLUMNS = 200
+"""Architecture Lock Revision B: generated project-year column count > 200 = ERROR.
+
+A locked structural constant in its own right. It is deliberately NOT derived from
+the calendar-year window: the two protections guard different things -- this one
+bounds Duration and the width of the profiling grids, while min_year/max_year bound
+Base Year, Start Year, Last Project Year and therefore the inflation span. Deriving
+one from the other silently imposed a 301-column project guard and would equally
+have imposed a 200-year cap on the inflation span had it been done the other way.
+"""
+
+
 def _validate_limits(contract: StructureContract, path: Path) -> None:
     limits = contract.limits
     if limits.min_year >= limits.max_year:
@@ -670,13 +682,14 @@ def _validate_limits(contract: StructureContract, path: Path) -> None:
             f"{path}: limits.min_year ({limits.min_year}) must be below "
             f"limits.max_year ({limits.max_year})"
         )
-    span = limits.max_year - limits.min_year + 1
-    if limits.max_generated_year_columns != span:
+    if limits.max_generated_year_columns != ARCHITECTURE_MAX_GENERATED_YEAR_COLUMNS:
         raise StructureContractError(
-            f"{path}: limits.max_generated_year_columns is {limits.max_generated_year_columns}, "
-            f"but the supported calendar-year window {limits.min_year}-{limits.max_year} is "
-            f"{span} years wide. The structural generation guard is derived from the year "
-            "boundary; it is not an independent business maximum and must not drift from it."
+            f"{path}: limits.max_generated_year_columns is "
+            f"{limits.max_generated_year_columns}, but the Architecture Lock Revision B "
+            f"structural protection on generated project-year columns is "
+            f"{ARCHITECTURE_MAX_GENERATED_YEAR_COLUMNS} "
+            '("Generated column count > 200 = ERROR"). It is an independent locked '
+            "constant, not a function of the calendar-year window."
         )
     # The widest grid that guard permits must still fit the Excel column limit.
     for grid in contract.all_grids:

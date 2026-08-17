@@ -23,13 +23,23 @@ Option Explicit
 '   5. APPLY, REVALIDATE, and on any failure RESTORE those blocks logically.
 ' ===========================================================================
 
+' Values are held as Double, not Long. An entered cell is user-controlled and can be
+' changed by paste even where Data Validation exists, so a value such as 1E10 must be
+' REJECTED, not converted. Nothing here calls CLng on an entered value until the
+' relevant bound has been proved.
+'
+' HasX means "present and a whole number". InRangeX means "additionally inside the
+' bound that governs it", and only that flag licenses arithmetic on the value.
 Private Type TimelineTriple
-    HasBase     As Boolean
-    HasStart    As Boolean
-    HasDuration As Boolean
-    BaseYear    As Long
-    StartYear   As Long
-    Duration    As Long
+    HasBase       As Boolean
+    HasStart      As Boolean
+    HasDuration   As Boolean
+    BaseInRange   As Boolean
+    StartInRange  As Boolean
+    DurationInRange As Boolean
+    BaseYear      As Double
+    StartYear     As Double
+    Duration      As Double
 End Type
 
 ' ---------------------------------------------------------------------------
@@ -39,22 +49,35 @@ Private Function ReadTriple(ByVal BaseName As String, ByVal StartName As String,
                             ByVal DurationName As String) As TimelineTriple
     Dim t As TimelineTriple
     Dim v As Variant
+    Dim d As Double
 
     v = modWorkbook.ReadValue(BaseName)
-    If modWorkbook.IsWholeNumber(v) Then
-        t.HasBase = True
-        t.BaseYear = CLng(v)
+    If modWorkbook.TryReadDouble(v, d) Then
+        If d = Int(d) Then
+            t.HasBase = True
+            t.BaseYear = d
+            t.BaseInRange = (d >= LIMIT_MIN_YEAR And d <= LIMIT_MAX_YEAR)
+        End If
     End If
+
     v = modWorkbook.ReadValue(StartName)
-    If modWorkbook.IsWholeNumber(v) Then
-        t.HasStart = True
-        t.StartYear = CLng(v)
+    If modWorkbook.TryReadDouble(v, d) Then
+        If d = Int(d) Then
+            t.HasStart = True
+            t.StartYear = d
+            t.StartInRange = (d >= LIMIT_MIN_YEAR And d <= LIMIT_MAX_YEAR)
+        End If
     End If
+
     v = modWorkbook.ReadValue(DurationName)
-    If modWorkbook.IsWholeNumber(v) Then
-        t.HasDuration = True
-        t.Duration = CLng(v)
+    If modWorkbook.TryReadDouble(v, d) Then
+        If d = Int(d) Then
+            t.HasDuration = True
+            t.Duration = d
+            t.DurationInRange = (d >= 1 And d <= LIMIT_MAX_YEAR_COLUMNS)
+        End If
     End If
+
     ReadTriple = t
 End Function
 
@@ -70,17 +93,24 @@ Private Function IsComplete(ByRef T As TimelineTriple) As Boolean
     IsComplete = T.HasBase And T.HasStart And T.HasDuration
 End Function
 
+' True only when every value is present, whole AND inside the bound that governs it,
+' so arithmetic on the triple cannot overflow.
+Private Function IsUsable(ByRef T As TimelineTriple) As Boolean
+    IsUsable = IsComplete(T) And T.BaseInRange And T.StartInRange And T.DurationInRange
+End Function
+
+' Safe only when IsUsable holds: 2200 + 200 - 1 is far inside a Long.
 Private Function LastProjectYear(ByRef T As TimelineTriple) As Long
-    LastProjectYear = T.StartYear + T.Duration - 1
+    LastProjectYear = modWorkbook.SafeLong(T.StartYear + T.Duration - 1)
 End Function
 
 Private Function InflationFirstYear(ByRef T As TimelineTriple) As Long
-    InflationFirstYear = T.BaseYear + 1
+    InflationFirstYear = modWorkbook.SafeLong(T.BaseYear) + 1
 End Function
 
 ' Legitimately zero when base year = start year and duration = 1.
 Private Function InflationYearCount(ByRef T As TimelineTriple) As Long
-    If Not IsComplete(T) Then Exit Function
+    If Not IsUsable(T) Then Exit Function
     Dim firstYear As Long, lastYear As Long
     firstYear = InflationFirstYear(T)
     lastYear = LastProjectYear(T)
@@ -89,7 +119,7 @@ Private Function InflationYearCount(ByRef T As TimelineTriple) As Long
 End Function
 
 Private Function DescribeTriple(ByRef T As TimelineTriple) As String
-    If Not IsComplete(T) Then
+    If Not IsUsable(T) Then
         DescribeTriple = "(not applied)"
     Else
         DescribeTriple = "Base " & T.BaseYear & " / Start " & T.StartYear & _
@@ -106,8 +136,15 @@ End Function
 '
 ' Note what is NOT here: no 25-year cap. Twenty-five years is an Architecture
 ' benchmark target, not a business maximum, and a 40-year project is a legitimate
-' model. The only width guard is the structural generation limit, which is the
-' width of the supported calendar-year window.
+' model. The structural width guard is LIMIT_MAX_YEAR_COLUMNS, the Architecture Lock
+' Revision B protection on generated PROJECT-YEAR columns ("Generated column count
+' > 200 = ERROR"). It is independent of the calendar-year window, which separately
+' bounds Base Year, Start Year, Last Project Year and therefore the inflation span.
+'
+' ORDER IS LOAD-BEARING. Each value is bounded BEFORE any arithmetic that depends on
+' it. Duration is checked against the column guard before Last Project Year is
+' calculated from it, so an entered 1E10 produces a controlled message rather than a
+' VBA Overflow inside the check that was supposed to reject it.
 Public Function PrevalidateEntered() As String
     Dim t As TimelineTriple
     Dim problems As String
@@ -121,30 +158,43 @@ Public Function PrevalidateEntered() As String
         Exit Function
     End If
 
+    ' --- duration, bounded before it is used in any calculation --------------
     If t.Duration < 1 Then
-        problems = problems & "  - Project Duration must be at least 1 year, not " & t.Duration & "." & vbCrLf
+        problems = problems & "  - Project Duration must be at least 1 year, not " & _
+                   Format$(t.Duration, "0") & "." & vbCrLf
+    ElseIf Not t.DurationInRange Then
+        problems = problems & "  - Project Duration " & Format$(t.Duration, "0") & _
+                   " would generate " & Format$(t.Duration, "0") & _
+                   " project-year columns, beyond the structural protection limit of " & _
+                   LIMIT_MAX_YEAR_COLUMNS & "." & vbCrLf
     End If
-    If t.BaseYear < LIMIT_MIN_YEAR Or t.BaseYear > LIMIT_MAX_YEAR Then
-        problems = problems & "  - Base Year " & t.BaseYear & " is outside the supported range " & _
-                   LIMIT_MIN_YEAR & "-" & LIMIT_MAX_YEAR & "." & vbCrLf
+
+    ' --- years, bounded before any comparison or sum uses them ---------------
+    If Not t.BaseInRange Then
+        problems = problems & "  - Base Year " & Format$(t.BaseYear, "0") & _
+                   " is outside the supported range " & LIMIT_MIN_YEAR & "-" & _
+                   LIMIT_MAX_YEAR & "." & vbCrLf
     End If
-    If t.StartYear < LIMIT_MIN_YEAR Or t.StartYear > LIMIT_MAX_YEAR Then
-        problems = problems & "  - Project Start Year " & t.StartYear & " is outside the supported range " & _
-                   LIMIT_MIN_YEAR & "-" & LIMIT_MAX_YEAR & "." & vbCrLf
+    If Not t.StartInRange Then
+        problems = problems & "  - Project Start Year " & Format$(t.StartYear, "0") & _
+                   " is outside the supported range " & LIMIT_MIN_YEAR & "-" & _
+                   LIMIT_MAX_YEAR & "." & vbCrLf
     End If
-    If t.BaseYear > t.StartYear Then
-        problems = problems & "  - Base Year " & t.BaseYear & " is later than Project Start Year " & _
-                   t.StartYear & ". Costs cannot be priced after the project begins." & vbCrLf
+
+    If t.BaseInRange And t.StartInRange Then
+        If t.BaseYear > t.StartYear Then
+            problems = problems & "  - Base Year " & Format$(t.BaseYear, "0") & _
+                       " is later than Project Start Year " & Format$(t.StartYear, "0") & _
+                       ". Costs cannot be priced after the project begins." & vbCrLf
+        End If
     End If
-    If t.Duration >= 1 Then
+
+    ' --- only now is the derived last project year safe to compute -----------
+    If t.DurationInRange And t.StartInRange Then
         If LastProjectYear(t) > LIMIT_MAX_YEAR Then
             problems = problems & "  - Last Project Year would be " & LastProjectYear(t) & _
-                       ", beyond the supported structural year boundary " & LIMIT_MAX_YEAR & "." & vbCrLf
-        End If
-        If t.Duration > LIMIT_MAX_YEAR_COLUMNS Then
-            problems = problems & "  - Project Duration " & t.Duration & " would generate " & t.Duration & _
-                       " project-year columns, beyond the structural protection limit of " & _
-                       LIMIT_MAX_YEAR_COLUMNS & "." & vbCrLf
+                       ", beyond the supported structural year boundary " & _
+                       LIMIT_MAX_YEAR & "." & vbCrLf
         End If
     End If
 
@@ -158,8 +208,10 @@ Private Function BuildSummary(ByRef oldT As TimelineTriple, ByRef newT As Timeli
                               ByRef IsDestructive As Boolean) As String
     Dim summary As String
     Dim removedProfileCells As Long, removedRates As Long
-    Dim costIds() As String, riskIds() As String, profiles() As String
-    Dim costCount As Long, riskCount As Long, profileCount As Long
+    Dim costIds() As String, riskIds() As String
+    Dim profiles() As String, goneProfiles() As String
+    Dim costCount As Long, riskCount As Long
+    Dim profileCount As Long, goneCount As Long
     Dim newInflFirst As Long, newInflCount As Long
     Dim removedYearsText As String
     Dim i As Long
@@ -168,22 +220,27 @@ Private Function BuildSummary(ByRef oldT As TimelineTriple, ByRef newT As Timeli
     If newInflCount > 0 Then newInflFirst = InflationFirstYear(newT)
 
     ' Profiling: only a duration reduction removes cells, and only from the tail.
-    If IsComplete(oldT) Then
+    If IsUsable(oldT) Then
         If newT.Duration < oldT.Duration Then
-            For i = newT.Duration + 1 To oldT.Duration
+            For i = modWorkbook.SafeLong(newT.Duration) + 1 To modWorkbook.SafeLong(oldT.Duration)
                 If Len(removedYearsText) > 0 Then removedYearsText = removedYearsText & ", "
                 removedYearsText = removedYearsText & "project year " & i & _
-                                   " (" & (oldT.StartYear + i - 1) & ")"
+                                   " (" & (modWorkbook.SafeLong(oldT.StartYear) + i - 1) & ")"
             Next i
         End If
     End If
 
     removedProfileCells = _
-        modProfiling.CountNonZeroBeyond(modProfiling.CostKind(), newT.Duration, costIds, costCount) + _
-        modProfiling.CountNonZeroBeyond(modProfiling.RiskKind(), newT.Duration, riskIds, riskCount)
+        modProfiling.CountDataBeyond(modProfiling.CostKind(), modWorkbook.SafeLong(newT.Duration), costIds, costCount) + _
+        modProfiling.CountDataBeyond(modProfiling.RiskKind(), modWorkbook.SafeLong(newT.Duration), riskIds, riskCount)
 
-    ' Inflation: rates leave the span whenever a year leaves it, from either end.
-    removedRates = modInflation.CountRatesLeavingSpan(newInflFirst, newInflCount, profiles, profileCount)
+    ' Inflation: assessed for BOTH loss mechanisms in one pass, so a rate lost
+    ' because its profile left the Config master is reported even when the timeline
+    ' itself is unchanged, and a cell whose profile and year both disappear is
+    ' counted once.
+    removedRates = modInflation.CountRateLosses(newInflFirst, newInflCount, _
+                                                profiles, profileCount, _
+                                                goneProfiles, goneCount)
 
     IsDestructive = (removedProfileCells > 0) Or (removedRates > 0)
 
@@ -202,10 +259,17 @@ Private Function BuildSummary(ByRef oldT As TimelineTriple, ByRef newT As Timeli
         summary = summary & vbCrLf & "  Project years removed : " & removedYearsText & vbCrLf
     End If
 
+    ' A removed profile is reported even when it held no rates: the row is going,
+    ' and the user should be told so before it goes.
+    If goneCount > 0 Then
+        summary = summary & vbCrLf & "  Inflation profiles removed from Config : " & _
+                  modWorkbook.JoinLimited(goneProfiles, goneCount, 5, ", ") & vbCrLf
+    End If
+
     If IsDestructive Then
         summary = summary & vbCrLf & "  DATA THAT WILL BE PERMANENTLY DELETED" & vbCrLf
         If removedProfileCells > 0 Then
-            summary = summary & "    non-zero profiling percentages : " & removedProfileCells & vbCrLf
+            summary = summary & "    profiling cells holding data   : " & removedProfileCells & vbCrLf
             If costCount > 0 Then
                 summary = summary & "    affected cost lines            : " & _
                           modWorkbook.JoinLimited(costIds, costCount, 5, ", ") & vbCrLf
@@ -216,7 +280,7 @@ Private Function BuildSummary(ByRef oldT As TimelineTriple, ByRef newT As Timeli
             End If
         End If
         If removedRates > 0 Then
-            summary = summary & "    inflation rates leaving span   : " & removedRates & vbCrLf
+            summary = summary & "    inflation rates lost           : " & removedRates & vbCrLf
             If profileCount > 0 Then
                 summary = summary & "    affected profiles              : " & _
                           modWorkbook.JoinLimited(profiles, profileCount, 5, ", ") & vbCrLf
@@ -235,7 +299,8 @@ Public Sub PCCM_ApplyTimeline()
     Dim oldT As TimelineTriple, newT As TimelineTriple
     Dim problems As String, summary As String
     Dim isDestructive As Boolean
-    Dim costBefore As Variant, riskBefore As Variant, inflationBefore As Variant
+    Dim costBefore As TableSnapshot, riskBefore As TableSnapshot
+    Dim inflationBefore As TableSnapshot
     Dim appliedBase As Variant, appliedStart As Variant, appliedDuration As Variant
     Dim captured As Boolean
     Dim result As OperationResult
@@ -275,14 +340,18 @@ Public Sub PCCM_ApplyTimeline()
     captured = True
 
     ' --- 5. apply one coherent transition -----------------------------------
-    modWorkbook.WriteValue NM_APPLIED_BASE_YEAR, newT.BaseYear
-    modWorkbook.WriteValue NM_APPLIED_START_YEAR, newT.StartYear
-    modWorkbook.WriteValue NM_APPLIED_DURATION, newT.Duration
+    ' Prevalidation has already proved each value is whole and inside its bound, so
+    ' these conversions cannot overflow.
+    modWorkbook.WriteValue NM_APPLIED_BASE_YEAR, modWorkbook.SafeLong(newT.BaseYear)
+    modWorkbook.WriteValue NM_APPLIED_START_YEAR, modWorkbook.SafeLong(newT.StartYear)
+    modWorkbook.WriteValue NM_APPLIED_DURATION, modWorkbook.SafeLong(newT.Duration)
 
     modAppState.FailPointCheck "apply.after_triple"
 
-    modProfiling.SetYearColumns modProfiling.CostKind(), newT.StartYear, newT.Duration
-    modProfiling.SetYearColumns modProfiling.RiskKind(), newT.StartYear, newT.Duration
+    modProfiling.SetYearColumns modProfiling.CostKind(), modWorkbook.SafeLong(newT.StartYear), _
+                                modWorkbook.SafeLong(newT.Duration)
+    modProfiling.SetYearColumns modProfiling.RiskKind(), modWorkbook.SafeLong(newT.StartYear), _
+                                modWorkbook.SafeLong(newT.Duration)
 
     modAppState.FailPointCheck "apply.after_profiling_columns"
 
@@ -313,24 +382,51 @@ Public Sub PCCM_ApplyTimeline()
     Exit Sub
 
 Failure:
-    Dim reason As String
+    Dim reason As String, restoreNote As String
     reason = "Error " & Err.Number & ": " & Err.Description
+
     If captured Then
-        On Error Resume Next
-        modWorkbook.WriteValue NM_APPLIED_BASE_YEAR, appliedBase
-        modWorkbook.WriteValue NM_APPLIED_START_YEAR, appliedStart
-        modWorkbook.WriteValue NM_APPLIED_DURATION, appliedDuration
-        modWorkbook.RestoreTable modProfiling.ProfilingTable(modProfiling.CostKind()), costBefore
-        modWorkbook.RestoreTable modProfiling.ProfilingTable(modProfiling.RiskKind()), riskBefore
-        modWorkbook.RestoreTable modWorkbook.Lo(SH_INFLATION, TBL_INFLATION), inflationBefore
-        On Error GoTo 0
+        restoreNote = TryRestoreTimeline(appliedBase, appliedStart, appliedDuration, _
+                                         costBefore, riskBefore, inflationBefore)
+    Else
+        restoreNote = "Nothing had been modified when the failure occurred."
     End If
+
     modAppState.RecalculateStructuralState
     modAppState.RestoreAppState snapshot
-    modAppState.RecordResult "FAIL|" & reason
+    modAppState.RecordResult "FAIL|" & reason & "|" & restoreNote
     If Not modAppState.gAutomationActive Then
-        modAppState.ReportFailure "Apply / Update Timeline", reason, _
-            "The applied timeline, both profiling grids and the inflation grid have been " & _
-            "restored to their values from before this operation. No partial change remains."
+        modAppState.ReportFailure "Apply / Update Timeline", reason, restoreNote
     End If
 End Sub
+
+' Restores exactly the blocks Apply may modify, and REPORTS whether it succeeded.
+' Deliberately not On Error Resume Next: a restore that could not complete is the
+' most important thing the user could be told, and burying it would leave them
+' believing the workbook was clean when it was not.
+Private Function TryRestoreTimeline(ByVal AppliedBase As Variant, _
+                                    ByVal AppliedStart As Variant, _
+                                    ByVal AppliedDuration As Variant, _
+                                    ByRef CostBefore As TableSnapshot, _
+                                    ByRef RiskBefore As TableSnapshot, _
+                                    ByRef InflationBefore As TableSnapshot) As String
+    On Error GoTo RestoreFailed
+
+    modWorkbook.WriteValue NM_APPLIED_BASE_YEAR, AppliedBase
+    modWorkbook.WriteValue NM_APPLIED_START_YEAR, AppliedStart
+    modWorkbook.WriteValue NM_APPLIED_DURATION, AppliedDuration
+    modWorkbook.RestoreTable modProfiling.ProfilingTable(modProfiling.CostKind()), CostBefore
+    modWorkbook.RestoreTable modProfiling.ProfilingTable(modProfiling.RiskKind()), RiskBefore
+    modWorkbook.RestoreTable modWorkbook.Lo(SH_INFLATION, TBL_INFLATION), InflationBefore
+
+    TryRestoreTimeline = "The applied timeline, both profiling grids and the inflation " & _
+                         "grid have been restored to their state from before this " & _
+                         "operation, including row count, column count, number formats " & _
+                         "and column widths. No partial change remains."
+    Exit Function
+
+RestoreFailed:
+    TryRestoreTimeline = "RESTORE INCOMPLETE. Error " & Err.Number & ": " & Err.Description & _
+                         vbCrLf & "The workbook may hold a partial structural change. " & _
+                         "Do not continue; close without saving and reopen the last saved copy."
+End Function

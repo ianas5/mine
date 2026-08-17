@@ -129,7 +129,21 @@ was not.
     4. SNAPSHOT      the blocks this operation may modify.
     5. APPLY         then REVALIDATE, and RESTORE those blocks on any failure.
 
-### Prevalidation
+### Prevalidation is overflow-safe
+
+An entered cell is user-controlled and can be changed by paste even where Data
+Validation exists, so a value such as `1E10` must be **rejected**, not converted.
+The triple is read as `Double`; nothing calls `CLng` on an entered value until the
+bound that governs it has been proved. Order is load-bearing:
+
+1. Duration is checked against the 200-column guard **before** Last Project Year is
+   computed from it.
+2. Base Year and Start Year are checked against 1900–2200 **before** any comparison
+   or sum uses them.
+
+The same discipline applies to every other untrusted read: the applied triple, the
+ID counters, an identifier's sequence part, and a year-column header (a header cell
+is editable, so it may hold anything). Each is bounded, then converted.
 
 Rejects, without touching applied state, and reporting **every** failure at once:
 
@@ -142,10 +156,11 @@ Rejects, without touching applied state, and reporting **every** failure at once
 
 **25 years is not a cap.** It is an Architecture benchmark target; a 40-year
 project is a legitimate model and `test_12` asserts durations of 26, 40, 75 and
-120 all pass. The only width guard is `max_generated_year_columns`, and that is
-not an independent invented number either — the loader asserts it equals
-`max_year − min_year + 1`, the width of the supported calendar-year window. A
-guard derived from the year boundary cannot drift away from it.
+120 all pass.
+
+**Two independent protections.** See *Structural limits* below. The duration guard
+is the Architecture Lock Revision B project-year column protection; the year window
+is a separate calendar bound.
 
 ### One combined delta
 
@@ -158,6 +173,38 @@ expose half-applied structural states, and the destructive assessment would
 over-report. `test_29` demonstrates the second: shrinking 4 → 2 and growing back
 to 4 destroys two project years, while the combined delta with duration unchanged
 at 4 destroys nothing.
+
+---
+
+## Structural limits: two independent protections
+
+They guard different things and neither is derived from the other. Deriving one
+from the other is exactly what produced the wrong figure in the first submission.
+
+| Limit | Value | Bounds |
+|---|---|---|
+| `min_year` / `max_year` | 1900–2200 | the supported **calendar-year** window: Base Year, Start Year, Last Project Year, and therefore the possible span of the Inflation grid |
+| `max_generated_year_columns` | **200** | Architecture Lock Revision B: *"Generated column count > 200 = ERROR"* — the **project-year** column protection, bounding Duration and the width of the profiling grids |
+
+The first submission set `max_generated_year_columns` to 301 and asserted it equalled
+`max_year − min_year + 1`. That was wrong twice over: it silently raised the locked
+200-column project guard to 301, and had the derivation run the other way it would
+have imposed a 200-year cap on the inflation span, which has no such limit.
+
+The loader now asserts the value **is** 200 and rejects anything else, including
+301. The Excel-grid check is unchanged and independent: fixed columns plus the guard
+must still fit inside XFD.
+
+Consequences, all asserted:
+
+- Duration **200** is accepted whenever the calendar bound permits (2000 + 200 − 1 = 2199).
+- Duration **201** is rejected before any structural modification.
+- Durations 26, 40, 75 and 120 remain valid.
+- A base year of 1900 with a project ending in 2199 requires **299 inflation years** —
+  far beyond the 200-column project guard, and perfectly legal, because the
+  inflation span is bounded by the calendar window instead.
+- Duration is checked against the guard **before** Last Project Year is computed
+  from it, so an oversized value never reaches the arithmetic.
 
 ---
 
@@ -183,6 +230,19 @@ share falls in 2029".
 A row that totalled 100% before a duration increase still totals 100% after it.
 There is no redistribution, no normalisation, and no formula pretending a row is
 valid. The 100% requirement is a Model Check rule.
+
+**An existing value is preserved exactly, including blank.** The distinction row
+synchronisation encodes:
+
+| Case | Value |
+|---|---|
+| genuinely NEW driver | every project year starts at 0% |
+| genuinely NEW project year | that cell starts at 0% |
+| EXISTING (permanent ID, project-year index) | preserved exactly, **including blank** |
+
+Filling an existing blank with 0% would repair invalid user data inside a
+structural operation and hide it from the Model Check phase whose job is to report
+it. Structural synchronisation is not a repair tool.
 
 ### Inflation — anchored by CALENDAR YEAR
 
@@ -223,16 +283,43 @@ Assessment runs **before** anything is modified, which is why **cancellation
 needs no rollback**: nothing has moved when the user is asked. `test_32` asserts
 the assessment function is pure.
 
-A change is destructive only when real user data would be lost. Removing 0%
-profiling cells or blank inflation cells destroys nothing and gets the ordinary
-structural confirmation.
+### Two independent inflation loss mechanisms
+
+A rate is destroyed if **either** applies:
+
+1. its **calendar year** leaves the required span, or
+2. its **profile name** leaves the Config master list.
+
+The second is not a timeline change at all. Deleting a profile from Config destroys
+that row's annual rates on the next synchronisation even when Base Year, Start Year
+and Duration are completely unchanged. Assessing only the first left Apply able to
+delete a populated profile row with no destructive confirmation whatever.
+
+`modInflation.CountRateLosses` now assesses both in one pass, judging each
+`(Profile Name, Calendar Year)` cell **once**, so a cell whose profile and whose
+year both disappear in the same operation is counted once rather than twice.
+
+### What counts as data
+
+| Cell contents | Loss? |
+|---|---|
+| blank | no — the user entered nothing |
+| numeric zero | no — 0% is what a new project-year cell is created with |
+| non-zero number | **yes** |
+| text | **yes** |
+| error value | **yes** |
+
+Counting only numeric non-zero cells was too narrow: a percentage pasted as text
+would have been deleted by a duration reduction with no warning at all.
 
 The destructive prompt names:
 
 - the old and new timeline
 - which project years are removed
-- the count of non-zero profiling percentages affected
-- representative affected permanent IDs
+- any inflation profiles leaving the Config master, whether or not they held rates
+- the count of profiling cells holding data
+- the count of inflation rates lost
+- representative affected permanent IDs and profile names
 - that the data will be permanently deleted
 
 ---
@@ -304,12 +391,39 @@ A user cancellation occurs before modification and needs no rollback.
 
 For a genuine mid-operation runtime error, the operation captures only the blocks
 it may modify — the applied triple, the two profiling grids, the inflation grid,
-and for Add/Delete the driver row and counter state — and restores those values
-and shapes on failure, restores application state, reports the failure clearly,
-and runs structural revalidation.
+and for Add/Delete the register table and counter state — restores them, restores
+application state, reports the failure clearly, and revalidates.
+
+A snapshot captures **both dimensions and the presentation**:
+
+| Captured | Why |
+|---|---|
+| column count | a partially added or removed year column must not survive |
+| **row count** | a failed Add that had already grown the table left an extra row behind; a failed Delete left a missing one |
+| header values | a relabelled year column must go back to its previous label |
+| number formats | a restored year column that came back unformatted is unusable |
+| column widths | likewise |
+| every body value | including blanks, restored as blanks |
+
+`RestoreTable` rebuilds the shape first, then presentation, then contents, and
+**raises** if the restored shape does not match the snapshot. The ListObject
+minimum-row case is handled explicitly rather than left to chance: deleting the
+last data row would remove the body entirely, so that final row is cleared instead.
+
+Restoration is **not** wrapped in `On Error Resume Next`. A restore that could not
+complete is the most important thing the user could be told, so it runs inside a
+dedicated function that reports either the successful restoration or
+`RESTORE INCOMPLETE`, with the underlying error and an instruction not to continue.
 
 There is deliberately **no** generic transaction framework, **no** undo journal
 and **no** workbook snapshot system. Logical restoration is the requirement.
+
+**Data Validation and styling on a runtime-created row are assumed to come from
+Excel Table propagation, and that assumption is not accepted on trust.** Gate-B
+section M asserts, on a row created by `ListRows.Add` beyond the reserved capacity,
+that the ID cell keeps the model-controlled fill and carries no validation, that
+user cells keep the editable fill, and that every validated column still has its
+rule. If propagation does not deliver that, Gate B will say so.
 
 The counter is restored **only** on a failed operation, which issued no surviving
 identifier. A successful delete never restores it.
@@ -323,12 +437,27 @@ has no severities, no register, no overall status and no simulation gate. It
 **reports** and never repairs — `test_20` asserts the module writes nothing to the
 workbook. A failure makes the macro operation fail.
 
-Checks: applied triple internally consistent; profiling column count equals
-Applied Duration; profiling headers run Start→Last with no gap; Cost and Risk
-profiling IDs match their registers 1:1; no duplicate IDs; IDs match their
-declared prefix and pattern; inflation headers match the required span exactly;
-inflation rows match the Config profile names; counters not behind their highest
-issued ID; no malformed grid state.
+Checks, each reported **independently** so a workbook violating several is told
+about all of them, and none performing arithmetic on a value it has not already
+bounded:
+
+- Base Year and Start Year each within 1900–2200
+- Duration ≥ 1 and ≤ 200
+- Base Year ≤ Start Year
+- Last Project Year ≤ 2200
+- malformed or non-whole applied values, reported without crashing
+- profiling column count equals Applied Duration
+- profiling headers run Start→Last with no gap
+- Cost and Risk profiling IDs match their registers 1:1
+- no duplicate permanent IDs
+- IDs match their declared prefix **and the contract's minimum sequence width**, so
+  `CL-001` and `CL-1000` are valid while `CL-1` is not — prefix plus digits alone
+  is not sufficient, and the width comes from the emitted `ID_PAD_*` rather than
+  from a hardcoded 3
+- inflation headers match the required span exactly
+- inflation rows match the current Config profile names
+- counters not behind their highest issued ID
+- no malformed grid state, reported once rather than duplicated
 
 It checks nothing about business validity: a row that does not total 100%, a
 missing inflation rate and a blank unit cost all pass here.
@@ -352,16 +481,45 @@ them exactly as before.
 
     python3 pccm/builder/build_stage_a.py            # Linux: .xlsx + generated inputs
     .\bootstrap\windows\build_stage_b.ps1            # Windows: .xlsx -> .xlsm
-    .\bootstrap\windows\phase4_functional_test.ps1   # Windows: functional matrix A-L
+    .\bootstrap\windows\phase4_functional_test.ps1   # Windows: functional matrix A-R
 
 The bootstrap opens an owned Excel instance, saves as `.xlsm` (FileFormat 52),
 applies the 14 locked CodeNames, imports the VBA, creates the five buttons with
 `OnAction`, saves, closes, releases COM in explicit named order, then **reopens in
 a fresh instance** and verifies what actually persisted.
 
-It changes no security setting, and the COM lifecycle policy is the one proven by
-the Phase-1.6 readiness gate, implemented once in `com_lifecycle.ps1` and
-dot-sourced by both scripts. See `bootstrap/windows/README.md`.
+### Path resolution
+
+The two module directories resolve **differently**, and the difference is what makes
+the disposable harness build honest:
+
+| Modules | Resolved against | Why |
+|---|---|---|
+| `src/vba/*.bas` | the repository root | version-controlled input, identical for every build |
+| `build/vba/modConstants.bas` | the **supplied `BuildDir`** | generated beside the workbook, manifest and fixture it belongs to |
+
+Resolving the generated module against the repository root meant the harness copied
+a build to `%TEMP%` and then imported `modConstants.bas` from the *real* repository
+build — testing a different generated source than the manifest and scenarios sitting
+beside the workbook it was driving. `test_46e` asserts the corrected resolution.
+
+### COM ownership
+
+The policy is the one proven by the Phase-1.6 readiness gate, implemented once in
+`com_lifecycle.ps1` and dot-sourced by both scripts, and no security setting is
+changed. Two classes of violation were found in the first submission and are now
+enforced against statically:
+
+- `VBComponents.Import` returns a `VBComponent`. Its return was discarded, leaving
+  an unowned RCW. It is now captured, released once and nulled.
+- Chained member expressions such as `$Workbook.Names.Item(...)` and
+  `$body.Rows.Count` mint intermediate RCWs that nothing owns. Every one is now an
+  explicitly named, explicitly released transient.
+
+`test_46a`–`test_46g` sweep both scripts for chained access, unowned returns,
+`foreach` over a COM collection, and any release that does not null its variable.
+
+See `bootstrap/windows/README.md`.
 
 ---
 
@@ -381,9 +539,8 @@ dot-sourced by both scripts. See `bootstrap/windows/README.md`.
 1. **The Windows runtime is unproven.** The Linux tests establish that the rules
    are coherent and that the source is internally consistent. They cannot execute
    VBA. Only Gate B closes this.
-2. **The structural protection limit is derived, not quoted.** It is the width of
-   the supported calendar-year window (301). If Revision B fixes a different
-   figure, it is a one-line contract change.
+2. **Data Validation and styling on a runtime-created row rely on Excel Table
+   propagation.** Gate-B section M proves or disproves it; nothing here assumes it.
 3. **Profiling year cells carry no data validation.** A per-cell bound would block
    ordinary partial entry, and the 100% requirement is a Model Check rule.
 4. **Trace columns are refreshed, not live.** Description and Risk Name are copied

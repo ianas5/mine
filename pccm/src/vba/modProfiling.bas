@@ -115,12 +115,16 @@ End Sub
 ' ---------------------------------------------------------------------------
 ' Destructive assessment - runs BEFORE anything is modified
 ' ---------------------------------------------------------------------------
-' Counts the non-zero profiling percentages a shrink to NewCount would destroy and
-' collects representative permanent IDs. A removed 0% cell destroys no user data
-' and is deliberately not counted.
-Public Function CountNonZeroBeyond(ByVal Kind As String, ByVal NewCount As Long, _
-                                   ByRef AffectedIds() As String, _
-                                   ByRef AffectedCount As Long) As Long
+' Counts the profiling cells a shrink to NewCount would destroy and collects
+' representative permanent IDs.
+'
+' A cell counts as a loss when modWorkbook.IsDataCell holds: blank and numeric zero
+' destroy nothing, and EVERYTHING else does. Counting only numeric non-zero cells
+' was too narrow -- a percentage pasted as text, or an error value, would have been
+' deleted by a duration reduction with no destructive warning at all.
+Public Function CountDataBeyond(ByVal Kind As String, ByVal NewCount As Long, _
+                                ByRef AffectedIds() As String, _
+                                ByRef AffectedCount As Long) As Long
     Dim target As ListObject
     Dim fixedCols As Long, existing As Long, r As Long, c As Long
     Dim rowCount As Long, hits As Long
@@ -143,23 +147,19 @@ Public Function CountNonZeroBeyond(ByVal Kind As String, ByVal NewCount As Long,
             For c = NewCount + 1 To existing
                 Dim cell As Range
                 Set cell = modWorkbook.CellIn(target, r, fixedCols + c)
-                If Not modWorkbook.IsEmptyCell(cell) Then
-                    If IsNumeric(cell.Value) Then
-                        If CDbl(cell.Value) <> 0 Then
-                            hits = hits + 1
-                            If Not seen.Exists(idText) Then
-                                seen.Add idText, True
-                                AffectedCount = AffectedCount + 1
-                                AffectedIds(AffectedCount) = idText
-                            End If
-                        End If
+                If modWorkbook.IsDataCell(cell) Then
+                    hits = hits + 1
+                    If Not seen.Exists(idText) Then
+                        seen.Add idText, True
+                        AffectedCount = AffectedCount + 1
+                        AffectedIds(AffectedCount) = idText
                     End If
                 End If
             Next c
         End If
     Next r
 
-    CountNonZeroBeyond = hits
+    CountDataBeyond = hits
 End Function
 
 ' ---------------------------------------------------------------------------
@@ -204,7 +204,13 @@ Public Sub SyncRows(ByVal Kind As String)
                 Dim values() As Variant
                 ReDim values(1 To IIf(yearCols < 1, 1, yearCols))
                 For c = 1 To yearCols
-                    values(c) = modWorkbook.CellIn(target, r, fixedCols + c).Value
+                    Dim source As Range
+                    Set source = modWorkbook.CellIn(target, r, fixedCols + c)
+                    If modWorkbook.IsEmptyCell(source) Then
+                        values(c) = Empty
+                    Else
+                        values(c) = source.Value
+                    End If
                 Next c
                 held.Add key, values
             End If
@@ -229,10 +235,16 @@ Public Sub SyncRows(ByVal Kind As String)
                 Dim cell As Range
                 Set cell = modWorkbook.CellIn(target, writeRow, fixedCols + c)
                 If held.Exists(driverId) Then
+                    ' An EXISTING (permanent ID, project-year index) value is
+                    ' preserved exactly -- including blank. Filling a blank with 0%
+                    ' here would repair invalid user data inside a structural
+                    ' operation and hide it from the Model Check phase whose job is
+                    ' to report it. Only a genuinely new driver, or a genuinely new
+                    ' project-year column, starts at 0%.
                     Dim kept As Variant
                     kept = held(driverId)
                     If IsEmpty(kept(c)) Then
-                        cell.Value = PROFILE_INITIAL_VALUE
+                        cell.ClearContents
                     Else
                         cell.Value = kept(c)
                     End If

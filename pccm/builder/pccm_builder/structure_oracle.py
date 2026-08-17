@@ -22,7 +22,7 @@ on the distinction:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Sequence
 
 BLANK = None
@@ -110,32 +110,47 @@ def prevalidate(entered: Timeline, limits: Limits) -> list[str]:
     if problems:
         return problems
 
+    # Order matters, and mirrors the VBA. Each value is bounded BEFORE any arithmetic
+    # that depends on it, so an oversized entered value is rejected with a message
+    # rather than overflowing the calculation that would have caught it.
+    duration_bounded = True
     if entered.duration < 1:
         problems.append(f"Project Duration must be at least 1 year, not {entered.duration}.")
-    for label, value in (("Base Year", entered.base_year), ("Project Start Year", entered.start_year)):
+        duration_bounded = False
+    elif entered.duration > limits.max_generated_year_columns:
+        # The Architecture Lock structural protection on generated PROJECT-YEAR
+        # columns. Independent of the calendar-year window below.
+        problems.append(
+            f"Project Duration {entered.duration} would generate {entered.duration} "
+            f"project-year columns, beyond the structural protection limit of "
+            f"{limits.max_generated_year_columns}."
+        )
+        duration_bounded = False
+
+    years_bounded = True
+    for label, value in (
+        ("Base Year", entered.base_year),
+        ("Project Start Year", entered.start_year),
+    ):
         if not limits.min_year <= value <= limits.max_year:
             problems.append(
                 f"{label} {value} is outside the supported range "
                 f"{limits.min_year}-{limits.max_year}."
             )
-    if entered.base_year > entered.start_year:
+            years_bounded = False
+
+    if years_bounded and entered.base_year > entered.start_year:
         problems.append(
             f"Base Year {entered.base_year} is later than Project Start Year "
             f"{entered.start_year}. Costs cannot be priced after the project begins."
         )
 
-    if entered.duration is not None and entered.duration >= 1 and entered.start_year is not None:
+    if duration_bounded and years_bounded:
         last = entered.start_year + entered.duration - 1
         if last > limits.max_year:
             problems.append(
                 f"Last Project Year would be {last}, beyond the supported structural "
                 f"year boundary {limits.max_year}."
-            )
-        if entered.duration > limits.max_generated_year_columns:
-            problems.append(
-                f"Project Duration {entered.duration} would generate "
-                f"{entered.duration} project-year columns, beyond the structural "
-                f"protection limit of {limits.max_generated_year_columns}."
             )
 
     return problems
@@ -144,19 +159,46 @@ def prevalidate(entered: Timeline, limits: Limits) -> list[str]:
 # ---------------------------------------------------------------------------
 # profiling: anchored by project-year index
 # ---------------------------------------------------------------------------
+def is_data(value: object) -> bool:
+    """True when a cell holds something whose loss is real data loss.
+
+    Blank is not data: the user has entered nothing. Numeric zero is not data
+    either: 0% is the value a new project-year cell is created with, so removing
+    one destroys nothing the user chose.
+
+    EVERYTHING ELSE IS. A non-zero percentage obviously, but also text, an Excel
+    error value, or anything else that ended up in the cell by paste. Treating only
+    numeric non-zero cells as data would let a shrink silently delete a pasted
+    string the user was about to fix, without a destructive warning.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return value != 0
+    return True
+
+
 def remap_profiling(
-    rows: Mapping[str, Sequence[float]], new_duration: int, initial: float = 0.0
-) -> dict[str, list[float]]:
+    rows: Mapping[str, Sequence[object]], new_duration: int, initial: float = 0.0
+) -> dict[str, list[object]]:
     """Reshape profiling rows to *new_duration* project-year columns.
 
     Values are preserved by POSITION, because a profiling percentage means 'this
     share falls in project year N', not 'this share falls in 2029'. Growing appends
     new cells at *initial* (0%), so a row that totalled 100% still totals 100% and
     no redistribution or normalisation occurs. Shrinking truncates from the tail.
+
+    A surviving position keeps its value EXACTLY, including blank. Structural
+    synchronisation must not quietly turn a blank into 0%: a blank profiling cell is
+    invalid data and Model Check has to be able to see it.
     """
     if new_duration < 0:
         raise ValueError(f"new_duration must not be negative, got {new_duration}")
-    reshaped: dict[str, list[float]] = {}
+    reshaped: dict[str, list[object]] = {}
     for key, values in rows.items():
         kept = list(values[:new_duration])
         kept.extend([initial] * (new_duration - len(kept)))
@@ -164,20 +206,48 @@ def remap_profiling(
     return reshaped
 
 
+def sync_profiling_values(
+    existing: Mapping[str, Sequence[object]],
+    keys: Sequence[str],
+    year_count: int,
+    initial: float = 0.0,
+) -> dict[str, list[object]]:
+    """Rebuild profiling rows for *keys*, preserving every existing value exactly.
+
+    The distinction this encodes is the one row synchronisation kept getting wrong:
+
+      genuinely NEW driver          -> every project year starts at *initial* (0%)
+      genuinely NEW project year    -> that cell starts at *initial* (0%)
+      EXISTING (id, year index)     -> preserved exactly, INCLUDING BLANK
+
+    Filling an existing blank with 0% would repair invalid user data inside a
+    structural operation and hide it from the Model Check phase whose job is to
+    report it.
+    """
+    rebuilt: dict[str, list[object]] = {}
+    for key in keys:
+        if key in existing:
+            values = list(existing[key][:year_count])
+            values.extend([initial] * (year_count - len(values)))
+        else:
+            values = [initial] * year_count
+        rebuilt[key] = values
+    return rebuilt
+
+
 def removed_profiling_values(
-    rows: Mapping[str, Sequence[float]], new_duration: int
-) -> list[tuple[str, int, float]]:
+    rows: Mapping[str, Sequence[object]], new_duration: int
+) -> list[tuple[str, int, object]]:
     """The (id, project-year index, value) triples a shrink would destroy.
 
-    Only non-zero values are reported: removing a 0% cell destroys no user data and
-    needs no destructive warning beyond the ordinary structural confirmation.
-    Project-year indices are 1-based, matching what the user sees.
+    Reported when ``is_data`` holds: blank and numeric zero destroy nothing, and
+    anything else does. Project-year indices are 1-based, matching the user's view.
     """
-    destroyed: list[tuple[str, int, float]] = []
+    destroyed: list[tuple[str, int, object]] = []
     for key, values in rows.items():
         for offset, value in enumerate(values):
-            if offset >= new_duration and value:
-                destroyed.append((key, offset + 1, float(value)))
+            if offset >= new_duration and is_data(value):
+                destroyed.append((key, offset + 1, value))
     return destroyed
 
 
@@ -201,19 +271,48 @@ def remap_inflation(
 
 
 def removed_inflation_values(
-    rows: Mapping[str, Mapping[int, float | None]], new_years: Iterable[int]
-) -> list[tuple[str, int, float]]:
-    """The (profile, calendar year, rate) triples a remap would destroy.
+    rows: Mapping[str, Mapping[int, float | None]],
+    new_years: Iterable[int],
+    surviving_profiles: Iterable[str] | None = None,
+) -> list[tuple[str, int, object]]:
+    """The (profile, calendar year, rate) triples a synchronisation would destroy.
 
-    Only non-blank rates are reported. A blank leaving the span destroys nothing.
+    TWO INDEPENDENT LOSS MECHANISMS, and a rate is lost if EITHER applies:
+
+      * its calendar year leaves the required span, or
+      * its profile name leaves the Config master list.
+
+    The second is not a timeline change at all: deleting a profile from Config
+    destroys that row's rates on the next synchronisation even when Base Year,
+    Start Year and Duration are untouched.
+
+    Each (profile, year) cell is judged ONCE, so a cell whose profile and whose year
+    both disappear in the same operation is counted once, not twice.
+
+    ``surviving_profiles`` of None means "profiles are not being changed", which is
+    different from an empty collection meaning "every profile has been removed".
+    Only non-blank rates count: a blank leaving destroys nothing.
     """
-    surviving = set(new_years)
-    destroyed: list[tuple[str, int, float]] = []
+    surviving_years = set(new_years)
+    keep_profiles = None if surviving_profiles is None else set(surviving_profiles)
+
+    destroyed: list[tuple[str, int, object]] = []
     for key, rates in rows.items():
+        profile_lost = keep_profiles is not None and key not in keep_profiles
         for year, rate in rates.items():
-            if year not in surviving and rate is not None:
-                destroyed.append((key, year, float(rate)))
+            if not is_data(rate):
+                continue
+            if profile_lost or year not in surviving_years:
+                destroyed.append((key, year, rate))
     return destroyed
+
+
+def removed_profiles(
+    rows: Mapping[str, Mapping[int, float | None]], surviving_profiles: Iterable[str]
+) -> list[str]:
+    """Inflation rows whose profile name has left the Config master list."""
+    keep = set(surviving_profiles)
+    return [key for key in rows if key not in keep]
 
 
 # ---------------------------------------------------------------------------
@@ -345,8 +444,9 @@ class DestructiveImpact:
 
     removed_project_year_indices: list[int]
     removed_inflation_years: list[int]
-    profiling_losses: list[tuple[str, str, int, float]]
-    inflation_losses: list[tuple[str, int, float]]
+    profiling_losses: list[tuple[str, str, int, object]]
+    inflation_losses: list[tuple[str, int, object]]
+    removed_profile_names: list[str] = field(default_factory=list)
 
     @property
     def profiling_loss_count(self) -> int:
@@ -378,17 +478,22 @@ class DestructiveImpact:
 
 def assess(
     change: TimelineChange,
-    profiling: Mapping[str, Mapping[str, Sequence[float]]],
+    profiling: Mapping[str, Mapping[str, Sequence[object]]],
     inflation: Mapping[str, Mapping[int, float | None]],
+    surviving_profiles: Iterable[str] | None = None,
 ) -> DestructiveImpact:
-    """What *change* would destroy, given the current grid contents.
+    """What a synchronisation would destroy, given the current grid contents.
 
     ``profiling`` is {grid name: {permanent id: [values by project-year index]}}.
+    ``surviving_profiles`` is the current Config profile master; pass it whenever
+    profile rows will be synchronised, which Apply always does. Omitting it means
+    "profiles are not changing" and suppresses that half of the assessment.
+
     Runs before any modification, which is why cancelling needs no rollback: the
     user is asked before a single cell has moved.
     """
     new_duration = change.new.duration or 0
-    profiling_losses: list[tuple[str, str, int, float]] = []
+    profiling_losses: list[tuple[str, str, int, object]] = []
     for grid_name, rows in profiling.items():
         for key, index, value in removed_profiling_values(rows, new_duration):
             profiling_losses.append((grid_name, key, index, value))
@@ -397,20 +502,34 @@ def assess(
         removed_project_year_indices=change.removed_project_year_indices,
         removed_inflation_years=change.removed_inflation_years,
         profiling_losses=profiling_losses,
-        inflation_losses=removed_inflation_values(inflation, change.new_inflation_years),
+        inflation_losses=removed_inflation_values(
+            inflation, change.new_inflation_years, surviving_profiles
+        ),
+        removed_profile_names=(
+            [] if surviving_profiles is None else removed_profiles(inflation, surviving_profiles)
+        ),
     )
 
 
 def apply_change(
     change: TimelineChange,
-    profiling: Mapping[str, Mapping[str, Sequence[float]]],
+    profiling: Mapping[str, Mapping[str, Sequence[object]]],
     inflation: Mapping[str, Mapping[int, float | None]],
     initial_profile_value: float = 0.0,
-) -> tuple[dict[str, dict[str, list[float]]], dict[str, dict[int, float | None]]]:
-    """The grid contents after *change*, as one combined transition."""
+    surviving_profiles: Iterable[str] | None = None,
+) -> tuple[dict[str, dict[str, list[object]]], dict[str, dict[int, float | None]]]:
+    """The grid contents after *change*, as one combined transition.
+
+    When ``surviving_profiles`` is given, rows whose profile has left the Config
+    master are dropped, which is the change the destructive assessment warned about.
+    """
     new_duration = change.new.duration or 0
     reshaped_profiling = {
         grid_name: remap_profiling(rows, new_duration, initial_profile_value)
         for grid_name, rows in profiling.items()
     }
-    return reshaped_profiling, remap_inflation(inflation, change.new_inflation_years)
+    kept = inflation
+    if surviving_profiles is not None:
+        keep = set(surviving_profiles)
+        kept = {name: rates for name, rates in inflation.items() if name in keep}
+    return reshaped_profiling, remap_inflation(kept, change.new_inflation_years)

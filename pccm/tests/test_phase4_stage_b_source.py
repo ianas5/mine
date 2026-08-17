@@ -254,7 +254,9 @@ def test_13_the_generated_module_carries_the_id_prefixes_and_limits() -> None:
         'ID_PREFIX_RISK As String = "R-"',
         "LIMIT_MIN_YEAR As Long = 1900",
         "LIMIT_MAX_YEAR As Long = 2200",
-        "LIMIT_MAX_YEAR_COLUMNS As Long = 301",
+        # Architecture Lock Revision B, independent of the calendar-year window.
+        "LIMIT_MAX_YEAR_COLUMNS As Long = 200",
+        "ID_COUNTER_MAX As Long = 2147483647",
     ):
         assert fragment in text, f"modConstants is missing: {fragment}"
 
@@ -483,10 +485,17 @@ def test_37_the_harness_covers_every_required_scenario() -> None:
     for marker in (
         "# A. Stage-B build",
         "# B. Permanent Cost Line IDs",
+        "# B2. A REAL reorder of the Cost Lines table",
         "# C. Permanent Risk IDs",
         "# D - J. Timeline scenarios",
         "# K. Profiling synchronisation",
         "# L. Runtime failure containment",
+        "# M. Real table growth beyond the reserved capacity",
+        "# N. An Inflation Profile removed from Config is destructive",
+        "# O. Non-numeric content in a removed profiling cell is a data loss",
+        "# P. An oversized pasted timeline value is rejected cleanly",
+        "# Q. Add failure after row mutation has begun",
+        "# R. Delete failure after row mutation has begun",
     ):
         assert marker in code, f"the harness is missing section: {marker}"
 
@@ -547,6 +556,61 @@ def test_44_the_harness_verifies_natural_shutdown() -> None:
     assert "Wait-ExcelExit" in code
 
 
+def test_44a_the_harness_exercises_a_real_listobject_reorder() -> None:
+    """Editing a cell in place is not a reorder and proves nothing about identity."""
+    code = _ps(HARNESS_PS1)
+    assert "Invoke-TableSort" in code, "the harness must move whole rows"
+    assert "$sortObj.Apply()" in _ps_code(HARNESS_PS1)
+    assert "the physical row order actually changed" in code
+    assert "each permanent ID still sits on its own row data" in code
+    assert "FIRST ROW MARKER" not in code, (
+        "the edit-in-place pseudo-reorder must be gone, not merely supplemented"
+    )
+
+
+def test_44b_the_harness_drives_the_register_past_its_reserved_capacity() -> None:
+    """Until a 26th driver exists, the ListRows.Add path has never run."""
+    code = _ps(HARNESS_PS1)
+    assert "reserved_rows" in code
+    assert "more identified rows than its reserved capacity" in code
+    assert "the ListObject itself grew" in code
+    assert "the grown row ID cell keeps the model-controlled treatment" in code
+    assert "the grown row user cells keep the editable input treatment" in code
+    assert "keeps its Data Validation on the grown row" in code
+    assert "a generated profiling year cell is visually an editable input" in code
+
+
+def test_44c_the_harness_covers_the_removed_config_profile_loss_path() -> None:
+    code = _ps(HARNESS_PS1)
+    assert "the confirmation names the removed profile" in code
+    assert "cancelling leaves the inflation row and all its rates unchanged" in code
+    assert "accepting removes the obsolete inflation row" in code
+
+
+def test_44d_the_harness_covers_blank_preservation_and_non_numeric_loss() -> None:
+    code = _ps(HARNESS_PS1)
+    assert "an existing BLANK profiling cell is still blank after synchronisation" in code
+    assert "text in a removed profiling cell triggers a destructive warning" in code
+
+
+def test_44e_the_harness_covers_add_and_delete_failure_injection() -> None:
+    code = _ps(HARNESS_PS1)
+    for stage in ("add.after_write_id", "delete.after_remove"):
+        assert stage in code, f"the harness never injects a failure at {stage}"
+        assert any(stage in m.code_without_string_removal for m in _handwritten_modules()), (
+            f"no VBA fail point is named {stage}"
+        )
+    assert "the driver table row count was restored" in code
+    assert "the profiling row count was restored" in code
+    assert "no identifier issued by the failed Add survives" in code
+
+
+def test_44f_the_harness_covers_oversized_pasted_timeline_values() -> None:
+    code = _ps(HARNESS_PS1)
+    assert "rejected by prevalidation, not by an overflow" in code
+    assert "an oversized Start Year is rejected cleanly" in code
+
+
 # ===========================================================================
 # mechanical sweeps
 #
@@ -587,6 +651,7 @@ def test_46_every_powershell_helper_invoked_is_defined_somewhere() -> None:
         "Copy-Item", "Join-Path", "Split-Path", "New-Object", "Add-Type",
         "Select-Object", "Where-Object", "ForEach-Object", "ConvertFrom-Json",
         "Set-StrictMode", "Get-CimInstance", "Out-Null", "Write-Verbose",
+        "Sort-Object", "Measure-Object", "Select-String",
     }
     problems = []
     for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
@@ -595,6 +660,187 @@ def test_46_every_powershell_helper_invoked_is_defined_somewhere() -> None:
             if name not in defined and name not in builtin:
                 problems.append(f"{path.name}: {name} is invoked but never defined")
     assert not problems, "stale or undefined PowerShell helpers:\n  " + "\n  ".join(problems)
+
+
+# Variables that hold an Excel COM object. A chained member expression rooted at one
+# of these mints an intermediate RCW that nothing names and nothing releases.
+COM_ROOT_VARIABLES = (
+    "excel", "excel2", "wb", "wb2", "workbooks", "workbooks2", "worksheets",
+    "worksheets2", "localWorksheets", "ws", "ws2", "vbproj", "vbproj2", "vbcomps",
+    "vbcomps2", "shapes", "shp", "anchor", "tf", "tr", "existing", "imported",
+    "added", "body", "lo", "los", "cols", "rowsObj", "colsObj", "rng", "nm", "names",
+    "cell", "interior", "validation", "sortObj", "sortFields", "keyRange", "hit",
+    "target", "register", "Workbook", "ExcelApp", "c", "probe",
+)
+
+
+def _com_root_pattern() -> str:
+    return "(" + "|".join(COM_ROOT_VARIABLES) + ")"
+
+
+def test_45a_every_vba_block_construct_is_balanced() -> None:
+    """A structural substitute for the compiler that cannot run here.
+
+    An unclosed If, For, Do, With, Select Case, Type or procedure is a syntax error
+    that would only surface on Windows, after the review gate. Line continuations
+    are joined first so a wrapped condition is counted once.
+    """
+    openers = {
+        "proc": re.compile(r"^(public |private |friend )?(static )?(sub|function) ", re.I),
+        "type": re.compile(r"^(public |private )?type \w", re.I),
+        "if": re.compile(r"^if .*\bthen$", re.I),
+        "for": re.compile(r"^for\b", re.I),
+        "do": re.compile(r"^do\b", re.I),
+        "with": re.compile(r"^with\b", re.I),
+        "select": re.compile(r"^select case\b", re.I),
+    }
+    closers = {
+        "proc": re.compile(r"^end (sub|function)\b", re.I),
+        "type": re.compile(r"^end type\b", re.I),
+        "if": re.compile(r"^end if\b", re.I),
+        "for": re.compile(r"^next\b", re.I),
+        "do": re.compile(r"^loop\b", re.I),
+        "with": re.compile(r"^end with\b", re.I),
+        "select": re.compile(r"^end select\b", re.I),
+    }
+    problems = []
+    for module in _all_modules():
+        lines, buffer = [], ""
+        for raw in module.code_without_string_removal.splitlines():
+            stripped = raw.strip()
+            if stripped.endswith("_"):
+                buffer += stripped[:-1] + " "
+                continue
+            lines.append(buffer + stripped)
+            buffer = ""
+        if buffer:
+            lines.append(buffer)
+
+        counts = dict.fromkeys(openers, 0)
+        for line in lines:
+            for key, pattern in openers.items():
+                if pattern.match(line):
+                    counts[key] += 1
+            for key, pattern in closers.items():
+                if pattern.match(line):
+                    counts[key] -= 1
+        unbalanced = {k: v for k, v in counts.items() if v}
+        if unbalanced:
+            problems.append(f"{module.name}: {unbalanced}")
+    assert not problems, "unbalanced VBA block constructs:\n  " + "\n  ".join(problems)
+
+
+def test_45b_no_vba_line_exceeds_the_language_limit() -> None:
+    """VBA rejects a physical line longer than 1023 characters."""
+    problems = [
+        f"{m.name}:{n}"
+        for m in _all_modules()
+        for n, line in enumerate(m.raw.splitlines(), 1)
+        if len(line) > 1023
+    ]
+    assert not problems, f"lines beyond the VBA limit: {problems}"
+
+
+def test_46a_no_chained_com_member_access_exists() -> None:
+    """$Workbook.Names.Item(...) and $body.Rows.Count are the forbidden shape.
+
+    Each creates an intermediate COM object that is never named, never released and
+    never gated by a release failure. The proven readiness discipline requires
+    acquire -> use -> release -> null on every one of them.
+    """
+    pattern = re.compile(rf"\${_com_root_pattern()}\.(\w+)\.(\w+)")
+    problems = []
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        for number, line in enumerate(_ps_code(path).splitlines(), 1):
+            for match in pattern.finditer(line):
+                problems.append(
+                    f"{path.name}:{number}: ${match.group(1)}.{match.group(2)}.{match.group(3)}"
+                )
+    assert not problems, "chained COM member access:\n  " + "\n  ".join(problems)
+
+
+def test_46b_no_object_returning_com_call_is_left_unowned() -> None:
+    """VBComponents.Import returns a VBComponent. Discarding it leaks an RCW."""
+    pattern = re.compile(rf"^\${_com_root_pattern()}\.(Import|Add|AddShape|Open|Item)\(")
+    problems = []
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        for number, line in enumerate(_ps_code(path).splitlines(), 1):
+            if pattern.match(line.strip()):
+                problems.append(f"{path.name}:{number}: {line.strip()[:70]}")
+    assert not problems, "unowned COM return value:\n  " + "\n  ".join(problems)
+    assert "$imported = $vbcomps.Import($file)" in _ps_code(BUILD_PS1), (
+        "the Import return must be captured in a named transient"
+    )
+    assert "Release-Transient $imported" in _ps_code(BUILD_PS1)
+
+
+def test_46c_no_foreach_iterates_a_com_collection() -> None:
+    """foreach over a COM collection hides the enumerator and every item RCW."""
+    pattern = re.compile(rf"foreach\s*\(\s*\$\w+\s+in\s+\${_com_root_pattern()}\b")
+    problems = []
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        for number, line in enumerate(_ps_code(path).splitlines(), 1):
+            if pattern.search(line):
+                problems.append(f"{path.name}:{number}: {line.strip()[:70]}")
+    assert not problems, "foreach over a COM collection:\n  " + "\n  ".join(problems)
+
+
+def test_46d_every_transient_release_nulls_the_caller_variable() -> None:
+    """Release then null, on the same line, every time.
+
+    PowerShell parameter binding cannot null a caller's variable, so a release that
+    is not followed by an explicit assignment leaves a live alias to a released RCW.
+    That is precisely the defect that produced the InvalidComObjectException in
+    readiness run 2.
+    """
+    pattern = re.compile(r"Release-Transient\s+\$(\w+)\s+'[^']*'\s*;?\s*(.*)")
+    problems = []
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+        for number, line in enumerate(_ps_code(path).splitlines(), 1):
+            match = pattern.search(line)
+            if not match:
+                continue
+            variable, tail = match.group(1), match.group(2)
+            if f"${variable}" not in tail or "$null" not in tail:
+                problems.append(f"{path.name}:{number}: ${variable} released but not nulled")
+    assert not problems, "released without nulling:\n  " + "\n  ".join(problems)
+
+
+def test_46g_named_releases_also_null_their_variable() -> None:
+    pattern = re.compile(r"Invoke-NamedRelease\s+\$\w+\s+\$(\w+)\s+'[^']*';\s*(.*)")
+    problems = []
+    for path in (BUILD_PS1, HARNESS_PS1):
+        for number, line in enumerate(_ps_code(path).splitlines(), 1):
+            match = pattern.search(line)
+            if not match:
+                continue
+            variable, tail = match.group(1), match.group(2)
+            if f"${variable}" not in tail or "$null" not in tail:
+                problems.append(f"{path.name}:{number}: ${variable} released but not nulled")
+    assert not problems, "released without nulling:\n  " + "\n  ".join(problems)
+
+
+def test_46e_the_generated_module_resolves_from_the_supplied_build_dir() -> None:
+    """The disposable harness build must test its OWN generated modConstants.bas.
+
+    Resolving the generated directory against the repository root meant the harness
+    copied a build to %TEMP% and then imported modConstants.bas from the real
+    repository build -- a different generated source than the manifest and scenario
+    fixture sitting beside the workbook it was driving.
+    """
+    code = _ps_code(BUILD_PS1)
+    assert "$genDir  = Join-Path $BuildDir" in code, (
+        "the generated VBA directory must resolve from the supplied BuildDir"
+    )
+    assert "$genDir  = Join-Path $pccmRoot" not in code
+    # Source modules stay repository-relative: they are version-controlled input.
+    assert "$srcDir  = Join-Path $pccmRoot $manifest.vba.source_dir" in code
+
+
+def test_46f_the_harness_copies_a_coherent_build_set() -> None:
+    code = _ps_code(HARNESS_PS1)
+    for item in ("stage_a_filename", "stage_b_manifest.json", "phase4_scenarios.json", "'vba'"):
+        assert item in code, f"the disposable copy is missing {item}"
 
 
 def test_47_no_powershell_helper_is_defined_but_never_used() -> None:

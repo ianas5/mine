@@ -47,8 +47,12 @@ Public Function FormatId(ByVal Kind As String, ByVal Sequence As Long) As String
     FormatId = IdPrefix(Kind) & digits
 End Function
 
+' Counters live in cells a paste can reach, so the read is bounded before
+' conversion. A corrupt or oversized counter reads as 0 here and is reported by
+' modStructuralCheck as "behind its highest issued identifier", which is exactly
+' what it would be.
 Public Function ReadCounter(ByVal Kind As String) As Long
-    ReadCounter = modWorkbook.ReadLong(CounterName(Kind), 0)
+    ReadCounter = modWorkbook.ReadLongInRange(CounterName(Kind), 0, ID_COUNTER_MAX, 0)
 End Function
 
 ' Advances the counter and returns the identifier it just issued. The counter is
@@ -64,6 +68,7 @@ Public Function HighestIssued(ByVal Kind As String) As Long
     Dim register As ListObject
     Dim r As Long, rowCount As Long, idCol As Long, best As Long
     Dim prefix As String, idText As String, tail As String
+    Dim seq As Double
 
     Set register = RegisterTable(Kind)
     idCol = IdColumn(Kind)
@@ -75,8 +80,10 @@ Public Function HighestIssued(ByVal Kind As String) As Long
         If Len(idText) > Len(prefix) Then
             If StrComp(Left$(idText, Len(prefix)), prefix, vbTextCompare) = 0 Then
                 tail = Mid$(idText, Len(prefix) + 1)
-                If IsNumeric(tail) Then
-                    If CLng(tail) > best Then best = CLng(tail)
+                ' Bounded before conversion: a pasted identifier such as CL-99999999999
+                ' must not overflow the scan that exists to detect exactly that corruption.
+                If modWorkbook.IsWholeInRange(tail, 0, ID_COUNTER_MAX, seq) Then
+                    If modWorkbook.SafeLong(seq) > best Then best = modWorkbook.SafeLong(seq)
                 End If
             End If
         End If
@@ -207,7 +214,10 @@ Public Function AddDriver(ByVal Kind As String) As OperationResult
 
     modAppState.FailPointCheck "add.after_sync"
 
-    ' Put the cursor on the first field the user actually owns.
+    ' Put the cursor on the first field the user actually owns. This is the only
+    ' cosmetic step in the operation, and it is the only place a suppressed error is
+    ' acceptable: failing to move the selection must not fail an otherwise complete
+    ' structural change. Nothing that alters data is inside this guard.
     On Error Resume Next
     register.Parent.Activate
     modWorkbook.CellIn(register, targetRow, FirstEditableColumn(Kind)).Select
@@ -296,6 +306,8 @@ Public Function SelectedId(ByVal Kind As String) As String
 
     Set register = RegisterTable(Kind)
     If register.DataBodyRange Is Nothing Then Exit Function
+    ' Intersect raises when the selection is on another sheet; that simply means "no
+    ' driver row is selected", which the next line handles. No data is touched here.
     On Error Resume Next
     Set body = Application.Intersect(Selection, register.DataBodyRange)
     On Error GoTo 0
@@ -344,7 +356,7 @@ Public Sub RunDriverOperation(ByVal Kind As String, ByVal IsAdd As Boolean, _
                               ByVal PermanentId As String)
     Dim snapshot As AppStateSnapshot
     Dim result As OperationResult
-    Dim registerBefore As Variant, profilingBefore As Variant
+    Dim registerBefore As TableSnapshot, profilingBefore As TableSnapshot
     Dim counterBefore As Long
     Dim problems As String
     Dim captured As Boolean
@@ -378,23 +390,48 @@ Public Sub RunDriverOperation(ByVal Kind As String, ByVal IsAdd As Boolean, _
     Exit Sub
 
 Failure:
-    Dim reason As String
+    Dim reason As String, restoreNote As String
     reason = "Error " & Err.Number & ": " & Err.Description
+
     If captured Then
-        On Error Resume Next
-        modWorkbook.RestoreTable RegisterTable(Kind), registerBefore
-        modWorkbook.RestoreTable modProfiling.ProfilingTable(Kind), profilingBefore
-        ' The counter is restored ONLY because this operation failed and issued no
-        ' surviving identifier. A successful delete never restores it.
-        modWorkbook.WriteValue CounterName(Kind), counterBefore
-        On Error GoTo 0
+        restoreNote = TryRestoreDriver(Kind, registerBefore, profilingBefore, counterBefore)
+    Else
+        restoreNote = "Nothing had been modified when the failure occurred."
     End If
+
     modAppState.RecalculateStructuralState
     modAppState.RestoreAppState snapshot
-    modAppState.RecordResult "FAIL|" & reason
+    modAppState.RecordResult "FAIL|" & reason & "|" & restoreNote
     If Not modAppState.gAutomationActive Then
-        modAppState.ReportFailure IIf(IsAdd, "Add ", "Delete ") & KindLabel(Kind), reason, _
-            "The register, its profiling grid and the ID counter have been restored to " & _
-            "their values from before this operation. No partial change remains."
+        modAppState.ReportFailure IIf(IsAdd, "Add ", "Delete ") & KindLabel(Kind), reason, restoreNote
     End If
 End Sub
+
+' Restores exactly the blocks an Add or Delete may modify, and REPORTS the outcome.
+' The register and profiling snapshots carry row count as well as column count, so a
+' failed Add that had already grown the table cannot leave an extra row behind and a
+' failed Delete cannot leave a missing one.
+'
+' The counter is restored ONLY here, because this operation failed and therefore
+' issued no surviving identifier. A successful Delete never restores it.
+Private Function TryRestoreDriver(ByVal Kind As String, _
+                                  ByRef RegisterBefore As TableSnapshot, _
+                                  ByRef ProfilingBefore As TableSnapshot, _
+                                  ByVal CounterBefore As Long) As String
+    On Error GoTo RestoreFailed
+
+    modWorkbook.RestoreTable RegisterTable(Kind), RegisterBefore
+    modWorkbook.RestoreTable modProfiling.ProfilingTable(Kind), ProfilingBefore
+    modWorkbook.WriteValue CounterName(Kind), CounterBefore
+
+    TryRestoreDriver = "The register, its profiling grid and the ID counter have been " & _
+                       "restored to their state from before this operation, including " & _
+                       "row and column counts. No identifier issued by the failed " & _
+                       "operation survives, and no partial change remains."
+    Exit Function
+
+RestoreFailed:
+    TryRestoreDriver = "RESTORE INCOMPLETE. Error " & Err.Number & ": " & Err.Description & _
+                       vbCrLf & "The workbook may hold a partial structural change. " & _
+                       "Do not continue; close without saving and reopen the last saved copy."
+End Function

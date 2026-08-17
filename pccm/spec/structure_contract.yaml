@@ -25,19 +25,30 @@ structure_contract_version: "1.0.0"
 # -----------------------------------------------------------------------------
 # Structural limits.
 #
-# These are STRUCTURAL GENERATION GUARDS, not business maxima. The 25-year figure
-# in the Architecture design is a benchmark target and is deliberately encoded
-# nowhere: a 40-year project is a legitimate model.
+# TWO INDEPENDENT PROTECTIONS. They guard different things and must never be
+# derived from one another.
 #
-# max_generated_year_columns is not an independent invented cap. It is exactly the
-# width of the supported calendar-year window (max_year - min_year + 1), and the
-# loader asserts that identity, so the guard cannot drift away from the year
-# boundary it is derived from.
+#   min_year / max_year
+#       The supported CALENDAR-YEAR boundary. It constrains Base Year, Start Year
+#       and Last Project Year, and therefore the possible span of the Inflation
+#       grid, which is keyed by calendar year. 1900-2200.
+#
+#   max_generated_year_columns
+#       The Architecture Lock Revision B structural protection on generated
+#       PROJECT-YEAR columns: "Generated column count > 200 = ERROR". It constrains
+#       Duration and the width of the two profiling grids. It is a locked constant
+#       in its own right, NOT a function of the calendar-year window, and it imposes
+#       NO 200-year cap on the inflation span.
+#
+# Neither is a business maximum. The 25-year figure in the Architecture design is a
+# benchmark target and is deliberately encoded nowhere: a 40-year project is a
+# legitimate model, and so is a 200-year one.
 # -----------------------------------------------------------------------------
 limits:
   min_year: 1900
   max_year: 2200
-  max_generated_year_columns: 301
+  # Architecture Lock Revision B: generated project-year column count > 200 = ERROR.
+  max_generated_year_columns: 200
 
 # -----------------------------------------------------------------------------
 # Entered vs applied timeline.

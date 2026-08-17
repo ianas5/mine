@@ -35,6 +35,14 @@ GENERATED_BANNER = (
 
 XL_OPEN_XML_WORKBOOK_MACRO_ENABLED = 52
 
+VBA_LONG_MAX = 2_147_483_647
+"""The largest value a VBA Long can hold.
+
+Emitted so the VBA can bound an untrusted numeric cell BEFORE converting it. It is
+a representational limit of the language, never a limit on the model: identifiers,
+years and durations all have their own contract-declared bounds.
+"""
+
 
 @dataclass(frozen=True)
 class StageBArtifacts:
@@ -168,16 +176,30 @@ def render_constants_module(
         const(f"NM_COUNTER_{upper}", counter.defined_name)
         const(f"ID_PREFIX_{upper}", counter.prefix)
         const(f"ID_PAD_{upper}", counter.pad_width, "minimum display width, not a maximum")
+    lines.append(
+        "' The largest sequence a VBA Long can represent. This is a REPRESENTATIONAL"
+    )
+    lines.append(
+        "' bound used to reject a corrupt or pasted counter before conversion, not a"
+    )
+    lines.append("' maximum on how many identifiers the model may issue.")
+    const("ID_COUNTER_MAX", VBA_LONG_MAX)
     lines.append("")
 
     # --- limits ------------------------------------------------------------
     section("Structural limits (generation guards, never business maxima)")
+    lines.append("' Two INDEPENDENT protections. They guard different things:")
+    lines.append("'   LIMIT_MIN_YEAR / LIMIT_MAX_YEAR   the supported CALENDAR-YEAR window,")
+    lines.append("'     bounding Base Year, Start Year, Last Project Year and the inflation span.")
+    lines.append("'   LIMIT_MAX_YEAR_COLUMNS            Architecture Lock Revision B protection on")
+    lines.append("'     generated PROJECT-YEAR columns: \"Generated column count > 200 = ERROR\".")
+    lines.append("' Neither is derived from the other, and neither is a business maximum.")
     const("LIMIT_MIN_YEAR", structure.limits.min_year)
     const("LIMIT_MAX_YEAR", structure.limits.max_year)
     const(
         "LIMIT_MAX_YEAR_COLUMNS",
         structure.limits.max_generated_year_columns,
-        "= LIMIT_MAX_YEAR - LIMIT_MIN_YEAR + 1",
+        "generated project-year columns; NOT a calendar-year cap",
     )
     lines.append("")
 
@@ -336,6 +358,22 @@ def build_manifest(
             "max_generated_year_columns": structure.limits.max_generated_year_columns,
         },
         "state_labels": dict(structure.structural_state.labels),
+        # Presentation tokens, so the functional harness can assert that a row or a
+        # year column CREATED AT RUNTIME still carries the Phase-2 input language --
+        # editable cells must never become visually indistinguishable from
+        # model-controlled ones. The harness restates no colour of its own.
+        "presentation": {
+            "input_fill": spec.presentation["colors"]["input_fill"],
+            "locked_fill": spec.presentation["colors"]["locked_fill"],
+        },
+        "driver_validation_columns": {
+            register.key: [
+                column.key
+                for column in register.columns
+                if column.validation is not None
+            ]
+            for register in drivers.all_registers
+        },
         "structural_checks": [dict(c) for c in structure.structural_checks],
     }
 
