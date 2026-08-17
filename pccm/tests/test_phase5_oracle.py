@@ -1,0 +1,1261 @@
+#!/usr/bin/env python3
+"""PCCM Phase 5 Gate-A Step-2 tests: the pure analytical oracle.
+
+Golden cases, refusal semantics, referenced-only resolution, reconciliation and
+the architecture boundary of `builder/pccm_builder/calc_oracle.py`.
+
+--------------------------------------------------------------------------------
+HAND-DERIVED INDEPENDENCE
+--------------------------------------------------------------------------------
+Every expected value below is written as a literal derived by hand from
+docs/phase5_plan.md §23, or by an independent exact-rational calculation in the
+test itself. None is obtained by calling another function of `calc_oracle.py`:
+the evidence chain is
+
+    hand-derived literals -> Python oracle -> (later) phase5_cases.json -> (later) VBA
+
+and a test that asks the oracle what it produces, then asserts it produces that,
+proves nothing.
+
+--------------------------------------------------------------------------------
+WHY GOLDEN COMPARISONS USE A TOLERANCE, NOT EXACT EQUALITY
+--------------------------------------------------------------------------------
+The plan's hand-derived literals are exact MATHEMATICAL values; the oracle
+computes in IEEE-754 Double, as the model must. Two effects put the two a unit in
+the last place apart on some inputs:
+
+  * ordinary Double rounding: `100 * 1.1085375` is `110.85374999999999`, because
+    `1.1085375` has no exact binary representation;
+  * the MANDATED stable forms: `Min/6 + ML*(2/3) + Max/6` gives
+    `104.99999999999999` where the forbidden naive `(Min + 4*ML + Max)/6` gives
+    exactly `105.0`.
+
+Neither is a defect - §19.2 requires the stable form - so the comparison is a
+relative tolerance of 1e-12, four orders tighter than the reconciliation
+tolerance and about four orders looser than one ulp.
+
+PROOF SCOPE: Linux, Python, pure functions. NO VBA IS EXECUTED HERE.
+
+Runs standalone or under pytest.
+"""
+
+from __future__ import annotations
+
+import ast
+import subprocess
+import sys
+import textwrap
+from fractions import Fraction
+from pathlib import Path
+
+PCCM_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PCCM_ROOT / "builder"))
+
+from pccm_builder.calc_oracle import (  # noqa: E402
+    AppliedTimeline,
+    CalculationModel,
+    CostDriver,
+    DriverKind,
+    FxRow,
+    ModelInputRefusal,
+    NumericalRangeRefusal,
+    OracleInvariantError,
+    RiskDriver,
+    Tolerances,
+    assert_reconciled,
+    calculate,
+    reconcile,
+)
+
+ORACLE_PATH = PCCM_ROOT / "builder" / "pccm_builder" / "calc_oracle.py"
+NUMERIC_PATH = PCCM_ROOT / "builder" / "pccm_builder" / "calc_numeric.py"
+
+# The locked tolerance constants of spec/calc_contract.yaml, supplied at the
+# adapter boundary. The pure numerical layer never reads a file.
+TOL = Tolerances(
+    profiling_sum_absolute=1e-9,
+    identity_absolute_floor=1e-6,
+    identity_relative_coefficient=1e-12,
+    conditioning_scale_floor=1.0,
+)
+
+REL = 1e-12
+
+
+def _close(actual: float, expected: float, rel: float = REL, note: str = "") -> None:
+    allowance = abs(expected) * rel + 1e-9
+    assert abs(actual - expected) <= allowance, (
+        f"{note or 'value'}: got {actual!r}, expected {expected!r} "
+        f"(difference {actual - expected!r} exceeds {allowance!r})"
+    )
+
+
+def _refuses(call, reason: str) -> str:
+    try:
+        call()
+    except (ModelInputRefusal, NumericalRangeRefusal) as error:
+        return str(error)
+    raise AssertionError(f"{reason}: no refusal was raised")
+
+
+# ---------------------------------------------------------------------------
+# fixtures - the shared setup of plan §23
+# ---------------------------------------------------------------------------
+def _cost(
+    permanent_id: str = "CL-001",
+    distribution: str = "Triangular",
+    currency: str = "SAR",
+    profile: str = "Standard",
+    minimum: object = 80,
+    most_likely: object = 100,
+    maximum: object = 150,
+    weights: tuple[object, ...] = (1.0,),
+    quantity: object = 10,
+) -> CostDriver:
+    return CostDriver(
+        permanent_id, distribution, currency, profile,
+        minimum, most_likely, maximum, weights, quantity=quantity,
+    )
+
+
+def _risk(
+    permanent_id: str = "R-001",
+    distribution: str = "Triangular",
+    currency: str = "SAR",
+    profile: str = "Standard",
+    minimum: object = 100,
+    most_likely: object = 200,
+    maximum: object = 450,
+    weights: tuple[object, ...] = (1.0,),
+    probability: object = 0.3,
+) -> RiskDriver:
+    return RiskDriver(
+        permanent_id, distribution, currency, profile,
+        minimum, most_likely, maximum, weights, probability=probability,
+    )
+
+
+def _model(
+    base: int = 2026,
+    start: int = 2026,
+    duration: int = 1,
+    discount: object = 0.10,
+    fx: tuple[FxRow, ...] = (FxRow("SAR", 1),),
+    rates: dict[str, dict[int, object]] | None = None,
+    costs: tuple[CostDriver, ...] = (),
+    risks: tuple[RiskDriver, ...] = (),
+) -> CalculationModel:
+    return CalculationModel(
+        timeline=AppliedTimeline(base, start, duration),
+        discount_rate=discount,
+        fx_rows=fx,
+        inflation_rates=rates if rates is not None else {"Standard": {}},
+        cost_drivers=costs,
+        risk_drivers=risks,
+    )
+
+
+def _three_year(rate: object = 0.05) -> dict[str, dict[int, object]]:
+    return {"Standard": {2027: rate, 2028: rate, 2029: rate}}
+
+
+# ---------------------------------------------------------------------------
+# CASES 1-13 - the hand-derived arithmetic
+# ---------------------------------------------------------------------------
+def test_case_01_sar_no_inflation_one_project_year() -> None:
+    """Base 2026, Start 2026, Dur 1, r = 10%. infl = 1, disc = 1, Knom = Kpv = 1."""
+    result = calculate(_model(costs=(_cost(),)), TOL)
+    driver = result.drivers[0]
+    _close(driver.knom, 1.0, note="Knom")
+    _close(driver.kpv, 1.0, note="Kpv")
+    _close(result.totals.a_nom, 1000.0, note="A_nom")
+    _close(result.totals.c_nom, 1100.0, note="C_nom")
+    _close(result.totals.b_nom, 100.0, note="B_nom")
+    assert_reconciled(result, TOL)
+
+
+def test_case_02_foreign_currency() -> None:
+    """USD FX = 3.75, unit cost 100, Qty 4 -> Knom = 3.75, A = 1500 SAR."""
+    result = calculate(
+        _model(
+            fx=(FxRow("SAR", 1), FxRow("USD", 3.75)),
+            costs=(_cost(currency="USD", quantity=4),),
+        ),
+        TOL,
+    )
+    _close(result.drivers[0].knom, 3.75, note="Knom")
+    _close(result.totals.a_nom, 1500.0, note="A_nom")
+
+
+def test_case_03_multi_year_profiling_with_compounded_inflation() -> None:
+    """Base 2026, Start 2027, Dur 3, rates 5%, profile 20/50/30.
+
+    f = 1.05, 1.1025, 1.157625
+    Knom = 0.21 + 0.55125 + 0.3472875 = 1.1085375
+    A_nom = 1108.5375
+    """
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    factors = {row.calendar_year: row.cumulative_factor for row in result.inflation_factors}
+    _close(factors[2027], 1.05, note="infl 2027")
+    _close(factors[2028], 1.1025, note="infl 2028")
+    _close(factors[2029], 1.157625, note="infl 2029")
+    _close(result.drivers[0].knom, 1.1085375, note="Knom")
+    _close(result.totals.a_nom, 1108.5375, note="A_nom")
+
+
+def test_case_04_present_value_across_multiple_years() -> None:
+    """r = 10% on case 3.
+
+    Kpv  = 0.21 + 0.501136363636 + 0.287014462810 = 0.998150826446
+    A_pv = 998.150826446
+    C_pv = 1097.965909091
+    """
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    _close(result.drivers[0].kpv, 0.998150826446, rel=1e-11, note="Kpv")
+    _close(result.totals.a_pv, 998.150826446, rel=1e-11, note="A_pv")
+    _close(result.totals.c_pv, 1097.965909091, rel=1e-11, note="C_pv")
+
+
+def test_case_05_triangular_deterministic_versus_mean() -> None:
+    """80/100/150 -> central 100, mean 110. On case 3: C_nom 1219.39125, B_nom 110.85375."""
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    driver = result.drivers[0]
+    _close(driver.central_value, 100.0, note="central")
+    _close(driver.mean_value, 110.0, note="mean")
+    _close(result.totals.c_nom, 1219.39125, note="C_nom")
+    _close(result.totals.b_nom, 110.85375, note="B_nom")
+    assert driver.central_basis == "ML"
+
+
+def test_case_06_beta_pert_deterministic_versus_mean() -> None:
+    """80/100/150, lambda 4 -> central 100, mean (80 + 400 + 150)/6 = 105."""
+    result = calculate(_model(costs=(_cost(distribution="Beta-PERT"),)), TOL)
+    driver = result.drivers[0]
+    _close(driver.central_value, 100.0, note="central")
+    _close(driver.mean_value, 105.0, note="mean")
+    assert driver.central_basis == "ML"
+
+
+def test_case_07_uniform_midpoint_equals_mean() -> None:
+    """Min 80 / Max 150 -> central 115, mean 115, and B = 0 for this driver."""
+    result = calculate(
+        _model(costs=(_cost(distribution="Uniform", most_likely=None),)), TOL
+    )
+    driver = result.drivers[0]
+    _close(driver.central_value, 115.0, note="central")
+    _close(driver.mean_value, 115.0, note="mean")
+    assert result.totals.b_nom == 0.0
+    assert driver.central_basis == "Midpoint"
+
+
+def test_case_08_risk_emv_with_probability_below_one() -> None:
+    """P = 30%, severity 100/200/450 -> mean severity 250, D = 75."""
+    result = calculate(_model(risks=(_risk(),)), TOL)
+    _close(result.drivers[0].mean_value, 250.0, note="expected severity")
+    _close(result.totals.d_nom, 75.0, note="D_nom")
+
+
+def test_case_09_multi_year_risk_profile() -> None:
+    """The case-8 risk on case-3 factors: D_nom 83.1403125, D_pv 74.8613119835."""
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               risks=(_risk(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    _close(result.totals.d_nom, 83.1403125, note="D_nom")
+    _close(result.totals.d_pv, 74.8613119835, rel=1e-11, note="D_pv")
+
+
+def test_case_10_base_year_equals_start_year() -> None:
+    """Base 2027, Start 2027, Dur 2, rate 2028 = 5% -> infl(2027) = 1, infl(2028) = 1.05."""
+    result = calculate(
+        _model(base=2027, start=2027, duration=2, discount=0.0,
+               rates={"Standard": {2028: 0.05}},
+               costs=(_cost(weights=(0.5, 0.5)),)),
+        TOL,
+    )
+    factors = {row.calendar_year: row.cumulative_factor for row in result.inflation_factors}
+    assert factors[2027] == 1.0
+    _close(factors[2028], 1.05, note="infl 2028")
+
+
+def test_case_11_base_year_earlier_than_start_year() -> None:
+    """Case 3: project year 1 (2027) already carries 1.05 from pre-project escalation."""
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               costs=(_cost(weights=(1.0, 0.0, 0.0)),)),
+        TOL,
+    )
+    factors = {row.calendar_year: row.cumulative_factor for row in result.inflation_factors}
+    _close(factors[2027], 1.05, note="project year 1 factor")
+    _close(result.drivers[0].knom, 1.05, note="Knom is the year-1 factor alone")
+
+
+def test_case_12_zero_inflation_leaves_knom_at_fx() -> None:
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, discount=0.0,
+               fx=(FxRow("SAR", 1), FxRow("USD", 3.75)),
+               rates=_three_year(0.0),
+               costs=(_cost(currency="USD", weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    assert all(row.cumulative_factor == 1.0 for row in result.inflation_factors)
+    _close(result.drivers[0].knom, 3.75, note="Knom = FX when inflation is flat")
+
+
+def test_case_13_negative_but_valid_inflation() -> None:
+    """rate -2%, three years -> 0.98, 0.9604, 0.941192 (D2)."""
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, discount=0.0, rates=_three_year(-0.02),
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    factors = {row.calendar_year: row.cumulative_factor for row in result.inflation_factors}
+    _close(factors[2027], 0.98, note="2027")
+    _close(factors[2028], 0.9604, note="2028")
+    _close(factors[2029], 0.941192, note="2029")
+
+
+# ---------------------------------------------------------------------------
+# CASES 14-25 - refusals and the acceptances a naive implementation over-blocks
+# ---------------------------------------------------------------------------
+def test_case_14_blank_required_inflation_rate_is_refused_naming_profile_and_year() -> None:
+    message = _refuses(
+        lambda: calculate(
+            _model(base=2026, start=2027, duration=3,
+                   rates={"Standard": {2027: 0.05, 2028: None, 2029: 0.05}},
+                   costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+            TOL,
+        ),
+        "blank required inflation rate",
+    )
+    assert "Standard" in message
+    assert "2028" in message
+
+
+def test_case_15_profile_sum_not_one_hundred_percent_is_refused_naming_the_driver() -> None:
+    message = _refuses(
+        lambda: calculate(
+            _model(base=2026, start=2027, duration=3, rates=_three_year(),
+                   costs=(_cost(weights=(0.2, 0.5, 0.2)),)),
+            TOL,
+        ),
+        "profile sum != 100%",
+    )
+    assert "CL-001" in message
+    assert "0.8999999999999999" in message      # the offending sum is reported verbatim
+
+
+def test_case_16_quantity_zero_is_refused() -> None:
+    message = _refuses(
+        lambda: calculate(_model(costs=(_cost(quantity=0),)), TOL), "Quantity = 0"
+    )
+    assert "CL-001" in message and "Quantity" in message
+
+
+def test_case_17_negative_quantity_is_refused() -> None:
+    _refuses(lambda: calculate(_model(costs=(_cost(quantity=-5),)), TOL), "Quantity < 0")
+
+
+def test_case_18_discount_rate_of_minus_one_hundred_percent_is_refused() -> None:
+    message = _refuses(
+        lambda: calculate(_model(discount=-1.0, costs=(_cost(),)), TOL), "r = -100%"
+    )
+    assert "discount rate" in message
+
+
+def test_case_19_negative_discount_rate_above_minus_one_hundred_percent_is_accepted() -> None:
+    """r = -5% on case 3: disc = 1, 1/0.95, 1/0.9025, so A_pv > A_nom - correct,
+    and exactly why `A_pv <= A_nom` is not a gate."""
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, discount=-0.05, rates=_three_year(),
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    _close(result.discount_factors[1], 1.0, note="disc 1")
+    _close(result.discount_factors[2], 1.0 / 0.95, note="disc 2")
+    _close(result.discount_factors[3], 1.0 / 0.9025, note="disc 3")
+    assert result.totals.a_pv > result.totals.a_nom
+    assert_reconciled(result, TOL)
+
+
+def test_case_20_inflation_rate_of_minus_one_hundred_percent_is_refused() -> None:
+    message = _refuses(
+        lambda: calculate(
+            _model(base=2026, start=2027, duration=3,
+                   rates={"Standard": {2027: 0.05, 2028: -1.0, 2029: 0.05}},
+                   costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+            TOL,
+        ),
+        "inflation rate = -100%",
+    )
+    assert "2028" in message
+
+
+def test_case_21_negative_but_valid_inflation_rate_is_accepted() -> None:
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, discount=0.0, rates=_three_year(-0.02),
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    assert result.totals.a_nom > 0.0
+    assert_reconciled(result, TOL)
+
+
+def test_case_22_uniform_with_a_populated_most_likely_is_accepted_and_ignores_it() -> None:
+    """D1: Min 80 / ML 999 / Max 150 -> central = mean = 115, ML ignored."""
+    result = calculate(
+        _model(costs=(_cost(distribution="Uniform", most_likely=999),)), TOL
+    )
+    driver = result.drivers[0]
+    _close(driver.central_value, 115.0, note="central")
+    _close(driver.mean_value, 115.0, note="mean")
+
+
+def test_case_23_a_hundred_percent_summing_profile_with_a_blank_is_refused() -> None:
+    """D4: 50% / blank / 50% sums to 100% and is STILL refused."""
+    message = _refuses(
+        lambda: calculate(
+            _model(base=2026, start=2027, duration=3, rates=_three_year(),
+                   costs=(_cost(weights=(0.5, None, 0.5)),)),
+            TOL,
+        ),
+        "blank profiling cell",
+    )
+    assert "CL-001" in message
+    assert "project year 2" in message
+    assert "blank" in message
+
+
+def test_case_24_double_overflow_is_a_controlled_refusal() -> None:
+    """Never an uncontrolled error, never a fabricated zero."""
+    message = _refuses(
+        lambda: calculate(
+            _model(base=2026, start=2027, duration=3, discount=0.0,
+                   rates=_three_year(1e300),
+                   costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+            TOL,
+        ),
+        "inflation overflow",
+    )
+    assert "Standard" in message
+
+    extreme = _refuses(
+        lambda: calculate(_model(costs=(_cost(minimum=1e308, most_likely=1e308,
+                                              maximum=1e308, quantity=1e10),)), TOL),
+        "extreme unit cost",
+    )
+    assert "CL-001" in extreme
+
+
+def test_case_25_an_unreferenced_incomplete_fx_row_does_not_block() -> None:
+    """A valid SAR-only model plus a duplicate, blank-rate EUR row referenced by
+    nothing. Validating the whole Config universe would refuse a valid model."""
+    result = calculate(
+        _model(
+            fx=(FxRow("SAR", 1), FxRow("EUR", None), FxRow("EUR", "n/a")),
+            rates={"Standard": {}, "Unused": {2027: None}},
+            costs=(_cost(),),
+        ),
+        TOL,
+    )
+    _close(result.totals.a_nom, 1000.0, note="A_nom")
+    assert "EUR" not in result.resolved_fx
+
+
+# ---------------------------------------------------------------------------
+# CASES 28-31
+# ---------------------------------------------------------------------------
+def test_case_28_stable_means_accept_inputs_the_naive_form_cannot() -> None:
+    for distribution, expected in (("Triangular", 1e308), ("Beta-PERT", 1e308)):
+        result = calculate(
+            _model(costs=(_cost(distribution=distribution, minimum=1e308,
+                                most_likely=1e308, maximum=1e308, quantity=1),)),
+            TOL,
+        )
+        _close(result.drivers[0].mean_value, expected, note=f"{distribution} mean")
+
+    uniform = calculate(
+        _model(costs=(_cost(distribution="Uniform", minimum=1.5e308,
+                            most_likely=None, maximum=1.5e308, quantity=1),)),
+        TOL,
+    )
+    _close(uniform.drivers[0].mean_value, 1.5e308, note="Uniform midpoint")
+
+
+def test_case_29_discount_factor_underflow_refuses_at_project_year_34() -> None:
+    message = _refuses(
+        lambda: calculate(
+            _model(base=2026, start=2026, duration=34, discount=1e10,
+                   rates={"Standard": {y: 0.0 for y in range(2027, 2060)}},
+                   costs=(_cost(weights=tuple([1.0] + [0.0] * 33)),)),
+            TOL,
+        ),
+        "discount underflow",
+    )
+    assert "project year 34" in message
+
+    # 33 years is the last representable duration for this rate.
+    ok = calculate(
+        _model(base=2026, start=2026, duration=33, discount=1e10,
+               rates={"Standard": {y: 0.0 for y in range(2027, 2060)}},
+               costs=(_cost(weights=tuple([1.0] + [0.0] * 32)),)),
+        TOL,
+    )
+    assert ok.discount_factors[33] > 0.0
+
+
+def test_case_30_cancellation_heavy_reconciliation_holds() -> None:
+    """Large positive and negative contributions whose net is near zero.
+
+    Cancellation ACROSS YEARS is where the plan's conditioning design does its
+    work: `Sum_y |annual| + |headline|` keeps growing when the signed annual
+    values cancel, so I3/I4 keep a tolerance proportional to the arithmetic
+    actually performed rather than falling back to the 1e-6 floor.
+    """
+    costs = (
+        _cost("CL-001", minimum=1e9, most_likely=1.1e9, maximum=1.2e9, weights=(1.0, 0.0),
+              quantity=1),
+        _cost("CL-002", minimum=-1.2e9, most_likely=-1.1e9, maximum=-1e9, weights=(0.0, 1.0),
+              quantity=1),
+    )
+    result = calculate(
+        _model(base=2026, start=2026, duration=2, discount=0.0,
+               rates={"Standard": {2027: 0.0}}, costs=costs),
+        TOL,
+    )
+    assert result.totals.c_nom == 0.0                       # the net really is zero
+    assert abs(result.annual[0].base_cost_nominal) > 1e9     # the arithmetic was not
+    assert abs(result.annual[1].base_cost_nominal) > 1e9
+
+    checks = {check.name: check for check in reconcile(result, TOL)}
+    assert checks["I3a nominal base"].allowance > TOL.identity_absolute_floor, (
+        "the annual conditioning scale must reflect the terms, not the near-zero net"
+    )
+    assert_reconciled(result, TOL)
+
+
+def test_finding_headline_cancellation_can_exceed_the_locked_i1_allowance() -> None:
+    """PINNED FINDING — reported to review, NOT silently corrected.
+
+    Plan §15 states the objective: "The scale must reflect the MAGNITUDE OF THE
+    ARITHMETIC PERFORMED, not the magnitude of its net result." The locked I1 and
+    I2 scales are `max(1, |A| + |B| + |C|)` and `max(1, |C| + |D| + |E|)` — sums
+    of the HEADLINE TOTALS. That achieves the objective for the annual identities,
+    whose scale sums `|annual|` term by term, but not for I1/I2 when the totals
+    themselves cancel across drivers.
+
+    The model below is entirely valid: three cost lines, ordered three-point sets,
+    positive Quantity, weights summing to 1. Two of them are exact mirrors, so A,
+    B and C all collapse to a few tens of SAR while the accumulation ran through
+    partial sums of 1e17 — where one unit in the last place is already 16 SAR. The
+    conditioning scale therefore falls back to the 1e-6 floor and I1 is reported
+    as failing, even though nothing is wrong with the model OR the calculation.
+
+    THIS TEST ASSERTS THE CURRENT BEHAVIOUR so it cannot change unnoticed. It is
+    not an endorsement: if review amends the locked conditioning definition, this
+    test must fail and be updated with it. Step 2 implements the accepted
+    definition exactly and does not alter it.
+    """
+    costs = (
+        _cost("CL-001", minimum=0.0, most_likely=1e17, maximum=4e17, weights=(1.0,), quantity=1),
+        _cost("CL-002", minimum=10.0, most_likely=30.0, maximum=110.0, weights=(1.0,),
+              quantity=1),
+        _cost("CL-003", minimum=-4e17, most_likely=-1e17, maximum=0.0, weights=(1.0,),
+              quantity=1),
+    )
+    result = calculate(_model(discount=0.0, costs=costs), TOL)
+
+    # The model was accepted: this is not a refusal, and no input is at fault.
+    totals = result.totals
+    assert abs(totals.a_nom) < 1e3 and abs(totals.c_nom) < 1e3
+
+    checks = {check.name: check for check in reconcile(result, TOL)}
+    i1 = checks["I1 nominal: A + B = C"]
+    assert i1.allowance == TOL.identity_absolute_floor, (
+        "the headline scale collapsed to the floor, which is the finding"
+    )
+    assert abs(i1.difference) > i1.allowance
+    assert not i1.holds
+
+    try:
+        assert_reconciled(result, TOL)
+    except OracleInvariantError as error:
+        assert "I1 nominal" in str(error)
+        return
+    raise AssertionError("the pinned finding no longer reproduces; review §15 and update")
+
+
+def test_case_31_the_base_year_inflation_row_is_explicit() -> None:
+    """Base 2026, Start 2028, Dur 3 -> rows 2026..2030, with 2026 blank at factor 1."""
+    rates = {"Standard": {year: 0.05 for year in range(2027, 2031)}}
+    result = calculate(
+        _model(base=2026, start=2028, duration=3, rates=rates,
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    rows = {row.calendar_year: row for row in result.inflation_factors}
+    assert sorted(rows) == [2026, 2027, 2028, 2029, 2030]
+    assert rows[2026].annual_rate is None, "the base-year rate is a model-controlled blank"
+    assert rows[2026].cumulative_factor == 1.0
+    _close(rows[2027].cumulative_factor, 1.05, note="pre-project 2027")
+    _close(rows[2028].cumulative_factor, 1.1025, note="project year 1")
+
+
+# ---------------------------------------------------------------------------
+# REFERENCED-ONLY RESOLUTION
+# ---------------------------------------------------------------------------
+def test_a_referenced_bad_currency_is_refused() -> None:
+    for bad in (None, "n/a", 0, -1):
+        _refuses(
+            lambda b=bad: calculate(
+                _model(fx=(FxRow("SAR", 1), FxRow("USD", b)),
+                       costs=(_cost(currency="USD"),)),
+                TOL,
+            ),
+            f"referenced USD rate {bad!r}",
+        )
+
+
+def test_a_referenced_missing_currency_is_refused() -> None:
+    message = _refuses(
+        lambda: calculate(_model(costs=(_cost(currency="USD"),)), TOL), "missing USD"
+    )
+    assert "USD" in message
+
+
+def test_a_referenced_duplicate_currency_is_refused() -> None:
+    message = _refuses(
+        lambda: calculate(
+            _model(fx=(FxRow("SAR", 1), FxRow("USD", 3.75), FxRow("USD", 3.80)),
+                   costs=(_cost(currency="USD"),)),
+            TOL,
+        ),
+        "duplicate USD",
+    )
+    assert "USD" in message
+
+
+def test_an_unreferenced_bad_currency_does_not_block() -> None:
+    result = calculate(
+        _model(fx=(FxRow("SAR", 1), FxRow("USD", -3.75), FxRow("USD", None)),
+               costs=(_cost(currency="SAR"),)),
+        TOL,
+    )
+    _close(result.totals.a_nom, 1000.0, note="A_nom")
+
+
+def test_a_referenced_incomplete_inflation_profile_is_refused() -> None:
+    message = _refuses(
+        lambda: calculate(
+            _model(base=2026, start=2027, duration=3,
+                   rates={"Standard": {2027: 0.05, 2029: 0.05}},
+                   costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+            TOL,
+        ),
+        "missing required inflation year",
+    )
+    assert "2028" in message
+
+
+def test_a_referenced_missing_inflation_profile_is_refused() -> None:
+    message = _refuses(
+        lambda: calculate(_model(rates={}, costs=(_cost(),)), TOL), "missing profile"
+    )
+    assert "Standard" in message
+
+
+def test_an_unreferenced_incomplete_inflation_profile_does_not_block() -> None:
+    result = calculate(
+        _model(base=2026, start=2027, duration=3,
+               rates={"Standard": {2027: 0.05, 2028: 0.05, 2029: 0.05},
+                      "Neglected": {2027: None}},
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    _close(result.totals.a_nom, 1108.5375, note="A_nom")
+
+
+def test_the_sar_invariant_applies_even_with_no_foreign_currency() -> None:
+    for fx in ((FxRow("SAR", 2),), (FxRow("SAR", None),), (), (FxRow("SAR", 1), FxRow("SAR", 1))):
+        message = _refuses(
+            lambda f=fx: calculate(_model(fx=f, costs=(_cost(),)), TOL),
+            f"SAR invariant with fx={fx}",
+        )
+        assert "SAR" in message
+
+
+def test_the_sar_invariant_applies_to_a_model_with_no_drivers_at_all() -> None:
+    _refuses(lambda: calculate(_model(fx=(FxRow("SAR", 2),)), TOL), "empty model, SAR != 1")
+
+
+# ---------------------------------------------------------------------------
+# §22 MUST-HAVE TESTS
+# ---------------------------------------------------------------------------
+def test_a_populated_uniform_most_likely_has_no_influence_whatsoever() -> None:
+    results = [
+        calculate(_model(costs=(_cost(distribution="Uniform", most_likely=ml),)), TOL)
+        for ml in (None, 0, 999, -1e6, 115)
+    ]
+    first = results[0].totals
+    for other in results[1:]:
+        assert other.totals == first
+
+
+def test_a_numeric_zero_profile_weight_is_accepted() -> None:
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               costs=(_cost(weights=(0.5, 0.0, 0.5)),)),
+        TOL,
+    )
+    assert result.drivers[0].weights == (0.5, 0.0, 0.5)
+    assert_reconciled(result, TOL)
+
+
+def test_a_blank_profile_weight_is_refused_and_is_not_zero() -> None:
+    message = _refuses(
+        lambda: calculate(
+            _model(base=2026, start=2027, duration=3, rates=_three_year(),
+                   costs=(_cost(weights=(0.5, None, 0.5)),)),
+            TOL,
+        ),
+        "blank weight",
+    )
+    assert "blank" in message and "not zero" in message
+
+
+def test_profile_weights_travel_with_the_permanent_id_not_the_row() -> None:
+    """Reordering the driver sequence changes nothing at all."""
+    a = _cost("CL-001", weights=(0.2, 0.5, 0.3), quantity=10)
+    b = _cost("CL-002", weights=(0.6, 0.1, 0.3), quantity=4, maximum=200)
+    forward = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(), costs=(a, b)), TOL
+    )
+    reversed_ = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(), costs=(b, a)), TOL
+    )
+    assert forward.totals == reversed_.totals
+    assert {d.permanent_id: d.knom for d in forward.drivers} == {
+        d.permanent_id: d.knom for d in reversed_.drivers
+    }
+
+
+def test_a_wrong_length_profile_is_refused() -> None:
+    message = _refuses(
+        lambda: calculate(
+            _model(base=2026, start=2027, duration=3, rates=_three_year(),
+                   costs=(_cost(weights=(0.5, 0.5)),)),
+            TOL,
+        ),
+        "wrong profile length",
+    )
+    assert "CL-001" in message
+
+
+def test_a_non_numeric_profile_cell_is_refused() -> None:
+    _refuses(
+        lambda: calculate(
+            _model(base=2026, start=2027, duration=3, rates=_three_year(),
+                   costs=(_cost(weights=(0.5, "half", 0.0)),)),
+            TOL,
+        ),
+        "non-numeric weight",
+    )
+
+
+def test_quantity_scales_the_contribution_but_never_knom_or_kpv() -> None:
+    """Quantity is a per-driver multiplier, not part of the escalation path."""
+    base = calculate(_model(costs=(_cost(quantity=10),)), TOL)
+    doubled = calculate(_model(costs=(_cost(quantity=20),)), TOL)
+    assert doubled.drivers[0].knom == base.drivers[0].knom
+    assert doubled.drivers[0].kpv == base.drivers[0].kpv
+    _close(doubled.totals.a_nom, base.totals.a_nom * 2.0, note="A scales with Quantity")
+
+
+def test_probability_scales_the_emv_but_never_knom_or_kpv() -> None:
+    """Probability is replaced by a Bernoulli draw later, so folding it into Kpv
+    would double-count it."""
+    base = calculate(_model(risks=(_risk(probability=0.3),)), TOL)
+    doubled = calculate(_model(risks=(_risk(probability=0.6),)), TOL)
+    assert doubled.drivers[0].knom == base.drivers[0].knom
+    assert doubled.drivers[0].kpv == base.drivers[0].kpv
+    _close(doubled.totals.d_nom, base.totals.d_nom * 2.0, note="D scales with Probability")
+
+
+def test_probability_zero_is_valid_and_gives_zero_emv() -> None:
+    result = calculate(_model(risks=(_risk(probability=0),)), TOL)
+    assert result.totals.d_nom == 0.0
+    assert result.totals.d_pv == 0.0
+    assert_reconciled(result, TOL)
+
+
+def test_probability_one_is_valid() -> None:
+    result = calculate(_model(risks=(_risk(probability=1),)), TOL)
+    _close(result.totals.d_nom, 250.0, note="D at certainty is the expected severity")
+
+
+def test_a_probability_outside_zero_to_one_is_refused() -> None:
+    for bad in (-0.1, 1.1, None, "half"):
+        _refuses(
+            lambda b=bad: calculate(_model(risks=(_risk(probability=b),)), TOL),
+            f"probability {bad!r}",
+        )
+
+
+def test_negative_but_ordered_cost_values_are_allowed() -> None:
+    """No locked contract imposes positivity on Min / ML / Max, and inventing one
+    would be inventing a business rule."""
+    result = calculate(
+        _model(costs=(_cost(minimum=-150, most_likely=-100, maximum=-80),)), TOL
+    )
+    assert result.totals.a_nom < 0.0
+    assert_reconciled(result, TOL)
+
+
+def test_negative_but_ordered_risk_impacts_are_allowed() -> None:
+    result = calculate(
+        _model(risks=(_risk(minimum=-450, most_likely=-200, maximum=-100),)), TOL
+    )
+    assert result.totals.d_nom < 0.0
+    assert_reconciled(result, TOL)
+
+
+def test_an_out_of_order_three_point_set_is_refused() -> None:
+    for distribution in ("Triangular", "Beta-PERT"):
+        _refuses(
+            lambda d=distribution: calculate(
+                _model(costs=(_cost(distribution=d, minimum=150, most_likely=100,
+                                    maximum=80),)),
+                TOL,
+            ),
+            f"{distribution} out of order",
+        )
+
+
+def test_a_uniform_with_min_above_max_is_refused() -> None:
+    _refuses(
+        lambda: calculate(
+            _model(costs=(_cost(distribution="Uniform", minimum=150, most_likely=None,
+                                maximum=80),)),
+            TOL,
+        ),
+        "Uniform Min > Max",
+    )
+
+
+def test_an_invalid_distribution_is_refused() -> None:
+    for bad in ("Normal", "triangular", "", "PERT"):
+        message = _refuses(
+            lambda b=bad: calculate(_model(costs=(_cost(distribution=b),)), TOL),
+            f"distribution {bad!r}",
+        )
+        assert "CL-001" in message
+
+
+def test_an_empty_driver_set_is_not_refused() -> None:
+    """No accepted contract requires at least one driver, so none is invented."""
+    result = calculate(_model(), TOL)
+    assert result.totals.a_nom == 0.0
+    assert result.totals.e_pv == 0.0
+    assert result.drivers == ()
+    assert len(result.annual) == 1
+    assert_reconciled(result, TOL)
+
+
+def test_a_base_year_after_the_start_year_is_refused() -> None:
+    message = _refuses(
+        lambda: calculate(_model(base=2030, start=2026, costs=(_cost(),)), TOL),
+        "Base Year > Start Year",
+    )
+    assert "Base Year" in message
+
+
+def test_a_blank_or_non_numeric_discount_rate_is_refused() -> None:
+    for bad in (None, "ten percent"):
+        _refuses(
+            lambda b=bad: calculate(_model(discount=b, costs=(_cost(),)), TOL),
+            f"discount rate {bad!r}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# ANNUAL SERIES AND RECONCILIATION
+# ---------------------------------------------------------------------------
+def test_the_annual_series_uses_the_mean_basis_not_the_deterministic_basis() -> None:
+    """Locked: annual cash flow is mean-only. There is no deterministic series."""
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    annual_total = sum(row.base_cost_nominal for row in result.annual)
+    _close(annual_total, result.totals.c_nom, note="annual base sums to C, not A")
+    assert abs(annual_total - result.totals.a_nom) > 1.0
+
+
+def test_each_annual_row_carries_its_own_calendar_year() -> None:
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    assert [(row.project_index, row.calendar_year) for row in result.annual] == [
+        (1, 2027), (2, 2028), (3, 2029)
+    ]
+
+
+def test_all_reconciliation_identities_hold_on_a_mixed_model() -> None:
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               fx=(FxRow("SAR", 1), FxRow("USD", 3.75)),
+               costs=(_cost("CL-001", weights=(0.2, 0.5, 0.3)),
+                      _cost("CL-002", distribution="Beta-PERT", currency="USD",
+                            weights=(0.1, 0.1, 0.8), quantity=3)),
+               risks=(_risk("R-001", weights=(0.0, 0.5, 0.5)),
+                      _risk("R-002", distribution="Uniform", most_likely=None,
+                            weights=(1.0, 0.0, 0.0), probability=0.75))),
+        TOL,
+    )
+    checks = reconcile(result, TOL)
+    names = {check.name for check in checks}
+    for expected in ("I1 nominal: A + B = C", "I2 PV: C + D = E", "I3c nominal total",
+                     "I4a PV base", "I5 profile sum: R-002"):
+        assert expected in names
+    failing = [check.name for check in checks if not check.holds]
+    assert not failing, failing
+    assert_reconciled(result, TOL)
+
+
+def test_reconciliation_failure_is_an_internal_invariant_error_not_a_refusal() -> None:
+    """A user must never be told their model is invalid because the calculation
+    disagreed with itself."""
+    result = calculate(_model(costs=(_cost(),)), TOL)
+    impossible = Tolerances(
+        profiling_sum_absolute=1e-9,
+        identity_absolute_floor=-1.0,          # forces every identity to fail
+        identity_relative_coefficient=-1.0,
+        conditioning_scale_floor=1.0,
+    )
+    try:
+        assert_reconciled(result, impossible)
+    except OracleInvariantError as error:
+        assert not isinstance(error, (ModelInputRefusal, NumericalRangeRefusal))
+        assert "reconciliation failed" in str(error)
+        return
+    raise AssertionError("a failing identity did not raise an invariant error")
+
+
+def test_the_driver_audit_columns_reconstruct_the_headline_measures() -> None:
+    """Plain column sums over rows of one kind — the property the audit exists for."""
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               costs=(_cost("CL-001", weights=(0.2, 0.5, 0.3)),
+                      _cost("CL-002", weights=(0.6, 0.2, 0.2), quantity=2)),
+               risks=(_risk("R-001", weights=(0.3, 0.3, 0.4)),)),
+        TOL,
+    )
+    costs = [d for d in result.drivers if d.driver_kind is DriverKind.COST_LINE]
+    risks = [d for d in result.drivers if d.driver_kind is DriverKind.RISK]
+    _close(sum(d.deterministic_nominal for d in costs), result.totals.a_nom, note="A")
+    _close(sum(d.uncertainty_mean_shift_nominal for d in costs), result.totals.b_nom, note="B")
+    _close(sum(d.mean_basis_nominal for d in costs), result.totals.c_nom, note="C")
+    _close(sum(d.expected_risk_nominal for d in risks), result.totals.d_nom, note="D")
+
+
+def test_no_audit_column_carries_two_meanings_by_driver_kind() -> None:
+    result = calculate(_model(costs=(_cost(),), risks=(_risk(),)), TOL)
+    cost = next(d for d in result.drivers if d.driver_kind is DriverKind.COST_LINE)
+    risk = next(d for d in result.drivers if d.driver_kind is DriverKind.RISK)
+    assert cost.probability is None and cost.expected_risk_nominal is None
+    assert risk.quantity is None and risk.central_value is None
+    assert risk.mean_basis_nominal is None and risk.deterministic_nominal is None
+
+
+def test_an_independent_rational_derivation_agrees_with_the_oracle() -> None:
+    """A SECOND independent check, exact rather than floating point.
+
+    It supplements the accepted literals above; it does not replace them.
+    """
+    weights = [Fraction(1, 5), Fraction(1, 2), Fraction(3, 10)]
+    rate = Fraction(1, 20)
+    factors = [(1 + rate) ** k for k in (1, 2, 3)]
+    knom = sum(w * f for w, f in zip(weights, factors))
+    central = Fraction(100)
+    quantity = Fraction(10)
+    expected_a = float(central * quantity * knom)
+
+    result = calculate(
+        _model(base=2026, start=2027, duration=3, rates=_three_year(),
+               costs=(_cost(weights=(0.2, 0.5, 0.3)),)),
+        TOL,
+    )
+    _close(result.totals.a_nom, expected_a, note="A_nom against exact rationals")
+    _close(result.drivers[0].knom, float(knom), note="Knom against exact rationals")
+
+
+# ---------------------------------------------------------------------------
+# ARCHITECTURE BOUNDARY - executable dependencies, not vocabulary
+# ---------------------------------------------------------------------------
+FORBIDDEN_IMPORTS = frozenset(
+    {"openpyxl", "win32com", "pythoncom", "xlwings", "random", "secrets", "numpy", "scipy"}
+)
+FORBIDDEN_NAMES = frozenset(
+    {
+        "Workbook", "Worksheet", "Worksheets", "Range", "Cells", "ListObject", "ListObjects",
+        "ThisWorkbook", "ActiveWorkbook", "Application", "Rnd", "Randomize", "percentile",
+        "quantile",
+    }
+)
+
+
+def _imported_modules(path: Path) -> set[str]:
+    """Top-level module names of every EXECUTABLE import statement."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            modules.add(node.module.split(".")[0])
+    return modules
+
+
+def _referenced_identifiers(path: Path) -> set[str]:
+    """Identifiers actually referenced in code.
+
+    Walking the AST is what makes this a dependency test rather than a fragile
+    word ban: comments never enter the tree at all, and docstrings are string
+    constants rather than `Name` or `Attribute` nodes, so prose about later
+    phases cannot trip it.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+    return names
+
+
+def test_the_oracle_imports_no_excel_com_or_random_dependency() -> None:
+    for path in (ORACLE_PATH, NUMERIC_PATH):
+        offending = _imported_modules(path) & FORBIDDEN_IMPORTS
+        assert not offending, f"{path.name} imports {sorted(offending)}"
+
+
+def test_the_oracle_references_no_workbook_or_simulation_identifier() -> None:
+    for path in (ORACLE_PATH, NUMERIC_PATH):
+        offending = _referenced_identifiers(path) & FORBIDDEN_NAMES
+        assert not offending, f"{path.name} references {sorted(offending)}"
+
+
+def test_prose_about_later_phases_does_not_trip_the_boundary_test() -> None:
+    """Guards the guard: the modules DO discuss workbooks and Monte Carlo in
+    comments and docstrings, and must be allowed to."""
+    text = ORACLE_PATH.read_text(encoding="utf-8")
+    assert "Monte Carlo" in text and "ListObject" in text
+    assert not _referenced_identifiers(ORACLE_PATH) & FORBIDDEN_NAMES
+
+
+def test_the_oracle_runs_with_no_excel_library_importable() -> None:
+    """The strongest form: load both modules in a fresh interpreter, WITHOUT the
+    `pccm_builder` package (whose `__init__` legitimately imports openpyxl), run a
+    calculation, and assert no forbidden module was ever loaded."""
+    script = textwrap.dedent(
+        f"""
+        import importlib.util, sys, types
+        builder = {str(PCCM_ROOT / "builder" / "pccm_builder")!r}
+        pkg = types.ModuleType("pccm5")
+        pkg.__path__ = [builder]
+        sys.modules["pccm5"] = pkg
+        for name in ("calc_numeric", "calc_oracle"):
+            spec = importlib.util.spec_from_file_location(
+                f"pccm5.{{name}}", builder + "/" + name + ".py"
+            )
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[f"pccm5.{{name}}"] = module
+            spec.loader.exec_module(module)
+        oracle = sys.modules["pccm5.calc_oracle"]
+        model = oracle.CalculationModel(
+            timeline=oracle.AppliedTimeline(2026, 2026, 1),
+            discount_rate=0.10,
+            fx_rows=(oracle.FxRow("SAR", 1),),
+            inflation_rates={{"Standard": {{}}}},
+            cost_drivers=(oracle.CostDriver(
+                "CL-001", "Triangular", "SAR", "Standard", 80, 100, 150, (1.0,), quantity=10
+            ),),
+        )
+        tolerances = oracle.Tolerances(1e-9, 1e-6, 1e-12, 1.0)
+        result = oracle.calculate(model, tolerances)
+        assert result.totals.a_nom == 1000.0, result.totals.a_nom
+        loaded = {{m for m in sys.modules if m.split(".")[0] in {sorted(FORBIDDEN_IMPORTS)!r}}}
+        assert not loaded, sorted(loaded)
+        print("OK")
+        """
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "OK" in completed.stdout
+
+
+def test_e_is_accumulated_independently_and_not_derived_from_c_and_d() -> None:
+    """A STRUCTURAL guard, because a behavioural one cannot see this.
+
+    `E = C + D` produces the same number as independent accumulation for every
+    ordinary model — that is precisely why I2 is worth checking — so no golden
+    value can distinguish the two implementations. Substituting the derivation
+    was verified to leave the entire suite passing.
+
+    What the derivation destroys is the MEANING of I2: an identity computed by
+    definition can never fail, so it stops being a check. The guard is therefore
+    on the shape of `_accumulate_totals`: `e_nom` and `e_pv` must be built by
+    accumulation over the drivers, and must never be assigned from `c_*` or `d_*`.
+    """
+    tree = ast.parse(ORACLE_PATH.read_text(encoding="utf-8"))
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_accumulate_totals"
+    )
+
+    derived_from: set[str] = set()
+    accumulated: set[str] = set()
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+        if not targets & {"e_nom", "e_pv"}:
+            continue
+        sources = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+        derived_from |= sources & {"c_nom", "c_pv", "d_nom", "d_pv"}
+        if "safe_accumulate" in sources:
+            accumulated |= targets
+
+    assert not derived_from, (
+        f"E is assigned from {sorted(derived_from)}. `E = C + D` is a reconciliation "
+        "identity, not the calculation path; deriving it makes I2 unfalsifiable."
+    )
+    assert accumulated == {"e_nom", "e_pv"}, (
+        f"E must be built with safe_accumulate over the drivers; accumulated {accumulated}"
+    )
+
+
+def test_b_is_accumulated_independently_and_not_derived_from_c_and_a() -> None:
+    """The same rule for `B = C - A`, and for the same reason: it would make I1
+    unfalsifiable."""
+    tree = ast.parse(ORACLE_PATH.read_text(encoding="utf-8"))
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_accumulate_totals"
+    )
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+        if not targets & {"b_nom", "b_pv"}:
+            continue
+        sources = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+        assert not sources & {"a_nom", "a_pv", "c_nom", "c_pv"}, (
+            f"B is assigned from {sorted(sources & {'a_nom', 'a_pv', 'c_nom', 'c_pv'})}"
+        )
+
+
+def test_the_uncertainty_shift_comes_from_the_driver_not_from_the_totals() -> None:
+    """Per driver, B is `(mean - central) * Qty * K`, computed at the driver.
+
+    Behavioural companion to the structural guards above: the audit column must
+    hold the driver's own shift, so a totals-level derivation would leave it empty
+    or wrong.
+    """
+    result = calculate(
+        _model(costs=(_cost("CL-001", quantity=10), _cost("CL-002", quantity=3)),), TOL
+    )
+    for driver in result.drivers:
+        expected_shift = (driver.mean_value - driver.central_value) * driver.quantity
+        _close(driver.uncertainty_mean_shift_nominal, expected_shift * driver.knom,
+               note=f"B for {driver.permanent_id}")
+
+
+def test_the_oracle_writes_nothing_anywhere() -> None:
+    """No file I/O of any kind: the pure layer never reads YAML or writes output."""
+    forbidden = {"open", "write_text", "read_text", "safe_load", "dump", "mkdir"}
+    assert not _referenced_identifiers(ORACLE_PATH) & forbidden
+    assert not _referenced_identifiers(NUMERIC_PATH) & forbidden
+
+
+def test_the_distribution_adapter_is_not_a_second_authority() -> None:
+    """The master list stays in `input_contract.yaml`; this maps names to shapes.
+
+    A name the adapter does not know is refused as an invalid distribution rather
+    than silently accepted, so the adapter cannot quietly widen the offering.
+    """
+    from pccm_builder.calc_oracle import _DISTRIBUTION_ADAPTER, DistributionKind
+
+    assert set(_DISTRIBUTION_ADAPTER) == {"Triangular", "Beta-PERT", "Uniform"}
+    assert len(set(_DISTRIBUTION_ADAPTER.values())) == len(DistributionKind)
+    _refuses(
+        lambda: calculate(_model(costs=(_cost(distribution="Lognormal"),)), TOL),
+        "a distribution the adapter does not know",
+    )
+
+
+def test_the_accepted_distribution_names_still_match_the_input_contract() -> None:
+    """If the upstream master list ever changes, this fails loudly."""
+    import yaml
+
+    from pccm_builder.calc_oracle import _DISTRIBUTION_ADAPTER
+
+    document = yaml.safe_load(
+        (PCCM_ROOT / "spec" / "input_contract.yaml").read_text(encoding="utf-8")
+    )
+    table = next(t for t in document["config_tables"] if t["key"] == "distributions")
+    upstream = set(table["values"])
+    assert upstream == set(_DISTRIBUTION_ADAPTER), (
+        f"upstream distributions {sorted(upstream)} disagree with the adapter "
+        f"{sorted(_DISTRIBUTION_ADAPTER)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# runner
+# ---------------------------------------------------------------------------
+def _run_all() -> int:
+    tests = sorted(
+        (name, fn) for name, fn in globals().items()
+        if name.startswith("test_") and callable(fn)
+    )
+    failures = 0
+    print("PCCM Phase 5 Gate-A Step-2 analytical oracle tests")
+    print("=" * 70)
+    for name, fn in tests:
+        try:
+            fn()
+        except AssertionError as error:
+            failures += 1
+            print(f"  [FAIL] {name}\n         {error}")
+        except Exception as error:  # noqa: BLE001
+            failures += 1
+            print(f"  [ERROR] {name}\n          {type(error).__name__}: {error}")
+        else:
+            print(f"  [PASS] {name}")
+    print("=" * 70)
+    print(f"  {len(tests) - failures} passed, {failures} failed")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run_all())
