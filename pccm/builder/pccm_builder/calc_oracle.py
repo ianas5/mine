@@ -61,6 +61,7 @@ from .calc_numeric import (
     beta_pert_mean,
     compound_inflation_factors,
     discount_factor_series,
+    exact_sum_of_products,
     is_usable_double,
     midpoint,
     safe_accumulate,
@@ -70,6 +71,7 @@ from .calc_numeric import (
     safe_signed_sum,
     safe_subtract,
     scaled_magnitude,
+    scaled_magnitude_of_product,
     triangular_mean,
 )
 
@@ -726,28 +728,54 @@ def precomputed_factors(
     Bernoulli draw in Monte Carlo and must not be folded in here; Quantity is a
     per-driver multiplier, not a factor of the escalation path. Folding either in
     would double-count them at the contribution step.
+
+    TWO TIERS, and the tier boundary is a MATERIALIZATION boundary.
+
+    1. **The current staging, unchanged**: form each `w_y * infl_y` (and
+       `* disc_y`), sum them in canonical project-year order, then apply FX. Every
+       ordinary model takes this path and its bits do not move.
+    2. **Only if that complete pipeline fails**, the whole factor is re-formed as
+       one exact expression, `SUM_y (FX * w_y * infl_y)`, and rounded once.
+
+    Algebraically the two are the same number. The difference is what has to fit a
+    Double on the way: `w_y * infl_y` and the pre-FX sum are implementation
+    intermediates that `_Calc` never publishes, so neither is a representability
+    boundary. `Knom` and `Kpv` are published, so they are. A profile of
+    `[2, -1]` against an inflation factor of `MAX_DOUBLE` and an FX of `0.5` has
+    `Knom = MAX_DOUBLE / 2` — refusing it because `2 * MAX_DOUBLE` was formed first
+    is refusing a model for its evaluation order (Erratum C2).
     """
-    nominal_terms: list[float] = []
-    present_terms: list[float] = []
-    labels: list[str] = []
-    for offset, weight in enumerate(weights):
-        index = offset + 1
-        year_where = f"{where}, project year {index}"
-        labels.append(f"project year {index}")
-        nominal_terms.append(safe_product([weight, inflation_by_index[offset]], year_where))
-        present_terms.append(
-            safe_product(
-                [weight, inflation_by_index[offset], discount_by_index[offset]], year_where
-            )
-        )
-    # Each per-year term is formed in project-year order, exactly as before; only
-    # the ACCUMULATION of the finished terms is signed-sum aware (Erratum C2).
-    nominal = safe_signed_sum(nominal_terms, f"{where}: Knom series", labels)
-    present = safe_signed_sum(present_terms, f"{where}: Kpv series", labels)
-    return (
-        safe_multiply(fx_rate, nominal, f"{where}: Knom"),
-        safe_multiply(fx_rate, present, f"{where}: Kpv"),
-    )
+    labels = [f"project year {offset + 1}" for offset in range(len(weights))]
+
+    def staged(with_discount: bool, tag: str) -> float:
+        """TIER 1 — the current sequence, reproduced exactly."""
+        terms: list[float] = []
+        for offset, weight in enumerate(weights):
+            year_where = f"{where}, project year {offset + 1}"
+            factors = [weight, inflation_by_index[offset]]
+            if with_discount:
+                factors.append(discount_by_index[offset])
+            terms.append(safe_product(factors, year_where))
+        total = safe_signed_sum(terms, f"{where}: {tag} series", labels)
+        return safe_multiply(fx_rate, total, f"{where}: {tag}")
+
+    def compound(with_discount: bool, tag: str) -> float:
+        """TIER 2 — FX distributed into the exact expression, rounded once."""
+        groups = []
+        for offset, weight in enumerate(weights):
+            factors = [fx_rate, weight, inflation_by_index[offset]]
+            if with_discount:
+                factors.append(discount_by_index[offset])
+            groups.append(factors)
+        return exact_sum_of_products(groups, f"{where}: {tag} (compound rescue)")
+
+    results = []
+    for with_discount, tag in ((False, "Knom"), (True, "Kpv")):
+        try:
+            results.append(staged(with_discount, tag))
+        except NumericalRangeRefusal:
+            results.append(compound(with_discount, tag))
+    return results[0], results[1]
 
 
 # ---------------------------------------------------------------------------
@@ -1062,110 +1090,181 @@ def _annual_series(
     ML/Midpoint basis: the locked Results requirement is that annual cash flow is
     mean-only, so the deterministic basis has no annual series at all.
 
-    The annual TOTAL is accumulated in its own pass rather than added from the two
-    series above it, so I3c and I4c are real checks and not arithmetic identities.
-
     Conditioning magnitudes are captured PER DRIVER PER YEAR, before the row
     aggregate exists. Conditioning on the aggregate would be conditioning on a
     number that has already cancelled - the annual aggregate can be `1` where the
     contributions that produced it were `1e16` apart.
+
+    --------------------------------------------------------------------------
+    WHAT IS PUBLISHED, AND WHAT IS NOT
+    --------------------------------------------------------------------------
+    `tblCalcAnnual` publishes SIX aggregate columns per year. It does not publish a
+    per-driver, per-year contribution, and neither does anything else in Phase 5.
+    So each of the six is a representability boundary and each is enforced
+    separately - a representable Total does not rescue an unrepresentable Base -
+    while an individual contribution is not a boundary at all.
+
+    Each series therefore has two tiers. Tier 1 is the current staging, unchanged:
+    form every contribution as a Double, then accumulate in canonical driver order,
+    with PV formed as `nominal * discount` exactly as before. If the complete
+    pipeline succeeds its result is returned bit for bit. Only if it fails is the
+    series re-formed as one exact sum of exact products - with the discount factor
+    INSIDE each PV product, so a nominal contribution that has no Double never
+    blocks the PV series that does.
+
+    Two cost lines at `+2` and `-2` against an inflation factor of `MAX_DOUBLE`
+    have contributions of `+2 * MAX_DOUBLE` and `-2 * MAX_DOUBLE` and an annual row
+    of `0`. Refusing that model is refusing it for its evaluation order (C2).
     """
     by_id = {driver.permanent_id: driver for driver in drivers}
     rows: list[AnnualRow] = []
     coefficient = tolerances.identity_relative_coefficient
-    mag: dict[str, float] = {
-        key: 0.0 for key in
-        ("annual_base_nom", "annual_base_pv", "annual_risk_nom", "annual_risk_pv",
-         "annual_total_nom", "annual_total_pv")
-    }
+    magnitude_keys = (
+        "annual_base_nom", "annual_base_pv", "annual_risk_nom", "annual_risk_pv",
+        "annual_total_nom", "annual_total_pv",
+    )
+    mag: dict[str, float] = {key: 0.0 for key in magnitude_keys}
 
-    def record(key: str, value: float, where: str) -> None:
-        mag[key] = scaled_magnitude(mag[key], value, coefficient, where)
+    def record(key: str, factors: Sequence[float], value: float | None, where: str) -> None:
+        """C1 conditioning, from the contribution when it has a Double and from the
+        same exact factor expression when it does not (round-5 review §9)."""
+        if value is not None:
+            mag[key] = scaled_magnitude(mag[key], value, coefficient, where)
+        else:
+            mag[key] = scaled_magnitude_of_product(mag[key], factors, coefficient, where)
 
     for offset, (index, calendar_year) in enumerate(project_years):
-        # Per-year contribution lists, in canonical driver order. As in
-        # `_accumulate_totals`, the order and the terms are unchanged; only the
-        # accumulation is signed-sum aware, so a year whose contributions cancel
-        # is not refused for a partial sum that left Double range (Erratum C2).
-        base_nom_terms: list[float] = []
-        base_pv_terms: list[float] = []
-        risk_nom_terms: list[float] = []
-        risk_pv_terms: list[float] = []
-        total_nom_terms: list[float] = []
-        total_pv_terms: list[float] = []
-        base_who: list[str] = []
-        risk_who: list[str] = []
-        total_who: list[str] = []
         discount = discounts[index]
+
+        # The FACTORS of every contribution, in canonical driver order. Building
+        # them before any of them is multiplied out is what lets a series be
+        # re-formed exactly when the staged evaluation cannot produce a value.
+        cost_groups: list[tuple[float, ...]] = []
+        risk_groups: list[tuple[float, ...]] = []
+        cost_labels: list[str] = []
+        risk_labels: list[str] = []
+        cost_where: list[str] = []
+        risk_where: list[str] = []
 
         for driver in ordered_costs:
             resolved = by_id[driver.permanent_id]
-            where = f"annual year {calendar_year}, cost line {driver.permanent_id!r}"
             infl = factors_by_profile[driver.inflation_profile][calendar_year]
-            weight = resolved.weights[offset]
-            nominal = safe_product(
-                [resolved.mean_value, resolved.quantity, resolved.fx_to_sar, weight, infl], where
+            cost_groups.append(
+                (
+                    resolved.mean_value, resolved.quantity, resolved.fx_to_sar,
+                    resolved.weights[offset], infl,
+                )
             )
-            present = safe_product([nominal, discount], f"{where} PV")
-            base_nom_terms.append(nominal)
-            base_pv_terms.append(present)
-            total_nom_terms.append(nominal)
-            total_pv_terms.append(present)
-            base_who.append(f"cost line {driver.permanent_id!r}")
-            total_who.append(f"cost line {driver.permanent_id!r}")
-            record("annual_base_nom", nominal, f"{where}: |base| nominal")
-            record("annual_base_pv", present, f"{where}: |base| PV")
-            record("annual_total_nom", nominal, f"{where}: |total| nominal")
-            record("annual_total_pv", present, f"{where}: |total| PV")
+            cost_labels.append(f"cost line {driver.permanent_id!r}")
+            cost_where.append(
+                f"annual year {calendar_year}, cost line {driver.permanent_id!r}"
+            )
 
         for driver in ordered_risks:
             resolved = by_id[driver.permanent_id]
-            where = f"annual year {calendar_year}, risk {driver.permanent_id!r}"
             infl = factors_by_profile[driver.inflation_profile][calendar_year]
-            weight = resolved.weights[offset]
-            nominal = safe_product(
-                [resolved.probability, resolved.mean_value, resolved.fx_to_sar, weight, infl],
-                where,
+            risk_groups.append(
+                (
+                    resolved.probability, resolved.mean_value, resolved.fx_to_sar,
+                    resolved.weights[offset], infl,
+                )
             )
-            present = safe_product([nominal, discount], f"{where} PV")
-            risk_nom_terms.append(nominal)
-            risk_pv_terms.append(present)
-            total_nom_terms.append(nominal)
-            total_pv_terms.append(present)
-            risk_who.append(f"risk {driver.permanent_id!r}")
-            total_who.append(f"risk {driver.permanent_id!r}")
-            record("annual_risk_nom", nominal, f"{where}: |risk| nominal")
-            record("annual_risk_pv", present, f"{where}: |risk| PV")
-            record("annual_total_nom", nominal, f"{where}: |total| nominal")
-            record("annual_total_pv", present, f"{where}: |total| PV")
+            risk_labels.append(f"risk {driver.permanent_id!r}")
+            risk_where.append(f"annual year {calendar_year}, risk {driver.permanent_id!r}")
+
+        def staged(groups, wheres):
+            """Each contribution as a Double, or `None` where it has none."""
+            nominal: list[float | None] = []
+            present: list[float | None] = []
+            for factors, where in zip(groups, wheres):
+                try:
+                    value = safe_product(list(factors), where)
+                except NumericalRangeRefusal:
+                    nominal.append(None)
+                    present.append(None)
+                    continue
+                nominal.append(value)
+                try:
+                    present.append(safe_product([value, discount], f"{where} PV"))
+                except NumericalRangeRefusal:
+                    present.append(None)
+            return nominal, present
+
+        cost_nominal, cost_present = staged(cost_groups, cost_where)
+        risk_nominal, risk_present = staged(risk_groups, risk_where)
+
+        for factors, value, where in zip(cost_groups, cost_nominal, cost_where):
+            record("annual_base_nom", factors, value, f"{where}: |base| nominal")
+            record("annual_total_nom", factors, value, f"{where}: |total| nominal")
+        for factors, value, where in zip(cost_groups, cost_present, cost_where):
+            discounted = factors + (discount,)
+            record("annual_base_pv", discounted, value, f"{where}: |base| PV")
+            record("annual_total_pv", discounted, value, f"{where}: |total| PV")
+        for factors, value, where in zip(risk_groups, risk_nominal, risk_where):
+            record("annual_risk_nom", factors, value, f"{where}: |risk| nominal")
+            record("annual_total_nom", factors, value, f"{where}: |total| nominal")
+        for factors, value, where in zip(risk_groups, risk_present, risk_where):
+            discounted = factors + (discount,)
+            record("annual_risk_pv", discounted, value, f"{where}: |risk| PV")
+            record("annual_total_pv", discounted, value, f"{where}: |total| PV")
 
         year = f"annual year {calendar_year}"
+
+        def series(values, groups, labels, tag: str, discounted: bool) -> float:
+            """TIER 1 then, only on failure, the exact compound form."""
+            if all(value is not None for value in values):
+                try:
+                    return safe_signed_sum(list(values), f"{year}: {tag}", labels)
+                except NumericalRangeRefusal:
+                    pass
+            expression = [
+                list(factors) + [discount] if discounted else list(factors)
+                for factors in groups
+            ]
+            # The rescue is over the whole series, so a refusal names the drivers
+            # that fed it rather than losing the diagnostic §19.4 requires.
+            named = ", ".join(labels[:3]) + ("..." if len(labels) > 3 else "")
+            return exact_sum_of_products(
+                expression, f"{year}: {tag} (compound rescue over {named})"
+            )
+
         # The annual TOTAL is summed over its own list of contributions rather than
         # added from the two series above it, so I3c and I4c stay real checks.
         rows.append(
             AnnualRow(
                 project_index=index,
                 calendar_year=calendar_year,
-                base_cost_nominal=safe_signed_sum(
-                    base_nom_terms, f"{year}: base nominal", base_who
+                base_cost_nominal=series(
+                    cost_nominal, cost_groups, cost_labels, "base nominal", False
                 ),
-                expected_risk_nominal=safe_signed_sum(
-                    risk_nom_terms, f"{year}: risk nominal", risk_who
+                expected_risk_nominal=series(
+                    risk_nominal, risk_groups, risk_labels, "risk nominal", False
                 ),
-                total_nominal=safe_signed_sum(
-                    total_nom_terms, f"{year}: total nominal", total_who
+                total_nominal=series(
+                    list(cost_nominal) + list(risk_nominal),
+                    list(cost_groups) + list(risk_groups),
+                    cost_labels + risk_labels,
+                    "total nominal",
+                    False,
                 ),
-                base_cost_pv=safe_signed_sum(base_pv_terms, f"{year}: base PV", base_who),
-                expected_risk_pv=safe_signed_sum(risk_pv_terms, f"{year}: risk PV", risk_who),
-                total_pv=safe_signed_sum(total_pv_terms, f"{year}: total PV", total_who),
+                base_cost_pv=series(
+                    cost_present, cost_groups, cost_labels, "base PV", True
+                ),
+                expected_risk_pv=series(
+                    risk_present, risk_groups, risk_labels, "risk PV", True
+                ),
+                total_pv=series(
+                    list(cost_present) + list(risk_present),
+                    list(cost_groups) + list(risk_groups),
+                    cost_labels + risk_labels,
+                    "total PV",
+                    True,
+                ),
             )
         )
     return tuple(rows), ReconciliationMagnitudes(relative_coefficient=coefficient, **mag)
 
 
-# ---------------------------------------------------------------------------
-# Reconciliation
-# ---------------------------------------------------------------------------
 def reconcile(result: CalculationResult, tolerances: Tolerances) -> tuple[IdentityCheck, ...]:
     """I1 - I5, conditioned on the UNDERLYING CONTRIBUTIONS.
 

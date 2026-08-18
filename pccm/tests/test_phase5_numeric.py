@@ -43,6 +43,7 @@ from pccm_builder.calc_numeric import (  # noqa: E402
     safe_add,
     safe_divide,
     safe_multiply,
+    exact_sum_of_products,
     safe_product,
     safe_signed_sum,
     safe_subtract,
@@ -1257,6 +1258,171 @@ def test_the_zero_classification_actually_fires_on_this_corpus() -> None:
             assert exact != 0, (a, b)
     assert judged >= 20, f"only {judged} tier-1 zeros in the corpus"
     assert collapsed >= 8, f"only {collapsed} of them were non-zero statistics"
+
+
+# ---------------------------------------------------------------------------
+# COMPOUND EXPRESSIONS - a sum of products, exact end to end
+# ---------------------------------------------------------------------------
+# `exact_sum_of_products` is the one composition round 5 adds to the kernel. It
+# exists because a NAMED Phase-5 output is often a sum of products whose
+# individual terms are implementation detail:
+#
+#     Knom          = SUM_y ( FX * w_y * infl_y )
+#     annual base   = SUM_i ( mean * qty * FX * w * infl )
+#
+# Neither `w_y * infl_y` nor one driver's annual contribution is published
+# anywhere, so neither is a representability boundary. Carrying them exactly until
+# the named value is reached is what stops a model being refused for its
+# evaluation order.
+_COMPOUND_CORPUS = (
+    MAX_DOUBLE, math.nextafter(MAX_DOUBLE, 0.0), 1e308, 1e250, 1e150, 1e100,
+    10.0, 2.0, 1.0, 0.5, 0.1, 1e-100, 1e-250, 1e-300, 1e-320, 5e-324,
+)
+_COMPOUND_CORPUS = _COMPOUND_CORPUS + tuple(-value for value in _COMPOUND_CORPUS)
+_HALF_MIN_SUBNORMAL = Fraction(5e-324) / 2
+
+
+def _exact_expression_oracle(groups) -> tuple[Fraction, list[Fraction]]:
+    terms = [_exact_product_oracle(factors) for factors in groups]
+    return sum(terms, Fraction(0)), terms
+
+
+def _compound_case(stream: _Stream) -> list[list[float]]:
+    """One deterministic expression.
+
+    THREE SHAPES, because a purely random corpus of huge magnitudes is almost
+    always out of range and would leave the interesting classes unexercised. Two of
+    the three shapes are built as cancelling pairs — the same factors with one sign
+    flipped — plus a residual, which is exactly how a real model produces terms far
+    outside Double range whose sum is not.
+    """
+    def group() -> list[float]:
+        return [stream.pick(_COMPOUND_CORPUS) for _ in range(2 + stream.next(5))]
+
+    shape = stream.next(3)
+    if shape == 0:
+        return [group() for _ in range(2 + stream.next(19))]
+
+    groups: list[list[float]] = []
+    for base in [group() for _ in range(1 + stream.next(4))]:
+        groups.append(list(base))
+        mirror = list(base)
+        mirror[0] = -mirror[0]
+        groups.append(mirror)
+    for _ in range(stream.next(3) + (1 if shape == 1 else 0)):
+        groups.append(group())
+    decorated = [(stream.next(1024), index, item) for index, item in enumerate(groups)]
+    decorated.sort(key=lambda entry: (entry[0], entry[1]))
+    return [item for _, _, item in decorated][:20]
+
+
+def test_the_compound_rescue_is_faithful_over_ten_thousand_expressions() -> None:
+    """§11. 2..20 summed terms, 2..6 factors each, judged against exact rationals.
+
+    The generator is the same fixed LCG the other sweeps use, so the corpus is
+    deterministic and does not depend on the stdlib RNG. Every case is a rescue
+    case: `exact_sum_of_products` IS the rescue helper and is never the ordinary
+    path.
+    """
+    stream = _Stream(0x5150BE6EB0E268)
+    representable = wide_term = subnormal_term = out_of_range = 0
+
+    for _ in range(_ADVERSARIAL_CASES):
+        groups = _compound_case(stream)
+        exact, terms = _exact_expression_oracle(groups)
+        kind, target = _classify(exact)
+        if kind == "value":
+            representable += 1
+            if any(abs(term) > _EXACT_MAX for term in terms):
+                wide_term += 1
+            if any(term != 0 and abs(term) < _HALF_MIN_SUBNORMAL for term in terms):
+                subnormal_term += 1
+        elif kind == "out-of-range":
+            out_of_range += 1
+
+        try:
+            actual = exact_sum_of_products(groups, "expression")
+        except NumericalRangeRefusal as error:
+            assert kind != "value", f"{groups} refused ({error}) but is {target!r}"
+            continue
+        assert kind == "value", f"{groups} returned {actual!r} but is {kind}"
+        assert actual == target, f"{groups}: got {actual!r}, correctly rounded is {target!r}"
+
+    # The three classes §11 requires the corpus to contain, counted rather than
+    # assumed. Without these floors the sweep could pass on easy cases alone.
+    assert representable > 2000, representable
+    assert wide_term > 500, (
+        f"only {wide_term} cases had an individual product outside Double range with a "
+        "representable sum — the class the rescue exists for"
+    )
+    assert subnormal_term > 500, (
+        f"only {subnormal_term} cases had an individual product below the smallest "
+        "Double with a representable sum"
+    )
+    assert out_of_range > 1000, out_of_range
+
+
+def test_a_compound_expression_whose_own_value_is_out_of_range_is_refused() -> None:
+    """§10.F, at the helper level. The rescue widens the arithmetic BETWEEN named
+    values; it never widens a named value itself."""
+    _refuses(
+        lambda: exact_sum_of_products([[0.5, 2.0, MAX_DOUBLE], [0.5, 2.0, MAX_DOUBLE]], "Knom"),
+        "a compound expression whose exact value exceeds MAX_DOUBLE",
+    )
+    # ... including by less than one ulp, which no staged evaluation could detect.
+    beyond = [[MAX_DOUBLE], [1.0, 2.0**969]]
+    exact, _ = _exact_expression_oracle(beyond)
+    assert 0 < abs(exact) - _EXACT_MAX < Fraction(2) ** 971
+    _refuses(lambda: exact_sum_of_products(beyond, "Knom"), "out of range by under an ulp")
+
+
+def test_a_compound_expression_that_collapses_to_zero_is_refused() -> None:
+    """The other classification, unchanged from the rest of the kernel."""
+    exact, _ = _exact_expression_oracle([[5e-324, 0.5]])
+    assert exact != 0 and float(exact) == 0.0
+    _refuses(lambda: exact_sum_of_products([[5e-324, 0.5]], "annual"), "a collapsed expression")
+
+
+def test_a_compound_expression_of_ordinary_numbers_is_the_ordinary_answer() -> None:
+    """§12 at the helper level: the rescue is not a different arithmetic, it is the
+    same arithmetic without the artificial intermediate boundaries."""
+    assert exact_sum_of_products([[2.0, 3.0], [4.0, 5.0]], "t") == 26.0
+    assert exact_sum_of_products([[1.0, 0.5], [1.0, 0.25]], "t") == 0.75
+    assert exact_sum_of_products([], "t") == 0.0
+    assert exact_sum_of_products([[1.0, 0.0, 1e308]], "t") == 0.0
+
+
+def test_a_compound_expression_still_requires_usable_operands() -> None:
+    """The widening is between named values, so every operand is still a Double."""
+    for bad in (math.inf, math.nan, 10**400):
+        _refuses(
+            lambda b=bad: exact_sum_of_products([[1.0, b]], "t"),
+            f"{bad!r} is not a usable Double",
+        )
+
+
+def test_the_conditioning_magnitude_of_an_unrepresentable_contribution() -> None:
+    """§9. `1e-12 * 2 * MAX_DOUBLE` is finite even though `2 * MAX_DOUBLE` is not.
+
+    The unscaled contribution must not have to become a Double just so its C1
+    conditioning magnitude can be recorded.
+    """
+    from pccm_builder.calc_numeric import scaled_magnitude_of_product
+
+    _refuses(lambda: safe_product([2.0, MAX_DOUBLE]), "the unscaled contribution")
+    scaled = scaled_magnitude_of_product(0.0, (2.0, 1.0, 1.0, 1.0, MAX_DOUBLE), 1e-12, "t")
+    assert scaled == float(Fraction(1e-12) * 2 * Fraction(MAX_DOUBLE)), scaled
+
+    # The accepted conditioning-underflow rule is unchanged: a metadata term too
+    # small to move an allowance floored at coefficient * 1 is dropped, not refused.
+    assert scaled_magnitude_of_product(0.0, (5e-324, 0.5), 1e-12, "t") == 0.0
+
+    # Overflow of the conditioning magnitude ITSELF is still refused: an allowance
+    # outside Double range cannot be compared against.
+    _refuses(
+        lambda: scaled_magnitude_of_product(0.0, (MAX_DOUBLE, MAX_DOUBLE), 1e-12, "t"),
+        "a conditioning magnitude outside Double range",
+    )
 
 
 # ---------------------------------------------------------------------------

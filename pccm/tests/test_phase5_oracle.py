@@ -53,7 +53,7 @@ from pathlib import Path
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
 
-from pccm_builder.calc_numeric import MAX_DOUBLE  # noqa: E402
+from pccm_builder.calc_numeric import MAX_DOUBLE, safe_product  # noqa: E402
 from pccm_builder.calc_oracle import (  # noqa: E402
     AppliedTimeline,
     CalculationModel,
@@ -1972,6 +1972,307 @@ def test_a_headline_total_beyond_range_by_less_than_one_ulp_is_refused() -> None
         "a headline total outside Double range by under one ulp",
     )
     assert "totals" in message
+
+
+# ---------------------------------------------------------------------------
+# Round 5 - the materialization boundary
+# ---------------------------------------------------------------------------
+# A representability boundary sits at a NAMED, MATERIALIZED Phase-5 value, not at
+# whatever subexpression the implementation happens to assign to a local variable.
+# `Knom`, `Kpv`, every per-driver audit amount, each of the six annual columns and
+# each headline total is published, so each must be a usable Double. `w * infl`,
+# the pre-FX sum, and one driver's contribution to one annual row are published
+# nowhere, so none of them is.
+_HALF_MAX = MAX_DOUBLE / 2
+
+
+def _profile_cost(
+    permanent_id: str, value: float, weights: tuple[float, ...],
+    currency: str = "SAR", profile: str = "P",
+) -> CostDriver:
+    return CostDriver(
+        permanent_id, "Uniform", currency, profile, value, None, value, weights, quantity=1
+    )
+
+
+def test_knom_is_not_refused_for_a_pre_fx_intermediate() -> None:
+    """REPRODUCER A. Profile `[2, -1]`, inflation factor `MAX_DOUBLE`, FX `0.5`.
+
+    `Knom = 0.5 * (2*MAX - 1*MAX) = MAX/2`. The current staging forms `2 * MAX`
+    before FX is applied, and that intermediate has no Double — but it is not a
+    `_Calc` field. Every value the model publishes is representable.
+    """
+    model = _model(
+        base=2025, start=2026, duration=2, discount=0.0,
+        fx=(FxRow("SAR", 1), FxRow("X", 0.5)),
+        rates={"P": {2026: MAX_DOUBLE, 2027: 0.0}},
+        costs=(_profile_cost("CL-001", 1.0, (2.0, -1.0), currency="X"),),
+    )
+    result = calculate(model, TOL)
+    driver = result.drivers[0]
+
+    assert driver.knom == _HALF_MAX, f"Knom is {driver.knom!r}"
+    assert driver.kpv == _HALF_MAX, f"Kpv is {driver.kpv!r}"
+    assert [row.base_cost_nominal for row in result.annual] == [MAX_DOUBLE, -_HALF_MAX]
+    assert [row.base_cost_pv for row in result.annual] == [MAX_DOUBLE, -_HALF_MAX]
+    assert result.totals.a_nom == result.totals.a_pv == _HALF_MAX
+    assert result.totals.c_nom == result.totals.c_pv == _HALF_MAX
+    assert result.totals.e_nom == result.totals.e_pv == _HALF_MAX
+    assert result.totals.b_nom == result.totals.b_pv == 0.0
+    assert result.totals.d_nom == result.totals.d_pv == 0.0
+    assert_reconciled(result, TOL)
+
+    # NOT VACUOUS: the intermediate the old orchestration insisted on really has
+    # no Double, so this model was refused before the patch.
+    _refuses(lambda: safe_product([2.0, MAX_DOUBLE]), "the pre-FX intermediate")
+    assert Fraction(0.5) * (2 * Fraction(MAX_DOUBLE) - Fraction(MAX_DOUBLE)) == Fraction(
+        _HALF_MAX
+    ), "the fixture's own arithmetic"
+
+
+def test_an_annual_row_is_not_refused_for_a_per_driver_contribution() -> None:
+    """REPRODUCER B. Two cost lines at `+2` and `-2`, inflation factor `MAX_DOUBLE`.
+
+    Each driver's per-year contribution is `±2 * MAX_DOUBLE`, which no Double
+    holds. `tblCalcAnnual` publishes the aggregate, and the aggregate is `0`.
+    """
+    weights = (1.0, -1.0, 1.0)
+    model = _model(
+        base=2025, start=2026, duration=3, discount=0.0,
+        rates={"P": {2026: MAX_DOUBLE, 2027: 0.0, 2028: -0.5}},
+        costs=(
+            _profile_cost("CL-001", 2.0, weights),
+            _profile_cost("CL-002", -2.0, weights),
+        ),
+    )
+    result = calculate(model, TOL)
+
+    for driver in result.drivers:
+        assert driver.knom == _HALF_MAX, f"{driver.permanent_id} Knom is {driver.knom!r}"
+        assert driver.kpv == _HALF_MAX
+    # The per-driver audit rows ARE published, and they are representable.
+    assert [d.mean_basis_nominal for d in result.drivers] == [MAX_DOUBLE, -MAX_DOUBLE]
+    assert [d.deterministic_nominal for d in result.drivers] == [MAX_DOUBLE, -MAX_DOUBLE]
+
+    assert [row.base_cost_nominal for row in result.annual] == [0.0, 0.0, 0.0]
+    assert [row.base_cost_pv for row in result.annual] == [0.0, 0.0, 0.0]
+    assert [row.total_nominal for row in result.annual] == [0.0, 0.0, 0.0]
+    assert [row.total_pv for row in result.annual] == [0.0, 0.0, 0.0]
+    assert result.totals.a_nom == result.totals.c_nom == result.totals.e_nom == 0.0
+    assert result.totals.b_nom == result.totals.d_nom == 0.0
+    assert_reconciled(result, TOL)
+
+    # NOT VACUOUS: the internal year-2026 contributions really do cross the Double
+    # boundary, in both directions.
+    assert Fraction(2) * Fraction(MAX_DOUBLE) > Fraction(MAX_DOUBLE)
+    _refuses(lambda: safe_product([2.0, 1.0, 1.0, 1.0, MAX_DOUBLE]), "the +2*MAX contribution")
+    _refuses(lambda: safe_product([-2.0, 1.0, 1.0, 1.0, MAX_DOUBLE]), "the -2*MAX contribution")
+
+
+def test_an_annual_row_is_not_refused_for_a_contribution_that_underflows() -> None:
+    """REPRODUCER C. Two identical drivers, profile `[5e-324, 1]`, factor `0.5`.
+
+    Each first-year contribution is `0.5 * 5e-324`, which has no non-zero Double.
+    The published annual row is the sum of the two, which is exactly `5e-324` — the
+    smallest Double there is.
+    """
+    subnormal = 5e-324
+    weights = (subnormal, 1.0)
+    model = _model(
+        base=2025, start=2026, duration=2, discount=0.0,
+        rates={"P": {2026: -0.5, 2027: 1.0}},
+        costs=(
+            _profile_cost("CL-001", 1.0, weights),
+            _profile_cost("CL-002", 1.0, weights),
+        ),
+    )
+    result = calculate(model, TOL)
+
+    for driver in result.drivers:
+        assert driver.knom == 1.0, f"{driver.permanent_id} Knom is {driver.knom!r}"
+        assert driver.kpv == 1.0
+    assert [row.base_cost_nominal for row in result.annual] == [subnormal, 2.0]
+    assert [row.base_cost_pv for row in result.annual] == [subnormal, 2.0]
+    assert result.totals.c_nom == result.totals.a_nom == result.totals.e_nom == 2.0
+    assert_reconciled(result, TOL)
+
+    # An INDEPENDENT exact oracle for the year-2026 aggregate: two contributions of
+    # 0.5 * 5e-324 each, neither of which is a Double.
+    contribution = Fraction(subnormal) * Fraction(0.5)
+    assert contribution != 0 and float(contribution) == 0.0
+    assert float(contribution + contribution) == subnormal
+    _refuses(lambda: safe_product([1.0, 1.0, 1.0, subnormal, 0.5]), "one 0.5s contribution")
+
+
+def test_the_annual_rescue_covers_risk_contributions_too() -> None:
+    """REPRODUCER D. The same boundary on the Risk path, and mixed with Cost.
+
+    Base Cost, Expected Risk and Total are three separately published columns, so
+    the fixture makes the CONTRIBUTIONS unrepresentable in both the Cost and the
+    Risk series while each published column is finite. The Risk products carry
+    `probability` where the Cost products carry `quantity`, so this exercises a
+    different factor list, not just a second copy of the cost path.
+    """
+    weights = (2.0, -1.0)                      # sums to 1
+    model = _model(
+        base=2025, start=2026, duration=2, discount=0.0,
+        rates={"P": {2026: MAX_DOUBLE, 2027: 0.0}},
+        costs=(
+            _profile_cost("CL-001", 1.0, weights),
+            _profile_cost("CL-002", -1.0, weights),
+        ),
+        risks=(
+            RiskDriver("R-001", "Uniform", "SAR", "P", 2.0, None, 2.0, weights,
+                       probability=0.5),
+            RiskDriver("R-002", "Uniform", "SAR", "P", -2.0, None, -2.0, weights,
+                       probability=0.5),
+        ),
+    )
+    result = calculate(model, TOL)
+
+    for driver in result.drivers:
+        assert driver.knom == MAX_DOUBLE, f"{driver.permanent_id} Knom is {driver.knom!r}"
+
+    # Published per-driver amounts, all representable.
+    costs = [d for d in result.drivers if d.driver_kind is DriverKind.COST_LINE]
+    risks = [d for d in result.drivers if d.driver_kind is DriverKind.RISK]
+    assert [d.mean_basis_nominal for d in costs] == [MAX_DOUBLE, -MAX_DOUBLE]
+    assert [d.expected_risk_nominal for d in risks] == [MAX_DOUBLE, -MAX_DOUBLE]
+
+    # Published annual columns, each rescued independently.
+    assert [row.base_cost_nominal for row in result.annual] == [0.0, 0.0]
+    assert [row.expected_risk_nominal for row in result.annual] == [0.0, 0.0]
+    assert [row.total_nominal for row in result.annual] == [0.0, 0.0]
+    assert [row.base_cost_pv for row in result.annual] == [0.0, 0.0]
+    assert [row.expected_risk_pv for row in result.annual] == [0.0, 0.0]
+    assert [row.total_pv for row in result.annual] == [0.0, 0.0]
+    assert result.totals.c_nom == result.totals.d_nom == result.totals.e_nom == 0.0
+    assert_reconciled(result, TOL)
+
+    # NOT VACUOUS in EITHER series: the year-2026 contributions have no Double on
+    # the cost side or the risk side.
+    _refuses(lambda: safe_product([1.0, 1.0, 1.0, 2.0, MAX_DOUBLE]), "the cost contribution")
+    _refuses(lambda: safe_product([0.5, 2.0, 1.0, 2.0, MAX_DOUBLE]), "the risk contribution")
+
+
+def test_a_published_driver_audit_value_outside_range_is_still_refused() -> None:
+    """REPRODUCER E. THE LIMIT OF THE RESCUE.
+
+    `tblCalcDrivers` publishes each driver's own amounts, so a driver whose
+    Mean-Basis Nominal is mathematically `2 * MAX_DOUBLE` cannot be calculated —
+    even though a second driver at `-2` would cancel it in A, C and E, and even
+    though every annual row and every headline would be zero.
+
+    Without this the rescue would drift into "arbitrary precision until the
+    workbook total", which C2 explicitly forbids.
+    """
+    message = _refuses(
+        lambda: calculate(
+            _model(
+                base=2025, start=2026, duration=1, discount=0.0,
+                rates={"P": {2026: MAX_DOUBLE}},
+                costs=(
+                    _profile_cost("CL-001", 2.0, (1.0,)),
+                    _profile_cost("CL-002", -2.0, (1.0,)),
+                ),
+            ),
+            TOL,
+        ),
+        "a published driver audit amount outside Double range",
+    )
+    assert "CL-001" in message, message
+
+    # And the headline it would have had is perfectly representable, which is
+    # exactly why this boundary has to be stated rather than inferred.
+    assert Fraction(2) * Fraction(MAX_DOUBLE) - 2 * Fraction(MAX_DOUBLE) == 0
+
+
+def test_the_ordinary_factor_and_annual_pipelines_are_bit_for_bit_unchanged() -> None:
+    """§12. THE NON-REGRESSION THAT MATTERS.
+
+    The compound helper must not become the default path. For a model that works,
+    `Knom`, `Kpv` and every annual column must be EXACTLY what the current staged
+    sequence produces — per-year `safe_product`, canonical signed sum, then FX;
+    and for PV, `nominal * discount` formed from the materialized nominal.
+
+    Exact Double equality, not a tolerance.
+    """
+    rates = {"Standard": {2027: 0.05, 2028: 0.05, 2029: 0.05}}
+    weights = (0.2, 0.5, 0.3)
+    result = calculate(
+        _model(
+            base=2026, start=2027, duration=3, discount=0.08, rates=rates,
+            fx=(FxRow("SAR", 1), FxRow("USD", 3.75)),
+            costs=(
+                _cost("CL-001", weights=weights),
+                _cost("CL-002", currency="USD", distribution="Beta-PERT",
+                      weights=(0.5, 0.25, 0.25), quantity=3),
+            ),
+            risks=(_risk("R-001", weights=(0.0, 1.0, 0.0)),),
+        ),
+        TOL,
+    )
+
+    inflation = {
+        row.calendar_year: row.cumulative_factor
+        for row in result.inflation_factors
+        if row.profile == "Standard"
+    }
+    discounts = result.discount_factors
+    driver = next(d for d in result.drivers if d.permanent_id == "CL-001")
+
+    # Knom, staged exactly as the ordinary path stages it.
+    staged = 0.0
+    for offset, calendar_year in enumerate((2027, 2028, 2029)):
+        staged = staged + weights[offset] * inflation[calendar_year]
+    assert driver.knom == 1.0 * staged, (driver.knom, staged)
+
+    # Each annual column, staged exactly as the ordinary path stages it: the
+    # per-driver product left to right, then canonical accumulation, and for PV the
+    # discount applied to the MATERIALIZED nominal rather than folded in.
+    for offset, row in enumerate(result.annual):
+        base_nominal = 0.0
+        base_present = 0.0
+        for cost in [d for d in result.drivers if d.driver_kind is DriverKind.COST_LINE]:
+            contribution = (
+                cost.mean_value * cost.quantity * cost.fx_to_sar
+                * cost.weights[offset] * inflation[row.calendar_year]
+            )
+            base_nominal = base_nominal + contribution
+            base_present = base_present + contribution * discounts[row.project_index]
+        assert row.base_cost_nominal == base_nominal, (row.calendar_year, base_nominal)
+        assert row.base_cost_pv == base_present, (row.calendar_year, base_present)
+
+    assert_reconciled(result, TOL)
+
+
+def test_the_compound_helper_is_not_reached_by_an_ordinary_model() -> None:
+    """§12, structurally: if the rescue ever became the default, this fails.
+
+    The helper is replaced by one that raises, and an ordinary model must still
+    calculate — proving the staged path carried it end to end.
+    """
+    module = sys.modules[calculate.__module__]
+    genuine = module.exact_sum_of_products
+
+    def forbidden(groups, where):
+        raise AssertionError(f"the compound rescue was reached for {where}")
+
+    module.exact_sum_of_products = forbidden
+    try:
+        result = calculate(
+            _model(
+                base=2026, start=2027, duration=3, discount=0.08, rates=_three_year(),
+                fx=(FxRow("SAR", 1), FxRow("USD", 3.75)),
+                costs=(_cost("CL-001", weights=(0.2, 0.5, 0.3)),
+                       _cost("CL-002", currency="USD", weights=(0.5, 0.25, 0.25))),
+                risks=(_risk("R-001", weights=(0.34, 0.33, 0.33)),),
+            ),
+            TOL,
+        )
+        assert_reconciled(result, TOL)
+    finally:
+        module.exact_sum_of_products = genuine
 
 
 # ---------------------------------------------------------------------------

@@ -452,7 +452,12 @@ def _big_whole(limbs: list[float]) -> float:
 
 
 def _round_exact(
-    sign: int, limbs: list[float], shift: int, where: str, sticky_below: bool = False
+    sign: int,
+    limbs: list[float],
+    shift: int,
+    where: str,
+    sticky_below: bool = False,
+    underflow_to_zero: bool = False,
 ) -> float:
     """Round `sign * limbs * 2**shift` to the nearest Double, ties to even.
 
@@ -465,10 +470,16 @@ def _round_exact(
     `sticky_below` carries the "there is more, below everything represented here"
     flag from an inexact division, so a value that only looks like a tie is not
     rounded as one.
+
+    `underflow_to_zero` is for CONDITIONING METADATA ONLY. Model arithmetic must
+    never take it: it turns the underflow refusal into `0.0`, which is the policy
+    `scaled_magnitude` already documents for a tolerance term too small to move the
+    allowance it feeds. Overflow is still refused under the flag, because a
+    conditioning scale outside Double makes the allowance itself meaningless.
     """
     top = _big_top_bit(limbs)
     if top < 0:
-        if sticky_below:
+        if sticky_below and not underflow_to_zero:
             raise NumericalRangeRefusal(
                 f"{where}: underflowed — a non-zero result has no usable non-zero Double"
             )
@@ -509,6 +520,8 @@ def _round_exact(
         if round_bit and (sticky or odd):
             quotient = quotient + 1.0
         if quotient == 0.0:
+            if underflow_to_zero:
+                return 0.0
             raise NumericalRangeRefusal(
                 f"{where}: underflowed — a non-zero result has no usable non-zero Double"
             )
@@ -581,6 +594,95 @@ def _exact_product(factors: Sequence[float]) -> tuple[int, list[float], int]:
         _big_add_shifted(mantissa_limbs, mantissa, 0)
         limbs = _big_multiply(limbs, mantissa_limbs)
     return sign, limbs, shift
+
+
+def _big_add_big_shifted(target: list[float], limbs: list[float], offset: int) -> None:
+    """`target += limbs * 2**offset` for `offset >= 0`. Limb by limb; each limb is
+    an integer below `2**24`, well inside what `_big_add_shifted` accepts."""
+    for index in range(len(limbs)):
+        if limbs[index] != 0.0:
+            _big_add_shifted(target, limbs[index], offset + index * _LIMB_BITS)
+
+
+def _exact_sum_of_products(
+    groups: Sequence[Sequence[float]],
+) -> tuple[int, list[float], int]:
+    """`(sign, magnitude limbs, shift)` for `SUM over groups of PRODUCT of factors`.
+
+    THE ONE COMPOSITION THE KERNEL DID NOT HAVE, and the whole of what round 5
+    adds to it. Each product is formed exactly — including products that have no
+    Double of their own — and the products are then added exactly. Only the
+    finished expression is range-classified and rounded, so an intermediate that
+    steps outside Double range never becomes a boundary.
+
+    That matters because a named Phase-5 output is often a sum of products whose
+    individual terms are implementation detail:
+
+        Knom = SUM_y ( FX * w_y * infl_y )
+
+    is the same number as `FX * SUM_y (w_y * infl_y)`, but evaluating it in this
+    form lets `w_y * infl_y` be wider than a Double while `Knom` is not.
+
+    Nothing about the existing kernel changes: `_exact_product` builds each term
+    and `_round_exact` finishes the job, exactly as they already do.
+    """
+    parts: list[tuple[int, list[float], int, int]] = []
+    for factors in groups:
+        sign, limbs, shift = _exact_product(factors)
+        if sign == 0:
+            continue
+        top = _big_top_bit(limbs)
+        if top < 0:
+            continue
+        parts.append((sign, limbs, shift, top))
+    if not parts:
+        return 0, _big_new(1), 0
+
+    smallest = parts[0][2]
+    highest = parts[0][2] + parts[0][3]
+    for _, _, shift, top in parts:
+        if shift < smallest:
+            smallest = shift
+        if shift + top > highest:
+            highest = shift + top
+    count = (highest - smallest) // _LIMB_BITS + 6
+
+    positive = _big_new(count)
+    negative = _big_new(count)
+    for sign, limbs, shift, _ in parts:
+        _big_add_big_shifted(
+            positive if sign > 0 else negative, limbs, shift - smallest
+        )
+
+    order = _big_compare(positive, negative)
+    if order == 0:
+        return 0, _big_new(1), 0
+    if order > 0:
+        _big_subtract(positive, negative)
+        return 1, positive, smallest
+    _big_subtract(negative, positive)
+    return -1, negative, smallest
+
+
+def exact_sum_of_products(groups: Sequence[Sequence[float]], where: str) -> float:
+    """`SUM over groups of PRODUCT of factors`, computed exactly and rounded once.
+
+    THE COMPOUND-EXPRESSION RESCUE. Callers use it only after their ordinary
+    staged evaluation has failed at an intermediate the model never publishes; see
+    `docs/phase5_gate_a_step2.md` §20. The classification is the kernel's, so it is
+    the same one every other rescue uses:
+
+        |exact| > MAX_DOUBLE               -> NumericalRangeRefusal
+        exact non-zero but rounding to 0   -> NumericalRangeRefusal
+        otherwise                          -> the correctly rounded Double
+
+    Every operand must already be a usable Double: this widens the arithmetic
+    BETWEEN named values, never the values themselves.
+    """
+    for index, factors in enumerate(groups):
+        _require_operands(f"{where}[{index}]", *factors)
+    sign, limbs, shift = _exact_sum_of_products(groups)
+    return _round_exact(sign, limbs, shift, where)
 
 
 def _round_exact_quotient(
@@ -1003,6 +1105,35 @@ def scaled_magnitude(
     operands = _require_operands(where, relative_coefficient, abs(float(term)))
     scaled = operands[0] * operands[1]
     _require_result(where, scaled, "conditioning scaling")
+    return safe_accumulate(accumulator, scaled, where)
+
+
+def scaled_magnitude_of_product(
+    accumulator: float,
+    factors: Sequence[float],
+    relative_coefficient: float,
+    where: str,
+) -> float:
+    """`scaled_magnitude` for a contribution that has NO Double of its own.
+
+    Erratum C1 conditions reconciliation on the underlying contributions, and some
+    of those contributions are non-materialized intermediates: a per-driver,
+    per-year annual term can be `2 * MAX_DOUBLE` while the annual row it feeds is
+    zero. The quantity actually needed is `coefficient * |contribution|`, and with
+    the locked `1e-12` that is finite — so the unscaled contribution must not have
+    to become a Double just so its metadata can be recorded.
+
+    The coefficient is therefore folded into the SAME exact factor expression and
+    the range classification happens once, at the end. The underflow policy is
+    `scaled_magnitude`'s, unchanged and for the same reason: a tolerance term too
+    small to represent cannot move an allowance floored at `coefficient * 1`.
+    """
+    magnitudes = _require_operands(where, relative_coefficient, *factors)
+    group = (magnitudes[0],) + tuple(
+        value if value >= 0.0 else -value for value in magnitudes[1:]
+    )
+    sign, limbs, shift = _exact_product(group)
+    scaled = _round_exact(sign, limbs, shift, where, underflow_to_zero=True)
     return safe_accumulate(accumulator, scaled, where)
 
 

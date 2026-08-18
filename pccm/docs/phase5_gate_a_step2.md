@@ -1,6 +1,6 @@
 # Phase 5 — Gate A — Step 2: pure analytical oracle and safe numerical semantics
 
-**Status: CORRECTED FOUR TIMES after independent review — ready for re-review.**
+**Status: CORRECTED FIVE TIMES after independent review — ready for re-review.**
 
 Step 1 is accepted and closed. This step locks and tests the pure numerical
 semantics that later Stage-A emission and later VBA must implement. It is
@@ -34,6 +34,15 @@ while its exact value was non-zero. All three are replaced by one exact
 already-converted inputs, classifies its range exactly, and rounds once. §19.3
 specifies it for VBA.
 
+**Round 5** (§20) — the exact kernel passed independent stress review and was
+**not reopened**. The remaining defect was one layer above it: the orchestration
+still treated non-materialized subexpressions — `w × infl` before FX, one driver's
+contribution to one annual row — as if they were required Double outputs, refusing
+valid models whose every published value is representable. Closed by one new
+composition on the kernel, `exact_sum_of_products`, used as a second tier under the
+unchanged `Knom`/`Kpv` and annual pipelines, plus the materialization-boundary rule
+in C2 point 10.
+
 **No business rule, formula or tolerance NUMBER changed in any round.**
 Round 2 changed **no design at all** — `docs/phase5_plan.md`,
 `spec/calc_contract.yaml`, `calc_loader.py`, `calc_fingerprint.py`,
@@ -46,8 +55,9 @@ plan Erratum C2, and changed **no contract**: `spec/calc_contract.yaml`,
 and `tools/` are byte-identical to the round-2 package. Round 4 changed
 `calc_numeric.py` and the two test modules only — `calc_oracle.py` needed no
 integration change, and the same contract and Phase-4 files remain byte-identical.
-**Tier 1 of every path is untouched in round 4**, so no ordinary model's numbers
-move.
+**Tier 1 of every path is untouched in rounds 4 and 5**, so no ordinary model's
+numbers move. Round 5 changed `calc_numeric.py`, `calc_oracle.py` and the two test
+modules, and clarified C2; the contract and Phase-4 files remain byte-identical.
 
 ---
 
@@ -101,18 +111,22 @@ it does not implement the machine.
 
 ## 2. Files changed
 
-| File | Change |
-|---|---|
-| `builder/pccm_builder/calc_oracle.py` | **new** — data model, resolution/validation, canonical ordering, analytical kernel, contribution-conditioned reconciliation |
-| `builder/pccm_builder/calc_numeric.py` | **new** — safe arithmetic, stable statistics, factor series, tolerance, failure hierarchy |
-| `tests/test_phase5_numeric.py` | **new** — 52 tests |
-| `tests/test_phase5_oracle.py` | **new** — 96 tests |
-| `docs/phase5_gate_a_step2.md` | **new** — this document |
-| `docs/phase5_plan.md` | **modified in round 1 only** — §15 erratum C1 plus its §0 register entry. Unchanged in round 2 |
-| `spec/calc_contract.yaml` | **modified in round 1 only** — `conditioning_terms` names (erratum C1). Unchanged in round 2 |
-| `builder/pccm_builder/calc_loader.py` | **modified in round 1 only** — `LOCKED_CONDITIONING_TERMS`. Unchanged in round 2 |
-| `tests/test_phase5_calc_contract_validation.py` | **modified in round 1 only** — the conditioning-term expectations; count unchanged at 151 |
-| `tools/package_review.py` | **modified in round 2** — writes `PROVENANCE.txt` into the archive so a review package identifies its own commit |
+**Current state at the head of this document's history**, with the round in which
+each file last changed. The per-module counts are the CURRENT ones; the historical
+progression is in §13.
+
+| File | Change | Last changed |
+|---|---|---|
+| `builder/pccm_builder/calc_oracle.py` | **new** — data model, resolution/validation, canonical ordering, analytical kernel, contribution-conditioned reconciliation, materialization-boundary rescues | round 5 |
+| `builder/pccm_builder/calc_numeric.py` | **new** — safe arithmetic, stable statistics, factor series, tolerance, failure hierarchy, exact Double-limb kernel | round 5 |
+| `tests/test_phase5_numeric.py` | **new** — **94 tests** | round 5 |
+| `tests/test_phase5_oracle.py` | **new** — **111 tests** | round 5 |
+| `docs/phase5_gate_a_step2.md` | **new** — this document | round 5 |
+| `docs/phase5_plan.md` | **modified in rounds 1, 3, 4 and 5** — §15 erratum C1 and its §0 register entry (round 1); erratum C2 and the §19.2 note (round 3); C2 points 7–9, the faithfulness and zero-classification rules (round 4); C2 point 10, the materialization boundary (round 5) | round 5 |
+| `spec/calc_contract.yaml` | **modified in round 1 only** — `conditioning_terms` names (erratum C1). Byte-identical since | round 1 |
+| `builder/pccm_builder/calc_loader.py` | **modified in round 1 only** — `LOCKED_CONDITIONING_TERMS`. Byte-identical since | round 1 |
+| `tests/test_phase5_calc_contract_validation.py` | **modified in round 1 only** — the conditioning-term expectations; count unchanged at 151 | round 1 |
+| `tools/package_review.py` | **modified in round 2** — writes `PROVENANCE.txt` into the archive so a review package identifies its own commit | round 2 |
 
 **Unchanged, and verified unchanged:** `builder/pccm_builder/calc_fingerprint.py`,
 `builder/pccm_builder/__init__.py`, `builder/build_stage_a.py`, all four earlier
@@ -436,45 +450,47 @@ the first submission had believed immune. §16.1 carries the full account.
 Run from a clean extraction, Linux, Python 3.11.
 
 ```
-python -m pytest pccm/tests/ -q        897 passed, 0 failed
+python -m pytest pccm/tests/ -q        910 passed, 0 failed
 python pccm/builder/build_stage_a.py   181 passed, 0 failed
 ```
 
 Standalone:
 
 ```
-python pccm/tests/test_phase5_numeric.py                  88 passed, 0 failed
-python pccm/tests/test_phase5_oracle.py                  104 passed, 0 failed
+python pccm/tests/test_phase5_numeric.py                  94 passed, 0 failed
+python pccm/tests/test_phase5_oracle.py                  111 passed, 0 failed
 python pccm/tests/test_phase5_calc_contract_validation.py 151 passed, 0 failed
 python pccm/tests/test_phase5_fingerprint.py              52 passed, 0 failed
 ```
 
-| Module | Step 1 final | Step 2 | Round-1 | Round-2 | Round-3 | Round-4 |
-|---|---|---|---|---|---|---|
-| `test_phase1_manifest_validation.py` | 10 | 10 | 10 | 10 | 10 | **10** |
-| `test_phase1_structure.py` | 21 | 21 | 21 | 21 | 21 | **21** |
-| `test_phase2_contract_validation.py` | 42 | 42 | 42 | 42 | 42 | **42** |
-| `test_phase2_inputs.py` | 40 | 40 | 40 | 40 | 40 | **40** |
-| `test_phase3_driver_contract_validation.py` | 31 | 31 | 31 | 31 | 31 | **31** |
-| `test_phase3_drivers.py` | 28 | 28 | 28 | 28 | 28 | **28** |
-| `test_phase3_verifier_intersection.py` | 12 | 12 | 12 | 12 | 12 | **12** |
-| `test_phase4_oracle.py` | 68 | 68 | 68 | 68 | 68 | **68** |
-| `test_phase4_stage_b_source.py` | 155 | 155 | 155 | 155 | 155 | **155** |
-| `test_phase4_structure.py` | 43 | 43 | 43 | 43 | 43 | **43** |
-| `test_phase4_structure_contract_validation.py` | 52 | 52 | 52 | 52 | 52 | **52** |
-| `test_phase5_calc_contract_validation.py` | 151 | 151 | 151 | 151 | 151 | **151** |
-| `test_phase5_fingerprint.py` | 52 | 52 | 52 | 52 | 52 | **52** |
-| `test_phase5_numeric.py` | — | 43 | 48 | 52 | 73 | **88** |
-| `test_phase5_oracle.py` | — | 75 | 85 | 96 | 101 | **104** |
-| **total** | **705** | **823** | **838** | **853** | **879** | **897** |
+| Module | Step 1 final | Step 2 | R1 | R2 | R3 | R4 | R5 |
+|---|---|---|---|---|---|---|---|
+| `test_phase1_manifest_validation.py` | 10 | 10 | 10 | 10 | 10 | 10 | **10** |
+| `test_phase1_structure.py` | 21 | 21 | 21 | 21 | 21 | 21 | **21** |
+| `test_phase2_contract_validation.py` | 42 | 42 | 42 | 42 | 42 | 42 | **42** |
+| `test_phase2_inputs.py` | 40 | 40 | 40 | 40 | 40 | 40 | **40** |
+| `test_phase3_driver_contract_validation.py` | 31 | 31 | 31 | 31 | 31 | 31 | **31** |
+| `test_phase3_drivers.py` | 28 | 28 | 28 | 28 | 28 | 28 | **28** |
+| `test_phase3_verifier_intersection.py` | 12 | 12 | 12 | 12 | 12 | 12 | **12** |
+| `test_phase4_oracle.py` | 68 | 68 | 68 | 68 | 68 | 68 | **68** |
+| `test_phase4_stage_b_source.py` | 155 | 155 | 155 | 155 | 155 | 155 | **155** |
+| `test_phase4_structure.py` | 43 | 43 | 43 | 43 | 43 | 43 | **43** |
+| `test_phase4_structure_contract_validation.py` | 52 | 52 | 52 | 52 | 52 | 52 | **52** |
+| `test_phase5_calc_contract_validation.py` | 151 | 151 | 151 | 151 | 151 | 151 | **151** |
+| `test_phase5_fingerprint.py` | 52 | 52 | 52 | 52 | 52 | 52 | **52** |
+| `test_phase5_numeric.py` | — | 43 | 48 | 52 | 73 | 88 | **94** |
+| `test_phase5_oracle.py` | — | 75 | 85 | 96 | 101 | 104 | **111** |
+| **total** | **705** | **823** | **838** | **853** | **879** | **897** | **910** |
 
 **Every existing count is unchanged.** No Step-1 test was weakened or removed;
-the 705 → 879 delta is exactly the 174 new Step-2 tests. The 151 Step-1 contract
+the 705 → 910 delta is exactly the 205 new Step-2 tests. The 151 Step-1 contract
 tests are unchanged in count; only the conditioning-term expectations inside them
 moved, for erratum C1. Round 3 added 21 numerical and 5 oracle tests and removed
 none. Stage-A verification is unchanged at 181/181 because Step 2 emits nothing.
 
-Round 4 added 15 numerical and 3 oracle tests and removed none. Four round-3
+Round 5 added 6 numerical and 7 oracle tests and removed none; no round-4 test was
+retargeted, because the kernel it guards did not change. Round 4 added 15 numerical
+and 3 oracle tests and removed none. Four round-3
 numerical tests were RETARGETED rather than weakened, because the mechanism they
 named no longer exists: `test_the_balanced_order_is_deterministic` and
 `test_product_signs_are_preserved_through_the_balanced_order` became
@@ -1221,7 +1237,234 @@ integration change at all** in round 4 — the rescues live entirely below it.
 
 ---
 
-## 20. Next step — NOT started
+## 20. Independent review round 5 — the materialization boundary
+
+Round 5 confirmed the exact limb kernel itself. Independent stress found **zero
+mismatches** over 300,000 exact-sum comparisons, 200,000 exact-product
+comparisons, 300,000 convex exact-quotient comparisons and 275,000+ crafted
+rescue cases against independent `Fraction.from_float` oracles.
+
+**The kernel was therefore not reopened.** Round 5 adds exactly one composition to
+it — `_exact_sum_of_products` — and changes nothing else about decomposition,
+limbs, the exact sum, the exact product, range classification, round-to-nearest
+ties-to-even or the convex zero rule. Every round-4 adversarial test is retained
+and still passes.
+
+The remaining defect was one layer above: **the orchestration still treated some
+non-materialized subexpressions as if they were required Double outputs.**
+
+### 20.1 The rule
+
+A representability boundary sits at a **named, materialized** Phase-5 value, not
+at whatever subexpression the implementation happens to assign to a local
+variable. Boundaries and non-boundaries are enumerated in plan §0 Erratum C2
+point 10. In short:
+
+| Must be a Double | Is not a boundary |
+|---|---|
+| FX rates, inflation factors, discount factors | `w_y × infl_y`, `w_y × infl_y × disc_y` |
+| Central Value, Mean Value, `Knom`, `Kpv` | the pre-FX sum inside `Knom` / `Kpv` |
+| every published per-driver audit amount | one driver's contribution to one annual row |
+| each of the six `tblCalcAnnual` columns | the temporary nominal used before its PV discount |
+| the A/B/C/D/E headline totals | an unscaled contribution used only for a C1 magnitude |
+
+### 20.2 The three reproducers
+
+| | Model | Refused at `6ccca6b` because | Now |
+|---|---|---|---|
+| **A** | profile `[2, −1]`, inflation factor `MAX_DOUBLE`, FX `0.5` | `2 × MAX_DOUBLE` was formed **before** FX | `Knom = Kpv = MAX/2` |
+| **B** | two cost lines `+2` / `−2`, factor `MAX_DOUBLE`, profile `[1, −1, 1]` | each per-driver/year contribution is `±2 × MAX_DOUBLE` | every annual column `0` |
+| **C** | two identical drivers, profile `[5e-324, 1]`, factor `0.5` | each first-year contribution is `0.5 × 5e-324`, which has no non-zero Double | annual `[5e-324, 2]` |
+
+Exact outputs are in §20.6. All three are valid models — negative profile weights
+are legal, there is no positivity rule, every input is a finite Double, and every
+value Phase 5 publishes is representable.
+
+### 20.3 The exact sum-of-products rescue
+
+One helper, `exact_sum_of_products(groups, where)`, computing
+
+```
+SUM over groups of ( PRODUCT of factors )
+```
+
+Each product is built by the existing `_exact_product` — exactly, including
+products with no Double of their own. The products are then aligned on the least
+exponent and added in the existing exact limb representation, positive and
+negative magnitudes separately, subtracted once. Only the finished expression is
+range-classified and rounded, by the existing `_round_exact`:
+
+```
+|exact| > MAX_DOUBLE               ->  NumericalRangeRefusal
+exact non-zero but rounding to 0   ->  NumericalRangeRefusal
+otherwise                          ->  the correctly rounded Double
+```
+
+Every operand is still required to be a usable Double on the way in: this widens
+the arithmetic **between** named values, never the values themselves. Production
+restrictions are unchanged — no `Fraction`, no `Decimal`, no `fsum`, no
+arbitrary-precision integer, no extended precision — and the same static AST test
+enforces them.
+
+Addition in this representation is associative and commutative, so there is no
+ordering rule to specify and no tie-breaker to get wrong. Cost is `O(limbs²)` per
+product and `O(limbs)` per term, on a path that only runs when the ordinary
+evaluation produced no value.
+
+### 20.4 Where it is used, and what tier 1 still is
+
+**`Knom` / `Kpv`.** Tier 1 is the current staging, unchanged: form each
+`w_y × infl_y` (and `× disc_y`), sum in canonical project-year order, then apply
+FX. If that complete pipeline succeeds its result is returned bit for bit. Only on
+failure is the factor re-formed as
+
+```
+Knom = SUM_y ( FX × w_y × infl_y )
+Kpv  = SUM_y ( FX × w_y × infl_y × disc_y )
+```
+
+which is algebraically identical and lets the pre-FX term be wider than a Double.
+**FX is not distributed on the normal path.**
+
+**The six annual columns.** Tier 1 is the current staging: every contribution as a
+Double, canonical accumulation, and PV formed as `nominal × discount` from the
+materialized nominal. On failure the series is re-formed as an exact sum of exact
+products, with the discount factor **inside** each PV product so an unrepresentable
+nominal contribution never blocks the PV column.
+
+```
+base nominal  =  SUM_i ( mean × qty × FX × w × infl )
+risk nominal  =  SUM_j ( prob × severity × FX × w × infl )
+total nominal =  the same cost and risk products, summed independently
+   ... PV      =  each of the above with  × disc_y  inside the product
+```
+
+**Base, Risk and Total are six separate published columns and are rescued
+separately.** A representable Total does not rescue an unrepresentable Base.
+
+**C1 conditioning.** The quantity C1 needs is `coefficient × |contribution|`, which
+is finite even where the contribution is not. On the ordinary path the magnitude is
+computed from the materialized contribution, bit for bit as before; on a rescue
+path `scaled_magnitude_of_product` folds the coefficient into the same exact factor
+expression and classifies once. The accepted conditioning-underflow rule is
+unchanged, and an overflowing conditioning magnitude is still refused.
+
+### 20.5 The limit of the rescue
+
+A **materialized** per-driver amount is still a boundary.
+`test_a_published_driver_audit_value_outside_range_is_still_refused` builds a
+driver whose Mean-Basis Nominal is `2 × MAX_DOUBLE` alongside one at `−2` that
+would cancel it in A, C and E — every headline and every annual row would be zero —
+and the model is **refused**, naming `CL-001`, because `tblCalcDrivers` has to
+publish that row. Without this the rescue would drift into "arbitrary precision
+until the workbook total", which C2 forbids.
+
+`test_the_compound_helper_is_not_reached_by_an_ordinary_model` replaces the helper
+with one that raises and calculates an ordinary three-driver model, proving the
+staged path carries it end to end;
+`test_the_ordinary_factor_and_annual_pipelines_are_bit_for_bit_unchanged` rebuilds
+`Knom` and every annual column with plain `*` and `+` in the staged order and
+requires **exact Double equality**, not a tolerance.
+
+### 20.6 Exact outputs
+
+**Reproducer A** — base 2025, start 2026, duration 2, discount 0, FX `SAR = 1` /
+`X = 0.5`, profile P rates `2026 = MAX_DOUBLE`, `2027 = 0`, CL-001 Uniform
+`Min = Max = 1`, Qty 1, currency X, weights `[2, −1]`:
+
+```
+Knom = Kpv                 8.988465674311579e+307
+annual base nominal        [1.7976931348623157e+308, -8.988465674311579e+307]
+annual base PV             [1.7976931348623157e+308, -8.988465674311579e+307]
+annual total nominal       [1.7976931348623157e+308, -8.988465674311579e+307]
+A_nom = A_pv               8.988465674311579e+307
+C_nom = C_pv               8.988465674311579e+307
+E_nom = E_pv               8.988465674311579e+307
+B = D                      0.0
+assert_reconciled          PASSES
+```
+
+**Reproducer B** — base 2025, start 2026, duration 3, discount 0, SAR only,
+profile P rates `2026 = MAX_DOUBLE`, `2027 = 0`, `2028 = −0.5`, CL-001 `±2`,
+CL-002 `∓2`, weights `[1, −1, 1]`:
+
+```
+CL-001 Knom = Kpv          8.988465674311579e+307
+CL-002 Knom = Kpv          8.988465674311579e+307
+CL-001 A_nom = C_nom       1.7976931348623157e+308
+CL-002 A_nom = C_nom      -1.7976931348623157e+308
+annual base nominal        [0.0, 0.0, 0.0]
+annual base PV             [0.0, 0.0, 0.0]
+annual total nominal       [0.0, 0.0, 0.0]
+A = C = E = B = D          0.0
+assert_reconciled          PASSES
+```
+
+**Reproducer C** — base 2025, start 2026, duration 2, discount 0, SAR only,
+profile P rates `2026 = −0.5`, `2027 = 1`, two identical Uniform drivers
+`Min = Max = 1`, Qty 1, weights `[5e-324, 1]`:
+
+```
+CL-001 Knom = Kpv          1.0
+CL-002 Knom = Kpv          1.0
+annual base nominal        [5e-324, 2.0]
+annual base PV             [5e-324, 2.0]
+annual total nominal       [5e-324, 2.0]
+A = C = E                  2.0
+A_pv = C_pv = E_pv         2.0
+assert_reconciled          PASSES
+```
+
+### 20.7 The property sweep
+
+`test_the_compound_rescue_is_faithful_over_ten_thousand_expressions`: 10,000
+deterministic expressions, 2–20 summed terms, 2–6 factors per term, from the
+exponent-spanning corpus `MAX_DOUBLE`, `nextafter(MAX_DOUBLE, 0)`, `1e308`,
+`1e250`, `1e150`, `1e100`, `10`, `2`, `1`, `0.5`, `0.1`, `1e-100`, `1e-250`,
+`1e-300`, `1e-320`, `5e-324` and negatives. Same fixed LCG as the round-4 sweeps;
+no unseeded randomness anywhere in the suite.
+
+A purely random corpus of these magnitudes is almost always out of range and would
+leave the interesting classes unexercised, so two of three generated shapes are
+built as **cancelling pairs** — the same factors with one sign flipped — plus a
+residual, which is how a real model produces terms far outside Double range whose
+sum is not. The sweep asserts floors on each required class rather than assuming
+them:
+
+| Class | Observed | Floor asserted |
+|---|---|---|
+| representable expression | 4,401 | > 2,000 |
+| an individual exact product outside Double range, sum representable | 2,029 | > 500 |
+| an individual exact product non-zero below the smallest Double, sum representable | 2,273 | > 500 |
+| exact expression genuinely out of range | 5,131 | > 1,000 |
+
+Zero mismatches against the exact oracle.
+
+### 20.8 Round-5 negative controls
+
+Each sabotage was applied to a working copy, the suite was run, and the source
+restored. Every round-4 control is retained and still fires.
+
+| Sabotage | Result |
+|---|---|
+| `Knom` / `Kpv` rescue removed — materialize `w × infl` before FX again | **3 failed**, including reproducer A |
+| annual rescue removed — each per-driver/year contribution a boundary again | **4 failed**, including reproducers B and C |
+| conditioning rescue removed — the unscaled contribution must fit a Double | **3 failed**, including reproducers B and C |
+
+### 20.9 What did NOT change
+
+Tier 1 of every path. `spec/calc_contract.yaml` is byte-identical and **no contract
+change was required**, as are `calc_loader.py`, `calc_fingerprint.py`,
+`build_stage_a.py`, `src/`, `bootstrap/`, `readiness/` and `tools/`. Erratum C1 and
+its contribution-level conditioning, the conditioning-term names, every tolerance
+number, canonical permanent-ID ordering, reference-field validation, `resolved_fx`
+semantics, the inflation and discount conventions and their underflow rules, D1–D6,
+the A/B/C/D/E and annual definitions, the fingerprint and the Stage-A emitter are
+untouched. No `phase5_cases.json`, no Phase-5 workbook block, no VBA.
+
+---
+
+## 21. Next step — NOT started
 
 Step 3, whatever review scopes it to be. Nothing beyond §1 of this document has
 been written.
@@ -1235,4 +1478,4 @@ been written.
 > **STEP 3 HAS NOT BEGUN.**
 > **PHASE 6 HAS NOT BEGUN.**
 
-**PHASE 5 GATE A STEP 2 FAITHFUL-RESCUE PATCH READY FOR INDEPENDENT REVIEW**
+**PHASE 5 GATE A STEP 2 COMPOUND-EXPRESSION PATCH READY FOR INDEPENDENT REVIEW**

@@ -50,7 +50,7 @@ folded silently into a new revision.
 
 | # | Correction | Applied in |
 |---|---|---|
-| **C2** | **A representable final result is never refused because an intermediate left the range.** §19.2 states the objective — "a mathematically equivalent expression avoids an intermediate that can overflow while the final result is representable" — but the stable forms alone do not reach it for two families. **(a) Signed sums**: any sum of validated Doubles whose *final* value is representable must be produced, even where the canonical-order partial sums are not (`MAX + MAX − MAX` is `MAX`). **(b) Convex statistics**: a deterministic central value or distribution mean is a convex combination of its points, so it always lies between `Min` and `Max` and always has a representable answer; it must not be refused because an internal averaging step overflowed or underflowed, nor reported as zero when its exact value is non-zero. **(c) Products**: the same rule and the same exact criterion apply to the `safe_product` rescue. **No tolerance, weight, formula or expected value changed**, and the stable forms of the table below remain the required ordinary path. | §19.2, and `docs/phase5_gate_a_step2.md` §18–§19 for the algorithms |
+| **C2** | **A representable final result is never refused because an intermediate left the range.** §19.2 states the objective — "a mathematically equivalent expression avoids an intermediate that can overflow while the final result is representable" — but the stable forms alone do not reach it for two families. **(a) Signed sums**: any sum of validated Doubles whose *final* value is representable must be produced, even where the canonical-order partial sums are not (`MAX + MAX − MAX` is `MAX`). **(b) Convex statistics**: a deterministic central value or distribution mean is a convex combination of its points, so it always lies between `Min` and `Max` and always has a representable answer; it must not be refused because an internal averaging step overflowed or underflowed, nor reported as zero when its exact value is non-zero. **(c) Products**: the same rule and the same exact criterion apply to the `safe_product` rescue. **(d) Materialization**: the boundary is a named, published Phase-5 value, not whatever subexpression the implementation assigns to a local variable. **No tolerance, weight, formula or expected value changed**, and the stable forms of the table below remain the required ordinary path. | §19.2, and `docs/phase5_gate_a_step2.md` §18–§20 for the algorithms |
 
 **What C2 locks, precisely.**
 
@@ -120,11 +120,43 @@ folded silently into a new revision.
    test, not `Decimal` or `Fraction`, and it applies to the Uniform midpoint, the
    Triangular mean and the Beta-PERT mean alike.
 
+10. **A representability boundary sits at a NAMED, MATERIALIZED value.** A
+    non-materialized implementation subexpression is **not** an independent
+    representability boundary, and a rescue may carry it in the exact wide
+    representation until the next named Phase-5 output is reached. Every named
+    output must still be a usable Double.
+
+    | Boundaries — each must be a Double | Not boundaries |
+    |---|---|
+    | resolved FX rates, annual inflation factors, discount factors | `w_y × infl_y` and `w_y × infl_y × disc_y` |
+    | driver Central Value, Mean Value, `Knom`, `Kpv` | the pre-FX sum inside `Knom` / `Kpv` |
+    | every published per-driver audit amount — Deterministic, Mean-Basis, Uncertainty Mean Shift, Expected Risk, nominal and PV | one Cost Line's or one Risk's contribution to one annual aggregate |
+    | each of the six `tblCalcAnnual` aggregate columns | the temporary nominal per-driver/year value used before its PV discount |
+    | the A/B/C/D/E headline totals | an unscaled annual contribution used only to build a C1 conditioning magnitude |
+    | published reconciliation allowance and difference values | |
+
+    **A materialized per-driver amount remains a real boundary.** If a driver's own
+    Mean-Basis Nominal exceeds `MAX_DOUBLE`, the model is refused even where another
+    driver would cancel it in the headline — `tblCalcDrivers` has to publish that
+    row. The wider exact form exists ONLY across the non-materialized intermediates
+    needed to produce one required named Double; it never turns the model into one
+    arbitrary-precision final calculation.
+
+    The same rule governs C1 conditioning. The quantity C1 needs is
+    `coefficient × |contribution|`, and with the locked `1e-12` that is finite even
+    where the contribution is `2 × MAX_DOUBLE`. On a rescue path the coefficient is
+    folded into the same exact factor expression, so the unscaled contribution never
+    has to become a Double just to record its metadata. The accepted
+    conditioning-underflow rule is unchanged, and a final conditioning magnitude or
+    allowance that genuinely has no Double is still a controlled refusal, never a
+    silent cap.
+
 C2 applies to the profile-weight sum validation, `Knom` and `Kpv`, the A/B/C/D/E
 accumulations, the annual Base Cost / Expected Risk / Total series, the
-annual-to-headline reconciliation sums, the `safe_product` rescue and the three
-convex statistics. It does **not** magnitude-sort or re-associate the normal
-calculation, and it changes nothing in `spec/calc_contract.yaml`.
+annual-to-headline reconciliation sums, the C1 conditioning magnitudes, the
+`safe_product` rescue and the three convex statistics. It does **not**
+magnitude-sort or re-associate the normal calculation, and it changes nothing in
+`spec/calc_contract.yaml`.
 
 Like C1, C2 is **not** editorial: it is a numerical correction to an accepted
 definition that did not reach its own stated objective.
@@ -1780,7 +1812,7 @@ stable equivalent exists.
 > zero-uncertainty distribution returned exactly, with each rescue judged against
 > the exact mathematical value of its Double inputs rather than against a
 > re-associated evaluation of them. The algorithms are specified for VBA in
-> `docs/phase5_gate_a_step2.md` §18 and §19.
+> `docs/phase5_gate_a_step2.md` §18–§20.
 
 ### 19.3 Inflation and discount — iterative, with overflow AND underflow detection
 
