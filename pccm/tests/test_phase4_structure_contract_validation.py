@@ -459,11 +459,48 @@ def test_rejects_a_malformed_entry_point_name() -> None:
     _rejected(rename, "an entry point outside the PCCM_ convention")
 
 
-def test_rejects_a_second_generated_module() -> None:
+def test_rejects_a_module_claiming_to_be_generated_that_the_builder_does_not_emit() -> None:
+    """The surviving half of "a second generated module is refused".
+
+    The builder now emits two: modConstants and modCalcContract. What must still be
+    refused is a module claiming to be generated when nothing generates it - the
+    contract and the builder would then disagree about what the build produces,
+    and the disagreement would only surface on Windows.
+    """
     _rejected(
         lambda d: d["vba"]["modules"][1].__setitem__("generated", True),
-        "more than one generated VBA module",
+        "a hand-written module marked generated",
     )
+
+
+def test_rejects_dropping_the_generated_flag_from_the_primary_generated_module() -> None:
+    """`vba.generated_module` must still be declared generated.
+
+    This is the other half of the original assertion, and it is the half that
+    matters most: modConstants is emitted whatever the contract says, so a contract
+    that stopped calling it generated would invite a hand-written copy.
+    """
+    _rejected(
+        lambda d: d["vba"]["modules"][0].__setitem__("generated", False),
+        "the primary generated module no longer declared generated",
+    )
+
+
+def test_rejects_a_duplicate_module_name() -> None:
+    """Also carried forward: two entries for one module is still refused."""
+    _rejected(
+        lambda d: d["vba"]["modules"][1].__setitem__("name", d["vba"]["modules"][2]["name"]),
+        "duplicate VBA module names",
+    )
+
+
+def test_the_generated_module_inventory_is_exactly_what_the_builder_emits() -> None:
+    """The current generated set, stated once and asserted in both directions."""
+    from pccm_builder.structure_loader import GENERATED_MODULES
+
+    assert sorted(GENERATED_MODULES) == ["modCalcContract", "modConstants"]
+    declared = [m["name"] for m in _base()["vba"]["modules"] if m.get("generated")]
+    assert sorted(declared) == sorted(GENERATED_MODULES)
 
 
 def test_rejects_a_malformed_module_name() -> None:

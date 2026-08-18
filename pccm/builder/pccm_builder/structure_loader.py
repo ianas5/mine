@@ -32,6 +32,16 @@ TABLE_NAME_RE = re.compile(r"^tbl[A-Z][A-Za-z0-9]*$")
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 STRUCTURE_NAME_RE = re.compile(r"^nm[A-Z][A-Za-z0-9_]*$")
 ENTRY_POINT_RE = re.compile(r"^PCCM_[A-Z][A-Za-z0-9]*$")
+GENERATED_MODULES = ("modConstants", "modCalcContract")
+"""Every VBA module the Stage-A builder emits, and therefore every module the
+contract may mark ``generated: true``.
+
+``vba.generated_module`` names the PRIMARY generated module - the constants
+projection every phase depends on - and stays ``modConstants``. Phase 5 adds
+``modCalcContract``, emitted by ``calc_emit``. Both are build artifacts that must
+never be hand-edited, and a module outside this tuple claiming to be generated
+means the contract and the builder disagree about what the build produces."""
+
 MODULE_NAME_RE = re.compile(r"^mod[A-Z][A-Za-z0-9]*$")
 SHAPE_NAME_RE = re.compile(r"^btnPCCM[A-Z][A-Za-z0-9]*$")
 VALID_GRID_KINDS = ("profiling", "inflation")
@@ -925,10 +935,21 @@ def _validate_buttons_and_vba(contract: StructureContract, path: Path) -> None:
                 f"{path}: VBA module {name!r} must match the mod<PascalCase> convention"
             )
     generated = [m.name for m in contract.vba_modules if m.generated]
-    if generated != [contract.vba_generated_module]:
+    if contract.vba_generated_module not in generated:
         raise StructureContractError(
-            f"{path}: exactly one module may be generated and it must be "
-            f"{contract.vba_generated_module!r}; the contract marks {generated}"
+            f"{path}: vba.generated_module is {contract.vba_generated_module!r} but that "
+            f"module is not declared generated; the contract marks {generated}"
+        )
+    if sorted(generated) != sorted(GENERATED_MODULES):
+        # The DEPLOYMENT invariant, generalised exactly as far as the build has
+        # gone and no further. Phase 5 emits a second generated module, so "exactly
+        # one" is no longer the rule - but "whatever the builder actually emits,
+        # and nothing else" still is. The set is statically locked here rather
+        # than left open, so a module cannot become generated without a deliberate
+        # change to the builder's own list.
+        raise StructureContractError(
+            f"{path}: the generated module set is locked to {sorted(GENERATED_MODULES)}; "
+            f"the contract marks {sorted(generated)}"
         )
     if not contract.forbidden_constructs:
         raise StructureContractError(

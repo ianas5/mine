@@ -457,6 +457,18 @@ vba:
     - name: "modStructuralCheck"
       generated: false
       responsibility: "Focused Phase-4 structural revalidation. Not the future Model Check engine."
+    - name: "modCalcContract"
+      generated: true
+      responsibility: "Calculation workspace geometry, fingerprint constants and tolerances, projected from spec/calc_contract.yaml and the fingerprint reference. Constants only."
+    - name: "modCalcFactors"
+      generated: false
+      responsibility: "The numerical primitives: range-checked arithmetic, the exact rescue kernel, the inflation and discount series, Knom / Kpv and the conditioning magnitudes."
+    - name: "modCalcAnalytical"
+      generated: false
+      responsibility: "The analytical calculation: distribution statistics, the per-driver audit amounts, A/B/C/D/E, the annual series and the reconciliation identities."
+    - name: "modCalcFingerprint"
+      generated: false
+      responsibility: "The Calculation Input Fingerprint: canonical encoding, the double-modulus reduction and the digest. No analytical logic."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.
