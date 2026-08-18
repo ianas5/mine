@@ -1,11 +1,126 @@
 # Phase 5 — Gate A — Step 5: the resolution layer
 
-**Status: ready for independent review.**
+**Status: CORRECTED after independent review — ready for re-review.**
 
 Step 4 is accepted and closed at `4b4e221`. This step adds one hand-written VBA
 module — `modCalcResolve` — that reads the workbook and hands back plain typed
 data, plus the static Linux suite that reads it, plus the narrow build plumbing
 it needs.
+
+---
+
+## Correction round — five blocking defects found by independent review
+
+Independent review of `17b1229` confirmed the architecture and most of the source
+shape: reference-set-first ordering, referenced-only FX, the global reporting-
+currency invariant without unconditional seeding, referenced-only inflation,
+calendar-year anchoring, Permanent-ID profiling, blank ≠ zero, binary key
+matching, applied-timeline use, empty-driver support, no `_Calc` write-back, no
+`PCCM_Calculate`, and three unchanged numerical modules. It then found five
+blocking defects.
+
+### 1. The Phase-4 structural prerequisites were never invoked
+
+The first submission said the `STRUCTURE CHANGE PENDING` gate belonged to the
+future checker. **That ownership was wrong** — a boundary error, not an accepted
+ambiguity. The locked plan assigns structural prerequisites to Phase 4, *invoked,
+not duplicated*, and `modCalcCheck` is the Phase-5 **numerical** prerequisite
+checker; it must not absorb the structural gate.
+
+`ResolveModel` began directly with `ResolveAppliedTimeline`, so a workbook whose
+applied cells still held numbers could resolve even while its entered structure
+had drifted away from them.
+
+A private `StructuralPrerequisites` adapter now runs **first**, before any
+calculation input is read:
+
+| Structural state | Outcome |
+| --- | --- |
+| `STATE_NOT_APPLIED` | controlled failure |
+| `STATE_PENDING` | controlled failure |
+| unreadable / unrecognised | controlled failure |
+| `STATE_CURRENT` | continue only if `modStructuralCheck.ValidateStructure()` returns `""` |
+
+A non-empty report is a controlled failure and **the Phase-4 report is preserved
+verbatim** in the detail — Phase 4 already says which invariant failed and where,
+and rewording it would lose the only description the user can act on.
+
+No structural rule is copied: no ID pattern check, no duplicate-ID check, no
+orphan-row check, no profiling or inflation grid matching, no counter integrity.
+`test_45` refuses every one of those identifiers in the resolver and requires
+exactly **one** call into `modStructuralCheck`. `modStructuralCheck` itself is
+untouched.
+
+Calling the gate first is not permission to widen anything: Phase-5 assumption
+resolution below is still referenced-only.
+
+### 2. D2 was missing from referenced inflation resolution
+
+A rate of `-1` or lower resolved as a valid assumption. The accepted oracle
+refuses it inside `resolve_inflation`: `1 + rate <= 0` collapses the price base
+and no inflation factor can be built from it.
+
+The check now sits on each referenced profile's required year, after the rate is
+read and before it is stored, as `rate <= -1#` — the same condition for a finite
+Double without forming the sum. It is deliberately **not** in `NumericCell`,
+which also reads values where a negative number is legitimate, and it is inside
+the referenced-profile loop, so a bad rate on an **unreferenced** profile still
+cannot block the model. The refusal names the profile, the calendar year and the
+condition.
+
+### 3. Identifiers were type-coerced with `CStr`
+
+`RawCellText` ended with `text = CStr(cell.Value)`, which silently turned the
+number `123` into the key `"123"` and `True` into `"True"`. A driver whose
+Currency cell holds a number must not match an FX row whose Currency is the
+corresponding text merely because VBA can render both as Strings.
+
+A type gate now proves `VarType(cell.Value) = vbString` **before** the value is
+taken. Conversion is the mechanism the gate exists to prevent, so it cannot be
+the mechanism that produces the key. Proven text is then taken exactly as it
+stands — still no trim, no case fold, no default — and a whitespace-only String
+is still refused in `ExactIdentifier`.
+
+The old test asserted the presence of `text = CStr(cell.Value)`, which locked the
+defect in. It now asserts the gate precedes the assignment and precedes any
+successful return.
+
+### 4. Numeric-looking text was accepted as a number
+
+`NumericCell` and `NumericNamedCell` delegated straight to
+`modWorkbook.TryReadDouble`, whose Phase-4 semantics deliberately parse a
+non-empty String through `IsNumeric` and `CDbl`. So `"0.05"` typed into a rate
+cell became a Double.
+
+The accepted oracle's `_numeric` is stricter: a real number is accepted; blank,
+Boolean and text are refused. **A numeric-looking String is still text.**
+
+A private `IsRealNumber` now gates both readers on `VarType`, accepting only
+`vbInteger`, `vbLong`, `vbSingle`, `vbDouble`, `vbCurrency`, `vbDecimal` and
+`vbByte`. **`TryReadDouble` is not weakened** — it has legitimate Phase-4
+structural callers, and `test_51` asserts it is untouched and that the Step-5
+rule was not pushed into Phase 4. The rule is also deliberately **not** applied to
+`YearColumn`: an Excel table header is a text label by nature, and parsing a
+numeric year header is a different structural operation that keeps Phase 4's
+semantics (`test_52`).
+
+### 5. A referenced profile could escape existence checking
+
+`ResolveInflationRates` returned early on `nameCount = 0 Or yearCount = 0`. Those
+are not the same question:
+
+* `nameCount = 0` — no profile is referenced, nothing is consulted, an empty
+  result is right.
+* `yearCount = 0` with `nameCount > 0` — profiles **are** referenced and there
+  are simply no annual rates to read. Each referenced profile must still exist.
+
+A one-year `Base Year = Last Year` model could therefore let a driver name a
+profile that was not in the table.
+
+The guards are now separate. `nameCount = 0` returns before the table is opened;
+otherwise every referenced key is resolved and the required-year loop then
+iterates zero times. No rate is fabricated, no Base-Year rate is invented, and
+the rate array is allocated only where there are rates to hold.
 
 ---
 
@@ -245,12 +360,10 @@ Project year 1 is the Start Year (`test_22`). The discount rate is read from
 `inpDiscountRate` as an ordinary required Setup input; a blank one is an unmade
 assumption, not zero.
 
-**A deliberate boundary decision:** the resolver does not gate on
-`nmStructuralState` being `Timeline current`. Reading only applied values is
-what §8 requires, and refusing to calculate while a structure change is pending
-is a prerequisite the plan assigns to the checker. Where no timeline has been
-applied the applied cells do not hold a whole number in range, so resolution
-fails naturally with a diagnostic naming the field.
+The resolver **does** gate on `nmStructuralState`, through the
+`StructuralPrerequisites` adapter described in the correction round above. The
+first submission claimed that gate belonged to the checker; that was a boundary
+error found in review, not an accepted ambiguity.
 
 ---
 
@@ -313,22 +426,25 @@ and the reporting-currency invariant still runs (`test_33`).
 `modCalcCheck` is next and owns the numerical prerequisites. Step 5 fails only
 where resolution itself cannot proceed:
 
-| Owned by resolution | Left to `modCalcCheck` |
-| --- | --- |
-| a referenced key has no matching source | `Min <= ML <= Max` ordering |
-| a referenced key has ambiguous duplicate rows | `Quantity > 0` |
-| a value cannot be read as the required type | `0 <= Probability <= 1` |
-| a required value is blank | the profiling-sum tolerance |
-| the reporting-currency invariant is broken | `1 + rate > 0` for an inflation rate |
-| an unknown distribution name | structural-state currency |
+Three owners, not two:
 
-The split follows the accepted oracle: its `_identifier`, `_numeric`,
-`resolve_fx`, `resolve_inflation` and `_resolve_weights` are the resolution
-layer, and the range and ordering rules enforced in `calculate` are not. One
-deliberate exception is noted: the oracle's `_resolve_weights` also checks the
-profiling sum, and that check is **not** duplicated here — it needs
-`SafeSignedSum` over the assembled vector and belongs with the tolerance
-authority, in the checker.
+| Owner | Concern |
+| --- | --- |
+| **Phase 4**, invoked by `StructuralPrerequisites` | the structural state; `ValidateStructure()` — ID patterns, duplicates, orphans, profiling and inflation grid shape, counters |
+| **Step 5**, `modCalcResolve` | a referenced key has no matching source; ambiguous duplicate rows; a value cannot be read as the required type; a required value is blank; the reporting-currency invariant; an unknown distribution name; D2 (`1 + rate <= 0`) on a referenced rate |
+| **Step 6**, `modCalcCheck` | `Min <= ML <= Max`; `Quantity > 0`; `0 <= Probability <= 1`; the profiling-sum tolerance |
+
+Phase-4 structural prerequisites are **invoked** by the Step-5 entry path, never
+duplicated. `modCalcCheck` will own only Phase-5 **numerical** prerequisites and
+must not absorb the structural gate.
+
+The Step-5 row follows the accepted oracle: its `_identifier`, `_numeric`,
+`resolve_fx` and `resolve_inflation` — including that function's own
+`1 + rate <= 0` refusal — are the resolution layer, and the range and ordering
+rules enforced in `calculate` are not. One deliberate exception: the oracle's
+`_resolve_weights` also checks the profiling sum, and that check is **not**
+duplicated here — it needs `SafeSignedSum` over the assembled vector and belongs
+with the tolerance authority, in the checker. That deferral is accepted.
 
 ---
 
@@ -379,10 +495,10 @@ retargeted, not deleted.
 
 | Module | Raw | Blank | Comment | Code | code < 900 | raw < 1200 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `modCalcResolve` | 835 | 45 | 178 | 612 | yes | yes |
+| `modCalcResolve` | 948 | 49 | 234 | 665 | yes | yes |
 
-The three Step-4 modules are byte-identical and their metrics are unchanged
-(1088/809, 1177/868, 511/284).
+Before the correction the figures were 835/612. The three Step-4 modules are
+byte-identical and their metrics are unchanged (1088/809, 1177/868, 511/284).
 
 ---
 
@@ -407,10 +523,12 @@ The three Step-4 modules are byte-identical and their metrics are unchanged
 | `test_phase5_oracle.py` | 111 |
 | `test_phase5_stage_a.py` | 57 |
 | `test_phase5_vba_source.py` | 120 |
-| `test_phase5_resolve_source.py` | **56 (new)** |
-| **Total** | **1146** |
+| `test_phase5_resolve_source.py` | **79 (new)** |
+| **Total** | **1169** |
 
-The Step-4 baseline was 1090. No test was removed and none was weakened.
+The Step-4 baseline was 1090 and the first Step-5 submission 1146. The
+correction adds 23 more static tests, all in the Step-5 suite. No test was
+removed and none was weakened.
 
 ### Mutation evidence
 
@@ -433,6 +551,29 @@ and the suite was run against each. **All fourteen were caught**, none silently:
 | default an unknown distribution | caught |
 | locate a year column by arithmetic instead of by header | caught |
 | walk every inflation row instead of the referenced set | caught |
+
+Fifteen more were planted for the correction round, and all fifteen were caught:
+
+| Planted regression | Result |
+| --- | --- |
+| skip the structural gate entirely | caught |
+| accept a `STATE_PENDING` structure | caught |
+| accept a `STATE_NOT_APPLIED` structure | caught |
+| refuse a state without a diagnostic | caught |
+| drop the unrecognised-state branch | caught |
+| ignore the `ValidateStructure()` report | caught |
+| drop the D2 rejection | caught |
+| coerce any identifier with `CStr` | caught |
+| accept numeric-looking text in `NumericCell` | caught |
+| accept numeric-looking text in `NumericNamedCell` | caught |
+| let `Boolean` through the numeric type gate | caught |
+| restore the combined inflation guard | caught |
+| apply the strict numeric rule to a year header | caught |
+
+The first attempt at the state-branch detector **missed** the emptied
+`STATE_NOT_APPLIED` case: its window ran past the next `Case` and borrowed the
+refusal belonging to the branch below. The detector now bounds each branch at the
+next `Case` or `End Select`, and the mutation is caught.
 
 Fourteen further negative controls plant the same defect classes as synthetic
 module text and assert the sweeps see them.

@@ -115,6 +115,10 @@ End Type
 ' ==========================================================================
 Public Function ResolveModel(ByRef model As ResolvedModel, ByRef detail As String) As Boolean
     detail = vbNullString
+    ' STEP 0 - the PHASE-4 STRUCTURAL PREREQUISITES, invoked and never
+    ' duplicated. They come first because there is no point resolving
+    ' calculation inputs out of a workbook whose structure is not current.
+    If Not StructuralPrerequisites(detail) Then Exit Function
     If Not ResolveAppliedTimeline(model.Timeline, detail) Then Exit Function
     If Not ResolveProjectYears(model.Timeline, model.ProjectIndexes, _
                                model.CalendarYears, detail) Then Exit Function
@@ -140,6 +144,64 @@ Public Function ResolveModel(ByRef model As ResolvedModel, ByRef detail As Strin
     If Not ResolveProfileWeights(model.Drivers, model.DriverCount, model.Timeline, _
                                  model.Weights, detail) Then Exit Function
     ResolveModel = True
+End Function
+
+' ==========================================================================
+' Phase-4 structural prerequisites - INVOKED, NEVER DUPLICATED
+'
+' The structural gate is Phase 4's and stays Phase 4's. This adapter asks the
+' two questions Phase 4 already answers - what is the structural state, and does
+' the existing validator report anything - and turns either answer into a
+' controlled resolution failure. It re-implements no individual structural rule:
+' no ID pattern check, no duplicate-ID check, no orphan-row check, no profiling
+' or inflation grid matching, no counter integrity. Every one of those already
+' has an owner, and a second copy would be a second authority.
+'
+' This is NOT the future modCalcCheck. That step owns the Phase-5 NUMERICAL
+' prerequisites and must not absorb the Phase-4 structural gate.
+'
+' Calling this first is also not permission to widen anything: Phase-5 assumption
+' resolution below is still referenced-only, and still consults no FX row and no
+' inflation rate that a driver has not referenced.
+' ==========================================================================
+Private Function StructuralPrerequisites(ByRef detail As String) As Boolean
+    Dim state As String, report As String
+    If Not modWorkbook.NameExists(NM_STRUCTURAL_STATE) Then
+        detail = "structural state: the defined name " & NM_STRUCTURAL_STATE & _
+                 " does not exist"
+        Exit Function
+    End If
+    state = modWorkbook.TextOf(modWorkbook.NamedCell(NM_STRUCTURAL_STATE))
+
+    Select Case state
+    Case STATE_NOT_APPLIED
+        detail = "structural prerequisite: " & STATE_NOT_APPLIED & _
+                 ". Apply / Update Timeline on Setup before calculating."
+        Exit Function
+    Case STATE_PENDING
+        detail = "structural prerequisite: " & STATE_PENDING & _
+                 ". The entered structure differs from the applied structure; " & _
+                 "apply it before calculating."
+        Exit Function
+    Case STATE_CURRENT
+        ' The only state resolution may proceed from, and even then only if the
+        ' Phase-4 validator has nothing to report.
+    Case Else
+        detail = "structural prerequisite: the structural state is unreadable or " & _
+                 "not a recognised state"
+        Exit Function
+    End Select
+
+    ' The report is PRESERVED, not summarised and not re-derived. Phase 4 already
+    ' says which invariant failed and where, and rewording it here would lose the
+    ' only description of the fault the user can act on.
+    report = modStructuralCheck.ValidateStructure()
+    If Len(report) > 0 Then
+        detail = "structural prerequisite: the workbook structure is not valid." & _
+                 vbCrLf & report
+        Exit Function
+    End If
+    StructuralPrerequisites = True
 End Function
 
 ' ==========================================================================
@@ -539,9 +601,14 @@ Public Function ResolveInflationRates(ByRef names() As String, ByVal nameCount A
         Exit Function
     End If
     If nameCount < 0 Then Exit Function
-    If nameCount = 0 Or yearCount = 0 Then
-        ' No referenced profile, or Base Year = Last Year so no annual rate is
-        ' required at all. Both are legitimate.
+    If nameCount = 0 Then
+        ' NO PROFILE IS REFERENCED. Nothing is consulted, and an empty result is
+        ' the right answer.
+        '
+        ' A ZERO-LENGTH REQUIRED SPAN IS A DIFFERENT QUESTION and is handled
+        ' below, after the referenced keys have been resolved. Base Year = Last
+        ' Year means there are no annual rates to READ; it does not mean a driver
+        ' may reference a profile that does not exist.
         ResolveInflationRates = True
         Exit Function
     End If
@@ -551,7 +618,7 @@ Public Function ResolveInflationRates(ByRef names() As String, ByVal nameCount A
     End If
     Set table = modWorkbook.Lo(GRID_INFLATION_SHEET, TBL_INFLATION)
 
-    ReDim rates(0 To nameCount - 1, 0 To yearCount - 1)
+    If yearCount > 0 Then ReDim rates(0 To nameCount - 1, 0 To yearCount - 1)
     For index = 0 To nameCount - 1
         key = names(LBound(names) + index)
         row = MatchingGridRow(table, GCOL_INFLATION_PROFILE_NAME, key)
@@ -571,6 +638,18 @@ Public Function ResolveInflationRates(ByRef names() As String, ByVal nameCount A
             If Not NumericCell(table, row, column, rate, _
                                "inflation profile " & key & ", calendar year " & CStr(year), _
                                detail) Then Exit Function
+            ' D2. A rate of -100% or lower collapses the price base: 1 + rate is
+            ' zero or negative, and no inflation factor can be built from it. For
+            ' a finite Double this is exactly rate <= -1, tested directly rather
+            ' than by forming 1 + rate. It is checked HERE, on a referenced
+            ' profile's required year, so a bad rate on an unreferenced profile
+            ' still cannot block the model - and it is not in NumericCell, which
+            ' also reads values for which a negative number is legitimate.
+            If rate <= -1# Then
+                detail = "inflation profile " & key & ", calendar year " & CStr(year) & _
+                         ": the rate gives 1 + rate <= 0; a rate of -100% or lower is refused"
+                Exit Function
+            End If
             rates(index, offset) = rate
         Next offset
     Next index
@@ -718,6 +797,13 @@ Private Function RawCellText(ByVal table As ListObject, ByVal rowIndex As Long, 
     If IsError(cell.Value) Then Exit Function
     If IsEmpty(cell.Value) Then Exit Function
     If IsObject(cell.Value) Then Exit Function
+    ' THE TYPE GATE. A reference identifier must already BE text. A number, a
+    ' Boolean or a date is refused, never converted into a key that might then
+    ' resolve: a driver whose Currency cell holds the number 123 must not match
+    ' an FX row whose Currency is the text "123" merely because VBA can render
+    ' both as Strings. Conversion is the mechanism this gate exists to prevent,
+    ' so the type is proven first and only then is the value taken.
+    If VarType(cell.Value) <> vbString Then Exit Function
     text = CStr(cell.Value)
     RawCellText = True
 End Function
@@ -752,6 +838,10 @@ Private Function NumericCell(ByVal table As ListObject, ByVal rowIndex As Long, 
         detail = where & ": the value is blank. A blank is not zero."
         Exit Function
     End If
+    If Not IsRealNumber(cell.Value) Then
+        detail = where & ": the value is not numeric"
+        Exit Function
+    End If
     If Not modWorkbook.TryReadDouble(cell.Value, value) Then
         detail = where & ": the value is not numeric"
         Exit Function
@@ -761,6 +851,25 @@ Private Function NumericCell(ByVal table As ListObject, ByVal rowIndex As Long, 
         Exit Function
     End If
     NumericCell = True
+End Function
+
+Private Function IsRealNumber(ByVal value As Variant) As Boolean
+    ' A NUMERIC-LOOKING STRING IS STILL TEXT. modWorkbook.TryReadDouble
+    ' deliberately parses one, because its Phase-4 structural callers must judge
+    ' a pasted value on what it means rather than on how it is stored. A
+    ' calculation input is the opposite case: "0.05" typed into a rate cell is
+    ' text that Excel never treated as a number, and accepting it here would
+    ' silently widen the model's input contract.
+    '
+    ' Phase 4's helper is not weakened to say so - it has legitimate callers of
+    ' its own. The stricter rule lives here, in front of it.
+    '
+    ' Boolean is excluded explicitly: True is arithmetically -1 in VBA and would
+    ' otherwise become a quantity or a rate.
+    Select Case VarType(value)
+    Case vbInteger, vbLong, vbSingle, vbDouble, vbCurrency, vbDecimal, vbByte
+        IsRealNumber = True
+    End Select
 End Function
 
 Private Function NumericNamedCell(ByVal definedName As String, ByRef value As Double, _
@@ -773,6 +882,10 @@ Private Function NumericNamedCell(ByVal definedName As String, ByRef value As Do
     raw = modWorkbook.ReadValue(definedName)
     If IsEmpty(raw) Then
         detail = where & ": the value is blank. A blank is not zero."
+        Exit Function
+    End If
+    If Not IsRealNumber(raw) Then
+        detail = where & ": the value is not numeric"
         Exit Function
     End If
     If Not modWorkbook.TryReadDouble(raw, value) Then

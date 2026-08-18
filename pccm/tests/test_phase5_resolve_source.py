@@ -516,9 +516,34 @@ def test_26_a_blank_weight_is_refused_and_never_becomes_zero() -> None:
 def test_27_identifiers_are_read_raw_and_never_trimmed_into_another_key() -> None:
     module = _resolver()
     raw_reader = _body(module, "RawCellText")
-    assert "text = CStr(cell.Value)" in raw_reader
     assert "Trim$" not in raw_reader, "the raw reader trims; a key would be rewritten"
     assert "LCase" not in raw_reader and "UCase" not in raw_reader
+
+
+def test_27a_an_identifier_must_already_be_text() -> None:
+    """A number, a Boolean or a date is REFUSED, never converted into a key.
+
+    A driver whose Currency cell holds the number 123 must not match an FX row
+    whose Currency is the text "123" merely because VBA can render both as
+    Strings. Conversion is the mechanism the gate exists to prevent, so the type
+    is proven BEFORE the value is taken.
+    """
+    module = _resolver()
+    statements = _statements(module, "RawCellText")
+    gate = statements.index("If VarType(cell.Value) <> vbString Then Exit Function")
+    assign = next(i for i, t in enumerate(statements) if re.match(r"^text = ", t))
+    assert gate < assign, "the value is taken before its type is proven"
+    success = next(i for i, t in enumerate(statements) if t == "RawCellText = True")
+    assert gate < success, "a non-text value can reach a successful return"
+
+
+def test_27b_the_identifier_is_exact_after_the_type_gate() -> None:
+    """Proven text is then taken unchanged: no trim, no fold, no default."""
+    body = _body(_resolver(), "RawCellText")
+    assert re.search(r"^\s*text = CStr\(cell\.Value\)\s*$", body, re.MULTILINE), (
+        "the proven String must be taken as it stands"
+    )
+    assert not re.search(r"text = (Trim|LCase|UCase|Left|Mid)\$?\(", body)
 
 
 def test_28_the_identifier_gate_refuses_rather_than_repairs() -> None:
@@ -858,6 +883,358 @@ def test_nc_14_generic_error_suppression_is_caught() -> None:
         "End Function\n",
     )
     assert "On Error Resume Next" in planted.code
+
+
+
+# ===========================================================================
+# 12. REVIEW-DISCOVERED DEFECTS
+#
+# Every test in this section fails against the source as first submitted.
+# ===========================================================================
+
+# --- 12.1 the Phase-4 structural prerequisite gate -------------------------
+STRUCTURAL_GATE = "StructuralPrerequisites"
+
+
+def test_42_the_structural_gate_runs_before_any_resolution() -> None:
+    """Phase-4 structural prerequisites are INVOKED, and they come first.
+
+    There is no point resolving calculation inputs out of a workbook whose
+    structure is not current, and a model whose entered structure has drifted
+    from its applied structure must not slip through merely because the applied
+    cells still hold numbers.
+    """
+    module = _resolver()
+    order = call_order(module, "ResolveModel", [
+        STRUCTURAL_GATE, "ResolveAppliedTimeline", "ResolveDrivers",
+        "ReferencedCurrencies", "ReferencedProfiles",
+        "ResolveFxRates", "ResolveInflationRates",
+    ])
+    gate = order[0]
+    assert gate < min(order[1:]), (
+        f"the structural gate runs at statement {gate}, after {min(order[1:])}"
+    )
+    statements = _statements(module, "ResolveModel")
+    assert statements[gate].startswith(f"If Not {STRUCTURAL_GATE}(detail) Then"), (
+        "the gate must be able to refuse, not merely be called"
+    )
+
+
+def _case_body(statements: list[str], label: str) -> list[str]:
+    """The statements belonging to ONE `Case` branch.
+
+    Bounded by the next `Case` or `End Select`, because an emptied branch would
+    otherwise borrow the refusal of the branch below it and look correct.
+    """
+    start = statements.index(label)
+    end = next(
+        (i for i in range(start + 1, len(statements))
+         if statements[i].startswith("Case ") or statements[i] == "End Select"),
+        len(statements),
+    )
+    return statements[start + 1:end]
+
+
+def test_43_the_gate_refuses_both_non_current_states() -> None:
+    module = _resolver()
+    body = _body(module, STRUCTURAL_GATE)
+    for constant in ("NM_STRUCTURAL_STATE", "STATE_NOT_APPLIED", "STATE_PENDING",
+                     "STATE_CURRENT"):
+        assert constant in body, f"{constant} is not consulted"
+    statements = _statements(module, STRUCTURAL_GATE)
+    for state in ("STATE_NOT_APPLIED", "STATE_PENDING"):
+        body_of = _case_body(statements, f"Case {state}")
+        assert any(t == "Exit Function" for t in body_of), f"{state} does not refuse"
+        assert any(t.startswith("detail =") for t in body_of), (
+            f"{state} refuses without saying why"
+        )
+    assert "Case Else" in statements, (
+        "an unreadable or unrecognised structural state must also refuse"
+    )
+    current = statements.index("Case STATE_CURRENT")
+    validate = next(i for i, t in enumerate(statements)
+                    if "modStructuralCheck.ValidateStructure()" in t)
+    assert current < validate, "the validator runs only from the current state"
+
+
+def test_44_the_gate_invokes_the_phase_4_validator_and_keeps_its_report() -> None:
+    """Phase 4 already says which invariant failed and where."""
+    module = _resolver()
+    body = _body(module, STRUCTURAL_GATE)
+    assert "report = modStructuralCheck.ValidateStructure()" in body
+    assert "If Len(report) > 0 Then" in body, "a non-empty report must refuse"
+    assert "report" in _body_raw(module, STRUCTURAL_GATE).split("detail =")[-1], (
+        "the Phase-4 report must be preserved in the detail, not summarised away"
+    )
+
+
+def test_45_the_gate_duplicates_no_phase_4_structural_rule() -> None:
+    """The individual invariants stay where they are. A second copy is a second
+    authority."""
+    code = _resolver().code
+    for owned in ("ID_PREFIX_COST_LINE", "ID_PREFIX_RISK", "ID_PAD_COST_LINE",
+                  "NM_COUNTER_COST_LINE", "NM_COUNTER_RISK", "ID_COUNTER_MAX",
+                  "CheckOrphanRows", "CheckIdPatterns", "CheckCounters",
+                  "CheckProfilingIdentity", "CheckInflationHeaders"):
+        assert owned not in code, f"the resolver re-implements {owned}"
+    # Exactly one call into the Phase-4 checker, and it is the whole report.
+    assert code.count("modStructuralCheck.") == 1
+
+
+def test_46_the_numerical_checker_still_does_not_exist() -> None:
+    """modCalcCheck owns the Phase-5 NUMERICAL prerequisites, and is Step 6."""
+    modules = _modules()
+    assert "modCalcCheck" not in modules
+    assert "modCalcCheck" not in "\n".join(m.code for m in modules.values())
+
+
+# --- 12.2 D2 on referenced inflation rates ---------------------------------
+def test_47_a_referenced_inflation_rate_of_minus_one_or_lower_is_refused() -> None:
+    """D2: `1 + rate <= 0` collapses the price base and builds no factor.
+
+    Tested directly as `rate <= -1#`, which is the same condition for a finite
+    Double without forming the sum.
+    """
+    module = _resolver()
+    statements = _statements(module, "ResolveInflationRates")
+    read = next(i for i, t in enumerate(statements) if "NumericCell(table, row, column" in t)
+    guard = statements.index("If rate <= -1# Then")
+    store = next(i for i, t in enumerate(statements) if t.startswith("rates(index, offset) ="))
+    assert read < guard < store, (
+        "D2 must be checked after the rate is read and before it is stored"
+    )
+    detail = _body_raw(module, "ResolveInflationRates")
+    assert "1 + rate <= 0" in detail, "the refusal must name the condition"
+    assert "calendar year" in detail and "inflation profile" in detail, (
+        "the refusal must name the profile and the year"
+    )
+
+
+def test_48_d2_is_not_in_the_generic_numeric_reader() -> None:
+    """`NumericCell` also reads values for which a negative number is legitimate."""
+    body = _body(_resolver(), "NumericCell")
+    assert "-1#" not in body, "a generic reader must not carry an inflation rule"
+
+
+def test_49_d2_is_reached_only_for_referenced_profiles() -> None:
+    """A bad rate on an unreferenced profile must still not block the model."""
+    statements = _statements(_resolver(), "ResolveInflationRates")
+    loop = statements.index("For index = 0 To nameCount - 1")
+    guard = statements.index("If rate <= -1# Then")
+    assert loop < guard, "D2 is checked outside the referenced-profile loop"
+
+
+# --- 12.3 strict numeric typing --------------------------------------------
+def test_50_a_numeric_looking_string_is_not_a_number() -> None:
+    """`modWorkbook.TryReadDouble` deliberately parses one.
+
+    Its Phase-4 structural callers must judge a pasted value on what it MEANS.
+    A calculation input is the opposite case: "0.05" typed into a rate cell is
+    text Excel never treated as a number, and accepting it would silently widen
+    the model's input contract. Phase 4's helper is not weakened to say so - the
+    stricter rule sits in front of it.
+    """
+    module = _resolver()
+    for procedure in ("NumericCell", "NumericNamedCell"):
+        statements = _statements(module, procedure)
+        gate = next(i for i, t in enumerate(statements) if t.startswith("If Not IsRealNumber("))
+        parse = next(i for i, t in enumerate(statements) if "TryReadDouble" in t)
+        assert gate < parse, f"{procedure} parses before it checks the type"
+    guard = _body(module, "IsRealNumber")
+    assert "VarType(value)" in guard, "the rule must be a type test"
+    for accepted in ("vbInteger", "vbLong", "vbSingle", "vbDouble", "vbCurrency",
+                     "vbDecimal", "vbByte"):
+        assert accepted in guard, f"{accepted} is a real numeric subtype and must pass"
+    for refused in ("vbString", "vbBoolean", "vbDate", "vbEmpty", "vbNull"):
+        assert refused not in guard, f"{refused} must not be an accepted numeric subtype"
+
+
+def test_51_the_phase_4_helper_was_not_weakened() -> None:
+    """`TryReadDouble` has legitimate structural callers and is untouched."""
+    workbook = _modules()["modWorkbook"]
+    body = _body(workbook, "TryReadDouble")
+    assert "If Not IsNumeric(Value) Then Exit Function" in body
+    assert "IsRealNumber" not in workbook.code, (
+        "the Step-5 rule must not have been pushed into Phase 4"
+    )
+
+
+def test_52_the_year_header_path_is_unchanged() -> None:
+    """A table header is a text label by nature.
+
+    `YearColumn` parses a numeric year header, and that is a different structural
+    operation from reading a calculation input. It keeps Phase 4's semantics.
+    """
+    body = _body(_resolver(), "YearColumn")
+    assert "modWorkbook.TryReadDouble(header.Value, value)" in body
+    assert "IsRealNumber" not in body, (
+        "the calculation-input rule must not be applied to a table header"
+    )
+
+
+# --- 12.4 a referenced profile must exist even with no required years ------
+def test_53_an_empty_required_span_does_not_excuse_a_missing_profile() -> None:
+    """`nameCount = 0` and `yearCount = 0` are NOT the same question.
+
+    No profile referenced means nothing is consulted. A referenced profile with
+    no required annual rates still has to exist: a one-year Base Year = Last Year
+    model must not let a driver name a profile that is not there.
+    """
+    module = _resolver()
+    statements = _statements(module, "ResolveInflationRates")
+    empty_names = statements.index("If nameCount = 0 Then")
+    lookup = next(i for i, t in enumerate(statements)
+                  if "MatchingGridRow(table, GCOL_INFLATION_PROFILE_NAME, key)" in t)
+    assert empty_names < lookup, "an unreferenced model must return before the lookup"
+    assert "If nameCount = 0 Or yearCount = 0 Then" not in statements, (
+        "the combined guard lets a referenced profile escape existence checking"
+    )
+    for index, statement in enumerate(statements):
+        if re.match(r"^If .*yearCount = 0.*Then$", statement):
+            assert index > lookup, (
+                "a zero-length required span must not return before the referenced "
+                "profile has been resolved"
+            )
+
+
+def test_54_no_rate_is_fabricated_for_an_empty_span() -> None:
+    body = _body(_resolver(), "ResolveInflationRates")
+    assert "If yearCount > 0 Then ReDim rates(0 To nameCount - 1, 0 To yearCount - 1)" in body, (
+        "the rate array is allocated only where there are rates to hold"
+    )
+    assert not re.search(r"rates\(index, \d+\) = 0#", body), "a zero rate is fabricated"
+    assert "For offset = 0 To yearCount - 1" in body, (
+        "an empty span must simply iterate zero times"
+    )
+
+
+# ===========================================================================
+# 13. NEGATIVE CONTROLS FOR THE REVIEW-DISCOVERED DEFECTS
+# ===========================================================================
+def test_nc_15_resolution_without_the_structural_gate_is_caught() -> None:
+    """The submitted shape: ResolveModel starts straight into resolution."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function ResolveModel() As Boolean\n"
+        "    detail = vbNullString\n"
+        "    If Not ResolveAppliedTimeline(model.Timeline, detail) Then Exit Function\n"
+        "    If Not ResolveDrivers(model.Drivers, model.DriverCount, detail) Then Exit Function\n"
+        "End Function\n",
+    )
+    order = call_order(planted, "ResolveModel",
+                       [STRUCTURAL_GATE, "ResolveAppliedTimeline", "ResolveDrivers"])
+    assert order[0] > min(order[1:]), "the missing gate must be visible as an ordering defect"
+
+
+def test_nc_16_a_gate_that_accepts_a_pending_structure_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + f"Private Function {STRUCTURAL_GATE}() As Boolean\n"
+        "    Select Case state\n"
+        "    Case STATE_PENDING\n"
+        f"        {STRUCTURAL_GATE} = True\n"
+        "    End Select\n"
+        "End Function\n",
+    )
+    statements = _statements(planted, STRUCTURAL_GATE)
+    branch = statements.index("Case STATE_PENDING")
+    assert "Exit Function" not in statements[branch + 1:branch + 4], (
+        "the planted acceptance must be visible to the sweep"
+    )
+
+
+def test_nc_17_a_gate_that_ignores_the_validator_report_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + f"Private Function {STRUCTURAL_GATE}() As Boolean\n"
+        "    report = modStructuralCheck.ValidateStructure()\n"
+        f"    {STRUCTURAL_GATE} = True\n"
+        "End Function\n",
+    )
+    body = _body(planted, STRUCTURAL_GATE)
+    assert "If Len(report) > 0 Then" not in body
+
+
+def test_nc_18_removing_the_d2_branch_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function ResolveInflationRates() As Boolean\n"
+        "    For index = 0 To nameCount - 1\n"
+        "        If Not NumericCell(table, row, column, rate, where, detail) Then Exit Function\n"
+        "        rates(index, offset) = rate\n"
+        "    Next index\n"
+        "End Function\n",
+    )
+    statements = _statements(planted, "ResolveInflationRates")
+    assert "If rate <= -1# Then" not in statements, (
+        "the missing D2 branch must be visible to the sweep"
+    )
+
+
+def test_nc_19_a_cstr_identifier_coercion_is_caught() -> None:
+    """The submitted shape: any Variant becomes a key."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function RawCellText() As Boolean\n"
+        "    If IsError(cell.Value) Then Exit Function\n"
+        "    If IsEmpty(cell.Value) Then Exit Function\n"
+        "    text = CStr(cell.Value)\n"
+        "    RawCellText = True\n"
+        "End Function\n",
+    )
+    statements = _statements(planted, "RawCellText")
+    assert "If VarType(cell.Value) <> vbString Then Exit Function" not in statements, (
+        "the missing type gate must be visible"
+    )
+    assert any(re.match(r"^text = ", t) for t in statements)
+
+
+def test_nc_20_a_boolean_or_numeric_identifier_would_reach_the_key() -> None:
+    """Without the gate, `True` and `123` both become resolvable keys."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function RawCellText() As Boolean\n"
+        "    If VarType(cell.Value) = vbBoolean Then text = CStr(cell.Value)\n"
+        "    If IsNumeric(cell.Value) Then text = CStr(cell.Value)\n"
+        "    RawCellText = True\n"
+        "End Function\n",
+    )
+    body = _body(planted, "RawCellText")
+    assert "vbBoolean" in body and "IsNumeric" in body
+    assert "If VarType(cell.Value) <> vbString Then Exit Function" not in body
+
+
+def test_nc_21_dropping_the_numeric_type_gate_is_caught() -> None:
+    for procedure in ("NumericCell", "NumericNamedCell"):
+        planted = _synthetic(
+            "modProbe",
+            _STUB + f"Private Function {procedure}() As Boolean\n"
+            "    If Not modWorkbook.TryReadDouble(cell.Value, value) Then Exit Function\n"
+            f"    {procedure} = True\n"
+            "End Function\n",
+        )
+        statements = _statements(planted, procedure)
+        assert not any(t.startswith("If Not IsRealNumber(") for t in statements), (
+            f"the missing type gate in {procedure} must be visible"
+        )
+
+
+def test_nc_22_the_combined_inflation_guard_is_caught() -> None:
+    """Restoring `nameCount = 0 Or yearCount = 0` lets a referenced profile
+    escape existence checking."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function ResolveInflationRates() As Boolean\n"
+        "    If nameCount = 0 Or yearCount = 0 Then\n"
+        "        ResolveInflationRates = True\n        Exit Function\n    End If\n"
+        "    row = MatchingGridRow(table, GCOL_INFLATION_PROFILE_NAME, key)\n"
+        "End Function\n",
+    )
+    statements = _statements(planted, "ResolveInflationRates")
+    assert "If nameCount = 0 Or yearCount = 0 Then" in statements
+    combined = statements.index("If nameCount = 0 Or yearCount = 0 Then")
+    lookup = next(i for i, t in enumerate(statements) if "MatchingGridRow(table," in t)
+    assert combined < lookup, "the escape must be visible as an ordering defect"
 
 
 # ===========================================================================
