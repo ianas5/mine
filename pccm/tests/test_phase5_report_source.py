@@ -300,9 +300,24 @@ def test_14_no_numerical_formula_is_reimplemented() -> None:
     assert calls == [
         "AccumulateTotals", "AllIdentitiesHold", "BuildAnnualSeries", "BuildDiscountFactors",
         "BuildDriverAudit", "BuildKnom", "BuildKpv", "CalcFpBuildCostRecord",
-        "CalcFpBuildFingerprint", "CalcFpBuildRiskRecord", "CalcFpCanonicalNumber",
-        "CalcFpCanonicalText", "Reconcile",
+        "CalcFpBuildFingerprint", "CalcFpBuildRiskRecord", "CalcFpNumberField",
+        "Reconcile",
     ], f"unexpected numerical surface: {calls}"
+    # THE FOUR HEADER SCALARS ARE NUMBER FIELDS.
+    #
+    # This list previously carried CalcFpCanonicalNumber and CalcFpCanonicalText
+    # together, which is exactly the defect independent review found: the reporter
+    # canonicalised each scalar as a number and then framed the RESULT as an S
+    # field, so the digest covered "text that looks numeric" where the contract
+    # says N. Canonicalising and framing are one decision and belong to one
+    # authority, so the reporter now calls the N-field framer and neither
+    # primitive.
+    assert "CalcFpCanonicalText" not in code, (
+        "a header number framed as text changes what the digest covers"
+    )
+    assert "CalcFpCanonicalNumber" not in code, (
+        "canonicalising without framing invites the framing to be reinvented here"
+    )
     # No compounding, no distribution arithmetic, no digest recurrence.
     assert not re.search(r"running\s*=\s*running\s*\*", code)
     assert "FP_BASE" not in code and "FP_MOD_1" not in code
@@ -340,7 +355,10 @@ def test_17_the_commit_and_its_verification_are_inside_the_rollback_envelope() -
     """Both can fail, so both sit inside the error envelope."""
     statements = _statements(_reporter(), "RunCalculation")
     armed = statements.index("On Error GoTo TransactionFailed")
-    disarmed = first_index(statements, r"^On Error GoTo 0$")
+    # The FIRST disarm AFTER the envelope was armed. Taking the first one in the
+    # procedure would find the pre-write envelope's disarm, which sits earlier and
+    # would make any ordering assertion below it vacuously true.
+    disarmed = armed + 1 + statements[armed + 1:].index("On Error GoTo 0")
     commit = first_index(statements, r"WriteSuccessCommit")
     verify = first_index(statements, r"VerifySuccessCommit")
     assert armed < commit < disarmed, "the commit is outside the rollback envelope"
@@ -356,7 +374,7 @@ def test_18_success_is_not_published_before_the_snapshot_verifies() -> None:
 
 def test_19_a_verification_failure_raises_rather_than_continuing() -> None:
     statements = _statements(_reporter(), "RunCalculation")
-    for guard in ("VerifyAnalytical(package)", "VerifySuccessCommit(package)"):
+    for guard in ("VerifyAnalytical(package)", "VerifySuccessCommit(successBlock)"):
         index = next(i for i, t in enumerate(statements) if guard in t)
         assert any("Err.Raise" in t for t in statements[index:index + 3]), (
             f"a failed {guard} does not raise"
@@ -364,14 +382,40 @@ def test_19_a_verification_failure_raises_rather_than_continuing() -> None:
 
 
 def test_20_no_generic_error_suppression() -> None:
-    code = _reporter().code
+    """Every handler is one of the reviewed envelopes, and each one lands.
+
+    This test asserted that TransactionFailed was the ONLY handler in the module.
+    Independent review rejected that shape: it left CaptureAppState,
+    BeginOperation, the preparation, the snapshot and every bookkeeping write
+    outside any handler at all, so a runtime fault in one of them escaped raw and
+    left EnableEvents, Calculation mode and ScreenUpdating dirty. The invariant
+    worth keeping is not "one handler" - it is that no handler suppresses, that
+    every handler name is a reviewed envelope, and that each target label really
+    exists in the procedure that arms it.
+    """
+    module = _reporter()
+    code = module.code
     assert "On Error Resume Next" not in code, (
         "a suppressed error would become a silently wrong calculation"
     )
-    handlers = [h for h in re.findall(r"On Error GoTo (\w+)", code) if h != "0"]
-    assert handlers == ["TransactionFailed"], (
-        f"the only handler is the transaction envelope; found {handlers}"
-    )
+    handlers = {h for h in re.findall(r"On Error GoTo (\w+)", code) if h != "0"}
+    assert handlers == {
+        "InvocationFailed",     # the top-level envelope over the whole endpoint
+        "CleanupFailed",        # cleanup raising while handling an earlier failure
+        "PreWriteFailed",       # an unexpected fault before any analytical mutation
+        "TransactionFailed",    # the rollback envelope over the mutating region
+        "RollbackFailed",       # the restore itself failing
+        "BookkeepingFailed",    # the calc_state record failing after the outcome
+    }, f"an unreviewed error handler exists: {sorted(handlers)}"
+    # Armed and landed in the SAME procedure. A handler whose label lives
+    # elsewhere is not a handler; VBA would refuse it, and a text sweep that never
+    # checked would not notice.
+    for procedure in module.procedures:
+        body = _body(module, procedure)
+        for target in {h for h in re.findall(r"On Error GoTo (\w+)", body) if h != "0"}:
+            assert re.search(rf"^{target}:$", body, re.M), (
+                f"{procedure} arms {target} but does not define it"
+            )
 
 
 def test_21_both_failpoints_are_wired_through_the_phase_4_mechanism() -> None:
@@ -433,17 +477,36 @@ def test_24_the_status_refresh_is_one_two_row_assignment() -> None:
         assert forbidden not in status, f"asking for the status touches {forbidden}"
 
 
-def test_25_the_success_commit_is_one_eight_row_assignment() -> None:
-    """Not four writes that could half-succeed and leave a fingerprint with no
-    stamp, or a stamp with no version."""
-    body = _body(_reporter(), "WriteSuccessCommit")
-    assert "Dim block(1 To 8, 1 To 1) As Variant" in body
-    assert body.count(".Value2 =") == 1
-    assert "CALC_STATE_VALUE_RANGE" in body
+def test_25_the_success_commit_is_built_once_and_written_once() -> None:
+    """Built once in memory, written once, and verified against THAT block.
+
+    Not four writes that could half-succeed and leave a fingerprint with no stamp,
+    or a stamp with no version - and not a block whose two timestamps come from
+    two different calls to Now, which cannot then be verified against what was
+    written.
+    """
+    module = _reporter()
+    build = _body(module, "BuildSuccessBlock")
+    assert "Dim built(1 To 8, 1 To 1) As Variant" in build
     for row in range(1, 9):
-        assert f"block({row}, 1) =" in body, f"commit row {row} is not populated"
-    assert "FP_VERSION" in body, "C15 must carry the fingerprint version"
-    assert "CALC_ATTEMPT_SUCCESS" in body and "CALC_STATUS_CURRENT" in body
+        assert f"built({row}, 1) =" in build, f"commit row {row} is not populated"
+    assert "FP_VERSION" in build, "C15 must carry the fingerprint version"
+    assert "CALC_ATTEMPT_SUCCESS" in build and "CALC_STATUS_CURRENT" in build
+    # ONE moment, into BOTH timestamp rows. Two calls to Now would put two
+    # different values in C13 and C20 and make the block unverifiable against
+    # itself.
+    assert build.count("Now") == 1, "the commit captures the clock more than once"
+    assert re.search(r"stamp = Now", build), "the captured moment must be named"
+    assert re.search(r"built\(1, 1\) = stamp", build), "C13 is not the captured moment"
+    assert re.search(r"built\(8, 1\) = stamp", build), "C20 is not the captured moment"
+
+    write = _body(module, "WriteSuccessCommit")
+    assert write.count(".Value2 =") == 1, "the commit metadata is written in pieces"
+    assert "CALC_STATE_VALUE_RANGE" in write
+    assert "Now" not in write, "the writer must write the block it was given"
+    assert re.search(r"\.Value2 = block$", write, re.M), (
+        "the writer must write the built block, not a freshly assembled one"
+    )
 
 
 # ===========================================================================
@@ -475,20 +538,78 @@ def test_27_rollback_restores_everything_that_was_snapshotted() -> None:
 
 def test_28_rollback_happens_before_any_failed_metadata() -> None:
     """The first observable moment after a failure is the previous successful
-    snapshot, exactly."""
-    statements = _statements(_reporter(), "RunCalculation")
-    restore = next(i for i, t in enumerate(statements) if "RestoreSnapshot" in t)
-    record = next(i for i, t in enumerate(statements) if "RecordFailure" in t)
+    snapshot, exactly.
+
+    The rollback and its record now live in RollbackAndRecord rather than inline
+    in RunCalculation, so the ordering is asserted where it happens. The stronger
+    claim is the second one: if the RESTORE itself fails, NO failed-attempt
+    metadata is written at all. That record asserts "the previous snapshot
+    stands", and writing it after a failed restore would assert something nobody
+    established.
+    """
+    module = _reporter()
+    statements = _statements(module, "RollbackAndRecord")
+    restore = next(i for i, s in enumerate(statements) if "RestoreSnapshot" in s)
+    record = next(i for i, s in enumerate(statements) if "WriteAttemptBlock" in s)
     assert restore < record, "FAILED metadata is written before the rollback"
+    # The restore is armed before it runs, and its handler writes nothing.
+    assert statements[restore - 1] == "On Error GoTo RollbackFailed", (
+        "the restore runs outside an error envelope and could escape raw"
+    )
+    failed = _body(module, "RollbackAndRecord").split("RollbackFailed:", 1)[1]
+    failed = failed.split("BookkeepingFailed:", 1)[0]
+    for forbidden in ("WriteAttemptBlock", "WriteStatusBlock", "WriteSuccessCommit",
+                      ".Value2 ="):
+        assert forbidden not in failed, (
+            f"a failed rollback still writes {forbidden} under a false premise"
+        )
+    # And a failed RECORD does not undo a rollback that succeeded.
+    book = _body(module, "RollbackAndRecord").split("BookkeepingFailed:", 1)[1]
+    assert "RestoreSnapshot" not in book, "a failed record re-runs the rollback"
 
 
 def test_29_a_committed_operation_can_never_become_failed() -> None:
-    statements = _statements(_reporter(), "RunCalculation")
-    handler = statements.index("On Error GoTo 0", statements.index("committed = True"))
-    tail = statements[handler:]
-    guard = next(i for i, t in enumerate(tail) if t == "If committed Then")
-    restore = next(i for i, t in enumerate(tail) if "RestoreSnapshot" in t)
-    assert guard < restore, "a committed operation could still be rolled back"
+    """Once C17 says SUCCESS, that is committed workbook truth.
+
+    A problem AFTER the commit - restoring EnableEvents, Calculation mode or
+    ScreenUpdating - is an application/invocation cleanup failure, not a failed
+    analytical transaction. Rewriting the attempt to FAILED there would leave the
+    workbook and the reported outcome contradicting each other, so the committed
+    flag is carried out of the transaction and the post-commit path writes
+    nothing at all.
+    """
+    module = _reporter()
+    statements = _statements(module, "RunCalculation")
+    committed = statements.index("committed = True")
+    # THE ENVELOPE IS DISARMED, then the success is published, then the procedure
+    # leaves. No handler in this procedure can fire after the commit, so no
+    # rollback and no FAILED record can reach a committed transaction.
+    tail = statements[committed:]
+    disarm = tail.index("On Error GoTo 0")
+    leave = tail.index("Exit Function")
+    assert disarm < leave, "an error handler is still armed after the commit"
+    for forbidden in ("RestoreSnapshot", "WriteAttemptBlock", "WriteStatusBlock",
+                      "RecordFailureWithoutRollback", "RollbackAndRecord",
+                      "WriteSuccessCommit"):
+        assert not any(forbidden in s for s in tail[:leave]), (
+            f"a committed transaction can still reach {forbidden}"
+        )
+    # The flag leaves the transaction, so the caller can tell the two axes apart.
+    assert "RunCalculation(ByRef committed As Boolean)" in _body(module, "RunCalculation"), (
+        "the commit fact must reach the endpoint, not die inside the transaction"
+    )
+    # And the post-commit branch writes NOTHING.
+    cleanup = _body(module, "CleanupOutcome")
+    guard = cleanup.index("If committed Then")
+    for forbidden in ("WriteAttemptBlock", "WriteStatusBlock", "WriteSuccessCommit",
+                      "RestoreSnapshot", ".Value2 =", "CALC_ATTEMPT_FAILED"):
+        assert forbidden not in cleanup, (
+            f"post-commit cleanup touches {forbidden} and can falsify C17"
+        )
+    committed_branch = cleanup[guard:cleanup.index("Exit Function", guard)]
+    assert "modAppState.Failed" in committed_branch, (
+        "the cleanup problem must still be reported on the invocation axis"
+    )
 
 
 def test_30_no_second_rollback_mechanism_exists() -> None:
@@ -537,11 +658,17 @@ def test_33_invalid_current_inputs_short_circuit_the_comparison() -> None:
 
 
 def test_34_a_failed_attempt_re_derives_the_status() -> None:
-    """FAILED is an attempt result. It never chooses the status."""
+    """FAILED is an attempt result. It never chooses the status.
+
+    Both failure recorders are checked: the one that runs when nothing analytical
+    was mutated, and the one that runs after a rollback.
+    """
     module = _reporter()
-    body = _body(module, "RecordFailure")
-    assert "CurrentStatus()" in body, "the status is not re-derived after a rollback"
-    assert "CALC_ATTEMPT_FAILED" in body
+    for procedure in ("RecordFailureWithoutRollback", "RollbackAndRecord"):
+        body = _body(module, procedure)
+        assert "CurrentStatus()" in body, f"{procedure} does not re-derive the status"
+        assert "CALC_ATTEMPT_FAILED" in body, f"{procedure} records the wrong result"
+        assert "CALC_STATUS_FAILED" not in body, "FAILED is not a status"
     fresh = _body(module, "CurrentStatus")
     assert "PrepareCurrentCalculation(package, detail)" in fresh, (
         "the re-derivation must run a fresh preparation against the restored state"
@@ -708,15 +835,37 @@ def test_47_headers_and_formats_are_never_written() -> None:
 # 9. application state and the forbidden surfaces
 # ===========================================================================
 def test_48_application_state_is_captured_and_restored() -> None:
-    body = _body(_reporter(), "PCCM_Calculate")
+    """Captured, changed, and restored however the endpoint returns.
+
+    The envelope is armed BEFORE the first fallible operation. Independent review
+    found it armed after CaptureAppState and BeginOperation, which left the two
+    operations that make restoration necessary outside any handler: a fault in
+    either escaped raw and left EnableEvents, Calculation mode and ScreenUpdating
+    dirty, which is worse than a failed calculation.
+    """
+    module = _reporter()
+    body = _body(module, "PCCM_Calculate")
     for stage in ("modAppState.CaptureAppState()", "modAppState.BeginOperation",
                   "modAppState.FinishOperation(state)"):
         assert stage in body, f"{stage} is missing"
-    statements = _statements(_reporter(), "PCCM_Calculate")
-    run = next(i for i, t in enumerate(statements) if "RunCalculation()" in t)
-    finish = next(i for i, t in enumerate(statements) if "FinishOperation" in t)
-    assert run < finish, "application state is restored before the work is done"
-    assert any("modAppState.Failed" in t for t in statements[finish:]), (
+    statements = _statements(module, "PCCM_Calculate")
+    armed = statements.index("On Error GoTo InvocationFailed")
+    capture = next(i for i, s in enumerate(statements) if "CaptureAppState()" in s)
+    begin = next(i for i, s in enumerate(statements) if "BeginOperation" in s)
+    run = next(i for i, s in enumerate(statements) if "RunCalculation(committed)" in s)
+    finish = next(i for i, s in enumerate(statements) if "FinishOperation" in s)
+    assert armed < capture < begin < run < finish, (
+        "the envelope must cover capture, begin and the transaction alike"
+    )
+    # An explicit flag, not an inference. Restoring state that was never captured
+    # would be its own fault, and skipping restoration that IS owed is the defect
+    # the envelope exists to prevent.
+    assert "stateCaptured As Boolean" in body
+    assert re.search(r"stateCaptured = True", body), "the flag is never set"
+    assert re.search(r"If stateCaptured Then", body), (
+        "the failure path restores unconditionally, or not at all"
+    )
+    assert any("modAppState.Failed" in s for s in statements[finish:]), (
         "a failed cleanup must be reported, not swallowed"
     )
 
@@ -743,7 +892,12 @@ def test_51_the_accepted_modules_were_not_modified() -> None:
         "modCalcCheck": "738343945932150470233cb2a0b7e6fea7617db1a877cae8e09d19085e39c43b",
         "modCalcFactors": "721b8d6aa16fef850a13c714b329395730c9110ccd50d17c99927c3bfaae68c1",
         "modCalcAnalytical": "e234b3adacdb443c8c7b2b5072c311e7622405c3ec2e2987a750d85400299e0d",
-        "modCalcFingerprint": "0a504c0dc29062420c5e4325117ef623157e5fc612de9a9e862d86315aed5802",
+        # Its CURRENT bytes. Step 7's correction round carried the ONE authorised
+        # reopening of this accepted module - CalcFpNumberField became Public so
+        # the reporter could reach the accepted N-field framing authority instead
+        # of framing a number as text. FINGERPRINT_STEP4_BODY_SHA256 is what says
+        # nothing else moved with it.
+        "modCalcFingerprint": "8e7c89750f301f27c2d9b7faf2b8057a217186c2a425b194de65a006b93b5075",
         "modWorkbook": "9cfa8f130c5bcdee783948654c969d4b0d6589fe7059c126f88c7676ca5405bf",
         "modAppState": "ef0b5c64a7a3b5aeeef5ef0797cd160071a7eda6a7d8cef9cb98301f1504672f",
         "modTimeline": "4a4f24d17b65bcbc0e46b1a74213b6a02eab6ab492b1788476d66eb7807b9e3f",
@@ -755,6 +909,243 @@ def test_51_the_accepted_modules_were_not_modified() -> None:
     for name, digest in frozen.items():
         actual = hashlib.sha256((SRC_VBA / f"{name}.bas").read_bytes()).hexdigest()
         assert actual == digest, f"{name}.bas changed; Step 7 adds a module and edits none"
+
+
+# ===========================================================================
+# 9b. THE CORRECTION-ROUND INVARIANTS
+#
+# Each of the five defects independent review found has a test here that fails
+# against the submitted source and passes against the corrected source.
+# ===========================================================================
+def test_53_the_header_scalars_are_framed_as_number_fields() -> None:
+    """BLOCKER 1. Base Year, Start Year, Duration and Discount Rate are numbers.
+
+    They were canonicalised as numbers and then framed as TEXT, so the digest
+    covered four S fields carrying numeric text where the contract says N. The
+    framing authority is modCalcFingerprint's in either case, so the reporter
+    calls its N-field framer rather than assembling a field of its own.
+    """
+    module = _reporter()
+    body = _body(module, "BuildFingerprint")
+    framed = re.findall(
+        r"modCalcFingerprint\.CalcFpNumberField\(\s*package\.Model\.Timeline\.(\w+)", body
+    )
+    assert framed == ["BaseYear", "StartYear", "Duration", "DiscountRate"], (
+        f"the header scalars are not the four locked ones, in order: {framed}"
+    )
+    assert len(re.findall(r"header\(\d\)", body)) == 4, "the header is not four fields"
+    # No S framing, and no field assembled by hand out here.
+    assert "CalcFpCanonicalText" not in module.code
+    assert "FP_TAG_TEXT" not in module.code and "FP_TAG_NUMBER" not in module.code, (
+        "the reporter frames a field itself instead of calling the framer"
+    )
+    assert "FP_FIELD_SEPARATOR" not in module.code
+
+
+def test_54_the_outcome_is_published_through_the_automation_aware_surface() -> None:
+    """BLOCKER 2. Announce, never ReportResult.
+
+    ReportResult shows a modal dialog unconditionally. Announce records the
+    outcome for automation and shows the dialog only when automation is inactive,
+    which is what lets Gate B drive this endpoint at all. A direct dialog would
+    block the harness and leave the run with no recorded result.
+    """
+    module = _reporter()
+    code = module.code
+    assert "modAppState.Announce" in code, "the outcome never reaches automation"
+    assert "ReportResult" not in code, (
+        "the endpoint publishes through the modal reporter and would block automation"
+    )
+    # The accepted Phase-4 surface is REUSED, not re-created here.
+    for invented in ("gAutomationActive", "gAutomationResult", "gLastResult",
+                     "AutomationActive", "RecordForAutomation"):
+        assert invented not in code, f"a second automation reporter ({invented}) was created"
+    # Announce belongs to the endpoint. Nothing deeper may publish.
+    for procedure in module.procedures:
+        if procedure == "PCCM_Calculate":
+            continue
+        assert "Announce" not in _body(module, procedure), (
+            f"{procedure} publishes an outcome; only the endpoint may"
+        )
+
+
+def test_55_every_exit_from_the_endpoint_publishes_exactly_one_outcome() -> None:
+    """BLOCKER 2/3. No path leaves PCCM_Calculate silently.
+
+    A path that returns without announcing is a calculation whose outcome no
+    automation run can observe - indistinguishable, from outside, from one that
+    never started.
+    """
+    statements = _statements(_reporter(), "PCCM_Calculate")
+    announces = [i for i, s in enumerate(statements) if "modAppState.Announce" in s]
+    exits = [i for i, s in enumerate(statements) if s == "Exit Sub"]
+    assert len(announces) == 3, (
+        f"expected one announcement per terminal path, found {len(announces)}"
+    )
+    # Each Exit Sub is immediately preceded by an announcement, and the last
+    # path falls out of the procedure straight after one.
+    for index in exits:
+        assert index - 1 in announces, "a path leaves the endpoint without announcing"
+    assert announces[-1] > exits[-1], "the final handler path announces nothing"
+
+
+def test_56_the_envelope_covers_every_fallible_invocation_step() -> None:
+    """BLOCKER 3. Containment starts before the first thing that can fail.
+
+    CaptureAppState, BeginOperation, the preparation, the snapshot and every
+    bookkeeping write can all raise. Whatever is left outside the envelope escapes
+    raw, past the restoration that the operation itself made necessary.
+    """
+    module = _reporter()
+    statements = _statements(module, "PCCM_Calculate")
+    # Declarations cannot fail. The first statement that can is the envelope.
+    executable = [
+        s for s in statements
+        if not re.match(r"^(Public |Private )?(Sub|Function)\b", s)
+        and not re.match(r"^Dim\b", s)
+    ]
+    assert executable[0] == "On Error GoTo InvocationFailed", (
+        f"something fallible runs before the envelope is installed: {executable[0]!r}"
+    )
+    # Preparation and the snapshot sit in their own envelope inside the
+    # transaction, so a runtime fault there is FAILED and not a model refusal.
+    run = _statements(module, "RunCalculation")
+    armed = run.index("On Error GoTo PreWriteFailed")
+    prepare = next(i for i, s in enumerate(run) if "PrepareCurrentCalculation" in s)
+    snapshot = next(i for i, s in enumerate(run) if "CaptureSnapshot" in s)
+    assert armed < prepare < snapshot, "preparation or the snapshot runs uncovered"
+    # And the two outcomes are told apart AT THE POINT THEY DIVERGE. The
+    # controlled refusal is reached from the "not prepared" branch; the handler
+    # for an unexpected fault in the very same region must NOT reach it, or a
+    # runtime fault would be reported to the user as a model problem they do not
+    # have.
+    body = _body(module, "RunCalculation")
+    happy, _, handlers = body.partition("PreWriteFailed:")
+    prewrite, _, transaction = handlers.partition("TransactionFailed:")
+    assert "RecordRefusal" in happy, "the controlled refusal is not on the normal path"
+    assert "If Not prepared Then" in happy, "the refusal is not conditioned on preparation"
+    assert "RecordFailureWithoutRollback" in prewrite, (
+        "an unexpected pre-write fault is not recorded as FAILED"
+    )
+    assert "RecordRefusal" not in prewrite, (
+        "a runtime fault is reported as a model refusal"
+    )
+    assert "RollbackAndRecord" not in prewrite, (
+        "nothing was mutated; a rollback here would restore over untouched state"
+    )
+    assert "RollbackAndRecord" in transaction and "RecordRefusal" not in transaction, (
+        "a fault after mutation must roll back and be FAILED, never REFUSED"
+    )
+    refusal = _body(module, "RecordRefusal")
+    assert "CALC_ATTEMPT_REFUSED" in refusal and "CALC_ATTEMPT_FAILED" not in refusal
+    prewrite = _body(module, "RecordFailureWithoutRollback")
+    assert "CALC_ATTEMPT_FAILED" in prewrite and "CALC_ATTEMPT_REFUSED" not in prewrite
+    assert "RestoreSnapshot" not in prewrite, (
+        "nothing analytical was mutated; there is nothing to roll back"
+    )
+
+
+def test_57_cleanup_is_attempted_once_and_only_when_state_was_captured() -> None:
+    """BLOCKER 3. FinishOperation runs exactly once per invocation.
+
+    Twice would restore a state that had already been restored. Never, on the
+    failure path, would leave EnableEvents, Calculation mode and ScreenUpdating
+    dirty. And attempting it when CaptureAppState itself failed would restore a
+    snapshot that was never taken.
+    """
+    module = _reporter()
+    body = _body(module, "PCCM_Calculate")
+    statements = _statements(module, "PCCM_Calculate")
+    finishes = [i for i, s in enumerate(statements) if "FinishOperation" in s]
+    assert len(finishes) == 2, (
+        "expected one cleanup on the normal path and one on the failure path"
+    )
+    normal, recovery = finishes
+    # The normal path clears the flag, so the handler cannot repeat the cleanup.
+    assert statements[normal + 1] == "stateCaptured = False", (
+        "the normal cleanup does not clear the flag and could be run twice"
+    )
+    # The recovery path is guarded by the flag and by its own envelope.
+    guard = statements.index("If stateCaptured Then")
+    assert guard < recovery, "the recovery cleanup is not guarded by the flag"
+    assert "On Error GoTo CleanupFailed" in statements[:guard], (
+        "the recovery cleanup can raise out of the handler"
+    )
+    # The original diagnosis survives a cleanup that fails while handling it.
+    tail = body.split("CleanupFailed:", 1)[1]
+    assert "failure" in tail, "the original failure is replaced by the cleanup failure"
+
+
+def test_58_a_post_commit_cleanup_problem_is_an_invocation_failure() -> None:
+    """BLOCKER 4. C17 = SUCCESS is committed workbook truth.
+
+    A cleanup problem afterwards is an application/invocation failure. Reporting
+    the ATTEMPT as FAILED would contradict the workbook, which still says SUCCESS
+    and correctly so.
+    """
+    module = _reporter()
+    cleanup = _body(module, "CleanupOutcome")
+    assert "ByVal committed As Boolean" in cleanup, (
+        "the cleanup outcome cannot tell a committed run from an uncommitted one"
+    )
+    branch = cleanup[cleanup.index("If committed Then"):]
+    branch = branch[:branch.index("Exit Function")]
+    assert "modAppState.Failed" in branch, "the cleanup problem is swallowed"
+    # It says so, in the text the user and the harness both see.
+    raw = _body_raw(module, "CleanupOutcome")
+    raw_branch = raw[raw.index("If committed Then"):]
+    assert "COMMITTED" in raw_branch, (
+        "the message must state that the calculation committed"
+    )
+    # The endpoint routes through it rather than rewriting the result inline.
+    endpoint = _statements(module, "PCCM_Calculate")
+    route = next(i for i, s in enumerate(endpoint) if "CleanupOutcome" in s)
+    finish = next(i for i, s in enumerate(endpoint) if "FinishOperation" in s)
+    assert finish < route, "the cleanup outcome is decided before cleanup runs"
+    assert "If Len(cleanup) > 0 Then" in endpoint[route], (
+        "a successful cleanup must leave the result alone"
+    )
+
+
+def test_59_the_commit_is_verified_cell_by_cell_against_the_block_written() -> None:
+    """BLOCKER 5. All eight cells, including C20, against THAT block.
+
+    A verifier that regenerated Now would compare against a value the commit never
+    contained. One that checked the stamp for being merely non-blank would pass
+    over a stamp written into the wrong cell. And C20 was not checked at all.
+    """
+    module = _reporter()
+    verify = _body(module, "VerifySuccessCommit")
+    assert "ByRef block As Variant" in verify, (
+        "the verifier must be handed the block that was written"
+    )
+    assert "VerifyRange(CALC_STATE_VALUE_RANGE, block, 8)" in verify, (
+        "the verification must cover all eight cells of the committed range"
+    )
+    assert "Now" not in verify, "the verifier regenerates the clock"
+    assert "Len(" not in verify, "a non-blank check is not a verification"
+    for selective in ("CALC_STATE_ROW_LAST_SUCCESSFUL_FINGERPRINT",
+                      "CALC_STATE_ROW_LAST_ATTEMPT_RESULT",
+                      "CALC_STATE_ROW_CALCULATION_STATUS", "StoredText"):
+        assert selective not in verify, (
+            f"a selected-field check ({selective}) cannot stand for the exact comparison"
+        )
+    # The same block, all the way through: built, written, verified.
+    statements = _statements(module, "RunCalculation")
+    build = next(i for i, s in enumerate(statements) if "BuildSuccessBlock" in s)
+    write = next(i for i, s in enumerate(statements) if "WriteSuccessCommit" in s)
+    check = next(i for i, s in enumerate(statements) if "VerifySuccessCommit" in s)
+    committed = statements.index("committed = True")
+    assert build < write < check < committed, (
+        "the commit is marked before it is proven, or built after it is written"
+    )
+    for index in (write, check):
+        assert "successBlock" in statements[index], (
+            "a different block reaches the write or the verification"
+        )
+    assert "Err.Raise" in statements[check + 1], (
+        "an unverified commit continues to success"
+    )
 
 
 # ===========================================================================
@@ -832,13 +1223,16 @@ def test_nc_05_an_omitted_scalar_block_in_rollback_is_caught() -> None:
 def test_nc_06_failed_metadata_before_rollback_is_caught() -> None:
     planted = _synthetic(
         "modProbe",
-        _STUB + "Private Function RunCalculation() As OperationResult\n"
-        "TransactionFailed:\n    RecordFailure detail\n    RestoreSnapshot snapshot\n"
-        "End Function\n",
+        _STUB + "Private Function RollbackAndRecord() As OperationResult\n"
+        "    WriteAttemptBlock CALC_ATTEMPT_FAILED, detail, CurrentStatus()\n"
+        "    On Error GoTo RollbackFailed\n"
+        "    RestoreSnapshot snapshot\n"
+        "RollbackFailed:\nEnd Function\n",
     )
-    statements = _statements(planted, "RunCalculation")
-    assert first_index(statements, r"RecordFailure") < \
-        first_index(statements, r"RestoreSnapshot")
+    statements = _statements(planted, "RollbackAndRecord")
+    record = next(i for i, s in enumerate(statements) if "WriteAttemptBlock" in s)
+    restore = next(i for i, s in enumerate(statements) if "RestoreSnapshot" in s)
+    assert record < restore, "metadata written before the rollback must be visible"
 
 
 def test_nc_07_a_refusal_touching_the_success_block_is_caught() -> None:
@@ -1001,6 +1395,312 @@ def test_nc_20_removed_verification_is_caught() -> None:
     statements = _statements(planted, "RunCalculation")
     assert first_index(statements, r"VerifyAnalytical") == len(statements)
     assert first_index(statements, r"VerifySuccessCommit") == len(statements)
+
+
+# --- the correction-round controls -----------------------------------------
+#
+# Each plants the DEFECT independent review found, or a near neighbour of it, and
+# asserts the detector above sees it. A detector nobody has watched fail is a
+# detector nobody has tested.
+def test_nc_21_a_header_number_framed_as_text_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function BuildFingerprint() As Boolean\n"
+        "    If Not modCalcFingerprint.CalcFpCanonicalNumber(t.BaseYear, sep, text) "
+        "Then Exit Function\n"
+        "    header(0) = modCalcFingerprint.CalcFpCanonicalText(text)\n"
+        "End Function\n",
+    )
+    code = planted.code
+    calls = sorted(set(re.findall(r"modCalc(?:Factors|Analytical|Fingerprint)\.(\w+)", code)))
+    assert "CalcFpCanonicalText" in calls and "CalcFpNumberField" not in calls, (
+        "the text framing of a number must be visible to the surface sweep"
+    )
+    body = _body(planted, "BuildFingerprint")
+    framed = re.findall(
+        r"modCalcFingerprint\.CalcFpNumberField\(\s*package\.Model\.Timeline\.(\w+)", body
+    )
+    assert framed == [], "the header framer check must find no N field here"
+
+
+def test_nc_22_a_hand_assembled_number_field_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function BuildFingerprint() As Boolean\n"
+        "    header(0) = FP_TAG_NUMBER & CStr(Len(text)) & FP_FIELD_SEPARATOR & text\n"
+        "End Function\n",
+    )
+    code = planted.code
+    assert "FP_TAG_NUMBER" in code and "FP_FIELD_SEPARATOR" in code, (
+        "reinvented framing must be visible outside the framing authority"
+    )
+
+
+def test_nc_23_publishing_through_the_modal_reporter_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Sub PCCM_Calculate()\n"
+        "    modAppState.ReportResult result\n"
+        "End Sub\n",
+    )
+    code = planted.code
+    assert "ReportResult" in code, "the modal reporter must be visible"
+    assert "modAppState.Announce" not in code, (
+        "the automation-aware surface must be visibly absent"
+    )
+
+
+def test_nc_24_a_second_automation_reporter_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private gAutomationResult As String\n"
+        "Public Sub PCCM_Calculate()\n"
+        "    gAutomationResult = result.Detail\n"
+        "End Sub\n",
+    )
+    assert "gAutomationResult" in planted.code, (
+        "a privately invented automation channel must be visible"
+    )
+
+
+def test_nc_25_a_fallible_step_outside_the_envelope_is_caught() -> None:
+    """Exactly the submitted shape: capture and begin ran before containment."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Sub PCCM_Calculate()\n"
+        "    Dim state As AppStateSnapshot\n"
+        "    state = modAppState.CaptureAppState()\n"
+        "    modAppState.BeginOperation\n"
+        "    On Error GoTo InvocationFailed\n"
+        "    result = RunCalculation(committed)\n"
+        "InvocationFailed:\nEnd Sub\n",
+    )
+    statements = _statements(planted, "PCCM_Calculate")
+    executable = [
+        s for s in statements
+        if not re.match(r"^(Public |Private )?(Sub|Function)\b", s)
+        and not re.match(r"^Dim\b", s)
+    ]
+    assert executable[0] != "On Error GoTo InvocationFailed", (
+        "the uncovered capture and begin must be visible"
+    )
+
+
+def test_nc_26_cleanup_skipped_after_an_early_failure_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Sub PCCM_Calculate()\n"
+        "    On Error GoTo InvocationFailed\n"
+        "    state = modAppState.CaptureAppState()\n"
+        "    result = RunCalculation(committed)\n"
+        "    cleanup = modAppState.FinishOperation(state)\n"
+        "    modAppState.Announce result\n"
+        "    Exit Sub\n"
+        "InvocationFailed:\n"
+        "    modAppState.Announce modAppState.Failed(\"Calculate\", Err.Description)\n"
+        "End Sub\n",
+    )
+    statements = _statements(planted, "PCCM_Calculate")
+    finishes = [i for i, s in enumerate(statements) if "FinishOperation" in s]
+    assert len(finishes) == 1, "the missing recovery cleanup must be visible"
+    assert "stateCaptured" not in planted.code, "the missing flag must be visible"
+
+
+def test_nc_27_cleanup_run_twice_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Sub PCCM_Calculate()\n"
+        "    On Error GoTo InvocationFailed\n"
+        "    stateCaptured = True\n"
+        "    cleanup = modAppState.FinishOperation(state)\n"
+        "    modAppState.Announce result\n"
+        "    Exit Sub\n"
+        "InvocationFailed:\n"
+        "    If stateCaptured Then cleanup = modAppState.FinishOperation(state)\n"
+        "End Sub\n",
+    )
+    statements = _statements(planted, "PCCM_Calculate")
+    finishes = [i for i, s in enumerate(statements) if "FinishOperation" in s]
+    assert len(finishes) == 2
+    assert statements[finishes[0] + 1] != "stateCaptured = False", (
+        "the uncleared flag that permits a second cleanup must be visible"
+    )
+
+
+def test_nc_27b_a_runtime_fault_recorded_as_a_refusal_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function RunCalculation() As OperationResult\n"
+        "    On Error GoTo PreWriteFailed\n"
+        "    prepared = PrepareCurrentCalculation(package, detail)\n"
+        "    If Not prepared Then\n"
+        "        RunCalculation = RecordRefusal(detail)\n"
+        "        Exit Function\n"
+        "    End If\n"
+        "PreWriteFailed:\n"
+        "    RunCalculation = RecordRefusal(detail)\n"
+        "TransactionFailed:\nEnd Function\n",
+    )
+    body = _body(planted, "RunCalculation")
+    prewrite = body.partition("PreWriteFailed:")[2].partition("TransactionFailed:")[0]
+    assert "RecordRefusal" in prewrite, (
+        "a runtime fault dressed as a model refusal must be visible"
+    )
+    assert "RecordFailureWithoutRollback" not in prewrite
+
+
+def test_nc_28_failed_metadata_written_after_a_failed_rollback_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function RollbackAndRecord() As OperationResult\n"
+        "    On Error GoTo RollbackFailed\n"
+        "    RestoreSnapshot snapshot\n"
+        "    WriteAttemptBlock CALC_ATTEMPT_FAILED, detail, CurrentStatus()\n"
+        "    Exit Function\n"
+        "RollbackFailed:\n"
+        "    WriteAttemptBlock CALC_ATTEMPT_FAILED, detail, CurrentStatus()\n"
+        "End Function\n",
+    )
+    body = _body(planted, "RollbackAndRecord")
+    failed = body.split("RollbackFailed:", 1)[1]
+    assert "WriteAttemptBlock" in failed, (
+        "metadata written under a false premise of restoration must be visible"
+    )
+
+
+def test_nc_29_a_failed_record_undoing_the_rollback_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function RollbackAndRecord() As OperationResult\n"
+        "    On Error GoTo BookkeepingFailed\n"
+        "    WriteAttemptBlock CALC_ATTEMPT_FAILED, detail, CurrentStatus()\n"
+        "    Exit Function\n"
+        "BookkeepingFailed:\n"
+        "    RestoreSnapshot snapshot\n"
+        "End Function\n",
+    )
+    body = _body(planted, "RollbackAndRecord")
+    book = body.split("BookkeepingFailed:", 1)[1]
+    assert "RestoreSnapshot" in book, (
+        "a record failure re-running the rollback must be visible"
+    )
+
+
+def test_nc_30_a_committed_run_rewritten_to_failed_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CleanupOutcome() As OperationResult\n"
+        "    If committed Then\n"
+        "        WriteAttemptBlock CALC_ATTEMPT_FAILED, cleanup, CurrentStatus()\n"
+        "    End If\n"
+        "End Function\n",
+    )
+    cleanup = _body(planted, "CleanupOutcome")
+    assert "WriteAttemptBlock" in cleanup and "CALC_ATTEMPT_FAILED" in cleanup, (
+        "a post-commit rewrite of C17 must be visible"
+    )
+
+
+def test_nc_31_a_commit_verified_on_seven_cells_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function VerifySuccessCommit(ByRef block As Variant) As Boolean\n"
+        "    VerifySuccessCommit = VerifyRange(CALC_STATE_VALUE_RANGE, block, 7)\n"
+        "End Function\n",
+    )
+    verify = _body(planted, "VerifySuccessCommit")
+    assert "VerifyRange(CALC_STATE_VALUE_RANGE, block, 8)" not in verify, (
+        "a verification that stops before C20 must be visible"
+    )
+
+
+def test_nc_32_a_stamp_checked_only_for_being_non_blank_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function VerifySuccessCommit() As Boolean\n"
+        "    If Len(StoredText(CALC_STATE_ROW_LAST_SUCCESSFUL_STAMP)) = 0 Then Exit Function\n"
+        "    VerifySuccessCommit = True\n"
+        "End Function\n",
+    )
+    verify = _body(planted, "VerifySuccessCommit")
+    assert "Len(" in verify and "StoredText" in verify, (
+        "a non-blank stand-in for a value comparison must be visible"
+    )
+    assert "ByRef block As Variant" not in verify
+
+
+def test_nc_33_a_verifier_that_regenerates_the_clock_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function VerifySuccessCommit(ByRef block As Variant) As Boolean\n"
+        "    block(1, 1) = Now\n"
+        "    VerifySuccessCommit = VerifyRange(CALC_STATE_VALUE_RANGE, block, 8)\n"
+        "End Function\n",
+    )
+    assert "Now" in _body(planted, "VerifySuccessCommit"), (
+        "a verifier comparing against a value the commit never held must be visible"
+    )
+
+
+def test_nc_34_two_captured_moments_in_one_commit_block_are_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Sub BuildSuccessBlock()\n"
+        "    Dim built(1 To 8, 1 To 1) As Variant\n"
+        "    built(1, 1) = Now\n"
+        "    built(8, 1) = Now\n"
+        "End Sub\n",
+    )
+    build = _body(planted, "BuildSuccessBlock")
+    assert build.count("Now") == 2, "the second clock read must be visible"
+
+
+def test_nc_35_marking_a_commit_before_verifying_it_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function RunCalculation() As OperationResult\n"
+        "    BuildSuccessBlock package, successBlock\n"
+        "    WriteSuccessCommit successBlock\n"
+        "    committed = True\n"
+        "    If Not VerifySuccessCommit(successBlock) Then Err.Raise 5\n"
+        "End Function\n",
+    )
+    statements = _statements(planted, "RunCalculation")
+    check = next(i for i, s in enumerate(statements) if "VerifySuccessCommit" in s)
+    committed = statements.index("committed = True")
+    assert committed < check, "the premature commit flag must be visible"
+
+
+def test_nc_36_a_handler_whose_label_is_missing_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function RunCalculation() As OperationResult\n"
+        "    On Error GoTo TransactionFailed\n"
+        "    WriteAnalytical package\n"
+        "End Function\n",
+    )
+    body = _body(planted, "RunCalculation")
+    targets = {h for h in re.findall(r"On Error GoTo (\w+)", body) if h != "0"}
+    assert targets == {"TransactionFailed"}
+    assert not re.search(r"^TransactionFailed:$", body, re.M), (
+        "the missing handler label must be visible"
+    )
+
+
+def test_nc_37_a_silent_path_out_of_the_endpoint_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Sub PCCM_Calculate()\n"
+        "    On Error GoTo InvocationFailed\n"
+        "    result = RunCalculation(committed)\n"
+        "    modAppState.Announce result\n"
+        "    Exit Sub\n"
+        "InvocationFailed:\n"
+        "End Sub\n",
+    )
+    statements = _statements(planted, "PCCM_Calculate")
+    announces = [i for i, s in enumerate(statements) if "modAppState.Announce" in s]
+    assert len(announces) == 1, "the unannounced handler path must be visible"
 
 
 # ===========================================================================

@@ -141,13 +141,19 @@ Public Function CalcFpCanonicalNumber(ByVal value As Double, ByVal decimalSepara
     CalcFpCanonicalNumber = True
 End Function
 
-Private Function CalcFpNumberField(ByVal value As Double, ByVal decimalSeparator As String, _
-                                  ByRef result As String) As Boolean
+Public Function CalcFpNumberField(ByVal value As Double, ByVal decimalSeparator As String, _
+                                 ByRef result As String) As Boolean
     ' The N field around a canonical number. Separate from CalcFpCanonicalNumber
     ' because the numeric encoding is the only one that can fail, and Gate B
     ' compares the canonical TEXT of the ten locked numeric vectors rather than
-    ' their framed fields. Private: no caller outside this module frames a
-    ' number field of its own.
+    ' their framed fields.
+    '
+    ' PUBLIC since Step 7. The orchestration layer frames the four header
+    ' scalars - Base Year, Start Year, Duration and Discount Rate - and they are
+    ' NUMBER fields. It must reach the accepted framing authority rather than
+    ' assemble an N field of its own, and it must not reach CalcFpCanonicalText,
+    ' which would tag a number as text and change what the digest covers. The
+    ' body below is unchanged.
     Dim text As String
     If Not CalcFpCanonicalNumber(value, decimalSeparator, text) Then Exit Function
     result = CalcFpField(FP_TAG_NUMBER, text)

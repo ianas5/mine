@@ -91,19 +91,79 @@ End Type
 ' THE SIX PHASE-5 ENDPOINTS
 ' ==========================================================================
 Public Sub PCCM_Calculate()
-    ' The only endpoint that writes. Application state is captured and restored
-    ' through the accepted Phase-4 discipline, whatever the outcome.
+    ' THE WHOLE INVOCATION IS INSIDE AN ENVELOPE, installed before the first
+    ' fallible operation. Application state is captured, changed, and must be
+    ' restored however this returns - a VBA error that bypassed the normal path
+    ' would leave EnableEvents, Calculation mode and ScreenUpdating dirty, which
+    ' is the one outcome worse than a failed calculation.
+    '
+    ' The result is published through Announce, NOT ReportResult: Announce
+    ' records the outcome for automation and shows a dialog only when automation
+    ' is inactive. Gate B drives this endpoint through that mechanism, and a
+    ' direct dialog would block it.
     Dim state As AppStateSnapshot, result As OperationResult
-    Dim cleanup As String
+    Dim stateCaptured As Boolean, committed As Boolean
+    Dim cleanup As String, failure As String
+
+    On Error GoTo InvocationFailed
     state = modAppState.CaptureAppState()
+    stateCaptured = True
     modAppState.BeginOperation
-    result = RunCalculation()
+    result = RunCalculation(committed)
+    On Error GoTo 0
+
     cleanup = modAppState.FinishOperation(state)
-    If Len(cleanup) > 0 Then
-        result = modAppState.Failed("Calculate", cleanup)
+    stateCaptured = False
+    If Len(cleanup) > 0 Then result = CleanupOutcome(result, committed, cleanup)
+    modAppState.Announce result
+    Exit Sub
+
+InvocationFailed:
+    failure = Err.Description
+    On Error GoTo CleanupFailed
+    If stateCaptured Then
+        cleanup = modAppState.FinishOperation(state)
+        If Len(cleanup) > 0 Then failure = failure & vbCrLf & cleanup
     End If
-    modAppState.ReportResult result
+    On Error GoTo 0
+    modAppState.Announce modAppState.Failed("Calculate", failure)
+    Exit Sub
+
+CleanupFailed:
+    ' The cleanup attempt itself raised. Nothing further can be restored here,
+    ' and the original failure must still reach the caller rather than being
+    ' replaced by the failure of the attempt to recover from it.
+    On Error GoTo 0
+    modAppState.Announce modAppState.Failed("Calculate", failure & vbCrLf & _
+        "Application state could not be restored after the failure.")
 End Sub
+
+Private Function CleanupOutcome(ByRef result As OperationResult, ByVal committed As Boolean, _
+                                ByVal cleanup As String) As OperationResult
+    ' A CLEANUP PROBLEM AFTER THE COMMIT IS AN INVOCATION FAILURE, NOT A FAILED
+    ' CALCULATION.
+    '
+    ' Once the transaction commits, C17 says SUCCESS and that is committed
+    ' workbook truth. Re-reading the attempt as FAILED while the workbook still
+    ' says SUCCESS would publish two contradictory answers, so nothing here
+    ' rewrites calc_state, rolls anything back or touches an analytical block.
+    ' The cleanup problem is surfaced on the invocation axis instead, where it
+    ' belongs, and the message says plainly that the calculation committed.
+    If committed Then
+        CleanupOutcome = modAppState.Failed("Calculate", _
+            "The calculation COMMITTED successfully and the calculation state " & _
+            "records it. Application state could not be fully restored " & _
+            "afterwards:" & vbCrLf & cleanup)
+        Exit Function
+    End If
+    ' Before the commit there is no committed truth to contradict, so the two
+    ' diagnostics are simply combined.
+    If result.Ok Then
+        CleanupOutcome = modAppState.Failed("Calculate", cleanup)
+    Else
+        CleanupOutcome = modAppState.Failed("Calculate", result.Detail & vbCrLf & cleanup)
+    End If
+End Function
 
 Public Function PCCM_CalculationStatus() As String
     ' Re-evaluates the status and writes ONLY C19:C20. It touches no analytical
@@ -145,20 +205,25 @@ End Function
 ' ==========================================================================
 ' The transaction
 ' ==========================================================================
-Private Function RunCalculation() As OperationResult
+Private Function RunCalculation(ByRef committed As Boolean) As OperationResult
     Dim package As CalculationPackage, snapshot As CalculationSnapshot
-    Dim detail As String, committed As Boolean
+    Dim successBlock As Variant
+    Dim detail As String, prepared As Boolean
 
-    ' EVERYTHING IN MEMORY FIRST. A refusal here has touched no analytical
-    ' block, so the previous successful snapshot stands untouched and only the
-    ' attempt/status metadata moves.
-    If Not PrepareCurrentCalculation(package, detail) Then
-        RecordRefusal detail
-        RunCalculation = modAppState.Failed("Calculate", detail)
+    ' PREPARATION AND SNAPSHOT SIT IN THEIR OWN ENVELOPE. A CONTROLLED refusal
+    ' from the accepted machinery is REFUSED; an unexpected runtime error in the
+    ' same region is FAILED. Downgrading a runtime fault to a refusal to keep
+    ' going would report a model problem the user does not have.
+    On Error GoTo PreWriteFailed
+    prepared = PrepareCurrentCalculation(package, detail)
+    If prepared Then CaptureSnapshot snapshot
+    On Error GoTo 0
+
+    If Not prepared Then
+        ' Nothing analytical has been touched, so nothing is rolled back.
+        RunCalculation = RecordRefusal(detail)
         Exit Function
     End If
-
-    CaptureSnapshot snapshot
 
     On Error GoTo TransactionFailed
     WriteAnalytical package
@@ -168,11 +233,12 @@ Private Function RunCalculation() As OperationResult
                   "the analytical snapshot did not verify against the prepared result"
     End If
     modAppState.FailPointCheck FAILPOINT_SUCCESS_COMMIT
-    ' THE COMMIT IS INSIDE THE TRANSACTION. The assignment can fail and its
-    ' verification can fail, so both sit inside the rollback envelope; SUCCESS
-    ' is published only once the analytical snapshot has been verified.
-    WriteSuccessCommit package
-    If Not VerifySuccessCommit(package) Then
+    ' BUILT ONCE, WRITTEN ONCE, VERIFIED AGAINST THE SAME BLOCK. Both timestamps
+    ' are captured into it here; verification never generates a second Now,
+    ' which would compare against a value the commit never contained.
+    BuildSuccessBlock package, successBlock
+    WriteSuccessCommit successBlock
+    If Not VerifySuccessCommit(successBlock) Then
         Err.Raise vbObjectError + 5102, "modCalcReport.RunCalculation", _
                   "the success commit did not verify"
     End If
@@ -181,20 +247,87 @@ Private Function RunCalculation() As OperationResult
     RunCalculation = modAppState.Succeeded("Calculation committed.")
     Exit Function
 
+PreWriteFailed:
+    ' An UNEXPECTED failure before any analytical mutation. FAILED, never
+    ' REFUSED - and no rollback, because nothing was written.
+    detail = Err.Description
+    On Error GoTo 0
+    RunCalculation = RecordFailureWithoutRollback(detail)
+    Exit Function
+
 TransactionFailed:
     detail = Err.Description
     On Error GoTo 0
-    If committed Then
-        ' Unreachable by construction, and stated anyway: once committed, no
-        ' later mutation may turn the calculation into a failure.
-        RunCalculation = modAppState.Succeeded("Calculation committed.")
-        Exit Function
-    End If
-    ' ROLLBACK FIRST, metadata second. The first observable moment after a
-    ' failure must be the previous successful snapshot, exactly.
+    RunCalculation = RollbackAndRecord(snapshot, detail)
+End Function
+
+Private Function RecordRefusal(ByVal detail As String) As OperationResult
+    ' A refusal touches C17:C20 and nothing else. C13:C16 - the last successful
+    ' record - and every analytical block stand exactly as they were.
+    Dim note As String
+    On Error GoTo BookkeepingFailed
+    WriteAttemptBlock CALC_ATTEMPT_REFUSED, detail, CALC_STATUS_INVALID
+    On Error GoTo 0
+    RecordRefusal = modAppState.Failed("Calculate", detail)
+    Exit Function
+BookkeepingFailed:
+    note = Err.Description
+    On Error GoTo 0
+    RecordRefusal = modAppState.Failed("Calculate", detail & vbCrLf & _
+        "The refusal could not be recorded in the calculation state: " & note)
+End Function
+
+Private Function RecordFailureWithoutRollback(ByVal detail As String) As OperationResult
+    ' No analytical state was mutated, so there is nothing to restore - but the
+    ' attempt is still FAILED and is still recorded if the workbook permits it.
+    Dim note As String
+    On Error GoTo BookkeepingFailed
+    WriteAttemptBlock CALC_ATTEMPT_FAILED, detail, CurrentStatus()
+    On Error GoTo 0
+    RecordFailureWithoutRollback = modAppState.Failed("Calculate", detail)
+    Exit Function
+BookkeepingFailed:
+    note = Err.Description
+    On Error GoTo 0
+    RecordFailureWithoutRollback = modAppState.Failed("Calculate", detail & vbCrLf & _
+        "The failed attempt could not be recorded in the calculation state: " & note)
+End Function
+
+Private Function RollbackAndRecord(ByRef snapshot As CalculationSnapshot, _
+                                   ByVal detail As String) As OperationResult
+    ' ROLLBACK FIRST, metadata second, and the metadata is written ONLY because
+    ' the rollback succeeded.
+    Dim note As String
+    On Error GoTo RollbackFailed
     RestoreSnapshot snapshot
-    RecordFailure detail
-    RunCalculation = modAppState.Failed("Calculate", detail)
+    On Error GoTo 0
+
+    On Error GoTo BookkeepingFailed
+    WriteAttemptBlock CALC_ATTEMPT_FAILED, detail, CurrentStatus()
+    On Error GoTo 0
+    RollbackAndRecord = modAppState.Failed("Calculate", detail)
+    Exit Function
+
+RollbackFailed:
+    ' The restoration itself failed. NO failed-attempt metadata is written: that
+    ' record asserts "the previous snapshot stands", and asserting it here would
+    ' be a claim nobody has established. Both diagnostics are preserved.
+    note = Err.Description
+    On Error GoTo 0
+    RollbackAndRecord = modAppState.Failed("Calculate", _
+        "The calculation failed AND the previous snapshot could not be fully " & _
+        "restored." & vbCrLf & "Original failure: " & detail & vbCrLf & _
+        "Restore failure: " & note)
+    Exit Function
+
+BookkeepingFailed:
+    ' The rollback succeeded and is NOT undone. Only its record failed, and the
+    ' previous successful snapshot remains authoritative.
+    note = Err.Description
+    On Error GoTo 0
+    RollbackAndRecord = modAppState.Failed("Calculate", detail & vbCrLf & _
+        "The previous successful snapshot was restored, but the failed attempt " & _
+        "could not be recorded: " & note)
 End Function
 
 ' ==========================================================================
@@ -386,11 +519,19 @@ Private Function BuildFingerprint(ByRef package As CalculationPackage, _
     Dim riskIds() As String, riskRecords() As String, riskCount As Long
     Dim index As Long, record As String
 
+    ' THE FOUR HEADER SCALARS ARE NUMBER FIELDS. They go through the accepted
+    ' N-field encoder, not through the text one: tagging a number as text would
+    ' change what the digest covers, and the framing authority is
+    ' modCalcFingerprint's in either case.
     separator = HostDecimalSeparator()
-    If Not NumberField(package.Model.Timeline.BaseYear, separator, header(0), detail) Then Exit Function
-    If Not NumberField(package.Model.Timeline.StartYear, separator, header(1), detail) Then Exit Function
-    If Not NumberField(package.Model.Timeline.Duration, separator, header(2), detail) Then Exit Function
-    If Not NumberField(package.Model.Timeline.DiscountRate, separator, header(3), detail) Then Exit Function
+    If Not modCalcFingerprint.CalcFpNumberField(package.Model.Timeline.BaseYear, _
+            separator, header(0)) Then GoTo HeaderFailed
+    If Not modCalcFingerprint.CalcFpNumberField(package.Model.Timeline.StartYear, _
+            separator, header(1)) Then GoTo HeaderFailed
+    If Not modCalcFingerprint.CalcFpNumberField(package.Model.Timeline.Duration, _
+            separator, header(2)) Then GoTo HeaderFailed
+    If Not modCalcFingerprint.CalcFpNumberField(package.Model.Timeline.DiscountRate, _
+            separator, header(3)) Then GoTo HeaderFailed
 
     ReDim costIds(0 To 0): ReDim costRecords(0 To 0)
     ReDim riskIds(0 To 0): ReDim riskRecords(0 To 0)
@@ -420,6 +561,9 @@ Private Function BuildFingerprint(ByRef package As CalculationPackage, _
         Exit Function
     End If
     BuildFingerprint = True
+    Exit Function
+HeaderFailed:
+    detail = "a header value could not be canonically encoded"
 End Function
 
 Private Function DriverRecord(ByRef package As CalculationPackage, ByVal index As Long, _
@@ -534,33 +678,38 @@ Private Sub ResizeBody(ByVal target As ListObject, ByVal rows As Long)
     Loop
 End Sub
 
-Private Sub WriteSuccessCommit(ByRef package As CalculationPackage)
-    ' ONE 8x1 assignment. Not four writes that could half-succeed and leave a
+Private Sub BuildSuccessBlock(ByRef package As CalculationPackage, ByRef block As Variant)
+    ' ONE 8x1 block, built once. Both timestamps are the SAME captured moment:
+    ' the commit and the status evaluation it publishes happen together, and
+    ' capturing them here is what lets verification compare against the exact
+    ' values that were written.
+    Dim built(1 To 8, 1 To 1) As Variant
+    Dim stamp As Date
+    stamp = Now
+    built(1, 1) = stamp
+    built(2, 1) = package.Fingerprint
+    built(3, 1) = FP_VERSION
+    built(4, 1) = AppliedTimelineText(package)
+    built(5, 1) = CALC_ATTEMPT_SUCCESS
+    built(6, 1) = vbNullString
+    built(7, 1) = CALC_STATUS_CURRENT
+    built(8, 1) = stamp
+    block = built
+End Sub
+
+Private Sub WriteSuccessCommit(ByRef block As Variant)
+    ' ONE assignment. Not four writes that could half-succeed and leave a
     ' fingerprint with no stamp, or a stamp with no version.
-    Dim block(1 To 8, 1 To 1) As Variant
-    block(1, 1) = Now
-    block(2, 1) = package.Fingerprint
-    block(3, 1) = FP_VERSION
-    block(4, 1) = AppliedTimelineText(package)
-    block(5, 1) = CALC_ATTEMPT_SUCCESS
-    block(6, 1) = vbNullString
-    block(7, 1) = CALC_STATUS_CURRENT
-    block(8, 1) = Now
     CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block
 End Sub
 
-Private Sub RecordRefusal(ByVal detail As String)
-    ' A refusal touches C17:C20 and nothing else. C13:C16 - the last successful
-    ' record - and every analytical block stand exactly as they were.
-    WriteAttemptBlock CALC_ATTEMPT_REFUSED, detail, CALC_STATUS_INVALID
-End Sub
-
-Private Sub RecordFailure(ByVal detail As String)
-    ' Only ever called AFTER a successful rollback. The status is derived afresh
-    ' against the RESTORED snapshot: FAILED is an attempt result and never a
-    ' status.
-    WriteAttemptBlock CALC_ATTEMPT_FAILED, detail, CurrentStatus()
-End Sub
+Private Function VerifySuccessCommit(ByRef block As Variant) As Boolean
+    ' ALL EIGHT CELLS, against the SAME block that was written - including C20,
+    ' and including both timestamps as the values the commit actually carried.
+    ' A verifier that regenerated Now, or that checked a stamp only for being
+    ' non-blank, would be proving something other than "this commit landed".
+    VerifySuccessCommit = VerifyRange(CALC_STATE_VALUE_RANGE, block, 8)
+End Function
 
 Private Sub WriteAttemptBlock(ByVal result As String, ByVal detail As String, _
                               ByVal status As String)
@@ -621,21 +770,6 @@ Private Function VerifyRange(ByVal address As String, ByRef block As Variant, _
                         block(index, 1)) Then Exit Function
     Next index
     VerifyRange = True
-End Function
-
-Private Function VerifySuccessCommit(ByRef package As CalculationPackage) As Boolean
-    ' The fingerprint, the version, the applied timeline, the attempt result and
-    ' the status are the parts that must be exactly what was intended. The two
-    ' timestamps are not compared against a recomputed Now.
-    If StoredText(CALC_STATE_ROW_LAST_SUCCESSFUL_FINGERPRINT) <> package.Fingerprint Then Exit Function
-    If StoredText(CALC_STATE_ROW_LAST_SUCCESSFUL_APPLIED_TIMELINE) <> _
-       AppliedTimelineText(package) Then Exit Function
-    If StoredText(CALC_STATE_ROW_LAST_ATTEMPT_RESULT) <> CALC_ATTEMPT_SUCCESS Then Exit Function
-    If Len(StoredText(CALC_STATE_ROW_LAST_ATTEMPT_DETAIL)) <> 0 Then Exit Function
-    If StoredText(CALC_STATE_ROW_CALCULATION_STATUS) <> CALC_STATUS_CURRENT Then Exit Function
-    If StoredValue(CALC_STATE_ROW_FINGERPRINT_VERSION) <> FP_VERSION Then Exit Function
-    If Len(StoredText(CALC_STATE_ROW_LAST_SUCCESSFUL_STAMP)) = 0 Then Exit Function
-    VerifySuccessCommit = True
 End Function
 
 Private Function SameCell(ByVal written As Variant, ByVal wanted As Variant) As Boolean
@@ -862,11 +996,6 @@ Private Function StoredText(ByVal row As Long) As String
     StoredText = modWorkbook.TextOf(StateCell(row))
 End Function
 
-Private Function StoredValue(ByVal row As Long) As Double
-    Dim value As Double
-    If modWorkbook.TryReadDouble(StateCell(row).Value, value) Then StoredValue = value
-End Function
-
 Private Function StateCell(ByVal row As Long) As Range
     Set StateCell = CalcSheet.Range(CALC_STATE_VALUE_COLUMN & CStr(row))
 End Function
@@ -925,16 +1054,6 @@ Private Function HostDecimalSeparator() As String
     ' told about cannot disagree with the one it will see. No Application
     ' setting is consulted, and no Excel object reaches modCalcFingerprint.
     HostDecimalSeparator = Mid$(Format$(0#, "0.0"), 2, 1)
-End Function
-
-Private Function NumberField(ByVal value As Double, ByVal separator As String, _
-                             ByRef field As String, ByRef detail As String) As Boolean
-    If Not modCalcFingerprint.CalcFpCanonicalNumber(value, separator, field) Then
-        detail = "a header value could not be canonically encoded"
-        Exit Function
-    End If
-    field = modCalcFingerprint.CalcFpCanonicalText(field)
-    NumberField = True
 End Function
 
 Private Sub CountCurrencyReferences(ByRef package As CalculationPackage)

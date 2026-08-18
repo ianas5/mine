@@ -137,6 +137,13 @@ FINGERPRINT_PUBLIC = {
     "CalcFpCanonicalNumber", "CalcFpCanonicalInteger",
     "CalcFpReduceDouble", "CalcFpDigestStream", "CalcFpBuildCostRecord",
     "CalcFpBuildRiskRecord", "CalcFpBuildFingerprint",
+    # PUBLIC SINCE STEP 7, and the ONLY change made to this accepted module.
+    # modCalcReport frames the four header scalars - Base Year, Start Year,
+    # Duration and Discount Rate - and they are NUMBER fields. The orchestration
+    # layer must reach the accepted framing authority rather than assemble an N
+    # field of its own, so the framing authority stays here and becomes
+    # reachable. The body is unchanged; test_64j proves that.
+    "CalcFpNumberField",
 }
 
 # Public WITHOUT a current cross-module caller, each for a stated reason. Every
@@ -185,8 +192,35 @@ PHASE4_SHA256 = {
 # ===========================================================================
 # fixtures and sweeps
 # ===========================================================================
+# The Step-4 accepted EXECUTABLE text of modCalcFingerprint: comments and blank
+# lines removed, whitespace runs collapsed, and the ONE authorised Step-7
+# visibility keyword normalised back to Private. Step 7's correction round was
+# permitted to make CalcFpNumberField Public and nothing else, and this digest is
+# what "nothing else" is measured against.
+FINGERPRINT_STEP4_BODY_SHA256 = (
+    "f6e8313b2bb29deee488e7a11eca282b1b64dcb8b7226bbc771c6dcc01a0bbaa"
+)
+
+
 def _modules() -> dict[str, VbaModule]:
     return {m.name: m for m in load_modules([SRC_VBA])}
+
+
+def fingerprint_body_digest() -> str:
+    """modCalcFingerprint reduced to executable text, visibility normalised."""
+    import hashlib
+
+    kept: list[str] = []
+    for line in (SRC_VBA / "modCalcFingerprint.bas").read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("'"):
+            continue
+        stripped = re.sub(r"\s+", " ", stripped)
+        stripped = stripped.replace(
+            "Public Function CalcFpNumberField", "Private Function CalcFpNumberField"
+        )
+        kept.append(stripped)
+    return hashlib.sha256("\n".join(kept).encode()).hexdigest()
 
 
 def _kernel() -> dict[str, VbaModule]:
@@ -860,7 +894,7 @@ def test_44_the_required_minimum_surface_is_inside_the_whitelist() -> None:
     for name in ("CalcFpUtf16Length", "CalcFpNormaliseCodeUnit", "CalcFpCanonicalText",
                  "CalcFpCanonicalNumber", "CalcFpCanonicalInteger", "CalcFpReduceDouble",
                  "CalcFpDigestStream", "CalcFpBuildCostRecord", "CalcFpBuildRiskRecord",
-                 "CalcFpBuildFingerprint"):
+                 "CalcFpBuildFingerprint", "CalcFpNumberField"):
         assert name in FINGERPRINT_PUBLIC
 
 
@@ -1614,15 +1648,28 @@ def test_64h_every_public_helper_has_a_cross_module_caller_or_a_stated_reason() 
 
     A Public name with no caller outside its own module and no entry in the
     documented exception set is accidental API growth.
+
+    The caller corpus is EVERY hand-written module on disk, not just the kernel.
+    Scoping it to the kernel would have called a genuine consumer in the
+    orchestration layer "no caller", which is how a real cross-module need gets
+    mislabelled as accidental growth - and it would equally have let a kernel
+    name be justified by a caller that does not exist.
     """
     modules = _kernel()
+    corpus = _modules()
     unexplained: list[str] = []
     for name, module in modules.items():
-        others = "\n".join(other.code for label, other in modules.items() if label != name)
+        others = "\n".join(other.code for label, other in corpus.items() if label != name)
         for procedure in module.public_procedures:
             if procedure in PUBLIC_WITHOUT_CROSS_MODULE_CALLER:
                 continue
-            called = re.search(rf"(?<![\w.]){procedure}\s*\(", others)
+            # Bare, or qualified with the OWNING module. A qualification by any
+            # other name is a different procedure that happens to share a
+            # spelling, and must not count as this one's caller.
+            called = re.search(
+                rf"(?<![\w.]){procedure}\s*\(|(?<![\w.]){name}\.{procedure}\s*\(",
+                others,
+            )
             if not called:
                 unexplained.append(f"{name}.{procedure}")
     assert not unexplained, (
@@ -1631,15 +1678,59 @@ def test_64h_every_public_helper_has_a_cross_module_caller_or_a_stated_reason() 
     )
 
 
-def test_64i_the_three_reviewed_helpers_are_private() -> None:
-    """None had a cross-module caller, and none was part of the diagnostic surface."""
+def test_64i_the_reviewed_helpers_keep_their_reviewed_visibility() -> None:
+    """Two stay Private. The third was reopened ONCE, for a real caller.
+
+    DistributionMean and CanonicalOrder had no cross-module caller and were not
+    part of the Gate-B diagnostic surface, so they remain Private.
+
+    CalcFpNumberField is different: independent review found that the
+    orchestration layer had been framing the four header scalars as TEXT fields,
+    and the authorised repair was to make the accepted N-field framer reachable
+    rather than to reproduce N framing outside this module. It is Public because
+    modCalcReport calls it - which is asserted here rather than assumed, and NOT
+    by way of the documented no-caller exception set.
+    """
     analytical = _kernel()["modCalcAnalytical"]
     fingerprint = _kernel()["modCalcFingerprint"]
     for name in ("DistributionMean", "CanonicalOrder"):
         assert name in analytical.procedures, f"{name} must keep its semantics"
         assert name not in analytical.public_procedures, f"{name} must be Private"
-    assert "CalcFpNumberField" in fingerprint.procedures
-    assert "CalcFpNumberField" not in fingerprint.public_procedures
+    assert "CalcFpNumberField" in fingerprint.public_procedures, (
+        "the header scalars are N fields and the framing authority must be reachable"
+    )
+    assert "CalcFpNumberField" not in PUBLIC_WITHOUT_CROSS_MODULE_CALLER, (
+        "it has a real caller; it must not be excused as having none"
+    )
+    reporter = _modules()["modCalcReport"]
+    assert re.search(r"modCalcFingerprint\.CalcFpNumberField\s*\(", reporter.code), (
+        "modCalcReport must be the caller that justifies the reopening"
+    )
+
+
+def test_64j_only_the_visibility_of_calcfpnumberfield_changed() -> None:
+    """The authorisation was "visibility ONLY". This is what that means.
+
+    Comments and blank lines are removed, whitespace runs are collapsed, and the
+    one authorised keyword is normalised back to Private. What remains is the
+    module's executable text, and it must digest to exactly what Step 4 left.
+    A changed constant, a reordered field, a different reducer or an extra line
+    anywhere in modCalcFingerprint would move this digest.
+    """
+    assert fingerprint_body_digest() == FINGERPRINT_STEP4_BODY_SHA256
+
+
+def test_64k_the_reopened_framer_still_frames_a_number_field() -> None:
+    """Reachability is not licence to change what the field means.
+
+    The body must still canonicalise as a NUMBER and frame with the number tag.
+    Had it been rewritten to route through the text encoder, the digest over the
+    header would change while every visibility test still passed.
+    """
+    body = _procedure_body(_kernel()["modCalcFingerprint"], "CalcFpNumberField")
+    assert "CalcFpCanonicalNumber(" in body, "the numeric canonicaliser is the input"
+    assert "CalcFpField(FP_TAG_NUMBER," in body, "the field must carry the number tag"
+    assert "CalcFpCanonicalText" not in body, "a number must never be framed as text"
 
 
 # --- 13.6 conditioning underflow versus overflow ---------------------------

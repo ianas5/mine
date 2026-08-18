@@ -1,11 +1,17 @@
 # Phase 5 — Gate A — Step 7: transactional reporting and orchestration
 
-**Status: ready for independent review.**
+**Status: correction round 1 — ready for independent review.**
 
 Step 6 is accepted and closed at `12ade1d`. This step adds the final Phase-5
 production module — `modCalcReport` — with the transactional write-back, the
 `calc_state` maintenance and the six calculation endpoints, plus the static Linux
 suite that reads it and the narrow plumbing the endpoint declaration needs.
+
+The first submission (`a9de9b3`) was rejected with five blocking defects. They
+are recorded in full under **[Correction round 1](#correction-round-1)**, with
+the tests that would fail if any of them returned. The accepted Step-7
+architecture is otherwise unchanged, and one accepted module — `modCalcFingerprint`
+— was reopened for exactly one visibility change, under explicit authorisation.
 
 ---
 
@@ -42,9 +48,10 @@ three more names by which the work might have been split.
 
 | Module | Raw | Blank | Comment | Code | code < 900 | raw < 1200 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `modCalcReport` | 952 | 67 | 176 | 709 | yes | yes |
+| `modCalcReport` | 1071 | 76 | 213 | 782 | yes | yes |
 
-It fits, with 191 code lines of headroom. No extra module was needed.
+It fits, with 118 code lines of headroom. No extra module was needed, and none
+was added in the correction round.
 
 ---
 
@@ -167,14 +174,19 @@ Gate A cannot demonstrate the six rows, but it can show nothing forbids them:
 Asserted by statement index (`test_16`):
 
 ```
-CaptureSnapshot
+On Error GoTo PreWriteFailed
+    PrepareCurrentCalculation           pure; nothing analytical is touched
+    CaptureSnapshot
+On Error GoTo 0
+    If Not prepared Then RecordRefusal  REFUSED; no rollback, nothing mutated
 On Error GoTo TransactionFailed
     WriteAnalytical                     five tables + calc_totals
     FailPointCheck FAILPOINT_ANALYTICAL_WRITE
     VerifyAnalytical                    read back and compare
     FailPointCheck FAILPOINT_SUCCESS_COMMIT
-    WriteSuccessCommit                  ONE 8x1 assignment to C13:C20
-    VerifySuccessCommit
+    BuildSuccessBlock                   ONE 8x1 block, ONE captured moment
+    WriteSuccessCommit                  ONE assignment of THAT block to C13:C20
+    VerifySuccessCommit                 all eight cells against THAT block
     committed = True
 On Error GoTo 0
 ```
@@ -184,8 +196,16 @@ assignment can fail and so can its verification, so both sit inside the rollback
 boundary. Success is not published before the analytical snapshot verifies
 (`test_18`). A failed verification raises rather than continuing (`test_19`).
 
-There is no `On Error Resume Next`; `test_20` asserts `TransactionFailed` is the
-only handler in the module.
+Preparation and the snapshot sit in **their own** envelope. A *controlled*
+refusal from the accepted machinery is `REFUSED`; an *unexpected* runtime fault
+in the same region is `FAILED`, with no rollback because nothing was mutated
+(`test_56`). Downgrading a runtime fault to a refusal would report a model
+problem the user does not have.
+
+There is no `On Error Resume Next`. `test_20` asserts the handler set is exactly
+the six reviewed envelopes — `InvocationFailed`, `CleanupFailed`,
+`PreWriteFailed`, `TransactionFailed`, `RollbackFailed`, `BookkeepingFailed` —
+and that every armed label is defined in the procedure that arms it.
 
 ### Snapshot set
 
@@ -201,8 +221,9 @@ All five tables through `modWorkbook.RestoreTable`, plus both scalar blocks
 
 **Rollback happens first, metadata second** (`test_28`). The first observable
 moment after a failure is the previous successful snapshot, exactly. Only then
-does `RecordFailure` write one 4×1 block to C17:C20 with `FAILED`, the specific
-detail, a **freshly derived** status and a fresh timestamp.
+does `RollbackAndRecord` write one 4×1 block to C17:C20 with `FAILED`, the
+specific detail, a **freshly derived** status and a fresh timestamp
+(`test_34`).
 
 So the final observable state after a failure is:
 
@@ -213,11 +234,19 @@ So the final observable state after a failure is:
 The document does **not** claim final C13:C20 equals its previous value. Only
 C13:C16 does.
 
-If the failure-metadata assignment itself fails, the already-successful rollback
-is not undone; there is no recovery transaction around failure bookkeeping.
+**If the restore itself fails, no failed-attempt metadata is written at all.**
+That record asserts *"the previous snapshot stands"*, and writing it after a
+failed restore would assert something nobody established. Both diagnostics — the
+original failure and the restore failure — are carried to the caller instead
+(`test_28`).
 
-`test_29` asserts a committed operation can never be rolled back: the `committed`
-guard precedes the restore in the handler.
+If the failure-metadata assignment itself fails, the already-successful rollback
+is **not** undone; there is no recovery transaction around failure bookkeeping,
+and `test_28` refuses a `RestoreSnapshot` in the bookkeeping handler.
+
+`test_29` asserts a committed operation can never become `FAILED`: the envelope
+is disarmed between `committed = True` and the procedure's exit, so no handler
+can fire after the commit, and nothing on that path writes.
 
 ### Pre-write refusal boundary
 
@@ -296,10 +325,36 @@ numeric comparison, so **a blank never verifies as zero** (`test_46`).
 
 ## Application state
 
-`PCCM_Calculate` captures, begins, runs, finishes and reports through the
+`PCCM_Calculate` captures, begins, runs, finishes and publishes through the
 accepted Phase-4 discipline (`test_48`), and a failed cleanup is reported rather
 than swallowed. No `MsgBox`, no change handler (`test_49`), no RNG or `_SimData`
-(`test_50`). `modAppState` was not redesigned.
+(`test_50`). `modAppState` was not redesigned and is byte-frozen (`test_51`).
+
+The endpoint is wrapped in a top-level envelope installed **before the first
+fallible operation** — before `CaptureAppState`, before `BeginOperation` — with
+an explicit `stateCaptured As Boolean`:
+
+```vba
+On Error GoTo InvocationFailed
+state = modAppState.CaptureAppState()
+stateCaptured = True
+modAppState.BeginOperation
+result = RunCalculation(committed)
+On Error GoTo 0
+
+cleanup = modAppState.FinishOperation(state)
+stateCaptured = False
+If Len(cleanup) > 0 Then result = CleanupOutcome(result, committed, cleanup)
+modAppState.Announce result
+```
+
+`FinishOperation` is attempted **exactly once**: the normal path clears the flag
+so the handler cannot repeat it, and the handler runs it only when state was
+actually captured (`test_57`). The recovery cleanup has its own `CleanupFailed`
+envelope, so a cleanup that raises while handling an earlier failure cannot
+escape raw — and the original diagnosis survives it rather than being replaced.
+
+Every terminal path publishes exactly one outcome (`test_55`).
 
 ---
 
@@ -344,13 +399,16 @@ are declared and none is bound to a button.
 | `test_phase5_numeric.py` | 94 |
 | `test_phase5_oracle.py` | 111 |
 | `test_phase5_stage_a.py` | 57 |
-| `test_phase5_vba_source.py` | 120 |
+| `test_phase5_vba_source.py` | 122 |
 | `test_phase5_resolve_source.py` | 91 |
 | `test_phase5_check_source.py` | 60 |
-| `test_phase5_report_source.py` | **72 (new)** |
-| **Total** | **1313** |
+| `test_phase5_report_source.py` | **97** |
+| **Total** | **1340** |
 
-The Step-6 baseline was 1241. No test was removed and none was weakened.
+The Step-6 baseline was 1241; the Step-7 submission was 1313. **No test was
+removed and none was weakened.** The correction round added 25 tests to the
+reporter suite and 2 to the kernel suite; the Step-5 (91) and Step-6 (60) suites
+are unchanged in count, and the Stage-A verifier still reports 351/351.
 
 ### Mutation evidence
 
@@ -372,6 +430,170 @@ calculation.
 Twenty further negative controls plant the same defect classes as synthetic
 module text.
 
+**Correction round.** Twenty-four *new* regressions were planted into a scratch
+copy of the corrected sources — one per defect and per near neighbour — and the
+suite was run against each. **All twenty-four were caught**, the last of them
+only after the detector for it was strengthened (see below):
+
+| # | Planted regression | Caught by |
+| --- | --- | --- |
+| M01 | header canonicalised as a number, framed as text | `test_14` |
+| M02 | header field assembled by hand from `FP_TAG_NUMBER` | `test_53` |
+| M03 | `CalcFpNumberField` made `Private` again | `test_51` |
+| M04 | the framer rerouted through the text encoder | `test_51` |
+| M05 | `ReportResult` restored in place of `Announce` | `test_54` |
+| M06 | a handler path stops announcing | `test_55` |
+| M07 | envelope armed after `CaptureAppState`/`BeginOperation` | `test_48` |
+| M08 | the recovery cleanup removed | `test_48` |
+| M09 | `stateCaptured` never cleared, so cleanup can run twice | `test_57` |
+| M10 | preparation and snapshot left uncovered | `test_56` |
+| M11 | a runtime fault recorded as a model refusal | `test_56` |
+| M12 | FAILED metadata written after a *failed* rollback | `test_28` |
+| M13 | a failed record re-running the rollback | `test_28` |
+| M14 | `On Error Resume Next` reintroduced | `test_20` |
+| M15 | an unreviewed handler added | `test_20` |
+| M16 | post-commit cleanup rewriting C17 to `FAILED` | `test_29` |
+| M17 | the commit fact never leaving the transaction | `test_29` |
+| M18 | the envelope left armed past the commit | `test_29` |
+| M19 | C20 dropped from the commit verification | `test_59` |
+| M20 | the verifier regenerating `Now` | `test_59` |
+| M21 | a second captured moment in the commit block | `test_25` |
+| M22 | the commit marked before it is proven | `test_16` |
+| M23 | the writer assembling part of its own block | `test_25` |
+| M24 | a different block reaching the verification | `test_19` |
+
+**M11 was MISSED on the first sweep.** The suite distinguished refusal from
+failure by inspecting `RecordRefusal` and `RecordFailureWithoutRollback` in
+isolation, which says nothing about *which handler reaches which*. Swapping the
+`PreWriteFailed` handler to call `RecordRefusal` left both procedures intact and
+passed. `test_56` now partitions `RunCalculation` at its handler labels and
+asserts the routing at the point the two outcomes diverge; `test_nc_27b` plants
+the same swap and watches the detector see it.
+
+The corrected suite was also run against the submitted commit `a9de9b3` with the
+production sources restored to their submitted state. **Sixteen reporter tests,
+two kernel tests and one checker test fail there**, covering all five blocking
+defects: blocker 1 (`test_14`, `test_53`, `test_43`, `test_64i`), blocker 2
+(`test_54`, `test_55`), blocker 3 (`test_20`, `test_48`, `test_56`, `test_57`),
+blocker 4 (`test_29`, `test_58`), blocker 5 (`test_25`, `test_59`).
+
+---
+
+## Correction round 1
+
+Independent review rejected the submission at `a9de9b3` with five blocking
+defects. Each is recorded here with what was wrong, what the source does now, and
+which test would fail if it came back.
+
+### 1 — the fingerprint header framed numbers as text
+
+`BuildFingerprint` called a private helper that canonicalised each header scalar
+as a number and then framed the *result* as an **S** field. Base Year, Start
+Year, Duration and Discount Rate are **N** fields in the locked schema, so the
+digest covered four text fields carrying numeric text where the contract says
+number. Canonicalising and framing are one decision.
+
+The authorised repair was narrow: `CalcFpNumberField` in `modCalcFingerprint`
+changed from `Private` to `Public`, and **nothing else in that module changed**.
+Its body, its framing, `CalcFpCanonicalNumber`, `CalcFpField`, the UTF-16
+handling, `FP_VERSION`, the reducer, the digest, the record schema, the sorting,
+the reference digest and the reference stream are all untouched. The reporter now
+calls it and neither `CalcFpCanonicalNumber` nor `CalcFpCanonicalText`, and it
+does not reproduce N framing of its own.
+
+`modCalcFingerprint` is consequently frozen **twice** — at its current bytes, and
+at its Step-4 *executable text* with comments and blanks removed, whitespace
+collapsed and that one keyword normalised back to `Private`
+(`test_64j`, `test_44` in the Step-6 suite, `test_51` here). The second digest,
+`f6e8313b…`, is what "visibility only" means as a check rather than a promise.
+The Public fingerprint surface goes from 10 names to 11, and
+`CalcFpNumberField` is **not** added to the no-cross-module-caller exception set:
+`test_64i` asserts `modCalcReport` really is its caller. `test_64h`'s caller
+corpus was widened from the three kernel modules to every hand-written module,
+because scoping it to the kernel would have called a genuine consumer "no caller"
+— and would equally have let a kernel name be justified by a caller that does not
+exist.
+
+The reference digest `50B6EB0E26857EA7` over 366 UTF-16 code units is unchanged.
+The Python oracle already framed the four scalars as N fields
+(`tests/test_phase5_fingerprint.py:136`); the VBA had disagreed with it, and now
+does not.
+
+### 2 — the endpoint bypassed the harness-aware announcement surface
+
+`PCCM_Calculate` ended through `modAppState.ReportResult`, which shows a modal
+dialog unconditionally. Gate B drives this endpoint through automation, and a
+modal dialog blocks it and leaves the run with no recorded result.
+
+It now ends through `modAppState.Announce`, which records the outcome for
+automation and shows the dialog only when automation is inactive. **No new
+automation reporter was created and `modAppState` was not modified**;
+`test_54` refuses `ReportResult`, refuses six invented channel names, and refuses
+`Announce` anywhere but the endpoint.
+
+### 3 — error and cleanup containment started too late
+
+The envelope was armed *after* `CaptureAppState` and `BeginOperation`, so the two
+operations that make restoration necessary ran outside it, along with the
+preparation, the snapshot and every bookkeeping write. A fault in any of them
+escaped raw, past the restoration it had itself made necessary, leaving
+`EnableEvents`, `Calculation` mode and `ScreenUpdating` dirty — worse than a
+failed calculation.
+
+Now: a top-level envelope installed before the first fallible operation, an
+explicit `stateCaptured` flag, `FinishOperation` attempted exactly once, a
+`CleanupFailed` envelope over the recovery cleanup, and separate `PreWriteFailed`
+and `TransactionFailed` envelopes that keep a controlled refusal and an
+unexpected fault apart. A failure before analytical mutation is `FAILED` with no
+rollback; a failure after it rolls back first; a **failed rollback writes no
+FAILED metadata at all**; and a failed metadata write does not undo a successful
+rollback. There is no `On Error Resume Next`.
+
+`test_20` previously asserted that `TransactionFailed` was the only handler in
+the module — the assumption that produced the defect. It was **retargeted, not
+deleted**: it now asserts the handler set is exactly the six reviewed envelopes,
+that none suppresses, and that every armed label is defined where it is armed.
+
+### 4 — post-commit cleanup could retroactively falsify a committed success
+
+After the commit, C17 = `SUCCESS` is committed workbook truth. A later
+`FinishOperation` problem is an application/invocation cleanup failure, not a
+failed analytical transaction, and rewriting the attempt to `FAILED` would leave
+the workbook and the reported outcome contradicting each other.
+
+`RunCalculation` now carries the commit fact out through
+`ByRef committed As Boolean`, and `CleanupOutcome` decides on that basis. When
+the run committed, it **writes nothing** — no `WriteAttemptBlock`, no
+`WriteStatusBlock`, no rollback, no `.Value2` — and reports the cleanup problem
+on the invocation axis with a message that states plainly that the calculation
+committed.
+
+**On the §4.1 STOP condition:** the existing `OperationResult` shape *can*
+represent "committed calculation success plus cleanup/invocation failure"
+without ambiguity, so no interface limitation is reported. The two axes are
+already separate objects: `PCCM_AutomationResult()` reports the invocation
+outcome (`FAIL|Calculate|<detail>`) while `PCCM_CalculationAttemptResult()`
+independently reports `SUCCESS` read from committed `calc_state`, and the detail
+text names the situation explicitly. Nothing rewrites C13:C20 after the commit.
+This is the one place in the correction round where the instruction offered a
+stop, and the reviewer should treat the assessment above as the claim to reject
+if it is wrong.
+
+### 5 — the success commit was not verified against the exact block written
+
+C20 was excluded from verification, and the success timestamp was only checked
+for being non-blank — a check that passes over a stamp written into the wrong
+cell. The verifier compared selected semantic fields, not the commit.
+
+The 8×1 block is now built **once** by `BuildSuccessBlock`, with a single
+captured `stamp As Date` written into both `built(1,1)` and `built(8,1)`;
+`WriteSuccessCommit` performs one assignment of that block; and
+`VerifySuccessCommit` compares C13:C20 against **that same block**, all eight
+cells, generating no second `Now`. `committed = True` is set only after the whole
+block verifies, and a failed verification raises. The old selected-field verifier
+was removed rather than kept under the same procedure name — two procedures of
+one name is a VBA compile error, and the exact comparison subsumes it.
+
 ---
 
 ## Retargeted invariants
@@ -384,6 +606,23 @@ deleted — including two that had asserted the *absence* of what Step 7 builds:
 | `test_04_step_7_does_not_exist_yet` (Step-6 suite) | renamed `test_04_the_checker_owns_no_orchestration`; the checker declares no endpoint and does not reach into the reporter |
 | `test_08_the_deferred_phase_6_surface_does_not_exist_yet` (Step-4 suite) | the list has run out of names ahead of it, so it asserts the Step-4 **kernel** does not reach forward into any later module or endpoint |
 
+Correction round 1 retargeted nine more. None was deleted, and each now asserts
+the invariant that survived the defect rather than the assumption that caused it:
+
+| Test | Was | Now asserts |
+| --- | --- | --- |
+| `test_14` | pinned a call list containing `CalcFpCanonicalNumber` + `CalcFpCanonicalText` | the list contains `CalcFpNumberField` and neither primitive |
+| `test_17` | took the *first* `On Error GoTo 0` in the procedure | the first disarm **after** the envelope was armed — the earlier one belongs to the pre-write envelope and made the ordering vacuous |
+| `test_19` | named `VerifySuccessCommit(package)` | `VerifySuccessCommit(successBlock)` |
+| `test_20` | `TransactionFailed` is the **only** handler | the handler set is exactly the six reviewed envelopes, none suppresses, every armed label is defined where armed |
+| `test_25` | the commit is one 8-row assignment inside `WriteSuccessCommit` | built once with one captured moment, written once, the writer assembles nothing |
+| `test_28` | `RestoreSnapshot` before `RecordFailure` inline in `RunCalculation` | the ordering inside `RollbackAndRecord`, plus: a failed rollback writes no metadata, and a failed record does not re-run the rollback |
+| `test_29` | a `committed` guard precedes the restore in the handler | the envelope is disarmed before the commit is published, and the post-commit path writes nothing |
+| `test_34` | one `RecordFailure` re-derives the status | **both** failure recorders re-derive it, and `FAILED` is never used as a status |
+| `test_48` | capture, begin, finish appear and run before cleanup | the envelope is armed before capture, and the `stateCaptured` flag governs the recovery cleanup |
+| `test_64i` (kernel suite) | `CalcFpNumberField` is Private | it is Public, has a real caller in `modCalcReport`, and is not excused by the exception set |
+| `test_44` / `test_51` | `modCalcFingerprint` frozen at its Step-4 bytes | frozen at its current bytes **and** at its Step-4 executable text with the one authorised keyword normalised away |
+
 ---
 
 ## What remains for Gate B
@@ -393,3 +632,28 @@ restores, whether an injected failure at either failpoint produces the state thi
 document describes, whether the six status rows come out as specified, and
 whether the fingerprint matches `50B6EB0E26857EA7` on real Excel arithmetic and a
 real locale. Gate A has established what the source says, and only that.
+
+**No VBA was executed.** No Windows run was made, no Excel COM session was
+opened, and nothing in this document or in any test in the repository claims
+otherwise — `test_52` scans this suite for such a claim. Everything below is
+unproven and remains unproven until Gate B runs on Windows:
+
+* that `modCalcFingerprint` and `modCalcReport` compile at all, including that
+  the module now has exactly one `VerifySuccessCommit`
+* that the four header scalars produce the N fields the oracle produces, and that
+  the digest over a real model is `50B6EB0E26857EA7`
+* that `modAppState.Announce` suppresses the dialog under automation and records
+  the outcome where the harness reads it
+* that `FinishOperation` actually restores `EnableEvents`, `Calculation` mode and
+  `ScreenUpdating`, and that the `stateCaptured` path is reached when
+  `CaptureAppState` or `BeginOperation` raises
+* that a fault at either failpoint rolls back to the previous snapshot, that a
+  *failed* rollback leaves C17:C20 untouched, and that a failed metadata write
+  leaves the rollback standing
+* that the eight-cell commit verification passes on real Excel — in particular
+  that a `Date` written through `.Value2` reads back equal to the value written
+* that a post-commit cleanup failure leaves C17 reading `SUCCESS` while the
+  invocation axis reports the failure
+
+Gate B has not been started. No harness work, no Windows execution, no RNG or
+Monte Carlo, and nothing from Phase 6 is present in this round.

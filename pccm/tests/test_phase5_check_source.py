@@ -628,7 +628,12 @@ FROZEN_SHA256 = {
     "modCalcResolve": "3c67584390516a8a1c811df62d650749f6ef71518c649d7f1bb88dc753a837c1",
     "modCalcFactors": "721b8d6aa16fef850a13c714b329395730c9110ccd50d17c99927c3bfaae68c1",
     "modCalcAnalytical": "e234b3adacdb443c8c7b2b5072c311e7622405c3ec2e2987a750d85400299e0d",
-    "modCalcFingerprint": "0a504c0dc29062420c5e4325117ef623157e5fc612de9a9e862d86315aed5802",
+    # Its CURRENT bytes. They are not Step 4's bytes: Step 7's correction round
+    # carried the single authorised reopening of this module, making
+    # CalcFpNumberField Public so the orchestration layer could reach the
+    # accepted N-field framing authority. FINGERPRINT_STEP4_BODY_SHA256 below is
+    # what proves nothing else moved with it.
+    "modCalcFingerprint": "8e7c89750f301f27c2d9b7faf2b8057a217186c2a425b194de65a006b93b5075",
     "modWorkbook": "9cfa8f130c5bcdee783948654c969d4b0d6589fe7059c126f88c7676ca5405bf",
     "modAppState": "ef0b5c64a7a3b5aeeef5ef0797cd160071a7eda6a7d8cef9cb98301f1504672f",
     "modTimeline": "4a4f24d17b65bcbc0e46b1a74213b6a02eab6ab492b1788476d66eb7807b9e3f",
@@ -639,13 +644,47 @@ FROZEN_SHA256 = {
 }
 
 
+# modCalcFingerprint's Step-4 accepted EXECUTABLE text: comments and blank lines
+# removed, whitespace runs collapsed, and the one authorised visibility keyword
+# normalised back to Private. A byte digest alone would say only "this file
+# changed"; this one says what the change was allowed to be.
+FINGERPRINT_STEP4_BODY_SHA256 = (
+    "f6e8313b2bb29deee488e7a11eca282b1b64dcb8b7226bbc771c6dcc01a0bbaa"
+)
+
+
+def _fingerprint_body_digest() -> str:
+    import hashlib
+
+    kept: list[str] = []
+    for line in (SRC_VBA / "modCalcFingerprint.bas").read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("'"):
+            continue
+        stripped = re.sub(r"\s+", " ", stripped)
+        stripped = stripped.replace(
+            "Public Function CalcFpNumberField", "Private Function CalcFpNumberField"
+        )
+        kept.append(stripped)
+    return hashlib.sha256("\n".join(kept).encode()).hexdigest()
+
+
 def test_44_the_accepted_modules_were_not_modified() -> None:
-    """Step 6 ADDS a module. It changes none."""
+    """Step 6 ADDS a module. It changes none.
+
+    modCalcFingerprint later took the ONE reopening authorised in Step 7's
+    correction round, so it is frozen twice over: at its current bytes, and at
+    its Step-4 executable text with that single visibility keyword normalised
+    away. The second digest is the one that says the body was not touched.
+    """
     import hashlib
 
     for name, digest in FROZEN_SHA256.items():
         actual = hashlib.sha256((SRC_VBA / f"{name}.bas").read_bytes()).hexdigest()
         assert actual == digest, f"{name}.bas changed; Step 6 adds a module and edits none"
+    assert _fingerprint_body_digest() == FINGERPRINT_STEP4_BODY_SHA256, (
+        "modCalcFingerprint changed beyond the authorised visibility of CalcFpNumberField"
+    )
 
 
 def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
