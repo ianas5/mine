@@ -25,8 +25,10 @@ that oracle would prove nothing. Every emitted number is therefore re-derived he
 by a second, independently written route:
 
   * the plan's own section-23 literals, restated in this file;
-  * `_exact_case`, an exact `Fraction` evaluator written from the plan's formulas
-    and sharing no code with `calc_oracle.py`;
+  * `_reference_payload`, a complete second implementation of the accepted
+    evaluation semantics, written from the plan's rules and sharing no code with
+    `calc_oracle.py`. Because it reproduces those semantics rather than an
+    idealised real-number formula, emitted Doubles are compared by EXACT equality;
   * the fingerprint reference stream, its 366-code-unit length, its digest and the
     eight probe digests, restated here as literals.
 
@@ -603,6 +605,46 @@ def test_no_runtime_only_case_carries_a_fabricated_result() -> None:
             assert set(case) == {"id", "kind", "title", "why"}, case
 
 
+def test_the_corpus_metadata_and_tolerance_header_are_exact() -> None:
+    """The acceptance artifact proves its own header.
+
+    These sit outside the expectation-path ledger, which is defined specifically as
+    expected-RESULT evidence, but a harness reading the corpus has to be able to
+    trust which contract and which authorities produced it.
+    """
+    document = _built()["cases"]
+    assert document["schema_version"] == 1
+    assert document["tolerances"] == LOCKED_TOLERANCES
+    assert document["provenance"] == {
+        "model_version": "0.5.0",
+        "calc_contract_version": "1.0.0",
+        "fingerprint_version": 1,
+        "oracle": "builder/pccm_builder/calc_oracle.py",
+        "numerical_kernel": "builder/pccm_builder/calc_numeric.py",
+        "fingerprint_authority": "builder/pccm_builder/calc_fingerprint.py",
+    }
+    # ... and the header agrees with the authorities it names.
+    calc = _built()["calc"]
+    assert document["provenance"]["calc_contract_version"] == calc.version
+    assert document["provenance"]["fingerprint_version"] == calc.fingerprint_version
+    assert document["provenance"]["model_version"] == _built()["spec"].model["model_version"]
+    assert document["tolerances"]["profiling_sum_absolute"] == (
+        calc.tolerances.profiling_sum_absolute
+    )
+    assert document["tolerances"]["identity_absolute_floor"] == (
+        calc.tolerances.identity_absolute_floor
+    )
+    assert document["tolerances"]["identity_relative_coefficient"] == (
+        calc.tolerances.identity_relative_coefficient
+    )
+    assert document["tolerances"]["conditioning_scale_floor"] == (
+        calc.tolerances.conditioning_scale_floor
+    )
+    for named in document["provenance"].values():
+        if isinstance(named, str) and named.endswith(".py"):
+            assert (PCCM_ROOT / named).is_file(), named
+
+
 def test_the_emitted_fingerprint_evidence_matches_the_locked_literals() -> None:
     """Case 26, 27, 35 and 36, against literals restated in THIS file."""
     section = _built()["cases"]["fingerprint"]
@@ -704,24 +746,29 @@ class _Ledger:
         assert actual == expected, f"{path}: emitted {actual!r}, independently {expected!r}"
         self.mark(path)
 
-    def number(self, path: str, actual, expected, scale: float = 0.0) -> None:
+    def number(self, path: str, actual, expected) -> None:
         """A Double the corpus emitted, against the independently derived value.
 
-        Exact equality wherever it holds - which is almost everywhere, including
-        every zero, every subnormal and every `MAX_DOUBLE / 2`. A relative
-        tolerance covers only the places where the plan's mandated stable forms
-        legitimately differ from exact rational arithmetic, and `scale` covers a
-        value that cancelled to near-zero.
+        EXACT EQUALITY, with no tolerance and no scale. The independent reference
+        deliberately reproduces the ACCEPTED EVALUATION SEMANTICS - tier 1's
+        ordinary Double path where it succeeds, the exact rescue where it does
+        not, the materialization boundaries, canonical driver order and the stable
+        statistic forms - so it produces the very Double the corpus is expected to
+        contain, not an idealised real number it should be near.
+
+        THE EARLIER VERSION OF THIS METHOD WAS A DEFECT. It carried a `scale`
+        taken from the largest magnitude anywhere in the payload and applied it to
+        every field, so in a fixture with an annual row near `MAX_DOUBLE` the
+        allowance was about `1.8e297` and `mean_value = 1e200` was accepted in
+        place of `1.0`. Path coverage without discrimination proves nothing, and a
+        C1-style conditioning scale belongs to RECONCILIATION - the question of
+        whether two independently accumulated totals agree - never to the question
+        of whether one emitted field equals its independently derived value.
+
+        `None` (a field that does not apply to a driver kind) compares by equality
+        too, so a blank can never be satisfied by a number or the reverse.
         """
-        if expected is None or actual is None:
-            assert actual == expected, f"{path}: emitted {actual!r}, independently {expected!r}"
-            self.mark(path)
-            return
-        if actual != expected:
-            allowance = max(abs(expected), abs(scale)) * REL
-            assert abs(actual - expected) <= allowance, (
-                f"{path}: emitted {actual!r}, independently {expected!r}"
-            )
+        assert actual == expected, f"{path}: emitted {actual!r}, independently {expected!r}"
         self.mark(path)
 
 
@@ -1134,12 +1181,6 @@ _ANNUAL_NUMBER_FIELDS = (
 def _check_payload(ledger: _Ledger, base: str, emitted: dict, model: dict) -> None:
     """Validate a COMPLETE emitted expected payload against the independent one."""
     reference = _reference_payload(model)
-    scale = max(
-        [abs(value) for value in reference["totals"].values() if value]
-        + [abs(row[key]) for row in reference["annual"] for key in _ANNUAL_NUMBER_FIELDS
-           if row[key]]
-        + [1.0]
-    )
 
     assert set(emitted["resolved_fx"]) == set(reference["resolved_fx"]), (
         f"{base}.resolved_fx: emitted {sorted(emitted['resolved_fx'])}, "
@@ -1175,7 +1216,7 @@ def _check_payload(ledger: _Ledger, base: str, emitted: dict, model: dict) -> No
             ledger.equal(f"{path}.{field}", emitted["drivers"][index][field], driver[field])
         for field in _DRIVER_NUMBER_FIELDS:
             ledger.number(f"{path}.{field}", emitted["drivers"][index][field],
-                          driver[field], scale)
+                          driver[field])
         assert len(emitted["drivers"][index]["weights"]) == len(driver["weights"])
         for ordinal, weight in enumerate(driver["weights"]):
             ledger.number(f"{path}.weights[{ordinal}]",
@@ -1189,11 +1230,10 @@ def _check_payload(ledger: _Ledger, base: str, emitted: dict, model: dict) -> No
         ledger.equal(f"{path}.calendar_year", emitted["annual"][index]["calendar_year"],
                      row["calendar_year"])
         for field in _ANNUAL_NUMBER_FIELDS:
-            ledger.number(f"{path}.{field}", emitted["annual"][index][field],
-                          row[field], scale)
+            ledger.number(f"{path}.{field}", emitted["annual"][index][field], row[field])
 
     for field, value in reference["totals"].items():
-        ledger.number(f"{base}.totals.{field}", emitted["totals"][field], value, scale)
+        ledger.number(f"{base}.totals.{field}", emitted["totals"][field], value)
 
 
 # --- helper-level vectors, classified from exact arithmetic ------------------
@@ -1962,6 +2002,63 @@ def test_a_mutated_projected_hash_modulus_is_caught() -> None:
         assert "Public Const FP_MOD_2 As Long = 2147483629" in built["module_text"]
     finally:
         calc_fingerprint.FP_MOD_2 = original
+
+
+def test_a_catastrophically_wrong_corpus_value_is_rejected() -> None:
+    """DISCRIMINATION, not just coverage.
+
+    Reproducer A publishes values near `MAX_DOUBLE` alongside values of `1.0`,
+    `0.5` and `0.0`. An earlier version of this file scaled the comparison
+    allowance by the largest magnitude anywhere in the payload, which made the
+    allowance about `1.8e297` and accepted every one of the mutations below - each
+    wrong by roughly two hundred orders of magnitude - while the path ledger still
+    reported 1979 checked, 0 missing, 0 extra.
+
+    Coverage without discrimination proves nothing, so each mutation is asserted
+    to fail. The values are chosen to be the small ones sitting beside a huge one.
+    """
+    document = _built()["cases"]
+    original = next(entry for entry in document["regression_vectors"]["materialization"]
+                    if entry["name"].startswith("Reproducer A"))
+    assert original["expected"]["drivers"][0]["mean_value"] == 1.0
+    assert original["expected"]["drivers"][0]["central_value"] == 1.0
+    assert original["expected"]["drivers"][0]["fx_to_sar"] == 0.5
+    assert original["expected"]["totals"]["b_nom"] == 0.0
+    assert original["expected"]["drivers"][0]["knom"] == _MAX_DOUBLE / 2, (
+        "the fixture must still contain a value near MAX_DOUBLE, or the control "
+        "no longer tests what it was written for"
+    )
+
+    mutations = (
+        ("drivers[0].mean_value", lambda e: e["drivers"][0].__setitem__("mean_value", 1e200)),
+        ("drivers[0].central_value",
+         lambda e: e["drivers"][0].__setitem__("central_value", -1e200)),
+        ("drivers[0].fx_to_sar", lambda e: e["drivers"][0].__setitem__("fx_to_sar", 1e200)),
+        ("totals.b_nom", lambda e: e["totals"].__setitem__("b_nom", 1e200)),
+    )
+    for label, mutate in mutations:
+        tampered = json.loads(json.dumps(document))
+        target = next(entry for entry in tampered["regression_vectors"]["materialization"]
+                      if entry["name"].startswith("Reproducer A"))
+        mutate(target["expected"])
+        try:
+            _validate_corpus(_Ledger(), tampered)
+        except AssertionError:
+            continue
+        raise AssertionError(f"a catastrophically wrong {label} passed the corpus check")
+
+
+def test_a_blank_field_cannot_be_satisfied_by_a_number() -> None:
+    """A field that does not apply to a driver kind is blank, and blank is not 0."""
+    document = json.loads(json.dumps(_built()["cases"]))
+    case = next(c for c in document["plan_cases"] if c["id"] == 8)
+    assert case["expected"]["drivers"][0]["central_value"] is None
+    case["expected"]["drivers"][0]["central_value"] = 0.0
+    try:
+        _validate_corpus(_Ledger(), document)
+    except AssertionError:
+        return
+    raise AssertionError("a blank driver field was satisfied by zero")
 
 
 def test_a_mutated_golden_expected_value_is_caught() -> None:

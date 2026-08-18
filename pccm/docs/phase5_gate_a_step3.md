@@ -1,6 +1,6 @@
 # Phase 5 — Gate A — Step 3: Stage-A calculation workspace emission
 
-**Status: CORRECTED ONCE after independent review — ready for re-review.**
+**Status: CORRECTED TWICE after independent review — ready for re-review.**
 
 Step 2 is accepted and closed. This step makes `spec/calc_contract.yaml` a real
 build input, puts the physical `_Calc` calculation workspace into the generated
@@ -18,6 +18,16 @@ acceptance-corpus gaps were closed: the Gate-B fingerprint vector set was
 incomplete, and golden independence was a spot check rather than exhaustive. One
 documented count was wrong. **The workbook and `modCalcContract.bas` are
 byte-for-byte unchanged by the correction; only `phase5_cases.json` expanded.**
+
+**Round 2** (§19) — the completed vector set and the path ledger were confirmed.
+One blocking defect remained, and it was in the PROOF rather than in the corpus:
+the ledger showed every expectation path was VISITED, but its numeric comparator
+carried a whole-payload magnitude as a tolerance scale, so in a fixture holding a
+value near `MAX_DOUBLE` the allowance was about `1.8e297` and `mean_value = 1e200`
+was accepted in place of `1.0`. Coverage without discrimination proves nothing.
+The scale is gone and emitted Doubles are now compared by exact equality. **This
+round is a test-proof correction only: `calc_cases.py`, `phase5_cases.json`, the
+workbook and `modCalcContract.bas` are all unchanged.**
 
 ---
 
@@ -64,7 +74,7 @@ declared in the Stage-B manifest. A test asserts that.
 | `spec/workbook.yaml` | `model_version` 0.4.0 → 0.5.0, `build_phase` → Phase 5 |
 | `VERSION` | 0.4.0 → 0.5.0 |
 | `tests/test_phase4_structure.py` | the version-convention test's literal moved with it; see §11 |
-| `tests/test_phase5_stage_a.py` | **new** — 54 tests |
+| `tests/test_phase5_stage_a.py` | **new** — 57 tests |
 
 **Unchanged, and verified unchanged:** `spec/calc_contract.yaml`,
 `spec/input_contract.yaml`, `spec/driver_contract.yaml`,
@@ -358,10 +368,13 @@ two SETS to be identical, in both directions:
 
 ```
 expectation leaf paths  : 1979
-independently validated : 1979
+independently validated : 1979     (all by EXACT Double comparison)
 missing                 : 0        (nothing entered the corpus unproved)
 extra                   : 0        (no check claimed a path the corpus lacks)
 ```
+
+Acceptance therefore rests on **both** halves: every path is covered, **and** every
+numerical comparison is discriminating.
 
 | root | leaves |
 |---|---|
@@ -399,11 +412,41 @@ That distinction is load-bearing. `[1e16, 1, -1e16]` sums to `0.0` in canonical
 order and to `1.0` in exact arithmetic, and `0.0` is the required answer — a
 reference built on exact rationals alone would have declared the corpus wrong.
 
-Comparison is **exact equality wherever it holds**, which is almost everywhere,
-including every zero, every subnormal and every `MAX_DOUBLE / 2`. A relative
-tolerance of `1e-11` covers only the places where the plan's mandated stable forms
-legitimately differ from exact rational arithmetic, and a per-payload `scale`
-covers a value that cancelled to near-zero.
+### The comparison rule — exact, with no scale
+
+Because the reference reproduces the accepted evaluation semantics rather than an
+idealised real-number formula, it produces **the very Double the corpus is expected
+to contain**. So the comparison is **exact Double equality**, with no tolerance and
+no scale:
+
+```
+emitted Double == independently derived Double
+```
+
+All **1979** expectation leaves pass under that rule.
+
+`None` — a field that does not apply to a driver kind — compares by equality too,
+so a blank can never be satisfied by a number or the reverse.
+
+**The earlier version of this comparator was a defect, and it is worth recording
+why.** It carried a `scale` taken from the largest magnitude anywhere in the
+payload and applied it to every field. In Reproducer A, which publishes values near
+`MAX_DOUBLE` alongside values of `1.0`, `0.5` and `0.0`, that made the allowance
+about `1.8e297`, and `mean_value = 1e200`, `central_value = -1e200`,
+`fx_to_sar = 1e200` and `totals.b_nom = 1e200` were all accepted — each wrong by
+roughly two hundred orders of magnitude — while the ledger still reported 1979
+checked, 0 missing, 0 extra.
+
+**A C1-style conditioning scale belongs to RECONCILIATION**, which asks whether two
+independently accumulated totals agree and must therefore be proportional to the
+arithmetic performed. It has no place in the different question of whether one
+emitted field equals its independently derived value. The two were conflated; they
+are now separate.
+
+Tolerance survives in exactly one place, and it is a different evidence layer: the
+separate comparison against the plan's **shortened, human-written literals**, where
+§23 states values like `0.998150826446` to twelve figures rather than to the last
+bit.
 
 ### The regression corpus is not exempt
 
@@ -443,14 +486,19 @@ A field that does not apply to a driver kind is asserted **blank**, never zero.
 
 ## 10. Determinism
 
-**This correction changed neither the workbook nor the constants module.**
-Rebuilding before and after the patch with a fixed timestamp:
+**Round 1 changed neither the workbook nor the constants module; round 2 changed
+no generated artifact at all.** Rebuilding before and after each patch with a fixed
+timestamp:
 
 ```
-build/vba/modCalcContract.bas   byte-identical before and after
-build/PCCM_stageA.xlsx          structurally identical before and after
-build/phase5_cases.json         expanded, as intended
+                              round 1              round 2
+modCalcContract.bas           byte-identical       byte-identical
+PCCM_stageA.xlsx              structurally same    structurally same
+phase5_cases.json             expanded             byte-identical
 ```
+
+Round 2 is a test-proof correction: the only file that changed is
+`tests/test_phase5_stage_a.py`.
 
 `PCCM_BUILD_TIMESTAMP` fixed, two builds from the same source:
 
@@ -547,8 +595,25 @@ source restored. All seven fail against the corpus as it stood at `d82471e`:
 | a NON-spot-checked value tampered deep inside a materialization payload (`annual[2].total_pv`) | **fails** — `test_a_tampered_non_spot_checked_regression_value_is_caught` |
 | a new expected field added with no matching check | **fails** — `test_a_new_expected_field_cannot_escape_independent_validation` |
 
-The last one is the important one: it proves future corpus growth cannot silently
-escape independent validation, which a numeric floor could never do.
+Round 2 added the **discrimination** controls, all against Reproducer A, which
+holds small values beside one near `MAX_DOUBLE`. Every one of these was ACCEPTED at
+`6e683a7` and is rejected now:
+
+| Mutation | Expected | Tampered |
+|---|---|---|
+| `drivers[0].mean_value` | `1.0` | `1e200` |
+| `drivers[0].central_value` | `1.0` | `-1e200` |
+| `drivers[0].fx_to_sar` | `0.5` | `1e200` |
+| `totals.b_nom` | `0.0` | `1e200` |
+
+plus `test_a_blank_field_cannot_be_satisfied_by_a_number`, which sets a Risk's
+`central_value` from blank to `0.0` and requires that to fail. The control asserts
+the fixture still contains a value near `MAX_DOUBLE`, so it cannot quietly stop
+testing what it was written for.
+
+Two controls matter most: the added-field one proves future corpus growth cannot
+silently escape independent validation, which a numeric floor could never do; the
+catastrophic-tamper one proves the checks that ran actually reject a wrong value.
 
 Two further controls act on the generated constants: a mutated projected tolerance
 and a mutated projected hash modulus are each shown to change the emitted `.bas`.
@@ -581,14 +646,14 @@ or not.
 Run from a clean extraction, Linux, Python 3.11.
 
 ```
-python -m pytest pccm/tests/ -q        964 passed, 0 failed
+python -m pytest pccm/tests/ -q        967 passed, 0 failed
 python pccm/builder/build_stage_a.py   351 passed, 0 failed
 ```
 
 Standalone:
 
 ```
-python pccm/tests/test_phase5_stage_a.py                  54 passed, 0 failed
+python pccm/tests/test_phase5_stage_a.py                  57 passed, 0 failed
 python pccm/tests/test_phase5_numeric.py                  94 passed, 0 failed
 python pccm/tests/test_phase5_oracle.py                  111 passed, 0 failed
 python pccm/tests/test_phase5_calc_contract_validation.py 151 passed, 0 failed
@@ -612,10 +677,10 @@ python pccm/tests/test_phase5_fingerprint.py              52 passed, 0 failed
 | `test_phase5_fingerprint.py` | 52 | **52** |
 | `test_phase5_numeric.py` | 94 | **94** |
 | `test_phase5_oracle.py` | 111 | **111** |
-| `test_phase5_stage_a.py` | — | **54** |
-| **total** | **910** | **964** |
+| `test_phase5_stage_a.py` | — | **57** |
+| **total** | **910** | **967** |
 
-**Every existing count is unchanged.** The 910 → 964 delta is exactly the 54 new
+**Every existing count is unchanged.** The 910 → 967 delta is exactly the 57 new
 Step-3 tests. No Step-2 test was weakened, added to or removed; the numeric and
 oracle modules are byte-identical to the accepted Step-2 package.
 
@@ -623,8 +688,10 @@ oracle modules are byte-identical to the accepted Step-2 package.
 reading taken before the last test of the round was added, and it was
 arithmetically impossible against its own "910 + 53" statement — review was right
 to reject it. The correct pre-correction baseline was **963**; this correction
-replaced three spot-check tests with four exhaustive ones, so the current total is
-**964**. No test was removed to make a number true.
+replaced three spot-check tests with four exhaustive ones, giving **964**. Round 2
+added three more — the catastrophic-tamper control, the blank-field control and the
+corpus-metadata check — giving the current **967**. No test was removed to make a
+number true.
 
 ### Stage-A verification count
 
