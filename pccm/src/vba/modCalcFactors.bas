@@ -521,7 +521,8 @@ Private Function RoundExact(ByRef value As ExactNumber, ByRef result As Double, 
     RoundExact = True
 End Function
 
-Private Function ExactSumOf(ByRef terms() As Double, ByRef total As ExactNumber) As Boolean
+Private Function ExactSumOf(ByRef terms() As Double, ByVal termCount As Long, _
+                            ByRef total As ExactNumber) As Boolean
     ' Every Double is an exact integer multiple of 2^smallest, where smallest is
     ' the least of the terms' own exponents, so aligning there is exact. Positive
     ' and negative magnitudes accumulate separately and are subtracted once,
@@ -529,7 +530,7 @@ Private Function ExactSumOf(ByRef terms() As Double, ByRef total As ExactNumber)
     Dim index As Long, sign As Long, mantissa As Double, exponent As Long
     Dim smallest As Long, largest As Long, seen As Boolean, count As Long
     Dim positive As ExactNumber, negative As ExactNumber
-    For index = LBound(terms) To UBound(terms)
+    For index = LBound(terms) To LBound(terms) + termCount - 1
         If Not DecomposeDouble(terms(index), sign, mantissa, exponent) Then Exit Function
         If sign <> 0 Then
             If Not seen Then
@@ -548,7 +549,7 @@ Private Function ExactSumOf(ByRef terms() As Double, ByRef total As ExactNumber)
     count = Fix((largest - smallest) / LIMB_BITS) + 6
     ExactInit positive, count
     ExactInit negative, count
-    For index = LBound(terms) To UBound(terms)
+    For index = LBound(terms) To LBound(terms) + termCount - 1
         If DecomposeDouble(terms(index), sign, mantissa, exponent) Then
             If sign > 0 Then
                 ExactAddShifted positive, mantissa, exponent - smallest
@@ -617,7 +618,14 @@ End Function
 ' ==========================================================================
 ' Public exact-rescue surface
 ' ==========================================================================
-Public Function SafeSignedSum(ByRef terms() As Double, ByRef result As Double) As Boolean
+Public Function SafeSignedSum(ByRef terms() As Double, ByVal termCount As Long, _
+                              ByRef result As Double) As Boolean
+    ' THE LOGICAL COUNT IS EXPLICIT, and it is checked BEFORE any bound of
+    ' `terms` is read. VBA cannot express a zero-element array: an allocated one
+    ' always has UBound >= LBound, and an unallocated dynamic array raises on
+    ' LBound before any test of its emptiness could run. So "how many terms" is
+    ' a parameter, and the additive identity is reachable.
+    '
     ' TIER 1 - the canonical supplied order, unchanged. If it produces a value
     ' that value is returned bit for bit; a sum that already works is NEVER
     ' reordered, so canonical permanent-ID order still decides the answer.
@@ -628,9 +636,15 @@ Public Function SafeSignedSum(ByRef terms() As Double, ByRef result As Double) A
     ' that residual WAS the answer.
     Dim index As Long, total As Double, ok As Boolean
     Dim exact As ExactNumber
+    If termCount < 0 Then Exit Function
+    If termCount = 0 Then
+        result = 0#
+        SafeSignedSum = True
+        Exit Function
+    End If
     total = 0#
     ok = True
-    For index = LBound(terms) To UBound(terms)
+    For index = LBound(terms) To LBound(terms) + termCount - 1
         If Not SafeAccumulate(total, terms(index)) Then
             ok = False
             Exit For
@@ -641,23 +655,29 @@ Public Function SafeSignedSum(ByRef terms() As Double, ByRef result As Double) A
         SafeSignedSum = True
         Exit Function
     End If
-    If Not ExactSumOf(terms, exact) Then Exit Function
+    If Not ExactSumOf(terms, termCount, exact) Then Exit Function
     SafeSignedSum = RoundExact(exact, result, False, False)
 End Function
 
-Public Function SafeProduct(ByRef factors() As Double, ByRef result As Double) As Boolean
+Public Function SafeProduct(ByRef factors() As Double, ByVal factorCount As Long, _
+                            ByRef result As Double) As Boolean
+    ' The logical count is explicit for the same reason SafeSignedSum's is, and
+    ' the empty product - the multiplicative identity - is settled before any
+    ' bound of `factors` is read.
+    '
     ' Tier 1 is left to right. Tier 2 is the EXACT product, not a reordering: a
     ' magnitude-balanced order proves nothing about whether the exact product is
     ' in range, and was shown to accept one that exceeds MAX_DOUBLE while
     ' refusing one that rounds to 5e-324.
     Dim index As Long, running As Double, ok As Boolean, anyZero As Boolean
     Dim negatives As Long, exact As ExactNumber
-    If UBound(factors) < LBound(factors) Then
+    If factorCount < 0 Then Exit Function
+    If factorCount = 0 Then
         result = 1#
         SafeProduct = True
         Exit Function
     End If
-    For index = LBound(factors) To UBound(factors)
+    For index = LBound(factors) To LBound(factors) + factorCount - 1
         If Not IsUsableDouble(factors(index)) Then Exit Function
         If factors(index) = 0# Then anyZero = True
         If factors(index) < 0# Then negatives = negatives + 1
@@ -671,7 +691,7 @@ Public Function SafeProduct(ByRef factors() As Double, ByRef result As Double) A
     End If
     running = 1#
     ok = True
-    For index = LBound(factors) To UBound(factors)
+    For index = LBound(factors) To LBound(factors) + factorCount - 1
         If Not SafeMultiply(running, factors(index), running) Then
             ok = False
             Exit For
@@ -682,8 +702,7 @@ Public Function SafeProduct(ByRef factors() As Double, ByRef result As Double) A
         SafeProduct = True
         Exit Function
     End If
-    If Not ExactProductOf(factors, LBound(factors), _
-                          UBound(factors) - LBound(factors) + 1, exact) Then Exit Function
+    If Not ExactProductOf(factors, LBound(factors), factorCount, exact) Then Exit Function
     SafeProduct = RoundExact(exact, result, False, False)
 End Function
 
@@ -806,20 +825,24 @@ Private Sub AddExactShifted(ByRef positive As ExactNumber, ByRef negative As Exa
     Next index
 End Sub
 
-Public Function ExactQuotientOfSum(ByRef terms() As Double, ByVal divisor As Double, _
+Public Function ExactQuotientOfSum(ByRef terms() As Double, ByVal termCount As Long, _
+                                   ByVal divisor As Double, _
                                    ByRef result As Double) As Boolean
-    ' Round (SUM terms) / divisor for divisor in {2, 3, 6}. The numerator is
-    ' dyadic but the quotient is not, so the numerator is shifted left by
-    ' GUARD_BITS and the division remainder becomes a sticky flag: a non-zero
-    ' remainder means the true value is strictly above the quotient, which is
-    ' exactly what a sticky bit encodes, so ties still resolve correctly.
+    ' Round (SUM terms) / divisor. The numerator is dyadic but the quotient is
+    ' not, so the numerator is shifted left by GUARD_BITS and the division
+    ' remainder becomes a sticky flag: a non-zero remainder means the true value
+    ' is strictly above the quotient, which is exactly what a sticky bit
+    ' encodes, so ties still resolve correctly.
+    '
+    ' THE PUBLIC DIVISOR CONTRACT IS EXACTLY {2, 3, 6} - the three convex-
+    ' statistic denominators, and nothing else. The divisor is validated BEFORE
+    ' the exact division, because this procedure installs no error handler and a
+    ' zero divisor would otherwise reach a raw division. ExactDivideSmall stays
+    ' the locked small-divisor kernel and is not generalised.
     Dim exact As ExactNumber, guarded As ExactNumber, quotient As ExactNumber
     Dim index As Long, remainder As Double
-    If Not ExactSumOf(terms, exact) Then Exit Function
-    If divisor = 1# Then
-        ExactQuotientOfSum = RoundExact(exact, result, False, False)
-        Exit Function
-    End If
+    If divisor <> 2# And divisor <> 3# And divisor <> 6# Then Exit Function
+    If Not ExactSumOf(terms, termCount, exact) Then Exit Function
     ExactInit guarded, exact.Count + Fix(GUARD_BITS / LIMB_BITS) + 2
     guarded.Sign = exact.Sign
     guarded.Shift = exact.Shift - GUARD_BITS
@@ -944,14 +967,14 @@ Private Function BuildFactor(ByVal fxRate As Double, ByRef weights() As Double, 
         group(0) = weights(LBound(weights) + index)
         group(1) = inflation(LBound(inflation) + index)
         If withDiscount Then group(2) = discount(LBound(discount) + index)
-        If Not SafeProduct(group, terms(index)) Then
+        If Not SafeProduct(group, width, terms(index)) Then
             ok = False
             detail = "project year " & CStr(index + 1)
             Exit For
         End If
     Next index
     If ok Then
-        If SafeSignedSum(terms, staged) Then
+        If SafeSignedSum(terms, count, staged) Then
             If SafeMultiply(fxRate, staged, scaled) Then
                 result = scaled
                 detail = vbNullString

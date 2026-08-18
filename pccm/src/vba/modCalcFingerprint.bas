@@ -129,12 +129,13 @@ Public Function CalcFpCanonicalNumber(ByVal value As Double, ByVal decimalSepara
     CalcFpCanonicalNumber = True
 End Function
 
-Public Function CalcFpNumberField(ByVal value As Double, ByVal decimalSeparator As String, _
+Private Function CalcFpNumberField(ByVal value As Double, ByVal decimalSeparator As String, _
                                   ByRef result As String) As Boolean
     ' The N field around a canonical number. Separate from CalcFpCanonicalNumber
     ' because the numeric encoding is the only one that can fail, and Gate B
     ' compares the canonical TEXT of the ten locked numeric vectors rather than
-    ' their framed fields.
+    ' their framed fields. Private: no caller outside this module frames a
+    ' number field of its own.
     Dim text As String
     If Not CalcFpCanonicalNumber(value, decimalSeparator, text) Then Exit Function
     result = CalcFpField(FP_TAG_NUMBER, text)
@@ -328,12 +329,20 @@ Private Function CalcFpBuildDriverRecord(ByVal permanentId As String, _
     ' ONE kind-specific scalar, in ONE position: Quantity for a cost line,
     ' Probability for a risk. The shared builder never sees both, so it cannot
     ' emit an identity for the one that does not apply.
-    Dim fields() As String, count As Long, index As Long
+    '
+    ' THE CAPACITY IS COMPUTED, NOT GUESSED. Six fixed fields - Permanent ID,
+    ' Distribution, the kind-specific scalar, Min, Max and FX - plus the two
+    ' vectors, plus ONE MORE when Most Likely is present. Folding the optional
+    ' field into a constant is exactly how a record that emits nine fields came
+    ' to be given eight slots.
+    Dim fields() As String, count As Long, index As Long, fieldCount As Long
     Dim inflationCount As Long, weightCount As Long
     inflationCount = UBound(inflationFactors) - LBound(inflationFactors) + 1
     weightCount = UBound(weights) - LBound(weights) + 1
     If inflationCount < 1 Or weightCount < 1 Then Exit Function
-    ReDim fields(0 To 5 + inflationCount + weightCount)
+    fieldCount = 6 + inflationCount + weightCount
+    If includeMostLikely Then fieldCount = fieldCount + 1
+    ReDim fields(0 To fieldCount - 1)
     fields(0) = CalcFpCanonicalText(permanentId)
     fields(1) = CalcFpCanonicalText(distribution)
     count = 2
@@ -359,6 +368,11 @@ Private Function CalcFpBuildDriverRecord(ByVal permanentId As String, _
                                  fields(count)) Then Exit Function
         count = count + 1
     Next index
+    ' The emitted count must equal the capacity the schema asked for. This turns
+    ' a future field-order or schema edit into a controlled failure instead of
+    ' another silent buffer mismatch, and `count` - never the array size -
+    ' remains the encoded field count.
+    If count <> fieldCount Then Exit Function
     CalcFpBuildDriverRecord = CalcFpEncodeRecord(fields, count, record)
 End Function
 

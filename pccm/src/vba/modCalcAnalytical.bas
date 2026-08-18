@@ -163,7 +163,7 @@ Public Function TriangularMean(ByVal minimum As Double, ByVal mostLikely As Doub
     numerator(0) = minimum
     numerator(1) = mostLikely
     numerator(2) = maximum
-    TriangularMean = ConvexFinish(stagedOk, staged, numerator, 3#, result)
+    TriangularMean = ConvexFinish(stagedOk, staged, numerator, 3, 3#, result)
 End Function
 
 Public Function PertMean(ByVal minimum As Double, ByVal mostLikely As Double, _
@@ -189,7 +189,7 @@ Public Function PertMean(ByVal minimum As Double, ByVal mostLikely As Double, _
     numerator(3) = mostLikely
     numerator(4) = mostLikely
     numerator(5) = maximum
-    PertMean = ConvexFinish(stagedOk, staged, numerator, 6#, result)
+    PertMean = ConvexFinish(stagedOk, staged, numerator, 6, 6#, result)
 End Function
 
 Public Function UniformMean(ByVal minimum As Double, ByVal maximum As Double, _
@@ -206,10 +206,10 @@ Public Function UniformMean(ByVal minimum As Double, ByVal maximum As Double, _
     stagedOk = StableConvex(values, CONVEX_HALVES, staged)
     numerator(0) = minimum
     numerator(1) = maximum
-    UniformMean = ConvexFinish(stagedOk, staged, numerator, 2#, result)
+    UniformMean = ConvexFinish(stagedOk, staged, numerator, 2, 2#, result)
 End Function
 
-Public Function DistributionMean(ByVal distKind As Long, ByVal minimum As Double, _
+Private Function DistributionMean(ByVal distKind As Long, ByVal minimum As Double, _
                                  ByVal mostLikely As Double, ByVal maximum As Double, _
                                  ByRef result As Double) As Boolean
     ' The distribution mean. Uniform is a TWO-POINT distribution: a populated
@@ -252,7 +252,7 @@ Public Function ExpectedRisk(ByVal probability As Double, ByVal severity As Doub
     group(0) = probability
     group(1) = severity
     group(2) = factor
-    ExpectedRisk = SafeProduct(group, result)
+    ExpectedRisk = SafeProduct(group, 3, result)
 End Function
 
 Private Function UsableOperands(ByRef values() As Double) As Boolean
@@ -307,8 +307,8 @@ Private Function DivideInto(ByRef total As Double, ByVal value As Double, _
 End Function
 
 Private Function ConvexFinish(ByVal stagedOk As Boolean, ByVal staged As Double, _
-                              ByRef numerator() As Double, ByVal divisor As Double, _
-                              ByRef result As Double) As Boolean
+                              ByRef numerator() As Double, ByVal numeratorCount As Long, _
+                              ByVal divisor As Double, ByRef result As Double) As Boolean
     ' A staged zero is not trusted. The midpoint of -20 and 19 subnormals is
     ' -0.5 of a subnormal, which every staged evaluation rounds to zero; the
     ' exact numerator knows the difference between that and a true zero.
@@ -319,7 +319,7 @@ Private Function ConvexFinish(ByVal stagedOk As Boolean, ByVal staged As Double,
             Exit Function
         End If
     End If
-    ConvexFinish = ExactQuotientOfSum(numerator, divisor, result)
+    ConvexFinish = ExactQuotientOfSum(numerator, numeratorCount, divisor, result)
 End Function
 
 ' ==========================================================================
@@ -335,13 +335,12 @@ End Function
 ' This is NOT magnitude ordering. Magnitude never decides the order drivers are
 ' processed in.
 ' ==========================================================================
-Public Function CanonicalOrder(ByRef ids() As String, ByRef isRisk() As Boolean, _
-                               ByRef order() As Long) As Boolean
-    Dim count As Long, first As Long, index As Long, slot As Long
+Private Function CanonicalOrder(ByRef ids() As String, ByRef isRisk() As Boolean, _
+                                ByVal count As Long, ByRef order() As Long) As Boolean
+    Dim first As Long, index As Long, slot As Long
     Dim probe As Long, moving As Long
-    first = LBound(ids)
-    count = UBound(ids) - first + 1
     If count < 1 Then Exit Function
+    first = LBound(ids)
     ReDim order(0 To count - 1)
     slot = 0
     For index = 0 To count - 1
@@ -373,9 +372,9 @@ Public Function CanonicalOrder(ByRef ids() As String, ByRef isRisk() As Boolean,
     CanonicalOrder = True
 End Function
 
-Private Function AuditOrder(ByRef audits() As DriverAudit, ByRef order() As Long) As Boolean
-    Dim ids() As String, risky() As Boolean, index As Long, count As Long
-    count = UBound(audits) - LBound(audits) + 1
+Private Function AuditOrder(ByRef audits() As DriverAudit, ByVal count As Long, _
+                            ByRef order() As Long) As Boolean
+    Dim ids() As String, risky() As Boolean, index As Long
     If count < 1 Then Exit Function
     ReDim ids(0 To count - 1)
     ReDim risky(0 To count - 1)
@@ -383,12 +382,12 @@ Private Function AuditOrder(ByRef audits() As DriverAudit, ByRef order() As Long
         ids(index) = audits(LBound(audits) + index).PermanentId
         risky(index) = audits(LBound(audits) + index).IsRisk
     Next index
-    AuditOrder = CanonicalOrder(ids, risky, order)
+    AuditOrder = CanonicalOrder(ids, risky, count, order)
 End Function
 
-Private Function DriverOrder(ByRef drivers() As DriverFactors, ByRef order() As Long) As Boolean
-    Dim ids() As String, risky() As Boolean, index As Long, count As Long
-    count = UBound(drivers) - LBound(drivers) + 1
+Private Function DriverOrder(ByRef drivers() As DriverFactors, ByVal count As Long, _
+                             ByRef order() As Long) As Boolean
+    Dim ids() As String, risky() As Boolean, index As Long
     If count < 1 Then Exit Function
     ReDim ids(0 To count - 1)
     ReDim risky(0 To count - 1)
@@ -396,7 +395,7 @@ Private Function DriverOrder(ByRef drivers() As DriverFactors, ByRef order() As 
         ids(index) = drivers(LBound(drivers) + index).PermanentId
         risky(index) = drivers(LBound(drivers) + index).IsRisk
     Next index
-    DriverOrder = CanonicalOrder(ids, risky, order)
+    DriverOrder = CanonicalOrder(ids, risky, count, order)
 End Function
 
 ' ==========================================================================
@@ -496,7 +495,7 @@ Private Function TripleProduct(ByVal a As Double, ByVal b As Double, ByVal c As 
     group(0) = a
     group(1) = b
     group(2) = c
-    TripleProduct = SafeProduct(group, result)
+    TripleProduct = SafeProduct(group, 3, result)
 End Function
 
 ' ==========================================================================
@@ -513,9 +512,16 @@ End Function
 ' scale measures the arithmetic THAT WAS PERFORMED rather than the total that
 ' survived it (erratum C1).
 ' ==========================================================================
-Public Function AccumulateTotals(ByRef audits() As DriverAudit, ByRef totals As AnalyticalTotals, _
+Public Function AccumulateTotals(ByRef audits() As DriverAudit, ByVal auditCount As Long, _
+                                 ByRef totals As AnalyticalTotals, _
                                  ByRef magnitudes As ReconciliationMagnitudes, _
                                  ByRef detail As String) As Boolean
+    ' THE LOGICAL COUNT IS A PARAMETER, and the empty case is settled before any
+    ' bound of `audits` is read. A model with no cost lines and no risks is
+    ' valid, and VBA cannot represent a zero-element array: an allocated one
+    ' always has UBound >= LBound, and an unallocated dynamic array raises on
+    ' LBound. Deriving the count from the array would make the empty model
+    ' unreachable however the branch was written.
     Dim order() As Long, index As Long, slot As Long, who As String
     Dim count As Long, costs As Long, risks As Long, coefficient As Double
     Dim aNomTerms() As Double, aPvTerms() As Double
@@ -532,13 +538,14 @@ Public Function AccumulateTotals(ByRef audits() As DriverAudit, ByRef totals As 
         Exit Function
     End If
     ClearHeadlineMagnitudes magnitudes
-    count = UBound(audits) - LBound(audits) + 1
-    If count < 1 Then
-        ClearTotals totals
+    ClearTotals totals
+    If auditCount < 0 Then Exit Function
+    If auditCount = 0 Then
         AccumulateTotals = True
         Exit Function
     End If
-    If Not AuditOrder(audits, order) Then
+    count = auditCount
+    If Not AuditOrder(audits, count, order) Then
         detail = "canonical driver order"
         Exit Function
     End If
@@ -635,22 +642,13 @@ End Function
 
 Private Function SumMeasure(ByRef terms() As Double, ByVal count As Long, ByRef result As Double, _
                             ByVal measure As String, ByRef detail As String) As Boolean
-    If SumSeries(terms, count, result) Then
+    ' An empty measure is zero, not a failure: a model with no risks has D = 0,
+    ' and SafeSignedSum settles that from the count alone.
+    If SafeSignedSum(terms, count, result) Then
         SumMeasure = True
         Exit Function
     End If
     detail = measure & " total"
-End Function
-
-Private Function SumSeries(ByRef terms() As Double, ByVal count As Long, _
-                           ByRef result As Double) As Boolean
-    ' An empty measure is zero, not a failure: a model with no risks has D = 0.
-    If count < 1 Then
-        result = 0#
-        SumSeries = True
-        Exit Function
-    End If
-    SumSeries = SafeSignedSum(terms, result)
 End Function
 
 Private Sub ClearTotals(ByRef totals As AnalyticalTotals)
@@ -727,11 +725,16 @@ End Sub
 ' contributions of +2*MAX_DOUBLE and -2*MAX_DOUBLE and an annual row of 0.
 ' Refusing that model would be refusing it for its evaluation order (C2).
 ' ==========================================================================
-Public Function BuildAnnualSeries(ByRef drivers() As DriverFactors, ByRef fxRate() As Double, _
-                                  ByRef weights() As Double, ByRef inflation() As Double, _
-                                  ByRef years() As YearFactors, ByRef rows() As AnnualRow, _
+Public Function BuildAnnualSeries(ByRef drivers() As DriverFactors, ByVal driverCount As Long, _
+                                  ByRef fxRate() As Double, ByRef weights() As Double, _
+                                  ByRef inflation() As Double, ByRef years() As YearFactors, _
+                                  ByRef rows() As AnnualRow, _
                                   ByRef magnitudes As ReconciliationMagnitudes, _
                                   ByRef detail As String) As Boolean
+    ' `driverCount` is the logical driver count; see AccumulateTotals. With zero
+    ' drivers the applied years still exist, so every year still gets a row -
+    ' with its project index and calendar year and six zero series - and
+    ' drivers(), fxRate(), weights() and inflation() are never touched.
     Dim order() As Long, count As Long, costs As Long, risks As Long
     Dim yearCount As Long, offset As Long, slot As Long, index As Long
     Dim coefficient As Double, discount As Double
@@ -751,9 +754,9 @@ Public Function BuildAnnualSeries(ByRef drivers() As DriverFactors, ByRef fxRate
         detail = "applied timeline"
         Exit Function
     End If
-    count = UBound(drivers) - LBound(drivers) + 1
     ReDim rows(0 To yearCount - 1)
-    If count < 1 Then
+    If driverCount < 0 Then Exit Function
+    If driverCount = 0 Then
         For offset = 0 To yearCount - 1
             rows(offset).ProjectIndex = years(LBound(years) + offset).ProjectIndex
             rows(offset).CalendarYear = years(LBound(years) + offset).CalendarYear
@@ -761,7 +764,8 @@ Public Function BuildAnnualSeries(ByRef drivers() As DriverFactors, ByRef fxRate
         BuildAnnualSeries = True
         Exit Function
     End If
-    If Not DriverOrder(drivers, order) Then
+    count = driverCount
+    If Not DriverOrder(drivers, count, order) Then
         detail = "canonical driver order"
         Exit Function
     End If
@@ -803,7 +807,7 @@ Public Function BuildAnnualSeries(ByRef drivers() As DriverFactors, ByRef fxRate
         ' series it feeds decides whether that matters.
         For slot = 0 To count - 1
             group = GroupOf(factorsOf, slot, False, discount)
-            hasNominal(slot) = SafeProduct(group, nominal(slot))
+            hasNominal(slot) = SafeProduct(group, ANNUAL_FACTOR_COUNT, nominal(slot))
             hasPresent(slot) = False
             If hasNominal(slot) Then
                 hasPresent(slot) = SafeMultiply(nominal(slot), discount, present(slot))
@@ -947,7 +951,7 @@ Private Function AnnualSeries(ByRef values() As Double, ByRef present() As Boole
         For index = 0 To count - 1
             terms(index) = values(first + index)
         Next index
-        If SafeSignedSum(terms, staged) Then
+        If SafeSignedSum(terms, count, staged) Then
             result = staged
             AnnualSeries = True
             Exit Function
@@ -988,9 +992,14 @@ End Function
 ' reporting nonsense.
 ' ==========================================================================
 Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As AnnualRow, _
-                          ByRef drivers() As DriverFactors, ByRef weights() As Double, _
+                          ByRef drivers() As DriverFactors, ByVal driverCount As Long, _
+                          ByRef weights() As Double, _
                           ByRef magnitudes As ReconciliationMagnitudes, _
                           ByRef checks() As IdentityCheck, ByRef detail As String) As Boolean
+    ' `driverCount` is the logical driver count; see AccumulateTotals. With zero
+    ' drivers the ten non-I5 identities are still produced and still hold, no
+    ' I5 profile check exists because there is no profile to check, and neither
+    ' drivers() nor weights() is touched.
     Dim order() As Long, count As Long, yearCount As Long
     Dim index As Long, slot As Long, position As Long
     Dim series() As Double, total As Double, scale As Double
@@ -1005,7 +1014,11 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
         detail = "conditioning magnitudes captured at a different coefficient"
         Exit Function
     End If
-    count = UBound(drivers) - LBound(drivers) + 1
+    If driverCount < 0 Then
+        detail = "negative driver count"
+        Exit Function
+    End If
+    count = driverCount
     yearCount = UBound(rows) - LBound(rows) + 1
     ' AN EMPTY DRIVER SET RECONCILES. A model with no cost lines and no risks is
     ' a valid model whose totals are zero, whose annual series are zero and
@@ -1063,7 +1076,7 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
         End If
         ' SIGNED: annual rows carry either sign, and the reconciliation must not
         ' refuse a model whose headline it is about to confirm (erratum C2).
-        If Not SumSeries(series, yearCount, total) Then
+        If Not SafeSignedSum(series, yearCount, total) Then
             detail = labels(position)
             Exit Function
         End If
@@ -1081,11 +1094,11 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
     ' I5: each driver's profile weights must sum to 1. Its allowance is the
     ' profiling tolerance - an absolute tolerance on a normalised sum, which is
     ' conditioned on nothing.
-    If count < 1 Then
+    If count = 0 Then
         Reconcile = True
         Exit Function
     End If
-    If Not DriverOrder(drivers, order) Then
+    If Not DriverOrder(drivers, count, order) Then
         detail = "canonical driver order"
         Exit Function
     End If
@@ -1096,7 +1109,7 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
             series(position) = weights(LBound(weights, 1) + order(slot), _
                                        LBound(weights, 2) + position)
         Next position
-        If Not SafeSignedSum(series, total) Then
+        If Not SafeSignedSum(series, UBound(series) + 1, total) Then
             detail = "I5 profile sum, driver " & drivers(index).PermanentId
             Exit Function
         End If

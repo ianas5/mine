@@ -1,6 +1,6 @@
 # Phase 5 — Gate A — Step 4: the pure VBA numerical kernel, as source
 
-**Status: CORRECTED after independent review — ready for re-review.**
+**Status: CORRECTED TWICE after independent review — ready for re-review.**
 
 Step 3 is accepted and closed. This step adds three hand-written VBA modules —
 `modCalcFactors`, `modCalcAnalytical`, `modCalcFingerprint` — that implement the
@@ -10,7 +10,114 @@ the contract declare them.
 
 ---
 
-## Correction round — five blocking defects found by independent review
+## Second correction round — runtime-capability and API defects
+
+Independent review of `2d76d78` confirmed that the first correction genuinely
+fixed the fingerprint schema, the inflation vector, the `FP_VERSION` authority,
+the exact binary constants, the split C1 ownership, the conditioning
+underflow/overflow split and the removal of `Variant`. It then found two
+**runtime-capability** blockers and two source/API hardening items.
+
+The common thread in the two blockers is the same mistake made twice: **VBA
+cannot represent a zero-element array.** An allocated array always satisfies
+`UBound >= LBound`, and an unallocated dynamic array raises Error 9 on `LBound`
+before any emptiness test could run. Every branch guarded by a count derived
+from array bounds is therefore dead code — including the empty-driver branch
+this document previously described as fixed. **That claim was wrong**, and the
+API, not the branch, was the problem.
+
+### 1. The driver-record buffer was one field short whenever ML was present
+
+The field ORDER was correct. The allocation was not:
+
+```vba
+ReDim fields(0 To 5 + inflationCount + weightCount)   ' 6 + n + m SLOTS
+```
+
+The record has six fixed fields — Permanent ID, Distribution, the kind-specific
+scalar, Min, Max, FX — plus both vectors, plus a seventh when Most Likely is
+present. The locked one-year Triangular cost record emits **nine** fields into
+**eight** slots, so the source could not build the reference record at all, even
+though the static schema test was green.
+
+The capacity is now computed and the emitted count is checked against it:
+
+```vba
+fieldCount = 6 + inflationCount + weightCount
+If includeMostLikely Then fieldCount = fieldCount + 1
+ReDim fields(0 To fieldCount - 1)
+...
+If count <> fieldCount Then Exit Function
+```
+
+`count` — never the array size — remains the encoded field count. The final
+guard turns a future schema edit into a controlled failure rather than another
+silent buffer mismatch. `test_53` evaluates the source's own formula
+symbolically for both ML cases; `test_53a` evaluates it for the locked reproducer
+and requires nine.
+
+### 2. The empty-driver fix was unreachable
+
+`AccumulateTotals`, `BuildAnnualSeries` and `Reconcile` all derived their driver
+count from the array bounds, so the accepted empty model — zero cost lines, zero
+risks, zero totals, annual rows still present, ten identities holding — could
+never be expressed.
+
+The logical count is now a parameter at every aggregate boundary, and the
+zero-count branch is settled **before any bound of the corresponding array is
+read**. The private order helpers take it too, so the same defect cannot
+reappear one level down. No dummy driver, no `Variant`, no allocation probing,
+no error-handler trick.
+
+`test_63` proves the ordering structurally: it locates the explicit
+`If <count> = 0 Then` branch and the first statement that reads a bound of, or
+subscripts, each possibly-empty array, and requires the branch to come first.
+
+### 3. `SafeProduct` could not return the empty product
+
+`safe_product([]) == 1.0` is locked behaviour, and
+
+```vba
+If UBound(factors) < LBound(factors) Then
+```
+
+has exactly the defect above: unreachable for an allocated array, raising for an
+unallocated one. `SafeProduct` and `SafeSignedSum` now take an explicit logical
+count, refuse a negative one, and settle the multiplicative and additive
+identities before touching a bound. Every call site passes its own count —
+`TripleProduct` and `ExpectedRisk` pass 3, `BuildFactor` passes `width`,
+`AnnualSeries` passes `count`, the I5 profile sum passes the project-year count.
+For a positive count the Tier-1 result and the exact Tier-2 rescue are unchanged.
+
+### 4. `ExactQuotientOfSum` reached a raw division on an unsupported divisor
+
+It is Public, it installs no error handler, and it performed no validation before
+`ExactDivideSmall`. A divisor of zero would have reached a raw division. The
+public contract is now **exactly `{2, 3, 6}`** — the three convex-statistic
+denominators — validated before any work is done. Any other divisor returns
+`False` and leaves the result unchanged. The unreachable identity path for a
+divisor of `1` has been removed rather than left as dead code, and
+`ExactDivideSmall` remains the locked small-divisor kernel.
+
+### 5. Three helpers were Public without a cross-module caller
+
+The whitelist comment claimed every Public name had an external caller. Source
+reference inspection disproved that for `DistributionMean`, `CanonicalOrder` and
+`CalcFpNumberField` — each is called only inside its own module, and none was
+part of the requested Gate-B diagnostic surface. All three are now `Private`,
+with semantics unchanged and no inlining.
+
+`test_64h` now **scans references** rather than trusting the comment: a Public
+name with no caller outside its own module must appear in an explicit exception
+set with a stated reason. The exceptions are the ten fingerprint helpers that
+form the Gate-B diagnostic surface, the primitives and rescues the resolver layer
+will call directly, the five distribution and audit entry points the Step-4
+instruction requires to be Public, and `AllIdentitiesHold`, which later
+orchestration consumes.
+
+---
+
+## First correction round — five blocking defects found by independent review
 
 Independent review of `7fac269` reproduced every reported static result and
 accepted the three-module architecture, the line-limit retarget, the module
@@ -89,10 +196,13 @@ every magnitude field.
 
 `Reconcile` began with an explicit `"no drivers"` refusal. The accepted Step-2
 oracle has `test_an_empty_driver_set_is_not_refused`, and no accepted contract
-invented a minimum-driver rule. A model with no cost lines and no risks has zero
-totals, zero annual series and no profile checks, and every identity holds. It
-now produces the ten non-I5 checks and returns success, and never reaches
-`DriverOrder`.
+invented a minimum-driver rule.
+
+The refusal was removed in this round, **but the replacement was still not
+reachable**: the count was derived from the array bounds, which can never be
+zero. The second correction round above fixes that properly with an explicit
+logical count. This round's claim that the empty model was expressible was
+wrong.
 
 ### 5. Conditioning overflow was silently turned into zero
 
@@ -184,14 +294,15 @@ added.
 
 | Module | Raw | Blank | Comment | Code | Code < 900 | Raw < 1200 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `modCalcFactors` | 1065 | 49 | 214 | 802 | yes | yes |
-| `modCalcAnalytical` | 1164 | 64 | 231 | 869 | yes | yes |
-| `modCalcFingerprint` | 485 | 28 | 175 | 282 | yes | yes |
+| `modCalcFactors` | 1088 | 49 | 230 | 809 | yes | yes |
+| `modCalcAnalytical` | 1177 | 63 | 246 | 868 | yes | yes |
+| `modCalcFingerprint` | 499 | 28 | 186 | 285 | yes | yes |
 
-All three are below both applicable limits after the correction. The figures
-before it were 995/781, 1098/826 and 428/255. `modCalcAnalytical` at 869 code
-lines is the closest to a threshold, with 31 lines of headroom; the split
-magnitude ownership and the typed flat-vector construction are what consumed it. A comment line is one whose first
+All three are below both applicable limits. The figures were 995/781, 1098/826
+and 428/255 at first submission and 1065/802, 1164/869 and 485/282 after the
+first correction. `modCalcAnalytical` remains the closest to a threshold, with
+32 code lines of headroom; the count plumbing added signature lines and removed a
+pass-through helper, netting one line fewer than before. A comment line is one whose first
 non-whitespace character is the VBA apostrophe; a blank line is neither comment
 nor code.
 
@@ -584,17 +695,31 @@ The Stage-A post-build verifier still reports **351 passed, 0 failed**.
 | `test_phase5_numeric.py` | 94 |
 | `test_phase5_oracle.py` | 111 |
 | `test_phase5_stage_a.py` | 57 |
-| `test_phase5_vba_source.py` | **93** |
-| **Total** | **1063** |
+| `test_phase5_vba_source.py` | **112** |
+| **Total** | **1082** |
 
-The pre-review baseline was 967 and the first Step-4 submission was 1029. The
-correction adds 34 more static tests, all in `test_phase5_vba_source.py`. **No
-test was removed, and no test was weakened to make the patch pass.**
+The pre-review baseline was 967; the first Step-4 submission was 1029; the first
+correction reached 1063. The second correction adds 19 more static tests, all in
+`test_phase5_vba_source.py`. **No test was removed, and no test was weakened to
+make the patch pass.**
 
-### Discrimination against the defective commit
+### Discrimination against the defective commits
 
-Run unchanged against `7fac269`, the corrected suite produces **23 failures**,
-covering every defect class:
+Run unchanged against **`7fac269`** (the first submission) the suite produces 23
+failures; run unchanged against **`2d76d78`** (the first correction) it produces
+14, covering every defect of the second round:
+
+| Defect | Failing tests against `2d76d78` |
+| --- | --- |
+| ML buffer under-allocation | `test_53`, `test_53a` |
+| empty branch after a bounds read, all three producers | `test_62`, `test_63`, `test_64a` |
+| count-less private order helpers | `test_64b` |
+| unreachable `SafeProduct` empty product | `test_64c`, `test_64d` |
+| count-less `SafeSignedSum` boundary | `test_64c`, `test_64d`, `test_64e` |
+| unguarded `ExactQuotientOfSum` divisor | `test_64f` |
+| `DistributionMean` / `CanonicalOrder` / `CalcFpNumberField` Public | `test_43`, `test_45`, `test_64h`, `test_64i` |
+
+The first round's defect classes and their failing tests against `7fac269`:
 
 | Defect | Failing tests |
 | --- | --- |
@@ -604,17 +729,15 @@ covering every defect class:
 | wrong `TWO_52` / `MAX_SIGNIFICAND` / `MAX_DOUBLE` | `test_56`, `test_57` |
 | unused approximate constant | `test_58` |
 | whole-object magnitudes clear | `test_59`, `test_60`, `test_61` |
-| explicit no-driver refusal | `test_62` |
 | conditioning failure turned into zero | `test_64`, `test_65`, `test_66` |
 | `Variant` numerical containers | `test_06`, `test_68`, `test_69`, `test_70` |
-| private versioned builder | `test_37` |
 
-`test_67` (an overflow cannot be relabelled an accepted underflow) and
-`test_53b`/`test_53c` (the schema positions are distinguishable) are standing
-invariants rather than discriminators; the defects they guard are caught by the
-tests above.
+`test_67` (an overflow cannot be relabelled an accepted underflow), `test_64g`
+(the convex statistics pass only supported divisors) and `test_53b`/`test_53c`
+(the schema positions are distinguishable) are standing invariants rather than
+discriminators.
 
-### The twenty-two negative controls
+### The thirty negative controls
 
 `tests/test_phase5_vba_source.py` plants twelve defects in synthetic module text
 and asserts the sweep that exists to catch each one does catch it. A sweep that
@@ -648,6 +771,17 @@ had silently stopped working would pass every positive test and fail these.
 21. an exact failure turned into a zero
 22. a `Variant` numerical container
 
+**Eight more for the second round:**
+
+23. a capacity formula that forgets Most Likely
+24. a missing emitted-count guard
+25. a count derived from array bounds, in each of the three producers
+26. an empty branch placed after a bounds read
+27. an unreachable `SafeProduct` empty-product branch
+28. a count-less `SafeSignedSum`
+29. an unguarded exact divisor
+30. an accidentally Public helper
+
 A further check runs the other way: a comment that mentions `Application.` and
 `Worksheets` must **not** be reported, which is what proves the sweeps read code
 and not commentary.
@@ -666,6 +800,24 @@ Whitelisted **exactly**, in both directions, so accidental growth is a test
 failure rather than a silent new entry point. Everything else in each module is
 `Private`.
 
+**`modCalcFactors` (17)** — `IsUsableDouble`, `SafeAdd`, `SafeSubtract`,
+`SafeMultiply`, `SafeDivide`, `SafeAccumulate`, `SafeSignedSum`, `SafeProduct`,
+`ExactSumOfProducts`, `ExactQuotientOfSum`, `BuildInflationFactors`,
+`BuildDiscountFactors`, `BuildKnom`, `BuildKpv`, `ConditioningScaledMagnitude`,
+`ConditioningScaledProduct`, `IdentityAllowance`.
+
+**`modCalcAnalytical` (10)** — `TriangularMean`, `PertMean`, `UniformMean`,
+`DeterministicCentral`, `ExpectedRisk`, `BuildDriverAudit`, `AccumulateTotals`,
+`BuildAnnualSeries`, `Reconcile`, `AllIdentitiesHold`.
+
+**`modCalcFingerprint` (10)** — `CalcFpUtf16Length`, `CalcFpNormaliseCodeUnit`,
+`CalcFpCanonicalText`, `CalcFpCanonicalNumber`, `CalcFpCanonicalInteger`,
+`CalcFpReduceDouble`, `CalcFpDigestStream`, `CalcFpBuildCostRecord`,
+`CalcFpBuildRiskRecord`, `CalcFpBuildFingerprint`.
+
+`DistributionMean`, `CanonicalOrder` and `CalcFpNumberField` were Public in
+`2d76d78` with no cross-module caller. They are now `Private`.
+
 Two `modCalcFactors` procedures are Public specifically because
 `modCalcAnalytical` calls them, and this is why:
 
@@ -679,13 +831,13 @@ Two `modCalcFactors` procedures are Public specifically because
   finite. Only the exact kernel can fold the coefficient into that factor
   expression, and C1 requires the magnitude to be recorded anyway.
 
-`CalcFpNumberField` is Public alongside `CalcFpCanonicalNumber` because the N
-field is the only field whose encoding can fail, and Gate B compares the
-canonical *text* of the ten locked numeric vectors rather than their framed
-fields. `CalcFpBuildVersionedFingerprint` is **Private**: the version is
-injectable only so a future migration can express the grammar for a version
-other than the current one, and production has exactly one entry point, which
-reads `FP_VERSION` from `modCalcContract`.
+`CalcFpBuildVersionedFingerprint` is **Private**: the version is injectable only
+so a future migration can express the grammar for a version other than the
+current one, and production has exactly one entry point, which reads
+`FP_VERSION` from `modCalcContract`.
+
+`test_64h` scans cross-module references and fails any Public name that has no
+external caller and no entry in the documented exception set.
 
 ---
 

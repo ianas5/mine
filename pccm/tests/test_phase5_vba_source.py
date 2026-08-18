@@ -111,17 +111,39 @@ FACTORS_PUBLIC = {
 }
 
 ANALYTICAL_PUBLIC = {
-    "TriangularMean", "PertMean", "UniformMean", "DistributionMean",
-    "DeterministicCentral", "ExpectedRisk",
-    "CanonicalOrder", "BuildDriverAudit", "AccumulateTotals",
-    "BuildAnnualSeries", "Reconcile", "AllIdentitiesHold",
+    "TriangularMean", "PertMean", "UniformMean", "DeterministicCentral", "ExpectedRisk",
+    "BuildDriverAudit", "AccumulateTotals", "BuildAnnualSeries", "Reconcile",
+    # Later orchestration consumes the reconciliation result, so the verdict over
+    # a check array is part of the reviewed surface even though nothing calls it
+    # across a module boundary yet.
+    "AllIdentitiesHold",
 }
 
 FINGERPRINT_PUBLIC = {
     "CalcFpUtf16Length", "CalcFpNormaliseCodeUnit", "CalcFpCanonicalText",
-    "CalcFpCanonicalNumber", "CalcFpCanonicalInteger", "CalcFpNumberField",
+    "CalcFpCanonicalNumber", "CalcFpCanonicalInteger",
     "CalcFpReduceDouble", "CalcFpDigestStream", "CalcFpBuildCostRecord",
     "CalcFpBuildRiskRecord", "CalcFpBuildFingerprint",
+}
+
+# Public WITHOUT a current cross-module caller, each for a stated reason. Every
+# other Public name must have one, and test_71 proves it by scanning references.
+PUBLIC_WITHOUT_CROSS_MODULE_CALLER = {
+    # The Gate-B diagnostic surface: the locked helper vectors are compared one
+    # by one against the reference implementation on Windows, so each stays
+    # reachable even though the production path goes through the builders.
+    "CalcFpUtf16Length", "CalcFpNormaliseCodeUnit", "CalcFpCanonicalText",
+    "CalcFpCanonicalNumber", "CalcFpCanonicalInteger", "CalcFpReduceDouble",
+    "CalcFpDigestStream",
+    # Consumed by later orchestration, not by another module today.
+    "AllIdentitiesHold",
+    # The primitives and rescues the resolver layer will call directly.
+    "ExpectedRisk", "IsUsableDouble", "SafeAdd", "SafeSubtract", "SafeMultiply", "SafeDivide",
+    "SafeAccumulate", "SafeSignedSum", "BuildInflationFactors",
+    "BuildDiscountFactors", "BuildKnom", "BuildKpv", "IdentityAllowance",
+    "TriangularMean", "PertMean", "UniformMean", "DeterministicCentral",
+    "BuildDriverAudit", "AccumulateTotals", "BuildAnnualSeries", "Reconcile",
+    "CalcFpBuildCostRecord", "CalcFpBuildRiskRecord", "CalcFpBuildFingerprint",
 }
 
 PUBLIC_SURFACE = {
@@ -737,6 +759,11 @@ def test_44_the_required_minimum_surface_is_inside_the_whitelist() -> None:
     assert required <= FACTORS_PUBLIC
     assert {"TriangularMean", "PertMean", "UniformMean", "DeterministicCentral",
             "ExpectedRisk"} <= ANALYTICAL_PUBLIC
+    for name in ("CalcFpUtf16Length", "CalcFpNormaliseCodeUnit", "CalcFpCanonicalText",
+                 "CalcFpCanonicalNumber", "CalcFpCanonicalInteger", "CalcFpReduceDouble",
+                 "CalcFpDigestStream", "CalcFpBuildCostRecord", "CalcFpBuildRiskRecord",
+                 "CalcFpBuildFingerprint"):
+        assert name in FINGERPRINT_PUBLIC
 
 
 def test_45_every_helper_outside_the_whitelist_is_private() -> None:
@@ -914,6 +941,33 @@ def _vba_constant_literal(module: VbaModule, name: str) -> str:
     raise AssertionError(f"{module.name} does not declare {name} As Double")
 
 
+def record_capacity(module: VbaModule):
+    """Evaluate the source's own allocation formula symbolically.
+
+    The `fieldCount = …` and `If includeMostLikely Then fieldCount = …` statements
+    are read out of the source and applied, so the test measures what the code
+    allocates rather than what a comment claims it allocates.
+    """
+    body = _procedure_body(module, "CalcFpBuildDriverRecord")
+    base = re.search(r"^\s*fieldCount = (\d+) \+ inflationCount \+ weightCount\s*$",
+                     body, re.MULTILINE)
+    assert base, "the base capacity is not a readable formula"
+    bump = re.search(
+        r"^\s*If includeMostLikely Then fieldCount = fieldCount \+ (\d+)\s*$",
+        body, re.MULTILINE,
+    )
+    redim = re.search(r"^\s*ReDim fields\(0 To fieldCount - 1\)\s*$", body, re.MULTILINE)
+    assert redim, "the allocation must be sized from the computed field count"
+
+    def capacity(include_ml: bool, inflation_count: int, weight_count: int) -> int:
+        total = int(base.group(1)) + inflation_count + weight_count
+        if include_ml:
+            total += int(bump.group(1)) if bump else 0
+        return total
+
+    return capacity
+
+
 def number_field_arguments(module: VbaModule, procedure: str) -> list[str]:
     """The first argument of every `CalcFpNumberField` call, in source order."""
     body = _procedure_body(module, procedure)
@@ -1030,13 +1084,42 @@ def test_52_inflation_factors_are_encoded_before_the_profile_weights() -> None:
     assert inflation < weight, "the inflation vector must precede the weight vector"
 
 
-def test_53_the_record_length_accounts_for_both_vectors() -> None:
-    """The field array is sized from both counts, so neither can be dropped
-    silently."""
+def test_53_the_record_capacity_accounts_for_both_vectors_and_the_optional_ml() -> None:
+    """The allocation is SIX fixed fields plus both vectors, plus one for ML.
+
+    Permanent ID, Distribution, the kind-specific scalar, Min, Max and FX are the
+    six; Most Likely is a seventh only when it is present. A capacity constant
+    that folded the optional field in is how a record emitting nine fields came to
+    be given eight slots - and the static schema test stayed green while the
+    locked one-year Triangular record could not be built at all.
+    """
     body = _procedure_body(_kernel()["modCalcFingerprint"], "CalcFpBuildDriverRecord")
     assert "inflationCount = UBound(inflationFactors) - LBound(inflationFactors) + 1" in body
     assert "weightCount = UBound(weights) - LBound(weights) + 1" in body
-    assert "ReDim fields(0 To 5 + inflationCount + weightCount)" in body
+    capacity = record_capacity(_kernel()["modCalcFingerprint"])
+    assert capacity(False, 1, 1) == 6 + 1 + 1
+    assert capacity(True, 1, 1) == 7 + 1 + 1
+    assert capacity(True, 5, 5) == 7 + 5 + 5
+    assert capacity(False, 5, 5) == 6 + 5 + 5
+    assert "If count <> fieldCount Then Exit Function" in body, (
+        "the emitted count must be checked against the capacity the schema asked for"
+    )
+    assert "CalcFpEncodeRecord(fields, count, record)" in body, (
+        "the ENCODED field count is the emitted count, never the array size"
+    )
+
+
+def test_53a_the_capacity_covers_the_locked_triangular_one_year_record() -> None:
+    """The reproducer, evaluated symbolically from the source formula.
+
+    ID, Distribution, Quantity, Min, Max, ML, FX, inflation[0], weight[0] is nine
+    fields. The allocation must provide nine slots.
+    """
+    capacity = record_capacity(_kernel()["modCalcFingerprint"])
+    emitted = len(number_field_arguments(_kernel()["modCalcFingerprint"],
+                                         "CalcFpBuildDriverRecord")) + 2
+    assert emitted == 9, "the locked one-year record emits nine fields"
+    assert capacity(True, 1, 1) == 9
 
 
 # --- 13.1b the schema positions must be distinguishable --------------------
@@ -1226,25 +1309,239 @@ def test_61_a_conflicting_coefficient_fails_deterministically() -> None:
 
 
 # --- 13.5 the empty driver set ---------------------------------------------
-def test_62_an_empty_driver_set_reconciles_rather_than_being_refused() -> None:
-    """No accepted contract invented a "must have at least one driver" rule.
+def first_bounds_access(module: VbaModule, procedure: str, array: str) -> int:
+    """The index of the first statement that reads a bound of, or subscripts, `array`.
 
-    A model with no cost lines and no risks has zero totals, zero annual series
-    and no profile checks, and every identity holds.
+    `len(statements)` if it is never touched. This is the line an empty-model
+    branch must come BEFORE: an unallocated dynamic array raises on LBound, so a
+    guard placed after one can never run.
+    """
+    statements = [text for _, text in logical_statements(_procedure_body(module, procedure))]
+    pattern = re.compile(rf"(?:[LU]Bound\(\s*{array}\b|(?<![\w.]){array}\s*\()")
+    # Statement 0 is the declaration itself: `audits() As DriverAudit` names the
+    # array without reading it, and a guard cannot precede its own signature.
+    for index, statement in enumerate(statements):
+        if index and pattern.search(statement):
+            return index
+    return len(statements)
+
+
+def empty_branch_index(module: VbaModule, procedure: str, count: str) -> int:
+    """The index of the explicit `If <count> = 0 Then` branch."""
+    statements = [text for _, text in logical_statements(_procedure_body(module, procedure))]
+    for index, statement in enumerate(statements):
+        if re.match(rf"^If {count} = 0 Then$", statement):
+            return index
+    raise AssertionError(f"{procedure} has no explicit zero-{count} branch")
+
+
+def test_62_the_logical_count_is_a_parameter_at_every_aggregate_boundary() -> None:
+    """VBA cannot represent a zero-element array.
+
+    An allocated array always has `UBound >= LBound`, so a count derived from the
+    bounds is never zero; an unallocated dynamic array raises Error 9 on `LBound`
+    before any emptiness test could run. Deriving the count from the array makes
+    the accepted empty model unreachable however the branch is written, so the
+    count is passed in.
     """
     module = _kernel()["modCalcAnalytical"]
-    raw_body = _procedure_body_raw(module, "Reconcile")
-    assert '"no drivers"' not in raw_body, "an empty driver set must not be refused"
-    statements = [text for _, text in logical_statements(_procedure_body(module, "Reconcile"))]
-    guard = statements.index("If count < 1 Then")
-    assert statements[guard + 1] == "Reconcile = True", (
-        "the empty case must succeed, not fall through to the driver loop"
-    )
-    assert "ReDim checks(0 To 9 + count)" in _procedure_body(module, "Reconcile"), (
+    assert "auditCount As Long" in _signature(module, "AccumulateTotals")
+    assert "driverCount As Long" in _signature(module, "BuildAnnualSeries")
+    assert "driverCount As Long" in _signature(module, "Reconcile")
+    for procedure, array in (("AccumulateTotals", "audits"),
+                             ("BuildAnnualSeries", "drivers"),
+                             ("Reconcile", "drivers")):
+        body = _procedure_body(module, procedure)
+        assert not re.search(rf"count = UBound\({array}\)", body), (
+            f"{procedure} still derives its count from the array bounds"
+        )
+
+
+def test_63_every_empty_branch_precedes_any_access_to_its_array() -> None:
+    """An empty model must reach each branch WITHOUT touching the array."""
+    module = _kernel()["modCalcAnalytical"]
+    for procedure, count, arrays in (
+        ("AccumulateTotals", "auditCount", ("audits",)),
+        ("BuildAnnualSeries", "driverCount", ("drivers", "fxRate", "weights", "inflation")),
+        ("Reconcile", "count", ("drivers", "weights")),
+    ):
+        branch = empty_branch_index(module, procedure, count)
+        for array in arrays:
+            touch = first_bounds_access(module, procedure, array)
+            assert branch < touch, (
+                f"{procedure} touches {array} at statement {touch}, before its "
+                f"zero-{count} branch at {branch}"
+            )
+
+
+def test_64a_the_empty_branches_produce_the_accepted_empty_model() -> None:
+    """Zero totals, one row per applied year, ten identities and no I5 check."""
+    module = _kernel()["modCalcAnalytical"]
+    totals = _procedure_body(module, "AccumulateTotals")
+    assert totals.index("ClearTotals totals") < totals.index("If auditCount = 0 Then")
+    annual = _procedure_body(module, "BuildAnnualSeries")
+    assert annual.index("ReDim rows(0 To yearCount - 1)") < annual.index("If driverCount = 0 Then")
+    assert "rows(offset).ProjectIndex = years(LBound(years) + offset).ProjectIndex" in annual
+    reconcile = _procedure_body(module, "Reconcile")
+    assert '"no drivers"' not in _procedure_body_raw(module, "Reconcile")
+    assert "ReDim checks(0 To 9 + count)" in reconcile, (
         "the ten non-I5 checks must be produced whatever the driver count"
     )
-    order = next(i for i, s in enumerate(statements) if s.startswith("If Not DriverOrder("))
+    statements = [text for _, text in logical_statements(reconcile)]
+    guard = statements.index("If count = 0 Then")
+    order = next(i for i, t in enumerate(statements) if t.startswith("If Not DriverOrder("))
     assert guard < order, "DriverOrder must not be reached with no drivers"
+
+
+def test_64b_the_private_order_helpers_take_the_logical_count() -> None:
+    """A helper that re-derived the count from the array would reintroduce the
+    same unreachable branch one level down."""
+    module = _kernel()["modCalcAnalytical"]
+    for name in ("AuditOrder", "DriverOrder", "CanonicalOrder"):
+        assert "count As Long" in _signature(module, name), f"{name} lacks the count"
+    for name, array in (("AuditOrder", "audits"), ("DriverOrder", "drivers")):
+        body = _procedure_body(module, name)
+        assert not re.search(rf"count = UBound\({array}\)", body)
+
+
+# --- 13.5b the empty sequence identities -----------------------------------
+def test_64c_the_sequence_primitives_take_an_explicit_logical_count() -> None:
+    """`safe_product([]) == 1.0` is locked behaviour, and it needs a count.
+
+    `If UBound(factors) < LBound(factors) Then` has the same defect as a derived
+    driver count: it is unreachable for an allocated array and raises for an
+    unallocated one, so the multiplicative identity could never be returned.
+    """
+    module = _kernel()["modCalcFactors"]
+    assert "factorCount As Long" in _signature(module, "SafeProduct")
+    assert "termCount As Long" in _signature(module, "SafeSignedSum")
+    for procedure in ("SafeProduct", "SafeSignedSum"):
+        body = _procedure_body(module, procedure)
+        assert "UBound(factors) < LBound(factors)" not in body
+        assert "UBound(terms) < LBound(terms)" not in body
+
+
+def test_64d_the_empty_product_is_one_and_the_empty_sum_is_zero() -> None:
+    """Both identities are settled before any bound is read."""
+    module = _kernel()["modCalcFactors"]
+    for procedure, count, array, identity in (
+        ("SafeProduct", "factorCount", "factors", "result = 1#"),
+        ("SafeSignedSum", "termCount", "terms", "result = 0#"),
+    ):
+        statements = [text for _, text in logical_statements(_procedure_body(module, procedure))]
+        guard = statements.index(f"If {count} = 0 Then")
+        assert statements[guard + 1] == identity, (
+            f"{procedure} does not return its identity for an empty sequence"
+        )
+        assert statements.index(f"If {count} < 0 Then Exit Function") < guard, (
+            f"{procedure} must refuse a negative count"
+        )
+        assert guard < first_bounds_access(module, procedure, array), (
+            f"{procedure} reads a bound of {array} before settling the empty case"
+        )
+
+
+def test_64e_every_sequence_call_site_passes_its_logical_count() -> None:
+    """No call site may fall back to the allocated capacity."""
+    expected = {
+        ("modCalcFactors", "BuildFactor"): {"SafeProduct(group, width,",
+                                            "SafeSignedSum(terms, count,"},
+        ("modCalcAnalytical", "ExpectedRisk"): {"SafeProduct(group, 3,"},
+        ("modCalcAnalytical", "TripleProduct"): {"SafeProduct(group, 3,"},
+        ("modCalcAnalytical", "AnnualSeries"): {"SafeSignedSum(terms, count,"},
+        ("modCalcAnalytical", "SumMeasure"): {"SafeSignedSum(terms, count,"},
+    }
+    for (module_name, procedure), fragments in expected.items():
+        body = _procedure_body(_kernel()[module_name], procedure)
+        for fragment in fragments:
+            assert fragment in body, f"{module_name}.{procedure} lacks {fragment}"
+    annual = _procedure_body(_kernel()["modCalcAnalytical"], "BuildAnnualSeries")
+    assert "SafeProduct(group, ANNUAL_FACTOR_COUNT," in annual
+    reconcile = _procedure_body(_kernel()["modCalcAnalytical"], "Reconcile")
+    assert "SafeSignedSum(series, yearCount, total)" in reconcile
+    assert "SafeSignedSum(series, UBound(series) + 1, total)" in reconcile
+
+
+# --- 13.5c the exact quotient divisor boundary -----------------------------
+def test_64f_an_unsupported_divisor_is_refused_before_the_exact_division() -> None:
+    """`ExactQuotientOfSum` is Public and installs no error handler.
+
+    A divisor of zero would otherwise reach a raw division inside it. The
+    contract is exactly the three convex-statistic denominators.
+    """
+    module = _kernel()["modCalcFactors"]
+    statements = [
+        text for _, text in
+        logical_statements(_procedure_body(module, "ExactQuotientOfSum"))
+    ]
+    guard = statements.index(
+        "If divisor <> 2# And divisor <> 3# And divisor <> 6# Then Exit Function"
+    )
+    division = next(i for i, t in enumerate(statements) if "ExactDivideSmall(" in t)
+    assert guard < division, "the divisor must be validated before the division"
+    assert guard < next(i for i, t in enumerate(statements) if "ExactSumOf(" in t), (
+        "an unsupported divisor should be refused before any work is done"
+    )
+    assert only_supported_divisors_are_passed(), (
+        "a caller passes a divisor outside the documented contract"
+    )
+
+
+def only_supported_divisors_are_passed() -> bool:
+    """Every ExactQuotientOfSum call site's divisor is 2, 3 or 6."""
+    for module in _kernel().values():
+        for _, statement in logical_statements(module.code):
+            for match in re.finditer(r"ExactQuotientOfSum\(([^)]*)\)", statement):
+                arguments = [a.strip() for a in match.group(1).split(",")]
+                if len(arguments) == 4 and arguments[2] not in {"2#", "3#", "6#", "divisor"}:
+                    return False
+    return True
+
+
+def test_64g_the_convex_statistics_pass_only_supported_divisors() -> None:
+    module = _kernel()["modCalcAnalytical"]
+    divisors = {
+        "TriangularMean": "3#", "PertMean": "6#", "UniformMean": "2#",
+    }
+    for procedure, divisor in divisors.items():
+        body = _procedure_body(module, procedure)
+        assert re.search(rf"ConvexFinish\(.*, {re.escape(divisor)}, result\)", body), (
+            f"{procedure} does not pass {divisor}"
+        )
+
+
+# --- 13.5d public surface discipline ---------------------------------------
+def test_64h_every_public_helper_has_a_cross_module_caller_or_a_stated_reason() -> None:
+    """Scans references, not comments.
+
+    A Public name with no caller outside its own module and no entry in the
+    documented exception set is accidental API growth.
+    """
+    modules = _kernel()
+    unexplained: list[str] = []
+    for name, module in modules.items():
+        others = "\n".join(other.code for label, other in modules.items() if label != name)
+        for procedure in module.public_procedures:
+            if procedure in PUBLIC_WITHOUT_CROSS_MODULE_CALLER:
+                continue
+            called = re.search(rf"(?<![\w.]){procedure}\s*\(", others)
+            if not called:
+                unexplained.append(f"{name}.{procedure}")
+    assert not unexplained, (
+        "Public with no cross-module caller and no documented reason: "
+        f"{sorted(unexplained)}"
+    )
+
+
+def test_64i_the_three_reviewed_helpers_are_private() -> None:
+    """None had a cross-module caller, and none was part of the diagnostic surface."""
+    analytical = _kernel()["modCalcAnalytical"]
+    fingerprint = _kernel()["modCalcFingerprint"]
+    for name in ("DistributionMean", "CanonicalOrder"):
+        assert name in analytical.procedures, f"{name} must keep its semantics"
+        assert name not in analytical.public_procedures, f"{name} must be Private"
+    assert "CalcFpNumberField" in fingerprint.procedures
+    assert "CalcFpNumberField" not in fingerprint.public_procedures
 
 
 # --- 13.6 conditioning underflow versus overflow ---------------------------
@@ -1464,6 +1761,126 @@ def test_nc_21_an_exact_failure_turned_into_zero_is_caught() -> None:
         "    End If\nEnd Function\n",
     )
     assert swallowed_failure_statements(planted, "F") != []
+
+
+def test_nc_23_a_capacity_formula_that_forgets_most_likely_is_caught() -> None:
+    """The submitted formula, evaluated for the locked one-year Triangular shape."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CalcFpBuildDriverRecord() As Boolean\n"
+        "    fieldCount = 5 + inflationCount + weightCount\n"
+        "    ReDim fields(0 To fieldCount - 1)\n"
+        "End Function\n",
+    )
+    capacity = record_capacity(planted)
+    assert capacity(True, 1, 1) == 7, "the planted formula allocates seven slots"
+    assert capacity(True, 1, 1) < 9, "and the locked record needs nine"
+
+
+def test_nc_24_a_missing_emitted_count_guard_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CalcFpBuildDriverRecord() As Boolean\n"
+        "    CalcFpBuildDriverRecord = CalcFpEncodeRecord(fields, count, record)\n"
+        "End Function\n",
+    )
+    body = _procedure_body(planted, "CalcFpBuildDriverRecord")
+    assert "If count <> fieldCount Then Exit Function" not in body
+
+
+def test_nc_25_a_count_derived_from_array_bounds_is_caught() -> None:
+    """The pattern that makes an empty model unreachable, in all three producers."""
+    for procedure, array, count in (("AccumulateTotals", "audits", "auditCount"),
+                                    ("BuildAnnualSeries", "drivers", "driverCount"),
+                                    ("Reconcile", "drivers", "driverCount")):
+        planted = _synthetic(
+            "modProbe",
+            _STUB + f"Public Function {procedure}(ByRef {array}() As DriverAudit) As Boolean\n"
+            f"    count = UBound({array}) - LBound({array}) + 1\n"
+            "    If count < 1 Then\n        Exit Function\n    End If\n"
+            "End Function\n",
+        )
+        body = _procedure_body(planted, procedure)
+        assert re.search(rf"count = UBound\({array}\)", body), (
+            "the derived-count pattern must be visible to the sweep"
+        )
+        assert count not in _signature(planted, procedure), (
+            "and the planted version has no logical count parameter"
+        )
+
+
+def test_nc_26_an_empty_branch_placed_after_a_bounds_read_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function AccumulateTotals(ByRef audits() As DriverAudit, _\n"
+        "                                 ByVal auditCount As Long) As Boolean\n"
+        "    count = UBound(audits) - LBound(audits) + 1\n"
+        "    If auditCount = 0 Then\n        AccumulateTotals = True\n"
+        "        Exit Function\n    End If\n"
+        "End Function\n",
+    )
+    branch = empty_branch_index(planted, "AccumulateTotals", "auditCount")
+    touch = first_bounds_access(planted, "AccumulateTotals", "audits")
+    assert touch < branch, "the planted order must be visible to the sweep"
+
+
+def test_nc_27_an_unreachable_empty_product_branch_is_caught() -> None:
+    """`If UBound(factors) < LBound(factors)` can never be true for an allocated
+    array, and raises for an unallocated one."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function SafeProduct(ByRef factors() As Double) As Boolean\n"
+        "    If UBound(factors) < LBound(factors) Then\n        result = 1#\n"
+        "        SafeProduct = True\n        Exit Function\n    End If\n"
+        "End Function\n",
+    )
+    body = _procedure_body(planted, "SafeProduct")
+    assert "UBound(factors) < LBound(factors)" in body
+    assert "factorCount As Long" not in _signature(planted, "SafeProduct")
+
+
+def test_nc_28_a_count_less_signed_sum_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function SafeSignedSum(ByRef terms() As Double, _\n"
+        "                              ByRef result As Double) As Boolean\n"
+        "End Function\n",
+    )
+    assert "termCount As Long" not in _signature(planted, "SafeSignedSum")
+
+
+def test_nc_29_an_unguarded_exact_divisor_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function ExactQuotientOfSum(ByVal divisor As Double) As Boolean\n"
+        "    If Not ExactSumOf(terms, termCount, exact) Then Exit Function\n"
+        "    remainder = ExactDivideSmall(guarded, divisor, quotient)\n"
+        "End Function\n",
+    )
+    statements = [
+        text for _, text in
+        logical_statements(_procedure_body(planted, "ExactQuotientOfSum"))
+    ]
+    assert not any("divisor <> 2#" in t for t in statements), (
+        "the planted version reaches the division with no divisor guard"
+    )
+
+
+def test_nc_30_an_accidentally_public_helper_is_caught() -> None:
+    """No cross-module caller and no documented reason is accidental growth."""
+    for name in ("DistributionMean", "CanonicalOrder", "CalcFpNumberField"):
+        assert name not in PUBLIC_WITHOUT_CROSS_MODULE_CALLER, (
+            f"{name} must not be excused; it has no external consumer"
+        )
+    planted = _synthetic(
+        "modProbe", _STUB + "Public Function DistributionMean() As Boolean\nEnd Function\n"
+    )
+    assert "DistributionMean" in planted.public_procedures
+    others = "\n".join(m.code for m in _kernel().values())
+    assert not re.search(r"(?<![\w.])DistributionMean\s*\(", "\n".join(
+        m.code for name, m in _kernel().items() if name != "modCalcAnalytical"
+    )), "DistributionMean genuinely has no cross-module caller"
+    assert others  # the scan operated on real source, not on an empty string
 
 
 def test_nc_22_a_variant_numerical_container_is_caught() -> None:
