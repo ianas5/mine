@@ -26,6 +26,7 @@ sys.path.insert(0, str(PCCM_ROOT / "builder"))
 from openpyxl import load_workbook  # noqa: E402
 
 from pccm_builder import (  # noqa: E402
+    BUILDER_VERSION,
     build_workbook,
     load_contract,
     load_driver_contract,
@@ -468,10 +469,19 @@ def test_35_phase_2_and_3_surfaces_are_intact() -> None:
 
 
 def test_36_version_file_matches_the_model_version() -> None:
+    """The repository's phase-version convention: `VERSION`, the manifest's
+    `model_version` and `BUILDER_VERSION` advance together, once per phase.
+
+    The literal moved from `0.4.0` to `0.5.0` when Phase 5 Gate-A Step 3 put real
+    Phase-5 blocks in the generated workbook. What the test proves — that all
+    three agree and none drifts on its own — is unchanged, and `BUILDER_VERSION`
+    is now checked here too rather than only implied.
+    """
     version = (PCCM_ROOT / "VERSION").read_text(encoding="utf-8").strip()
     spec = load_spec(SPEC_PATH)
-    assert version == spec.model["model_version"] == "0.4.0", (
-        f"VERSION={version}, model_version={spec.model['model_version']}"
+    assert version == spec.model["model_version"] == BUILDER_VERSION == "0.5.0", (
+        f"VERSION={version}, model_version={spec.model['model_version']}, "
+        f"BUILDER_VERSION={BUILDER_VERSION}"
     )
 
 

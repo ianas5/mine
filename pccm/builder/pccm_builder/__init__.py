@@ -12,17 +12,24 @@ cannot read YAML: build/vba/modConstants.bas and build/stage_b_manifest.json.
 The generated workbook is a build artifact, never a source of truth.
 
 A fifth specification, spec/calc_contract.yaml, owns the physical shape of the
-Phase-5 `_Calc` workspace. As of Phase 5 Gate-A Step 1 it is loaded and fully
-validated but is DELIBERATELY NOT PROJECTED into the workbook: no Phase-5 block is
-emitted yet. calc_fingerprint.py is the reference implementation of the
-Calculation Input Fingerprint and owns the hash mathematics outright.
+Phase-5 `_Calc` workspace. As of Phase 5 Gate-A Step 3 it is a REAL BUILD INPUT:
+loaded, cross-validated, projected into the workbook as empty representation, and
+checked in the generated artifact. Nothing in Stage A calculates - the analytical
+oracle is called only to produce expected values for build/phase5_cases.json, and
+never to populate a cell. calc_fingerprint.py is the reference implementation of
+the Calculation Input Fingerprint and owns the hash mathematics outright.
 
 The public surface is limited to exactly what build_stage_a.py and the test
 suites import. Internal types remain reachable through their own modules but are
 not re-exported here.
 """
 
-from .calc_loader import CalcContractError, load_calc_contract
+from .calc_emit import emit_calc_artifacts
+from .calc_loader import (
+    CalcContractError,
+    load_calc_contract,
+    validate_calc_against,
+)
 from .contract_loader import ContractError, load_contract
 from .driver_loader import DriverContractError, load_driver_contract
 from .spec_loader import SpecError, load_spec
@@ -39,6 +46,7 @@ __all__ = [
     "SpecError",                 # build_stage_a.py, manifest tests
     "StructureContractError",    # build_stage_a.py, Phase 4 tests
     "build_workbook",            # build_stage_a.py, all structural test suites
+    "emit_calc_artifacts",       # build_stage_a.py, Phase 5 Gate-A Step-3 tests
     "emit_stage_b",              # build_stage_a.py, Phase 4 Stage-B emission tests
     "load_calc_contract",        # Phase 5 Gate-A Step-1 tests
     "load_contract",             # build_stage_a.py, all test suites
@@ -46,5 +54,6 @@ __all__ = [
     "load_spec",                 # build_stage_a.py, all test suites
     "load_structure_contract",   # build_stage_a.py, Phase 4 tests
     "structural_digest",         # reproducibility test
+    "validate_calc_against",     # build_stage_a.py, Phase 5 Gate-A tests
     "verify_workbook",           # build_stage_a.py
 ]

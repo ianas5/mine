@@ -11,8 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import range_boundaries
 
+from .calc_loader import CalcContract
+from .calc_render import placeholder_row, table_ref
 from .contract_loader import EXCEL_MAX_COLUMN, EXCEL_MAX_ROW, InputContract
 from .driver_loader import DriverContract
 from .spec_loader import WorkbookSpec
@@ -49,8 +52,15 @@ def verify_workbook(
     contract: InputContract | None = None,
     drivers: DriverContract | None = None,
     structure: StructureContract | None = None,
+    calc: CalcContract | None = None,
 ) -> VerificationResult:
-    """Verify the workbook at *path* against the manifest and every contract."""
+    """Verify the workbook at *path* against the manifest and every contract.
+
+    `calc` adds the Phase-5 calculation-workspace checks. It is optional for the
+    same reason `build_workbook`'s is: isolated Phase 1-4 unit tests still verify
+    the artifact they build. `build_stage_a.py` always passes it, so the
+    production Stage-A gate always includes them.
+    """
     path = Path(path)
     result = VerificationResult()
 
@@ -156,6 +166,10 @@ def verify_workbook(
             expected_tables |= {r.table_name for r in drivers.all_registers}
         if structure is not None:
             expected_tables |= {g.table_name for g in structure.all_grids}
+        # EXTENDED, NOT RELAXED. The gate still says "only contract-declared Tables
+        # exist"; Phase 5 adds five declared tables to the expected set.
+        if calc is not None:
+            expected_tables |= set(calc.table_names)
         found_tables = {name for _, name in _tables(workbook)}
         result.check(
             "only contract-declared Excel Tables exist",
@@ -169,6 +183,8 @@ def verify_workbook(
             _verify_drivers(result, workbook, drivers)
         if structure is not None and contract is not None:
             _verify_structure(result, workbook, structure, contract)
+        if calc is not None:
+            _verify_calc(result, workbook, calc)
     finally:
         workbook.close()
 
@@ -552,6 +568,196 @@ def _verify_structure(
             f"grid {grid.sheet} shows its structural state message",
             worksheet[f"B{grid.state_message_row}"].value == structure.state_messages[key],
             f"found {worksheet[f'B{grid.state_message_row}'].value!r}",
+        )
+
+
+def _verify_calc(result: VerificationResult, workbook, calc: CalcContract) -> None:
+    """The Phase-5 calculation workspace, checked against the GENERATED ARTIFACT.
+
+    Not against the contract's own statements, and not against the fact that the
+    renderer was called: every assertion below reads the workbook that was just
+    written, so a renderer that drifts from the contract is caught by the artifact
+    rather than excused by it.
+    """
+    sheet = calc.sheet
+    if sheet not in workbook.sheetnames:
+        result.check(f"calculation sheet {sheet!r} exists", False)
+        return
+    worksheet = workbook[sheet]
+    result.check(f"calculation sheet {sheet!r} exists", True)
+    result.check(
+        f"calculation sheet {sheet!r} visibility is {calc.required_visibility!r}",
+        worksheet.sheet_state == calc.required_visibility,
+        f"found {worksheet.sheet_state!r}",
+    )
+
+    # --- Phase-4 territory is intact -----------------------------------------
+    # The counters are Phase-4 state. Phase 5 renders below them and must not have
+    # overwritten, cleared or reformatted any of it.
+    for address in calc.phase4_cells:
+        cell = worksheet[address]
+        result.check(
+            f"Phase-4 counter {sheet}!{address} still holds its integer counter",
+            cell.value == 0 and cell.number_format == "0",
+            f"found {cell.value!r} / {cell.number_format!r}",
+        )
+    result.check(
+        f"Phase-4 reserved rows {calc.phase4_first_row}-{calc.phase4_last_row} carry no "
+        "Phase-5 content",
+        all(
+            worksheet.cell(row=row, column=column).value is None
+            for row in calc.phase4_reserved_rows
+            for column in range(6, EXCEL_MAX_COLUMN + 1)
+            if column <= 60
+        ),
+    )
+
+    # --- scalar blocks --------------------------------------------------------
+    for block in (calc.calc_state, calc.calc_totals):
+        for entry in block.fields:
+            label = worksheet[f"{block.label_column}{entry.row}"]
+            result.check(
+                f"{block.key} row {entry.row} label is {entry.label!r}",
+                label.value == entry.label,
+                f"found {label.value!r}",
+            )
+            cell = worksheet[f"{block.value_column}{entry.row}"]
+            result.check(
+                f"{block.key} value cell {cell.coordinate} carries number format "
+                f"{entry.number_format!r}",
+                cell.number_format == entry.number_format,
+                f"found {cell.number_format!r}",
+            )
+            result.check(
+                f"{block.key} value cell {cell.coordinate} holds its initial state "
+                f"{'BLANK' if entry.initial is None else repr(entry.initial)}",
+                cell.value == entry.initial if entry.initial is not None
+                else cell.value is None,
+                f"found {cell.value!r}",
+            )
+            if entry.note:
+                note = worksheet[f"{block.note_column}{entry.row}"]
+                result.check(
+                    f"{block.key} row {entry.row} carries its contract note",
+                    note.value == entry.note,
+                    f"found {note.value!r}",
+                )
+
+    # Stated separately because it is the one that is easiest to get wrong: the
+    # contract declares FP_VERSION = 1, and C15 must still ship blank.
+    version_entry = calc.calc_state.field_by_key("fingerprint_version")
+    version_cell = f"{calc.calc_state.value_column}{version_entry.row}"
+    result.check(
+        f"fingerprint version cell {sheet}!{version_cell} is BLANK, not seeded with "
+        f"FP_VERSION={calc.fingerprint_version}",
+        worksheet[version_cell].value is None,
+        f"found {worksheet[version_cell].value!r}",
+    )
+    result.check(
+        "no calc_totals cell is seeded with zero",
+        all(
+            worksheet[f"{calc.calc_totals.value_column}{entry.row}"].value is None
+            for entry in calc.calc_totals.fields
+        ),
+        "blank means no calculation has committed; zero would mean a total of zero",
+    )
+
+    # --- the five tables ------------------------------------------------------
+    tables = getattr(worksheet, "tables", {})
+    for table in calc.all_tables:
+        name = table.table_name
+        if name not in tables:
+            result.check(f"calculation table {name} exists on {sheet}", False)
+            continue
+        result.check(f"calculation table {name} exists on {sheet}", True)
+        expected_ref = table_ref(table)
+        result.check(
+            f"calculation table {name} spans {expected_ref}",
+            tables[name].ref == expected_ref,
+            f"found {tables[name].ref}",
+        )
+        left, top, right, bottom = _rect(tables[name].ref)
+        result.check(
+            f"calculation table {name} has its header on row {table.header_row}",
+            top == table.header_row,
+            f"found row {top}",
+        )
+        result.check(
+            f"calculation table {name} occupies columns "
+            f"{table.first_column}:{table.last_column}",
+            left == table.first_column_index and right == table.last_column_index,
+            f"found {get_column_letter(left)}:{get_column_letter(right)}",
+        )
+        result.check(
+            f"calculation table {name} is {len(table.columns)} columns wide",
+            right - left + 1 == len(table.columns),
+            f"found {right - left + 1}",
+        )
+        headers = [
+            worksheet.cell(row=table.header_row, column=left + index).value
+            for index in range(len(table.columns))
+        ]
+        result.check(
+            f"calculation table {name} header spelling and order match the contract",
+            headers == table.headers,
+            f"expected {table.headers}, found {headers}",
+        )
+        for index, column in enumerate(table.columns):
+            cell = worksheet.cell(row=placeholder_row(table), column=left + index)
+            result.check(
+                f"{name}.{column.key} body carries number format "
+                f"{column.number_format!r}",
+                cell.number_format == column.number_format,
+                f"found {cell.number_format!r}",
+            )
+        result.check(
+            f"calculation table {name} has ZERO semantic rows: its one physical body "
+            "row is blank",
+            all(
+                worksheet.cell(row=row, column=col).value is None
+                for row in range(table.header_row + 1, bottom + 1)
+                for col in range(left, right + 1)
+            ),
+            "a build-time row would be a fabricated calculation output",
+        )
+        result.check(
+            f"calculation table {name} carries no formula",
+            not any(
+                isinstance(worksheet.cell(row=row, column=col).value, str)
+                and str(worksheet.cell(row=row, column=col).value).startswith("=")
+                for row in range(table.header_row, bottom + 1)
+                for col in range(left, right + 1)
+            ),
+        )
+        result.check(
+            f"calculation table {name} carries no data validation",
+            not data_validation_intersects(worksheet, tables[name].ref),
+            "the calculation workspace is model-controlled, not a user input surface",
+        )
+
+    rects = {t.table_name: _rect(tables[t.table_name].ref)
+             for t in calc.all_tables if t.table_name in tables}
+    names = sorted(rects)
+    for i, left_name in enumerate(names):
+        for right_name in names[i + 1:]:
+            result.check(
+                f"calculation tables {left_name} and {right_name} do not overlap",
+                not _overlaps(rects[left_name], rects[right_name]),
+                f"{tables[left_name].ref} vs {tables[right_name].ref}",
+            )
+    for name, rect in rects.items():
+        result.check(
+            f"calculation table {name} clears the Phase-4 reservation "
+            f"(rows {calc.phase4_first_row}-{calc.phase4_last_row})",
+            rect[1] > calc.phase4_last_row,
+            f"starts on row {rect[1]}",
+        )
+
+    for block in (calc.calc_state, calc.calc_totals):
+        result.check(
+            f"{block.key} value column carries no data validation",
+            not data_validation_intersects(worksheet, block.value_range()),
+            "these are model-controlled audit cells, not user inputs",
         )
 
 

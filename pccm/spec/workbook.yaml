@@ -16,8 +16,8 @@ manifest_version: "1.3.0"
 model:
   name: "Probabilistic Cost & Contingency Model"
   short_name: "PCCM"
-  model_version: "0.4.0"
-  build_phase: "Phase 4 - Structural Runtime (Gate A: source)"
+  model_version: "0.5.0"
+  build_phase: "Phase 5 - Calculation Workspace (Gate A: source)"
   reporting_currency: "SAR"      # locked model constant
 
 workbook:

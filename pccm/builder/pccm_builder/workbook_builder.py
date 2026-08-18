@@ -30,11 +30,13 @@ from .driver_render import render_register
 from .names import apply_defined_names
 from .spec_loader import SheetSpec, WorkbookSpec
 from .structure_loader import StructureContract, validate_structure_against
+from .calc_loader import CalcContract
+from .calc_render import render_calc_workspace
 from .structure_render import render_applied_timeline, render_grid, render_identity
 from .styling import StyleBook
 from .validation import apply_validation
 
-BUILDER_VERSION = "0.4.0"
+BUILDER_VERSION = "0.5.0"
 DEFAULT_SHEET_TITLE = "Sheet"
 TIMESTAMP_ENV_VAR = "PCCM_BUILD_TIMESTAMP"
 
@@ -109,8 +111,17 @@ def build_workbook(
     contract: InputContract,
     drivers: DriverContract,
     structure: StructureContract,
+    calc: CalcContract | None = None,
 ) -> tuple[Workbook, BuildMetadata]:
-    """Create the Stage A workbook from the manifest and all three contracts."""
+    """Create the Stage A workbook from the manifest and every contract.
+
+    `calc` is the Phase-5 calculation contract. It is optional ONLY so that
+    isolated Phase 1-4 unit tests can still build the structural workbook they
+    were written against; `build_stage_a.py` always supplies it, and the
+    production Stage-A path therefore always renders and verifies the Phase-5
+    workspace. Passing `None` builds a workbook with no `_Calc` Phase-5 blocks,
+    which post-build verification with a contract will reject.
+    """
     _assert_consistent(spec, contract, drivers, structure)
 
     styles = StyleBook(spec.presentation)
@@ -140,6 +151,11 @@ def build_workbook(
                 render_grid(worksheet, grid, structure, styles)
             else:
                 render_identity(worksheet, structure, styles)
+                # `_Calc` carries two authorities: Phase 4 owns rows 1-11 above,
+                # and the calculation contract owns everything from row 13 down.
+                # The calc loader proves the two areas cannot intersect.
+                if calc is not None and sheet_spec.name == calc.sheet:
+                    render_calc_workspace(worksheet, calc, styles)
         else:
             _populate_blocks(worksheet, sheet_spec, styles, metadata)
 
