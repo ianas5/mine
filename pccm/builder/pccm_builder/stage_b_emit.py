@@ -129,7 +129,13 @@ def render_constants_module(
 
     def const(name: str, value, comment: str | None = None) -> None:
         rendered = _vba_literal(value)
-        kind = "String" if isinstance(value, str) else "Long"
+        if isinstance(value, str):
+            kind = "String"
+        elif isinstance(value, float):
+            # A Long literal of `1.0` does not parse. A rate is a Double.
+            kind, rendered = "Double", _vba_double(value)
+        else:
+            kind = "Long"
         text = f"Public Const {name} As {kind} = {rendered}"
         if comment:
             text += f"    ' {comment}"
@@ -149,6 +155,43 @@ def render_constants_module(
         const(f"TBL_{_ident(grid.key)}", grid.table_name)
     for table in contract.all_tables:
         const(f"TBL_{_ident(table.key or table.table_name)}", table.table_name)
+    lines.append("")
+
+    # --- Setup / Config table geometry the CALCULATION reads ----------------
+    # Phase 4 manages structure and never reads a rate, a discount or a
+    # distribution name, so these were not projected before. Phase 5 resolution
+    # does read them, and the alternative to projecting them is a second copy of
+    # the contract's own coordinates hand-written into VBA.
+    section("Setup / Config table geometry")
+    for table in contract.all_tables:
+        prefix = _ident(table.key or table.table_name)
+        for ordinal, column in enumerate(table.columns, start=1):
+            const(f"COL_{prefix}_{_ident(column.header)}", ordinal, column.header)
+        const(f"TBL_{prefix}_LOCKED_SEED_ROWS", table.locked_seed_rows)
+    lines.append("")
+
+    # --- input defined names ------------------------------------------------
+    # The Setup input cells, by defined name. Phase 5 reads the discount rate;
+    # the rest are projected with it so the set has one rule rather than an
+    # ad-hoc membership decided by whichever field a later phase happened to
+    # need first.
+    section("Setup input defined names")
+    for key in sorted(contract.inputs):
+        const(f"NM_INPUT_{_ident(key)}", contract.inputs[key].defined_name)
+    lines.append("")
+
+    # --- locked model vocabulary -------------------------------------------
+    # The reporting currency and its identity rate come from the FX table's own
+    # locked seed row, and the distribution master list from the Config table
+    # that owns it. Neither is restated here or in VBA: the NAMES are projected,
+    # and which internal shape each distribution selects is an adapter that
+    # belongs to the resolver, exactly as it belongs to the Python oracle.
+    section("Locked model vocabulary")
+    _project_reporting_currency(contract, const)
+    distributions = _seeded_values(contract, "distributions")
+    const("DISTRIBUTION_COUNT", len(distributions))
+    for ordinal, name in enumerate(distributions, start=1):
+        const(f"DISTRIBUTION_NAME_{ordinal}", name)
     lines.append("")
 
     # --- entered / applied names -------------------------------------------
@@ -405,6 +448,45 @@ def build_manifest(
 
 
 # ---------------------------------------------------------------------------
+def _vba_double(value: float) -> str:
+    """A Double literal VBA parses back to the same bits.
+
+    `repr` is the shortest decimal that round-trips and VBA's parser is correctly
+    rounded, so the bits survive. An integral value gets an explicit `.0` so VBA
+    cannot type it as a Long.
+    """
+    text = repr(float(value))
+    if "e" in text or "E" in text or "." in text:
+        return text
+    return text + ".0"
+
+
+def _seeded_values(contract: InputContract, key: str) -> list[str]:
+    """The single-column seed values of a Config table, in contract order."""
+    table = next(t for t in contract.all_tables if t.key == key)
+    return [str(row[0]) for row in table.seed_rows]
+
+
+def _project_reporting_currency(contract: InputContract, const) -> None:
+    """The reporting currency and its identity rate, from the FX table itself.
+
+    `tblFXRates` carries exactly one locked seed row, and that row IS the
+    reporting-currency identity. Reading it here rather than naming the currency
+    in this file keeps the currency and its rate where the contract already put
+    them, and makes a change to that row a change to the projection.
+    """
+    table = next(t for t in contract.all_tables if t.table_name == "tblFXRates")
+    if table.locked_seed_rows != 1 or len(table.seed_rows) != 1:
+        raise ValueError(
+            "the FX table must carry exactly one locked seed row: it is the "
+            f"reporting-currency identity, found {len(table.seed_rows)}"
+        )
+    currency, rate = table.seed_rows[0][0], table.seed_rows[0][1]
+    const("REPORTING_CURRENCY", str(currency))
+    const("REPORTING_CURRENCY_RATE", float(rate),
+          "a global invariant, enforced in every model")
+
+
 def _bgr(hex_rgb: str) -> int:
     """Excel Interior.Color is a BGR long, not an RGB hex string."""
     value = hex_rgb.lstrip("#")

@@ -469,6 +469,9 @@ vba:
     - name: "modCalcFingerprint"
       generated: false
       responsibility: "The Calculation Input Fingerprint: canonical encoding, the double-modulus reduction and the digest. No analytical logic."
+    - name: "modCalcResolve"
+      generated: false
+      responsibility: "The worksheet-aware resolution layer: reference sets, then referenced-only FX and inflation, applied-timeline scalars and Permanent-ID profiling, handed on as plain typed data."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.

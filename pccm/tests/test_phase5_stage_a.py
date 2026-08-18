@@ -1815,25 +1815,24 @@ def test_the_stage_a_xlsm_and_vba_boundary_is_unchanged() -> None:
     assert not any(name.endswith(".bas") for name in names)
 
 
-def test_the_stage_b_manifest_carries_the_step_4_kernel_and_nothing_later() -> None:
+def test_the_stage_b_manifest_carries_the_implemented_modules_and_nothing_later() -> None:
     """Retargeted at Step 4, which is the step that adds the kernel inventory.
 
     At Step 3 this test read "no Phase-5 VBA module was added to the manifest",
     and that was right: Step 3 emits generated constants only, and declaring a
     module it had not written would have been declaring a file that did not exist.
-    Step 4 writes the three kernel modules and is instructed to declare them, so
-    the assertion moves to the boundary that is still ahead - the resolver,
-    checker and reporter of Phase 6, and the calculation endpoint - rather than
-    being deleted.
+    Step 4 wrote the three kernel modules and Step 5 the resolver, so the
+    assertion keeps moving to the boundary that is still ahead - the checker,
+    the reporter and the calculation endpoints - rather than being deleted.
     """
     path = PCCM_ROOT / "build" / "stage_b_manifest.json"
     if not path.is_file():
         return
     text = json.dumps(json.loads(path.read_text(encoding="utf-8")))
     for expected in ("modCalcContract", "modCalcFactors", "modCalcAnalytical",
-                     "modCalcFingerprint"):
+                     "modCalcFingerprint", "modCalcResolve"):
         assert expected in text, f"{expected} is missing from the Stage-B manifest"
-    for forbidden in ("modCalcResolve", "modCalcCheck", "modCalcReport",
+    for forbidden in ("modCalcCheck", "modCalcReport",
                       "PCCM_Calculate", "PCCM_CalculationStatus",
                       "PCCM_CalculationFingerprint"):
         assert forbidden not in text, f"{forbidden} appeared in the Stage-B manifest"

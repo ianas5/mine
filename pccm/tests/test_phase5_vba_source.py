@@ -50,6 +50,11 @@ SRC_VBA = PCCM_ROOT / "src" / "vba"
 
 KERNEL_MODULES = ("modCalcFactors", "modCalcAnalytical", "modCalcFingerprint")
 
+# The Step-5 resolution layer. It is the ONE module allowed workbook access, and
+# it is deliberately not in KERNEL_MODULES: every worksheet-free sweep below
+# runs over the kernel and must keep running over exactly the kernel.
+STEP5_MODULE = "modCalcResolve"
+
 PHASE4_MODULES = (
     "modWorkbook", "modAppState", "modTimeline", "modDrivers",
     "modProfiling", "modInflation", "modStructuralCheck",
@@ -256,15 +261,20 @@ def test_01_the_three_kernel_modules_exist_and_declare_themselves() -> None:
 
 
 def test_02_step_4_added_exactly_three_modules_and_no_fourth() -> None:
-    """The accepted module split is deliberate.
+    """The accepted Step-4 module split is deliberate.
 
-    A modCalcMath, modCalcTypes or modCalcExact would be a fourth production
+    A modCalcMath, modCalcTypes or modCalcExact would be a fourth NUMERICAL
     module that no review accepted, and the split would stop meaning anything.
+    Step 5 adds exactly one further module, the resolver, and the inventory is
+    asserted in both directions so neither step can grow another.
     """
     on_disk = set(_modules())
-    assert on_disk == set(PHASE4_MODULES) | set(KERNEL_MODULES), (
+    assert on_disk == set(PHASE4_MODULES) | set(KERNEL_MODULES) | {STEP5_MODULE}, (
         f"unexpected hand-written module inventory: {sorted(on_disk)}"
     )
+    assert set(KERNEL_MODULES) == {
+        "modCalcFactors", "modCalcAnalytical", "modCalcFingerprint"
+    }
 
 
 def test_03_no_phase4_vba_source_file_changed() -> None:
@@ -315,14 +325,27 @@ def test_07_no_kernel_procedure_is_a_pccm_endpoint() -> None:
 
 
 def test_08_the_deferred_phase_6_surface_does_not_exist_yet() -> None:
-    everything = "\n".join(m.raw for m in _modules().values())
-    for deferred in (
-        "modCalcResolve", "modCalcCheck", "modCalcReport",
+    """`modCalcResolve` left this list at Step 5, when it was implemented.
+
+    Everything else on it is still ahead: the checker, the reporter and the
+    five Phase-5 status accessors.
+    """
+    deferred = (
+        "modCalcCheck", "modCalcReport",
         "PCCM_Calculate", "PCCM_CalculationStatus", "PCCM_CalculationAttemptResult",
         "PCCM_CalculationAttemptDetail", "PCCM_CalculationFingerprint",
         "PCCM_CurrentInputFingerprint",
-    ):
-        assert deferred not in everything, f"{deferred} belongs to a later step"
+    )
+    # EXECUTABLE code, not commentary: the resolver legitimately names the
+    # checker when saying which prerequisites it deliberately leaves to it, and
+    # a sentence about a later step is not an implementation of one.
+    modules = _modules()
+    executable = "\n".join(m.code for m in modules.values())
+    declared = {p for m in modules.values() for p in m.procedures}
+    for name in deferred:
+        assert name not in executable, f"{name} is referenced in code; it belongs to a later step"
+        assert name not in declared, f"{name} is declared; it belongs to a later step"
+        assert name not in modules, f"{name} exists as a module; it belongs to a later step"
 
 
 def test_09_no_change_handler_exists_anywhere() -> None:

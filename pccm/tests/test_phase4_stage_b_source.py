@@ -221,8 +221,12 @@ PHASE4_VBA_MODULES = (
     "modProfiling", "modInflation", "modStructuralCheck",
 )
 
-# The Phase-5 numerical kernel. Two limits, both enforced.
-PHASE5_VBA_MODULES = ("modCalcFactors", "modCalcAnalytical", "modCalcFingerprint")
+# The Phase-5 modules. Two limits, both enforced. The resolver is measured by
+# the same policy as the numerical kernel: it is a Phase-5 module whose
+# responsibility is coherent and whose contract requires it to explain itself.
+PHASE5_VBA_MODULES = (
+    "modCalcFactors", "modCalcAnalytical", "modCalcFingerprint", "modCalcResolve",
+)
 
 PHASE4_RAW_LINE_LIMIT = 900
 PHASE5_CODE_LINE_LIMIT = 900
