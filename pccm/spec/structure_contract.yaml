@@ -472,6 +472,9 @@ vba:
     - name: "modCalcResolve"
       generated: false
       responsibility: "The worksheet-aware resolution layer: reference sets, then referenced-only FX and inflation, applied-timeline scalars and Permanent-ID profiling, handed on as plain typed data."
+    - name: "modCalcCheck"
+      generated: false
+      responsibility: "The Phase-5 numerical prerequisite checker over the resolved model: timeline, discount rate, profiling sum, three-point ordering, Quantity and Probability. Reports and refuses; never repairs."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.

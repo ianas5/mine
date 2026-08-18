@@ -226,6 +226,7 @@ PHASE4_VBA_MODULES = (
 # responsibility is coherent and whose contract requires it to explain itself.
 PHASE5_VBA_MODULES = (
     "modCalcFactors", "modCalcAnalytical", "modCalcFingerprint", "modCalcResolve",
+    "modCalcCheck",
 )
 
 PHASE4_RAW_LINE_LIMIT = 900

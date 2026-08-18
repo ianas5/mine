@@ -220,7 +220,7 @@ def test_08_no_phase_5_endpoint_or_later_module_was_added() -> None:
     modules = _modules()
     executable = "\n".join(m.code for m in modules.values())
     declared = {p for m in modules.values() for p in m.procedures}
-    for deferred in ("modCalcCheck", "modCalcReport", "PCCM_Calculate",
+    for deferred in ("modCalcReport", "PCCM_Calculate",
                      "PCCM_CalculationStatus", "PCCM_CalculationAttemptResult",
                      "PCCM_CalculationAttemptDetail", "PCCM_CalculationFingerprint",
                      "PCCM_CurrentInputFingerprint"):
@@ -981,11 +981,24 @@ def test_45_the_gate_duplicates_no_phase_4_structural_rule() -> None:
     assert code.count("modStructuralCheck.") == 1
 
 
-def test_46_the_numerical_checker_still_does_not_exist() -> None:
-    """modCalcCheck owns the Phase-5 NUMERICAL prerequisites, and is Step 6."""
+def test_46_the_resolver_does_not_perform_the_numerical_checks() -> None:
+    """`modCalcCheck` arrived at Step 6. What must still hold is the SPLIT.
+
+    This test asserted the checker's absence while it was unwritten. Now that it
+    exists, the invariant worth keeping is that the resolver did not absorb its
+    predicates: resolution stays resolution.
+    """
     modules = _modules()
-    assert "modCalcCheck" not in modules
-    assert "modCalcCheck" not in "\n".join(m.code for m in modules.values())
+    assert "modCalcCheck" in modules, "the checker exists from Step 6 onward"
+    resolver = _resolver().code
+    assert "modCalcCheck" not in resolver, (
+        "the resolver calls the checker; the dependency runs the other way"
+    )
+    for predicate in ("TOL_PROFILING_SUM_ABSOLUTE", "SafeSignedSum"):
+        assert predicate not in resolver, f"the resolver evaluates {predicate}"
+    assert "modCalcResolve" not in modules["modCalcCheck"].code, (
+        "the checker calls back into the resolver"
+    )
 
 
 # --- 12.2 D2 on referenced inflation rates ---------------------------------

@@ -55,6 +55,10 @@ KERNEL_MODULES = ("modCalcFactors", "modCalcAnalytical", "modCalcFingerprint")
 # runs over the kernel and must keep running over exactly the kernel.
 STEP5_MODULE = "modCalcResolve"
 
+# The Step-6 numerical prerequisite checker. Like the resolver it is outside
+# KERNEL_MODULES, so every sweep below keeps running over exactly the kernel.
+STEP6_MODULE = "modCalcCheck"
+
 PHASE4_MODULES = (
     "modWorkbook", "modAppState", "modTimeline", "modDrivers",
     "modProfiling", "modInflation", "modStructuralCheck",
@@ -265,11 +269,13 @@ def test_02_step_4_added_exactly_three_modules_and_no_fourth() -> None:
 
     A modCalcMath, modCalcTypes or modCalcExact would be a fourth NUMERICAL
     module that no review accepted, and the split would stop meaning anything.
-    Step 5 adds exactly one further module, the resolver, and the inventory is
-    asserted in both directions so neither step can grow another.
+    Steps 5 and 6 add exactly one further module each - the resolver and the
+    checker - and the inventory is asserted in both directions so no step can
+    grow another.
     """
     on_disk = set(_modules())
-    assert on_disk == set(PHASE4_MODULES) | set(KERNEL_MODULES) | {STEP5_MODULE}, (
+    assert on_disk == (set(PHASE4_MODULES) | set(KERNEL_MODULES)
+                       | {STEP5_MODULE, STEP6_MODULE}), (
         f"unexpected hand-written module inventory: {sorted(on_disk)}"
     )
     assert set(KERNEL_MODULES) == {
@@ -325,13 +331,13 @@ def test_07_no_kernel_procedure_is_a_pccm_endpoint() -> None:
 
 
 def test_08_the_deferred_phase_6_surface_does_not_exist_yet() -> None:
-    """`modCalcResolve` left this list at Step 5, when it was implemented.
+    """Each name leaves this list at the step that implements it.
 
-    Everything else on it is still ahead: the checker, the reporter and the
-    five Phase-5 status accessors.
+    `modCalcResolve` left at Step 5 and `modCalcCheck` at Step 6. Everything
+    still on it is ahead: the reporter and the five Phase-5 status accessors.
     """
     deferred = (
-        "modCalcCheck", "modCalcReport",
+        "modCalcReport",
         "PCCM_Calculate", "PCCM_CalculationStatus", "PCCM_CalculationAttemptResult",
         "PCCM_CalculationAttemptDetail", "PCCM_CalculationFingerprint",
         "PCCM_CurrentInputFingerprint",

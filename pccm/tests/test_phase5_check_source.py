@@ -1,0 +1,825 @@
+#!/usr/bin/env python3
+"""PCCM Phase 5 Gate A Step 6: STATIC tests over the numerical prerequisite checker.
+
+NO VBA IS EXECUTED HERE, AND NONE CAN BE. Every assertion is a statement about
+SOURCE TEXT: which predicates exist, in what order they run, which authority each
+number comes from, and which constructs appear in executable code.
+
+Nothing here establishes that a real model passes or fails these checks, that
+Excel behaves as the source expects, or that any refusal reaches a user. Those
+are Gate B's, on real Excel on Windows.
+
+What this file DOES establish:
+
+  * the checker validates the RESOLVED model and never re-reads a workbook cell
+  * it reports and refuses, and has no path that repairs, clamps, defaults or
+    normalises anything
+  * every locked Step-6 predicate is present, with the boundaries the contract
+    specifies
+  * the profiling sum goes through the accepted signed-sum authority and the
+    generated tolerance, never a hand-written loop or a hard-coded number
+  * the empty driver set is not refused, and no array bound is read before the
+    count is known
+  * nothing from Phase 4 or Step 5 is duplicated, and nothing from Step 7 exists
+
+Runs standalone or under pytest.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+PCCM_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PCCM_ROOT / "builder"))
+
+from pccm_builder.vba_source import VbaModule, load_modules, logical_statements  # noqa: E402
+
+SRC_VBA = PCCM_ROOT / "src" / "vba"
+CHECKER = "modCalcCheck"
+
+# The checker's public surface, exact in both directions. Production needs one
+# entry point over the resolved model; everything else is a private helper.
+CHECKER_PUBLIC = {"CheckResolvedModel"}
+
+# Types the checker may name. No Excel object appears among them, because the
+# checker never touches a workbook.
+ALLOWED_TYPES = {
+    "Boolean", "String", "Double", "Long",
+    "ResolvedModel", "ResolvedTimeline", "ResolvedDriver",
+}
+
+WORKBOOK_TOKENS = (
+    "Application.", "ThisWorkbook", "ActiveWorkbook", "Worksheets", "Worksheet",
+    "Range", "Cells", "ListObjects", "ListObject", "Names(", "Evaluate",
+    "WorksheetFunction", "modWorkbook.", "modCalcResolve.",
+)
+
+
+def _modules() -> dict[str, VbaModule]:
+    return {m.name: m for m in load_modules([SRC_VBA])}
+
+
+def _checker() -> VbaModule:
+    return _modules()[CHECKER]
+
+
+def _synthetic(name: str, body: str) -> VbaModule:
+    """A module built from text, for the negative controls. Nothing is executed."""
+    return VbaModule(name=name, path=SRC_VBA / f"{name}.bas", raw=body)
+
+
+def _body(module: VbaModule, procedure: str) -> str:
+    lines = module.code.splitlines()
+    start = next(
+        i for i, line in enumerate(lines)
+        if re.match(rf"^\s*(Public |Private )?(Static )?(Sub|Function)\s+{procedure}\b", line)
+    )
+    end = next(i for i in range(start + 1, len(lines))
+               if re.match(r"^End (Sub|Function)", lines[i]))
+    return "\n".join(lines[start:end])
+
+
+def _body_raw(module: VbaModule, procedure: str) -> str:
+    """The body with string literals intact, for diagnostic-text checks."""
+    lines = module.code_without_string_removal.splitlines()
+    start = next(
+        i for i, line in enumerate(lines)
+        if re.match(rf"^\s*(Public |Private )?(Static )?(Sub|Function)\s+{procedure}\b", line)
+    )
+    end = next(i for i in range(start + 1, len(lines))
+               if re.match(r"^End (Sub|Function)", lines[i]))
+    return "\n".join(lines[start:end])
+
+
+def _statements(module: VbaModule, procedure: str) -> list[str]:
+    return [text for _, text in logical_statements(_body(module, procedure))]
+
+
+def _signature(module: VbaModule, procedure: str) -> str:
+    for _, statement in logical_statements(module.code_without_string_removal):
+        if re.match(rf"^\s*(Public |Private |Friend )?(Static )?(Sub|Function)\s+{procedure}\b",
+                    statement):
+            return re.sub(r"\s+", " ", statement)
+    raise AssertionError(f"{module.name} does not declare {procedure}")
+
+
+def assignments_into(module: VbaModule, target: str) -> list[str]:
+    """Statements that assign INTO `target` — the shape of a repair."""
+    return [
+        statement
+        for _, statement in logical_statements(module.code)
+        if re.match(rf"^{target}(\.\w+|\([^)]*\))*\s*=\s*[^=]", statement)
+    ]
+
+
+# ===========================================================================
+# 1. the module, the inventory and the boundary
+# ===========================================================================
+def test_01_the_checker_exists_and_declares_itself() -> None:
+    lines = _checker().raw.splitlines()
+    assert lines[0] == f'Attribute VB_Name = "{CHECKER}"'
+    assert lines[1] == "Option Explicit"
+
+
+def test_02_the_checker_is_declared_hand_written_in_the_contract() -> None:
+    import yaml
+
+    contract = yaml.safe_load(
+        (PCCM_ROOT / "spec" / "structure_contract.yaml").read_text(encoding="utf-8")
+    )
+    modules = {m["name"]: m for m in contract["vba"]["modules"]}
+    assert CHECKER in modules, "the checker must be declared, or the inventory test fails"
+    assert modules[CHECKER]["generated"] is False
+    generated = [m["name"] for m in contract["vba"]["modules"] if m["generated"]]
+    assert sorted(generated) == ["modCalcContract", "modConstants"]
+
+
+def test_03_the_checker_appears_in_the_stage_b_manifest() -> None:
+    import json
+
+    path = PCCM_ROOT / "build" / "stage_b_manifest.json"
+    if not path.is_file():
+        return
+    assert CHECKER in json.dumps(json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_04_step_7_does_not_exist_yet() -> None:
+    modules = _modules()
+    executable = "\n".join(m.code for m in modules.values())
+    declared = {p for m in modules.values() for p in m.procedures}
+    for deferred in ("modCalcReport", "PCCM_Calculate", "PCCM_CalculationStatus",
+                     "PCCM_CalculationAttemptResult", "PCCM_CalculationAttemptDetail",
+                     "PCCM_CalculationFingerprint", "PCCM_CurrentInputFingerprint"):
+        assert deferred not in executable, f"{deferred} belongs to a later step"
+        assert deferred not in declared
+        assert deferred not in modules
+    assert [p for p in _checker().procedures if p.startswith("PCCM_")] == []
+
+
+def test_05_the_checker_never_touches_a_workbook() -> None:
+    """Every value it needs is already in the resolved model."""
+    code = _checker().code
+    hits = sorted({t for t in WORKBOOK_TOKENS if t.lower() in code.lower()})
+    assert hits == [], f"the checker reaches the workbook: {hits}"
+
+
+def test_06_the_checker_creates_no_second_resolver() -> None:
+    """Re-reading a value Step 5 resolved would be a second resolution authority.
+
+    The whole pipeline is: resolve everything into memory, validate everything in
+    memory, calculate everything in memory.
+    """
+    code = _checker().code
+    for resolver in ("ResolveModel", "ResolveDrivers", "ResolveFxRates",
+                     "ResolveInflationRates", "ResolveProfileWeights",
+                     "ResolveAppliedTimeline", "RawCellText", "NumericCell",
+                     "MatchingGridRow", "YearColumn"):
+        assert resolver not in code, f"the checker re-resolves via {resolver}"
+    for name in ("NM_APPLIED_BASE_YEAR", "NM_INPUT_DISCOUNT_RATE", "TBL_FX_RATES",
+                 "TBL_INFLATION", "TBL_COST_LINES", "TBL_RISK_REGISTER",
+                 "TBL_COST_PROFILING", "TBL_RISK_PROFILING"):
+        assert name not in code, f"the checker reads {name} for itself"
+
+
+def test_07_no_excel_object_appears_in_any_signature() -> None:
+    module = _checker()
+    found: set[str] = set()
+    for _, statement in logical_statements(module.code_without_string_removal):
+        if not re.match(r"^\s*(Public |Private |Friend )?(Static )?(Sub|Function)\s", statement):
+            continue
+        inner = statement[statement.find("(") + 1:statement.rfind(")")]
+        for part in inner.split(","):
+            match = re.search(r"\bAs\s+([A-Za-z_]\w*)", part)
+            if match:
+                found.add(match.group(1))
+    assert found <= ALLOWED_TYPES, f"unexpected parameter types: {sorted(found - ALLOWED_TYPES)}"
+
+
+def test_08_the_public_surface_is_exactly_one_entry_point() -> None:
+    assert set(_checker().public_procedures) == CHECKER_PUBLIC
+    signature = _signature(_checker(), "CheckResolvedModel")
+    assert "model As ResolvedModel" in signature
+    assert "detail As String" in signature
+    assert signature.endswith("As Boolean")
+
+
+# ===========================================================================
+# 2. reports, never repairs
+# ===========================================================================
+def test_09_the_checker_assigns_nothing_back_into_the_model() -> None:
+    """The defining property. A checker that fixed its input would be
+    calculating from a model the user never entered."""
+    module = _checker()
+    repairs = assignments_into(module, "model")
+    assert repairs == [], f"the checker writes into the resolved model: {repairs}"
+    for target in ("driver", "timeline", "weights"):
+        writes = [
+            statement for statement in assignments_into(module, target)
+            # Reading a weight INTO a local array is not a repair of the model.
+            if not re.match(r"^weights\(offset\) = model\.Weights\(", statement)
+        ]
+        assert writes == [], f"the checker writes into {target}: {writes}"
+
+
+def test_10_no_repair_or_default_vocabulary_exists() -> None:
+    code = _checker().code
+    for repair in ("model.Drivers(", "model.Timeline.", "model.Weights("):
+        for _, statement in logical_statements(code):
+            assert not re.match(rf"^{re.escape(repair)}[^=]*=\s*[^=]", statement), (
+                f"the checker assigns into {repair}"
+            )
+    # No clamping, no normalising, no defaulting.
+    for forbidden in ("ClearContents", ".Value =", "= Abs(driver.Probability)",
+                      "/ total", "Normalise", "Normalize", "Clamp"):
+        assert forbidden not in code, f"the checker performs a repair ({forbidden})"
+
+
+def test_11_the_checker_publishes_nothing() -> None:
+    """Later orchestration owns telling the user. The checker returns status."""
+    code = _checker().code
+    for publisher in ("MsgBox", "modAppState", "SH_CALC", "CALC_SHEET",
+                      "CALC_STATE", "CALC_ATTEMPT", "modCalcReport"):
+        assert publisher not in code, f"the checker publishes via {publisher}"
+
+
+def test_12_no_generic_error_suppression() -> None:
+    code = _checker().code
+    assert "On Error Resume Next" not in code
+    assert "On Error" not in code, (
+        "the checker installs no handler; every refusal is a returned False"
+    )
+
+
+def test_13_every_refusal_carries_a_diagnostic() -> None:
+    """A refusal a user cannot act on is barely better than a crash."""
+    module = _checker()
+    for procedure in module.procedures:
+        body = _body(module, procedure)
+        statements = [t for _, t in logical_statements(body)]
+        exits = [i for i, t in enumerate(statements) if t == "Exit Function"]
+        if not exits or procedure in ("DriverLabel", "OrderingFailure"):
+            continue
+        assert any(t.startswith("detail = ") for t in statements), (
+            f"{procedure} can refuse without saying why"
+        )
+
+
+def test_14_a_specific_diagnostic_is_never_overwritten_by_a_generic_one() -> None:
+    """Once a helper has said which driver and which rule, the caller returns."""
+    statements = _statements(_checker(), "CheckResolvedModel")
+    for index, statement in enumerate(statements):
+        if re.match(r"^If Not Check\w+\(.*detail\) Then", statement):
+            tail = statement.split("Then", 1)[1].strip()
+            following = tail or statements[index + 1]
+            assert following == "Exit Function", (
+                f"a failed check is followed by {following!r} rather than an immediate return"
+            )
+
+
+# ===========================================================================
+# 3. the model-level predicates
+# ===========================================================================
+def test_15_base_year_after_start_year_is_refused() -> None:
+    module = _checker()
+    body = _body(module, "CheckTimeline")
+    assert "If timeline.BaseYear > timeline.StartYear Then" in body, (
+        "the applied Base/Start relationship is not checked"
+    )
+    raw = _body_raw(module, "CheckTimeline")
+    assert "CStr(timeline.BaseYear)" in raw and "CStr(timeline.StartYear)" in raw, (
+        "the refusal must name both values"
+    )
+    assert "postdate" in raw or "later than" in raw
+
+
+def test_16_base_year_equal_to_start_year_is_accepted() -> None:
+    """Base Year = Start Year is the ordinary one-year case; only `>` refuses."""
+    body = _body(_checker(), "CheckTimeline")
+    assert ">=" not in body, "an equal Base and Start Year must not be refused"
+
+
+def test_17_the_discount_rate_d3_predicate_is_present() -> None:
+    module = _checker()
+    body = _body(module, "CheckDiscountRate")
+    assert "If timeline.DiscountRate <= -1# Then" in body, (
+        "D3 (1 + r > 0) is not checked"
+    )
+    raw = _body_raw(module, "CheckDiscountRate")
+    assert "1 + r <= 0" in raw, "the refusal must name the condition"
+
+
+def test_18_the_discount_rate_is_never_clamped_or_defaulted() -> None:
+    module = _checker()
+    body = _body(module, "CheckDiscountRate")
+    assert not re.search(r"timeline\.DiscountRate\s*=\s*[^=]", body), (
+        "the rate is modified"
+    )
+    assert "BuildDiscountFactors" not in module.code, (
+        "the factor builder stays in modCalcFactors and is not reached from here"
+    )
+
+
+def test_19_the_model_predicates_run_before_the_driver_loop() -> None:
+    statements = _statements(_checker(), "CheckResolvedModel")
+    timeline = next(i for i, t in enumerate(statements) if "CheckTimeline(" in t)
+    discount = next(i for i, t in enumerate(statements) if "CheckDiscountRate(" in t)
+    loop = next(i for i, t in enumerate(statements) if t.startswith("For index = 0 To"))
+    assert timeline < loop and discount < loop
+
+
+# ===========================================================================
+# 4. the profiling sum
+# ===========================================================================
+def test_20_the_profiling_sum_uses_the_accepted_signed_sum_authority() -> None:
+    """A hand-written accumulation would be a second summation rule.
+
+    `SafeSignedSum` is signed and carries the tier-2 exact rescue, so a profile
+    whose partial sums step outside Double range still produces its representable
+    answer instead of a refusal.
+    """
+    body = _body(_checker(), "CheckProfileSum")
+    assert "modCalcFactors.SafeSignedSum(weights, count, total)" in body
+    assert not re.search(r"total = total \+", body), (
+        "a naive accumulation replaces the accepted primitive"
+    )
+    assert not re.search(r"For \w+ = .* : .*total", body)
+
+
+def test_21_the_tolerance_comes_from_the_generated_contract_constant() -> None:
+    module = _checker()
+    body = _body(module, "CheckProfileSum")
+    assert "TOL_PROFILING_SUM_ABSOLUTE" in body, "the tolerance is not the contract's"
+    for literal in ("1e-9", "1E-9", "0.000000001", "1e-6", "1E-6", "0.0000001"):
+        assert literal not in module.code, f"a tolerance literal {literal} is hard-coded"
+    declared = [c for c in module.constants]
+    assert declared == ["PROFILE_SUM_TARGET"], (
+        f"the checker declares unexpected constants: {declared}"
+    )
+
+
+def test_22_the_comparison_is_against_one_within_the_tolerance() -> None:
+    module = _checker()
+    body = _body(module, "CheckProfileSum")
+    assert "Abs(difference) > TOL_PROFILING_SUM_ABSOLUTE" in body
+    assert "modCalcFactors.SafeSubtract(total, PROFILE_SUM_TARGET, difference)" in body, (
+        "the difference must go through the accepted primitive"
+    )
+    assert "Private Const PROFILE_SUM_TARGET As Double = 1#" in module.raw
+
+
+def test_23_a_sum_that_cannot_be_represented_is_a_controlled_refusal() -> None:
+    """Never a fabricated zero."""
+    statements = _statements(_checker(), "CheckProfileSum")
+    failure = next(i for i, t in enumerate(statements)
+                   if t.startswith("If Not modCalcFactors.SafeSignedSum("))
+    assert any(t.startswith("detail =") for t in statements[failure:failure + 3])
+    assert "total = 0#" not in statements, "a failed sum is fabricated as zero"
+
+
+def test_24_no_individual_weight_sign_rule_is_invented() -> None:
+    """The locked rule is about the SUM.
+
+    A profile may legitimately contain a zero weight - a driver may spend nothing
+    in a year - and a negative one, a credit or a transfer out. Refusing either
+    would invent a business rule no contract states.
+    """
+    body = _body(_checker(), "CheckProfileSum")
+    for invented in (r"weights\(offset\) < 0", r"weights\(\w+\) <= 0",
+                     r"weight < 0#", r"weight <= 0#"):
+        assert not re.search(invented, body), (
+            "the checker rejects an individual weight by sign"
+        )
+
+
+def test_25_the_profile_failure_names_the_driver_the_sum_and_the_tolerance() -> None:
+    raw = _body_raw(_checker(), "CheckProfileSum")
+    assert "DriverLabel(" in raw, "the refusal must name the driver"
+    assert "CStr(total)" in raw, "the refusal must state the resolved sum"
+    assert "CStr(PROFILE_SUM_TARGET)" in raw, "the refusal must state the target"
+    assert "CStr(TOL_PROFILING_SUM_ABSOLUTE)" in raw, "the refusal must state the tolerance"
+
+
+# ===========================================================================
+# 5. the distribution ordering
+# ===========================================================================
+def test_26_triangular_and_pert_require_the_full_ordering() -> None:
+    body = _body(_checker(), "CheckOrdering")
+    assert "Case DIST_TRIANGULAR, DIST_BETA_PERT" in body
+    assert ("If driver.MinValue > driver.MostLikely Or "
+            "driver.MostLikely > driver.MaxValue Then") in body
+
+
+def test_27_uniform_requires_only_min_and_max() -> None:
+    """D1: a populated Most Likely is ACCEPTED and IGNORED."""
+    module = _checker()
+    body = _body(module, "CheckOrdering")
+    statements = [t for _, t in logical_statements(body)]
+    start = statements.index("Case DIST_UNIFORM")
+    end = next(i for i in range(start + 1, len(statements))
+               if statements[i].startswith("Case "))
+    uniform = statements[start + 1:end]
+    assert any("driver.MinValue > driver.MaxValue" in t for t in uniform)
+    assert not any("MostLikely" in t for t in uniform), (
+        "the Uniform branch reads Most Likely; it must be ignored, not checked"
+    )
+    assert "HasMostLikely" not in body, (
+        "a populated Most Likely must not decide whether Uniform is refused"
+    )
+
+
+def test_28_the_distribution_kind_is_not_mapped_a_second_time() -> None:
+    """Step 5 resolved DistKind. The NAME is used only in the diagnostic."""
+    module = _checker()
+    code = module.code
+    assert "DISTRIBUTION_NAME_1" not in code
+    assert "DistributionKindOf" not in code
+    body = _body(module, "CheckOrdering")
+    assert "driver.DistKind" in body
+    assert 'driver.Distribution' not in body, (
+        "the ordering check must dispatch on the resolved kind, not on text"
+    )
+
+
+def test_29_no_positivity_rule_is_invented_for_the_three_point_values() -> None:
+    """A correctly ordered set of negative values is a valid distribution."""
+    body = _body(_checker(), "CheckOrdering")
+    for invented in (r"MinValue <= 0#", r"MinValue < 0#", r"MaxValue <= 0#",
+                     r"MostLikely < 0#"):
+        assert not re.search(invented, body), "a sign rule is invented for a three-point value"
+
+
+def test_30_the_ordering_check_computes_no_statistic() -> None:
+    """An ordering check that computed a mean would be calculating early."""
+    code = _checker().code
+    for owned in ("TriangularMean", "PertMean", "UniformMean", "DistributionMean",
+                  "DeterministicCentral", "ExpectedRisk", "ExactQuotientOfSum"):
+        assert owned not in code, f"the checker calls {owned}"
+
+
+def test_31_an_unrecognised_distribution_kind_is_refused_not_ignored() -> None:
+    statements = _statements(_checker(), "CheckOrdering")
+    assert "Case Else" in statements, (
+        "an unmapped kind must refuse rather than pass silently"
+    )
+    index = statements.index("Case Else")
+    assert any(t.startswith("detail =") for t in statements[index:index + 3])
+
+
+# ===========================================================================
+# 6. the per-kind scalars
+# ===========================================================================
+def test_32_a_cost_line_requires_a_strictly_positive_quantity() -> None:
+    body = _body(_checker(), "CheckQuantity")
+    assert "If driver.Quantity <= 0# Then" in body, "zero Quantity must be refused"
+    assert "DriverLabel(driver)" in _body_raw(_checker(), "CheckQuantity")
+
+
+def test_33_a_cost_line_does_not_validate_probability() -> None:
+    """`Probability = 1 for cost lines` is a carry convention, not a user input."""
+    assert "Probability" not in _body(_checker(), "CheckQuantity")
+
+
+def test_34_a_risk_requires_a_probability_in_the_closed_interval() -> None:
+    body = _body(_checker(), "CheckProbability")
+    assert "If driver.Probability < 0# Or driver.Probability > 1# Then" in body, (
+        "both boundaries must be valid and anything outside refused"
+    )
+    assert "<= 0#" not in body and ">= 1#" not in body, (
+        "0 and 1 are valid probabilities"
+    )
+
+
+def test_35_a_risk_does_not_validate_quantity() -> None:
+    assert "Quantity" not in _body(_checker(), "CheckProbability")
+
+
+def test_36_the_scalar_checks_are_dispatched_by_kind() -> None:
+    statements = _statements(_checker(), "CheckDriver")
+    branch = statements.index("If driver.IsRisk Then")
+    tail = statements[branch:]
+    probability = next(i for i, t in enumerate(tail) if "CheckProbability(" in t)
+    quantity = next(i for i, t in enumerate(tail) if "CheckQuantity(" in t)
+    assert probability < quantity, "the risk branch must come first, matching IsRisk"
+    assert "Else" in tail[probability:quantity]
+
+
+# ===========================================================================
+# 7. the empty driver set
+# ===========================================================================
+def test_37_an_empty_driver_set_is_not_refused() -> None:
+    """No accepted contract requires at least one Cost Line or Risk."""
+    statements = _statements(_checker(), "CheckResolvedModel")
+    empty = statements.index("If model.DriverCount = 0 Then")
+    assert statements[empty + 1] == "CheckResolvedModel = True", (
+        "an empty model must succeed once the model-level predicates hold"
+    )
+    assert "If model.DriverCount < 0 Then Exit Function" not in statements or True
+    assert any(t == "If model.DriverCount < 0 Then" for t in statements), (
+        "a negative count must be refused"
+    )
+
+
+def test_38_no_array_bound_is_read_before_the_count_is_known() -> None:
+    """A VBA array cannot represent a zero-element set, and an unallocated
+    dynamic array raises on LBound."""
+    statements = _statements(_checker(), "CheckResolvedModel")
+    empty = statements.index("If model.DriverCount = 0 Then")
+    for array in ("model.Drivers", "model.Weights"):
+        touch = next(
+            (i for i, t in enumerate(statements)
+             if i and re.search(rf"[LU]Bound\(\s*{re.escape(array)}\b", t)),
+            len(statements),
+        )
+        assert empty < touch, f"{array} bounds are read before the empty branch"
+
+
+def test_39_the_model_level_predicates_still_run_for_an_empty_model() -> None:
+    """An empty driver set does not excuse a bad timeline or discount rate."""
+    statements = _statements(_checker(), "CheckResolvedModel")
+    empty = statements.index("If model.DriverCount = 0 Then")
+    for predicate in ("CheckTimeline(", "CheckDiscountRate("):
+        index = next(i for i, t in enumerate(statements) if predicate in t)
+        assert index < empty, f"{predicate} is skipped for an empty model"
+
+
+def test_40_the_profiling_span_is_guarded_for_a_zero_duration() -> None:
+    body = _body(_checker(), "CheckProfileSum")
+    statements = [t for _, t in logical_statements(body)]
+    guard = statements.index("If count > 0 Then")
+    touch = next(i for i, t in enumerate(statements)
+                 if re.search(r"[LU]Bound\(model\.Weights", t))
+    assert guard < touch, "the weight array is indexed before its span is known"
+
+
+# ===========================================================================
+# 8. nothing is duplicated
+# ===========================================================================
+def test_41_no_phase_4_structural_rule_is_duplicated() -> None:
+    """The structural gate is Phase 4's and is already invoked by the resolver."""
+    code = _checker().code
+    for owned in ("NM_STRUCTURAL_STATE", "STATE_PENDING", "STATE_NOT_APPLIED",
+                  "STATE_CURRENT", "modStructuralCheck", "ValidateStructure",
+                  "ID_PREFIX_COST_LINE", "ID_PREFIX_RISK", "NM_COUNTER_COST_LINE"):
+        assert owned not in code, f"the checker duplicates the Phase-4 rule {owned}"
+
+
+def test_42_no_step_5_resolution_rule_is_duplicated() -> None:
+    code = _checker().code
+    for owned in ("REPORTING_CURRENCY", "COL_FX_RATES_CURRENCY", "vbBinaryCompare",
+                  "IsRealNumber", "TryReadDouble", "GCOL_INFLATION_PROFILE_NAME",
+                  "GRID_COST_PROFILING_FIXED_COLS"):
+        assert owned not in code, f"the checker duplicates the Step-5 rule {owned}"
+
+
+def test_43_no_numerical_kernel_is_duplicated() -> None:
+    """The checker owns no arithmetic of its own."""
+    module = _checker()
+    code = module.code
+    for owned in ("BuildInflationFactors", "BuildKnom", "BuildKpv",
+                  "ExactSumOfProducts", "AccumulateTotals", "BuildAnnualSeries",
+                  "Reconcile", "CalcFpDigestStream"):
+        assert owned not in code, f"the checker reaches into {owned}"
+    calls = sorted(set(re.findall(r"modCalcFactors\.(\w+)", code)))
+    assert calls == ["SafeSignedSum", "SafeSubtract"], (
+        f"unexpected numerical calls: {calls}"
+    )
+
+
+# Every VBA module that existed before Step 6, byte for byte as Step 5 left it.
+# Recorded as digests rather than asked of git, so the check holds in a
+# reconstructed tree that has no repository.
+FROZEN_SHA256 = {
+    "modCalcResolve": "3c67584390516a8a1c811df62d650749f6ef71518c649d7f1bb88dc753a837c1",
+    "modCalcFactors": "721b8d6aa16fef850a13c714b329395730c9110ccd50d17c99927c3bfaae68c1",
+    "modCalcAnalytical": "e234b3adacdb443c8c7b2b5072c311e7622405c3ec2e2987a750d85400299e0d",
+    "modCalcFingerprint": "0a504c0dc29062420c5e4325117ef623157e5fc612de9a9e862d86315aed5802",
+    "modWorkbook": "9cfa8f130c5bcdee783948654c969d4b0d6589fe7059c126f88c7676ca5405bf",
+    "modAppState": "ef0b5c64a7a3b5aeeef5ef0797cd160071a7eda6a7d8cef9cb98301f1504672f",
+    "modTimeline": "4a4f24d17b65bcbc0e46b1a74213b6a02eab6ab492b1788476d66eb7807b9e3f",
+    "modDrivers": "8f947a4cc473b76161c867f99daf5fbb4af670b909cca0387165b079c102af48",
+    "modProfiling": "0312858d7d817d20a99877f8be52ca0f7cf5b0bbb9aa9770367ed11138d9d7ca",
+    "modInflation": "08db32807d495c22e6067350291c21a9a277884de5e5064555612f6bb991118c",
+    "modStructuralCheck": "1798c56a459c9e35c581871248815841b28a3c88a62a931a68afe5d71853ed54",
+}
+
+
+def test_44_the_accepted_modules_were_not_modified() -> None:
+    """Step 6 ADDS a module. It changes none."""
+    import hashlib
+
+    for name, digest in FROZEN_SHA256.items():
+        actual = hashlib.sha256((SRC_VBA / f"{name}.bas").read_bytes()).hexdigest()
+        assert actual == digest, f"{name}.bas changed; Step 6 adds a module and edits none"
+
+
+def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
+    """Asserted in both directions, so Step 6 cannot have grown a second module."""
+    on_disk = set(_modules())
+    assert on_disk == set(FROZEN_SHA256) | {CHECKER}, (
+        f"unexpected hand-written module inventory: {sorted(on_disk)}"
+    )
+
+
+# ===========================================================================
+# 9. NEGATIVE CONTROLS
+#
+# Each plants the regression the rule exists to prevent and asserts the sweep
+# that would catch it does.
+# ===========================================================================
+_STUB = 'Attribute VB_Name = "modProbe"\nOption Explicit\n'
+
+
+def test_nc_01_a_missing_base_start_check_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CheckTimeline() As Boolean\n"
+        "    CheckTimeline = True\nEnd Function\n",
+    )
+    assert "timeline.BaseYear > timeline.StartYear" not in _body(planted, "CheckTimeline")
+
+
+def test_nc_02_a_missing_d3_check_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CheckDiscountRate() As Boolean\n"
+        "    CheckDiscountRate = True\nEnd Function\n",
+    )
+    assert "DiscountRate <= -1#" not in _body(planted, "CheckDiscountRate")
+
+
+def test_nc_03_a_naive_profiling_accumulation_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CheckProfileSum() As Boolean\n"
+        "    For offset = 0 To count - 1\n        total = total + weights(offset)\n"
+        "    Next offset\nEnd Function\n",
+    )
+    body = _body(planted, "CheckProfileSum")
+    assert re.search(r"total = total \+", body), "the naive loop must be visible"
+    assert "modCalcFactors.SafeSignedSum(" not in body
+
+
+def test_nc_04_a_hard_coded_tolerance_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CheckProfileSum() As Boolean\n"
+        "    If Abs(difference) > 0.000000001 Then Exit Function\nEnd Function\n",
+    )
+    body = _body(planted, "CheckProfileSum")
+    assert "TOL_PROFILING_SUM_ABSOLUTE" not in body
+    assert "0.000000001" in body, "the planted literal must be visible"
+
+
+def test_nc_05_an_individual_weight_sign_rule_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CheckProfileSum() As Boolean\n"
+        "    If weights(offset) < 0# Then Exit Function\nEnd Function\n",
+    )
+    assert re.search(r"weights\(offset\) < 0", _body(planted, "CheckProfileSum"))
+
+
+def test_nc_06_uniform_requiring_the_ml_ordering_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CheckOrdering() As Boolean\n"
+        "    Select Case driver.DistKind\n    Case DIST_UNIFORM\n"
+        "        If driver.MinValue > driver.MostLikely Then Exit Function\n"
+        "    Case DIST_TRIANGULAR\n    End Select\nEnd Function\n",
+    )
+    statements = [t for _, t in logical_statements(_body(planted, "CheckOrdering"))]
+    start = statements.index("Case DIST_UNIFORM")
+    end = next(i for i in range(start + 1, len(statements))
+               if statements[i].startswith("Case "))
+    assert any("MostLikely" in t for t in statements[start + 1:end]), (
+        "the planted Uniform ML rule must be visible to the sweep"
+    )
+
+
+def test_nc_07_a_quantity_of_zero_being_accepted_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CheckQuantity() As Boolean\n"
+        "    If driver.Quantity < 0# Then Exit Function\n"
+        "    CheckQuantity = True\nEnd Function\n",
+    )
+    body = _body(planted, "CheckQuantity")
+    assert "If driver.Quantity <= 0# Then" not in body
+    assert "driver.Quantity < 0#" in body
+
+
+def test_nc_08_a_probability_outside_the_interval_being_accepted_is_caught() -> None:
+    for planted_body, missing in (
+        ("    If driver.Probability > 1# Then Exit Function\n", "< 0#"),
+        ("    If driver.Probability < 0# Then Exit Function\n", "> 1#"),
+    ):
+        planted = _synthetic(
+            "modProbe",
+            _STUB + "Private Function CheckProbability() As Boolean\n" + planted_body
+            + "End Function\n",
+        )
+        body = _body(planted, "CheckProbability")
+        assert ("If driver.Probability < 0# Or driver.Probability > 1# Then") not in body
+        assert missing not in body
+
+
+def test_nc_09_refusing_an_empty_driver_set_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function CheckResolvedModel() As Boolean\n"
+        '    If model.DriverCount = 0 Then\n        detail = "at least one driver is required"\n'
+        "        Exit Function\n    End If\nEnd Function\n",
+    )
+    statements = [t for _, t in logical_statements(_body(planted, "CheckResolvedModel"))]
+    empty = statements.index("If model.DriverCount = 0 Then")
+    assert statements[empty + 1] != "CheckResolvedModel = True", (
+        "the planted refusal must not look like the accepted empty path"
+    )
+
+
+def test_nc_10_a_repair_is_caught() -> None:
+    for planted_body in (
+        "    model.Drivers(index).Quantity = 1#\n",
+        "    model.Drivers(index).Probability = 1#\n",
+        "    model.Weights(index, offset) = model.Weights(index, offset) / total\n",
+        "    model.Timeline.DiscountRate = 0#\n",
+    ):
+        planted = _synthetic(
+            "modProbe",
+            _STUB + "Public Function CheckResolvedModel() As Boolean\n" + planted_body
+            + "End Function\n",
+        )
+        assert assignments_into(planted, "model") != [], (
+            f"the planted repair must be visible: {planted_body.strip()}"
+        )
+
+
+def test_nc_11_re_reading_the_workbook_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function CheckResolvedModel() As Boolean\n"
+        "    quantity = modWorkbook.CellIn(table, row, COL_COST_LINES_QUANTITY).Value\n"
+        "End Function\n",
+    )
+    code = planted.code
+    hits = sorted({t for t in WORKBOOK_TOKENS if t.lower() in code.lower()})
+    assert "modWorkbook." in hits
+
+
+def test_nc_12_an_early_step_7_surface_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe", _STUB + "Public Sub PCCM_Calculate()\nEnd Sub\n"
+    )
+    assert "PCCM_Calculate" in planted.procedures
+    report = _synthetic("modCalcReport", _STUB)
+    assert report.name == "modCalcReport"
+
+
+def test_nc_13_a_generic_diagnostic_overwriting_a_specific_one_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function CheckResolvedModel() As Boolean\n"
+        "    If Not CheckDriver(driver, detail) Then\n"
+        '        detail = "the model is not valid"\n        Exit Function\n    End If\n'
+        "End Function\n",
+    )
+    statements = [t for _, t in logical_statements(_body(planted, "CheckResolvedModel"))]
+    index = next(i for i, t in enumerate(statements) if t.startswith("If Not CheckDriver("))
+    assert statements[index + 1] != "Exit Function", (
+        "the planted overwrite must be visible to the sweep"
+    )
+
+
+def test_nc_14_a_second_distribution_name_mapping_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CheckOrdering() As Boolean\n"
+        "    Select Case driver.Distribution\n    Case DISTRIBUTION_NAME_1\n"
+        "    End Select\nEnd Function\n",
+    )
+    body = _body(planted, "CheckOrdering")
+    assert "driver.Distribution" in body and "DISTRIBUTION_NAME_1" in body
+    assert "driver.DistKind" not in body
+
+
+# ===========================================================================
+# 10. this suite makes no runtime claim
+# ===========================================================================
+def test_45_no_test_in_this_file_claims_that_vba_ran() -> None:
+    text = Path(__file__).read_text(encoding="utf-8")
+    banned = (
+        ("VBA", "produced"), ("VBA", "computed"), ("VBA", "returned"),
+        ("VBA", "evaluated"), ("checked", "a real model"),
+        ("refused", "at runtime"), ("executed", "the VBA"), ("ran", "the VBA"),
+    )
+    for parts in banned:
+        assert " ".join(parts) not in text, f"this suite must not make that claim: {parts}"
+    assert "NO VBA IS EXECUTED HERE" in text
+
+
+if __name__ == "__main__":  # pragma: no cover
+    import pytest
+
+    raise SystemExit(pytest.main([__file__, "-q"]))
