@@ -1,6 +1,6 @@
 # Phase 5 — Gate A — Step 5: the resolution layer
 
-**Status: CORRECTED after independent review — ready for re-review.**
+**Status: CORRECTED TWICE after independent review — ready for re-review.**
 
 Step 4 is accepted and closed at `4b4e221`. This step adds one hand-written VBA
 module — `modCalcResolve` — that reads the workbook and hands back plain typed
@@ -9,7 +9,70 @@ it needs.
 
 ---
 
-## Correction round — five blocking defects found by independent review
+## Second correction round — the profiling column, and an incomplete handoff
+
+Independent review of `4ece6ef` confirmed all five Round-1 corrections are closed
+and found two further blockers.
+
+### 1. Profiling columns were resolved with the wrong header
+
+`ResolveProfileWeights` selected its column with
+
+```vba
+column = YearColumn(grid, fixedCols, offset + 1)
+```
+
+and the static test **required** that expression, locking the defect in.
+
+Phase 4 anchors profiling by **project-year index**, but labels those columns
+with **calendar years** — `modProfiling.SetYearColumns` writes
+`CStr(CLng(StartYear) + i - 1)` into the header block and its own comment says
+"Headers are display only; no value moves because of a relabel." Its own lookup
+is `fixedCols + ProjectYearIndex`.
+
+So project-year index 1 does not have the header `"1"`. With an applied Start
+Year of 2028 it has the header `"2028"`. The resolver searched for a label the
+workbook never carries, and a perfectly valid model would have been refused with
+*"the applied project-year column is missing"* before any numerical check ran.
+An integration defect, not a Gate-B unknown.
+
+The lookup is now the project-year index:
+
+```vba
+column = fixedCols + offset + 1
+```
+
+Direct position is safe **here and only here** because `ResolveModel` invokes the
+Phase-4 structural gate first: `ValidateStructure()` has already proven the grid
+carries exactly Applied Duration year columns headed from Applied Start Year
+onward. Re-deriving that from the headers would be a second interpretation
+authority for something Phase 4 has settled. `test_57` asserts the ordering that
+licenses it, and a column beyond the grid is still a controlled failure.
+
+`YearColumn` is untouched and **inflation still uses it**, because an inflation
+assumption genuinely is calendar-year anchored. `test_58` asserts inflation is
+now its only caller.
+
+### 2. The Step-6 handoff was incomplete
+
+The ownership table listed only `Min <= ML <= Max`, `Quantity > 0`,
+`0 <= Probability <= 1` and the profiling-sum tolerance for the future checker.
+The locked plan §18 also assigns it the applied Base/Start relationship and the
+discount-rate D3 predicate.
+
+That the Phase-4 structural validator may report an invalid applied Base/Start
+relationship as corruption does not remove the Phase-5 numerical predicate from
+the checker. Two consumers at different boundaries is fine; **zero** consumers in
+the Phase-5 checker is not.
+
+The table below is corrected. `test_60` reads the Step-6 row and fails if any
+locked predicate is missing from it — the handoff is asserted, not narrated.
+Nothing was implemented: `test_61` proves the resolver did not absorb any of
+these predicates while the documentation was being fixed.
+
+---
+
+## First correction round — five blocking defects found by independent review
 
 Independent review of `17b1229` confirmed the architecture and most of the source
 shape: reference-set-first ordering, referenced-only FX, the global reporting-
@@ -330,7 +393,10 @@ BodyRowCount` sweep in `ResolveFxRates`.
 ## Inflation: referenced profiles, anchored to calendar years
 
 The required span is `BaseYear + 1 .. LastProjectYear`, selected **by calendar
-year** (`test_19`). A Start Year shift therefore selects the rates for the new
+year** (`test_19`) — the opposite of profiling, and deliberately so: an inflation
+assumption belongs to the year it was made for, while a profiling weight belongs
+to a position in the project. `YearColumn` exists for this case and, since the
+second correction, inflation is its only caller (`test_58`). A Start Year shift therefore selects the rates for the new
 years rather than moving the old values positionally. The column is located by
 its header value, never by arithmetic on a column index (`test_20`), so a grid
 that has not been regenerated for the applied timeline reports a missing column
@@ -367,12 +433,34 @@ error found in review, not an accepted ambiguity.
 
 ---
 
-## Profiling: by Permanent ID
+## Profiling: two axes, anchored differently
 
-The grid row is found by matching the Permanent ID (`test_23`) and never by
+```
+row    -> Permanent ID
+column -> project-year INDEX
+```
+
+**The row** is found by matching the Permanent ID (`test_23`) and never by
 walking the register and the grid in parallel (`test_24`). A driver reorder
-cannot attach another driver's weights. Only the project-year columns belonging
-to the applied timeline are read (`test_25`).
+cannot attach another driver's weights.
+
+**The column** is the project-year index: `fixedCols + offset + 1`, so offset 0
+is the first applied year column (`test_25`, `test_55`).
+
+**Profiling values are anchored by project-year INDEX. The column headers
+display calendar years.** Phase 4 relabels those headers when Start Year changes
+and moves no value — `modProfiling.SetYearColumns` writes
+`CStr(CLng(StartYear) + i - 1)` and says so in its own comment. A weight entered
+against project year 1 stays project year 1's weight. Profiling is **not**
+calendar-year anchored, and nothing in the resolver's profiling path reads
+`StartYear`, `BaseYear`, `LastYear` or a calendar year at all (`test_59`) — which
+is what makes a Start Year shift incapable of moving a weight.
+
+Direct column position is licensed by the structural gate having already run:
+`ValidateStructure()` proves the grid carries exactly Applied Duration year
+columns headed from Applied Start Year onward, so the resolver does not build a
+second header-interpretation authority to rediscover project index 1
+(`test_57`). A column beyond the grid is still a controlled failure.
 
 **A numeric `0` weight is legitimate** — a driver may genuinely spend nothing in
 a year. **A blank weight is not zero**: `NumericCell` catches the blank *before*
@@ -432,7 +520,7 @@ Three owners, not two:
 | --- | --- |
 | **Phase 4**, invoked by `StructuralPrerequisites` | the structural state; `ValidateStructure()` — ID patterns, duplicates, orphans, profiling and inflation grid shape, counters |
 | **Step 5**, `modCalcResolve` | a referenced key has no matching source; ambiguous duplicate rows; a value cannot be read as the required type; a required value is blank; the reporting-currency invariant; an unknown distribution name; D2 (`1 + rate <= 0`) on a referenced rate |
-| **Step 6**, `modCalcCheck` | `Min <= ML <= Max`; `Quantity > 0`; `0 <= Probability <= 1`; the profiling-sum tolerance |
+| **Step 6**, `modCalcCheck` | applied `Base Year <= Start Year`; discount rate D3, `1 + r > 0`, on the value Step 5 already resolved; profiling sum = 100% within `TOL_PROFILING_SUM_ABSOLUTE`, via the accepted `SafeSignedSum` authority; Triangular / Beta-PERT `Min <= ML <= Max`; Uniform `Min <= Max` with a populated ML accepted and ignored; cost `Quantity > 0`; risk `0 <= Probability <= 1`; and the remaining §18 numerical-usability and range prerequisites |
 
 Phase-4 structural prerequisites are **invoked** by the Step-5 entry path, never
 duplicated. `modCalcCheck` will own only Phase-5 **numerical** prerequisites and
@@ -495,9 +583,10 @@ retargeted, not deleted.
 
 | Module | Raw | Blank | Comment | Code | code < 900 | raw < 1200 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `modCalcResolve` | 948 | 49 | 234 | 665 | yes | yes |
+| `modCalcResolve` | 969 | 49 | 255 | 665 | yes | yes |
 
-Before the correction the figures were 835/612. The three Step-4 modules are
+The figures were 835/612 at first submission and 948/665 after the first
+correction; the second changed commentary only, leaving the code count at 665. The three Step-4 modules are
 byte-identical and their metrics are unchanged (1088/809, 1177/868, 511/284).
 
 ---
@@ -523,12 +612,13 @@ byte-identical and their metrics are unchanged (1088/809, 1177/868, 511/284).
 | `test_phase5_oracle.py` | 111 |
 | `test_phase5_stage_a.py` | 57 |
 | `test_phase5_vba_source.py` | 120 |
-| `test_phase5_resolve_source.py` | **79 (new)** |
-| **Total** | **1169** |
+| `test_phase5_resolve_source.py` | **91 (new)** |
+| **Total** | **1181** |
 
-The Step-4 baseline was 1090 and the first Step-5 submission 1146. The
-correction adds 23 more static tests, all in the Step-5 suite. No test was
-removed and none was weakened.
+The Step-4 baseline was 1090, the first Step-5 submission 1146, and the first
+correction 1169. The second correction adds 12 more, all in the Step-5 suite. No
+test was removed; one test that had locked in the profiling defect by requiring
+the wrong expression was corrected rather than deleted.
 
 ### Mutation evidence
 

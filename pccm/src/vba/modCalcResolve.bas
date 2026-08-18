@@ -679,12 +679,31 @@ Public Function ResolveInflationFactors(ByRef rates() As Double, ByVal profileIn
 End Function
 
 ' ==========================================================================
-' Profiling - BY PERMANENT ID, never by row position
+' Profiling - ROW by Permanent ID, COLUMN by project-year INDEX
 '
-' A driver reorder must not attach another driver's weights, so the grid row is
-' found by matching the Permanent ID and never by walking the two tables in
-' parallel. Only the project-year columns belonging to the APPLIED timeline are
-' read.
+' TWO INDEPENDENT AXES, and they are anchored differently:
+'
+'   row    -> Permanent ID. A driver reorder must not attach another driver's
+'             weights, so the grid row is matched on the identifier and never by
+'             walking the register and the grid in parallel.
+'   column -> project-year INDEX. Project year 1 is the first applied year
+'             column, whatever calendar year it displays.
+'
+' THE HEADERS ARE CALENDAR YEARS, AND THEY ARE DISPLAY ONLY. Phase 4 relabels
+' them when Start Year changes and deliberately moves NO value: a weight entered
+' against project year 1 stays project year 1's weight. Searching for a header
+' of "1" would therefore look for a label the workbook never carries - an
+' applied grid starting in 2028 is headed "2028" - and a perfectly valid model
+' would be refused for a column that is present.
+'
+' Direct position is safe HERE, and only here, because ResolveModel has already
+' invoked the Phase-4 structural gate: ValidateStructure has proven the grid
+' carries exactly Applied Duration year columns headed from Applied Start Year
+' onward. Re-deriving that from the headers would be a second interpretation
+' authority for something Phase 4 has already settled.
+'
+' Inflation is the opposite case and keeps YearColumn: an inflation assumption
+' IS anchored to its calendar year.
 '
 ' A numeric 0 weight is legitimate - a driver may genuinely spend nothing in a
 ' year. A BLANK weight is not zero: it is an unmade assumption, and it is
@@ -737,8 +756,10 @@ Public Function ResolveProfileWeights(ByRef drivers() As ResolvedDriver, _
             Exit Function
         End If
         For offset = 0 To timeline.Duration - 1
-            column = YearColumn(grid, fixedCols, offset + 1)
-            If column = 0 Then
+            ' Project-year INDEX, not calendar year: offset 0 is the first
+            ' applied year column. The count was proven by the structural gate.
+            column = fixedCols + offset + 1
+            If column > grid.ListColumns.Count Then
                 detail = "profiling for driver " & _
                          drivers(LBound(drivers) + index).PermanentId & _
                          ", project year " & CStr(offset + 1) & _

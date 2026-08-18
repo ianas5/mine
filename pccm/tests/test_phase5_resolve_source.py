@@ -493,7 +493,7 @@ def test_24_profiling_never_walks_the_two_tables_in_parallel() -> None:
 def test_25_only_applied_project_year_columns_are_read() -> None:
     body = _body(_resolver(), "ResolveProfileWeights")
     assert "For offset = 0 To timeline.Duration - 1" in body
-    assert "column = YearColumn(grid, fixedCols, offset + 1)" in body
+    assert "column = fixedCols + offset + 1" in body
 
 
 def test_26_a_blank_weight_is_refused_and_never_becomes_zero() -> None:
@@ -1235,6 +1235,227 @@ def test_nc_22_the_combined_inflation_guard_is_caught() -> None:
     combined = statements.index("If nameCount = 0 Or yearCount = 0 Then")
     lookup = next(i for i, t in enumerate(statements) if "MatchingGridRow(table," in t)
     assert combined < lookup, "the escape must be visible as an ordering defect"
+
+
+
+# ===========================================================================
+# 14. THE TWO PROFILING AXES
+#
+# Row and column are anchored DIFFERENTLY, and conflating them is the defect
+# this section exists to prevent.
+# ===========================================================================
+def test_55_the_profiling_column_is_the_project_year_index() -> None:
+    """Project year 1 is the FIRST applied year column, whatever it displays.
+
+    The headers are calendar years and Phase 4 relabels them when Start Year
+    changes while moving no value. Searching for a header of "1" looks for a
+    label an applied grid never carries - one starting in 2028 is headed "2028" -
+    and would refuse a valid model for a column that is present.
+    """
+    module = _resolver()
+    body = _body(module, "ResolveProfileWeights")
+    assert "column = fixedCols + offset + 1" in body, (
+        "the profiling column must be selected by project-year index"
+    )
+    assert "YearColumn(" not in body, (
+        "profiling must not go through the calendar-year header search"
+    )
+    for calendar in ("CalendarYear", "timeline.StartYear", "timeline.BaseYear",
+                     "timeline.LastYear"):
+        assert calendar not in body, (
+            f"profiling consults {calendar}; it is anchored by index, not by year"
+        )
+
+
+def test_56_the_profiling_row_is_still_the_permanent_id() -> None:
+    """Direct COLUMN position does not license direct ROW position."""
+    body = _body(_resolver(), "ResolveProfileWeights")
+    assert "MatchingGridRow(grid, keyColumn, drivers(LBound(drivers) + index).PermanentId)" in body
+    assert not re.search(r"row = index", body)
+    assert not re.search(r"CellIn\(grid, index", body)
+
+
+def test_57_direct_position_is_licensed_by_the_structural_gate() -> None:
+    """Phase 4 has already proven the grid carries exactly Applied Duration year
+    columns headed from Applied Start Year onward.
+
+    Re-deriving that here would be a second interpretation authority for
+    something already settled - but the licence only holds because the gate runs
+    first, so the ordering is asserted rather than assumed.
+    """
+    module = _resolver()
+    order = call_order(module, "ResolveModel",
+                       [STRUCTURAL_GATE, "ResolveProfileWeights"])
+    assert order[0] < order[1], (
+        "profiling reads a column by position before the structural gate has run"
+    )
+    body = _body(module, "ResolveProfileWeights")
+    assert "If column > grid.ListColumns.Count Then" in body, (
+        "a column beyond the grid must still be a controlled failure"
+    )
+
+
+def test_58_inflation_remains_calendar_year_anchored() -> None:
+    """The opposite case, and it must not be dragged along by the fix.
+
+    An inflation assumption IS anchored to its calendar year, so its column is
+    still found by header.
+    """
+    module = _resolver()
+    body = _body(module, "ResolveInflationRates")
+    assert "column = YearColumn(table, GRID_INFLATION_FIXED_COLS, year)" in body
+    assert "year = timeline.BaseYear + 1 + offset" in body, (
+        "the inflation column is selected by CALENDAR YEAR"
+    )
+    assert not re.search(r"column = GRID_INFLATION_FIXED_COLS \+ offset", body), (
+        "inflation must not become project-index anchored"
+    )
+    # YearColumn survives, and inflation is now its only caller.
+    callers = [
+        procedure for procedure in module.procedures
+        if procedure != "YearColumn" and "YearColumn(" in _body(module, procedure)
+    ]
+    assert callers == ["ResolveInflationRates"], f"unexpected YearColumn callers: {callers}"
+
+
+def test_59_a_start_year_shift_cannot_move_a_weight() -> None:
+    """The property the index anchoring exists to guarantee.
+
+    Nothing in the profiling path depends on any calendar year, so which weight
+    belongs to project year 1 cannot change when Start Year does.
+    """
+    module = _resolver()
+    statements = _statements(module, "ResolveProfileWeights")
+    for statement in statements:
+        assert not re.search(r"\b(StartYear|BaseYear|LastYear|CalendarYear)\b", statement), (
+            f"the profiling path depends on a calendar year: {statement}"
+        )
+    assert any("timeline.Duration" in t for t in statements), (
+        "the profiling span is the applied duration, which is index-shaped"
+    )
+
+
+# ===========================================================================
+# 15. THE STEP-6 HANDOFF
+#
+# Step 5 does not evaluate these, and must not. What it must not do is let them
+# disappear from the record of what the numerical checker still owes.
+# ===========================================================================
+STEP6_REQUIRED_SCOPE = (
+    "Base Year <= Start Year",
+    "1 + r > 0",
+    "TOL_PROFILING_SUM_ABSOLUTE",
+    "Min <= ML <= Max",
+    "Min <= Max",
+    "Quantity > 0",
+    "0 <= Probability <= 1",
+)
+
+
+def _step6_scope() -> str:
+    """The Step-6 column of the ownership table in the Step-5 document."""
+    text = (PCCM_ROOT / "docs" / "phase5_gate_a_step5.md").read_text(encoding="utf-8")
+    rows = [line for line in text.splitlines() if line.startswith("| **Step 6**")]
+    assert rows, "the ownership table has no Step-6 row"
+    return "\n".join(rows)
+
+
+def test_60_the_step_6_handoff_lists_every_locked_numerical_prerequisite() -> None:
+    """A predicate Step 5 does not evaluate still has to be owed by someone.
+
+    The structural validator may report an invalid applied Base/Start
+    relationship as corruption; that does not remove the locked Phase-5
+    numerical predicate from the checker. Two consumers at different boundaries
+    is fine. Zero consumers in the Phase-5 checker is not.
+    """
+    scope = _step6_scope()
+    missing = [item for item in STEP6_REQUIRED_SCOPE if item not in scope]
+    assert not missing, f"the Step-6 handoff omits: {missing}"
+
+
+def test_61_step_5_did_not_absorb_the_step_6_predicates() -> None:
+    """The documentation fix must not become an implementation."""
+    code = _resolver().code
+    for absorbed in ("TOL_PROFILING_SUM_ABSOLUTE", "SafeSignedSum",
+                     "modCalcAnalytical.", "AllIdentitiesHold"):
+        assert absorbed not in code, f"the resolver evaluates {absorbed}"
+    for procedure in ("ResolveAppliedTimeline", "ResolveDrivers", "ResolveProfileWeights"):
+        body = _body(_resolver(), procedure)
+        assert not re.search(r"BaseYear\s*>\s*.*StartYear", body), (
+            "the Base/Start predicate belongs to the checker"
+        )
+        assert not re.search(r"Quantity\s*<=\s*0#", body)
+        assert not re.search(r"Probability\s*[<>]", body)
+    assert "DiscountRate <= -1#" not in code, "D3 belongs to the checker"
+
+
+# ===========================================================================
+# 16. NEGATIVE CONTROLS FOR THE PROFILING AXES
+# ===========================================================================
+def test_nc_23_a_header_search_for_the_project_index_is_caught() -> None:
+    """The submitted expression: it looks for a header of "1"."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function ResolveProfileWeights() As Boolean\n"
+        "    For offset = 0 To timeline.Duration - 1\n"
+        "        column = YearColumn(grid, fixedCols, offset + 1)\n"
+        "    Next offset\n"
+        "End Function\n",
+    )
+    body = _body(planted, "ResolveProfileWeights")
+    assert "YearColumn(" in body, "the header search must be visible to the sweep"
+    assert "column = fixedCols + offset + 1" not in body
+
+
+def test_nc_24_calendar_year_profiling_selection_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function ResolveProfileWeights() As Boolean\n"
+        "    For offset = 0 To timeline.Duration - 1\n"
+        "        column = YearColumn(grid, fixedCols, timeline.StartYear + offset)\n"
+        "    Next offset\n"
+        "End Function\n",
+    )
+    statements = _statements(planted, "ResolveProfileWeights")
+    assert any(re.search(r"\b(StartYear|BaseYear|LastYear|CalendarYear)\b", t)
+               for t in statements), (
+        "a calendar-year dependence in the profiling path must be visible"
+    )
+
+
+def test_nc_25_base_year_profiling_selection_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function ResolveProfileWeights() As Boolean\n"
+        "    column = YearColumn(grid, fixedCols, timeline.BaseYear + 1 + offset)\n"
+        "End Function\n",
+    )
+    body = _body(planted, "ResolveProfileWeights")
+    assert "timeline.BaseYear" in body
+    assert "column = fixedCols + offset + 1" not in body
+
+
+def test_nc_26_project_index_inflation_selection_is_caught() -> None:
+    """Inflation must NOT follow profiling: its assumptions are year-anchored."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function ResolveInflationRates() As Boolean\n"
+        "    column = GRID_INFLATION_FIXED_COLS + offset + 1\n"
+        "End Function\n",
+    )
+    body = _body(planted, "ResolveInflationRates")
+    assert re.search(r"column = GRID_INFLATION_FIXED_COLS \+ offset", body), (
+        "the planted index lookup must be visible"
+    )
+    assert "YearColumn(" not in body
+
+
+def test_nc_27_an_omitted_step_6_predicate_is_caught() -> None:
+    """The handoff assertion reads the table row, not a comment."""
+    scope = _step6_scope()
+    for item in STEP6_REQUIRED_SCOPE:
+        pruned = scope.replace(item, "")
+        assert item not in pruned, f"removing {item} must be visible to the sweep"
 
 
 # ===========================================================================
