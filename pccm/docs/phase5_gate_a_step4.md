@@ -1,6 +1,6 @@
 # Phase 5 — Gate A — Step 4: the pure VBA numerical kernel, as source
 
-**Status: CORRECTED TWICE after independent review — ready for re-review.**
+**Status: CORRECTED THREE TIMES after independent review — ready for re-review.**
 
 Step 3 is accepted and closed. This step adds three hand-written VBA modules —
 `modCalcFactors`, `modCalcAnalytical`, `modCalcFingerprint` — that implement the
@@ -10,7 +10,97 @@ the contract declare them.
 
 ---
 
+## Third correction round — two fingerprint source defects
+
+Independent review of `6760196` accepted the record capacity fix, the logical-count
+APIs, the reachable zero-driver branches, both empty-sequence identities, the
+`{2, 3, 6}` divisor contract and the public-surface cleanup. It found two
+remaining defects, both confined to `modCalcFingerprint`. Neither module in the
+numerical or analytical layer changed in this round.
+
+### 1. The private fingerprint builder assigned the wrong function result
+
+`CalcFpBuildVersionedFingerprint` ended with
+
+```vba
+CalcFpBuildFingerprint = CalcFpDigestStream(stream, result)
+```
+
+— the name of the **public wrapper**, not its own. A VBA function returns by
+assigning to its own name, so the helper never assigned its result at all, and
+the wrapper, which returns whatever the helper returns, would have received the
+default `False` on every successful digest.
+
+Nothing at the signature level can see this. The assignment is legal VBA, the
+call compiles, and every test that reads declarations passes.
+
+The fix is one identifier. The stream construction, section order, record
+ordering, `FP_VERSION` authority, digest algorithm, UTF-16 handling and schema
+are untouched.
+
+**A general gate now covers the class.** `test_71` requires every Function in the
+three modules to assign its own name somewhere; `test_72` rejects an assignment
+whose left-hand identifier is a *different* Function in the same module. Array
+elements (`fields(0) = …`) and UDT members (`check.Label = …`) are excluded
+because they are not return statements, and no control-flow proof is attempted —
+a failure-only path need not assign anything. Run against `6760196` the gate
+reports exactly one offender, and names it.
+
+### 2. The separator equality gate made the locked dual injection impossible
+
+`CalcFpCanonicalNumber` located the mantissa marker correctly and then added
+
+```vba
+If Mid$(text, marker, 1) <> decimalSeparator Then Exit Function
+```
+
+The locked acceptance case injects **both** `"."` and `","` on **one** host and
+requires byte-identical output. That gate makes the pair unsatisfiable on any
+single machine: whichever character the host formatter emits, the other injection
+is refused. This is not a runtime unknown — it follows from the branch structure,
+and Gate A can see it.
+
+The encoder now takes the alternative the accepted plan already permits: locate
+the marker in the formatter's own output, and normalise that one position to `.`
+regardless of which character was there.
+
+```vba
+text = Format$(number, FP_NUMBER_FORMAT)
+marker = CalcFpMarkerIndex(text)
+If marker = 0 Then Exit Function
+result = Left$(text, marker - 1) & "." & Mid$(text, marker + 1)
+```
+
+`CalcFpMarkerIndex` still validates the whole scientific-notation shape — optional
+sign, one digit, the marker, sixteen fractional digits, `E`, an exponent sign, at
+least two exponent digits — so the marker is identified by position within a form
+that has already been checked, and the exponent marker, the exponent sign and
+every digit remain untouchable.
+
+**The separator stays a parameter.** It is the locked public interface, it is what
+the later resolver reports about its environment, it is what Gate B injects, and
+it is still validated as exactly one UTF-16 code unit. What it is no longer
+required to do is match what the host emitted — the encoder does not need to trust
+the supplied value in order to find the marker. No `Application.International`, no
+`DecimalSeparator`, no `UseSystemSeparators`, no worksheet state, no Excel object.
+
+`test_35a` fails any statement comparing the marker character against
+`decimalSeparator`; `test_35b` asserts the argument and its validation survive
+and that no machine state is consulted.
+
+### What this round still does not prove
+
+Gate A has shown that the source does not make the two separator injections
+mutually exclusive. It has **not** shown that `Format$` under a foreign locale
+produces the accepted 17-significant-digit form, nor that the ten locked numeric
+encodings come out right, nor that either injection yields the reference digest.
+Those need real Excel and remain Gate B's.
+
+---
+
 ## Second correction round — runtime-capability and API defects
+
+*(Superseded in part by the third round above; retained as the record of what was found and when.)*
 
 Independent review of `2d76d78` confirmed that the first correction genuinely
 fixed the fingerprint schema, the inflation vector, the `FP_VERSION` authority,
@@ -266,7 +356,11 @@ reviewer must be able to rely on.
    authority.
 3. **Fingerprint parity with VBA is not established.** The reference digest
    `50B6EB0E26857EA7` over 366 UTF-16 code units remains a Python result. Whether
-   the VBA encoder reproduces it is Gate B's question, on real Excel on Windows.
+   the VBA encoder reproduces it is Gate B's question, on real Excel on Windows —
+   as is whether `Format$` under a foreign locale produces the accepted
+   17-significant-digit form, and whether the two locked separator injections
+   actually agree at runtime. Gate A has only shown that the source does not
+   forbid them.
 4. **The kernel has never been compiled.** `Option Explicit` is present in all
    three modules and the source tests check block balance, line length and
    declaration shape, but a static reader is not a compiler. A type error that
@@ -296,13 +390,15 @@ added.
 | --- | --- | --- | --- | --- | --- | --- |
 | `modCalcFactors` | 1088 | 49 | 230 | 809 | yes | yes |
 | `modCalcAnalytical` | 1177 | 63 | 246 | 868 | yes | yes |
-| `modCalcFingerprint` | 499 | 28 | 186 | 285 | yes | yes |
+| `modCalcFingerprint` | 511 | 28 | 199 | 284 | yes | yes |
 
-All three are below both applicable limits. The figures were 995/781, 1098/826
-and 428/255 at first submission and 1065/802, 1164/869 and 485/282 after the
-first correction. `modCalcAnalytical` remains the closest to a threshold, with
-32 code lines of headroom; the count plumbing added signature lines and removed a
-pass-through helper, netting one line fewer than before. A comment line is one whose first
+All three are below both applicable limits. `modCalcFactors` and
+`modCalcAnalytical` are byte-identical to the previous round; only
+`modCalcFingerprint` changed, and its code count fell by one while its commentary
+grew. The figures were 995/781, 1098/826 and 428/255 at first submission,
+1065/802, 1164/869 and 485/282 after the first correction, and 1088/809,
+1177/868 and 499/285 after the second. `modCalcAnalytical` remains the closest to
+a threshold, with 32 code lines of headroom. A comment line is one whose first
 non-whitespace character is the VBA apostrophe; a blank line is neither comment
 nor code.
 
@@ -526,12 +622,16 @@ Long.
 `CalcFpUtf16Length` is `Len(text)` — a VBA `String` is already UTF-16, so a
 non-BMP character is already counted as its two surrogate units.
 
-**The decimal separator is an argument.** `Application.International` appears
-nowhere. `CalcFpCanonicalNumber` takes the separator the host formatter produced
-and normalises it back to `.` **positionally**, rewriting exactly one character:
-`E`, `+`, `-` and every digit already occur elsewhere in scientific notation, so
-a global replace would corrupt the exponent. A test asserts `Replace` is absent
-from that procedure.
+**The decimal separator is an argument, and the marker is found in the output.**
+`Application.International` appears nowhere. `CalcFpMarkerIndex` validates the
+scientific-notation shape and returns the index of the single mantissa marker,
+whatever character the host formatter put there; `CalcFpCanonicalNumber` rewrites
+exactly that position to `.`. A global replace would corrupt the exponent — `E`,
+`+`, `-` and every digit occur elsewhere in the form — and a test asserts
+`Replace` is absent. The supplied separator is validated as one UTF-16 code unit
+but is never compared against the host's own marker; see the third correction
+round for why that comparison would make the locked pair of injections
+unsatisfiable.
 
 **The digest** is `CalcFpHex8(h1) & CalcFpHex8(h2)`, eight hex digits each, with
 both accumulators starting at `FP_INIT_1` / `FP_INIT_2`. `CalcFpHex8` divides in
@@ -695,17 +795,24 @@ The Stage-A post-build verifier still reports **351 passed, 0 failed**.
 | `test_phase5_numeric.py` | 94 |
 | `test_phase5_oracle.py` | 111 |
 | `test_phase5_stage_a.py` | 57 |
-| `test_phase5_vba_source.py` | **112** |
-| **Total** | **1082** |
+| `test_phase5_vba_source.py` | **120** |
+| **Total** | **1090** |
 
-The pre-review baseline was 967; the first Step-4 submission was 1029; the first
-correction reached 1063. The second correction adds 19 more static tests, all in
-`test_phase5_vba_source.py`. **No test was removed, and no test was weakened to
-make the patch pass.**
+The pre-review baseline was 967; the first Step-4 submission was 1029; the
+corrections reached 1063, then 1082, now 1090. **No test was removed, and no test
+was weakened to make a patch pass.**
 
 ### Discrimination against the defective commits
 
-Run unchanged against **`7fac269`** (the first submission) the suite produces 23
+Run unchanged against **`6760196`** (the second correction) the suite produces
+four failures, covering both defects of the third round:
+
+| Defect | Failing tests against `6760196` |
+| --- | --- |
+| wrong function-result assignment in the private fingerprint builder | `test_71`, `test_72`, `test_73` |
+| host-marker equality gate in the numeric encoder | `test_35a` |
+
+Run unchanged against **`7fac269`** (the first submission) it produces 23
 failures; run unchanged against **`2d76d78`** (the first correction) it produces
 14, covering every defect of the second round:
 
@@ -737,7 +844,7 @@ The first round's defect classes and their failing tests against `7fac269`:
 (the schema positions are distinguishable) are standing invariants rather than
 discriminators.
 
-### The thirty negative controls
+### The thirty-three negative controls
 
 `tests/test_phase5_vba_source.py` plants twelve defects in synthetic module text
 and asserts the sweep that exists to catch each one does catch it. A sweep that
@@ -781,6 +888,13 @@ had silently stopped working would pass every positive test and fail these.
 28. a count-less `SafeSignedSum`
 29. an unguarded exact divisor
 30. an accidentally Public helper
+
+**Three more for the third round:**
+
+31. a foreign function-result assignment
+32. the result gate must NOT fire on a correct function whose only other
+    assignments are an array element and a UDT member
+33. a restored host-marker equality gate
 
 A further check runs the other way: a comment that mentions `Application.` and
 `Worksheets` must **not** be reported, which is what proves the sweeps read code

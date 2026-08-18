@@ -641,7 +641,69 @@ def test_35_the_separator_normalisation_is_positional_and_not_a_global_replace()
     """`E`, `+`, `-` and every digit already occur in scientific notation."""
     body = _procedure_body(_kernel()["modCalcFingerprint"], "CalcFpCanonicalNumber")
     assert "Replace" not in body, "a global replace would corrupt the exponent"
-    assert "CalcFpMarkerIndex(text)" in body
+    assert "marker = CalcFpMarkerIndex(text)" in body, (
+        "the marker must be located in the formatter's own output"
+    )
+    literal = _procedure_body_raw(_kernel()["modCalcFingerprint"], "CalcFpCanonicalNumber")
+    assert 'result = Left$(text, marker - 1) & "." & Mid$(text, marker + 1)' in literal, (
+        "exactly the marker position must be rewritten to a full stop"
+    )
+
+
+def host_marker_equality_gate(module: VbaModule, procedure: str) -> list[str]:
+    """Statements that refuse when the host's own marker differs from the
+    caller-supplied separator.
+
+    Such a gate makes the locked dual injection unsatisfiable: on ONE host, both
+    "." and "," must produce byte-identical output, and whichever character the
+    formatter emits, a gate comparing against it refuses the other injection.
+    """
+    statements = [text for _, text in logical_statements(_procedure_body(module, procedure))]
+    return [
+        statement
+        for statement in statements
+        if re.search(r"Mid\$?\(\s*\w+\s*,\s*marker\s*,\s*1\s*\)\s*<>\s*decimalSeparator",
+                     statement)
+        or re.search(r"decimalSeparator\s*<>\s*Mid\$?\(", statement)
+    ]
+
+
+def test_35a_the_host_marker_is_never_compared_against_the_supplied_separator() -> None:
+    """Gate A cannot run VBA, but it CAN prove the source does not make the two
+    locked separator injections mutually exclusive.
+
+    The accepted plan permits exactly this implementation: identify the mantissa
+    marker from the formatter's own output and normalise that one position. The
+    supplied separator therefore does not have to match what the host emitted,
+    and requiring it to match is what would make one of the two injections
+    impossible on any single machine.
+    """
+    module = _kernel()["modCalcFingerprint"]
+    assert host_marker_equality_gate(module, "CalcFpCanonicalNumber") == [], (
+        "the encoder refuses a separator that differs from the host's own marker; "
+        "the locked pair of injections could then never both succeed"
+    )
+    statements = [
+        text for _, text in
+        logical_statements(_procedure_body(module, "CalcFpCanonicalNumber"))
+    ]
+    for statement in statements:
+        assert not re.search(r"\bdecimalSeparator\b.*(<>|=).*\btext\b", statement), (
+            "the separator must not be validated against the formatted text at all"
+        )
+
+
+def test_35b_the_separator_remains_a_validated_argument() -> None:
+    """The public interface is unchanged and no machine state is consulted."""
+    module = _kernel()["modCalcFingerprint"]
+    assert "decimalSeparator As String" in _signature(module, "CalcFpCanonicalNumber")
+    body = _procedure_body(module, "CalcFpCanonicalNumber")
+    assert "If CalcFpUtf16Length(decimalSeparator) <> 1 Then Exit Function" in body, (
+        "the separator is still validated as exactly one UTF-16 code unit"
+    )
+    for forbidden in ("Application.International", "DecimalSeparator",
+                      "UseSystemSeparators"):
+        assert forbidden not in module.code, f"{forbidden} would consult the machine"
 
 
 def test_36_the_record_builders_take_the_most_likely_flag_from_their_caller() -> None:
@@ -1656,6 +1718,101 @@ def _procedure_body_raw(module: VbaModule, name: str) -> str:
     return "\n".join(lines[start:end])
 
 
+# --- 13.8 function results -------------------------------------------------
+_DECLARATION = re.compile(r"^(Public |Private |Friend )?(Static )?(Sub|Function)\s+(\w+)")
+_ASSIGNMENT = re.compile(r"^([A-Za-z_]\w*)\s*=\s*[^=]")
+_NOT_AN_ASSIGNMENT = re.compile(
+    r"^(If|ElseIf|Dim|Const|ReDim|For|Do|While|Set|Select|Case|Next|Loop|End|Exit)\b",
+    re.IGNORECASE,
+)
+
+
+def function_result_assignments(module: VbaModule) -> dict[str, set[str]]:
+    """For each Function in `module`, the plain identifiers its body assigns.
+
+    A VBA function returns by assigning to its own name, so an assignment to the
+    WRONG name compiles cleanly, returns the default, and is invisible to every
+    test that only reads signatures. Array-element and UDT-member assignments are
+    excluded: `fields(0) = …` and `check.Label = …` are not return statements.
+    """
+    functions: dict[str, set[str]] = {}
+    current: str | None = None
+    for _, statement in logical_statements(module.code):
+        declaration = _DECLARATION.match(statement)
+        if declaration:
+            current = declaration.group(4) if declaration.group(3).lower() == "function" else None
+            if current:
+                functions[current] = set()
+            continue
+        if current is None:
+            continue
+        if not _NOT_AN_ASSIGNMENT.match(statement):
+            assignment = _ASSIGNMENT.match(statement)
+            if assignment:
+                functions[current].add(assignment.group(1))
+        # `If <cond> Then <name> = …` is a return on a single line.
+        for tail in re.finditer(r"\bThen\s+([A-Za-z_]\w*)\s*=\s*[^=]", statement):
+            functions[current].add(tail.group(1))
+    return functions
+
+
+def foreign_result_assignments(module: VbaModule) -> list[str]:
+    """Functions that assign the name of a DIFFERENT function in the same module."""
+    assignments = function_result_assignments(module)
+    names = set(assignments)
+    return sorted(
+        f"{name} -> {sorted((assigned & names) - {name})}"
+        for name, assigned in assignments.items()
+        if (assigned & names) - {name}
+    )
+
+
+def functions_never_assigning_their_own_result(module: VbaModule) -> list[str]:
+    return sorted(
+        name for name, assigned in function_result_assignments(module).items()
+        if name not in assigned
+    )
+
+
+def test_71_every_function_returns_through_its_own_result_name() -> None:
+    """A mechanical gate, so this class of typo is not rediscovered one at a time.
+
+    VBA has no compiler here to notice that a procedure assigns a name that is not
+    its own: the assignment is legal, the caller silently receives the default,
+    and every signature-level test still passes. This checks the one thing that
+    catches it - that each Function names itself somewhere on a successful path.
+
+    It is deliberately NOT a control-flow proof. A failure-only path need not
+    assign anything.
+    """
+    for name, module in _kernel().items():
+        missing = functions_never_assigning_their_own_result(module)
+        assert not missing, f"{name}: these Functions never assign their own result: {missing}"
+
+
+def test_72_no_function_assigns_another_functions_result_name() -> None:
+    for name, module in _kernel().items():
+        foreign = foreign_result_assignments(module)
+        assert not foreign, f"{name}: assignment to another Function's result: {foreign}"
+
+
+def test_73_the_private_fingerprint_builder_returns_its_own_result() -> None:
+    """The specific instance the gate above generalises.
+
+    `CalcFpBuildVersionedFingerprint` computes the digest and the public wrapper
+    returns whatever it returns, so assigning the WRAPPER's name inside the helper
+    discards the result entirely.
+    """
+    module = _kernel()["modCalcFingerprint"]
+    body = _procedure_body(module, "CalcFpBuildVersionedFingerprint")
+    assert "CalcFpBuildVersionedFingerprint = CalcFpDigestStream(stream, result)" in body
+    assert "CalcFpBuildFingerprint =" not in body, (
+        "the helper must not assign the public wrapper's result name"
+    )
+    wrapper = _procedure_body(module, "CalcFpBuildFingerprint")
+    assert "CalcFpBuildFingerprint = CalcFpBuildVersionedFingerprint(" in wrapper
+
+
 # ===========================================================================
 # 14. NEGATIVE CONTROLS FOR THE REVIEW-DISCOVERED DEFECTS
 # ===========================================================================
@@ -1761,6 +1918,60 @@ def test_nc_21_an_exact_failure_turned_into_zero_is_caught() -> None:
         "    End If\nEnd Function\n",
     )
     assert swallowed_failure_statements(planted, "F") != []
+
+
+def test_nc_31_a_foreign_function_result_assignment_is_caught() -> None:
+    """The exact defect: the helper assigns the wrapper's name."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function CalcFpBuildFingerprint() As Boolean\n"
+        "    CalcFpBuildFingerprint = CalcFpBuildVersionedFingerprint(stream, result)\n"
+        "End Function\n"
+        "Private Function CalcFpBuildVersionedFingerprint() As Boolean\n"
+        "    CalcFpBuildFingerprint = CalcFpDigestStream(stream, result)\n"
+        "End Function\n",
+    )
+    assert functions_never_assigning_their_own_result(planted) == [
+        "CalcFpBuildVersionedFingerprint"
+    ]
+    assert foreign_result_assignments(planted) == [
+        "CalcFpBuildVersionedFingerprint -> ['CalcFpBuildFingerprint']"
+    ]
+
+
+def test_nc_32_the_result_gate_does_not_fire_on_a_correct_function() -> None:
+    """The other direction: a function that does name itself must pass.
+
+    Array-element and member assignments are not return statements and must not
+    be mistaken for one.
+    """
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function F(ByRef fields() As String) As Boolean\n"
+        "    Dim check As IdentityCheck\n"
+        "    fields(0) = \"x\"\n"
+        "    check.Label = \"y\"\n"
+        "    If ok Then F = True\n"
+        "End Function\n",
+    )
+    assert functions_never_assigning_their_own_result(planted) == []
+    assert foreign_result_assignments(planted) == []
+
+
+def test_nc_33_a_host_marker_equality_gate_is_caught() -> None:
+    """Restoring the gate must be visible to the sweep."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function CalcFpCanonicalNumber() As Boolean\n"
+        "    marker = CalcFpMarkerIndex(text)\n"
+        "    If marker = 0 Then Exit Function\n"
+        "    If Mid$(text, marker, 1) <> decimalSeparator Then Exit Function\n"
+        "    CalcFpCanonicalNumber = True\n"
+        "End Function\n",
+    )
+    assert host_marker_equality_gate(planted, "CalcFpCanonicalNumber") == [
+        "If Mid$(text, marker, 1) <> decimalSeparator Then Exit Function"
+    ]
 
 
 def test_nc_23_a_capacity_formula_that_forgets_most_likely_is_caught() -> None:

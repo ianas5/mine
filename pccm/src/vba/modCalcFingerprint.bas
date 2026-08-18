@@ -105,17 +105,30 @@ Public Function CalcFpCanonicalNumber(ByVal value As Double, ByVal decimalSepara
     ' two exponent digits, no thousands separator, and negative zero normalised
     ' to positive zero.
     '
-    ' THE DECIMAL SEPARATOR IS AN ARGUMENT, never read from the machine. On a
-    ' comma-locale Windows host the formatter emits ",", and the same model must
-    ' not fingerprint differently in Riyadh and in Berlin. Passing it in is also
-    ' what makes this a pure function that can be reasoned about at all.
+    ' THE NORMALISATION IS POSITIONAL, AND THE MARKER IS FOUND IN THE OUTPUT.
+    ' CalcFpMarkerIndex validates the scientific-notation shape and returns the
+    ' index of the single mantissa marker, WHATEVER character the host formatter
+    ' put there. That position is then rewritten to "." unconditionally.
     '
-    ' THE NORMALISATION IS POSITIONAL, NOT TEXTUAL. Replacing every occurrence of
-    ' the separator is only safe while the separator happens not to occur
-    ' elsewhere in scientific notation - and it does occur elsewhere for "E", for
-    ' "+", for "-" and for every digit. The marker's POSITION is fixed by the
-    ' accepted form, so exactly one character is rewritten and the exponent
-    ' marker, the exponent sign and every digit are untouchable by construction.
+    ' Replacing every occurrence of a separator instead would only be safe while
+    ' the separator happens not to occur elsewhere in scientific notation - and
+    ' it does occur elsewhere for "E", for "+", for "-" and for every digit. By
+    ' locating the marker positionally, exactly one character is rewritten and
+    ' the exponent marker, the exponent sign and every digit are untouchable by
+    ' construction.
+    '
+    ' WHY THE HOST MARKER IS NOT COMPARED AGAINST decimalSeparator. The locked
+    ' acceptance case injects BOTH "." and "," on ONE host and requires the two
+    ' outputs to be byte-identical. A gate demanding that the host's own marker
+    ' equal the supplied separator makes that pair unsatisfiable on any single
+    ' machine: whichever separator the formatter emits, the other injection is
+    ' refused. The encoder does not need to trust the supplied value to discover
+    ' the marker, so it does not.
+    '
+    ' The separator stays a parameter: it is the locked public interface, it is
+    ' what the later resolver reports about its environment, and it is what Gate
+    ' B injects. It is validated as one UTF-16 code unit, and no Excel object,
+    ' Application setting or worksheet state is consulted to obtain it.
     Dim text As String, marker As Long, number As Double
     If CalcFpUtf16Length(decimalSeparator) <> 1 Then Exit Function
     If Not IsUsableDouble(value) Then Exit Function
@@ -124,7 +137,6 @@ Public Function CalcFpCanonicalNumber(ByVal value As Double, ByVal decimalSepara
     text = Format$(number, FP_NUMBER_FORMAT)
     marker = CalcFpMarkerIndex(text)
     If marker = 0 Then Exit Function
-    If Mid$(text, marker, 1) <> decimalSeparator Then Exit Function
     result = Left$(text, marker - 1) & "." & Mid$(text, marker + 1)
     CalcFpCanonicalNumber = True
 End Function
@@ -461,7 +473,7 @@ Private Function CalcFpBuildVersionedFingerprint(ByVal version As Long, _
     If Not CalcFpEncodeSection(FP_SECTION_3, sortedRisk, riskCount, part) Then Exit Function
     stream = stream & part
 
-    CalcFpBuildFingerprint = CalcFpDigestStream(stream, result)
+    CalcFpBuildVersionedFingerprint = CalcFpDigestStream(stream, result)
 End Function
 
 Private Function CalcFpSortedRecords(ByRef ids() As String, ByRef records() As String, _
