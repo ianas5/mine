@@ -50,7 +50,7 @@ folded silently into a new revision.
 
 | # | Correction | Applied in |
 |---|---|---|
-| **C2** | **A representable final result is never refused because an intermediate left the range.** §19.2 states the objective — "a mathematically equivalent expression avoids an intermediate that can overflow while the final result is representable" — but the stable forms alone do not reach it for two families. **(a) Signed sums**: any sum of validated Doubles whose *final* value is representable must be produced, even where the canonical-order partial sums are not (`MAX + MAX − MAX` is `MAX`). **(b) Convex statistics**: a deterministic central value or distribution mean is a convex combination of its points, so it always lies between `Min` and `Max` and always has a representable answer; it must not be refused because an internal averaging step overflowed or underflowed. **No tolerance, weight, formula or expected value changed**, and the stable forms of the table below remain the required ordinary path. | §19.2, and `docs/phase5_gate_a_step2.md` §18 for the algorithms |
+| **C2** | **A representable final result is never refused because an intermediate left the range.** §19.2 states the objective — "a mathematically equivalent expression avoids an intermediate that can overflow while the final result is representable" — but the stable forms alone do not reach it for two families. **(a) Signed sums**: any sum of validated Doubles whose *final* value is representable must be produced, even where the canonical-order partial sums are not (`MAX + MAX − MAX` is `MAX`). **(b) Convex statistics**: a deterministic central value or distribution mean is a convex combination of its points, so it always lies between `Min` and `Max` and always has a representable answer; it must not be refused because an internal averaging step overflowed or underflowed, nor reported as zero when its exact value is non-zero. **(c) Products**: the same rule and the same exact criterion apply to the `safe_product` rescue. **No tolerance, weight, formula or expected value changed**, and the stable forms of the table below remain the required ordinary path. | §19.2, and `docs/phase5_gate_a_step2.md` §18–§19 for the algorithms |
 
 **What C2 locks, precisely.**
 
@@ -80,15 +80,50 @@ folded silently into a new revision.
 6. **No positivity rule is introduced anywhere.** A negative profile weight, a
    negative contribution and a negative total all remain legal. What changed is
    how a sum is computed, not what a model may contain.
-7. **Cross-language reproducibility.** Both rescues are specified as deterministic
-   integer-and-Double algorithms — comparisons, exact power-of-two scaling and
-   counting loops — with a definite order and a definite tie-breaker. No
-   `math.fsum`, `frexp`, `ldexp`, `Decimal` or `Fraction` appears in production;
+7. **A rescue must be faithful, not merely better.** A rescue that re-associates
+   Double operations is a heuristic and proves nothing. Re-associating a sum
+   discards the rounding residual of each intermediate subtraction, and that
+   residual can BE the answer once the large terms cancel; reordering a product by
+   magnitude decides neither whether the exact product is in range nor whether a
+   representable one exists. Each rescue path is therefore judged against the
+   **exact mathematical value of the already-converted IEEE-754 Double inputs**:
+
+   ```
+   |exact| > MAX_DOUBLE                      -> NumericalRangeRefusal
+   exact non-zero but rounding to zero       -> NumericalRangeRefusal
+   otherwise                                 -> the correctly rounded Double
+   ```
+
+   The range test is on the **exact** value, not on the rounded one: a result can
+   exceed `MAX_DOUBLE` by less than half an ulp and still round to it, and
+   returning `MAX_DOUBLE` there fabricates a value.
+8. **Cross-language reproducibility.** Both rescues are specified as deterministic
+   `Double`-and-integer algorithms — exact power-of-two scaling, fixed-width limbs
+   holding exact integers, comparisons, counting loops and truncation — with a
+   definite order and a definite tie rule. No `math.fsum`, `frexp`, `ldexp`,
+   `Decimal`, `Fraction` or arbitrary-precision integer appears in production;
    `Decimal` and `Fraction` remain legitimate in independent test oracles only.
+9. **A zero is classified, not assumed.** For a NON-DEGENERATE convex statistic:
+
+   * a **non-zero** successful tier-1 result is returned unchanged — tier 1's own
+     rounding is the accepted ordinary path and moving it would change existing
+     calculations;
+   * a tier-1 result of **exactly zero** is **not** automatically accepted. It is
+     classified as either an **exact mathematical zero**, which returns `0`, or a
+     **non-zero statistic whose Double result collapses to zero**, which is a
+     `NumericalRangeRefusal`.
+
+   `midpoint(-20s, 19s)` with `s = 5e-324` evaluates to `0` in the stable form
+   without raising, while the exact midpoint is `-0.5s` — non-zero, and with no
+   usable non-zero Double. Reporting `0` there is the silent deletion §19.3 exists
+   to prevent. The classification is a deterministic Double-portable numerical
+   test, not `Decimal` or `Fraction`, and it applies to the Uniform midpoint, the
+   Triangular mean and the Beta-PERT mean alike.
 
 C2 applies to the profile-weight sum validation, `Knom` and `Kpv`, the A/B/C/D/E
-accumulations, the annual Base Cost / Expected Risk / Total series, and the
-annual-to-headline reconciliation sums. It does **not** magnitude-sort the normal
+accumulations, the annual Base Cost / Expected Risk / Total series, the
+annual-to-headline reconciliation sums, the `safe_product` rescue and the three
+convex statistics. It does **not** magnitude-sort or re-associate the normal
 calculation, and it changes nothing in `spec/calc_contract.yaml`.
 
 Like C1, C2 is **not** editorial: it is a numerical correction to an accepted
@@ -1742,8 +1777,10 @@ stable equivalent exists.
 > refused for an internal averaging step, even in the stable form. Both are
 > repaired by the two-tier rules recorded in §0 Erratum C2 — canonical order
 > first, rescue only where canonical order produced nothing, and a
-> zero-uncertainty distribution returned exactly. The algorithms are specified for
-> VBA in `docs/phase5_gate_a_step2.md` §18.
+> zero-uncertainty distribution returned exactly, with each rescue judged against
+> the exact mathematical value of its Double inputs rather than against a
+> re-associated evaluation of them. The algorithms are specified for VBA in
+> `docs/phase5_gate_a_step2.md` §18 and §19.
 
 ### 19.3 Inflation and discount — iterative, with overflow AND underflow detection
 

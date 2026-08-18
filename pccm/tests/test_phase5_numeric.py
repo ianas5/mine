@@ -168,10 +168,11 @@ def test_ordinary_products_are_evaluated_left_to_right_unchanged() -> None:
         assert safe_product(factors) == expected, factors
 
 
-def test_the_balanced_order_is_deterministic() -> None:
+def test_the_product_rescue_is_deterministic() -> None:
     """Same inputs, same answer, every time — the property VBA must reproduce."""
     factors = [1e308, 10.0, 0.01]
     assert safe_product(factors) == safe_product(list(factors)) == 1e307
+    assert {safe_product([1e100, 0.5, 1e150, 5e-324, 1e-250]) for _ in range(20)} == {5e-324}
 
 
 def test_a_zero_factor_makes_an_exactly_zero_product() -> None:
@@ -179,9 +180,10 @@ def test_a_zero_factor_makes_an_exactly_zero_product() -> None:
     assert safe_product([1e-300, 0.0, 1e-300]) == 0.0
 
 
-def test_product_signs_are_preserved_through_the_balanced_order() -> None:
+def test_product_signs_are_preserved_through_the_rescue() -> None:
     assert safe_product([-1e308, 10.0, 0.01]) == -1e307
     assert safe_product([-1e308, -10.0, 0.01]) == 1e307
+    assert safe_product([-1e100, 0.5, 1e150, 5e-324, 1e-250]) == -5e-324
 
 
 def test_an_empty_product_is_the_multiplicative_identity() -> None:
@@ -691,15 +693,14 @@ BOUNDARY_CORPUS = (
     -MAX_DOUBLE, -math.nextafter(MAX_DOUBLE, 0.0), -1e308, -1.0, -1e-300, -1e-320, -5e-324,
 )
 
-# (label, function, exact weights, ulps the RESCUE may differ from correctly
-# rounded). Zero for Triangular and Uniform. One for Beta-PERT, because its
-# numerator `Min + 4*ML + Max` needs two roundings where the other two need one -
-# the same one-ulp class the accepted stable form already carries and which
-# `test_the_mandated_stable_form_is_not_bit_identical_to_the_naive_form` records.
+# (label, function, exact weights). The rescue is CORRECTLY ROUNDED for all
+# three: it forms the exact numerator, divides once with a guard and a sticky
+# remainder, and rounds once. The round-2 binade rescue was one ulp out on
+# Beta-PERT; the exact form is not.
 _STATISTICS = (
-    ("triangular mean", triangular_mean, (Fraction(1, 3), Fraction(1, 3), Fraction(1, 3)), 0),
-    ("Beta-PERT mean", beta_pert_mean, (Fraction(1, 6), Fraction(2, 3), Fraction(1, 6)), 1),
-    ("midpoint", midpoint, (Fraction(1, 2), Fraction(1, 2)), 0),
+    ("triangular mean", triangular_mean, (Fraction(1, 3), Fraction(1, 3), Fraction(1, 3))),
+    ("Beta-PERT mean", beta_pert_mean, (Fraction(1, 6), Fraction(2, 3), Fraction(1, 6))),
+    ("midpoint", midpoint, (Fraction(1, 2), Fraction(1, 2))),
 )
 
 
@@ -722,7 +723,7 @@ def test_no_convex_statistic_is_refused_when_its_answer_is_representable() -> No
     a usable non-zero Double, the oracle must produce a value; a refusal there is
     a refusal of an answer that exists.
     """
-    for label, function, weights, _ in _STATISTICS:
+    for label, function, weights in _STATISTICS:
         for points in itertools.product(BOUNDARY_CORPUS, repeat=len(weights)):
             exact = sum(
                 (weight * Fraction(point) for weight, point in zip(weights, points)),
@@ -753,7 +754,7 @@ def test_the_convex_statistics_are_correctly_rounded_on_the_boundary_corpus() ->
     enough to turn `5e-324` into `0.0` and a value into a refusal.
     """
     rescued = 0
-    for label, function, weights, allowed_ulps in _STATISTICS:
+    for label, function, weights in _STATISTICS:
         for points in itertools.product(BOUNDARY_CORPUS, repeat=len(weights)):
             exact = sum(
                 (weight * Fraction(point) for weight, point in zip(weights, points)),
@@ -772,10 +773,8 @@ def test_the_convex_statistics_are_correctly_rounded_on_the_boundary_corpus() ->
                 actual = function(*points)
             except NumericalRangeRefusal:
                 raise AssertionError(f"{label}{points} refused; exact rounds to {rounded!r}")
-            distance = _ulps_apart(actual, rounded)
-            assert distance <= allowed_ulps, (
-                f"{label}{points}: rescue gave {actual!r}, correctly rounded is "
-                f"{rounded!r} ({distance} ulps, {allowed_ulps} allowed)"
+            assert actual == rounded, (
+                f"{label}{points}: rescue gave {actual!r}, correctly rounded is {rounded!r}"
             )
     assert rescued > 1000, (
         f"only {rescued} corpus inputs actually reached the rescue; the sweep would pass "
@@ -832,30 +831,74 @@ def test_a_statistic_with_no_usable_non_zero_double_is_still_refused() -> None:
     assert float(Fraction(5e-324) / 2) == 0.0
 
 
-def test_the_binade_rescue_uses_only_powers_of_two() -> None:
+def test_the_exact_rescues_use_only_vba_translatable_operations() -> None:
     """A STRUCTURAL guard on cross-language reproducibility (§10).
 
-    The rescue must be expressible in VBA with a counting loop and nothing else.
-    `math.frexp`, `math.ldexp`, `Decimal` and `Fraction` in the rescue would each
-    be correct in Python and untranslatable, so none may appear in the module at
-    all.
+    The rescues must be expressible in VBA with `Double` arithmetic, `Fix` and
+    counting loops. `math.frexp`, `math.ldexp`, `math.fsum`, `Decimal` and
+    `Fraction` would each be correct in Python and untranslatable, so none may
+    appear in the module at all — and neither may Python's arbitrary-precision
+    `int`, which is why `_fix` is written with Double operations instead of
+    `math.floor`.
     """
     source = NUMERIC_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    called: set[str] = set()
+    names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
-            called.add(node.attr)
+            names.add(node.attr)
         elif isinstance(node, ast.Name):
-            called.add(node.id)
-    for banned in ("frexp", "ldexp", "fsum", "Decimal", "Fraction", "nextafter"):
-        assert banned not in called, f"calc_numeric.py uses {banned}, which VBA has no form of"
+            names.add(node.id)
+    for banned in (
+        "frexp", "ldexp", "fsum", "Decimal", "Fraction", "nextafter", "floor",
+        "trunc", "getcontext", "as_integer_ratio",
+    ):
+        assert banned not in names, f"calc_numeric.py uses {banned}, which VBA has no form of"
+    # `int` appears as an isinstance TYPE in `is_usable_double`, which is a type
+    # test, not arithmetic. What must not appear is a CALL to it: converting a
+    # Double to Python's arbitrary-precision integer would make the kernel exact
+    # in a way VBA cannot reproduce.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            assert node.func.id not in ("int", "round", "divmod", "pow"), (
+                f"calc_numeric.py calls {node.func.id}(), which has no Double-only meaning"
+            )
+
+
+def test_the_truncation_primitive_is_exact_and_matches_vba_fix() -> None:
+    """`_fix` is the one place the exact kernel needs integer truncation, and it
+    is written in Double operations so VBA `Fix` is a direct substitute."""
+    from pccm_builder.calc_numeric import _fix
+
+    for value in (0.0, 1.0, 1.5, 2.9999999999999996, 16777215.0, 16777216.5,
+                  4503599627370495.5, 4503599627370496.0, 9007199254740991.0):
+        assert _fix(value) == math.floor(value), value
+    # exhaustive over a dense band that exercises the round-then-correct path
+    for step in range(0, 20000):
+        value = step / 7.0
+        assert _fix(value) == math.floor(value), value
 
 
 def test_the_minimum_normal_double_constant_is_the_ieee_754_value() -> None:
     assert MIN_NORMAL_DOUBLE == 2.0**-1022
     assert MIN_NORMAL_DOUBLE / 2.0 != 0.0                      # subnormals exist below it
     assert math.frexp(MIN_NORMAL_DOUBLE) == (0.5, -1021)
+
+
+def test_the_exact_decomposition_round_trips_every_boundary_double() -> None:
+    """`_decompose` is the entry point of both rescues: if it is not exact,
+    nothing above it can be. Checked against `Fraction` — test-side only."""
+    from pccm_builder.calc_numeric import _decompose
+
+    for value in BOUNDARY_CORPUS + (0.1, 3.0, 2.0**-1022, 1.5e-323, -0.1):
+        sign, mantissa, exponent = _decompose(value)
+        if value == 0.0:
+            assert (sign, mantissa, exponent) == (0, 0.0, 0)
+            continue
+        assert 4503599627370496.0 <= mantissa < 9007199254740992.0, value
+        assert Fraction(sign) * Fraction(mantissa) * Fraction(2) ** exponent == Fraction(
+            value
+        ), value
 
 
 # ---------------------------------------------------------------------------
@@ -886,11 +929,404 @@ def test_sabotaging_the_degenerate_invariant_breaks_the_exactness_vectors() -> N
     assert -MAX_DOUBLE / 3.0 + -MAX_DOUBLE / 3.0 + -MAX_DOUBLE / 3.0 == -math.inf
 
 
-def test_sabotaging_the_binade_rescue_breaks_the_subnormal_statistics() -> None:
-    """§13. Without tier 2, a subnormal Uniform has no midpoint at all."""
+def test_sabotaging_the_statistic_rescue_breaks_the_subnormal_statistics() -> None:
+    """§13. Without the exact rescue, a subnormal Uniform has no midpoint at all."""
     assert midpoint(5e-324, 1e-323) == 1e-323
     _refuses(lambda: safe_divide(5e-324, 2.0), "the stable midpoint's own first step")
     assert float(Fraction(5e-324) / 2 + Fraction(1e-323) / 2) == 1e-323
+
+
+# ---------------------------------------------------------------------------
+# FAITHFUL RESCUE - the exact mathematical target, adversarially swept
+# ---------------------------------------------------------------------------
+# The round-2 rescues were heuristics: re-associating Doubles for sums, and
+# reordering by magnitude for products. Both were shown to be wrong in ways no
+# clean-cancellation vector could expose, so the criterion is now stated exactly
+# and swept against an independent oracle.
+#
+# `Fraction.from_float` is EXACT and appears in TEST CODE ONLY. It is not
+# production semantics and it is not what the model computes; it is independent
+# Gate-A evidence about what the production algorithm should have produced.
+def _exact_sum_oracle(terms) -> Fraction:
+    return sum((Fraction(term) for term in terms), Fraction(0))
+
+
+def _exact_product_oracle(factors) -> Fraction:
+    exact = Fraction(1)
+    for factor in factors:
+        exact = exact * Fraction(factor)
+    return exact
+
+
+_EXACT_MAX = Fraction(MAX_DOUBLE)
+
+
+def _classify(exact: Fraction):
+    """(kind, target) for an exact value, using the EXACT range test of §11.
+
+    `abs(exact) <= Fraction(MAX_DOUBLE)` is tested BEFORE `float(exact)`, because
+    an exact value can exceed `MAX_DOUBLE` and still round down to it — Python's
+    overflow threshold is half an ulp above `MAX_DOUBLE`, not at it. Using
+    `math.isfinite(float(exact))` as the definition of "in range" would call that
+    case representable and hide exactly the defect this sweep exists to find.
+    """
+    if abs(exact) > _EXACT_MAX:
+        return "out-of-range", None
+    target = float(exact)
+    if exact != 0 and target == 0.0:
+        return "collapsed", None
+    return "value", target
+
+
+def test_the_exact_range_test_is_not_the_same_as_float_overflow() -> None:
+    """The half-ulp band §11 warns about, demonstrated rather than asserted.
+
+    `MAX_DOUBLE + 0.5 ulp` is mathematically out of range yet `float()` of it is
+    `MAX_DOUBLE`, so a classifier built on `float(exact)` would call it a value.
+    """
+    # ulp(MAX_DOUBLE) is 2**971, and Python's overflow threshold sits half an ulp
+    # above MAX_DOUBLE, so anything in (MAX, MAX + 2**970) is mathematically out of
+    # range while `float()` reports it as MAX_DOUBLE.
+    beyond = _EXACT_MAX + Fraction(2) ** 969
+    assert beyond > _EXACT_MAX
+    assert float(beyond) == MAX_DOUBLE                # float() does NOT report overflow
+    assert math.isfinite(float(beyond))
+    assert _classify(beyond)[0] == "out-of-range"
+
+
+class _Stream:
+    """A fixed linear congruential generator.
+
+    Deterministic and self-contained: the corpus does not depend on the stdlib
+    RNG's implementation staying stable across Python versions, and there is no
+    unseeded randomness anywhere in this file.
+    """
+
+    def __init__(self, seed: int) -> None:
+        self._state = seed & 0xFFFFFFFFFFFFFFFF
+
+    def next(self, bound: int) -> int:
+        self._state = (self._state * 6364136223846793005 + 1442695040888963407) & (
+            0xFFFFFFFFFFFFFFFF
+        )
+        return (self._state >> 33) % bound
+
+    def pick(self, values):
+        return values[self.next(len(values))]
+
+
+_SUM_CORPUS = (
+    MAX_DOUBLE, math.nextafter(MAX_DOUBLE, 0.0), 1e308, 1.78e308, 1.7e308, 1e292,
+    1.0, 1e-292, 1e-308, 1e-320, 5e-324,
+)
+_SUM_CORPUS = _SUM_CORPUS + tuple(-value for value in _SUM_CORPUS)
+
+_PRODUCT_CORPUS = (
+    MAX_DOUBLE, 1e308, 1e250, 1e150, 1e100, 1e50, 10.0, 2.0, 1.0, 0.5, 0.1,
+    1e-50, 1e-100, 1e-150, 1e-250, 1e-300, 1e-320, 5e-324,
+)
+_PRODUCT_CORPUS = _PRODUCT_CORPUS + tuple(-value for value in _PRODUCT_CORPUS)
+
+_ADVERSARIAL_CASES = 10000
+
+
+def _tier_one_sum(terms):
+    """Plain canonical accumulation — the tier-1 path, reproduced in the test so
+    a case can be classified as "rescued" without asking the module."""
+    try:
+        return safe_sum(terms), True
+    except NumericalRangeRefusal:
+        return None, False
+
+
+def _tier_one_product(factors):
+    if any(factor == 0.0 for factor in factors):
+        return None, False
+    try:
+        result = 1.0
+        for factor in factors:
+            result = safe_multiply(result, factor)
+        return result, True
+    except NumericalRangeRefusal:
+        return None, False
+
+
+def test_the_signed_sum_rescue_is_faithful_over_ten_thousand_adversarial_cases() -> None:
+    """§10. Lengths 2..20 from the boundary corpus, every rescue judged exactly.
+
+    THE CASE THIS EXISTS FOR is rounding-residual loss:
+    `[6e307, -8e307, -1.7e308, 6e307, 7e307, 6e307, -1e292]` sums to exactly
+    `-1e292`, and a rescue that cancels the largest opposite-signed pair with one
+    rounded subtraction throws away the residual and answers
+    `-1.99792015476736e292`. Clean-cancellation vectors cannot see that; a sweep
+    against exact rationals can.
+    """
+    stream = _Stream(0x50BE6EB0E26857)
+    rescued = 0
+    for _ in range(_ADVERSARIAL_CASES):
+        length = 2 + stream.next(19)
+        terms = [stream.pick(_SUM_CORPUS) for _ in range(length)]
+        _, tier_one_worked = _tier_one_sum(terms)
+        if tier_one_worked:
+            continue                                   # tier 1 owns this case
+        rescued += 1
+        kind, target = _classify(_exact_sum_oracle(terms))
+        try:
+            actual = safe_signed_sum(terms)
+        except NumericalRangeRefusal as error:
+            assert kind != "value", f"{terms} refused ({error}) but is {target!r}"
+            continue
+        assert kind == "value", f"{terms} returned {actual!r} but is {kind}"
+        assert actual == target, f"{terms}: got {actual!r}, correctly rounded is {target!r}"
+    assert rescued > 5000, f"only {rescued} cases reached the rescue; the sweep is too easy"
+
+
+def test_the_product_rescue_is_faithful_over_ten_thousand_adversarial_cases() -> None:
+    """§10. Factor counts 2..6 from the product corpus, every rescue judged
+    exactly — both the false acceptance and the false refusal directions."""
+    stream = _Stream(0x2147483647002A)
+    rescued = 0
+    for _ in range(_ADVERSARIAL_CASES):
+        count = 2 + stream.next(5)
+        factors = [stream.pick(_PRODUCT_CORPUS) for _ in range(count)]
+        _, tier_one_worked = _tier_one_product(factors)
+        if tier_one_worked:
+            continue
+        rescued += 1
+        kind, target = _classify(_exact_product_oracle(factors))
+        try:
+            actual = safe_product(factors)
+        except NumericalRangeRefusal as error:
+            assert kind != "value", f"{factors} refused ({error}) but is {target!r}"
+            continue
+        assert kind == "value", f"{factors} returned {actual!r} but is {kind}"
+        assert actual == target, f"{factors}: got {actual!r}, correctly rounded is {target!r}"
+    assert rescued > 3000, f"only {rescued} cases reached the rescue; the sweep is too easy"
+
+
+def test_the_signed_sum_reproducers_of_the_round_three_review() -> None:
+    """§1.1 and §1.3, asserted as literals rather than only inside a sweep."""
+    residual = [6e307, -8e307, -1.7e308, 6e307, 7e307, 6e307, -1e292]
+    assert _classify(_exact_sum_oracle(residual)) == ("value", -1e292)
+    assert safe_signed_sum(residual) == -1e292
+    _refuses(lambda: safe_sum(residual), "the canonical order does overflow here")
+
+    beyond = [-8e307, -7e307, -1.78e308, 5e307, -1e292, 1e308, -MAX_DOUBLE, 1.78e308]
+    exact = _exact_sum_oracle(beyond)
+    excess = abs(exact) - _EXACT_MAX
+    assert excess > 0, "the reproducer must be out of range, or it tests nothing"
+    assert excess < Fraction(2) ** 971, (
+        "and it must be within one ulp of MAX_DOUBLE, or a coarse check would catch it"
+    )
+    assert _classify(exact)[0] == "out-of-range"
+    _refuses(lambda: safe_signed_sum(beyond), "a total that genuinely exceeds the range")
+
+
+def test_the_product_reproducers_of_the_round_three_review() -> None:
+    """§5.1 and §5.2."""
+    beyond = [1e50, MAX_DOUBLE, 1e-150, 1e100]
+    exact = _exact_product_oracle(beyond)
+    excess = abs(exact) - _EXACT_MAX
+    assert 0 < excess < Fraction(2) ** 971, "must be out of range by under one ulp"
+    assert _classify(exact)[0] == "out-of-range"
+    _refuses(lambda: safe_product(beyond), "a product that genuinely exceeds the range")
+
+    representable = [1e100, 0.5, 1e150, 5e-324, 1e-250]
+    assert _classify(_exact_product_oracle(representable)) == ("value", 5e-324)
+    assert safe_product(representable) == 5e-324
+
+
+# ---------------------------------------------------------------------------
+# CONVEX ZERO - both directions
+# ---------------------------------------------------------------------------
+# §13. A statistic of exactly zero is a real answer; a statistic that is
+# mathematically non-zero and collapses to zero is not. Tier 1 cannot tell them
+# apart, so a non-degenerate zero is classified before it is returned.
+_SUBNORMAL = 5e-324
+
+
+def test_a_mathematically_exact_zero_statistic_is_returned_as_zero() -> None:
+    """The over-refusal control: symmetric inputs whose statistic really is zero."""
+    assert midpoint(-5.0, 5.0) == 0.0
+    assert midpoint(-MAX_DOUBLE, MAX_DOUBLE) == 0.0
+    assert midpoint(-_SUBNORMAL, _SUBNORMAL) == 0.0
+    assert triangular_mean(-3.0, 0.0, 3.0) == 0.0
+    assert triangular_mean(-4.0, 1.0, 3.0) == 0.0
+    assert triangular_mean(-2 * _SUBNORMAL, _SUBNORMAL, _SUBNORMAL) == 0.0
+    assert beta_pert_mean(-6.0, 0.0, 6.0) == 0.0
+    assert beta_pert_mean(-2.0, 0.0, 2.0) == 0.0
+    assert beta_pert_mean(-4 * _SUBNORMAL, _SUBNORMAL, 0.0) == 0.0
+
+
+def test_a_non_zero_statistic_that_collapses_to_zero_is_refused_not_reported() -> None:
+    """THE ROUND-3 §8 REPRODUCER. `midpoint(-20s, 19s)` with `s = 5e-324`.
+
+    Tier 1 evaluates `-10s + fl(9.5s)` = `-10s + 10s` = `0` and raises nothing, so
+    a rule that accepts any successful tier-1 result reports zero for a statistic
+    whose exact value is `-0.5s`. That is the silent deletion §19.3 exists to
+    prevent, and it is now a refusal.
+    """
+    assert -20 * _SUBNORMAL / 2.0 + 19 * _SUBNORMAL / 2.0 == 0.0      # tier 1 succeeds
+    exact = Fraction(-20 * _SUBNORMAL) / 2 + Fraction(19 * _SUBNORMAL) / 2
+    assert exact != 0 and float(exact) == 0.0
+    _refuses(lambda: midpoint(-20 * _SUBNORMAL, 19 * _SUBNORMAL), "a collapsed midpoint")
+    _refuses(lambda: triangular_mean(_SUBNORMAL, _SUBNORMAL, -_SUBNORMAL), "collapsed mean")
+    _refuses(lambda: beta_pert_mean(_SUBNORMAL, -_SUBNORMAL, _SUBNORMAL), "collapsed mean")
+
+
+def test_a_statistic_at_the_minimum_non_zero_subnormal_is_produced() -> None:
+    """The other side again: an answer that only just exists must still appear."""
+    assert midpoint(_SUBNORMAL, _SUBNORMAL) == _SUBNORMAL             # degenerate, tier 0
+    assert midpoint(0.0, 2 * _SUBNORMAL) == _SUBNORMAL
+    assert midpoint(-2 * _SUBNORMAL, 4 * _SUBNORMAL) == _SUBNORMAL
+    assert triangular_mean(_SUBNORMAL, _SUBNORMAL, _SUBNORMAL) == _SUBNORMAL
+    assert triangular_mean(0.0, _SUBNORMAL, 2 * _SUBNORMAL) == _SUBNORMAL
+    assert beta_pert_mean(0.0, _SUBNORMAL, 2 * _SUBNORMAL) == _SUBNORMAL
+
+
+def test_the_convex_zero_classification_sweeps_both_directions() -> None:
+    """Every small multiple of the subnormal, judged exactly, in BOTH directions.
+
+    Neither may happen:
+
+      * a mathematically non-zero statistic returned as `0.0` — the §8 defect;
+      * a representable non-zero statistic refused — the C2 defect.
+
+    Documentation that claimed the second without testing the first is what let §8
+    through, so both are counted and both must be zero.
+
+    NOT asserted here: that a NON-ZERO tier-1 result matches the correctly rounded
+    exact statistic. §7 locks tier 1's own rounding — `midpoint(-7s, 6s)` gives
+    `-1s` where the exact statistic is `-0.5s` — and moving that would change
+    ordinary calculations. Only the rescue path is held to exact rounding, which
+    `test_the_convex_statistics_are_correctly_rounded_on_the_boundary_corpus` does.
+    """
+    scale = Fraction(_SUBNORMAL)
+    false_zeros: list[tuple] = []
+    false_refusals: list[tuple] = []
+
+    for a, b in itertools.product(range(-8, 9), repeat=2):
+        exact = (Fraction(a) + Fraction(b)) * scale / 2
+        kind, target = _classify(exact)
+        try:
+            actual = midpoint(a * _SUBNORMAL, b * _SUBNORMAL)
+        except NumericalRangeRefusal:
+            if kind == "value" and target != 0.0:
+                false_refusals.append(("midpoint", a, b, target))
+            continue
+        if actual == 0.0 and exact != 0:
+            false_zeros.append(("midpoint", a, b, exact))
+
+    for a, b, c in itertools.product(range(-4, 5), repeat=3):
+        for label, function, exact in (
+            ("triangular", triangular_mean, (Fraction(a) + Fraction(b) + Fraction(c)) * scale / 3),
+            ("Beta-PERT", beta_pert_mean,
+             (Fraction(a) + 4 * Fraction(b) + Fraction(c)) * scale / 6),
+        ):
+            kind, target = _classify(exact)
+            try:
+                actual = function(a * _SUBNORMAL, b * _SUBNORMAL, c * _SUBNORMAL)
+            except NumericalRangeRefusal:
+                if kind == "value" and target != 0.0:
+                    false_refusals.append((label, a, b, c, target))
+                continue
+            if actual == 0.0 and exact != 0:
+                false_zeros.append((label, a, b, c, exact))
+
+    assert not false_zeros, f"non-zero statistics reported as zero: {false_zeros[:5]}"
+    assert not false_refusals, f"representable statistics refused: {false_refusals[:5]}"
+
+
+def test_the_zero_classification_actually_fires_on_this_corpus() -> None:
+    """The sweep above would pass vacuously if nothing ever reached the
+    classification, so count the cases where tier 1 produced a zero that had to be
+    judged."""
+    judged = 0
+    collapsed = 0
+    for a, b in itertools.product(range(-8, 9), repeat=2):
+        if a == b:
+            continue                                   # degenerate; tier 0 answers
+        if a * _SUBNORMAL / 2.0 + b * _SUBNORMAL / 2.0 != 0.0:
+            continue
+        judged += 1
+        exact = (Fraction(a) + Fraction(b)) * Fraction(_SUBNORMAL) / 2
+        try:
+            midpoint(a * _SUBNORMAL, b * _SUBNORMAL)
+        except NumericalRangeRefusal:
+            collapsed += 1
+            assert exact != 0, (a, b)
+    assert judged >= 20, f"only {judged} tier-1 zeros in the corpus"
+    assert collapsed >= 8, f"only {collapsed} of them were non-zero statistics"
+
+
+# ---------------------------------------------------------------------------
+# ROUND-3 NEGATIVE CONTROLS
+# ---------------------------------------------------------------------------
+def test_the_rounded_pair_cancellation_would_fail_the_residual_reproducer() -> None:
+    """§17. The round-2 signed-sum rescue, reproduced here, gets §1.1 wrong.
+
+    This is the sabotage written as a test rather than as an edit: if the module
+    ever goes back to cancelling with one rounded subtraction, the number below is
+    what it will produce, and the reproducer test above will catch it.
+    """
+    terms = [6e307, -8e307, -1.7e308, 6e307, 7e307, 6e307, -1e292]
+    positives = sorted((abs(v), i) for i, v in enumerate(terms) if v > 0.0)
+    negatives = sorted((abs(v), i) for i, v in enumerate(terms) if v < 0.0)
+    while positives and negatives:
+        p_magnitude, p_index = positives.pop()
+        n_magnitude, n_index = negatives.pop()
+        if p_magnitude == n_magnitude:
+            continue
+        if p_magnitude > n_magnitude:
+            positives.append((p_magnitude - n_magnitude, p_index))
+            positives.sort()
+        else:
+            negatives.append((n_magnitude - p_magnitude, n_index))
+            negatives.sort()
+    remaining = positives if positives else negatives
+    total = 0.0
+    for magnitude, _ in remaining:
+        total = total + magnitude
+    rounded_pair = total if positives else -total
+
+    assert rounded_pair == -1.99792015476736e292, rounded_pair
+    assert safe_signed_sum(terms) == -1e292
+    assert rounded_pair != safe_signed_sum(terms), (
+        "the sabotage must differ from the faithful answer, or it proves nothing"
+    )
+
+
+def test_the_magnitude_balanced_order_would_fail_both_product_reproducers() -> None:
+    """§17. The round-2 product rescue, reproduced here, gets §5.1 and §5.2 wrong."""
+
+    def balanced(factors):
+        sign = -1.0 if sum(1 for value in factors if value < 0) % 2 else 1.0
+        magnitudes = sorted(abs(value) for value in factors)
+        low, high = 0, len(magnitudes) - 1
+        result = 1.0
+        while low <= high:
+            if result >= 1.0:
+                factor, low = magnitudes[low], low + 1
+            else:
+                factor, high = magnitudes[high], high - 1
+            result = safe_multiply(result, factor)
+        return result * sign
+
+    assert balanced([1e50, MAX_DOUBLE, 1e-150, 1e100]) == MAX_DOUBLE
+    _refuses(lambda: safe_product([1e50, MAX_DOUBLE, 1e-150, 1e100]), "an out-of-range product")
+
+    _refuses(
+        lambda: balanced([1e100, 0.5, 1e150, 5e-324, 1e-250]),
+        "the balanced order cannot reach this product",
+    )
+    assert safe_product([1e100, 0.5, 1e150, 5e-324, 1e-250]) == 5e-324
+
+
+def test_blindly_accepting_a_tier_one_zero_would_fail_the_convex_reproducer() -> None:
+    """§17. The round-2 convex rule, reproduced here, reports zero for §8."""
+    blind = -20 * _SUBNORMAL / 2.0 + 19 * _SUBNORMAL / 2.0
+    assert blind == 0.0                                 # what tier 1 alone produces
+    _refuses(lambda: midpoint(-20 * _SUBNORMAL, 19 * _SUBNORMAL), "a collapsed midpoint")
 
 
 # ---------------------------------------------------------------------------

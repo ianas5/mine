@@ -47,9 +47,9 @@ of `IsUsableDouble`, not because Python needs the constant."""
 MIN_NORMAL_DOUBLE = 2.2250738585072014e-308
 """The smallest positive NORMAL double, `2**-1022`.
 
-The boundary below which halving stops being exact, which is the one place the
-binade rescue has to know about (see `_binade_rescue`). Nothing else in the
-module needs it."""
+The boundary below which a Double carries fewer than 53 significand bits, which
+is where the exact rescues in this module earn their keep. Exported so tests can
+state that boundary by name rather than by literal."""
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +190,422 @@ def safe_divide(a: float, b: float, where: str = "division") -> float:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Exact arithmetic on Double limbs — the faithful-rescue kernel
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS. A rescue that re-associates Double operations is a heuristic,
+# not a proof. The round-2 rescues showed exactly how that fails:
+#
+#   * cancelling the largest opposite-signed pair with one rounded subtraction
+#     `p - n` DISCARDS the rounding residual of that subtraction. When the large
+#     terms then cancel, the discarded residual was the answer:
+#     `[6e307, -8e307, -1.7e308, 6e307, 7e307, 6e307, -1e292]` sums to `-1e292`
+#     and the rounded-pair rescue produced `-1.99792015476736e292` — a 100% error;
+#   * a magnitude-balanced product order proves nothing about whether the exact
+#     product is in range: it returned `MAX_DOUBLE` for a product that genuinely
+#     exceeds `MAX_DOUBLE` by 0.887 ulp, and refused one whose exact value rounds
+#     to `5e-324`.
+#
+# So the rescue paths do not re-associate Doubles at all. They compute the EXACT
+# mathematical value of the already-converted IEEE-754 inputs in a wide
+# fixed-point form, classify its range exactly, and round ONCE.
+#
+# EVERY OPERATION BELOW IS A DOUBLE OPERATION. Limbs are Doubles holding exact
+# integers below `2**24`; intermediates stay below `2**49`, far inside the exact
+# integer range of a Double. There is no `Decimal`, no `Fraction`, no Python
+# arbitrary-precision integer, no `fsum`, no `frexp`/`ldexp`. Everything is
+# addition, subtraction, multiplication, division by an exact power of two, and
+# truncation — i.e. VBA `Double` arithmetic plus `Fix`. `docs/phase5_gate_a_step2.md`
+# §18 specifies the translation.
+#
+# COST. The rescue is O(limbs) per term for sums and O(limbs**2) for products,
+# on a path that only runs when the ordinary evaluation produced no value at all.
+# Tier 1 remains a plain O(n) loop and is untouched.
+_LIMB_BITS = 24
+_LIMB_BASE = 16777216.0                      # 2**24
+_TWO_52 = 4503599627370496.0
+_TWO_53 = 9007199254740992.0
+_MAX_SIGNIFICAND = 9007199254740991.0        # 2**53 - 1, the significand of MAX_DOUBLE
+_MAX_EXPONENT = 971                          # MAX_DOUBLE = (2**53 - 1) * 2**971
+_MIN_SUBNORMAL_EXPONENT = -1074
+_GUARD_BITS = 64                             # extra bits before an inexact division
+
+_POWERS_OF_TWO = (
+    2.0**512, 2.0**256, 2.0**128, 2.0**64, 2.0**32,
+    2.0**16, 2.0**8, 2.0**4, 2.0**2, 2.0**1,
+)
+_POWER_STEPS = (512, 256, 128, 64, 32, 16, 8, 4, 2, 1)
+_SMALL_POWERS = tuple(float(1 << bit) for bit in range(_LIMB_BITS + 1))
+
+
+def _fix(value: float) -> float:
+    """Truncation toward zero — VBA `Fix` — for `0 <= value < 2**53`.
+
+    Written with Double operations only, so nothing here depends on Python's
+    arbitrary-precision `int`. Above `2**52` every Double is already an integer;
+    below it, adding and subtracting `2**52` rounds to the nearest integer, and
+    one correction turns that into truncation.
+    """
+    if value >= _TWO_52:
+        return value
+    rounded = (value + _TWO_52) - _TWO_52
+    if rounded > value:
+        rounded = rounded - 1.0
+    return rounded
+
+
+def _scale_by_power_of_two(value: float, exponent: int) -> float:
+    """`value * 2**exponent`, applied in exact steps from a fixed power table.
+
+    Scaling a Double by a power of two moves the exponent and leaves the
+    significand alone, so every step is exact as long as the running value stays
+    in range. Callers only use this where the final result is known to be
+    representable and `|exponent| <= 1074`, which bounds every intermediate.
+    """
+    if exponent == 0 or value == 0.0:
+        return value
+    remaining = exponent if exponent > 0 else -exponent
+    for power, step in zip(_POWERS_OF_TWO, _POWER_STEPS):
+        while remaining >= step:
+            value = value * power if exponent > 0 else value / power
+            remaining -= step
+    return value
+
+
+def _decompose(value: float) -> tuple[int, float, int]:
+    """`|value| = mantissa * 2**exponent` with `mantissa` an integer in
+    `[2**52, 2**53)`; `(0, 0.0, 0)` for zero.
+
+    A counting loop over a power-of-two table rather than `frexp`, because VBA has
+    no `frexp` and every step here is an exact scaling. The first loop lifts
+    subnormals into the normal range, which is exact — a subnormal scaled up by a
+    power of two loses nothing.
+    """
+    if value == 0.0:
+        return 0, 0.0, 0
+    sign = 1 if value > 0.0 else -1
+    magnitude = value if value > 0.0 else -value
+    exponent = 0
+    while magnitude < 1.0:
+        magnitude = magnitude * _POWERS_OF_TWO[0]
+        exponent -= _POWER_STEPS[0]
+    for power, step in zip(_POWERS_OF_TWO, _POWER_STEPS):
+        while magnitude >= power:
+            magnitude = magnitude / power
+            exponent += step
+    return sign, magnitude * _TWO_52, exponent - 52
+
+
+# --- unsigned magnitudes, base 2**24, every limb an integer in [0, 2**24) ---
+def _big_new(count: int) -> list[float]:
+    return [0.0] * count
+
+
+def _big_add_at(limbs: list[float], index: int, amount: float) -> None:
+    """`limbs += amount * 2**(24*index)`, with `amount` an integer below `2**47`."""
+    carry = amount
+    position = index
+    while carry != 0.0:
+        total = limbs[position] + carry
+        carry = _fix(total / _LIMB_BASE)
+        limbs[position] = total - carry * _LIMB_BASE
+        position += 1
+
+
+def _big_add_shifted(limbs: list[float], mantissa: float, offset: int) -> None:
+    """`limbs += mantissa * 2**offset` for `offset >= 0`.
+
+    The 53-bit mantissa is cut into three 24-bit pieces so that every piece,
+    shifted by the sub-limb remainder, stays an exact integer below `2**47`.
+    """
+    index = offset // _LIMB_BITS
+    scale = _SMALL_POWERS[offset - index * _LIMB_BITS]
+    rest = mantissa
+    for piece in range(3):
+        quotient = _fix(rest / _LIMB_BASE)
+        low = rest - quotient * _LIMB_BASE
+        rest = quotient
+        if low != 0.0:
+            _big_add_at(limbs, index + piece, low * scale)
+        if rest == 0.0:
+            return
+
+
+def _big_compare(left: list[float], right: list[float]) -> int:
+    for index in range(len(left) - 1, -1, -1):
+        if left[index] != right[index]:
+            return 1 if left[index] > right[index] else -1
+    return 0
+
+
+def _big_subtract(left: list[float], right: list[float]) -> None:
+    """`left -= right`; the caller has established `left >= right`."""
+    borrow = 0.0
+    for index in range(len(left)):
+        value = left[index] - right[index] - borrow
+        if value < 0.0:
+            value = value + _LIMB_BASE
+            borrow = 1.0
+        else:
+            borrow = 0.0
+        left[index] = value
+
+
+def _big_multiply(left: list[float], right: list[float]) -> list[float]:
+    """Schoolbook product. Every intermediate stays below `2**49`."""
+    result = _big_new(len(left) + len(right) + 1)
+    for i in range(len(left)):
+        if left[i] == 0.0:
+            continue
+        carry = 0.0
+        for j in range(len(right)):
+            total = result[i + j] + left[i] * right[j] + carry
+            carry = _fix(total / _LIMB_BASE)
+            result[i + j] = total - carry * _LIMB_BASE
+        position = i + len(right)
+        while carry != 0.0:
+            total = result[position] + carry
+            carry = _fix(total / _LIMB_BASE)
+            result[position] = total - carry * _LIMB_BASE
+            position += 1
+    return result
+
+
+def _big_divide_small(limbs: list[float], divisor: float) -> tuple[list[float], float]:
+    """Exact `divmod` by a small integer. Used only for the 2, 3 and 6 of the
+    convex statistics, where the numerator is a dyadic sum but the statistic is
+    not."""
+    quotient = _big_new(len(limbs))
+    remainder = 0.0
+    for index in range(len(limbs) - 1, -1, -1):
+        current = remainder * _LIMB_BASE + limbs[index]
+        share = _fix(current / divisor)
+        quotient[index] = share
+        remainder = current - share * divisor
+    return quotient, remainder
+
+
+def _big_top_bit(limbs: list[float]) -> int:
+    """Index of the most significant set bit, or `-1` when the value is zero."""
+    for index in range(len(limbs) - 1, -1, -1):
+        value = limbs[index]
+        if value != 0.0:
+            bit = 0
+            while value >= 2.0:
+                value = _fix(value / 2.0)
+                bit += 1
+            return index * _LIMB_BITS + bit
+    return -1
+
+
+def _big_bit(limbs: list[float], position: int) -> bool:
+    index = position // _LIMB_BITS
+    if index >= len(limbs):
+        return False
+    shifted = _fix(limbs[index] / _SMALL_POWERS[position - index * _LIMB_BITS])
+    return shifted - _fix(shifted / 2.0) * 2.0 != 0.0
+
+
+def _big_any_below(limbs: list[float], position: int) -> bool:
+    index = position // _LIMB_BITS
+    offset = position - index * _LIMB_BITS
+    for lower in range(min(index, len(limbs))):
+        if limbs[lower] != 0.0:
+            return True
+    if offset == 0 or index >= len(limbs):
+        return False
+    scale = _SMALL_POWERS[offset]
+    return limbs[index] - _fix(limbs[index] / scale) * scale != 0.0
+
+
+def _big_high_part(limbs: list[float], drop: int) -> float:
+    """`floor(value / 2**drop)`, which the caller guarantees is below `2**53`.
+
+    At most four limbs can reach a 53-bit result, so the loop is bounded and every
+    partial total is an exact integer.
+    """
+    index = drop // _LIMB_BITS
+    if index >= len(limbs):
+        return 0.0
+    offset = drop - index * _LIMB_BITS
+    total = _fix(limbs[index] / _SMALL_POWERS[offset])
+    weight = _SMALL_POWERS[_LIMB_BITS - offset]
+    for step in (1, 2, 3):
+        position = index + step
+        if position >= len(limbs):
+            break
+        if limbs[position] != 0.0:
+            total = total + limbs[position] * weight
+        weight = weight * _LIMB_BASE
+    return total
+
+
+def _big_whole(limbs: list[float]) -> float:
+    """The whole magnitude, which the caller guarantees is below `2**53`."""
+    total = 0.0
+    weight = 1.0
+    for index in range(min(len(limbs), 3)):
+        if limbs[index] != 0.0:
+            total = total + limbs[index] * weight
+        weight = weight * _LIMB_BASE
+    return total
+
+
+def _round_exact(
+    sign: int, limbs: list[float], shift: int, where: str, sticky_below: bool = False
+) -> float:
+    """Round `sign * limbs * 2**shift` to the nearest Double, ties to even.
+
+    THE RANGE TEST IS ON THE EXACT VALUE, not on the rounded one. A sum can exceed
+    `MAX_DOUBLE` by less than half an ulp and still round to `MAX_DOUBLE`; that is
+    an out-of-range result and it is refused, because C2 removes refusals of
+    answers that exist and creates no fabricated ones. Likewise a non-zero exact
+    value with no non-zero Double is refused rather than reported as zero.
+
+    `sticky_below` carries the "there is more, below everything represented here"
+    flag from an inexact division, so a value that only looks like a tie is not
+    rounded as one.
+    """
+    top = _big_top_bit(limbs)
+    if top < 0:
+        if sticky_below:
+            raise NumericalRangeRefusal(
+                f"{where}: underflowed — a non-zero result has no usable non-zero Double"
+            )
+        return 0.0
+
+    exponent = top + shift
+    if exponent > 1023:
+        raise NumericalRangeRefusal(
+            f"{where}: the exact result is outside finite Double range"
+        )
+
+    target = exponent - 52
+    if target < _MIN_SUBNORMAL_EXPONENT:
+        target = _MIN_SUBNORMAL_EXPONENT
+    drop = target - shift
+
+    if drop <= 0:
+        # Fewer than 54 significant bits and no bit below 2**-1074: the value is
+        # exactly a Double already, so there is nothing to round.
+        quotient = _big_whole(limbs)
+        scale = shift
+        if sticky_below:
+            raise NumericalRangeRefusal(
+                f"{where}: the exact result needs more precision than a Double holds"
+            )
+    else:
+        quotient = _big_high_part(limbs, drop)
+        round_bit = _big_bit(limbs, drop - 1)
+        sticky = sticky_below or _big_any_below(limbs, drop - 1)
+        if target == _MAX_EXPONENT and (
+            quotient > _MAX_SIGNIFICAND
+            or (quotient == _MAX_SIGNIFICAND and (round_bit or sticky))
+        ):
+            raise NumericalRangeRefusal(
+                f"{where}: the exact result is outside finite Double range"
+            )
+        odd = quotient - _fix(quotient / 2.0) * 2.0 != 0.0
+        if round_bit and (sticky or odd):
+            quotient = quotient + 1.0
+        if quotient == 0.0:
+            raise NumericalRangeRefusal(
+                f"{where}: underflowed — a non-zero result has no usable non-zero Double"
+            )
+        scale = target
+
+    result = _scale_by_power_of_two(quotient, scale)
+    return result if sign > 0 else -result
+
+
+def _exact_sum(terms: Sequence[float]) -> tuple[int, list[float], int]:
+    """`(sign, magnitude limbs, shift)` for the exact mathematical sum of Doubles.
+
+    Every Double is an integer multiple of `2**smallest`, where `smallest` is the
+    least of the terms' own exponents, so aligning them there is exact and the sum
+    is an exact integer in that unit. Positive and negative magnitudes are
+    accumulated separately and subtracted once, which needs no signed carries.
+    """
+    parts: list[tuple[int, float, int]] = []
+    for value in terms:
+        sign, mantissa, exponent = _decompose(value)
+        if sign != 0:
+            parts.append((sign, mantissa, exponent))
+    if not parts:
+        return 0, _big_new(1), 0
+
+    smallest = parts[0][2]
+    largest = parts[0][2]
+    for _, _, exponent in parts:
+        if exponent < smallest:
+            smallest = exponent
+        if exponent > largest:
+            largest = exponent
+    count = (largest - smallest) // _LIMB_BITS + 6
+
+    positive = _big_new(count)
+    negative = _big_new(count)
+    for sign, mantissa, exponent in parts:
+        _big_add_shifted(
+            positive if sign > 0 else negative, mantissa, exponent - smallest
+        )
+
+    order = _big_compare(positive, negative)
+    if order == 0:
+        return 0, _big_new(1), 0
+    if order > 0:
+        _big_subtract(positive, negative)
+        return 1, positive, smallest
+    _big_subtract(negative, positive)
+    return -1, negative, smallest
+
+
+def _exact_product(factors: Sequence[float]) -> tuple[int, list[float], int]:
+    """`(sign, magnitude limbs, shift)` for the exact mathematical product.
+
+    The mantissas multiply as integers and the exponents add, so the product is
+    exact regardless of how far outside Double range it lands — which is what lets
+    the range classification be a fact rather than an artefact of evaluation order.
+    """
+    sign = 1
+    shift = 0
+    limbs = _big_new(3)
+    limbs[0] = 1.0
+    for value in factors:
+        part_sign, mantissa, exponent = _decompose(value)
+        if part_sign == 0:
+            return 0, _big_new(1), 0
+        sign = sign * part_sign
+        shift = shift + exponent
+        mantissa_limbs = _big_new(3)
+        _big_add_shifted(mantissa_limbs, mantissa, 0)
+        limbs = _big_multiply(limbs, mantissa_limbs)
+    return sign, limbs, shift
+
+
+def _round_exact_quotient(
+    sign: int, limbs: list[float], shift: int, divisor: float, where: str
+) -> float:
+    """Round `sign * limbs * 2**shift / divisor` to the nearest Double.
+
+    Dividing by 3 or 6 leaves the dyadic world, so the numerator is first shifted
+    left by `_GUARD_BITS` and the division remainder becomes a sticky flag. The
+    quotient is then exact to far more bits than a Double holds, and a non-zero
+    remainder means the true value is strictly above it — which is precisely what
+    a sticky bit encodes, so the rounding, ties included, is still exact.
+    """
+    if divisor == 1.0:
+        return _round_exact(sign, limbs, shift, where)
+    guarded = _big_new(len(limbs) + _GUARD_BITS // _LIMB_BITS + 2)
+    for index in range(len(limbs)):
+        if limbs[index] != 0.0:
+            _big_add_shifted(guarded, limbs[index], index * _LIMB_BITS + _GUARD_BITS)
+    quotient, remainder = _big_divide_small(guarded, divisor)
+    return _round_exact(
+        sign, quotient, shift - _GUARD_BITS, where, sticky_below=remainder != 0.0
+    )
+
+
 def safe_accumulate(accumulator: float, term: float, where: str = "accumulation") -> float:
     """Add one term to a running total, checked at THIS term.
 
@@ -223,30 +639,36 @@ def safe_signed_sum(
     reordered**, so no ordinary model's numbers move, and canonical
     permanent-ID order remains what defines ordinary evaluation.
 
-    **Tier 2 — cancellation rescue, only after tier 1 overflowed.** A partial sum
-    can exceed Double while the true total is perfectly representable:
-    `MAX + MAX - MAX` is `MAX`, but left to right the first addition is already
-    infinite. Refusing that is refusing an answer that exists (§19.2).
+    **Tier 2 — the exact sum, only after tier 1 overflowed.** A partial sum can
+    exceed Double while the true total is perfectly representable: `MAX + MAX -
+    MAX` is `MAX`, but left to right the first addition is already infinite.
+    Refusing that is refusing an answer that exists (§19.2).
 
-    The rescue is deterministic and reproducible in VBA:
+    Tier 2 does **not** re-associate Double additions. Re-association is a
+    heuristic and it silently loses information: cancelling the largest
+    opposite-signed pair with one rounded subtraction discards that subtraction's
+    rounding residual, and when the large terms cancel the residual WAS the
+    answer. `[6e307, -8e307, -1.7e308, 6e307, 7e307, 6e307, -1e292]` sums to
+    exactly `-1e292`, and a rounded-pair rescue produces `-1.99792015476736e292`.
 
-    1. every term is validated as a usable finite Double;
-    2. terms are split into positive and negative MAGNITUDES, keeping the
-       original canonical index as a tie-breaker, with exact zeros discarded;
-    3. each bucket is ordered by magnitude;
-    4. the largest opposite-signed magnitudes are repeatedly cancelled:
-       equal magnitudes annihilate exactly, otherwise the residual `|p - n|` is
-       re-inserted on the side that was larger. **This step cannot re-create the
-       overflow being rescued**: it subtracts two non-negative magnitudes, and the
-       residual never exceeds the larger operand;
-    5. once one sign is exhausted, the remaining same-sign magnitudes are summed
-       smallest-first. If THAT overflows, the true signed total genuinely exceeds
-       Double range and a refusal is correct;
-    6. the surviving sign is applied.
+    Instead the terms are added in a wide exact fixed-point form (`_exact_sum`),
+    the range of the exact total is classified against `MAX_DOUBLE` and against
+    the smallest subnormal, and the result is rounded **once**, to nearest with
+    ties to even. So:
 
-    Tier 2 is only reached where tier 1 produced no value at all, so the choice is
-    between an answer and no answer. It is NOT invoked for underflow: a sum cannot
-    underflow to zero except by genuine cancellation, which is a real result.
+        exact total representable   -> the correctly rounded Double
+        |exact total| > MAX_DOUBLE  -> NumericalRangeRefusal
+        exact total non-zero but
+          rounding to zero          -> NumericalRangeRefusal
+        exact total exactly zero    -> +0.0
+
+    The range test is on the EXACT total, not on the rounded one: a sum can exceed
+    `MAX_DOUBLE` by less than half an ulp and still round to it, and returning
+    `MAX_DOUBLE` there would fabricate a value C2 explicitly forbids.
+
+    Tier 2 is only reached where tier 1 produced no value at all. It is NOT
+    invoked for underflow: a sum cannot underflow to zero except by genuine
+    cancellation, which is a real result.
 
     `labels` name the terms in tier-1 messages, so a refusal can still say which
     driver or year was responsible.
@@ -266,33 +688,9 @@ def safe_signed_sum(
     except NumericalRangeRefusal:
         pass  # tier 2
 
-    # --- tier 2: deterministic opposite-sign cancellation --------------------
-    # `(magnitude, canonical index)` tuples sort by magnitude first and by the
-    # ORIGINAL canonical position second, so equal magnitudes have one and only
-    # one ordering. Nothing here depends on Python's sort being stable.
-    positives = sorted((abs(v), i) for i, v in enumerate(values) if v > 0.0)
-    negatives = sorted((abs(v), i) for i, v in enumerate(values) if v < 0.0)
-
-    while positives and negatives:
-        p_magnitude, p_index = positives.pop()          # largest positive
-        n_magnitude, n_index = negatives.pop()          # largest negative
-        if p_magnitude == n_magnitude:
-            continue                                    # exact annihilation
-        if p_magnitude > n_magnitude:
-            positives.append((p_magnitude - n_magnitude, p_index))
-            positives.sort()
-        else:
-            negatives.append((n_magnitude - p_magnitude, n_index))
-            negatives.sort()
-
-    remaining = positives if positives else negatives
-    if not remaining:
-        return 0.0                                      # everything annihilated
-    sign = 1.0 if positives else -1.0
-    total = 0.0
-    for magnitude, index in remaining:                  # smallest magnitude first
-        total = safe_accumulate(total, magnitude, f"{where} (cancellation rescue)[{index}]")
-    return total if sign > 0.0 else -total
+    # --- tier 2: the exact mathematical sum, rounded once --------------------
+    sign, limbs, shift = _exact_sum(values)
+    return _round_exact(sign, limbs, shift, f"{where} (faithful rescue)")
 
 
 # ---------------------------------------------------------------------------
@@ -300,29 +698,31 @@ def safe_signed_sum(
 # ---------------------------------------------------------------------------
 def safe_product(factors: Sequence[float], where: str = "product") -> float:
     """A short product, evaluated so that a representable answer is not lost to a
-    gratuitous intermediate overflow.
+    gratuitous intermediate overflow or underflow.
 
     TWO TIERS, deliberately:
 
     1. **Left to right first.** For every ordinary model this succeeds, and it is
        bit-for-bit what a naive implementation produces. Nothing about existing
        results changes.
-    2. **Only if that fails**, re-evaluate in a magnitude-balanced order: start
-       from `1.0` and repeatedly take the smallest remaining magnitude while the
-       running product is `>= 1`, the largest otherwise. `1e308 * 10 * 0.01` then
-       evaluates as `1e308 * 0.01 * 10 = 1e307` instead of overflowing at the
-       first step on a product that is perfectly representable.
+    2. **Only if that fails**, the EXACT product of the already-converted Doubles
+       is formed (`_exact_product`: the mantissas multiply as integers and the
+       exponents add), its range is classified exactly, and it is rounded once.
+
+    A REORDERING IS NOT A PROOF, which is why tier 2 is not one. The round-2
+    magnitude-balanced order returned `MAX_DOUBLE` for `[1e50, MAX_DOUBLE,
+    1e-150, 1e100]`, whose exact product exceeds `MAX_DOUBLE` by 0.887 ulp, and
+    refused `[1e100, 0.5, 1e150, 5e-324, 1e-250]`, whose exact product rounds to
+    `5e-324`. Both are answered correctly by the exact form:
+
+        exact product representable  -> the correctly rounded Double
+        |exact product| > MAX_DOUBLE -> NumericalRangeRefusal
+        exact product non-zero but
+          rounding to zero           -> NumericalRangeRefusal
 
     The alternative to tier 2 is refusing a valid calculation, so it is only ever
-    reached where the choice is "some answer" versus "no answer".
-
-    NUMERICAL EDGE, STATED RATHER THAN HIDDEN: floating-point multiplication is
-    commutative but NOT associative, so a reordered evaluation can differ from the
-    left-to-right one in the last unit in the last place. Tier 2 therefore runs
-    only when tier 1 has already failed to produce any value at all, and its order
-    is fully deterministic (ascending magnitude, stable) so the same inputs always
-    give the same answer. A later VBA implementation must reproduce BOTH tiers,
-    in this order, to match.
+    reached where the choice is "the right answer" versus "no answer". A later VBA
+    implementation must reproduce BOTH tiers, in this order, to match.
     """
     if not factors:
         return 1.0
@@ -342,17 +742,8 @@ def safe_product(factors: Sequence[float], where: str = "product") -> float:
     except NumericalRangeRefusal:
         pass  # tier 2
 
-    sign = -1.0 if sum(1 for value in values if value < 0) % 2 else 1.0
-    magnitudes = sorted(abs(value) for value in values)
-    low, high = 0, len(magnitudes) - 1
-    result = 1.0
-    while low <= high:
-        if result >= 1.0:
-            factor, low = magnitudes[low], low + 1
-        else:
-            factor, high = magnitudes[high], high - 1
-        result = safe_multiply(result, factor, f"{where} (magnitude-balanced)")
-    return safe_multiply(result, sign, f"{where} (sign)")
+    sign, limbs, shift = _exact_product(values)
+    return _round_exact(sign, limbs, shift, f"{where} (faithful rescue)")
 
 
 # ---------------------------------------------------------------------------
@@ -374,15 +765,17 @@ def safe_product(factors: Sequence[float], where: str = "product") -> float:
 #   Tier 1 — the accepted stable form, unchanged: divide each point by its
 #            denominator BEFORE accumulating, so an oversized numerator is never
 #            formed. Every ordinary model lands here and its bits do not move.
-#   Tier 2 — binade rescue, reached ONLY when tier 1 raised. Scale every point by
-#            one shared power of two, evaluate the same formula, scale the result
-#            back by the same power of two.
+#   Tier 2 — the exact statistic, rounded once. Reached when tier 1 raised, AND
+#            when tier 1 returned exactly zero.
 #
-# Why a power of two: multiplying or dividing a Double by 2 is exact in IEEE-754
-# (it adjusts the exponent and leaves the significand alone) until the subnormal
-# range, so the rescue introduces no error of its own. It also needs nothing more
-# exotic than a counting loop, which is why it is reproducible in VBA — see
-# `docs/phase5_gate_a_step2.md`. `frexp`/`ldexp` are deliberately NOT used.
+# WHY A TIER-1 ZERO IS NOT AUTOMATICALLY ACCEPTED. `midpoint(-20s, 19s)` with
+# `s = 5e-324` evaluates as `-10s + fl(9.5s)` = `-10s + 10s` = `0`, and tier 1
+# raises nothing. The exact midpoint is `-0.5s`, which is NOT zero and has no
+# usable non-zero Double. Returning `0` there reports a value the model does not
+# have, which is the silent-underflow failure §19.3 exists to prevent. So a
+# non-degenerate zero is classified exactly: a numerator that is mathematically
+# zero gives `0.0`, and one that is not gives either the correctly rounded tiny
+# Double or a controlled refusal. A NON-ZERO tier-1 result is never touched.
 def _degenerate_point(values: tuple[float, ...]) -> float | None:
     """The single point of a zero-uncertainty distribution, or `None`."""
     first = values[0]
@@ -392,119 +785,35 @@ def _degenerate_point(values: tuple[float, ...]) -> float | None:
     return first
 
 
-def _binade_shift(biggest: float) -> int:
-    """Halvings needed to bring `biggest` into `[1, 2)`; negative means doublings.
-
-    A counting loop, not `frexp`, so the VBA translation is the same loop.
-    """
-    shifts = 0
-    while biggest >= 2.0:
-        biggest = biggest / 2.0
-        shifts += 1
-    while biggest < 1.0:
-        biggest = biggest * 2.0
-        shifts -= 1
-    return shifts
-
-
-def _binade_rescue(
-    values: tuple[float, ...],
-    where: str,
-    formula: "Callable[[tuple[float, ...]], float]",
-) -> float:
-    """Evaluate a convex combination in a binade where it cannot overflow.
-
-    The points are scaled so the LARGEST magnitude sits in `[1, 2)`. Every weight
-    is at most 1 and they sum to 1, so the scaled statistic is bounded by 2 and the
-    numerator `Min + 4*ML + Max` by 12: the intermediate arithmetic that defeated
-    tier 1 cannot recur.
-
-    That is why `formula` is the STRAIGHTFORWARD form — sum, then divide once —
-    rather than the divide-first stable form. Dividing first exists only to keep a
-    numerator inside Double range, which in this binade is not in question, and it
-    costs real accuracy here: with points that nearly cancel, three separately
-    rounded quotients differ from the exact result by far more than one rounding
-    of their exact sum. It is also evaluated with plain operators rather than the
-    refusing primitives, because a scaled point can be subnormal and
-    `subnormal / 3` may round to zero even though its contribution is far below
-    the last bit of the answer — refusing there would reintroduce the very defect
-    being repaired.
-
-    Scaling DOWN can flush a hugely smaller point to zero. That is not a lost
-    contribution: a point more than 2^1074 times smaller than the largest cannot
-    change any bit of a convex combination of them.
-
-    Scaling the result BACK is where a genuine range failure is reported. If
-    doubling overflows, the true statistic really does exceed Double range; if
-    halving collapses a non-zero value to zero, the true statistic really has no
-    usable non-zero Double. Both are correct refusals, and are the distinction
-    §19.2 draws against an intermediate that merely stepped outside the range.
-    """
-    biggest = max(abs(value) for value in values)
-    shifts = _binade_shift(biggest)
-
-    scaled = list(values)
-    for _ in range(abs(shifts)):
-        if shifts > 0:
-            scaled = [value / 2.0 for value in scaled]      # exact; may flush
-        else:
-            scaled = [value * 2.0 for value in scaled]      # exact; cannot overflow
-
-    result = _require_result(where, formula(tuple(scaled)), "rescued convex combination")
-    if result == 0.0:
-        return 0.0
-
-    if shifts > 0:
-        for _ in range(shifts):
-            result = safe_multiply(result, 2.0, f"{where} (binade rescue)")
-        return result
-
-    # Scaling back DOWN, where a naive repeated halving would round twice. Halving
-    # is exact only while the value stays normal; each step taken inside the
-    # subnormal range rounds again, and two roundings can land a bit below the
-    # correctly-rounded answer -- far enough, at the bottom of the range, to turn a
-    # representable statistic into a spurious "underflowed to zero".
-    #
-    # So: halve one step at a time while that is exact, then perform every
-    # remaining step as ONE division, which rounds once. The single divisor is
-    # always small: the exact loop cannot stop above `2**-1021`, so at most ~53
-    # steps can remain before the true answer is below half the smallest subnormal.
-    remaining = -shifts
-    while remaining > 0 and abs(result) / 2.0 >= MIN_NORMAL_DOUBLE:
-        result = result / 2.0                               # exact: still normal
-        remaining -= 1
-    if remaining > 0:
-        if remaining > 1023:                                # cannot arise; see above
-            raise NumericalRangeRefusal(
-                f"{where} (binade rescue): the statistic underflowed to exactly zero"
-            )
-        divisor = 1.0
-        for _ in range(remaining):
-            divisor = divisor * 2.0                         # exact power of two
-        result = result / divisor                           # ONE rounding
-        if result == 0.0:
-            raise NumericalRangeRefusal(
-                f"{where} (binade rescue): the statistic underflowed to exactly zero"
-            )
-    return result
-
-
 def _convex_mean(
     values: tuple[float, ...],
     where: str,
     stable: "Callable[[tuple[float, ...]], float]",
-    formula: "Callable[[tuple[float, ...]], float]",
+    numerator: "Callable[[tuple[float, ...]], tuple[float, ...]]",
+    divisor: float,
 ) -> float:
-    """Tier 0 -> tier 1 -> tier 2, in that order. See the block comment above."""
+    """Tier 0 -> tier 1 -> exact. See the block comment above.
+
+    `numerator` returns the terms whose exact sum is the statistic's mathematical
+    numerator, and `divisor` its denominator — `(Min + ML + Max) / 3`,
+    `(Min + 4*ML + Max) / 6`, `(Min + Max) / 2`. The `4*ML` is supplied as four
+    copies of `ML` rather than a multiplication, so the exact numerator can be
+    formed even where `4*ML` itself has no Double.
+    """
     numbers = _require_operands(where, *values)
     point = _degenerate_point(numbers)
     if point is not None:
         return point
+
     try:
-        return stable(numbers)
+        result = stable(numbers)
     except NumericalRangeRefusal:
-        pass
-    return _binade_rescue(numbers, where, formula)
+        result = None
+    if result is not None and result != 0.0:
+        return result
+
+    sign, limbs, shift = _exact_sum(numerator(numbers))
+    return _round_exact_quotient(sign, limbs, shift, divisor, where)
 
 
 def triangular_mean(minimum: float, most_likely: float, maximum: float) -> float:
@@ -516,10 +825,12 @@ def triangular_mean(minimum: float, most_likely: float, maximum: float) -> float
         total = safe_accumulate(total, safe_divide(v[1], 3.0, where), where)
         return safe_accumulate(total, safe_divide(v[2], 3.0, where), where)
 
-    def formula(v: tuple[float, ...]) -> float:
-        return (v[0] + v[1] + v[2]) / 3.0
+    def numerator(v: tuple[float, ...]) -> tuple[float, ...]:
+        return (v[0], v[1], v[2])
 
-    return _convex_mean((minimum, most_likely, maximum), where, stable, formula)
+    return _convex_mean(
+        (minimum, most_likely, maximum), where, stable, numerator, 3.0
+    )
 
 
 def beta_pert_mean(minimum: float, most_likely: float, maximum: float) -> float:
@@ -535,10 +846,12 @@ def beta_pert_mean(minimum: float, most_likely: float, maximum: float) -> float:
         total = safe_accumulate(total, safe_multiply(v[1], 2.0 / 3.0, where), where)
         return safe_accumulate(total, safe_divide(v[2], 6.0, where), where)
 
-    def formula(v: tuple[float, ...]) -> float:
-        return (v[0] + 4.0 * v[1] + v[2]) / 6.0
+    def numerator(v: tuple[float, ...]) -> tuple[float, ...]:
+        return (v[0], v[1], v[1], v[1], v[1], v[2])
 
-    return _convex_mean((minimum, most_likely, maximum), where, stable, formula)
+    return _convex_mean(
+        (minimum, most_likely, maximum), where, stable, numerator, 6.0
+    )
 
 
 def midpoint(minimum: float, maximum: float) -> float:
@@ -549,10 +862,10 @@ def midpoint(minimum: float, maximum: float) -> float:
         total = safe_accumulate(0.0, safe_divide(v[0], 2.0, where), where)
         return safe_accumulate(total, safe_divide(v[1], 2.0, where), where)
 
-    def formula(v: tuple[float, ...]) -> float:
-        return (v[0] + v[1]) / 2.0
+    def numerator(v: tuple[float, ...]) -> tuple[float, ...]:
+        return (v[0], v[1])
 
-    return _convex_mean((minimum, maximum), where, stable, formula)
+    return _convex_mean((minimum, maximum), where, stable, numerator, 2.0)
 
 
 # ---------------------------------------------------------------------------

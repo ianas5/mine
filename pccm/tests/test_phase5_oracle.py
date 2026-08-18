@@ -1842,6 +1842,139 @@ def test_ordinary_models_are_bit_for_bit_unchanged_by_the_signed_sum() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Round 3 - the faithful rescue, end to end
+# ---------------------------------------------------------------------------
+# The seven-term reproducer as a real model. Every input is a usable Double,
+# every rule is satisfied, and the headline the model asks for is representable —
+# but the canonical order overflows on the way there, and a rescue that
+# re-associates Doubles gets a number that is 100% wrong.
+_RESIDUAL_TERMS = (6e307, -8e307, -1.7e308, 6e307, 7e307, 6e307, -1e292)
+_RESIDUAL_TOTAL = -1e292
+
+
+def _residual_model() -> CalculationModel:
+    return _model(
+        discount=0.0,
+        costs=tuple(
+            _degenerate_cost(f"CL-{index + 1:03d}", value)
+            for index, value in enumerate(_RESIDUAL_TERMS)
+        ),
+    )
+
+
+def test_a_headline_whose_cancellation_leaves_a_rounding_residual_is_exact() -> None:
+    """REPRODUCER §1.2, end to end.
+
+    `A_nom` is the exact signed sum of seven cost lines, `-1e292`. The round-2
+    rescue answered `-1.99792015476736e292` because cancelling the two largest
+    opposite-signed magnitudes with one rounded subtraction discarded the very
+    residual that survives.
+    """
+    exact = sum((Fraction(term) for term in _RESIDUAL_TERMS), Fraction(0))
+    assert float(exact) == _RESIDUAL_TOTAL, "the fixture's own arithmetic"
+
+    result = calculate(_residual_model(), TOL)
+    assert result.totals.a_nom == _RESIDUAL_TOTAL, f"A_nom is {result.totals.a_nom!r}"
+    assert result.totals.c_nom == _RESIDUAL_TOTAL, f"C_nom is {result.totals.c_nom!r}"
+    assert result.totals.e_nom == _RESIDUAL_TOTAL, f"E_nom is {result.totals.e_nom!r}"
+    assert result.totals.a_pv == _RESIDUAL_TOTAL
+    assert [row.base_cost_nominal for row in result.annual] == [_RESIDUAL_TOTAL]
+    assert_reconciled(result, TOL)
+
+
+def test_reconciliation_cannot_catch_a_consistently_wrong_rescue() -> None:
+    """§12. THE POINT OF THIS TEST IS WHAT RECONCILIATION IS NOT.
+
+    Substituting the round-2 rounded-pair cancellation makes A, C, E and the
+    annual series all wrong — and all wrong in the SAME way, because they are the
+    same algorithm applied to the same contributions. Every identity still holds,
+    `assert_reconciled` still passes, and the model still reports a result.
+
+    So reconciliation verifies consistency BETWEEN calculation paths. It is not an
+    independent numerical-accuracy oracle, and it can never be one. Only a
+    fixture that compares against the exact mathematical value catches this class,
+    which is why the assertion above is on the calculated value and not on the
+    identities.
+    """
+    def rounded_pair_sum(terms):
+        """The round-2 tier 2, verbatim."""
+        positives = sorted((abs(v), i) for i, v in enumerate(terms) if v > 0.0)
+        negatives = sorted((abs(v), i) for i, v in enumerate(terms) if v < 0.0)
+        while positives and negatives:
+            p_magnitude, p_index = positives.pop()
+            n_magnitude, n_index = negatives.pop()
+            if p_magnitude == n_magnitude:
+                continue
+            if p_magnitude > n_magnitude:
+                positives.append((p_magnitude - n_magnitude, p_index))
+                positives.sort()
+            else:
+                negatives.append((n_magnitude - p_magnitude, n_index))
+                negatives.sort()
+        remaining = positives if positives else negatives
+        if not remaining:
+            return 0.0
+        total = 0.0
+        for magnitude, _ in remaining:
+            total = total + magnitude
+        return total if positives else -total
+
+    module = sys.modules[calculate.__module__]
+    genuine = module.safe_signed_sum
+
+    def rescue(terms, where="sum", labels=None):
+        values = list(terms)
+        try:
+            total = 0.0
+            for value in values:
+                total = module.safe_accumulate(total, value, where)
+            return total
+        except NumericalRangeRefusal:
+            return rounded_pair_sum(values)
+
+    module.safe_signed_sum = rescue
+    try:
+        broken = calculate(_residual_model(), TOL)
+        # The sabotage does NOT make the model fail, and it does NOT break any
+        # identity: every path is wrong the same way.
+        assert_reconciled(broken, TOL)
+        assert broken.totals.a_nom == broken.totals.c_nom == broken.totals.e_nom
+        assert broken.totals.a_nom != _RESIDUAL_TOTAL, (
+            "the sabotage must change the answer, or this control proves nothing"
+        )
+        assert broken.totals.a_nom == -1.99792015476736e292, broken.totals.a_nom
+    finally:
+        module.safe_signed_sum = genuine
+
+    assert calculate(_residual_model(), TOL).totals.a_nom == _RESIDUAL_TOTAL
+
+
+def test_a_headline_total_beyond_range_by_less_than_one_ulp_is_refused() -> None:
+    """REPRODUCER §1.3, end to end. The exact total exceeds `MAX_DOUBLE` by about
+    half an ulp, so it rounds to `MAX_DOUBLE` — and returning that would be the
+    fabricated value C2 forbids."""
+    terms = (-8e307, -7e307, -1.78e308, 5e307, -1e292, 1e308, -MAX_DOUBLE, 1.78e308)
+    exact = sum((Fraction(term) for term in terms), Fraction(0))
+    assert abs(exact) > Fraction(MAX_DOUBLE)
+    assert abs(exact) - Fraction(MAX_DOUBLE) < Fraction(2) ** 971
+
+    message = _refuses(
+        lambda: calculate(
+            _model(
+                discount=0.0,
+                costs=tuple(
+                    _degenerate_cost(f"CL-{index + 1:03d}", value)
+                    for index, value in enumerate(terms)
+                ),
+            ),
+            TOL,
+        ),
+        "a headline total outside Double range by under one ulp",
+    )
+    assert "totals" in message
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 def _run_all() -> int:
