@@ -594,8 +594,41 @@ COLLISION_PROBE_INPUTS: tuple[tuple[str, ...], ...] = (
     ("A", UNIT_SEPARATOR, "C"),
 )
 
-SEPARATOR_VALUES: tuple[float, ...] = (
-    0.0, 1.0, 0.1, -9.87e-5, 1.7976931348623157e308, 5e-324,
+# The ten locked canonical numeric encodings of plan section 11.3. Every one is
+# carried into the corpus so the later Gate-B diagnostic can exercise the encoder
+# DIRECTLY against JSON-owned expectations, rather than hardcoding literals in
+# PowerShell or VBA. The label is textual so `-0` stays distinguishable from `0`
+# after a JSON round trip.
+NUMERIC_ENCODING_VECTORS: tuple[tuple[str, float], ...] = (
+    ("0", 0.0),
+    ("-0", -0.0),
+    ("1", 1.0),
+    ("-1", -1.0),
+    ("0.1", 0.1),
+    ("1e-20", 1e-20),
+    ("1e+20", 1e20),
+    ("0.1 + 0.2", 0.1 + 0.2),
+    ("MAX_DOUBLE", 1.7976931348623157e308),
+    ("minimum subnormal", 5e-324),
+)
+
+# One more for the separator proof only: the hostile value that drove the Step-1
+# positional-normalisation correction. It is not one of the ten locked encodings.
+SEPARATOR_EXTRA_VECTORS: tuple[tuple[str, float], ...] = (
+    ("-9.87e-5", -9.87e-5),
+)
+
+# The two locked UTF-16 behaviours a real VBA implementation has to get right:
+# `AscW` returns a SIGNED 16-bit Integer, so every unit above U+7FFF comes back
+# negative and must be normalised; and a non-BMP character contributes TWO units,
+# so the length prefix counts code units and never code points.
+UTF16_VECTORS: tuple[tuple[str, str, str], ...] = (
+    ("bmp_above_7fff", "\u9ad8",
+     "a single BMP code unit above U+7FFF, where VBA AscW returns a negative Integer"),
+    ("non_bmp", "\U0001f600",
+     "one code point, two UTF-16 code units: the surrogate pair VBA walks"),
+    ("mixed_length_prefix", "A\U0001f600",
+     "two code points but three code units, so the length prefix cannot use Len()"),
 )
 
 REDUCTION_INPUTS: tuple[tuple[str, int, int], ...] = (
@@ -604,6 +637,19 @@ REDUCTION_INPUTS: tuple[tuple[str, int, int], ...] = (
     ("FP_MOD_1", 1234567890, 41),
     ("FP_MOD_2", 1234567890, 41),
 )
+
+
+def _signed_ascw(unit: int) -> int:
+    """The `Integer` VBA `AscW` returns for a UTF-16 code unit.
+
+    `calc_fingerprint.normalise_code_unit` owns the inverse and stays the
+    authority: the round trip is asserted here so a drift between the two would
+    fail the build rather than ship a wrong expectation.
+    """
+    signed = unit - 65536 if unit > 32767 else unit
+    if fp.normalise_code_unit(signed) != unit:
+        raise RuntimeError(f"signed AscW projection disagrees with the authority: {unit}")
+    return signed
 
 
 def reference_stream(fingerprint_version: int) -> str:
@@ -659,13 +705,38 @@ def fingerprint_section(calc: CalcContract) -> dict[str, Any]:
             {"case": 27, "values": list(values), "digest": fp.fingerprint_probe(values)}
             for values in COLLISION_PROBE_INPUTS
         ],
+        "numeric_encodings": {
+            "case": 26,
+            "vectors": [
+                {"label": label, "value": value,
+                 "expected": fp.canonical_number(value, ".")}
+                for label, value in NUMERIC_ENCODING_VECTORS
+            ],
+        },
+        "utf16_vectors": {
+            "case": 26,
+            "vectors": [
+                {
+                    "key": key,
+                    "text": text,
+                    "code_point_count": len(text),
+                    "utf16_length": fp.utf16_length(text),
+                    "code_units": list(fp.utf16_code_units(text)),
+                    "signed_ascw": [_signed_ascw(unit)
+                                    for unit in fp.utf16_code_units(text)],
+                    "canonical_text_field": fp.encode_fields([fp.text_field(text)]),
+                }
+                for key, text, _ in UTF16_VECTORS
+            ],
+        },
         "decimal_separator": {
             "case": 35,
             "vectors": [
-                {"value": value,
+                {"label": label, "value": value,
+                 "expected": fp.canonical_number(value, "."),
                  "point": fp.canonical_number(value, "."),
                  "comma": fp.canonical_number(value, ",")}
-                for value in SEPARATOR_VALUES
+                for label, value in NUMERIC_ENCODING_VECTORS + SEPARATOR_EXTRA_VECTORS
             ],
         },
         "reduction_vectors": [

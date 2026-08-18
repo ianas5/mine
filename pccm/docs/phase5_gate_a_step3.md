@@ -1,6 +1,6 @@
 # Phase 5 — Gate A — Step 3: Stage-A calculation workspace emission
 
-**Status: READY FOR INDEPENDENT REVIEW.**
+**Status: CORRECTED ONCE after independent review — ready for re-review.**
 
 Step 2 is accepted and closed. This step makes `spec/calc_contract.yaml` a real
 build input, puts the physical `_Calc` calculation workspace into the generated
@@ -11,6 +11,13 @@ will consume. It is Linux-only.
 numerical oracle remains the semantic authority; `calc_contract.yaml` remains the
 physical workbook-representation authority. The workbook ships with no calculated
 result of any kind.
+
+**Round 1** (§18) — the workbook emission, the verifier, the constants projection
+and the Stage-A architecture were confirmed sound and are unchanged. Two
+acceptance-corpus gaps were closed: the Gate-B fingerprint vector set was
+incomplete, and golden independence was a spot check rather than exhaustive. One
+documented count was wrong. **The workbook and `modCalcContract.bas` are
+byte-for-byte unchanged by the correction; only `phase5_cases.json` expanded.**
 
 ---
 
@@ -57,7 +64,7 @@ declared in the Stage-B manifest. A test asserts that.
 | `spec/workbook.yaml` | `model_version` 0.4.0 → 0.5.0, `build_phase` → Phase 5 |
 | `VERSION` | 0.4.0 → 0.5.0 |
 | `tests/test_phase4_structure.py` | the version-convention test's literal moved with it; see §11 |
-| `tests/test_phase5_stage_a.py` | **new** — 53 tests |
+| `tests/test_phase5_stage_a.py` | **new** — 54 tests |
 
 **Unchanged, and verified unchanged:** `spec/calc_contract.yaml`,
 `spec/input_contract.yaml`, `spec/driver_contract.yaml`,
@@ -220,8 +227,18 @@ purpose               a sentence saying it is test data
 provenance            model_version, calc_contract_version, fingerprint_version,
                       and the three source modules by path
 tolerances            the four contract numbers
-fingerprint           constants, reference (case 26), collision_probes (case 27),
-                      decimal_separator (case 35), reduction_vectors (case 36)
+fingerprint           constants
+                      reference          (case 26) stream, code_units, digest
+                      collision_probes   (case 27) eight probes and digests
+                      numeric_encodings  (case 26) the TEN locked canonical
+                                         encodings: label, value, expected
+                      utf16_vectors      (case 26) key, text, code_point_count,
+                                         utf16_length, code_units, signed_ascw,
+                                         canonical_text_field
+                      decimal_separator  (case 35) label, value, expected, point,
+                                         comma - eleven vectors
+                      reduction_vectors  (case 36) modulus_name, modulus, h, u, x,
+                                         remainder, double_only_remainder
 plan_cases[37]        id, kind, title, and per kind:
                         analytical   -> model + expected{resolved_fx,
                                         inflation_factors, discount_factors,
@@ -238,6 +255,64 @@ regression_vectors    conditioning, convex_statistics, materialization, product,
 rollback behaviours that no pure function can evidence, so they carry a `why` and
 no expected numbers at all. A test asserts their record has exactly the four keys
 `{id, kind, title, why}` — Python does not pretend to prove them.
+
+### The complete Gate-B fingerprint vector set
+
+Plan §24.1 requires real Windows/VBA to exercise the canonical encoder and the
+reducer directly, and locks *"every expected value comes from
+build/phase5_cases.json"*. Round 1 found two of the six required families missing,
+which would have forced the Windows harness to hardcode expectations outside the
+corpus. Both are now carried.
+
+**A — the ten locked canonical numeric encodings** (`fingerprint.numeric_encodings`):
+
+| label | value | expected |
+|---|---|---|
+| `0` | `0.0` | `0.0000000000000000E+00` |
+| `-0` | `-0.0` | `0.0000000000000000E+00` |
+| `1` | `1.0` | `1.0000000000000000E+00` |
+| `-1` | `-1.0` | `-1.0000000000000000E+00` |
+| `0.1` | `0.1` | `1.0000000000000001E-01` |
+| `1e-20` | `1e-20` | `9.9999999999999995E-21` |
+| `1e+20` | `1e+20` | `1.0000000000000000E+20` |
+| `0.1 + 0.2` | `0.30000000000000004` | `3.0000000000000004E-01` |
+| `MAX_DOUBLE` | `1.7976931348623157e+308` | `1.7976931348623157E+308` |
+| `minimum subnormal` | `5e-324` | `4.9406564584124654E-324` |
+
+Each record carries a textual `label`, so `-0` stays distinguishable from `0` even
+though both encode identically and a JSON consumer may render the two values the
+same way. A test asserts the two labels differ and that the second value really
+carries a negative sign bit.
+
+**D and E — direct UTF-16 / `AscW` vectors** (`fingerprint.utf16_vectors`):
+
+| key | text | code points | UTF-16 units | `code_units` | `signed_ascw` | canonical field |
+|---|---|---|---|---|---|---|
+| `bmp_above_7fff` | `高` | 1 | 1 | `[39640]` | `[-25896]` | `S1:高` |
+| `non_bmp` | `😀` | 1 | 2 | `[55357, 56832]` | `[-10179, -8704]` | `S2:😀` |
+| `mixed_length_prefix` | `A😀` | 2 | 3 | `[65, 55357, 56832]` | `[65, -10179, -8704]` | `S3:A😀` |
+
+`signed_ascw` is what VBA's `AscW` returns — a SIGNED 16-bit `Integer`, so every
+unit above `U+7FFF` comes back negative; `code_units` is the same value after the
+`+ 65536` normalisation. The generator derives the signed form and asserts the
+round trip through `calc_fingerprint.normalise_code_unit`, so a drift between the
+two fails the build rather than shipping a wrong expectation. The third vector
+exists to prove the length prefix counts CODE UNITS: `A😀` is two code points and
+three units, so a VBA implementation using `Len()` would emit `S2:` and be caught.
+
+**B — separator injection** (`fingerprint.decimal_separator`) now covers the same
+ten labelled vectors plus the hostile `-9.87e-5` that drove the Step-1 positional
+normalisation fix, and each record carries an `expected` literal. The test asserts
+`point == LOCKED` **and** `comma == LOCKED`, not merely `point == comma`: the
+canonical form always uses `.`, so a host separator of `,` is normalised away, and
+proving invariance alone would say nothing about correctness.
+
+**C and F** — the four reduction vectors and the complete 366-code-unit reference
+stream were already carried and are unchanged.
+
+**No new fingerprint authority.** `calc_cases.py` derives every emitted value from
+`calc_fingerprint.py`; the locked literal copies live in the test file only, and
+none of them was added to `calc_contract.yaml`.
 
 ### The C1/C2 regression corpus
 
@@ -259,44 +334,123 @@ sweeps, which stay in the Step-2 test modules where they belong:
 
 ---
 
-## 9. Golden independence
+## 9. Golden independence — exhaustive, and accounted path by path
 
 ```
 hand-derived literal  ->  Python oracle  ->  phase5_cases.json  ->  later VBA
 ```
 
 The corpus is generated BY the accepted oracle, so comparing it back to that
-oracle would prove nothing. Every emitted number is re-derived by a second,
-independently written route:
+oracle would prove nothing. Round 1 found the first attempt insufficient: it
+covered only `plan_cases` of kind `analytical`, only a subset of the fields inside
+them, and only spot checks of the regression corpus, behind a `checked > 400`
+floor that could pass while hundreds of values went untested.
 
-1. **Plan §23's own literals**, restated in the test file:
-   case 1 `Knom = 1`, `A = 1000`, `C = 1100`, `B = 100`; case 2 `Knom = 3.75`,
-   `A = 1500`; case 3 `Knom = 1.1085375`, `A_nom = 1108.5375`; case 4
-   `Kpv = 0.998150826446`, `A_pv = 998.150826446`, `C_pv = 1097.965909091`;
-   case 5 `C_nom = 1219.39125`, `B_nom = 110.85375`; case 6 mean `105`; case 7
-   central = mean = `115`, `B = 0`; case 8 mean severity `250`, `D = 75`; case 9
-   `D_nom = 83.1403125`, `D_pv = 74.8613119835`; case 22 central = mean = `115`.
-2. **`_exact_case`**, an exact `Fraction` evaluator written in the test from the
-   plan's formulas, sharing no code with `calc_oracle.py`. It re-derives the
-   inflation factors, the discount series, `Knom`, `Kpv`, every driver amount,
-   every annual column and all ten headline totals from the case's INPUT DATA
-   alone. **~598 emitted numbers** are checked this way, and the test asserts a
-   floor of 400 so it cannot pass vacuously.
-3. **The fingerprint literals**, restated in the test: the reference stream
-   character for character, its length of **366** UTF-16 code units, its digest
-   **`50B6EB0E26857EA7`**, the eight probe digests, and the four reduction
-   remainders.
+**The floor is gone. Coverage is now proved by a LEDGER.**
 
-`test_the_independent_oracle_disagrees_when_the_corpus_is_wrong` and
-`test_a_mutated_golden_expected_value_is_caught` prove the comparison can fail.
+`_expectation_paths(document)` enumerates every expectation leaf in the JSON —
+every leaf under `plan_cases[*].expected`, every
+`plan_cases[*].statistics[*].expected`, every `plan_cases[*].expected_refusal`,
+every leaf under `regression_vectors[*][*].expected`, every
+`regression_vectors[*][*].expected_refusal`, and the whole `fingerprint` subtree.
+Each independent check records the path it validated. The test then requires the
+two SETS to be identical, in both directions:
 
-A field that does not apply to a driver kind is asserted **blank**, never zero —
-`central_value` and the deterministic/mean-basis amounts on a Risk row, the
-expected-risk amounts on a Cost Line row.
+```
+expectation leaf paths  : 1979
+independently validated : 1979
+missing                 : 0        (nothing entered the corpus unproved)
+extra                   : 0        (no check claimed a path the corpus lacks)
+```
 
----
+| root | leaves |
+|---|---|
+| `plan_cases` | 1268 |
+| `regression_vectors` | 516 |
+| `fingerprint` | 195 |
+
+Model inputs (`model`, `terms`, `factors`, `points`), titles and prose are not
+expectations and are excluded; every leaf under `fingerprint` is included, which
+is why the corpus carries data and no explanatory `note` strings.
+
+### The independent reference
+
+`_reference_payload(model)` rebuilds the COMPLETE expected payload of any
+analytical model — the resolved FX map, every inflation factor row, the discount
+series, all twenty-one driver fields plus the weights, all eight annual fields and
+all ten headline totals. It calls **neither** `calc_oracle.calculate`, **nor**
+`calc_cases.evaluate`, **nor** any production rescue helper; it is written from
+the plan's rules using `Fraction`, plain Double arithmetic and locked literals.
+
+It models the accepted TWO TIERS rather than pure rational arithmetic, because
+tier 1 owns its result:
+
+* a product is left-to-right Double, refusing overflow and a non-zero collapse to
+  zero; only if that fails does the exact rational value, correctly rounded, take
+  over;
+* a series is the staged per-contribution path, then one exact compound
+  expression — the materialization rule of Erratum C2, written out from the
+  specification;
+* PV's tier 1 forms `nominal × discount` from the MATERIALIZED nominal, exactly as
+  the accepted staging does;
+* headline totals accumulate in canonical driver order.
+
+That distinction is load-bearing. `[1e16, 1, -1e16]` sums to `0.0` in canonical
+order and to `1.0` in exact arithmetic, and `0.0` is the required answer — a
+reference built on exact rationals alone would have declared the corpus wrong.
+
+Comparison is **exact equality wherever it holds**, which is almost everywhere,
+including every zero, every subnormal and every `MAX_DOUBLE / 2`. A relative
+tolerance of `1e-11` covers only the places where the plan's mandated stable forms
+legitimately differ from exact rational arithmetic, and a per-payload `scale`
+covers a value that cancelled to near-zero.
+
+### The regression corpus is not exempt
+
+* **model-based** (`conditioning`, `materialization` ×4, `row_order`) — the same
+  `_reference_payload` validates the COMPLETE emitted payload, not selected
+  fields;
+* **helper-level** (`signed_sum`, `product`, `convex_statistics`) — exact
+  `Fraction` arithmetic derives the exact value, classifies its range with
+  `abs(exact) <= Fraction(MAX_DOUBLE)` tested BEFORE `float(exact)`, and yields
+  either the correctly rounded Double or a refusal. The production helper is never
+  asked what its own answer should be. A zero-uncertainty distribution is held to
+  the stronger statement — it must return its point EXACTLY, not merely correctly
+  rounded;
+* **the materialized-boundary refusal** — `_check_materialization_refusal`
+  independently proves from exact arithmetic that CL-001's own Mean-Basis Nominal
+  is `2 × MAX_DOUBLE`, which exceeds `MAX_DOUBLE`, **and** that the headline it
+  feeds cancels to exactly zero. Both halves matter: the first is why the refusal
+  is correct, the second is why it is not obvious.
+
+### The plan's own literals
+
+Plan §23's hand-derived numbers are restated in the test file and checked
+separately: case 1 `Knom = 1`, `A = 1000`, `C = 1100`, `B = 100`; case 2
+`Knom = 3.75`, `A = 1500`; case 3 `Knom = 1.1085375`, `A_nom = 1108.5375`; case 4
+`Kpv = 0.998150826446`, `A_pv = 998.150826446`, `C_pv = 1097.965909091`; case 5
+`C_nom = 1219.39125`, `B_nom = 110.85375`; case 6 mean `105`; case 7 central =
+mean = `115`, `B = 0`; case 8 mean severity `250`, `D = 75`; case 9
+`D_nom = 83.1403125`, `D_pv = 74.8613119835`; case 22 central = mean = `115`.
+
+The fingerprint half is entirely hand-written: the reference stream character for
+character, its 366-code-unit length, its digest `50B6EB0E26857EA7`, the eight
+probe inputs and digests, the ten canonical encodings, the three UTF-16 vectors
+and the four reduction vectors — the last checked twice, once against the locked
+remainder and once by independently recomputing `x = h × 131 + u` and `x mod m`.
+
+A field that does not apply to a driver kind is asserted **blank**, never zero.
 
 ## 10. Determinism
+
+**This correction changed neither the workbook nor the constants module.**
+Rebuilding before and after the patch with a fixed timestamp:
+
+```
+build/vba/modCalcContract.bas   byte-identical before and after
+build/PCCM_stageA.xlsx          structurally identical before and after
+build/phase5_cases.json         expanded, as intended
+```
 
 `PCCM_BUILD_TIMESTAMP` fixed, two builds from the same source:
 
@@ -360,8 +514,10 @@ from disk:
 
 ## 13. Negative controls
 
+### Against the generated workbook
+
 `_verify_mutated` builds the workbook, mutates the saved artifact, and re-verifies.
-Each of these produces a verification failure for the intended reason:
+Each produces a verification failure for the intended reason:
 
 | Mutation | Caught by |
 |---|---|
@@ -376,14 +532,30 @@ Each of these produces a verification failure for the intended reason:
 | `C10` overwritten with `7` | Phase-4 counter check |
 | a fabricated `H16`/`I16` semantic row | the zero-semantic-rows check |
 
-Three further controls act on the generated files rather than the workbook: a
-mutated projected tolerance, a mutated projected hash modulus and a mutated golden
-expected value are each shown to change or fail the corresponding assertion. And
-`test_a_malformed_calculation_contract_fails_the_build_with_exit_code_two` moves
-`tblCalcYears`'s header row in a copied contract, runs the real entry point, and
-requires exit code 2, a `CALCULATION CONTRACT ERROR`, and **no workbook on disk**.
+### Against the acceptance corpus
 
----
+Each was applied to `calc_cases.py` on a working copy, the suite was run, and the
+source restored. All seven fail against the corpus as it stood at `d82471e`:
+
+| Sabotage | Result |
+|---|---|
+| one of the ten numeric canonical encodings removed | **fails** — the path ledger reports a missing expectation |
+| `1e-20` expected string changed to `1.0000000000000000E-20` | **fails** — the hand-written literal disagrees |
+| the `U+9AD8` vector removed | **fails** — the ledger reports the missing vector |
+| `U+9AD8` normalised unit changed from `39640` | **fails** — the locked UTF-16 literal disagrees |
+| `😀` made to contribute one unit instead of two (`len()` instead of `utf16_length`) | **fails** — the locked length and the `utf16_length == len(code_units)` property both break |
+| a NON-spot-checked value tampered deep inside a materialization payload (`annual[2].total_pv`) | **fails** — `test_a_tampered_non_spot_checked_regression_value_is_caught` |
+| a new expected field added with no matching check | **fails** — `test_a_new_expected_field_cannot_escape_independent_validation` |
+
+The last one is the important one: it proves future corpus growth cannot silently
+escape independent validation, which a numeric floor could never do.
+
+Two further controls act on the generated constants: a mutated projected tolerance
+and a mutated projected hash modulus are each shown to change the emitted `.bas`.
+And `test_a_malformed_calculation_contract_fails_the_build_with_exit_code_two`
+moves `tblCalcYears`'s header row in a copied contract, runs the real entry point,
+and requires exit code 2, a `CALCULATION CONTRACT ERROR`, and **no workbook on
+disk**.
 
 ## 14. Consumed, but not calculated
 
@@ -409,14 +581,14 @@ or not.
 Run from a clean extraction, Linux, Python 3.11.
 
 ```
-python -m pytest pccm/tests/ -q        962 passed, 0 failed
+python -m pytest pccm/tests/ -q        964 passed, 0 failed
 python pccm/builder/build_stage_a.py   351 passed, 0 failed
 ```
 
 Standalone:
 
 ```
-python pccm/tests/test_phase5_stage_a.py                  53 passed, 0 failed
+python pccm/tests/test_phase5_stage_a.py                  54 passed, 0 failed
 python pccm/tests/test_phase5_numeric.py                  94 passed, 0 failed
 python pccm/tests/test_phase5_oracle.py                  111 passed, 0 failed
 python pccm/tests/test_phase5_calc_contract_validation.py 151 passed, 0 failed
@@ -440,12 +612,19 @@ python pccm/tests/test_phase5_fingerprint.py              52 passed, 0 failed
 | `test_phase5_fingerprint.py` | 52 | **52** |
 | `test_phase5_numeric.py` | 94 | **94** |
 | `test_phase5_oracle.py` | 111 | **111** |
-| `test_phase5_stage_a.py` | — | **53** |
-| **total** | **910** | **962** |
+| `test_phase5_stage_a.py` | — | **54** |
+| **total** | **910** | **964** |
 
-**Every existing count is unchanged.** The 910 → 962 delta is exactly the 53 new
+**Every existing count is unchanged.** The 910 → 964 delta is exactly the 54 new
 Step-3 tests. No Step-2 test was weakened, added to or removed; the numeric and
 oracle modules are byte-identical to the accepted Step-2 package.
+
+**COUNT CORRECTION.** The first Step-3 submission documented 962. That was a stale
+reading taken before the last test of the round was added, and it was
+arithmetically impossible against its own "910 + 53" statement — review was right
+to reject it. The correct pre-correction baseline was **963**; this correction
+replaced three spot-check tests with four exhaustive ones, so the current total is
+**964**. No test was removed to make a number true.
 
 ### Stage-A verification count
 
