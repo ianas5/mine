@@ -157,14 +157,42 @@ def test_02_the_resolver_is_declared_in_the_structure_contract() -> None:
     assert sorted(generated) == ["modCalcContract", "modConstants"]
 
 
+def _emitted_manifest() -> dict:
+    """The Stage-B manifest, PRODUCED by the real emitter into a fresh temp tree.
+
+    Never read from `build/`. An assertion about the manifest that returns early
+    when the artifact happens to be absent proves nothing at all - it passes
+    loudest exactly when the build is broken.
+    """
+    import json
+    import tempfile
+    from pathlib import Path as _Path
+
+    from pccm_builder import (
+        emit_stage_b, load_contract, load_driver_contract, load_spec,
+        load_structure_contract,
+    )
+
+    spec_dir = PCCM_ROOT / "spec"
+    tmp = _Path(tempfile.mkdtemp(prefix="pccm-manifest-"))
+    emit_stage_b(
+        tmp,
+        load_spec(spec_dir / "workbook.yaml"),
+        load_contract(spec_dir / "input_contract.yaml"),
+        load_driver_contract(spec_dir / "driver_contract.yaml"),
+        load_structure_contract(spec_dir / "structure_contract.yaml"),
+    )
+    path = tmp / "stage_b_manifest.json"
+    assert path.is_file(), "the emitter produced no Stage-B manifest"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_03_the_resolver_appears_in_the_stage_b_manifest() -> None:
     import json
 
-    path = PCCM_ROOT / "build" / "stage_b_manifest.json"
-    if not path.is_file():
-        return
-    text = json.dumps(json.loads(path.read_text(encoding="utf-8")))
-    assert RESOLVER in text, "the resolver is missing from the Stage-B manifest"
+    assert RESOLVER in json.dumps(_emitted_manifest()), (
+        "the resolver is missing from the Stage-B manifest"
+    )
 
 
 def test_04_the_three_numerical_modules_are_still_worksheet_free() -> None:
@@ -220,14 +248,16 @@ def test_08_no_phase_5_endpoint_or_later_module_was_added() -> None:
     modules = _modules()
     executable = "\n".join(m.code for m in modules.values())
     declared = {p for m in modules.values() for p in m.procedures}
-    for deferred in ("modCalcReport", "PCCM_Calculate",
-                     "PCCM_CalculationStatus", "PCCM_CalculationAttemptResult",
-                     "PCCM_CalculationAttemptDetail", "PCCM_CalculationFingerprint",
-                     "PCCM_CurrentInputFingerprint"):
-        assert deferred not in executable
-        assert deferred not in declared
-        assert deferred not in modules
-    assert [p for p in _resolver().procedures if p.startswith("PCCM_")] == []
+    # Every name here has now been implemented by its own step. What the
+    # RESOLVER must still not do is declare or reach for any of them.
+    resolver = _resolver()
+    for later in ("modCalcReport", "modCalcCheck", "PCCM_Calculate",
+                  "PCCM_CalculationStatus", "PCCM_CalculationAttemptResult",
+                  "PCCM_CalculationAttemptDetail", "PCCM_CalculationFingerprint",
+                  "PCCM_CurrentInputFingerprint"):
+        assert later not in resolver.code, f"{later} leaked into the resolver"
+    assert [p for p in resolver.procedures if p.startswith("PCCM_")] == []
+    assert executable and declared and modules
 
 
 def test_09_nothing_is_written_anywhere() -> None:

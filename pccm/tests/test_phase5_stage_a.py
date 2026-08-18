@@ -1815,27 +1815,56 @@ def test_the_stage_a_xlsm_and_vba_boundary_is_unchanged() -> None:
     assert not any(name.endswith(".bas") for name in names)
 
 
+from pccm_builder import emit_stage_b  # noqa: E402
+
+
+def _manifest_specs():
+    """The four contracts the Stage-B emitter needs, loaded from the project spec."""
+    from pccm_builder import (
+        load_contract, load_driver_contract, load_spec, load_structure_contract,
+    )
+
+    spec_dir = PCCM_ROOT / "spec"
+    return (
+        load_spec(spec_dir / "workbook.yaml"),
+        load_contract(spec_dir / "input_contract.yaml"),
+        load_driver_contract(spec_dir / "driver_contract.yaml"),
+        load_structure_contract(spec_dir / "structure_contract.yaml"),
+    )
+
+
 def test_the_stage_b_manifest_carries_the_implemented_modules_and_nothing_later() -> None:
     """Retargeted at Step 4, which is the step that adds the kernel inventory.
 
     At Step 3 this test read "no Phase-5 VBA module was added to the manifest",
     and that was right: Step 3 emits generated constants only, and declaring a
     module it had not written would have been declaring a file that did not exist.
-    Step 4 wrote the three kernel modules, Step 5 the resolver and Step 6 the
-    checker, so the assertion keeps moving to the boundary that is still ahead -
-    the reporter and the calculation endpoints - rather than being deleted.
+    Steps 4 to 7 wrote the whole Phase-5 module set, so the assertion has run
+    out of names ahead of it. What it asserts now is the boundary that remains:
+    the six endpoints are declared, and not one of them is bound to a button.
     """
-    path = PCCM_ROOT / "build" / "stage_b_manifest.json"
-    if not path.is_file():
-        return
+    # PRODUCED, not read from `build/`. The old form returned early when the
+    # artifact was absent, which made the assertion pass loudest exactly when
+    # the build was broken.
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp(prefix="pccm-manifest-"))
+    emit_stage_b(tmp, *_manifest_specs())
+    path = tmp / "stage_b_manifest.json"
+    assert path.is_file(), "the emitter produced no Stage-B manifest"
     text = json.dumps(json.loads(path.read_text(encoding="utf-8")))
     for expected in ("modCalcContract", "modCalcFactors", "modCalcAnalytical",
-                     "modCalcFingerprint", "modCalcResolve", "modCalcCheck"):
+                     "modCalcFingerprint", "modCalcResolve", "modCalcCheck",
+                     "modCalcReport"):
         assert expected in text, f"{expected} is missing from the Stage-B manifest"
-    for forbidden in ("modCalcReport",
-                      "PCCM_Calculate", "PCCM_CalculationStatus",
-                      "PCCM_CalculationFingerprint"):
-        assert forbidden not in text, f"{forbidden} appeared in the Stage-B manifest"
+    # The Phase-5 module set is complete, so the remaining boundary is that the
+    # six endpoints are declared as API procedures and NONE of them is bound to
+    # a button.
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    bound = {b["entry_point"] for b in manifest["buttons"]}
+    assert len(bound) == 5, f"the workbook must still have exactly five buttons: {bound}"
+    assert "PCCM_Calculate" not in bound, "a Calculate button was created"
+    assert "PCCM_Calculate" in text, "the calculation endpoint is not declared"
 
 
 def test_the_stage_a_verification_is_extended_and_nothing_was_dropped() -> None:

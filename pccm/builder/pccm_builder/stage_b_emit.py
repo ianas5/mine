@@ -355,6 +355,11 @@ def build_manifest(
                 for m in structure.vba_modules
             ],
             "entry_points": list(structure.entry_points),
+            # The calculation endpoints a later harness drives through
+            # Application.Run. Deliberately NOT entry_points: nothing binds them
+            # to a button, and the manifest is where the harness learns the
+            # difference.
+            "api_procedures": list(structure.api_procedures),
             "forbidden_constructs": list(structure.forbidden_constructs),
         },
         "buttons": [

@@ -59,6 +59,10 @@ STEP5_MODULE = "modCalcResolve"
 # KERNEL_MODULES, so every sweep below keeps running over exactly the kernel.
 STEP6_MODULE = "modCalcCheck"
 
+# The Step-7 presentation and orchestration layer, the last Phase-5 module.
+# Also outside KERNEL_MODULES, for the same reason.
+STEP7_MODULE = "modCalcReport"
+
 PHASE4_MODULES = (
     "modWorkbook", "modAppState", "modTimeline", "modDrivers",
     "modProfiling", "modInflation", "modStructuralCheck",
@@ -269,13 +273,13 @@ def test_02_step_4_added_exactly_three_modules_and_no_fourth() -> None:
 
     A modCalcMath, modCalcTypes or modCalcExact would be a fourth NUMERICAL
     module that no review accepted, and the split would stop meaning anything.
-    Steps 5 and 6 add exactly one further module each - the resolver and the
-    checker - and the inventory is asserted in both directions so no step can
-    grow another.
+    Steps 5, 6 and 7 add exactly one further module each - the resolver, the
+    checker and the reporter - and the inventory is asserted in both directions
+    so no step can grow another.
     """
     on_disk = set(_modules())
     assert on_disk == (set(PHASE4_MODULES) | set(KERNEL_MODULES)
-                       | {STEP5_MODULE, STEP6_MODULE}), (
+                       | {STEP5_MODULE, STEP6_MODULE, STEP7_MODULE}), (
         f"unexpected hand-written module inventory: {sorted(on_disk)}"
     )
     assert set(KERNEL_MODULES) == {
@@ -331,13 +335,15 @@ def test_07_no_kernel_procedure_is_a_pccm_endpoint() -> None:
 
 
 def test_08_the_deferred_phase_6_surface_does_not_exist_yet() -> None:
-    """Each name leaves this list at the step that implements it.
+    """Each name left this list at the step that implemented it.
 
-    `modCalcResolve` left at Step 5 and `modCalcCheck` at Step 6. Everything
-    still on it is ahead: the reporter and the five Phase-5 status accessors.
+    `modCalcResolve` at Step 5, `modCalcCheck` at Step 6, and the reporter with
+    its six endpoints at Step 7. The list is now empty of module and endpoint
+    names, so what this test asserts is the one thing still worth asserting: the
+    Step-4 kernel does not reach forward into any of them.
     """
     deferred = (
-        "modCalcReport",
+        "modCalcReport", "modCalcCheck", "modCalcResolve",
         "PCCM_Calculate", "PCCM_CalculationStatus", "PCCM_CalculationAttemptResult",
         "PCCM_CalculationAttemptDetail", "PCCM_CalculationFingerprint",
         "PCCM_CurrentInputFingerprint",
@@ -345,13 +351,14 @@ def test_08_the_deferred_phase_6_surface_does_not_exist_yet() -> None:
     # EXECUTABLE code, not commentary: the resolver legitimately names the
     # checker when saying which prerequisites it deliberately leaves to it, and
     # a sentence about a later step is not an implementation of one.
-    modules = _modules()
-    executable = "\n".join(m.code for m in modules.values())
-    declared = {p for m in modules.values() for p in m.procedures}
+    kernel = "\n".join(_kernel()[name].code for name in KERNEL_MODULES)
     for name in deferred:
-        assert name not in executable, f"{name} is referenced in code; it belongs to a later step"
-        assert name not in declared, f"{name} is declared; it belongs to a later step"
-        assert name not in modules, f"{name} exists as a module; it belongs to a later step"
+        assert name not in kernel, (
+            f"{name} is referenced by the Step-4 kernel; the dependency runs the "
+            "other way"
+        )
+    for name in KERNEL_MODULES:
+        assert [p for p in _kernel()[name].procedures if p.startswith("PCCM_")] == []
 
 
 def test_09_no_change_handler_exists_anywhere() -> None:

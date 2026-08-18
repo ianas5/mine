@@ -136,26 +136,60 @@ def test_02_the_checker_is_declared_hand_written_in_the_contract() -> None:
     assert sorted(generated) == ["modCalcContract", "modConstants"]
 
 
+def _emitted_manifest() -> dict:
+    """The Stage-B manifest, PRODUCED by the real emitter into a fresh temp tree.
+
+    Never read from `build/`. An assertion about the manifest that returns early
+    when the artifact happens to be absent proves nothing at all - it passes
+    loudest exactly when the build is broken.
+    """
+    import json
+    import tempfile
+    from pathlib import Path as _Path
+
+    from pccm_builder import (
+        emit_stage_b, load_contract, load_driver_contract, load_spec,
+        load_structure_contract,
+    )
+
+    spec_dir = PCCM_ROOT / "spec"
+    tmp = _Path(tempfile.mkdtemp(prefix="pccm-manifest-"))
+    emit_stage_b(
+        tmp,
+        load_spec(spec_dir / "workbook.yaml"),
+        load_contract(spec_dir / "input_contract.yaml"),
+        load_driver_contract(spec_dir / "driver_contract.yaml"),
+        load_structure_contract(spec_dir / "structure_contract.yaml"),
+    )
+    path = tmp / "stage_b_manifest.json"
+    assert path.is_file(), "the emitter produced no Stage-B manifest"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_03_the_checker_appears_in_the_stage_b_manifest() -> None:
     import json
 
-    path = PCCM_ROOT / "build" / "stage_b_manifest.json"
-    if not path.is_file():
-        return
-    assert CHECKER in json.dumps(json.loads(path.read_text(encoding="utf-8")))
+    assert CHECKER in json.dumps(_emitted_manifest())
 
 
-def test_04_step_7_does_not_exist_yet() -> None:
+def test_04_the_checker_owns_no_orchestration() -> None:
+    """Step 7 arrived. What must still hold is that it did not move INTO the
+    checker.
+
+    This test asserted the reporter's absence while it was unwritten. Now that it
+    exists, the invariant worth keeping is the split: the checker declares no
+    endpoint, publishes nothing, and does not reach into the orchestration layer.
+    """
     modules = _modules()
-    executable = "\n".join(m.code for m in modules.values())
-    declared = {p for m in modules.values() for p in m.procedures}
-    for deferred in ("modCalcReport", "PCCM_Calculate", "PCCM_CalculationStatus",
+    assert "modCalcReport" in modules, "the reporter exists from Step 7 onward"
+    assert [p for p in _checker().procedures if p.startswith("PCCM_")] == []
+    assert "modCalcReport" not in _checker().code, (
+        "the checker calls the reporter; the dependency runs the other way"
+    )
+    for endpoint in ("PCCM_Calculate", "PCCM_CalculationStatus",
                      "PCCM_CalculationAttemptResult", "PCCM_CalculationAttemptDetail",
                      "PCCM_CalculationFingerprint", "PCCM_CurrentInputFingerprint"):
-        assert deferred not in executable, f"{deferred} belongs to a later step"
-        assert deferred not in declared
-        assert deferred not in modules
-    assert [p for p in _checker().procedures if p.startswith("PCCM_")] == []
+        assert endpoint not in _checker().code, f"{endpoint} leaked into the checker"
 
 
 def test_05_the_checker_never_touches_a_workbook() -> None:
@@ -617,7 +651,7 @@ def test_44_the_accepted_modules_were_not_modified() -> None:
 def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
     """Asserted in both directions, so Step 6 cannot have grown a second module."""
     on_disk = set(_modules())
-    assert on_disk == set(FROZEN_SHA256) | {CHECKER}, (
+    assert on_disk == set(FROZEN_SHA256) | {CHECKER, "modCalcReport"}, (
         f"unexpected hand-written module inventory: {sorted(on_disk)}"
     )
 

@@ -226,7 +226,7 @@ PHASE4_VBA_MODULES = (
 # responsibility is coherent and whose contract requires it to explain itself.
 PHASE5_VBA_MODULES = (
     "modCalcFactors", "modCalcAnalytical", "modCalcFingerprint", "modCalcResolve",
-    "modCalcCheck",
+    "modCalcCheck", "modCalcReport",
 )
 
 PHASE4_RAW_LINE_LIMIT = 900
@@ -313,7 +313,12 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
     """Every externally callable PCCM_ procedure is accounted for by the contract."""
     import yaml
     data = yaml.safe_load(STRUCTURE_PATH.read_text(encoding="utf-8"))
-    accounted = set(data["vba"]["entry_points"]) | set(data["vba"]["harness_procedures"])
+    # Three declared groups now: button entry points, Phase-4 harness helpers,
+    # and the Phase-5 automation/API endpoints. The rule is unchanged - every
+    # externally callable PCCM_ procedure is accounted for by the contract.
+    accounted = (set(data["vba"]["entry_points"])
+                 | set(data["vba"]["harness_procedures"])
+                 | set(data["vba"].get("api_procedures", [])))
     found = {
         p for m in _all_modules() for p in m.public_procedures if p.startswith("PCCM_")
     }

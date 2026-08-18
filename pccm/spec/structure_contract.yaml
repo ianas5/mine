@@ -475,6 +475,9 @@ vba:
     - name: "modCalcCheck"
       generated: false
       responsibility: "The Phase-5 numerical prerequisite checker over the resolved model: timeline, discount rate, profiling sum, three-point ordering, Quantity and Probability. Reports and refuses; never repairs."
+    - name: "modCalcReport"
+      generated: false
+      responsibility: "The Phase-5 presentation and orchestration layer: one in-memory preparation path, the transactional _Calc snapshot with verify-then-commit and rollback, the derived-status axis, and the six calculation endpoints."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.
@@ -498,6 +501,19 @@ vba:
     - "PCCM_StructuralReport"
     - "PCCM_DeleteCostLineById"
     - "PCCM_DeleteRiskById"
+
+  # The Phase-5 calculation automation/API surface. These are NOT buttons and NOT
+  # harness helpers: they are the externally callable endpoints a later Windows
+  # harness drives through Application.Run, and the two read accessors an
+  # integrator may call. Declaring them here is what keeps the orphan-macro test
+  # meaningful now that PCCM_ procedures exist outside Phase 4.
+  api_procedures:
+    - "PCCM_Calculate"
+    - "PCCM_CalculationStatus"
+    - "PCCM_CalculationAttemptResult"
+    - "PCCM_CalculationAttemptDetail"
+    - "PCCM_CalculationFingerprint"
+    - "PCCM_CurrentInputFingerprint"
 
   # Constructs that must NOT appear anywhere in Phase-4 VBA. The Linux static tests
   # assert their absence, so a later phase's functionality cannot leak in early.

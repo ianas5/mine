@@ -252,6 +252,7 @@ class StructureContract:
     vba_generated_dir: str
     vba_generated_module: str
     entry_points: list[str]
+    api_procedures: list[str]
     forbidden_constructs: list[str]
     structural_checks: list[dict[str, str]]
     source_path: Path
@@ -427,6 +428,10 @@ def load_structure_contract(path: str | Path) -> StructureContract:
         vba_generated_dir=_req_str(raw_vba, "generated_dir", f"{where}: vba"),
         vba_generated_module=_req_str(raw_vba, "generated_module", f"{where}: vba"),
         entry_points=[str(e) for e in _req(raw_vba, "entry_points", f"{where}: vba")],
+        # The Phase-5 calculation endpoints. Optional so a contract predating
+        # Phase 5 still loads; the static tests are what require them to be
+        # declared once they exist.
+        api_procedures=[str(e) for e in raw_vba.get("api_procedures", [])],
         forbidden_constructs=[
             str(c) for c in _req(raw_vba, "forbidden_constructs", f"{where}: vba")
         ],
