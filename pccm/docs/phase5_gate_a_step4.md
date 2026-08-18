@@ -1,12 +1,146 @@
 # Phase 5 — Gate A — Step 4: the pure VBA numerical kernel, as source
 
-**Status: ready for independent review.**
+**Status: CORRECTED after independent review — ready for re-review.**
 
 Step 3 is accepted and closed. This step adds three hand-written VBA modules —
 `modCalcFactors`, `modCalcAnalytical`, `modCalcFingerprint` — that implement the
 accepted Step-2 numerical semantics and the locked fingerprint encoding, plus the
 static Linux test suite that reads them, plus the narrow build plumbing that lets
 the contract declare them.
+
+---
+
+## Correction round — five blocking defects found by independent review
+
+Independent review of `7fac269` reproduced every reported static result and
+accepted the three-module architecture, the line-limit retarget, the module
+inventory, the worksheet-free boundary, the four scoped arithmetic handlers and
+the Phase-4 source preservation. It then found five blocking source defects.
+None of them was an ambiguity in the design. All five are corrected here.
+
+### 1. The fingerprint driver-record schema was wrong
+
+The submitted encoder emitted, for every driver, both `Quantity` and
+`Probability` with the inapplicable one set to `1`, and **emitted no resolved
+inflation-factor vector at all**.
+
+That conflated two different sections of the accepted plan. `Quantity = 1 for
+risks, Probability = 1 for cost lines` is the in-memory `DriverFactors` carry
+convention that the calculation and the simulation share. It is not the record
+schema. The locked schema encodes the driver's own kind-specific scalar and
+nothing for the other kind.
+
+The missing inflation vector was the more serious half: without it, a change in
+a referenced inflation factor leaves the record unchanged, and a stale result
+presents itself as current. That defeats the entire stale-results design.
+
+**Why the 366-unit reference did not catch it.** Golden case 1 has FX = 1,
+inflation factor = 1 and profile weight = 1, so its three trailing numeric
+fields are `1, 1, 1`. Substituting a `Probability` of `1` for the missing
+inflation factor of `1` produced the same stream. The masking was possible only
+because every value in that region was the identity. `test_53c` now digests the
+same record with a **non-identity** inflation factor of `1.05` and proves the
+slot is distinguishable from an identity, from its absence, and from the weight
+beside it.
+
+### 2. The exact-kernel constants were not the exact constants
+
+```
+                    submitted             correct
+TWO_52              4503599627370500      4503599627370496  = 2^52
+MAX_SIGNIFICAND     9007199254740990      9007199254740991  = 2^53 - 1
+MAX_DOUBLE          1.79769313486232E+308 1.7976931348623157E+308
+```
+
+`TWO_52` was wrong by +4 and `MAX_SIGNIFICAND` by −1. These are not
+documentation values: `DecomposeDouble` multiplies by `TWO_52` to produce an
+**integer** mantissa for the limb kernel, and `RoundExact` compares an exact
+significand against `MAX_SIGNIFICAND` to classify the `MAX_DOUBLE` boundary. The
+first fed a non-integer into the exact kernel; the second misclassified the
+largest representable Double.
+
+The `MAX_DOUBLE` literal was also mathematically **above** the true maximum, and
+a floating-point literal whose mathematical value exceeds the greatest value its
+type can represent is statically invalid. `test_57` compares the literal as an
+exact `Decimal` against `(2^53 − 1) × 2^971`, because `float()` would round the
+defect away.
+
+`MIN_NORMAL_DOUBLE` was unused and has been removed. `test_58` now fails any
+declared constant that nothing reads.
+
+### 3. The C1 magnitude structure was cleared twice
+
+`ReconciliationMagnitudes` carries both the headline A/B/C/D/E scales and the
+annual Base/Risk/Total scales, and `Reconcile` needs all of them at once. Both
+`AccumulateTotals` and `BuildAnnualSeries` began with a whole-object clear, so
+whichever ran second erased what the first had captured. **No call order could
+produce the structure `Reconcile` requires** — a real integration impossibility
+in the public pure API, not a stylistic problem.
+
+Ownership is now split. `PrepareMagnitudeCoefficient` sets the coefficient on an
+untouched record and otherwise verifies it, failing deterministically on a
+conflict rather than reinterpreting existing magnitudes against a tolerance they
+were not measured for. `ClearHeadlineMagnitudes` and `ClearAnnualMagnitudes`
+each clear their own half and leave the other alone. The result is independent of
+call order. `test_59` asserts the two halves are disjoint and together cover
+every magnitude field.
+
+### 4. An empty driver set was refused
+
+`Reconcile` began with an explicit `"no drivers"` refusal. The accepted Step-2
+oracle has `test_an_empty_driver_set_is_not_refused`, and no accepted contract
+invented a minimum-driver rule. A model with no cost lines and no risks has zero
+totals, zero annual series and no profile checks, and every identity holds. It
+now produces the ten non-I5 checks and returns success, and never reaches
+`DriverOrder`.
+
+### 5. Conditioning overflow was silently turned into zero
+
+`ConditioningScaledProduct` did `If Not ExactSumOfProducts(…) Then scaled = 0#`,
+treating **every** exact failure as an accepted underflow. C1's exception is
+narrow: a scaled term too small to represent cannot move an allowance floored at
+`coefficient × 1`, so losing it changes no answer. A magnitude **outside** Double
+range is a different fact entirely, and recording it as zero understates the
+conditioning scale — narrowing a tolerance by accident, which is no better than
+widening one.
+
+`ConditioningScaledMagnitude` compounded this by retrying `coefficient *
+magnitude` as raw arithmetic after `SafeMultiply` had already refused it.
+
+Both now go through `ExactSumOfProductsCore(…, underflowToZero:=True)`. One
+kernel, two policies, and the policy is a parameter:
+
+| | model arithmetic | C1 conditioning |
+| --- | --- | --- |
+| exact value representable | rounded result | rounded result |
+| exact value below the smallest Double | **refusal** | zero, success |
+| exact value above `MAX_DOUBLE` | **refusal** | **refusal** |
+
+`test_67` asserts the three range refusals inside `RoundExact` do not consult the
+underflow flag, so an overflow can never be relabelled as an accepted underflow.
+
+### 6. `Variant` had been added to the numerical boundary
+
+The submitted kernel used `ByRef factors As Variant`, `ByRef groups As Variant`
+and `expression() As Variant`, and the static test and this document had both
+quietly added `"Variant"` to the allowed type list. **That was not an approved
+constraint resolution**, and widening a boundary by editing the test that
+enforces it is exactly backwards.
+
+`Variant` is gone from the three modules. `SafeProduct` and
+`ConditioningScaledProduct` take `Double()` directly. Sum-of-products uses a
+flat typed vector:
+
+```vba
+ExactSumOfProducts(factors() As Double, groupStarts() As Long,
+                   groupLengths() As Long, groupCount As Long, result As Double)
+```
+
+`factors` holds every factor of every group end to end; group *g* occupies
+`groupLengths(g)` entries beginning at offset `groupStarts(g)`. Groups may differ
+in length, which the two production call sites need. `test_68` fails on any
+`As Variant` in executable code in any of the three modules, and `"Variant"` has
+been removed from `ALLOWED_PARAMETER_TYPES`.
 
 ---
 
@@ -50,11 +184,14 @@ added.
 
 | Module | Raw | Blank | Comment | Code | Code < 900 | Raw < 1200 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `modCalcFactors` | 995 | 47 | 167 | 781 | yes | yes |
-| `modCalcAnalytical` | 1098 | 62 | 210 | 826 | yes | yes |
-| `modCalcFingerprint` | 428 | 27 | 146 | 255 | yes | yes |
+| `modCalcFactors` | 1065 | 49 | 214 | 802 | yes | yes |
+| `modCalcAnalytical` | 1164 | 64 | 231 | 869 | yes | yes |
+| `modCalcFingerprint` | 485 | 28 | 175 | 282 | yes | yes |
 
-All three are below both applicable limits. A comment line is one whose first
+All three are below both applicable limits after the correction. The figures
+before it were 995/781, 1098/826 and 428/255. `modCalcAnalytical` at 869 code
+lines is the closest to a threshold, with 31 lines of headroom; the split
+magnitude ownership and the typed flat-vector construction are what consumed it. A comment line is one whose first
 non-whitespace character is the VBA apostrophe; a blank line is neither comment
 nor code.
 
@@ -104,10 +241,13 @@ first — contains none of `Application.`, `ThisWorkbook`, `ActiveWorkbook`,
 `Names(`, `Evaluate`, `WorksheetFunction`, `modWorkbook.`, `Rnd`, `Randomize`,
 `MRG32k3a`, `NPV`, `Percentile`.
 
-No parameter has an Excel object type. The only declared parameter types are
-`Double`, `Long`, `Boolean`, `String`, `Variant`, the locked carry types
-`DriverFactors` and `YearFactors`, the analytical records, and the exact kernel's
-private `ExactNumber`.
+No parameter has an Excel object type, and **no parameter or local is a
+`Variant`**. The only declared parameter types are `Double`, `Long`, `Boolean`,
+`String`, the locked carry types `DriverFactors` and `YearFactors`, the
+analytical records `DriverAudit`, `AnalyticalTotals`, `AnnualRow`,
+`ReconciliationMagnitudes` and `IdentityCheck`, and the exact kernel's private
+`ExactNumber`. Numerical factor groups are described by typed `Double()` and
+`Long()` vectors — never a `Variant`, `Collection`, `Dictionary` or `Object`.
 
 Zero procedures across the three modules begin with `PCCM_`.
 
@@ -142,8 +282,10 @@ there is a returned `False` with a diagnostic string.
 
 ## The exact kernel
 
-`LIMB_BITS = 24`, `LIMB_BASE = 16777216#`. A value is `(sign, base-2^24 limbs,
-binary shift)` held as Doubles. The module contains no `Currency`, no `Decimal`,
+`LIMB_BITS = 24`, `LIMB_BASE = 16777216#`, `TWO_52 = 4503599627370496#` (2^52),
+`MAX_SIGNIFICAND = 9007199254740991#` (2^53 − 1), `MAX_DOUBLE =
+1.7976931348623157E+308` ((2^53 − 1) × 2^971). A value is `(sign, base-2^24
+limbs, binary shift)` held as Doubles. The module contains no `Currency`, no `Decimal`,
 no `CDec`, no `CCur`, no `Eval`, no `WorksheetFunction`, no native `Mod` and no
 native `\`. The only `CLng` in the three modules narrows a hex digit, which is 0
 to 15; a test asserts that this is the sole narrowing.
@@ -294,18 +436,29 @@ by the later resolver layer, which owns the distribution vocabulary.
 
 ### The record field order
 
-The order is fixed by the Step-3 reference stream and is reproduced exactly:
+Cost and risk are NOT the same shape:
 
 ```
-S(PermanentId) S(Distribution) N(Quantity) N(Min) N(Max)
-[ N(MostLikely) ] N(Probability) N(FxToSar) N(weight)*
+COST:  S(PermanentId) S(Distribution) N(Quantity)    N(Min) N(Max)
+       [ N(MostLikely) ] N(FxToSar) N(inflation)* N(weight)*
+
+RISK:  S(PermanentId) S(Distribution) N(Probability) N(Min) N(Max)
+       [ N(MostLikely) ] N(FxToSar) N(inflation)* N(weight)*
 ```
 
-Quantity and Probability are **both** always present, and the one that does not
-apply to a kind is `1` rather than blank — a cost line carries its Quantity and a
-Probability of 1, a risk carries a Quantity of 1 and its Probability. That is the
-locked `DriverFactors` convention, and encoding a fixed `1` keeps every record the
-same shape, so a cost line and a risk cannot encode identically by losing a field.
+A cost line encodes `Quantity` and **no** `Probability` field. A risk encodes
+`Probability` and **no** `Quantity` field. The opposite kind's multiplicative
+identity is not fingerprinted at all.
+
+Both vectors are resolved and both are encoded in project-year order, inflation
+first. The inflation vector is the resolved **cumulative factor** per applied
+project year — not the profile name and not the annual rates — because that is
+what the calculation consumed. The encoder hashes exactly the vectors it is
+handed; whether their lengths match Applied Duration is the later resolver and
+check layer's question, not a pure encoder's.
+
+Most Likely appears only when `includeMostLikely` says so, and that flag is
+supplied by the caller. It is never inferred from the distribution text.
 
 ---
 
@@ -405,7 +558,7 @@ build:
 | `build/phase4_scenarios.json` | identical |
 | `build/phase5_cases.json` | identical |
 | `build/PCCM_stageA.xlsx` | every zip member identical except the two that carry the build timestamp (`docProps/core.xml` and the Build sheet cell). No structural change. |
-| `build/stage_b_manifest.json` | changed **only** by the four added module inventory entries |
+| `build/stage_b_manifest.json` | changed **only** by the four added module inventory entries, and **unchanged by the correction round** |
 
 The Stage-A post-build verifier still reports **351 passed, 0 failed**.
 
@@ -431,18 +584,43 @@ The Stage-A post-build verifier still reports **351 passed, 0 failed**.
 | `test_phase5_numeric.py` | 94 |
 | `test_phase5_oracle.py` | 111 |
 | `test_phase5_stage_a.py` | 57 |
-| `test_phase5_vba_source.py` | **59 (new)** |
-| **Total** | **1029** |
+| `test_phase5_vba_source.py` | **93** |
+| **Total** | **1063** |
 
-The baseline was 967. The increase is 59 new static tests plus 3 from splitting
-one retargeted validation test into three and adding an inventory assertion. **No
+The pre-review baseline was 967 and the first Step-4 submission was 1029. The
+correction adds 34 more static tests, all in `test_phase5_vba_source.py`. **No
 test was removed, and no test was weakened to make the patch pass.**
 
-### The twelve negative controls
+### Discrimination against the defective commit
+
+Run unchanged against `7fac269`, the corrected suite produces **23 failures**,
+covering every defect class:
+
+| Defect | Failing tests |
+| --- | --- |
+| wrong cost/risk record schema | `test_48`, `test_49`, `test_50` |
+| missing inflation-factor vector | `test_51`, `test_52`, `test_53` |
+| caller-selected fingerprint version | `test_54`, `test_55` |
+| wrong `TWO_52` / `MAX_SIGNIFICAND` / `MAX_DOUBLE` | `test_56`, `test_57` |
+| unused approximate constant | `test_58` |
+| whole-object magnitudes clear | `test_59`, `test_60`, `test_61` |
+| explicit no-driver refusal | `test_62` |
+| conditioning failure turned into zero | `test_64`, `test_65`, `test_66` |
+| `Variant` numerical containers | `test_06`, `test_68`, `test_69`, `test_70` |
+| private versioned builder | `test_37` |
+
+`test_67` (an overflow cannot be relabelled an accepted underflow) and
+`test_53b`/`test_53c` (the schema positions are distinguishable) are standing
+invariants rather than discriminators; the defects they guard are caught by the
+tests above.
+
+### The twenty-two negative controls
 
 `tests/test_phase5_vba_source.py` plants twelve defects in synthetic module text
 and asserts the sweep that exists to catch each one does catch it. A sweep that
 had silently stopped working would pass every positive test and fail these.
+
+**The original twelve:**
 
 1. a host call (`Application.Sum`)
 2. a workbook read (`ThisWorkbook.Worksheets(…).Range(…)`)
@@ -457,7 +635,20 @@ had silently stopped working would pass every positive test and fail these.
 11. a hard-coded modulus literal in fingerprint code
 12. accidental Public API growth
 
-A thirteenth check runs the other way: a comment that mentions `Application.` and
+**Ten more for the review-discovered defects:**
+
+13. `Probability` reintroduced into a cost record
+14. the inflation vector dropped
+15. the inflation and weight loops swapped
+16. a caller-selected fingerprint version
+17. a rounded `TWO_52` / `MAX_SIGNIFICAND`
+18. a `MAX_DOUBLE` literal above the representable maximum
+19. a whole-object magnitude clear
+20. an explicit no-driver refusal
+21. an exact failure turned into a zero
+22. a `Variant` numerical container
+
+A further check runs the other way: a comment that mentions `Application.` and
 `Worksheets` must **not** be reported, which is what proves the sweeps read code
 and not commentary.
 
@@ -488,12 +679,24 @@ Two `modCalcFactors` procedures are Public specifically because
   finite. Only the exact kernel can fold the coefficient into that factor
   expression, and C1 requires the magnitude to be recorded anyway.
 
+`CalcFpNumberField` is Public alongside `CalcFpCanonicalNumber` because the N
+field is the only field whose encoding can fail, and Gate B compares the
+canonical *text* of the ten locked numeric vectors rather than their framed
+fields. `CalcFpBuildVersionedFingerprint` is **Private**: the version is
+injectable only so a future migration can express the grammar for a version
+other than the current one, and production has exactly one entry point, which
+reads `FP_VERSION` from `modCalcContract`.
+
 ---
 
 ## Provenance
 
 Direction of authority is unchanged: the accepted plan and the tested Python
-oracle define the semantics, and the VBA implements them. Nothing in the Python
+oracle define the semantics, and the VBA implements them. The correction round
+changed VBA source and static tests only. `calc_fingerprint.py`,
+`calc_numeric.py`, `calc_oracle.py`, `calc_cases.py` and `calc_contract.yaml`
+are untouched, and the reference digest `50B6EB0E26857EA7` over 366 UTF-16 code
+units is unchanged — `test_53b` recomputes it under the corrected schema. Nothing in the Python
 oracle, `calc_contract.yaml`, `calc_fingerprint.py`, `calc_numeric.py`,
 `calc_oracle.py`, `calc_cases.py` or `build/phase5_cases.json` was changed to make
 the VBA easier to write.

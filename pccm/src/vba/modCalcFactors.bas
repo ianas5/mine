@@ -22,16 +22,32 @@ Option Explicit
 ' rounds once.
 ' ==========================================================================
 
-Public Const MAX_DOUBLE As Double = 1.79769313486232E+308
-Private Const MIN_NORMAL_DOUBLE As Double = 2.2250738585072E-308
+' The EXACT IEEE-754 binary64 boundaries. These are not documentation values
+' rounded for readability, and they may not be approximated:
+'
+'   TWO_52          = 2^52        = 4503599627370496
+'   MAX_SIGNIFICAND = 2^53 - 1    = 9007199254740991
+'   MAX_DOUBLE      = (2^53 - 1) * 2^971
+'
+' DecomposeDouble multiplies a normalised magnitude by TWO_52 to produce an
+' INTEGER mantissa, and RoundExact compares an exact significand against
+' MAX_SIGNIFICAND to classify the MAX_DOUBLE boundary. A constant off by four
+' feeds a non-integer into the limb kernel; a constant off by one misclassifies
+' the largest representable Double.
+'
+' The MAX_DOUBLE literal is the accepted 17-significant-digit form. Its
+' mathematical value is just BELOW the true maximum and rounds up to it, so the
+' literal is itself inside the valid Double range - a literal whose
+' mathematical value exceeded the maximum would be statically invalid.
+Public Const MAX_DOUBLE As Double = 1.7976931348623157E+308
 
 ' Base 2^24 keeps every limb product below 2^48 and every running limb-plus-
 ' carry expression below 2^49, comfortably inside the 53-bit exact integer
 ' range of a Double. Nothing here relies on extended precision.
 Private Const LIMB_BITS As Long = 24
 Private Const LIMB_BASE As Double = 16777216#
-Private Const TWO_52 As Double = 4503599627370500#
-Private Const MAX_SIGNIFICAND As Double = 9007199254740990#
+Private Const TWO_52 As Double = 4503599627370496#
+Private Const MAX_SIGNIFICAND As Double = 9007199254740991#
 Private Const MAX_EXPONENT As Long = 971
 Private Const MIN_SUBNORMAL_EXPONENT As Long = -1074
 Private Const GUARD_BITS As Long = 64
@@ -568,7 +584,8 @@ Private Sub CombineMagnitudes(ByRef positive As ExactNumber, ByRef negative As E
     total.Shift = smallest
 End Sub
 
-Private Function ExactProductOf(ByRef factors() As Double, _
+Private Function ExactProductOf(ByRef factors() As Double, ByVal first As Long, _
+                                ByVal count As Long, _
                                 ByRef product As ExactNumber) As Boolean
     ' The mantissas multiply as integers and the exponents add, so the product
     ' is exact however far outside Double range it lands - which is what makes
@@ -579,7 +596,7 @@ Private Function ExactProductOf(ByRef factors() As Double, _
     ExactInit running, 3
     running.Sign = 1
     running.Limbs(0) = 1#
-    For index = LBound(factors) To UBound(factors)
+    For index = first To first + count - 1
         If Not DecomposeDouble(factors(index), sign, mantissa, exponent) Then Exit Function
         If sign = 0 Then
             ExactInit product, 1
@@ -628,24 +645,22 @@ Public Function SafeSignedSum(ByRef terms() As Double, ByRef result As Double) A
     SafeSignedSum = RoundExact(exact, result, False, False)
 End Function
 
-Public Function SafeProduct(ByRef factors As Variant, ByRef result As Double) As Boolean
+Public Function SafeProduct(ByRef factors() As Double, ByRef result As Double) As Boolean
     ' Tier 1 is left to right. Tier 2 is the EXACT product, not a reordering: a
     ' magnitude-balanced order proves nothing about whether the exact product is
     ' in range, and was shown to accept one that exceeds MAX_DOUBLE while
     ' refusing one that rounds to 5e-324.
-    Dim values() As Double
     Dim index As Long, running As Double, ok As Boolean, anyZero As Boolean
     Dim negatives As Long, exact As ExactNumber
-    values = AsDoubleArray(factors)
-    If UBound(values) < LBound(values) Then
+    If UBound(factors) < LBound(factors) Then
         result = 1#
         SafeProduct = True
         Exit Function
     End If
-    For index = LBound(values) To UBound(values)
-        If Not IsUsableDouble(values(index)) Then Exit Function
-        If values(index) = 0# Then anyZero = True
-        If values(index) < 0# Then negatives = negatives + 1
+    For index = LBound(factors) To UBound(factors)
+        If Not IsUsableDouble(factors(index)) Then Exit Function
+        If factors(index) = 0# Then anyZero = True
+        If factors(index) < 0# Then negatives = negatives + 1
     Next index
     If anyZero Then
         ' An exact zero makes the product exactly zero; no ordering changes that
@@ -656,8 +671,8 @@ Public Function SafeProduct(ByRef factors As Variant, ByRef result As Double) As
     End If
     running = 1#
     ok = True
-    For index = LBound(values) To UBound(values)
-        If Not SafeMultiply(running, values(index), running) Then
+    For index = LBound(factors) To UBound(factors)
+        If Not SafeMultiply(running, factors(index), running) Then
             ok = False
             Exit For
         End If
@@ -667,11 +682,13 @@ Public Function SafeProduct(ByRef factors As Variant, ByRef result As Double) As
         SafeProduct = True
         Exit Function
     End If
-    If Not ExactProductOf(values, exact) Then Exit Function
+    If Not ExactProductOf(factors, LBound(factors), _
+                          UBound(factors) - LBound(factors) + 1, exact) Then Exit Function
     SafeProduct = RoundExact(exact, result, False, False)
 End Function
 
-Public Function ExactSumOfProducts(ByRef groups As Variant, _
+Public Function ExactSumOfProducts(ByRef factors() As Double, ByRef groupStarts() As Long, _
+                                   ByRef groupLengths() As Long, ByVal groupCount As Long, _
                                    ByRef result As Double) As Boolean
     ' SUM over groups of PRODUCT of factors, formed exactly - including a
     ' product that has no Double of its own - and rounded once at the end.
@@ -680,18 +697,54 @@ Public Function ExactSumOfProducts(ByRef groups As Variant, _
     ' SUM_y (FX * w_y * infl_y), the same number as FX * SUM_y (w_y * infl_y),
     ' but in this form w_y * infl_y may be wider than a Double while Knom is
     ' not. A per-driver annual contribution is the same story.
+    '
+    ' THE GROUPS ARE A FLAT TYPED VECTOR. `factors` holds every factor of every
+    ' group end to end; group g occupies groupLengths(g) entries beginning at
+    ' offset groupStarts(g) from LBound(factors). Groups may differ in length.
+    ' Nothing here is a Variant, a Collection or an Object: a numerical kernel
+    ' whose container can hold anything has given up the type checking that
+    ' catches a wrong shape before Windows does.
+    ExactSumOfProducts = ExactSumOfProductsCore(factors, groupStarts, groupLengths, _
+                                                groupCount, False, result)
+End Function
+
+Private Function ExactSumOfProductsCore(ByRef factors() As Double, ByRef groupStarts() As Long, _
+                                        ByRef groupLengths() As Long, ByVal groupCount As Long, _
+                                        ByVal underflowToZero As Boolean, _
+                                        ByRef result As Double) As Boolean
+    ' ONE implementation, TWO underflow policies, and the difference is a
+    ' parameter rather than a second kernel.
+    '
+    ' underflowToZero = False  model arithmetic. A value below the smallest
+    '                          Double is a refusal, because deleting a real
+    '                          contribution with no error anywhere is the
+    '                          silent failure this whole design exists to
+    '                          prevent.
+    ' underflowToZero = True   C1 conditioning metadata. A scaled term too
+    '                          small to represent cannot move an allowance
+    '                          floored at coefficient * 1, so losing it changes
+    '                          no answer.
+    '
+    ' OVERFLOW IS A FAILURE UNDER BOTH POLICIES. RoundExact refuses an exact
+    ' value above MAX_DOUBLE whatever this flag says, so a conditioning scale
+    ' outside Double range is reported and never quietly recorded as zero.
     Dim index As Long, sign As Long, smallest As Long, largest As Long
-    Dim seen As Boolean, count As Long, top As Long
+    Dim seen As Boolean, count As Long, top As Long, first As Long
     Dim term As ExactNumber, positive As ExactNumber, negative As ExactNumber
     Dim total As ExactNumber
-    Dim shifts() As Long, tops() As Long
-    ReDim shifts(0 To UBound(groups) - LBound(groups))
-    ReDim tops(0 To UBound(groups) - LBound(groups))
-    For index = LBound(groups) To UBound(groups)
-        If Not ExactProductOf(AsDoubleArray(groups(index)), term) Then Exit Function
+    Dim tops() As Long
+    If groupCount < 1 Then
+        result = 0#
+        ExactSumOfProductsCore = True
+        Exit Function
+    End If
+    ReDim tops(0 To groupCount - 1)
+    For index = 0 To groupCount - 1
+        first = LBound(factors) + groupStarts(LBound(groupStarts) + index)
+        If Not ExactProductOf(factors, first, groupLengths(LBound(groupLengths) + index), _
+                              term) Then Exit Function
         top = ExactTopBit(term)
-        shifts(index - LBound(groups)) = term.Shift
-        tops(index - LBound(groups)) = top
+        tops(index) = top
         If top >= 0 Then
             If Not seen Then
                 smallest = term.Shift: largest = term.Shift + top: seen = True
@@ -703,15 +756,17 @@ Public Function ExactSumOfProducts(ByRef groups As Variant, _
     Next index
     If Not seen Then
         result = 0#
-        ExactSumOfProducts = True
+        ExactSumOfProductsCore = True
         Exit Function
     End If
     count = Fix((largest - smallest) / LIMB_BITS) + 6
     ExactInit positive, count
     ExactInit negative, count
-    For index = LBound(groups) To UBound(groups)
-        If ExactProductOf(AsDoubleArray(groups(index)), term) Then
-            If tops(index - LBound(groups)) >= 0 Then
+    For index = 0 To groupCount - 1
+        If tops(index) >= 0 Then
+            first = LBound(factors) + groupStarts(LBound(groupStarts) + index)
+            If ExactProductOf(factors, first, groupLengths(LBound(groupLengths) + index), _
+                              term) Then
                 sign = term.Sign
                 AddExactShifted positive, negative, sign, term, term.Shift - smallest
             End If
@@ -720,10 +775,20 @@ Public Function ExactSumOfProducts(ByRef groups As Variant, _
     CombineMagnitudes positive, negative, smallest, total
     If total.Sign = 0 Then
         result = 0#
-        ExactSumOfProducts = True
+        ExactSumOfProductsCore = True
         Exit Function
     End If
-    ExactSumOfProducts = RoundExact(total, result, False, False)
+    ExactSumOfProductsCore = RoundExact(total, result, False, underflowToZero)
+End Function
+
+Private Function SingleGroup(ByRef factors() As Double, ByRef starts() As Long, _
+                             ByRef lengths() As Long) As Long
+    ' The flat description of one group covering the whole of `factors`.
+    ReDim starts(0 To 0)
+    ReDim lengths(0 To 0)
+    starts(0) = 0
+    lengths(0) = UBound(factors) - LBound(factors) + 1
+    SingleGroup = 1
 End Function
 
 Private Sub AddExactShifted(ByRef positive As ExactNumber, ByRef negative As ExactNumber, _
@@ -765,15 +830,6 @@ Public Function ExactQuotientOfSum(ByRef terms() As Double, ByVal divisor As Dou
     Next index
     remainder = ExactDivideSmall(guarded, divisor, quotient)
     ExactQuotientOfSum = RoundExact(quotient, result, remainder <> 0#, False)
-End Function
-
-Private Function AsDoubleArray(ByRef source As Variant) As Double()
-    Dim out() As Double, index As Long
-    ReDim out(LBound(source) To UBound(source))
-    For index = LBound(source) To UBound(source)
-        out(index) = CDbl(source(index))
-    Next index
-    AsDoubleArray = out
 End Function
 
 ' ==========================================================================
@@ -875,14 +931,16 @@ Private Function BuildFactor(ByVal fxRate As Double, ByRef weights() As Double, 
     ' boundary; Knom is published, so it is.
     Dim index As Long, count As Long, ok As Boolean
     Dim terms() As Double, staged As Double, scaled As Double
-    Dim groups() As Variant, group() As Double
+    Dim group() As Double, width As Long
+    Dim flat() As Double, starts() As Long, lengths() As Long
     detail = vbNullString
     count = UBound(weights) - LBound(weights) + 1
     If count < 1 Then Exit Function
     ReDim terms(0 To count - 1)
+    If withDiscount Then width = 3 Else width = 2
+    ReDim group(0 To width - 1)
     ok = True
     For index = 0 To count - 1
-        ReDim group(0 To 1 + IIf(withDiscount, 1, 0))
         group(0) = weights(LBound(weights) + index)
         group(1) = inflation(LBound(inflation) + index)
         If withDiscount Then group(2) = discount(LBound(discount) + index)
@@ -902,17 +960,22 @@ Private Function BuildFactor(ByVal fxRate As Double, ByRef weights() As Double, 
             End If
         End If
     End If
-    ReDim groups(0 To count - 1)
+    ' The exact expression as a FLAT TYPED VECTOR: FX distributed into every
+    ' group, project year by project year.
+    width = width + 1
+    ReDim flat(0 To count * width - 1)
+    ReDim starts(0 To count - 1)
+    ReDim lengths(0 To count - 1)
     For index = 0 To count - 1
-        ReDim group(0 To 2 + IIf(withDiscount, 1, 0))
-        group(0) = fxRate
-        group(1) = weights(LBound(weights) + index)
-        group(2) = inflation(LBound(inflation) + index)
-        If withDiscount Then group(3) = discount(LBound(discount) + index)
-        groups(index) = group
+        starts(index) = index * width
+        lengths(index) = width
+        flat(index * width) = fxRate
+        flat(index * width + 1) = weights(LBound(weights) + index)
+        flat(index * width + 2) = inflation(LBound(inflation) + index)
+        If withDiscount Then flat(index * width + 3) = discount(LBound(discount) + index)
     Next index
     detail = "compound factor expression"
-    If ExactSumOfProducts(groups, result) Then
+    If ExactSumOfProducts(flat, starts, lengths, count, result) Then
         detail = vbNullString
         BuildFactor = True
     End If
@@ -930,49 +993,56 @@ Public Function ConditioningScaledMagnitude(ByRef accumulator As Double, _
                                             ByVal coefficient As Double) As Boolean
     ' Underflow policy here is deliberately different from model arithmetic: a
     ' scaled term below roughly 5e-312 cannot move an allowance floored at
-    ' coefficient * 1, so losing it changes no answer. Overflow is still a
-    ' failure, because an allowance outside Double range cannot be compared
-    ' against.
+    ' coefficient * 1, so losing it changes no answer. OVERFLOW IS STILL A
+    ' FAILURE, because an allowance outside Double range cannot be compared
+    ' against - and the two must be told apart by the exact kernel, never by
+    ' repeating the multiplication that already failed and hoping.
     Dim magnitude As Double, scaled As Double
+    Dim group(0 To 1) As Double
     If Not IsUsableDouble(term) Then Exit Function
     magnitude = term
     If magnitude < 0# Then magnitude = -magnitude
     If Not SafeMultiply(coefficient, magnitude, scaled) Then
-        ' Only an underflow to zero is tolerated; overflow is still a failure.
-        scaled = coefficient * magnitude
-        If Not IsUsableDouble(scaled) Then Exit Function
-        If scaled <> 0# Then Exit Function
+        group(0) = coefficient
+        group(1) = magnitude
+        If Not ConditioningScaledExact(group, scaled) Then Exit Function
     End If
     ConditioningScaledMagnitude = SafeAccumulate(accumulator, scaled)
 End Function
 
 Public Function ConditioningScaledProduct(ByRef accumulator As Double, _
-                                          ByRef factors As Variant, _
+                                          ByRef factors() As Double, _
                                           ByVal coefficient As Double) As Boolean
     ' The same magnitude for a contribution that has NO Double of its own. The
     ' quantity C1 needs is coefficient * |contribution|, which is finite even
     ' where the contribution is 2 * MAX_DOUBLE, so the coefficient is folded
     ' into the SAME exact factor expression rather than forcing the unscaled
     ' contribution into a Double first.
-    Dim values() As Double, group() As Double, groups() As Variant
-    Dim index As Long, scaled As Double
-    values = AsDoubleArray(factors)
-    ReDim group(0 To UBound(values) - LBound(values) + 1)
+    Dim group() As Double, index As Long, scaled As Double
+    ReDim group(0 To UBound(factors) - LBound(factors) + 1)
     group(0) = coefficient
-    For index = LBound(values) To UBound(values)
-        If values(index) < 0# Then
-            group(index - LBound(values) + 1) = -values(index)
+    For index = LBound(factors) To UBound(factors)
+        If factors(index) < 0# Then
+            group(index - LBound(factors) + 1) = -factors(index)
         Else
-            group(index - LBound(values) + 1) = values(index)
+            group(index - LBound(factors) + 1) = factors(index)
         End If
     Next index
-    ReDim groups(0 To 0)
-    groups(0) = group
-    If Not ExactSumOfProducts(groups, scaled) Then
-        ' Only an underflow of the metadata term is tolerated; see above.
-        scaled = 0#
-    End If
+    If Not ConditioningScaledExact(group, scaled) Then Exit Function
     ConditioningScaledProduct = SafeAccumulate(accumulator, scaled)
+End Function
+
+Private Function ConditioningScaledExact(ByRef group() As Double, _
+                                         ByRef scaled As Double) As Boolean
+    ' The exact value of one conditioning group, under the conditioning
+    ' underflow policy. A True result means the magnitude is either
+    ' representable or provably too small to matter; a False result means it is
+    ' OUTSIDE Double range, and the caller must report that rather than record
+    ' a zero it did not measure.
+    Dim starts() As Long, lengths() As Long, groupCount As Long
+    groupCount = SingleGroup(group, starts, lengths)
+    ConditioningScaledExact = ExactSumOfProductsCore(group, starts, lengths, groupCount, _
+                                                     True, scaled)
 End Function
 
 Public Function IdentityAllowance(ByVal scale As Double, ByVal absoluteFloor As Double, _

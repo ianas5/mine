@@ -70,8 +70,11 @@ BOUNDARY_TOKENS = (
 
 # Types a kernel parameter may have. Anything else - and in particular any Excel
 # object - is refused.
+# VARIANT IS NOT ON THIS LIST. The pure numerical modules are typed end to end:
+# a container that can hold anything gives up the type checking that would catch
+# a wrong numerical shape here rather than on Windows.
 ALLOWED_PARAMETER_TYPES = {
-    "Double", "Long", "Boolean", "String", "Variant",
+    "Double", "Long", "Boolean", "String",
     # The locked carry types and the module-local records.
     "DriverFactors", "YearFactors", "DriverAudit", "AnalyticalTotals",
     "AnnualRow", "ReconciliationMagnitudes", "IdentityCheck",
@@ -630,7 +633,7 @@ def test_36_the_record_builders_take_the_most_likely_flag_from_their_caller() ->
 
 
 def test_37_the_records_are_sorted_by_permanent_id_before_hashing() -> None:
-    body = _procedure_body(_kernel()["modCalcFingerprint"], "CalcFpBuildFingerprint")
+    body = _procedure_body(_kernel()["modCalcFingerprint"], "CalcFpBuildVersionedFingerprint")
     assert body.count("CalcFpSortedRecords(") == 2, (
         "both the cost and the risk section must be ordered"
     )
@@ -886,6 +889,590 @@ def test_nc_12_public_api_growth_is_caught() -> None:
         _STUB + "Public Function ExactTopBit() As Long\n    ExactTopBit = 0\nEnd Function\n",
     )
     assert set(planted.public_procedures) - FACTORS_PUBLIC == {"ExactTopBit"}
+
+
+# ===========================================================================
+# 13. REVIEW-DISCOVERED DEFECTS
+#
+# Every test in this section fails against the source as first submitted. Each
+# inspects a declaration or an executable body; none searches for a reassuring
+# comment.
+# ===========================================================================
+def _vba_constant(module: VbaModule, name: str) -> float:
+    """The value of a `Const <name> As Double = <literal>`, as a Python float."""
+    return float(_vba_constant_literal(module, name))
+
+
+def _vba_constant_literal(module: VbaModule, name: str) -> str:
+    """The literal text of a Double constant, with VBA's type suffix removed."""
+    for line in module.code_without_string_removal.splitlines():
+        match = re.match(
+            rf"^\s*(?:Public|Private)\s+Const\s+{name}\s+As\s+Double\s*=\s*(\S+)", line
+        )
+        if match:
+            return match.group(1).rstrip("#!@")
+    raise AssertionError(f"{module.name} does not declare {name} As Double")
+
+
+def number_field_arguments(module: VbaModule, procedure: str) -> list[str]:
+    """The first argument of every `CalcFpNumberField` call, in source order."""
+    body = _procedure_body(module, procedure)
+    return [m.group(1).strip() for m in re.finditer(r"CalcFpNumberField\(([^,]+),", body)]
+
+
+def text_field_arguments(module: VbaModule, procedure: str) -> list[str]:
+    body = _procedure_body(module, procedure)
+    return [m.group(1).strip() for m in re.finditer(r"CalcFpCanonicalText\(([^,)]+)\)", body)]
+
+
+def variant_declarations(module: VbaModule) -> list[str]:
+    """Every `As Variant` in executable code, by line number."""
+    return [
+        f"{module.name}:{number}"
+        for number, statement in logical_statements(module.code)
+        if re.search(r"\bAs\s+Variant\b", statement)
+    ]
+
+
+def cleared_fields(module: VbaModule, procedure: str) -> set[str]:
+    """The magnitude fields a clear routine assigns by name."""
+    body = _procedure_body(module, procedure)
+    return {
+        match.group(1)
+        for match in re.finditer(r"^\s*magnitudes\.(\w+)\s*=\s*0#\s*$", body, re.MULTILINE)
+    }
+
+
+def swallowed_failure_statements(module: VbaModule, procedure: str) -> list[str]:
+    """Statements that turn a failed exact evaluation straight into a zero.
+
+    `If Not Exact…(…) Then <var> = 0` treats EVERY exact failure as an accepted
+    underflow, including an overflow. That understates a conditioning scale
+    without saying so.
+    """
+    statements = [text for _, text in logical_statements(_procedure_body(module, procedure))]
+    hits: list[str] = []
+    for index, statement in enumerate(statements):
+        if not re.match(r"^If Not \w*Exact\w*\(.*\) Then", statement):
+            continue
+        tail = statement.split("Then", 1)[1].strip()
+        follow = tail or (statements[index + 1] if index + 1 < len(statements) else "")
+        if re.match(r"^\w+ = 0#?$", follow):
+            hits.append(statement)
+    return hits
+
+
+# --- 13.1 the fingerprint driver-record schema -----------------------------
+def test_48_the_shared_record_builder_emits_the_locked_field_order() -> None:
+    """ID, Distribution, ONE kind-specific scalar, Min, Max, [ML], FX, inflation
+    factors, then profile weights."""
+    module = _kernel()["modCalcFingerprint"]
+    assert text_field_arguments(module, "CalcFpBuildDriverRecord") == [
+        "permanentId", "distribution",
+    ]
+    assert number_field_arguments(module, "CalcFpBuildDriverRecord") == [
+        "kindScalar",
+        "minValue",
+        "maxValue",
+        "mostLikely",
+        "fxToSar",
+        "inflationFactors(LBound(inflationFactors) + index)",
+        "weights(LBound(weights) + index)",
+    ]
+
+
+def test_49_a_cost_record_carries_quantity_and_no_probability() -> None:
+    """The opposite kind's multiplicative identity is NOT fingerprinted.
+
+    `Quantity = 1 for risks, Probability = 1 for cost lines` is the in-memory
+    DriverFactors carry convention that the calculation and the simulation share.
+    It is not the record schema, and writing an identity into the stream would put
+    a field in the record that the locked grammar does not have.
+    """
+    module = _kernel()["modCalcFingerprint"]
+    signature = _signature(module, "CalcFpBuildCostRecord")
+    assert "quantity As Double" in signature
+    assert "probability" not in signature.lower()
+    body = _procedure_body(module, "CalcFpBuildCostRecord")
+    assert "quantity" in body
+    assert not re.search(r"\bprobability\b", body, re.IGNORECASE)
+    assert not re.search(r",\s*1#\s*,", body), "a cost record must not encode an identity field"
+
+
+def test_50_a_risk_record_carries_probability_and_no_quantity() -> None:
+    module = _kernel()["modCalcFingerprint"]
+    signature = _signature(module, "CalcFpBuildRiskRecord")
+    assert "probability As Double" in signature
+    assert "quantity" not in signature.lower()
+    body = _procedure_body(module, "CalcFpBuildRiskRecord")
+    assert "probability" in body
+    assert not re.search(r"\bquantity\b", body, re.IGNORECASE)
+    assert not re.search(r",\s*1#\s*,", body), "a risk record must not encode an identity field"
+
+
+def test_51_both_record_builders_take_the_resolved_inflation_factor_vector() -> None:
+    """Without it, a change in a referenced inflation factor leaves the record
+    unchanged - and a stale result presents itself as current."""
+    module = _kernel()["modCalcFingerprint"]
+    for name in ("CalcFpBuildCostRecord", "CalcFpBuildRiskRecord",
+                 "CalcFpBuildDriverRecord"):
+        signature = _signature(module, name)
+        assert "inflationFactors() As Double" in signature, f"{name} lacks the vector"
+        assert "weights() As Double" in signature, f"{name} lacks the weight vector"
+
+
+def test_52_inflation_factors_are_encoded_before_the_profile_weights() -> None:
+    """Two vectors of the same length in the same record: order is the schema."""
+    arguments = number_field_arguments(_kernel()["modCalcFingerprint"],
+                                       "CalcFpBuildDriverRecord")
+    inflation = next(i for i, a in enumerate(arguments) if a.startswith("inflationFactors"))
+    weight = next(i for i, a in enumerate(arguments) if a.startswith("weights"))
+    assert inflation < weight, "the inflation vector must precede the weight vector"
+
+
+def test_53_the_record_length_accounts_for_both_vectors() -> None:
+    """The field array is sized from both counts, so neither can be dropped
+    silently."""
+    body = _procedure_body(_kernel()["modCalcFingerprint"], "CalcFpBuildDriverRecord")
+    assert "inflationCount = UBound(inflationFactors) - LBound(inflationFactors) + 1" in body
+    assert "weightCount = UBound(weights) - LBound(weights) + 1" in body
+    assert "ReDim fields(0 To 5 + inflationCount + weightCount)" in body
+
+
+# --- 13.1b the schema positions must be distinguishable --------------------
+# These two tests compute with the accepted PYTHON reference implementation, which
+# owns the encoding. They make no statement about VBA: they establish properties
+# of the locked stream that the VBA schema above is written to reproduce, and
+# they are here because the defect they guard was a schema defect.
+def _reference_cost_fields(inflation: float, weight: float) -> tuple:
+    """Golden case 1's cost record under the LOCKED schema."""
+    from pccm_builder import calc_fingerprint as fp
+
+    return (
+        fp.text_field("Triangular"),
+        fp.number_field(10), fp.number_field(80), fp.number_field(150),
+        fp.number_field(100),
+        fp.number_field(1),                 # resolved FX
+        fp.number_field(inflation),         # resolved inflation factor
+        fp.number_field(weight),            # profiling weight
+    )
+
+
+def test_53b_the_one_year_reference_stream_is_unchanged_by_the_correct_schema() -> None:
+    """366 UTF-16 code units and the locked digest, still.
+
+    Golden case 1 has FX = 1, inflation factor = 1 and weight = 1, so its three
+    trailing numeric fields are `1, 1, 1` under the locked schema - which is
+    exactly why substituting a Probability of 1 for the missing inflation factor
+    could hide inside it. Restoring the correct field restores the same stream.
+    """
+    from pccm_builder import calc_fingerprint as fp
+    from pccm_builder.calc_loader import load_calc_contract
+
+    version = load_calc_contract(PCCM_ROOT / "spec" / "calc_contract.yaml").fingerprint_version
+    stream = fp.build_canonical_stream(
+        version=version,
+        header_fields=[fp.number_field(2026), fp.number_field(2026),
+                       fp.number_field(1), fp.number_field(0.10)],
+        cost_records=[fp.DriverRecord("CL-001", _reference_cost_fields(1, 1))],
+    )
+    assert fp.utf16_length(stream) == 366
+    assert fp.fingerprint(stream) == "50B6EB0E26857EA7"
+
+
+def test_53c_a_non_identity_inflation_factor_cannot_be_confused_with_anything() -> None:
+    """The masking was only possible because every trailing value was 1.
+
+    With a real inflation factor in the slot, a record that dropped it - or that
+    put something else there - encodes to a different digest. This is the property
+    the one-year fixture could not demonstrate.
+    """
+    from pccm_builder import calc_fingerprint as fp
+
+    def digest(fields: tuple) -> str:
+        return fp.fingerprint(
+            fp.encode_section("X", [(fp.text_field("CL-001"),) + fields])
+        )
+
+    correct = digest(_reference_cost_fields(1.05, 1))
+    identity_substituted = digest(_reference_cost_fields(1, 1))
+    dropped = digest(_reference_cost_fields(1.05, 1)[:6] + _reference_cost_fields(1.05, 1)[7:])
+    swapped = digest(
+        _reference_cost_fields(1.05, 1)[:6]
+        + (_reference_cost_fields(1.05, 1)[7], _reference_cost_fields(1.05, 1)[6])
+    )
+    assert len({correct, identity_substituted, dropped, swapped}) == 4, (
+        "the inflation slot must be distinguishable from an identity, from its "
+        "absence, and from the weight beside it"
+    )
+
+
+# --- 13.2 the fingerprint version authority --------------------------------
+def test_54_the_production_fingerprint_builder_reads_fp_version() -> None:
+    module = _kernel()["modCalcFingerprint"]
+    signature = _signature(module, "CalcFpBuildFingerprint")
+    assert "version As Long" not in signature, (
+        "a caller must not be able to select the fingerprint algorithm version"
+    )
+    assert "FP_VERSION" in _procedure_body(module, "CalcFpBuildFingerprint")
+
+
+def test_55_the_version_injecting_builder_is_private() -> None:
+    """Injectable only for a future migration that compares two encodings."""
+    module = _kernel()["modCalcFingerprint"]
+    assert "CalcFpBuildVersionedFingerprint" in module.procedures
+    assert "CalcFpBuildVersionedFingerprint" not in module.public_procedures
+
+
+# --- 13.3 the exact binary constants ---------------------------------------
+def test_56_the_kernel_constants_are_the_exact_ieee_boundaries() -> None:
+    """Compared against the accepted Python authority AND against exact integers.
+
+    These are used by decomposition, by MAX_DOUBLE boundary classification and by
+    ties-to-even rounding. They are not documentation values.
+    """
+    from pccm_builder import calc_numeric
+
+    module = _kernel()["modCalcFactors"]
+    assert _vba_constant(module, "TWO_52") == calc_numeric._TWO_52
+    assert _vba_constant(module, "TWO_52") == float(2 ** 52)
+    assert _vba_constant(module, "MAX_SIGNIFICAND") == calc_numeric._MAX_SIGNIFICAND
+    assert _vba_constant(module, "MAX_SIGNIFICAND") == float(2 ** 53 - 1)
+    assert _vba_constant(module, "MAX_DOUBLE") == calc_numeric.MAX_DOUBLE
+    assert _vba_constant(module, "MAX_DOUBLE") == float((2 ** 53 - 1) * 2 ** 971)
+
+
+def test_57_the_max_double_literal_is_itself_inside_the_double_range() -> None:
+    """A floating-point literal whose MATHEMATICAL value exceeds the greatest
+    value representable by its type is statically invalid.
+
+    `float()` would hide this by rounding, so the literal is compared as an exact
+    decimal against the exact binary maximum.
+    """
+    from decimal import Decimal
+
+    literal = _vba_constant_literal(_kernel()["modCalcFactors"], "MAX_DOUBLE")
+    assert Decimal(literal) <= Decimal((2 ** 53 - 1) * 2 ** 971), (
+        f"the literal {literal} is above the largest representable Double"
+    )
+
+
+def test_58_no_unused_approximate_constant_survives() -> None:
+    """A drafted constant that nothing uses is a number nothing checks.
+
+    Counted across all three kernel modules, because a `Public Const` is
+    deliberately declared where it is defined and used where it is needed - the
+    distribution vocabulary lives with the carry type and is read by the
+    analytical layer.
+    """
+    everywhere = "\n".join(module.code for module in _kernel().values())
+    for name, module in _kernel().items():
+        for constant in module.constants:
+            uses = len(re.findall(rf"(?<![\w.]){constant}(?![\w])", everywhere))
+            assert uses > 1, f"{name} declares {constant} but nothing uses it"
+
+
+# --- 13.4 C1 magnitude ownership -------------------------------------------
+def test_59_the_two_magnitude_producers_clear_disjoint_halves() -> None:
+    """One structure, two producers, and therefore two ownerships.
+
+    A whole-object clear in each would make a complete structure unreachable:
+    whichever ran second would erase what the first captured, and Reconcile needs
+    both halves at once.
+    """
+    module = _kernel()["modCalcAnalytical"]
+    headline = cleared_fields(module, "ClearHeadlineMagnitudes")
+    annual = cleared_fields(module, "ClearAnnualMagnitudes")
+    assert headline == {
+        "ANom", "APv", "BNom", "BPv", "CNom", "CPv", "DNom", "DPv", "ENom", "EPv"
+    }
+    assert annual == {
+        "AnnualBaseNom", "AnnualBasePv", "AnnualRiskNom", "AnnualRiskPv",
+        "AnnualTotalNom", "AnnualTotalPv",
+    }
+    assert not (headline & annual), "the two halves overlap"
+    declared = set(_type_fields(module, "ReconciliationMagnitudes"))
+    assert headline | annual == declared - {"RelativeCoefficient"}, (
+        "every magnitude field must belong to exactly one owner"
+    )
+
+
+def test_60_neither_producer_clears_the_whole_structure() -> None:
+    module = _kernel()["modCalcAnalytical"]
+    assert "ClearMagnitudes" not in module.procedures, (
+        "a whole-object clear cannot exist; the two halves have different owners"
+    )
+    totals = _procedure_body(module, "AccumulateTotals")
+    annual = _procedure_body(module, "BuildAnnualSeries")
+    assert "ClearHeadlineMagnitudes magnitudes" in totals
+    assert "ClearAnnualMagnitudes" not in totals
+    assert "ClearAnnualMagnitudes magnitudes" in annual
+    assert "ClearHeadlineMagnitudes" not in annual
+
+
+def test_61_a_conflicting_coefficient_fails_deterministically() -> None:
+    """Old magnitudes are never reinterpreted against a tolerance they were not
+    measured for."""
+    module = _kernel()["modCalcAnalytical"]
+    body = _procedure_body(module, "PrepareMagnitudeCoefficient")
+    assert "magnitudes.RelativeCoefficient = 0#" in body, (
+        "the untouched state must be recognised"
+    )
+    assert "PrepareMagnitudeCoefficient = (magnitudes.RelativeCoefficient = coefficient)" in body
+    for producer in ("AccumulateTotals", "BuildAnnualSeries"):
+        assert "PrepareMagnitudeCoefficient(magnitudes, coefficient)" in _procedure_body(
+            module, producer
+        ), f"{producer} does not verify the coefficient"
+
+
+# --- 13.5 the empty driver set ---------------------------------------------
+def test_62_an_empty_driver_set_reconciles_rather_than_being_refused() -> None:
+    """No accepted contract invented a "must have at least one driver" rule.
+
+    A model with no cost lines and no risks has zero totals, zero annual series
+    and no profile checks, and every identity holds.
+    """
+    module = _kernel()["modCalcAnalytical"]
+    raw_body = _procedure_body_raw(module, "Reconcile")
+    assert '"no drivers"' not in raw_body, "an empty driver set must not be refused"
+    statements = [text for _, text in logical_statements(_procedure_body(module, "Reconcile"))]
+    guard = statements.index("If count < 1 Then")
+    assert statements[guard + 1] == "Reconcile = True", (
+        "the empty case must succeed, not fall through to the driver loop"
+    )
+    assert "ReDim checks(0 To 9 + count)" in _procedure_body(module, "Reconcile"), (
+        "the ten non-I5 checks must be produced whatever the driver count"
+    )
+    order = next(i for i, s in enumerate(statements) if s.startswith("If Not DriverOrder("))
+    assert guard < order, "DriverOrder must not be reached with no drivers"
+
+
+# --- 13.6 conditioning underflow versus overflow ---------------------------
+def test_64_a_failed_exact_evaluation_is_never_turned_into_a_zero() -> None:
+    """C1's narrow exception is UNDERFLOW, not "any failure".
+
+    A final conditioning magnitude outside Double range must be reported. Silently
+    recording zero understates the scale, and a tolerance may never be narrowed by
+    accident any more than it may be widened by one.
+    """
+    module = _kernel()["modCalcFactors"]
+    for procedure in ("ConditioningScaledProduct", "ConditioningScaledMagnitude",
+                      "ConditioningScaledExact"):
+        assert swallowed_failure_statements(module, procedure) == [], (
+            f"{procedure} converts an exact failure into a zero"
+        )
+
+
+def test_65_the_conditioning_path_uses_the_underflow_to_zero_policy() -> None:
+    """One kernel, two policies, and the policy is a parameter."""
+    module = _kernel()["modCalcFactors"]
+    public = _procedure_body(module, "ExactSumOfProducts")
+    assert re.search(r"ExactSumOfProductsCore\(.*groupCount, False, result\)", public, re.S), (
+        "model arithmetic must refuse an underflow"
+    )
+    conditioning = _procedure_body(module, "ConditioningScaledExact")
+    assert re.search(r"ExactSumOfProductsCore\(.*groupCount, _?\s*True, scaled\)",
+                     conditioning, re.S), (
+        "conditioning metadata must be allowed to underflow to zero"
+    )
+
+
+def test_66_conditioning_does_not_retry_the_multiplication_that_failed() -> None:
+    """An unchecked arithmetic retry after SafeMultiply refused is not a rescue."""
+    body = _procedure_body(_kernel()["modCalcFactors"], "ConditioningScaledMagnitude")
+    assert not re.search(r"^\s*scaled = coefficient \* magnitude\s*$", body, re.MULTILINE), (
+        "the failed multiplication must not be repeated outside a safe primitive"
+    )
+    assert "ConditioningScaledExact(group, scaled)" in body
+
+
+def test_67_an_overflow_cannot_be_labelled_as_an_accepted_underflow() -> None:
+    """The range refusals in RoundExact do not consult the underflow flag."""
+    statements = [
+        text for _, text in
+        logical_statements(_procedure_body(_kernel()["modCalcFactors"], "RoundExact"))
+    ]
+    overflow = [s for s in statements if "Exit Function" in s and (
+        "exponent > 1023" in s or "MAX_SIGNIFICAND" in s
+    )]
+    assert len(overflow) == 3, f"expected three range refusals, found {overflow}"
+    for statement in overflow:
+        assert "underflowToZero" not in statement, (
+            "an out-of-range magnitude may never be accepted as an underflow"
+        )
+
+
+# --- 13.7 typed numerical containers ---------------------------------------
+def test_68_no_kernel_module_declares_a_variant() -> None:
+    """The numerical boundary is Double, Long, Boolean, String and typed records.
+
+    A Variant container was never an approved resolution of this constraint, and
+    the allowed-type list is not the place to widen it.
+    """
+    for name, module in _kernel().items():
+        assert variant_declarations(module) == [], (
+            f"{name} declares a Variant: {variant_declarations(module)}"
+        )
+    assert "Variant" not in ALLOWED_PARAMETER_TYPES
+
+
+def test_69_the_sum_of_products_container_is_a_flat_typed_vector() -> None:
+    module = _kernel()["modCalcFactors"]
+    signature = _signature(module, "ExactSumOfProducts")
+    for part in ("factors() As Double", "groupStarts() As Long",
+                 "groupLengths() As Long", "groupCount As Long"):
+        assert part in signature, f"ExactSumOfProducts lacks {part}"
+    assert "factors() As Double" in _signature(module, "SafeProduct")
+    assert "factors() As Double" in _signature(module, "ConditioningScaledProduct")
+
+
+def test_70_every_exact_rescue_site_builds_the_typed_vector() -> None:
+    """Both production callers describe their groups with the same two Long
+    vectors, so no site can drift back to an untyped container."""
+    for module_name, procedure in (("modCalcFactors", "BuildFactor"),
+                                   ("modCalcAnalytical", "AnnualSeries")):
+        body = _procedure_body(_kernel()[module_name], procedure)
+        assert "flat() As Double" in body or "Dim flat() As Double" in body
+        assert "starts() As Long" in body
+        assert "lengths() As Long" in body
+        assert re.search(r"ExactSumOfProducts\(flat, starts, lengths, count, result\)", body)
+
+
+def _signature(module: VbaModule, name: str) -> str:
+    """One procedure's declaration, with continuations joined."""
+    for _, statement in logical_statements(module.code_without_string_removal):
+        if re.match(rf"^\s*(Public |Private |Friend )?(Static )?(Sub|Function)\s+{name}\b",
+                    statement):
+            return re.sub(r"\s+", " ", statement)
+    raise AssertionError(f"{module.name} does not declare {name}")
+
+
+def _procedure_body_raw(module: VbaModule, name: str) -> str:
+    """A procedure body with string literals INTACT, for literal-text checks."""
+    lines = module.code_without_string_removal.splitlines()
+    start = next(
+        i for i, line in enumerate(lines)
+        if re.match(rf"^\s*(Public |Private )?(Static )?(Sub|Function)\s+{name}\b", line)
+    )
+    end = next(i for i in range(start + 1, len(lines))
+               if re.match(r"^End (Sub|Function)", lines[i]))
+    return "\n".join(lines[start:end])
+
+
+# ===========================================================================
+# 14. NEGATIVE CONTROLS FOR THE REVIEW-DISCOVERED DEFECTS
+# ===========================================================================
+def test_nc_13_reintroducing_probability_into_a_cost_record_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CalcFpBuildDriverRecord() As Boolean\n"
+        "    If Not CalcFpNumberField(quantity, decimalSeparator, fields(count)) Then Exit Function\n"
+        "    If Not CalcFpNumberField(minValue, decimalSeparator, fields(count)) Then Exit Function\n"
+        "    If Not CalcFpNumberField(maxValue, decimalSeparator, fields(count)) Then Exit Function\n"
+        "    If Not CalcFpNumberField(probability, decimalSeparator, fields(count)) Then Exit Function\n"
+        "    If Not CalcFpNumberField(fxToSar, decimalSeparator, fields(count)) Then Exit Function\n"
+        "End Function\n",
+    )
+    assert "probability" in number_field_arguments(planted, "CalcFpBuildDriverRecord")
+
+
+def test_nc_14_dropping_the_inflation_vector_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CalcFpBuildDriverRecord() As Boolean\n"
+        "    If Not CalcFpNumberField(fxToSar, decimalSeparator, fields(count)) Then Exit Function\n"
+        "    If Not CalcFpNumberField(weights(LBound(weights) + index), decimalSeparator, _\n"
+        "                             fields(count)) Then Exit Function\n"
+        "End Function\n",
+    )
+    arguments = number_field_arguments(planted, "CalcFpBuildDriverRecord")
+    assert not any(a.startswith("inflationFactors") for a in arguments)
+
+
+def test_nc_15_swapping_the_inflation_and_weight_loops_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function CalcFpBuildDriverRecord() As Boolean\n"
+        "    If Not CalcFpNumberField(weights(LBound(weights) + index), decimalSeparator, _\n"
+        "                             fields(count)) Then Exit Function\n"
+        "    If Not CalcFpNumberField(inflationFactors(LBound(inflationFactors) + index), _\n"
+        "                             decimalSeparator, fields(count)) Then Exit Function\n"
+        "End Function\n",
+    )
+    arguments = number_field_arguments(planted, "CalcFpBuildDriverRecord")
+    inflation = next(i for i, a in enumerate(arguments) if a.startswith("inflationFactors"))
+    weight = next(i for i, a in enumerate(arguments) if a.startswith("weights"))
+    assert weight < inflation, "the planted swap must be visible to the ordering check"
+
+
+def test_nc_16_a_caller_selected_fingerprint_version_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function CalcFpBuildFingerprint(ByVal version As Long, _\n"
+        "                                       ByRef result As String) As Boolean\n"
+        "End Function\n",
+    )
+    assert "version As Long" in _signature(planted, "CalcFpBuildFingerprint")
+
+
+def test_nc_17_a_rounded_binary_constant_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Const TWO_52 As Double = 4503599627370500#\n"
+        "Private Const MAX_SIGNIFICAND As Double = 9007199254740990#\n",
+    )
+    assert _vba_constant(planted, "TWO_52") != float(2 ** 52)
+    assert _vba_constant(planted, "MAX_SIGNIFICAND") != float(2 ** 53 - 1)
+
+
+def test_nc_18_an_out_of_range_max_double_literal_is_caught() -> None:
+    from decimal import Decimal
+
+    planted = _synthetic(
+        "modProbe", _STUB + "Public Const MAX_DOUBLE As Double = 1.79769313486232E+308\n"
+    )
+    literal = _vba_constant_literal(planted, "MAX_DOUBLE")
+    assert Decimal(literal) > Decimal((2 ** 53 - 1) * 2 ** 971)
+
+
+def test_nc_19_a_whole_object_magnitude_clear_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Sub ClearMagnitudes(ByRef magnitudes As ReconciliationMagnitudes)\n"
+        "    Dim blank As ReconciliationMagnitudes\n    magnitudes = blank\nEnd Sub\n",
+    )
+    assert "ClearMagnitudes" in planted.procedures
+    assert cleared_fields(planted, "ClearMagnitudes") == set(), (
+        "a whole-object clear names no field, so it can own no half"
+    )
+
+
+def test_nc_20_an_explicit_no_driver_refusal_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function Reconcile() As Boolean\n    If count < 1 Then\n"
+        '        detail = "no drivers"\n        Exit Function\n    End If\nEnd Function\n',
+    )
+    assert '"no drivers"' in _procedure_body_raw(planted, "Reconcile")
+
+
+def test_nc_21_an_exact_failure_turned_into_zero_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function F() As Boolean\n"
+        "    If Not ExactSumOfProducts(groups, scaled) Then\n        scaled = 0#\n"
+        "    End If\nEnd Function\n",
+    )
+    assert swallowed_failure_statements(planted, "F") != []
+
+
+def test_nc_22_a_variant_numerical_container_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Function SafeProduct(ByRef factors As Variant) As Boolean\n"
+        "    Dim groups() As Variant\nEnd Function\n",
+    )
+    assert len(variant_declarations(planted)) == 2
 
 
 # ===========================================================================

@@ -251,31 +251,49 @@ End Function
 ' ==========================================================================
 ' Driver records
 '
-' FIELD ORDER IS LOCKED by the Step-3 reference stream:
+' FIELD ORDER IS LOCKED, and the two kinds are NOT the same shape:
 '
-'   S(PermanentId) S(Distribution) N(Quantity) N(Min) N(Max)
-'   [ N(MostLikely) ] N(Probability) N(FxToSar) N(weight)*
+'   COST:  S(PermanentId) S(Distribution) N(Quantity)    N(Min) N(Max)
+'          [ N(MostLikely) ] N(FxToSar) N(inflation)* N(weight)*
 '
-' Most Likely is present only when the distribution has one; includeMostLikely
-' is decided by the later resolver layer, which owns the distribution
-' vocabulary, and is passed in here rather than inferred from the name.
+'   RISK:  S(PermanentId) S(Distribution) N(Probability) N(Min) N(Max)
+'          [ N(MostLikely) ] N(FxToSar) N(inflation)* N(weight)*
 '
-' Quantity and Probability are BOTH always present, and the one that does not
-' apply to a kind is 1 rather than blank: a cost line carries its Quantity and a
-' Probability of 1, a risk carries a Quantity of 1 and its Probability. Encoding
-' a fixed 1 keeps every record the same shape, so a cost line and a risk can
-' never encode identically by losing a field.
+' THE OPPOSITE KIND'S MULTIPLICATIVE IDENTITY IS NOT FINGERPRINTED. A cost line
+' encodes Quantity and no Probability; a risk encodes Probability and no
+' Quantity. The `Quantity = 1 for risks, Probability = 1 for cost lines`
+' convention belongs to the in-memory DriverFactors carry type that the
+' calculation and the simulation share - it is a calculation convenience, not
+' the fingerprint schema, and writing an identity 1 into the stream would put a
+' field in the record that the locked grammar does not have.
+'
+' THE RESOLVED INFLATION-FACTOR VECTOR IS PART OF THE RECORD. It is what makes
+' the fingerprint detect a changed inflation profile: without it a model whose
+' referenced rates moved would hash identically to the model before the move,
+' and a stale result would present itself as current. The vector is RESOLVED -
+' the cumulative factor for each applied project year, not the profile name and
+' not the annual rates - because that is what the calculation actually consumed.
+'
+' Both vectors are encoded in project-year order, inflation first and then the
+' profiling weights. This encoder hashes exactly the vectors it is handed;
+' whether their lengths match Applied Duration is the later resolver and check
+' layer's question, not a pure encoder's.
 ' ==========================================================================
 Public Function CalcFpBuildCostRecord(ByVal permanentId As String, ByVal distribution As String, _
                                       ByVal quantity As Double, ByVal minValue As Double, _
                                       ByVal maxValue As Double, ByVal mostLikely As Double, _
                                       ByVal includeMostLikely As Boolean, _
-                                      ByVal fxToSar As Double, ByRef weights() As Double, _
+                                      ByVal fxToSar As Double, _
+                                      ByRef inflationFactors() As Double, _
+                                      ByRef weights() As Double, _
                                       ByVal decimalSeparator As String, _
                                       ByRef record As String) As Boolean
+    ' `quantity` is the cost line's own Quantity, and no Probability field is
+    ' emitted at all.
     CalcFpBuildCostRecord = CalcFpBuildDriverRecord(permanentId, distribution, quantity, _
                                                     minValue, maxValue, mostLikely, _
-                                                    includeMostLikely, 1#, fxToSar, weights, _
+                                                    includeMostLikely, fxToSar, _
+                                                    inflationFactors, weights, _
                                                     decimalSeparator, record)
 End Function
 
@@ -283,32 +301,43 @@ Public Function CalcFpBuildRiskRecord(ByVal permanentId As String, ByVal distrib
                                       ByVal probability As Double, ByVal minValue As Double, _
                                       ByVal maxValue As Double, ByVal mostLikely As Double, _
                                       ByVal includeMostLikely As Boolean, _
-                                      ByVal fxToSar As Double, ByRef weights() As Double, _
+                                      ByVal fxToSar As Double, _
+                                      ByRef inflationFactors() As Double, _
+                                      ByRef weights() As Double, _
                                       ByVal decimalSeparator As String, _
                                       ByRef record As String) As Boolean
-    CalcFpBuildRiskRecord = CalcFpBuildDriverRecord(permanentId, distribution, 1#, _
+    ' `probability` is the risk's own Probability, and no Quantity field is
+    ' emitted at all.
+    CalcFpBuildRiskRecord = CalcFpBuildDriverRecord(permanentId, distribution, probability, _
                                                     minValue, maxValue, mostLikely, _
-                                                    includeMostLikely, probability, fxToSar, _
-                                                    weights, decimalSeparator, record)
+                                                    includeMostLikely, fxToSar, _
+                                                    inflationFactors, weights, _
+                                                    decimalSeparator, record)
 End Function
 
 Private Function CalcFpBuildDriverRecord(ByVal permanentId As String, _
-                                         ByVal distribution As String, ByVal quantity As Double, _
-                                         ByVal minValue As Double, ByVal maxValue As Double, _
-                                         ByVal mostLikely As Double, _
+                                         ByVal distribution As String, _
+                                         ByVal kindScalar As Double, ByVal minValue As Double, _
+                                         ByVal maxValue As Double, ByVal mostLikely As Double, _
                                          ByVal includeMostLikely As Boolean, _
-                                         ByVal probability As Double, ByVal fxToSar As Double, _
+                                         ByVal fxToSar As Double, _
+                                         ByRef inflationFactors() As Double, _
                                          ByRef weights() As Double, _
                                          ByVal decimalSeparator As String, _
                                          ByRef record As String) As Boolean
-    Dim fields() As String, count As Long, index As Long, weightCount As Long
+    ' ONE kind-specific scalar, in ONE position: Quantity for a cost line,
+    ' Probability for a risk. The shared builder never sees both, so it cannot
+    ' emit an identity for the one that does not apply.
+    Dim fields() As String, count As Long, index As Long
+    Dim inflationCount As Long, weightCount As Long
+    inflationCount = UBound(inflationFactors) - LBound(inflationFactors) + 1
     weightCount = UBound(weights) - LBound(weights) + 1
-    If weightCount < 1 Then Exit Function
-    ReDim fields(0 To 6 + weightCount)
+    If inflationCount < 1 Or weightCount < 1 Then Exit Function
+    ReDim fields(0 To 5 + inflationCount + weightCount)
     fields(0) = CalcFpCanonicalText(permanentId)
     fields(1) = CalcFpCanonicalText(distribution)
     count = 2
-    If Not CalcFpNumberField(quantity, decimalSeparator, fields(count)) Then Exit Function
+    If Not CalcFpNumberField(kindScalar, decimalSeparator, fields(count)) Then Exit Function
     count = count + 1
     If Not CalcFpNumberField(minValue, decimalSeparator, fields(count)) Then Exit Function
     count = count + 1
@@ -318,10 +347,13 @@ Private Function CalcFpBuildDriverRecord(ByVal permanentId As String, _
         If Not CalcFpNumberField(mostLikely, decimalSeparator, fields(count)) Then Exit Function
         count = count + 1
     End If
-    If Not CalcFpNumberField(probability, decimalSeparator, fields(count)) Then Exit Function
-    count = count + 1
     If Not CalcFpNumberField(fxToSar, decimalSeparator, fields(count)) Then Exit Function
     count = count + 1
+    For index = 0 To inflationCount - 1
+        If Not CalcFpNumberField(inflationFactors(LBound(inflationFactors) + index), _
+                                 decimalSeparator, fields(count)) Then Exit Function
+        count = count + 1
+    Next index
     For index = 0 To weightCount - 1
         If Not CalcFpNumberField(weights(LBound(weights) + index), decimalSeparator, _
                                  fields(count)) Then Exit Function
@@ -357,11 +389,36 @@ End Function
 ' ==========================================================================
 ' The stream and the digest
 ' ==========================================================================
-Public Function CalcFpBuildFingerprint(ByVal version As Long, ByRef headerFields() As String, _
+Public Function CalcFpBuildFingerprint(ByRef headerFields() As String, _
                                        ByVal headerCount As Long, ByRef costIds() As String, _
                                        ByRef costRecords() As String, ByVal costCount As Long, _
                                        ByRef riskIds() As String, ByRef riskRecords() As String, _
                                        ByVal riskCount As Long, ByRef result As String) As Boolean
+    ' THE ALGORITHM VERSION IS NOT A PARAMETER. FP_VERSION is projected from
+    ' spec/calc_contract.yaml into modCalcContract, and letting a caller choose
+    ' it would let a resolver silently select a different encoding - which is
+    ' the one thing a version stamp exists to make impossible.
+    CalcFpBuildFingerprint = CalcFpBuildVersionedFingerprint(FP_VERSION, headerFields, _
+                                                             headerCount, costIds, costRecords, _
+                                                             costCount, riskIds, riskRecords, _
+                                                             riskCount, result)
+End Function
+
+Private Function CalcFpBuildVersionedFingerprint(ByVal version As Long, _
+                                                 ByRef headerFields() As String, _
+                                                 ByVal headerCount As Long, _
+                                                 ByRef costIds() As String, _
+                                                 ByRef costRecords() As String, _
+                                                 ByVal costCount As Long, _
+                                                 ByRef riskIds() As String, _
+                                                 ByRef riskRecords() As String, _
+                                                 ByVal riskCount As Long, _
+                                                 ByRef result As String) As Boolean
+    ' PRIVATE, and deliberately so. The version is injectable here only because
+    ' the stream grammar has to be expressible for a version other than the
+    ' current one - a future migration compares two encodings of the same
+    ' inputs. Production has exactly one entry point, above, and it reads the
+    ' generated constant.
     ' stream ::= F_S("PCCM-FP") F_I(version) section*
     '
     ' Sections are emitted in the locked order HEADER, COST, RISK - fixed, never

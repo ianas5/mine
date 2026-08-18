@@ -527,7 +527,11 @@ Public Function AccumulateTotals(ByRef audits() As DriverAudit, ByRef totals As 
 
     detail = vbNullString
     coefficient = TOL_IDENTITY_RELATIVE_COEFFICIENT
-    ClearMagnitudes magnitudes, coefficient
+    If Not PrepareMagnitudeCoefficient(magnitudes, coefficient) Then
+        detail = "conditioning magnitudes already carry a different coefficient"
+        Exit Function
+    End If
+    ClearHeadlineMagnitudes magnitudes
     count = UBound(audits) - LBound(audits) + 1
     If count < 1 Then
         ClearTotals totals
@@ -654,11 +658,49 @@ Private Sub ClearTotals(ByRef totals As AnalyticalTotals)
     totals = blank
 End Sub
 
-Private Sub ClearMagnitudes(ByRef magnitudes As ReconciliationMagnitudes, _
-                            ByVal coefficient As Double)
-    Dim blank As ReconciliationMagnitudes
-    magnitudes = blank
-    magnitudes.RelativeCoefficient = coefficient
+' ONE structure, TWO producers, and therefore two OWNERSHIPS.
+'
+' ReconciliationMagnitudes carries both the headline A/B/C/D/E scales and the
+' annual Base/Risk/Total scales, and Reconcile needs all of them at once. A
+' whole-object clear in each producer would make that impossible: whichever ran
+' second would erase what the first had captured, and no call order could
+' produce a complete structure. So each producer clears ONLY its own half and
+' leaves the other half alone.
+Private Function PrepareMagnitudeCoefficient(ByRef magnitudes As ReconciliationMagnitudes, _
+                                             ByVal coefficient As Double) As Boolean
+    ' A zero coefficient is the untouched state of a freshly declared record;
+    ' the contract's coefficient is never zero. An already-populated structure
+    ' carrying a DIFFERENT coefficient fails deterministically rather than
+    ' having its existing magnitudes silently reinterpreted against a tolerance
+    ' they were not measured for.
+    If magnitudes.RelativeCoefficient = 0# Then
+        magnitudes.RelativeCoefficient = coefficient
+        PrepareMagnitudeCoefficient = True
+        Exit Function
+    End If
+    PrepareMagnitudeCoefficient = (magnitudes.RelativeCoefficient = coefficient)
+End Function
+
+Private Sub ClearHeadlineMagnitudes(ByRef magnitudes As ReconciliationMagnitudes)
+    magnitudes.ANom = 0#
+    magnitudes.APv = 0#
+    magnitudes.BNom = 0#
+    magnitudes.BPv = 0#
+    magnitudes.CNom = 0#
+    magnitudes.CPv = 0#
+    magnitudes.DNom = 0#
+    magnitudes.DPv = 0#
+    magnitudes.ENom = 0#
+    magnitudes.EPv = 0#
+End Sub
+
+Private Sub ClearAnnualMagnitudes(ByRef magnitudes As ReconciliationMagnitudes)
+    magnitudes.AnnualBaseNom = 0#
+    magnitudes.AnnualBasePv = 0#
+    magnitudes.AnnualRiskNom = 0#
+    magnitudes.AnnualRiskPv = 0#
+    magnitudes.AnnualTotalNom = 0#
+    magnitudes.AnnualTotalPv = 0#
 End Sub
 
 ' ==========================================================================
@@ -699,7 +741,11 @@ Public Function BuildAnnualSeries(ByRef drivers() As DriverFactors, ByRef fxRate
 
     detail = vbNullString
     coefficient = TOL_IDENTITY_RELATIVE_COEFFICIENT
-    ClearMagnitudes magnitudes, coefficient
+    If Not PrepareMagnitudeCoefficient(magnitudes, coefficient) Then
+        detail = "conditioning magnitudes already carry a different coefficient"
+        Exit Function
+    End If
+    ClearAnnualMagnitudes magnitudes
     yearCount = UBound(years) - LBound(years) + 1
     If yearCount < 1 Then
         detail = "applied timeline"
@@ -881,8 +927,9 @@ Private Function AnnualSeries(ByRef values() As Double, ByRef present() As Boole
                               ByRef factorsOf() As Double, ByVal first As Long, _
                               ByVal count As Long, ByVal discounted As Boolean, _
                               ByVal discount As Double, ByRef result As Double) As Boolean
-    Dim terms() As Double, expression() As Variant, group() As Double
-    Dim index As Long, complete As Boolean, staged As Double
+    Dim terms() As Double, group() As Double
+    Dim flat() As Double, starts() As Long, lengths() As Long, width As Long
+    Dim index As Long, position As Long, complete As Boolean, staged As Double
     If count < 1 Then
         result = 0#
         AnnualSeries = True
@@ -906,12 +953,25 @@ Private Function AnnualSeries(ByRef values() As Double, ByRef present() As Boole
             Exit Function
         End If
     End If
-    ReDim expression(0 To count - 1)
+    ' The exact expression as a FLAT TYPED VECTOR of Doubles, described by two
+    ' Long index vectors. No Variant appears anywhere in the numerical path.
+    If discounted Then
+        width = ANNUAL_FACTOR_COUNT + 1
+    Else
+        width = ANNUAL_FACTOR_COUNT
+    End If
+    ReDim flat(0 To count * width - 1)
+    ReDim starts(0 To count - 1)
+    ReDim lengths(0 To count - 1)
     For index = 0 To count - 1
         group = GroupOf(factorsOf, first + index, discounted, discount)
-        expression(index) = group
+        starts(index) = index * width
+        lengths(index) = width
+        For position = 0 To width - 1
+            flat(index * width + position) = group(position)
+        Next position
     Next index
-    AnnualSeries = ExactSumOfProducts(expression, result)
+    AnnualSeries = ExactSumOfProducts(flat, starts, lengths, count, result)
 End Function
 
 ' ==========================================================================
@@ -947,10 +1007,12 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
     End If
     count = UBound(drivers) - LBound(drivers) + 1
     yearCount = UBound(rows) - LBound(rows) + 1
-    If count < 1 Then
-        detail = "no drivers"
-        Exit Function
-    End If
+    ' AN EMPTY DRIVER SET RECONCILES. A model with no cost lines and no risks is
+    ' a valid model whose totals are zero, whose annual series are zero and
+    ' whose identities all hold; there is no accepted rule requiring at least
+    ' one driver, and inventing one here would refuse a model the oracle
+    ' accepts. It simply produces the ten non-I5 checks and no profile checks,
+    ' because there are no profiles to check.
     ReDim checks(0 To 9 + count)
 
     If Not TotalIdentity(checks(0), "I1 nominal: A + B = C", totals.ANom, totals.BNom, _
@@ -1019,6 +1081,10 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
     ' I5: each driver's profile weights must sum to 1. Its allowance is the
     ' profiling tolerance - an absolute tolerance on a normalised sum, which is
     ' conditioned on nothing.
+    If count < 1 Then
+        Reconcile = True
+        Exit Function
+    End If
     If Not DriverOrder(drivers, order) Then
         detail = "canonical driver order"
         Exit Function
