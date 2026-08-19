@@ -269,8 +269,8 @@ Two, through the accepted Phase-4 `modAppState.FailPointCheck` (`test_21`):
 
 | Constant | Stage name | Source location | Position |
 | --- | --- | --- | --- |
-| `FAILPOINT_ANALYTICAL_WRITE` | `Phase5AnalyticalWrite` | `RunCalculation`, `modCalcReport.bas:263` | after `WriteAnalytical`, before `VerifyAnalytical` — analytical state is half-written |
-| `FAILPOINT_SUCCESS_COMMIT` | `Phase5SuccessCommit` | `WriteSuccessCommit`, `modCalcReport.bas:744` | the statement **immediately before** `CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block` |
+| `FAILPOINT_ANALYTICAL_WRITE` | `Phase5AnalyticalWrite` | `RunCalculation`, `modCalcReport.bas:264` | after `WriteAnalytical`, before `VerifyAnalytical` — analytical state is half-written |
+| `FAILPOINT_SUCCESS_COMMIT` | `Phase5SuccessCommit` | `WriteSuccessCommit`, `modCalcReport.bas:744` (assignment at `:745`) | the statement **immediately before** `CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block` |
 
 The commit hook sits at the assignment, not upstream of it:
 
