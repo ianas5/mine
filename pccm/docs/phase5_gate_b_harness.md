@@ -1533,3 +1533,112 @@ nothing.
 
 The `Double → String` cast is **not yet root-caused**, and is deliberately not
 guessed at. See the Run-2 review return for the narrowed candidate set.
+
+---
+
+## Review round 2A: three corrections to the Run-2 package
+
+### Correction 1 — the component inventory emitted one nested array
+
+`Get-Phase5VbComponentInventory` accumulated into `$out` and ended with
+`return ,$out`. The unary comma exists to stop PowerShell unrolling a
+collection. That is right for a function returning one **row** whose cells must
+stay together — which is why `Write-RowObject` uses `-NoEnumerate` — and wrong
+for a function producing a **sequence of records**: the caller's `@(...)` sees a
+single nested array, and every downstream
+
+```powershell
+$Components | Where-Object { [int]$_.Type -eq ... }
+```
+
+filters one array-shaped object that has no `.Type` at all. No partition would
+ever match, silently, and no textual source test can see it.
+
+The function now emits one `PSCustomObject` per component:
+
+```
+zero components -> nothing emitted
+one component   -> one PSCustomObject
+N components    -> N PSCustomObjects
+```
+
+and the caller's `@(...)` is the authority that turns 0/1/N into an `Object[]`.
+A `PSCustomObject` is not a collection, so there is nothing for the comma to
+protect. **`Get-Phase5TypedTableBody` is untouched** — it emits one `object[]`
+per row and must keep `-NoEnumerate`, or row boundaries would be lost.
+
+### Correction 2 — the button proof now binds sheet, shape and macro together
+
+The previous rule proved three independent global sets: five bound shapes, every
+bound name declared, every declared entry point present somewhere. This passes
+on a real defect:
+
+```
+btnPCCMAddCostLine    -> PCCM_DeleteCostLine
+btnPCCMDeleteCostLine -> PCCM_AddCostLine
+```
+
+Every name exists, every macro exists, five shapes are bound, nothing calls
+`PCCM_Calculate` — and two buttons do the opposite of what they say. Worse, the
+old per-button line would have printed `ok the button btnPCCMAddCostLine calls
+PCCM_AddCostLine` about a button that calls `PCCM_DeleteCostLine`. That check is
+removed, not merely supplemented.
+
+The manifest already carries the whole identity (`sheet`, `shape_name`,
+`entry_point`), so the proof operates on `(Sheet, ShapeName, OnAction)` triples.
+For each declared button: exactly one shape of that name exists on that sheet;
+**that** shape's `OnAction` equals the declared entry point (case-sensitive); and
+no second copy of the name exists on any other sheet. Then: no undeclared
+macro-bound shape, no undeclared shape reaching `PCCM_*` at all, no shape calling
+`PCCM_Calculate`, and the bound triple set equals the declared triple set —
+which closes the count from both ends without ever counting raw shapes. The raw
+`Shape.Count == 5` rule is **not** restored; a sixth *unbound* decorative shape
+still passes.
+
+### Correction 3 — string literals are data, not code
+
+`Remove-VbaCommentary` removed comments but left string payloads, so the runtime
+scanner and the static one had different semantics for the same question. The
+Python authority has always done both — `VbaModule.code` is
+`strip_strings(strip_comments(raw))`, and `contains_construct()` scans that.
+
+```vba
+MsgBox "NPV is not available"          ' prose, in a message
+Err.Raise 5, , "Worksheet_Change"      ' prose, in an error string
+```
+
+`Remove-VbaStringLiterals` applies the same regex the Python side uses —
+`"(?:[^"]|"")*"` replaced by an **empty** literal, so the surrounding statement
+keeps its shape and a forbidden token after a literal is still found.
+`Get-VbaExecutableCode` composes the two in the Python order: comments first
+(that pass is the one that understands literals, so it must run while they are
+intact), then literals. `Remove-VbaCommentary` also gained the doubled-quote
+escape it was missing, so `"he said ""don't"""` no longer closes early.
+
+The manifest `forbidden_constructs` list is unchanged, and `test_129` runs the
+corrected rule over every frozen production module to prove the stricter scanner
+does not flag accepted source.
+
+### Correction 4 — what P5-D5 actually proves
+
+An earlier statement of mine — that P5-D5 passed because the reference model's
+values are representable within the formatter's effective significant digits —
+**was wrong**, and the correction matters.
+
+P5-D5 does not reconstruct the reference stream through
+`CalcFpCanonicalNumber` at all. It reads the **pre-emitted** stream:
+
+```powershell
+$stream = [string]$reference.stream
+$length = [string]$Excel.Run('GBD_StreamLength', $stream)
+$digest = [string]$Excel.Run('GBD_DigestStream', $stream)
+```
+
+So P5-D5 proves that an already-canonical stream survives VBA length and digest
+processing. It says nothing about whether production VBA can **generate** that
+stream from its Double inputs. The 15-significant-digit ceiling in
+`Format$`, which P5-D1 and P5-D2 expose, is therefore not excused by P5-D5
+passing — and P5-D1/P5-D2 become **more** important, not less: they are the only
+scenarios that exercise the generation step directly.
+
+P5-D1 and P5-D2 remain a PRODUCTION finding and remain unrepaired.

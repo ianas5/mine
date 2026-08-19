@@ -858,9 +858,10 @@ def test_37_no_calculate_button_and_no_new_production_module() -> None:
     # The harness asserts all three of those things at runtime too.
     source = _executable(SCENARIOS)
     assert "'NO shape has OnAction = PCCM_Calculate'" in source
-    assert "'exactly five shapes are bound to a macro'" in source
+    assert "'exactly the five declared (sheet, shape, macro) bindings exist'" in source
     assert "'every macro-bound shape is one of the five declared buttons'" in source
     assert "'no undeclared shape invokes a PCCM_ procedure'" in source
+    assert "'the button ' + $wantSheet + '!' + $wantName + ' calls ' + $wantAction" in source
     assert "'the manifest declares 15 production modules'" in source
     assert "': the production module ' + $name + ' is a standard module'" in source
 
@@ -4304,13 +4305,20 @@ def test_110_the_forbidden_construct_scan_reads_code_not_commentary() -> None:
     """R2. modAppState's explanatory comments are prose, and stay."""
     source = _executable(SCENARIOS)
     ev = source[source.index("Add-Result 'P5-D0'") - 6000:source.index("Add-Result 'P5-EV'")]
-    assert "$code = Remove-VbaCommentary -Code $raw" in ev, (
+    assert "$code = Get-VbaExecutableCode -Code $raw" in ev, (
         "the scan still runs over the raw module text"
     )
     assert "if ($code -match [regex]::Escape([string]$forbidden))" in ev, (
         "the manifest scan does not run over the stripped code"
     )
     assert "$raw -match" not in ev, "the raw text is still scanned somewhere"
+    # And the second half of the rule is a real substitution, not a pass-through:
+    # a construct named inside a string literal is data, not an occurrence.
+    stripper = _procedure(source, "Remove-VbaStringLiterals")
+    assert "[regex]::Replace($Code," in stripper, (
+        "the string-literal stripper returns its input unchanged"
+    )
+    assert "return $Code" not in stripper
     # The requirement itself is untouched: the manifest list is still the source.
     assert "@($Manifest.vba.forbidden_constructs)" in ev
     assert "'the manifest forbids ' + $handler" in source
@@ -4332,10 +4340,18 @@ def test_111_a_real_change_event_declaration_still_fails() -> None:
     source = _executable(SCENARIOS)
     stripper = _procedure(source, "Remove-VbaCommentary")
     # A comment starts at an apostrophe OUTSIDE a string literal.
-    assert "if (($ch -eq \"'\") -and (-not $inString)) { break }" in stripper
+    assert "if (($ch -eq ([char]39)) -and (-not $inString)) { break }" in stripper, (
+        "the comment marker is no longer recognised outside a string literal"
+    )
     assert "$inString = -not $inString" in stripper, (
         "string literals are not tracked, so an apostrophe inside one would truncate code"
     )
+    # A doubled quote inside a literal is an ESCAPE, not a close. Without it,
+    # "he said ""don't""" closes early and the apostrophe truncates the rest.
+    assert "($line[$i + 1] -eq '\"')" in stripper, (
+        "the doubled-quote escape is gone, so a literal can close early"
+    )
+    assert "$null = $kept.Append('\"\"')" in stripper
     assert "Rem" in stripper, "Rem-form commentary is not handled"
     # No blanket substitution that could swallow a real declaration.
     for forbidden in ("-replace 'Worksheet_Change'", "-replace 'Workbook_SheetChange'",
@@ -4343,8 +4359,8 @@ def test_111_a_real_change_event_declaration_still_fails() -> None:
         assert forbidden not in source, f"a blanket text substitution was used ({forbidden})"
 
     # The declaration test judges the STRIPPED code, like the general scan.
-    assert "$code = Remove-VbaCommentary -Code $raw" in source, (
-        "the module text is no longer stripped before it is scanned"
+    assert "$code = Get-VbaExecutableCode -Code $raw" in source, (
+        "the module text is no longer reduced to executable code before scanning"
     )
     assert "Test-VbaProcedureDeclared -Code $code" in source, (
         "the declaration test runs over raw text rather than stripped code"
@@ -4512,8 +4528,13 @@ def test_115_command_buttons_are_counted_by_macro_binding_not_by_shape() -> None
     block = source[source.index("Add-Result 'P5-FX'"):source.index("Add-Result 'P5-M'")]
     assert "$commandButtons = @($shapeRecords | Where-Object {" in block
     assert "-not [string]::IsNullOrWhiteSpace([string]$_.OnAction) })" in block
-    assert "'exactly five shapes are bound to a macro'" in block
-    assert "($commandButtons.Count -eq 5)" in block
+    assert "'exactly the five declared (sheet, shape, macro) bindings exist'" in block
+    assert "$boundTriples.Count -eq $declaredTriples.Count" in block
+    # A declared shape name may exist exactly once, on its declared sheet.
+    assert "'no second shape named ' + $wantName + ' exists on any other sheet'" in block, (
+        "a duplicate command surface on another sheet would go unreported"
+    )
+    assert "([string]$_.Name -eq $wantName) -and ([string]$_.Sheet -ne $wantSheet)" in block
     assert "'exactly five command buttons persist in the workbook'" not in source, (
         "the raw shape count is still the button requirement"
     )
@@ -4527,6 +4548,12 @@ def test_116_the_no_calculate_button_requirement_is_unchanged_and_widened() -> N
     """R4. Strictly stronger than the count it replaces."""
     source = _executable(SCENARIOS)
     block = source[source.index("Add-Result 'P5-FX'"):source.index("Add-Result 'P5-M'")]
+    # The declared macro is compared against THAT shape's own OnAction, so a
+    # button bound to another declared button's macro cannot pass.
+    assert "$bound = ($actual -ceq $wantAction)" in block, (
+        "the macro comparison fell back to global set membership"
+    )
+    assert "$onActions -contains $wantAction" not in block
     # unchanged: over EVERY shape, bound or not
     assert "'NO shape has OnAction = PCCM_Calculate'" in block
     assert "($onActions -notcontains 'PCCM_Calculate')" in block
@@ -4535,9 +4562,9 @@ def test_116_the_no_calculate_button_requirement_is_unchanged_and_widened() -> N
     assert "'every macro-bound shape is one of the five declared buttons'" in block
     assert "'no undeclared shape invokes a PCCM_ procedure'" in block
     assert "[string]$_.OnAction -like 'PCCM_*'" in block
-    # The five is counted over the BOUND shapes, never over every shape again.
-    assert "($commandButtons.Count -eq 5)" in block, (
-        "the five-button rule is back on the raw shape count"
+    # The five is counted over the BOUND triples, never over every shape again.
+    assert "$boundTriples = @($commandButtons | ForEach-Object {" in block, (
+        "the five-button rule no longer counts bindings"
     )
     assert "($shapeRecords.Count -eq 5)" not in block
 
@@ -4713,4 +4740,400 @@ def test_119_the_error_evidence_names_the_call_chain_not_only_the_line() -> None
     # its shape and the report stays greppable.
     assert "($parts -join [string][char]10)" in formatter, (
         "the located error is not assembled into a single detail value"
+    )
+
+
+# ===========================================================================
+# 24. REVIEW ROUND 2A: cardinality, binding identity, string literals
+# ===========================================================================
+def _button_block() -> str:
+    source = _executable(SCENARIOS)
+    return source[source.index("Add-Result 'P5-FX'"):source.index("Add-Result 'P5-M'")]
+
+
+# --- BLOCKER 1: the inventory emits records, not one nested array -----------
+def test_120_the_component_inventory_emits_one_record_per_component() -> None:
+    """`return ,$out` would hand the caller ONE array-shaped object.
+
+    The unary comma stops PowerShell unrolling a collection. That is right for a
+    function returning one ROW whose cells must stay together; it is wrong for a
+    function producing a SEQUENCE of records. With the comma, the caller's
+    `@(...)` sees a single nested array and every downstream
+    `Where-Object { $_.Type ... }` filters an object with no `.Type` at all.
+    """
+    source = _executable(SCENARIOS)
+    reader = _procedure(source, "Get-Phase5VbComponentInventory")
+    assert "return ,$out" not in reader, "the inventory still returns a nested array"
+    assert "," not in reader.split("return")[-1] or "return" not in reader, (
+        "the inventory still has a comma-wrapped return"
+    )
+    assert "$out" not in reader, (
+        "the inventory still accumulates a collection instead of emitting records"
+    )
+    assert "Write-Output ([pscustomobject]@{" in reader, (
+        "the inventory does not emit one record per component"
+    )
+    # A PSCustomObject is not a collection, so -NoEnumerate is neither needed
+    # nor correct here.
+    assert "-NoEnumerate" not in reader, (
+        "a record emission does not need the row-boundary protection"
+    )
+    assert "Write-RowObject" not in reader
+
+
+def test_121_the_caller_is_the_authority_that_collects_the_inventory() -> None:
+    """0/1/N from the pipeline; @() at the caller turns it into an Object[]."""
+    source = _executable(SCENARIOS)
+    for callsite in ("$components = @(Get-Phase5VbComponentInventory -Workbook $Workbook)",
+                     "$inventory = @(Get-Phase5VbComponentInventory -Workbook $Workbook)"):
+        assert callsite in source, f"a caller does not wrap the inventory with @(): {callsite}"
+    # Neither caller re-indexes as if it had received one nested array.
+    assert "$components[0][0]" not in source
+    assert "$inventory[0][0]" not in source
+    # And @() is only the authority if the function actually emits records: a
+    # comma-wrapped return makes the caller's @() collect one nested array.
+    assert "return ,$out" not in source, (
+        "the inventory hands back a collection, so the caller's @() collects one "
+        "array-shaped object instead of the component records"
+    )
+
+    # Cardinality, modelled the way PowerShell resolves it.
+    def emitted(records: list) -> list:
+        """What `@(function)` yields when the function EMITS each record."""
+        return list(records)
+
+    def comma_wrapped(records: list) -> list:
+        """What `@(function)` yields when the function does `return ,$out`."""
+        return [records]
+
+    for count in (0, 1, 2, 30):
+        records = [{"Name": f"c{i}", "Type": 1} for i in range(count)]
+        assert len(emitted(records)) == count, "emission must preserve cardinality"
+        # The defect: any count collapses to one array-shaped object.
+        assert len(comma_wrapped(records)) == 1
+        if count != 1:
+            assert len(comma_wrapped(records)) != count, (
+                "the comma-wrapped return changes the caller's element count"
+            )
+        # And that object has no .Type, so no partition can ever match it.
+        assert "Type" not in comma_wrapped(records)[0]
+
+
+def test_122_the_inventory_helper_consumes_records_not_an_array() -> None:
+    """Every partition reads `.Type` off an individual component record."""
+    helper = _inventory_helper()
+    for partition in ("$standard = @($Components | Where-Object {",
+                      "$documents = @($Components | Where-Object {",
+                      "$other = @($Components | Where-Object {"):
+        assert partition in helper, f"the helper no longer partitions with {partition}"
+    assert "[int]$_.Type" in helper, "the partitions do not read a record's own type"
+    assert "[string]$_.Name" in helper
+
+    # Records in -> the Run-2 topology partitions correctly.
+    records = ([{"Name": f"mod{i}", "Type": VBEXT_STD_MODULE} for i in range(15)]
+               + [{"Name": f"sh{i}", "Type": VBEXT_DOCUMENT} for i in range(MANIFEST_SHEET_COUNT)]
+               + [{"Name": "ThisWorkbook", "Type": VBEXT_DOCUMENT}])
+    assert len([r for r in records if r["Type"] == VBEXT_STD_MODULE]) == 15
+    assert len([r for r in records if r["Type"] == VBEXT_DOCUMENT]) == MANIFEST_SHEET_COUNT + 1
+    # One nested array in -> nothing matches anything, silently.
+    nested = [records]
+    assert len([r for r in nested if isinstance(r, dict) and r.get("Type") == VBEXT_STD_MODULE]) == 0
+    assert len([r for r in nested if isinstance(r, dict) and r.get("Type") == VBEXT_DOCUMENT]) == 0
+
+
+def test_123_the_typed_table_reader_keeps_its_row_boundary_protection() -> None:
+    """This finding is about the inventory ONLY.
+
+    Get-Phase5TypedTableBody emits one object[] PER ROW and must keep
+    -NoEnumerate, or a row's cells would each become a pipeline object.
+    """
+    source = _executable(SCENARIOS)
+    reader = _procedure(source, "Get-Phase5TypedTableBody")
+    assert "Write-RowObject $line" in reader, "the row emission was changed"
+    writer = _procedure(_executable(HARNESS), "Write-RowObject")
+    assert "Write-Output -NoEnumerate $Row" in writer, (
+        "the accepted row-boundary protection was removed"
+    )
+    assert "[object[]]$Row" in writer
+
+
+# --- BLOCKER 2: the binding is a triple ------------------------------------
+def test_124_each_declared_button_is_proved_as_a_sheet_shape_macro_triple() -> None:
+    """Three independent global sets pass on two swapped entry points."""
+    block = _button_block()
+    # 1. exactly one shape with the declared name on the declared sheet
+    assert "'exactly one shape named ' + $wantName + ' exists on ' + $wantSheet" in block
+    assert "([string]$_.Sheet -eq $wantSheet) -and ([string]$_.Name -eq $wantName)" in block
+    assert "($onSheet.Count -eq 1)" in block
+    # 2. THAT shape's OnAction equals the declared entry point
+    assert "$actual = [string]$onSheet[0].OnAction" in block
+    assert "$bound = ($actual -ceq $wantAction)" in block, (
+        "the macro is not compared against the declared entry point on that shape"
+    )
+    # 3. no second copy of the declared name elsewhere
+    assert "'no second shape named ' + $wantName + ' exists on any other sheet'" in block
+    assert "([string]$_.Name -eq $wantName) -and ([string]$_.Sheet -ne $wantSheet)" in block
+    # 4/5/6
+    assert "'every macro-bound shape is one of the five declared buttons'" in block
+    assert "'NO shape has OnAction = PCCM_Calculate'" in block
+    assert "'exactly the five declared (sheet, shape, macro) bindings exist'" in block
+
+    # The weak set-wise per-button check is gone, not merely supplemented.
+    assert "($onActions -contains [string]$button.entry_point)" not in block, (
+        "the global entry-point membership check survives and can report a "
+        "swapped button as correct"
+    )
+    # And the manifest really does carry the whole identity.
+    manifest = _emitted()["manifest"]
+    for button in manifest["buttons"]:
+        for field in ("sheet", "shape_name", "entry_point"):
+            assert button[field], f"the manifest button lacks {field}"
+
+
+def test_125_the_button_decision_table() -> None:
+    """Every case the review named, against the triple rule."""
+    manifest = _emitted()["manifest"]
+    declared = [(b["sheet"], b["shape_name"], b["entry_point"]) for b in manifest["buttons"]]
+    assert len(declared) == 5
+    declared_pairs = {(s, n) for s, n, _ in declared}
+    declared_triples = set(declared)
+
+    def verdict(shapes: list[tuple[str, str, str]]) -> bool:
+        """shapes = [(sheet, name, on_action)]; '' means no macro."""
+        for sheet, name, action in declared:
+            on_sheet = [s for s in shapes if s[0] == sheet and s[1] == name]
+            if len(on_sheet) != 1:
+                return False
+            if on_sheet[0][2] != action:
+                return False
+            if [s for s in shapes if s[1] == name and s[0] != sheet]:
+                return False
+        bound = [s for s in shapes if s[2]]
+        if any((s[0], s[1]) not in declared_pairs for s in bound):
+            return False
+        if any((s[0], s[1]) not in declared_pairs and s[2].startswith("PCCM_") for s in shapes):
+            return False
+        if any(s[2] == "PCCM_Calculate" for s in shapes):
+            return False
+        return set(bound) == declared_triples and len(bound) == len(declared_triples)
+
+    # correct five triples -> PASS
+    assert verdict(list(declared)), "the correct five bindings must pass"
+
+    # two entry points swapped -> FAIL  (the counterexample the review gave)
+    swapped = list(declared)
+    a = next(i for i, t in enumerate(swapped) if t[1] == "btnPCCMAddCostLine")
+    d = next(i for i, t in enumerate(swapped) if t[1] == "btnPCCMDeleteCostLine")
+    swapped[a] = (swapped[a][0], swapped[a][1], declared[d][2])
+    swapped[d] = (swapped[d][0], swapped[d][1], declared[a][2])
+    assert not verdict(swapped), "two swapped entry points must fail"
+    # and the three global set-wise checks would all still have passed
+    assert {t[1] for t in swapped} == {t[1] for t in declared}
+    assert {t[2] for t in swapped} == {t[2] for t in declared}
+    assert len([t for t in swapped if t[2]]) == 5
+
+    # correct shape name on the wrong sheet -> FAIL
+    moved = [t for t in declared if t[1] != "btnPCCMAddRisk"]
+    moved.append(("Setup", "btnPCCMAddRisk", "PCCM_AddRisk"))
+    assert not verdict(moved), "a declared button on the wrong sheet must fail"
+
+    # duplicate declared shape on another sheet -> FAIL
+    assert not verdict(list(declared) + [("Setup", "btnPCCMAddRisk", "PCCM_AddRisk")]), (
+        "a duplicate of a declared button elsewhere must fail"
+    )
+
+    # missing declared button -> FAIL
+    assert not verdict(list(declared)[:4]), "a missing declared button must fail"
+
+    # sixth UNBOUND decorative shape -> PASS
+    assert verdict(list(declared) + [("Setup", "Decoration", "")]), (
+        "an unbound decorative shape is not a command button"
+    )
+
+    # sixth MACRO-BOUND shape -> FAIL
+    assert not verdict(list(declared) + [("Setup", "Decoration", "SomeMacro")]), (
+        "a sixth macro-bound shape must fail"
+    )
+
+    # undeclared PCCM_ binding -> FAIL
+    assert not verdict(list(declared) + [("Setup", "Rogue", "PCCM_AddRisk")])
+
+    # PCCM_Calculate binding -> FAIL, bound to a declared name or not
+    assert not verdict(list(declared) + [("Setup", "Rogue", "PCCM_Calculate")])
+    calc = list(declared)
+    calc[a] = (calc[a][0], calc[a][1], "PCCM_Calculate")
+    assert not verdict(calc), "a declared button rebound to PCCM_Calculate must fail"
+
+    # and the raw-count rule is NOT what decides any of this
+    assert len(list(declared) + [("Setup", "Decoration", "")]) == 6, (
+        "the passing decorative case has six shapes, so a Shape.Count == 5 rule "
+        "would have failed it"
+    )
+
+
+def test_126_the_raw_shape_count_rule_is_not_restored() -> None:
+    source = _executable(SCENARIOS)
+    for forbidden in ("'exactly five command buttons persist in the workbook'",
+                      "($shapesFound -eq 5)", "$shapesFound++"):
+        assert forbidden not in source, f"the raw Shape.Count rule is back ({forbidden})"
+
+
+# --- BLOCKER 3: string literals are data, not code -------------------------
+def test_127_the_runtime_scanner_matches_the_python_source_authority() -> None:
+    """VbaModule.code is strip_strings(strip_comments(raw)). So is this."""
+    source = _executable(SCENARIOS)
+    combined = _procedure(source, "Get-VbaExecutableCode")
+    assert "Remove-VbaStringLiterals -Code (Remove-VbaCommentary -Code $Code)" in combined, (
+        "the runtime scanner does not compose the two halves in the Python order"
+    )
+    stripper = _procedure(source, "Remove-VbaStringLiterals")
+    assert "'\"(?:[^\"]|\"\")*\"'" in stripper, (
+        "the literal pattern is not the one the Python authority uses"
+    )
+    assert "[regex]::Replace" in stripper
+    # The payload is EMPTIED, not deleted: the statement around it keeps shape.
+    assert "'\"\"'" in stripper, "the literal is removed rather than emptied"
+
+    # Doubled quotes are an escape, in the comment stripper too.
+    commentary = _procedure(source, "Remove-VbaCommentary")
+    assert "($line[$i + 1] -eq '\"')" in commentary, (
+        "a doubled quote inside a string is not treated as an escape"
+    )
+    assert "$null = $kept.Append('\"\"')" in commentary
+
+    # The Python authority is unchanged and still says the same thing.
+    authority = _text(PCCM_ROOT / "builder" / "pccm_builder" / "vba_source.py")
+    assert "return strip_strings(strip_comments(self.raw))" in authority
+    assert r'''re.sub(r'"(?:[^"]|"")*"', '""', source)''' in authority
+
+
+def test_128_the_forbidden_construct_decision_table() -> None:
+    """Commentary and string payloads are data; real constructs are not."""
+    manifest_forbidden = _emitted()["manifest"]["vba"]["forbidden_constructs"]
+    for needed in ("Worksheet_Change", "Workbook_SheetChange", "Randomize", "Rnd(",
+                   "RunSimulation", "NPV"):
+        assert needed in manifest_forbidden, f"{needed} left the manifest list"
+
+    def strip_comments(vba: str) -> str:
+        out = []
+        for line in vba.splitlines():
+            in_string, cut, i = False, len(line), 0
+            while i < len(line):
+                ch = line[i]
+                if ch == '"':
+                    if in_string and i + 1 < len(line) and line[i + 1] == '"':
+                        i += 2
+                        continue
+                    in_string = not in_string
+                elif ch == "'" and not in_string:
+                    cut = i
+                    break
+                i += 1
+            text = line[:cut]
+            out.append("" if re.match(r"^\s*Rem(\s|$)", text) else text)
+        return "\n".join(out)
+
+    def code(vba: str) -> str:
+        return re.sub(r'"(?:[^"]|"")*"', '""', strip_comments(vba))
+
+    def flags(vba: str) -> set[str]:
+        body = code(vba)
+        return {c for c in manifest_forbidden if c in body}
+
+    declares = lambda vba, name: bool(re.search(
+        r"(?im)^\s*(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?(?:Sub|Function)\s+"
+        + re.escape(name) + r"\s*\(", code(vba)))
+
+    # allowed
+    assert not flags("' there is no input Worksheet_Change handler")
+    assert not flags("Rem Worksheet_Change is deliberately absent")
+    assert not flags('Err.Raise 5, , "Worksheet_Change"')
+    assert not flags('MsgBox "NPV is not available"')
+    assert not flags('Debug.Print "RunSimulation"')
+    assert not flags('x = "Rnd("')
+    assert not declares("' no Worksheet_Change here", "Worksheet_Change")
+    assert not declares('MsgBox "Private Sub Worksheet_Change("', "Worksheet_Change")
+
+    # FAIL
+    assert declares("Private Sub Worksheet_Change(ByVal Target As Range)", "Worksheet_Change")
+    assert declares(
+        "Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal T As Range)",
+        "Workbook_SheetChange")
+    assert "Randomize" in flags("    Randomize")
+    assert "Rnd(" in flags("    x = Rnd()")
+    assert "RunSimulation" in flags("    Call RunSimulation")
+
+    # a real construct AFTER a string literal on the same statement still fails
+    assert "Randomize" in flags('MsgBox "no rng here" : Randomize')
+    assert "Rnd(" in flags('Debug.Print "Worksheet_Change" : y = Rnd(1)')
+    # a comment AFTER executable code does not hide the code
+    assert "Randomize" in flags("    Randomize   ' seeded here")
+    # an apostrophe inside a literal does not truncate the statement
+    assert "Randomize" in flags('MsgBox "it' + "'" + 's fine" : Randomize')
+    # doubled quotes inside a literal stay inside it
+    assert not flags('MsgBox "he said ""NPV"" loudly"')
+    assert "Randomize" in flags('MsgBox "he said ""hi""" : Randomize')
+
+
+def test_129_the_production_source_still_passes_the_corrected_scan() -> None:
+    """The accepted production VBA must be clean under the new semantics.
+
+    A stricter scanner that flagged real production code would be a different
+    defect, so this runs the corrected rule over every frozen module.
+    """
+    manifest_forbidden = _emitted()["manifest"]["vba"]["forbidden_constructs"]
+    sys.path.insert(0, str(PCCM_ROOT / "builder"))
+    from pccm_builder.vba_source import strip_comments, strip_strings
+
+    offenders = []
+    for path in sorted(SRC_VBA.glob("*.bas")):
+        body = strip_strings(strip_comments(_text(path)))
+        for construct in manifest_forbidden:
+            if construct in body:
+                offenders.append(f"{path.name}: {construct}")
+    assert not offenders, (
+        "the corrected scan flags accepted production source: " + "; ".join(offenders)
+    )
+    # And the two Run-2 false positives really were comment-only.
+    app_state = _text(SRC_VBA / "modAppState.bas")
+    assert "Worksheet_Change" in app_state and "NPV" in app_state
+    assert "Worksheet_Change" not in strip_strings(strip_comments(app_state))
+    assert "NPV" not in strip_strings(strip_comments(app_state))
+
+
+# --- negative controls -----------------------------------------------------
+def test_nc_92_a_comma_wrapped_inventory_return_is_caught() -> None:
+    planted = _synthetic("    return ,$out\n")
+    assert "Write-Output" not in planted, "the comma-wrapped return must be visible"
+    records = [{"Name": "modA", "Type": 1}, {"Name": "Sheet1", "Type": 100}]
+    wrapped = [records]
+    assert len(wrapped) == 1 != len(records)
+    assert not [r for r in wrapped if isinstance(r, dict)], (
+        "the caller sees one array-shaped object with no .Type"
+    )
+
+
+def test_nc_93_a_set_wise_button_proof_is_caught() -> None:
+    planted = _synthetic("($onActions -contains [string]$button.entry_point)\n")
+    assert "$wantSheet" not in planted, "the set-wise proof must be visible as one"
+    declared = [("Cost Lines", "btnPCCMAddCostLine", "PCCM_AddCostLine"),
+                ("Cost Lines", "btnPCCMDeleteCostLine", "PCCM_DeleteCostLine")]
+    swapped = [("Cost Lines", "btnPCCMAddCostLine", "PCCM_DeleteCostLine"),
+               ("Cost Lines", "btnPCCMDeleteCostLine", "PCCM_AddCostLine")]
+    # Every global set is identical; the triples are not.
+    assert {t[1] for t in swapped} == {t[1] for t in declared}
+    assert {t[2] for t in swapped} == {t[2] for t in declared}
+    assert set(swapped) != set(declared), "the swap is invisible to set-wise checks"
+
+
+def test_nc_94_a_comment_only_stripper_is_caught() -> None:
+    planted = _synthetic("$code = Remove-VbaCommentary -Code $raw\n")
+    assert "Remove-VbaStringLiterals" not in planted, (
+        "a comment-only stripper must be visible as one"
+    )
+    # The payload a comment-only stripper leaves behind.
+    line = 'MsgBox "NPV is not available"'
+    assert "NPV" in line, "the string payload survives comment stripping"
+    assert "NPV" not in re.sub(r'"(?:[^"]|"")*"', '""', line), (
+        "emptying the literal is what removes it"
     )

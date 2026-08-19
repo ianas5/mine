@@ -367,15 +367,34 @@ function Remove-VbaCommentary {
     foreach ($line in ($Code -split "`r?`n")) {
         $inString = $false
         $kept = New-Object System.Text.StringBuilder
-        for ($i = 0; $i -lt $line.Length; $i++) {
+        $i = 0
+        while ($i -lt $line.Length) {
             $ch = $line[$i]
             if ($ch -eq '"') {
+                # A DOUBLED QUOTE INSIDE A STRING IS AN ESCAPED QUOTE, not a
+                # close. Without this, "he said ""don't""" would be read as
+                # closing after `said `, and the apostrophe in don't would
+                # truncate the rest of a real statement.
+                if ($inString -and (($i + 1) -lt $line.Length) -and ($line[$i + 1] -eq '"')) {
+                    $null = $kept.Append('""')
+                    $i += 2
+                    continue
+                }
                 $inString = -not $inString
                 $null = $kept.Append($ch)
+                $i++
                 continue
             }
-            if (($ch -eq "'") -and (-not $inString)) { break }
+            # [char]39, not a quoted apostrophe. A double-quoted string whose
+            # only content is an apostrophe desynchronises every naive
+            # quote-stripping sweep that reads this file - including the
+            # accepted invocation sweep in tests/test_phase4_stage_b_source.py,
+            # which strips single-quoted strings before double-quoted ones. The
+            # codebase already uses [char]31 for the unit separator for the same
+            # class of reason.
+            if (($ch -eq ([char]39)) -and (-not $inString)) { break }
             $null = $kept.Append($ch)
+            $i++
         }
         $text = $kept.ToString()
         # Rem-form commentary: the statement keyword, not an identifier prefix.
@@ -383,6 +402,35 @@ function Remove-VbaCommentary {
         $null = $out.AppendLine($text)
     }
     return $out.ToString()
+}
+
+# THE SECOND HALF OF THE SAME RULE. A construct named inside a string literal is
+# DATA, not an executable occurrence of it:
+#
+#     MsgBox "NPV is not available"          <- prose, in a message
+#     Err.Raise 5, , "Worksheet_Change"      <- prose, in an error string
+#
+# The Python authority has always done both - VbaModule.code is
+# strip_strings(strip_comments(raw)) - and contains_construct() scans that. The
+# runtime scanner had only the first half, so the two had different semantics
+# for the same question. This is the same regex the Python side uses:
+# `"(?:[^"]|"")*"`, replaced by an EMPTY literal.
+#
+# The literal is replaced rather than deleted so the statement around it keeps
+# its shape: `x = Rnd()` after `MsgBox "..."` on the same line survives intact,
+# and a forbidden token that follows a string literal is still found.
+function Remove-VbaStringLiterals {
+    param([string]$Code)
+    return [regex]::Replace($Code, '"(?:[^"]|"")*"', '""')
+}
+
+# The executable code of a module: commentary gone, string payloads emptied,
+# every executable token preserved. Comments are stripped FIRST - the comment
+# scanner is the one that understands string literals, so it must run while the
+# literals are still intact.
+function Get-VbaExecutableCode {
+    param([string]$Code)
+    return (Remove-VbaStringLiterals -Code (Remove-VbaCommentary -Code $Code))
 }
 
 # Does the code declare a procedure with this name? Sub/Function, any accessor,
@@ -444,8 +492,35 @@ function Get-VbComponentTypeName {
 # objects are released inside the loop and none escapes.
 function Get-Phase5VbComponentInventory {
     param($Workbook)
+    # ONE RECORD PER COMPONENT, EMITTED. Not one array returned.
+    #
+    # This used to accumulate into $out and end with `return ,$out`. The unary
+    # comma exists to stop PowerShell unrolling a collection - it is the right
+    # tool for a function that must hand back ONE row whose own elements must not
+    # become separate pipeline objects, which is why Write-RowObject uses
+    # -NoEnumerate for table rows. It is the WRONG tool here: this function
+    # produces a SEQUENCE of records, and wrapping the sequence made the caller's
+    # @(...) see a single nested array. Every downstream
+    #
+    #     $Components | Where-Object { [int]$_.Type -eq ... }
+    #
+    # would then filter one array-shaped object with no .Type at all, and no
+    # partition would ever match. A textual source test cannot see that; the
+    # cardinality has to be stated in the emission itself.
+    #
+    # The contract, deliberately the plain pipeline one:
+    #     zero components -> nothing is emitted
+    #     one component   -> one PSCustomObject
+    #     N components    -> N PSCustomObjects
+    # and the caller's @(...) is what turns 0/1/N into an Object[].
+    #
+    # A PSCustomObject is not a collection, so emitting one cannot unroll into
+    # its properties. There is nothing here for the comma to protect.
+    #
+    # NOTE: this says nothing about Get-Phase5TypedTableBody. That function emits
+    # one object[] PER ROW and must keep -NoEnumerate, or a row's cells would
+    # each become a pipeline object and the row boundaries would be lost.
     $project = $null; $components = $null
-    $out = @()
     try {
         $project = $Workbook.VBProject
         $components = $project.VBComponents
@@ -454,10 +529,11 @@ function Get-Phase5VbComponentInventory {
             $component = $null
             try {
                 $component = $components.Item($i)
-                $out += [pscustomobject]@{
+                # Plain data only, read before the COM object is released.
+                Write-Output ([pscustomobject]@{
                     Name = [string]$component.Name
                     Type = [int]$component.Type
-                }
+                })
             } finally {
                 if ($null -ne $component) { Release-Transient $component 'VBComponent'; $component = $null }
             }
@@ -466,7 +542,6 @@ function Get-Phase5VbComponentInventory {
         if ($null -ne $components) { Release-Transient $components 'VBComponents'; $components = $null }
         if ($null -ne $project)    { Release-Transient $project    'VBProject';     $project    = $null }
     }
-    return ,$out
 }
 
 function Format-VbComponentList {
@@ -2159,28 +2234,106 @@ function Invoke-Phase5GateBScenarios {
         $declaredNames = @($declared | ForEach-Object { [string]$_.shape_name })
         $commandButtons = @($shapeRecords | Where-Object {
             -not [string]::IsNullOrWhiteSpace([string]$_.OnAction) })
-        $null = Add-Check $list 'exactly five shapes are bound to a macro' `
-            ($commandButtons.Count -eq 5) `
-            ("bound " + $commandButtons.Count + "; all shapes: " + $shapeInventory)
-        $undeclaredBound = @($commandButtons | Where-Object { $declaredNames -notcontains [string]$_.Name })
+
+        # THE PROOF IS ON TRIPLES: (Sheet, ShapeName, OnAction).
+        #
+        # Three independent global sets are not enough, and the counterexample is
+        # not hypothetical:
+        #
+        #     btnPCCMAddCostLine    -> PCCM_DeleteCostLine
+        #     btnPCCMDeleteCostLine -> PCCM_AddCostLine
+        #
+        # All five shape names still exist. All five entry points still appear
+        # somewhere in the OnAction list. Five shapes are still bound. Nothing
+        # calls PCCM_Calculate. Every set-wise check passes and two real buttons
+        # do the opposite of what they say. The manifest already carries the
+        # whole identity - sheet, shape_name, entry_point - so the binding is
+        # matched as a unit, on the sheet the manifest names.
+        foreach ($button in $declared) {
+            $wantSheet = [string]$button.sheet
+            $wantName = [string]$button.shape_name
+            $wantAction = [string]$button.entry_point
+
+            # 1. EXACTLY ONE shape with that name on the declared sheet.
+            $onSheet = @($shapeRecords | Where-Object {
+                ([string]$_.Sheet -eq $wantSheet) -and ([string]$_.Name -eq $wantName) })
+            $null = Add-Check $list `
+                ('exactly one shape named ' + $wantName + ' exists on ' + $wantSheet) `
+                ($onSheet.Count -eq 1) `
+                ('found ' + $onSheet.Count + '; all shapes: ' + $shapeInventory)
+
+            # 2. THAT shape's OnAction is the declared entry point. Not "the
+            #    entry point exists somewhere" - this shape, this macro.
+            $bound = $false
+            $actual = '<no such shape>'
+            if ($onSheet.Count -eq 1) {
+                $actual = [string]$onSheet[0].OnAction
+                if ([string]::IsNullOrWhiteSpace($actual)) { $actual = '<no macro>' }
+                $bound = ($actual -ceq $wantAction)
+            }
+            $null = Add-Check $list `
+                ('the button ' + $wantSheet + '!' + $wantName + ' calls ' + $wantAction) `
+                $bound ('OnAction is ' + $actual)
+
+            # 3. NO SECOND COPY of the declared shape name anywhere else. A
+            #    duplicate on another sheet is a second command surface.
+            $elsewhere = @($shapeRecords | Where-Object {
+                ([string]$_.Name -eq $wantName) -and ([string]$_.Sheet -ne $wantSheet) })
+            $null = Add-Check $list `
+                ('no second shape named ' + $wantName + ' exists on any other sheet') `
+                ($elsewhere.Count -eq 0) `
+                ((@($elsewhere | ForEach-Object {
+                    [string]$_.Sheet + '!' + [string]$_.Name + ' -> ' + [string]$_.OnAction }) -join ', '))
+        }
+
+        # 4. NO UNDECLARED MACRO-BOUND SHAPE. Judged as a triple too: a bound
+        #    shape whose (sheet, name) is not a declared pair.
+        $declaredPairs = @($declared | ForEach-Object {
+            [string]$_.sheet + [char]31 + [string]$_.shape_name })
+        $undeclaredBound = @($commandButtons | Where-Object {
+            $declaredPairs -notcontains ([string]$_.Sheet + [char]31 + [string]$_.Name) })
         $null = Add-Check $list 'every macro-bound shape is one of the five declared buttons' `
             ($undeclaredBound.Count -eq 0) `
             ("undeclared: " + (@($undeclaredBound | ForEach-Object {
                 [string]$_.Sheet + '!' + [string]$_.Name + ' -> ' + [string]$_.OnAction }) -join ', '))
+
         # AND NO UNDECLARED SHAPE MAY REACH THE PCCM SURFACE AT ALL, bound or not.
         $strayPccm = @($shapeRecords | Where-Object {
-            ($declaredNames -notcontains [string]$_.Name) -and
+            ($declaredPairs -notcontains ([string]$_.Sheet + [char]31 + [string]$_.Name)) -and
             ([string]$_.OnAction -like 'PCCM_*') })
         $null = Add-Check $list 'no undeclared shape invokes a PCCM_ procedure' `
             ($strayPccm.Count -eq 0) `
             ((@($strayPccm | ForEach-Object {
                 [string]$_.Sheet + '!' + [string]$_.Name + ' -> ' + [string]$_.OnAction }) -join ', '))
+
+        # 6. EXACTLY THE FIVE DECLARED BINDINGS EXIST. The bound triples and the
+        #    declared triples must be the same set - which closes the count from
+        #    both ends without ever counting raw shapes.
+        $declaredTriples = @($declared | ForEach-Object {
+            [string]$_.sheet + [char]31 + [string]$_.shape_name + [char]31 + [string]$_.entry_point })
+        $boundTriples = @($commandButtons | ForEach-Object {
+            [string]$_.Sheet + [char]31 + [string]$_.Name + [char]31 + [string]$_.OnAction })
+        $missingTriples = @($declaredTriples | Where-Object { $boundTriples -notcontains $_ })
+        $extraTriples = @($boundTriples | Where-Object { $declaredTriples -notcontains $_ })
+        $null = Add-Check $list `
+            'exactly the five declared (sheet, shape, macro) bindings exist' `
+            (($missingTriples.Count -eq 0) -and ($extraTriples.Count -eq 0) -and
+             ($boundTriples.Count -eq $declaredTriples.Count)) `
+            ('missing: ' + (($missingTriples -replace [string][char]31, '!') -join ', ') +
+             '; unexpected: ' + (($extraTriples -replace [string][char]31, '!') -join ', ') +
+             '; bound ' + $boundTriples.Count + ' of ' + $declaredTriples.Count)
+
         Add-Note ('P5-M: shape inventory across the ' + [string]@($Manifest.sheets).Count +
                   ' manifest sheets: ' + $shapeInventory)
-        foreach ($button in $declared) {
-            $null = Add-Check $list ('the button ' + $button.shape_name + ' calls ' + $button.entry_point) `
-                ($onActions -contains [string]$button.entry_point)
-        }
+        # THE SET-WISE PER-BUTTON CHECK IS GONE, deliberately. It asked whether
+        # each declared entry point appeared ANYWHERE in the global OnAction
+        # list, which is true even when two buttons have swapped macros - it
+        # would have printed "ok the button btnPCCMAddCostLine calls
+        # PCCM_AddCostLine" about a button that calls PCCM_DeleteCostLine. The
+        # per-triple check above answers the same question about the actual
+        # shape, so keeping the weaker one would only add a reassuring line that
+        # can be wrong.
+
         # THE ONE THAT MATTERS: no shape may invoke the calculation endpoint.
         $null = Add-Check $list 'NO shape has OnAction = PCCM_Calculate' `
             ($onActions -notcontains 'PCCM_Calculate') (($onActions -join ', '))
@@ -2237,8 +2390,10 @@ function Invoke-Phase5GateBScenarios {
                     $module = $component.CodeModule
                     if ($module.CountOfLines -gt 0) {
                         $raw = [string]$module.Lines(1, $module.CountOfLines)
-                        # COMMENTARY IS NOT CODE. The whole Run-2 P5-EV failure.
-                        $code = Remove-VbaCommentary -Code $raw
+                        # COMMENTARY IS NOT CODE, AND NEITHER IS A STRING PAYLOAD.
+                        # Run-2 P5-EV flagged prose; a message text naming a
+                        # forbidden construct would have been the same defect.
+                        $code = Get-VbaExecutableCode -Code $raw
                         foreach ($forbidden in @($Manifest.vba.forbidden_constructs)) {
                             if ($code -match [regex]::Escape([string]$forbidden)) {
                                 $offenders += ([string]$component.Name + ': ' + [string]$forbidden)
