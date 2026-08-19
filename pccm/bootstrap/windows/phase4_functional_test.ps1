@@ -2986,6 +2986,13 @@ if ($transient.Count -gt 0) {
     Add-Result 'Y' 'Transient COM releases' 'PASS' 'every transient object released cleanly'
 }
 
+# --- final Phase-4 completeness, now that Y and Z exist --------------------
+# HERE, and nowhere earlier. P5-P4 gates entry to Phase 5 on the cases that can
+# exist while the automation session is live; Y and Z are recorded after it is
+# torn down. This is the gate that still demands the whole 35/35 matrix, and it
+# cannot pass unless Y and Z each ran and PASSED.
+Add-Phase4FinalCompletenessResult -Results $results
+
 Write-Host ''
 Write-Host 'Shutdown ledger' -ForegroundColor Cyan
 Write-Host '---------------'

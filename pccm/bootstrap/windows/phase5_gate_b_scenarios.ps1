@@ -104,7 +104,92 @@ $script:Phase4RequiredScenarioIds = @(
     'Y', 'Z'
 )
 
+# Two of those 35 are not Phase-4 BEHAVIOUR cases, and they are the whole of the
+# Run-1 sequencing defect:
+#
+#   Z  asserts the owned Excel process exited naturally. It is recorded after
+#      Workbook.Close, Application.Quit and the COM release ledger have run.
+#   Y  asserts every transient COM object released cleanly across the WHOLE run,
+#      Phase-5's own transients included. It is recorded last of all, from
+#      Get-TransientFailures.
+#
+# Both are POST-SESSION lifecycle assertions. Phase 5 runs inside the live
+# automation session, so neither can exist while Invoke-Phase5GateBScenarios is
+# executing - and evaluating Y early would attest to Phase-4's transients only,
+# which is weaker evidence, not stronger.
+#
+# They stay in the 35-case matrix and stay mandatory. What moved is WHERE the
+# 35/35 demand is made: P5-FIN, after Y and Z, gates final acceptance.
+$script:Phase4FinalizationScenarioIds = @('Y', 'Z')
+
 function Get-Phase4RequiredScenarioIds { return $script:Phase4RequiredScenarioIds }
+
+function Get-Phase4FinalizationScenarioIds { return $script:Phase4FinalizationScenarioIds }
+
+# DERIVED, never a second hand-maintained list. A case added to the matrix is a
+# prerequisite case automatically; the only way to defer one is to name it above,
+# and P5-P4 proves the two sets still partition the matrix exactly.
+function Get-Phase4PrerequisiteScenarioIds {
+    $deferred = $script:Phase4FinalizationScenarioIds
+    return @($script:Phase4RequiredScenarioIds | Where-Object { $deferred -notcontains $_ })
+}
+
+# ===========================================================================
+# P5-FIN. Final Phase-4 completeness, AFTER the post-session lifecycle cases
+# ===========================================================================
+# The other half of the Run-1 correction, and the reason the 35/35 requirement
+# did not weaken when P5-P4 narrowed to what can exist at its point in the
+# lifecycle. This runs last, after Y and Z have been recorded, and it demands:
+#
+#   all 35 matrix cases reported a result
+#   0 FAIL across all 35
+#   0 SKIP across all 35
+#   35/35 PASS
+#   and each deferred case, BY NAME, ran exactly once and PASSED
+#
+# The named check is what makes final acceptance impossible without Y and Z: a
+# bare 35/35 count would be satisfiable by a matrix that lost Z and counted
+# something else twice. Because the driver's exit code is driven by the FAIL
+# count, a FAIL here fails the whole run - including a Phase-4 SKIP, which the
+# summary alone would have printed and then exited 0 on.
+function Add-Phase4FinalCompletenessResult {
+    param($Results)
+
+    $required = Get-Phase4RequiredScenarioIds
+    $deferred = Get-Phase4FinalizationScenarioIds
+    $list = New-Checklist
+    $seen = @($Results | ForEach-Object { $_.Id })
+
+    $missing = @()
+    foreach ($id in $required) { if ($seen -notcontains $id) { $missing += $id } }
+    $null = Add-Check $list 'all 35 Phase-4 scenarios reported a result' ($missing.Count -eq 0) `
+        ("missing: " + ($missing -join ', '))
+
+    $phase4 = @($Results | Where-Object { $required -contains $_.Id })
+    $failed = @($phase4 | Where-Object { $_.Status -eq 'FAIL' })
+    $skipped = @($phase4 | Where-Object { $_.Status -eq 'SKIP' })
+    $null = Add-Check $list 'the final Phase-4 matrix has 0 FAIL' ($failed.Count -eq 0) `
+        (($failed | ForEach-Object { $_.Id }) -join ', ')
+    $null = Add-Check $list 'the final Phase-4 matrix has 0 SKIP' ($skipped.Count -eq 0) `
+        (($skipped | ForEach-Object { $_.Id }) -join ', ')
+    $passed = @($phase4 | Where-Object { $_.Status -eq 'PASS' })
+    $null = Add-Check $list 'the final Phase-4 matrix is 35/35 PASS' ($passed.Count -eq 35) `
+        ("passed " + $passed.Count + " of 35")
+
+    # BY NAME, one at a time, and exactly one record each.
+    foreach ($id in $deferred) {
+        $record = @($Results | Where-Object { $_.Id -eq $id })
+        $null = Add-Check $list `
+            ('the deferred lifecycle case ' + $id + ' ran exactly once and PASSED') `
+            (($record.Count -eq 1) -and ([string]$record[0].Status -eq 'PASS')) `
+            ("recorded " + $record.Count + " result(s): " +
+             (($record | ForEach-Object { [string]$_.Status }) -join ', '))
+    }
+
+    Add-Result 'P5-FIN' `
+        'Final Phase-4 completeness: 35/35 PASS, 0 FAIL, 0 SKIP, deferred lifecycle cases included' `
+        $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+}
 
 # ===========================================================================
 # P5-PRE. Coverage preflight, BEFORE Excel is started
@@ -1576,30 +1661,72 @@ function Invoke-Phase5GateBScenarios {
     $attemptFields = Get-Phase5AttemptFields
 
     # -------------------------------------------------------------------
-    # PHASE-4 PREREQUISITE. 35/35, 0 FAIL, 0 SKIP - checked, not assumed.
+    # PHASE-4 PREREQUISITE. Every case that CAN exist here: 0 FAIL, 0 SKIP.
     # -------------------------------------------------------------------
     # Gate-B acceptance requires the structural matrix intact BEFORE a Phase-5
     # result means anything. A Phase-5 pass on a workbook whose timeline
     # machinery is broken would be evidence of nothing.
+    #
+    # RUN-1 SEQUENCING DEFECT. This used to demand all 35 here, Y and Z included.
+    # Y and Z are recorded after the automation session is torn down, and Phase 5
+    # needs that session live - so the demand was unsatisfiable by construction:
+    # 33 of 35, P5-ALL refused, then Y and Z passed moments later and the summary
+    # printed 35 of 35. The threshold was never the problem. The matrix is still
+    # 35 and 35/35 is still required; that demand now lives in P5-FIN, which runs
+    # after Y and Z and which no run can pass without them.
     $required = Get-Phase4RequiredScenarioIds
+    $deferred = Get-Phase4FinalizationScenarioIds
+    $prerequisite = Get-Phase4PrerequisiteScenarioIds
     $list = New-Checklist
     $seen = @($Results | ForEach-Object { $_.Id })
+
+    # THE PARTITION IS PROVED, NOT ASSERTED IN PROSE. Nothing may leave the
+    # matrix by being called a lifecycle case: the two sets must be disjoint,
+    # must cover all 35, and every deferred name must be a real matrix member.
+    $overlap = @($prerequisite | Where-Object { $deferred -contains $_ })
+    $strayDeferred = @($deferred | Where-Object { $required -notcontains $_ })
+    $partitionOk = (($prerequisite.Count + $deferred.Count) -eq $required.Count) -and `
+                   ($overlap.Count -eq 0) -and ($strayDeferred.Count -eq 0)
+    $null = Add-Check $list 'the prerequisite and deferred sets partition the 35-case matrix' `
+        $partitionOk `
+        ("prerequisite " + $prerequisite.Count + " + deferred " + $deferred.Count +
+         " vs matrix " + $required.Count + "; overlap: " + ($overlap -join ', ') +
+         "; not in matrix: " + ($strayDeferred -join ', '))
+
+    # AND THE DEFERRAL IS REAL. If a deferred case has already been recorded, it
+    # was never a post-session case and must not be excluded from this gate.
+    # This is the direct regression assertion for the Run-1 topology.
+    $earlyDeferred = @($deferred | Where-Object { $seen -contains $_ })
+    $null = Add-Check $list `
+        ('the deferred lifecycle cases have not run yet, so deferring them is real: ' +
+         ($deferred -join ', ')) `
+        ($earlyDeferred.Count -eq 0) ("already recorded: " + ($earlyDeferred -join ', '))
+
     $missing = @()
-    foreach ($id in $required) { if ($seen -notcontains $id) { $missing += $id } }
-    $null = Add-Check $list 'all 35 Phase-4 scenarios reported a result' ($missing.Count -eq 0) `
-        ("missing: " + ($missing -join ', '))
-    $phase4 = @($Results | Where-Object { $required -contains $_.Id })
+    foreach ($id in $prerequisite) { if ($seen -notcontains $id) { $missing += $id } }
+    $null = Add-Check $list `
+        ('all ' + $prerequisite.Count + ' pre-Phase-5 Phase-4 scenarios reported a result') `
+        ($missing.Count -eq 0) ("missing: " + ($missing -join ', '))
+    $phase4 = @($Results | Where-Object { $prerequisite -contains $_.Id })
     $failed = @($phase4 | Where-Object { $_.Status -eq 'FAIL' })
     $skipped = @($phase4 | Where-Object { $_.Status -eq 'SKIP' })
+    # Not one FAIL and not one SKIP is tolerated, exactly as before. Only the
+    # membership of the set narrowed, and only to what can exist at this point.
     $null = Add-Check $list 'the Phase-4 matrix has 0 FAIL' ($failed.Count -eq 0) `
         (($failed | ForEach-Object { $_.Id }) -join ', ')
     $null = Add-Check $list 'the Phase-4 matrix has 0 SKIP' ($skipped.Count -eq 0) `
         (($skipped | ForEach-Object { $_.Id }) -join ', ')
     $passed = @($phase4 | Where-Object { $_.Status -eq 'PASS' })
-    $null = Add-Check $list 'the Phase-4 matrix is 35/35 PASS' ($passed.Count -eq 35) `
-        ("passed " + $passed.Count + " of 35")
+    $null = Add-Check $list `
+        ('the pre-Phase-5 Phase-4 matrix is ' + $prerequisite.Count + '/' +
+         $prerequisite.Count + ' PASS') `
+        ($passed.Count -eq $prerequisite.Count) `
+        ("passed " + $passed.Count + " of " + $prerequisite.Count)
     $phase4Ok = Test-ChecklistOk $list
-    Add-Result 'P5-P4' 'Phase-4 prerequisite: 35/35 PASS, 0 FAIL, 0 SKIP' `
+    Add-Result 'P5-P4' `
+        ('Phase-4 prerequisite before Phase 5: ' + $prerequisite.Count + '/' +
+         $prerequisite.Count + ' PASS, 0 FAIL, 0 SKIP (' + ($deferred -join ', ') +
+         ' deferred to P5-FIN)') `
         $(if ($phase4Ok) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     if (-not $phase4Ok) {
         # A FAIL, never a SKIP. "Phase 5 was not attempted" must be as loud as

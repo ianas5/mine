@@ -3703,3 +3703,437 @@ def test_nc_83_a_widened_analytical_comparator_is_caught() -> None:
         "a comparator that accepts a numeric String must be visible; it would "
         "hide a workbook that published a number as text"
     )
+
+
+# ===========================================================================
+# 22. RUNTIME RUN 1: the Phase-4 prerequisite must be lifecycle-reachable
+# ===========================================================================
+# Runtime Run 1 (harness commit 35640ec, first real Windows/Excel execution)
+# reported:
+#
+#   [FAIL] P5-P4   FAIL all 35 Phase-4 scenarios reported a result -- missing: Y, Z
+#                  ok   the Phase-4 matrix has 0 FAIL
+#                  ok   the Phase-4 matrix has 0 SKIP
+#                  FAIL the Phase-4 matrix is 35/35 PASS -- passed 33 of 35
+#   [FAIL] P5-ALL  not attempted: the Phase-4 structural matrix is not intact
+#   [PASS] Z       Excel closed naturally after the functional run
+#   [PASS] Y       Transient COM releases
+#   ... Phase-4 structural matrix: 35 of 35
+#
+# The prerequisite demanded two results that cannot exist at the point it runs.
+# Z is recorded after Application.Quit and the natural-exit wait; Y is recorded
+# last of all, from the whole-run transient ledger. Phase 5 executes inside the
+# live automation session, so neither can precede it.
+#
+# The tests below pin the corrected lifecycle. They do NOT relax 35/35: they pin
+# that the 35/35 demand moved to a gate that runs after Y and Z, and that no run
+# can be accepted without them.
+def _prerequisite_gate() -> str:
+    """The P5-P4 block: entry into Invoke-Phase5GateBScenarios, up to P5-FX."""
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Invoke-Phase5GateBScenarios")
+    # Bounded at both ends: after the procedure's own param block, and before the
+    # locked FX capture, which is the first statement that touches the workbook
+    # and belongs to P5-FX rather than to the gate.
+    return body[body.index("$required = Get-Phase4RequiredScenarioIds"):
+                body.index("Save-Phase5LockedFxSeed")]
+
+
+def _final_gate() -> str:
+    return _procedure(_executable(SCENARIOS), "Add-Phase4FinalCompletenessResult")
+
+
+def test_96_the_deferred_cases_are_declared_and_the_partition_is_derived() -> None:
+    """The prerequisite set is the matrix MINUS the named lifecycle cases.
+
+    Derived, never a second hand-maintained list: a case added to the 35 becomes
+    a prerequisite case automatically, and the only way to defer one is to name
+    it in the finalization list, which stays inside the matrix.
+    """
+    source = _executable(SCENARIOS)
+
+    declared = re.search(
+        r"\$script:Phase4RequiredScenarioIds\s*=\s*@\((.*?)\)", source, re.S
+    )
+    assert declared, "the required Phase-4 matrix is not declared"
+    required = _ps_string_literals(declared.group(1))
+    assert len(required) == 35, f"the matrix names {len(required)} scenarios, not 35"
+    assert set(required) == set(PHASE4_SCENARIO_IDS)
+
+    deferred_decl = re.search(
+        r"\$script:Phase4FinalizationScenarioIds\s*=\s*@\((.*?)\)", source, re.S
+    )
+    assert deferred_decl, "the post-session lifecycle cases are not declared"
+    deferred = _ps_string_literals(deferred_decl.group(1))
+    assert deferred == ["Y", "Z"] or sorted(deferred) == ["Y", "Z"], (
+        f"the deferred set is {deferred}, not exactly the two lifecycle cases"
+    )
+
+    # NOTHING LEFT THE MATRIX. Every deferred case is still one of the 35.
+    for name in deferred:
+        assert name in required, (
+            f"{name} was deferred out of the matrix instead of within it"
+        )
+
+    # DERIVED, not declared twice.
+    derived = _procedure(source, "Get-Phase4PrerequisiteScenarioIds")
+    assert "$script:Phase4RequiredScenarioIds | Where-Object" in derived, (
+        "the prerequisite set is not derived from the matrix"
+    )
+    assert "$deferred -notcontains $_" in derived
+    assert "@(" in derived and "'PRE0'" not in derived, (
+        "the prerequisite set restates scenario names instead of deriving them"
+    )
+
+    # AND BOTH GATES CONSUME IT. A declaration nothing reads is documentation.
+    assert "Get-Phase4FinalizationScenarioIds" in _prerequisite_gate(), (
+        "the entry gate does not read the deferred set it excludes"
+    )
+    final = _final_gate()
+    assert "Get-Phase4FinalizationScenarioIds" in final, (
+        "the final gate does not read the deferred set it must demand"
+    )
+    assert "foreach ($id in $deferred)" in final, (
+        "the final gate reads the deferred set without checking its members"
+    )
+
+
+def test_97_the_prerequisite_cannot_demand_results_that_cannot_exist_yet() -> None:
+    """PROOF 1. P5-P4 evaluates the prerequisite set, never the whole matrix.
+
+    This is the exact Run-1 defect: `$required` at the gate meant `missing: Y, Z`
+    on a run in which nothing was wrong.
+    """
+    gate = _prerequisite_gate()
+    assert "Get-Phase4PrerequisiteScenarioIds" in gate, (
+        "the prerequisite gate does not use the prerequisite set"
+    )
+
+    # The completeness, FAIL, SKIP and count checks all read $prerequisite.
+    assert "foreach ($id in $prerequisite) { if ($seen -notcontains $id)" in gate, (
+        "the completeness check still walks the full 35-case matrix"
+    )
+    assert "$phase4 = @($Results | Where-Object { $prerequisite -contains $_.Id })" in gate, (
+        "the FAIL/SKIP partition is still taken over the full matrix"
+    )
+    assert "$passed.Count -eq $prerequisite.Count" in gate, (
+        "the pass count is still compared against a hard 35 at the entry gate"
+    )
+    assert "$passed.Count -eq 35" not in gate, (
+        "the entry gate still demands 35, which Y and Z cannot satisfy there"
+    )
+    assert "'all 35 Phase-4 scenarios reported a result'" not in gate, (
+        "the entry gate still demands all 35 results exist"
+    )
+
+    # AND THE DEFERRAL IS PROVED, not asserted in prose.
+    assert "$earlyDeferred" in gate, (
+        "nothing proves the deferred cases have genuinely not run yet"
+    )
+    assert "$deferred | Where-Object { $seen -contains $_ }" in gate
+
+
+def test_98_no_phase_4_fail_or_skip_is_ignored_at_either_gate() -> None:
+    """PROOFS 2 and 3. Zero tolerance survives at both gates.
+
+    The entry gate tolerates no FAIL and no SKIP among the cases it can see; the
+    final gate tolerates none across all 35. Neither counts PASS alone.
+    """
+    gate = _prerequisite_gate()
+    assert "'the Phase-4 matrix has 0 FAIL'" in gate
+    assert "'the Phase-4 matrix has 0 SKIP'" in gate
+    assert "$_.Status -eq 'FAIL'" in gate and "$_.Status -eq 'SKIP'" in gate
+    assert "($failed.Count -eq 0)" in gate and "($skipped.Count -eq 0)" in gate
+
+    final = _final_gate()
+    assert "'the final Phase-4 matrix has 0 FAIL'" in final
+    assert "'the final Phase-4 matrix has 0 SKIP'" in final
+    assert "($failed.Count -eq 0)" in final and "($skipped.Count -eq 0)" in final
+    assert "$required -contains $_.Id" in final, (
+        "the final gate does not take its partition over the full 35-case matrix"
+    )
+
+    # No -ne, no exclusion list, no 'ignore', no allowance anywhere near either.
+    for block, label in ((gate, "P5-P4"), (final, "P5-FIN")):
+        for forbidden in ("-contains 'SKIP'", "Status -ne 'FAIL'", "Status -ne 'SKIP'"):
+            assert forbidden not in block, (
+                f"{label} appears to exempt results from the FAIL/SKIP rule"
+            )
+
+
+def test_99_p5_all_is_refused_when_any_reachable_prerequisite_is_not_pass() -> None:
+    """PROOFS 4 and 8. Nothing runs on an unmet prerequisite, and it is a FAIL."""
+    gate = _prerequisite_gate()
+    assert "$phase4Ok = Test-ChecklistOk $list" in gate, (
+        "the gate decision is not taken from the whole checklist"
+    )
+    source = _executable(SCENARIOS)
+    block = source[source.index("if (-not $phase4Ok)"):]
+    assert "Add-Result 'P5-ALL'" in block[:600]
+    assert "'FAIL'" in block[:600], "an unmet prerequisite is reported as something other than FAIL"
+    assert "'SKIP'" not in block[:600], "an unmet prerequisite must not read as a quiet skip"
+    # AND IT RETURNS. Reporting the refusal and then running anyway would be worse.
+    assert re.search(r"Add-Result 'P5-ALL'.*?\n\s*return\b", block[:900], re.S), (
+        "the refusal does not stop the Phase-5 scenarios from running"
+    )
+
+
+def test_100_the_final_gate_still_demands_the_whole_35_case_matrix() -> None:
+    """PROOF 6. 35/35 did not weaken; it moved to where it is reachable."""
+    final = _final_gate()
+    assert "Get-Phase4RequiredScenarioIds" in final, (
+        "the final gate does not read the full 35-case matrix"
+    )
+    assert "'all 35 Phase-4 scenarios reported a result'" in final
+    assert "'the final Phase-4 matrix is 35/35 PASS'" in final
+    assert "$passed.Count -eq 35" in final, "35/35 is not asserted at the final gate"
+    assert "Add-Result 'P5-FIN'" in final
+    assert "Get-Phase4PrerequisiteScenarioIds" not in final, (
+        "the final gate must judge the whole matrix, not the reduced entry set"
+    )
+
+
+def test_101_final_acceptance_is_impossible_without_y_and_z_passing() -> None:
+    """PROOFS 5 and 7. Each deferred case is checked BY NAME, exactly once.
+
+    A bare 35/35 count is satisfiable by a matrix that lost Z and counted some
+    other result twice, so the count alone is not the guarantee.
+    """
+    final = _final_gate()
+    assert "foreach ($id in $deferred)" in final, (
+        "the deferred lifecycle cases are not checked individually"
+    )
+    assert "$record = @($Results | Where-Object { $_.Id -eq $id })" in final
+    assert "$record.Count -eq 1" in final, (
+        "a deferred case recorded twice would pass an existence-only check"
+    )
+    assert "[string]$record[0].Status -eq 'PASS'" in final, (
+        "a deferred case that FAILED would satisfy a presence-only check"
+    )
+    assert "ran exactly once and PASSED" in final
+
+    # A SKIP is not a PASS. Both zero-tolerance predicates at the final gate must
+    # be live expressions: a deferred case that skipped would otherwise ride
+    # through on nothing but the named check, and a softened predicate here is
+    # indistinguishable from acceptance.
+    assert "'the final Phase-4 matrix has 0 FAIL' ($failed.Count -eq 0)" in final, (
+        "the final gate's FAIL predicate is not a live comparison"
+    )
+    assert "'the final Phase-4 matrix has 0 SKIP' ($skipped.Count -eq 0)" in final, (
+        "the final gate's SKIP predicate is not a live comparison"
+    )
+
+    # AND IT IS WIRED. A gate that is defined but never called gates nothing.
+    harness = _executable(HARNESS)
+    assert "Add-Phase4FinalCompletenessResult -Results $results" in harness, (
+        "the final gate is never called, so nothing ever demands Y and Z"
+    )
+    # The run's exit code is driven by the FAIL count, so a P5-FIN FAIL fails it.
+    assert "$failed = @($results | Where-Object { $_.Status -eq 'FAIL' })" in harness
+    assert "if ($failed.Count -eq 0) {" in harness
+    assert "exit 1" in harness
+
+
+def test_102_shutdown_and_com_release_proof_remains_mandatory() -> None:
+    """PROOF 9. Y and Z keep their coverage; nothing was removed to fix ordering."""
+    harness = _executable(HARNESS)
+    assert "Add-Result 'Z' 'Excel closed naturally after the functional run' 'PASS'" in harness
+    assert "Add-Result 'Y' 'Transient COM releases' 'PASS'" in harness
+    assert "Add-Result 'Y' 'Transient COM releases' 'FAIL'" in harness
+    assert "$transient = @(Get-TransientFailures)" in harness, (
+        "the whole-run transient ledger is no longer read"
+    )
+    # The shutdown ledger itself is untouched.
+    for token in ("$rel.WorkbookClosed = $true", "$rel.QuitCalled = $true",
+                  "$rel.NaturalExit = Wait-ExcelExit", "$rel.EmergencyRequired = $true"):
+        assert token in harness, f"the shutdown ledger lost {token}"
+
+    # Emitting Y and Z is not enough: both must sit in the deferred set, because
+    # that set is what the final gate demands BY NAME. Dropping either from it
+    # would leave the case running and judged by nothing.
+    deferred_decl = re.search(
+        r"\$script:Phase4FinalizationScenarioIds\s*=\s*@\((.*?)\)",
+        _executable(SCENARIOS), re.S,
+    )
+    assert deferred_decl, "the deferred set is not declared"
+    deferred = set(_ps_string_literals(deferred_decl.group(1)))
+    assert deferred == {"Y", "Z"}, (
+        f"the final gate demands {sorted(deferred)} by name; both lifecycle "
+        "cases must be there or one of them is proved by nothing"
+    )
+
+
+def test_103_the_correction_is_pure_powershell_and_touches_no_vba() -> None:
+    """PROOF 10. A lifecycle/ledger fix has no business in a production module."""
+    final = _final_gate()
+    gate = _prerequisite_gate()
+    for block, label in ((gate, "P5-P4"), (final, "P5-FIN")):
+        # No COM, no Run(), no workbook, no VBA at either gate: both read the
+        # in-memory result ledger and nothing else.
+        for forbidden in ("$Workbook", "$Excel", ".Run(", "VBProject", "PCCM_"):
+            assert forbidden not in block, (
+                f"{label} reaches into the workbook; it must judge results only"
+            )
+    # And the diagnostic module is still the only non-production .bas involved.
+    assert DIAGNOSTIC.is_file()
+    assert (SRC_VBA / "modCalcReport.bas").is_file()
+
+
+def test_104_the_accepted_gate_b_scenario_topology_is_preserved() -> None:
+    """PROOF 11. Every accepted family still emits; P5-FIN is the only addition."""
+    scenarios = _executable(SCENARIOS)
+    harness = _executable(HARNESS)
+    both = scenarios + "\n" + harness
+    for name in ("P5-PRE", "P5-P4", "P5-ALL", "P5-FX", "P5-M", "P5-DC",
+                 "P5-AN", "P5-RF", "P5-PQ", "P5-PN", "P5-AR", "P5-ID",
+                 "P5-ST", "P5-NS", "P5-KP", "P5-RC", "P5-FA", "P5-FC",
+                 "P5-AX", "P5-EV", "P5-XX", "P5-FIN"):
+        # P5-FA and P5-FC are emitted through the shared failpoint driver, which
+        # takes the ID as a parameter; both emission forms count.
+        assert (f"Add-Result '{name}'" in both
+                or f"-ScenarioId '{name}'" in both), f"scenario {name} no longer emits"
+    for name in STATUS_ROW_IDS:
+        assert (f"Add-Result '{name}'" in both
+                or f"-ScenarioId '{name}'" in both), f"status row {name} no longer emits"
+    # The plan-case scenario registry is unchanged: P5-FIN is a gate, not a
+    # mapping target, exactly as P5-PRE, P5-P4 and P5-ALL are not.
+    registry = _procedure(scenarios, "Get-Phase5ScenarioIds")
+    for name in ("P5-FIN", "P5-P4", "P5-ALL", "P5-PRE"):
+        assert f"'{name}'" not in registry, (
+            f"{name} is a lifecycle gate and must not be a plan-case mapping target"
+        )
+
+
+def test_105_the_runtime_run_1_topology_is_pinned_end_to_end() -> None:
+    """PROOF 12. The observed Run-1 ledger, replayed against both gates.
+
+    Order is taken from the harness source, not assumed: the Phase-5 call, then
+    Z, then Y, then the final gate.
+    """
+    harness = _executable(HARNESS)
+    phase5_at = harness.index("Invoke-Phase5GateBScenarios -Excel")
+    z_at = harness.index("Add-Result 'Z' 'Excel closed naturally")
+    y_at = harness.index("$transient = @(Get-TransientFailures)")
+    fin_at = harness.index("Add-Phase4FinalCompletenessResult -Results $results")
+    assert phase5_at < z_at < y_at < fin_at, (
+        "the corrected lifecycle order is not Phase 5 -> Z -> Y -> final gate"
+    )
+    # Z really is after the session is gone, and Y after Z.
+    quit_at = harness.index("$excel.Quit(); $rel.QuitCalled = $true")
+    assert phase5_at < quit_at < z_at, (
+        "Z no longer follows Application.Quit, so it is not a post-session case"
+    )
+
+    # The entry gate judges the reduced set, the final gate the whole matrix.
+    gate = _prerequisite_gate()
+    assert "$prerequisite -contains $_.Id" in gate, (
+        "the entry gate no longer partitions on the prerequisite set"
+    )
+    assert "$required -contains $_.Id" not in gate, (
+        "the entry gate is back to judging the full matrix, which is the defect"
+    )
+    assert "$required -contains $_.Id" in _final_gate(), (
+        "the final gate no longer judges the whole matrix"
+    )
+
+    required = set(PHASE4_SCENARIO_IDS)
+    deferred = {"Y", "Z"}
+    prerequisite = required - deferred
+
+    def entry_gate(ledger: dict) -> bool:
+        seen = set(ledger)
+        if prerequisite - seen:
+            return False
+        judged = {k: v for k, v in ledger.items() if k in prerequisite}
+        return (not any(v == "FAIL" for v in judged.values())
+                and not any(v == "SKIP" for v in judged.values())
+                and sum(v == "PASS" for v in judged.values()) == len(prerequisite))
+
+    def final_gate(ledger: dict) -> bool:
+        seen = set(ledger)
+        if required - seen:
+            return False
+        judged = {k: v for k, v in ledger.items() if k in required}
+        if any(v in ("FAIL", "SKIP") for v in judged.values()):
+            return False
+        if sum(v == "PASS" for v in judged.values()) != 35:
+            return False
+        return all(ledger.get(name) == "PASS" for name in deferred)
+
+    # RUN 1, exactly as observed: at the entry gate only the 33 exist.
+    at_entry = {name: "PASS" for name in prerequisite}
+    assert entry_gate(at_entry), (
+        "the corrected entry gate still refuses the Run-1 ledger it should accept"
+    )
+    # The old gate is what actually fired, and it could not have done otherwise.
+    old_missing = required - set(at_entry)
+    assert old_missing == {"Y", "Z"}, "the Run-1 'missing: Y, Z' detail is not reproduced"
+
+    # Y and Z then run, and the final gate accepts the completed matrix.
+    completed = dict(at_entry, Y="PASS", Z="PASS")
+    assert final_gate(completed)
+
+    # But not without them, and not with them failing.
+    assert not final_gate(dict(at_entry)), "the final gate accepts a matrix missing Y and Z"
+    assert not final_gate(dict(at_entry, Y="PASS", Z="FAIL"))
+    assert not final_gate(dict(at_entry, Y="FAIL", Z="PASS"))
+    assert not final_gate(dict(at_entry, Y="PASS", Z="SKIP"))
+    # And a genuine Phase-4 regression still stops Phase 5 at the entry gate.
+    broken = dict(at_entry); broken["K2"] = "FAIL"
+    assert not entry_gate(broken)
+    skipped = dict(at_entry); skipped["K2"] = "SKIP"
+    assert not entry_gate(skipped)
+    dropped = {k: v for k, v in at_entry.items() if k != "K2"}
+    assert not entry_gate(dropped)
+
+
+# --- negative controls -----------------------------------------------------
+def test_nc_84_the_original_run_1_prerequisite_is_caught() -> None:
+    """The accepted-at-35640ec gate, replayed: unsatisfiable by construction."""
+    planted = _synthetic(
+        "$required = Get-Phase4RequiredScenarioIds\n"
+        "foreach ($id in $required) { if ($seen -notcontains $id) { $missing += $id } }\n"
+        "$null = Add-Check $list 'all 35 Phase-4 scenarios reported a result' "
+        "($missing.Count -eq 0)\n"
+    )
+    assert "Get-Phase4PrerequisiteScenarioIds" not in planted, (
+        "the defective gate must be visible as one that reads the whole matrix"
+    )
+    at_entry = set(PHASE4_SCENARIO_IDS) - {"Y", "Z"}
+    missing = set(PHASE4_SCENARIO_IDS) - at_entry
+    assert missing == {"Y", "Z"} and len(at_entry) == 33, (
+        "33 of 35 with Y and Z missing is exactly what Run 1 reported"
+    )
+
+
+def test_nc_85_lowering_the_threshold_to_33_is_caught() -> None:
+    """The tempting non-fix: drop the count and lose Y/Z coverage entirely."""
+    planted = _synthetic(
+        "$null = Add-Check $list 'the Phase-4 matrix is 33/33 PASS' ($passed.Count -eq 33)\n"
+    )
+    assert "35" not in planted, "a threshold cut must be visible as one"
+    # With no later gate, a run whose Z FAILED would still be accepted.
+    judged = {name: "PASS" for name in set(PHASE4_SCENARIO_IDS) - {"Y", "Z"}}
+    assert sum(v == "PASS" for v in judged.values()) == 33
+    ledger = dict(judged, Y="PASS", Z="FAIL")
+    assert sum(v == "PASS" for v in ledger.values() ) == 34, (
+        "a 33/33 entry gate with no final gate never judges Y or Z at all"
+    )
+
+
+def test_nc_86_a_count_only_final_gate_is_caught() -> None:
+    """35/35 by count alone is satisfiable by a matrix that lost Z."""
+    planted = _synthetic(
+        "$null = Add-Check $list 'the final Phase-4 matrix is 35/35 PASS' "
+        "($passed.Count -eq 35)\n"
+    )
+    assert "foreach ($id in $deferred)" not in planted, (
+        "a count-only final gate must be visible as one"
+    )
+    # A duplicated result stands in for the missing one under a pure count.
+    ledger = [(name, "PASS") for name in set(PHASE4_SCENARIO_IDS) - {"Z"}]
+    ledger.append(("Y", "PASS"))          # Y recorded twice, Z never
+    assert sum(1 for _, status in ledger if status == "PASS") == 35
+    assert "Z" not in {name for name, _ in ledger}, (
+        "the count reaches 35 while the case the gate exists to prove is absent"
+    )

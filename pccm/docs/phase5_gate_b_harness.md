@@ -1300,3 +1300,98 @@ Everything about behaviour, and specifically:
 * that no owned Excel process leaks and the instance exits naturally
 
 Gate A established what the source says. Gate B has not been run.
+
+---
+
+## Runtime Run 1: the Phase-4 prerequisite sequencing correction
+
+Gate B has now been run once on Windows, at harness commit `35640ec`. That run
+did not reach a Phase-5 result. It stopped at the prerequisite gate:
+
+```
+[FAIL] P5-P4  Phase-4 prerequisite: 35/35 PASS, 0 FAIL, 0 SKIP
+    FAIL all 35 Phase-4 scenarios reported a result -- missing: Y, Z
+    ok   the Phase-4 matrix has 0 FAIL
+    ok   the Phase-4 matrix has 0 SKIP
+    FAIL the Phase-4 matrix is 35/35 PASS -- passed 33 of 35
+
+[FAIL] P5-ALL  Phase-5 Gate-B scenarios
+    not attempted: the Phase-4 structural matrix is not intact, so no Phase-5
+    result would mean anything
+
+[PASS] Z  Excel closed naturally after the functional run
+[PASS] Y  Transient COM releases
+
+  36 passed, 2 failed, 0 skipped
+  Phase-4 structural matrix: 35 of 35
+```
+
+Nothing in the workbook was wrong. The prerequisite demanded two results that
+cannot exist at the point it runs.
+
+### Why Y and Z cannot precede Phase 5
+
+`Y` and `Z` are the only two entries in the 35-case matrix that are not Phase-4
+*behaviour* cases:
+
+* **Z** asserts the owned Excel process exited naturally. It is recorded after
+  `Workbook.Close`, `Application.Quit`, the COM release ledger and
+  `Wait-ExcelExit`.
+* **Y** asserts every transient COM object released cleanly across the *whole*
+  run, Phase-5's own transients included. It is recorded last of all, from
+  `Get-TransientFailures`.
+
+Phase 5 runs inside the live automation session — `Invoke-Phase5GateBScenarios`
+is called with the same `$excel` and `$wb`, before `PCCM_AutomationEnd`. So the
+gate asked for a post-session result from inside the session. It was
+unsatisfiable by construction, and no workbook could have passed it.
+
+Evaluating `Y` early would not have helped either: it would attest to Phase-4's
+transients only, which is weaker evidence, not stronger.
+
+### The correction: two gates, one matrix
+
+The threshold was never the problem, so the threshold did not move. The matrix
+is still 35 cases and 35/35 PASS with 0 FAIL and 0 SKIP is still required. What
+changed is *where* each demand is made.
+
+| | `P5-P4` (entry) | `P5-FIN` (final) |
+|---|---|---|
+| runs | before any Phase-5 scenario, session live | after `Y` and `Z`, session gone |
+| judges | the 33 prerequisite cases | all 35 matrix cases |
+| FAIL tolerated | none | none |
+| SKIP tolerated | none | none |
+| pass count | 33/33 | 35/35 |
+| by name | — | each deferred case, exactly one record, `PASS` |
+| on failure | `P5-ALL` FAIL, `return` | FAIL, and the run exits 1 |
+
+`$script:Phase4FinalizationScenarioIds = @('Y', 'Z')` names the deferred cases.
+`Get-Phase4PrerequisiteScenarioIds` **derives** the entry set as the matrix minus
+that list — there is no second hand-maintained roster to drift, a case added to
+the matrix becomes a prerequisite case automatically, and the only way to defer
+one is to name it while it stays inside the 35.
+
+`P5-P4` proves the partition rather than asserting it in prose: the two sets must
+be disjoint, must sum to 35, and every deferred name must be a real matrix
+member. It also checks that no deferred case has *already* been recorded — if one
+had, it was never a post-session case and has no business being excluded. That
+check is the direct regression assertion for the Run-1 topology.
+
+`P5-FIN` is what makes the deferral safe. A bare 35/35 count would be satisfiable
+by a matrix that lost `Z` and counted something else twice, so each deferred case
+is checked by name for exactly one record with status `PASS`. Because the
+driver's exit code is driven by the FAIL count, a `P5-FIN` FAIL fails the whole
+run — including on a Phase-4 SKIP, which the summary alone would have printed
+before exiting 0.
+
+### What this correction is not
+
+It does not lower 35 to 33. It does not exempt any case from the FAIL/SKIP rule.
+It does not remove `Y` or `Z` coverage — it makes both *mandatory at a gate that
+can see them*, which the accepted source never had. It touches no production VBA,
+no calculation behaviour, no contract, no fingerprint and no oracle: both gates
+read the in-memory result ledger and nothing else, and the tests pin that neither
+reaches for `$Workbook`, `$Excel`, `.Run(`, `VBProject` or any `PCCM_` endpoint.
+
+Runtime Run 1 stands as historical evidence of a harness sequencing defect. It
+was not a production failure, and it has not been rerun.
