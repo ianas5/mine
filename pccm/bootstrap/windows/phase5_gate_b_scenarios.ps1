@@ -73,7 +73,7 @@ function Get-Phase5ScenarioIds {
     return @(
         'P5-M',
         'P5-D0', 'P5-D1', 'P5-D2', 'P5-D3', 'P5-D4', 'P5-D5', 'P5-D6', 'P5-D7', 'P5-D8',
-        'P5-AN', 'P5-RF', 'P5-ID',
+        'P5-AN', 'P5-RF', 'P5-PQ', 'P5-PN', 'P5-AR', 'P5-ID',
         'P5-S1', 'P5-S2', 'P5-S3', 'P5-S4', 'P5-S5', 'P5-S6',
         'P5-ST', 'P5-NS', 'P5-KP', 'P5-RC',
         'P5-FA', 'P5-FC',
@@ -604,6 +604,229 @@ function Write-Phase5Weights {
                 }
             }
         }
+    }
+}
+
+# ===========================================================================
+# Gate-B workbook mutations
+# ===========================================================================
+# The plan section 18 prerequisite matrix is EMITTED, in
+# `phase5_cases.json -> gate_b`. Most of its boundaries cannot be expressed as
+# valid analytical models - "abc" is not a Discount Rate and a blank is not a
+# Quantity - so the corpus describes WORKBOOK MUTATIONS: what to change, where,
+# and what the refusal must say. This applies one.
+#
+# PowerShell holds no list of its own. Every predicate, target and expected
+# detail token comes from the corpus, so a locked prerequisite cannot be dropped
+# by editing this file.
+function Invoke-Phase5Mutation {
+    param($Excel, $Workbook, $Manifest, $Inspection, $Mutation)
+
+    $registers = @{}
+    foreach ($register in @($Manifest.registers)) { $registers[$register.key] = $register }
+    $grids = @{}
+    foreach ($grid in @($Manifest.grids)) { $grids[$grid.key] = $grid }
+    $fx = $Inspection.input_tables.fx_rates
+
+    switch ([string]$Mutation.kind) {
+        'entered_structure' {
+            # An ENTERED structural input. `apply_timeline` decides whether the
+            # applied structure is refreshed: false is how STRUCTURE CHANGE
+            # PENDING is produced, and it is the only mutation that leaves the
+            # Phase-4 structural gate holding the refusal.
+            $names = @{
+                base_year  = 'nmBaseYear_Entered'
+                start_year = 'nmStartYear_Entered'
+                duration   = 'nmDuration_Entered'
+            }
+            Set-NamedValue -Workbook $Workbook `
+                -DefinedName $Manifest.defined_names.($names[[string]$Mutation.target]) `
+                -Value ([double]$Mutation.value)
+            if ($Mutation.apply_timeline) {
+                $Excel.Run('PCCM_ApplyTimeline') | Out-Null
+            }
+        }
+        'named_number' {
+            Set-NamedValue -Workbook $Workbook `
+                -DefinedName $Inspection.inputs.([string]$Mutation.target).defined_name `
+                -Value ([double]$Mutation.value)
+        }
+        'named_text' {
+            Set-NamedValueText -Workbook $Workbook `
+                -DefinedName $Inspection.inputs.([string]$Mutation.target).defined_name `
+                -Text ([string]$Mutation.value)
+        }
+        'named_blank' {
+            Clear-NamedValue -Workbook $Workbook `
+                -DefinedName $Inspection.inputs.([string]$Mutation.target).defined_name
+        }
+        'register_cell' {
+            $register = $registers[[string]$Mutation.register]
+            $row = Find-RegisterRow -Workbook $Workbook -Register $register `
+                -PermanentId ([string]$Mutation.permanent_id)
+            $ordinal = [array]::IndexOf(@($register.columns), [string]$Mutation.column) + 1
+            if ($ordinal -lt 1) { throw ("no register column " + [string]$Mutation.column) }
+            Set-TableCell -Workbook $Workbook -SheetName $register.sheet `
+                -TableName $register.table_name -RowIndex $row -ColumnIndex $ordinal `
+                -Value (Get-MutationValue $Mutation)
+        }
+        'fx_row' {
+            $repeat = 1
+            if ($null -ne $Mutation.repeat) { $repeat = [int]$Mutation.repeat }
+            for ($copy = 1; $copy -le $repeat; $copy++) {
+                $row = 0
+                if (-not $Mutation.append) {
+                    $row = Find-FxRow -Workbook $Workbook -Table $fx `
+                        -Currency ([string]$Mutation.currency)
+                }
+                if ($row -lt 1) {
+                    $row = (Get-TableRowCount -Workbook $Workbook -SheetName $fx.sheet `
+                        -TableName $fx.table_name) + 1
+                    Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet `
+                        -TableName $fx.table_name
+                    Set-TableCell -Workbook $Workbook -SheetName $fx.sheet `
+                        -TableName $fx.table_name -RowIndex $row -ColumnIndex 1 `
+                        -Value ([string]$Mutation.currency)
+                }
+                Set-TableCell -Workbook $Workbook -SheetName $fx.sheet `
+                    -TableName $fx.table_name -RowIndex $row -ColumnIndex 2 `
+                    -Value (Get-MutationValue $Mutation -Property 'rate')
+            }
+        }
+        'fx_remove' {
+            $row = Find-FxRow -Workbook $Workbook -Table $fx -Currency ([string]$Mutation.currency)
+            if ($row -ge 1) {
+                Remove-TableRow -Workbook $Workbook -SheetName $fx.sheet `
+                    -TableName $fx.table_name -RowIndex $row
+            }
+        }
+        'inflation_cell' {
+            $grid = $grids['inflation']
+            $row = Find-GridRow -Workbook $Workbook -Grid $grid -Key ([string]$Mutation.profile)
+            $headers = @(Get-TableColumnNames -Workbook $Workbook -SheetName $grid.sheet `
+                -TableName $grid.table_name)
+            $ordinal = [array]::IndexOf($headers, [string]$Mutation.calendar_year) + 1
+            if ($ordinal -lt 1) { throw ("no inflation column for " + [string]$Mutation.calendar_year) }
+            Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
+                -TableName $grid.table_name -RowIndex $row -ColumnIndex $ordinal `
+                -Value (Get-MutationValue $Mutation)
+        }
+        'inflation_profile_rename' {
+            $grid = $grids['inflation']
+            $row = Find-GridRow -Workbook $Workbook -Grid $grid -Key ([string]$Mutation.profile)
+            Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
+                -TableName $grid.table_name -RowIndex $row -ColumnIndex 1 `
+                -Value ([string]$Mutation.value)
+        }
+        'inflation_profile_add' {
+            $grid = $grids['inflation']
+            $row = (Get-TableRowCount -Workbook $Workbook -SheetName $grid.sheet `
+                -TableName $grid.table_name) + 1
+            Add-BlankTableRow -Workbook $Workbook -SheetName $grid.sheet -TableName $grid.table_name
+            Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
+                -TableName $grid.table_name -RowIndex $row -ColumnIndex 1 `
+                -Value ([string]$Mutation.profile)
+            $headers = @(Get-TableColumnNames -Workbook $Workbook -SheetName $grid.sheet `
+                -TableName $grid.table_name)
+            $ordinal = [array]::IndexOf($headers, [string]$Mutation.calendar_year) + 1
+            if ($ordinal -ge 1) {
+                Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
+                    -TableName $grid.table_name -RowIndex $row -ColumnIndex $ordinal `
+                    -Value (Get-MutationValue $Mutation)
+            }
+        }
+        'profiling_cell' {
+            $grid = $grids[[string]$Mutation.grid]
+            $row = Find-GridRow -Workbook $Workbook -Grid $grid -Key ([string]$Mutation.permanent_id)
+            $fixed = @($grid.fixed_columns).Count
+            Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
+                -TableName $grid.table_name -RowIndex $row `
+                -ColumnIndex ($fixed + [int]$Mutation.project_year) `
+                -Value (Get-MutationValue $Mutation)
+        }
+        default { throw ("unknown Gate-B mutation kind '" + [string]$Mutation.kind + "'") }
+    }
+}
+
+function Get-MutationValue {
+    param($Mutation, [string]$Property = 'value')
+    # A NULL IN THE CORPUS IS A BLANK CELL, never zero and never "". The same
+    # rule the fixture writers follow, applied to the mutation matrix: several
+    # locked prerequisites ARE the blank, and casting first would write the very
+    # value the predicate exists to refuse the absence of.
+    $raw = $Mutation.$Property
+    if ($null -eq $raw) { return $null }
+    if ($raw -is [string]) { return [string]$raw }
+    return [double]$raw
+}
+
+function Find-RegisterRow {
+    param($Workbook, $Register, [string]$PermanentId)
+    $body = @(Get-TableBody -Workbook $Workbook -SheetName $Register.sheet `
+        -TableName $Register.table_name)
+    for ($index = 0; $index -lt $body.Count; $index++) {
+        if ([string]$body[$index][0] -eq $PermanentId) { return $index + 1 }
+    }
+    throw ("no register row carries the permanent ID " + $PermanentId)
+}
+
+function Find-GridRow {
+    param($Workbook, $Grid, [string]$Key)
+    $body = @(Get-TableBody -Workbook $Workbook -SheetName $Grid.sheet -TableName $Grid.table_name)
+    for ($index = 0; $index -lt $body.Count; $index++) {
+        if ([string]$body[$index][0] -eq $Key) { return $index + 1 }
+    }
+    throw ("no grid row carries the key " + $Key)
+}
+
+function Find-FxRow {
+    param($Workbook, $Table, [string]$Currency)
+    $body = @(Get-TableBody -Workbook $Workbook -SheetName $Table.sheet -TableName $Table.table_name)
+    for ($index = 0; $index -lt $body.Count; $index++) {
+        if ([string]$body[$index][0] -eq $Currency) { return $index + 1 }
+    }
+    return 0
+}
+
+function Clear-NamedValue {
+    param($Workbook, [string]$DefinedName)
+    $names = $null; $nm = $null; $rng = $null
+    try {
+        $names = $Workbook.Names
+        $nm = $names.Item($DefinedName)
+        $rng = $nm.RefersToRange
+        # A GENUINE BLANK. Writing '' would leave a zero-length string, which is
+        # a value the user entered, not the absence of one.
+        $null = $rng.ClearContents()
+    } finally {
+        if ($null -ne $rng)   { Release-Transient $rng   'Range(name)'; $rng   = $null }
+        if ($null -ne $nm)    { Release-Transient $nm    'Name';        $nm    = $null }
+        if ($null -ne $names) { Release-Transient $names 'Names';       $names = $null }
+    }
+}
+
+function Get-Phase5PlanRefusalTokens {
+    param($Cases, [string]$PlanCaseId)
+    # From the corpus, never from a list here. A predicate whose discriminator
+    # was dropped upstream must fail rather than silently degrade to "some error
+    # occurred".
+    $tokens = $Cases.gate_b.plan_refusal_tokens.$PlanCaseId
+    if ($null -eq $tokens) { return @() }
+    return @($tokens)
+}
+
+function Add-Phase5DetailTokenChecks {
+    param($List, [string]$Detail, $Tokens, [string]$Label)
+    # THE DISCRIMINATOR. "some error occurred" is not evidence that the intended
+    # predicate fired. Each token is a fragment of the accepted production
+    # message that names the PREDICATE, so a harmless wording edit elsewhere in
+    # the sentence does not break the proof but a refusal from the WRONG
+    # predicate does.
+    $null = Add-Check $List ($Label + ': the refusal detail is specific, not empty') `
+        (-not [string]::IsNullOrWhiteSpace($Detail)) $Detail
+    foreach ($token in @($Tokens)) {
+        $null = Add-Check $List ($Label + ": the detail names the predicate ('" + $token + "')") `
+            ($Detail -like ('*' + $token + '*')) ("detail: " + $Detail)
     }
 }
 
@@ -1612,8 +1835,9 @@ function Invoke-Phase5GateBScenarios {
             $status = [string]$Excel.Run('PCCM_CalculationStatus')
             $null = Add-Check $list ('case ' + $id + ' (' + [string]$case.expected_refusal + '): REFUSED') `
                 ($attempt -eq 'REFUSED') ("attempt '" + $attempt + "'")
-            $null = Add-Check $list ('case ' + $id + ': the refusal detail is specific, not empty') `
-                (-not [string]::IsNullOrWhiteSpace($detail)) $detail
+            Add-Phase5DetailTokenChecks -List $list -Detail $detail `
+                -Tokens (Get-Phase5PlanRefusalTokens -Cases $Cases -PlanCaseId ([string]$case.id)) `
+                -Label ('case ' + $id)
             $null = Add-Check $list ('case ' + $id + ': the derived status is INVALID') `
                 ($status -eq 'INVALID') $status
 
@@ -1639,6 +1863,227 @@ function Invoke-Phase5GateBScenarios {
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Result 'P5-RF' 'Prerequisite refusals' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # P5-PQ. THE COMPLETE plan section 18 PREREQUISITE MATRIX
+    # -------------------------------------------------------------------
+    # The nine refusal plan cases do not exhaust section 18. Base Year after
+    # Start Year, STRUCTURE CHANGE PENDING, a duplicated referenced currency, a
+    # non-numeric Probability, an unknown Distribution and a dozen more locked
+    # predicates had no real-Windows scenario at all.
+    #
+    # The matrix is EMITTED, in phase5_cases.json -> gate_b.prerequisite_cases.
+    # This scenario consumes it; it holds no list of its own, so a locked
+    # predicate cannot be dropped by editing this file.
+    try {
+        $list = New-Checklist
+        $prerequisites = @($Cases.gate_b.prerequisite_cases)
+        $null = Add-Check $list 'the emitted prerequisite matrix is present' `
+            ($prerequisites.Count -ge 1) ("cases " + $prerequisites.Count)
+
+        # One successful baseline, and every prerequisite refusal is compared
+        # against it: the prior snapshot must survive each, exactly as P5-RF
+        # proves for the plan-case refusals.
+        $planCase = @{}
+        foreach ($candidate in @($Cases.plan_cases)) { $planCase[[string]$candidate.id] = $candidate }
+        $covered = @()
+        foreach ($entry in $prerequisites) {
+            $id = [string]$entry.id
+            $base = $planCase[[string]$entry.base_plan_case]
+            if ($null -eq $base) {
+                $null = Add-Check $list ($id + ': the base plan case exists') $false `
+                    ("base_plan_case " + [string]$entry.base_plan_case)
+                continue
+            }
+            $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+                -Inspection $Inspection -Model $base.model
+            $Excel.Run('PCCM_Calculate') | Out-Null
+            $null = Add-Check $list ($id + ': the unmutated base fixture calculates') `
+                ([string]$Excel.Run('PCCM_CalculationAttemptResult') -eq 'SUCCESS') `
+                ("base plan case " + [string]$entry.base_plan_case)
+            $before = Get-Phase5Snapshot -Workbook $Workbook -Inspection $Inspection
+
+            # THE MUTATION, from the corpus.
+            Invoke-Phase5Mutation -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+                -Inspection $Inspection -Mutation $entry.mutation
+
+            $Excel.Run('PCCM_Calculate') | Out-Null
+            $attempt = [string]$Excel.Run('PCCM_CalculationAttemptResult')
+            $detail = [string]$Excel.Run('PCCM_CalculationAttemptDetail')
+            $status = [string]$Excel.Run('PCCM_CalculationStatus')
+            $null = Add-Check $list ($id + ' (' + [string]$entry.predicate + '): attempt = ' + [string]$entry.expected_attempt) `
+                ($attempt -eq [string]$entry.expected_attempt) ("got '" + $attempt + "'")
+            $null = Add-Check $list ($id + ': status = ' + [string]$entry.expected_status) `
+                ($status -eq [string]$entry.expected_status) ("got '" + $status + "'")
+            Add-Phase5DetailTokenChecks -List $list -Detail $detail `
+                -Tokens $entry.detail_tokens -Label $id
+            if ($entry.snapshot_unchanged) {
+                $after = Get-Phase5Snapshot -Workbook $Workbook -Inspection $Inspection
+                Add-SnapshotUnchangedChecks -List $list -Before $before -After $after `
+                    -Label $id -SuccessFields $successRecordFields
+                Add-Phase5AttemptAxisChecks -List $list -After $after -Label $id `
+                    -ExpectedResult ([string]$entry.expected_attempt) `
+                    -ExpectedStatus ([string]$entry.expected_status)
+            }
+            $covered += $id
+        }
+        $null = Add-Check $list 'every emitted prerequisite case was driven' `
+            ($covered.Count -eq $prerequisites.Count) `
+            ("covered " + $covered.Count + " of " + $prerequisites.Count)
+        Add-Result 'P5-PQ' `
+            ('Plan section 18 prerequisite matrix: ' + $covered.Count + ' predicates, each with its own detail discriminator') `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'P5-PQ' 'Plan section 18 prerequisite matrix' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # P5-PN. THE REFERENCED-ONLY COMPLEMENT: what must NOT block
+    # -------------------------------------------------------------------
+    # A harness that only proved refusals would accept a model that refused too
+    # much. An assumption nobody references cannot block a valid model, and that
+    # is a locked semantic in its own right.
+    try {
+        $list = New-Checklist
+        $noBlock = @($Cases.gate_b.no_block_cases)
+        $null = Add-Check $list 'the emitted no-block matrix is present' `
+            ($noBlock.Count -ge 1) ("cases " + $noBlock.Count)
+        $planCase = @{}
+        foreach ($candidate in @($Cases.plan_cases)) { $planCase[[string]$candidate.id] = $candidate }
+        $covered = @()
+        foreach ($entry in $noBlock) {
+            $id = [string]$entry.id
+            $base = $planCase[[string]$entry.base_plan_case]
+            $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+                -Inspection $Inspection -Model $base.model
+            $Excel.Run('PCCM_Calculate') | Out-Null
+            $baseline = [string]$Excel.Run('PCCM_CalculationFingerprint')
+
+            Invoke-Phase5Mutation -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+                -Inspection $Inspection -Mutation $entry.mutation
+
+            $Excel.Run('PCCM_Calculate') | Out-Null
+            $attempt = [string]$Excel.Run('PCCM_CalculationAttemptResult')
+            $detail = [string]$Excel.Run('PCCM_CalculationAttemptDetail')
+            $status = [string]$Excel.Run('PCCM_CalculationStatus')
+            $null = Add-Check $list ($id + ' (' + [string]$entry.predicate + '): attempt = ' + [string]$entry.expected_attempt) `
+                ($attempt -eq [string]$entry.expected_attempt) ("got '" + $attempt + "', detail '" + $detail + "'")
+            $null = Add-Check $list ($id + ': status = ' + [string]$entry.expected_status) `
+                ($status -eq [string]$entry.expected_status) ("got '" + $status + "'")
+            $null = Add-Check $list ($id + ': the detail stays blank - nothing was refused') `
+                ([string]::IsNullOrEmpty($detail)) $detail
+            # The unreferenced assumption is not merely tolerated: it changes
+            # NOTHING, so the digest is the one the clean model produced.
+            $null = Add-Check $list ($id + ': the stored fingerprint is unchanged by the unreferenced row') `
+                ([string]$Excel.Run('PCCM_CalculationFingerprint') -ceq $baseline)
+            $covered += $id
+        }
+        $null = Add-Check $list 'every emitted no-block case was driven' `
+            ($covered.Count -eq $noBlock.Count) `
+            ("covered " + $covered.Count + " of " + $noBlock.Count)
+        Add-Result 'P5-PN' `
+            ('Referenced-only no-block semantics: ' + $covered.Count + ' assumptions that must not block') `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'P5-PN' 'Referenced-only no-block semantics' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # P5-AR. THE DRIVER-AUDIT A/B/C/D RECONSTRUCTION
+    # -------------------------------------------------------------------
+    # A CROSS-CHECK BETWEEN TWO PARTS OF THE REAL WORKBOOK, not a second
+    # comparison against the oracle. Every driver row and every headline total is
+    # already asserted against the emitted oracle by Add-Phase5AnalyticalChecks;
+    # this proves the published audit COLUMNS actually reconstruct the published
+    # headline TOTALS, partitioned by driver kind:
+    #
+    #   A = sum of the Cost Line deterministic columns
+    #   B = sum of the Cost Line uncertainty-mean-shift columns
+    #   C = sum of the Cost Line mean-basis columns
+    #   D = sum of the Risk expected-risk columns
+    #
+    # The mapping is EMITTED, in gate_b.audit_reconstruction.relationships, so
+    # PowerShell never restates "column 18" in its own source. The fixture has
+    # three Cost Lines and two Risks, so none of the four is trivial.
+    try {
+        $list = New-Checklist
+        $audit = $Cases.gate_b.audit_reconstruction
+        $null = Add-Check $list 'the emitted audit fixture is present' ($null -ne $audit)
+        $null = Add-Check $list 'the audit fixture has more than one Cost Line' `
+            ((@($audit.model.cost_lines)).Count -ge 2) `
+            ("cost lines " + (@($audit.model.cost_lines)).Count)
+        $null = Add-Check $list 'the audit fixture has at least one Risk' `
+            ((@($audit.model.risks)).Count -ge 1) ("risks " + (@($audit.model.risks)).Count)
+
+        $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+            -Inspection $Inspection -Model $audit.model
+        $Excel.Run('PCCM_Calculate') | Out-Null
+        $null = Add-Check $list 'the multi-driver audit fixture calculated' `
+            ([string]$Excel.Run('PCCM_CalculationAttemptResult') -eq 'SUCCESS')
+
+        # The published values still equal the oracle - the audit relationship is
+        # an ADDITIONAL claim, not a replacement for value equality.
+        Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook -Inspection $Inspection `
+            -Case $audit -Tolerances $Cases.tolerances
+
+        $rows = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_drivers')
+        $kindColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_drivers' -ColumnKey 'driver_kind'
+        $null = Add-Check $list 'tblCalcDrivers carries rows of both kinds' `
+            ((@($rows | Where-Object { [string]$_[$kindColumn] -eq 'Cost Line' }).Count -ge 2) -and
+             (@($rows | Where-Object { [string]$_[$kindColumn] -eq 'Risk' }).Count -ge 1))
+
+        foreach ($relationship in @($audit.relationships)) {
+            $ordinal = Get-CalcTableColumnIndex -Inspection $Inspection `
+                -TableKey 'calc_drivers' -ColumnKey ([string]$relationship.driver_column)
+            $null = Add-Check $list `
+                ([string]$relationship.headline + ': tblCalcDrivers publishes ' + [string]$relationship.driver_column) `
+                ($ordinal -ge 0)
+            if ($ordinal -lt 0) { continue }
+
+            # PARTITIONED BY KIND, and a BLANK IS SKIPPED, never read as the
+            # opposite kind's identity 1. An N/A cell means the column does not
+            # apply to that row; folding a 1 into the sum would fabricate a
+            # contribution the model never made.
+            $sum = 0.0
+            $contributors = 0
+            $wrongKindPopulated = 0
+            foreach ($row in $rows) {
+                $isKind = ([string]$row[$kindColumn] -eq [string]$relationship.kind)
+                $blank = Test-CalcBlank -Actual $row[$ordinal]
+                if ($isKind) {
+                    if (-not $blank) {
+                        $sum = $sum + [double]$row[$ordinal]
+                        $contributors++
+                    }
+                } elseif (-not $blank) {
+                    $wrongKindPopulated++
+                }
+            }
+            $null = Add-Check $list `
+                ([string]$relationship.headline + ': the ' + [string]$relationship.kind + ' partition contributed rows') `
+                ($contributors -ge 1) ("contributors " + $contributors)
+            $null = Add-Check $list `
+                ([string]$relationship.headline + ': the opposite kind publishes BLANK in ' + [string]$relationship.driver_column) `
+                ($wrongKindPopulated -eq 0) ("populated on the wrong kind: " + $wrongKindPopulated)
+
+            $headline = Get-CalcScalar -Workbook $Workbook -Inspection $Inspection `
+                -Block 'calc_totals' -FieldKey ([string]$relationship.headline)
+            # AN AUDIT RELATIONSHIP, not the reconciliation allowance. The two
+            # sides are the same published Doubles summed in the same order, so
+            # they are compared with the ordinary value primitive and no new
+            # tolerance is invented here.
+            $null = Add-Check $list `
+                ([string]$relationship.headline + ' = SUM(' + [string]$relationship.driver_column + ') over ' + [string]$relationship.kind + ' rows') `
+                (Test-CalcValue -Actual $headline -Expected $sum `
+                    -Tolerance ([double]$Cases.tolerances.identity_relative_coefficient)) `
+                ("calc_totals " + (Format-CalcValue $headline) + ", reconstructed " + (Format-CalcValue $sum))
+        }
+        Add-Result 'P5-AR' `
+            'Driver-audit reconstruction: A/B/C/D from the ACTUAL tblCalcDrivers columns to the ACTUAL calc_totals' `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'P5-AR' 'Driver-audit reconstruction' 'FAIL' (Format-Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -1955,6 +2400,14 @@ function Invoke-Phase5GateBScenarios {
             ("source " + [string]$baseCase.model.discount_rate + `
              ", target " + [string]$targetCase.model.discount_rate)
 
+        # THE WHOLE SUCCESSFUL SNAPSHOT, CAPTURED BEFORE THE EDIT.
+        #
+        # Row 2 previously proved only the accessor axis and C13:C16. A defect
+        # where PCCM_CalculationStatus rewrote analytical outputs while merely
+        # re-deriving the status would have passed it. C23:C32 and all five
+        # analytical ListObjects are captured here and compared afterwards.
+        $rowTwoBefore = Get-Phase5Snapshot -Workbook $Workbook -Inspection $Inspection
+
         # ONE ORDINARY FINGERPRINTED SCALAR. Not a timeline application.
         Set-NamedValue -Workbook $Workbook -DefinedName $Inspection.inputs.discount_rate.defined_name `
             -Value ([double]$targetCase.model.discount_rate)
@@ -1967,11 +2420,24 @@ function Invoke-Phase5GateBScenarios {
         $null = Add-Check $list 'row 2: the CURRENT input fingerprint changed' `
             ($row2.Current -cne $establishedFingerprint) `
             ("stored " + $row2.Stored + ", current " + $row2.Current)
-        $after = Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state'
-        foreach ($field in $successRecordFields) {
-            $null = Add-Check $list ('row 2: calc_state.' + $field + ' is unchanged') `
-                (Test-CalcValue -Actual $after[$field] -Expected $establishedState[$field])
-        }
+
+        # C13:C16, C23:C32 and the five tables, all unchanged. C17:C20 is NOT in
+        # that comparison: PCCM_CalculationStatus deliberately refreshes C19 and
+        # C20, and asserting the whole block unchanged would assert that asking
+        # for the status did nothing.
+        $rowTwoAfter = Get-Phase5Snapshot -Workbook $Workbook -Inspection $Inspection
+        Add-SnapshotUnchangedChecks -List $list -Before $rowTwoBefore -After $rowTwoAfter `
+            -Label 'row 2' -SuccessFields $successRecordFields
+        $null = Add-Check $list 'row 2: C17 still records the previous SUCCESS' `
+            ([string]$rowTwoAfter.State['last_attempt_result'] -eq 'SUCCESS') `
+            ("got " + (Format-CalcValue $rowTwoAfter.State['last_attempt_result']))
+        $null = Add-Check $list 'row 2: C18 is still blank' `
+            (Test-CalcBlank -Actual $rowTwoAfter.State['last_attempt_detail'])
+        $null = Add-Check $list 'row 2: C19 was re-derived to STALE by the status evaluation' `
+            ([string]$rowTwoAfter.State['calculation_status'] -eq 'STALE') `
+            ("got " + (Format-CalcValue $rowTwoAfter.State['calculation_status']))
+        $null = Add-Check $list 'row 2: C20 carries a status-evaluation timestamp' `
+            (-not (Test-CalcBlank -Actual $rowTwoAfter.State['status_evaluated_at']))
         Add-Result 'P5-S2' 'Status row 2: valid fingerprinted input changed, no Calculate' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
 
@@ -2094,17 +2560,16 @@ function Invoke-Phase5GateBScenarios {
             (([string]$Excel.Run('PCCM_CalculationStatus') -eq 'CURRENT') -and
              ([string]$Excel.Run('PCCM_CalculationAttemptResult') -eq 'SUCCESS'))
 
-        # Distinct descriptions, so the sort key actually orders the rows.
-        $rowCount = Get-TableRowCount -Workbook $Workbook -SheetName $costReg.sheet `
-            -TableName $costReg.table_name
-        for ($row = 1; $row -le $rowCount; $row++) {
-            Set-TableCell -Workbook $Workbook -SheetName $costReg.sheet -TableName $costReg.table_name `
-                -RowIndex $row -ColumnIndex $descriptionOrdinal `
-                -Value ('sort-key-' + [string](100 - $row))
-        }
+        # NO CELL IS EDITED HERE. Write-Phase5Driver already gives every row a
+        # deterministic, distinct Description - "GateB <PermanentId>" - so the
+        # existing values are sufficient sort keys. The previous version rewrote
+        # them to manufacture an ordering, which changed TWO non-fingerprinted
+        # dimensions at once and stopped this being a row-order-only proof.
         $idsBefore = @(Get-IdColumnValues -Workbook $Workbook -Info $costReg)
+        # Descending on the EXISTING descriptions, which reverses the ascending
+        # order the fixture applier created.
         Invoke-TableSort -Workbook $Workbook -SheetName $costReg.sheet `
-            -TableName $costReg.table_name -KeyColumnIndex $descriptionOrdinal -Order 1
+            -TableName $costReg.table_name -KeyColumnIndex $descriptionOrdinal -Order 2
         $idsAfter = @(Get-IdColumnValues -Workbook $Workbook -Info $costReg)
         # THE ORDER ACTUALLY CHANGED. "Sort was called" is not evidence.
         $null = Add-Check $list 'the physical permanent-ID order ACTUALLY changed' `
@@ -2115,7 +2580,7 @@ function Invoke-Phase5GateBScenarios {
             ("before " + ($idsBefore -join ',') + " / after " + ($idsAfter -join ','))
         & $probe 'Cost Lines physically re-sorted (real ListObject sort, order changed)' $reorderDigest
         Invoke-TableSort -Workbook $Workbook -SheetName $costReg.sheet `
-            -TableName $costReg.table_name -KeyColumnIndex $descriptionOrdinal -Order 2
+            -TableName $costReg.table_name -KeyColumnIndex $descriptionOrdinal -Order 1
         $idsRestored = @(Get-IdColumnValues -Workbook $Workbook -Info $costReg)
         $null = Add-Check $list 'the original physical order was restored' `
             (($idsRestored -join ',') -ceq ($idsBefore -join ',')) `
@@ -2301,6 +2766,39 @@ function Invoke-Phase5GateBScenarios {
             $null = Add-Check $list 'the changed model is STALE before the injected failure' `
                 ([string]$Excel.Run('PCCM_CalculationStatus') -eq 'STALE')
 
+            # 2b. ESTABLISH A DELIBERATELY NON-DEFAULT CALLER STATE.
+            #
+            # Asserting EnableEvents/ScreenUpdating True and Calculation
+            # Automatic afterwards proves only that the application happens to be
+            # in convenient defaults - which it would be even if FinishOperation
+            # restored nothing at all. The accepted Phase-4 scenario S already
+            # rejected that pattern: it establishes unusual caller state and
+            # proves EXACT restoration. Gate B does the same for the calculation
+            # operation, with a StatusBar sentinel unique to this failpoint so a
+            # value carried over from another scenario cannot satisfy it.
+            $sentinel = 'PCCM Phase-5 rollback sentinel ' + $Failpoint
+            $Excel.ScreenUpdating = $false
+            $Excel.EnableEvents = $false
+            $Excel.DisplayAlerts = $false
+            $Excel.Calculation = -4135          # xlCalculationManual
+            $Excel.StatusBar = $sentinel
+            $callerState = [pscustomobject]@{
+                ScreenUpdating = $Excel.ScreenUpdating
+                EnableEvents   = $Excel.EnableEvents
+                DisplayAlerts  = $Excel.DisplayAlerts
+                Calculation    = $Excel.Calculation
+                StatusBar      = $Excel.StatusBar
+            }
+            $null = Add-Check $list 'a NON-DEFAULT caller state was established before the operation' `
+                (($callerState.ScreenUpdating -eq $false) -and ($callerState.EnableEvents -eq $false) -and
+                 ($callerState.DisplayAlerts -eq $false) -and ([int]$callerState.Calculation -eq -4135) -and
+                 ([string]$callerState.StatusBar -eq $sentinel)) `
+                ("ScreenUpdating=" + [string]$callerState.ScreenUpdating +
+                 " EnableEvents=" + [string]$callerState.EnableEvents +
+                 " DisplayAlerts=" + [string]$callerState.DisplayAlerts +
+                 " Calculation=" + [string]$callerState.Calculation +
+                 " StatusBar='" + [string]$callerState.StatusBar + "'")
+
             # 3. ARM THE FAILPOINT through the accepted Phase-4 mechanism.
             $Excel.Run('PCCM_AutomationEnd') | Out-Null
             $Excel.Run('PCCM_AutomationBegin', $true, $Failpoint) | Out-Null
@@ -2348,13 +2846,37 @@ function Invoke-Phase5GateBScenarios {
             }
             $null = Add-Check $list 'no mixed old/new analytical state survived the rollback' (-not $mixed)
 
-            # 8. EXCEL APPLICATION STATE IS RESTORED.
-            $null = Add-Check $list 'EnableEvents was restored' ($Excel.EnableEvents -eq $true) `
-                ("EnableEvents = " + [string]$Excel.EnableEvents)
-            $null = Add-Check $list 'ScreenUpdating was restored' ($Excel.ScreenUpdating -eq $true) `
-                ("ScreenUpdating = " + [string]$Excel.ScreenUpdating)
-            $null = Add-Check $list 'Calculation mode was restored to automatic' `
-                ([int]$Excel.Calculation -eq -4105) ("Calculation = " + [string]$Excel.Calculation)
+            # 8. THE CALLER'S OWN STATE IS RESTORED, EXACTLY.
+            #
+            # Compared against what was CAPTURED, not against Excel's defaults,
+            # and asserted BEFORE the harness normalises anything for the
+            # scenarios that follow. All five properties, every time, in both
+            # failpoint scenarios - neither inherits the other's proof.
+            $null = Add-Check $list 'ScreenUpdating was restored to the CAPTURED caller value' `
+                ($Excel.ScreenUpdating -eq $callerState.ScreenUpdating) `
+                ("captured " + [string]$callerState.ScreenUpdating + ", now " + [string]$Excel.ScreenUpdating)
+            $null = Add-Check $list 'EnableEvents was restored to the CAPTURED caller value' `
+                ($Excel.EnableEvents -eq $callerState.EnableEvents) `
+                ("captured " + [string]$callerState.EnableEvents + ", now " + [string]$Excel.EnableEvents)
+            $null = Add-Check $list 'DisplayAlerts was restored to the CAPTURED caller value' `
+                ($Excel.DisplayAlerts -eq $callerState.DisplayAlerts) `
+                ("captured " + [string]$callerState.DisplayAlerts + ", now " + [string]$Excel.DisplayAlerts)
+            $null = Add-Check $list 'Calculation was restored to the CAPTURED caller value' `
+                ([int]$Excel.Calculation -eq [int]$callerState.Calculation) `
+                ("captured " + [string]$callerState.Calculation + ", now " + [string]$Excel.Calculation)
+            $null = Add-Check $list 'StatusBar was restored to the CAPTURED sentinel' `
+                ([string]$Excel.StatusBar -eq [string]$callerState.StatusBar) `
+                ("captured '" + [string]$callerState.StatusBar + "', now '" + [string]$Excel.StatusBar + "'")
+            $null = Add-Check $list 'the restored state is NOT merely Excel default state' `
+                (([int]$callerState.Calculation -ne -4105) -and ($callerState.EnableEvents -eq $false)) `
+                'the captured state must differ from the defaults, or the proof is vacuous'
+
+            # 8b. ONLY NOW may the harness normalise for the scenarios that follow.
+            $Excel.ScreenUpdating = $true
+            $Excel.EnableEvents = $true
+            $Excel.DisplayAlerts = $false
+            $Excel.Calculation = -4105          # xlCalculationAutomatic
+            $Excel.StatusBar = $false
 
             # 9. Disarm, and prove the model still calculates afterwards: a
             #    rollback that left the workbook unusable would not be a rollback.

@@ -768,9 +768,11 @@ def test_33_the_rollback_asserts_every_required_final_state() -> None:
                   "'C20 carries a fresh evaluation timestamp'",
                   "'PCCM_CalculationStatus() = STALE, not CURRENT'",
                   "'no mixed old/new analytical state survived the rollback'",
-                  "'EnableEvents was restored'",
-                  "'ScreenUpdating was restored'",
-                  "'Calculation mode was restored to automatic'"):
+                  "'ScreenUpdating was restored to the CAPTURED caller value'",
+                  "'EnableEvents was restored to the CAPTURED caller value'",
+                  "'DisplayAlerts was restored to the CAPTURED caller value'",
+                  "'Calculation was restored to the CAPTURED caller value'",
+                  "'StatusBar was restored to the CAPTURED sentinel'"):
         assert claim in block, f"the rollback scenario never asserts {claim}"
     assert "Add-SnapshotUnchangedChecks" in block, (
         "the rollback never compares against the previous successful snapshot"
@@ -2051,4 +2053,540 @@ def test_nc_47_a_semantic_value_in_the_inspection_projection_is_caught() -> None
     planted2["default_precision"] = 6
     assert set(planted2) - set(ALLOWED_CALC_KEYS) == {"default_precision"}, (
         "a ban-list would have missed this; the allowlist does not"
+    )
+
+
+# ===========================================================================
+# 14. CORRECTION ROUND 2
+#
+# Five defects found in independent review of aa18cab. Each has a test here that
+# fails against that source and passes against the corrected one.
+# ===========================================================================
+LOCKED_PREREQUISITE_PREDICATES = {
+    # timeline and the structural handoff
+    "base_year_after_start_year", "structure_change_pending",
+    # the discount input's type
+    "discount_rate_blank", "discount_rate_non_numeric",
+    # FX and the reporting-currency invariant
+    "referenced_currency_missing", "referenced_currency_duplicated",
+    "referenced_rate_not_positive", "referenced_rate_blank",
+    "referenced_rate_non_numeric", "reporting_currency_missing",
+    "reporting_currency_duplicated", "reporting_currency_rate_not_one",
+    # inflation
+    "referenced_profile_missing", "referenced_rate_non_numeric_inflation",
+    # profiling
+    "profiling_cell_non_numeric",
+    # distribution
+    "distribution_missing", "distribution_unknown",
+    # three-point ordering
+    "triangular_ordering", "beta_pert_ordering", "uniform_ordering",
+    # quantity
+    "quantity_missing", "quantity_non_numeric",
+    # probability
+    "probability_missing", "probability_non_numeric",
+    "probability_below_zero", "probability_above_one",
+}
+
+LOCKED_NO_BLOCK_PREDICATES = {
+    "unreferenced_fx_duplicated", "unreferenced_fx_blank_rate",
+    "unreferenced_profile_incomplete",
+}
+
+
+def _gate_b() -> dict:
+    return _emitted()["cases"]["gate_b"]
+
+
+def test_63_every_locked_prerequisite_has_a_windows_scenario() -> None:
+    """BLOCKER 1. The nine refusal plan cases do not exhaust plan section 18.
+
+    Base Year after Start Year, STRUCTURE CHANGE PENDING, a duplicated
+    referenced currency, a non-numeric Probability, an unknown Distribution and a
+    dozen more locked predicates had no real-Windows scenario at all.
+    """
+    gate_b = _gate_b()
+    emitted = {entry["predicate"] for entry in gate_b["prerequisite_cases"]}
+    # The inflation non-numeric predicate shares a name with the FX one in the
+    # locked list above; the corpus disambiguates by section.
+    sections = {entry["section"] for entry in gate_b["prerequisite_cases"]}
+    assert "18.I2" in sections, "no scenario covers a non-numeric referenced inflation rate"
+    locked = LOCKED_PREREQUISITE_PREDICATES - {"referenced_rate_non_numeric_inflation"}
+    missing = sorted(locked - emitted)
+    assert not missing, f"locked prerequisites with no Windows scenario: {missing}"
+    # BIDIRECTIONAL: a scenario nobody locked is unexplained coverage.
+    extra = sorted(emitted - locked)
+    assert not extra, f"Gate-B prerequisite scenarios outside the locked set: {extra}"
+    assert len(gate_b["prerequisite_cases"]) == 26
+
+
+def test_64_structure_change_pending_is_covered_and_is_not_re_applied() -> None:
+    """BLOCKER 1. The one predicate the Phase-4 structural gate holds."""
+    entry = next(item for item in _gate_b()["prerequisite_cases"]
+                 if item["predicate"] == "structure_change_pending")
+    assert entry["mutation"]["kind"] == "entered_structure"
+    assert entry["mutation"]["apply_timeline"] is False, (
+        "the timeline is re-applied, so the pending state is never reached"
+    )
+    assert "STRUCTURE CHANGE PENDING" in entry["detail_tokens"]
+    # And the harness really honours the flag.
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Invoke-Phase5Mutation")
+    assert "if ($Mutation.apply_timeline) {" in body, (
+        "the mutation applier always re-applies, so the pending state is unreachable"
+    )
+
+
+def test_65_every_prerequisite_has_a_specific_detail_discriminator() -> None:
+    """BLOCKER 1.3. "some error occurred" is not evidence the predicate fired."""
+    gate_b = _gate_b()
+    for entry in gate_b["prerequisite_cases"]:
+        tokens = entry["detail_tokens"]
+        assert tokens, f"{entry['id']} has no detail discriminator"
+        for token in tokens:
+            assert isinstance(token, str) and token.strip(), f"{entry['id']} has an empty token"
+    # The nine plan-case refusals have them too.
+    plan_tokens = gate_b["plan_refusal_tokens"]
+    refusals = {str(case["id"]) for case in _emitted()["cases"]["plan_cases"]
+                if case["kind"] == "refusal"}
+    assert set(plan_tokens) == refusals, (
+        f"plan-refusal discriminators do not match the refusal cases: "
+        f"{sorted(set(plan_tokens) ^ refusals)}"
+    )
+    for case_id, tokens in plan_tokens.items():
+        assert tokens, f"plan case {case_id} has no detail discriminator"
+
+    # Every token is a real fragment of an accepted production message.
+    production = "\n".join(_text(SRC_VBA / name) for name in (
+        "modCalcResolve.bas", "modCalcCheck.bas", "modCalcFactors.bas",
+        "modCalcReport.bas", "modAppState.bas", "modStructuralCheck.bas",
+    )) + "\n" + _emitted()["constants"]
+    unknown = []
+    for entry in gate_b["prerequisite_cases"]:
+        for token in entry["detail_tokens"]:
+            # Identifiers the fixture supplies (currency codes, permanent IDs,
+            # calendar years) are not in the production text; the PREDICATE
+            # fragments must be.
+            if token in ("USD", "SAR", "CL-001", "2027", "Standard"):
+                continue
+            if token not in production:
+                unknown.append(f"{entry['id']}:{token!r}")
+    assert not unknown, (
+        f"detail tokens that appear in no accepted production message: {unknown}"
+    )
+
+    # And the harness ASSERTS them, rather than only checking non-empty.
+    source = _executable(SCENARIOS)
+    helper = _procedure(source, "Add-Phase5DetailTokenChecks")
+    assert "foreach ($token in @($Tokens))" in helper, (
+        "the discriminator tokens are never compared"
+    )
+    assert "-like ('*' + $token + '*')" in helper
+    assert "Add-Phase5DetailTokenChecks" in _scenario_block(source, "P5-AN", "P5-RF"), (
+        "the plan-case refusals still check only that a detail exists"
+    )
+
+
+def test_66_the_prerequisite_matrix_is_emitted_not_hand_held() -> None:
+    """BLOCKER 1.1. PowerShell consumes the corpus; it holds no list."""
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-RF", "P5-PQ")
+    assert "$Cases.gate_b.prerequisite_cases" in block, (
+        "the prerequisite scenario does not read the emitted matrix"
+    )
+    # No PowerShell-side predicate list may exist.
+    for predicate in sorted(LOCKED_PREREQUISITE_PREDICATES):
+        assert f"'{predicate}'" not in source, (
+            f"the harness names the predicate {predicate} in its own source"
+        )
+    # The mutation applier is driven by the corpus's `kind` vocabulary.
+    body = _procedure(source, "Invoke-Phase5Mutation")
+    for kind in ("entered_structure", "named_number", "named_text", "named_blank",
+                 "register_cell", "fx_row", "fx_remove", "inflation_cell",
+                 "inflation_profile_rename", "inflation_profile_add", "profiling_cell"):
+        assert f"'{kind}'" in body, f"the applier cannot apply a {kind} mutation"
+    assert "default { throw" in body, "an unknown mutation kind is silently ignored"
+    # And every emitted mutation kind is one the applier implements.
+    used = {entry["mutation"]["kind"] for entry in
+            _gate_b()["prerequisite_cases"] + _gate_b()["no_block_cases"]}
+    for kind in sorted(used):
+        assert f"'{kind}'" in body, f"the corpus emits a {kind} mutation the harness cannot apply"
+
+
+def test_67_a_null_mutation_value_is_written_as_a_blank() -> None:
+    """BLOCKER 1.2. Several locked prerequisites ARE the blank."""
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Get-MutationValue")
+    assert "if ($null -eq $raw) { return $null }" in body, (
+        "a null mutation value is cast rather than written as a blank"
+    )
+    assert body.index("if ($null -eq $raw)") < body.index("[double]$raw"), (
+        "the null branch runs after the cast"
+    )
+    # A blank Setup scalar goes through ClearContents, not through ''.
+    clear = _procedure(source, "Clear-NamedValue")
+    assert "$rng.ClearContents()" in clear
+    # The corpus really does carry null mutations.
+    nulls = [entry for entry in _gate_b()["prerequisite_cases"]
+             if entry["mutation"].get("value", "") is None
+             or entry["mutation"].get("rate", "") is None
+             or entry["mutation"]["kind"] == "named_blank"]
+    assert len(nulls) >= 4, f"only {len(nulls)} blank prerequisites are emitted"
+
+
+def test_68_the_referenced_only_no_block_complement_exists() -> None:
+    """BLOCKER 1.4. A harness that only proved refusals would accept over-refusal."""
+    gate_b = _gate_b()
+    emitted = {entry["predicate"] for entry in gate_b["no_block_cases"]}
+    assert emitted == LOCKED_NO_BLOCK_PREDICATES, (
+        f"the no-block set is {sorted(emitted)}, not {sorted(LOCKED_NO_BLOCK_PREDICATES)}"
+    )
+    for entry in gate_b["no_block_cases"]:
+        assert entry["expected_attempt"] == "SUCCESS"
+        assert entry["expected_status"] == "CURRENT"
+        assert entry["detail_tokens"] == []
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-PQ", "P5-PN")
+    assert "$Cases.gate_b.no_block_cases" in block
+    assert "the detail stays blank - nothing was refused" in block
+    assert "the stored fingerprint is unchanged by the unreferenced row" in block
+
+
+def test_69_status_row_2_compares_the_whole_analytical_snapshot() -> None:
+    """BLOCKER 2. A status query that rewrote analytical outputs would have passed."""
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-S1", "P5-S2")
+    assert "$rowTwoBefore = Get-Phase5Snapshot" in block, (
+        "row 2 captures no full baseline before the edit"
+    )
+    assert "$rowTwoAfter = Get-Phase5Snapshot" in block
+    assert "Add-SnapshotUnchangedChecks -List $list -Before $rowTwoBefore -After $rowTwoAfter" in block, (
+        "row 2 never compares C23:C32 or the five analytical tables"
+    )
+    # C17:C20 is handled SEPARATELY, because C19/C20 are deliberately refreshed.
+    assert "'row 2: C19 was re-derived to STALE by the status evaluation'" in block
+    assert "'row 2: C20 carries a status-evaluation timestamp'" in block
+    assert "'row 2: C17 still records the previous SUCCESS'" in block
+
+
+def test_70_the_row_order_probe_edits_no_cell() -> None:
+    """BLOCKER 3. Rewriting Description changed two dimensions at once."""
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-ST", "P5-NS")
+    # Bounded by the NEXT probe's first executable line: `_executable` strips
+    # comments, so the banner that separates the probes is not there to slice on.
+    reorder = block[block.index("$reorderCase = $null"):
+                    block.index("$confidence = $Inspection.inputs.selected_confidence_level")]
+    assert "Set-TableCell" not in reorder, (
+        "the row-order probe still edits a cell to manufacture the ordering"
+    )
+    assert "sort-key" not in reorder
+    assert "$descriptionOrdinal" in reorder, "the sort key is not the existing Description"
+    assert "$idsBefore" in reorder and "$idsAfter" in reorder
+    assert "'the physical permanent-ID order ACTUALLY changed'" in reorder
+    # The fixture applier is what gives every row a distinct Description.
+    driver = _procedure(source, "Write-Phase5Driver")
+    assert "'GateB ' + [string]$Driver.permanent_id" in driver, (
+        "the applier no longer writes a deterministic distinct Description"
+    )
+
+
+def test_71_the_driver_audit_reconstruction_exists() -> None:
+    """BLOCKER 4. The A/B/C/D cross-check between two parts of the workbook."""
+    audit = _gate_b()["audit_reconstruction"]
+    assert len(audit["model"]["cost_lines"]) >= 2, "the audit fixture has too few Cost Lines"
+    assert len(audit["model"]["risks"]) >= 1, "the audit fixture carries no Risk"
+    mapping = {entry["headline"]: (entry["driver_column"], entry["kind"])
+               for entry in audit["relationships"]}
+    assert mapping == {
+        "a_nom": ("deterministic_nominal", "Cost Line"),
+        "a_pv": ("deterministic_pv", "Cost Line"),
+        "b_nom": ("uncertainty_mean_shift_nominal", "Cost Line"),
+        "b_pv": ("uncertainty_mean_shift_pv", "Cost Line"),
+        "c_nom": ("mean_basis_nominal", "Cost Line"),
+        "c_pv": ("mean_basis_pv", "Cost Line"),
+        "d_nom": ("expected_risk_nominal", "Risk"),
+        "d_pv": ("expected_risk_pv", "Risk"),
+    }, f"the audit relationships are wrong: {mapping}"
+    # The ordinals really are the locked ones: A=14/15, C=16/17, B=18/19, D=20/21.
+    columns = _emitted()["inspection"]["calc"]["tables"]["calc_drivers"]["columns"]
+    for headline, ordinal in (("a_nom", 14), ("a_pv", 15), ("c_nom", 16), ("c_pv", 17),
+                              ("b_nom", 18), ("b_pv", 19), ("d_nom", 20), ("d_pv", 21)):
+        assert columns[ordinal - 1] == mapping[headline][0], (
+            f"{headline} is not column {ordinal} of tblCalcDrivers"
+        )
+    # And the relationship actually holds in the emitted oracle.
+    drivers = audit["expected"]["drivers"]
+    totals = audit["expected"]["totals"]
+    for entry in audit["relationships"]:
+        total = sum(row[entry["driver_column"]] for row in drivers
+                    if row["driver_kind"] == entry["kind"]
+                    and row[entry["driver_column"]] is not None)
+        assert abs(total - totals[entry["headline"]]) <= 1e-9 * max(
+            abs(totals[entry["headline"]]), 1.0
+        ), f"{entry['headline']} does not reconstruct in the emitted oracle"
+
+
+def test_72_the_reconstruction_reads_the_actual_workbook_on_both_sides() -> None:
+    """BLOCKER 4.2. ACTUAL tblCalcDrivers to ACTUAL calc_totals."""
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-PN", "P5-AR")
+    assert "Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_drivers'" in block, (
+        "the reconstruction never reads the real driver table"
+    )
+    assert "-Block 'calc_totals' -FieldKey ([string]$relationship.headline)" in block, (
+        "the reconstruction never reads the real totals"
+    )
+    assert "$audit.relationships" in block, "the column mapping is not read from the corpus"
+    # Partitioned by kind, both ways.
+    assert "$isKind = ([string]$row[$kindColumn] -eq [string]$relationship.kind)" in block
+    assert ": the opposite kind publishes BLANK in " in block, (
+        "nothing proves the opposite kind's cells are N/A"
+    )
+    # A BLANK IS SKIPPED, never folded in as the opposite kind's identity 1.
+    assert "$blank = Test-CalcBlank -Actual $row[$ordinal]" in block
+    assert "if (-not $blank) {" in block
+    for forbidden in ("-eq $null) { $sum = $sum + 1", "$sum + 1.0", "Value 1 }"):
+        assert forbidden not in block, (
+            f"a blank is folded in as an identity value ({forbidden})"
+        )
+    # No new tolerance is invented for an audit relationship.
+    assert "[Math]::Max" not in block
+    assert "identity_absolute_floor" not in block
+
+
+def test_73_both_failpoints_prove_exact_caller_state_restoration() -> None:
+    """BLOCKER 5. Defaults are not evidence that anything was restored."""
+    source = _executable(SCENARIOS)
+    block = source[source.index("function Invoke-Phase5RollbackScenario"):
+                   source.index("$analyticalOk = Invoke-Phase5RollbackScenario")]
+    # A NON-DEFAULT caller state is established and captured.
+    for established in ("$Excel.ScreenUpdating = $false", "$Excel.EnableEvents = $false",
+                        "$Excel.DisplayAlerts = $false", "$Excel.Calculation = -4135",
+                        "$Excel.StatusBar = $sentinel"):
+        assert established in block, f"the caller state is not made non-default ({established})"
+    assert "$sentinel = 'PCCM Phase-5 rollback sentinel ' + $Failpoint" in block, (
+        "the StatusBar sentinel is not unique to the failpoint under test"
+    )
+    assert "$callerState = [pscustomobject]@{" in block, "the caller state is never captured"
+    # ALL FIVE properties compared against the CAPTURED values.
+    for prop in ("ScreenUpdating", "EnableEvents", "DisplayAlerts", "Calculation", "StatusBar"):
+        assert f"'{prop} was restored to the CAPTURED" in block, (
+            f"{prop} is not compared against the captured caller value"
+        )
+        assert f"$callerState.{prop}" in block
+    # NOT against Excel's defaults.
+    for hardcoded in ("'EnableEvents was restored' ($Excel.EnableEvents -eq $true)",
+                      "'ScreenUpdating was restored' ($Excel.ScreenUpdating -eq $true)",
+                      "'Calculation mode was restored to automatic'"):
+        assert hardcoded not in block, f"a hard-coded default check survives ({hardcoded})"
+    # The comparison happens BEFORE the harness normalises for later scenarios.
+    compare = block.index("'StatusBar was restored to the CAPTURED sentinel'")
+    normalise = block.index("$Excel.ScreenUpdating = $true")
+    assert compare < normalise, (
+        "the harness normalises application state before asserting restoration"
+    )
+    # And the proof is vacuous-free: the captured state must differ from defaults.
+    assert "'the restored state is NOT merely Excel default state'" in block
+
+
+def test_74_neither_failpoint_inherits_the_others_state_proof() -> None:
+    """BLOCKER 5.2. One shared runner, invoked twice, with its own capture each time."""
+    source = _executable(SCENARIOS)
+    assert source.count("$callerState = [pscustomobject]@{") == 1, (
+        "the caller state is captured in more than one place, so the two runs could diverge"
+    )
+    runner = source[source.index("function Invoke-Phase5RollbackScenario"):
+                    source.index("$analyticalOk = Invoke-Phase5RollbackScenario")]
+    assert "$sentinel = " in runner, "the sentinel is not built inside the shared runner"
+    # Both invocations go through the runner that carries the capture.
+    tail = source[source.index("$analyticalOk = Invoke-Phase5RollbackScenario"):]
+    assert tail.count("Invoke-Phase5RollbackScenario -Excel $Excel") == 2, (
+        "the two failpoint scenarios do not both run the state-restoration proof"
+    )
+    assert "-Failpoint $failpoints.AnalyticalWrite" in tail
+    assert "-Failpoint $failpoints.SuccessCommit" in tail
+
+
+# ===========================================================================
+# 15. CORRECTION-ROUND-2 NEGATIVE CONTROLS
+# ===========================================================================
+def test_nc_48_a_missing_section_18_prerequisite_is_caught() -> None:
+    """A. A locked predicate dropped from the emitted matrix."""
+    emitted = {entry["predicate"] for entry in _gate_b()["prerequisite_cases"]}
+    planted = emitted - {"probability_above_one"}
+    locked = LOCKED_PREREQUISITE_PREDICATES - {"referenced_rate_non_numeric_inflation"}
+    assert sorted(locked - planted) == ["probability_above_one"], (
+        "a locked prerequisite with no Windows scenario must be visible"
+    )
+
+
+def test_nc_49_a_missing_structure_change_pending_is_caught() -> None:
+    """B. The one predicate the Phase-4 structural gate holds."""
+    planted = [entry for entry in _gate_b()["prerequisite_cases"]
+               if entry["predicate"] != "structure_change_pending"]
+    assert not [entry for entry in planted
+                if entry["predicate"] == "structure_change_pending"], (
+        "the dropped STRUCTURE CHANGE PENDING scenario must be visible"
+    )
+    # And a version that re-applies the timeline never reaches the state.
+    entry = dict(next(item for item in _gate_b()["prerequisite_cases"]
+                      if item["predicate"] == "structure_change_pending"))
+    entry["mutation"] = {**entry["mutation"], "apply_timeline": True}
+    assert entry["mutation"]["apply_timeline"] is True, (
+        "a mutation that re-applies the timeline must be visible as such"
+    )
+
+
+def test_nc_50_a_non_empty_only_detail_check_is_caught() -> None:
+    """C. "some error occurred" is not evidence the predicate fired."""
+    planted = _synthetic(
+        "$null = Add-Check $list ('case ' + $id + ': the refusal detail is specific, not empty') `\n"
+        "    (-not [string]::IsNullOrWhiteSpace($detail)) $detail\n"
+    )
+    assert "Add-Phase5DetailTokenChecks" not in planted, (
+        "a non-empty-only detail check must be visible"
+    )
+    assert "$token" not in planted
+    # And a corpus entry with no tokens is visible too.
+    entry = dict(_gate_b()["prerequisite_cases"][0])
+    entry["detail_tokens"] = []
+    assert not entry["detail_tokens"], "a discriminator-free prerequisite must be visible"
+
+
+def test_nc_51_row_2_checking_only_c13_c16_is_caught() -> None:
+    """D. A status query that rewrote analytical outputs would pass this."""
+    planted = _synthetic(
+        "$after = Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection "
+        "-Block 'calc_state'\n"
+        "foreach ($field in $successRecordFields) {\n"
+        "    $null = Add-Check $list ('row 2: calc_state.' + $field + ' is unchanged') `\n"
+        "        (Test-CalcValue -Actual $after[$field] -Expected $establishedState[$field])\n"
+        "}\n"
+    )
+    assert "Get-Phase5Snapshot" not in planted, (
+        "a row-2 proof that captures no analytical baseline must be visible"
+    )
+    assert "Add-SnapshotUnchangedChecks" not in planted
+
+
+def test_nc_52_a_row_order_probe_that_edits_description_is_caught() -> None:
+    """E. Rewriting the sort key changes two dimensions at once."""
+    planted = _synthetic(
+        "for ($row = 1; $row -le $rowCount; $row++) {\n"
+        "    Set-TableCell -Workbook $Workbook -SheetName $costReg.sheet "
+        "-TableName $costReg.table_name `\n"
+        "        -RowIndex $row -ColumnIndex $descriptionOrdinal "
+        "-Value ('sort-key-' + [string](100 - $row))\n"
+        "}\n"
+        "$idsBefore = @(Get-IdColumnValues -Workbook $Workbook -Info $costReg)\n"
+    )
+    assert "Set-TableCell" in planted, "the manufactured ordering must be visible"
+    assert "sort-key" in planted
+
+
+def test_nc_53_a_missing_audit_reconstruction_is_caught() -> None:
+    """F. Comparing each side to the oracle is not the cross-check."""
+    planted = _synthetic(
+        "Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook -Inspection $Inspection `\n"
+        "    -Case $case -Tolerances $Cases.tolerances\n"
+    )
+    assert "$audit.relationships" not in planted, (
+        "an analytical-only proof with no reconstruction must be visible"
+    )
+    assert "calc_totals' -FieldKey ([string]$relationship.headline)" not in planted
+
+
+def test_nc_54_a_reconstruction_with_wrong_columns_is_caught() -> None:
+    """G. B on 16/17, C on 18/19, D including cost rows, D omitted."""
+    columns = _emitted()["inspection"]["calc"]["tables"]["calc_drivers"]["columns"]
+    correct = {entry["headline"]: (entry["driver_column"], entry["kind"])
+               for entry in _gate_b()["audit_reconstruction"]["relationships"]}
+
+    swapped = dict(correct)
+    swapped["b_nom"] = ("mean_basis_nominal", "Cost Line")     # 16 instead of 18
+    swapped["c_nom"] = ("uncertainty_mean_shift_nominal", "Cost Line")  # 18 instead of 16
+    assert swapped != correct, "the swapped B/C mapping must be visible"
+    assert columns[17] == "uncertainty_mean_shift_nominal", "column 18 is B, not C"
+    assert columns[15] == "mean_basis_nominal", "column 16 is C, not B"
+
+    wrong_kind = dict(correct)
+    wrong_kind["d_nom"] = ("expected_risk_nominal", "Cost Line")
+    assert wrong_kind["d_nom"][1] != correct["d_nom"][1], (
+        "D partitioned over cost rows must be visible"
+    )
+
+    dropped = {key: value for key, value in correct.items() if not key.startswith("d_")}
+    assert set(correct) - set(dropped) == {"d_nom", "d_pv"}, (
+        "an omitted D must be visible"
+    )
+
+
+def test_nc_55_a_blank_folded_in_as_identity_one_is_caught() -> None:
+    """G. An N/A cell is not the opposite kind's identity value."""
+    planted = _synthetic(
+        "foreach ($row in $rows) {\n"
+        "    $value = $row[$ordinal]\n"
+        "    if (Test-CalcBlank -Actual $value) { $value = 1 }\n"
+        "    $sum = $sum + [double]$value\n"
+        "}\n"
+    )
+    assert "$value = 1 }" in planted, (
+        "a blank fabricated as the identity value must be visible"
+    )
+    assert "if (-not $blank) {" not in planted
+
+
+def test_nc_56_hard_coded_default_application_state_is_caught() -> None:
+    """H. Defaults prove nothing about restoration."""
+    planted = _synthetic(
+        "$null = Add-Check $list 'EnableEvents was restored' ($Excel.EnableEvents -eq $true)\n"
+        "$null = Add-Check $list 'ScreenUpdating was restored' ($Excel.ScreenUpdating -eq $true)\n"
+        "$null = Add-Check $list 'Calculation mode was restored to automatic' "
+        "([int]$Excel.Calculation -eq -4105)\n"
+    )
+    assert "$callerState" not in planted, (
+        "a proof against Excel defaults rather than the captured caller state must be visible"
+    )
+    assert "-eq $true" in planted and "-eq -4105" in planted
+
+
+def test_nc_57_an_application_state_proof_missing_a_property_is_caught() -> None:
+    """I and J. DisplayAlerts and StatusBar are part of the caller's state."""
+    for omitted in ("DisplayAlerts", "StatusBar"):
+        kept = [prop for prop in
+                ("ScreenUpdating", "EnableEvents", "DisplayAlerts", "Calculation", "StatusBar")
+                if prop != omitted]
+        planted = "\n".join(
+            f"$null = Add-Check $list '{prop} was restored to the CAPTURED caller value' "
+            f"($Excel.{prop} -eq $callerState.{prop})"
+            for prop in kept
+        )
+        assert f"'{omitted} was restored" not in planted, (
+            f"the omitted {omitted} assertion must be visible"
+        )
+        assert len(kept) == 4
+
+
+def test_nc_58_a_powershell_held_prerequisite_list_is_caught() -> None:
+    """1.1. The matrix is emitted; PowerShell consumes it."""
+    planted = _synthetic(
+        "$prerequisites = @(\n"
+        "    @{ id = 'PQ-01'; predicate = 'base_year_after_start_year'; "
+        "detail_tokens = @('Base Year') },\n"
+        "    @{ id = 'PQ-02'; predicate = 'structure_change_pending'; "
+        "detail_tokens = @('STRUCTURE CHANGE PENDING') })\n"
+    )
+    assert "$Cases.gate_b.prerequisite_cases" not in planted, (
+        "a hand-maintained duplicate matrix in PowerShell must be visible"
+    )
+    assert "'base_year_after_start_year'" in planted
+
+
+def test_nc_59_a_no_block_case_expecting_a_refusal_is_caught() -> None:
+    """1.4. The complement must expect SUCCESS, not REFUSED."""
+    entry = dict(_gate_b()["no_block_cases"][0])
+    entry["expected_attempt"] = "REFUSED"
+    entry["expected_status"] = "INVALID"
+    assert entry["expected_attempt"] != "SUCCESS", (
+        "a no-block case inverted into a refusal must be visible"
     )

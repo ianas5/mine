@@ -1,6 +1,6 @@
 # Phase 5 — Gate B — Step B1: the Windows harness extension
 
-**Status: correction round 1 — harness source, ready for independent review.
+**Status: correction round 2 — harness source, ready for independent review.
 NOTHING HAS BEEN RUN.**
 
 Gate A is accepted and closed at `1968fb8`. This step authors the Windows Gate-B
@@ -10,7 +10,13 @@ Linux, review independently, and only then run real Excel on Windows.
 
 The first submission (`93f306d`) had its architecture accepted and was rejected
 with **eight harness defects**, recorded in full under
-**[Correction round 1](#correction-round-1)**. Every one was a defect in what the
+**[Correction round 1](#correction-round-1)**. Correction round 1 (`aa18cab`)
+closed all eight and was rejected with **five more**, recorded under
+**[Correction round 2](#correction-round-2)**: incomplete plan section 18
+prerequisite coverage, a status row that did not compare the analytical
+snapshot, a row-order probe that changed two dimensions, a missing driver-audit
+reconstruction, and an application-state proof that checked Excel's defaults
+rather than the caller's own state. Every one was a defect in what the
 harness would have PROVED, not in how it is wired: two fixture writers that
 destroyed the condition they were exercising, a refusal proof that asserted the
 opposite of the rule, a reconciliation block that reimplemented a rejected
@@ -361,6 +367,197 @@ along with the value.
 
 ---
 
+## Correction round 2
+
+Independent review reproduced 110/110 and 351/351, accepted all eight round-1
+fixes as closed, and rejected the harness on five more defects.
+
+### 1 — the Windows refusal coverage did not cover all of plan section 18
+
+P5-RF ran the nine refusal cases the 37-case plan corpus carries. Those nine are
+valid and remain — but they do not exhaust section 18. **Base Year after Start
+Year, STRUCTURE CHANGE PENDING, a duplicated referenced currency, a
+non-numeric Probability, an unknown Distribution and a dozen more locked
+predicates had no real-Windows scenario at all.**
+
+Most of those boundaries cannot be expressed as valid analytical models — `"abc"`
+is not a Discount Rate, a blank is not a Quantity — and the typed oracle is right
+to refuse them at its own boundary. So the new corpus describes **workbook
+mutations** rather than pretending such values are valid cases. The Python oracle
+is not weakened and no analytical expectation is invented for a refused model.
+
+**The 37 plan cases are untouched.** The matrix lives in a separate emitted
+section, `phase5_cases.json → gate_b`:
+
+```
+gate_b
+  schema_version, purpose
+  prerequisite_cases[]   id, section, predicate, title, base_plan_case,
+                         mutation{kind, ...}, detail_tokens[],
+                         expected_attempt, expected_status, snapshot_unchanged
+  no_block_cases[]       same shape; expected SUCCESS / CURRENT, no tokens
+  plan_refusal_tokens{}  the discriminators for the nine refusal plan cases
+  audit_reconstruction   title, model, expected, relationships[]
+```
+
+The `mutation.kind` vocabulary the harness implements is
+`entered_structure`, `named_number`, `named_text`, `named_blank`,
+`register_cell`, `fx_row`, `fx_remove`, `inflation_cell`,
+`inflation_profile_rename`, `inflation_profile_add` and `profiling_cell`.
+An unknown kind throws rather than being ignored. **PowerShell holds no list of
+its own**: `test_66` refuses every locked predicate name in the harness source
+and requires every emitted mutation kind to be one the applier implements.
+
+A `null` in the matrix is a **blank cell** — the same rule the fixture writers
+follow, because several locked prerequisites *are* the blank. A blank Setup
+scalar goes through `ClearContents`, never `''`.
+
+**Specific detail discrimination.** P5-RF previously proved only that the detail
+was non-empty, which cannot tell a refusal from the intended predicate apart from
+any other refusal. Every scenario now asserts a token set drawn from the accepted
+production message, and `test_65` proves each token actually appears in
+`modCalcResolve.bas`, `modCalcCheck.bas`, `modCalcFactors.bas`,
+`modCalcReport.bas`, `modAppState.bas`, `modStructuralCheck.bas` or the
+generated constants — identifiers the fixture itself supplies (`USD`, `SAR`,
+`CL-001`, `2027`, `Standard`) excepted. Whole sentences are not frozen, so a
+harmless wording edit does not break the proof while a refusal from the wrong
+predicate does.
+
+**The referenced-only complement.** A harness that only proved refusals would
+accept a model that refused too much, so three no-block cases prove SUCCESS,
+CURRENT, a blank detail and an **unchanged digest** for an unreferenced duplicate
+currency, an unreferenced currency with a blank rate, and an unreferenced
+incomplete inflation profile.
+
+### The complete prerequisite ledger
+
+| Locked predicate | Condition | Gate-B scenario | Detail discriminator |
+| --- | --- | --- | --- |
+| `18.T1` | Base Year later than Start Year | `PQ-01` → `P5-PQ` | `Base Year`, `Start Year` |
+| `18.T2` | an entered structural value changed and the timeline was not re-applied | `PQ-02` → `P5-PQ` | `STRUCTURE CHANGE PENDING`, `structural prerequisite` |
+| `18.D1` | Discount Rate blank | `PQ-03` → `P5-PQ` | `Discount Rate`, `blank` |
+| `18.D2` | Discount Rate non-numeric | `PQ-04` → `P5-PQ` | `Discount Rate`, `not numeric` |
+| `18.F1` | a referenced foreign currency has no tblFXRates row | `PQ-05` → `P5-PQ` | `FX`, `USD`, `rows` |
+| `18.F2` | a referenced foreign currency appears twice | `PQ-06` → `P5-PQ` | `FX`, `USD`, `rows` |
+| `18.F3` | a referenced FX rate is not strictly positive | `PQ-07` → `P5-PQ` | `FX`, `USD`, `strictly positive` |
+| `18.F4` | a referenced FX rate is blank | `PQ-08` → `P5-PQ` | `FX rate for referenced currency`, `USD`, `blank` |
+| `18.F5` | a referenced FX rate is non-numeric | `PQ-09` → `P5-PQ` | `FX rate for referenced currency`, `USD`, `not numeric` |
+| `18.F6` | the reporting currency has no row | `PQ-10` → `P5-PQ` | `the reporting currency`, `SAR`, `exactly once` |
+| `18.F7` | the reporting currency appears twice | `PQ-11` → `P5-PQ` | `the reporting currency`, `SAR`, `exactly once` |
+| `18.F8` | the reporting currency rate is not exactly 1 | `PQ-12` → `P5-PQ` | `the reporting currency`, `SAR`, `must resolve to` |
+| `18.I1` | a referenced inflation profile is absent from the grid | `PQ-13` → `P5-PQ` | `inflation: profile`, `Standard`, `not present` |
+| `18.I2` | a required referenced inflation rate is non-numeric | `PQ-14` → `P5-PQ` | `inflation profile`, `2027`, `not numeric` |
+| `18.P1` | a required profiling cell is non-numeric | `PQ-15` → `P5-PQ` | `profiling for driver`, `CL-001`, `not numeric` |
+| `18.X1` | Distribution is blank | `PQ-16` → `P5-PQ` | `Distribution`, `blank` |
+| `18.X2` | Distribution is not one of the three accepted kinds | `PQ-17` → `P5-PQ` | `Distribution`, `not an accepted distribution` |
+| `18.O1` | Triangular Min <= Most Likely <= Max is violated | `PQ-18` → `P5-PQ` | `Triangular`, `Min <= Most Likely <= Max` |
+| `18.O2` | Beta-PERT Min <= Most Likely <= Max is violated | `PQ-19` → `P5-PQ` | `Beta-PERT`, `Min <= Most Likely <= Max` |
+| `18.O3` | Uniform Min <= Max is violated | `PQ-20` → `P5-PQ` | `Uniform`, `Min <= Max` |
+| `18.Q1` | Quantity is blank | `PQ-21` → `P5-PQ` | `Quantity`, `blank` |
+| `18.Q2` | Quantity is non-numeric | `PQ-22` → `P5-PQ` | `Quantity`, `not numeric` |
+| `18.R1` | Probability is blank | `PQ-23` → `P5-PQ` | `Probability`, `blank` |
+| `18.R2` | Probability is non-numeric | `PQ-24` → `P5-PQ` | `Probability`, `not numeric` |
+| `18.R3` | Probability below zero | `PQ-25` → `P5-PQ` | `Probability`, `fraction in [0, 1]` |
+| `18.R4` | Probability above one | `PQ-26` → `P5-PQ` | `Probability`, `fraction in [0, 1]` |
+| `18.N1` | an UNREFERENCED foreign currency appearing twice does not block | `PN-01` → `P5-PN` | *(SUCCESS, detail blank)* |
+| `18.N2` | an UNREFERENCED foreign currency with a blank rate does not block | `PN-02` → `P5-PN` | *(SUCCESS, detail blank)* |
+| `18.N3` | an UNREFERENCED inflation profile with a missing rate does not block | `PN-03` → `P5-PN` | *(SUCCESS, detail blank)* |
+| plan case 14 | blank required inflation rate | `14` → `P5-RF` | `inflation profile`, `blank` |
+| plan case 15 | profile does not sum to 100% | `15` → `P5-RF` | `profiling weights sum to` |
+| plan case 16 | Quantity of zero | `16` → `P5-RF` | `Quantity`, `strictly positive` |
+| plan case 17 | negative Quantity | `17` → `P5-RF` | `Quantity`, `strictly positive` |
+| plan case 18 | discount rate of -100% | `18` → `P5-RF` | `discount rate`, `1 + r <= 0` |
+| plan case 20 | inflation rate of -100% | `20` → `P5-RF` | `inflation profile`, `1 + rate <= 0` |
+| plan case 23 | profile summing to 100% containing a blank | `23` → `P5-RF` | `profiling for driver`, `blank` |
+| plan case 24 | controlled Double overflow | `24` → `P5-RF` | `inflation factor` |
+| plan case 29 | discount factor underflow | `29` → `P5-RF` | `discount factors` |
+
+### 2 — status row 2 did not prove the analytical snapshot unchanged
+
+Row 2 proved the accessor axis and C13:C16. **A defect where
+`PCCM_CalculationStatus()` rewrote analytical outputs while re-deriving the
+status would have passed it**, because C23:C32 and the five ListObjects were
+never compared.
+
+A full `Get-Phase5Snapshot` baseline is now captured **before** the
+fingerprinted input changes, and `Add-SnapshotUnchangedChecks` compares
+C13:C16, C23:C32 and all five tables afterwards. C17:C20 is handled **separately**
+— C19 and C20 are deliberately refreshed by the status evaluation, so asserting
+the whole block unchanged would assert that asking for the status did nothing.
+Row 2 now states all four: C17 still SUCCESS, C18 still blank, C19 re-derived to
+STALE, C20 carrying a fresh timestamp.
+
+### 3 — the row-order probe changed Description as well as row order
+
+The corrected round-1 probe used a real multi-row fixture and proved the physical
+order changed — that part stands. But it first **rewrote every Description** to
+`sort-key-…` to force the ordering, so it changed **two** non-fingerprinted
+dimensions and stopped being a row-order-only proof.
+
+`Write-Phase5Driver` already gives every row a deterministic, distinct
+Description — `GateB <PermanentId>` — so the existing values are sufficient sort
+keys. The probe now edits **no cell at all**: it captures the permanent-ID order,
+sorts descending on the existing Description values, captures the order again,
+requires it to have changed with the same identifiers present, asserts CURRENT /
+SUCCESS / unchanged digests, then sorts ascending and asserts the original order
+is back. `test_70` fails if `Set-TableCell` appears anywhere in that probe.
+
+### 4 — the driver-audit A/B/C/D reconstruction was missing
+
+Every driver row and every headline total was compared against the Python oracle,
+and that remains. But the locked plan additionally requires a **cross-check
+between two parts of the real workbook**: the published audit columns must
+reconstruct the published headline totals.
+
+| Headline | `tblCalcDrivers` column | Ordinal | Partition |
+| --- | --- | --- | --- |
+| `a_nom` / `a_pv` | `deterministic_nominal` / `deterministic_pv` | 14 / 15 | Cost Line |
+| `b_nom` / `b_pv` | `uncertainty_mean_shift_nominal` / `_pv` | 18 / 19 | Cost Line |
+| `c_nom` / `c_pv` | `mean_basis_nominal` / `mean_basis_pv` | 16 / 17 | Cost Line |
+| `d_nom` / `d_pv` | `expected_risk_nominal` / `expected_risk_pv` | 20 / 21 | Risk |
+
+`P5-AR` drives a Gate-B-only multi-driver fixture — **three Cost Lines and two
+Risks**, so none of A, B, C or D is trivial — reads the ACTUAL `tblCalcDrivers`
+body, partitions it by Driver Kind, sums each audit column, and compares against
+the ACTUAL `calc_totals` cell. The mapping is emitted in
+`gate_b.audit_reconstruction.relationships`, so PowerShell never restates
+"column 18". **An N/A blank is skipped, never folded in as the opposite kind's
+identity 1**, and the scenario separately asserts that the opposite kind
+publishes BLANK in each column. No new tolerance is invented: this is an audit
+relationship over the same published Doubles, not the reconciliation allowance.
+
+The fixture's `expected` block goes through the accepted oracle and is validated
+by the Stage-A golden-independence ledger like every other emitted expectation.
+
+### 5 — the rollback application-state proof checked defaults, not restoration
+
+The failpoint scenarios asserted `EnableEvents = True`, `ScreenUpdating = True`
+and `Calculation = Automatic` after the injected failure. That proves only that
+the application happens to be in convenient defaults — which it would be even if
+`FinishOperation` restored nothing. The accepted Phase-4 scenario S already
+rejected this pattern.
+
+Each failpoint scenario now establishes a **deliberately non-default caller
+state** before arming the failpoint:
+
+```
+ScreenUpdating = False
+EnableEvents   = False
+DisplayAlerts  = False
+Calculation    = xlCalculationManual (-4135)
+StatusBar      = "PCCM Phase-5 rollback sentinel <failpoint name>"
+```
+
+captures those exact values, runs the failed calculation, and asserts **all five**
+against the captured values — **before** normalising anything for the scenarios
+that follow. The StatusBar sentinel carries the failpoint name, so a value left
+by the other scenario cannot satisfy it, and a further check requires the
+captured state to differ from Excel's defaults so the proof cannot be vacuous.
+Both `P5-FA` and `P5-FC` go through the same shared runner, which captures
+independently on each invocation — neither inherits the other's proof.
+
+---
+
 ## The 37-case coverage ledger
 
 Every ID in `phase5_cases.json → plan_cases[*].id` maps to at least one Windows
@@ -433,7 +630,10 @@ all. What may not happen is a case disappearing because several share a fixture.
 | `P5-D7` | Convex statistics at the naive-overflow boundary |
 | `P5-D8` | The diagnostic module **removed**, inventory back to 15 |
 | `P5-AN` | Every analytical fixture, every emitted expected value |
-| `P5-RF` | Every prerequisite refusal; the prior successful snapshot survives each |
+| `P5-RF` | The nine refusal plan cases, each with its own detail discriminator |
+| `P5-PQ` | The complete plan section 18 prerequisite matrix (26 predicates) |
+| `P5-PN` | The referenced-only no-block complement (3 assumptions) |
+| `P5-AR` | Driver-audit A/B/C/D reconstruction over a multi-driver fixture |
 | `P5-ID` | Identities I1, I2, I3a–c, I4a–c, I5 — production `Reconcile` is the authority |
 | `P5-S1`…`P5-S6` | The six-row status matrix |
 | `P5-ST` | The primary staleness sequence |
@@ -698,6 +898,12 @@ Everything about behaviour, and specifically:
   construction is needed — the harness will report which
 * that the fixture applier can drive every emitted model into the workbook, and
   that Apply Timeline generates the year columns each fixture needs
+* that each of the 26 prerequisite mutations produces the refusal its tokens
+  describe, and that the three no-block mutations produce none
+* that the audit columns really do reconstruct the headline totals on real Excel
+  arithmetic
+* that `FinishOperation` restores a genuinely non-default caller state, including
+  `DisplayAlerts` and `StatusBar`
 * that `Set-TableCell -Value $null` really leaves an Excel cell BLANK, so cases
   14 and 23 present the model with the blank they describe
 * that a real `ListObject.Sort` over three Cost Lines moves the rows on target

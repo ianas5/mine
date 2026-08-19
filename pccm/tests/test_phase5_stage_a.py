@@ -807,6 +807,12 @@ def _expectation_paths(document: dict) -> set[str]:
             if "expected_refusal" in entry:
                 paths.add(f"{base}.expected_refusal")
     paths |= set(_leaf_paths(document["fingerprint"], "fingerprint"))
+    # The Gate-B evidence corpus. Its prerequisite and no-block entries describe
+    # WORKBOOK MUTATIONS and carry no expectation to validate; the audit
+    # reconstruction carries a full analytical block, and it is held to exactly
+    # the same independence standard as every plan case.
+    audit = document["gate_b"]["audit_reconstruction"]
+    paths |= set(_leaf_paths(audit["expected"], "gate_b.audit_reconstruction.expected"))
     return paths
 
 
@@ -1527,6 +1533,10 @@ _LOCKED_REFUSALS = {
 
 
 def _validate_corpus(ledger: _Ledger, document: dict) -> None:
+    audit = document["gate_b"]["audit_reconstruction"]
+    _check_payload(ledger, "gate_b.audit_reconstruction.expected",
+                   audit["expected"], audit["model"])
+
     for index, case in enumerate(document["plan_cases"]):
         base = f"plan_cases[{index}]"
         if case["kind"] == "analytical":

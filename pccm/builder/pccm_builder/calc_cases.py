@@ -782,6 +782,329 @@ def fingerprint_section(calc: CalcContract) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# ===========================================================================
+# GATE-B EVIDENCE CORPUS
+#
+# ADDED IN GATE-B B1 CORRECTION ROUND 2, and deliberately SEPARATE from the 37
+# plan cases, which keep their meanings exactly.
+#
+# The 37 plan cases are the analytical/refusal PLAN corpus. Nine of them are
+# prerequisite refusals, and those nine do not exhaust plan section 18: several
+# locked predicates - Base Year after Start Year, STRUCTURE CHANGE PENDING, a
+# duplicated referenced currency, a non-numeric Probability, an unknown
+# Distribution - had no real-Windows scenario at all.
+#
+# Most of those boundaries CANNOT be expressed as valid analytical models: "abc"
+# is not a Discount Rate and a blank is not a Quantity, and the typed oracle is
+# right to refuse them at its own boundary. So this corpus describes WORKBOOK
+# MUTATIONS instead: what to change, in which cell, and what the refusal must
+# say. The oracle is not weakened and no analytical expectation is invented for
+# a refused model.
+#
+# The DETAIL TOKENS are the discriminator. "some error occurred" is not evidence
+# that the intended predicate fired, and freezing whole sentences would make a
+# harmless wording edit a false failure. Each token below is a fragment of the
+# accepted production message that names the PREDICATE - taken from
+# modCalcResolve.bas and modCalcCheck.bas.
+# ===========================================================================
+GATE_B_PREREQUISITE_SCHEMA_VERSION = 1
+
+# `mutation.kind` vocabulary, consumed by the Windows harness:
+#   entered_structure   write an ENTERED structural input and do NOT re-apply
+#   named_number        write a number into a Setup defined name
+#   named_text          write text into a Setup defined name
+#   named_blank         clear a Setup defined name
+#   register_cell       write into a driver register cell (number / text / null)
+#   fx_row              add, retype or clear a tblFXRates row
+#   fx_remove           delete the tblFXRates row for a currency
+#   inflation_cell      write into the inflation grid at (profile, calendar year)
+#   profiling_cell      write into a profiling grid at (driver, project year)
+GATE_B_PREREQUISITES: list[dict[str, Any]] = [
+    # --- timeline and the structural handoff -----------------------------
+    {"id": "PQ-01", "section": "18.T1", "predicate": "base_year_after_start_year",
+     "title": "Base Year later than Start Year",
+     "base_plan_case": 3,
+     "mutation": {"kind": "entered_structure", "target": "base_year", "value": 2030,
+                  "apply_timeline": True},
+     "detail_tokens": ["Base Year", "Start Year"]},
+    {"id": "PQ-02", "section": "18.T2", "predicate": "structure_change_pending",
+     "title": "an entered structural value changed and the timeline was not re-applied",
+     "base_plan_case": 3,
+     "mutation": {"kind": "entered_structure", "target": "duration", "value": 4,
+                  "apply_timeline": False},
+     "detail_tokens": ["STRUCTURE CHANGE PENDING", "structural prerequisite"]},
+    # --- the discount input's type ----------------------------------------
+    {"id": "PQ-03", "section": "18.D1", "predicate": "discount_rate_blank",
+     "title": "Discount Rate blank",
+     "base_plan_case": 3,
+     "mutation": {"kind": "named_blank", "target": "discount_rate"},
+     "detail_tokens": ["Discount Rate", "blank"]},
+    {"id": "PQ-04", "section": "18.D2", "predicate": "discount_rate_non_numeric",
+     "title": "Discount Rate non-numeric",
+     "base_plan_case": 3,
+     "mutation": {"kind": "named_text", "target": "discount_rate", "value": "abc"},
+     "detail_tokens": ["Discount Rate", "not numeric"]},
+    # --- FX and the reporting-currency invariant ---------------------------
+    {"id": "PQ-05", "section": "18.F1", "predicate": "referenced_currency_missing",
+     "title": "a referenced foreign currency has no tblFXRates row",
+     "base_plan_case": 2,
+     "mutation": {"kind": "fx_remove", "currency": "USD"},
+     "detail_tokens": ["FX", "USD", "rows"]},
+    {"id": "PQ-06", "section": "18.F2", "predicate": "referenced_currency_duplicated",
+     "title": "a referenced foreign currency appears twice",
+     "base_plan_case": 2,
+     "mutation": {"kind": "fx_row", "currency": "USD", "rate": 3.75, "append": True},
+     "detail_tokens": ["FX", "USD", "rows"]},
+    {"id": "PQ-07", "section": "18.F3", "predicate": "referenced_rate_not_positive",
+     "title": "a referenced FX rate is not strictly positive",
+     "base_plan_case": 2,
+     "mutation": {"kind": "fx_row", "currency": "USD", "rate": 0},
+     "detail_tokens": ["FX", "USD", "strictly positive"]},
+    {"id": "PQ-08", "section": "18.F4", "predicate": "referenced_rate_blank",
+     "title": "a referenced FX rate is blank",
+     "base_plan_case": 2,
+     "mutation": {"kind": "fx_row", "currency": "USD", "rate": None},
+     "detail_tokens": ["FX rate for referenced currency", "USD", "blank"]},
+    {"id": "PQ-09", "section": "18.F5", "predicate": "referenced_rate_non_numeric",
+     "title": "a referenced FX rate is non-numeric",
+     "base_plan_case": 2,
+     "mutation": {"kind": "fx_row", "currency": "USD", "rate": "n/a"},
+     "detail_tokens": ["FX rate for referenced currency", "USD", "not numeric"]},
+    {"id": "PQ-10", "section": "18.F6", "predicate": "reporting_currency_missing",
+     "title": "the reporting currency has no row",
+     "base_plan_case": 3,
+     "mutation": {"kind": "fx_remove", "currency": "SAR"},
+     "detail_tokens": ["the reporting currency", "SAR", "exactly once"]},
+    {"id": "PQ-11", "section": "18.F7", "predicate": "reporting_currency_duplicated",
+     "title": "the reporting currency appears twice",
+     "base_plan_case": 3,
+     "mutation": {"kind": "fx_row", "currency": "SAR", "rate": 1, "append": True},
+     "detail_tokens": ["the reporting currency", "SAR", "exactly once"]},
+    {"id": "PQ-12", "section": "18.F8", "predicate": "reporting_currency_rate_not_one",
+     "title": "the reporting currency rate is not exactly 1",
+     "base_plan_case": 3,
+     "mutation": {"kind": "fx_row", "currency": "SAR", "rate": 2},
+     "detail_tokens": ["the reporting currency", "SAR", "must resolve to"]},
+    # --- inflation ---------------------------------------------------------
+    {"id": "PQ-13", "section": "18.I1", "predicate": "referenced_profile_missing",
+     "title": "a referenced inflation profile is absent from the grid",
+     "base_plan_case": 3,
+     "mutation": {"kind": "inflation_profile_rename", "profile": "Standard",
+                  "value": "Renamed"},
+     "detail_tokens": ["inflation: profile", "Standard", "not present"]},
+    {"id": "PQ-14", "section": "18.I2", "predicate": "referenced_rate_non_numeric",
+     "title": "a required referenced inflation rate is non-numeric",
+     "base_plan_case": 3,
+     "mutation": {"kind": "inflation_cell", "profile": "Standard", "calendar_year": 2027,
+                  "value": "n/a"},
+     "detail_tokens": ["inflation profile", "2027", "not numeric"]},
+    # --- profiling ---------------------------------------------------------
+    {"id": "PQ-15", "section": "18.P1", "predicate": "profiling_cell_non_numeric",
+     "title": "a required profiling cell is non-numeric",
+     "base_plan_case": 3,
+     "mutation": {"kind": "profiling_cell", "grid": "cost_profiling",
+                  "permanent_id": "CL-001", "project_year": 2, "value": "n/a"},
+     "detail_tokens": ["profiling for driver", "CL-001", "not numeric"]},
+    # --- distribution ------------------------------------------------------
+    {"id": "PQ-16", "section": "18.X1", "predicate": "distribution_missing",
+     "title": "Distribution is blank",
+     "base_plan_case": 3,
+     "mutation": {"kind": "register_cell", "register": "cost_lines",
+                  "permanent_id": "CL-001", "column": "distribution", "value": None},
+     "detail_tokens": ["Distribution", "blank"]},
+    {"id": "PQ-17", "section": "18.X2", "predicate": "distribution_unknown",
+     "title": "Distribution is not one of the three accepted kinds",
+     "base_plan_case": 3,
+     "mutation": {"kind": "register_cell", "register": "cost_lines",
+                  "permanent_id": "CL-001", "column": "distribution", "value": "Lognormal"},
+     "detail_tokens": ["Distribution", "not an accepted distribution"]},
+    # --- three-point ordering ----------------------------------------------
+    {"id": "PQ-18", "section": "18.O1", "predicate": "triangular_ordering",
+     "title": "Triangular Min <= Most Likely <= Max is violated",
+     "base_plan_case": 3,
+     "mutation": {"kind": "register_cell", "register": "cost_lines",
+                  "permanent_id": "CL-001", "column": "unit_cost_most_likely",
+                  "value": 500},
+     "detail_tokens": ["Triangular", "Min <= Most Likely <= Max"]},
+    {"id": "PQ-19", "section": "18.O2", "predicate": "beta_pert_ordering",
+     "title": "Beta-PERT Min <= Most Likely <= Max is violated",
+     "base_plan_case": 6,
+     "mutation": {"kind": "register_cell", "register": "cost_lines",
+                  "permanent_id": "CL-001", "column": "unit_cost_most_likely",
+                  "value": 500},
+     "detail_tokens": ["Beta-PERT", "Min <= Most Likely <= Max"]},
+    {"id": "PQ-20", "section": "18.O3", "predicate": "uniform_ordering",
+     "title": "Uniform Min <= Max is violated",
+     "base_plan_case": 7,
+     "mutation": {"kind": "register_cell", "register": "cost_lines",
+                  "permanent_id": "CL-001", "column": "unit_cost_min", "value": 900},
+     "detail_tokens": ["Uniform", "Min <= Max"]},
+    # --- Quantity ----------------------------------------------------------
+    {"id": "PQ-21", "section": "18.Q1", "predicate": "quantity_missing",
+     "title": "Quantity is blank",
+     "base_plan_case": 3,
+     "mutation": {"kind": "register_cell", "register": "cost_lines",
+                  "permanent_id": "CL-001", "column": "quantity", "value": None},
+     "detail_tokens": ["Quantity", "blank"]},
+    {"id": "PQ-22", "section": "18.Q2", "predicate": "quantity_non_numeric",
+     "title": "Quantity is non-numeric",
+     "base_plan_case": 3,
+     "mutation": {"kind": "register_cell", "register": "cost_lines",
+                  "permanent_id": "CL-001", "column": "quantity", "value": "n/a"},
+     "detail_tokens": ["Quantity", "not numeric"]},
+    # --- Probability -------------------------------------------------------
+    {"id": "PQ-23", "section": "18.R1", "predicate": "probability_missing",
+     "title": "Probability is blank",
+     "base_plan_case": 9,
+     "mutation": {"kind": "register_cell", "register": "risk_register",
+                  "permanent_id": "R-001", "column": "probability", "value": None},
+     "detail_tokens": ["Probability", "blank"]},
+    {"id": "PQ-24", "section": "18.R2", "predicate": "probability_non_numeric",
+     "title": "Probability is non-numeric",
+     "base_plan_case": 9,
+     "mutation": {"kind": "register_cell", "register": "risk_register",
+                  "permanent_id": "R-001", "column": "probability", "value": "n/a"},
+     "detail_tokens": ["Probability", "not numeric"]},
+    {"id": "PQ-25", "section": "18.R3", "predicate": "probability_below_zero",
+     "title": "Probability below zero",
+     "base_plan_case": 9,
+     "mutation": {"kind": "register_cell", "register": "risk_register",
+                  "permanent_id": "R-001", "column": "probability", "value": -0.5},
+     "detail_tokens": ["Probability", "fraction in [0, 1]"]},
+    {"id": "PQ-26", "section": "18.R4", "predicate": "probability_above_one",
+     "title": "Probability above one",
+     "base_plan_case": 9,
+     "mutation": {"kind": "register_cell", "register": "risk_register",
+                  "permanent_id": "R-001", "column": "probability", "value": 1.5},
+     "detail_tokens": ["Probability", "fraction in [0, 1]"]},
+]
+
+# THE COMPLEMENT. Referenced-only resolution means an assumption nobody uses
+# cannot block a valid model, and that is a locked semantic in its own right: a
+# harness that only proved refusals would accept a model that refused too much.
+GATE_B_NO_BLOCK: list[dict[str, Any]] = [
+    {"id": "PN-01", "section": "18.N1", "predicate": "unreferenced_fx_duplicated",
+     "title": "an UNREFERENCED foreign currency appearing twice does not block",
+     "base_plan_case": 3,
+     "mutation": {"kind": "fx_row", "currency": "ZZZ", "rate": 3.75, "append": True,
+                  "repeat": 2}},
+    {"id": "PN-02", "section": "18.N2", "predicate": "unreferenced_fx_blank_rate",
+     "title": "an UNREFERENCED foreign currency with a blank rate does not block",
+     "base_plan_case": 3,
+     "mutation": {"kind": "fx_row", "currency": "ZZZ", "rate": None, "append": True}},
+    {"id": "PN-03", "section": "18.N3", "predicate": "unreferenced_profile_incomplete",
+     "title": "an UNREFERENCED inflation profile with a missing rate does not block",
+     "base_plan_case": 3,
+     "mutation": {"kind": "inflation_profile_add", "profile": "Unused",
+                  "calendar_year": 2027, "value": None}},
+]
+
+# The multi-driver fixture the driver-audit reconstruction needs. Several Cost
+# Lines AND several Risks, so A, B, C and D are all non-trivially represented and
+# the cost/risk partition is not vacuous. Built from the accepted model helpers
+# and evaluated through the accepted oracle - no expected value is invented.
+GATE_B_AUDIT_MODEL = _model(
+    base_year=2026, start_year=2027, duration=3,
+    inflation={"Standard": {"2027": 0.05, "2028": 0.05, "2029": 0.05},
+               "Flat": {"2027": 0.0, "2028": 0.0, "2029": 0.0}},
+    fx=[{"currency": "SAR", "rate": 1}, {"currency": "USD", "rate": 3.75}],
+    cost_lines=[
+        _cost(permanent_id="CL-001", profile_weights=_PROFILE_3),
+        _cost(permanent_id="CL-002", distribution="Beta-PERT", currency="USD",
+              quantity=4, min_value=50, most_likely=70, max_value=120,
+              profile_weights=[0.5, 0.25, 0.25]),
+        _cost(permanent_id="CL-003", distribution="Uniform", most_likely=None,
+              inflation_profile="Flat", quantity=2, min_value=10, max_value=30,
+              profile_weights=[0.0, 0.0, 1.0]),
+    ],
+    risks=[
+        _risk(permanent_id="R-001", profile_weights=_PROFILE_3, probability=0.3),
+        _risk(permanent_id="R-002", distribution="Uniform", most_likely=None,
+              currency="USD", min_value=20, max_value=60, probability=0.75,
+              profile_weights=[0.4, 0.4, 0.2]),
+    ],
+)
+
+# The audit-column relationships the reconstruction check must use. Ordinals are
+# the accepted tblCalcDrivers schema's, and they are emitted so PowerShell reads
+# them rather than restating "column 18" in its own source.
+GATE_B_AUDIT_RELATIONSHIPS: list[dict[str, Any]] = [
+    {"headline": "a_nom", "driver_column": "deterministic_nominal", "kind": "Cost Line"},
+    {"headline": "a_pv", "driver_column": "deterministic_pv", "kind": "Cost Line"},
+    {"headline": "b_nom", "driver_column": "uncertainty_mean_shift_nominal", "kind": "Cost Line"},
+    {"headline": "b_pv", "driver_column": "uncertainty_mean_shift_pv", "kind": "Cost Line"},
+    {"headline": "c_nom", "driver_column": "mean_basis_nominal", "kind": "Cost Line"},
+    {"headline": "c_pv", "driver_column": "mean_basis_pv", "kind": "Cost Line"},
+    {"headline": "d_nom", "driver_column": "expected_risk_nominal", "kind": "Risk"},
+    {"headline": "d_pv", "driver_column": "expected_risk_pv", "kind": "Risk"},
+]
+
+
+# The detail discriminators for the NINE refusal plan cases. They stay in the
+# Gate-B corpus rather than being added to the plan cases themselves: the 37 keep
+# their meanings exactly, and PowerShell still holds no list of its own. Each
+# token is a fragment of the accepted production message that names the
+# PREDICATE - from modCalcResolve.bas, modCalcCheck.bas and modCalcFactors.bas.
+GATE_B_PLAN_REFUSAL_TOKENS: dict[int, list[str]] = {
+    14: ["inflation profile", "blank"],
+    15: ["profiling weights sum to"],
+    16: ["Quantity", "strictly positive"],
+    17: ["Quantity", "strictly positive"],
+    18: ["discount rate", "1 + r <= 0"],
+    20: ["inflation profile", "1 + rate <= 0"],
+    23: ["profiling for driver", "blank"],
+    24: ["inflation factor"],
+    29: ["discount factors"],
+}
+
+
+def gate_b_section(tolerances: Tolerances) -> dict[str, Any]:
+    """The Gate-B-only evidence corpus. Separate from `plan_cases` by design."""
+    audit_expected = evaluate(GATE_B_AUDIT_MODEL, tolerances)
+    cost_ids = {line["permanent_id"] for line in GATE_B_AUDIT_MODEL["cost_lines"]}
+    risk_ids = {risk["permanent_id"] for risk in GATE_B_AUDIT_MODEL["risks"]}
+    if not cost_ids or not risk_ids:
+        raise RuntimeError("the audit fixture must carry both Cost Lines and Risks")
+    if len(cost_ids) < 2:
+        raise RuntimeError("the audit fixture must carry more than one Cost Line")
+    refusals = {entry["id"] for entry in CASES if entry["kind"] == REFUSAL}
+    if refusals != set(GATE_B_PLAN_REFUSAL_TOKENS):
+        raise RuntimeError(
+            "every refusal plan case needs a Gate-B detail discriminator; "
+            f"missing {sorted(refusals - set(GATE_B_PLAN_REFUSAL_TOKENS))}, "
+            f"extra {sorted(set(GATE_B_PLAN_REFUSAL_TOKENS) - refusals)}"
+        )
+    return {
+        "schema_version": GATE_B_PREREQUISITE_SCHEMA_VERSION,
+        "purpose": (
+            "Gate-B-only runtime evidence: the plan section 18 prerequisite matrix as "
+            "WORKBOOK MUTATIONS, the referenced-only no-block complement, and the "
+            "multi-driver audit-reconstruction fixture. Separate from plan_cases, "
+            "which keep their meanings."
+        ),
+        "prerequisite_cases": [
+            {**entry, "expected_attempt": "REFUSED", "expected_status": "INVALID",
+             "snapshot_unchanged": True}
+            for entry in GATE_B_PREREQUISITES
+        ],
+        "no_block_cases": [
+            {**entry, "expected_attempt": "SUCCESS", "expected_status": "CURRENT",
+             "detail_tokens": [], "snapshot_unchanged": False}
+            for entry in GATE_B_NO_BLOCK
+        ],
+        "plan_refusal_tokens": {
+            str(case_id): list(tokens)
+            for case_id, tokens in sorted(GATE_B_PLAN_REFUSAL_TOKENS.items())
+        },
+        "audit_reconstruction": {
+            "title": "driver-audit A/B/C/D reconstruction over a multi-driver model",
+            "model": GATE_B_AUDIT_MODEL,
+            "expected": audit_expected,
+            "relationships": GATE_B_AUDIT_RELATIONSHIPS,
+        },
+    }
+
+
 def build_cases(calc: CalcContract, model_version: str) -> dict[str, Any]:
     """The whole `phase5_cases.json` document, deterministically ordered."""
     tolerances = tolerances_from(calc)
@@ -835,6 +1158,7 @@ def build_cases(calc: CalcContract, model_version: str) -> dict[str, Any]:
         },
         "fingerprint": fingerprint_section(calc),
         "plan_cases": cases,
+        "gate_b": gate_b_section(tolerances),
         "regression_vectors": _regression_section(tolerances),
     }
 
