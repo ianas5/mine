@@ -284,12 +284,149 @@ function Get-CalcScalarBlock {
     return $out
 }
 
+# ===========================================================================
+# THE PHASE-5 TYPED TABLE READER
+# ===========================================================================
+# The accepted Phase-4 Get-TableBody converts every cell to a display-neutral
+# STRING - `if ($null -eq $v) { '' } else { [string]$v }`. That is right for the
+# structural comparisons it was written for, and WRONG for Phase-5 analytical
+# evidence, because Test-CalcValue is deliberately type-sensitive: a numeric
+# expectation requires a numeric actual, and a blank must never equal a numeric
+# zero. A correct Excel cell holding Value2 = 1.05 arrived as the String "1.05"
+# and every analytical comparison returned False before it ever compared a
+# number. The first successful Gate-B analytical scenario would have failed with
+# production behaving perfectly.
+#
+# So Phase 5 reads the body itself, preserving what Excel published:
+#
+#   blank Value2   -> $null          (an absence, distinguishable from "")
+#   text Value2    -> String
+#   numeric Value2 -> the numeric scalar, NEVER stringified
+#   Boolean        -> Boolean
+#
+# Nothing here formats. Formatting belongs to failure diagnostics, and a reader
+# that formats is a reader that has already decided the comparison.
+#
+# THE ROW SHAPE IS THE ACCEPTED ONE: exactly one non-enumerated object[] per
+# physical row, through Write-RowObject, so the caller's @(...) still gives
+# 0/1/N with row boundaries intact. The row is allocated at the known column
+# count and assigned BY INDEX, because `$line += $null` appends nothing and a
+# blank cell would silently vanish from the row.
+#
+# The Phase-4 helper is not modified.
+function Get-Phase5TypedTableBody {
+    param($Workbook, [string]$SheetName, [string]$TableName)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $body = $null
+    $rowsObj = $null; $colsObj = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $body = $lo.DataBodyRange
+        # An empty body is a valid outcome: emit NOTHING, exactly as the accepted
+        # reader does.
+        if ($null -eq $body) { return }
+
+        $rowsObj = $body.Rows
+        $colsObj = $body.Columns
+        $rowCount = [int]$rowsObj.Count
+        $colCount = [int]$colsObj.Count
+        Release-Transient $rowsObj 'Range(rows)'; $rowsObj = $null
+        Release-Transient $colsObj 'Range(columns)'; $colsObj = $null
+
+        for ($r = 1; $r -le $rowCount; $r++) {
+            $line = New-Object 'object[]' $colCount
+            for ($c = 1; $c -le $colCount; $c++) {
+                $cell = $null
+                try {
+                    $cell = $body.Cells($r, $c)
+                    # Value2, and NOTHING else. No [string], no Format, no
+                    # coalescing of $null into ''.
+                    $line[$c - 1] = $cell.Value2
+                } finally {
+                    if ($null -ne $cell) { Release-Transient $cell 'Range(cell)'; $cell = $null }
+                }
+            }
+            Write-RowObject $line
+        }
+    } finally {
+        if ($null -ne $rowsObj)         { Release-Transient $rowsObj         'Range(rows)';    $rowsObj         = $null }
+        if ($null -ne $colsObj)         { Release-Transient $colsObj         'Range(columns)'; $colsObj         = $null }
+        if ($null -ne $body)            { Release-Transient $body            'Range(body)';    $body            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';     $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects';    $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';      $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';     $localWorksheets = $null }
+    }
+}
+
+function Get-Phase5TypedCell {
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowIndex, [int]$ColumnIndex)
+    # One cell, same discipline, for the places that need a single Value2 rather
+    # than a whole body.
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null
+    $body = $null; $cell = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $body = $lo.DataBodyRange
+        if ($null -eq $body) { return $null }
+        $cell = $body.Cells($RowIndex, $ColumnIndex)
+        return $cell.Value2
+    } finally {
+        if ($null -ne $cell)            { Release-Transient $cell            'Range(cell)';  $cell            = $null }
+        if ($null -ne $body)            { Release-Transient $body            'Range(body)';  $body            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';   $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects';  $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';    $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';   $localWorksheets = $null }
+    }
+}
+
+function Set-Phase5TypedCell {
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowIndex,
+          [int]$ColumnIndex, $Value)
+    # WRITES THE VALUE IT WAS GIVEN, with no coercion.
+    #
+    # The accepted Set-TableCell decides between [string] and [double] by
+    # inspecting the argument, which is right for fixture authoring. It is wrong
+    # for restoring a CAPTURED value: converting a captured text seed into a
+    # number would repair a defective workbook into agreement with the contract.
+    # Phase-4's helper is not modified; this one simply does not choose.
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null
+    $body = $null; $cell = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $body = $lo.DataBodyRange
+        $cell = $body.Cells($RowIndex, $ColumnIndex)
+        if ($null -eq $Value) {
+            $null = $cell.ClearContents()
+        } else {
+            $cell.Value2 = $Value
+        }
+    } finally {
+        if ($null -ne $cell)            { Release-Transient $cell            'Range(cell)';  $cell            = $null }
+        if ($null -ne $body)            { Release-Transient $body            'Range(body)';  $body            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';   $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects';  $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';    $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';   $localWorksheets = $null }
+    }
+}
+
 function Get-CalcTableRows {
     param($Workbook, $Inspection, [string]$TableKey)
-    # Reuses the accepted Phase-4 row-emission idiom: Get-TableBody puts ONE
-    # object on the pipeline per row, and the caller materialises with @(...).
+    # THE TYPED READER. Every `_Calc` oracle comparison therefore consumes the
+    # Value2 types Excel actually published, and a workbook that wrote a number
+    # as text fails rather than passing through a stringifying reader.
     $table = $Inspection.calc.tables.$TableKey
-    return @(Get-TableBody -Workbook $Workbook -SheetName $Inspection.calc.sheet `
+    return @(Get-Phase5TypedTableBody -Workbook $Workbook -SheetName $Inspection.calc.sheet `
         -TableName $table.table_name)
 }
 
@@ -327,6 +464,53 @@ function Test-CalcValue {
     if ($Tolerance -le 0.0) { return $false }
     $scale = [Math]::Max([Math]::Abs($e), 1.0)
     return ([Math]::Abs($a - $e) -le ($Tolerance * $scale))
+}
+
+# ---------------------------------------------------------------------------
+# SNAPSHOT IDENTITY - stricter than the analytical comparator
+# ---------------------------------------------------------------------------
+# Test-CalcValue answers "is this the value the oracle expected?", and for that
+# question a blank and an empty string are the same absence and a tolerance is
+# sometimes right. "Was this restored EXACTLY as it was?" is a different
+# question, and the two must not share a comparator:
+#
+#   * a numeric 1 restored as the String "1" is a restoration failure, and
+#     Test-CalcValue would have accepted neither - but a row-string comparison
+#     would have seen "1" both times;
+#   * a real Empty restored as "" is a restoration failure, and Test-CalcValue
+#     treats the two as equivalent blanks by design.
+#
+# So snapshot identity gets its own rule: same TYPE CLASS, same value, no
+# tolerance, no display-text conversion, and $null is never "".
+function Test-Phase5ExactValue {
+    param($Actual, $Expected)
+    if ($null -eq $Expected) {
+        # A genuine absence. An empty String is a value the user entered.
+        return ($null -eq $Actual)
+    }
+    if ($null -eq $Actual) { return $false }
+    if ($Expected -is [string]) {
+        if (-not ($Actual -is [string])) { return $false }
+        return ([string]$Actual -ceq [string]$Expected)
+    }
+    if ($Expected -is [bool]) {
+        if (-not ($Actual -is [bool])) { return $false }
+        return ([bool]$Actual -eq [bool]$Expected)
+    }
+    # Numeric. A String that merely LOOKS numeric is not equal to a number.
+    if ($Actual -is [string]) { return $false }
+    if ($Actual -is [bool]) { return $false }
+    return ([double]$Actual -eq [double]$Expected)
+}
+
+function Format-Phase5Typed {
+    param($Value)
+    # DIAGNOSTICS ONLY. Nothing compares through this.
+    if ($null -eq $Value) { return '<null>' }
+    if ($Value -is [string]) { return "String'" + $Value + "'" }
+    if ($Value -is [bool]) { return "Boolean:" + [string]$Value }
+    return ($Value.GetType().Name + ':' +
+            ([double]$Value).ToString('R', [System.Globalization.CultureInfo]::InvariantCulture))
 }
 
 function Format-CalcValue {
@@ -425,7 +609,16 @@ function Save-Phase5LockedFxSeed {
         throw ("the FX table declares " + [string]$fx.locked_seed_rows +
                " locked seed rows; the Gate-B reset assumes exactly one")
     }
-    $body = @(Get-TableBody -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name)
+    # THE TYPED READER, not Get-TableBody.
+    #
+    # Get-TableBody stringifies, so a correctly built numeric rate of 1 was
+    # captured as the String "1" - and an INCORRECTLY built text seed of "1" was
+    # captured identically. The restoration then wrote ([double]$Seed.Rate),
+    # silently converting a defective text seed into a number before the
+    # analytical scenarios ran. That repairs the workbook into agreement with the
+    # contract, which is exactly what the capture rule forbids.
+    $body = @(Get-Phase5TypedTableBody -Workbook $Workbook -SheetName $fx.sheet `
+        -TableName $fx.table_name)
     if ($body.Count -lt 1) {
         throw "the FX table has no body row, so there is no locked seed to capture"
     }
@@ -462,22 +655,27 @@ function Reset-Phase5FxTable {
     }
     # Row 1 is REWRITTEN from the capture. It is not trusted to still be the seed:
     # after PQ-10 it is a shifted USD row, and after PQ-12 its rate is 2.
-    Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+    #
+    # THE CAPTURED VALUE IS WRITTEN BACK AS ITSELF. No [double], no [string], no
+    # decision about what the value ought to be: Set-Phase5TypedCell assigns
+    # Value2 directly, so a numeric seed stays numeric and a defective text seed
+    # stays text and is exposed by the production calculation rather than being
+    # quietly corrected here.
+    Set-Phase5TypedCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
         -RowIndex 1 -ColumnIndex 1 -Value $Seed.Currency
-    if ($null -eq $Seed.Rate) {
-        Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
-            -RowIndex 1 -ColumnIndex 2 -Value $null
-    } else {
-        Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
-            -RowIndex 1 -ColumnIndex 2 -Value ([double]$Seed.Rate)
-    }
-    # Read back, because a restoration nobody checked is an assumption.
-    $body = @(Get-TableBody -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name)
-    if (([string]$body[0][0] -cne [string]$Seed.Currency) -or `
-        (-not (Test-CalcValue -Actual $body[0][1] -Expected $Seed.Rate))) {
-        throw ("the locked FX seed did not restore: row 1 is '" + [string]$body[0][0] +
-               "' / " + (Format-CalcValue $body[0][1]) + ", captured '" +
-               [string]$Seed.Currency + "' / " + (Format-CalcValue $Seed.Rate))
+    Set-Phase5TypedCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+        -RowIndex 1 -ColumnIndex 2 -Value $Seed.Rate
+    # Read back through the TYPED reader and compare with the STRICT comparator,
+    # because a restoration nobody checked is an assumption - and one checked
+    # with the analytical comparator would accept a type change.
+    $body = @(Get-Phase5TypedTableBody -Workbook $Workbook -SheetName $fx.sheet `
+        -TableName $fx.table_name)
+    if ((-not (Test-Phase5ExactValue -Actual $body[0][0] -Expected $Seed.Currency)) -or `
+        (-not (Test-Phase5ExactValue -Actual $body[0][1] -Expected $Seed.Rate))) {
+        throw ("the locked FX seed did not restore: row 1 is " +
+               (Format-Phase5Typed $body[0][0]) + " / " + (Format-Phase5Typed $body[0][1]) +
+               ", captured " + (Format-Phase5Typed $Seed.Currency) + " / " +
+               (Format-Phase5Typed $Seed.Rate))
     }
 }
 
@@ -1264,15 +1462,18 @@ function Get-Phase5AttemptFields { return $script:Phase5AttemptFields }
 
 function Get-Phase5Snapshot {
     param($Workbook, $Inspection)
+    # THE ROWS ARE KEPT AS TYPED CELL ARRAYS.
+    #
+    # They used to be Format-CalcValue'd and joined into one String per row, so
+    # the "exact" rollback proof was really a proof about display text: a numeric
+    # 1 and the String "1" produced the same evidence, and a real Empty and an
+    # empty String both collapsed to "<blank>". Formatting is now used only to
+    # describe a failure, never to decide one.
     $tables = New-Object System.Collections.Specialized.OrderedDictionary
     foreach ($key in $Inspection.calc.tables.PSObject.Properties.Name) {
         $rows = @()
         foreach ($row in @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey $key)) {
-            $cells = @()
-            foreach ($cell in @($row)) { $cells += (Format-CalcValue $cell) }
-            # The UNIT SEPARATOR, as [char], not a `u{...} escape: Windows
-            # PowerShell 5.1 has no such escape and would fail to parse it.
-            $rows += ($cells -join ([string][char]31))
+            $rows += , @($row)
         }
         $tables.Add($key, $rows)
     }
@@ -1286,35 +1487,60 @@ function Get-Phase5Snapshot {
 function Add-SnapshotUnchangedChecks {
     param($List, $Before, $After, [string]$Label, $SuccessFields)
     if ($null -eq $SuccessFields) { $SuccessFields = Get-Phase5SuccessRecordFields }
+    # EVERY comparison below is Test-Phase5ExactValue, not the analytical
+    # comparator: this is "restored exactly as it was", where a numeric 1 that
+    # came back as "1" and a blank that came back as "" are both failures.
+    #
     # C13:C16 exactly.
     foreach ($field in $SuccessFields) {
         $null = Add-Check $List ($Label + ': calc_state.' + $field + ' (C13:C16) is unchanged') `
-            (Test-CalcValue -Actual $After.State[$field] -Expected $Before.State[$field]) `
-            ("was " + (Format-CalcValue $Before.State[$field]) + `
-             ", now " + (Format-CalcValue $After.State[$field]))
+            (Test-Phase5ExactValue -Actual $After.State[$field] -Expected $Before.State[$field]) `
+            ("was " + (Format-Phase5Typed $Before.State[$field]) + `
+             ", now " + (Format-Phase5Typed $After.State[$field]))
     }
     # C23:C32 exactly, INCLUDING blanks. A previously blank total that came back
-    # as numeric zero would be a fabricated value, not a preserved one.
+    # as numeric zero - or as an empty String - would be a fabricated value, not
+    # a preserved one.
     foreach ($field in $Before.Totals.Keys) {
         $null = Add-Check $List ($Label + ': calc_totals.' + $field + ' (C23:C32) is unchanged') `
-            (Test-CalcValue -Actual $After.Totals[$field] -Expected $Before.Totals[$field]) `
-            ("was " + (Format-CalcValue $Before.Totals[$field]) + `
-             ", now " + (Format-CalcValue $After.Totals[$field]))
+            (Test-Phase5ExactValue -Actual $After.Totals[$field] -Expected $Before.Totals[$field]) `
+            ("was " + (Format-Phase5Typed $Before.Totals[$field]) + `
+             ", now " + (Format-Phase5Typed $After.Totals[$field]))
     }
-    # All five analytical ListObjects, row for row and cell for cell. Row count
-    # first: a table that came back shorter would otherwise compare only the rows
-    # that survived.
+    # All five analytical ListObjects: row count, then column count, then every
+    # cell. Row count first, because a table that came back shorter would
+    # otherwise compare only the rows that survived.
     foreach ($key in $Before.Tables.Keys) {
         $was = @($Before.Tables[$key]); $now = @($After.Tables[$key])
         $null = Add-Check $List ($Label + ': ' + $key + ' has its previous row count') `
             ($was.Count -eq $now.Count) ("was " + $was.Count + ", now " + $now.Count)
         $identical = ($was.Count -eq $now.Count)
+        $firstDifference = ''
         if ($identical) {
             for ($i = 0; $i -lt $was.Count; $i++) {
-                if ($was[$i] -cne $now[$i]) { $identical = $false }
+                $wasRow = @($was[$i]); $nowRow = @($now[$i])
+                if ($wasRow.Count -ne $nowRow.Count) {
+                    $identical = $false
+                    if ($firstDifference -eq '') {
+                        $firstDifference = ('row ' + ($i + 1) + ' has ' + $nowRow.Count +
+                                            ' cells, was ' + $wasRow.Count)
+                    }
+                    continue
+                }
+                for ($c = 0; $c -lt $wasRow.Count; $c++) {
+                    if (-not (Test-Phase5ExactValue -Actual $nowRow[$c] -Expected $wasRow[$c])) {
+                        $identical = $false
+                        if ($firstDifference -eq '') {
+                            $firstDifference = ('row ' + ($i + 1) + ' cell ' + ($c + 1) +
+                                                ': was ' + (Format-Phase5Typed $wasRow[$c]) +
+                                                ', now ' + (Format-Phase5Typed $nowRow[$c]))
+                        }
+                    }
+                }
             }
         }
-        $null = Add-Check $List ($Label + ': ' + $key + ' is the previous snapshot exactly') $identical
+        $null = Add-Check $List ($Label + ': ' + $key + ' is the previous snapshot exactly') `
+            $identical $firstDifference
     }
 }
 
@@ -1393,14 +1619,17 @@ function Invoke-Phase5GateBScenarios {
         $list = New-Checklist
         $seed = Save-Phase5LockedFxSeed -Workbook $Workbook -Inspection $Inspection
         $null = Add-Check $list 'the locked FX seed was captured from the real Stage-B workbook' `
-            ((-not [string]::IsNullOrEmpty([string]$seed.Currency)) -and `
-             (-not (Test-CalcBlank -Actual $seed.Rate))) `
-            ("captured '" + [string]$seed.Currency + "' / " + (Format-CalcValue $seed.Rate))
+            (($null -ne $seed.Currency) -and ($null -ne $seed.Rate)) `
+            ("captured " + (Format-Phase5Typed $seed.Currency) + " / " +
+             (Format-Phase5Typed $seed.Rate))
         # The capture is REPORTED, not asserted against a literal. If the built
         # seed is wrong, the analytical scenarios below must fail; repairing it
         # here would hide a real build defect.
-        Add-Note ("P5-FX: locked FX seed captured as '" + [string]$seed.Currency +
-                  "' / " + (Format-CalcValue $seed.Rate) +
+        # The TYPE is reported too, and is deliberately NOT asserted: whether the
+        # built rate is numeric is the production build's claim to make, and the
+        # analytical scenarios are what test it.
+        Add-Note ("P5-FX: locked FX seed captured as " + (Format-Phase5Typed $seed.Currency) +
+                  " / " + (Format-Phase5Typed $seed.Rate) +
                   " from the untouched Stage-B workbook")
         Add-Result 'P5-FX' 'Locked FX seed captured before any Phase-5 mutation' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
@@ -2507,7 +2736,11 @@ function Invoke-Phase5GateBScenarios {
                     if ($gridCandidate.key -eq $pair.key) { $grid = $gridCandidate }
                 }
                 $fixed = @($grid.fixed_columns).Count
-                $body = @(Get-TableBody -Workbook $Workbook -SheetName $grid.sheet `
+                # THE TYPED READER. These weights are compared with the
+                # type-sensitive analytical comparator, so a stringifying reader
+                # would have failed every one of them against a correct workbook -
+                # the same defect the _Calc tables had.
+                $body = @(Get-Phase5TypedTableBody -Workbook $Workbook -SheetName $grid.sheet `
                     -TableName $grid.table_name)
                 foreach ($driver in $pair.drivers) {
                     $found = $null
@@ -3114,7 +3347,15 @@ function Invoke-Phase5GateBScenarios {
             foreach ($key in $before.Tables.Keys) {
                 $was = @($before.Tables[$key]); $now = @($after.Tables[$key])
                 if ($was.Count -ne $now.Count) { $mixed = $true; continue }
-                for ($i = 0; $i -lt $was.Count; $i++) { if ($was[$i] -cne $now[$i]) { $mixed = $true } }
+                for ($i = 0; $i -lt $was.Count; $i++) {
+                    $wasRow = @($was[$i]); $nowRow = @($now[$i])
+                    if ($wasRow.Count -ne $nowRow.Count) { $mixed = $true; continue }
+                    for ($c = 0; $c -lt $wasRow.Count; $c++) {
+                        if (-not (Test-Phase5ExactValue -Actual $nowRow[$c] -Expected $wasRow[$c])) {
+                            $mixed = $true
+                        }
+                    }
+                }
             }
             $null = Add-Check $list 'no mixed old/new analytical state survived the rollback' (-not $mixed)
 

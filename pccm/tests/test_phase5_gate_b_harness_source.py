@@ -3042,8 +3042,12 @@ def test_83_the_locked_fx_seed_is_captured_from_the_real_workbook() -> None:
     assert "[int]$fx.locked_seed_rows -ne 1" in capture, (
         "the capture does not require exactly one locked seed row"
     )
-    assert "Get-TableBody -Workbook $Workbook" in capture, (
-        "the seed is not read from the real workbook"
+    assert "Get-Phase5TypedTableBody -Workbook $Workbook" in capture, (
+        "the seed is not read from the real workbook through the TYPED reader"
+    )
+    assert "Get-TableBody -Workbook $Workbook" not in capture, (
+        "the seed is captured through the stringifying Phase-4 reader, so a "
+        "correct numeric rate and a defective text rate look identical"
     )
     # NOT a literal, and NOT the emitted model.
     for forbidden in ("'SAR'", '"SAR"', "$Model.fx", "$Cases.", "$entry.rate",
@@ -3096,12 +3100,27 @@ def test_85_the_fixture_restores_the_seed_before_appending() -> None:
     # Everything after the seed goes.
     assert "Remove-TableRow -Workbook $Workbook -SheetName $fx.sheet" in reset
     assert "for ($row = $rows; $row -gt 1; $row--)" in reset
-    # Row 1's currency AND rate are both rewritten from the capture.
+    # Row 1's currency AND rate are both rewritten from the capture, AS
+    # THEMSELVES. A [double] cast here would convert a defective text seed into a
+    # number and repair the workbook into agreement with the contract.
+    assert "Set-Phase5TypedCell -Workbook $Workbook -SheetName $fx.sheet" in reset, (
+        "the restoration goes through a coercing setter"
+    )
     assert "-RowIndex 1 -ColumnIndex 1 -Value $Seed.Currency" in reset, (
         "the seed currency is not restored"
     )
-    assert "-RowIndex 1 -ColumnIndex 2 -Value ([double]$Seed.Rate)" in reset, (
-        "the seed rate is not restored"
+    assert "-RowIndex 1 -ColumnIndex 2 -Value $Seed.Rate" in reset, (
+        "the seed rate is not restored as itself"
+    )
+    assert "[double]$Seed.Rate" not in reset, (
+        "the captured rate is converted before it is written back"
+    )
+    assert "[string]$Seed.Currency" not in reset
+    # The read-back uses the typed reader and the STRICT comparator.
+    assert "Get-Phase5TypedTableBody" in reset
+    assert "Test-Phase5ExactValue -Actual $body[0][1] -Expected $Seed.Rate" in reset, (
+        "the restoration is verified with the analytical comparator, which would "
+        "accept a type change"
     )
     # And the restoration is read back rather than assumed.
     assert "the locked FX seed did not restore" in reset
@@ -3313,4 +3332,374 @@ def test_nc_75_a_partial_analytical_recheck_is_caught() -> None:
     assert "calc_inflation_factors" not in planted, "the omitted table must be visible"
     assert "Add-Phase5AnalyticalChecks" not in planted, (
         "a hand-rolled partial recheck instead of the shared checker must be visible"
+    )
+
+
+# ===========================================================================
+# 20. CORRECTION ROUND 5
+#
+# Three defects found in independent review of 56b90d9. Each has a test here
+# that fails against that source and passes against the corrected one.
+# ===========================================================================
+def test_89_the_calc_tables_are_read_with_their_value2_types() -> None:
+    """BLOCKER 1. The Phase-4 reader stringifies; Test-CalcValue is type-sensitive.
+
+    `Get-TableBody` does `if ($null -eq $v) { '' } else { [string]$v }`, which is
+    right for the structural comparisons it was written for. Fed into a
+    type-sensitive analytical comparator, a correct cell holding `Value2 = 1.05`
+    arrived as the String `"1.05"` and every comparison returned False before it
+    compared a number. The first successful analytical Gate-B scenario would have
+    failed with production behaving perfectly.
+    """
+    # The Phase-4 behaviour this rests on, asserted rather than assumed - and
+    # asserted to be UNCHANGED, because Step B1 may not edit it.
+    phase4 = _executable(HARNESS)
+    reader = _procedure(phase4, "Get-TableBody")
+    assert "if ($null -eq $v) { $line += '' } else { $line += [string]$v }" in reader, (
+        "the accepted Phase-4 reader changed; the reasoning below needs restating"
+    )
+
+    source = _executable(SCENARIOS)
+    rows = _procedure(source, "Get-CalcTableRows")
+    assert "Get-Phase5TypedTableBody" in rows, (
+        "the calculation tables are not read through the typed reader"
+    )
+    assert "Get-TableBody" not in rows, (
+        "the calculation tables are still read through the stringifying reader"
+    )
+
+    typed = _procedure(source, "Get-Phase5TypedTableBody")
+    assert "$line[$c - 1] = $cell.Value2" in typed, (
+        "the typed reader does not assign Value2 straight into the row"
+    )
+    # NOTHING is stringified, coalesced or formatted on the way out.
+    for forbidden in ("[string]$v", "[string]$cell", "+= ''", "Format-CalcValue",
+                      "Format-Phase5Typed", ".Text", ".Value)"):
+        assert forbidden not in typed, f"the typed reader transforms a cell ({forbidden})"
+    # The row is allocated at the column count and filled BY INDEX, because
+    # `$line += $null` appends nothing and a blank cell would vanish.
+    assert "New-Object 'object[]' $colCount" in typed, (
+        "the row is accumulated with +=, so a blank cell disappears from it"
+    )
+    assert "$line +=" not in typed
+    # The accepted row-emission idiom survives: one non-enumerated object per row.
+    assert "Write-RowObject $line" in typed
+    assert "if ($null -eq $body) { return }" in typed, (
+        "an empty body no longer emits zero objects"
+    )
+    # And the accepted COM ownership discipline.
+    for owned in ("$localWorksheets = $Workbook.Worksheets", "$ws = $localWorksheets.Item",
+                  "$los = $ws.ListObjects", "$lo = $los.Item", "$body = $lo.DataBodyRange"):
+        assert owned in typed, f"the typed reader skips an owned COM acquisition ({owned})"
+    assert typed.count("Release-Transient") >= 7
+
+
+def test_90_the_typed_reader_preserves_every_value2_class() -> None:
+    """BLOCKER 1.3. A no-COM shape and TYPE control, like the accepted PRE probe.
+
+    Linux cannot run PowerShell, so the reader's pipeline behaviour cannot be
+    observed here. What CAN be stated is the contract the source implements:
+    a row of `[1.25, "USD", $null, 3]` must arrive as four cells whose classes
+    are numeric, String, null and numeric - not four strings, and not three cells
+    with the blank silently dropped.
+    """
+    fabricated = [1.25, "USD", None, 3]
+
+    # THE SHIPPED READER, modelled: every non-null becomes a string and null
+    # becomes an empty string.
+    stringified = ["" if cell is None else str(cell) for cell in fabricated]
+    assert stringified == ["1.25", "USD", "", "3"]
+    assert all(isinstance(cell, str) for cell in stringified), (
+        "the shipped reader's output must be visibly all-text"
+    )
+
+    # THE TYPED READER, modelled: the scalar arrives as itself.
+    preserved = list(fabricated)
+    assert len(preserved) == 4, "the row shape must survive the blank"
+    assert isinstance(preserved[0], float) and not isinstance(preserved[0], str)
+    assert isinstance(preserved[1], str)
+    assert preserved[2] is None
+    assert isinstance(preserved[3], int) and not isinstance(preserved[3], str)
+
+    # And the consequence for the comparator: the shipped shape fails a correct
+    # numeric expectation, the typed one passes it.
+    def type_sensitive(actual, expected):
+        if expected is None:
+            return actual is None or (isinstance(actual, str) and actual == "")
+        if isinstance(actual, str) and not isinstance(expected, str):
+            return False
+        return actual == expected
+
+    assert not type_sensitive(stringified[0], 1.25), (
+        "the stringified numeric must be visibly rejected by a type-sensitive comparator"
+    )
+    assert type_sensitive(preserved[0], 1.25)
+
+
+def test_91_the_snapshot_keeps_typed_cells_not_a_row_string() -> None:
+    """BLOCKER 2. "Exact" was a proof about display text.
+
+    Rows were `Format-CalcValue`'d and joined into one String each, so a numeric
+    1 and the String "1" produced identical evidence, and a real Empty and an
+    empty String both collapsed to `<blank>`.
+    """
+    source = _executable(SCENARIOS)
+    snapshot = _procedure(source, "Get-Phase5Snapshot")
+    assert "Format-CalcValue" not in snapshot, (
+        "the snapshot still formats its cells into the authoritative comparison"
+    )
+    assert "-join" not in snapshot, "the snapshot still joins a row into one String"
+    assert "[char]31" not in snapshot, "the unit-separator serialisation survives"
+    assert "$rows += , @($row)" in snapshot, (
+        "the snapshot does not retain the row as a typed cell array"
+    )
+
+
+def test_92_snapshot_identity_uses_the_strict_comparator() -> None:
+    """BLOCKER 2.1/2.3. "Restored exactly" is not "matches the oracle"."""
+    source = _executable(SCENARIOS)
+    strict = _procedure(source, "Test-Phase5ExactValue")
+    # A. a real absence is not an empty String.
+    assert "if ($null -eq $Expected) {" in strict
+    assert "return ($null -eq $Actual)" in strict, (
+        "an expected blank accepts something other than a genuine blank"
+    )
+    assert ".Length -eq 0" not in strict, "an empty String is treated as a blank"
+    # B/C/D. same type class, exact value, no tolerance.
+    assert "if ($Expected -is [string]) {" in strict
+    assert "-ceq [string]$Expected" in strict, "text is compared case-insensitively"
+    assert "if ($Expected -is [bool]) {" in strict
+    assert "if ($Actual -is [string]) { return $false }" in strict, (
+        "a String that looks numeric is accepted against a number"
+    )
+    assert "Tolerance" not in strict, "the strict comparator carries a tolerance"
+    assert "Format-" not in strict, "the strict comparator compares display text"
+
+    checks = _procedure(source, "Add-SnapshotUnchangedChecks")
+    assert "Test-CalcValue" not in checks, (
+        "the snapshot comparison still uses the analytical comparator"
+    )
+    assert checks.count("Test-Phase5ExactValue") >= 3, (
+        "C13:C16, C23:C32 and the tables are not all compared strictly"
+    )
+    # Row count, column count, then every cell.
+    assert "$was.Count -eq $now.Count" in checks
+    assert "$wasRow.Count -ne $nowRow.Count" in checks, "the column count is not compared"
+    assert "for ($c = 0; $c -lt $wasRow.Count; $c++)" in checks, "cells are not compared"
+    # Formatting survives ONLY as diagnostics.
+    assert "Format-Phase5Typed" in checks
+    diagnostics = _procedure(source, "Format-Phase5Typed")
+    assert "DIAGNOSTICS ONLY" in _text(SCENARIOS)[_text(SCENARIOS).index("function Format-Phase5Typed"):
+                                                  _text(SCENARIOS).index("function Format-CalcValue")]
+
+
+def test_93_the_strict_comparator_rejects_the_four_planted_restorations() -> None:
+    """BLOCKER 2.4, as a decision table over the rule the source implements."""
+    def strict(actual, expected):
+        if expected is None:
+            return actual is None
+        if actual is None:
+            return False
+        if isinstance(expected, str):
+            return isinstance(actual, str) and actual == expected
+        if isinstance(expected, bool):
+            return isinstance(actual, bool) and actual == expected
+        if isinstance(actual, (str, bool)):
+            return False
+        return float(actual) == float(expected)
+
+    # 1. a numeric Double restored as a String.
+    assert not strict('1', 1.0), 'numeric 1 restored as text must be rejected'
+    # 2. a genuine blank restored as an empty String.
+    assert not strict('', None), 'a blank restored as an empty string must be rejected'
+    # 3. identical display text, wrong underlying type.
+    assert not strict("1.05", 1.05)
+    assert not strict(1.05, "1.05")
+    # 4. a C23:C32 blank replaced by "".
+    assert not strict("", None)
+    # And the correct restorations still pass.
+    assert strict(1.0, 1.0) and strict(None, None) and strict("USD", "USD")
+    # THE SHIPPED CHAIN cannot see any of it. Two stages destroy the evidence,
+    # and modelling only the second would understate the defect:
+    #
+    #   Get-TableBody   every non-null cell -> String, every null -> ""
+    #   Format-CalcValue + join   the row -> one display String
+    def shipped_read(cell):
+        return "" if cell is None else (cell if isinstance(cell, str) else f"{cell:g}")
+
+    def shipped_format(cell):
+        if cell is None or (isinstance(cell, str) and cell == ""):
+            return "<blank>"
+        return "'" + cell + "'" if isinstance(cell, str) else f"{cell:g}"
+
+    def shipped_row(cells):
+        return chr(31).join(shipped_format(shipped_read(c)) for c in cells)
+
+    assert shipped_row([1.0, None]) == shipped_row(["1", ""]), (
+        "the shipped row-string evidence must be visibly blind to both defects"
+    )
+    # The typed snapshot is not: it compares cell by cell with the strict rule.
+    typed_before, typed_after = [1.0, None], ["1", ""]
+    assert not all(strict(a, b) for a, b in zip(typed_after, typed_before)), (
+        "the typed snapshot must reject the same pair the row string accepted"
+    )
+
+
+def test_94_the_fx_seed_is_captured_and_restored_without_coercion() -> None:
+    """BLOCKER 3. The harness must not repair a defective built seed.
+
+    `Get-TableBody` captured a correct numeric 1 as the String "1", and an
+    incorrect text seed of "1" identically. `-Value ([double]$Seed.Rate)` then
+    converted the capture into a number, so a workbook that had built the
+    reporting rate as TEXT would have been silently corrected before the
+    analytical scenarios ran.
+    """
+    source = _executable(SCENARIOS)
+    capture = _procedure(source, "Save-Phase5LockedFxSeed")
+    assert "Get-Phase5TypedTableBody" in capture
+    assert "Get-TableBody" not in capture
+    for forbidden in ("[string]$body", "[double]$body", "Format-CalcValue"):
+        assert forbidden not in capture, f"the capture coerces the seed ({forbidden})"
+
+    reset = _procedure(source, "Reset-Phase5FxTable")
+    assert "[double]$Seed.Rate" not in reset, "the captured rate is converted on the way back"
+    assert "Set-Phase5TypedCell" in reset, "the restoration goes through a coercing setter"
+    setter = _procedure(source, "Set-Phase5TypedCell")
+    assert "$cell.Value2 = $Value" in setter, "the typed setter does not assign Value2 directly"
+    assert "[double]$Value" not in setter and "[string]$Value" not in setter, (
+        "the typed setter chooses a type for its caller"
+    )
+    assert "$cell.ClearContents()" in setter, "a null cannot be written as a genuine blank"
+    # The accepted Phase-4 setter is untouched and still chooses, which is right
+    # for fixture authoring.
+    phase4 = _procedure(_executable(HARNESS), "Set-TableCell")
+    assert "$cell.Value2 = [double]$Value" in phase4, (
+        "the accepted Phase-4 setter was modified"
+    )
+
+
+def test_95_nothing_widened_the_analytical_comparator_to_accept_text() -> None:
+    """BLOCKER 1.2. The reader was fixed, not the comparator weakened."""
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Test-CalcValue")
+    assert "if ($Actual -is [string]) { return $false }" in body, (
+        "the analytical comparator now accepts a numeric String, which would "
+        "hide a workbook that wrote a number as text"
+    )
+    assert "[double]$Actual -eq [double]$Expected" not in body.split(
+        "if ($Actual -is [string]) { return $false }")[0], (
+        "a numeric comparison happens before the String rejection"
+    )
+
+
+# ===========================================================================
+# 21. CORRECTION-ROUND-5 NEGATIVE CONTROLS
+# ===========================================================================
+def test_nc_76_reading_the_calc_tables_through_get_tablebody_is_caught() -> None:
+    """The shipped path."""
+    planted = _synthetic(
+        "function Get-CalcTableRows {\n"
+        "    param($Workbook, $Inspection, [string]$TableKey)\n"
+        "    $table = $Inspection.calc.tables.$TableKey\n"
+        "    return @(Get-TableBody -Workbook $Workbook -SheetName $Inspection.calc.sheet `\n"
+        "        -TableName $table.table_name)\n"
+        "}\n"
+    )
+    assert "Get-TableBody" in planted, "the stringifying reader must be visible"
+    assert "Get-Phase5TypedTableBody" not in planted
+
+
+def test_nc_77_a_reader_that_stringifies_is_caught() -> None:
+    planted = _synthetic(
+        "$v = $cell.Value2\n"
+        "if ($null -eq $v) { $line += '' } else { $line += [string]$v }\n"
+    )
+    assert "[string]$v" in planted, "the cast must be visible"
+    assert "$line[$c - 1] = $cell.Value2" not in planted
+    assert "+= ''" in planted, "the blank-to-empty-string coalescing must be visible"
+
+
+def test_nc_78_an_accumulating_row_drops_a_blank_cell() -> None:
+    """Why the typed reader allocates and assigns by index."""
+    cells = [1.25, None, "USD"]
+    # `$line += $null` appends NOTHING in PowerShell: the row silently shortens.
+    accumulated = [c for c in cells if c is not None]
+    assert len(accumulated) == 2, "the dropped blank must be visible"
+    indexed = [None] * len(cells)
+    for index, cell in enumerate(cells):
+        indexed[index] = cell
+    assert len(indexed) == 3 and indexed[1] is None
+
+
+def test_nc_79_a_row_string_snapshot_is_caught() -> None:
+    planted = _synthetic(
+        "foreach ($cell in @($row)) { $cells += (Format-CalcValue $cell) }\n"
+        "$rows += ($cells -join ([string][char]31))\n"
+    )
+    assert "Format-CalcValue" in planted and "-join" in planted, (
+        "the display-text serialisation must be visible"
+    )
+    assert "$rows += , @($row)" not in planted
+
+
+def test_nc_80_a_snapshot_compared_with_the_analytical_comparator_is_caught() -> None:
+    planted = _synthetic(
+        "foreach ($field in $SuccessFields) {\n"
+        "    $null = Add-Check $List 'unchanged' `\n"
+        "        (Test-CalcValue -Actual $After.State[$field] -Expected $Before.State[$field])\n"
+        "}\n"
+    )
+    assert "Test-CalcValue" in planted, "the analytical comparator must be visible"
+    assert "Test-Phase5ExactValue" not in planted
+    # And it is genuinely too weak: it treats $null and "" as the same blank.
+    def analytical(actual, expected):
+        blank = lambda v: v is None or (isinstance(v, str) and v == "")
+        if expected is None:
+            return blank(actual)
+        return actual == expected
+    assert analytical('', None), (
+        'the analytical comparator must be visibly blind to a blank restored '
+        'as an empty string'
+    )
+
+
+def test_nc_81_a_coerced_seed_restoration_is_caught() -> None:
+    planted = _synthetic(
+        "Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `\n"
+        "    -RowIndex 1 -ColumnIndex 2 -Value ([double]$Seed.Rate)\n"
+    )
+    assert "[double]$Seed.Rate" in planted, (
+        "the conversion that would repair a defective text seed must be visible"
+    )
+    assert "Set-Phase5TypedCell" not in planted
+
+
+def test_nc_82_a_stringifying_seed_capture_is_caught() -> None:
+    planted = _synthetic(
+        "$body = @(Get-TableBody -Workbook $Workbook -SheetName $fx.sheet "
+        "-TableName $fx.table_name)\n"
+        "$script:Phase5LockedFxSeed = [pscustomobject]@{ Currency = $body[0][0]; "
+        "Rate = $body[0][1] }\n"
+    )
+    assert "Get-TableBody" in planted, "the stringifying capture must be visible"
+    # A correct numeric seed and a defective text seed capture identically.
+    correct, defective = 1.0, "1"
+    assert str(correct) != str(defective)          # "1.0" vs "1" in Python
+    assert f"{correct:g}" == defective, (
+        "under Excel's Value2 -> String conversion both become the same text, "
+        "which is the point"
+    )
+
+
+def test_nc_83_a_widened_analytical_comparator_is_caught() -> None:
+    """Fixing the reader is the correct repair; widening the comparator is not."""
+    planted = _synthetic(
+        "function Test-CalcValue {\n"
+        "    param($Actual, $Expected)\n"
+        "    return ([double]$Actual -eq [double]$Expected)\n"
+        "}\n"
+    )
+    assert "$Actual -is [string]) { return $false }" not in planted, (
+        "a comparator that accepts a numeric String must be visible; it would "
+        "hide a workbook that published a number as text"
     )

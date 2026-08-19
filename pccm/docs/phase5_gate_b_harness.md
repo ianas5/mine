@@ -1,6 +1,6 @@
 # Phase 5 — Gate B — Step B1: the Windows harness extension
 
-**Status: correction round 4 — harness source, ready for independent review.
+**Status: correction round 5 — harness source, ready for independent review.
 NOTHING HAS BEEN RUN.**
 
 Gate A is accepted and closed at `1968fb8`. This step authors the Windows Gate-B
@@ -26,7 +26,12 @@ relative tolerance. Correction round 3 (`aa6611c`) closed all four and was
 rejected with **two more**, recorded under
 **[Correction round 4](#correction-round-4)**: a locked FX seed that was never
 restored between scenarios, and a referenced-only proof that showed non-blocking
-without showing no-effect. Every one was a defect in what the
+without showing no-effect. Correction round 4 (`56b90d9`) closed both and was
+rejected with **three more**, recorded under
+**[Correction round 5](#correction-round-5)**: a table reader that destroyed the
+`Value2` types the analytical comparator depends on, a snapshot whose
+"exactness" was a string serialisation, and an FX seed capture/restore that
+could repair a defective built seed. Every one was a defect in what the
 harness would have PROVED, not in how it is wired: two fixture writers that
 destroyed the condition they were exercising, a refusal proof that asserted the
 opposite of the rule, a reconciliation block that reimplemented a rejected
@@ -814,6 +819,115 @@ copy, and refuses any direct `Get-CalcTableRows` in that block.
 
 ---
 
+## Correction round 5
+
+Independent review reproduced 164/164 and 351/351, accepted both round-4 fixes,
+and rejected the harness on three more. All three are the same family: the
+harness was comparing **display text** where it claimed to compare **values**.
+
+### 1 — the table reader destroyed the `Value2` types
+
+`Get-CalcTableRows` delegated to the accepted Phase-4 `Get-TableBody`, which
+does
+
+```powershell
+$v = $cell.Value2
+if ($null -eq $v) { $line += '' } else { $line += [string]$v }
+```
+
+That is right for the structural comparisons it was written for. It is wrong for
+Phase-5 analytical evidence, because `Test-CalcValue` is deliberately
+type-sensitive: a numeric expectation requires a numeric actual, and a blank must
+never equal a numeric zero. A correct cell holding `Value2 = 1.05` arrived as the
+String `"1.05"` and the comparison returned **False before it ever compared a
+number**. The first successful Gate-B analytical scenario would have failed with
+production behaving perfectly — a deterministic harness defect.
+
+`Get-Phase5TypedTableBody` reads the body itself and preserves what Excel
+published: blank → `$null`, text → String, numeric → the numeric scalar, Boolean
+→ Boolean. Nothing formats; formatting belongs to failure diagnostics, and a
+reader that formats has already decided the comparison. The accepted row-emission
+idiom survives — one non-enumerated `object[]` per physical row through
+`Write-RowObject`, an empty body emitting nothing — and the row is **allocated at
+the column count and assigned by index**, because `$line += $null` appends
+nothing in PowerShell and a blank cell would silently vanish from the row
+(`test_nc_78`). Full COM ownership and release discipline, unchanged.
+
+**The Phase-4 helper is not modified**, and `test_89` asserts its current shape
+so the reasoning above cannot rot. `Get-CalcTableRows` no longer calls it, so all
+five `_Calc` tables now consume the types Excel actually published. The I5
+profiling-weight comparison in `P5-ID` had the same defect for the same reason
+and moves to the typed reader too.
+
+**The comparator was not widened.** `test_95` refuses any change that would let a
+numeric String satisfy a numeric expectation — that would hide a workbook which
+published a number as text, which is precisely what Gate B is for.
+
+### 2 — snapshot "exactness" was a string serialisation
+
+The rollback, refusal and status-row proofs require exact preservation of
+C13:C16, C23:C32 and the five analytical ListObjects, blanks included.
+`Get-Phase5Snapshot` was `Format-CalcValue`-ing every cell and joining each row
+into one String. Two stages destroyed the evidence:
+
+| Stage | What it did |
+| --- | --- |
+| `Get-TableBody` | every non-null cell → String, every null → `""` |
+| `Format-CalcValue` + join | the row → one display String |
+
+So a numeric `1` and the String `"1"` produced identical evidence, and a real
+`Empty` and an empty String both collapsed to `<blank>`. And the scalar
+comparisons used `Test-CalcValue`, which treats `$null` and `""` as the same
+absence **by design** — right for "is this the value the oracle expected?",
+too weak for "was this restored exactly as it was?".
+
+Snapshot identity now has its own rule, `Test-Phase5ExactValue`:
+
+| Expected | Requires |
+| --- | --- |
+| `$null` | `$null` — an empty String is a value the user entered, not an absence |
+| String | String, exact case-sensitive equality |
+| numeric | non-String, non-Boolean numeric, exact equality |
+| Boolean | Boolean, exact value |
+
+No tolerance, no display-text conversion. `Get-Phase5Snapshot` retains rows as
+typed cell arrays; `Add-SnapshotUnchangedChecks` compares row count, then column
+count, then every cell through the strict comparator, and reports the first
+difference with its type. `Format-Phase5Typed` exists only to describe a failure.
+
+`test_93` runs the four planted restorations as a decision table — numeric `1`
+restored as `"1"`, a blank restored as `""`, identical display text with the
+wrong type, a `calc_totals` blank replaced by `""` — and also shows the shipped
+chain accepting the pair the typed snapshot rejects.
+
+### 3 — the FX seed capture could repair a defective built seed
+
+Round 4 fixed cross-scenario contamination and said the seed was captured "from
+the real Stage-B workbook, not repaired from literals". The value flow still
+performed a type-changing repair: `Save-Phase5LockedFxSeed` read through
+`Get-TableBody`, so a correct numeric `1` was captured as the String `"1"` — and
+an **incorrect** built seed already holding the text `"1"` was captured
+identically. `Reset-Phase5FxTable` then wrote `([double]$Seed.Rate)`, converting
+the capture into a number.
+
+A workbook that had built the reporting FX rate as **text** would therefore have
+been silently corrected before any analytical scenario ran, in violation of the
+round-4 rule: *if the built seed itself is wrong, the analytical scenarios must
+fail; the harness must not repair it into agreement.*
+
+The capture now uses the typed reader, and the restoration writes the captured
+value **as itself** through `Set-Phase5TypedCell`, which assigns `Value2`
+directly and chooses nothing — a `$null` still becomes a genuine blank via
+`ClearContents`. The read-back uses the typed reader and the strict comparator,
+because a read-back through the analytical comparator would accept the very type
+change the restoration must not make. `P5-FX` reports the captured value **and
+its type** as a note and asserts neither against a literal: whether the built
+rate is numeric is the production build's claim, and the analytical scenarios are
+what test it. The accepted Phase-4 `Set-TableCell` is untouched and still chooses
+between `[string]` and `[double]`, which is right for fixture authoring.
+
+---
+
 ## The 37-case coverage ledger
 
 Every ID in `phase5_cases.json → plan_cases[*].id` maps to at least one Windows
@@ -1163,7 +1277,11 @@ Everything about behaviour, and specifically:
   `tblInflation` with the year band Apply generated, and that the keyed rate
   writer finds each row
 * that row 1 of `tblFXRates` in the built workbook really is the reporting seed,
-  and that restoring it returns each scenario to a clean baseline
+  that its rate was built as a number rather than as text, and that restoring it
+  returns each scenario to a clean baseline
+* that `Range.Value2` really does hand back a numeric scalar for a numeric cell,
+  `$null` for a blank one and a String for text, so the typed reader observes
+  what this source assumes it will
 * that an unreferenced assumption leaves every published analytical value
   identical to the base case's
 * that the audit columns really do reconstruct the headline totals on real Excel
