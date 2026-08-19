@@ -1,6 +1,6 @@
 # Phase 5 — Gate B — Step B1: the Windows harness extension
 
-**Status: correction round 2 — harness source, ready for independent review.
+**Status: correction round 3 — harness source, ready for independent review.
 NOTHING HAS BEEN RUN.**
 
 Gate A is accepted and closed at `1968fb8`. This step authors the Windows Gate-B
@@ -16,7 +16,13 @@ closed all eight and was rejected with **five more**, recorded under
 prerequisite coverage, a status row that did not compare the analytical
 snapshot, a row-order probe that changed two dimensions, a missing driver-audit
 reconstruction, and an application-state proof that checked Excel's defaults
-rather than the caller's own state. Every one was a defect in what the
+rather than the caller's own state. Correction round 2 (`2a2ae86`) closed all
+five and was rejected with **four more**, recorded under
+**[Correction round 3](#correction-round-3)**: a fixture loader that bypassed the
+Phase-4 owner of inflation profile rows, a fixture that never proved its own
+structural prerequisites, three prerequisite mutations that could not reach the
+predicate they claimed, and an audit cross-check required to be exact that used a
+relative tolerance. Every one was a defect in what the
 harness would have PROVED, not in how it is wired: two fixture writers that
 destroyed the condition they were exercising, a refusal proof that asserted the
 opposite of the rule, a reconciliation block that reimplemented a rejected
@@ -433,7 +439,7 @@ incomplete inflation profile.
 
 | Locked predicate | Condition | Gate-B scenario | Detail discriminator |
 | --- | --- | --- | --- |
-| `18.T1` | Base Year later than Start Year | `PQ-01` → `P5-PQ` | `Base Year`, `Start Year` |
+| `18.T1` | Base Year later than Start Year, through modCalcCheck directly | `DC-01` → `P5-DC` *(direct)* | `Base Year`, `Start Year` |
 | `18.T2` | an entered structural value changed and the timeline was not re-applied | `PQ-02` → `P5-PQ` | `STRUCTURE CHANGE PENDING`, `structural prerequisite` |
 | `18.D1` | Discount Rate blank | `PQ-03` → `P5-PQ` | `Discount Rate`, `blank` |
 | `18.D2` | Discount Rate non-numeric | `PQ-04` → `P5-PQ` | `Discount Rate`, `not numeric` |
@@ -445,7 +451,7 @@ incomplete inflation profile.
 | `18.F6` | the reporting currency has no row | `PQ-10` → `P5-PQ` | `the reporting currency`, `SAR`, `exactly once` |
 | `18.F7` | the reporting currency appears twice | `PQ-11` → `P5-PQ` | `the reporting currency`, `SAR`, `exactly once` |
 | `18.F8` | the reporting currency rate is not exactly 1 | `PQ-12` → `P5-PQ` | `the reporting currency`, `SAR`, `must resolve to` |
-| `18.I1` | a referenced inflation profile is absent from the grid | `PQ-13` → `P5-PQ` | `inflation: profile`, `Standard`, `not present` |
+| `18.I1` | a driver references an inflation profile that does not exist | `PQ-13` → `P5-PQ` | `inflation: profile`, `MissingGateBProfile`, `not present` |
 | `18.I2` | a required referenced inflation rate is non-numeric | `PQ-14` → `P5-PQ` | `inflation profile`, `2027`, `not numeric` |
 | `18.P1` | a required profiling cell is non-numeric | `PQ-15` → `P5-PQ` | `profiling for driver`, `CL-001`, `not numeric` |
 | `18.X1` | Distribution is blank | `PQ-16` → `P5-PQ` | `Distribution`, `blank` |
@@ -558,6 +564,149 @@ independently on each invocation — neither inherits the other's proof.
 
 ---
 
+## Correction round 3
+
+Independent review reproduced 134/134 and 351/351, accepted all five round-2
+fixes as closed, and rejected the harness on four more.
+
+### 1 — the fixture bypassed the Phase-4 owner of inflation profile rows
+
+`Config!tblInflationProfiles` is the Phase-4 source of truth for inflation
+profile identities, and `modInflation.SyncProfileRows` **rebuilds**
+`Inflation!tblInflation` from that master inside `PCCM_ApplyTimeline`. The
+loader was writing profile names straight into `tblInflation` **before** Apply —
+so the very Apply the fixture depends on deleted the rows it had just planted,
+and `Write-Phase5InflationRates` then searched for a row production had already
+removed. A harness fixture-construction defect, not a calculation defect.
+
+**The corrected `Set-Phase5Fixture` sequence:**
+
+```
+1  clear previous fixture drivers through the production delete endpoints,
+   and reset the ID counters
+2  write the Setup scalars (Base/Start/Duration entered, Discount Rate)
+3  write the fixture FX assumptions above the locked reporting-currency seed
+4  synchronise Config!tblInflationProfiles to EXACTLY the fixture's profile set
+5  add Cost Lines and Risks through PCCM_AddCostLine / PCCM_AddRisk and write
+   their register cells
+6  PCCM_ApplyTimeline  -- production creates the structure:
+       SetYearColumns   the profiling and inflation year bands
+       SyncProfileRows  the Inflation rows, from the Config master
+       profiling rows   synchronised by permanent ID
+   ... and the fixture PROVES this step succeeded (see 2 below)
+7  only now: blank the rate cells, write the annual inflation rates keyed by
+   PROFILE NAME x CALENDAR YEAR, and write the profiling weights keyed by
+   permanent ID
+```
+
+`Set-Phase5InflationProfileMaster` clears the editable master rows, writes
+exactly the distinct fixture profile names as exact binary text, and writes **no
+rate**. The table identity comes from
+`phase5_gate_b_inspection.json → input_tables.inflation_profiles`; `test_75`
+refuses the literals `'Config'` and `'tblInflationProfiles'` anywhere in the
+harness, and refuses any `tblInflation` seeding in the fixture. No Phase-4
+module was edited and no harness-only structural sync exists: the point is to
+drive the existing production mechanism correctly.
+
+**Rate placement is keyed on both axes.** The row was an incremented counter,
+which assumed the emitted model's profile order equals the physical grid order —
+it does not, because `SyncProfileRows` rebuilds in **Config-master** order.
+The row is now found by **inflation profile name** through `Find-GridRow`, and
+the column by **calendar-year header** as before. Every rate cell is blanked
+first, because `SyncProfileRows` deliberately preserves a surviving profile's
+rates by name and a value left by an earlier fixture must not be inherited as
+this one's assumption. `test_nc_64` demonstrates the order-independence
+positively: with the model listing `Standard, Flat` and the grid materialising
+`Flat, Standard`, the keyed writer places each rate on its own profile and the
+positional one puts Standard's rate on Flat's row.
+
+### 2 — the fixture did not prove its own structural setup succeeded
+
+The loader discarded `PCCM_AutomationResult` after `PCCM_ApplyTimeline` and
+carried straight on into the rate writer, the weight writer and
+`PCCM_Calculate`. A refused or failed Apply, or a failed structural
+revalidation, would therefore have surfaced later as a *calculation* defect
+rather than as the fixture fault it was.
+
+`Set-Phase5Fixture` now **throws** — twice, with the offending text in the
+exception — if the Apply did not return `OK|…`, or if `PCCM_StructuralReport()`
+is not blank. Both gates precede the value writers; `test_76` asserts the
+ordering by index.
+
+**This gate applies to the clean base fixture only.** A later prerequisite
+mutation is *meant* to make an input invalid, and `Invoke-Phase5Mutation` imposes
+no such gate — except where an entry explicitly asks for one via
+`require_clean_structure`, which only the unreferenced-profile no-block case
+does. `test_77` asserts that no prerequisite case carries that flag.
+
+### 3 — three prerequisite mutations could not reach their predicate
+
+A token that appears somewhere in production source proves **vocabulary**, not
+that the chosen mutation reaches the procedure that emits it. Three entries were
+not semantically reachable as written.
+
+**`base_year_after_start_year`.** `modTimeline` **prevalidates** Base > Start
+and refuses the Apply without moving the applied timeline, so the workbook is
+left with entered ≠ applied and the next `PCCM_Calculate` is refused by
+`StructuralPrerequisites` with STRUCTURE CHANGE PENDING — a different predicate,
+in a different module, with a different message. The predicate has left the
+mutation matrix and is proved **directly**: `P5-DC` calls the transient
+diagnostic's `GBD_CheckBaseAfterStart`, which builds a `ResolvedModel` on
+target with `DriverCount = 0` and calls the already-Public
+`modCalcCheck.CheckResolvedModel`. A control, `GBD_CheckTimelineAccepted`,
+requires the same construction with Base ≤ Start to be **accepted**, so the
+refusal cannot come from something else the harness built wrong. It runs before
+the diagnostic module is removed, and no production visibility is reopened.
+STRUCTURE CHANGE PENDING remains its own separate workbook scenario.
+
+**`referenced_profile_missing`.** Renaming a `tblInflation` row breaks the
+Phase-4 invariant *"Inflation rows match the Config profile master"*, so
+`ResolveModel` refuses at `ValidateStructure` and the Step-5 lookup is never
+reached. The mutation now moves the **driver's reference** instead —
+`cost_lines.CL-001.inflation_profile → "MissingGateBProfile"` — leaving Phase-4
+structure coherent. A direct COM write bypasses the cell's Data Validation, which
+is the point of an invalid-input runtime test. `ResolveDrivers` reads the exact
+text, `ReferencedProfiles` contains it, and `ResolveInflationRates` cannot find
+it in `tblInflation`: exactly the resolver refusal the tokens name.
+
+**`unreferenced_profile_incomplete`.** Adding a row straight to
+`tblInflation` creates the same master/grid mismatch from the other side. The
+profile is now declared in `Config!tblInflationProfiles` and
+`PCCM_ApplyTimeline` is re-run through the accepted automation path, so
+`SyncProfileRows` creates the matching Inflation row — with **blank rates by
+construction**, because a profile it has not seen before gets a cleared slot.
+`PCCM_StructuralReport()` is required to be blank before the calculation, which
+is half the claim: the profile is structurally legitimate and numerically ignored
+because nothing references it. The calculation must then be SUCCESS / CURRENT
+with a blank detail and the baseline digest unchanged.
+
+The token-vocabulary check (`test_65`) is kept — it still catches a
+discriminator that names nothing in production — but it is **vocabulary
+evidence, not proof of runtime reachability**, and `test_79`, `test_80` and
+`test_81` now pin each of these three ownership boundaries to the route that
+actually reaches it.
+
+### 4 — the audit cross-check used a relative tolerance
+
+`P5-AR` compared the reconstructed sum against the published headline with
+`-Tolerance $Cases.tolerances.identity_relative_coefficient` — 1e-12. That is
+not the production C1 allowance, but it is still an epsilon on a relationship
+required to be **exact**, and it could hide a small but real mismatch between two
+values the workbook publishes.
+
+The emitted Gate-B audit fixture reconstructs to the **identical IEEE Double**
+for all eight relationships — `test_82` asserts that with `==`, so exactness
+is representable rather than aspirational. The comparison is now
+`-Tolerance 0.0`, passed explicitly so the intent is unmistakable, and
+`test_82` refuses `identity_relative_coefficient`,
+`identity_absolute_floor`, `conditioning_scale_floor`,
+`profiling_sum_absolute`, any non-zero `-Tolerance`, and `[Math]::Abs` /
+`[Math]::Max` in that block. This is an audit relationship — *does the audit
+table reconstruct the headline the workbook publishes?* — not I1–I4
+reconciliation, which keeps its own production allowance untouched.
+
+---
+
 ## The 37-case coverage ledger
 
 Every ID in `phase5_cases.json → plan_cases[*].id` maps to at least one Windows
@@ -628,10 +777,11 @@ all. What may not happen is a case disappearing because several share a fixture.
 | `P5-D5` | The complete reference stream: unit count **and** digest |
 | `P5-D6` | The eight delimiter-hostile collision probes |
 | `P5-D7` | Convex statistics at the naive-overflow boundary |
+| `P5-DC` | Predicates the workbook cannot reach, through `modCalcCheck` directly |
 | `P5-D8` | The diagnostic module **removed**, inventory back to 15 |
 | `P5-AN` | Every analytical fixture, every emitted expected value |
 | `P5-RF` | The nine refusal plan cases, each with its own detail discriminator |
-| `P5-PQ` | The complete plan section 18 prerequisite matrix (26 predicates) |
+| `P5-PQ` | The plan section 18 prerequisite matrix (25 workbook-reachable predicates) |
 | `P5-PN` | The referenced-only no-block complement (3 assumptions) |
 | `P5-AR` | Driver-audit A/B/C/D reconstruction over a multi-driver fixture |
 | `P5-ID` | Identities I1, I2, I3a–c, I4a–c, I5 — production `Reconcile` is the authority |
@@ -898,8 +1048,12 @@ Everything about behaviour, and specifically:
   construction is needed — the harness will report which
 * that the fixture applier can drive every emitted model into the workbook, and
   that Apply Timeline generates the year columns each fixture needs
-* that each of the 26 prerequisite mutations produces the refusal its tokens
-  describe, and that the three no-block mutations produce none
+* that each of the 25 prerequisite mutations produces the refusal its tokens
+  describe, that the direct `modCalcCheck` call refuses and its control
+  accepts, and that the three no-block mutations produce no refusal at all
+* that `SyncProfileRows` materialises the fixture's Config-master profiles into
+  `tblInflation` with the year band Apply generated, and that the keyed rate
+  writer finds each row
 * that the audit columns really do reconstruct the headline totals on real Excel
   arithmetic
 * that `FinishOperation` restores a genuinely non-default caller state, including

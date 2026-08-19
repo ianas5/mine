@@ -2105,7 +2105,11 @@ def test_63_every_locked_prerequisite_has_a_windows_scenario() -> None:
     dozen more locked predicates had no real-Windows scenario at all.
     """
     gate_b = _gate_b()
-    emitted = {entry["predicate"] for entry in gate_b["prerequisite_cases"]}
+    # THREE ROUTES, ONE LEDGER. A predicate the workbook cannot reach because an
+    # earlier accepted gate refuses first is proved by calling the checker
+    # directly; that is still a Windows scenario, and it still counts.
+    emitted = ({entry["predicate"] for entry in gate_b["prerequisite_cases"]}
+               | {entry["predicate"] for entry in gate_b["direct_check_cases"]})
     # The inflation non-numeric predicate shares a name with the FX one in the
     # locked list above; the corpus disambiguates by section.
     sections = {entry["section"] for entry in gate_b["prerequisite_cases"]}
@@ -2116,7 +2120,8 @@ def test_63_every_locked_prerequisite_has_a_windows_scenario() -> None:
     # BIDIRECTIONAL: a scenario nobody locked is unexplained coverage.
     extra = sorted(emitted - locked)
     assert not extra, f"Gate-B prerequisite scenarios outside the locked set: {extra}"
-    assert len(gate_b["prerequisite_cases"]) == 26
+    assert len(gate_b["prerequisite_cases"]) == 25
+    assert len(gate_b["direct_check_cases"]) == 1
 
 
 def test_64_structure_change_pending_is_covered_and_is_not_re_applied() -> None:
@@ -2139,7 +2144,7 @@ def test_64_structure_change_pending_is_covered_and_is_not_re_applied() -> None:
 def test_65_every_prerequisite_has_a_specific_detail_discriminator() -> None:
     """BLOCKER 1.3. "some error occurred" is not evidence the predicate fired."""
     gate_b = _gate_b()
-    for entry in gate_b["prerequisite_cases"]:
+    for entry in gate_b["prerequisite_cases"] + gate_b["direct_check_cases"]:
         tokens = entry["detail_tokens"]
         assert tokens, f"{entry['id']} has no detail discriminator"
         for token in tokens:
@@ -2161,12 +2166,13 @@ def test_65_every_prerequisite_has_a_specific_detail_discriminator() -> None:
         "modCalcReport.bas", "modAppState.bas", "modStructuralCheck.bas",
     )) + "\n" + _emitted()["constants"]
     unknown = []
-    for entry in gate_b["prerequisite_cases"]:
+    for entry in gate_b["prerequisite_cases"] + gate_b["direct_check_cases"]:
         for token in entry["detail_tokens"]:
             # Identifiers the fixture supplies (currency codes, permanent IDs,
             # calendar years) are not in the production text; the PREDICATE
             # fragments must be.
-            if token in ("USD", "SAR", "CL-001", "2027", "Standard"):
+            if token in ("USD", "SAR", "CL-001", "2027", "Standard",
+                         "MissingGateBProfile"):
                 continue
             if token not in production:
                 unknown.append(f"{entry['id']}:{token!r}")
@@ -2202,7 +2208,7 @@ def test_66_the_prerequisite_matrix_is_emitted_not_hand_held() -> None:
     body = _procedure(source, "Invoke-Phase5Mutation")
     for kind in ("entered_structure", "named_number", "named_text", "named_blank",
                  "register_cell", "fx_row", "fx_remove", "inflation_cell",
-                 "inflation_profile_rename", "inflation_profile_add", "profiling_cell"):
+                 "config_profile_add", "profiling_cell"):
         assert f"'{kind}'" in body, f"the applier cannot apply a {kind} mutation"
     assert "default { throw" in body, "an unknown mutation kind is silently ignored"
     # And every emitted mutation kind is one the applier implements.
@@ -2412,11 +2418,18 @@ def test_74_neither_failpoint_inherits_the_others_state_proof() -> None:
 # ===========================================================================
 def test_nc_48_a_missing_section_18_prerequisite_is_caught() -> None:
     """A. A locked predicate dropped from the emitted matrix."""
-    emitted = {entry["predicate"] for entry in _gate_b()["prerequisite_cases"]}
+    gate_b = _gate_b()
+    emitted = ({entry["predicate"] for entry in gate_b["prerequisite_cases"]}
+               | {entry["predicate"] for entry in gate_b["direct_check_cases"]})
     planted = emitted - {"probability_above_one"}
     locked = LOCKED_PREREQUISITE_PREDICATES - {"referenced_rate_non_numeric_inflation"}
     assert sorted(locked - planted) == ["probability_above_one"], (
         "a locked prerequisite with no Windows scenario must be visible"
+    )
+    # And a predicate that lost its DIRECT route is equally visible.
+    without_direct = {entry["predicate"] for entry in gate_b["prerequisite_cases"]}
+    assert "base_year_after_start_year" in sorted(locked - without_direct), (
+        "a predicate reachable only by the direct route must be visible if that route goes"
     )
 
 
@@ -2589,4 +2602,419 @@ def test_nc_59_a_no_block_case_expecting_a_refusal_is_caught() -> None:
     entry["expected_status"] = "INVALID"
     assert entry["expected_attempt"] != "SUCCESS", (
         "a no-block case inverted into a refusal must be visible"
+    )
+
+
+# ===========================================================================
+# 16. CORRECTION ROUND 3
+#
+# Four defects found in independent review of 2a2ae86. Each has a test here that
+# fails against that source and passes against the corrected one.
+# ===========================================================================
+def test_75_the_config_master_owns_inflation_profile_rows() -> None:
+    """BLOCKER 1. `SyncProfileRows` rebuilds tblInflation from the Config master.
+
+    A profile row planted straight into `Inflation!tblInflation` is removed by
+    the very `PCCM_ApplyTimeline` the fixture depends on, and the rate writer
+    then searches for a row production has already deleted. That is a fixture
+    defect, not a calculation defect.
+    """
+    # The production ownership this rests on, asserted rather than assumed.
+    inflation = _text(SRC_VBA / "modInflation.bas")
+    sync = inflation[inflation.index("Public Sub SyncProfileRows"):]
+    sync = sync[:sync.index("\nEnd Sub")]
+    assert "TBL_INFLATION_PROFILES" in sync and "SH_CONFIG" in sync, (
+        "SyncProfileRows no longer reads the Config master; the reasoning below needs restating"
+    )
+    timeline = _text(SRC_VBA / "modTimeline.bas")
+    assert "modInflation.SyncProfileRows" in timeline, (
+        "Apply Timeline no longer synchronises the profile rows"
+    )
+
+    source = _executable(SCENARIOS)
+    fixture = _procedure(source, "Set-Phase5Fixture")
+    assert "Set-Phase5InflationProfileMaster" in fixture, (
+        "the fixture does not populate the Config profile master"
+    )
+    master = _procedure(source, "Set-Phase5InflationProfileMaster")
+    assert "$Inspection.input_tables.inflation_profiles" in master, (
+        "the Config table identity is not read from the projection"
+    )
+    for hardcoded in ("'Config'", "'tblInflationProfiles'"):
+        assert hardcoded not in source, f"the harness hard-codes {hardcoded}"
+    # The master carries IDENTITIES only.
+    assert "-ColumnIndex 1" in master
+    assert "-ColumnIndex 2" not in master, "a rate is written into the profile master"
+    # And nothing seeds tblInflation profile identities directly any more.
+    assert "$inflGrid" not in fixture, (
+        "the fixture still reaches into the inflation grid before Apply"
+    )
+    assert "Clear-Phase5GridBody" not in fixture, (
+        "the fixture still clears the inflation grid it does not own"
+    )
+
+
+def test_76_the_fixture_proves_its_own_structural_prerequisites() -> None:
+    """BLOCKER 2. A broken fixture must fail at fixture establishment."""
+    source = _executable(SCENARIOS)
+    fixture = _procedure(source, "Set-Phase5Fixture")
+    apply_at = fixture.index("$Excel.Run('PCCM_ApplyTimeline')")
+    assert "$applied -notlike 'OK|*'" in fixture, (
+        "the Apply result is not required to be a success"
+    )
+    assert "throw (\"Gate-B fixture establishment failed: PCCM_ApplyTimeline" in fixture, (
+        "a refused or failed Apply does not stop the fixture"
+    )
+    assert "PCCM_StructuralReport" in fixture, (
+        "the fixture never asks whether the generated structure is coherent"
+    )
+    assert "throw (\"Gate-B fixture establishment failed: the generated structure" in fixture
+    # BOTH GATES PRECEDE the value writers.
+    rates_at = fixture.index("Write-Phase5InflationRates")
+    weights_at = fixture.index("Write-Phase5Weights")
+    report_at = fixture.index("PCCM_StructuralReport")
+    assert apply_at < report_at < rates_at, (
+        "inflation rates are written before the structural gate"
+    )
+    assert report_at < weights_at, "profiling weights are written before the structural gate"
+    # It THROWS. It does not return a diagnostic the caller may ignore.
+    assert fixture.count("throw (") >= 2
+
+
+def test_77_the_baseline_gate_is_not_applied_to_deliberate_mutations() -> None:
+    """BLOCKER 2.2. A prerequisite mutation is MEANT to make the model invalid."""
+    source = _executable(SCENARIOS)
+    mutation = _procedure(source, "Invoke-Phase5Mutation")
+    # The mutation applier does not impose the clean-baseline gate globally.
+    assert "PCCM_StructuralReport" not in mutation or "require_clean_structure" in mutation, (
+        "the mutation applier imposes the baseline gate on deliberate corruption"
+    )
+    # Only the entry that ASKS for a clean structure gets one checked.
+    clean = [entry for entry in _gate_b()["no_block_cases"]
+             if entry["mutation"].get("require_clean_structure")]
+    assert clean, "no no-block case requires the structure to stay valid"
+    dirty = [entry for entry in _gate_b()["prerequisite_cases"]
+             if entry["mutation"].get("require_clean_structure")]
+    assert not dirty, "a prerequisite mutation demands a clean structure it is meant to break"
+
+
+def test_78_inflation_rates_are_placed_by_profile_name() -> None:
+    """BLOCKER 1.3. Model order is not physical grid order.
+
+    `SyncProfileRows` rebuilds the grid in Config-master order, and nothing binds
+    that to the order the emitted model happens to list its profiles in.
+    """
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Write-Phase5InflationRates")
+    assert "$rowIndex = Find-GridRow -Workbook $Workbook -Grid $grid -Key ([string]$name)" in body, (
+        "the profile row is not located by name"
+    )
+    assert "$rowIndex++" not in body, "the profile row is still an incremented counter"
+    # The column axis stays keyed by calendar-year header.
+    assert "[array]::IndexOf($headers, [string]$year)" in body
+    # And a rate a previous fixture left on a surviving profile is cleared first:
+    # SyncProfileRows keeps rates by name, so inheritance is real.
+    assert "-Value $null" in body, (
+        "stale rates on a surviving profile are inherited into the next fixture"
+    )
+
+
+def test_79_the_unreachable_predicate_is_proved_by_calling_the_checker() -> None:
+    """BLOCKER 3.1. Entering Base > Start never reaches modCalcCheck.
+
+    `modTimeline` prevalidates the relationship and refuses the Apply, so the
+    workbook is left with entered <> applied and the next `PCCM_Calculate` is
+    refused by `StructuralPrerequisites` with STRUCTURE CHANGE PENDING - a
+    different predicate, in a different module, with a different message.
+    """
+    # The production prevalidation this rests on.
+    timeline = _text(SRC_VBA / "modTimeline.bas")
+    assert "If t.BaseYear > t.StartYear Then" in timeline, (
+        "Apply no longer prevalidates Base > Start; the reasoning needs restating"
+    )
+    # The predicate has left the workbook-mutation matrix.
+    predicates = {entry["predicate"] for entry in _gate_b()["prerequisite_cases"]}
+    assert "base_year_after_start_year" not in predicates, (
+        "the predicate is still claimed by a workbook mutation that cannot reach it"
+    )
+    entry = next(item for item in _gate_b()["direct_check_cases"]
+                 if item["predicate"] == "base_year_after_start_year")
+    assert entry["procedure"] == "GBD_CheckBaseAfterStart"
+    assert entry["control_procedure"] == "GBD_CheckTimelineAccepted"
+    assert entry["arguments"]["base_year"] > entry["arguments"]["start_year"]
+    assert entry["control_arguments"]["base_year"] <= entry["control_arguments"]["start_year"]
+
+    # The diagnostic calls the ACCEPTED checker, and reopens nothing.
+    diagnostic = _vba_executable(DIAGNOSTIC)
+    assert "modCalcCheck.CheckResolvedModel(model, detail)" in diagnostic, (
+        "the diagnostic does not call the accepted checker"
+    )
+    assert "Dim model As ResolvedModel" in diagnostic
+    assert "model.DriverCount = 0" in diagnostic, (
+        "a driver could refuse first and mask the model-level predicate"
+    )
+    checker = _text(SRC_VBA / "modCalcCheck.bas")
+    assert re.search(r"^Public Function CheckResolvedModel\b", checker, re.M), (
+        "CheckResolvedModel is not Public in the accepted source"
+    )
+    resolve = _text(SRC_VBA / "modCalcResolve.bas")
+    assert re.search(r"^Public Type ResolvedModel\b", resolve, re.M)
+
+    # The scenario runs BEFORE the diagnostic module is removed.
+    source = _executable(SCENARIOS)
+    assert source.index("Add-Result 'P5-DC'") < source.index("Add-Result 'P5-D8'"), (
+        "the direct check runs after the diagnostic module was removed"
+    )
+    block = _scenario_block(source, "P5-D7", "P5-DC")
+    assert "$Cases.gate_b.direct_check_cases" in block
+    assert "Add-Phase5DetailTokenChecks" in block, "the refusal detail is not discriminated"
+    assert "the control model with the predicate satisfied is ACCEPTED" in block, (
+        "nothing proves the checker accepts the same construction when the predicate holds"
+    )
+    # STRUCTURE CHANGE PENDING remains a SEPARATE workbook scenario.
+    assert "structure_change_pending" in {entry["predicate"] for entry
+                                          in _gate_b()["prerequisite_cases"]}
+
+
+def test_80_the_missing_profile_mutation_moves_the_driver_reference() -> None:
+    """BLOCKER 3.2. Renaming a grid row breaks the Phase-4 invariant first."""
+    # The structural check this rests on.
+    structural = _text(SRC_VBA / "modStructuralCheck.bas")
+    assert "which is not in the Config " in structural, (
+        "the master/grid invariant is gone; the reasoning needs restating"
+    )
+    entry = next(item for item in _gate_b()["prerequisite_cases"]
+                 if item["predicate"] == "referenced_profile_missing")
+    assert entry["mutation"]["kind"] == "register_cell", (
+        "the mutation still edits the structural grid instead of the driver reference"
+    )
+    assert entry["mutation"]["column"] == "inflation_profile"
+    assert entry["mutation"]["value"] not in ("Standard", "Flat"), (
+        "the driver still references a profile the fixture declares"
+    )
+    assert entry["mutation"]["value"] in entry["detail_tokens"], (
+        "the missing profile name is not among the discriminators"
+    )
+    # The grid-editing kind is gone from the applier entirely.
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Invoke-Phase5Mutation")
+    assert "'inflation_profile_rename'" not in body, (
+        "the structure-breaking rename mutation survives"
+    )
+
+
+def test_81_the_unreferenced_profile_goes_through_the_config_master() -> None:
+    """BLOCKER 3.3. A grid-only addition proves the structural gate, not no-block."""
+    entry = next(item for item in _gate_b()["no_block_cases"]
+                 if item["predicate"] == "unreferenced_profile_incomplete")
+    assert entry["mutation"]["kind"] == "config_profile_add", (
+        "the unused profile is still added straight to the grid"
+    )
+    assert entry["mutation"]["apply_timeline"] is True, (
+        "production SyncProfileRows never runs, so no matching grid row is created"
+    )
+    assert entry["mutation"]["require_clean_structure"] is True, (
+        "nothing proves the workbook is still structurally valid"
+    )
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Invoke-Phase5Mutation")
+    branch = body[body.index("'config_profile_add' {"):]
+    branch = branch[:branch.index("\n        '")] if "\n        '" in branch else branch
+    assert "$Inspection.input_tables.inflation_profiles" in branch, (
+        "the profile is not added to the Config master"
+    )
+    assert "PCCM_ApplyTimeline" in branch, "production sync is never invoked"
+    assert "PCCM_StructuralReport" in branch, "the structure is never re-proved"
+    assert "'inflation_profile_add'" not in body, "the grid-only addition survives"
+    # A new profile arrives with BLANK rates by construction: SyncProfileRows
+    # clears the slot for a profile it has not seen before.
+    inflation = _text(SRC_VBA / "modInflation.bas")
+    assert "' A new profile, or a newly required year: BLANK, never zero." in inflation
+
+
+def test_82_the_audit_reconstruction_is_exact() -> None:
+    """BLOCKER 4. A relative epsilon can hide a real mismatch."""
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-PN", "P5-AR")
+    assert "-Tolerance 0.0)" in block, (
+        "the audit reconstruction does not compare exactly"
+    )
+    assert "rows, EXACTLY'" in block
+    for forbidden in ("identity_relative_coefficient", "identity_absolute_floor",
+                      "conditioning_scale_floor", "profiling_sum_absolute"):
+        assert forbidden not in block, (
+            f"the audit reconstruction applies a tolerance ({forbidden})"
+        )
+    # No epsilon of any kind is introduced.
+    assert not re.search(r"-Tolerance\s+(?!0\.0)", block), (
+        "a non-zero tolerance survives in the audit reconstruction"
+    )
+    assert "[Math]::Abs" not in block and "[Math]::Max" not in block
+    # And the emitted fixture really does reconstruct exactly, so exactness is
+    # representable rather than aspirational.
+    audit = _gate_b()["audit_reconstruction"]
+    for relationship in audit["relationships"]:
+        total = sum(row[relationship["driver_column"]] for row in audit["expected"]["drivers"]
+                    if row["driver_kind"] == relationship["kind"]
+                    and row[relationship["driver_column"]] is not None)
+        assert total == audit["expected"]["totals"][relationship["headline"]], (
+            f"{relationship['headline']} does not reconstruct to the identical Double"
+        )
+
+
+# ===========================================================================
+# 17. CORRECTION-ROUND-3 NEGATIVE CONTROLS
+# ===========================================================================
+def test_nc_60_seeding_inflation_profiles_into_the_grid_is_caught() -> None:
+    """A. The Config master owns profile identities; Apply rebuilds the grid."""
+    planted = _synthetic(
+        "$inflGrid = $null\n"
+        "foreach ($grid in @($Manifest.grids)) { if ($grid.key -eq 'inflation') "
+        "{ $inflGrid = $grid } }\n"
+        "Clear-Phase5GridBody -Workbook $Workbook -SheetName $inflGrid.sheet "
+        "-TableName $inflGrid.table_name -ColumnCount $inflHeaders.Count\n"
+        "foreach ($name in $profiles) {\n"
+        "    Set-TableCell -Workbook $Workbook -SheetName $inflGrid.sheet "
+        "-TableName $inflGrid.table_name -RowIndex $index -ColumnIndex 1 -Value $name\n"
+        "}\n"
+    )
+    assert "Set-Phase5InflationProfileMaster" not in planted, (
+        "a fixture that plants profile rows in the grid must be visible"
+    )
+    assert "$inflGrid" in planted and "Clear-Phase5GridBody" in planted
+
+
+def test_nc_61_ignoring_a_failed_apply_is_caught() -> None:
+    """B. A refused Apply must fail at fixture establishment."""
+    planted = _synthetic(
+        "$Excel.Run('PCCM_ApplyTimeline') | Out-Null\n"
+        "$applied = [string]$Excel.Run('PCCM_AutomationResult')\n"
+        "Write-Phase5InflationRates -Workbook $Workbook -Manifest $Manifest -Model $Model\n"
+        "return $applied\n"
+    )
+    assert "$applied -notlike 'OK|*'" not in planted, (
+        "a fixture that discards the Apply result must be visible"
+    )
+    assert "throw" not in planted
+    assert planted.index("$applied = ") < planted.index("Write-Phase5InflationRates")
+
+
+def test_nc_62_ignoring_a_non_empty_structural_report_is_caught() -> None:
+    """C. An incoherent generated structure must fail at establishment."""
+    planted = _synthetic(
+        "if ($applied -notlike 'OK|*') { throw 'apply failed' }\n"
+        "Write-Phase5InflationRates -Workbook $Workbook -Manifest $Manifest -Model $Model\n"
+        "Write-Phase5Weights -Workbook $Workbook -Manifest $Manifest -Model $Model\n"
+    )
+    assert "PCCM_StructuralReport" not in planted, (
+        "a fixture that never asks for the structural report must be visible"
+    )
+
+
+def test_nc_63_positional_inflation_rate_placement_is_caught() -> None:
+    """D. Model profile order is not physical grid order."""
+    planted = _synthetic(
+        "$rowIndex = 0\n"
+        "foreach ($name in $Model.inflation.PSObject.Properties.Name) {\n"
+        "    $rowIndex++\n"
+        "    $rates = $Model.inflation.$name\n"
+        "}\n"
+    )
+    assert "$rowIndex++" in planted, "the positional row counter must be visible"
+    assert "Find-GridRow" not in planted
+
+
+def test_nc_64_a_swapped_profile_order_does_not_move_the_rates() -> None:
+    """D, positively: the keyed writer is order-independent.
+
+    Two profiles, listed by the model in one order and materialised by
+    SyncProfileRows in the Config master's order. A name-keyed writer puts each
+    rate on its own profile whichever order the grid ends up in; a positional one
+    swaps them.
+    """
+    model_order = ["Standard", "Flat"]
+    grid_order = ["Flat", "Standard"]          # what SyncProfileRows produced
+    rates = {"Standard": 0.05, "Flat": 0.0}
+
+    keyed = {name: rates[name] for name in model_order}          # by profile name
+    positional = {grid_order[index]: rates[name]                 # by row position
+                  for index, name in enumerate(model_order)}
+    assert keyed == rates, "the keyed placement must be order-independent"
+    assert positional != rates, (
+        "the positional placement must be visibly wrong when the orders differ"
+    )
+    assert positional["Flat"] == rates["Standard"], (
+        "the positional writer puts Standard's rate on Flat's row"
+    )
+
+
+def test_nc_65_the_entered_apply_route_for_base_after_start_is_caught() -> None:
+    """E. It reaches STRUCTURE CHANGE PENDING, not modCalcCheck."""
+    planted = {
+        "id": "PQ-01", "predicate": "base_year_after_start_year",
+        "mutation": {"kind": "entered_structure", "target": "base_year",
+                     "value": 2030, "apply_timeline": True},
+        "detail_tokens": ["Base Year", "Start Year"],
+    }
+    assert planted["mutation"]["kind"] == "entered_structure", (
+        "the workbook-mutation route for an unreachable predicate must be visible"
+    )
+    # Apply prevalidates and refuses, so the applied timeline never moves and the
+    # NEXT calculate is refused by the structural gate instead.
+    timeline = _text(SRC_VBA / "modTimeline.bas")
+    assert "If t.BaseYear > t.StartYear Then" in timeline
+    resolve = _text(SRC_VBA / "modCalcResolve.bas")
+    assert "STATE_PENDING" in resolve, (
+        "the pending state the entered route actually reaches must be visible"
+    )
+    assert "procedure" not in planted, "the direct-check route must be visibly absent"
+
+
+def test_nc_66_a_grid_rename_for_the_missing_profile_is_caught() -> None:
+    """F. It breaks the master/grid invariant and hits the structural gate."""
+    planted = {
+        "predicate": "referenced_profile_missing",
+        "mutation": {"kind": "inflation_profile_rename", "profile": "Standard",
+                     "value": "Renamed"},
+    }
+    assert planted["mutation"]["kind"] != "register_cell", (
+        "a structural-grid rename must be visible as such"
+    )
+    structural = _text(SRC_VBA / "modStructuralCheck.bas")
+    assert "which is not in the Config " in structural, (
+        "the invariant the rename breaks must be visible"
+    )
+
+
+def test_nc_67_a_grid_only_unused_profile_is_caught() -> None:
+    """G. The same mismatch, from the other side."""
+    planted = {
+        "predicate": "unreferenced_profile_incomplete",
+        "mutation": {"kind": "inflation_profile_add", "profile": "Unused",
+                     "calendar_year": 2027, "value": None},
+    }
+    assert planted["mutation"]["kind"] != "config_profile_add", (
+        "a grid-only profile addition must be visible as such"
+    )
+    assert "apply_timeline" not in planted["mutation"], (
+        "the missing production sync must be visible"
+    )
+    assert "require_clean_structure" not in planted["mutation"], (
+        "the missing structural re-proof must be visible"
+    )
+
+
+def test_nc_68_a_toleranced_audit_reconstruction_is_caught() -> None:
+    """H. Even 1e-12 can hide a real mismatch between two published values."""
+    planted = _synthetic(
+        "$null = Add-Check $list ($relationship.headline + ' = SUM(...)') `\n"
+        "    (Test-CalcValue -Actual $headline -Expected $sum `\n"
+        "        -Tolerance ([double]$Cases.tolerances.identity_relative_coefficient))\n"
+    )
+    assert "identity_relative_coefficient" in planted, (
+        "a toleranced audit comparison must be visible"
+    )
+    assert "-Tolerance 0.0" not in planted
+    assert re.search(r"-Tolerance\s+(?!0\.0)", planted), (
+        "the non-zero tolerance must be visible to the detector"
     )

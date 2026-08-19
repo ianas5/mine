@@ -332,6 +332,66 @@ Public Function GBD_ConvexStatistic(ByVal statistic As String, ByVal a As Double
 End Function
 
 ' ==========================================================================
+' The Phase-5 numerical checker, called directly on real VBA
+' ==========================================================================
+Public Function GBD_CheckBaseAfterStart(ByVal baseYear As Long, ByVal startYear As Long, _
+                                        ByVal duration As Long, _
+                                        ByVal discountRate As Double) As String
+    ' PLAN SECTION 18: "Base Year later than Start Year".
+    '
+    ' WHY THIS EXISTS RATHER THAN A WORKBOOK MUTATION. Entering Base > Start and
+    ' calling PCCM_ApplyTimeline does NOT reach this predicate: modTimeline
+    ' PREVALIDATES the relationship and refuses the Apply without changing the
+    ' applied timeline, so the workbook is left with entered <> applied and the
+    ' next PCCM_Calculate is refused by StructuralPrerequisites with STRUCTURE
+    ' CHANGE PENDING - a different predicate, with a different message, in a
+    ' different module. Independent review found the Gate-B mutation claiming
+    ' the modCalcCheck predicate while actually exercising the Phase-4 gate.
+    '
+    ' So the checker is called DIRECTLY, on a ResolvedModel built here. Both the
+    ' type and modCalcCheck.CheckResolvedModel are already Public: no production
+    ' visibility is reopened, and no production source is touched.
+    '
+    ' DriverCount is 0 deliberately. A model with no drivers still has a timeline
+    ' and a discount rate, and both must hold - which is exactly the model-level
+    ' predicate under test, with nothing else able to refuse first.
+    Dim model As ResolvedModel
+    Dim detail As String
+    model.Timeline.BaseYear = baseYear
+    model.Timeline.StartYear = startYear
+    model.Timeline.Duration = duration
+    model.Timeline.LastYear = startYear + duration - 1
+    model.Timeline.DiscountRate = discountRate
+    model.DriverCount = 0
+    If modCalcCheck.CheckResolvedModel(model, detail) Then
+        GBD_CheckBaseAfterStart = GBD_FAIL & "CheckResolvedModel ACCEPTED the model"
+        Exit Function
+    End If
+    GBD_CheckBaseAfterStart = GBD_OK & detail
+End Function
+
+Public Function GBD_CheckTimelineAccepted(ByVal baseYear As Long, ByVal startYear As Long, _
+                                          ByVal duration As Long, _
+                                          ByVal discountRate As Double) As String
+    ' THE CONTROL FOR THE ABOVE. The same construction with Base <= Start must be
+    ' ACCEPTED, or the refusal proves only that the harness built a model
+    ' modCalcCheck rejects for some other reason.
+    Dim model As ResolvedModel
+    Dim detail As String
+    model.Timeline.BaseYear = baseYear
+    model.Timeline.StartYear = startYear
+    model.Timeline.Duration = duration
+    model.Timeline.LastYear = startYear + duration - 1
+    model.Timeline.DiscountRate = discountRate
+    model.DriverCount = 0
+    If modCalcCheck.CheckResolvedModel(model, detail) Then
+        GBD_CheckTimelineAccepted = GBD_OK & "accepted"
+        Exit Function
+    End If
+    GBD_CheckTimelineAccepted = GBD_FAIL & detail
+End Function
+
+' ==========================================================================
 ' Shared
 ' ==========================================================================
 Private Function GBD_Unwrap(ByVal reply As String) As String

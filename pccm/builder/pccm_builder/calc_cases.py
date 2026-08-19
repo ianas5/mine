@@ -820,13 +820,14 @@ GATE_B_PREREQUISITE_SCHEMA_VERSION = 1
 #   inflation_cell      write into the inflation grid at (profile, calendar year)
 #   profiling_cell      write into a profiling grid at (driver, project year)
 GATE_B_PREREQUISITES: list[dict[str, Any]] = [
-    # --- timeline and the structural handoff -----------------------------
-    {"id": "PQ-01", "section": "18.T1", "predicate": "base_year_after_start_year",
-     "title": "Base Year later than Start Year",
-     "base_plan_case": 3,
-     "mutation": {"kind": "entered_structure", "target": "base_year", "value": 2030,
-                  "apply_timeline": True},
-     "detail_tokens": ["Base Year", "Start Year"]},
+    # --- the structural handoff ------------------------------------------
+    #
+    # `base_year_after_start_year` is NOT here. Entering Base > Start does not
+    # reach modCalcCheck: modTimeline PREVALIDATES the relationship and refuses
+    # the Apply, leaving entered <> applied, so the next PCCM_Calculate is
+    # refused by StructuralPrerequisites with STRUCTURE CHANGE PENDING - a
+    # different predicate, in a different module, with a different message. The
+    # predicate is proved directly instead; see GATE_B_DIRECT_CHECKS.
     {"id": "PQ-02", "section": "18.T2", "predicate": "structure_change_pending",
      "title": "an entered structural value changed and the timeline was not re-applied",
      "base_plan_case": 3,
@@ -886,12 +887,22 @@ GATE_B_PREREQUISITES: list[dict[str, Any]] = [
      "mutation": {"kind": "fx_row", "currency": "SAR", "rate": 2},
      "detail_tokens": ["the reporting currency", "SAR", "must resolve to"]},
     # --- inflation ---------------------------------------------------------
+    # THE DRIVER'S REFERENCE MOVES, NOT THE GRID.
+    #
+    # Renaming a tblInflation row breaks the Phase-4 invariant "Inflation rows
+    # match the Config profile master", so ResolveModel refuses at
+    # ValidateStructure and the Step-5 referenced-profile lookup is never
+    # reached. Pointing the DRIVER at a profile nobody declared leaves Phase-4
+    # structure coherent and is exactly the condition the resolver owns. A direct
+    # COM write bypasses the cell's Data Validation, which is the point of an
+    # invalid-input runtime test.
     {"id": "PQ-13", "section": "18.I1", "predicate": "referenced_profile_missing",
-     "title": "a referenced inflation profile is absent from the grid",
+     "title": "a driver references an inflation profile that does not exist",
      "base_plan_case": 3,
-     "mutation": {"kind": "inflation_profile_rename", "profile": "Standard",
-                  "value": "Renamed"},
-     "detail_tokens": ["inflation: profile", "Standard", "not present"]},
+     "mutation": {"kind": "register_cell", "register": "cost_lines",
+                  "permanent_id": "CL-001", "column": "inflation_profile",
+                  "value": "MissingGateBProfile"},
+     "detail_tokens": ["inflation: profile", "MissingGateBProfile", "not present"]},
     {"id": "PQ-14", "section": "18.I2", "predicate": "referenced_rate_non_numeric",
      "title": "a required referenced inflation rate is non-numeric",
      "base_plan_case": 3,
@@ -992,11 +1003,46 @@ GATE_B_NO_BLOCK: list[dict[str, Any]] = [
      "title": "an UNREFERENCED foreign currency with a blank rate does not block",
      "base_plan_case": 3,
      "mutation": {"kind": "fx_row", "currency": "ZZZ", "rate": None, "append": True}},
+    # THROUGH THE CONFIG MASTER AND PRODUCTION APPLY.
+    #
+    # Adding a row straight to tblInflation creates the same master/grid
+    # mismatch PQ-13 used to, and the structural gate refuses before
+    # referenced-only semantics are tested. The profile is declared in
+    # Config!tblInflationProfiles and PCCM_ApplyTimeline is re-run, so
+    # SyncProfileRows creates the matching Inflation row with BLANK rates -
+    # structurally legitimate, numerically ignored because nothing references it.
     {"id": "PN-03", "section": "18.N3", "predicate": "unreferenced_profile_incomplete",
      "title": "an UNREFERENCED inflation profile with a missing rate does not block",
      "base_plan_case": 3,
-     "mutation": {"kind": "inflation_profile_add", "profile": "Unused",
-                  "calendar_year": 2027, "value": None}},
+     "mutation": {"kind": "config_profile_add", "profile": "UnusedGateBProfile",
+                  "apply_timeline": True, "require_clean_structure": True}},
+]
+
+# PREDICATES PROVED BY CALLING THE ACCEPTED CHECKER DIRECTLY.
+#
+# Some plan section 18 boundaries are unreachable through the workbook because an
+# EARLIER accepted gate refuses first. Base Year after Start Year is the clear
+# case: modTimeline prevalidates it, so no entered value can carry it as far as
+# modCalcCheck. The predicate is real and locked, so it is exercised on real VBA
+# through the transient diagnostic module, which calls the already-Public
+# modCalcCheck.CheckResolvedModel over a ResolvedModel built on target. No
+# production visibility is reopened.
+GATE_B_DIRECT_CHECKS: list[dict[str, Any]] = [
+    {"id": "DC-01", "section": "18.T1", "predicate": "base_year_after_start_year",
+     "title": "Base Year later than Start Year, through modCalcCheck directly",
+     "procedure": "GBD_CheckBaseAfterStart",
+     "control_procedure": "GBD_CheckTimelineAccepted",
+     "arguments": {"base_year": 2030, "start_year": 2027, "duration": 3,
+                   "discount_rate": 0.10},
+     "control_arguments": {"base_year": 2026, "start_year": 2027, "duration": 3,
+                           "discount_rate": 0.10},
+     "expected_refused": True,
+     "detail_tokens": ["Base Year", "Start Year"],
+     "why": (
+         "PCCM_ApplyTimeline prevalidates Base > Start and refuses, leaving "
+         "entered <> applied, so a workbook mutation reaches STRUCTURE CHANGE "
+         "PENDING in StructuralPrerequisites and never reaches modCalcCheck."
+     )},
 ]
 
 # The multi-driver fixture the driver-audit reconstruction needs. Several Cost
@@ -1087,6 +1133,7 @@ def gate_b_section(tolerances: Tolerances) -> dict[str, Any]:
              "snapshot_unchanged": True}
             for entry in GATE_B_PREREQUISITES
         ],
+        "direct_check_cases": [dict(entry) for entry in GATE_B_DIRECT_CHECKS],
         "no_block_cases": [
             {**entry, "expected_attempt": "SUCCESS", "expected_status": "CURRENT",
              "detail_tokens": [], "snapshot_unchanged": False}
