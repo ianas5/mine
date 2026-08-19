@@ -366,10 +366,31 @@ function Remove-VbaCommentary {
     $out = New-Object System.Text.StringBuilder
     foreach ($line in ($Code -split "`r?`n")) {
         $inString = $false
+        # Rem is a STATEMENT, so it is commentary wherever a statement may
+        # begin: at the start of the line, or after a colon separator. This
+        # tracks that boundary through the same single pass that already
+        # understands string literals, rather than post-matching a regex over
+        # the whole line - a regex cannot see whether a colon was inside a
+        # literal, and a line-anchored one misses the inline form entirely.
+        $atStatementStart = $true
         $kept = New-Object System.Text.StringBuilder
         $i = 0
         while ($i -lt $line.Length) {
             $ch = $line[$i]
+
+            # REM-FORM COMMENTARY. Three conditions, all required:
+            #   * outside a string literal, so x = "Rem NPV" is data;
+            #   * at a statement boundary, so nothing mid-expression matches;
+            #   * the COMPLETE keyword - followed by whitespace or end of line -
+            #     so Remember and RemoteValue are identifiers, not comments.
+            # Once it begins, the rest of the physical line is commentary.
+            if ((-not $inString) -and $atStatementStart -and
+                ((($i + 3) -le $line.Length)) -and
+                ($line.Substring($i, 3) -eq 'Rem') -and
+                (((($i + 3) -eq $line.Length)) -or [char]::IsWhiteSpace($line[$i + 3]))) {
+                break
+            }
+
             if ($ch -eq '"') {
                 # A DOUBLED QUOTE INSIDE A STRING IS AN ESCAPED QUOTE, not a
                 # close. Without this, "he said ""don't""" would be read as
@@ -377,14 +398,17 @@ function Remove-VbaCommentary {
                 # truncate the rest of a real statement.
                 if ($inString -and (($i + 1) -lt $line.Length) -and ($line[$i + 1] -eq '"')) {
                     $null = $kept.Append('""')
+                    $atStatementStart = $false
                     $i += 2
                     continue
                 }
                 $inString = -not $inString
                 $null = $kept.Append($ch)
+                $atStatementStart = $false
                 $i++
                 continue
             }
+
             # [char]39, not a quoted apostrophe. A double-quoted string whose
             # only content is an apostrophe desynchronises every naive
             # quote-stripping sweep that reads this file - including the
@@ -393,13 +417,18 @@ function Remove-VbaCommentary {
             # codebase already uses [char]31 for the unit separator for the same
             # class of reason.
             if (($ch -eq ([char]39)) -and (-not $inString)) { break }
+
             $null = $kept.Append($ch)
+            # Whitespace neither opens nor closes a statement, so it leaves the
+            # boundary alone: `x = 1 :   Rem ...` is still a Rem statement. A
+            # colon opens the next statement, but ONLY outside a literal, so the
+            # colon in "text : Rem NPV" does not.
+            if (-not [char]::IsWhiteSpace($ch)) {
+                $atStatementStart = (($ch -eq ':') -and (-not $inString))
+            }
             $i++
         }
-        $text = $kept.ToString()
-        # Rem-form commentary: the statement keyword, not an identifier prefix.
-        if ($text -match '^\s*Rem(\s|$)') { $text = '' }
-        $null = $out.AppendLine($text)
+        $null = $out.AppendLine($kept.ToString())
     }
     return $out.ToString()
 }

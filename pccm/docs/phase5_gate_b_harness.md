@@ -1615,6 +1615,9 @@ keeps its shape and a forbidden token after a literal is still found.
 intact), then literals. `Remove-VbaCommentary` also gained the doubled-quote
 escape it was missing, so `"he said ""don't"""` no longer closes early.
 
+See *Review round 2B* below for the `Rem` half of the same rule, which this
+round got wrong.
+
 The manifest `forbidden_constructs` list is unchanged, and `test_129` runs the
 corrected rule over every frozen production module to prove the stricter scanner
 does not flag accepted source.
@@ -1642,3 +1645,77 @@ passing — and P5-D1/P5-D2 become **more** important, not less: they are the on
 scenarios that exercise the generation step directly.
 
 P5-D1 and P5-D2 remain a PRODUCTION finding and remain unrepaired.
+
+---
+
+## Review round 2B: `Rem` is a statement, not a line prefix
+
+Round 2A recognised `Rem` commentary only as the first token of a physical line:
+
+```powershell
+if ($text -match '^\s*Rem(\s|$)') { $text = '' }
+```
+
+VBA permits `Rem` wherever a **statement** may begin, which includes after a
+colon separator:
+
+```vba
+x = 1: Rem Worksheet_Change is deliberately absent
+```
+
+That line survived the round-2A stripper intact, so P5-EV could report
+`Worksheet_Change` as executable code from a comment — the same class of false
+positive the round-2 correction existed to remove, in a form it did not cover.
+
+The shape was the real problem. The old rule rebuilt the line and *then* matched
+a line-anchored regex over it, so it could not see whether a colon was inside a
+string literal or whether one had occurred at all. The decision now happens at a
+character position, inside the single pass that already tracks literals:
+
+```powershell
+if ((-not $inString) -and $atStatementStart -and
+    ((($i + 3) -le $line.Length)) -and
+    ($line.Substring($i, 3) -eq 'Rem') -and
+    (((($i + 3) -eq $line.Length)) -or [char]::IsWhiteSpace($line[$i + 3]))) {
+    break
+}
+```
+
+Three conditions, all required, and one consequence:
+
+* **outside a literal** — `x = "Rem Worksheet_Change"` is data;
+* **at a statement boundary** — the line start, or after a colon that is itself
+  outside a literal, so the colon in `"text : Rem NPV"` does not open one;
+* **the complete keyword** — followed by whitespace or end of line, so
+  `Remember` and `RemoteValue` stay identifiers;
+* once it begins, the rest of the physical line is commentary.
+
+The boundary is maintained in the same loop: whitespace leaves it alone (so
+`x = 1 :   Rem …` still works), a literal closes it, and a colon outside a
+literal reopens it. No broad regex was introduced; the line-anchored one is
+gone rather than supplemented.
+
+### Decision table
+
+| Source | Verdict |
+|---|---|
+| `Rem Worksheet_Change is absent` | allowed |
+| `x = 1: Rem Worksheet_Change is absent` | allowed |
+| `x = 1 :   Rem NPV is deliberately absent` | allowed |
+| `x = "Rem Worksheet_Change"` | allowed (string data) |
+| `x = "text : Rem NPV" : Randomize` | **`Randomize` FAILS** |
+| `Remember = 1` | not a comment |
+| `RemoteValue = "NPV"` | not a comment |
+| `x = 1: Randomize` | **FAIL** |
+| `x = 1: Rem Randomize is deliberately absent` | allowed |
+| `REM …` / `rem …` | allowed (VBA is case-insensitive) |
+| `MyLabel: Rem NPV` | allowed |
+| `Dim Remainder As Long: Randomize` | **FAIL** |
+
+Everything from round 2A still holds: apostrophe comments, apostrophes inside
+literals, doubled quotes, literal removal, and real forbidden tokens after a
+literal or before a trailing comment.
+
+`test_132` additionally proves that on every frozen production module the
+runtime stripper and the Python authority produce **identical** executable code,
+so the stricter rule did not change what the accepted source says.

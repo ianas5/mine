@@ -4380,27 +4380,18 @@ def test_111_a_real_change_event_declaration_still_fails() -> None:
         r"Worksheet_Change\s*\("
     )
 
-    def strip(vba: str) -> str:
-        out = []
-        for line in vba.splitlines():
-            in_string, kept = False, []
-            for ch in line:
-                if ch == '"':
-                    in_string = not in_string
-                    kept.append(ch)
-                    continue
-                if ch == "'" and not in_string:
-                    break
-                kept.append(ch)
-            text = "".join(kept)
-            out.append("" if re.match(r"^\s*Rem(\s|$)", text) else text)
-        return "\n".join(out)
+    # The SHARED model, so this test cannot encode a different lexical rule
+    # from the one the harness ships. See section 25.
+    strip = _model_remove_commentary
 
     # 1. a comment naming the handler -> allowed
     assert not pattern.search(strip("' there is no input Worksheet_Change handler")), (
         "a comment is still read as a declaration"
     )
     assert not pattern.search(strip("Rem Worksheet_Change is deliberately absent"))
+    assert not pattern.search(strip("x = 1: Rem Private Sub Worksheet_Change(x)")), (
+        "an inline Rem comment is still read as code"
+    )
     # 2. a real Worksheet_Change procedure -> FAIL
     assert pattern.search(strip("Private Sub Worksheet_Change(ByVal Target As Range)"))
     assert pattern.search(strip("Sub Worksheet_Change(ByVal Target As Range)"))
@@ -5014,39 +5005,16 @@ def test_128_the_forbidden_construct_decision_table() -> None:
                    "RunSimulation", "NPV"):
         assert needed in manifest_forbidden, f"{needed} left the manifest list"
 
-    def strip_comments(vba: str) -> str:
-        out = []
-        for line in vba.splitlines():
-            in_string, cut, i = False, len(line), 0
-            while i < len(line):
-                ch = line[i]
-                if ch == '"':
-                    if in_string and i + 1 < len(line) and line[i + 1] == '"':
-                        i += 2
-                        continue
-                    in_string = not in_string
-                elif ch == "'" and not in_string:
-                    cut = i
-                    break
-                i += 1
-            text = line[:cut]
-            out.append("" if re.match(r"^\s*Rem(\s|$)", text) else text)
-        return "\n".join(out)
-
-    def code(vba: str) -> str:
-        return re.sub(r'"(?:[^"]|"")*"', '""', strip_comments(vba))
-
-    def flags(vba: str) -> set[str]:
-        body = code(vba)
-        return {c for c in manifest_forbidden if c in body}
-
-    declares = lambda vba, name: bool(re.search(
-        r"(?im)^\s*(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?(?:Sub|Function)\s+"
-        + re.escape(name) + r"\s*\(", code(vba)))
+    # The SHARED model, so this decision table and section 25's cannot drift.
+    flags = _model_flags
+    declares = _model_declares
 
     # allowed
     assert not flags("' there is no input Worksheet_Change handler")
     assert not flags("Rem Worksheet_Change is deliberately absent")
+    assert not flags("x = 1: Rem Worksheet_Change is deliberately absent"), (
+        "an inline Rem comment is read as executable code"
+    )
     assert not flags('Err.Raise 5, , "Worksheet_Change"')
     assert not flags('MsgBox "NPV is not available"')
     assert not flags('Debug.Print "RunSimulation"')
@@ -5137,3 +5105,280 @@ def test_nc_94_a_comment_only_stripper_is_caught() -> None:
     assert "NPV" not in re.sub(r'"(?:[^"]|"")*"', '""', line), (
         "emptying the literal is what removes it"
     )
+
+
+# ===========================================================================
+# 25. REVIEW ROUND 2B: Rem is a STATEMENT, not a line prefix
+# ===========================================================================
+# VBA permits Rem wherever a statement may begin, which includes after a colon
+# separator:
+#
+#     x = 1: Rem Worksheet_Change is deliberately absent
+#
+# A line-anchored `^\s*Rem(\s|$)` misses that form entirely, so P5-EV could
+# report Worksheet_Change as executable code from a comment. The models below
+# are a faithful port of the corrected single-pass stripper and are shared by
+# every test in this section, so no test can quietly disagree with another
+# about what the rule is.
+def _model_remove_commentary(code: str) -> str:
+    """Faithful port of Remove-VbaCommentary."""
+    out = []
+    for line in code.split("\n"):
+        in_string = False
+        at_statement_start = True
+        kept: list[str] = []
+        index = 0
+        while index < len(line):
+            char = line[index]
+            # Rem: outside a literal, at a statement boundary, complete keyword.
+            if (not in_string) and at_statement_start and (index + 3) <= len(line) \
+               and line[index:index + 3].lower() == "rem" \
+               and ((index + 3) == len(line) or line[index + 3].isspace()):
+                break
+            if char == '"':
+                if in_string and (index + 1) < len(line) and line[index + 1] == '"':
+                    kept.append('""')
+                    at_statement_start = False
+                    index += 2
+                    continue
+                in_string = not in_string
+                kept.append(char)
+                at_statement_start = False
+                index += 1
+                continue
+            if char == "'" and not in_string:
+                break
+            kept.append(char)
+            if not char.isspace():
+                at_statement_start = (char == ":" and not in_string)
+            index += 1
+        out.append("".join(kept))
+    return "\n".join(out)
+
+
+def _model_remove_string_literals(code: str) -> str:
+    return re.sub(r'"(?:[^"]|"")*"', '""', code)
+
+
+def _model_executable(code: str) -> str:
+    """Faithful port of Get-VbaExecutableCode."""
+    return _model_remove_string_literals(_model_remove_commentary(code))
+
+
+def _model_flags(code: str) -> set[str]:
+    body = _model_executable(code)
+    return {c for c in _emitted()["manifest"]["vba"]["forbidden_constructs"] if c in body}
+
+
+def _model_declares(code: str, name: str) -> bool:
+    return bool(re.search(
+        r"(?im)^\s*(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?(?:Sub|Function)\s+"
+        + re.escape(name) + r"\s*\(", _model_executable(code)))
+
+
+def _model_remove_commentary_line_start_only(code: str) -> str:
+    """The DEFECTIVE implementation this round replaces."""
+    out = []
+    for line in code.split("\n"):
+        in_string, kept, index = False, [], 0
+        while index < len(line):
+            char = line[index]
+            if char == '"':
+                if in_string and index + 1 < len(line) and line[index + 1] == '"':
+                    kept.append('""')
+                    index += 2
+                    continue
+                in_string = not in_string
+                kept.append(char)
+                index += 1
+                continue
+            if char == "'" and not in_string:
+                break
+            kept.append(char)
+            index += 1
+        text = "".join(kept)
+        out.append("" if re.match(r"^\s*Rem(\s|$)", text) else text)
+    return "\n".join(out)
+
+
+def test_130_rem_is_recognised_at_every_statement_boundary() -> None:
+    """The corrected rule, stated in source and proved by the shared model."""
+    stripper = _procedure(_executable(SCENARIOS), "Remove-VbaCommentary")
+    # The boundary is tracked in the SAME pass that understands literals.
+    assert "$atStatementStart = $true" in stripper, "no statement boundary is tracked"
+    assert "$line.Substring($i, 3) -eq 'Rem'" in stripper, (
+        "Rem is not matched as a complete three-character keyword"
+    )
+    # Complete keyword only: whitespace or end of line must follow.
+    assert "[char]::IsWhiteSpace($line[$i + 3])" in stripper, (
+        "Remember and RemoteValue would be read as commentary"
+    )
+    assert "(($i + 3) -eq $line.Length)" in stripper, "a bare `Rem` line is not handled"
+    # Outside a literal only.
+    assert "(-not $inString) -and $atStatementStart" in stripper
+    # A colon opens the next statement, but only outside a literal.
+    assert "$atStatementStart = (($ch -eq ':') -and (-not $inString))" in stripper
+    # Whitespace leaves the boundary alone, so `x = 1 :   Rem ...` still works.
+    assert "if (-not [char]::IsWhiteSpace($ch)) {" in stripper
+
+    # The line-anchored regex is gone, not merely supplemented.
+    assert "'^\\s*Rem(\\s|$)'" not in _executable(SCENARIOS), (
+        "the line-start-only Rem rule survives"
+    )
+    # And no broad regex replaced it.
+    for forbidden in ("-replace 'Rem", "-match 'Rem", "Rem.*$"):
+        assert forbidden not in stripper, f"a broad Rem regex was introduced ({forbidden})"
+
+
+def test_131_the_rem_decision_table() -> None:
+    """Every case the review named, plus the ones that must not regress."""
+    # --- required additions ------------------------------------------------
+    assert not _model_flags("Rem Worksheet_Change is absent")
+    assert not _model_flags("x = 1: Rem Worksheet_Change is absent")
+    assert not _model_flags("x = 1 :   Rem NPV is deliberately absent")
+    assert not _model_flags('x = "Rem Worksheet_Change"')
+    assert "Randomize" in _model_flags('x = "text : Rem NPV" : Randomize'), (
+        "a colon inside a literal must not open a statement"
+    )
+    assert not _model_flags('x = "text : Rem NPV" : Randomize') - {"Randomize"}, (
+        "the literal payload leaked into the executable code"
+    )
+    assert not _model_flags("Remember = 1"), "Remember was read as a Rem comment"
+    assert not _model_flags('RemoteValue = "NPV"'), "RemoteValue was read as a Rem comment"
+    assert "Randomize" in _model_flags("x = 1: Randomize")
+    assert not _model_flags("x = 1: Rem Randomize is deliberately absent")
+
+    # --- and the identifier-prefix cases really do keep their code ----------
+    assert "Remember = 1" in _model_executable("Remember = 1")
+    assert "RemoteValue" in _model_executable('RemoteValue = "NPV"')
+
+    # --- VBA is case-insensitive -------------------------------------------
+    assert not _model_flags("REM Worksheet_Change upper case")
+    assert not _model_flags("rem NPV lower case")
+    assert not _model_flags("x = 1: REM NPV")
+
+    # --- degenerate and label forms ----------------------------------------
+    assert _model_executable("Rem").strip() == ""
+    assert not _model_flags("x = 1: Rem")
+    assert not _model_flags("MyLabel: Rem NPV after a label")
+    assert "Randomize" in _model_flags("Dim Remainder As Long: Randomize"), (
+        "an identifier starting with Rem must not swallow the next statement"
+    )
+
+    # --- nothing from round 2A regressed -----------------------------------
+    assert not _model_flags("' there is no input Worksheet_Change handler")
+    assert not _model_flags('MsgBox "NPV is not available"')
+    assert not _model_flags('MsgBox "he said ""NPV"" loudly"')
+    assert "Randomize" in _model_flags('MsgBox "it' + "'" + 's fine" : Randomize')
+    assert "Randomize" in _model_flags("    Randomize   ' seeded here")
+    assert "Randomize" in _model_flags('MsgBox "no rng here" : Randomize')
+    assert "Rnd(" in _model_flags("    x = Rnd()")
+    assert "RunSimulation" in _model_flags("    Call RunSimulation")
+
+    # --- declarations ------------------------------------------------------
+    assert _model_declares("Private Sub Worksheet_Change(ByVal T As Range)", "Worksheet_Change")
+    assert _model_declares(
+        "Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal T As Range)",
+        "Workbook_SheetChange")
+    assert not _model_declares("Rem Private Sub Worksheet_Change(x)", "Worksheet_Change")
+    assert not _model_declares('x = "Private Sub Worksheet_Change("', "Worksheet_Change")
+    assert not _model_declares("' Private Sub Worksheet_Change(x)", "Worksheet_Change")
+
+
+def test_132_the_production_source_is_unaffected_by_the_rem_correction() -> None:
+    """A stricter comment rule must not change what the frozen modules say."""
+    forbidden = _emitted()["manifest"]["vba"]["forbidden_constructs"]
+    offenders = []
+    for path in sorted(SRC_VBA.glob("*.bas")) + [DIAGNOSTIC]:
+        body = _model_executable(_text(path))
+        for construct in forbidden:
+            if construct in body:
+                offenders.append(f"{path.name}: {construct}")
+    assert not offenders, (
+        "the corrected Rem rule flags accepted source: " + "; ".join(offenders)
+    )
+    # The corrected stripper agrees with the Python authority on real modules -
+    # neither one strips MORE than the other on code that has no inline Rem.
+    sys.path.insert(0, str(PCCM_ROOT / "builder"))
+    from pccm_builder.vba_source import strip_comments, strip_strings
+    for path in sorted(SRC_VBA.glob("*.bas")):
+        raw = _text(path)
+        assert _model_executable(raw).strip() == strip_strings(strip_comments(raw)).strip(), (
+            f"{path.name}: the runtime and static strippers disagree"
+        )
+
+
+def test_nc_95_the_line_start_only_rem_rule_is_caught() -> None:
+    """The exact defect this round closes, reproduced against the old code."""
+    planted = _synthetic("        if ($text -match '^\\s*Rem(\\s|$)') { $text = '' }\n")
+    assert "$atStatementStart" not in planted, (
+        "the line-start-only Rem rule must be visible as one"
+    )
+    forbidden = _emitted()["manifest"]["vba"]["forbidden_constructs"]
+
+    def defective_flags(code: str) -> set[str]:
+        body = _model_remove_string_literals(_model_remove_commentary_line_start_only(code))
+        return {c for c in forbidden if c in body}
+
+    inline = "x = 1: Rem Worksheet_Change is deliberately absent"
+    assert "Worksheet_Change" in defective_flags(inline), (
+        "the inline Rem form must defeat the line-start-only implementation"
+    )
+    assert not _model_flags(inline), "the corrected rule must not flag it"
+    # The line-start form is the only one the old rule ever handled.
+    at_start = "Rem Worksheet_Change is deliberately absent"
+    assert not defective_flags(at_start) and not _model_flags(at_start), (
+        "both rules agree on the form the old one was written for"
+    )
+    # And the old rule was not merely incomplete - it was wrong in one
+    # direction only: it never stripped too much.
+    assert defective_flags("Remember = 1") == _model_flags("Remember = 1")
+
+
+def test_133_the_rem_decision_is_taken_inside_the_single_pass() -> None:
+    """Structural, and independent of test_130's keyword assertions.
+
+    The old rule rebuilt the line and THEN matched a line-anchored regex over
+    it, which is why it could not see a colon separator. The corrected rule
+    decides at a character position, inside the pass that already knows whether
+    it is inside a literal - so this pins the shape, not just the tokens.
+    """
+    stripper = _procedure(_executable(SCENARIOS), "Remove-VbaCommentary")
+
+    # The post-loop line rewrite is gone: nothing reconstructs the line and
+    # then blanks it.
+    assert "$text = $kept.ToString()" not in stripper, (
+        "the line is still rebuilt for a line-level Rem decision"
+    )
+    assert "{ $text = '' }" not in stripper
+    assert "$null = $out.AppendLine($kept.ToString())" in stripper, (
+        "the kept text is no longer appended directly"
+    )
+
+    # The Rem guard lives INSIDE the character loop, and ahead of the literal
+    # and apostrophe branches, so it is evaluated at every candidate position.
+    loop_at = stripper.index("while ($i -lt $line.Length) {")
+    rem_at = stripper.index("$line.Substring($i, 3) -eq 'Rem'")
+    quote_at = stripper.index("if ($ch -eq '\"') {")
+    apostrophe_at = stripper.index("if (($ch -eq ([char]39)) -and (-not $inString)) { break }")
+    assert loop_at < rem_at < quote_at < apostrophe_at, (
+        "the Rem guard is not evaluated per position inside the single pass"
+    )
+    # It is indexed by $i, not applied to the whole line.
+    assert "$line.Substring($i, 3)" in stripper
+    assert "$line[$i + 3]" in stripper
+
+    # And it consults literal state at that position, so a Rem inside a string
+    # cannot end the line. Checked over the guard's own region, independently
+    # of how the conjunction is written.
+    rem_guard = stripper[loop_at:quote_at]
+    assert "$inString" in rem_guard, (
+        "the Rem guard does not consult literal state"
+    )
+    assert "$atStatementStart" in rem_guard
+
+    # And the boundary really is maintained across the loop, in both directions.
+    assert stripper.count("$atStatementStart = $false") == 2, (
+        "the statement boundary is not closed on both literal paths"
+    )
+    assert "$atStatementStart = (($ch -eq ':') -and (-not $inString))" in stripper
