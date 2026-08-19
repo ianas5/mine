@@ -1,17 +1,21 @@
 # Phase 5 — Gate A — Step 7: transactional reporting and orchestration
 
-**Status: correction round 1 — ready for independent review.**
+**Status: correction round 2 — ready for independent review.**
 
 Step 6 is accepted and closed at `12ade1d`. This step adds the final Phase-5
 production module — `modCalcReport` — with the transactional write-back, the
 `calc_state` maintenance and the six calculation endpoints, plus the static Linux
 suite that reads it and the narrow plumbing the endpoint declaration needs.
 
-The first submission (`a9de9b3`) was rejected with five blocking defects. They
-are recorded in full under **[Correction round 1](#correction-round-1)**, with
-the tests that would fail if any of them returned. The accepted Step-7
-architecture is otherwise unchanged, and one accepted module — `modCalcFingerprint`
-— was reopened for exactly one visibility change, under explicit authorisation.
+The first submission (`a9de9b3`) was rejected with five blocking defects, all of
+which independent review has since confirmed closed; they are recorded under
+**[Correction round 1](#correction-round-1)**. Correction round 1 (`73adbb0`) was
+then rejected with two further blockers — an uncontained normal-path cleanup and
+a commit failpoint that was not at the commit boundary — recorded under
+**[Correction round 2](#correction-round-2)**. Each defect keeps the tests that
+would fail if it returned. The accepted Step-7 architecture is otherwise
+unchanged; `modCalcFingerprint` was reopened once, in round 1, for exactly one
+visibility change under explicit authorisation, and is untouched this round.
 
 ---
 
@@ -48,10 +52,10 @@ three more names by which the work might have been split.
 
 | Module | Raw | Blank | Comment | Code | code < 900 | raw < 1200 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `modCalcReport` | 1071 | 76 | 213 | 782 | yes | yes |
+| `modCalcReport` | 1113 | 78 | 242 | 793 | yes | yes |
 
-It fits, with 118 code lines of headroom. No extra module was needed, and none
-was added in the correction round.
+It fits, with 107 code lines of headroom. No extra module was needed, and none
+was added in either correction round.
 
 ---
 
@@ -263,14 +267,31 @@ block do not.
 
 Two, through the accepted Phase-4 `modAppState.FailPointCheck` (`test_21`):
 
-| Constant | Stage name | Position |
-| --- | --- | --- |
-| `FAILPOINT_ANALYTICAL_WRITE` | `Phase5AnalyticalWrite` | after `WriteAnalytical`, before `VerifyAnalytical` — analytical state is half-written |
-| `FAILPOINT_SUCCESS_COMMIT` | `Phase5SuccessCommit` | immediately before `WriteSuccessCommit` |
+| Constant | Stage name | Source location | Position |
+| --- | --- | --- | --- |
+| `FAILPOINT_ANALYTICAL_WRITE` | `Phase5AnalyticalWrite` | `RunCalculation`, `modCalcReport.bas:263` | after `WriteAnalytical`, before `VerifyAnalytical` — analytical state is half-written |
+| `FAILPOINT_SUCCESS_COMMIT` | `Phase5SuccessCommit` | `WriteSuccessCommit`, `modCalcReport.bas:744` | the statement **immediately before** `CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block` |
 
-`test_21` also refuses `gAutomationFailAfterStage` in the module: no second
-injection framework. Phase-4 failpoint machinery is untouched, and the Windows
-harness was neither extended nor run.
+The commit hook sits at the assignment, not upstream of it:
+
+```vba
+Private Sub WriteSuccessCommit(ByRef block As Variant)
+    modAppState.FailPointCheck FAILPOINT_SUCCESS_COMMIT
+    CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block
+End Sub
+```
+
+`WriteSuccessCommit` is called from inside the `TransactionFailed` envelope,
+after the analytical snapshot has been written and verified, so an injected
+exception there rolls back from the **final commit boundary** with C13:C20 not
+yet published.
+
+`test_21` inspects the writer's own executable body — the hook must be exactly
+one statement before the assignment, with nothing between them and nothing after
+it — and refuses the hook anywhere in `RunCalculation`, refuses a second wiring,
+and refuses `gAutomationFailAfterStage`: no second injection framework. Phase-4
+failpoint machinery is untouched, and the Windows harness was neither extended
+nor run.
 
 ---
 
@@ -342,19 +363,56 @@ modAppState.BeginOperation
 result = RunCalculation(committed)
 On Error GoTo 0
 
+On Error GoTo NormalCleanupFailed
+cleanupAttempted = True
 cleanup = modAppState.FinishOperation(state)
+On Error GoTo 0
 stateCaptured = False
+
 If Len(cleanup) > 0 Then result = CleanupOutcome(result, committed, cleanup)
 modAppState.Announce result
 ```
 
-`FinishOperation` is attempted **exactly once**: the normal path clears the flag
-so the handler cannot repeat it, and the handler runs it only when state was
-actually captured (`test_57`). The recovery cleanup has its own `CleanupFailed`
-envelope, so a cleanup that raises while handling an earlier failure cannot
-escape raw — and the original diagnosis survives it rather than being replaced.
+### Cleanup is contained on both paths, and attempted at most once
 
-Every terminal path publishes exactly one outcome (`test_55`).
+`FinishOperation` returns a diagnostic `String` for a restoration it could not
+complete — but it is an Excel call and can also **raise**. There are exactly two
+contexts that may call it, and each runs inside its own cleanup-failure
+envelope:
+
+| Context | Envelope | Reached when |
+| --- | --- | --- |
+| normal path | `NormalCleanupFailed` | the transaction returned, whatever its outcome |
+| recovery path | `CleanupFailed` | an error occurred **before** the normal cleanup |
+
+Two Boolean facts carry the distinction, and the guards read those facts rather
+than inferring them from where a label sits:
+
+* `stateCaptured` — a snapshot exists and something still owes a restore
+* `cleanupAttempted` — the one permitted attempt has been spent, raise or not
+
+`cleanupAttempted` is set **before** each call, so a call that raises still
+counts as the attempt. The recovery guard is
+`If stateCaptured And Not cleanupAttempted Then`, so it can never retry an
+attempt the normal path already spent. Neither handler calls `FinishOperation`
+again (`test_48`, `test_57`).
+
+When the normal cleanup **raises**, `NormalCleanupFailed` contains it, captures
+`Err.Description`, and publishes through `CleanupOutcome` — the same rule the
+returned-diagnostic path uses, so the committed/uncommitted distinction applies
+identically:
+
+* **committed = True** — C17 keeps saying `SUCCESS`, no rollback, nothing
+  rewritten in `calc_state`; the announcement states that the calculation
+  committed and application restoration then failed
+* **committed = False** — the existing failed or refused calculation outcome is
+  preserved and the cleanup exception is merged into its detail
+
+Nothing on that path touches an analytical block, `WriteAttemptBlock`,
+`WriteStatusBlock` or `RestoreSnapshot` — `test_57` refuses each by name.
+
+Every terminal path publishes exactly one outcome (`test_55`); there are now
+four.
 
 ---
 
@@ -402,13 +460,15 @@ are declared and none is bound to a button.
 | `test_phase5_vba_source.py` | 122 |
 | `test_phase5_resolve_source.py` | 91 |
 | `test_phase5_check_source.py` | 60 |
-| `test_phase5_report_source.py` | **97** |
-| **Total** | **1340** |
+| `test_phase5_report_source.py` | **107** |
+| **Total** | **1350** |
 
-The Step-6 baseline was 1241; the Step-7 submission was 1313. **No test was
-removed and none was weakened.** The correction round added 25 tests to the
-reporter suite and 2 to the kernel suite; the Step-5 (91) and Step-6 (60) suites
-are unchanged in count, and the Stage-A verifier still reports 351/351.
+The Step-6 baseline was 1241; the Step-7 submission was 1313; correction round 1
+was 1340. **No test was removed and none was weakened.** Round 1 added 25 tests
+to the reporter suite and 2 to the kernel suite; round 2 adds 10 more to the
+reporter suite and retargets five in place (`test_20`, `test_21`, `test_48`,
+`test_55`, `test_57`). The Step-5 (91) and Step-6 (60) suites are unchanged in
+count, and the Stage-A verifier still reports 351/351.
 
 ### Mutation evidence
 
@@ -469,6 +529,45 @@ isolation, which says nothing about *which handler reaches which*. Swapping the
 passed. `test_56` now partitions `RunCalculation` at its handler labels and
 asserts the routing at the point the two outcomes diverge; `test_nc_27b` plants
 the same swap and watches the detector see it.
+
+**Correction round 2.** Twenty-four further regressions were planted into a
+scratch copy and the suite run against each. **All twenty-four were caught** —
+eleven on the cleanup-containment boundary, eight on the failpoint boundary, and
+five re-testing round-1 invariants that must not regress while this round moves
+code around them:
+
+| # | Planted regression | Caught by |
+| --- | --- | --- |
+| N01 | the submitted shape: normal cleanup with the handler disarmed | `test_48`, `test_57` |
+| N02 | normal cleanup covered by the top-level envelope instead of its own | `test_48`, `test_57` |
+| N03 | the normal-cleanup handler retries `FinishOperation` | `test_48`, `test_57` |
+| N04 | the normal-cleanup handler announces nothing | `test_55`, `test_57` |
+| N05 | the normal-cleanup handler rewrites `calc_state` | `test_57` |
+| N06 | the normal-cleanup handler ignores the committed axis | `test_57` |
+| N07 | the attempt marked spent *after* the call, so a raise leaves it unmarked | `test_57` |
+| N08 | the exactly-once state removed entirely | `test_48`, `test_57` |
+| N09 | the recovery guard drops the spent flag | `test_48`, `test_57` |
+| N10 | the recovery handler retries `FinishOperation` | `test_48`, `test_57` |
+| N11 | the normal-cleanup envelope left open past the call | `test_57` |
+| N12 | the submitted shape: commit hook upstream of `BuildSuccessBlock` | `test_21` |
+| N13 | commit hook *after* the C13:C20 assignment | `test_21` |
+| N14 | a statement between the hook and the write | `test_21`, `test_25` |
+| N15 | the commit hook removed | `test_21` |
+| N16 | the hook wired from two places | `test_21` |
+| N17 | a hand-rolled second injection mechanism | `test_21` |
+| N18 | the analytical hook moved before `WriteAnalytical` | `test_21` |
+| N19 | the analytical hook moved past the analytical verification | `test_21` |
+| N20 | `Announce` swapped back to `ReportResult` | `test_54`, `test_55` |
+| N21 | the top-level envelope armed late again | `test_48`, `test_56` |
+| N22 | C20 dropped from the commit verification | `test_59` |
+| N23 | the commit marked before it is proven | `test_16`, `test_59` |
+| N24 | `On Error Resume Next` reintroduced | `test_20`, `test_48`, `test_57` |
+
+The round-2 suite was run against the round-1 commit `73adbb0` with the
+production source restored to its submitted state. **Five reporter tests fail
+there**, covering both blockers: blocker 1 (`test_48`, `test_57`, and `test_20`
+and `test_55` for the handler and terminal path the fix adds) and blocker 2
+(`test_21`).
 
 The corrected suite was also run against the submitted commit `a9de9b3` with the
 production sources restored to their submitted state. **Sixteen reporter tests,
@@ -596,6 +695,84 @@ one name is a VBA compile error, and the exact comparison subsumes it.
 
 ---
 
+## Correction round 2
+
+Independent review confirmed the five round-1 areas substantially closed and
+rejected `73adbb0` with two remaining blockers.
+
+### 1 — the NORMAL-path `FinishOperation` was outside every envelope
+
+Round 1 armed `CleanupFailed` over the **recovery** cleanup only. The normal path
+disarmed the top-level envelope first and then called `FinishOperation` with
+nothing armed:
+
+```vba
+On Error GoTo 0                                   ' <- envelope closed here
+
+cleanup = modAppState.FinishOperation(state)      ' <- and this could raise
+```
+
+`FinishOperation` returns a diagnostic `String` for a restoration it could not
+complete, so the returned-diagnostic case was handled. But it is an Excel call
+and can also **raise**, and a raise there escaped `PCCM_Calculate` with
+`stateCaptured` still `True`, no `CleanupOutcome`, no `Announce`, and no
+invocation result recorded for automation. That was exactly one uncovered
+application-state cleanup path, and round 1 had required the invocation envelope
+to contain cleanup failures as well.
+
+**The fix** is a narrow envelope of its own — `NormalCleanupFailed` — armed
+before the call and closed immediately after it, plus an explicit
+`cleanupAttempted As Boolean` so the exactly-once rule is carried in state rather
+than inferred from statement position. The flag is set *before* each call, so a
+call that raises still counts as the attempt; the recovery guard became
+`If stateCaptured And Not cleanupAttempted Then`; and neither handler calls
+`FinishOperation` again. The raised case publishes through the same
+`CleanupOutcome` rule the returned-diagnostic case uses, so a committed
+calculation keeps C17 = `SUCCESS` and an uncommitted one keeps its own outcome
+with the cleanup exception merged in. `modAppState` was not modified, no new
+application-state framework was created, and there is no `On Error Resume Next`.
+
+`test_48` now walks **every** `FinishOperation` in the endpoint and requires a
+cleanup-failure handler to be armed and still open above each one; `test_57`
+proves both contexts independently — armed, spent-before-call, no retry, no
+`calc_state` write, and an announcement on the raised path. `test_nc_38` plants
+the shipped `On Error GoTo 0` / `FinishOperation` pair verbatim and watches the
+detector see it.
+
+### 2 — the success-commit failpoint was not at the C13:C20 assignment
+
+Gate-B plan §25.7 requires the rollback proof at two injection boundaries: after
+analytical blocks have been mutated, and **at the final C13:C20 commit
+assignment**. The hook was in `RunCalculation`, several statements upstream:
+
+```vba
+modAppState.FailPointCheck FAILPOINT_SUCCESS_COMMIT
+BuildSuccessBlock package, successBlock
+WriteSuccessCommit successBlock
+```
+
+so it exercised a failure during commit *preparation* — before the block was
+built and before anything was published — not a failure at the commit boundary.
+The test was `assert around < commit`, which any earlier statement satisfies.
+
+**The fix** moves the existing Phase-4 `FailPointCheck` into `WriteSuccessCommit`
+as the statement immediately before the assignment. Nothing stands between them.
+The writer is called from inside the `TransactionFailed` envelope, after the
+analytical snapshot has been written and verified, so an injected exception now
+rolls back from the real commit boundary with C13:C20 unpublished. No second
+injection mechanism was added, and `FAILPOINT_ANALYTICAL_WRITE` is unchanged:
+still after `WriteAnalytical`, still before `VerifyAnalytical`.
+
+`test_21` no longer compares statement indices across procedures. It reads
+`WriteSuccessCommit`'s own executable body, requires the hook at exactly
+`assignment - 1`, names whatever stands between them if anything does, refuses
+the hook anywhere in `RunCalculation`, and refuses a second wiring. `test_nc_43`
+plants the shipped upstream placement and asserts that the superseded index check
+passes on it while the body check does not — the weak assertion and the strong
+one, on the same defect, in one test.
+
+---
+
 ## Retargeted invariants
 
 Eight tests named the world before this module existed. Each was retargeted, not
@@ -623,6 +800,16 @@ the invariant that survived the defect rather than the assumption that caused it
 | `test_64i` (kernel suite) | `CalcFpNumberField` is Private | it is Public, has a real caller in `modCalcReport`, and is not excused by the exception set |
 | `test_44` / `test_51` | `modCalcFingerprint` frozen at its Step-4 bytes | frozen at its current bytes **and** at its Step-4 executable text with the one authorised keyword normalised away |
 
+Correction round 2 retargeted five more, again in place:
+
+| Test | Was | Now asserts |
+| --- | --- | --- |
+| `test_20` | six reviewed handlers | seven — `NormalCleanupFailed` joins them, and every armed label is still defined where armed |
+| `test_21` | `around < commit` by statement index in `RunCalculation` | the hook sits at `assignment - 1` inside `WriteSuccessCommit`'s own body, is absent from `RunCalculation`, and is wired exactly once |
+| `test_48` | capture/begin/finish appear, envelope armed before capture | **every** `FinishOperation` runs with a cleanup-failure envelope armed and open above it |
+| `test_55` | three terminal paths announce | four |
+| `test_57` | one cleanup on each path, guarded by `stateCaptured` | both contexts contained independently; the attempt is spent before the call; neither handler retries; the raised path announces and writes nothing |
+
 ---
 
 ## What remains for Gate B
@@ -647,6 +834,11 @@ unproven and remains unproven until Gate B runs on Windows:
 * that `FinishOperation` actually restores `EnableEvents`, `Calculation` mode and
   `ScreenUpdating`, and that the `stateCaptured` path is reached when
   `CaptureAppState` or `BeginOperation` raises
+* that a `FinishOperation` which **raises** on the normal path is contained by
+  `NormalCleanupFailed`, reaches `Announce`, and leaves a committed C17 reading
+  `SUCCESS` — the source says so; no run has shown it
+* that an injected failure at `FAILPOINT_SUCCESS_COMMIT` now fires with C13:C20
+  unpublished and rolls back from that boundary
 * that a fault at either failpoint rolls back to the previous snapshot, that a
   *failed* rollback leaves C17:C20 untouched, and that a failed metadata write
   leaves the rollback standing

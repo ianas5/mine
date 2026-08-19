@@ -401,7 +401,8 @@ def test_20_no_generic_error_suppression() -> None:
     handlers = {h for h in re.findall(r"On Error GoTo (\w+)", code) if h != "0"}
     assert handlers == {
         "InvocationFailed",     # the top-level envelope over the whole endpoint
-        "CleanupFailed",        # cleanup raising while handling an earlier failure
+        "NormalCleanupFailed",  # the NORMAL-path cleanup raising rather than reporting
+        "CleanupFailed",        # the RECOVERY cleanup raising while handling a failure
         "PreWriteFailed",       # an unexpected fault before any analytical mutation
         "TransactionFailed",    # the rollback envelope over the mutating region
         "RollbackFailed",       # the restore itself failing
@@ -419,15 +420,59 @@ def test_20_no_generic_error_suppression() -> None:
 
 
 def test_21_both_failpoints_are_wired_through_the_phase_4_mechanism() -> None:
-    """One where analytical state is half-written, one around the commit."""
+    """One after analytical state is mutated. One AT the C13:C20 assignment.
+
+    `around < commit` was too weak: any statement earlier in the procedure
+    satisfies it, and the submitted source put the commit hook before
+    BuildSuccessBlock - so it exercised a failure during commit PREPARATION, not
+    at the commit boundary Gate B is required to inject at. The location is now
+    asserted inside the writer's own body, adjacently.
+    """
     module = _reporter()
     statements = _statements(module, "RunCalculation")
     write = first_index(statements, r"WriteAnalytical")
     mid = first_index(statements, r"FailPointCheck FAILPOINT_ANALYTICAL_WRITE")
+    verify = first_index(statements, r"VerifyAnalytical")
     commit = first_index(statements, r"WriteSuccessCommit")
-    around = first_index(statements, r"FailPointCheck FAILPOINT_SUCCESS_COMMIT")
-    assert write < mid, "the mid-write failpoint fires before anything is written"
-    assert around < commit, "the commit failpoint fires after the commit"
+    assert write < mid < verify, (
+        "the mid-write failpoint must fire after a block is mutated and before "
+        "the analytical verification"
+    )
+
+    # --- the commit hook is AT the assignment, inside the writer ------------
+    writer = _statements(module, "WriteSuccessCommit")
+    executable = [
+        s for s in writer
+        if not re.match(r"^(Public |Private )?(Sub|Function)\b", s)
+        and not re.match(r"^Dim\b", s)
+    ]
+    hook = next(
+        (i for i, s in enumerate(executable)
+         if s == "modAppState.FailPointCheck FAILPOINT_SUCCESS_COMMIT"), None
+    )
+    assert hook is not None, (
+        "the commit failpoint is not in the procedure that performs the commit"
+    )
+    assignment = next(
+        i for i, s in enumerate(executable)
+        if re.match(r"^CalcSheet\.Range\(CALC_STATE_VALUE_RANGE\)\.Value2 = block$", s)
+    )
+    assert hook == assignment - 1, (
+        "the commit failpoint is not immediately before the C13:C20 assignment: "
+        f"{executable[hook + 1:assignment]!r} stands between them"
+    )
+    assert hook < assignment, "the failpoint fires after C13:C20 is published"
+    # It is not ALSO left upstream, where it would fire first and never reach here.
+    assert "FAILPOINT_SUCCESS_COMMIT" not in _body(module, "RunCalculation"), (
+        "the commit failpoint is still wired into the transaction body"
+    )
+    assert module.code.count("FailPointCheck FAILPOINT_SUCCESS_COMMIT") == 1, (
+        "the commit failpoint is injected from more than one place"
+    )
+    # And the writer is called from inside the rollback envelope.
+    armed = statements.index("On Error GoTo TransactionFailed")
+    assert armed < commit, "the commit is outside the rollback envelope"
+
     assert "modAppState.FailPointCheck" in module.code, (
         "the accepted Phase-4 injection mechanism must be reused"
     )
@@ -857,15 +902,34 @@ def test_48_application_state_is_captured_and_restored() -> None:
     assert armed < capture < begin < run < finish, (
         "the envelope must cover capture, begin and the transaction alike"
     )
-    # An explicit flag, not an inference. Restoring state that was never captured
-    # would be its own fault, and skipping restoration that IS owed is the defect
-    # the envelope exists to prevent.
+    # Explicit flags, not inferences. Restoring state that was never captured
+    # would be its own fault; skipping restoration that IS owed is the defect the
+    # envelope exists to prevent; and retrying an attempt that already raised is
+    # the defect the second flag exists to prevent.
     assert "stateCaptured As Boolean" in body
+    assert "cleanupAttempted As Boolean" in body
     assert re.search(r"stateCaptured = True", body), "the flag is never set"
-    assert re.search(r"If stateCaptured Then", body), (
-        "the failure path restores unconditionally, or not at all"
+    assert re.search(r"If stateCaptured And Not cleanupAttempted Then", body), (
+        "the recovery path restores unconditionally, or retries a spent attempt"
     )
-    assert any("modAppState.Failed" in s for s in statements[finish:]), (
+    # NEITHER cleanup call is outside a handler. Every FinishOperation in this
+    # procedure has a cleanup-failure envelope armed and still open above it.
+    for index in [i for i, s in enumerate(statements) if "FinishOperation" in s]:
+        armed = [j for j, s in enumerate(statements[:index])
+                 if s.startswith("On Error GoTo ") and s != "On Error GoTo 0"]
+        disarmed = [j for j, s in enumerate(statements[:index]) if s == "On Error GoTo 0"]
+        assert armed, f"the cleanup at statement {index} has no handler at all"
+        assert armed[-1] > (disarmed[-1] if disarmed else -1), (
+            f"the cleanup at statement {index} runs with its handler disarmed; "
+            "an exception there escapes the endpoint raw"
+        )
+        target = statements[armed[-1]].split()[-1]
+        assert target in ("NormalCleanupFailed", "CleanupFailed"), (
+            f"the cleanup at statement {index} is covered by {target}, "
+            "which is not a cleanup-failure envelope"
+        )
+    assert any("modAppState.Failed" in s or "CleanupOutcome" in s
+               for s in statements[finish:]), (
         "a failed cleanup must be reported, not swallowed"
     )
 
@@ -979,7 +1043,7 @@ def test_55_every_exit_from_the_endpoint_publishes_exactly_one_outcome() -> None
     statements = _statements(_reporter(), "PCCM_Calculate")
     announces = [i for i, s in enumerate(statements) if "modAppState.Announce" in s]
     exits = [i for i, s in enumerate(statements) if s == "Exit Sub"]
-    assert len(announces) == 3, (
+    assert len(announces) == 4, (
         f"expected one announcement per terminal path, found {len(announces)}"
     )
     # Each Exit Sub is immediately preceded by an announcement, and the last
@@ -1046,12 +1110,17 @@ def test_56_the_envelope_covers_every_fallible_invocation_step() -> None:
 
 
 def test_57_cleanup_is_attempted_once_and_only_when_state_was_captured() -> None:
-    """BLOCKER 3. FinishOperation runs exactly once per invocation.
+    """BLOCKER 3, and correction round 2. BOTH cleanup calls are contained.
 
-    Twice would restore a state that had already been restored. Never, on the
-    failure path, would leave EnableEvents, Calculation mode and ScreenUpdating
-    dirty. And attempting it when CaptureAppState itself failed would restore a
-    snapshot that was never taken.
+    FinishOperation returns a diagnostic String for a restoration it could not
+    complete - but it is an Excel call and can also RAISE. Round 1 armed an
+    envelope over the RECOVERY call only and left the NORMAL call outside every
+    handler, so a raise there escaped the endpoint with no announcement, no
+    recorded automation result, and stateCaptured still True.
+
+    Twice would restore a state already restored; never would leave EnableEvents,
+    Calculation mode and ScreenUpdating dirty. Exactly once, contained, on every
+    path.
     """
     module = _reporter()
     body = _body(module, "PCCM_Calculate")
@@ -1061,18 +1130,70 @@ def test_57_cleanup_is_attempted_once_and_only_when_state_was_captured() -> None
         "expected one cleanup on the normal path and one on the failure path"
     )
     normal, recovery = finishes
-    # The normal path clears the flag, so the handler cannot repeat the cleanup.
-    assert statements[normal + 1] == "stateCaptured = False", (
-        "the normal cleanup does not clear the flag and could be run twice"
+
+    # --- the NORMAL call runs with a cleanup-failure handler ARMED ----------
+    #
+    # Armed before it, and the top-level envelope is not what covers it: that one
+    # is disarmed first, precisely so a normal-path raise does not re-enter the
+    # recovery cleanup.
+    armed = [i for i, s in enumerate(statements[:normal])
+             if s.startswith("On Error GoTo ") and s != "On Error GoTo 0"]
+    disarmed = [i for i, s in enumerate(statements[:normal]) if s == "On Error GoTo 0"]
+    assert armed and armed[-1] > (disarmed[-1] if disarmed else -1), (
+        "the normal FinishOperation runs with no error handler armed"
     )
-    # The recovery path is guarded by the flag and by its own envelope.
-    guard = statements.index("If stateCaptured Then")
-    assert guard < recovery, "the recovery cleanup is not guarded by the flag"
+    normal_handler = statements[armed[-1]].split()[-1]
+    assert normal_handler == "NormalCleanupFailed", (
+        f"the normal cleanup is covered by {normal_handler}, not its own envelope"
+    )
+    assert re.search(rf"^{normal_handler}:$", body, re.M), (
+        "the normal-cleanup handler label does not exist"
+    )
+
+    # --- the attempt is SPENT, in state, before the call can raise ----------
+    assert "cleanupAttempted As Boolean" in body, (
+        "nothing in state records that the one permitted attempt was used"
+    )
+    spent = statements.index("cleanupAttempted = True")
+    assert spent < normal, (
+        "the attempt is marked after the call, so a raise leaves it unmarked"
+    )
+    assert statements[normal + 1] == "On Error GoTo 0", "the envelope is not closed"
+    assert "stateCaptured = False" in statements[normal:normal + 3], (
+        "a completed normal cleanup does not clear the state-owed flag"
+    )
+
+    # --- the normal-cleanup handler does NOT retry, does NOT write ----------
+    handler = body.split(f"{normal_handler}:", 1)[1].split("InvocationFailed:", 1)[0]
+    assert "FinishOperation" not in handler, (
+        "a cleanup that raised is retried; one attempt means one attempt"
+    )
+    assert "modAppState.Announce" in handler, (
+        "a raised normal cleanup is never announced"
+    )
+    assert "CleanupOutcome" in handler, (
+        "the committed/uncommitted distinction is not applied to a raised cleanup"
+    )
+    for forbidden in ("WriteAttemptBlock", "WriteStatusBlock", "WriteSuccessCommit",
+                      "RestoreSnapshot", ".Value2 ="):
+        assert forbidden not in handler, (
+            f"a raised normal cleanup touches {forbidden} after a committed calculation"
+        )
+
+    # --- the RECOVERY call is guarded by BOTH facts -------------------------
+    guard = statements.index("If stateCaptured And Not cleanupAttempted Then")
+    assert guard < recovery, "the recovery cleanup is not guarded by the flags"
     assert "On Error GoTo CleanupFailed" in statements[:guard], (
         "the recovery cleanup can raise out of the handler"
     )
-    # The original diagnosis survives a cleanup that fails while handling it.
-    tail = body.split("CleanupFailed:", 1)[1]
+    assert statements.index("cleanupAttempted = True", guard) < recovery, (
+        "the recovery attempt is not marked spent before it is made"
+    )
+    # And it cannot retry either. The label is matched line-anchored: splitting on
+    # the bare text would land inside NormalCleanupFailed and read the wrong
+    # handler, which is how a retry hides from a sweep that never checks.
+    tail = re.split(r"^CleanupFailed:$", body, maxsplit=1, flags=re.M)[1]
+    assert "FinishOperation" not in tail, "the recovery cleanup is retried"
     assert "failure" in tail, "the original failure is replaced by the cleanup failure"
 
 
@@ -1701,6 +1822,199 @@ def test_nc_37_a_silent_path_out_of_the_endpoint_is_caught() -> None:
     statements = _statements(planted, "PCCM_Calculate")
     announces = [i for i, s in enumerate(statements) if "modAppState.Announce" in s]
     assert len(announces) == 1, "the unannounced handler path must be visible"
+
+
+# --- correction round 2 -----------------------------------------------------
+def test_nc_38_the_submitted_uncovered_normal_cleanup_is_caught() -> None:
+    """THE ROUND-1 SHAPE, verbatim: the handler disarmed before the cleanup.
+
+    `On Error GoTo 0` immediately above `FinishOperation` is exactly what shipped
+    at 73adbb0. The detector must see that the call runs with nothing armed.
+    """
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Sub PCCM_Calculate()\n"
+        "    On Error GoTo InvocationFailed\n"
+        "    state = modAppState.CaptureAppState()\n"
+        "    stateCaptured = True\n"
+        "    result = RunCalculation(committed)\n"
+        "    On Error GoTo 0\n"
+        "    cleanup = modAppState.FinishOperation(state)\n"
+        "    stateCaptured = False\n"
+        "    modAppState.Announce result\n"
+        "    Exit Sub\n"
+        "InvocationFailed:\n"
+        "    On Error GoTo CleanupFailed\n"
+        "    If stateCaptured Then cleanup = modAppState.FinishOperation(state)\n"
+        "CleanupFailed:\nEnd Sub\n",
+    )
+    statements = _statements(planted, "PCCM_Calculate")
+    normal = next(i for i, s in enumerate(statements) if "FinishOperation" in s)
+    armed = [i for i, s in enumerate(statements[:normal])
+             if s.startswith("On Error GoTo ") and s != "On Error GoTo 0"]
+    disarmed = [i for i, s in enumerate(statements[:normal]) if s == "On Error GoTo 0"]
+    assert armed and armed[-1] < disarmed[-1], (
+        "the disarmed normal cleanup must be visible to the sweep"
+    )
+    assert "cleanupAttempted" not in planted.code, (
+        "the missing exactly-once state must be visible"
+    )
+
+
+def test_nc_39_a_normal_cleanup_failure_that_retries_cleanup_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Sub PCCM_Calculate()\n"
+        "    On Error GoTo NormalCleanupFailed\n"
+        "    cleanupAttempted = True\n"
+        "    cleanup = modAppState.FinishOperation(state)\n"
+        "    Exit Sub\n"
+        "NormalCleanupFailed:\n"
+        "    cleanup = modAppState.FinishOperation(state)\n"
+        "    modAppState.Announce result\n"
+        "End Sub\n",
+    )
+    handler = _body(planted, "PCCM_Calculate").split("NormalCleanupFailed:", 1)[1]
+    assert "FinishOperation" in handler, "the retried cleanup must be visible"
+
+
+def test_nc_40_a_normal_cleanup_failure_that_rewrites_calc_state_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Sub PCCM_Calculate()\n"
+        "    On Error GoTo NormalCleanupFailed\n"
+        "    cleanup = modAppState.FinishOperation(state)\n"
+        "    Exit Sub\n"
+        "NormalCleanupFailed:\n"
+        "    WriteAttemptBlock CALC_ATTEMPT_FAILED, Err.Description, CurrentStatus()\n"
+        "    modAppState.Announce result\n"
+        "End Sub\n",
+    )
+    handler = _body(planted, "PCCM_Calculate").split("NormalCleanupFailed:", 1)[1]
+    assert "WriteAttemptBlock" in handler, (
+        "a committed SUCCESS falsified by a cleanup exception must be visible"
+    )
+
+
+def test_nc_41_a_silent_normal_cleanup_failure_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Sub PCCM_Calculate()\n"
+        "    On Error GoTo NormalCleanupFailed\n"
+        "    cleanup = modAppState.FinishOperation(state)\n"
+        "    modAppState.Announce result\n"
+        "    Exit Sub\n"
+        "NormalCleanupFailed:\n"
+        "End Sub\n",
+    )
+    handler = _body(planted, "PCCM_Calculate").split("NormalCleanupFailed:", 1)[1]
+    assert "modAppState.Announce" not in handler, (
+        "a cleanup exception that reaches no announcement must be visible"
+    )
+
+
+def test_nc_42_a_recovery_cleanup_guarded_only_by_state_captured_is_caught() -> None:
+    """The guard must consult the SPENT flag too, not just position."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Public Sub PCCM_Calculate()\n"
+        "InvocationFailed:\n"
+        "    On Error GoTo CleanupFailed\n"
+        "    If stateCaptured Then\n"
+        "        cleanup = modAppState.FinishOperation(state)\n"
+        "    End If\n"
+        "CleanupFailed:\nEnd Sub\n",
+    )
+    body = _body(planted, "PCCM_Calculate")
+    assert "If stateCaptured Then" in body
+    assert "If stateCaptured And Not cleanupAttempted Then" not in body, (
+        "a guard that cannot tell a spent attempt from an unused one must be visible"
+    )
+
+
+def test_nc_43_the_submitted_upstream_commit_failpoint_is_caught() -> None:
+    """THE ROUND-1 SHAPE: the hook fires before commit preparation, not at it."""
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Function RunCalculation() As OperationResult\n"
+        "    modAppState.FailPointCheck FAILPOINT_SUCCESS_COMMIT\n"
+        "    BuildSuccessBlock package, successBlock\n"
+        "    WriteSuccessCommit successBlock\n"
+        "End Function\n"
+        "Private Sub WriteSuccessCommit(ByRef block As Variant)\n"
+        "    CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block\n"
+        "End Sub\n",
+    )
+    # The weak assertion still passes on the defect. The strong one does not.
+    statements = _statements(planted, "RunCalculation")
+    around = first_index(statements, r"FailPointCheck FAILPOINT_SUCCESS_COMMIT")
+    commit = first_index(statements, r"WriteSuccessCommit")
+    assert around < commit, "the superseded index check passes on the defect"
+    writer = _statements(planted, "WriteSuccessCommit")
+    assert not any("FAILPOINT_SUCCESS_COMMIT" in s for s in writer), (
+        "the hook's absence from the commit procedure must be visible"
+    )
+    assert "FAILPOINT_SUCCESS_COMMIT" in _body(planted, "RunCalculation"), (
+        "the upstream placement must be visible"
+    )
+
+
+def test_nc_44_a_commit_failpoint_after_the_assignment_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Sub WriteSuccessCommit(ByRef block As Variant)\n"
+        "    CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block\n"
+        "    modAppState.FailPointCheck FAILPOINT_SUCCESS_COMMIT\n"
+        "End Sub\n",
+    )
+    writer = [s for s in _statements(planted, "WriteSuccessCommit")
+              if not re.match(r"^(Public |Private )?(Sub|Function)\b", s)]
+    hook = next(i for i, s in enumerate(writer) if "FAILPOINT_SUCCESS_COMMIT" in s)
+    assignment = next(i for i, s in enumerate(writer) if ".Value2 = block" in s)
+    assert hook > assignment, (
+        "a failpoint that can only fire after C13:C20 is published must be visible"
+    )
+
+
+def test_nc_45_a_statement_between_the_failpoint_and_the_commit_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Sub WriteSuccessCommit(ByRef block As Variant)\n"
+        "    modAppState.FailPointCheck FAILPOINT_SUCCESS_COMMIT\n"
+        "    block(1, 1) = Now\n"
+        "    CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block\n"
+        "End Sub\n",
+    )
+    writer = [s for s in _statements(planted, "WriteSuccessCommit")
+              if not re.match(r"^(Public |Private )?(Sub|Function)\b", s)]
+    hook = next(i for i, s in enumerate(writer) if "FAILPOINT_SUCCESS_COMMIT" in s)
+    assignment = next(i for i, s in enumerate(writer) if ".Value2 = block" in s)
+    assert hook != assignment - 1, "the intervening statement must be visible"
+
+
+def test_nc_46_a_removed_commit_failpoint_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Sub WriteSuccessCommit(ByRef block As Variant)\n"
+        "    CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block\n"
+        "End Sub\n",
+    )
+    assert "FailPointCheck FAILPOINT_SUCCESS_COMMIT" not in planted.code, (
+        "the missing commit failpoint must be visible"
+    )
+
+
+def test_nc_47_a_second_injection_mechanism_is_caught() -> None:
+    planted = _synthetic(
+        "modProbe",
+        _STUB + "Private Sub WriteSuccessCommit(ByRef block As Variant)\n"
+        "    If gAutomationFailAfterStage = \"Commit\" Then Err.Raise 5\n"
+        "    CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block\n"
+        "End Sub\n",
+    )
+    assert "gAutomationFailAfterStage" in planted.code, (
+        "a hand-rolled injection point must be visible"
+    )
 
 
 # ===========================================================================

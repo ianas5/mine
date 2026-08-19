@@ -101,8 +101,18 @@ Public Sub PCCM_Calculate()
     ' records the outcome for automation and shows a dialog only when automation
     ' is inactive. Gate B drives this endpoint through that mechanism, and a
     ' direct dialog would block it.
+    '
+    ' CLEANUP IS ATTEMPTED AT MOST ONCE, AND WHICHEVER CONTEXT ATTEMPTS IT DOES
+    ' SO INSIDE AN ENVELOPE. FinishOperation returns a diagnostic String for a
+    ' restoration it could not complete, but it is an Excel call and can also
+    ' RAISE - and a raise on the NORMAL path would escape this endpoint with no
+    ' announcement, no recorded automation result, and stateCaptured still True.
+    '
+    ' Two Boolean facts carry the distinction, not statement position:
+    '   stateCaptured    - a snapshot exists and something still owes a restore
+    '   cleanupAttempted - the one permitted attempt has been spent, raise or not
     Dim state As AppStateSnapshot, result As OperationResult
-    Dim stateCaptured As Boolean, committed As Boolean
+    Dim stateCaptured As Boolean, cleanupAttempted As Boolean, committed As Boolean
     Dim cleanup As String, failure As String
 
     On Error GoTo InvocationFailed
@@ -112,17 +122,41 @@ Public Sub PCCM_Calculate()
     result = RunCalculation(committed)
     On Error GoTo 0
 
+    On Error GoTo NormalCleanupFailed
+    cleanupAttempted = True
     cleanup = modAppState.FinishOperation(state)
+    On Error GoTo 0
     stateCaptured = False
+
     If Len(cleanup) > 0 Then result = CleanupOutcome(result, committed, cleanup)
     modAppState.Announce result
+    Exit Sub
+
+NormalCleanupFailed:
+    ' THE NORMAL CLEANUP RAISED. The attempt is spent and is NOT retried: a
+    ' restoration that failed by raising is not made more likely by running it
+    ' again, and running it again is how an endpoint restores twice.
+    '
+    ' Nothing analytical is touched and calc_state is not rewritten, so a
+    ' committed calculation stays committed and C17 keeps saying SUCCESS. The
+    ' problem is reported on the invocation axis through the SAME outcome rule
+    ' the returned-diagnostic path uses.
+    failure = Err.Description
+    On Error GoTo 0
+    modAppState.Announce CleanupOutcome(result, committed, _
+        "Application state could not be restored: " & failure)
     Exit Sub
 
 InvocationFailed:
     failure = Err.Description
     On Error GoTo CleanupFailed
-    If stateCaptured Then
+    ' Reached only from BEFORE the normal cleanup, so the attempt is still
+    ' available - but that is asserted from state rather than assumed from where
+    ' this label sits.
+    If stateCaptured And Not cleanupAttempted Then
+        cleanupAttempted = True
         cleanup = modAppState.FinishOperation(state)
+        stateCaptured = False
         If Len(cleanup) > 0 Then failure = failure & vbCrLf & cleanup
     End If
     On Error GoTo 0
@@ -130,9 +164,9 @@ InvocationFailed:
     Exit Sub
 
 CleanupFailed:
-    ' The cleanup attempt itself raised. Nothing further can be restored here,
-    ' and the original failure must still reach the caller rather than being
-    ' replaced by the failure of the attempt to recover from it.
+    ' The recovery cleanup attempt itself raised. It is not retried either, and
+    ' the original failure must still reach the caller rather than being replaced
+    ' by the failure of the attempt to recover from it.
     On Error GoTo 0
     modAppState.Announce modAppState.Failed("Calculate", failure & vbCrLf & _
         "Application state could not be restored after the failure.")
@@ -232,7 +266,6 @@ Private Function RunCalculation(ByRef committed As Boolean) As OperationResult
         Err.Raise vbObjectError + 5101, "modCalcReport.RunCalculation", _
                   "the analytical snapshot did not verify against the prepared result"
     End If
-    modAppState.FailPointCheck FAILPOINT_SUCCESS_COMMIT
     ' BUILT ONCE, WRITTEN ONCE, VERIFIED AGAINST THE SAME BLOCK. Both timestamps
     ' are captured into it here; verification never generates a second Now,
     ' which would compare against a value the commit never contained.
@@ -700,6 +733,15 @@ End Sub
 Private Sub WriteSuccessCommit(ByRef block As Variant)
     ' ONE assignment. Not four writes that could half-succeed and leave a
     ' fingerprint with no stamp, or a stamp with no version.
+    '
+    ' THE COMMIT FAILPOINT SITS HERE, IMMEDIATELY BEFORE THE ASSIGNMENT, because
+    ' the boundary Gate B has to exercise is the final C13:C20 write itself. A
+    ' hook several statements upstream proves a failure during commit
+    ' PREPARATION - the analytical snapshot is written and verified either way,
+    ' but the block has not been built and nothing has been published, so the
+    ' rollback it exercises is not the rollback from the commit boundary.
+    ' Nothing fallible stands between the check and the write.
+    modAppState.FailPointCheck FAILPOINT_SUCCESS_COMMIT
     CalcSheet.Range(CALC_STATE_VALUE_RANGE).Value2 = block
 End Sub
 
