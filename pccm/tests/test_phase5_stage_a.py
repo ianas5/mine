@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import math
+import struct
 import os
 import shutil
 import subprocess
@@ -1457,6 +1458,8 @@ def _check_fingerprint(ledger: _Ledger, section: dict) -> None:
     assert encodings["vectors"][0]["label"] != encodings["vectors"][1]["label"]
     assert math.copysign(1.0, encodings["vectors"][1]["value"]) == -1.0
 
+    _validate_canonical_parity(ledger, section)
+
     utf16 = section["utf16_vectors"]
     ledger.equal("fingerprint.utf16_vectors.case", utf16["case"], 26)
     assert len(utf16["vectors"]) == len(LOCKED_UTF16_VECTORS) == 3
@@ -1530,6 +1533,68 @@ _LOCKED_REFUSALS = {
     17: "ModelInputRefusal", 18: "ModelInputRefusal", 20: "ModelInputRefusal",
     23: "ModelInputRefusal", 24: "NumericalRangeRefusal", 29: "NumericalRangeRefusal",
 }
+
+
+def _canonical_from_bits(bits: str) -> str:
+    """The canonical text derived INDEPENDENTLY of the emitter.
+
+    This deliberately does not call `calc_cases`, does not call
+    `calc_fingerprint.canonical_number`, and does not reimplement the VBA
+    algorithm. It goes straight to Python's own correctly-rounded 17-significant
+    -digit formatter and applies the one contract rule that formatter does not
+    know about - negative zero normalises to positive zero. If the emitted
+    corpus and this disagree, one of them is wrong and the build stops.
+    """
+    value = struct.unpack(">d", bytes.fromhex(bits))[0]
+    if value == 0.0:
+        value = 0.0
+    return f"{value:.16E}"
+
+
+def _validate_canonical_parity(ledger: _Ledger, section: dict) -> None:
+    parity = section["canonical_parity"]
+    ledger.equal("fingerprint.canonical_parity.case", parity["case"], 26)
+
+    vectors = parity["vectors"]
+    # A corpus that silently shrank would still pass every per-vector check.
+    assert len(vectors) > 2000, f"the parity corpus holds only {len(vectors)} vectors"
+    seen: set[str] = set()
+    for index, vector in enumerate(vectors):
+        path = f"fingerprint.canonical_parity.vectors[{index}]"
+        bits = vector["bits"]
+        assert len(bits) == 16 and all(c in "0123456789ABCDEF" for c in bits), bits
+        assert bits not in seen, f"duplicate bit pattern {bits}"
+        seen.add(bits)
+        ledger.equal(f"{path}.bits", bits, bits)
+        ledger.equal(f"{path}.label", vector["label"], vector["label"])
+        ledger.equal(f"{path}.expected", vector["expected"], _canonical_from_bits(bits))
+
+    # The domain the corpus claims to cover is checked, not assumed.
+    exponents = {int(v["expected"].split("E")[1]) for v in vectors}
+    assert min(exponents) <= -320 and max(exponents) >= 300, sorted(exponents)[:3]
+    assert any(v["expected"].startswith("-") for v in vectors), "no negative vector"
+    assert sum(1 for v in vectors if v["label"].startswith("lcg ")) == 512
+
+    neighbours = parity["neighbours"]
+    assert len(neighbours) >= 8, len(neighbours)
+    for index, triple in enumerate(neighbours):
+        base = f"fingerprint.canonical_parity.neighbours[{index}]"
+        ledger.equal(f"{base}.label", triple["label"], triple["label"])
+        members = triple["members"]
+        assert [m["position"] for m in members] == ["below", "value", "above"]
+        texts = []
+        for ordinal, member in enumerate(members):
+            path = f"{base}.members[{ordinal}]"
+            ledger.equal(f"{path}.position", member["position"], member["position"])
+            ledger.equal(f"{path}.bits", member["bits"], member["bits"])
+            ledger.equal(f"{path}.expected", member["expected"],
+                         _canonical_from_bits(member["bits"]))
+            texts.append(member["expected"])
+        # THE POINT OF THE TRIPLE: three distinct Doubles, three distinct texts.
+        assert len(set(texts)) == 3, f"{triple['label']}: neighbours collapse to {texts}"
+        below, value, above = (struct.unpack(">d", bytes.fromhex(m["bits"]))[0]
+                               for m in members)
+        assert below < value < above or above < value < below, triple["label"]
 
 
 def _validate_corpus(ledger: _Ledger, document: dict) -> None:

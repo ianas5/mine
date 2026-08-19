@@ -192,13 +192,18 @@ PHASE4_SHA256 = {
 # ===========================================================================
 # fixtures and sweeps
 # ===========================================================================
-# The Step-4 accepted EXECUTABLE text of modCalcFingerprint: comments and blank
-# lines removed, whitespace runs collapsed, and the ONE authorised Step-7
-# visibility keyword normalised back to Private. Step 7's correction round was
-# permitted to make CalcFpNumberField Public and nothing else, and this digest is
-# what "nothing else" is measured against.
-FINGERPRINT_STEP4_BODY_SHA256 = (
-    "f6e8313b2bb29deee488e7a11eca282b1b64dcb8b7226bbc771c6dcc01a0bbaa"
+# The ACCEPTED EXECUTABLE text of modCalcFingerprint: comments and blank lines
+# removed, whitespace runs collapsed, and the ONE authorised Step-7 visibility
+# keyword normalised back to Private.
+#
+# This digest has moved twice, each time under a recorded authorisation:
+#   Step 7                 CalcFpNumberField made Public, nothing else.
+#   Gate B Runtime Run 2   the canonical Double encoder rebuilt, because Format$
+#                          provably could not produce the contracted 17
+#                          significant digits on real Excel.
+# It is what "and nothing else" is measured against from here on.
+FINGERPRINT_ACCEPTED_BODY_SHA256 = (
+    "3b9f3e1a489b026c2dca9b94351fa677aa6f9bb4d27feded18e88cffb05d82b3"
 )
 
 
@@ -707,16 +712,48 @@ def test_34_the_decimal_separator_is_an_argument_and_never_read_from_the_machine
         )
 
 
-def test_35_the_separator_normalisation_is_positional_and_not_a_global_replace() -> None:
-    """`E`, `+`, `-` and every digit already occur in scientific notation."""
-    body = _procedure_body(_kernel()["modCalcFingerprint"], "CalcFpCanonicalNumber")
+def test_35_the_separator_cannot_reach_the_canonical_text_at_all() -> None:
+    """STRONGER than the positional normalisation it replaces.
+
+    The old encoder had to repair the host formatter's marker, because the HOST
+    chose that character; the rule was that exactly one position be rewritten,
+    never a global replace. Gate B Runtime Run 2 retired that whole arrangement:
+    the encoder now generates its own digits, so it emits the marker itself and
+    the separator has nothing to normalise.
+
+    Separator invariance - the locked case that injects both "." and "," on one
+    host and requires byte-identical output - is therefore true by construction.
+    This test pins that: no Replace, no marker rewrite, and the separator does
+    not appear anywhere in the generation path.
+    """
+    module = _kernel()["modCalcFingerprint"]
+    body = _procedure_body(module, "CalcFpCanonicalNumber")
     assert "Replace" not in body, "a global replace would corrupt the exponent"
-    assert "marker = CalcFpMarkerIndex(text)" in body, (
-        "the marker must be located in the formatter's own output"
+    assert "Left$(text, marker - 1)" not in body, (
+        "the encoder still rewrites a host formatter's marker"
     )
-    literal = _procedure_body_raw(_kernel()["modCalcFingerprint"], "CalcFpCanonicalNumber")
-    assert 'result = Left$(text, marker - 1) & "." & Mid$(text, marker + 1)' in literal, (
-        "exactly the marker position must be rewritten to a full stop"
+    # The separator appears exactly twice: once in the signature, where the
+    # locked public interface declares it, and once in its own validation. Not
+    # a third time.
+    assert body.count("decimalSeparator") == 2, (
+        "the separator is used for something other than its own validation"
+    )
+    signature, _, remainder = body.partition("As Boolean")
+    assert "decimalSeparator" in signature, "the parameter left the public interface"
+    assert remainder.count("decimalSeparator") == 1
+    assert "If CalcFpUtf16Length(decimalSeparator) <> 1 Then Exit Function" in body
+
+    # And it reaches none of the routines that actually build the text.
+    for name in ("CalcFpBuildCanonical", "CalcFpDecompose", "CalcFpLimbsFromMantissa",
+                 "CalcFpMultiplyPower", "CalcFpMultiplySmall", "CalcFpLimbDigits",
+                 "CalcFpPlainDigits", "CalcFpRoundSignificant", "CalcFpExponentText"):
+        generator = _procedure_body(module, name)
+        assert "decimalSeparator" not in generator, (
+            f"{name} can see the separator, so the output could still depend on it"
+        )
+    # The marker index survives as a POST-CONDITION on this module's own output.
+    assert "If CalcFpMarkerIndex(text) = 0 Then Exit Function" in body, (
+        "the accepted structural validation was dropped rather than repurposed"
     )
 
 
@@ -1717,7 +1754,7 @@ def test_64j_only_the_visibility_of_calcfpnumberfield_changed() -> None:
     A changed constant, a reordered field, a different reducer or an extra line
     anywhere in modCalcFingerprint would move this digest.
     """
-    assert fingerprint_body_digest() == FINGERPRINT_STEP4_BODY_SHA256
+    assert fingerprint_body_digest() == FINGERPRINT_ACCEPTED_BODY_SHA256
 
 
 def test_64k_the_reopened_framer_still_frames_a_number_field() -> None:
@@ -2261,3 +2298,140 @@ if __name__ == "__main__":  # pragma: no cover
     import pytest
 
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ===========================================================================
+# GATE B RUNTIME RUN 2: the canonical Double encoder
+# ===========================================================================
+# Run 2 proved on real Excel that Format$(number, "0.0000000000000000E+00")
+# cannot produce the contracted 17 significant digits:
+#
+#   0.1          got 1.0000000000000000E-01  want 1.0000000000000001E-01
+#   1e-20        got 1.0000000000000000E-20  want 9.9999999999999995E-21
+#   0.1 + 0.2    got 3.0000000000000000E-01  want 3.0000000000000004E-01
+#   MAX_DOUBLE   got 1.7976931348623200E+308 want 1.7976931348623157E+308
+#
+# Every one is fifteen correct significant digits then zero padding. The
+# placeholders were there; the digits were never produced.
+CANONICAL_GENERATORS = (
+    "CalcFpBuildCanonical", "CalcFpDecompose", "CalcFpLimbsFromMantissa",
+    "CalcFpMultiplyPower", "CalcFpIntegerPower", "CalcFpMultiplySmall",
+    "CalcFpLimbDigits", "CalcFpPlainDigits", "CalcFpRoundSignificant",
+    "CalcFpIncrementDigits", "CalcFpExponentText", "CalcFpLongDigits",
+)
+
+
+def test_80_the_canonical_encoder_no_longer_formats_anything() -> None:
+    """Format$ is not the canonical authority, and no format string survives."""
+    module = _kernel()["modCalcFingerprint"]
+    code = module.code
+    assert "Format$" not in code and "Format(" not in code, (
+        "the canonical encoder is back on the host's number-to-text conversion"
+    )
+    assert "FP_NUMBER_FORMAT" not in module.raw, "the format string survives"
+    assert "0.0000000000000000E+00" not in code, (
+        "a format-string literal is still present in executable code"
+    )
+    # Nor may any other host conversion smuggle the digits in.
+    for forbidden in ("CStr(", "CDbl(", "Str$(", "Str(", "CDec("):
+        assert forbidden not in _procedure_body(module, "CalcFpBuildCanonical"), (
+            f"{forbidden} would reintroduce a host conversion into the canonical path"
+        )
+    for name in CANONICAL_GENERATORS:
+        body = _procedure_body(module, name)
+        assert "Format" not in body, f"{name} formats"
+        assert "CStr" not in body, f"{name} uses CStr, which is locale-sensitive"
+
+
+def test_81_the_canonical_encoder_generates_digits_from_exact_integers() -> None:
+    """M * 2^E is exact, so the decimal expansion is finite and computable."""
+    module = _kernel()["modCalcFingerprint"]
+    for name in CANONICAL_GENERATORS:
+        assert name in module.code, f"{name} is missing from the encoder"
+
+    decompose = _procedure_body(module, "CalcFpDecompose")
+    # Scaling by two only: the one operation that is exact in binary floating
+    # point, which is what makes M and E exact.
+    assert "scaled = scaled * 2#" in decompose and "scaled = scaled / 2#" in decompose
+    assert "FP_TWO_52" in decompose and "FP_TWO_53" in decompose
+    assert "guard > 1200" in decompose and "guard > 2400" in decompose, (
+        "the normalisation loops are unbounded"
+    )
+
+    build = _procedure_body(module, "CalcFpBuildCanonical")
+    # E >= 0 -> multiply by 2^E; E < 0 -> multiply by 5^-E and shift the point.
+    assert "CalcFpMultiplyPower(limbs, limbCount, 2#, exponent, 23)" in build
+    assert "CalcFpMultiplyPower(limbs, limbCount, 5#, -exponent, 10)" in build
+    assert "scale = exponent" in build
+
+    small = _procedure_body(module, "CalcFpMultiplySmall")
+    assert "FP_LIMB_BASE" in small
+    assert "quotient = Int(product / FP_LIMB_BASE)" in small
+    assert "limbs(index) = product - quotient * FP_LIMB_BASE" in small
+    # The limb width is what keeps every product inside the exact-integer range.
+    assert "Private Const FP_LIMB_BASE As Double = 10000000#" in module.raw
+    assert "Private Const FP_LIMB_DIGITS As Long = 7" in module.raw
+
+
+def test_82_the_rounding_is_half_to_even_and_the_tie_is_exact() -> None:
+    """A binary64's expansion terminates, so an exact tie really can occur."""
+    module = _kernel()["modCalcFingerprint"]
+    body = _procedure_body_raw(module, "CalcFpRoundSignificant")
+    assert "FP_SIGNIFICANT_DIGITS" in body
+    assert 'If nextDigit > "5" Then' in body
+    assert 'ElseIf nextDigit = "5" Then' in body
+    assert "If CalcFpHasNonZero(tail) Then" in body, (
+        "a 5 followed by anything nonzero must round up, not tie"
+    )
+    assert "roundUp = CalcFpIsOddDigit(lastDigit)" in body, (
+        "the exact tie does not round half to EVEN"
+    )
+    # A carry out of 999...9 must lift the exponent, not truncate silently.
+    assert "exp10 = exp10 + 1" in body
+    odd = _procedure_body(module, "CalcFpIsOddDigit")
+    assert "Case 1, 3, 5, 7, 9" in odd
+
+
+def test_83_the_canonical_output_shape_is_locked() -> None:
+    module = _kernel()["modCalcFingerprint"]
+    build = _procedure_body_raw(module, "CalcFpBuildCanonical")
+    assert 'text = sign & Left$(head, 1) & "." & Mid$(head, 2) & "E" & CalcFpExponentText(exp10)' in build
+    assert 'text = "0." & String$(FP_FRACTION_DIGITS, "0") & "E+00"' in build, (
+        "zero does not produce the locked canonical form"
+    )
+    assert 'If value < 0# Then sign = "-"' in build
+    exponent = _procedure_body_raw(module, "CalcFpExponentText")
+    assert 'sign = "-"' in exponent and 'sign = "+"' in exponent, (
+        "the exponent sign is not always present"
+    )
+    assert 'digits = String$(2 - Len(digits), "0") & digits' in exponent, (
+        "the exponent is not zero-padded to at least two digits"
+    )
+    canonical = _procedure_body_raw(module, "CalcFpCanonicalNumber")
+    assert "If number = 0# Then number = 0#" in canonical, "negative zero is not normalised"
+    assert "If Not IsUsableDouble(value) Then Exit Function" in canonical, (
+        "a non-finite value is no longer refused"
+    )
+
+
+def test_84_the_encoder_needs_no_api_and_no_wide_type() -> None:
+    """Standalone Excel + VBA, offline, 32-bit and 64-bit alike."""
+    module = _kernel()["modCalcFingerprint"]
+    raw = module.raw
+    for forbidden in ("Declare ", "PtrSafe", "LongPtr", "LongLong", "kernel32",
+                      "msvcrt", "CreateObject", "Application."):
+        assert forbidden not in raw, (
+            f"{forbidden} would add a platform or host dependency to the encoder"
+        )
+    # Only Double, Long, String and Boolean appear as declared types.
+    declared = set(re.findall(r"\bAs\s+([A-Za-z]+)", module.code))
+    assert declared <= {"Double", "Long", "String", "Boolean"}, sorted(declared)
+
+
+def test_85_no_worksheet_or_display_formatting_reaches_the_encoder() -> None:
+    module = _kernel()["modCalcFingerprint"]
+    for forbidden in ("Range(", "Cells(", "NumberFormat", "Worksheet", "ActiveSheet",
+                      "Evaluate(", "WorksheetFunction"):
+        assert forbidden not in module.code, (
+            f"{forbidden} would make the canonical text depend on the workbook"
+        )

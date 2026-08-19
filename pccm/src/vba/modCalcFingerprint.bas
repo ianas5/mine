@@ -42,13 +42,29 @@ Option Explicit
 ' Parity with the reference implementation is proven on Windows at Gate B.
 ' ==========================================================================
 
-' The host format that yields the locked canonical form: one digit, the host's
-' decimal marker, sixteen fractional digits (17 significant digits in total),
-' an uppercase E, an always-present exponent sign and at least two exponent
-' digits. The digit count is the encoding authority's, mirrored here because a
-' format string is not expressible as a projected constant.
-Private Const FP_NUMBER_FORMAT As String = "0.0000000000000000E+00"
+' The locked canonical form: one digit, a decimal point, sixteen fractional
+' digits (17 significant digits in total), an uppercase E, an always-present
+' exponent sign and at least two exponent digits. The digit count is the
+' encoding authority's, mirrored here because it is not expressible as a
+' projected constant.
+'
+' THERE IS NO FORMAT STRING ANY MORE, and that is the point. See
+' CalcFpCanonicalNumber.
 Private Const FP_FRACTION_DIGITS As Long = 16
+Private Const FP_SIGNIFICANT_DIGITS As Long = 17
+
+' The exact-integer scratch arithmetic below. A limb holds seven decimal digits,
+' so a limb-by-factor product stays under 10^14 and every intermediate remains
+' an EXACT Double integer (the exact-integer ceiling is 2^53, about 9.007e15).
+Private Const FP_LIMB_BASE As Double = 10000000#
+Private Const FP_LIMB_DIGITS As Long = 7
+Private Const FP_TWO_52 As Double = 4503599627370496#
+Private Const FP_TWO_53 As Double = 9007199254740992#
+Private Const FP_MANTISSA_DIGITS As Long = 16
+' M * 5^1126 is at most 804 decimal digits, so 115 limbs; 200 is headroom, and
+' CalcFpMultiplySmall refuses rather than overruns if it is ever reached.
+Private Const FP_MAX_LIMBS As Long = 200
+Private Const FP_DIGIT_TABLE As String = "0123456789"
 Private Const FP_FIELD_SEPARATOR As String = ":"
 Private Const FP_HEX_DIGITS As String = "0123456789ABCDEF"
 Private Const FP_HEX_WIDTH As Long = 8
@@ -105,40 +121,410 @@ Public Function CalcFpCanonicalNumber(ByVal value As Double, ByVal decimalSepara
     ' two exponent digits, no thousands separator, and negative zero normalised
     ' to positive zero.
     '
-    ' THE NORMALISATION IS POSITIONAL, AND THE MARKER IS FOUND IN THE OUTPUT.
-    ' CalcFpMarkerIndex validates the scientific-notation shape and returns the
-    ' index of the single mantissa marker, WHATEVER character the host formatter
-    ' put there. That position is then rewritten to "." unconditionally.
+    ' --------------------------------------------------------------------
+    ' WHY THIS IS NOT Format$ ANY MORE
+    ' --------------------------------------------------------------------
+    ' It was, and Gate B Runtime Run 2 proved on real Excel that it could not
+    ' meet the contract. Format$(number, "0.0000000000000000E+00") supplies
+    ' sixteen fractional PLACEHOLDERS, but VBA's numeric-to-text conversion
+    ' carries only about 15 significant decimal digits; the placeholders beyond
+    ' that are filled with ZEROS rather than with recovered digits. The observed
+    ' failures were exactly that shape:
     '
-    ' Replacing every occurrence of a separator instead would only be safe while
-    ' the separator happens not to occur elsewhere in scientific notation - and
-    ' it does occur elsewhere for "E", for "+", for "-" and for every digit. By
-    ' locating the marker positionally, exactly one character is rewritten and
-    ' the exponent marker, the exponent sign and every digit are untouchable by
-    ' construction.
+    '   0.1          got 1.0000000000000000E-01  want 1.0000000000000001E-01
+    '   1e-20        got 1.0000000000000000E-20  want 9.9999999999999995E-21
+    '   0.1 + 0.2    got 3.0000000000000000E-01  want 3.0000000000000004E-01
+    '   MAX_DOUBLE   got 1.7976931348623200E+308 want 1.7976931348623157E+308
     '
-    ' WHY THE HOST MARKER IS NOT COMPARED AGAINST decimalSeparator. The locked
-    ' acceptance case injects BOTH "." and "," on ONE host and requires the two
-    ' outputs to be byte-identical. A gate demanding that the host's own marker
-    ' equal the supplied separator makes that pair unsatisfiable on any single
-    ' machine: whichever separator the formatter emits, the other injection is
-    ' refused. The encoder does not need to trust the supplied value to discover
-    ' the marker, so it does not.
+    ' Every one is 15 correct significant digits followed by padding. Adding
+    ' more placeholders cannot help: the digits were never produced.
     '
-    ' The separator stays a parameter: it is the locked public interface, it is
-    ' what the later resolver reports about its environment, and it is what Gate
-    ' B injects. It is validated as one UTF-16 code unit, and no Excel object,
-    ' Application setting or worksheet state is consulted to obtain it.
-    Dim text As String, marker As Long, number As Double
+    ' A binary64 is exactly M * 2^E with M an integer, so its decimal expansion
+    ' is FINITE and can be computed exactly with integer arithmetic. That is
+    ' what happens below - the text is GENERATED, digit by digit, never
+    ' formatted. Nothing is asked of the host's number-to-text conversion, so
+    ' nothing depends on its precision.
+    '
+    ' --------------------------------------------------------------------
+    ' WHY THE SEPARATOR IS STILL A PARAMETER
+    ' --------------------------------------------------------------------
+    ' It is the locked public interface, it is what the resolver reports about
+    ' its environment, and it is what Gate B injects. It is still validated as
+    ' exactly one UTF-16 code unit, so an unusable separator is still refused.
+    '
+    ' What changed is that it can no longer AFFECT the output. The old
+    ' implementation had to locate the host formatter's marker and rewrite it,
+    ' because the host chose that character. This implementation emits the
+    ' marker itself, so separator invariance - the locked acceptance case that
+    ' injects both "." and "," and requires byte-identical output - is now true
+    ' by construction rather than by repair.
+    Dim text As String, number As Double
     If CalcFpUtf16Length(decimalSeparator) <> 1 Then Exit Function
     If Not IsUsableDouble(value) Then Exit Function
     number = value
+    ' Normalises negative zero, which compares equal to zero but carries a sign.
     If number = 0# Then number = 0#
-    text = Format$(number, FP_NUMBER_FORMAT)
-    marker = CalcFpMarkerIndex(text)
-    If marker = 0 Then Exit Function
-    result = Left$(text, marker - 1) & "." & Mid$(text, marker + 1)
+    If Not CalcFpBuildCanonical(number, text) Then Exit Function
+    ' THE ACCEPTED STRUCTURAL VALIDATION IS KEPT, now as a post-condition on
+    ' this module's own output rather than on a foreign formatter's. A generator
+    ' that ever produced the wrong shape refuses instead of emitting it.
+    If CalcFpMarkerIndex(text) = 0 Then Exit Function
+    result = text
     CalcFpCanonicalNumber = True
+End Function
+
+Private Function CalcFpBuildCanonical(ByVal value As Double, ByRef text As String) As Boolean
+    ' value = M * 2^E exactly, with M an integer in [2^52, 2^53).
+    '
+    '   E >= 0 : the value is the integer M * 2^E, decimal point at the end.
+    '   E <  0 : M / 2^-E = M * 5^-E / 10^-E, so the digits are those of the
+    '            integer M * 5^-E with the point -E places from the right.
+    '
+    ' Either way the whole expansion is computed exactly, then rounded ONCE to
+    ' 17 significant digits.
+    Dim limbs() As Double, limbCount As Long
+    Dim mantissa As Double, exponent As Long
+    Dim allDigits As String, head As String, sign As String
+    Dim scale As Long, exp10 As Long
+
+    If value = 0# Then
+        text = "0." & String$(FP_FRACTION_DIGITS, "0") & "E+00"
+        CalcFpBuildCanonical = True
+        Exit Function
+    End If
+    If value < 0# Then sign = "-"
+
+    If Not CalcFpDecompose(value, mantissa, exponent) Then Exit Function
+    If Not CalcFpLimbsFromMantissa(mantissa, limbs, limbCount) Then Exit Function
+
+    If exponent >= 0 Then
+        ' 2^23 is 8388608, under one limb, so each pass consumes 23 powers.
+        If Not CalcFpMultiplyPower(limbs, limbCount, 2#, exponent, 23) Then Exit Function
+        scale = 0
+    Else
+        ' 5^10 is 9765625, under one limb, so each pass consumes ten powers.
+        If Not CalcFpMultiplyPower(limbs, limbCount, 5#, -exponent, 10) Then Exit Function
+        scale = exponent
+    End If
+
+    allDigits = CalcFpLimbDigits(limbs, limbCount)
+    If Len(allDigits) = 0 Then Exit Function
+    exp10 = Len(allDigits) - 1 + scale
+    If Not CalcFpRoundSignificant(allDigits, head, exp10) Then Exit Function
+
+    text = sign & Left$(head, 1) & "." & Mid$(head, 2) & "E" & CalcFpExponentText(exp10)
+    CalcFpBuildCanonical = True
+End Function
+
+Private Function CalcFpDecompose(ByVal value As Double, ByRef mantissa As Double, _
+                                 ByRef exponent As Long) As Boolean
+    ' EXACT, because the only operations are multiplication and division by two.
+    ' Scaling up stops below 2^53 so it cannot overflow; scaling down stops at
+    ' or above 2^52 so it cannot underflow. Subnormals are covered: the smallest
+    ' positive Double, 2^-1074, normalises to M = 2^52 with E = -1126.
+    Dim scaled As Double, guard As Long
+    scaled = Abs(value)
+    exponent = 0
+    Do While scaled < FP_TWO_52
+        scaled = scaled * 2#
+        exponent = exponent - 1
+        guard = guard + 1
+        If guard > 1200 Then Exit Function
+    Loop
+    Do While scaled >= FP_TWO_53
+        scaled = scaled / 2#
+        exponent = exponent + 1
+        guard = guard + 1
+        If guard > 2400 Then Exit Function
+    Loop
+    mantissa = scaled
+    CalcFpDecompose = True
+End Function
+
+Private Function CalcFpLimbsFromMantissa(ByVal mantissa As Double, ByRef limbs() As Double, _
+                                         ByRef limbCount As Long) As Boolean
+    ' M is an integer below 2^53, so it has at most sixteen decimal digits and
+    ' every subtraction here is between exact integers - no division, no
+    ' rounding, no dependence on how the host converts numbers to text.
+    Dim digits(1 To FP_MANTISSA_DIGITS) As Long
+    Dim power As Double, remainder As Double, value As Double
+    Dim place As Long, count As Long, first As Long, index As Long
+
+    remainder = mantissa
+    power = 1000000000000000#
+    For place = 1 To FP_MANTISSA_DIGITS
+        count = 0
+        Do While remainder >= power
+            remainder = remainder - power
+            count = count + 1
+            If count > 9 Then Exit Function
+        Loop
+        digits(place) = count
+        power = power / 10#
+    Next place
+    If remainder <> 0# Then Exit Function
+
+    ReDim limbs(0 To FP_MAX_LIMBS)
+    limbCount = 0
+    place = FP_MANTISSA_DIGITS
+    Do While place >= 1
+        first = place - FP_LIMB_DIGITS + 1
+        If first < 1 Then first = 1
+        value = 0#
+        For index = first To place
+            value = value * 10# + digits(index)
+        Next index
+        limbs(limbCount) = value
+        limbCount = limbCount + 1
+        place = first - 1
+    Loop
+    Do While limbCount > 1
+        If limbs(limbCount - 1) <> 0# Then Exit Do
+        limbCount = limbCount - 1
+    Loop
+    CalcFpLimbsFromMantissa = True
+End Function
+
+Private Function CalcFpMultiplyPower(ByRef limbs() As Double, ByRef limbCount As Long, _
+                                     ByVal base As Double, ByVal count As Long, _
+                                     ByVal chunk As Long) As Boolean
+    ' Chunked so the work is proportional to count/chunk passes rather than to
+    ' count. The chunk factor is itself under one limb, which is what keeps
+    ' every product inside the exact-integer range.
+    ' NO \ AND NO Mod ANYWHERE IN THIS MODULE, including here where both
+    ' operands are Longs and either would have been correct. The accepted
+    ' invariant is that this module contains neither operator at all, so that a
+    ' reader never has to decide which occurrences are safe; the loop below is
+    ' bounded by count/chunk, at most 113 iterations.
+    Dim passes As Long, remainder As Long, factor As Double, index As Long
+    If count < 0 Then Exit Function
+    If chunk < 1 Then Exit Function
+    passes = 0
+    remainder = count
+    Do While remainder >= chunk
+        remainder = remainder - chunk
+        passes = passes + 1
+    Loop
+    factor = CalcFpIntegerPower(base, chunk)
+    For index = 1 To passes
+        If Not CalcFpMultiplySmall(limbs, limbCount, factor) Then Exit Function
+    Next index
+    If remainder > 0 Then
+        If Not CalcFpMultiplySmall(limbs, limbCount, CalcFpIntegerPower(base, remainder)) Then Exit Function
+    End If
+    CalcFpMultiplyPower = True
+End Function
+
+Private Function CalcFpIntegerPower(ByVal base As Double, ByVal power As Long) As Double
+    Dim result As Double, index As Long
+    result = 1#
+    For index = 1 To power
+        result = result * base
+    Next index
+    CalcFpIntegerPower = result
+End Function
+
+Private Function CalcFpMultiplySmall(ByRef limbs() As Double, ByRef limbCount As Long, _
+                                     ByVal factor As Double) As Boolean
+    ' limb < 10^7 and factor < 10^7, so limb * factor < 10^14 and the running
+    ' carry stays under 10^7 - the whole product is an exact Double integer.
+    Dim index As Long, carry As Double, product As Double, quotient As Double
+    carry = 0#
+    For index = 0 To limbCount - 1
+        product = limbs(index) * factor + carry
+        quotient = Int(product / FP_LIMB_BASE)
+        limbs(index) = product - quotient * FP_LIMB_BASE
+        carry = quotient
+    Next index
+    Do While carry > 0#
+        If limbCount > UBound(limbs) Then Exit Function
+        quotient = Int(carry / FP_LIMB_BASE)
+        limbs(limbCount) = carry - quotient * FP_LIMB_BASE
+        limbCount = limbCount + 1
+        carry = quotient
+    Loop
+    CalcFpMultiplySmall = True
+End Function
+
+Private Function CalcFpLimbDigits(ByRef limbs() As Double, ByVal limbCount As Long) As String
+    ' The most significant limb keeps its natural width; every other limb is
+    ' zero-padded to the full limb width, or its leading zeros would vanish.
+    Dim out As String, part As String, index As Long
+    out = CalcFpPlainDigits(limbs(limbCount - 1))
+    For index = limbCount - 2 To 0 Step -1
+        part = CalcFpPlainDigits(limbs(index))
+        out = out & String$(FP_LIMB_DIGITS - Len(part), "0") & part
+    Next index
+    CalcFpLimbDigits = out
+End Function
+
+Private Function CalcFpPlainDigits(ByVal value As Double) As String
+    ' NO CStr AND NO Format. The canonical text must not depend on any locale,
+    ' and a digit is selected from a literal table rather than converted.
+    Dim out As String, remainder As Double, power As Double, count As Long
+    If value = 0# Then
+        CalcFpPlainDigits = "0"
+        Exit Function
+    End If
+    remainder = value
+    power = 1000000#
+    Do While power >= 1#
+        count = 0
+        Do While remainder >= power
+            remainder = remainder - power
+            count = count + 1
+        Loop
+        If Len(out) > 0 Or count > 0 Then out = out & Mid$(FP_DIGIT_TABLE, count + 1, 1)
+        power = power / 10#
+    Loop
+    CalcFpPlainDigits = out
+End Function
+
+Private Function CalcFpRoundSignificant(ByVal allDigits As String, ByRef head As String, _
+                                        ByRef exp10 As Long) As Boolean
+    ' ROUND HALF TO EVEN, matching the reference encoder. The tie case is not
+    ' theoretical: a binary64's exact expansion terminates, so the eighteenth
+    ' significant digit really can be a 5 with nothing after it.
+    Dim total As Long, nextDigit As String, tail As String, carried As String
+    Dim roundUp As Boolean, lastDigit As Long
+    total = Len(allDigits)
+    If total <= FP_SIGNIFICANT_DIGITS Then
+        head = allDigits & String$(FP_SIGNIFICANT_DIGITS - total, "0")
+        CalcFpRoundSignificant = True
+        Exit Function
+    End If
+    head = Left$(allDigits, FP_SIGNIFICANT_DIGITS)
+    nextDigit = Mid$(allDigits, FP_SIGNIFICANT_DIGITS + 1, 1)
+    tail = Mid$(allDigits, FP_SIGNIFICANT_DIGITS + 2)
+    lastDigit = CalcFpDigitValue(Right$(head, 1))
+    If lastDigit < 0 Then Exit Function
+    If nextDigit > "5" Then
+        roundUp = True
+    ElseIf nextDigit = "5" Then
+        If CalcFpHasNonZero(tail) Then
+            roundUp = True
+        Else
+            roundUp = CalcFpIsOddDigit(lastDigit)
+        End If
+    End If
+    If roundUp Then
+        If Not CalcFpIncrementDigits(head, carried) Then Exit Function
+        If Len(carried) > FP_SIGNIFICANT_DIGITS Then
+            ' 999...9 carried into 1000...0: one more decimal place.
+            head = Left$(carried, FP_SIGNIFICANT_DIGITS)
+            exp10 = exp10 + 1
+        Else
+            head = carried
+        End If
+    End If
+    CalcFpRoundSignificant = True
+End Function
+
+Private Function CalcFpHasNonZero(ByVal text As String) As Boolean
+    Dim index As Long
+    For index = 1 To Len(text)
+        If Mid$(text, index, 1) <> "0" Then
+            CalcFpHasNonZero = True
+            Exit Function
+        End If
+    Next index
+End Function
+
+Private Function CalcFpIncrementDigits(ByVal digits As String, ByRef out As String) As Boolean
+    ' String arithmetic, because seventeen digits do not fit any VBA integer.
+    Dim buffer As String, index As Long, value As Long, carry As Long
+    buffer = digits
+    carry = 1
+    For index = Len(buffer) To 1 Step -1
+        value = CalcFpDigitValue(Mid$(buffer, index, 1))
+        If value < 0 Then Exit Function
+        value = value + carry
+        If value >= 10 Then
+            value = value - 10
+            carry = 1
+        Else
+            carry = 0
+        End If
+        Mid$(buffer, index, 1) = Mid$(FP_DIGIT_TABLE, value + 1, 1)
+        If carry = 0 Then Exit For
+    Next index
+    If carry = 1 Then buffer = "1" & buffer
+    out = buffer
+    CalcFpIncrementDigits = True
+End Function
+
+Private Function CalcFpDigitValue(ByVal char As String) As Long
+    Dim index As Long
+    CalcFpDigitValue = -1
+    For index = 1 To 10
+        If Mid$(FP_DIGIT_TABLE, index, 1) = char Then
+            CalcFpDigitValue = index - 1
+            Exit Function
+        End If
+    Next index
+End Function
+
+Private Function CalcFpExponentText(ByVal exp10 As Long) As String
+    Dim sign As String, magnitude As Long, digits As String
+    If exp10 < 0 Then
+        sign = "-"
+        magnitude = -exp10
+    Else
+        sign = "+"
+        magnitude = exp10
+    End If
+    digits = CalcFpLongDigits(magnitude)
+    If Len(digits) < 2 Then digits = String$(2 - Len(digits), "0") & digits
+    CalcFpExponentText = sign & digits
+End Function
+
+Private Function CalcFpIsOddDigit(ByVal digit As Long) As Boolean
+    ' Stated as the ten cases rather than as digit Mod 2, because this module
+    ' contains no Mod and no \ - see CalcFpMultiplyPower.
+    Select Case digit
+        Case 1, 3, 5, 7, 9
+            CalcFpIsOddDigit = True
+    End Select
+End Function
+
+Private Function CalcFpLongDigits(ByVal value As Long) As String
+    ' Again no CStr: the exponent digits are as locale-sensitive as any other.
+    ' The exponent magnitude never exceeds 1200, so four places are enough and
+    ' the subtraction loop runs at most nine times per place.
+    Dim out As String, remainder As Long, power As Long, count As Long
+    If value = 0 Then
+        CalcFpLongDigits = "0"
+        Exit Function
+    End If
+    If value < 0 Then Exit Function
+    remainder = value
+    power = 10000
+    Do While power >= 1
+        count = 0
+        Do While remainder >= power
+            remainder = remainder - power
+            count = count + 1
+        Loop
+        If Len(out) > 0 Or count > 0 Then out = out & Mid$(FP_DIGIT_TABLE, count + 1, 1)
+        power = CalcFpTenthOf(power)
+    Loop
+    CalcFpLongDigits = out
+End Function
+
+Private Function CalcFpTenthOf(ByVal power As Long) As Long
+    ' The five exact places a Long exponent magnitude can occupy.
+    Select Case power
+        Case 10000
+            CalcFpTenthOf = 1000
+        Case 1000
+            CalcFpTenthOf = 100
+        Case 100
+            CalcFpTenthOf = 10
+        Case 10
+            CalcFpTenthOf = 1
+        Case Else
+            CalcFpTenthOf = 0
+    End Select
 End Function
 
 Public Function CalcFpNumberField(ByVal value As Double, ByVal decimalSeparator As String, _

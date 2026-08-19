@@ -1719,3 +1719,166 @@ literal or before a trailing comment.
 `test_132` additionally proves that on every frozen production module the
 runtime stripper and the Python authority produce **identical** executable code,
 so the stricter rule did not change what the accepted source says.
+
+---
+
+## The canonical Double encoder: a production correction
+
+Gate B Runtime Run 2 exposed the first defect in accepted **production** VBA.
+This section records what it was, why the contract did not move, and what the
+replacement actually does.
+
+### 1. The contract stays at 17 significant digits
+
+The reference encoder is `f"{number:.16E}"` — one digit before the point,
+sixteen after — with negative zero normalised. That is not a stylistic choice:
+
+* **17 digits is the shortest width that round-trips every binary64.** At 15,
+  distinct Doubles collide. A concrete pair, from the test corpus:
+
+  ```
+  x = -1.996150245444706e-194
+  y = -1.9961502454447058e-194     (the next representable value above x)
+
+  15 digits   -1.99615024544471E-194  ==  -1.99615024544471E-194
+  17 digits   -1.9961502454447061E-194 != -1.9961502454447058E-194
+  ```
+
+  Over 4 000 deterministic probes, more than 100 neighbour pairs collapse at 15
+  digits. A canonical numeric FIELD that maps two different Doubles to the same
+  text maps two different models to the same fingerprint — which is the one
+  thing the fingerprint exists to prevent.
+
+* Reducing the contract to 15 to suit `Format$` would therefore not be a
+  relaxation, it would be a defect. The contract is confirmed, not assumed;
+  `test_02` and `test_nc_02` in `tests/test_phase5_canonical_number.py` prove it.
+
+### 2. Root cause
+
+```vba
+Private Const FP_NUMBER_FORMAT As String = "0.0000000000000000E+00"
+text = Format$(number, FP_NUMBER_FORMAT)
+```
+
+Sixteen fractional **placeholders**, but VBA's numeric-to-text conversion
+carries about **15 significant decimal digits**. The placeholders beyond that
+are filled with zeros, not with recovered digits. Every Run-2 failure has that
+shape:
+
+| value | produced | contracted |
+|---|---|---|
+| `0.1` | `1.0000000000000000E-01` | `1.0000000000000001E-01` |
+| `1e-20` | `1.0000000000000000E-20` | `9.9999999999999995E-21` |
+| `0.1 + 0.2` | `3.0000000000000000E-01` | `3.0000000000000004E-01` |
+| `MAX_DOUBLE` | `1.7976931348623**200**E+308` | `1.7976931348623**157**E+308` |
+| min subnormal | `4.9406564584124**700**E-324` | `4.9406564584124**654**E-324` |
+
+Three distinctions matter here:
+
+* **stored precision** — a binary64 holds 53 bits, about 15.95 decimal digits;
+* **display precision** — what the host's conversion will emit, about 15;
+* **round-trip representation** — 17 digits, the width needed to recover the
+  exact bit pattern.
+
+`Format$` supplies the second. The contract needs the third. **Adding
+placeholders cannot help**, because the digits were never produced —
+`test_nc_01` models the defect and reproduces all five observations exactly.
+
+### 3. The replacement: generated, not formatted
+
+A binary64 is exactly `M × 2^E` with `M` an integer, so its decimal expansion is
+**finite** and computable with integer arithmetic alone.
+
+```
+decompose   value  ->  M in [2^52, 2^53), E in [-1126, 971]
+                       only *2 and /2, so every step is exact;
+                       2^-1074 normalises to M = 2^52, E = -1126
+E >= 0      digits of  M * 2^E,          point at the end
+E <  0      digits of  M * 5^(-E),       point -E places from the right
+round       once, to 17 significant digits, half to EVEN
+format      [-]d.dddddddddddddddd E[+-]dd
+```
+
+The big integer is held as base-10⁷ limbs in Doubles. A limb-by-factor product
+stays under 10¹⁴, well inside the exact-integer ceiling of 2⁵³, so **every
+intermediate is exact**. Powers are consumed in chunks that fit one limb — 2²³
+and 5¹⁰ — so the widest case (M × 5¹¹²⁶, 804 digits, 115 limbs) costs about 113
+passes rather than 1 126.
+
+Round-half-even is required, not decorative: a binary64's expansion terminates,
+so the 18th significant digit really can be a 5 with nothing after it. Thirteen
+such exact ties occur in 20 000 random Doubles.
+
+Nothing calls `Format`, `CStr` or `Str`; digits are selected from a literal
+table. No Windows API, no `Declare`, no `LongPtr`, no `Application` reference —
+only `Double`, `Long`, `String` and `Boolean` appear, so 32-bit and 64-bit
+Office are the same code. This module still contains no `Mod` and no `\`, even
+where both operands are Longs and either would have been correct.
+
+### 4. Separator invariance became structural
+
+The separator stays the locked public interface and is still validated as
+exactly one UTF-16 code unit. What changed is that it can no longer **reach** the
+output: the encoder emits the marker itself, so there is nothing to normalise.
+The locked dual injection — `.` and `,` on one host, byte-identical output — is
+now true by construction rather than by repair. `CalcFpMarkerIndex` survives as
+a **post-condition on this module's own output**.
+
+### 5. Proof, and the limit of it
+
+The shipped algorithm is transcribed routine-for-routine into
+`tests/vba_canonical_port.py` and held against the Python oracle:
+
+| corpus | result |
+|---|---|
+| every power of ten from 1e-323 to 1e308, plus both neighbours of each | 0 mismatches |
+| 400 000 deterministic bit patterns | 0 mismatches |
+| the emitted parity corpus (2 432 vectors) | 0 mismatches |
+| the ten locked P5-D1 vectors and eleven P5-D2 separator vectors | 0 mismatches |
+
+**What this does not prove** is that VBA executes the transcription faithfully.
+That is Gate B's, on Windows, against the emitted corpus. The port is never an
+authority: expectations come from `calc_fingerprint.py`, and `test_14` pins each
+ported routine and constant against the module it mirrors so the two cannot
+drift.
+
+### 6. Fingerprint compatibility: nothing moved
+
+The emitted corpus before and after, leaf by leaf:
+
+```
+leaves before : 3999
+leaves after  : 11386
+added         : 7387   all under fingerprint.canonical_parity
+removed       : 0
+CHANGED       : 0
+```
+
+The reference digest is still `50B6EB0E26857EA7` over 366 code units; the
+reference stream, collision probes, UTF-16 vectors, the ten numeric encodings,
+the separator vectors, every plan case and every regression vector are
+byte-identical.
+
+**No golden value changed, and none needed to.** The oracle was always correct —
+the emitted corpus and the reference digest have only ever been produced by
+Python. What was wrong was VBA's ability to *reproduce* them. Text and integer
+field encoding, UTF-16 length, field framing, section and record grammar, and
+the digest recurrence are all untouched.
+
+**Compatibility with previously calculated workbook fingerprints:** a stored
+fingerprint produced by the defective encoder over a model containing a number
+that needs more than 15 significant digits would not match one produced now.
+That is the correction working as intended — the old value was wrong — and it
+surfaces as `STALE`, which is the accepted signal for "the stored fingerprint no
+longer describes these inputs". No accepted workbook has ever been calculated:
+Gate B has not passed, so no such fingerprint exists in the field.
+
+### 7. P5-DP
+
+The corrected encoder is held at Gate B against the whole emitted parity corpus,
+not against ten examples — `Format$` was wrong on six of the ten and right on
+four, so ten was never a width that could accept a replacement. Each probe is
+rebuilt from its **IEEE-754 bit pattern**, never parsed from a decimal literal,
+and the expected text is read from the corpus: the harness computes no canonical
+string of its own. Nine neighbour triples double as a collision proof — three
+distinct Doubles must give three distinct canonical strings.

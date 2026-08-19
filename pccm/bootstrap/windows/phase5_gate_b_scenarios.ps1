@@ -2538,6 +2538,80 @@ function Invoke-Phase5GateBScenarios {
         }
 
         # ---------------------------------------------------------------
+        # P5-DP. Canonical-Double PARITY across the binary64 domain
+        # ---------------------------------------------------------------
+        # Runtime Run 2 showed ten vectors were enough to EXPOSE a defective
+        # canonical encoder and nowhere near enough to accept a corrected one:
+        # Format$ was wrong on six of the ten and right on four. This drives the
+        # emitted parity corpus - every named boundary, both neighbours of every
+        # power of ten, and deterministic generated bit patterns.
+        #
+        # THE DOUBLE IS REBUILT FROM ITS BIT PATTERN, not parsed from a decimal
+        # literal, so no JSON reader's last-bit behaviour can enter the proof.
+        # THE EXPECTED TEXT IS THE CORPUS'S. Nothing here computes it.
+        try {
+            $list = New-Checklist
+            $parity = $Cases.fingerprint.canonical_parity
+            $vectors = @($parity.vectors)
+            $null = Add-Check $list 'the canonical parity corpus was emitted' `
+                ($vectors.Count -gt 2000) ("vectors " + $vectors.Count)
+            $checked = 0
+            $failures = @()
+            foreach ($vector in $vectors) {
+                $bits = [string]$vector.bits
+                $probe = [BitConverter]::Int64BitsToDouble([Convert]::ToInt64($bits, 16))
+                $reply = [string]$Excel.Run('GBD_CanonicalNumber', [double]$probe, '.')
+                $checked++
+                if ($reply -cne ('OK|' + [string]$vector.expected)) {
+                    if ($failures.Count -lt 20) {
+                        $failures += ('[' + $bits + '] ' + [string]$vector.label +
+                                      ': got ' + $reply + ', expected OK|' +
+                                      [string]$vector.expected)
+                    }
+                }
+            }
+            # ONE aggregate check, because 2432 ok lines would bury the evidence,
+            # and up to twenty full discrepancies, because a bare count would
+            # bury it just as effectively the other way.
+            $null = Add-Check $list `
+                ('every canonical parity vector matched on real VBA (' +
+                 [string]$checked + ' vectors)') `
+                ($failures.Count -eq 0) `
+                ('first ' + [string]$failures.Count + ' of the failures: ' +
+                 ($failures -join ' | '))
+            $null = Add-Check $list 'every emitted parity vector was actually driven' `
+                ($checked -eq $vectors.Count) `
+                ('drove ' + $checked + ' of ' + $vectors.Count)
+
+            # NEIGHBOUR / COLLISION PROOF. Three distinct Doubles must produce
+            # three distinct canonical strings, or two different models could
+            # fingerprint alike. This is why the contract is 17 digits.
+            foreach ($triple in @($parity.neighbours)) {
+                $texts = @()
+                $ok = $true
+                foreach ($member in @($triple.members)) {
+                    $probe = [BitConverter]::Int64BitsToDouble(
+                        [Convert]::ToInt64([string]$member.bits, 16))
+                    $reply = [string]$Excel.Run('GBD_CanonicalNumber', [double]$probe, '.')
+                    if ($reply -cne ('OK|' + [string]$member.expected)) { $ok = $false }
+                    $texts += $reply
+                }
+                $distinct = @($texts | Select-Object -Unique)
+                $null = Add-Check $list `
+                    ('neighbours of ' + [string]$triple.label +
+                     ' stay three distinct canonical strings') `
+                    ($ok -and ($distinct.Count -eq 3)) `
+                    (($texts -join ' | '))
+            }
+            Add-Result 'P5-DP' `
+                ('Canonical-Double parity across the binary64 domain (' +
+                 [string]$vectors.Count + ' vectors, plan case 26)') `
+                $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+        } catch {
+            Add-Result 'P5-DP' 'Canonical-Double parity' 'FAIL' (Format-Phase5Err $_)
+        }
+
+        # ---------------------------------------------------------------
         # P5-D2. Decimal-separator INJECTION, on the same Windows host
         # ---------------------------------------------------------------
         # The runtime proof Gate A could not make. Both separators go into the

@@ -5382,3 +5382,97 @@ def test_133_the_rem_decision_is_taken_inside_the_single_pass() -> None:
         "the statement boundary is not closed on both literal paths"
     )
     assert "$atStatementStart = (($ch -eq ':') -and (-not $inString))" in stripper
+
+
+# ===========================================================================
+# 26. THE CANONICAL-DOUBLE PARITY SCENARIO (P5-DP)
+# ===========================================================================
+def _parity_block() -> str:
+    source = _executable(SCENARIOS)
+    return source[source.index("$parity = $Cases.fingerprint.canonical_parity"):
+                  source.index("Add-Result 'P5-DP'")]
+
+
+def test_134_the_parity_scenario_drives_the_emitted_corpus() -> None:
+    """Ten vectors exposed the defect; they cannot accept the correction."""
+    source = _executable(SCENARIOS)
+    assert "Add-Result 'P5-DP'" in source, "the parity scenario does not emit a result"
+    block = _parity_block()
+    assert "$vectors = @($parity.vectors)" in block
+    assert "($vectors.Count -gt 2000)" in block, "the corpus size is not gated"
+    assert "'every emitted parity vector was actually driven'" in block, (
+        "a scenario that silently drove none would still report PASS"
+    )
+    assert "($checked -eq $vectors.Count)" in block
+    # It runs BEFORE the diagnostic module is removed, or GBD_ would not answer.
+    assert source.index("Add-Result 'P5-DP'") < source.index("Add-Result 'P5-D8'")
+    assert source.index("Add-Result 'P5-D0'") < source.index("Add-Result 'P5-DP'")
+
+
+def test_135_the_parity_probe_is_rebuilt_from_its_bit_pattern() -> None:
+    """Identity is the bit pattern; a decimal literal is a second opinion."""
+    block = _parity_block()
+    assert "[BitConverter]::Int64BitsToDouble([Convert]::ToInt64($bits, 16))" in block, (
+        "the probe is not reconstructed from the IEEE-754 bit pattern"
+    )
+    assert "$bits = [string]$vector.bits" in block
+    assert "$vector.value" not in block, "the scenario reads a decimal literal instead"
+
+    corpus = _emitted()["cases"]["fingerprint"]["canonical_parity"]
+    assert len(corpus["vectors"]) > 2000
+    for vector in corpus["vectors"][:50]:
+        assert len(vector["bits"]) == 16
+        assert all(c in "0123456789ABCDEF" for c in vector["bits"])
+        assert "value" not in vector, "the corpus carries an ambiguous decimal literal"
+
+
+def test_136_the_harness_never_computes_a_canonical_expectation() -> None:
+    """An expectation produced by the algorithm under test proves nothing."""
+    block = _parity_block()
+    assert "[string]$vector.expected" in block, "the expectation is not read from the corpus"
+    assert "-cne ('OK|' + [string]$vector.expected)" in block, (
+        "the comparison is not case-sensitive against the emitted text"
+    )
+    scenarios = _executable(SCENARIOS)
+    for forbidden in ("ToString('E16')", 'ToString("E16")', "{0:E16}", "'E16'",
+                      "[double]::Parse", "Format-Number"):
+        assert forbidden not in scenarios, (
+            f"the harness formats a canonical number of its own ({forbidden})"
+        )
+
+
+def test_137_the_neighbour_triples_are_a_collision_proof() -> None:
+    block = _parity_block()
+    assert "foreach ($triple in @($parity.neighbours))" in block
+    assert "$distinct = @($texts | Select-Object -Unique)" in block
+    assert "($ok -and ($distinct.Count -eq 3))" in block, (
+        "three distinct Doubles are not required to give three distinct strings"
+    )
+    corpus = _emitted()["cases"]["fingerprint"]["canonical_parity"]
+    assert len(corpus["neighbours"]) >= 8
+    for triple in corpus["neighbours"]:
+        texts = [m["expected"] for m in triple["members"]]
+        assert len(set(texts)) == 3, triple["label"]
+        assert [m["position"] for m in triple["members"]] == ["below", "value", "above"]
+
+
+def test_138_the_parity_failures_are_reported_not_just_counted() -> None:
+    """2432 ok lines would bury the evidence; a bare count buries it too."""
+    block = _parity_block()
+    assert "$failures.Count -lt 20" in block, "no individual discrepancy is retained"
+    assert "'[' + $bits + '] '" in block, "a failure does not name its bit pattern"
+    assert "', expected OK|'" in block, "a failure does not show what was expected"
+    assert "($failures.Count -eq 0)" in block
+    assert "($failures -join ' | ')" in block
+
+
+def test_139_the_locked_ten_vector_scenarios_are_not_weakened() -> None:
+    """P5-DP is additional evidence, never a replacement for P5-D1 or P5-D2."""
+    source = _executable(SCENARIOS)
+    assert "Add-Result 'P5-D1'" in source and "Add-Result 'P5-D2'" in source
+    assert "'ten locked numeric vectors were emitted'" in source
+    assert "($vectors.Count -eq 10)" in source, "the ten locked vectors are no longer required"
+    assert "'the separator vector set was emitted'" in source
+    assert "'the canonical form does not depend on the injected separator'" in source
+    corpus = _emitted()["cases"]["fingerprint"]
+    assert len(corpus["numeric_encodings"]["vectors"]) == 10

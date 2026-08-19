@@ -628,12 +628,15 @@ FROZEN_SHA256 = {
     "modCalcResolve": "3c67584390516a8a1c811df62d650749f6ef71518c649d7f1bb88dc753a837c1",
     "modCalcFactors": "721b8d6aa16fef850a13c714b329395730c9110ccd50d17c99927c3bfaae68c1",
     "modCalcAnalytical": "e234b3adacdb443c8c7b2b5072c311e7622405c3ec2e2987a750d85400299e0d",
-    # Its CURRENT bytes. They are not Step 4's bytes: Step 7's correction round
-    # carried the single authorised reopening of this module, making
-    # CalcFpNumberField Public so the orchestration layer could reach the
-    # accepted N-field framing authority. FINGERPRINT_STEP4_BODY_SHA256 below is
-    # what proves nothing else moved with it.
-    "modCalcFingerprint": "8e7c89750f301f27c2d9b7faf2b8057a217186c2a425b194de65a006b93b5075",
+    # Its CURRENT bytes, and they have now moved TWICE, both times under an
+    # explicit authorisation recorded here:
+    #   Step 7  - CalcFpNumberField made Public, nothing else.
+    #   Gate B Runtime Run 2 - the canonical Double encoder rebuilt, because
+    #     Format$ provably could not produce the contracted 17 significant
+    #     digits on real Excel. That correction is confined to this module and
+    #     to the canonical-number path inside it; FINGERPRINT_ACCEPTED_BODY_SHA256
+    #     below is what proves nothing else moved with it.
+    "modCalcFingerprint": "44c218cc4a3c65ae272f26ce7da29e538aa1519cd62225682256c620deb4cee5",
     "modWorkbook": "9cfa8f130c5bcdee783948654c969d4b0d6589fe7059c126f88c7676ca5405bf",
     "modAppState": "ef0b5c64a7a3b5aeeef5ef0797cd160071a7eda6a7d8cef9cb98301f1504672f",
     "modTimeline": "4a4f24d17b65bcbc0e46b1a74213b6a02eab6ab492b1788476d66eb7807b9e3f",
@@ -648,8 +651,8 @@ FROZEN_SHA256 = {
 # removed, whitespace runs collapsed, and the one authorised visibility keyword
 # normalised back to Private. A byte digest alone would say only "this file
 # changed"; this one says what the change was allowed to be.
-FINGERPRINT_STEP4_BODY_SHA256 = (
-    "f6e8313b2bb29deee488e7a11eca282b1b64dcb8b7226bbc771c6dcc01a0bbaa"
+FINGERPRINT_ACCEPTED_BODY_SHA256 = (
+    "3b9f3e1a489b026c2dca9b94351fa677aa6f9bb4d27feded18e88cffb05d82b3"
 )
 
 
@@ -682,7 +685,7 @@ def test_44_the_accepted_modules_were_not_modified() -> None:
     for name, digest in FROZEN_SHA256.items():
         actual = hashlib.sha256((SRC_VBA / f"{name}.bas").read_bytes()).hexdigest()
         assert actual == digest, f"{name}.bas changed; Step 6 adds a module and edits none"
-    assert _fingerprint_body_digest() == FINGERPRINT_STEP4_BODY_SHA256, (
+    assert _fingerprint_body_digest() == FINGERPRINT_ACCEPTED_BODY_SHA256, (
         "modCalcFingerprint changed beyond the authorised visibility of CalcFpNumberField"
     )
 

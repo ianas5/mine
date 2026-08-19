@@ -961,7 +961,7 @@ def test_51_the_accepted_modules_were_not_modified() -> None:
         # the reporter could reach the accepted N-field framing authority instead
         # of framing a number as text. FINGERPRINT_STEP4_BODY_SHA256 is what says
         # nothing else moved with it.
-        "modCalcFingerprint": "8e7c89750f301f27c2d9b7faf2b8057a217186c2a425b194de65a006b93b5075",
+        "modCalcFingerprint": "44c218cc4a3c65ae272f26ce7da29e538aa1519cd62225682256c620deb4cee5",
         "modWorkbook": "9cfa8f130c5bcdee783948654c969d4b0d6589fe7059c126f88c7676ca5405bf",
         "modAppState": "ef0b5c64a7a3b5aeeef5ef0797cd160071a7eda6a7d8cef9cb98301f1504672f",
         "modTimeline": "4a4f24d17b65bcbc0e46b1a74213b6a02eab6ab492b1788476d66eb7807b9e3f",

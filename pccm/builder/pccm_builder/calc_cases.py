@@ -27,6 +27,9 @@ no expected numbers. Python does not pretend to prove them.
 
 from __future__ import annotations
 
+import math
+import struct
+
 from typing import Any
 
 from . import calc_fingerprint as fp
@@ -644,6 +647,167 @@ NUMERIC_ENCODING_VECTORS: tuple[tuple[str, float], ...] = (
     ("minimum subnormal", 5e-324),
 )
 
+# ---------------------------------------------------------------------------
+# The canonical-Double PARITY corpus
+# ---------------------------------------------------------------------------
+# Gate B Runtime Run 2 proved that ten handpicked vectors were enough to EXPOSE
+# a defective canonical encoder but nowhere near enough to accept a corrected
+# one. `Format$` was wrong on six of the ten and right on four; an algorithm can
+# be wrong on far subtler inputs than that.
+#
+# So the corrected VBA is held against a corpus that spans the binary64 domain:
+# every named boundary, dense exponent coverage with both neighbours of each
+# power of ten, and deterministic bit patterns from a fixed generator.
+#
+# IDENTITY IS THE BIT PATTERN, not the decimal literal. A JSON number is parsed
+# by whatever reads it, and two readers need not agree on the last bit of a
+# decimal literal. The 16-hex-digit IEEE-754 big-endian bit pattern is
+# unambiguous, and the Windows harness reconstructs the Double from it rather
+# than from text.
+#
+# THE EXPECTED STRINGS COME FROM THE PYTHON ORACLE AND NOWHERE ELSE. Neither the
+# harness nor any PowerShell helper may recompute them: an expectation produced
+# by the same algorithm it is testing proves only that the algorithm is
+# self-consistent.
+#
+# The generator is an explicit LCG rather than any library generator, so the corpus is
+# reproducible from this source alone, by anyone, on any Python build.
+_PARITY_LCG_START = 0x5DEECE66D2026081
+_PARITY_LCG_MULTIPLIER = 6364136223846793005
+_PARITY_LCG_INCREMENT = 1442695040888963407
+_PARITY_LCG_MASK = (1 << 64) - 1
+_PARITY_GENERATED_COUNT = 512
+
+
+def _parity_bit_stream(count: int) -> list[int]:
+    """`count` deterministic 64-bit patterns from a fixed 64-bit LCG."""
+    state = _PARITY_LCG_START
+    out: list[int] = []
+    while len(out) < count:
+        state = (state * _PARITY_LCG_MULTIPLIER + _PARITY_LCG_INCREMENT) & _PARITY_LCG_MASK
+        out.append(state)
+    return out
+
+
+def _double_from_bits(bits: int) -> float:
+    return struct.unpack(">d", struct.pack(">Q", bits & _PARITY_LCG_MASK))[0]
+
+
+def _bits_from_double(value: float) -> int:
+    return struct.unpack(">Q", struct.pack(">d", value))[0]
+
+
+def _parity_named_values() -> list[tuple[str, float]]:
+    """Every boundary the review named, plus the halfway/rounding probes."""
+    named: list[tuple[str, float]] = [
+        ("+0", 0.0),
+        ("-0", -0.0),
+        ("1", 1.0),
+        ("-1", -1.0),
+        ("0.1", 0.1),
+        ("-0.1", -0.1),
+        ("0.1 + 0.2", 0.1 + 0.2),
+        ("1e-20", 1e-20),
+        ("-1e-20", -1e-20),
+        ("MAX_DOUBLE", 1.7976931348623157e308),
+        ("-MAX_DOUBLE", -1.7976931348623157e308),
+        ("minimum positive normal", 2.2250738585072014e-308),
+        ("-minimum positive normal", -2.2250738585072014e-308),
+        ("maximum subnormal", _double_from_bits(0x000FFFFFFFFFFFFF)),
+        ("minimum positive subnormal", 5e-324),
+        ("-minimum positive subnormal", -5e-324),
+        # Halfway and rounding-boundary probes: exactly representable ties, and
+        # the classic decimal-representation traps.
+        ("0.5", 0.5),
+        ("1.5", 1.5),
+        ("2.5", 2.5),
+        ("-2.5", -2.5),
+        ("2^53", 9007199254740992.0),
+        ("2^53 - 1", 9007199254740991.0),
+        ("2^53 + 2", 9007199254740994.0),
+        ("1/3", 1.0 / 3.0),
+        ("2/3", 2.0 / 3.0),
+        ("pi", 3.141592653589793),
+        ("e", 2.718281828459045),
+        ("largest exact integer run", 4503599627370497.0),
+    ]
+    # Dense exponent coverage, with BOTH neighbours of every power of ten. The
+    # neighbours are where a rounding boundary is most likely to be crossed.
+    for exponent in range(-323, 309):
+        value = float(f"1e{exponent}")
+        if value == 0.0 or not math.isfinite(value):
+            continue
+        named.append((f"1e{exponent}", value))
+        for direction, suffix in ((math.inf, "next up"), (-math.inf, "next down")):
+            neighbour = math.nextafter(value, direction)
+            if math.isfinite(neighbour) and neighbour != 0.0:
+                named.append((f"1e{exponent} {suffix}", neighbour))
+    return named
+
+
+def _parity_vectors() -> list[dict[str, Any]]:
+    seen: set[int] = set()
+    out: list[dict[str, Any]] = []
+
+    def add(label: str, value: float) -> None:
+        if not math.isfinite(value):
+            return
+        bits = _bits_from_double(value)
+        if bits in seen:
+            return
+        seen.add(bits)
+        out.append({
+            "label": label,
+            "bits": f"{bits:016X}",
+            "expected": fp.canonical_number(value, "."),
+        })
+
+    for label, value in _parity_named_values():
+        add(label, value)
+    for index, bits in enumerate(_parity_bit_stream(_PARITY_GENERATED_COUNT)):
+        value = _double_from_bits(bits)
+        if math.isfinite(value):
+            add(f"lcg {index}", value)
+    return out
+
+
+def _parity_neighbour_triples() -> list[dict[str, Any]]:
+    """prev / x / next, which must not collapse to one canonical string.
+
+    17 significant digits is the shortest width that separates every pair of
+    distinct binary64 values. A narrower canonicalisation would map neighbours
+    onto the same fingerprint field, so two different models would hash alike -
+    which is the whole reason the contract is 17 and not 15.
+    """
+    probes = [
+        ("1", 1.0),
+        ("0.1", 0.1),
+        ("1e-20", 1e-20),
+        ("1e+20", 1e20),
+        ("pi", 3.141592653589793),
+        ("minimum positive normal", 2.2250738585072014e-308),
+        ("minimum positive subnormal", 5e-324),
+        ("MAX_DOUBLE", 1.7976931348623157e308),
+        ("2^53", 9007199254740992.0),
+        ("-0.1", -0.1),
+    ]
+    triples: list[dict[str, Any]] = []
+    for label, value in probes:
+        below = math.nextafter(value, -math.inf)
+        above = math.nextafter(value, math.inf)
+        if not (math.isfinite(below) and math.isfinite(above)):
+            continue
+        members = []
+        for name, member in (("below", below), ("value", value), ("above", above)):
+            members.append({
+                "position": name,
+                "bits": f"{_bits_from_double(member):016X}",
+                "expected": fp.canonical_number(member, "."),
+            })
+        triples.append({"label": label, "members": members})
+    return triples
+
+
 # One more for the separator proof only: the hostile value that drove the Step-1
 # positional-normalisation correction. It is not one of the ten locked encodings.
 SEPARATOR_EXTRA_VECTORS: tuple[tuple[str, float], ...] = (
@@ -744,6 +908,14 @@ def fingerprint_section(calc: CalcContract) -> dict[str, Any]:
                  "expected": fp.canonical_number(value, ".")}
                 for label, value in NUMERIC_ENCODING_VECTORS
             ],
+        },
+        # The corrected canonical encoder is held against the binary64 domain,
+        # not against ten examples. Identity is the IEEE-754 bit pattern; the
+        # expected text is the Python oracle's and nothing else may produce it.
+        "canonical_parity": {
+            "case": 26,
+            "vectors": _parity_vectors(),
+            "neighbours": _parity_neighbour_triples(),
         },
         "utf16_vectors": {
             "case": 26,
