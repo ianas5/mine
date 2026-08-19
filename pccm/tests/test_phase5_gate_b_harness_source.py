@@ -563,9 +563,18 @@ def test_23_the_diagnostic_module_is_removed_after_the_vector_section() -> None:
             f"{vector} runs after the diagnostic module was removed"
         )
     tail = source[removal:]
-    assert "'the diagnostic module is absent from the project'" in source
-    assert "'the inventory is exactly the 15 manifest modules again'" in source
+    assert "'the diagnostic module is absent from the standard modules'" in source, (
+        "removal is no longer proved against the partition the module lives in"
+    )
+    assert "'the diagnostic module is absent from the project entirely'" in source
     assert "'no diagnostic procedure is callable any more'" in source
+    # The full manifest inventory is re-asserted after removal, through the same
+    # helper P5-M uses, so the two cannot drift apart.
+    d8 = source[source.index("$components.Remove($target)"):removal]
+    assert "Add-Phase5ModuleInventoryChecks -List $list -Components $inventory" in d8, (
+        "the inventory is no longer re-asserted after the diagnostic module is removed"
+    )
+    assert "-Label 'after removal'" in d8
     # The inventory re-assertion happens BEFORE the analytical acceptance work.
     assert source.index("Add-Result 'P5-AN'") > removal, (
         "analytical acceptance runs while the diagnostic module is still installed"
@@ -849,18 +858,31 @@ def test_37_no_calculate_button_and_no_new_production_module() -> None:
     # The harness asserts all three of those things at runtime too.
     source = _executable(SCENARIOS)
     assert "'NO shape has OnAction = PCCM_Calculate'" in source
-    assert "'exactly five command buttons persist in the workbook'" in source
+    assert "'exactly five shapes are bound to a macro'" in source
+    assert "'every macro-bound shape is one of the five declared buttons'" in source
+    assert "'no undeclared shape invokes a PCCM_ procedure'" in source
     assert "'the manifest declares 15 production modules'" in source
-    assert "'the module ' + $name + ' persists in the saved project'" in source
+    assert "': the production module ' + $name + ' is a standard module'" in source
 
 
 def test_38_the_production_modules_are_asserted_by_name_not_by_count() -> None:
     source = _executable(SCENARIOS)
-    block = source[source.index("Add-Result 'P5-M'") - 5000:source.index("Add-Result 'P5-M'")]
-    assert "foreach ($name in $expected)" in block, "the modules are not checked by name"
-    assert "$present -contains $name" in block
-    # And in the other direction: no module outside the manifest may persist.
-    assert "'no module outside the manifest persists'" in block
+    helper = _procedure(source, "Add-Phase5ModuleInventoryChecks")
+    assert "foreach ($name in $ExpectedModules)" in helper, (
+        "the modules are not checked by name"
+    )
+    assert "$standardNames -contains $name" in helper
+    # And exactly, not merely at least: a set that gained a stray and lost a
+    # real one would satisfy any inequality.
+    assert "($standardNames.Count -eq @($ExpectedModules).Count)" in helper
+    # And in the other direction: no standard module outside the manifest may
+    # persist. A count on its own would pass a project that gained a stray
+    # module and lost a real one.
+    assert "': no standard module outside the manifest persists'" in helper
+    assert "$ExpectedModules -notcontains $_" in helper
+    # P5-M reaches the production namespace through that helper.
+    block = source[source.index("Add-Result 'P5-M'") - 8000:source.index("Add-Result 'P5-M'")]
+    assert "Add-Phase5ModuleInventoryChecks -List $list -Components $components" in block
 
 
 def test_39_no_linux_test_here_executes_windows_or_claims_a_run() -> None:
@@ -4136,4 +4158,559 @@ def test_nc_86_a_count_only_final_gate_is_caught() -> None:
     assert sum(1 for _, status in ledger if status == "PASS") == 35
     assert "Z" not in {name for name, _ in ledger}, (
         "the count reaches 35 while the case the gate exists to prove is absent"
+    )
+
+
+# ===========================================================================
+# 23. RUNTIME RUN 2: the four confirmed harness roots
+# ===========================================================================
+# Runtime Run 2 (harness commit cc70c37) reached the Phase-5 scenarios and
+# finalised cleanly - 35/35 Phase-4, P5-FIN PASS, natural Excel exit - and then
+# failed 24 scenarios. They are not 24 defects. Four harness roots and one
+# production finding account for all of them; the tests below pin the four
+# harness roots so that exact run cannot recur.
+#
+#   R1  inventory semantics    P5-M, P5-D8   "present 30 of 15"
+#   R2  commentary as code     P5-EV         "modAppState: Worksheet_Change; NPV"
+#   R3  parameter shadowing    7 scenarios   "The property 'rows' cannot be found"
+#   R4  shape count as buttons P5-M          "found 6"
+#
+# The fifth, P5-D1/P5-D2, is a PRODUCTION finding and is NOT repaired here.
+MANIFEST_SHEET_COUNT = 14
+VBEXT_STD_MODULE = 1
+VBEXT_DOCUMENT = 100
+
+
+def _inventory_helper() -> str:
+    return _procedure(_executable(SCENARIOS), "Add-Phase5ModuleInventoryChecks")
+
+
+# --- R1: inventory semantics ------------------------------------------------
+def test_106_the_component_inventory_is_partitioned_by_vbide_type() -> None:
+    """R1. 15 manifest modules + 15 document components = 30 VBComponents.
+
+    Run 2's `present 30 of 15` was arithmetic, not a defect: a VBProject holds
+    one document component per worksheet plus ThisWorkbook. The manifest's
+    vba.modules describes STANDARD modules and never described documents.
+    """
+    source = _executable(SCENARIOS)
+    types = re.search(r"\$script:VbextComponentTypes\s*=\s*@\{(.*?)\n\}", source, re.S)
+    assert types, "the VBIDE component types are not declared"
+    declared = dict(re.findall(r"(\w+)\s*=\s*(\d+)", types.group(1)))
+    assert declared.get("StdModule") == str(VBEXT_STD_MODULE)
+    assert declared.get("Document") == str(VBEXT_DOCUMENT)
+    for named in ("ClassModule", "MSForm", "ActiveXDesigner"):
+        assert named in declared, f"{named} is not named, so it cannot be excluded by name"
+
+    reader = _procedure(source, "Get-Phase5VbComponentInventory")
+    assert "Type = [int]$component.Type" in reader, (
+        "the inventory does not carry the component type, so it cannot partition"
+    )
+    assert "Name = [string]$component.Name" in reader
+    assert "Release-Transient $component 'VBComponent'" in reader, (
+        "the inventory leaks a COM object per component"
+    )
+
+    helper = _inventory_helper()
+    assert "[int]$_.Type -eq $script:VbextComponentTypes.StdModule" in helper
+    assert "[int]$_.Type -eq $script:VbextComponentTypes.Document" in helper
+    # The document partition is JUDGED, not merely separated. Splitting the
+    # components and then asserting nothing about the documents would let a
+    # stray sheet component through in exchange for fixing the standard ones.
+    assert "($documents.Count -eq $expectedDocuments)" in helper, (
+        "document components are separated but never counted"
+    )
+
+    # The exact Run-2 topology, modelled.
+    components = (
+        [("mod%d" % i, VBEXT_STD_MODULE) for i in range(15)]
+        + [("sh%d" % i, VBEXT_DOCUMENT) for i in range(MANIFEST_SHEET_COUNT)]
+        + [("ThisWorkbook", VBEXT_DOCUMENT)]
+    )
+    assert len(components) == 30, "the reproduced Run-2 topology is not 30 components"
+    standard = [n for n, t in components if t == VBEXT_STD_MODULE]
+    documents = [n for n, t in components if t == VBEXT_DOCUMENT]
+    assert len(standard) == 15 and len(documents) == MANIFEST_SHEET_COUNT + 1
+    # The old rule failed on a correct project; the new one does not.
+    assert len(components) != 15, "the old name-only rule compared 30 against 15"
+
+
+def test_107_the_inventory_is_not_weakened_to_at_least_fifteen() -> None:
+    """R1. Exact, both directions, and every other component type excluded."""
+    helper = _inventory_helper()
+    # Every manifest module must be a STANDARD module - not merely present.
+    assert "': the production module ' + $name + ' is a standard module'" in helper
+    # No stray standard module.
+    assert "$strayStandard = @($standardNames | Where-Object { $ExpectedModules -notcontains $_ })" in helper
+    assert "($strayStandard.Count -eq 0)" in helper
+    # And the set size is exact.
+    assert "($standardNames.Count -eq @($ExpectedModules).Count)" in helper
+    for forbidden in ("-ge 15", "-gt 14", "at least"):
+        assert forbidden not in helper, f"the inventory was weakened ({forbidden})"
+    # Documents are counted, not waved through.
+    assert "$expectedDocuments = $ExpectedSheetCount + 1" in helper, (
+        "document components are not counted, so a stray one could hide there"
+    )
+    assert "($documents.Count -eq $expectedDocuments)" in helper, (
+        "the document count is computed and then not compared"
+    )
+    assert "': exactly one ThisWorkbook document component'" in helper
+    # Nothing else may exist at all.
+    assert "': no class module, UserForm or designer component exists'" in helper
+    assert "($other.Count -eq 0)" in helper
+    # And the arithmetic is stated so the evidence is self-checking.
+    assert "@($Components).Count -eq (@($ExpectedModules).Count + $expectedDocuments)" in helper
+
+
+def test_108_a_stray_or_missing_standard_module_still_fails() -> None:
+    """R1. The decision table the corrected rule must implement."""
+    manifest = {f"mod{i}" for i in range(15)}
+    docs = MANIFEST_SHEET_COUNT + 1
+
+    def verdict(standard: set, documents: int, other: int) -> bool:
+        return (manifest <= standard and not (standard - manifest)
+                and len(standard) == len(manifest)
+                and documents == docs and other == 0)
+
+    assert verdict(set(manifest), docs, 0), "the correct project must pass"
+    assert not verdict(manifest | {"modStray"}, docs, 0), "a stray standard module must fail"
+    assert not verdict(manifest - {"mod0"}, docs, 0), "a missing manifest module must fail"
+    assert not verdict(manifest | {DIAGNOSTIC_MODULE_NAME}, docs, 0), (
+        "a left-behind diagnostic module must fail"
+    )
+    assert not verdict(set(manifest), docs, 1), "a class module or UserForm must fail"
+    assert not verdict(set(manifest), docs + 1, 0), "a stray document component must fail"
+    assert not verdict(set(manifest), docs - 1, 0), "a missing document component must fail"
+
+
+def test_109_the_diagnostic_module_absence_is_proved_in_its_own_partition() -> None:
+    """R1. The diagnostic module is a STANDARD module, so that is where it is denied."""
+    source = _executable(SCENARIOS)
+    d8 = source[source.index("$components.Remove($target)"):source.index("Add-Result 'P5-D8'")]
+    assert "'the diagnostic module is absent from the standard modules'" in d8
+    assert "$standardNames -notcontains $diagnosticName" in d8, (
+        "absence is not proved against the partition the module would reappear in"
+    )
+    assert "'the diagnostic module is absent from the project entirely'" in d8
+    assert "'no diagnostic procedure is callable any more'" in source
+    # P5-M and P5-D8 share one helper, so the two judgements cannot drift.
+    assert d8.count("Add-Phase5ModuleInventoryChecks") == 1
+    m = source[source.index("Add-Result 'P5-FX'"):source.index("Add-Result 'P5-M'")]
+    assert "Add-Phase5ModuleInventoryChecks" in m
+
+
+# --- R2: commentary is not code ---------------------------------------------
+def test_110_the_forbidden_construct_scan_reads_code_not_commentary() -> None:
+    """R2. modAppState's explanatory comments are prose, and stay."""
+    source = _executable(SCENARIOS)
+    ev = source[source.index("Add-Result 'P5-D0'") - 6000:source.index("Add-Result 'P5-EV'")]
+    assert "$code = Remove-VbaCommentary -Code $raw" in ev, (
+        "the scan still runs over the raw module text"
+    )
+    assert "if ($code -match [regex]::Escape([string]$forbidden))" in ev, (
+        "the manifest scan does not run over the stripped code"
+    )
+    assert "$raw -match" not in ev, "the raw text is still scanned somewhere"
+    # The requirement itself is untouched: the manifest list is still the source.
+    assert "@($Manifest.vba.forbidden_constructs)" in ev
+    assert "'the manifest forbids ' + $handler" in source
+
+    # The production comments that Run 2 flagged are still there, unedited.
+    app_state = _text(SRC_VBA / "modAppState.bas")
+    assert "no input Worksheet_Change handler" in app_state, (
+        "the explanatory production comment was removed instead of the harness fixed"
+    )
+    assert "NPV" in app_state
+    # And they are commentary, not code, in the accepted source.
+    for needle in ("no input Worksheet_Change handler", "NPV, EMV"):
+        line = next(l for l in app_state.splitlines() if needle in l)
+        assert line.lstrip().startswith("'"), f"{needle!r} is not on a comment line"
+
+
+def test_111_a_real_change_event_declaration_still_fails() -> None:
+    """R2. The three cases the runtime proof must distinguish."""
+    source = _executable(SCENARIOS)
+    stripper = _procedure(source, "Remove-VbaCommentary")
+    # A comment starts at an apostrophe OUTSIDE a string literal.
+    assert "if (($ch -eq \"'\") -and (-not $inString)) { break }" in stripper
+    assert "$inString = -not $inString" in stripper, (
+        "string literals are not tracked, so an apostrophe inside one would truncate code"
+    )
+    assert "Rem" in stripper, "Rem-form commentary is not handled"
+    # No blanket substitution that could swallow a real declaration.
+    for forbidden in ("-replace 'Worksheet_Change'", "-replace 'Workbook_SheetChange'",
+                      ".Replace('Worksheet_Change'"):
+        assert forbidden not in source, f"a blanket text substitution was used ({forbidden})"
+
+    # The declaration test judges the STRIPPED code, like the general scan.
+    assert "$code = Remove-VbaCommentary -Code $raw" in source, (
+        "the module text is no longer stripped before it is scanned"
+    )
+    assert "Test-VbaProcedureDeclared -Code $code" in source, (
+        "the declaration test runs over raw text rather than stripped code"
+    )
+    assert "if ($code -match [regex]::Escape([string]$forbidden))" in source, (
+        "the manifest forbidden-construct scan reads the raw text again"
+    )
+    declared = _procedure(source, "Test-VbaProcedureDeclared")
+    assert "(?:Sub|Function)" in declared, "the declaration test does not look for a procedure"
+    assert "[regex]::Escape($ProcedureName)" in declared
+    assert r"\s*\(" in declared, "the name is not required to be followed by an argument list"
+    assert "'no change-event procedure is DECLARED anywhere in the project'" in source
+
+    # The decision table, modelled against the same rule.
+    pattern = re.compile(
+        r"(?im)^\s*(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?(?:Sub|Function)\s+"
+        r"Worksheet_Change\s*\("
+    )
+
+    def strip(vba: str) -> str:
+        out = []
+        for line in vba.splitlines():
+            in_string, kept = False, []
+            for ch in line:
+                if ch == '"':
+                    in_string = not in_string
+                    kept.append(ch)
+                    continue
+                if ch == "'" and not in_string:
+                    break
+                kept.append(ch)
+            text = "".join(kept)
+            out.append("" if re.match(r"^\s*Rem(\s|$)", text) else text)
+        return "\n".join(out)
+
+    # 1. a comment naming the handler -> allowed
+    assert not pattern.search(strip("' there is no input Worksheet_Change handler")), (
+        "a comment is still read as a declaration"
+    )
+    assert not pattern.search(strip("Rem Worksheet_Change is deliberately absent"))
+    # 2. a real Worksheet_Change procedure -> FAIL
+    assert pattern.search(strip("Private Sub Worksheet_Change(ByVal Target As Range)"))
+    assert pattern.search(strip("Sub Worksheet_Change(ByVal Target As Range)"))
+    assert pattern.search(strip("Public Static Sub Worksheet_Change(ByVal T As Range)"))
+    # 3. a real Workbook_SheetChange procedure -> FAIL
+    sheet_pattern = re.compile(
+        r"(?im)^\s*(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?(?:Sub|Function)\s+"
+        r"Workbook_SheetChange\s*\("
+    )
+    assert sheet_pattern.search(strip(
+        "Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Range)"
+    ))
+    # and a handler declared after a comment on the previous line is still caught
+    assert pattern.search(strip(
+        "' no Worksheet_Change here\nPrivate Sub Worksheet_Change(ByVal Target As Range)"
+    )), "stripping a comment must not swallow the following line"
+    # an apostrophe inside a string literal does not truncate the statement
+    assert pattern.search(strip(
+        'Private Sub Worksheet_Change(ByVal T As Range) : x = "it' + "'" + 's"'
+    ))
+
+
+# --- R3: the typed-parameter shadowing --------------------------------------
+def test_112_no_typed_parameter_is_shadowed_by_a_local_assignment() -> None:
+    """R3. The `.rows` root, closed as a CLASS rather than as one instance.
+
+    PowerShell variable names are case-insensitive and a typed parameter keeps
+    its constraint, so `$block = <PSCustomObject>` inside a function declaring
+    `[string]$Block` silently stringified the block. `$block.rows` then threw
+    PropertyNotFoundException on all seven of P5-S2, P5-ST, P5-S3, P5-S4, P5-S5,
+    P5-KP and P5-RC. This scans every function in all three harness files.
+    """
+    offenders = []
+    for path in (SCENARIOS, HARNESS, BOOTSTRAP / "com_lifecycle.ps1"):
+        # Comments are stripped first. The block in Get-CalcScalar that QUOTES
+        # the defective line to explain it is documentation, not a shadow.
+        source = _executable(path)
+        for match in re.finditer(r"^function\s+([A-Za-z0-9\-]+)", source, re.M):
+            name = match.group(1)
+            start = source.index("{", match.end())
+            depth, end = 0, start
+            while end < len(source):
+                if source[end] == "{":
+                    depth += 1
+                elif source[end] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                end += 1
+            body = source[start:end]
+            param = re.search(r"param\s*\(", body)
+            if not param:
+                continue
+            open_at = body.index("(", param.start())
+            depth, close_at = 0, open_at
+            while close_at < len(body):
+                if body[close_at] == "(":
+                    depth += 1
+                elif body[close_at] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                close_at += 1
+            typed = {
+                var.lower(): (kind, var)
+                for kind, var in re.findall(
+                    r"\[([A-Za-z0-9.\[\]]+)\]\s*\$([A-Za-z0-9_]+)", body[open_at:close_at + 1]
+                )
+            }
+            if not typed:
+                continue
+            for assign in re.finditer(
+                r"(?<![\w$`])\$([A-Za-z0-9_]+)\s*=(?![=~])", body[close_at + 1:]
+            ):
+                key = assign.group(1).lower()
+                if key in typed:
+                    kind, declared = typed[key]
+                    offenders.append(
+                        f"{path.name}::{name} declares [{kind}]${declared} "
+                        f"and reassigns ${assign.group(1)}"
+                    )
+    assert not offenders, (
+        "a typed parameter is shadowed by a local assignment, which silently "
+        "coerces the value: " + "; ".join(offenders)
+    )
+
+
+def test_113_get_calc_scalar_reads_the_block_into_its_own_local() -> None:
+    """R3, the specific instance, pinned by name."""
+    body = _procedure(_executable(SCENARIOS), "Get-CalcScalar")
+    assert "$blockSpec = $Inspection.calc.scalar_blocks.$Block" in body
+    assert "$blockSpec.rows.$FieldKey" in body
+    assert "$blockSpec.value_column" in body
+    assert "\n    $block =" not in body, "the shadowing assignment is back"
+    # The receiver really does carry `rows`: the projection was never at fault.
+    inspection = json.loads(_text(PCCM_ROOT / "build" / "phase5_gate_b_inspection.json")) \
+        if (PCCM_ROOT / "build" / "phase5_gate_b_inspection.json").is_file() else None
+    if inspection is not None:
+        for block in ("calc_state", "calc_totals"):
+            spec = inspection["calc"]["scalar_blocks"][block]
+            assert "rows" in spec, f"{block} has no rows mapping"
+            assert "value_column" in spec
+            assert spec["rows"], f"{block}.rows is empty"
+
+
+def test_114_the_rows_receiver_is_the_block_not_the_key() -> None:
+    """R3. The precise Run-2 object shape: a String asked for `.rows`."""
+    # What the defect produced: the parameter, retyped, is a String.
+    stringified = "@{value_column=C; rows=}"
+    assert not hasattr(stringified, "rows")
+    # What the corrected code holds: the block mapping itself.
+    block = {"value_column": "C", "rows": {"last_attempt_result": 17}}
+    assert "rows" in block and block["rows"]["last_attempt_result"] == 17
+    # And the two are reached by DIFFERENT names in source, so one cannot become
+    # the other again.
+    body = _procedure(_executable(SCENARIOS), "Get-CalcScalar")
+    assert "$Block" in body and "$blockSpec" in body
+    assert body.count("$blockSpec") == 3, "the local is not used for all three reads"
+
+
+# --- R4: shapes are not command buttons -------------------------------------
+def test_115_command_buttons_are_counted_by_macro_binding_not_by_shape() -> None:
+    """R4. `found 6` counted every Shape; a command button is a bound shape."""
+    source = _executable(SCENARIOS)
+    block = source[source.index("Add-Result 'P5-FX'"):source.index("Add-Result 'P5-M'")]
+    assert "$commandButtons = @($shapeRecords | Where-Object {" in block
+    assert "-not [string]::IsNullOrWhiteSpace([string]$_.OnAction) })" in block
+    assert "'exactly five shapes are bound to a macro'" in block
+    assert "($commandButtons.Count -eq 5)" in block
+    assert "'exactly five command buttons persist in the workbook'" not in source, (
+        "the raw shape count is still the button requirement"
+    )
+    # It NAMES what it found. Run 2 said "found 6" and nothing else.
+    assert "$shapeInventory" in block
+    assert "[string]$_.Sheet + '!' + [string]$_.Name + ' -> '" in block
+    assert "Add-Note ('P5-M: shape inventory across the '" in block
+
+
+def test_116_the_no_calculate_button_requirement_is_unchanged_and_widened() -> None:
+    """R4. Strictly stronger than the count it replaces."""
+    source = _executable(SCENARIOS)
+    block = source[source.index("Add-Result 'P5-FX'"):source.index("Add-Result 'P5-M'")]
+    # unchanged: over EVERY shape, bound or not
+    assert "'NO shape has OnAction = PCCM_Calculate'" in block
+    assert "($onActions -notcontains 'PCCM_Calculate')" in block
+    assert "$onActions = @($shapeRecords | ForEach-Object { [string]$_.OnAction })" in block
+    # widened: an undeclared shape may not reach the PCCM surface at all
+    assert "'every macro-bound shape is one of the five declared buttons'" in block
+    assert "'no undeclared shape invokes a PCCM_ procedure'" in block
+    assert "[string]$_.OnAction -like 'PCCM_*'" in block
+    # The five is counted over the BOUND shapes, never over every shape again.
+    assert "($commandButtons.Count -eq 5)" in block, (
+        "the five-button rule is back on the raw shape count"
+    )
+    assert "($shapeRecords.Count -eq 5)" not in block
+
+    # The decision table.
+    declared = {"btnPCCMApplyTimeline", "btnPCCMAddCostLine", "btnPCCMDeleteCostLine",
+                "btnPCCMAddRisk", "btnPCCMDeleteRisk"}
+
+    def verdict(shapes: list) -> bool:
+        bound = [s for s in shapes if s[1]]
+        return (len(bound) == 5
+                and all(n in declared for n, _ in bound)
+                and not any(a == "PCCM_Calculate" for _, a in shapes)
+                and not any(n not in declared and a.startswith("PCCM_") for n, a in shapes))
+
+    five = [(n, "PCCM_" + n[7:]) for n in sorted(declared)]
+    assert verdict(five), "the five declared buttons must pass"
+    # Run 2's sixth shape, if it carries no macro, is not a command button.
+    assert verdict(five + [("Decoration", "")]), (
+        "an unbound decorative shape is not a command button"
+    )
+    # But anything that commands is judged.
+    assert not verdict(five + [("Rogue", "PCCM_AddRisk")]), "an undeclared bound shape must fail"
+    assert not verdict(five + [("Rogue", "PCCM_Calculate")])
+    assert not verdict(five[:4]), "a missing button must fail"
+    assert not verdict(five + [("Decoration", "SomeOtherMacro")]), (
+        "a sixth macro-bound shape must fail the five-button rule"
+    )
+
+
+# --- diagnostics ------------------------------------------------------------
+def test_117_unexpected_phase5_errors_carry_a_source_location() -> None:
+    """Run 2 reported eleven scenarios as one sentence with no location."""
+    source = _executable(SCENARIOS)
+    formatter = _procedure(source, "Format-Phase5Err")
+    assert "$ErrorRecord.InvocationInfo" in formatter, "no invocation information is read"
+    for member in ("ScriptName", "ScriptLineNumber", "OffsetInLine"):
+        assert member in formatter, f"the location omits {member}"
+    assert "$ErrorRecord.ScriptStackTrace" in formatter, "no call chain is reported"
+    assert "$invocation.Line" in formatter, "the offending source line is not shown"
+    assert "$exception.InnerException" in formatter, (
+        "a wrapped exception would still be reported only by its outer type"
+    )
+    assert "$exception.GetType().FullName" in formatter, "the .NET type is no longer reported"
+    assert "$exception.Message" in formatter, "the message is no longer reported"
+
+    # NO COM OBJECT REACHES THE LEDGER.
+    for forbidden in ("$Workbook", "$Excel", ".Value2", "Range(", "VBProject", "$Application"):
+        assert forbidden not in formatter, (
+            f"the diagnostic ledger touches a COM object ({forbidden})"
+        )
+
+    # Every Phase-5 catch site uses it, and the accepted Phase-4 helper is intact.
+    assert "Format-Err " not in source.replace("Format-Phase5Err", ""), (
+        "a Phase-5 catch site still reports through the type+message-only helper"
+    )
+    assert source.count("Format-Phase5Err $_") >= 20, (
+        "most Phase-5 catch sites are not routed through the located formatter"
+    )
+    lifecycle = _text(BOOTSTRAP / "com_lifecycle.ps1")
+    assert "function Format-Err {" in lifecycle, "the accepted Phase-4 helper was renamed"
+    assert "ScriptStackTrace" not in lifecycle, "the accepted Phase-4 helper was modified"
+
+
+def test_118_the_typed_reader_is_confirmed_by_run_2_and_unchanged() -> None:
+    """Run 2 proved the typed reader works; it must not be 'fixed'.
+
+    P5-FX PASSED and recorded, on real Windows PowerShell 5.1 and real Excel:
+
+        P5-FX: locked FX seed captured as String'SAR' / Double:1
+
+    That is `New-Object 'object[]' $colCount`, index assignment, `Write-RowObject`
+    and `Format-Phase5Typed` all behaving exactly as designed - a String stayed a
+    String and a numeric stayed a Double across the COM boundary. The reader is
+    therefore NOT the InvalidCastException boundary, and stringifying Value2
+    would destroy the evidence architecture for nothing.
+    """
+    reader = _procedure(_executable(SCENARIOS), "Get-Phase5TypedTableBody")
+    assert "$line = New-Object 'object[]' $colCount" in reader, (
+        "the allocation Run 2 exercised successfully was changed"
+    )
+    assert "$line[$c - 1] = $cell.Value2" in reader, "the typed read was changed"
+    assert "Write-RowObject $line" in reader
+    for forbidden in ("[string]$cell.Value2", "Format-CalcValue", "$line += "):
+        assert forbidden not in reader, f"the reader now stringifies or appends ({forbidden})"
+    comparator = _procedure(_executable(SCENARIOS), "Test-Phase5ExactValue")
+    assert "if ($Actual -is [string]) { return $false }" in comparator, (
+        "the exact comparator was widened to accept display text"
+    )
+
+
+# --- negative controls -----------------------------------------------------
+def test_nc_87_the_run_2_name_only_inventory_is_caught() -> None:
+    planted = _synthetic(
+        "$present += [string]$component.Name\n"
+        "$null = Add-Check $list 'the inventory is exactly the 15 manifest modules again' "
+        "((@($present).Count -eq $expected.Count))\n"
+    )
+    assert "$component.Type" not in planted, "a name-only inventory must be visible as one"
+    present, expected = 15 + MANIFEST_SHEET_COUNT + 1, 15
+    assert present != expected and present == 30, (
+        "the defective rule compares 30 against 15, which is what Run 2 printed"
+    )
+
+
+def test_nc_88_a_raw_text_forbidden_scan_is_caught() -> None:
+    planted = _synthetic("if ($raw -match [regex]::Escape([string]$forbidden)) {\n")
+    assert "Remove-VbaCommentary" not in planted, "a raw-text scan must be visible as one"
+    comment = "' ... no input Worksheet_Change handler, and this guarantees that stays true"
+    assert "Worksheet_Change" in comment, "the production comment really does contain the token"
+    assert comment.lstrip().startswith("'"), "and it really is a comment"
+
+
+def test_nc_89_a_reintroduced_parameter_shadow_is_caught() -> None:
+    planted = _synthetic(
+        "function Get-CalcScalar {\n"
+        "    param($Workbook, $Inspection, [string]$Block, [string]$FieldKey)\n"
+        "    $block = $Inspection.calc.scalar_blocks.$Block\n"
+    )
+    assert "$blockSpec" not in planted, "the shadowing assignment must be visible"
+    # PowerShell resolves $block and $Block to one variable; the type constraint
+    # then converts the assigned object to its string form.
+    assert "$block".lower() == "$Block".lower()
+
+
+def test_nc_90_counting_shapes_as_buttons_is_caught() -> None:
+    planted = _synthetic(
+        "$shapesFound++\n"
+        "$null = Add-Check $list 'exactly five command buttons persist in the workbook' "
+        "($shapesFound -eq 5) (\"found \" + $shapesFound)\n"
+    )
+    assert "OnAction" not in planted, "a shape-count rule must be visible as one"
+    # Six shapes, five of them buttons: the count fails and names nothing.
+    shapes = [("btn%d" % i, "PCCM_X") for i in range(5)] + [("Decoration", "")]
+    assert len(shapes) == 6 and len([s for s in shapes if s[1]]) == 5
+
+
+def test_nc_91_a_type_and_message_only_error_report_is_caught() -> None:
+    planted = _synthetic(
+        "$type = $ErrorRecord.Exception.GetType().FullName\n"
+        "return ('{0}: {1}' -f $type, $msg)\n"
+    )
+    assert "ScriptStackTrace" not in planted and "InvocationInfo" not in planted, (
+        "a location-free error report must be visible as one"
+    )
+    # Eleven scenarios, one indistinguishable sentence.
+    reported = ["System.InvalidCastException: Unable to cast object of type "
+                "'System.Double' to type 'System.String'."] * 11
+    assert len(set(reported)) == 1, (
+        "Run 2's eleven cast failures were textually identical, so none could be located"
+    )
+
+
+def test_119_the_error_evidence_names_the_call_chain_not_only_the_line() -> None:
+    """One shared path served eleven Run-2 scenarios.
+
+    Knowing WHICH LINE threw is not enough when the throwing statement lives in
+    a helper that every scenario reaches through a different route. The frame
+    stack is what distinguishes `Set-Phase5Fixture -> Reset-Phase5FxTable` from
+    `Set-Phase5Fixture -> Write-Phase5Driver`, and it is reported frame by frame
+    rather than as one unsplit blob.
+    """
+    formatter = _procedure(_executable(SCENARIOS), "Format-Phase5Err")
+    assert "$stack = [string]$ErrorRecord.ScriptStackTrace" in formatter, (
+        "the call chain is not read from the error record"
+    )
+    assert "foreach ($frame in ($stack -split" in formatter, (
+        "the call chain is not rendered frame by frame"
+    )
+    assert "$parts += ('  ' + $frame.Trim())" in formatter
+    # An empty stack must not be reported as a chain of nothing.
+    assert "if (-not [string]::IsNullOrWhiteSpace($stack))" in formatter
+    # And the chain is joined into ONE detail string, so a checklist line keeps
+    # its shape and the report stays greppable.
+    assert "($parts -join [string][char]10)" in formatter, (
+        "the located error is not assembled into a single detail value"
     )

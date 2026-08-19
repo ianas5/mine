@@ -326,6 +326,309 @@ function Invoke-Phase5CoveragePreflight {
 }
 
 # ===========================================================================
+# VBA CODE VERSUS COMMENTARY
+# ===========================================================================
+# RUN-2 ROOT. P5-EV read each CodeModule's whole text and searched it literally
+# for every manifest forbidden_construct:
+#
+#   FAIL no forbidden construct exists in the real Stage-B project
+#        -- modAppState: Worksheet_Change; modAppState: NPV
+#
+# Both hits are PROSE in accepted production source:
+#
+#   modAppState.bas:7   ' ... No cost, risk, escalation, FX, NPV, EMV,
+#   modAppState.bas:78  ' ... no input Worksheet_Change handler, and this
+#                       '     guarantees that stays true even if
+#
+# A comment explaining that there is no Worksheet_Change handler was read as a
+# Worksheet_Change handler. That is a harness false positive with no product
+# meaning, and the comment must stay: it is the reason the guarantee exists.
+#
+# The Python side already draws this line - builder/pccm_builder/vba_source.py
+# strips comments and string literals before any structural scan, for exactly
+# this reason. This is the same rule, applied at runtime to the code Excel
+# actually holds.
+#
+# THE SCAN IS NOT WEAKENED. It still runs over every component, still uses the
+# manifest's own list, and a real declaration still fails. What it no longer
+# does is read prose as code. Two things are deliberately NOT done:
+#   * no construct is removed from the manifest list;
+#   * no blanket text substitution is applied - a stripped line keeps its
+#     length-zero content, so a real `Private Sub Worksheet_Change(` on the very
+#     next line is untouched and still fails.
+#
+# A VBA comment starts at an apostrophe that is NOT inside a double-quoted
+# string, and runs to end of line. Doubled quotes ("") are the VBA escape and
+# stay inside the literal. Rem-form comments are handled by the same rule: a
+# line whose first token is Rem is commentary.
+function Remove-VbaCommentary {
+    param([string]$Code)
+    $out = New-Object System.Text.StringBuilder
+    foreach ($line in ($Code -split "`r?`n")) {
+        $inString = $false
+        $kept = New-Object System.Text.StringBuilder
+        for ($i = 0; $i -lt $line.Length; $i++) {
+            $ch = $line[$i]
+            if ($ch -eq '"') {
+                $inString = -not $inString
+                $null = $kept.Append($ch)
+                continue
+            }
+            if (($ch -eq "'") -and (-not $inString)) { break }
+            $null = $kept.Append($ch)
+        }
+        $text = $kept.ToString()
+        # Rem-form commentary: the statement keyword, not an identifier prefix.
+        if ($text -match '^\s*Rem(\s|$)') { $text = '' }
+        $null = $out.AppendLine($text)
+    }
+    return $out.ToString()
+}
+
+# Does the code declare a procedure with this name? Sub/Function, any accessor,
+# optionally Static, and the name must be followed by '(' - so a mention of the
+# identifier inside another statement is still caught by the general scan while
+# a DECLARATION is reported as the declaration it is.
+function Test-VbaProcedureDeclared {
+    param([string]$Code, [string]$ProcedureName)
+    $pattern = '(?im)^\s*(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?(?:Sub|Function)\s+' +
+               [regex]::Escape($ProcedureName) + '\s*\('
+    return ($Code -match $pattern)
+}
+
+# ===========================================================================
+# THE VBPROJECT COMPONENT INVENTORY
+# ===========================================================================
+# RUN-2 ROOT. P5-M and P5-D8 both enumerated VBComponents and compared every
+# component NAME against the manifest's 15-entry vba.modules collection:
+#
+#   FAIL the inventory is exactly the 15 manifest modules again -- present 30 of 15
+#   FAIL no module outside the manifest persists -- extra: ThisWorkbook,
+#        shDashboard, shSetup, ... shSimData
+#
+# All fifteen production modules were individually confirmed present and the
+# diagnostic procedure was no longer callable. The 30 is arithmetic, not a
+# defect: a VBProject holds one DOCUMENT component per worksheet plus one for
+# ThisWorkbook, and this workbook has 14 sheets.
+#
+#   15 standard modules + 14 sheet documents + 1 ThisWorkbook = 30 components
+#
+# The manifest's vba.modules describes the production STANDARD MODULES. It has
+# never described document components, and it never could - they are created by
+# Excel when a sheet exists, not imported by the bootstrap.
+#
+# So the inventory is partitioned BY COMPONENT TYPE and each partition is judged
+# against what actually governs it. Nothing is weakened to "at least 15": the
+# standard-module set must still equal the manifest set exactly, in both
+# directions, by name.
+#
+# The VBIDE type constants, named rather than spelled as bare integers at the
+# comparison sites:
+$script:VbextComponentTypes = @{
+    StdModule        = 1     # vbext_ct_StdModule    - the production namespace
+    ClassModule      = 2     # vbext_ct_ClassModule
+    MSForm           = 3     # vbext_ct_MSForm
+    ActiveXDesigner  = 11    # vbext_ct_ActiveXDesigner
+    Document         = 100   # vbext_ct_Document     - sheets and ThisWorkbook
+}
+
+function Get-VbComponentTypeName {
+    param([int]$TypeValue)
+    foreach ($key in $script:VbextComponentTypes.Keys) {
+        if ([int]$script:VbextComponentTypes[$key] -eq $TypeValue) { return $key }
+    }
+    return ('type' + [string]$TypeValue)
+}
+
+# Every component as plain data: name and numeric type, nothing else. The COM
+# objects are released inside the loop and none escapes.
+function Get-Phase5VbComponentInventory {
+    param($Workbook)
+    $project = $null; $components = $null
+    $out = @()
+    try {
+        $project = $Workbook.VBProject
+        $components = $project.VBComponents
+        $count = [int]$components.Count
+        for ($i = 1; $i -le $count; $i++) {
+            $component = $null
+            try {
+                $component = $components.Item($i)
+                $out += [pscustomobject]@{
+                    Name = [string]$component.Name
+                    Type = [int]$component.Type
+                }
+            } finally {
+                if ($null -ne $component) { Release-Transient $component 'VBComponent'; $component = $null }
+            }
+        }
+    } finally {
+        if ($null -ne $components) { Release-Transient $components 'VBComponents'; $components = $null }
+        if ($null -ne $project)    { Release-Transient $project    'VBProject';     $project    = $null }
+    }
+    return ,$out
+}
+
+function Format-VbComponentList {
+    param($Components)
+    return (@($Components | ForEach-Object {
+        [string]$_.Name + ' (' + (Get-VbComponentTypeName -TypeValue ([int]$_.Type)) + ')'
+    }) -join ', ')
+}
+
+# The whole inventory judgement, shared by P5-M and P5-D8 so the two cannot
+# drift apart. $ExpectedSheetCount is the manifest's own sheet count; the +1 is
+# ThisWorkbook, which every workbook has exactly one of.
+function Add-Phase5ModuleInventoryChecks {
+    param($List, $Components, $ExpectedModules, [int]$ExpectedSheetCount, [string]$Label)
+
+    $standard = @($Components | Where-Object { [int]$_.Type -eq $script:VbextComponentTypes.StdModule })
+    $documents = @($Components | Where-Object { [int]$_.Type -eq $script:VbextComponentTypes.Document })
+    $other = @($Components | Where-Object {
+        ([int]$_.Type -ne $script:VbextComponentTypes.StdModule) -and
+        ([int]$_.Type -ne $script:VbextComponentTypes.Document) })
+    $standardNames = @($standard | ForEach-Object { [string]$_.Name })
+
+    # THE PRODUCTION NAMESPACE, EXACTLY. Both directions, by name, no tolerance.
+    foreach ($name in $ExpectedModules) {
+        $null = Add-Check $List ($Label + ': the production module ' + $name + ' is a standard module') `
+            ($standardNames -contains $name) `
+            ('standard modules: ' + ($standardNames -join ', '))
+    }
+    $strayStandard = @($standardNames | Where-Object { $ExpectedModules -notcontains $_ })
+    $null = Add-Check $List ($Label + ': no standard module outside the manifest persists') `
+        ($strayStandard.Count -eq 0) ('stray standard modules: ' + ($strayStandard -join ', '))
+    $null = Add-Check $List `
+        ($Label + ': the standard-module set is exactly the ' + [string]@($ExpectedModules).Count +
+         ' manifest modules') `
+        ($standardNames.Count -eq @($ExpectedModules).Count) `
+        ('present ' + $standardNames.Count + ' of ' + @($ExpectedModules).Count + ': ' +
+         ($standardNames -join ', '))
+
+    # THE DOCUMENT COMPONENTS ARE COUNTED, NOT WAVED THROUGH. One per sheet plus
+    # ThisWorkbook - so a stray document component cannot hide here either.
+    $expectedDocuments = $ExpectedSheetCount + 1
+    $null = Add-Check $List `
+        ($Label + ': the document components are the ' + [string]$ExpectedSheetCount +
+         ' sheets plus ThisWorkbook') `
+        ($documents.Count -eq $expectedDocuments) `
+        ('found ' + $documents.Count + ', expected ' + $expectedDocuments + ': ' +
+         (Format-VbComponentList $documents))
+    $null = Add-Check $List ($Label + ': exactly one ThisWorkbook document component') `
+        (@($documents | Where-Object { [string]$_.Name -eq 'ThisWorkbook' }).Count -eq 1) `
+        (Format-VbComponentList $documents)
+
+    # AND NOTHING ELSE AT ALL. A class module, a UserForm or an ActiveX designer
+    # is code that the manifest does not describe and the bootstrap did not put
+    # there, whatever it is called.
+    $null = Add-Check $List `
+        ($Label + ': no class module, UserForm or designer component exists') `
+        ($other.Count -eq 0) (Format-VbComponentList $other)
+
+    # The whole-project arithmetic, stated so the evidence is self-checking.
+    $null = Add-Check $List `
+        ($Label + ': the project is exactly ' + [string]@($ExpectedModules).Count +
+         ' standard modules + ' + [string]$expectedDocuments + ' document components') `
+        (@($Components).Count -eq (@($ExpectedModules).Count + $expectedDocuments)) `
+        ('total components ' + @($Components).Count + ': ' + (Format-VbComponentList $Components))
+}
+
+# ===========================================================================
+# UNEXPECTED-ERROR EVIDENCE
+# ===========================================================================
+# RUN-2 DIAGNOSTIC GAP. Every Phase-5 catch site reported through the accepted
+# Phase-4 Format-Err helper, which returns exception TYPE and MESSAGE and nothing else.
+# Run 2 therefore recorded eleven scenarios as
+#
+#   System.InvalidCastException: Unable to cast object of type 'System.Double'
+#   to type 'System.String'.
+#
+# with no file, no line and no call chain - the same sentence eleven times, and
+# no way to tell which statement produced it. The message named a type pair that
+# PowerShell's own [string] conversion cannot fail on, so the text alone did not
+# even identify the KIND of boundary involved.
+#
+# This adds the location. It does NOT change Format-Err: that helper is accepted
+# Phase-4 source and its callers are Phase-4 scenarios.
+#
+# PLAIN DATA ONLY. Strings, integers and type names are read out of the
+# ErrorRecord. No COM object, no Range, no Workbook and no Application is
+# captured, held or rendered - the diagnostic ledger must never become a reason
+# for an RCW to outlive its scope.
+function Format-Phase5Err {
+    param($ErrorRecord)
+    if ($null -eq $ErrorRecord) { return 'unknown error' }
+    $parts = @()
+
+    # The exception chain, outermost first. A MethodInvocationException wrapping
+    # the real cause is exactly the shape a .NET or COM binding fault takes, and
+    # reporting only the outer type hides it.
+    $exception = $null
+    try { $exception = $ErrorRecord.Exception } catch { }
+    $depth = 0
+    while (($null -ne $exception) -and ($depth -lt 5)) {
+        $type = ''
+        try { $type = [string]$exception.GetType().FullName } catch { $type = 'unknown type' }
+        $message = ''
+        try { $message = [string]$exception.Message } catch { }
+        if ($depth -eq 0) {
+            $parts += ($type + ': ' + $message)
+        } else {
+            $parts += ('  inner[' + [string]$depth + '] ' + $type + ': ' + $message)
+        }
+        $next = $null
+        try { $next = $exception.InnerException } catch { }
+        $exception = $next
+        $depth++
+    }
+    if ($parts.Count -eq 0) {
+        try { $parts += [string]$ErrorRecord } catch { $parts += 'unknown error' }
+    }
+
+    # WHERE. Script, line, column and the offending source line itself.
+    $invocation = $null
+    try { $invocation = $ErrorRecord.InvocationInfo } catch { }
+    if ($null -ne $invocation) {
+        $script = ''
+        try { $script = [string]$invocation.ScriptName } catch { }
+        if ([string]::IsNullOrWhiteSpace($script)) { $script = '<no script>' }
+        else { $script = Split-Path -Leaf $script }
+        $line = 0
+        try { $line = [int]$invocation.ScriptLineNumber } catch { }
+        $column = 0
+        try { $column = [int]$invocation.OffsetInLine } catch { }
+        $parts += ('  at ' + $script + ':' + [string]$line + ' col ' + [string]$column)
+        $text = ''
+        try { $text = [string]$invocation.Line } catch { }
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            $parts += ('  source: ' + $text.Trim())
+        }
+    }
+
+    # THE CALL CHAIN. Which helper the throwing statement was reached through is
+    # the whole question when one shared path serves eleven scenarios.
+    $stack = ''
+    try { $stack = [string]$ErrorRecord.ScriptStackTrace } catch { }
+    if (-not [string]::IsNullOrWhiteSpace($stack)) {
+        foreach ($frame in ($stack -split "`r?`n")) {
+            if (-not [string]::IsNullOrWhiteSpace($frame)) { $parts += ('  ' + $frame.Trim()) }
+        }
+    }
+
+    $category = ''
+    try { $category = [string]$ErrorRecord.CategoryInfo.Category } catch { }
+    $target = ''
+    try { $target = [string]$ErrorRecord.CategoryInfo.TargetType } catch { }
+    if (-not [string]::IsNullOrWhiteSpace($category)) {
+        $suffix = ''
+        if (-not [string]::IsNullOrWhiteSpace($target)) { $suffix = ', target type ' + $target }
+        $parts += ('  category: ' + $category + $suffix)
+    }
+
+    return ($parts -join [string][char]10)
+}
+
+# ===========================================================================
 # Reading the calculation workspace
 # ===========================================================================
 # Every address comes from the inspection projection. Nothing below names a cell
@@ -333,9 +636,28 @@ function Invoke-Phase5CoveragePreflight {
 # instead of leaving them pointing at a stale coordinate.
 function Get-CalcScalar {
     param($Workbook, $Inspection, [string]$Block, [string]$FieldKey)
-    $block = $Inspection.calc.scalar_blocks.$Block
-    $row = [int]$block.rows.$FieldKey
-    $address = [string]$block.value_column + [string]$row
+    # RUN-2 ROOT. This used to read:
+    #
+    #     $block = $Inspection.calc.scalar_blocks.$Block
+    #
+    # PowerShell variable names are CASE-INSENSITIVE, so $block IS $Block - the
+    # [string]-typed parameter. A typed parameter keeps its type constraint for
+    # the life of the variable, so assigning the block PSCustomObject to it
+    # CONVERTED it to a string ("@{value_column=C; rows=...}"). The next line
+    # then asked a String for .rows and Set-StrictMode turned that into
+    #
+    #     PropertyNotFoundException: The property 'rows' cannot be found on this object
+    #
+    # every single time. Run 2 reported it from P5-S2, P5-ST, P5-S3, P5-S4,
+    # P5-S5, P5-KP and P5-RC - seven scenarios, one defect, and nothing to do
+    # with the inspection projection, which carries 'rows' for both blocks.
+    #
+    # The local is named for what it holds and can no longer collide with a
+    # parameter. A source test scans EVERY typed parameter in this file for the
+    # same shadowing, so the class of defect is closed, not just this instance.
+    $blockSpec = $Inspection.calc.scalar_blocks.$Block
+    $row = [int]$blockSpec.rows.$FieldKey
+    $address = [string]$blockSpec.value_column + [string]$row
     # Each COM object into its OWN named variable, released in the narrowest
     # scope, exactly as every Phase-4 helper does. No chained member expression
     # creates an intermediate RCW that nothing owns.
@@ -1761,7 +2083,7 @@ function Invoke-Phase5GateBScenarios {
         Add-Result 'P5-FX' 'Locked FX seed captured before any Phase-5 mutation' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-FX' 'Locked FX seed capture' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-FX' 'Locked FX seed capture' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -1769,39 +2091,40 @@ function Invoke-Phase5GateBScenarios {
     # -------------------------------------------------------------------
     try {
         $list = New-Checklist
-        $project = $null; $components = $null
-        try {
-            $project = $Workbook.VBProject
-            $components = $project.VBComponents
-            $present = @()
-            for ($i = 1; $i -le $components.Count; $i++) {
-                $component = $null
-                try { $component = $components.Item($i); $present += [string]$component.Name }
-                finally { if ($null -ne $component) { Release-Transient $component 'VBComponent'; $component = $null } }
-            }
-            # BY NAME, in both directions. A count alone would pass a project that
-            # had gained a stray module and lost a real one.
-            $expected = @($Manifest.vba.modules | ForEach-Object { [string]$_.name })
-            $null = Add-Check $list 'the manifest declares 15 production modules' `
-                ($expected.Count -eq 15) ("declared " + $expected.Count)
-            foreach ($name in $expected) {
-                $null = Add-Check $list ('the module ' + $name + ' persists in the saved project') `
-                    ($present -contains $name)
-            }
-            $extra = @($present | Where-Object { $expected -notcontains $_ })
-            $null = Add-Check $list 'no module outside the manifest persists' ($extra.Count -eq 0) `
-                ("extra: " + ($extra -join ', '))
-        } finally {
-            if ($null -ne $components) { Release-Transient $components 'VBComponents'; $components = $null }
-            if ($null -ne $project) { Release-Transient $project 'VBProject'; $project = $null }
-        }
+        # BY NAME AND BY TYPE, in both directions. A count alone would pass a
+        # project that had gained a stray module and lost a real one; a
+        # name-only scan over every component fails on the sheet and
+        # ThisWorkbook documents Excel creates, which is what Run 2 hit.
+        $expected = @($Manifest.vba.modules | ForEach-Object { [string]$_.name })
+        $null = Add-Check $list 'the manifest declares 15 production modules' `
+            ($expected.Count -eq 15) ("declared " + $expected.Count)
+        $components = @(Get-Phase5VbComponentInventory -Workbook $Workbook)
+        Add-Phase5ModuleInventoryChecks -List $list -Components $components `
+            -ExpectedModules $expected -ExpectedSheetCount (@($Manifest.sheets).Count) `
+            -Label 'saved project'
 
         # --- exactly five buttons, and not one of them calls PCCM_Calculate ---
         $declared = @($Manifest.buttons)
         $null = Add-Check $list 'the manifest declares exactly five buttons' ($declared.Count -eq 5) `
             ("declared " + $declared.Count)
-        $shapesFound = 0
-        $onActions = @()
+        # RUN-2 ROOT. This used to count every Shape on every manifest sheet and
+        # require the total to be five:
+        #
+        #   FAIL exactly five command buttons persist in the workbook -- found 6
+        #
+        # while all five declared buttons were present with the right OnAction
+        # and NO shape called PCCM_Calculate. A Shape is not a command button: a
+        # command button is a shape BOUND TO A MACRO. The count said six and did
+        # not say what the sixth was, so the run could not be diagnosed from its
+        # own evidence.
+        #
+        # Every shape is still enumerated and still judged. What changed is that
+        # the inventory is now taken by NAME and OnAction, the command-button
+        # requirement is applied to the shapes that actually command something,
+        # and any shape that is not one of the five declared buttons must carry
+        # NO PCCM_ macro at all. That is strictly stronger than the count it
+        # replaces, and it names what it found.
+        $shapeRecords = @()
         foreach ($sheetSpec in @($Manifest.sheets)) {
             $sheets = $null; $sheet = $null; $shapes = $null
             try {
@@ -1812,8 +2135,11 @@ function Invoke-Phase5GateBScenarios {
                     $shape = $null
                     try {
                         $shape = $shapes.Item($i)
-                        $shapesFound++
-                        $onActions += [string]$shape.OnAction
+                        $shapeRecords += [pscustomobject]@{
+                            Sheet    = [string]$sheetSpec.name
+                            Name     = [string]$shape.Name
+                            OnAction = [string]$shape.OnAction
+                        }
                     } finally {
                         if ($null -ne $shape) { Release-Transient $shape 'Shape'; $shape = $null }
                     }
@@ -1824,8 +2150,33 @@ function Invoke-Phase5GateBScenarios {
                 if ($null -ne $sheets) { Release-Transient $sheets 'Worksheets'; $sheets = $null }
             }
         }
-        $null = Add-Check $list 'exactly five command buttons persist in the workbook' `
-            ($shapesFound -eq 5) ("found " + $shapesFound)
+        $onActions = @($shapeRecords | ForEach-Object { [string]$_.OnAction })
+        $shapeInventory = (@($shapeRecords | ForEach-Object {
+            [string]$_.Sheet + '!' + [string]$_.Name + ' -> ' +
+            $(if ([string]::IsNullOrWhiteSpace([string]$_.OnAction)) { '<no macro>' }
+              else { [string]$_.OnAction })
+        }) -join ', ')
+        $declaredNames = @($declared | ForEach-Object { [string]$_.shape_name })
+        $commandButtons = @($shapeRecords | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.OnAction) })
+        $null = Add-Check $list 'exactly five shapes are bound to a macro' `
+            ($commandButtons.Count -eq 5) `
+            ("bound " + $commandButtons.Count + "; all shapes: " + $shapeInventory)
+        $undeclaredBound = @($commandButtons | Where-Object { $declaredNames -notcontains [string]$_.Name })
+        $null = Add-Check $list 'every macro-bound shape is one of the five declared buttons' `
+            ($undeclaredBound.Count -eq 0) `
+            ("undeclared: " + (@($undeclaredBound | ForEach-Object {
+                [string]$_.Sheet + '!' + [string]$_.Name + ' -> ' + [string]$_.OnAction }) -join ', '))
+        # AND NO UNDECLARED SHAPE MAY REACH THE PCCM SURFACE AT ALL, bound or not.
+        $strayPccm = @($shapeRecords | Where-Object {
+            ($declaredNames -notcontains [string]$_.Name) -and
+            ([string]$_.OnAction -like 'PCCM_*') })
+        $null = Add-Check $list 'no undeclared shape invokes a PCCM_ procedure' `
+            ($strayPccm.Count -eq 0) `
+            ((@($strayPccm | ForEach-Object {
+                [string]$_.Sheet + '!' + [string]$_.Name + ' -> ' + [string]$_.OnAction }) -join ', '))
+        Add-Note ('P5-M: shape inventory across the ' + [string]@($Manifest.sheets).Count +
+                  ' manifest sheets: ' + $shapeInventory)
         foreach ($button in $declared) {
             $null = Add-Check $list ('the button ' + $button.shape_name + ' calls ' + $button.entry_point) `
                 ($onActions -contains [string]$button.entry_point)
@@ -1859,13 +2210,13 @@ function Invoke-Phase5GateBScenarios {
                     $callable = $true
                     $detail = "returned '" + [string]$probe + "'"
                 }
-            } catch { $detail = (Format-Err $_) }
+            } catch { $detail = (Format-Phase5Err $_) }
             $null = Add-Check $list ('the API procedure ' + $name + ' is callable') $callable $detail
         }
         Add-Result 'P5-M' 'Persisted project: 15 modules by name, 5 buttons, 6 API procedures' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-M' 'Persisted project inventory' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-M' 'Persisted project inventory' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -1878,16 +2229,29 @@ function Invoke-Phase5GateBScenarios {
             $project = $Workbook.VBProject
             $components = $project.VBComponents
             $offenders = @()
+            $declaredHandlers = @()
             for ($i = 1; $i -le $components.Count; $i++) {
                 $component = $null; $module = $null
                 try {
                     $component = $components.Item($i)
                     $module = $component.CodeModule
                     if ($module.CountOfLines -gt 0) {
-                        $text = [string]$module.Lines(1, $module.CountOfLines)
+                        $raw = [string]$module.Lines(1, $module.CountOfLines)
+                        # COMMENTARY IS NOT CODE. The whole Run-2 P5-EV failure.
+                        $code = Remove-VbaCommentary -Code $raw
                         foreach ($forbidden in @($Manifest.vba.forbidden_constructs)) {
-                            if ($text -match [regex]::Escape([string]$forbidden)) {
+                            if ($code -match [regex]::Escape([string]$forbidden)) {
                                 $offenders += ([string]$component.Name + ': ' + [string]$forbidden)
+                            }
+                        }
+                        # AND THE TWO EVENT HANDLERS ARE ALSO CHECKED AS
+                        # DECLARATIONS, against the same stripped code. The
+                        # general scan above would catch a bare mention; this
+                        # names a real handler as a real handler, which is the
+                        # distinction the requirement is actually about.
+                        foreach ($handler in 'Worksheet_Change', 'Workbook_SheetChange') {
+                            if (Test-VbaProcedureDeclared -Code $code -ProcedureName $handler) {
+                                $declaredHandlers += ([string]$component.Name + ': ' + $handler)
                             }
                         }
                     }
@@ -1896,8 +2260,12 @@ function Invoke-Phase5GateBScenarios {
                     if ($null -ne $component) { Release-Transient $component 'VBComponent'; $component = $null }
                 }
             }
-            $null = Add-Check $list 'no forbidden construct exists in the real Stage-B project' `
+            $null = Add-Check $list `
+                'no forbidden construct exists in the EXECUTABLE code of the real Stage-B project' `
                 ($offenders.Count -eq 0) ($offenders -join '; ')
+            $null = Add-Check $list `
+                'no change-event procedure is DECLARED anywhere in the project' `
+                ($declaredHandlers.Count -eq 0) ($declaredHandlers -join '; ')
             foreach ($handler in 'Worksheet_Change', 'Workbook_SheetChange') {
                 $null = Add-Check $list ('the manifest forbids ' + $handler) `
                     (@($Manifest.vba.forbidden_constructs) -contains $handler)
@@ -1909,7 +2277,7 @@ function Invoke-Phase5GateBScenarios {
         Add-Result 'P5-EV' 'No change events: the status cell is last-evaluated, not live' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-EV' 'No change events' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-EV' 'No change events' 'FAIL' (Format-Phase5Err $_)
     }
 
     # ===================================================================
@@ -1948,7 +2316,7 @@ function Invoke-Phase5GateBScenarios {
         Add-Result 'P5-D0' 'Transient diagnostic module imported AFTER the A1 production compile' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-D0' 'Transient diagnostic module import' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-D0' 'Transient diagnostic module import' 'FAIL' (Format-Phase5Err $_)
     }
 
     if ($diagnosticImported) {
@@ -1982,7 +2350,7 @@ function Invoke-Phase5GateBScenarios {
             Add-Result 'P5-D1' 'Direct VBA: ten canonical numeric encodings (plan case 26)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D1' 'Direct VBA: canonical numeric encodings' 'FAIL' (Format-Err $_)
+            Add-Result 'P5-D1' 'Direct VBA: canonical numeric encodings' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2025,7 +2393,7 @@ function Invoke-Phase5GateBScenarios {
             Add-Result 'P5-D2' 'Direct VBA: decimal-separator injection, both separators (plan case 35)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D2' 'Direct VBA: decimal-separator injection' 'FAIL' (Format-Err $_)
+            Add-Result 'P5-D2' 'Direct VBA: decimal-separator injection' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2055,7 +2423,7 @@ function Invoke-Phase5GateBScenarios {
             Add-Result 'P5-D3' 'Direct VBA: the four Double-only reductions (plan case 36)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D3' 'Direct VBA: the Double-only reducer' 'FAIL' (Format-Err $_)
+            Add-Result 'P5-D3' 'Direct VBA: the Double-only reducer' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2114,7 +2482,7 @@ function Invoke-Phase5GateBScenarios {
             Add-Result 'P5-D4' 'Direct VBA: UTF-16 signed AscW, unit counting and prefixes (plan case 26)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D4' 'Direct VBA: UTF-16 behaviour' 'FAIL' (Format-Err $_)
+            Add-Result 'P5-D4' 'Direct VBA: UTF-16 behaviour' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2138,7 +2506,7 @@ function Invoke-Phase5GateBScenarios {
             Add-Result 'P5-D5' 'Direct VBA: the complete reference stream, units and digest (plan case 26)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D5' 'Direct VBA: the reference stream' 'FAIL' (Format-Err $_)
+            Add-Result 'P5-D5' 'Direct VBA: the reference stream' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2172,7 +2540,7 @@ function Invoke-Phase5GateBScenarios {
             Add-Result 'P5-D6' 'Direct VBA: delimiter-hostile field content (plan case 27)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D6' 'Direct VBA: delimiter-hostile field content' 'FAIL' (Format-Err $_)
+            Add-Result 'P5-D6' 'Direct VBA: delimiter-hostile field content' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2200,7 +2568,7 @@ function Invoke-Phase5GateBScenarios {
             Add-Result 'P5-D7' 'Direct VBA: convex statistics at the overflow boundary (plan case 28)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D7' 'Direct VBA: convex statistics at the overflow boundary' 'FAIL' (Format-Err $_)
+            Add-Result 'P5-D7' 'Direct VBA: convex statistics at the overflow boundary' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2250,7 +2618,7 @@ function Invoke-Phase5GateBScenarios {
                 'Direct VBA: plan section 18 predicates the workbook cannot reach, through modCalcCheck' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-DC' 'Direct VBA: modCalcCheck predicates' 'FAIL' (Format-Err $_)
+            Add-Result 'P5-DC' 'Direct VBA: modCalcCheck predicates' 'FAIL' (Format-Phase5Err $_)
         }
     } else {
         foreach ($id in 'P5-D1', 'P5-D2', 'P5-D3', 'P5-D4', 'P5-D5', 'P5-D6', 'P5-D7',
@@ -2278,27 +2646,34 @@ function Invoke-Phase5GateBScenarios {
                 $components.Remove($target)
                 Release-Transient $target 'VBComponent(diagnostic)'; $target = $null
             }
-            $present = @()
-            for ($i = 1; $i -le $components.Count; $i++) {
-                $component = $null
-                try { $component = $components.Item($i); $present += [string]$component.Name }
-                finally { if ($null -ne $component) { Release-Transient $component 'VBComponent'; $component = $null } }
-            }
-            $null = Add-Check $list 'the diagnostic module is absent from the project' `
-                ($present -notcontains $diagnosticName) (($present -join ', '))
-            $expected = @($Manifest.vba.modules | ForEach-Object { [string]$_.name })
-            $null = Add-Check $list 'the inventory is exactly the 15 manifest modules again' `
-                ((@($present).Count -eq $expected.Count) -and `
-                 (@($present | Where-Object { $expected -notcontains $_ }).Count -eq 0)) `
-                ("present " + @($present).Count + " of " + $expected.Count)
-            foreach ($name in $expected) {
-                $null = Add-Check $list ('the production module ' + $name + ' survived the removal') `
-                    ($present -contains $name)
-            }
         } finally {
             if ($null -ne $components) { Release-Transient $components 'VBComponents'; $components = $null }
             if ($null -ne $project) { Release-Transient $project 'VBProject'; $project = $null }
         }
+
+        # RUN-2 ROOT, same defect as P5-M: this compared every component name
+        # against the manifest and reported "present 30 of 15" while the
+        # diagnostic module was genuinely gone and all fifteen production
+        # modules were genuinely there. The inventory is judged by TYPE now, by
+        # the SAME helper P5-M uses, so the two cannot drift apart.
+        #
+        # The diagnostic module is a STANDARD module, so its absence is proved
+        # against the standard-module partition - the partition it would have to
+        # reappear in. A document component cannot mask it and cannot be
+        # mistaken for it.
+        $inventory = @(Get-Phase5VbComponentInventory -Workbook $Workbook)
+        $standardNames = @($inventory |
+            Where-Object { [int]$_.Type -eq $script:VbextComponentTypes.StdModule } |
+            ForEach-Object { [string]$_.Name })
+        $null = Add-Check $list 'the diagnostic module is absent from the standard modules' `
+            ($standardNames -notcontains $diagnosticName) ($standardNames -join ', ')
+        $null = Add-Check $list 'the diagnostic module is absent from the project entirely' `
+            (@($inventory | Where-Object { [string]$_.Name -eq $diagnosticName }).Count -eq 0) `
+            (Format-VbComponentList $inventory)
+        $expected = @($Manifest.vba.modules | ForEach-Object { [string]$_.name })
+        Add-Phase5ModuleInventoryChecks -List $list -Components $inventory `
+            -ExpectedModules $expected -ExpectedSheetCount (@($Manifest.sheets).Count) `
+            -Label 'after removal'
         # It must also be gone from the RUNTIME: a removed component whose
         # procedure still answers would mean the removal did not take.
         $stillCallable = $false
@@ -2307,7 +2682,7 @@ function Invoke-Phase5GateBScenarios {
         Add-Result 'P5-D8' 'Transient diagnostic module removed; inventory back to 15' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-D8' 'Transient diagnostic module removal' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-D8' 'Transient diagnostic module removal' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2374,7 +2749,7 @@ function Invoke-Phase5GateBScenarios {
             ('Analytical fixtures through PCCM_Calculate: ' + $covered.Count + ' cases, all emitted values') `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-AN' 'Analytical fixtures through PCCM_Calculate' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-AN' 'Analytical fixtures through PCCM_Calculate' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2456,7 +2831,7 @@ function Invoke-Phase5GateBScenarios {
             ('Prerequisite refusals: ' + $covered.Count + ' cases; the prior successful snapshot survives each') `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-RF' 'Prerequisite refusals' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-RF' 'Prerequisite refusals' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2529,7 +2904,7 @@ function Invoke-Phase5GateBScenarios {
             ('Plan section 18 prerequisite matrix: ' + $covered.Count + ' predicates, each with its own detail discriminator') `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-PQ' 'Plan section 18 prerequisite matrix' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-PQ' 'Plan section 18 prerequisite matrix' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2607,7 +2982,7 @@ function Invoke-Phase5GateBScenarios {
             ('Referenced-only no-block semantics: ' + $covered.Count + ' assumptions that must not block') `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-PN' 'Referenced-only no-block semantics' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-PN' 'Referenced-only no-block semantics' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2711,7 +3086,7 @@ function Invoke-Phase5GateBScenarios {
             'Driver-audit reconstruction: A/B/C/D from the ACTUAL tblCalcDrivers columns to the ACTUAL calc_totals' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-AR' 'Driver-audit reconstruction' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-AR' 'Driver-audit reconstruction' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2907,7 +3282,7 @@ function Invoke-Phase5GateBScenarios {
             'Reconciliation identities I1, I2, I3a-c, I4a-c, I5 - production Reconcile is the authority' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-ID' 'Reconciliation identities' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-ID' 'Reconciliation identities' 'FAIL' (Format-Phase5Err $_)
     }
 
     # ===================================================================
@@ -2982,7 +3357,7 @@ function Invoke-Phase5GateBScenarios {
         Add-Result 'P5-S1' 'Status row 1: successful calculation, unchanged inputs' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-S1' 'Status row 1' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-S1' 'Status row 1' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3108,8 +3483,8 @@ function Invoke-Phase5GateBScenarios {
         $establishedFingerprint = [string]$Excel.Run('PCCM_CalculationFingerprint')
         $establishedState = Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state'
     } catch {
-        Add-Result 'P5-S2' 'Status row 2' 'FAIL' (Format-Err $_)
-        Add-Result 'P5-ST' 'Primary staleness sequence' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-S2' 'Status row 2' 'FAIL' (Format-Phase5Err $_)
+        Add-Result 'P5-ST' 'Primary staleness sequence' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3257,7 +3632,7 @@ function Invoke-Phase5GateBScenarios {
             'Non-staleness, four INDEPENDENT probes: description, real multi-row reorder, confidence level, unreferenced FX' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-NS' 'Non-staleness proofs' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-NS' 'Non-staleness proofs' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3346,7 +3721,7 @@ function Invoke-Phase5GateBScenarios {
             'CURRENT status with a historical REFUSED attempt; see P5-S5'
     } catch {
         foreach ($id in 'P5-S3', 'P5-S4', 'P5-S5', 'P5-KP', 'P5-RC') {
-            Add-Result $id 'Refusal / revert sequence' 'FAIL' (Format-Err $_)
+            Add-Result $id 'Refusal / revert sequence' 'FAIL' (Format-Phase5Err $_)
         }
     }
 
@@ -3526,7 +3901,7 @@ function Invoke-Phase5GateBScenarios {
             $null = Add-Check $list 'the model calculates again once the failpoint is disarmed' `
                 ([string]$Excel.Run('PCCM_CalculationAttemptResult') -eq 'SUCCESS')
         } catch {
-            $null = Add-Check $list 'the rollback scenario ran to completion' $false (Format-Err $_)
+            $null = Add-Check $list 'the rollback scenario ran to completion' $false (Format-Phase5Err $_)
         }
         Add-Result $ScenarioId $Title $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) `
             (Format-Checklist $list)
@@ -3594,7 +3969,7 @@ function Invoke-Phase5GateBScenarios {
         Add-Result 'P5-AX' 'Automation/invocation axis read separately from the calculation attempt' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-AX' 'Automation/invocation axis' 'FAIL' (Format-Err $_)
+        Add-Result 'P5-AX' 'Automation/invocation axis' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------

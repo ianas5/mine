@@ -1395,3 +1395,141 @@ reaches for `$Workbook`, `$Excel`, `.Run(`, `VBProject` or any `PCCM_` endpoint.
 
 Runtime Run 1 stands as historical evidence of a harness sequencing defect. It
 was not a production failure, and it has not been rerun.
+
+---
+
+## Runtime Run 2: four harness roots and one production finding
+
+Run 2 (harness commit `cc70c37`) reached the Phase-5 scenarios and finalised
+correctly — 35/35 Phase-4, `P5-FIN` PASS, clean shutdown ledger, natural Excel
+exit. It then failed 24 scenarios. They are not 24 defects. Four harness roots
+account for 22 of them; the remaining two are one production finding.
+
+| Root | Scenarios | Run-2 evidence |
+|---|---|---|
+| R1 inventory semantics | P5-M, P5-D8 | `present 30 of 15`, `extra: ThisWorkbook, shDashboard, …` |
+| R2 commentary read as code | P5-EV | `modAppState: Worksheet_Change; modAppState: NPV` |
+| R3 typed-parameter shadowing | 7 | `PropertyNotFoundException: The property 'rows' cannot be found` |
+| R4 shape count as button count | P5-M | `found 6` |
+| **P** production canonical number | P5-D1, P5-D2 | `1.7976931348623200E+308` vs `…3157E+308` |
+
+### R1 — a VBProject is not a module list
+
+`P5-M` and `P5-D8` enumerated `VBProject.VBComponents` and compared every
+component *name* against the manifest's 15-entry `vba.modules`. The 30 is
+arithmetic, not a defect:
+
+```
+15 standard modules + 14 sheet documents + 1 ThisWorkbook = 30 components
+```
+
+`vba.modules` describes the production **standard modules**. It never described
+document components and never could — Excel creates those when a sheet exists;
+the bootstrap does not import them.
+
+The inventory is now partitioned by VBIDE component type
+(`Get-Phase5VbComponentInventory` → `Add-Phase5ModuleInventoryChecks`, shared by
+both scenarios so they cannot drift). Nothing was weakened to "at least 15":
+the standard-module set must still equal the manifest set exactly, by name, in
+both directions. Document components are *counted* (`sheets + 1`) so a stray one
+cannot hide there either, and class modules, UserForms and ActiveX designers are
+excluded outright. `P5-D8` proves the diagnostic module's absence against the
+standard-module partition — the partition it would have to reappear in.
+
+### R2 — a comment about `Worksheet_Change` is not a `Worksheet_Change`
+
+`P5-EV` searched each `CodeModule`'s raw text for every
+`forbidden_constructs` entry. Both Run-2 hits are prose in accepted production
+source:
+
+```
+modAppState.bas:7    ' … No cost, risk, escalation, FX, NPV, EMV,
+modAppState.bas:78   ' … no input Worksheet_Change handler, and this
+```
+
+A comment explaining that there is no handler was read as a handler. The comment
+stays — it is the reason the guarantee exists.
+
+`Remove-VbaCommentary` strips comments (tracking string literals, so an
+apostrophe inside `"it's"` does not truncate the statement, and handling
+`Rem`-form) before the same manifest-driven scan runs. A second check,
+`Test-VbaProcedureDeclared`, additionally reports a real
+`Sub Worksheet_Change(` / `Sub Workbook_SheetChange(` **declaration** as the
+declaration it is. No construct left the manifest list and no blanket text
+substitution is used, so a real declaration on the line after a comment is still
+caught.
+
+The Python side already drew this line — `builder/pccm_builder/vba_source.py`
+strips comments and string literals before any structural scan, for exactly this
+reason. This is the same rule applied to the code Excel actually holds.
+
+### R3 — one shadowed parameter, seven scenarios
+
+```powershell
+function Get-CalcScalar {
+    param($Workbook, $Inspection, [string]$Block, [string]$FieldKey)
+    $block = $Inspection.calc.scalar_blocks.$Block     # <-- $block IS $Block
+    $row = [int]$block.rows.$FieldKey                  # <-- String has no .rows
+```
+
+PowerShell variable names are **case-insensitive**, and a typed parameter keeps
+its constraint for the life of the variable. Assigning the block PSCustomObject
+to `[string]$Block` converted it to `"@{value_column=C; rows=…}"`; the next line
+asked a String for `.rows` and StrictMode did the rest — on **every** call.
+P5-S2, P5-ST, P5-S3, P5-S4, P5-S5, P5-KP and P5-RC are one defect.
+
+The inspection projection was never at fault: it carries `rows` for both
+`calc_state` and `calc_totals`, as `phase5_gate_b_inspection.json` shows. The
+schema is unchanged.
+
+The local is renamed `$blockSpec`, and a source test scans **every** typed
+parameter in all three PowerShell files for the same shadowing — the class is
+closed, not just the instance.
+
+### R4 — a Shape is not a command button
+
+`P5-M` counted every `Shape` on every manifest sheet and required five, while
+all five declared buttons were present with the right `OnAction` and no shape
+called `PCCM_Calculate`. It reported `found 6` and did not say what the sixth
+was, so the run could not be diagnosed from its own evidence.
+
+A command button is a shape **bound to a macro**. Every shape is still
+enumerated and still judged; the five-button rule now applies to the bound
+shapes, every bound shape must be one of the five declared buttons, and no
+undeclared shape may carry a `PCCM_` macro at all. The inventory is reported by
+`sheet!name -> macro`. This is strictly stronger than the count it replaces —
+an unbound decoration passes, a sixth *bound* shape does not.
+
+### Diagnostics — Run 2 could not be located from its own output
+
+Eleven scenarios reported one indistinguishable sentence:
+
+```
+System.InvalidCastException: Unable to cast object of type 'System.Double' to type 'System.String'.
+```
+
+The accepted Phase-4 `Format-Err` returns exception type and message and nothing
+else. `Format-Phase5Err` adds the inner-exception chain, script/line/column, the
+offending source line, and the `ScriptStackTrace` frame by frame — which is what
+distinguishes `Set-Phase5Fixture → Reset-Phase5FxTable` from
+`Set-Phase5Fixture → Write-Phase5Driver` when one shared path serves eleven
+scenarios. It reads plain data only: no COM object reaches the ledger.
+`Format-Err` itself is accepted Phase-4 source and is untouched.
+
+### What Run 2 proved *works*
+
+`P5-FX` passed and recorded, on real Windows PowerShell 5.1 and real Excel:
+
+```
+P5-FX: locked FX seed captured as String'SAR' / Double:1
+```
+
+That is `New-Object 'object[]' $colCount`, index assignment, `Write-RowObject`
+and `Format-Phase5Typed` all behaving exactly as designed — a String stayed a
+String and a numeric stayed a Double across the COM boundary. The round-5 typed
+reader is therefore **not** the `InvalidCastException` boundary, and it was not
+changed. Stringifying `Value2` would destroy the evidence architecture for
+nothing.
+
+The `Double → String` cast is **not yet root-caused**, and is deliberately not
+guessed at. See the Run-2 review return for the narrowed candidate set.
