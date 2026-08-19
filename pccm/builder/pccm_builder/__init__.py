@@ -25,6 +25,7 @@ not re-exported here.
 """
 
 from .calc_emit import emit_calc_artifacts
+from .gate_b_inspection import emit_inspection
 from .calc_loader import (
     CalcContractError,
     load_calc_contract,
@@ -47,6 +48,7 @@ __all__ = [
     "StructureContractError",    # build_stage_a.py, Phase 4 tests
     "build_workbook",            # build_stage_a.py, all structural test suites
     "emit_calc_artifacts",       # build_stage_a.py, Phase 5 Gate-A Step-3 tests
+    "emit_inspection",           # build_stage_a.py, Phase 5 Gate-B harness
     "emit_stage_b",              # build_stage_a.py, Phase 4 Stage-B emission tests
     "load_calc_contract",        # Phase 5 Gate-A Step-1 tests
     "load_contract",             # build_stage_a.py, all test suites

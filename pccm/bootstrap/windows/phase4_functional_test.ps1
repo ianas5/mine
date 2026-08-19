@@ -1,7 +1,9 @@
 <#
 .SYNOPSIS
-    PCCM Phase-4 Windows functional test harness. Exercises the structural runtime
-    against a real Excel instance and produces a human-readable report.
+    PCCM Windows functional test harness: the accepted Phase-4 structural matrix,
+    plus the Phase-5 Gate-B calculation scenarios dot-sourced into the same run.
+    Exercises the runtime against a real Excel instance and produces a
+    human-readable report.
 
 .DESCRIPTION
     Gate-A source review is approved. Two Gate-B runs have happened on the target
@@ -103,6 +105,48 @@
           ID_COUNTER_MAX refuses allocation without overflowing counter + 1, while
           structural revalidation stays clean and Apply Timeline still succeeds
 
+    PHASE-5 GATE B, added additively and dot-sourced from
+    phase5_gate_b_scenarios.ps1. It runs inside THIS script's one COM lifecycle,
+    against the same Excel instance, the same workbook and the same Stage-B
+    bootstrap, and reports through the same Add-Result. The 35-scenario Phase-4
+    matrix above is unchanged and remains mandatory: P5-P4 checks it reached
+    35/35 with 0 FAIL and 0 SKIP and reports a FAIL, never a SKIP, if it did not.
+
+      P5-PRE Coverage preflight, pure PowerShell, BEFORE Excel: every plan-case
+          ID emitted into phase5_cases.json maps to a Windows scenario, no
+          mapping is a ghost, and every direct-vector set is complete
+      P5-P4  The Phase-4 prerequisite, checked rather than assumed
+      P5-M   The persisted project: 15 modules BY NAME, exactly five buttons, no
+          shape with OnAction = PCCM_Calculate, six api_procedures consumed AS
+          api_procedures and not folded into entry_points
+      P5-EV  No Worksheet_Change / Workbook_SheetChange in the real project
+      P5-D0  The TRANSIENT diagnostic module, imported only AFTER A1 has proved
+          the production project compiles
+      P5-D1..D7 The locked section-24.1 vectors on real VBA: ten canonical numeric
+          encodings, both decimal separators injected into the accepted encoder,
+          all four Double-only reductions, the UTF-16 set, the 366-unit
+          reference stream and its digest, the delimiter-hostile probes, and the
+          convex statistics at the overflow boundary
+      P5-D8  The diagnostic module REMOVED and the inventory back to 15
+      P5-AN  Every analytical fixture through PCCM_Calculate, with EVERY emitted
+          expected value asserted across the five tables and calc_totals
+      P5-RF  Every prerequisite refusal, with no partial analytical output
+      P5-ID  Reconciliation identities I1..I5, cancellation-heavy included
+      P5-S1..S6 The six-row status matrix, all four accessors on every row
+      P5-ST  The primary staleness sequence on a real fingerprinted input
+      P5-NS  Non-staleness: description, a REAL ListObject sort, confidence
+          level, an unreferenced FX assumption
+      P5-KP  A refusal preserves the prior successful snapshot, with C13:C16 and
+          C17:C20 compared as SEPARATE groups
+      P5-RC  Revert to CURRENT without calculating; CURRENT and a historical
+          REFUSED coexist by design
+      P5-FA / P5-FC Rollback at BOTH locked failpoint boundaries
+      P5-AX  The invocation axis and the calculation-attempt axis, read
+          separately and never conflated
+
+    NO PHASE-5 GATE-B RUN HAS BEEN MADE. This harness extension is source under
+    independent review; no Excel COM session has been started for it.
+
     Safety, unchanged from the readiness gate: no security setting is altered, no
     registry key is touched, no Trusted Location is added, and no Excel process
     this script did not create is ever terminated. A forced stop is never reported
@@ -126,6 +170,12 @@ $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptDir 'com_lifecycle.ps1')
+# THE PHASE-5 GATE-B SCENARIOS ARE DOT-SOURCED INTO THIS SCRIPT, not launched as
+# a second harness. They run inside the one COM lifecycle below, against the one
+# Excel instance this script owns, the one workbook it opens and the one Stage-B
+# bootstrap it runs, and they report through the same Add-Result. The Phase-4
+# matrix above them is unchanged and stays mandatory.
+. (Join-Path $scriptDir 'phase5_gate_b_scenarios.ps1')
 
 $pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
 if ([string]::IsNullOrWhiteSpace($BuildDir)) { $BuildDir = Join-Path $pccmRoot 'build' }
@@ -310,6 +360,27 @@ try {
 }
 
 # ===========================================================================
+# P5-PRE. Phase-5 coverage preflight, still BEFORE Excel is started
+# ===========================================================================
+# Same discipline as PRE: everything that can be checked without a COM object is
+# checked without one. A plan case emitted into the corpus and never wired into a
+# Windows scenario stops the run here rather than going missing from a summary.
+try {
+    if (-not (Invoke-Phase5CoveragePreflight -BuildDir $BuildDir)) {
+        Write-Host ''
+        Write-Host 'PHASE-4/5 FUNCTIONAL TEST ABORTED before Excel was started:' -ForegroundColor Red
+        Write-Host 'the Phase-5 plan-case corpus and the Gate-B coverage ledger disagree,' -ForegroundColor Red
+        Write-Host 'so a Gate-B run would report coverage it does not have.' -ForegroundColor Red
+        exit 1
+    }
+} catch {
+    Add-Result 'P5-PRE' 'Phase-5 coverage preflight' 'FAIL' (Format-Err $_)
+    Write-Host ''
+    Write-Host 'PHASE-4/5 FUNCTIONAL TEST ABORTED before Excel was started.' -ForegroundColor Red
+    exit 1
+}
+
+# ===========================================================================
 # Prepare a disposable copy of the build
 # ===========================================================================
 $tempRoot   = $null
@@ -320,19 +391,27 @@ $stageBPath = $null
 try {
     $manifestPath = Join-Path $BuildDir 'stage_b_manifest.json'
     $scenarioPath = Join-Path $BuildDir 'phase4_scenarios.json'
-    foreach ($required in @($manifestPath, $scenarioPath)) {
+    # The Phase-5 authorities. phase5_cases.json is the ONLY expected-value
+    # source for Gate B; phase5_gate_b_inspection.json is the only address one.
+    $casesPath = Join-Path $BuildDir 'phase5_cases.json'
+    $inspectPath = Join-Path $BuildDir 'phase5_gate_b_inspection.json'
+    foreach ($required in @($manifestPath, $scenarioPath, $casesPath, $inspectPath)) {
         if (-not (Test-Path -LiteralPath $required)) {
             throw "$required not found. Run the Stage-A build first: python3 pccm/builder/build_stage_a.py"
         }
     }
     $manifest  = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     $scenarios = Get-Content -LiteralPath $scenarioPath -Raw | ConvertFrom-Json
+    $cases      = Get-Content -LiteralPath $casesPath   -Raw | ConvertFrom-Json
+    $inspection = Get-Content -LiteralPath $inspectPath -Raw | ConvertFrom-Json
 
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("pccm-phase4-" + (Get-Date).ToString('yyyyMMdd-HHmmss'))
     $null = New-Item -ItemType Directory -Path $tempRoot -Force
     Copy-Item -LiteralPath (Join-Path $BuildDir $manifest.stage_a_filename) -Destination $tempRoot
     Copy-Item -LiteralPath $manifestPath -Destination $tempRoot
     Copy-Item -LiteralPath $scenarioPath -Destination $tempRoot
+    Copy-Item -LiteralPath $casesPath -Destination $tempRoot
+    Copy-Item -LiteralPath $inspectPath -Destination $tempRoot
     Copy-Item -LiteralPath (Join-Path $BuildDir 'vba') -Destination $tempRoot -Recurse
 
     $stageBPath = Join-Path $tempRoot $manifest.stage_b_filename
@@ -2837,6 +2916,21 @@ if ($buildOk) {
         Add-Result 'W' 'Representation ceiling' 'FAIL' (Format-Err $_)
     }
 
+    # -------------------------------------------------------------------
+    # PHASE 5 - GATE B
+    # -------------------------------------------------------------------
+    # Inside the SAME driven block, the same $excel, the same $wb, the same
+    # automation session. The Phase-4 matrix above is complete at this point and
+    # its results are passed in, because a Phase-5 result on a workbook whose
+    # structural runtime is broken would be evidence of nothing.
+    try {
+        Invoke-Phase5GateBScenarios -Excel $excel -Workbook $wb -Manifest $manifest `
+            -Inspection $inspection -Cases $cases -ScriptDir $scriptDir `
+            -TempRoot $tempRoot -Results $results
+    } catch {
+        Add-Result 'P5-XX' 'Driving the Phase-5 Gate-B scenarios' 'FAIL' (Format-Err $_)
+    }
+
     $excel.Run('PCCM_AutomationEnd') | Out-Null
   } catch {
     Add-Result 'XX' 'Driving the Stage-B workbook' 'FAIL' (Format-Err $_)
@@ -2917,11 +3011,17 @@ Write-Host ("  {0} passed, {1} failed, {2} skipped" -f `
     $failed.Count, `
     (@($results | Where-Object { $_.Status -eq 'SKIP' })).Count)
 Write-Host ''
+$phase4Ids = Get-Phase4RequiredScenarioIds
+$phase4Passed = @($results | Where-Object { $phase4Ids -contains $_.Id -and $_.Status -eq 'PASS' })
+Write-Host ("  Phase-4 structural matrix: {0} of {1}" -f $phase4Passed.Count, $phase4Ids.Count)
+Write-Host ("  Phase-5 Gate-B scenarios : {0} reported" -f `
+    (@($results | Where-Object { $_.Id -like 'P5-*' })).Count)
+Write-Host ''
 if ($failed.Count -eq 0) {
-    Write-Host 'PHASE-4 FUNCTIONAL TEST: ALL CHECKS PASSED' -ForegroundColor Green
+    Write-Host 'PHASE-4 / PHASE-5 FUNCTIONAL TEST: ALL CHECKS PASSED' -ForegroundColor Green
     Write-Host ''
     exit 0
 }
-Write-Host ("PHASE-4 FUNCTIONAL TEST FAILED: " + (($failed | ForEach-Object { $_.Id }) -join ', ')) -ForegroundColor Red
+Write-Host ("PHASE-4 / PHASE-5 FUNCTIONAL TEST FAILED: " + (($failed | ForEach-Object { $_.Id }) -join ', ')) -ForegroundColor Red
 Write-Host ''
 exit 1

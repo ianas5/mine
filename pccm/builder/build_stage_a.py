@@ -36,6 +36,7 @@ from pccm_builder import (  # noqa: E402
     SpecError,
     build_workbook,
     emit_calc_artifacts,
+    emit_inspection,
     emit_stage_b,
     load_calc_contract,
     load_contract,
@@ -145,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
 
     artifacts = emit_stage_b(out_path.parent, spec, contract, drivers, structure)
     calc_artifacts = emit_calc_artifacts(out_path.parent, spec, calc)
+    # Identities only, for the Gate-B Windows harness. No expected value lives
+    # here; phase5_cases.json remains the sole expected-value authority.
+    inspection = emit_inspection(out_path.parent, calc, contract)
 
     say(f"  built    : {out_path}")
     say(f"  emitted  : {artifacts.module_path}")
@@ -152,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  emitted  : {artifacts.scenario_path}")
     say(f"  emitted  : {calc_artifacts.module_path}")
     say(f"  emitted  : {calc_artifacts.cases_path}")
+    say(f"  emitted  : {inspection.path}")
     say(f"  stamped  : builder {metadata.builder_version}, {metadata.build_timestamp}")
     say("")
     say("Structural verification:")

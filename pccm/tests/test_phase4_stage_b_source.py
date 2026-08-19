@@ -60,6 +60,11 @@ BOOTSTRAP = PCCM_ROOT / "bootstrap" / "windows"
 LIFECYCLE_PS1 = BOOTSTRAP / "com_lifecycle.ps1"
 BUILD_PS1 = BOOTSTRAP / "build_stage_b.ps1"
 HARNESS_PS1 = BOOTSTRAP / "phase4_functional_test.ps1"
+# The Phase-5 Gate-B scenarios, DOT-SOURCED into the harness above. It is not a
+# second harness: it shares that script's scope, its helpers, its one COM
+# lifecycle and its reporting, so a helper it defines is defined for the harness
+# and a helper it calls must exist somewhere in this set.
+SCENARIOS_PS1 = BOOTSTRAP / "phase5_gate_b_scenarios.ps1"
 
 _EMITTED: dict[str, Path] = {}
 
@@ -1871,7 +1876,7 @@ def test_45_every_qualified_vba_call_resolves_to_a_real_procedure() -> None:
 def test_46_every_powershell_helper_invoked_is_defined_somewhere() -> None:
     """A helper removed from com_lifecycle.ps1 must not leave live call sites."""
     defined: set[str] = set()
-    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1, SCENARIOS_PS1):
         defined |= set(re.findall(r"^\s*function\s+([\w-]+)", _ps(path), re.MULTILINE))
 
     # Cmdlets and functions provided by PowerShell itself, used deliberately.
@@ -1884,7 +1889,7 @@ def test_46_every_powershell_helper_invoked_is_defined_somewhere() -> None:
         "Sort-Object", "Measure-Object", "Select-String", "Write-Output",
     }
     problems = []
-    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1):
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1, SCENARIOS_PS1):
         code = _ps_calls(path)
         for name in set(re.findall(r"\b([A-Z][a-z]+-[A-Z][\w]*)\b", code)):
             if name not in defined and name not in builtin:
