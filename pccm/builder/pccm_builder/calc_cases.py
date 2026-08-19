@@ -496,9 +496,41 @@ def evaluate(payload: dict[str, Any], tolerances: Tolerances) -> dict[str, Any]:
     factor tables, each driver's audit row, the six annual columns and the ten
     headline totals. Nothing derived, nothing rounded, nothing formatted.
     """
-    result = calculate(to_model(payload), tolerances)
+    model = to_model(payload)
+    result = calculate(model, tolerances)
     return {
         "resolved_fx": dict(sorted(result.resolved_fx.items())),
+        # ADDED IN GATE-B B1 CORRECTION ROUND 1, and PROJECTED, not computed.
+        #
+        # Independent review found two published `_Calc` columns with no emitted
+        # expectation behind them - tblCalcYears.Calendar Year and
+        # tblCalcFX.Referenced By - so the Windows harness could only have
+        # asserted them by deriving `start_year + index - 1` and counting driver
+        # references in PowerShell. Both facts are already the oracle's:
+        # `AppliedTimeline.project_years()` owns the calendar year and the model's
+        # own driver list owns the reference count. No oracle algorithm changed;
+        # these blocks only surface what `calculate` already had in hand.
+        "calc_years": [
+            {"project_index": index, "calendar_year": year,
+             "discount_factor": result.discount_factors[index]}
+            for index, year in model.timeline.project_years()
+        ],
+        "resolved_fx_rows": [
+            {"currency": currency, "fx_to_sar": rate,
+             "referenced_by": sum(
+                 1 for driver in (*model.cost_drivers, *model.risk_drivers)
+                 if driver.currency == currency
+             )}
+            for currency, rate in sorted(result.resolved_fx.items())
+        ],
+        # The applied-timeline text the successful commit records in C16. The
+        # FORMAT is modCalcReport.AppliedTimelineText's; this is a checked copy,
+        # pinned to that procedure by the Gate-B harness source suite so the two
+        # cannot drift.
+        "applied_timeline": (
+            f"{model.timeline.base_year}/{model.timeline.start_year}"
+            f"/{model.timeline.duration}"
+        ),
         "inflation_factors": [
             {"profile": row.profile, "calendar_year": row.calendar_year,
              "annual_rate": row.annual_rate, "cumulative_factor": row.cumulative_factor}

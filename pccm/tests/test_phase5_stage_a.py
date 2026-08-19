@@ -1147,8 +1147,28 @@ def _reference_payload(model: dict) -> dict:
             return total
         return _rounded(sum((Fraction(t) for t in terms if t is not None), Fraction(0)))
 
+    # The three blocks the Gate-B harness needs, derived here INDEPENDENTLY of the
+    # builder: the calendar years from this reference's own `years` list, the
+    # discount factors from its own recurrence, the reference counts from the
+    # payload's own driver lists, and the applied-timeline text from the payload's
+    # own timeline. Nothing is read back from the emitter.
+    reference_counts = {}
+    for driver in (*model["cost_lines"], *model["risks"]):
+        reference_counts[driver["currency"]] = reference_counts.get(driver["currency"], 0) + 1
+
     return {
         "resolved_fx": resolved_fx,
+        "calc_years": [
+            {"project_index": offset + 1, "calendar_year": years[offset],
+             "discount_factor": discount[offset + 1]}
+            for offset in range(duration)
+        ],
+        "resolved_fx_rows": [
+            {"currency": currency, "fx_to_sar": resolved_fx[currency],
+             "referenced_by": reference_counts[currency]}
+            for currency in sorted(resolved_fx)
+        ],
+        "applied_timeline": f"{base}/{start}/{duration}",
         "inflation_factors": inflation_rows,
         "discount_factors": {str(k): v for k, v in sorted(discount.items())},
         "drivers": drivers,
@@ -1208,6 +1228,29 @@ def _check_payload(ledger: _Ledger, base: str, emitted: dict, model: dict) -> No
     for key, value in reference["discount_factors"].items():
         ledger.number(f"{base}.discount_factors.{key}",
                       emitted["discount_factors"][key], value)
+
+    assert len(emitted["calc_years"]) == len(reference["calc_years"]), base
+    for index, row in enumerate(reference["calc_years"]):
+        path = f"{base}.calc_years[{index}]"
+        ledger.equal(f"{path}.project_index",
+                     emitted["calc_years"][index]["project_index"], row["project_index"])
+        ledger.equal(f"{path}.calendar_year",
+                     emitted["calc_years"][index]["calendar_year"], row["calendar_year"])
+        ledger.number(f"{path}.discount_factor",
+                      emitted["calc_years"][index]["discount_factor"], row["discount_factor"])
+
+    assert len(emitted["resolved_fx_rows"]) == len(reference["resolved_fx_rows"]), base
+    for index, row in enumerate(reference["resolved_fx_rows"]):
+        path = f"{base}.resolved_fx_rows[{index}]"
+        ledger.equal(f"{path}.currency",
+                     emitted["resolved_fx_rows"][index]["currency"], row["currency"])
+        ledger.number(f"{path}.fx_to_sar",
+                      emitted["resolved_fx_rows"][index]["fx_to_sar"], row["fx_to_sar"])
+        ledger.equal(f"{path}.referenced_by",
+                     emitted["resolved_fx_rows"][index]["referenced_by"], row["referenced_by"])
+
+    ledger.equal(f"{base}.applied_timeline", emitted["applied_timeline"],
+                 reference["applied_timeline"])
 
     assert len(emitted["drivers"]) == len(reference["drivers"]), base
     for index, driver in enumerate(reference["drivers"]):

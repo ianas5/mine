@@ -735,18 +735,18 @@ def test_32_the_rollback_comparison_uses_the_right_three_groups() -> None:
     """C13:C16, C23:C32 and the five tables. NOT all of C13:C20."""
     source = _executable(SCENARIOS)
     helper = source[source.index("function Add-SnapshotUnchangedChecks"):]
-    helper = helper[:helper.index("\n    }\n\n") + 6]
+    helper = helper[:helper.index("\nfunction ")]
     assert "$SuccessFields" in helper, "the success record is not compared as its own group"
     assert "$Before.Totals.Keys" in helper, "C23:C32 is not compared"
     assert "$Before.Tables.Keys" in helper, "the five tables are not compared"
     # The unchanged group is the SUCCESS RECORD only, and the attempt fields are
     # deliberately absent from it.
-    declared = re.search(r"\$successRecordFields = @\((.*?)\)", source, re.S)
+    declared = re.search(r"\$script:Phase5SuccessRecordFields = @\((.*?)\)", source, re.S)
     assert declared, "the success-record field group is not declared"
     fields = set(_ps_string_literals(declared.group(1)))
     assert fields == {"last_successful_stamp", "last_successful_fingerprint",
                       "fingerprint_version", "last_successful_applied_timeline"}
-    attempt = re.search(r"\$attemptFields = @\((.*?)\)", source, re.S)
+    attempt = re.search(r"\$script:Phase5AttemptFields = @\((.*?)\)", source, re.S)
     assert attempt, "the attempt field group is not declared"
     attempt_fields = set(_ps_string_literals(attempt.group(1)))
     assert attempt_fields == {"last_attempt_result", "last_attempt_detail",
@@ -792,8 +792,6 @@ def test_34_the_refusal_compares_the_two_groups_separately() -> None:
             f"row 4 does not assert that the attempt axis CHANGED ({changed}); "
             "asserting all of C13:C20 unchanged would assert the refusal was never recorded"
         )
-    # No partial analytical output may survive a refusal.
-    assert "'carries no refused output'" in source or "carries no refused output" in source
 
 
 def test_35_the_analytical_scenario_asserts_every_emitted_value() -> None:
@@ -876,6 +874,11 @@ def test_39_no_linux_test_here_executes_windows_or_claims_a_run() -> None:
     kept = []
     for line in _text(Path(__file__)).splitlines():
         if "# refusal-list" in line:
+            continue
+        # A test NAME may say what it refuses - test_52 names the shell it is
+        # keeping an algorithm OUT of - and that is a claim about the harness,
+        # not a call into one.
+        if line.lstrip().startswith("def test_"):
             continue
         kept.append(line)
     source = "\n".join(kept)
@@ -1337,3 +1340,715 @@ def test_47_the_transient_module_is_never_persisted() -> None:
     harness = _executable(HARNESS)
     # The accepted harness closes without saving, and that is unchanged.
     assert "$wb.Close($false)" in harness, "the workbook is no longer closed without saving"
+
+
+# ===========================================================================
+# 12. CORRECTION ROUND 1
+#
+# Eight defects found in independent review of 93f306d. Each has a test here
+# that fails against the submitted harness and passes against the corrected one.
+# ===========================================================================
+def _scenario_block(source: str, after: str, upto: str) -> str:
+    """The executable body of one scenario, bounded by its neighbours' results.
+
+    Comment lines are stripped by `_executable`, so a section cannot be located
+    by its banner. It is located by the Add-Result that closes the scenario
+    before it and the one that closes it.
+    """
+    start = source.index(f"Add-Result '{after}'") if after else 0
+    return source[start:source.index(f"Add-Result '{upto}'")]
+
+
+def _procedure(source: str, name: str) -> str:
+    start = source.index(f"function {name} ")if f"function {name} " in source \
+        else source.index(f"function {name}")
+    tail = source[start + 1:]
+    end = tail.index("\nfunction ") if "\nfunction " in tail else len(tail)
+    return source[start:start + 1 + end]
+
+
+def test_48_a_null_fixture_value_is_written_as_a_blank_cell() -> None:
+    """BLOCKER 1. `[double]$null` is numeric ZERO in PowerShell.
+
+    Both fixture writers cast before they branched, so plan case 14's blank
+    inflation rate became a rate of 0 and plan case 23's blank profiling weight
+    became 0%. Both models are VALID with a zero in place of the blank, so the
+    refusal each case exists to prove could never have fired: the fixture was
+    quietly destroying the condition it was written to exercise.
+    """
+    source = _executable(SCENARIOS)
+    for procedure, subject in (("Write-Phase5InflationRates", "$rates.$year"),
+                               ("Write-Phase5Weights", "$weight")):
+        body = _procedure(source, procedure)
+        guard = f"if ($null -eq {subject}) {{"
+        assert guard in body, f"{procedure} does not branch on null at all"
+        # THE BRANCH IS BEFORE THE CAST. A guard that runs after the conversion
+        # would be testing a zero it created itself.
+        cast = body.index(f"([double]{subject})")
+        assert body.index(guard) < cast, (
+            f"{procedure} casts to Double before it checks for null"
+        )
+        blank = body[body.index(guard):cast]
+        assert "-Value $null" in blank, (
+            f"{procedure} does not write a genuine blank on the null branch"
+        )
+        for forbidden in ("-Value 0", "-Value ''", '-Value ""', "-Value 0.0"):
+            assert forbidden not in body, (
+                f"{procedure} writes {forbidden} where the fixture says blank"
+            )
+
+
+def test_49_the_blank_fixture_cases_still_carry_their_blanks() -> None:
+    """BLOCKER 1, tied to the two cases that define the condition."""
+    cases = {str(case["id"]): case for case in _emitted()["cases"]["plan_cases"]}
+    # Case 14: a required inflation rate is null.
+    rates = cases["14"]["model"]["inflation"]["Standard"]
+    assert any(value is None for value in rates.values()), (
+        "plan case 14 no longer carries a blank inflation rate"
+    )
+    assert cases["14"]["expected_refusal"] == "ModelInputRefusal"
+    # Case 23: a profile weight is null while the vector still sums to 100%.
+    weights = cases["23"]["model"]["cost_lines"][0]["profile_weights"]
+    assert any(value is None for value in weights), (
+        "plan case 23 no longer carries a blank profiling weight"
+    )
+    present = [value for value in weights if value is not None]
+    assert abs(sum(present) - 1.0) < 1e-12, (
+        "plan case 23's remaining weights no longer sum to one, so a zero in "
+        "place of the blank would be refused for the wrong reason"
+    )
+    # Both are in the refusal scenario, so a lost blank cannot hide there.
+    source = _executable(SCENARIOS)
+    block = _ledger_block(source)
+    assert "14" in _mapped_ids(block) and "23" in _mapped_ids(block)
+
+
+def test_50_a_refusal_preserves_the_prior_snapshot_rather_than_emptying_it() -> None:
+    """BLOCKER 2. "No partial result" means no partial NEW snapshot survives.
+
+    The first submission asserted that every _Calc table held zero populated rows
+    after a refusal. P5-AN runs first and leaves a successful snapshot,
+    Set-Phase5Fixture changes the INPUT model and never touches _Calc, and a
+    pre-write refusal is REQUIRED to leave C13:C16, C23:C32 and all five tables
+    exactly as they were - so that assertion would have failed against correct
+    production behaviour.
+    """
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-AN", "P5-RF")
+    assert "populated" not in block, (
+        "the refusal proof still requires the analytical tables to be empty"
+    )
+    assert "$before = Get-Phase5Snapshot" in block, (
+        "the refusal proof captures no baseline to compare against"
+    )
+    assert "Add-SnapshotUnchangedChecks" in block, (
+        "the refusal proof never asserts the prior snapshot survived"
+    )
+    assert "Add-Phase5AttemptAxisChecks" in block, (
+        "the refusal proof never asserts that C17:C20 CHANGED"
+    )
+    # A SUCCESSFUL baseline is established first, and it is not vacuous.
+    assert "'a successful baseline snapshot was established first'" in block
+    assert "not empty, so the comparison is not vacuous" in block
+    # And the snapshot is NOT cleared to make the assertion pass.
+    for forbidden in ("Clear-Phase5GridBody -Workbook $Workbook -SheetName $Inspection.calc.sheet",
+                      "ClearContents", "Remove-TableRow -Workbook $Workbook -SheetName $Inspection"):
+        assert forbidden not in block, (
+            f"the refusal proof clears the calculation workspace ({forbidden})"
+        )
+
+
+def test_51_the_identity_set_is_the_locked_i1_to_i5_mapping() -> None:
+    """BLOCKER 3. I1, I2, I3a-c, I4a-c and I5 - each named, none merged."""
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-RF", "P5-ID")
+    for identity in ("I1", "I2", "I3a", "I3b", "I3c", "I4a", "I4b", "I4c", "I5"):
+        assert f"'{identity}'" in block or f"'{identity} " in block or f"' {identity}:" in block \
+            or f"{identity}:" in block, f"identity {identity} is not named in the evidence"
+    # I3 splits Base, Risk and Total. The first submission checked only Total.
+    for column in ("base_cost_nominal", "expected_risk_nominal", "total_nominal",
+                   "base_cost_pv", "expected_risk_pv", "total_pv"):
+        assert f"'{column}'" in block, f"the annual column {column} is never asserted separately"
+    # I5 is profiling evidence, per driver.
+    assert "profile_weights" in block, "I5 asserts no profiling weights at all"
+    assert "cost_profiling" in block and "risk_profiling" in block
+    # Production's own reconciliation is the authority.
+    assert "Reconcile" in block and "AllIdentitiesHold" in block, (
+        "the evidence never names production's own reconciliation as the authority"
+    )
+    assert "'30'" in block, "the cancellation-heavy fixture is not among the identity cases"
+
+
+def test_52_no_headline_conditioning_is_reimplemented_in_powershell() -> None:
+    """BLOCKER 3. Erratum C1 rejected headline-based conditioning.
+
+    The first submission decided each identity with
+    `max(|left|, |right|, floor) * coefficient` in PowerShell - the rejected
+    oracle, made the acceptance authority. Case 30 exists because that shape can
+    falsely fail a correct cancellation-heavy calculation.
+    """
+    source = _executable(SCENARIOS)
+    assert "[Math]::Max([Math]::Max(" not in source, (
+        "a headline-based conditioning allowance was reintroduced in PowerShell"
+    )
+    assert "identity_absolute_floor" not in source, (
+        "the harness reads the conditioning floor, which only a reimplementation needs"
+    )
+    for forbidden in ("$close = {", "$allowance", "conditioning"):
+        assert forbidden not in source, (
+            f"the harness reimplements the production conditioning rule ({forbidden})"
+        )
+    # The one comparison primitive is the same one every other value check uses.
+    block = _scenario_block(source, "P5-RF", "P5-ID")
+    assert "Test-CalcValue" in block
+    assert block.count("[Math]::Abs") == 0, (
+        "the identity block computes its own difference instead of comparing to the oracle"
+    )
+
+
+def test_53_the_staleness_target_has_an_emitted_oracle() -> None:
+    """BLOCKER 4. §25.2 requires the affected value to change TO the oracle value.
+
+    Exchanging two profiling weights produced a model the corpus does not
+    describe, so after the second Calculate there was nothing to compare against
+    and the proof degenerated into an annual ROW COUNT.
+    """
+    cases = {str(case["id"]): case for case in _emitted()["cases"]["plan_cases"]}
+    source, target = cases["3"], cases["19"]
+    # The two fixtures really do differ in exactly one fingerprinted scalar.
+    for key in ("timeline", "fx", "inflation", "cost_lines", "risks"):
+        assert source["model"][key] == target["model"][key], (
+            f"plan cases 3 and 19 no longer share {key}, so the transition is not one variable"
+        )
+    assert source["model"]["discount_rate"] != target["model"]["discount_rate"]
+    assert "expected" in target and target["expected"]["totals"], (
+        "the staleness target emits no expected block"
+    )
+
+    text = _executable(SCENARIOS)
+    block = _scenario_block(text, "P5-S1", "P5-ST")
+    assert "$candidate.id -eq '19'" in block, "the staleness target fixture is not plan case 19"
+    assert "$Inspection.inputs.discount_rate.defined_name" in block, (
+        "the staleness edit is not the Discount Rate scalar"
+    )
+    assert "'the source and target fixtures differ ONLY in Discount Rate'" in block
+    # AN ORACLE COMPARISON, not a row count.
+    assert "Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook -Inspection $Inspection `" in block
+    assert "-Case $targetCase" in block, (
+        "the recalculated model is never compared against the target's emitted block"
+    )
+    assert "PCCM_ApplyTimeline" not in block, (
+        "Apply Timeline is used to create staleness"
+    )
+
+
+def test_54_the_row_order_proof_actually_reorders_rows() -> None:
+    """BLOCKER 5. Sorting a one-row table changes nothing.
+
+    The Sort call was real; the reorder evidence was not. Plan case 3 has one
+    Cost Line.
+    """
+    cases = {str(case["id"]): case for case in _emitted()["cases"]["plan_cases"]}
+    assert len(cases["3"]["model"]["cost_lines"]) == 1, (
+        "plan case 3 gained rows; the reasoning below needs restating"
+    )
+    assert len(cases["30"]["model"]["cost_lines"]) >= 2, (
+        "the reorder fixture no longer has more than one Cost Line"
+    )
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-ST", "P5-NS")
+    assert "$candidate.id -eq '30'" in block, "the reorder probe does not use the multi-row fixture"
+    assert "'the reorder fixture has MORE THAN ONE Cost Line, so a sort can move rows'" in block
+    assert "$idsBefore = @(Get-IdColumnValues" in block, "the order before the sort is never captured"
+    assert "$idsAfter = @(Get-IdColumnValues" in block, "the order after the sort is never captured"
+    assert "'the physical permanent-ID order ACTUALLY changed'" in block, (
+        "the harness accepts 'Sort was called' as evidence that order changed"
+    )
+    assert "($idsBefore -join ',') -cne ($idsAfter -join ',')" in block
+
+
+def test_55_the_four_non_staleness_probes_are_independent() -> None:
+    """BLOCKER 5.2. Each probe starts from a baseline and restores its change."""
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-ST", "P5-NS")
+    for restored in ("'Description restored'",
+                     "'Cost Lines re-sorted back'",
+                     "'Selected Confidence Level restored'",
+                     "'the unreferenced FX assumption removed'"):
+        assert restored in block, f"a probe never restores its change ({restored})"
+    # The probe takes the digest it must hold against as an ARGUMENT, so a later
+    # probe cannot silently inherit an earlier probe's edit.
+    assert "param([string]$Name, [string]$Digest)" in block, (
+        "the probe reads a shared mutable digest instead of the one it began with"
+    )
+    assert block.count("& $probe") >= 8, (
+        "there are fewer probe invocations than four changes plus four restorations"
+    )
+    # Each probe re-establishes a baseline it can trust.
+    assert block.count("Set-Phase5Fixture") >= 3, (
+        "the probes never re-establish a known baseline between changes"
+    )
+
+
+def test_56_the_golden_case_asserts_the_emitted_reference_digest() -> None:
+    """BLOCKER 6. Two identically WRONG fingerprints would pass "stored == current".
+
+    Plan case 1 is the model the reference stream was built from, so the complete
+    production path must land on the emitted digest.
+    """
+    cases = {str(case["id"]): case for case in _emitted()["cases"]["plan_cases"]}
+    reference = _emitted()["cases"]["fingerprint"]["reference"]
+    assert reference["case"] == 26
+    # The reference stream really is case 1's model: same header scalars, same
+    # single Cost Line record.
+    model = cases["1"]["model"]
+    stream = reference["stream"]
+    assert f"S6:{model['cost_lines'][0]['permanent_id']}" in stream
+    assert f"S{len(model['cost_lines'][0]['distribution'])}:{model['cost_lines'][0]['distribution']}" in stream
+
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-D8", "P5-AN")
+    assert "$id -eq '1'" in block, "the golden case is not singled out"
+    assert "$Cases.fingerprint.reference.digest" in block, (
+        "the end-to-end fingerprint is never compared against the emitted digest"
+    )
+    assert "PCCM_CurrentInputFingerprint() on plan case 1 equals the emitted reference digest" in block
+    assert "PCCM_CalculationFingerprint() after the commit equals the emitted reference digest" in block
+    # The direct primitive proof is a DIFFERENT claim and both survive.
+    assert "Add-Result 'P5-D5'" in source
+    assert "GBD_DigestStream" in source
+
+
+def test_57_the_utf16_canonical_field_is_compared_in_full() -> None:
+    """BLOCKER 6.2. A prefix check passes a mangled payload of the right length."""
+    vectors = _emitted()["cases"]["fingerprint"]["utf16_vectors"]["vectors"]
+    for vector in vectors:
+        assert vector["canonical_text_field"], "the corpus emits no canonical field"
+    source = _executable(SCENARIOS)
+    block = source[source.index("Add-Result 'P5-D4'") - 5000:source.index("Add-Result 'P5-D4'")]
+    assert "$vector.canonical_text_field" in block, (
+        "the emitted canonical field is never used"
+    )
+    assert "the COMPLETE canonical text field matches the emitted one" in block
+    assert "-ceq $expectedField" in block, "the comparison is not an exact ordinal one"
+    # The prefix check survives as a supplementary claim, not as the whole one.
+    assert "its length prefix is the UTF-16 unit count" in block
+
+
+def test_58_the_analytical_audit_covers_every_declared_column() -> None:
+    """BLOCKER 7. Two published columns had no emitted expectation behind them."""
+    emitted = _emitted()
+    inspection = emitted["inspection"]["calc"]["tables"]
+    case = next(c for c in emitted["cases"]["plan_cases"]
+                if c["kind"] == "analytical" and str(c["id"]) == "2")
+    expected = case["expected"]
+
+    # The corpus now states an expectation for every column of every table.
+    coverage = {
+        "calc_years": {row for row in expected["calc_years"][0]},
+        "calc_fx": {row for row in expected["resolved_fx_rows"][0]},
+        "calc_drivers": set(expected["drivers"][0]) - {"weights"},
+        "calc_annual": set(expected["annual"][0]),
+        "calc_inflation_factors": {"inflation_profile", "calendar_year", "annual_rate",
+                                   "cumulative_inflation_factor"},
+    }
+    for key, table in inspection.items():
+        declared = set(table["columns"])
+        if key == "calc_inflation_factors":
+            continue  # named differently in the corpus; checked below
+        missing = declared - coverage[key]
+        assert not missing, f"{key} publishes {sorted(missing)} with no emitted expectation"
+    # calc_inflation_factors uses `profile` / `cumulative_factor` in the corpus.
+    row = expected["inflation_factors"][0]
+    assert set(row) == {"profile", "calendar_year", "annual_rate", "cumulative_factor"}
+
+    source = _executable(SCENARIOS)
+    checks = _procedure(source, "Add-Phase5AnalyticalChecks")
+    assert "$expected.calc_years" in checks, "tblCalcYears.Calendar Year is still unasserted"
+    assert "$expected.resolved_fx_rows" in checks, "tblCalcFX.Referenced By is still unasserted"
+    # And the assertions are driven from the fixture's own field names, so a new
+    # emitted column is asserted without editing the harness.
+    assert checks.count("foreach ($field in $wanted.PSObject.Properties.Name)") >= 4
+    # Neither value is DERIVED in PowerShell.
+    for forbidden in ("start_year +", "+ $index - 1", "$references++", "Measure-Object"):
+        assert forbidden not in checks, (
+            f"the harness derives an expected value instead of reading it ({forbidden})"
+        )
+
+
+def test_59_the_successful_calc_state_record_is_asserted(): 
+    """BLOCKER 7.2. C13:C20 itself, not only the four accessors."""
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Add-Phase5SuccessStateChecks")
+    assert "C13 last successful stamp is non-blank" in body
+    assert "C14 is exactly the digest PCCM_CalculationFingerprint returned" in body
+    assert "$Cases.fingerprint.constants.FP_VERSION" in body, (
+        "C15 is checked against something other than the emitted fingerprint version"
+    )
+    assert "$Case.expected.applied_timeline" in body, (
+        "C16 is checked against something other than the emitted applied-timeline text"
+    )
+    assert "C17 = SUCCESS" in body
+    assert "C18 is BLANK on success" in body
+    assert "C19 = CURRENT" in body
+    assert "C20 status-evaluation timestamp is non-blank" in body
+    # The two timestamps are NOT required to be equal to each other.
+    assert "status_evaluated_at'] -ceq" not in body
+    assert "last_successful_stamp'] -ceq" not in body
+    # And it is actually called from the analytical scenario.
+    assert "Add-Phase5SuccessStateChecks" in _scenario_block(source, "P5-D8", "P5-AN")
+
+
+def test_60_the_applied_timeline_text_is_a_checked_copy_of_production() -> None:
+    """The corpus emits `base/start/duration`; modCalcReport OWNS that format."""
+    report = _text(SRC_VBA / "modCalcReport.bas")
+    body = report[report.index("Private Function AppliedTimelineText"):]
+    body = body[:body.index("End Function")]
+    assert 'CStr(package.Model.Timeline.BaseYear) & "/"' in body
+    assert 'CStr(package.Model.Timeline.StartYear) & "/"' in body
+    assert "CStr(package.Model.Timeline.Duration)" in body
+    emitted = _emitted()["cases"]
+    for case in emitted["plan_cases"]:
+        if case["kind"] != "analytical":
+            continue
+        timeline = case["model"]["timeline"]
+        wanted = f"{timeline['base_year']}/{timeline['start_year']}/{timeline['duration']}"
+        assert case["expected"]["applied_timeline"] == wanted, (
+            f"case {case['id']}: the emitted applied-timeline text is not base/start/duration"
+        )
+
+
+def test_61_the_inspection_projection_is_identities_only() -> None:
+    """BLOCKER 8. A POSITIVE schema, not a list of banned names.
+
+    `fingerprint_version` is an expected VALUE and the two label lists are model
+    SEMANTICS. A ban-list can only refuse the semantic values somebody already
+    thought of; an allowlist refuses the next one too, whatever it is called.
+    """
+    from pccm_builder.gate_b_inspection import (
+        ALLOWED_BLOCK_KEYS, ALLOWED_CALC_KEYS, ALLOWED_INPUT_KEYS,
+        ALLOWED_INPUT_TABLE_KEYS, ALLOWED_ROOT_KEYS, ALLOWED_TABLE_KEYS,
+    )
+
+    inspection = _emitted()["inspection"]
+    assert set(inspection) == set(ALLOWED_ROOT_KEYS)
+    assert set(inspection["calc"]) == set(ALLOWED_CALC_KEYS)
+    for table in inspection["calc"]["tables"].values():
+        assert set(table) == set(ALLOWED_TABLE_KEYS)
+    for block in inspection["calc"]["scalar_blocks"].values():
+        assert set(block) == set(ALLOWED_BLOCK_KEYS)
+    for spec in inspection["inputs"].values():
+        assert set(spec) == set(ALLOWED_INPUT_KEYS)
+    for table in inspection["input_tables"].values():
+        assert set(table) == set(ALLOWED_INPUT_TABLE_KEYS)
+
+    # The three semantic values independent review removed, refused by name at
+    # the level they lived at. `fingerprint_version` survives as a calc_state ROW
+    # NAME, which is an address - row 15 is where the version is written - and
+    # banning it everywhere would refuse an identity along with the value.
+    assert "fingerprint_version" not in inspection["calc"]
+    assert "derived_status_labels" not in inspection["calc"]
+    assert "attempt_result_labels" not in inspection["calc"]
+    assert inspection["calc"]["scalar_blocks"]["calc_state"]["rows"]["fingerprint_version"] == 15, (
+        "the row that HOLDS the version is an address and must stay"
+    )
+    blob = json.dumps(inspection)
+    for banned in ("tolerance", "\"expected\"", "digest", "NOT CALCULATED", "REFUSED"):
+        assert banned not in blob, f"the projection carries a semantic value ({banned})"
+    # Every leaf is an identity: a string name, or an integer row/column ordinal.
+    for table in inspection["calc"]["tables"].values():
+        assert isinstance(table["table_name"], str)
+        assert isinstance(table["header_row"], int)
+    # And the version bumped, because the shape changed.
+    assert inspection["schema_version"] == 2
+
+
+def test_62_the_semantic_values_still_come_from_their_own_authorities() -> None:
+    """Removed from the projection, not moved into PowerShell literals."""
+    emitted = _emitted()
+    assert emitted["cases"]["fingerprint"]["constants"]["FP_VERSION"] == 1
+    source = _executable(SCENARIOS)
+    assert "$Cases.fingerprint.constants.FP_VERSION" in source, (
+        "the fingerprint version is not read from the value corpus"
+    )
+    assert "$Inspection.calc.fingerprint_version" not in source
+    assert "$Inspection.calc.derived_status_labels" not in source
+    assert "$Inspection.calc.attempt_result_labels" not in source
+    # The status and attempt vocabularies are asserted as literals in the ROWS
+    # they belong to, which is where the matrix states them - not read from an
+    # address projection.
+    for label in ("'CURRENT'", "'STALE'", "'INVALID'", "'SUCCESS'", "'REFUSED'", "'FAILED'"):
+        assert label in source
+
+
+# ===========================================================================
+# 13. CORRECTION-ROUND NEGATIVE CONTROLS
+#
+# One per defect independent review found, planted as synthetic text and watched
+# by the detector above. Nothing is written to disk and nothing runs.
+# ===========================================================================
+def test_nc_29_a_null_inflation_rate_cast_to_zero_is_caught() -> None:
+    """DEFECT 1, exactly as it shipped."""
+    planted = _synthetic(
+        "function Write-Phase5InflationRates {\n"
+        "    foreach ($year in $rates.PSObject.Properties.Name) {\n"
+        "        Set-TableCell -Workbook $Workbook -SheetName $grid.sheet "
+        "-TableName $grid.table_name `\n"
+        "            -RowIndex $rowIndex -ColumnIndex $ordinal -Value ([double]$rates.$year)\n"
+        "    }\n"
+        "}\n"
+    )
+    assert "if ($null -eq $rates.$year) {" not in planted, (
+        "the missing null branch must be visible; [double]$null is numeric zero"
+    )
+    assert "([double]$rates.$year)" in planted
+
+
+def test_nc_30_a_null_profiling_weight_cast_to_zero_is_caught() -> None:
+    """DEFECT 1, the other writer."""
+    planted = _synthetic(
+        "function Write-Phase5Weights {\n"
+        "    foreach ($weight in @($driver.profile_weights)) {\n"
+        "        Set-TableCell -Workbook $Workbook -SheetName $grid.sheet "
+        "-TableName $grid.table_name `\n"
+        "            -RowIndex $rowIndex -ColumnIndex ($fixed + $offset) -Value ([double]$weight)\n"
+        "    }\n"
+        "}\n"
+    )
+    assert "if ($null -eq $weight) {" not in planted, "the missing null branch must be visible"
+    assert "([double]$weight)" in planted
+
+
+def test_nc_31_a_null_branch_placed_after_the_cast_is_caught() -> None:
+    """The branch must precede the conversion, not follow it."""
+    planted = _synthetic(
+        "$value = [double]$weight\n"
+        "if ($null -eq $weight) { $value = $null }\n"
+        "Set-TableCell -Value $value\n"
+    )
+    cast = planted.index("[double]$weight")
+    guard = planted.index("if ($null -eq $weight)")
+    assert cast < guard, "a guard that runs after the cast must be visible"
+
+
+def test_nc_32_a_refusal_requiring_empty_analytical_tables_is_caught() -> None:
+    """DEFECT 2, exactly as it shipped: it would FAIL against correct production."""
+    planted = _synthetic(
+        "foreach ($tableKey in $Inspection.calc.tables.PSObject.Properties.Name) {\n"
+        "    $rows = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection "
+        "-TableKey $tableKey)\n"
+        "    $populated = @($rows | Where-Object { -not (Test-CalcBlank -Actual $_[0]) })\n"
+        "    $null = Add-Check $list 'carries no refused output' ($populated.Count -eq 0)\n"
+        "}\n"
+    )
+    assert "populated" in planted, (
+        "an assertion that the workspace is EMPTY after a refusal must be visible; "
+        "a pre-write refusal preserves the prior successful snapshot"
+    )
+    assert "Add-SnapshotUnchangedChecks" not in planted
+
+
+def test_nc_33_clearing_the_snapshot_before_a_refusal_is_caught() -> None:
+    """Weakening the proof by removing what it is supposed to preserve."""
+    planted = _synthetic(
+        "Clear-Phase5GridBody -Workbook $Workbook -SheetName $Inspection.calc.sheet `\n"
+        "    -TableName 'tblCalcDrivers' -ColumnCount 21\n"
+        "$Excel.Run('PCCM_Calculate') | Out-Null\n"
+        "$null = Add-Check $list 'nothing survived' ($rows.Count -eq 0)\n"
+    )
+    assert "Clear-Phase5GridBody -Workbook $Workbook -SheetName $Inspection.calc.sheet" in planted, (
+        "clearing the calculation workspace to make a refusal assertion pass must be visible"
+    )
+
+
+def test_nc_34_a_headline_conditioning_tolerance_is_caught() -> None:
+    """DEFECT 3, exactly as it shipped: erratum C1's rejected oracle."""
+    planted = _synthetic(
+        "$close = {\n"
+        "    param([double]$Left, [double]$Right)\n"
+        "    $scale = [Math]::Max([Math]::Max([Math]::Abs($Left), [Math]::Abs($Right)), $floor)\n"
+        "    return ([Math]::Abs($Left - $Right) -le ($tolerance * $scale))\n"
+        "}\n"
+    )
+    assert "[Math]::Max([Math]::Max(" in planted, (
+        "a PowerShell reimplementation of the conditioning allowance must be visible"
+    )
+    assert "$close = {" in planted
+
+
+def test_nc_35_an_identity_set_missing_the_base_risk_split_is_caught() -> None:
+    """DEFECT 3: I3 and I4 split Base, Risk and Total. Total alone is not I3."""
+    planted = _synthetic(
+        "foreach ($identity in @(\n"
+        "    @{ name = 'I3'; column = 'total_nominal'; headline = 'e_nom' },\n"
+        "    @{ name = 'I4'; column = 'total_pv'; headline = 'e_pv' })) { }\n"
+    )
+    for column in ("base_cost_nominal", "expected_risk_nominal",
+                   "base_cost_pv", "expected_risk_pv"):
+        assert column not in planted, f"the missing {column} assertion must be visible"
+    for identity in ("'I3a'", "'I3b'", "'I4a'", "'I4b'"):
+        assert identity not in planted
+
+
+def test_nc_36_an_identity_set_with_no_i5_evidence_is_caught() -> None:
+    """DEFECT 3: I5 is per-driver profiling evidence, and it was absent entirely."""
+    planted = _synthetic(
+        "$null = Add-Check $list 'I1' ($ok)\n"
+        "$null = Add-Check $list 'I2' ($ok)\n"
+        "$null = Add-Check $list 'I5: the annual series sums to E' ($ok)\n"
+    )
+    assert "profile_weights" not in planted, "the missing I5 profiling evidence must be visible"
+    assert "cost_profiling" not in planted and "risk_profiling" not in planted
+
+
+def test_nc_37_a_row_count_only_staleness_proof_is_caught() -> None:
+    """DEFECT 4, exactly as it shipped: no numerical value was proved."""
+    planted = _synthetic(
+        "$null = Add-Check $list 'the recalculated annual series is non-empty' `\n"
+        "    (@(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection "
+        "-TableKey 'calc_annual').Count -eq `\n"
+        "     @($baseCase.expected.annual).Count)\n"
+    )
+    assert "Add-Phase5AnalyticalChecks" not in planted, (
+        "a staleness proof that compares only a row count must be visible"
+    )
+    assert ".Count -eq" in planted
+
+
+def test_nc_38_a_staleness_target_with_no_emitted_oracle_is_caught() -> None:
+    """DEFECT 4: swapping weights produces a model the corpus does not describe."""
+    planted = _synthetic(
+        "Set-TableCell -RowIndex 1 -ColumnIndex ($fixed + 1) -Value ([double]$weights[1])\n"
+        "Set-TableCell -RowIndex 1 -ColumnIndex ($fixed + 2) -Value ([double]$weights[0])\n"
+        "$Excel.Run('PCCM_Calculate') | Out-Null\n"
+    )
+    assert "$targetCase" not in planted, (
+        "an edit with no emitted target fixture must be visible"
+    )
+    assert "$weights[1]" in planted
+
+
+def test_nc_39_a_one_row_reorder_fixture_is_caught() -> None:
+    """DEFECT 5: sorting a one-row table changes nothing."""
+    emitted = _emitted()["cases"]["plan_cases"]
+    single = next(case for case in emitted if str(case["id"]) == "3")
+    assert len(single["model"]["cost_lines"]) < 2, (
+        "the one-row fixture must be visible as one-row"
+    )
+    planted = _synthetic(
+        "Invoke-TableSort -Workbook $Workbook -SheetName $costReg.sheet `\n"
+        "    -TableName $costReg.table_name -KeyColumnIndex 3 -Order 2\n"
+        "& $probe 'Cost Lines physically re-sorted' $digest\n"
+    )
+    assert "$idsBefore" not in planted and "$idsAfter" not in planted, (
+        "a reorder proof that never captures the order must be visible"
+    )
+    assert "ACTUALLY changed" not in planted
+
+
+def test_nc_40_cumulative_non_staleness_probes_are_caught() -> None:
+    """DEFECT 5.2: four live edits at once isolates nothing."""
+    planted = _synthetic(
+        "Set-TableCell -ColumnIndex $descriptionOrdinal -Value 'changed'\n"
+        "& $probe 'Description changed'\n"
+        "Invoke-TableSort -KeyColumnIndex $descriptionOrdinal -Order 2\n"
+        "& $probe 'reordered'\n"
+        "Set-NamedValueText -Text 'P90'\n"
+        "& $probe 'confidence changed'\n"
+    )
+    for restored in ("'Description restored'", "'Cost Lines re-sorted back'",
+                     "'Selected Confidence Level restored'"):
+        assert restored not in planted, f"the missing restoration must be visible ({restored})"
+    assert "param([string]$Name, [string]$Digest)" not in planted, (
+        "a probe with no per-probe baseline digest must be visible"
+    )
+
+
+def test_nc_41_a_golden_case_asserting_only_stored_equals_current_is_caught() -> None:
+    """DEFECT 6: two identically WRONG fingerprints satisfy that."""
+    planted = _synthetic(
+        "$fingerprint = [string]$Excel.Run('PCCM_CalculationFingerprint')\n"
+        "$current = [string]$Excel.Run('PCCM_CurrentInputFingerprint')\n"
+        "$null = Add-Check $list 'they agree' ($fingerprint -ceq $current)\n"
+    )
+    assert "$Cases.fingerprint.reference.digest" not in planted, (
+        "a golden case that never reaches the emitted digest must be visible"
+    )
+    assert "$fingerprint -ceq $current" in planted
+
+
+def test_nc_42_a_prefix_only_utf16_field_check_is_caught() -> None:
+    """DEFECT 6.2: a mangled payload of the right length passes a prefix check."""
+    planted = _synthetic(
+        "$field = [string]$Excel.Run('GBD_CanonicalTextField', $units)\n"
+        "$expectedField = 'OK|S' + [string]$vector.utf16_length + ':'\n"
+        "$null = Add-Check $list 'prefix' ($field.StartsWith($expectedField))\n"
+    )
+    assert "$vector.canonical_text_field" not in planted, (
+        "a prefix-only canonical field check must be visible"
+    )
+    assert "StartsWith" in planted
+
+
+def test_nc_43_an_omitted_calendar_year_assertion_is_caught() -> None:
+    """DEFECT 7: tblCalcYears.Calendar Year had no emitted expectation."""
+    planted = _synthetic(
+        "$indexColumn = Get-CalcTableColumnIndex -TableKey 'calc_years' -ColumnKey 'project_index'\n"
+        "$factorColumn = Get-CalcTableColumnIndex -TableKey 'calc_years' -ColumnKey 'discount_factor'\n"
+        "foreach ($row in $years) { $null = Add-Check $list 'discount factor' ($ok) }\n"
+    )
+    assert "$expected.calc_years" not in planted, (
+        "an assertion set that never reads the emitted calc_years rows must be visible"
+    )
+    assert "calendar_year" not in planted
+
+
+def test_nc_44_an_omitted_referenced_by_assertion_is_caught() -> None:
+    """DEFECT 7: tblCalcFX.Referenced By had no emitted expectation."""
+    planted = _synthetic(
+        "$expectedFx = @($expected.resolved_fx.PSObject.Properties.Name)\n"
+        "foreach ($currency in $expectedFx) { $null = Add-Check $list 'FX rate' ($ok) }\n"
+    )
+    assert "$expected.resolved_fx_rows" not in planted, (
+        "an assertion set that never reads the emitted FX rows must be visible"
+    )
+    assert "referenced_by" not in planted
+
+
+def test_nc_45_a_powershell_derived_calendar_year_is_caught() -> None:
+    """DEFECT 7.1: deriving the answer is not checking it."""
+    planted = _synthetic(
+        "$wanted = $model.timeline.start_year + $index - 1\n"
+        "$null = Add-Check $list 'calendar year' ($row[$ordinal] -eq $wanted)\n"
+    )
+    assert "+ $index - 1" in planted, "a PowerShell-derived calendar year must be visible"
+    assert "$expected.calc_years" not in planted
+
+
+def test_nc_46_an_omitted_successful_calc_state_assertion_is_caught() -> None:
+    """DEFECT 7.2: the four accessors alone leave C13:C20 unexamined."""
+    planted = _synthetic(
+        "$null = Add-Check $list 'C17 = SUCCESS' ($attempt -eq 'SUCCESS')\n"
+        "$null = Add-Check $list 'C18 blank' ([string]::IsNullOrEmpty($detail))\n"
+    )
+    for missing in ("FP_VERSION", "applied_timeline", "last_successful_fingerprint"):
+        assert missing not in planted, f"the unasserted calc_state field must be visible ({missing})"
+
+
+def test_nc_47_a_semantic_value_in_the_inspection_projection_is_caught() -> None:
+    """DEFECT 8: an allowlist refuses the NEXT semantic value too."""
+    from pccm_builder.gate_b_inspection import ALLOWED_CALC_KEYS
+
+    planted = dict(_emitted()["inspection"]["calc"])
+    planted["fingerprint_version"] = 1
+    planted["derived_status_labels"] = ["NOT CALCULATED", "CURRENT", "STALE", "INVALID"]
+    extra = set(planted) - set(ALLOWED_CALC_KEYS)
+    assert extra == {"fingerprint_version", "derived_status_labels"}, (
+        "the reintroduced semantic values must be visible to the positive schema"
+    )
+    # And an innocent-looking new key is caught by the same rule.
+    planted2 = dict(_emitted()["inspection"]["calc"])
+    planted2["default_precision"] = 6
+    assert set(planted2) - set(ALLOWED_CALC_KEYS) == {"default_precision"}, (
+        "a ban-list would have missed this; the allowlist does not"
+    )

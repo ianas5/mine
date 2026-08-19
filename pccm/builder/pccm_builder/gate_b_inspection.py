@@ -48,7 +48,22 @@ from typing import Any
 from .calc_loader import CalcContract
 from .contract_loader import InputContract
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# THE POSITIVE SCHEMA. Every key the projection may carry, at every level, named
+# here. A banned-name list can only refuse the semantic values somebody already
+# thought of; an allowlist refuses the next one too, whatever it is called.
+ALLOWED_ROOT_KEYS = ("schema_version", "purpose", "provenance", "calc", "inputs",
+                     "input_tables")
+ALLOWED_CALC_KEYS = ("sheet", "required_visibility", "tables", "scalar_blocks")
+ALLOWED_TABLE_KEYS = ("table_name", "header_row", "first_column", "last_column",
+                      "first_column_index", "column_count", "first_body_row",
+                      "row_rule", "columns")
+ALLOWED_BLOCK_KEYS = ("label_column", "value_column", "first_row", "last_row",
+                      "value_range", "rows")
+ALLOWED_INPUT_KEYS = ("defined_name", "sheet", "cell", "type")
+ALLOWED_INPUT_TABLE_KEYS = ("table_name", "sheet", "header_row", "first_column",
+                            "columns", "locked_seed_rows")
 
 INSPECTION_FILENAME = "phase5_gate_b_inspection.json"
 
@@ -103,12 +118,18 @@ def build_inspection(calc: CalcContract, contract: InputContract) -> dict[str, A
 
 
 def _calc_projection(calc: CalcContract) -> dict[str, Any]:
+    # IDENTITIES ONLY.
+    #
+    # `fingerprint_version`, `derived_status_labels` and `attempt_result_labels`
+    # were here in the first submission and independent review removed them: a
+    # version number is an EXPECTED VALUE and the two label lists are model
+    # SEMANTICS, neither of which is an address. They come from the authorities
+    # that already publish them - `phase5_cases.json -> fingerprint.constants`
+    # for the version, and the accepted status/attempt vocabulary through the
+    # workbook itself - not from the thing that says where to look.
     return {
         "sheet": calc.sheet,
         "required_visibility": calc.required_visibility,
-        "fingerprint_version": calc.fingerprint_version,
-        "derived_status_labels": list(calc.derived_status_labels),
-        "attempt_result_labels": list(calc.attempt_result_labels),
         "tables": {
             key: {
                 "table_name": table.table_name,

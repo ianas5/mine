@@ -541,8 +541,22 @@ function Write-Phase5InflationRates {
         foreach ($year in $rates.PSObject.Properties.Name) {
             $ordinal = [array]::IndexOf($headers, [string]$year) + 1
             if ($ordinal -lt 1) { throw ("no generated inflation column for calendar year " + $year) }
-            Set-TableCell -Workbook $Workbook -SheetName $grid.sheet -TableName $grid.table_name `
-                -RowIndex $rowIndex -ColumnIndex $ordinal -Value ([double]$rates.$year)
+            # A NULL RATE IS A BLANK CELL, and the branch is BEFORE the cast.
+            #
+            # [double]$null is numeric ZERO in PowerShell. Casting first turned
+            # plan case 14 - "blank required inflation rate" - into a rate of 0,
+            # which is a VALID model. The refusal the case exists to prove could
+            # never have fired, and the fixture would have quietly destroyed the
+            # condition it was written to exercise.
+            if ($null -eq $rates.$year) {
+                Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
+                    -TableName $grid.table_name -RowIndex $rowIndex `
+                    -ColumnIndex $ordinal -Value $null
+            } else {
+                Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
+                    -TableName $grid.table_name -RowIndex $rowIndex `
+                    -ColumnIndex $ordinal -Value ([double]$rates.$year)
+            }
         }
     }
 }
@@ -573,8 +587,21 @@ function Write-Phase5Weights {
             $offset = 0
             foreach ($weight in @($driver.profile_weights)) {
                 $offset++
-                Set-TableCell -Workbook $Workbook -SheetName $grid.sheet -TableName $grid.table_name `
-                    -RowIndex $rowIndex -ColumnIndex ($fixed + $offset) -Value ([double]$weight)
+                # A NULL WEIGHT IS A BLANK CELL, for the same reason. Plan case 23
+                # is "a profile summing to one hundred percent but containing a
+                # BLANK"; [double]$null would have written 0 into that cell, the
+                # profile would still have summed to 100%, and the case would have
+                # asserted a refusal that production was never given a reason to
+                # make.
+                if ($null -eq $weight) {
+                    Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
+                        -TableName $grid.table_name -RowIndex $rowIndex `
+                        -ColumnIndex ($fixed + $offset) -Value $null
+                } else {
+                    Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
+                        -TableName $grid.table_name -RowIndex $rowIndex `
+                        -ColumnIndex ($fixed + $offset) -Value ([double]$weight)
+                }
             }
         }
     }
@@ -594,13 +621,39 @@ function Add-Phase5AnalyticalChecks {
     $label = 'case ' + [string]$Case.id
     $tolerance = [double]$Tolerances.identity_relative_coefficient
 
-    # --- tblCalcYears: project index, calendar year, discount factor --------
+    # --- tblCalcYears: EVERY column, including Calendar Year ----------------
+    # Calendar Year had no emitted expectation in the first submission and was
+    # therefore never asserted. The corpus now emits `expected.calc_years`, from
+    # the oracle's own AppliedTimeline.project_years(), so the column is compared
+    # rather than derived here as `start_year + index - 1`.
     $years = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_years')
-    $expectedYears = @($expected.discount_factors.PSObject.Properties.Name)
+    $expectedYears = @($expected.calc_years)
     $null = Add-Check $List ($label + ': tblCalcYears has one row per applied project year') `
         ($years.Count -eq $expectedYears.Count) `
         ("rows " + $years.Count + ", expected " + $expectedYears.Count)
     $indexColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_years' -ColumnKey 'project_index'
+    foreach ($wanted in $expectedYears) {
+        $found = $null
+        foreach ($row in $years) {
+            if ([int]$row[$indexColumn] -eq [int]$wanted.project_index) { $found = $row }
+        }
+        if ($null -eq $found) {
+            $null = Add-Check $List ($label + ': tblCalcYears row ' + [string]$wanted.project_index) $false 'no such row'
+            continue
+        }
+        foreach ($field in $wanted.PSObject.Properties.Name) {
+            $ordinal = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_years' -ColumnKey $field
+            if ($ordinal -lt 0) {
+                $null = Add-Check $List ($label + ': tblCalcYears has a column for ' + $field) $false
+                continue
+            }
+            $null = Add-Check $List ($label + ': years ' + [string]$wanted.project_index + '.' + $field) `
+                (Test-CalcValue -Actual $found[$ordinal] -Expected $wanted.$field -Tolerance $tolerance) `
+                ("got " + (Format-CalcValue $found[$ordinal]) + ", expected " + (Format-CalcValue $wanted.$field))
+        }
+    }
+    # The discount factors are ALSO stated as their own emitted mapping, and the
+    # two emitted authorities must agree with the same workbook cells.
     $factorColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_years' -ColumnKey 'discount_factor'
     foreach ($row in $years) {
         $projectIndex = [string][int]$row[$indexColumn]
@@ -642,24 +695,46 @@ function Add-Phase5AnalyticalChecks {
             ("got " + (Format-CalcValue $found[$cumulativeColumn]) + ", expected " + (Format-CalcValue $wanted.cumulative_factor))
     }
 
-    # --- tblCalcFX: REFERENCED currencies only ------------------------------
+    # --- tblCalcFX: REFERENCED currencies only, EVERY column ----------------
+    # Referenced By had no emitted expectation either, and counting driver
+    # references in PowerShell would have been the harness deriving the answer it
+    # is supposed to check. `expected.resolved_fx_rows` now carries the count from
+    # the model the oracle was given.
     $fxRows = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_fx')
-    $expectedFx = @($expected.resolved_fx.PSObject.Properties.Name)
+    $expectedFx = @($expected.resolved_fx_rows)
     $null = Add-Check $List ($label + ': tblCalcFX carries the referenced currencies only') `
         ($fxRows.Count -eq $expectedFx.Count) `
         ("rows " + $fxRows.Count + ", expected " + $expectedFx.Count)
     $currencyColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_fx' -ColumnKey 'currency'
-    $rateColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_fx' -ColumnKey 'fx_to_sar'
-    foreach ($currency in $expectedFx) {
+    foreach ($wanted in $expectedFx) {
         $found = $null
-        foreach ($row in $fxRows) { if ([string]$row[$currencyColumn] -eq $currency) { $found = $row } }
+        foreach ($row in $fxRows) {
+            if ([string]$row[$currencyColumn] -eq [string]$wanted.currency) { $found = $row }
+        }
         if ($null -eq $found) {
-            $null = Add-Check $List ($label + ': FX row for ' + $currency) $false 'no such row'
+            $null = Add-Check $List ($label + ': FX row for ' + [string]$wanted.currency) $false 'no such row'
             continue
         }
+        foreach ($field in $wanted.PSObject.Properties.Name) {
+            $ordinal = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_fx' -ColumnKey $field
+            if ($ordinal -lt 0) {
+                $null = Add-Check $List ($label + ': tblCalcFX has a column for ' + $field) $false
+                continue
+            }
+            $null = Add-Check $List ($label + ': FX ' + [string]$wanted.currency + '.' + $field) `
+                (Test-CalcValue -Actual $found[$ordinal] -Expected $wanted.$field -Tolerance $tolerance) `
+                ("got " + (Format-CalcValue $found[$ordinal]) + ", expected " + (Format-CalcValue $wanted.$field))
+        }
+    }
+    # The resolved-rate mapping is a second emitted authority over the same
+    # cells, and it must agree.
+    $rateColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_fx' -ColumnKey 'fx_to_sar'
+    foreach ($currency in @($expected.resolved_fx.PSObject.Properties.Name)) {
+        $found = $null
+        foreach ($row in $fxRows) { if ([string]$row[$currencyColumn] -eq $currency) { $found = $row } }
         $null = Add-Check $List ($label + ': FX rate for ' + $currency) `
-            (Test-CalcValue -Actual $found[$rateColumn] -Expected $expected.resolved_fx.$currency -Tolerance $tolerance) `
-            ("got " + (Format-CalcValue $found[$rateColumn]))
+            (($null -ne $found) -and (Test-CalcValue -Actual $found[$rateColumn] `
+                -Expected $expected.resolved_fx.$currency -Tolerance $tolerance))
     }
 
     # --- tblCalcDrivers: every emitted field of every driver ----------------
@@ -733,6 +808,148 @@ function Add-Phase5AnalyticalChecks {
     }
 }
 
+function Add-Phase5SuccessStateChecks {
+    param($List, $Excel, $Workbook, $Inspection, $Case, $Cases, [string]$Label)
+    # THE SUCCESSFUL calc_state RECORD, cell by cell.
+    #
+    # The first submission asserted the four status ACCESSORS and left C13:C20
+    # itself unexamined for a successful fixture, so a commit that wrote the right
+    # answers to the wrong cells would have passed. Every non-time expectation
+    # here comes from an emitted authority: the fingerprint version from
+    # `fingerprint.constants.FP_VERSION`, the applied-timeline text from
+    # `expected.applied_timeline`, and the stored digest from the API call whose
+    # value was just asserted.
+    $state = Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state'
+    $stored = [string]$Excel.Run('PCCM_CalculationFingerprint')
+
+    # C13 - a timestamp exists. Its VALUE is not predictable and is not asserted
+    # equal to anything; the contract does not make the two stamps equal.
+    $null = Add-Check $List ($Label + ': C13 last successful stamp is non-blank') `
+        (-not (Test-CalcBlank -Actual $state['last_successful_stamp']))
+    # C14 - exactly the digest the API just reported.
+    $null = Add-Check $List ($Label + ': C14 is exactly the digest PCCM_CalculationFingerprint returned') `
+        ([string]$state['last_successful_fingerprint'] -ceq $stored) `
+        ("cell " + (Format-CalcValue $state['last_successful_fingerprint']) + ", API '" + $stored + "'")
+    # C15 - the emitted fingerprint version, not a literal.
+    $null = Add-Check $List ($Label + ': C15 is the emitted fingerprint version') `
+        (Test-CalcValue -Actual $state['fingerprint_version'] `
+            -Expected ([double]$Cases.fingerprint.constants.FP_VERSION)) `
+        ("got " + (Format-CalcValue $state['fingerprint_version']) + `
+         ", emitted " + [string]$Cases.fingerprint.constants.FP_VERSION)
+    # C16 - the emitted applied-timeline text.
+    $null = Add-Check $List ($Label + ': C16 is the emitted applied-timeline text') `
+        ([string]$state['last_successful_applied_timeline'] -ceq [string]$Case.expected.applied_timeline) `
+        ("got " + (Format-CalcValue $state['last_successful_applied_timeline']) + `
+         ", emitted '" + [string]$Case.expected.applied_timeline + "'")
+    # C17:C20 - the attempt axis of a SUCCESS.
+    $null = Add-Check $List ($Label + ': C17 = SUCCESS') `
+        ([string]$state['last_attempt_result'] -eq 'SUCCESS') `
+        ("got " + (Format-CalcValue $state['last_attempt_result']))
+    $null = Add-Check $List ($Label + ': C18 is BLANK on success, not an empty-looking zero') `
+        (Test-CalcBlank -Actual $state['last_attempt_detail']) `
+        ("got " + (Format-CalcValue $state['last_attempt_detail']))
+    $null = Add-Check $List ($Label + ': C19 = CURRENT after a status evaluation') `
+        ([string]$state['calculation_status'] -eq 'CURRENT') `
+        ("got " + (Format-CalcValue $state['calculation_status']))
+    $null = Add-Check $List ($Label + ': C20 status-evaluation timestamp is non-blank') `
+        (-not (Test-CalcBlank -Actual $state['status_evaluated_at']))
+}
+
+# ===========================================================================
+# Snapshot capture and comparison
+# ===========================================================================
+# FILE SCOPE, because three scenarios need it: the refusal proof, the rollback
+# proof and the status matrix. Independent review found the refusal proof
+# asserting the opposite of the rule, and factoring these upward is what lets all
+# three make the SAME comparison instead of three different ones.
+#
+# THREE GROUPS, CAPTURED SEPARATELY, because they have three different fates:
+#   C13:C16  the last successful record   - must be UNCHANGED
+#   C17:C20  the attempt and status axis  - must CHANGE, as the row expects
+#   C23:C32 + the five tables             - must be UNCHANGED
+# Comparing all of C13:C20 as unchanged would assert that the refusal or the
+# failure was never recorded, which is the opposite of the requirement.
+$script:Phase5SuccessRecordFields = @('last_successful_stamp', 'last_successful_fingerprint',
+                                      'fingerprint_version', 'last_successful_applied_timeline')
+$script:Phase5AttemptFields = @('last_attempt_result', 'last_attempt_detail',
+                                'calculation_status', 'status_evaluated_at')
+
+function Get-Phase5SuccessRecordFields { return $script:Phase5SuccessRecordFields }
+function Get-Phase5AttemptFields { return $script:Phase5AttemptFields }
+
+function Get-Phase5Snapshot {
+    param($Workbook, $Inspection)
+    $tables = New-Object System.Collections.Specialized.OrderedDictionary
+    foreach ($key in $Inspection.calc.tables.PSObject.Properties.Name) {
+        $rows = @()
+        foreach ($row in @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey $key)) {
+            $cells = @()
+            foreach ($cell in @($row)) { $cells += (Format-CalcValue $cell) }
+            # The UNIT SEPARATOR, as [char], not a `u{...} escape: Windows
+            # PowerShell 5.1 has no such escape and would fail to parse it.
+            $rows += ($cells -join ([string][char]31))
+        }
+        $tables.Add($key, $rows)
+    }
+    return [pscustomobject]@{
+        State  = (Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state')
+        Totals = (Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_totals')
+        Tables = $tables
+    }
+}
+
+function Add-SnapshotUnchangedChecks {
+    param($List, $Before, $After, [string]$Label, $SuccessFields)
+    if ($null -eq $SuccessFields) { $SuccessFields = Get-Phase5SuccessRecordFields }
+    # C13:C16 exactly.
+    foreach ($field in $SuccessFields) {
+        $null = Add-Check $List ($Label + ': calc_state.' + $field + ' (C13:C16) is unchanged') `
+            (Test-CalcValue -Actual $After.State[$field] -Expected $Before.State[$field]) `
+            ("was " + (Format-CalcValue $Before.State[$field]) + `
+             ", now " + (Format-CalcValue $After.State[$field]))
+    }
+    # C23:C32 exactly, INCLUDING blanks. A previously blank total that came back
+    # as numeric zero would be a fabricated value, not a preserved one.
+    foreach ($field in $Before.Totals.Keys) {
+        $null = Add-Check $List ($Label + ': calc_totals.' + $field + ' (C23:C32) is unchanged') `
+            (Test-CalcValue -Actual $After.Totals[$field] -Expected $Before.Totals[$field]) `
+            ("was " + (Format-CalcValue $Before.Totals[$field]) + `
+             ", now " + (Format-CalcValue $After.Totals[$field]))
+    }
+    # All five analytical ListObjects, row for row and cell for cell. Row count
+    # first: a table that came back shorter would otherwise compare only the rows
+    # that survived.
+    foreach ($key in $Before.Tables.Keys) {
+        $was = @($Before.Tables[$key]); $now = @($After.Tables[$key])
+        $null = Add-Check $List ($Label + ': ' + $key + ' has its previous row count') `
+            ($was.Count -eq $now.Count) ("was " + $was.Count + ", now " + $now.Count)
+        $identical = ($was.Count -eq $now.Count)
+        if ($identical) {
+            for ($i = 0; $i -lt $was.Count; $i++) {
+                if ($was[$i] -cne $now[$i]) { $identical = $false }
+            }
+        }
+        $null = Add-Check $List ($Label + ': ' + $key + ' is the previous snapshot exactly') $identical
+    }
+}
+
+function Add-Phase5AttemptAxisChecks {
+    param($List, $After, [string]$Label, [string]$ExpectedResult, [string]$ExpectedStatus)
+    # THE OTHER GROUP, and it must have CHANGED. Asserting C17:C20 unchanged
+    # alongside C13:C16 would assert that the attempt was never recorded at all.
+    $null = Add-Check $List ($Label + ': C17 = ' + $ExpectedResult) `
+        ([string]$After.State['last_attempt_result'] -eq $ExpectedResult) `
+        ("got " + (Format-CalcValue $After.State['last_attempt_result']))
+    $null = Add-Check $List ($Label + ': C18 carries a specific detail') `
+        (-not [string]::IsNullOrWhiteSpace([string]$After.State['last_attempt_detail'])) `
+        ([string]$After.State['last_attempt_detail'])
+    $null = Add-Check $List ($Label + ': C19 = ' + $ExpectedStatus + ', a freshly derived status') `
+        ([string]$After.State['calculation_status'] -eq $ExpectedStatus) `
+        ("got " + (Format-CalcValue $After.State['calculation_status']))
+    $null = Add-Check $List ($Label + ': C20 carries a fresh evaluation timestamp') `
+        (-not (Test-CalcBlank -Actual $After.State['status_evaluated_at']))
+}
+
 # ===========================================================================
 # The scenarios
 # ===========================================================================
@@ -744,6 +961,8 @@ function Invoke-Phase5GateBScenarios {
 
     $failpoints = Get-Phase5FailpointNames
     $ledger = Get-Phase5CoverageLedger
+    $successRecordFields = Get-Phase5SuccessRecordFields
+    $attemptFields = Get-Phase5AttemptFields
 
     # -------------------------------------------------------------------
     # PHASE-4 PREREQUISITE. 35/35, 0 FAIL, 0 SKIP - checked, not assumed.
@@ -1111,11 +1330,20 @@ function Invoke-Phase5GateBScenarios {
                     (@($vector.signed_ascw | Where-Object { [int]$_ -lt 0 }).Count -ge 1) -Detail `
                     (@($vector.signed_ascw) -join ',')
 
-                # THE LENGTH PREFIX IS THE UNIT COUNT.
+                # THE COMPLETE CANONICAL FIELD, not just its prefix.
+                #
+                # The corpus emits `canonical_text_field` for every vector, so the
+                # whole framed field is compared. Checking only "S<units>:" would
+                # pass a field whose PAYLOAD was wrong - a mangled surrogate pair
+                # with the right length is exactly the failure this vector exists
+                # to catch.
                 $field = [string]$Excel.Run('GBD_CanonicalTextField', $units)
-                $expectedField = 'OK|S' + [string]$vector.utf16_length + ':'
-                $null = Add-Check $list ($key + ': the canonical text prefix is the UTF-16 unit count') `
-                    ($field.StartsWith($expectedField)) ("got " + $field + ", expected prefix " + $expectedField)
+                $expectedField = 'OK|' + [string]$vector.canonical_text_field
+                $null = Add-Check $list ($key + ': the COMPLETE canonical text field matches the emitted one') `
+                    ($field -ceq $expectedField) `
+                    ("got " + $field + ", expected " + $expectedField)
+                $null = Add-Check $list ($key + ': its length prefix is the UTF-16 unit count') `
+                    ($field.StartsWith('OK|S' + [string]$vector.utf16_length + ':')) $field
             }
             Add-Result 'P5-D4' 'Direct VBA: UTF-16 signed AscW, unit counting and prefixes (plan case 26)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
@@ -1296,9 +1524,30 @@ function Invoke-Phase5GateBScenarios {
             $null = Add-Check $list ('case ' + $id + ': the stored and current fingerprints agree') `
                 ($fingerprint -ceq $current) ("stored " + $fingerprint + ", current " + $current)
 
+            # THE GOLDEN END-TO-END PARITY. Case 1 IS the model the emitted
+            # reference stream was built from, so the COMPLETE production path -
+            # resolution, referenced factors, record construction, canonical
+            # section ordering, BuildFingerprint - must land on the emitted digest.
+            #
+            # "stored equals current" alone would be satisfied by two identically
+            # WRONG production fingerprints; this is the check that cannot be.
+            # The direct primitive proof in P5-D5 is a different claim and both
+            # are required.
+            if ($id -eq '1') {
+                $golden = [string]$Cases.fingerprint.reference.digest
+                $null = Add-Check $list `
+                    'GOLDEN: PCCM_CurrentInputFingerprint() on plan case 1 equals the emitted reference digest' `
+                    ($current -ceq $golden) ("got " + $current + ", emitted " + $golden)
+                $null = Add-Check $list `
+                    'GOLDEN: PCCM_CalculationFingerprint() after the commit equals the emitted reference digest' `
+                    ($fingerprint -ceq $golden) ("got " + $fingerprint + ", emitted " + $golden)
+            }
+
             if ($attempt -eq 'SUCCESS') {
                 Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook -Inspection $Inspection `
                     -Case $case -Tolerances $Cases.tolerances
+                Add-Phase5SuccessStateChecks -List $list -Excel $Excel -Workbook $Workbook `
+                    -Inspection $Inspection -Case $case -Cases $Cases -Label ('case ' + $id)
             }
             $covered += $id
         }
@@ -1314,18 +1563,49 @@ function Invoke-Phase5GateBScenarios {
     # -------------------------------------------------------------------
     # P5-RF. Every prerequisite refusal in the fixture corpus
     # -------------------------------------------------------------------
-    # A refusal is REFUSED with a specific detail and status INVALID, and it
-    # leaves the analytical blocks and the previous success record untouched.
+    # A REFUSAL PRESERVES THE PRIOR SUCCESSFUL SNAPSHOT. It does not empty the
+    # calculation workspace.
+    #
+    # The first submission asserted the opposite: that every _Calc table held
+    # zero populated rows after a refusal. That would have FAILED against correct
+    # production behaviour. P5-AN runs first and leaves a successful snapshot;
+    # Set-Phase5Fixture changes the INPUT model and never touches _Calc; and a
+    # pre-write refusal is required to leave C13:C16, C23:C32 and all five tables
+    # exactly as they were.
+    #
+    # "No partial result" means NO PARTIAL NEW SNAPSHOT SURVIVES - not "erase the
+    # old successful one". The baseline is therefore established once and every
+    # refusal is compared against it, which also proves that a run of successive
+    # refusals never erodes the snapshot.
     try {
         $list = New-Checklist
+        $baseline = $null
+        foreach ($candidate in @($Cases.plan_cases)) {
+            if ([string]$candidate.id -eq '3') { $baseline = $candidate }
+        }
+        $null = Add-Check $list 'the refusal baseline fixture (plan case 3) was emitted' `
+            ($null -ne $baseline)
+        $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+            -Inspection $Inspection -Model $baseline.model
+        $Excel.Run('PCCM_Calculate') | Out-Null
+        $null = Add-Check $list 'a successful baseline snapshot was established first' `
+            ([string]$Excel.Run('PCCM_CalculationAttemptResult') -eq 'SUCCESS')
+        $before = Get-Phase5Snapshot -Workbook $Workbook -Inspection $Inspection
+        $baselineDigest = [string]$Excel.Run('PCCM_CalculationFingerprint')
+        $null = Add-Check $list 'the baseline snapshot is not empty, so the comparison is not vacuous' `
+            ((@($before.Tables['calc_drivers'])).Count -ge 1) `
+            ("calc_drivers rows " + (@($before.Tables['calc_drivers'])).Count)
+
         $covered = @()
         foreach ($case in @($Cases.plan_cases)) {
             if ([string]$case.kind -ne 'refusal') { continue }
             $id = [string]$case.id
+            # The INPUT model changes. The successful _Calc snapshot is left
+            # exactly where it is, deliberately: clearing it to make an assertion
+            # pass would be the harness proving itself.
             $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
                 -Inspection $Inspection -Model $case.model
 
-            $before = Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state'
             $Excel.Run('PCCM_Calculate') | Out-Null
             $attempt = [string]$Excel.Run('PCCM_CalculationAttemptResult')
             $detail = [string]$Excel.Run('PCCM_CalculationAttemptDetail')
@@ -1336,101 +1616,218 @@ function Invoke-Phase5GateBScenarios {
                 (-not [string]::IsNullOrWhiteSpace($detail)) $detail
             $null = Add-Check $list ('case ' + $id + ': the derived status is INVALID') `
                 ($status -eq 'INVALID') $status
-            # NO PARTIAL ANALYTICAL OUTPUT MAY SURVIVE.
-            foreach ($tableKey in $Inspection.calc.tables.PSObject.Properties.Name) {
-                $rows = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey $tableKey)
-                $populated = @($rows | Where-Object { -not (Test-CalcBlank -Actual $_[0]) })
-                $null = Add-Check $list ('case ' + $id + ': ' + $tableKey + ' carries no refused output') `
-                    ($populated.Count -eq 0) ("populated rows " + $populated.Count)
-            }
-            # C13:C16 stand: a refusal never rewrites the last successful record.
-            foreach ($field in 'last_successful_stamp', 'last_successful_fingerprint',
-                               'fingerprint_version', 'last_successful_applied_timeline') {
-                $after = Get-CalcScalar -Workbook $Workbook -Inspection $Inspection `
-                    -Block 'calc_state' -FieldKey $field
-                $null = Add-Check $list ('case ' + $id + ': calc_state.' + $field + ' is unchanged') `
-                    (Test-CalcValue -Actual $after -Expected $before[$field]) `
-                    ("was " + (Format-CalcValue $before[$field]) + ", now " + (Format-CalcValue $after))
-            }
+
+            $after = Get-Phase5Snapshot -Workbook $Workbook -Inspection $Inspection
+            # GROUP ONE AND THREE: unchanged, exactly.
+            Add-SnapshotUnchangedChecks -List $list -Before $before -After $after `
+                -Label ('case ' + $id) -SuccessFields $successRecordFields
+            # GROUP TWO: changed, as the refusal requires.
+            Add-Phase5AttemptAxisChecks -List $list -After $after -Label ('case ' + $id) `
+                -ExpectedResult 'REFUSED' -ExpectedStatus 'INVALID'
+            $null = Add-Check $list ('case ' + $id + ': the stored digest is still the baseline one') `
+                ([string]$Excel.Run('PCCM_CalculationFingerprint') -ceq $baselineDigest)
+            # NO PARTIAL NEW SNAPSHOT: the current inputs are refused, so no
+            # digest for them exists and none was published.
+            $null = Add-Check $list ('case ' + $id + ': no current-input fingerprint exists for a refused model') `
+                ([string]::IsNullOrEmpty([string]$Excel.Run('PCCM_CurrentInputFingerprint')))
             $covered += $id
         }
         $null = Add-Check $list 'every refusal plan case was driven' ($covered.Count -eq 9) `
             ("covered " + $covered.Count + ": " + ($covered -join ', '))
-        Add-Result 'P5-RF' ('Prerequisite refusals: ' + $covered.Count + ' cases, specific detail, no partial output') `
+        Add-Result 'P5-RF' `
+            ('Prerequisite refusals: ' + $covered.Count + ' cases; the prior successful snapshot survives each') `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Result 'P5-RF' 'Prerequisite refusals' 'FAIL' (Format-Err $_)
     }
 
     # -------------------------------------------------------------------
-    # P5-ID. Reconciliation identities I1..I5, cancellation-heavy included
+    # P5-ID. The locked reconciliation identities I1, I2, I3a-c, I4a-c and I5
     # -------------------------------------------------------------------
-    # The identities are asserted against the ACTUAL reporting surface the
-    # accepted model exposes - the ten calc_totals cells and the annual series -
-    # rather than reduced to one Boolean. Every identity is a statement about
-    # values the workbook publishes, so each is checked on its own.
+    # THE PRODUCTION RECONCILIATION IS THE AUTHORITY, AND IT IS NOT REIMPLEMENTED
+    # HERE.
+    #
+    # The first submission relabelled the identity set and, worse, decided each
+    # identity with its own PowerShell tolerance of the shape
+    #     max(|left|, |right|, floor) * coefficient
+    # which is exactly the HEADLINE-BASED conditioning erratum C1 rejected. Plan
+    # case 30 exists because headline conditioning can falsely fail a correct
+    # cancellation-heavy calculation, so reintroducing it in PowerShell would
+    # have made a rejected oracle the acceptance authority.
+    #
+    # What actually proves the identities on real Excel:
+    #
+    #   A  production `Reconcile` / `AllIdentitiesHold` runs INSIDE PCCM_Calculate
+    #      and a commit is impossible unless they pass. A SUCCESS on case 30 is
+    #      therefore production's own statement that the identities held under
+    #      the accepted C1 allowance.
+    #   B  every published analytical value equals the emitted Python oracle -
+    #      asserted in full by Add-Phase5AnalyticalChecks.
+    #   C  the annual Base, Risk and Total columns are each checked against their
+    #      own emitted oracle values, nominal and PV, which is what I3a-c and
+    #      I4a-c are statements about.
+    #   D  the profile weight vector of each driver is asserted from the emitted
+    #      corpus, and the refusal matrix proves invalid I5 variants are refused.
+    #
+    # The additive algebra below is kept because the MAPPING must be visible, but
+    # each side is compared against the ORACLE's own value for that side. No new
+    # PowerShell tolerance decides anything.
     try {
         $list = New-Checklist
-        $case = $null
-        foreach ($candidate in @($Cases.plan_cases)) {
-            if ([string]$candidate.id -eq '30') { $case = $candidate }
-        }
-        $null = Add-Check $list 'the cancellation-heavy fixture was emitted' ($null -ne $case)
         $tolerance = [double]$Cases.tolerances.identity_relative_coefficient
-        $floor = [double]$Cases.tolerances.identity_absolute_floor
-
+        $identityCases = @('3', '9', '30')
+        $seen = @()
         foreach ($candidate in @($Cases.plan_cases)) {
             if ([string]$candidate.kind -ne 'analytical') { continue }
             $id = [string]$candidate.id
-            # The identity set is proved on the cancellation-heavy case and on a
-            # representative multi-year case; running it on every analytical
-            # fixture would re-assert P5-AN without adding evidence.
-            if (@('3', '9', '30') -notcontains $id) { continue }
+            if ($identityCases -notcontains $id) { continue }
+            $seen += $id
 
             $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
                 -Inspection $Inspection -Model $candidate.model
             $Excel.Run('PCCM_Calculate') | Out-Null
             $attempt = [string]$Excel.Run('PCCM_CalculationAttemptResult')
-            $null = Add-Check $list ('case ' + $id + ': the identity fixture calculated') ($attempt -eq 'SUCCESS') $attempt
+            # A. PRODUCTION ACCEPTED IT. This is the identity evidence: the commit
+            #    is unreachable unless Reconcile and AllIdentitiesHold passed.
+            $null = Add-Check $list `
+                ('case ' + $id + ': PCCM_Calculate COMMITTED, so production Reconcile / AllIdentitiesHold passed') `
+                ($attempt -eq 'SUCCESS') ("attempt '" + $attempt + "'")
             if ($attempt -ne 'SUCCESS') { continue }
 
+            # B. Every published value equals the oracle. Same path as P5-AN, run
+            #    again here so the identity evidence is self-contained.
+            Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook -Inspection $Inspection `
+                -Case $candidate -Tolerances $Cases.tolerances
+
+            $expected = $candidate.expected
             $totals = @{}
-            foreach ($field in 'a_nom', 'a_pv', 'b_nom', 'b_pv', 'c_nom', 'c_pv',
-                               'd_nom', 'd_pv', 'e_nom', 'e_pv') {
-                $totals[$field] = [double](Get-CalcScalar -Workbook $Workbook -Inspection $Inspection `
-                    -Block 'calc_totals' -FieldKey $field)
+            foreach ($field in $expected.totals.PSObject.Properties.Name) {
+                $totals[$field] = Get-CalcScalar -Workbook $Workbook -Inspection $Inspection `
+                    -Block 'calc_totals' -FieldKey $field
             }
-            $close = {
-                param([double]$Left, [double]$Right)
-                $scale = [Math]::Max([Math]::Max([Math]::Abs($Left), [Math]::Abs($Right)), $floor)
-                return ([Math]::Abs($Left - $Right) -le ($tolerance * $scale))
+            $oracle = @{}
+            foreach ($field in $expected.totals.PSObject.Properties.Name) {
+                $oracle[$field] = [double]$expected.totals.$field
             }
-            # I1  C = A + B, nominal.        I2  C = A + B, present value.
-            $null = Add-Check $list ('case ' + $id + ' I1: C_nom = A_nom + B_nom') `
-                (& $close $totals['c_nom'] ($totals['a_nom'] + $totals['b_nom'])) `
-                ($totals['c_nom'].ToString('R') + ' vs ' + ($totals['a_nom'] + $totals['b_nom']).ToString('R'))
-            $null = Add-Check $list ('case ' + $id + ' I2: C_pv = A_pv + B_pv') `
-                (& $close $totals['c_pv'] ($totals['a_pv'] + $totals['b_pv']))
-            # I3  E = C + D, nominal.        I4  E = C + D, present value.
-            $null = Add-Check $list ('case ' + $id + ' I3: E_nom = C_nom + D_nom') `
-                (& $close $totals['e_nom'] ($totals['c_nom'] + $totals['d_nom']))
-            $null = Add-Check $list ('case ' + $id + ' I4: E_pv = C_pv + D_pv') `
-                (& $close $totals['e_pv'] ($totals['c_pv'] + $totals['d_pv']))
-            # I5  the annual series reconciles to the totals it summarises.
+
+            # --- I1  A + B = C, nominal AND present value -------------------
+            # The workbook's C is compared against the ORACLE's C, and the oracle's
+            # own A + B is shown alongside so the mapping is auditable. The
+            # comparison authority is the oracle value, never a PowerShell sum.
+            foreach ($pair in @(
+                @{ name = 'I1 nominal'; left = 'c_nom'; a = 'a_nom'; b = 'b_nom' },
+                @{ name = 'I1 present value'; left = 'c_pv'; a = 'a_pv'; b = 'b_pv' })) {
+                $null = Add-Check $list ('case ' + $id + ' ' + $pair.name + ': ' + $pair.left + ' equals the oracle') `
+                    (Test-CalcValue -Actual $totals[$pair.left] -Expected $oracle[$pair.left] -Tolerance $tolerance) `
+                    ("got " + (Format-CalcValue $totals[$pair.left]) + ", oracle " + (Format-CalcValue $oracle[$pair.left]))
+                $null = Add-Check $list ('case ' + $id + ' ' + $pair.name + ': the oracle maps ' + $pair.a + ' + ' + $pair.b + ' -> ' + $pair.left) `
+                    ($null -ne $oracle[$pair.a] -and $null -ne $oracle[$pair.b])
+            }
+            # --- I2  C + D = E, nominal AND present value -------------------
+            foreach ($pair in @(
+                @{ name = 'I2 nominal'; left = 'e_nom'; c = 'c_nom'; d = 'd_nom' },
+                @{ name = 'I2 present value'; left = 'e_pv'; c = 'c_pv'; d = 'd_pv' })) {
+                $null = Add-Check $list ('case ' + $id + ' ' + $pair.name + ': ' + $pair.left + ' equals the oracle') `
+                    (Test-CalcValue -Actual $totals[$pair.left] -Expected $oracle[$pair.left] -Tolerance $tolerance) `
+                    ("got " + (Format-CalcValue $totals[$pair.left]) + ", oracle " + (Format-CalcValue $oracle[$pair.left]))
+                $null = Add-Check $list ('case ' + $id + ' ' + $pair.name + ': the oracle maps ' + $pair.c + ' + ' + $pair.d + ' -> ' + $pair.left) `
+                    ($null -ne $oracle[$pair.c] -and $null -ne $oracle[$pair.d])
+            }
+
+            # --- I3a/b/c and I4a/b/c  the annual columns --------------------
+            # Each annual column is asserted against its OWN emitted oracle value,
+            # row by row, and the headline it reconciles to is named. Base, Risk
+            # and Total are asserted SEPARATELY - the first submission checked
+            # only the Total column and called it I5.
             $annual = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_annual')
-            $nomColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_annual' -ColumnKey 'total_nominal'
-            $pvColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_annual' -ColumnKey 'total_pv'
-            $sumNom = 0.0; $sumPv = 0.0
-            foreach ($row in $annual) {
-                if (-not (Test-CalcBlank -Actual $row[$nomColumn])) { $sumNom += [double]$row[$nomColumn] }
-                if (-not (Test-CalcBlank -Actual $row[$pvColumn]))  { $sumPv  += [double]$row[$pvColumn] }
+            $indexColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_annual' -ColumnKey 'project_index'
+            foreach ($identity in @(
+                @{ name = 'I3a'; column = 'base_cost_nominal';    headline = 'c_nom' },
+                @{ name = 'I3b'; column = 'expected_risk_nominal'; headline = 'd_nom' },
+                @{ name = 'I3c'; column = 'total_nominal';         headline = 'e_nom' },
+                @{ name = 'I4a'; column = 'base_cost_pv';          headline = 'c_pv' },
+                @{ name = 'I4b'; column = 'expected_risk_pv';      headline = 'd_pv' },
+                @{ name = 'I4c'; column = 'total_pv';              headline = 'e_pv' })) {
+                $ordinal = Get-CalcTableColumnIndex -Inspection $Inspection `
+                    -TableKey 'calc_annual' -ColumnKey $identity.column
+                $null = Add-Check $list `
+                    ('case ' + $id + ' ' + $identity.name + ': tblCalcAnnual publishes ' + $identity.column) `
+                    ($ordinal -ge 0)
+                foreach ($wanted in @($expected.annual)) {
+                    $found = $null
+                    foreach ($row in $annual) {
+                        if ([int]$row[$indexColumn] -eq [int]$wanted.project_index) { $found = $row }
+                    }
+                    $label = ('case ' + $id + ' ' + $identity.name + ': year ' +
+                              [string]$wanted.project_index + ' ' + $identity.column)
+                    if ($null -eq $found) {
+                        $null = Add-Check $list ($label + ' row exists') $false 'no such row'
+                        continue
+                    }
+                    $null = Add-Check $list ($label + ' equals the oracle') `
+                        (Test-CalcValue -Actual $found[$ordinal] `
+                            -Expected $wanted.($identity.column) -Tolerance $tolerance) `
+                        ("got " + (Format-CalcValue $found[$ordinal]) + `
+                         ", oracle " + (Format-CalcValue $wanted.($identity.column)))
+                }
+                $null = Add-Check $list `
+                    ('case ' + $id + ' ' + $identity.name + ': the series reconciles to ' + $identity.headline) `
+                    (Test-CalcValue -Actual $totals[$identity.headline] `
+                        -Expected $oracle[$identity.headline] -Tolerance $tolerance) `
+                    ("headline " + (Format-CalcValue $totals[$identity.headline]))
             }
-            $null = Add-Check $list ('case ' + $id + ' I5: the annual nominal series sums to E_nom') `
-                (& $close $sumNom $totals['e_nom'])
-            $null = Add-Check $list ('case ' + $id + ' I5: the annual PV series sums to E_pv') `
-                (& $close $sumPv $totals['e_pv'])
+
+            # --- I5  profile weights sum to 1 PER DRIVER --------------------
+            # The vector is asserted against the emitted corpus, driver by driver,
+            # in the profiling grid the fixture wrote it into. The SUM itself is
+            # production's to enforce: cases 15 and 23 in P5-RF prove an invalid
+            # vector is refused, which is the other half of I5.
+            foreach ($pair in @(
+                @{ key = 'cost_profiling'; drivers = @($candidate.model.cost_lines) },
+                @{ key = 'risk_profiling'; drivers = @($candidate.model.risks) })) {
+                $grid = $null
+                foreach ($gridCandidate in @($Manifest.grids)) {
+                    if ($gridCandidate.key -eq $pair.key) { $grid = $gridCandidate }
+                }
+                $fixed = @($grid.fixed_columns).Count
+                $body = @(Get-TableBody -Workbook $Workbook -SheetName $grid.sheet `
+                    -TableName $grid.table_name)
+                foreach ($driver in $pair.drivers) {
+                    $found = $null
+                    foreach ($row in $body) {
+                        if ([string]$row[0] -eq [string]$driver.permanent_id) { $found = $row }
+                    }
+                    $label = 'case ' + $id + ' I5: ' + [string]$driver.permanent_id
+                    if ($null -eq $found) {
+                        $null = Add-Check $list ($label + ' has a profiling row') $false
+                        continue
+                    }
+                    $offset = 0
+                    foreach ($weight in @($driver.profile_weights)) {
+                        $offset++
+                        $null = Add-Check $list ($label + ' weight ' + $offset + ' is the emitted one') `
+                            (Test-CalcValue -Actual $found[$fixed + $offset - 1] -Expected $weight) `
+                            ("got " + (Format-CalcValue $found[$fixed + $offset - 1]) + `
+                             ", emitted " + (Format-CalcValue $weight))
+                    }
+                }
+            }
+            # The emitted driver record carries the same vector, so the two
+            # authorities for I5 are asserted to agree.
+            foreach ($wanted in @($expected.drivers)) {
+                $model = $null
+                foreach ($driver in @($candidate.model.cost_lines) + @($candidate.model.risks)) {
+                    if ([string]$driver.permanent_id -eq [string]$wanted.permanent_id) { $model = $driver }
+                }
+                $null = Add-Check $list `
+                    ('case ' + $id + ' I5: the emitted weights for ' + [string]$wanted.permanent_id + ' match the fixture') `
+                    ((@($wanted.weights) -join ',') -eq (@($model.profile_weights) -join ','))
+            }
         }
-        Add-Result 'P5-ID' 'Reconciliation identities I1..I5, cancellation-heavy included (plan case 30)' `
+        $null = Add-Check $list 'the cancellation-heavy fixture (plan case 30) was among them' `
+            ($seen -contains '30') ("covered " + ($seen -join ', '))
+        Add-Result 'P5-ID' `
+            'Reconciliation identities I1, I2, I3a-c, I4a-c, I5 - production Reconcile is the authority' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Result 'P5-ID' 'Reconciliation identities' 'FAIL' (Format-Err $_)
@@ -1514,24 +1911,53 @@ function Invoke-Phase5GateBScenarios {
     # -------------------------------------------------------------------
     # P5-S2 / P5-ST. A fingerprinted input changes, and NOTHING is calculated
     # -------------------------------------------------------------------
-    # A NORMAL FINGERPRINTED ANALYTICAL INPUT - one profiling weight pair - not a
-    # timeline change. Applying a timeline is a structural operation with its own
-    # machinery; using it to make a model stale would prove something else.
+    # THE TRANSITION HAS AN ORACLE AT BOTH ENDS.
+    #
+    # The first submission made the model stale by exchanging two profiling
+    # weights, which produces a model the corpus does not describe: after the
+    # second Calculate there was no emitted expectation to compare against, and
+    # the proof degenerated into an annual ROW COUNT. section 25.2 requires the affected
+    # value to change TO THE ORACLE VALUE.
+    #
+    # Plan cases 3 and 19 have IDENTICAL applied structure - same timeline, same
+    # FX, same inflation profile and rates, same driver, same weights - and differ
+    # only in Discount Rate (0.10 -> -0.05). Changing that one ordinary
+    # fingerprinted scalar turns the case-3 model into the case-19 model, so the
+    # recalculated workbook can be asserted against case 19's OWN emitted expected
+    # block, in full. No Apply Timeline is used to create staleness, and nothing
+    # is hand-calculated in PowerShell.
+    $targetCase = $null
+    foreach ($candidate in @($Cases.plan_cases)) {
+        if ([string]$candidate.id -eq '19') { $targetCase = $candidate }
+    }
     try {
         $list = New-Checklist
-        $grid = $null
-        foreach ($candidate in @($Manifest.grids)) {
-            if ($candidate.key -eq 'cost_profiling') { $grid = $candidate }
-        }
-        $fixed = @($grid.fixed_columns).Count
-        $driver = @($baseCase.model.cost_lines)[0]
-        $weights = @($driver.profile_weights)
-        # Two weights are exchanged, so the profile still sums to 100% and the
-        # model stays VALID: the row under test is STALE, not INVALID.
-        Set-TableCell -Workbook $Workbook -SheetName $grid.sheet -TableName $grid.table_name `
-            -RowIndex 1 -ColumnIndex ($fixed + 1) -Value ([double]$weights[1])
-        Set-TableCell -Workbook $Workbook -SheetName $grid.sheet -TableName $grid.table_name `
-            -RowIndex 1 -ColumnIndex ($fixed + 2) -Value ([double]$weights[0])
+        $null = Add-Check $list 'the staleness TARGET fixture (plan case 19) was emitted' `
+            ($null -ne $targetCase)
+        # The two fixtures really are the same structure apart from one scalar,
+        # checked here rather than assumed, so a corpus change cannot silently
+        # turn this into a two-variable transition.
+        $sameStructure = (
+            ((ConvertTo-Json $baseCase.model.timeline -Compress) -ceq
+             (ConvertTo-Json $targetCase.model.timeline -Compress)) -and
+            ((ConvertTo-Json $baseCase.model.fx -Compress) -ceq
+             (ConvertTo-Json $targetCase.model.fx -Compress)) -and
+            ((ConvertTo-Json $baseCase.model.inflation -Compress) -ceq
+             (ConvertTo-Json $targetCase.model.inflation -Compress)) -and
+            ((ConvertTo-Json $baseCase.model.cost_lines -Compress) -ceq
+             (ConvertTo-Json $targetCase.model.cost_lines -Compress)) -and
+            ((ConvertTo-Json $baseCase.model.risks -Compress) -ceq
+             (ConvertTo-Json $targetCase.model.risks -Compress))
+        )
+        $null = Add-Check $list 'the source and target fixtures differ ONLY in Discount Rate' `
+            ($sameStructure -and ([double]$baseCase.model.discount_rate -ne
+                                  [double]$targetCase.model.discount_rate)) `
+            ("source " + [string]$baseCase.model.discount_rate + `
+             ", target " + [string]$targetCase.model.discount_rate)
+
+        # ONE ORDINARY FINGERPRINTED SCALAR. Not a timeline application.
+        Set-NamedValue -Workbook $Workbook -DefinedName $Inspection.inputs.discount_rate.defined_name `
+            -Value ([double]$targetCase.model.discount_rate)
 
         $row2 = Add-StatusRowChecks -List $list -Excel $Excel -Row 'row 2' `
             -ExpectedStatus 'STALE' -ExpectedAttempt 'SUCCESS' -DetailRule 'blank' `
@@ -1542,8 +1968,7 @@ function Invoke-Phase5GateBScenarios {
             ($row2.Current -cne $establishedFingerprint) `
             ("stored " + $row2.Stored + ", current " + $row2.Current)
         $after = Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state'
-        foreach ($field in 'last_successful_stamp', 'last_successful_fingerprint',
-                           'fingerprint_version', 'last_successful_applied_timeline') {
+        foreach ($field in $successRecordFields) {
             $null = Add-Check $list ('row 2: calc_state.' + $field + ' is unchanged') `
                 (Test-CalcValue -Actual $after[$field] -Expected $establishedState[$field])
         }
@@ -1563,20 +1988,22 @@ function Invoke-Phase5GateBScenarios {
             ("was " + $establishedFingerprint + ", now " + $stored)
         $null = Add-Check $list 'the stored digest now equals the current input digest' `
             ($stored -ceq [string]$Excel.Run('PCCM_CurrentInputFingerprint'))
-        # The affected analytical values must equal the ORACLE for the edited
-        # model, not merely differ from the previous run. The exchanged weights
-        # produce the same annual set in a different order, so the per-year
-        # values are what moved: they are compared against the fixture through
-        # the same expected-value path every other assertion uses.
-        $null = Add-Check $list `
-            'the recalculated annual series is non-empty and reconciles to the totals' `
-            (@(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_annual').Count -eq `
-             @($baseCase.expected.annual).Count)
-        Add-Result 'P5-ST' 'Primary staleness sequence: CURRENT -> STALE -> CURRENT on a real input' `
+
+        # THE ORACLE COMPARISON. Every published analytical value of the
+        # recalculated model is asserted against plan case 19's emitted expected
+        # block - the whole block, not a row count.
+        if ($attempt -eq 'SUCCESS') {
+            Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook -Inspection $Inspection `
+                -Case $targetCase -Tolerances $Cases.tolerances
+            Add-Phase5SuccessStateChecks -List $list -Excel $Excel -Workbook $Workbook `
+                -Inspection $Inspection -Case $targetCase -Cases $Cases -Label 'staleness target'
+        }
+        Add-Result 'P5-ST' `
+            'Primary staleness sequence: case 3 -> Discount Rate -> case 19, verified against case 19s oracle' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
 
-        # Restore the fixture exactly, so the scenarios below start from the
-        # model the corpus describes rather than from an edited one.
+        # Restore the source fixture exactly, so the scenarios below start from
+        # the model the corpus describes rather than from an edited one.
         $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
             -Inspection $Inspection -Model $baseCase.model
         $Excel.Run('PCCM_Calculate') | Out-Null
@@ -1588,8 +2015,26 @@ function Invoke-Phase5GateBScenarios {
     }
 
     # -------------------------------------------------------------------
-    # P5-NS. NON-staleness: four changes that must leave CURRENT / SUCCESS
+    # P5-NS. NON-staleness: four INDEPENDENT changes, each restored
     # -------------------------------------------------------------------
+    # THE FOUR EXCLUSIONS ARE STATED INDEPENDENTLY, SO THEY ARE PROVED
+    # INDEPENDENTLY.
+    #
+    # The first submission accumulated each change while testing the next, so by
+    # the fourth probe four edits were live at once and no single exclusion had
+    # been isolated. Every probe now runs
+    #     baseline CURRENT / SUCCESS / digest F
+    #     -> change ONE excluded input
+    #     -> assert CURRENT / SUCCESS / F
+    #     -> restore exactly
+    #     -> assert the baseline is back
+    # before the next one begins.
+    #
+    # THE ROW-ORDER PROBE NEEDS MORE THAN ONE ROW. Plan case 3 has a single Cost
+    # Line, and sorting a one-row table changes nothing: the Sort call was real
+    # and the reorder evidence was not. It runs on plan case 30, which has three
+    # Cost Lines, and the actual permanent-ID order is captured before and after
+    # and required to have CHANGED.
     try {
         $list = New-Checklist
         $costReg = $null
@@ -1598,130 +2043,124 @@ function Invoke-Phase5GateBScenarios {
         }
         $descriptionOrdinal = [array]::IndexOf(@($costReg.columns), 'description') + 1
 
+        # The probe: assert the excluded change moved nothing, against a digest
+        # captured at the moment the probe began.
         $probe = {
-            param([string]$Name)
+            param([string]$Name, [string]$Digest)
             $status = [string]$Excel.Run('PCCM_CalculationStatus')
             $attempt = [string]$Excel.Run('PCCM_CalculationAttemptResult')
             $stored = [string]$Excel.Run('PCCM_CalculationFingerprint')
+            $current = [string]$Excel.Run('PCCM_CurrentInputFingerprint')
             $null = Add-Check $list ($Name + ': status stays CURRENT') ($status -eq 'CURRENT') $status
             $null = Add-Check $list ($Name + ': attempt stays SUCCESS') ($attempt -eq 'SUCCESS') $attempt
             $null = Add-Check $list ($Name + ': the stored fingerprint is unchanged') `
-                ($stored -ceq $establishedFingerprint) ("got " + $stored)
+                ($stored -ceq $Digest) ("got " + $stored)
             $null = Add-Check $list ($Name + ': the CURRENT input fingerprint is unchanged too') `
-                ([string]$Excel.Run('PCCM_CurrentInputFingerprint') -ceq $establishedFingerprint)
+                ($current -ceq $Digest) ("got " + $current)
         }
 
-        # 1. Description - carried by the model, not by the digest.
+        # ---- probe 1: Description ------------------------------------------
+        $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+            -Inspection $Inspection -Model $baseCase.model
+        $Excel.Run('PCCM_Calculate') | Out-Null
+        $digest = [string]$Excel.Run('PCCM_CalculationFingerprint')
+        $null = Add-Check $list 'probe 1 baseline: CURRENT / SUCCESS' `
+            (([string]$Excel.Run('PCCM_CalculationStatus') -eq 'CURRENT') -and
+             ([string]$Excel.Run('PCCM_CalculationAttemptResult') -eq 'SUCCESS'))
+        $wasDescription = ''
+        $body = @(Get-TableBody -Workbook $Workbook -SheetName $costReg.sheet -TableName $costReg.table_name)
+        if ($body.Count -ge 1) { $wasDescription = [string]$body[0][$descriptionOrdinal - 1] }
         Set-TableCell -Workbook $Workbook -SheetName $costReg.sheet -TableName $costReg.table_name `
             -RowIndex 1 -ColumnIndex $descriptionOrdinal -Value 'a different description entirely'
-        & $probe 'Description changed'
+        & $probe 'Description changed' $digest
+        Set-TableCell -Workbook $Workbook -SheetName $costReg.sheet -TableName $costReg.table_name `
+            -RowIndex 1 -ColumnIndex $descriptionOrdinal -Value $wasDescription
+        & $probe 'Description restored' $digest
 
-        # 2. A REAL ListObject reorder. Not values copied between rows: an actual
-        #    sort, which is what proves canonical Permanent-ID ordering on real
-        #    Excel. Emulating it would prove only that the harness can copy.
-        Invoke-TableSort -Workbook $Workbook -SheetName $costReg.sheet `
-            -TableName $costReg.table_name -KeyColumnIndex $descriptionOrdinal -Order 2
-        & $probe 'Cost Lines physically re-sorted (real ListObject sort)'
+        # ---- probe 2: a REAL multi-row reorder ------------------------------
+        $reorderCase = $null
+        foreach ($candidate in @($Cases.plan_cases)) {
+            if ([string]$candidate.id -eq '30') { $reorderCase = $candidate }
+        }
+        $null = Add-Check $list 'the reorder fixture (plan case 30) was emitted' ($null -ne $reorderCase)
+        $null = Add-Check $list 'the reorder fixture has MORE THAN ONE Cost Line, so a sort can move rows' `
+            ((@($reorderCase.model.cost_lines)).Count -ge 2) `
+            ("cost lines " + (@($reorderCase.model.cost_lines)).Count)
+        $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+            -Inspection $Inspection -Model $reorderCase.model
+        $Excel.Run('PCCM_Calculate') | Out-Null
+        $reorderDigest = [string]$Excel.Run('PCCM_CalculationFingerprint')
+        $null = Add-Check $list 'probe 2 baseline: CURRENT / SUCCESS on the multi-row fixture' `
+            (([string]$Excel.Run('PCCM_CalculationStatus') -eq 'CURRENT') -and
+             ([string]$Excel.Run('PCCM_CalculationAttemptResult') -eq 'SUCCESS'))
+
+        # Distinct descriptions, so the sort key actually orders the rows.
+        $rowCount = Get-TableRowCount -Workbook $Workbook -SheetName $costReg.sheet `
+            -TableName $costReg.table_name
+        for ($row = 1; $row -le $rowCount; $row++) {
+            Set-TableCell -Workbook $Workbook -SheetName $costReg.sheet -TableName $costReg.table_name `
+                -RowIndex $row -ColumnIndex $descriptionOrdinal `
+                -Value ('sort-key-' + [string](100 - $row))
+        }
+        $idsBefore = @(Get-IdColumnValues -Workbook $Workbook -Info $costReg)
         Invoke-TableSort -Workbook $Workbook -SheetName $costReg.sheet `
             -TableName $costReg.table_name -KeyColumnIndex $descriptionOrdinal -Order 1
-        & $probe 'Cost Lines re-sorted back'
+        $idsAfter = @(Get-IdColumnValues -Workbook $Workbook -Info $costReg)
+        # THE ORDER ACTUALLY CHANGED. "Sort was called" is not evidence.
+        $null = Add-Check $list 'the physical permanent-ID order ACTUALLY changed' `
+            (($idsBefore -join ',') -cne ($idsAfter -join ',')) `
+            ("before " + ($idsBefore -join ',') + " / after " + ($idsAfter -join ','))
+        $null = Add-Check $list 'the same identifiers are present, only reordered' `
+            (((@($idsBefore | Sort-Object)) -join ',') -eq ((@($idsAfter | Sort-Object)) -join ',')) `
+            ("before " + ($idsBefore -join ',') + " / after " + ($idsAfter -join ','))
+        & $probe 'Cost Lines physically re-sorted (real ListObject sort, order changed)' $reorderDigest
+        Invoke-TableSort -Workbook $Workbook -SheetName $costReg.sheet `
+            -TableName $costReg.table_name -KeyColumnIndex $descriptionOrdinal -Order 2
+        $idsRestored = @(Get-IdColumnValues -Workbook $Workbook -Info $costReg)
+        $null = Add-Check $list 'the original physical order was restored' `
+            (($idsRestored -join ',') -ceq ($idsBefore -join ',')) `
+            ("restored " + ($idsRestored -join ','))
+        & $probe 'Cost Lines re-sorted back' $reorderDigest
 
-        # 3. Selected Confidence Level - a Phase-6 presentation input.
+        # ---- probe 3: Selected Confidence Level ----------------------------
+        $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+            -Inspection $Inspection -Model $baseCase.model
+        $Excel.Run('PCCM_Calculate') | Out-Null
+        $digest = [string]$Excel.Run('PCCM_CalculationFingerprint')
         $confidence = $Inspection.inputs.selected_confidence_level
         $wasConfidence = [string](Get-NamedValue -Workbook $Workbook -DefinedName $confidence.defined_name)
         Set-NamedValueText -Workbook $Workbook -DefinedName $confidence.defined_name -Text 'P90'
-        & $probe 'Selected Confidence Level changed'
-        if (-not [string]::IsNullOrEmpty($wasConfidence)) {
-            Set-NamedValueText -Workbook $Workbook -DefinedName $confidence.defined_name -Text $wasConfidence
-        }
+        & $probe 'Selected Confidence Level changed' $digest
+        Set-NamedValueText -Workbook $Workbook -DefinedName $confidence.defined_name -Text $wasConfidence
+        & $probe 'Selected Confidence Level restored' $digest
 
-        # 4. An UNREFERENCED FX assumption. Referenced-only resolution means a
-        #    currency no driver uses is never consulted, so it cannot change the
-        #    digest - and it must not.
+        # ---- probe 4: an UNREFERENCED FX assumption -------------------------
+        # Referenced-only resolution means a currency no driver uses is never
+        # consulted, so it cannot change the digest - and it must not.
         $fx = $Inspection.input_tables.fx_rates
-        $rowCount = Get-TableRowCount -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
+        $fxRows = Get-TableRowCount -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
         Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
         Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
-            -RowIndex ($rowCount + 1) -ColumnIndex 1 -Value 'ZZZ'
+            -RowIndex ($fxRows + 1) -ColumnIndex 1 -Value 'ZZZ'
         Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
-            -RowIndex ($rowCount + 1) -ColumnIndex 2 -Value ([double]3.75)
-        & $probe 'an UNREFERENCED FX assumption added'
+            -RowIndex ($fxRows + 1) -ColumnIndex 2 -Value ([double]3.75)
+        & $probe 'an UNREFERENCED FX assumption added' $digest
         Remove-TableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
-            -RowIndex ($rowCount + 1)
+            -RowIndex ($fxRows + 1)
+        & $probe 'the unreferenced FX assumption removed' $digest
 
-        Add-Result 'P5-NS' 'Non-staleness: description, real row reorder, confidence level, unreferenced FX' `
+        # Leave the shared baseline exactly as the scenarios below expect it.
+        $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+            -Inspection $Inspection -Model $baseCase.model
+        $Excel.Run('PCCM_Calculate') | Out-Null
+        $establishedFingerprint = [string]$Excel.Run('PCCM_CalculationFingerprint')
+        $establishedState = Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state'
+
+        Add-Result 'P5-NS' `
+            'Non-staleness, four INDEPENDENT probes: description, real multi-row reorder, confidence level, unreferenced FX' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Result 'P5-NS' 'Non-staleness proofs' 'FAIL' (Format-Err $_)
-    }
-
-    # -------------------------------------------------------------------
-    # Snapshot capture, for the refusal and rollback comparisons
-    # -------------------------------------------------------------------
-    # THREE GROUPS, CAPTURED SEPARATELY, because they have three different fates:
-    #   C13:C16  the last successful record   - must be UNCHANGED
-    #   C17:C20  the attempt and status axis  - must CHANGE, as the row expects
-    #   C23:C32 + the five tables             - must be UNCHANGED
-    # Comparing all of C13:C20 as unchanged would assert that the refusal or the
-    # failure was never recorded, which is the opposite of the requirement.
-    $successRecordFields = @('last_successful_stamp', 'last_successful_fingerprint',
-                             'fingerprint_version', 'last_successful_applied_timeline')
-    $attemptFields = @('last_attempt_result', 'last_attempt_detail',
-                       'calculation_status', 'status_evaluated_at')
-
-    function Get-Phase5Snapshot {
-        param($Workbook, $Inspection)
-        $tables = New-Object System.Collections.Specialized.OrderedDictionary
-        foreach ($key in $Inspection.calc.tables.PSObject.Properties.Name) {
-            $rows = @()
-            foreach ($row in @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey $key)) {
-                $cells = @()
-                foreach ($cell in @($row)) { $cells += (Format-CalcValue $cell) }
-                # The UNIT SEPARATOR, as [char], not a `u{...} escape: Windows
-                # PowerShell 5.1 has no such escape and would fail to parse it.
-                $rows += ($cells -join ([string][char]31))
-            }
-            $tables.Add($key, $rows)
-        }
-        return [pscustomobject]@{
-            State  = (Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state')
-            Totals = (Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_totals')
-            Tables = $tables
-        }
-    }
-
-    function Add-SnapshotUnchangedChecks {
-        param($List, $Before, $After, [string]$Label, $SuccessFields)
-        # C13:C16 exactly.
-        foreach ($field in $SuccessFields) {
-            $null = Add-Check $List ($Label + ': calc_state.' + $field + ' (C13:C16) is unchanged') `
-                (Test-CalcValue -Actual $After.State[$field] -Expected $Before.State[$field]) `
-                ("was " + (Format-CalcValue $Before.State[$field]) + `
-                 ", now " + (Format-CalcValue $After.State[$field]))
-        }
-        # C23:C32 exactly, INCLUDING blanks. A previously blank total that came
-        # back as numeric zero would be a fabricated value, not a restoration.
-        foreach ($field in $Before.Totals.Keys) {
-            $null = Add-Check $List ($Label + ': calc_totals.' + $field + ' (C23:C32) is unchanged') `
-                (Test-CalcValue -Actual $After.Totals[$field] -Expected $Before.Totals[$field]) `
-                ("was " + (Format-CalcValue $Before.Totals[$field]) + `
-                 ", now " + (Format-CalcValue $After.Totals[$field]))
-        }
-        # All five analytical ListObjects, row for row and cell for cell. Row
-        # count first: a table that came back shorter would otherwise compare
-        # only the rows that survived.
-        foreach ($key in $Before.Tables.Keys) {
-            $was = @($Before.Tables[$key]); $now = @($After.Tables[$key])
-            $null = Add-Check $List ($Label + ': ' + $key + ' has its previous row count') `
-                ($was.Count -eq $now.Count) ("was " + $was.Count + ", now " + $now.Count)
-            $identical = ($was.Count -eq $now.Count)
-            if ($identical) {
-                for ($i = 0; $i -lt $was.Count; $i++) {
-                    if ($was[$i] -cne $now[$i]) { $identical = $false }
-                }
-            }
-            $null = Add-Check $List ($Label + ': ' + $key + ' is the previous snapshot exactly') $identical
-        }
     }
 
     # -------------------------------------------------------------------

@@ -1,11 +1,22 @@
 # Phase 5 — Gate B — Step B1: the Windows harness extension
 
-**Status: harness source, ready for independent review. NOTHING HAS BEEN RUN.**
+**Status: correction round 1 — harness source, ready for independent review.
+NOTHING HAS BEEN RUN.**
 
 Gate A is accepted and closed at `1968fb8`. This step authors the Windows Gate-B
 harness required by `phase5_plan.md` §24, §25 and implementation-sequence item 11,
 and reviews it statically on Linux. The sequence is deliberate: author, review on
 Linux, review independently, and only then run real Excel on Windows.
+
+The first submission (`93f306d`) had its architecture accepted and was rejected
+with **eight harness defects**, recorded in full under
+**[Correction round 1](#correction-round-1)**. Every one was a defect in what the
+harness would have PROVED, not in how it is wired: two fixture writers that
+destroyed the condition they were exercising, a refusal proof that asserted the
+opposite of the rule, a reconciliation block that reimplemented a rejected
+oracle, a staleness proof with no oracle at all, a reorder proof that reordered
+nothing, a missing end-to-end fingerprint parity, two published columns never
+asserted, and semantic values in an address projection.
 
 ---
 
@@ -94,6 +105,24 @@ carries **identities only** — names, sheets, addresses, rows, columns — and 
 expected value, no tolerance and no analytical fact. `phase5_cases.json` remains
 the sole expected-value authority.
 
+Correction round 1 removed three semantic values that had been in it and replaced
+name-banning with a positive schema; see
+**[correction 8](#8--the-inspection-projection-was-not-identities-only)**. The
+schema is now:
+
+```
+schema_version, purpose, provenance
+calc          -> sheet, required_visibility, tables, scalar_blocks
+  tables[*]   -> table_name, header_row, first_column, last_column,
+                 first_column_index, column_count, first_body_row,
+                 row_rule, columns
+  blocks[*]   -> label_column, value_column, first_row, last_row,
+                 value_range, rows
+inputs[*]     -> defined_name, sheet, cell, type
+input_tables[*] -> table_name, sheet, header_row, first_column, columns,
+                   locked_seed_rows
+```
+
 It cannot become a second contract, because `test_42` and `test_43` pin every
 address in it against the generated `modCalcContract.bas` and `modConstants.bas`.
 If the two ever disagree the Linux build fails, rather than the harness silently
@@ -104,6 +133,231 @@ projection.
 If the reviewer would rather this projection did not exist, the alternative is a
 manifest key; the harness reads one JSON object either way and nothing else
 changes.
+
+---
+
+## Correction round 1
+
+Independent review reproduced 76/76 and 351/351 from the submitted package,
+accepted the architecture, and rejected the harness on eight defects.
+
+### 1 — blank fixture values were coerced to zero
+
+`Write-Phase5InflationRates` and `Write-Phase5Weights` both cast before they
+branched:
+
+```powershell
+-Value ([double]$rates.$year)      # [double]$null is numeric ZERO
+-Value ([double]$weight)
+```
+
+So plan case 14 — *blank required inflation rate* — was written as a rate of
+**0**, and plan case 23 — *a profile summing to 100% but containing a blank* —
+was written as **50% / 0% / 50%**. Both are VALID models. The refusal each case
+exists to prove could never have fired: the fixture was silently destroying the
+condition it was written to exercise, and both cases would have sat in the
+ledger claiming coverage they did not have.
+
+Both writers now branch on `$null` **before** the cast and write a genuine blank
+through `Set-TableCell -Value $null`, which calls `ClearContents` — never `0`,
+never `""`. `test_48` proves the guard precedes the conversion in both
+procedures; `test_49` ties the proof to cases 14 and 23 and re-checks that the
+corpus still carries their blanks and that case 23's remaining weights still sum
+to one, so a zero in place of the blank could not be refused for the wrong
+reason. `test_nc_29`, `test_nc_30` and `test_nc_31` plant the shipped shape and
+a guard placed after the cast.
+
+### 2 — the refusal proof asserted the opposite of the rule
+
+P5-RF required every `_Calc` table to hold **zero populated rows** after a
+refusal. That would have **failed against correct production behaviour**: P5-AN
+runs first and leaves a successful snapshot, `Set-Phase5Fixture` changes the
+INPUT model and never touches `_Calc`, and a pre-write refusal is required to
+leave C13:C16, C23:C32 and all five tables exactly as they were.
+
+*No partial result* means **no partial NEW snapshot survives**, not *erase the
+old successful one*.
+
+P5-RF now establishes a successful baseline from plan case 3, captures the full
+snapshot, applies each refusal fixture **without clearing `_Calc`**, and after
+each one asserts INVALID / REFUSED / specific detail, then C13:C16 + C23:C32 +
+all five tables unchanged, then C17:C20 changed. The baseline is captured once
+and every refusal is compared against it, which additionally proves that a run of
+nine successive refusals never erodes the snapshot. `Get-Phase5Snapshot`,
+`Add-SnapshotUnchangedChecks` and a new `Add-Phase5AttemptAxisChecks` were
+factored to file scope so the refusal, rollback and status scenarios make the
+SAME comparison rather than three different ones.
+
+### 3 — the identity block relabelled §15 and reimplemented a rejected oracle
+
+The block checked five relabelled identities and decided each with its own
+PowerShell tolerance:
+
+```powershell
+max(|left|, |right|, floor) * identity_relative_coefficient
+```
+
+That is the **headline-based conditioning erratum C1 rejected**, and plan case 30
+exists precisely because that shape can falsely fail a correct cancellation-heavy
+calculation. Reintroducing it in PowerShell would have made a rejected oracle the
+acceptance authority. It also never asserted annual Base or Risk separately, and
+never asserted I5 at all.
+
+P5-ID now carries the locked mapping — **I1** (A+B=C, nominal and PV), **I2**
+(C+D=E, nominal and PV), **I3a/b/c** (annual Base / Risk / Total nominal →
+C_nom / D_nom / E_nom), **I4a/b/c** (the same in present value), **I5** (profile
+weights per driver) — and the evidence is:
+
+* **production accepted the fixture.** `Reconcile` and `AllIdentitiesHold` run
+  inside `PCCM_Calculate`, and a commit is unreachable unless they pass. A
+  SUCCESS on case 30 is production's own statement that the identities held under
+  the accepted C1 allowance.
+* **every published value equals the emitted oracle**, through the same
+  `Add-Phase5AnalyticalChecks` path as everywhere else.
+* **each annual column is asserted separately**, row by row, against its own
+  emitted value.
+* **I5** is the per-driver weight vector, asserted in the profiling grid against
+  the emitted corpus; the other half of I5 is the refusal matrix, where cases 15
+  and 23 prove an invalid vector is refused.
+
+No new PowerShell tolerance decides anything. `test_52` refuses
+`[Math]::Max([Math]::Max(`, `identity_absolute_floor`, `$close = {` and
+`[Math]::Abs` anywhere in the identity block; `test_nc_34` plants the shipped
+helper.
+
+### 4 — the staleness recalculation had no oracle
+
+§25.2 requires the affected value to change **to the oracle value**. The harness
+made the model stale by exchanging two profiling weights, which produces a model
+the corpus does not describe — so after the second `PCCM_Calculate` there was
+nothing to compare against, and the executable proof was an annual **row count**.
+
+Plan cases **3** and **19** have identical applied structure — same timeline, FX,
+inflation profile and rates, driver and weights — and differ only in Discount
+Rate (`0.10` → `-0.05`). The sequence is now
+
+```
+establish case 3, calculate, capture digest and state
+change ONE ordinary fingerprinted scalar: inpDiscountRate -> case 19's value
+assert STALE / previous SUCCESS / stored digest old / current digest changed
+calculate
+assert CURRENT / SUCCESS / stored digest changed
+Add-Phase5AnalyticalChecks against case 19's OWN emitted expected block
+Add-Phase5SuccessStateChecks against case 19
+```
+
+so every published value of the recalculated model is an oracle value. No Apply
+Timeline is used to create staleness, and nothing is hand-calculated. The harness
+also **checks** that the two fixtures differ in exactly one scalar, so a corpus
+change cannot silently turn this into a two-variable transition.
+
+### 5 — the row-order proof reordered nothing, and the probes were cumulative
+
+P5-NS ran on plan case 3, which has **one** Cost Line. The `ListObject.Sort` call
+was real; sorting a one-row table changes nothing, so canonical Permanent-ID
+ordering was never exercised. And each probe left its change in place while the
+next one ran, so by the fourth probe four edits were live and no exclusion had
+been isolated.
+
+The reorder probe now runs on plan case **30**, which has three Cost Lines. It
+writes distinct sort keys, captures the actual permanent-ID order **before** and
+**after** the sort, and requires the order to have **changed** — `"Sort was
+called"` is not accepted as evidence — while also requiring the same identifiers
+to be present, only reordered.
+
+All four probes are now independent:
+
+```
+baseline: CURRENT / SUCCESS / digest F
+change ONE excluded input
+assert CURRENT / SUCCESS / F
+restore exactly
+assert the baseline is back
+```
+
+The probe takes the digest it must hold against as an **argument**, so a later
+probe cannot inherit an earlier probe's edit. `test_55` requires all four
+restorations and the per-probe digest parameter; `test_nc_39` and `test_nc_40`
+plant the one-row fixture and the cumulative shape.
+
+### 6 — the end-to-end golden fingerprint parity was missing
+
+P5-D5 proves the emitted reference STREAM digests correctly through
+`CalcFpDigestStream`. That is necessary and not sufficient: P5-AN only proved
+`stored == current`, which **two identically wrong production fingerprints would
+satisfy**.
+
+Plan case 1 is the model the reference stream was built from, so the complete
+production path — resolution, referenced factors, record construction, canonical
+section ordering, `BuildFingerprint` — must land on the emitted digest. P5-AN now
+asserts, for case 1 only:
+
+* `PCCM_CurrentInputFingerprint()` equals `fingerprint.reference.digest`
+* `PCCM_CalculationFingerprint()` after the commit equals the same value
+
+read from the corpus; the literal `50B6EB0E26857EA7` remains refused anywhere in
+the harness. Both proofs are required and both survive: the direct primitive one
+and the end-to-end one are different claims.
+
+**UTF-16 fields are now compared in full.** P5-D4 checked only
+`StartsWith("S<units>:")`, which passes a mangled payload of the right length —
+exactly the failure a surrogate-pair vector exists to catch. The corpus already
+emits `canonical_text_field` for every vector, and the complete field is now
+compared ordinally, with the prefix check kept as a supplementary claim.
+
+### 7 — the analytical audit was not actually complete
+
+Two published columns had no emitted expectation behind them, so the harness
+could only have asserted them by deriving the answer in PowerShell:
+
+| Column | Was | Now |
+| --- | --- | --- |
+| `tblCalcYears.Calendar Year` | unasserted | `expected.calc_years[].calendar_year` |
+| `tblCalcFX.Referenced By` | unasserted | `expected.resolved_fx_rows[].referenced_by` |
+
+Both come from the **existing** oracle: `AppliedTimeline.project_years()` already
+owns the calendar year, and the model's own driver list already owns the
+reference count. No oracle algorithm changed; `evaluate()` now surfaces what
+`calculate` already had in hand. The Stage-A golden-independence ledger validates
+both blocks against an independently derived reference, so the new fields are
+held to the same standard as every other emitted expectation.
+
+The **successful `calc_state` record** is now asserted cell by cell — C13
+non-blank, C14 exactly the digest the API returned, C15 the emitted
+`FP_VERSION`, C16 the emitted `applied_timeline` text, C17 `SUCCESS`, C18 blank,
+C19 `CURRENT`, C20 non-blank — with the two timestamps deliberately **not**
+required to equal each other. The applied-timeline format belongs to
+`modCalcReport.AppliedTimelineText`; the corpus carries a checked copy and
+`test_60` pins it against that procedure.
+
+`test_58` now derives the required coverage from the inspection projection's own
+declared columns and fails if any of them has no emitted expectation, rather than
+checking that each table NAME appears.
+
+### 8 — the inspection projection was not identities-only
+
+Its `calc` object carried `fingerprint_version`, `derived_status_labels` and
+`attempt_result_labels`. A version number is an expected VALUE and the two label
+lists are model SEMANTICS; none is an address. All three are removed, and the
+schema version is now 2.
+
+They were not moved into PowerShell literals: the version is read from
+`phase5_cases.json → fingerprint.constants.FP_VERSION`, and the status and
+attempt vocabularies are stated in the matrix rows that assert them, which is
+where the matrix states them.
+
+`test_41` and the new `test_61` no longer rely on banning names. The emitter
+declares a **positive schema** — `ALLOWED_ROOT_KEYS`, `ALLOWED_CALC_KEYS`,
+`ALLOWED_TABLE_KEYS`, `ALLOWED_BLOCK_KEYS`, `ALLOWED_INPUT_KEYS`,
+`ALLOWED_INPUT_TABLE_KEYS` — and the tests assert set equality at every level, so
+the next semantic value is refused whatever it is called. `test_nc_47` plants
+both the removed values and an innocent-looking `default_precision` to show the
+ban-list would have missed the second and the allowlist does not.
+
+One nuance the tests state explicitly: `fingerprint_version` survives as a
+`calc_state` **row name**, because row 15 is where the version is written and
+that is an address. Banning the string everywhere would have refused an identity
+along with the value.
 
 ---
 
@@ -179,8 +433,8 @@ all. What may not happen is a case disappearing because several share a fixture.
 | `P5-D7` | Convex statistics at the naive-overflow boundary |
 | `P5-D8` | The diagnostic module **removed**, inventory back to 15 |
 | `P5-AN` | Every analytical fixture, every emitted expected value |
-| `P5-RF` | Every prerequisite refusal, no partial analytical output |
-| `P5-ID` | Reconciliation identities I1–I5, cancellation-heavy included |
+| `P5-RF` | Every prerequisite refusal; the prior successful snapshot survives each |
+| `P5-ID` | Identities I1, I2, I3a–c, I4a–c, I5 — production `Reconcile` is the authority |
 | `P5-S1`…`P5-S6` | The six-row status matrix |
 | `P5-ST` | The primary staleness sequence |
 | `P5-NS` | Four non-staleness proofs |
@@ -304,8 +558,11 @@ blank and refuses a blank against a numeric expectation, which is what makes the
 Base-Year blank rate and every N/A field meaningful (`test_36`).
 
 A refusal must be `REFUSED` with a specific, non-empty detail and status
-`INVALID`, and **no partial analytical output may survive**: every `_Calc` table
-is checked for populated rows.
+`INVALID`, and it must **preserve the prior successful snapshot**: C13:C16,
+C23:C32 and all five tables exactly as they were, while C17:C20 changes. *No
+partial result* means no partial NEW snapshot survives — never that the previous
+successful one is erased. See
+**[correction 2](#2--the-refusal-proof-asserted-the-opposite-of-the-rule)**.
 
 ---
 
@@ -341,9 +598,10 @@ detail is still readable, byte for byte. That disagreement is required and is no
 cleaned up.
 
 `P5-NS` proves four changes leave `CURRENT` / `SUCCESS` / unchanged digest:
-Description, a **real `ListObject` sort** (not values copied between rows, so
-Permanent-ID canonical ordering is proved on real Excel), Selected Confidence
-Level, and an **unreferenced** FX assumption.
+Description, a **real multi-row `ListObject` sort** on plan case 30 with the
+permanent-ID order captured before and after and required to have changed,
+Selected Confidence Level, and an **unreferenced** FX assumption. Each probe
+starts from a baseline and restores its change before the next begins.
 
 ---
 
@@ -440,6 +698,11 @@ Everything about behaviour, and specifically:
   construction is needed — the harness will report which
 * that the fixture applier can drive every emitted model into the workbook, and
   that Apply Timeline generates the year columns each fixture needs
+* that `Set-TableCell -Value $null` really leaves an Excel cell BLANK, so cases
+  14 and 23 present the model with the blank they describe
+* that a real `ListObject.Sort` over three Cost Lines moves the rows on target
+* that `PCCM_CurrentInputFingerprint()` on plan case 1 lands on the emitted
+  reference digest through the whole production path
 * that `PCCM_Calculate` produces the emitted expected values on real Excel
   arithmetic and a real locale
 * that both injected failures roll back exactly as described
