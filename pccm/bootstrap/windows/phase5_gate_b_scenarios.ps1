@@ -71,7 +71,7 @@ function Get-Phase5CoverageLedger {
 # naming anything outside this set, so a typo cannot silently drop a case.
 function Get-Phase5ScenarioIds {
     return @(
-        'P5-M',
+        'P5-FX', 'P5-M',
         'P5-D0', 'P5-D1', 'P5-D2', 'P5-D3', 'P5-D4', 'P5-D5', 'P5-D6', 'P5-D7',
         'P5-DC', 'P5-D8',
         'P5-AN', 'P5-RF', 'P5-PQ', 'P5-PN', 'P5-AR', 'P5-ID',
@@ -397,6 +397,90 @@ function Clear-Phase5UserRows {
     }
 }
 
+# ===========================================================================
+# THE LOCKED FX SEED
+# ===========================================================================
+# `tblFXRates` row 1 is the reporting currency's own row, and Stage A builds it
+# as a LOCKED seed. The Gate-B prerequisite matrix deliberately destroys it:
+# PQ-10 REMOVES it (so the physical USD row shifts up into row 1), PQ-11
+# duplicates it and PQ-12 rewrites its rate. `-KeepRows 1` therefore preserved
+# whatever happened to be row 1 afterwards, and the next fixture inherited a
+# shifted USD row or a reporting rate of 2 - deterministic cross-scenario
+# contamination that would have made later scenarios refuse on the global
+# reporting-currency invariant instead of the predicate they claim to test.
+#
+# THE SEED IS CAPTURED FROM THE REAL WORKBOOK, ONCE, BEFORE ANY PHASE-5
+# MUTATION - the workbook that passed Stage-A verification, the Stage-B
+# persistence checks and the Phase-4 functional matrix. It is NOT reconstructed
+# from a literal and NOT taken from the emitted model: rebuilding it as "SAR, 1"
+# would make the fixture manufacture the very invariant PQ-10 to PQ-12 exist to
+# test, and if the BUILT seed is wrong the analytical calculation must still
+# fail rather than be repaired into agreement.
+$script:Phase5LockedFxSeed = $null
+
+function Save-Phase5LockedFxSeed {
+    param($Workbook, $Inspection)
+    $fx = $Inspection.input_tables.fx_rates
+    if ([int]$fx.locked_seed_rows -ne 1) {
+        throw ("the FX table declares " + [string]$fx.locked_seed_rows +
+               " locked seed rows; the Gate-B reset assumes exactly one")
+    }
+    $body = @(Get-TableBody -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name)
+    if ($body.Count -lt 1) {
+        throw "the FX table has no body row, so there is no locked seed to capture"
+    }
+    $script:Phase5LockedFxSeed = [pscustomobject]@{
+        Currency = $body[0][0]
+        Rate     = $body[0][1]
+    }
+    return $script:Phase5LockedFxSeed
+}
+
+function Get-Phase5LockedFxSeed {
+    if ($null -eq $script:Phase5LockedFxSeed) {
+        throw ("the locked FX seed was never captured. Save-Phase5LockedFxSeed must run " +
+               "on the untouched Stage-B workbook, before any Phase-5 mutation.")
+    }
+    return $script:Phase5LockedFxSeed
+}
+
+function Reset-Phase5FxTable {
+    param($Workbook, $Inspection, $Seed)
+    # SCENARIO-ISOLATION BASELINE STATE, not a production repair. Nothing here
+    # changes production semantics; it undoes what the harness itself did to the
+    # workbook it keeps reusing.
+    $fx = $Inspection.input_tables.fx_rates
+    $rows = Get-TableRowCount -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
+    if ($rows -lt 1) {
+        Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
+        $rows = 1
+    }
+    # Everything after the seed row goes, whatever it is.
+    for ($row = $rows; $row -gt 1; $row--) {
+        Remove-TableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+            -RowIndex $row
+    }
+    # Row 1 is REWRITTEN from the capture. It is not trusted to still be the seed:
+    # after PQ-10 it is a shifted USD row, and after PQ-12 its rate is 2.
+    Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+        -RowIndex 1 -ColumnIndex 1 -Value $Seed.Currency
+    if ($null -eq $Seed.Rate) {
+        Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+            -RowIndex 1 -ColumnIndex 2 -Value $null
+    } else {
+        Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+            -RowIndex 1 -ColumnIndex 2 -Value ([double]$Seed.Rate)
+    }
+    # Read back, because a restoration nobody checked is an assumption.
+    $body = @(Get-TableBody -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name)
+    if (([string]$body[0][0] -cne [string]$Seed.Currency) -or `
+        (-not (Test-CalcValue -Actual $body[0][1] -Expected $Seed.Rate))) {
+        throw ("the locked FX seed did not restore: row 1 is '" + [string]$body[0][0] +
+               "' / " + (Format-CalcValue $body[0][1]) + ", captured '" +
+               [string]$Seed.Currency + "' / " + (Format-CalcValue $Seed.Rate))
+    }
+}
+
 function Set-Phase5Fixture {
     param($Excel, $Workbook, $Manifest, $Inspection, $Model)
 
@@ -414,13 +498,17 @@ function Set-Phase5Fixture {
     Set-NamedValue -Workbook $Workbook -DefinedName $inputs.discount_rate.defined_name `
         -Value ([double]$Model.discount_rate)
 
-    # --- 3. FX rates, from the fixture, above the locked reporting seed -----
+    # --- 3. FX: RESTORE THE CAPTURED SEED, then append the fixture's rows ---
+    #
+    # The reset comes FIRST and rewrites row 1 from the capture. It is not
+    # enough to keep row 1: PQ-10 deletes the reporting row and shifts a foreign
+    # one into its place, and PQ-12 leaves the reporting rate at 2.
     $fx = $Inspection.input_tables.fx_rates
-    Clear-Phase5UserRows -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
-        -KeepRows ([int]$fx.locked_seed_rows)
-    # The reporting currency's own row is the table's LOCKED seed row. It is
-    # never rewritten: the model states SAR -> 1 as a global invariant, and the
-    # fixture asserting it would be the fixture proving itself.
+    Reset-Phase5FxTable -Workbook $Workbook -Inspection $Inspection `
+        -Seed (Get-Phase5LockedFxSeed)
+    # The reporting currency's own row is the table's LOCKED seed row, and it
+    # carries the value Stage A built: the model states SAR -> 1 as a global
+    # invariant, and a fixture that wrote that value would be proving itself.
     $reporting = [string](Get-NamedValue -Workbook $Workbook `
         -DefinedName $inputs.reporting_currency.defined_name)
     $fxRow = 0
@@ -1296,6 +1384,31 @@ function Invoke-Phase5GateBScenarios {
     }
 
     # -------------------------------------------------------------------
+    # THE LOCKED FX SEED, CAPTURED ONCE
+    # -------------------------------------------------------------------
+    # Here, and nowhere later: the Phase-4 matrix has just been proved intact, so
+    # this is the last moment the workbook is guaranteed untouched by Phase-5.
+    # Every fixture below restores row 1 of tblFXRates from this capture.
+    try {
+        $list = New-Checklist
+        $seed = Save-Phase5LockedFxSeed -Workbook $Workbook -Inspection $Inspection
+        $null = Add-Check $list 'the locked FX seed was captured from the real Stage-B workbook' `
+            ((-not [string]::IsNullOrEmpty([string]$seed.Currency)) -and `
+             (-not (Test-CalcBlank -Actual $seed.Rate))) `
+            ("captured '" + [string]$seed.Currency + "' / " + (Format-CalcValue $seed.Rate))
+        # The capture is REPORTED, not asserted against a literal. If the built
+        # seed is wrong, the analytical scenarios below must fail; repairing it
+        # here would hide a real build defect.
+        Add-Note ("P5-FX: locked FX seed captured as '" + [string]$seed.Currency +
+                  "' / " + (Format-CalcValue $seed.Rate) +
+                  " from the untouched Stage-B workbook")
+        Add-Result 'P5-FX' 'Locked FX seed captured before any Phase-5 mutation' `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+    } catch {
+        Add-Result 'P5-FX' 'Locked FX seed capture' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
     # P5-M. The persisted project: modules by NAME, buttons, API procedures
     # -------------------------------------------------------------------
     try {
@@ -2064,11 +2177,22 @@ function Invoke-Phase5GateBScenarios {
     }
 
     # -------------------------------------------------------------------
-    # P5-PN. THE REFERENCED-ONLY COMPLEMENT: what must NOT block
+    # P5-PN. THE REFERENCED-ONLY COMPLEMENT: does not block AND does not affect
     # -------------------------------------------------------------------
     # A harness that only proved refusals would accept a model that refused too
     # much. An assumption nobody references cannot block a valid model, and that
     # is a locked semantic in its own right.
+    #
+    # BUT "SUCCESS, CURRENT, blank detail, same digest" IS NOT THE WHOLE CLAIM.
+    # A defect that excluded the unreferenced assumption from the FINGERPRINT
+    # while accidentally consuming it in the CALCULATION would satisfy every one
+    # of those and still publish wrong numbers. Referenced-only means the
+    # assumption is outside the calculation model, not merely outside the digest.
+    #
+    # So every no-block scenario also re-asserts the COMPLETE analytical
+    # workspace - all five tables and calc_totals - against the emitted expected
+    # block of its own base plan case. No new corpus is needed: the base case
+    # already carries it.
     try {
         $list = New-Checklist
         $noBlock = @($Cases.gate_b.no_block_cases)
@@ -2102,6 +2226,22 @@ function Invoke-Phase5GateBScenarios {
             # NOTHING, so the digest is the one the clean model produced.
             $null = Add-Check $list ($id + ': the stored fingerprint is unchanged by the unreferenced row') `
                 ([string]$Excel.Run('PCCM_CalculationFingerprint') -ceq $baseline)
+
+            # AND THE NUMBERS ARE STILL THE BASE CASE'S. The whole analytical
+            # workspace is compared against the emitted expected block of the
+            # base plan case, so an assumption that leaked into the calculation
+            # while staying out of the digest fails here rather than passing on
+            # four green flags.
+            if ($attempt -eq 'SUCCESS') {
+                Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook `
+                    -Inspection $Inspection -Case $base -Tolerances $Cases.tolerances
+                # The successful record too. The two timestamps are NOT required
+                # to equal the first calculation's: a recalculation may refresh
+                # them, and the contract does not say otherwise.
+                Add-Phase5SuccessStateChecks -List $list -Excel $Excel -Workbook $Workbook `
+                    -Inspection $Inspection -Case $base -Cases $Cases `
+                    -Label ($id + ' recalculated')
+            }
             $covered += $id
         }
         $null = Add-Check $list 'every emitted no-block case was driven' `

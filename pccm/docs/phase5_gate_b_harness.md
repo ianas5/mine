@@ -1,6 +1,6 @@
 # Phase 5 — Gate B — Step B1: the Windows harness extension
 
-**Status: correction round 3 — harness source, ready for independent review.
+**Status: correction round 4 — harness source, ready for independent review.
 NOTHING HAS BEEN RUN.**
 
 Gate A is accepted and closed at `1968fb8`. This step authors the Windows Gate-B
@@ -22,7 +22,11 @@ five and was rejected with **four more**, recorded under
 Phase-4 owner of inflation profile rows, a fixture that never proved its own
 structural prerequisites, three prerequisite mutations that could not reach the
 predicate they claimed, and an audit cross-check required to be exact that used a
-relative tolerance. Every one was a defect in what the
+relative tolerance. Correction round 3 (`aa6611c`) closed all four and was
+rejected with **two more**, recorded under
+**[Correction round 4](#correction-round-4)**: a locked FX seed that was never
+restored between scenarios, and a referenced-only proof that showed non-blocking
+without showing no-effect. Every one was a defect in what the
 harness would have PROVED, not in how it is wired: two fixture writers that
 destroyed the condition they were exercising, a refusal proof that asserted the
 opposite of the rule, a reconciliation block that reimplemented a rejected
@@ -707,6 +711,109 @@ reconciliation, which keeps its own production allowance untouched.
 
 ---
 
+## Correction round 4
+
+Independent review reproduced 151/151 and 351/351, accepted all four round-3
+fixes as closed, and rejected the harness on two more.
+
+### 1 — the locked FX seed was never restored between scenarios
+
+`tblFXRates` row 1 is the reporting currency's own row, built by Stage A as a
+**locked seed**. The fixture reset was `Clear-Phase5UserRows -KeepRows 1`, which
+preserves whatever is physically in row 1 — and the Gate-B prerequisite matrix
+deliberately destroys it.
+
+| Mutation | What it leaves behind | What the next fixture inherited |
+| --- | --- | --- |
+| `PQ-10` removes the reporting row | the foreign `USD` row shifts **up into row 1** | row 1 preserved as though it were the seed; the model's own reporting entry skipped and a **second** `USD` row appended |
+| `PQ-12` sets the reporting rate to `2` | row 1 is `SAR / 2` | every later fixture inherits `SAR = 2` and refuses on the **global reporting-currency invariant** instead of the predicate it claims to test |
+
+Deterministic cross-scenario contamination, not a race.
+
+**The seed is now captured once, from the real workbook.** `P5-FX` runs
+immediately after the Phase-4 prerequisite is proved intact — the last moment the
+workbook is guaranteed untouched by Phase 5 — and reads row 1's Currency and
+FX-to-SAR out of the Stage-B workbook that passed Stage-A verification, the
+Stage-B persistence checks and the 35-scenario Phase-4 matrix.
+
+The capture helper is `Save-Phase5LockedFxSeed`; the accessor
+`Get-Phase5LockedFxSeed` is the only way a fixture reaches it, and it throws when
+the capture never ran.
+
+It is **not** reconstructed. `test_83` refuses `'SAR'`, `"SAR"`, `$Model.fx`,
+`$Cases.`, `REPORTING_CURRENCY` and a hard-coded rate of 1 anywhere in the
+capture or the reset: rebuilding the seed as *"SAR, 1"* would make the fixture
+manufacture the very invariant `PQ-10` … `PQ-12` exist to test, and if the
+**built** seed is wrong the analytical scenarios must still fail rather than be
+repaired into agreement. The capture is reported as a note, never asserted
+against a literal. `Get-Phase5LockedFxSeed` throws if the capture never ran, so a
+future reordering fails loudly instead of silently reverting to the old
+behaviour.
+
+**The reset sequence**, `Reset-Phase5FxTable`, called at the top of the FX step
+in `Set-Phase5Fixture`:
+
+```
+1  read tblFXRates from the inspection projection
+2  ensure at least one physical body row exists
+3  remove every body row after row 1, whatever it is
+4  REWRITE row 1 from the capture: Currency, then FX to SAR
+5  read row 1 back and throw if it did not restore
+6  only then append the current fixture's non-reporting FX rows
+```
+
+Step 4 is the point: row 1 is rewritten, never trusted. `test_85` asserts the
+reset precedes the first `Add-BlankTableRow` and that `Clear-Phase5UserRows` is
+gone from the fixture entirely.
+
+**This is harness isolation, not a production repair.** No production VBA
+changed, no reset endpoint was added, and the single COM/workbook lifecycle is
+untouched — the helper undoes only what the harness itself did to the workbook it
+keeps reusing. And it does not disarm the mutations: `PQ-10` still physically
+removes the reporting row, `PQ-11` still appends a duplicate, `PQ-12` still
+rewrites the rate, and the reset happens only when the **next** clean fixture is
+established. `test_86` pins all three mutation shapes and the
+establish → mutate → calculate ordering, and refuses `Reset-Phase5FxTable` inside
+the mutation applier.
+
+### 2 — the referenced-only proof showed non-blocking, not no-effect
+
+`P5-PN` proved SUCCESS, CURRENT, a blank detail and an unchanged digest after an
+unreferenced mutation. Those are necessary and not sufficient: **a defect that
+kept the unreferenced assumption out of the fingerprint while consuming it in the
+calculation would satisfy every one of them and still publish wrong numbers.**
+Referenced-only means the assumption is outside the calculation model, not merely
+outside the digest.
+
+Each no-block scenario now runs:
+
+```
+Set-Phase5Fixture(base model) -> PCCM_Calculate -> capture the baseline digest
+apply the unreferenced mutation
+PCCM_Calculate again
+assert SUCCESS / CURRENT / blank detail / digest unchanged
+Add-Phase5AnalyticalChecks   against the SAME emitted base plan case
+Add-Phase5SuccessStateChecks against the SAME emitted base plan case
+```
+
+so the complete analytical workspace — `tblCalcYears`,
+`tblCalcInflationFactors`, `tblCalcFX`, `tblCalcDrivers`, `tblCalcAnnual` and all
+ten `calc_totals` cells — is compared against the base case's own emitted oracle
+**after** the mutation. No new corpus was needed: every base plan case already
+carries the expected block, and `test_87` checks that each one a no-block entry
+names really does.
+
+The successful `calc_state` record is re-asserted too — C14 the stored digest,
+C15 the emitted version, C16 the emitted applied timeline, C17 SUCCESS, C18
+blank, C19 CURRENT. The two timestamps are **not** required to equal the first
+calculation's: a recalculation may refresh them and the contract does not say
+otherwise.
+
+`test_88` requires the scenario to call the shared checker rather than a reduced
+copy, and refuses any direct `Get-CalcTableRows` in that block.
+
+---
+
 ## The 37-case coverage ledger
 
 Every ID in `phase5_cases.json → plan_cases[*].id` maps to at least one Windows
@@ -767,6 +874,7 @@ all. What may not happen is a case disappearing because several share a fixture.
 | --- | --- |
 | `P5-PRE` | Coverage preflight, pure PowerShell, before Excel |
 | `P5-P4` | The Phase-4 matrix reached 35/35, 0 FAIL, 0 SKIP |
+| `P5-FX` | The locked FX seed captured from the untouched Stage-B workbook |
 | `P5-M` | 15 modules **by name**, exactly 5 buttons, no `PCCM_Calculate` button, 6 `api_procedures` |
 | `P5-EV` | No `Worksheet_Change` / `Workbook_SheetChange` in the real project |
 | `P5-D0` | The transient diagnostic module imported, **after** A1 |
@@ -782,7 +890,7 @@ all. What may not happen is a case disappearing because several share a fixture.
 | `P5-AN` | Every analytical fixture, every emitted expected value |
 | `P5-RF` | The nine refusal plan cases, each with its own detail discriminator |
 | `P5-PQ` | The plan section 18 prerequisite matrix (25 workbook-reachable predicates) |
-| `P5-PN` | The referenced-only no-block complement (3 assumptions) |
+| `P5-PN` | The referenced-only complement: 3 assumptions that neither block nor affect |
 | `P5-AR` | Driver-audit A/B/C/D reconstruction over a multi-driver fixture |
 | `P5-ID` | Identities I1, I2, I3a–c, I4a–c, I5 — production `Reconcile` is the authority |
 | `P5-S1`…`P5-S6` | The six-row status matrix |
@@ -1054,6 +1162,10 @@ Everything about behaviour, and specifically:
 * that `SyncProfileRows` materialises the fixture's Config-master profiles into
   `tblInflation` with the year band Apply generated, and that the keyed rate
   writer finds each row
+* that row 1 of `tblFXRates` in the built workbook really is the reporting seed,
+  and that restoring it returns each scenario to a clean baseline
+* that an unreferenced assumption leaves every published analytical value
+  identical to the base case's
 * that the audit columns really do reconstruct the headline totals on real Excel
   arithmetic
 * that `FinishOperation` restores a genuinely non-default caller state, including

@@ -3018,3 +3018,299 @@ def test_nc_68_a_toleranced_audit_reconstruction_is_caught() -> None:
     assert re.search(r"-Tolerance\s+(?!0\.0)", planted), (
         "the non-zero tolerance must be visible to the detector"
     )
+
+
+# ===========================================================================
+# 18. CORRECTION ROUND 4
+#
+# Two defects found in independent review of aa6611c. Each has a test here that
+# fails against that source and passes against the corrected one.
+# ===========================================================================
+def test_83_the_locked_fx_seed_is_captured_from_the_real_workbook() -> None:
+    """BLOCKER 1. `-KeepRows 1` trusted whatever happened to be row 1.
+
+    PQ-10 REMOVES the reporting row, so a foreign currency shifts up into row 1
+    and the next fixture preserves it as though it were the seed. PQ-12 leaves
+    the reporting rate at 2, and every later fixture inherits it and refuses on
+    the global invariant instead of the predicate under test.
+    """
+    source = _executable(SCENARIOS)
+    capture = _procedure(source, "Save-Phase5LockedFxSeed")
+    assert "$Inspection.input_tables.fx_rates" in capture, (
+        "the FX table identity is not read from the projection"
+    )
+    assert "[int]$fx.locked_seed_rows -ne 1" in capture, (
+        "the capture does not require exactly one locked seed row"
+    )
+    assert "Get-TableBody -Workbook $Workbook" in capture, (
+        "the seed is not read from the real workbook"
+    )
+    # NOT a literal, and NOT the emitted model.
+    for forbidden in ("'SAR'", '"SAR"', "$Model.fx", "$Cases.", "$entry.rate",
+                      "REPORTING_CURRENCY"):
+        assert forbidden not in capture, (
+            f"the seed is reconstructed rather than captured ({forbidden})"
+        )
+    assert not re.search(r"Rate\s*=\s*1\b", capture), "the seed rate is hard-coded"
+    # An uncaptured seed is a loud failure, never a silent fall-back to row 1.
+    getter = _procedure(source, "Get-Phase5LockedFxSeed")
+    assert "throw (" in getter, "a missing capture degrades silently"
+
+
+def test_84_the_capture_precedes_every_phase_5_mutation() -> None:
+    """BLOCKER 1. Captured once, on the untouched Stage-B workbook."""
+    source = _executable(SCENARIOS)
+    scenarios = source[source.index("function Invoke-Phase5GateBScenarios"):]
+    capture_at = scenarios.index("Save-Phase5LockedFxSeed -Workbook $Workbook")
+    # Before the first fixture, and therefore before the first FX write.
+    first_fixture = scenarios.index("Set-Phase5Fixture -Excel $Excel")
+    assert capture_at < first_fixture, (
+        "the seed is captured after a fixture has already rewritten the FX table"
+    )
+    # And after the Phase-4 prerequisite, so the workbook is known good.
+    prerequisite_at = scenarios.index("Add-Result 'P5-P4'")
+    assert prerequisite_at < capture_at, (
+        "the seed is captured before the Phase-4 matrix is known intact"
+    )
+    assert scenarios.count("Save-Phase5LockedFxSeed -Workbook $Workbook") == 1, (
+        "the seed is re-captured, so a mutated table could become the new baseline"
+    )
+    assert "Add-Result 'P5-FX'" in scenarios, "the capture is not reported as a scenario"
+
+
+def test_85_the_fixture_restores_the_seed_before_appending() -> None:
+    """BLOCKER 1. Row 1 is rewritten from the capture, not preserved."""
+    source = _executable(SCENARIOS)
+    fixture = _procedure(source, "Set-Phase5Fixture")
+    assert "Reset-Phase5FxTable -Workbook $Workbook -Inspection $Inspection" in fixture, (
+        "the fixture does not reset the FX table from the capture"
+    )
+    assert "Clear-Phase5UserRows" not in fixture, (
+        "the fixture still preserves whatever happens to be row 1"
+    )
+    reset_at = fixture.index("Reset-Phase5FxTable")
+    append_at = fixture.index("Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet")
+    assert reset_at < append_at, "the fixture appends its FX rows before restoring the seed"
+
+    reset = _procedure(source, "Reset-Phase5FxTable")
+    # Everything after the seed goes.
+    assert "Remove-TableRow -Workbook $Workbook -SheetName $fx.sheet" in reset
+    assert "for ($row = $rows; $row -gt 1; $row--)" in reset
+    # Row 1's currency AND rate are both rewritten from the capture.
+    assert "-RowIndex 1 -ColumnIndex 1 -Value $Seed.Currency" in reset, (
+        "the seed currency is not restored"
+    )
+    assert "-RowIndex 1 -ColumnIndex 2 -Value ([double]$Seed.Rate)" in reset, (
+        "the seed rate is not restored"
+    )
+    # And the restoration is read back rather than assumed.
+    assert "the locked FX seed did not restore" in reset
+    # Still no literal reconstruction.
+    for forbidden in ("'SAR'", '"SAR"', "-Value 1)", "$Model.fx"):
+        assert forbidden not in reset, f"the reset reconstructs the seed ({forbidden})"
+
+
+def test_86_the_sar_mutations_still_mutate_before_any_restoration() -> None:
+    """BLOCKER 1.2.5. The reset must not disarm PQ-10, PQ-11 or PQ-12."""
+    prerequisites = {entry["id"]: entry for entry in _gate_b()["prerequisite_cases"]}
+    assert prerequisites["PQ-10"]["mutation"] == {"kind": "fx_remove", "currency": "SAR"}, (
+        "PQ-10 no longer physically removes the reporting row"
+    )
+    assert prerequisites["PQ-11"]["mutation"]["append"] is True, (
+        "PQ-11 no longer creates a duplicate reporting row"
+    )
+    assert prerequisites["PQ-11"]["mutation"]["currency"] == "SAR"
+    assert prerequisites["PQ-12"]["mutation"]["rate"] == 2, (
+        "PQ-12 no longer changes the reporting rate"
+    )
+    assert prerequisites["PQ-12"]["mutation"].get("append") is None, (
+        "PQ-12 appends a row instead of rewriting the seed's rate"
+    )
+    # The order inside the scenario: establish, THEN mutate, THEN calculate.
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-RF", "P5-PQ")
+    fixture_at = block.index("Set-Phase5Fixture -Excel $Excel")
+    mutate_at = block.index("Invoke-Phase5Mutation -Excel $Excel")
+    calculate_at = block.index("$Excel.Run('PCCM_Calculate') | Out-Null", mutate_at)
+    assert fixture_at < mutate_at < calculate_at, (
+        "the mutation does not happen between the clean fixture and the calculation"
+    )
+    # The reset belongs to establishing the NEXT fixture, not to the mutation.
+    mutation = _procedure(source, "Invoke-Phase5Mutation")
+    assert "Reset-Phase5FxTable" not in mutation, (
+        "the mutation applier resets the table it is meant to corrupt"
+    )
+
+
+def test_87_the_no_block_cases_reassert_the_full_analytical_workspace() -> None:
+    """BLOCKER 2. Referenced-only means outside the CALCULATION, not just the digest.
+
+    A defect that kept the unreferenced assumption out of the fingerprint while
+    consuming it in the calculation would satisfy SUCCESS / CURRENT / blank
+    detail / same digest and still publish wrong numbers.
+    """
+    source = _executable(SCENARIOS)
+    block = _scenario_block(source, "P5-PQ", "P5-PN")
+    assert "Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook `" in block, (
+        "the no-block scenario never re-checks the analytical workspace"
+    )
+    assert "-Inspection $Inspection -Case $base -Tolerances $Cases.tolerances" in block, (
+        "the recheck is not against the base plan case's own emitted block"
+    )
+    assert "Add-Phase5SuccessStateChecks" in block, (
+        "the successful calc_state record is not re-asserted after the mutation"
+    )
+    # The recheck happens AFTER the mutation and the recalculation.
+    mutate_at = block.index("Invoke-Phase5Mutation -Excel $Excel")
+    recheck_at = block.index("Add-Phase5AnalyticalChecks")
+    assert mutate_at < recheck_at, "the analytical recheck runs before the mutation"
+    # Every base plan case a no-block entry names really carries an expected block.
+    cases = {str(case["id"]): case for case in _emitted()["cases"]["plan_cases"]}
+    for entry in _gate_b()["no_block_cases"]:
+        base = cases[str(entry["base_plan_case"])]
+        assert base["kind"] == "analytical", (
+            f"{entry['id']} names a base case with no analytical expectation"
+        )
+        for key in ("calc_years", "resolved_fx_rows", "inflation_factors",
+                    "drivers", "annual", "totals"):
+            assert key in base["expected"], (
+                f"{entry['id']}'s base case emits no {key} to re-check"
+            )
+    # And the digest assertion survives alongside it.
+    assert "the stored fingerprint is unchanged by the unreferenced row" in block
+
+
+def test_88_the_analytical_recheck_covers_all_five_tables_and_the_totals() -> None:
+    """BLOCKER 2. The shared checker is what makes the recheck complete."""
+    source = _executable(SCENARIOS)
+    checks = _procedure(source, "Add-Phase5AnalyticalChecks")
+    for table in ("calc_years", "calc_inflation_factors", "calc_fx", "calc_drivers",
+                  "calc_annual"):
+        assert f"'{table}'" in checks, f"{table} is not covered by the shared checker"
+    assert "-Block 'calc_totals'" in checks
+    # The no-block scenario calls that shared checker rather than a reduced copy.
+    block = _scenario_block(source, "P5-PQ", "P5-PN")
+    assert "Get-CalcTableRows" not in block, (
+        "the no-block scenario reads tables itself instead of using the shared checker"
+    )
+
+
+# ===========================================================================
+# 19. CORRECTION-ROUND-4 NEGATIVE CONTROLS
+# ===========================================================================
+def test_nc_69_keeping_the_current_physical_row_one_is_caught() -> None:
+    """The shipped shape: trust row 1, restore nothing."""
+    planted = _synthetic(
+        "$fx = $Inspection.input_tables.fx_rates\n"
+        "Clear-Phase5UserRows -Workbook $Workbook -SheetName $fx.sheet "
+        "-TableName $fx.table_name `\n"
+        "    -KeepRows ([int]$fx.locked_seed_rows)\n"
+        "foreach ($entry in @($Model.fx)) { }\n"
+    )
+    assert "Reset-Phase5FxTable" not in planted, (
+        "a fixture that preserves whatever is in row 1 must be visible"
+    )
+    assert "Clear-Phase5UserRows" in planted
+
+
+def test_nc_70_the_deleted_reporting_row_contaminates_the_next_fixture() -> None:
+    """A. PQ-10 removes SAR and USD shifts up into row 1.
+
+    Modelled as data: `-KeepRows 1` preserves the shifted row, the fixture then
+    skips the model's own reporting entry and appends a SECOND foreign row.
+    """
+    captured = ("SAR", 1.0)
+    baseline = [("SAR", 1.0), ("USD", 3.75)]
+    model_fx = [("SAR", 1.0), ("USD", 3.75)]
+
+    # PQ-10: the reporting row is physically removed.
+    after_mutation = [row for row in baseline if row[0] != "SAR"]
+    assert after_mutation[0][0] == "USD", "the shifted row must be visible"
+
+    # The SHIPPED reset: keep row 1, append the model's non-reporting rows.
+    shipped = after_mutation[:1] + [row for row in model_fx if row[0] != "SAR"]
+    assert shipped[0][0] != captured[0], (
+        "the contaminated baseline must be visible: row 1 is not the reporting seed"
+    )
+    assert [row[0] for row in shipped] == ["USD", "USD"], (
+        "the duplicated foreign row must be visible"
+    )
+
+    # The CORRECTED reset: drop everything after row 1, rewrite row 1 from the
+    # capture, then append.
+    corrected = [captured] + [row for row in model_fx if row[0] != captured[0]]
+    assert corrected[0] == captured, "the restored seed must be row 1"
+    assert [row[0] for row in corrected] == ["SAR", "USD"]
+
+
+def test_nc_71_the_mutated_reporting_rate_is_inherited() -> None:
+    """B. PQ-12 leaves SAR at 2 and the next fixture never restores it."""
+    captured = ("SAR", 1.0)
+    after_mutation = [("SAR", 2.0), ("USD", 3.75)]
+
+    shipped = after_mutation[:1]                       # -KeepRows 1, no restore
+    assert shipped[0][1] == 2.0, "the inherited reporting rate must be visible"
+    assert shipped[0][1] != captured[1]
+
+    corrected = [captured]
+    assert corrected[0][1] == captured[1], "the restored rate must be the captured one"
+
+
+def test_nc_72_a_hard_coded_seed_reconstruction_is_caught() -> None:
+    """The fixture must not manufacture the invariant PQ-10..12 test."""
+    planted = _synthetic(
+        "Set-TableCell -Workbook $Workbook -SheetName $fx.sheet "
+        "-TableName $fx.table_name `\n"
+        "    -RowIndex 1 -ColumnIndex 1 -Value 'SAR'\n"
+        "Set-TableCell -Workbook $Workbook -SheetName $fx.sheet "
+        "-TableName $fx.table_name `\n"
+        "    -RowIndex 1 -ColumnIndex 2 -Value ([double]1)\n"
+    )
+    assert "'SAR'" in planted, "the hard-coded reporting currency must be visible"
+    assert "$Seed.Currency" not in planted and "$Seed.Rate" not in planted
+
+
+def test_nc_73_a_model_sourced_seed_reconstruction_is_caught() -> None:
+    """The seed must come from the built workbook, not from the corpus."""
+    planted = _synthetic(
+        "foreach ($entry in @($Model.fx)) {\n"
+        "    if ([string]$entry.currency -eq $reporting) {\n"
+        "        Set-TableCell -RowIndex 1 -ColumnIndex 2 -Value ([double]$entry.rate)\n"
+        "    }\n"
+        "}\n"
+    )
+    assert "$Model.fx" in planted, "the model-sourced seed must be visible"
+    assert "$Seed.Rate" not in planted
+    assert "Save-Phase5LockedFxSeed" not in planted
+
+
+def test_nc_74_a_digest_only_no_block_proof_is_caught() -> None:
+    """The shipped P5-PN shape: four green flags and no numbers."""
+    planted = _synthetic(
+        "$null = Add-Check $list ($id + ': attempt') ($attempt -eq 'SUCCESS')\n"
+        "$null = Add-Check $list ($id + ': status') ($status -eq 'CURRENT')\n"
+        "$null = Add-Check $list ($id + ': detail blank') "
+        "([string]::IsNullOrEmpty($detail))\n"
+        "$null = Add-Check $list ($id + ': fingerprint') "
+        "([string]$Excel.Run('PCCM_CalculationFingerprint') -ceq $baseline)\n"
+        "$covered += $id\n"
+    )
+    assert "Add-Phase5AnalyticalChecks" not in planted, (
+        "a no-block proof with no analytical recheck must be visible; an "
+        "assumption can leak into the calculation while staying out of the digest"
+    )
+    assert "Add-Phase5SuccessStateChecks" not in planted
+
+
+def test_nc_75_a_partial_analytical_recheck_is_caught() -> None:
+    """One table left out of the recheck."""
+    planted = _synthetic(
+        "foreach ($key in 'calc_years', 'calc_fx', 'calc_drivers', 'calc_annual') {\n"
+        "    $null = Add-Check $list ('recheck ' + $key) ($ok)\n"
+        "}\n"
+        "$null = Add-Check $list 'totals' ($ok)\n"
+    )
+    assert "calc_inflation_factors" not in planted, "the omitted table must be visible"
+    assert "Add-Phase5AnalyticalChecks" not in planted, (
+        "a hand-rolled partial recheck instead of the shared checker must be visible"
+    )
