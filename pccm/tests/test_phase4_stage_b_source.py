@@ -370,6 +370,13 @@ def test_11_every_constant_the_vba_references_is_emitted() -> None:
     problems: list[str] = []
     handwritten = _handwritten_modules()
     exported = {n for module in handwritten for n in _public_constants(module)}
+    # A SCREAMING_CASE name may also be defined as a PUBLIC FUNCTION. MAX_DOUBLE
+    # is one: a Const initialiser cannot compute, and that boundary has to be
+    # built rather than spelled - see modCalcFactors. The rule this test enforces
+    # is "referenced and defined somewhere", and a public function defines it
+    # just as a Public Const does.
+    exported |= {name for module in handwritten for name in module.public_procedures
+                 if name.isupper() or (name.upper() == name and "_" in name)}
     for module in handwritten:
         local = set(module.constants)
         for name in sorted(module.referenced_upper_identifiers):

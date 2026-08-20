@@ -626,7 +626,10 @@ def test_43_no_numerical_kernel_is_duplicated() -> None:
 # reconstructed tree that has no repository.
 FROZEN_SHA256 = {
     "modCalcResolve": "3c67584390516a8a1c811df62d650749f6ef71518c649d7f1bb88dc753a837c1",
-    "modCalcFactors": "721b8d6aa16fef850a13c714b329395730c9110ccd50d17c99927c3bfaae68c1",
+    # Runtime Run 3 authorisation: the MAX_DOUBLE Const overflowed VBA's
+    # fifteen-significant-digit literal parser, so the boundary is now BUILT
+    # from MAX_SIGNIFICAND * 2^971. See test_57 in test_phase5_vba_source.py.
+    "modCalcFactors": "da7156b6ac9766d25ae167c1b1fcd7ee9a37476eae78bf0895ea4425f9bacf1c",
     "modCalcAnalytical": "e234b3adacdb443c8c7b2b5072c311e7622405c3ec2e2987a750d85400299e0d",
     # Its CURRENT bytes, and they have now moved TWICE, both times under an
     # explicit authorisation recorded here:
@@ -636,7 +639,7 @@ FROZEN_SHA256 = {
     #     digits on real Excel. That correction is confined to this module and
     #     to the canonical-number path inside it; FINGERPRINT_ACCEPTED_BODY_SHA256
     #     below is what proves nothing else moved with it.
-    "modCalcFingerprint": "44c218cc4a3c65ae272f26ce7da29e538aa1519cd62225682256c620deb4cee5",
+    "modCalcFingerprint": "05d6a06fdf153538bfc7e1f1850e444bd6e62e09e89dd1c51a54385a499f14b9",
     "modWorkbook": "9cfa8f130c5bcdee783948654c969d4b0d6589fe7059c126f88c7676ca5405bf",
     "modAppState": "ef0b5c64a7a3b5aeeef5ef0797cd160071a7eda6a7d8cef9cb98301f1504672f",
     "modTimeline": "4a4f24d17b65bcbc0e46b1a74213b6a02eab6ab492b1788476d66eb7807b9e3f",
@@ -652,7 +655,7 @@ FROZEN_SHA256 = {
 # normalised back to Private. A byte digest alone would say only "this file
 # changed"; this one says what the change was allowed to be.
 FINGERPRINT_ACCEPTED_BODY_SHA256 = (
-    "3b9f3e1a489b026c2dca9b94351fa677aa6f9bb4d27feded18e88cffb05d82b3"
+    "9db46d920318e7f482e68f7983c32ba3553529bed1ab61593ee8798d390bedf4"
 )
 
 

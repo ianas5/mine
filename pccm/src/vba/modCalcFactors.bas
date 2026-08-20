@@ -35,11 +35,38 @@ Option Explicit
 ' feeds a non-integer into the limb kernel; a constant off by one misclassifies
 ' the largest representable Double.
 '
-' The MAX_DOUBLE literal is the accepted 17-significant-digit form. Its
-' mathematical value is just BELOW the true maximum and rounds up to it, so the
-' literal is itself inside the valid Double range - a literal whose
-' mathematical value exceeded the maximum would be statically invalid.
-Public Const MAX_DOUBLE As Double = 1.7976931348623157E+308
+' MAX_DOUBLE IS BUILT, NOT SPELLED. Runtime Run 3's VBE refused
+'
+'   Public Const MAX_DOUBLE As Double = 1.7976931348623157E+308
+'
+' with an Overflow on the literal, and displayed it back as
+' 1.79769313486232E+308. That display IS the defect: VBA converts a numeric
+' literal at about fifteen significant digits, and the fifteen-digit rounding of
+' the true maximum lands just ABOVE it, so the range check fails before the
+' value ever exists.
+'
+' The retired comment reasoned that the literal's mathematical value is below
+' the maximum and rounds up to it, so it must be in range. That is correct for a
+' correctly-rounding parser and wrong for this one, which rounds to fifteen
+' digits FIRST and only then checks the range. It is the same fifteen-digit
+' ceiling Gate B Runtime Run 2 proved on the formatting side, arriving from the
+' other direction.
+'
+' No decimal spelling can be trusted here, and a rounded-down literal would be a
+' different number wearing the right name: IsUsableDouble compares against this
+' bound, so a value below the true maximum would refuse the largest representable
+' Double, and the accepted MAX_DOUBLE fingerprint vector requires that value to
+' be usable and to encode as 1.7976931348623157E+308.
+'
+' So it is CONSTRUCTED from the exact identity this file already states above -
+' MAX_DOUBLE = (2^53 - 1) * 2^971 - using the constant that is already here and
+' already compiles. Every step is a multiplication by two, which is exact in
+' binary floating point, and no intermediate exceeds the final value, so nothing
+' overflows on the way. The result is bit-for-bit the maximum finite Double.
+'
+' It is a Function rather than a Const because a Const initialiser cannot
+' compute. Every call site reads `MAX_DOUBLE` exactly as before; no caller
+' changes, and no caller used it in a constant expression.
 
 ' Base 2^24 keeps every limb product below 2^48 and every running limb-plus-
 ' carry expression below 2^49, comfortably inside the 53-bit exact integer
@@ -49,6 +76,13 @@ Private Const LIMB_BASE As Double = 16777216#
 Private Const TWO_52 As Double = 4503599627370496#
 Private Const MAX_SIGNIFICAND As Double = 9007199254740991#
 Private Const MAX_EXPONENT As Long = 971
+' MAX_EXPONENT is also the binary exponent that lifts MAX_SIGNIFICAND to the
+' maximum finite Double - (2^53 - 1) * 2^971 - so BuildMaxDouble reuses it
+' rather than restating 971 a second time.
+' The built maximum, cached on first use. Not a Const, because a Const
+' initialiser cannot compute.
+Private mMaxDouble As Double
+Private mMaxDoubleBuilt As Boolean
 Private Const MIN_SUBNORMAL_EXPONENT As Long = -1074
 Private Const GUARD_BITS As Long = 64
 
@@ -97,6 +131,24 @@ End Type
 ' ==========================================================================
 ' The predicate
 ' ==========================================================================
+Public Function MAX_DOUBLE() As Double
+    If Not mMaxDoubleBuilt Then
+        mMaxDouble = BuildMaxDouble()
+        mMaxDoubleBuilt = True
+    End If
+    MAX_DOUBLE = mMaxDouble
+End Function
+
+Private Function BuildMaxDouble() As Double
+    ' (2^53 - 1) * 2^971, by exact doubling.
+    Dim result As Double, doubling As Long
+    result = MAX_SIGNIFICAND
+    For doubling = 1 To MAX_EXPONENT
+        result = result * 2#
+    Next doubling
+    BuildMaxDouble = result
+End Function
+
 Public Function IsUsableDouble(ByVal value As Double) As Boolean
     ' A NaN fails every comparison including equality with itself, which is the
     ' only portable test available here. An infinity fails the range test.

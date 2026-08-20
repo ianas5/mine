@@ -683,3 +683,106 @@ def test_20_the_isolation_fix_touches_no_production_file() -> None:
         encoding="utf-8")
     assert "$parity = $Cases.fingerprint.canonical_parity" in harness
     assert "Join-Path $BuildDir 'phase5_cases.json'" in harness
+
+
+# ===========================================================================
+# 7. THE RUN-3 COMPILE-SAFE RENAMES CHANGED NO BEHAVIOUR
+# ===========================================================================
+def test_21_the_encoder_is_identical_modulo_the_compile_safe_renames() -> None:
+    """`scale` -> `decimalScale` and `base` -> `powerBase`, and nothing else.
+
+    Runtime Run 3's VBE refused `Dim scale As Long`. The repair is an identifier
+    rename, and an identifier rename must be provably invisible: mapping the two
+    new names back must reproduce the accepted executable text exactly.
+    """
+    import subprocess
+
+    accepted = subprocess.run(
+        ["git", "show", "2670ae8:pccm/src/vba/modCalcFingerprint.bas"],
+        capture_output=True, text=True, cwd=str(PCCM_ROOT.parent),
+    )
+    if accepted.returncode != 0:
+        # A reconstructed tree has no repository; the rest of this file already
+        # proves the behaviour directly against the oracle.
+        return
+
+    def normalise(text: str) -> str:
+        kept = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("'"):
+                continue
+            stripped = re.sub(r"\s+", " ", stripped)
+            stripped = re.sub(r"\bdecimalScale\b", "scale", stripped)
+            stripped = re.sub(r"\bpowerBase\b", "base", stripped)
+            kept.append(stripped)
+        return "\n".join(kept)
+
+    current = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
+    assert normalise(current) == normalise(accepted.stdout), (
+        "the canonical encoder changed by more than the compile-safe renames"
+    )
+    # And the renames really did happen.
+    assert "decimalScale" in current and "powerBase" in current
+    executable = "\n".join(line for line in current.splitlines()
+                           if line.strip() and not line.strip().startswith("'"))
+    assert not re.search(r"\bscale\b", executable), "`scale` survives in executable text"
+    assert not re.search(r"(?<![A-Za-z])base(?![A-Za-z])", executable), (
+        "`base` survives in executable text"
+    )
+
+
+def test_22_the_parity_corpus_and_every_expectation_are_unchanged() -> None:
+    """A compile fix must not move one canonical digit."""
+    parity = _corpus()
+    assert len(parity["vectors"]) > 2000
+    # Every expectation still comes from the oracle, unchanged.
+    for vector in parity["vectors"][::53]:
+        value = _from_bits(vector["bits"])
+        assert vector["expected"] == fp.canonical_number(value, "."), vector["label"]
+        assert port.canonical_number(value, ".") == (True, vector["expected"])
+    # The locked ten and the reference digest are untouched.
+    document = _fresh_cases()["fingerprint"]
+    assert document["reference"]["digest"] == "50B6EB0E26857EA7"
+    assert document["reference"]["code_units"] == 366
+    assert len(document["numeric_encodings"]["vectors"]) == 10
+    for vector in document["numeric_encodings"]["vectors"]:
+        assert port.canonical_number(vector["value"], ".") == (True, vector["expected"])
+
+
+def test_23_max_double_is_built_and_is_the_true_maximum() -> None:
+    """The second Run-3 blocker, and the semantics it had to preserve."""
+    module = (SRC_VBA / "modCalcFactors.bas").read_text(encoding="utf-8")
+    executable = "\n".join(line for line in module.splitlines()
+                           if line.strip() and not line.strip().startswith("'"))
+    assert "Public Const MAX_DOUBLE" not in executable, "MAX_DOUBLE is a Const again"
+    assert "Public Function MAX_DOUBLE() As Double" in executable
+    assert "1.7976931348623157E+308" not in executable, "the overflowing literal is back"
+    assert "result = MAX_SIGNIFICAND" in executable
+    assert "For doubling = 1 To MAX_EXPONENT" in executable
+
+    # The construction, evaluated the way the VBA evaluates it.
+    built = float(2 ** 53 - 1)
+    for _ in range(971):
+        built = built * 2.0
+    assert built == sys.float_info.max, "the construction is not DBL_MAX"
+
+    # SEMANTICS: IsUsableDouble compares against this bound, so the largest
+    # representable Double must be USABLE and must encode as the locked vector.
+    assert not (built > sys.float_info.max), "DBL_MAX would be refused as unusable"
+    ok, text = port.canonical_number(built, ".")
+    assert ok and text == "1.7976931348623157E+308"
+    assert text == fp.canonical_number(sys.float_info.max)
+    # A rounded-DOWN literal would have refused it, which is why none was used.
+    rounded_down = float(f"{sys.float_info.max:.14E}".replace("2E+308", "1E+308"))
+    assert rounded_down < sys.float_info.max
+    assert sys.float_info.max > rounded_down, (
+        "a rounded-down bound would refuse the largest representable Double"
+    )
+
+    # One coherent definition across the project.
+    from pccm_builder import calc_numeric
+    assert calc_numeric.MAX_DOUBLE == sys.float_info.max == built
+    assert "MAX_DOUBLE = (2^53 - 1) * 2^971" in module, (
+        "the module no longer states the identity it builds from"
+    )

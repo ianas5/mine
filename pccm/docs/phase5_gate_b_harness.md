@@ -1930,3 +1930,99 @@ carrying a tampered expectation — are proved unable to become an oracle. The
 whole condition is reproduced end to end: with a genuine `build/` from the
 previous commit in place, the accepted commit's suite fails on exactly tests 11
 and 12 with `KeyError`, and the corrected suite passes.
+
+---
+
+## Runtime Run 3: two production compile blockers
+
+Run 3 never reached a scenario. The VBE stopped during the production compile,
+twice, and everything after that is session-loss cascade. The verification gap
+it exposed matters as much as the two defects: **1616 Python tests and 351
+Stage-A checks passed on a project that would not compile.**
+
+### Blocker 1 — `Dim scale As Long`
+
+`modCalcFingerprint.CalcFpBuildCanonical`, Syntax error, `scale` highlighted.
+
+`scale` is **not** simply a forbidden token: seven `scale` locals in
+`modCalcFactors` and `modCalcAnalytical` compiled in Runtime Run 2, which
+reached P5-M with every module present and every API procedure callable. What
+distinguishes the failing site is position — in all seven that compiled, `scale`
+is a *later* item in its `Dim` list; only this one stood as the token
+immediately after `Dim`, where the parser is looking for a fresh identifier and
+`Scale` is a Visual Basic statement keyword.
+
+Renamed to `decimalScale`. `base`, in the two new power helpers, was renamed to
+`powerBase` on the same reasoning: `Base` is the keyword in `Option Base`, Run 3
+stopped before reaching those lines, and an unproven identifier in the code path
+that already failed once is not worth defending.
+
+Both are identifier renames and are **provably invisible**: mapping the new
+names back reproduces the accepted executable text exactly, and `test_21` keeps
+it that way.
+
+### Blocker 2 — `MAX_DOUBLE` overflow
+
+`modCalcFactors`, Overflow, on a literal the VBE displayed as
+`1.79769313486232E+308` — which is **not what the source said**. The source
+carried the 17-digit form:
+
+```vba
+Public Const MAX_DOUBLE As Double = 1.7976931348623157E+308
+```
+
+The displayed value is the fifteen-significant-digit rounding of it, and that
+rounding is **above** the maximum finite Double. VBA converts a numeric literal
+at about fifteen digits and only then range-checks the result, so the value is
+out of range before it exists. It is the same fifteen-digit ceiling Run 2 proved
+on the formatting side, arriving from the other direction — and it is why the
+old test passed: it compared the literal as an exact `Decimal`, which is correct
+for a correctly-rounding parser and irrelevant to this one.
+
+**No decimal spelling can be trusted here**, and a rounded-down literal would be
+a different number wearing the right name: `IsUsableDouble` compares against this
+bound, so a value below the true maximum would refuse the largest representable
+Double — and the accepted `MAX_DOUBLE` fingerprint vector requires that value to
+be usable and to encode as `1.7976931348623157E+308`. The contract is therefore
+**exact DBL_MAX**, not a safe approximation.
+
+So it is built from the identity the module already stated:
+
+```vba
+Public Function MAX_DOUBLE() As Double      ' cached
+Private Function BuildMaxDouble() As Double
+    result = MAX_SIGNIFICAND                ' 2^53 - 1
+    For doubling = 1 To MAX_EXPONENT        ' * 2^971
+        result = result * 2#
+```
+
+Doubling is exact in binary floating point and no intermediate exceeds the final
+value, so nothing overflows on the way; the result is bit-for-bit DBL_MAX. It is
+a Function because a `Const` initialiser cannot compute — every call site reads
+`MAX_DOUBLE` unchanged, and none used it in a constant expression.
+`MAX_EXPONENT`, already declared as 971, is reused rather than restated.
+
+### Closing the static gap
+
+Two focused classes, run over declarations parsed from **executable** code, so
+prose naming a keyword is never read as a declaration:
+
+* `test_86`/`test_87`/`test_88` — no production declaration may introduce a VBA
+  statement keyword or type name. The eight pre-existing sites are grandfathered
+  on Run 2's successful compile and on nothing else, checked as a **set** in both
+  directions so a new one cannot slip past; a stale entry fails too.
+* `test_57`/`test_89` — every Double literal must still be in range after a
+  fifteen-significant-digit round trip, and every `Const` literal must fit its
+  declared type. The retired `MAX_DOUBLE` literal is the negative control.
+* `test_90`/`test_91` — array bounds are constant expressions, no local shadows
+  its procedure, every referenced `Const` is declared, and module-level
+  declarations precede the first procedure in both changed modules.
+
+These are not a VBA compiler and are not trying to be. They stop the two
+deterministic blockers now observed from passing the static gate again.
+
+### Nothing else moved
+
+`phase5_cases.json` is **byte-for-byte identical** to the accepted commit's,
+reference digest `50B6EB0E26857EA7` included. The eleven other production
+modules are byte-identical to accepted Gate-A `1968fb8`.

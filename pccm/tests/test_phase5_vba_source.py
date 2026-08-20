@@ -31,6 +31,7 @@ Runs standalone or under pytest.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import sys
 from pathlib import Path
@@ -103,7 +104,7 @@ ALLOWED_PARAMETER_TYPES = {
 # is public because something outside its module calls it.
 FACTORS_PUBLIC = {
     # The range predicate and the four arithmetic primitives.
-    "IsUsableDouble", "SafeAdd", "SafeSubtract", "SafeMultiply", "SafeDivide",
+    "MAX_DOUBLE", "IsUsableDouble", "SafeAdd", "SafeSubtract", "SafeMultiply", "SafeDivide",
     "SafeAccumulate",
     # The two-tier rescues.
     "SafeSignedSum", "SafeProduct", "ExactSumOfProducts",
@@ -158,7 +159,7 @@ PUBLIC_WITHOUT_CROSS_MODULE_CALLER = {
     # Consumed by later orchestration, not by another module today.
     "AllIdentitiesHold",
     # The primitives and rescues the resolver layer will call directly.
-    "ExpectedRisk", "IsUsableDouble", "SafeAdd", "SafeSubtract", "SafeMultiply", "SafeDivide",
+    "ExpectedRisk", "MAX_DOUBLE", "IsUsableDouble", "SafeAdd", "SafeSubtract", "SafeMultiply", "SafeDivide",
     "SafeAccumulate", "SafeSignedSum", "BuildInflationFactors",
     "BuildDiscountFactors", "BuildKnom", "BuildKpv", "IdentityAllowance",
     "TriangularMean", "PertMean", "UniformMean", "DeterministicCentral",
@@ -203,7 +204,7 @@ PHASE4_SHA256 = {
 #                          significant digits on real Excel.
 # It is what "and nothing else" is measured against from here on.
 FINGERPRINT_ACCEPTED_BODY_SHA256 = (
-    "3b9f3e1a489b026c2dca9b94351fa677aa6f9bb4d27feded18e88cffb05d82b3"
+    "9db46d920318e7f482e68f7983c32ba3553529bed1ab61593ee8798d390bedf4"
 )
 
 
@@ -920,7 +921,7 @@ def test_43_each_module_exposes_exactly_its_whitelisted_public_surface() -> None
 def test_44_the_required_minimum_surface_is_inside_the_whitelist() -> None:
     """The whitelist is exact, so it must still contain everything Step 4 requires."""
     required = {
-        "IsUsableDouble", "SafeAdd", "SafeSubtract", "SafeMultiply", "SafeDivide",
+        "MAX_DOUBLE", "IsUsableDouble", "SafeAdd", "SafeSubtract", "SafeMultiply", "SafeDivide",
         "SafeAccumulate", "SafeSignedSum", "SafeProduct", "ExactSumOfProducts",
         "BuildInflationFactors", "BuildDiscountFactors", "BuildKnom", "BuildKpv",
         "ConditioningScaledMagnitude", "IdentityAllowance",
@@ -1390,23 +1391,91 @@ def test_56_the_kernel_constants_are_the_exact_ieee_boundaries() -> None:
     assert _vba_constant(module, "TWO_52") == float(2 ** 52)
     assert _vba_constant(module, "MAX_SIGNIFICAND") == calc_numeric._MAX_SIGNIFICAND
     assert _vba_constant(module, "MAX_SIGNIFICAND") == float(2 ** 53 - 1)
-    assert _vba_constant(module, "MAX_DOUBLE") == calc_numeric.MAX_DOUBLE
-    assert _vba_constant(module, "MAX_DOUBLE") == float((2 ** 53 - 1) * 2 ** 971)
+    # MAX_DOUBLE is no longer a Const: Runtime Run 3 proved VBA cannot parse a
+    # decimal literal for it (see test_57). It is BUILT from the two constants
+    # above, and this checks the construction rather than a spelling.
+    assert "Private Const MAX_EXPONENT As Long = 971" in module.code, (
+        "the scaling exponent is no longer the accepted 971"
+    )
+    build = _procedure_body(module, "BuildMaxDouble")
+    assert "result = MAX_SIGNIFICAND" in build, "the build does not start at 2^53 - 1"
+    assert "For doubling = 1 To MAX_EXPONENT" in build, "the build does not scale by 2^971"
+    assert "result = result * 2#" in build, "the build uses something other than doubling"
+    constructed = float(2 ** 53 - 1)
+    for _ in range(971):
+        constructed = constructed * 2.0
+    assert constructed == calc_numeric.MAX_DOUBLE, "the construction is not the authority's value"
+    assert constructed == float((2 ** 53 - 1) * 2 ** 971)
+    import sys as _sys
+    assert constructed == _sys.float_info.max, "the construction is not the maximum finite Double"
 
 
-def test_57_the_max_double_literal_is_itself_inside_the_double_range() -> None:
-    """A floating-point literal whose MATHEMATICAL value exceeds the greatest
-    value representable by its type is statically invalid.
+def test_57_no_double_literal_survives_a_fifteen_digit_parse_out_of_range() -> None:
+    """THE STATIC GAP RUNTIME RUN 3 EXPOSED, closed.
 
-    `float()` would hide this by rounding, so the literal is compared as an exact
-    decimal against the exact binary maximum.
+    The retired form of this test compared the MAX_DOUBLE literal as an EXACT
+    decimal against the exact binary maximum, and passed - correctly, because
+    1.7976931348623157E+308 is mathematically below the maximum and rounds up
+    onto it. What it never modelled is that VBA converts a numeric literal at
+    about fifteen significant digits and only THEN range-checks the result. The
+    fifteen-digit rounding of that literal is 1.79769313486232E+308, which is
+    ABOVE the maximum, so the VBE refused it with Overflow and displayed the
+    rounded form back - the display that identified the mechanism.
+
+    So the rule is now the one that actually holds on the target: every Double
+    literal in production VBA must still be in range AFTER a fifteen-significant
+    -digit round trip. And the boundary itself carries no literal at all.
     """
     from decimal import Decimal
 
-    literal = _vba_constant_literal(_kernel()["modCalcFactors"], "MAX_DOUBLE")
-    assert Decimal(literal) <= Decimal((2 ** 53 - 1) * 2 ** 971), (
-        f"the literal {literal} is above the largest representable Double"
+    module = _kernel()["modCalcFactors"]
+    # 1. The boundary is built, not spelled. No literal to get wrong.
+    try:
+        literal = _vba_constant_literal(module, "MAX_DOUBLE")
+    except AssertionError:
+        literal = None
+    assert literal is None, (
+        f"MAX_DOUBLE is a literal again ({literal}); VBA cannot parse one for "
+        "this value"
     )
+    assert "Public Function MAX_DOUBLE() As Double" in module.code
+    assert "1.7976931348623157E+308" not in module.code, (
+        "the overflowing literal is back in executable code"
+    )
+
+    # 2. NEGATIVE CONTROL: the retired literal, under both rules.
+    retired = "1.7976931348623157E+308"
+    exact_maximum = Decimal((2 ** 53 - 1) * 2 ** 971)
+    assert Decimal(retired) <= exact_maximum, (
+        "the retired literal really was in range as an exact decimal, which is "
+        "why the old test passed"
+    )
+    fifteen = f"{float(retired):.14E}"
+    assert fifteen == "1.79769313486232E+308", fifteen
+    assert Decimal(fifteen) > exact_maximum, (
+        "the fifteen-digit parse of the retired literal must exceed the maximum"
+    )
+
+    # 3. THE RULE, over every Double literal in every production module.
+    offenders: list[str] = []
+    for name, module in sorted(_modules().items()):
+        for literal in re.findall(r"[-+]?\d+\.\d+[EeDd][-+]?\d+", module.code):
+            normalised = literal.replace("D", "E").replace("d", "e")
+            try:
+                value = float(normalised)
+            except (ValueError, OverflowError):
+                offenders.append(f"{name}: {literal} is not a parseable Double")
+                continue
+            if not math.isfinite(value):
+                offenders.append(f"{name}: {literal} is not finite")
+                continue
+            parsed = Decimal(f"{value:.14E}")
+            if abs(parsed) > exact_maximum:
+                offenders.append(
+                    f"{name}: {literal} rounds to {parsed} at fifteen significant "
+                    "digits, which is outside the Double range"
+                )
+    assert not offenders, "\n  ".join(["Double literals VBA cannot parse:"] + offenders)
 
 
 def test_58_no_unused_approximate_constant_survives() -> None:
@@ -2362,7 +2431,9 @@ def test_81_the_canonical_encoder_generates_digits_from_exact_integers() -> None
     # E >= 0 -> multiply by 2^E; E < 0 -> multiply by 5^-E and shift the point.
     assert "CalcFpMultiplyPower(limbs, limbCount, 2#, exponent, 23)" in build
     assert "CalcFpMultiplyPower(limbs, limbCount, 5#, -exponent, 10)" in build
-    assert "scale = exponent" in build
+    assert "decimalScale = exponent" in build, (
+        "the compile-safe rename was reverted"
+    )
 
     small = _procedure_body(module, "CalcFpMultiplySmall")
     assert "FP_LIMB_BASE" in small
@@ -2435,3 +2506,326 @@ def test_85_no_worksheet_or_display_formatting_reaches_the_encoder() -> None:
         assert forbidden not in module.code, (
             f"{forbidden} would make the canonical text depend on the workbook"
         )
+
+
+# ===========================================================================
+# RUNTIME RUN 3: VBA COMPILE SAFETY
+# ===========================================================================
+# Run 3 exposed a verification gap, not a logic defect: 1616 Python tests and
+# 351 Stage-A checks passed, and the project still would not compile in the VBE.
+# Two deterministic blockers, two classes:
+#
+#   1. an identifier that the VBA parser will not accept in a declaration;
+#   2. a numeric literal outside the declared type's range AT PARSE TIME.
+#
+# These tests are not a VBA compiler. They are focused checks for the two
+# classes now observed, run over declarations parsed from executable code -
+# comments and string literals are stripped first, so prose naming a keyword is
+# never read as a declaration.
+
+# Visual Basic statement keywords and type names. A subset of the full reserved
+# list, chosen because each is a STATEMENT KEYWORD or a TYPE NAME - the two
+# things a declaration position cannot also be. Curated deliberately rather than
+# scraped: an over-wide list would reject working accepted code, and this must
+# stay a check the project can actually keep green.
+VBA_RESERVED_IDENTIFIERS = frozenset({
+    # statement keywords (VB6 file and graphics statements VBA still parses)
+    "circle", "close", "get", "input", "kill", "line", "load", "lock", "name",
+    "open", "output", "print", "pset", "put", "reset", "scale", "seek", "unload",
+    "base",
+    "unlock", "width", "write", "erase", "beep", "randomize", "rem", "stop",
+    "end", "error", "resume", "spc", "tab", "lset", "rset", "mid",
+    # declaration and control keywords
+    "as", "byref", "byval", "call", "case", "const", "declare", "dim", "do",
+    "each", "else", "elseif", "exit", "for", "function", "goto", "if", "in",
+    "is", "let", "like", "loop", "me", "mod", "new", "next", "not", "nothing",
+    "on", "option", "optional", "paramarray", "preserve", "private", "property",
+    "public", "redim", "select", "set", "static", "step", "sub", "then", "to",
+    "type", "until", "wend", "while", "with", "and", "or", "xor", "eqv", "imp",
+    "true", "false", "null", "empty", "friend", "global", "implements", "lib",
+    "alias", "attribute", "enum", "event", "withevents",
+    # type names
+    "boolean", "byte", "currency", "date", "decimal", "double", "integer",
+    "long", "longlong", "longptr", "object", "single", "string", "variant", "any",
+})
+
+# Declaration sites that use one of the names above AND ARE PROVEN TO COMPILE:
+# Runtime Run 2 imported all fifteen modules, reached P5-M, and confirmed every
+# API procedure callable, which is only possible if the whole project compiled.
+# Every one of these was present in that build. They are grandfathered on that
+# evidence and on nothing else - a NEW one is rejected.
+#
+# Note what they have in common and what the Run-3 failure did not: in each of
+# these the reserved name is a LATER item in its Dim list or a later parameter,
+# never the token immediately after `Dim`.
+COMPILE_PROVEN_RESERVED_DECLARATIONS = frozenset({
+    ("modCalcAnalytical", "scale"),
+    ("modCalcAnalytical", "width"),
+    ("modCalcFactors", "scale"),
+    ("modCalcFactors", "width"),
+    ("modCalcFingerprint", "name"),
+    ("modCalcReport", "currency"),
+    ("modCalcResolve", "name"),
+})
+
+
+def _vba_declarations(module: VbaModule) -> list[tuple[str, str, int]]:
+    """(kind, identifier, line) for every declaration in EXECUTABLE code.
+
+    Driven from `logical_statements` over comment-stripped source, so a
+    continued declaration is read as one statement and a comment or a string
+    literal naming a keyword is not read as a declaration at all.
+    """
+    found: list[tuple[str, str, int]] = []
+    for lineno, statement in logical_statements(module.code_without_string_removal):
+        text = statement.strip()
+        head = re.match(
+            r"^(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?"
+            r"(Sub|Function|Property\s+\w+)\s+(\w+)\s*\((.*)\)",
+            text, re.IGNORECASE,
+        )
+        if head:
+            found.append(("procedure", head.group(2), lineno))
+            for part in re.split(r",(?![^()]*\))", head.group(3)):
+                parameter = re.search(
+                    r"(?:ByVal\s+|ByRef\s+|Optional\s+|ParamArray\s+)*(\w+)"
+                    r"\s*(?:\(\s*\))?\s*(?:As\s|=|$)",
+                    part.strip(), re.IGNORECASE,
+                )
+                if parameter:
+                    found.append(("parameter", parameter.group(1), lineno))
+            continue
+        constant = re.match(r"^(?:Public\s+|Private\s+)?Const\s+(.*)$", text, re.IGNORECASE)
+        if constant:
+            for part in constant.group(1).split(","):
+                name = re.match(r"\s*(\w+)", part)
+                if name:
+                    found.append(("const", name.group(1), lineno))
+            continue
+        variable = re.match(
+            r"^(?:Dim|ReDim|Static|Public|Private)\s+"
+            r"(?!Sub\b|Function\b|Const\b|Type\b|Enum\b|Declare\b|Property\b)(.*)$",
+            text, re.IGNORECASE,
+        )
+        if variable:
+            for part in re.split(r",(?![^()]*\))", variable.group(1)):
+                name = re.match(r"\s*(?:Preserve\s+)?(\w+)", part)
+                if name:
+                    found.append(("variable", name.group(1), lineno))
+    return found
+
+
+def test_86_no_production_declaration_introduces_a_reserved_identifier() -> None:
+    """CLASS 1. The `scale` blocker, closed as a class.
+
+    Run 3's VBE stopped at `Dim scale As Long, exp10 As Long` in
+    modCalcFingerprint with a Syntax error. Every other reserved-name
+    declaration in the project is grandfathered on Run 2's successful compile;
+    anything new is rejected.
+    """
+    # EVERY production module, not just the numerical kernel: a compile stops
+    # the whole project, wherever it lives.
+    modules = _modules()
+    scanned = 0
+    offenders: list[str] = []
+    for name, module in sorted(modules.items()):
+        for kind, identifier, lineno in _vba_declarations(module):
+            scanned += 1
+            if identifier.lower() not in VBA_RESERVED_IDENTIFIERS:
+                continue
+            if (name, identifier.lower()) in COMPILE_PROVEN_RESERVED_DECLARATIONS:
+                continue
+            offenders.append(
+                f"{name}:{lineno} declares {kind} `{identifier}`, which is a VBA "
+                "statement keyword or type name"
+            )
+    assert scanned > 1500, f"the declaration scan found only {scanned} declarations"
+    assert not offenders, "\n  ".join(["reserved identifiers in declarations:"] + offenders)
+
+    assert len(modules) >= 13, f"only {len(modules)} production modules were scanned"
+    # The specific site Run 3 rejected must not come back, in any module.
+    for name, module in sorted(modules.items()):
+        for kind, identifier, lineno in _vba_declarations(module):
+            if identifier.lower() == "scale" and name == "modCalcFingerprint":
+                raise AssertionError(f"`scale` is declared again at {name}:{lineno}")
+    assert "decimalScale" in modules["modCalcFingerprint"].code
+
+
+def test_87_the_grandfathered_list_is_evidence_not_a_blanket_exemption() -> None:
+    """Every entry must correspond to a declaration that actually exists.
+
+    A stale exemption is a hole: it would silently cover a NEW use of the same
+    name in the same module.
+    """
+    modules = _modules()
+    present = {
+        (name, identifier.lower())
+        for name, module in modules.items()
+        for _, identifier, _ in _vba_declarations(module)
+    }
+    stale = sorted(COMPILE_PROVEN_RESERVED_DECLARATIONS - present)
+    assert not stale, f"grandfathered entries with no declaration behind them: {stale}"
+    # BOTH DIRECTIONS, as a set. The reserved declarations that exist in the
+    # project must be EXACTLY the grandfathered ones - independently of how
+    # test_86 walks the sites, so a new one cannot slip past either formulation.
+    reserved_present = {
+        (name, identifier.lower())
+        for name, module in modules.items()
+        for _, identifier, _ in _vba_declarations(module)
+        if identifier.lower() in VBA_RESERVED_IDENTIFIERS
+    }
+    assert reserved_present == set(COMPILE_PROVEN_RESERVED_DECLARATIONS), (
+        "the reserved-declaration set drifted from the compile-proven list: "
+        f"new {sorted(reserved_present - set(COMPILE_PROVEN_RESERVED_DECLARATIONS))}, "
+        f"gone {sorted(set(COMPILE_PROVEN_RESERVED_DECLARATIONS) - reserved_present)}"
+    )
+    # And each one really is a reserved name, or it has no business on the list.
+    for _, identifier in COMPILE_PROVEN_RESERVED_DECLARATIONS:
+        assert identifier in VBA_RESERVED_IDENTIFIERS, identifier
+    # modCalcFingerprint may keep `base` and `name`; it may not keep `scale`.
+    assert ("modCalcFingerprint", "scale") not in COMPILE_PROVEN_RESERVED_DECLARATIONS
+
+
+def test_88_comments_and_string_literals_are_not_declarations() -> None:
+    """CLASS 1, the other direction: no false positive on prose.
+
+    modCalcFingerprint's comments discuss `scale`, `Format$` and the retired
+    literal on purpose. A scanner that read those as code would make the rule
+    unkeepable and would be quietly disabled.
+    """
+    module = _kernel()["modCalcFingerprint"]
+    assert "scale" in module.raw.lower(), "the explanatory comment was removed"
+    declared = {identifier.lower() for _, identifier, _ in _vba_declarations(module)}
+    assert "scale" not in declared, "a comment was read as a declaration"
+
+    planted = VbaModule(
+        name="planted",
+        path=SRC_VBA / "planted.bas",
+        raw=(
+            "Attribute VB_Name = \"planted\"\n"
+            "Option Explicit\n"
+            "' Dim scale As Long - explaining why this is not done\n"
+            "Private Function Probe() As String\n"
+            "    Dim safeName As Long\n"
+            "    Probe = \"Dim width As Long\"   ' a literal, not a declaration\n"
+            "    Rem Dim currency As Long\n"
+            "End Function\n"
+        ),
+    )
+    names = {identifier.lower() for _, identifier, _ in _vba_declarations(planted)}
+    assert "safename" in names, "a real declaration was missed"
+    for prose in ("scale", "width", "currency"):
+        assert prose not in names, f"{prose} was read out of prose as a declaration"
+
+    # And a real one IS caught.
+    real = VbaModule(
+        name="real", path=SRC_VBA / "real.bas",
+        raw=("Private Function Probe() As Long\n"
+             "    Dim scale As Long, other As Long\n"
+             "End Function\n"),
+    )
+    assert "scale" in {identifier.lower() for _, identifier, _ in _vba_declarations(real)}
+
+
+def test_89_every_const_literal_matches_its_declared_type() -> None:
+    """CLASS 2, generalised beyond MAX_DOUBLE.
+
+    An Integer const above 32767, a Long above 2147483647, or a Double outside
+    the range VBA's parser can reach are all immediate compile stops.
+    """
+    limits = {
+        "Integer": (-32768, 32767),
+        "Long": (-2147483648, 2147483647),
+        "Byte": (0, 255),
+    }
+    offenders: list[str] = []
+    for name, module in sorted(_modules().items()):
+        for lineno, statement in logical_statements(module.code_without_string_removal):
+            match = re.match(
+                r"^(?:Public\s+|Private\s+)?Const\s+(\w+)\s+As\s+(\w+)\s*=\s*([-+]?[\d.eEdD+]+)[#!@&]?\s*$",
+                statement.strip(),
+            )
+            if not match:
+                continue
+            constant, kind, literal = match.groups()
+            if kind in limits:
+                try:
+                    value = int(float(literal))
+                except ValueError:
+                    offenders.append(f"{name}:{lineno} {constant} = {literal} is not numeric")
+                    continue
+                low, high = limits[kind]
+                if not low <= value <= high:
+                    offenders.append(
+                        f"{name}:{lineno} {constant} As {kind} = {literal} is outside "
+                        f"[{low}, {high}]"
+                    )
+            elif kind == "Double":
+                parsed = float(f"{float(literal):.14E}")
+                if not math.isfinite(parsed):
+                    offenders.append(
+                        f"{name}:{lineno} {constant} As Double = {literal} overflows "
+                        "a fifteen-significant-digit parse"
+                    )
+    assert not offenders, "\n  ".join(["constant literals VBA cannot accept:"] + offenders)
+
+
+def test_90_the_new_canonical_encoder_has_no_other_compile_blocker() -> None:
+    """A focused look at the code Run 3 never got past."""
+    module = _kernel()["modCalcFingerprint"]
+    declarations = _vba_declarations(module)
+
+    # Array bounds in Dim must be constant expressions.
+    for lineno, statement in logical_statements(module.code_without_string_removal):
+        bound = re.match(r"^Dim\s+(\w+)\(([^)]*)\)\s+As\s", statement.strip())
+        if bound and bound.group(2).strip():
+            for token in re.findall(r"[A-Za-z_]\w*", bound.group(2)):
+                if token.lower() == "to":
+                    continue
+                assert f"Const {token} " in module.code, (
+                    f"{module.name}:{lineno} sizes an array with `{token}`, which is "
+                    "not a Const, so the bound is not a constant expression"
+                )
+
+    # No local shadows its own procedure name, which VBA rejects.
+    for _, procedure, _ in [d for d in declarations if d[0] == "procedure"]:
+        body = _procedure_body(module, procedure)
+        for kind, identifier, _ in _vba_declarations(
+            VbaModule(name=module.name, path=module.path, raw=body)
+        ):
+            if kind == "variable":
+                assert identifier.lower() != procedure.lower(), (
+                    f"{procedure} declares a local of its own name"
+                )
+
+    # Every Const the encoder references is declared in this module.
+    for token in ("FP_LIMB_BASE", "FP_LIMB_DIGITS", "FP_TWO_52", "FP_TWO_53",
+                  "FP_MANTISSA_DIGITS", "FP_MAX_LIMBS", "FP_SIGNIFICANT_DIGITS",
+                  "FP_FRACTION_DIGITS", "FP_DIGIT_TABLE"):
+        assert f"Const {token} As" in module.code, f"{token} is referenced but not declared"
+
+    # And the module-level declaration section really does precede every
+    # procedure - a Const after the first Sub is an immediate compile stop.
+    first_procedure = min(lineno for kind, _, lineno in declarations if kind == "procedure")
+    for kind, identifier, lineno in declarations:
+        if kind == "const":
+            assert lineno < first_procedure, (
+                f"Const {identifier} at line {lineno} appears after the first "
+                f"procedure at line {first_procedure}"
+            )
+
+
+def test_91_modcalcfactors_declaration_order_survives_the_new_function() -> None:
+    """MAX_DOUBLE became a Function, which had to go BELOW the declarations."""
+    module = _kernel()["modCalcFactors"]
+    declarations = _vba_declarations(module)
+    first_procedure = min(lineno for kind, _, lineno in declarations if kind == "procedure")
+    late = [(identifier, lineno) for kind, identifier, lineno in declarations
+            if kind == "const" and lineno > first_procedure]
+    assert not late, f"module-level constants after the first procedure: {late}"
+    # The cache variables are module level and precede every procedure too.
+    for line, text in logical_statements(module.code_without_string_removal):
+        if text.strip().startswith("Private mMaxDouble"):
+            assert line < first_procedure, "the cache variable is inside a procedure"
+    assert "Private mMaxDouble As Double" in module.code
+    assert "Private mMaxDoubleBuilt As Boolean" in module.code

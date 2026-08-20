@@ -185,7 +185,14 @@ Private Function CalcFpBuildCanonical(ByVal value As Double, ByRef text As Strin
     Dim limbs() As Double, limbCount As Long
     Dim mantissa As Double, exponent As Long
     Dim allDigits As String, head As String, sign As String
-    Dim scale As Long, exp10 As Long
+    ' decimalScale, NOT scale. Runtime Run 3's VBE stopped here with a Syntax
+    ' error and highlighted `scale`. Scale is a Visual Basic statement keyword,
+    ' and this is the one place in the project where it stands as the token
+    ' immediately after Dim - the seven pre-existing `scale` locals in
+    ' modCalcFactors and modCalcAnalytical all sit later in their Dim lists and
+    ' all compiled in Runtime Run 2. Whatever the parser's precise rule, the
+    ' identifier is not worth the argument.
+    Dim decimalScale As Long, exp10 As Long
 
     If value = 0# Then
         text = "0." & String$(FP_FRACTION_DIGITS, "0") & "E+00"
@@ -200,16 +207,16 @@ Private Function CalcFpBuildCanonical(ByVal value As Double, ByRef text As Strin
     If exponent >= 0 Then
         ' 2^23 is 8388608, under one limb, so each pass consumes 23 powers.
         If Not CalcFpMultiplyPower(limbs, limbCount, 2#, exponent, 23) Then Exit Function
-        scale = 0
+        decimalScale = 0
     Else
         ' 5^10 is 9765625, under one limb, so each pass consumes ten powers.
         If Not CalcFpMultiplyPower(limbs, limbCount, 5#, -exponent, 10) Then Exit Function
-        scale = exponent
+        decimalScale = exponent
     End If
 
     allDigits = CalcFpLimbDigits(limbs, limbCount)
     If Len(allDigits) = 0 Then Exit Function
-    exp10 = Len(allDigits) - 1 + scale
+    exp10 = Len(allDigits) - 1 + decimalScale
     If Not CalcFpRoundSignificant(allDigits, head, exp10) Then Exit Function
 
     text = sign & Left$(head, 1) & "." & Mid$(head, 2) & "E" & CalcFpExponentText(exp10)
@@ -286,7 +293,7 @@ Private Function CalcFpLimbsFromMantissa(ByVal mantissa As Double, ByRef limbs()
 End Function
 
 Private Function CalcFpMultiplyPower(ByRef limbs() As Double, ByRef limbCount As Long, _
-                                     ByVal base As Double, ByVal count As Long, _
+                                     ByVal powerBase As Double, ByVal count As Long, _
                                      ByVal chunk As Long) As Boolean
     ' Chunked so the work is proportional to count/chunk passes rather than to
     ' count. The chunk factor is itself under one limb, which is what keeps
@@ -305,21 +312,21 @@ Private Function CalcFpMultiplyPower(ByRef limbs() As Double, ByRef limbCount As
         remainder = remainder - chunk
         passes = passes + 1
     Loop
-    factor = CalcFpIntegerPower(base, chunk)
+    factor = CalcFpIntegerPower(powerBase, chunk)
     For index = 1 To passes
         If Not CalcFpMultiplySmall(limbs, limbCount, factor) Then Exit Function
     Next index
     If remainder > 0 Then
-        If Not CalcFpMultiplySmall(limbs, limbCount, CalcFpIntegerPower(base, remainder)) Then Exit Function
+        If Not CalcFpMultiplySmall(limbs, limbCount, CalcFpIntegerPower(powerBase, remainder)) Then Exit Function
     End If
     CalcFpMultiplyPower = True
 End Function
 
-Private Function CalcFpIntegerPower(ByVal base As Double, ByVal power As Long) As Double
+Private Function CalcFpIntegerPower(ByVal powerBase As Double, ByVal power As Long) As Double
     Dim result As Double, index As Long
     result = 1#
     For index = 1 To power
-        result = result * base
+        result = result * powerBase
     Next index
     CalcFpIntegerPower = result
 End Function
