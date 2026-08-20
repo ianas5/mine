@@ -2026,3 +2026,95 @@ deterministic blockers now observed from passing the static gate again.
 `phase5_cases.json` is **byte-for-byte identical** to the accepted commit's,
 reference digest `50B6EB0E26857EA7` included. The eleven other production
 modules are byte-identical to accepted Gate-A `1968fb8`.
+
+---
+
+## Review round 3A: the boundaries and the exemption authority
+
+### Blocker 1 — the construction still trusted a long decimal literal
+
+The round-3 fix built `MAX_DOUBLE` from
+
+```vba
+Private Const MAX_SIGNIFICAND As Double = 9007199254740991#
+```
+
+which is a **sixteen**-significant-digit decimal spelling — precisely the class
+of literal the same round declared unparseable. The reasoning was
+self-inconsistent, and the failure mode is worse than the one it replaced: an
+overflow stops the compile, whereas a significand parsed one unit low **compiles,
+runs, and silently yields the Double immediately below the maximum**. Python
+parsing that literal exactly proves nothing about VBA.
+
+A sweep found five such literals, all inside the two authorised modules:
+
+| module | literal | digits |
+|---|---|---|
+| `modCalcFactors` | `4503599627370496#` (`TWO_52`) | 16 |
+| `modCalcFactors` | `9007199254740991#` (`MAX_SIGNIFICAND`) | 16 |
+| `modCalcFingerprint` | `4503599627370496#` (`FP_TWO_52`) | 16 |
+| `modCalcFingerprint` | `9007199254740992#` (`FP_TWO_53`) | 16 |
+| `modCalcFingerprint` | `1000000000000000#` (10^15) | 16 |
+
+All five are gone. What remains is bit widths as small `Long` constants, and
+constructions from `1#`, `2#` and `10#`:
+
+```vba
+Private Const SIGNIFICAND_BITS As Long = 53
+Private Const MANTISSA_BITS As Long = 52
+
+Private Function ExactPowerOfTwo(ByVal bits As Long) As Double
+    result = 1#
+    For doubling = 1 To bits
+        result = result * 2#
+```
+
+* `TWO_52` = `ExactPowerOfTwo(52)`
+* `MAX_SIGNIFICAND` = `ExactPowerOfTwo(53) - 1#` — exact, because 2⁵³−1 needs
+  exactly 53 bits and is representable, so the subtraction does not round
+* `MAX_DOUBLE` = `MAX_SIGNIFICAND × 2^971` — 971 exact doublings, no
+  intermediate above the final value
+* `FP_MANTISSA_BITS` / `FP_SIGNIFICAND_BITS` build the decomposition bounds
+  through the encoder's existing `CalcFpIntegerPower`
+* 10¹⁵ = `CalcFpIntegerPower(10#, 15)` — every 10^k for k ≤ 15 is exactly
+  representable, so each step is exact
+
+**No parser-precision assumption remains anywhere in production VBA**: the
+longest surviving Double literal is `10000000#`, eight digits, and a static rule
+keeps it that way.
+
+The one-unit-low case is pinned as a negative control: it lands exactly on
+`nextafter(DBL_MAX, 0)`, is distinguishable, and is rejected.
+
+### Blocker 2 — module-wide grandfathering was a hole
+
+The exemption key was `(module, identifier)`. `modCalcFactors` already declares
+`scale`, so that pair grandfathered **any new `scale` anywhere in the module** —
+contradicting the stated rule that a new one is rejected.
+
+The key is now the **site**, counted as a multiset:
+
+```
+(module, enclosing scope, declaration kind, identifier, normalised statement) -> count
+```
+
+Fifteen sites are recorded, each an occurrence Runtime Run 2 compiled. No line
+numbers — those move whenever anything above them does. Both directions are
+required: a new site fails, and a stale entry fails too, because a stale
+exemption is itself a hole.
+
+Four ways a new occurrence can appear, all rejected: a **new procedure** in a
+module that already has that name; a **second reserved name** inside an already
+grandfathered procedure; an **identical repeat** of a grandfathered declaration,
+caught by the count; and the same identifier in a **new module**. Comments and
+string literals remain non-declarations.
+
+### A correction to the round-3 documentation
+
+The earlier note offered a pattern — that the seven pre-existing `scale`
+declarations sit later in their `Dim` lists while the failing one stood
+immediately after `Dim`. **That is not asserted as a VBA language rule, and it is
+not the basis of any exemption.** It is an observation about the failing site.
+What the exemptions rest on is narrower and empirical: Runtime Run 2 compiled
+these exact occurrences in the target Excel environment, and nothing more is
+claimed for them.

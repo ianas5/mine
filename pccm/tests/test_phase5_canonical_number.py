@@ -352,8 +352,8 @@ def test_14_every_ported_routine_exists_in_the_shipped_module() -> None:
     for constant, value in (("FP_LIMB_BASE", "10000000#"), ("FP_LIMB_DIGITS", "7"),
                             ("FP_SIGNIFICANT_DIGITS", "17"), ("FP_FRACTION_DIGITS", "16"),
                             ("FP_MANTISSA_DIGITS", "16"), ("FP_MAX_LIMBS", "200"),
-                            ("FP_TWO_52", "4503599627370496#"),
-                            ("FP_TWO_53", "9007199254740992#")):
+                            ("FP_MANTISSA_BITS", "52"),
+                            ("FP_SIGNIFICAND_BITS", "53")):
         assert f"Const {constant} As" in vba and f"= {value}" in vba, constant
     assert port.FP_LIMB_BASE == 10000000.0
     assert port.FP_SIGNIFICANT_DIGITS == 17
@@ -368,7 +368,7 @@ def test_15_the_limb_arithmetic_never_leaves_the_exact_integer_range() -> None:
     assert (10 ** 7 - 1) * (10 ** 7 - 1) + 10 ** 7 < 2 ** 53
     # And the assertion is live inside the port, so a corpus run would trip it.
     ported = (Path(__file__).resolve().parent / "vba_canonical_port.py").read_text(encoding="utf-8")
-    assert 'assert product < FP_TWO_53' in ported
+    assert "assert product < integer_power(2.0, FP_SIGNIFICAND_BITS)" in ported
     # The widest expansion the algorithm can produce still fits the limb array.
     widest_digits = len(str(9007199254740991 * 5 ** 1126))
     assert widest_digits < port.FP_MAX_LIMBS * port.FP_LIMB_DIGITS, widest_digits
@@ -688,48 +688,61 @@ def test_20_the_isolation_fix_touches_no_production_file() -> None:
 # ===========================================================================
 # 7. THE RUN-3 COMPILE-SAFE RENAMES CHANGED NO BEHAVIOUR
 # ===========================================================================
-def test_21_the_encoder_is_identical_modulo_the_compile_safe_renames() -> None:
-    """`scale` -> `decimalScale` and `base` -> `powerBase`, and nothing else.
+def test_21_the_encoder_changed_only_where_compile_safety_required() -> None:
+    """Two rounds of compile-safety edits, and nothing else in the encoder.
 
-    Runtime Run 3's VBE refused `Dim scale As Long`. The repair is an identifier
-    rename, and an identifier rename must be provably invisible: mapping the two
-    new names back must reproduce the accepted executable text exactly.
+    Round 3  `scale` -> `decimalScale`, `base` -> `powerBase` (identifiers only).
+    Round 3A the two sixteen-digit decomposition bounds and the sixteen-digit
+             10^15 replaced by exact constructions, because a long decimal
+             literal's VBA parse is precisely what Run 3 disproved.
+
+    The renames must be invisible, and the construction change must touch only
+    the lines that carry a boundary. Everything else must be byte-identical to
+    the accepted commit.
     """
     import subprocess
 
     accepted = subprocess.run(
-        ["git", "show", "2670ae8:pccm/src/vba/modCalcFingerprint.bas"],
+        ["git", "show", "b356557:pccm/src/vba/modCalcFingerprint.bas"],
         capture_output=True, text=True, cwd=str(PCCM_ROOT.parent),
     )
     if accepted.returncode != 0:
-        # A reconstructed tree has no repository; the rest of this file already
-        # proves the behaviour directly against the oracle.
+        # A reconstructed tree has no repository; the corpus tests below prove
+        # the behaviour directly against the oracle regardless.
         return
 
-    def normalise(text: str) -> str:
-        kept = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("'"):
-                continue
-            stripped = re.sub(r"\s+", " ", stripped)
-            stripped = re.sub(r"\bdecimalScale\b", "scale", stripped)
-            stripped = re.sub(r"\bpowerBase\b", "base", stripped)
-            kept.append(stripped)
-        return "\n".join(kept)
+    def executable(text: str) -> list[str]:
+        return [re.sub(r"\s+", " ", line.strip())
+                for line in text.splitlines()
+                if line.strip() and not line.strip().startswith("'")]
 
+    before = executable(accepted.stdout)
+    after = executable((SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8"))
+    changed = set(before).symmetric_difference(after)
+
+    # Every changed line must carry a boundary token. Nothing else moved.
+    boundary_tokens = ("FP_TWO_52", "FP_TWO_53", "FP_MANTISSA_BITS",
+                       "FP_SIGNIFICAND_BITS", "lowerBound", "upperBound",
+                       "1000000000000000#", "CalcFpIntegerPower(10#",
+                       "power = ")
+    stray = [line for line in sorted(changed)
+             if not any(token in line for token in boundary_tokens)]
+    assert not stray, (
+        "the encoder changed outside the boundary constructions:\n  "
+        + "\n  ".join(stray)
+    )
+
+    # The round-3 renames are still in place and still invisible.
     current = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
-    assert normalise(current) == normalise(accepted.stdout), (
-        "the canonical encoder changed by more than the compile-safe renames"
-    )
-    # And the renames really did happen.
     assert "decimalScale" in current and "powerBase" in current
-    executable = "\n".join(line for line in current.splitlines()
-                           if line.strip() and not line.strip().startswith("'"))
-    assert not re.search(r"\bscale\b", executable), "`scale` survives in executable text"
-    assert not re.search(r"(?<![A-Za-z])base(?![A-Za-z])", executable), (
-        "`base` survives in executable text"
+    body = "\n".join(after)
+    assert not re.search(r"\bscale\b", body), "`scale` is back in executable text"
+    assert not re.search(r"(?<![A-Za-z])base(?![A-Za-z])", body), (
+        "`base` is back in executable text"
     )
+    # And no long decimal literal survives anywhere in the encoder.
+    for retired in ("4503599627370496", "9007199254740992", "1000000000000000"):
+        assert retired not in body, f"{retired} is back in executable text"
 
 
 def test_22_the_parity_corpus_and_every_expectation_are_unchanged() -> None:
@@ -760,6 +773,17 @@ def test_23_max_double_is_built_and_is_the_true_maximum() -> None:
     assert "1.7976931348623157E+308" not in executable, "the overflowing literal is back"
     assert "result = MAX_SIGNIFICAND" in executable
     assert "For doubling = 1 To MAX_EXPONENT" in executable
+    # The significand itself is built, and built EXACTLY: 2^53 - 1. One unit
+    # either way still compiles and still runs, and yields a neighbour of the
+    # maximum - the silent failure this construction exists to prevent.
+    assert "ExactPowerOfTwo(SIGNIFICAND_BITS) - 1#" in executable, (
+        "the significand is not 2^53 - 1"
+    )
+    assert "Private Const SIGNIFICAND_BITS As Long = 53" in executable
+    for wrong in ("- 2#", "+ 1#", "- 0#"):
+        assert f"ExactPowerOfTwo(SIGNIFICAND_BITS) {wrong}" not in executable, (
+            f"the significand is built as 2^53 {wrong}"
+        )
 
     # The construction, evaluated the way the VBA evaluates it.
     built = float(2 ** 53 - 1)

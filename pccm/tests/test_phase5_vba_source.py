@@ -31,6 +31,7 @@ Runs standalone or under pytest.
 from __future__ import annotations
 
 import hashlib
+import collections
 import math
 import re
 import sys
@@ -204,7 +205,7 @@ PHASE4_SHA256 = {
 #                          significant digits on real Excel.
 # It is what "and nothing else" is measured against from here on.
 FINGERPRINT_ACCEPTED_BODY_SHA256 = (
-    "9db46d920318e7f482e68f7983c32ba3553529bed1ab61593ee8798d390bedf4"
+    "27589cbef04e29ceff15df05a0b1cbfdf2d35e25ab301cdc2c992e46468a9659"
 )
 
 
@@ -1378,36 +1379,84 @@ def test_55_the_version_injecting_builder_is_private() -> None:
 
 
 # --- 13.3 the exact binary constants ---------------------------------------
-def test_56_the_kernel_constants_are_the_exact_ieee_boundaries() -> None:
-    """Compared against the accepted Python authority AND against exact integers.
+def test_56_the_kernel_boundaries_are_built_exactly_not_spelled() -> None:
+    """All three, and none of them through a long decimal literal.
 
-    These are used by decomposition, by MAX_DOUBLE boundary classification and by
-    ties-to-even rounding. They are not documentation values.
+    Review round 3A: building MAX_DOUBLE from a sixteen-digit MAX_SIGNIFICAND
+    literal carried the very assumption Run 3 disproved, one level down - and it
+    would have failed SILENTLY, since a significand parsed one unit low still
+    compiles and yields the Double just below the maximum.
     """
     from pccm_builder import calc_numeric
 
     module = _kernel()["modCalcFactors"]
-    assert _vba_constant(module, "TWO_52") == calc_numeric._TWO_52
-    assert _vba_constant(module, "TWO_52") == float(2 ** 52)
-    assert _vba_constant(module, "MAX_SIGNIFICAND") == calc_numeric._MAX_SIGNIFICAND
-    assert _vba_constant(module, "MAX_SIGNIFICAND") == float(2 ** 53 - 1)
-    # MAX_DOUBLE is no longer a Const: Runtime Run 3 proved VBA cannot parse a
-    # decimal literal for it (see test_57). It is BUILT from the two constants
-    # above, and this checks the construction rather than a spelling.
-    assert "Private Const MAX_EXPONENT As Long = 971" in module.code, (
-        "the scaling exponent is no longer the accepted 971"
+    code = module.code
+
+    # The bit widths are the only declared authority, and they are small Longs.
+    assert "Private Const SIGNIFICAND_BITS As Long = 53" in code
+    assert "Private Const MANTISSA_BITS As Long = 52" in code
+    assert "Private Const MAX_EXPONENT As Long = 971" in code
+
+    # Nothing is spelled.
+    for retired in ("4503599627370496", "9007199254740991", "1.7976931348623157E+308"):
+        assert retired not in code, f"{retired} is back in executable code"
+    for name in ("TWO_52", "MAX_SIGNIFICAND", "MAX_DOUBLE"):
+        assert f"Const {name} As Double" not in code, f"{name} is a decimal Const again"
+
+    # Each is built by doubling from 1#, and MAX_SIGNIFICAND from a BUILT power.
+    power = _procedure_body(module, "ExactPowerOfTwo")
+    assert "result = 1#" in power and "result = result * 2#" in power
+    assert "For doubling = 1 To bits" in power
+    assert "MAX_SIGNIFICAND = mMaxSignificand" in code
+    significand = _procedure_body(module, "MAX_SIGNIFICAND")
+    assert "ExactPowerOfTwo(SIGNIFICAND_BITS) - 1#" in significand, (
+        "the significand is not built as 2^53 - 1"
     )
+    two52 = _procedure_body(module, "TWO_52")
+    assert "ExactPowerOfTwo(MANTISSA_BITS)" in two52
     build = _procedure_body(module, "BuildMaxDouble")
-    assert "result = MAX_SIGNIFICAND" in build, "the build does not start at 2^53 - 1"
-    assert "For doubling = 1 To MAX_EXPONENT" in build, "the build does not scale by 2^971"
-    assert "result = result * 2#" in build, "the build uses something other than doubling"
-    constructed = float(2 ** 53 - 1)
+    assert "result = MAX_SIGNIFICAND" in build
+    assert "For doubling = 1 To MAX_EXPONENT" in build
+    assert "result = result * 2#" in build
+
+    # THE INDEPENDENT MODEL. Every value reproduced by the same operations.
+    def exact_power_of_two(bits: int) -> float:
+        result = 1.0
+        for _ in range(bits):
+            result = result * 2.0
+        return result
+
+    built_two52 = exact_power_of_two(52)
+    built_significand = exact_power_of_two(53) - 1.0
+    built_maximum = built_significand
     for _ in range(971):
-        constructed = constructed * 2.0
-    assert constructed == calc_numeric.MAX_DOUBLE, "the construction is not the authority's value"
-    assert constructed == float((2 ** 53 - 1) * 2 ** 971)
+        built_maximum = built_maximum * 2.0
+
+    assert built_two52 == calc_numeric._TWO_52 == float(2 ** 52)
+    # 2. the significand is exact BEFORE any exponent scaling
+    assert built_significand == calc_numeric._MAX_SIGNIFICAND == float(2 ** 53 - 1)
+    # 3. bit-for-bit against the authority
+    import struct as _struct
     import sys as _sys
-    assert constructed == _sys.float_info.max, "the construction is not the maximum finite Double"
+    assert built_maximum == calc_numeric.MAX_DOUBLE == _sys.float_info.max
+    assert _struct.pack(">d", built_maximum) == _struct.pack(">d", _sys.float_info.max)
+
+    # 4. a significand one unit low is the PREVIOUS Double, and is rejected
+    wrong = built_significand - 1.0
+    for _ in range(971):
+        wrong = wrong * 2.0
+    assert wrong == math.nextafter(_sys.float_info.max, 0.0)
+    assert wrong != _sys.float_info.max, "the one-unit-low case is indistinguishable"
+    assert wrong < _sys.float_info.max
+
+    # 5. no host conversion anywhere near the construction
+    for forbidden in ("Format", "CStr", "Str$", "CDbl", "Val(", "Evaluate",
+                      "WorksheetFunction", "Declare ", "CreateObject"):
+        for procedure in ("ExactPowerOfTwo", "TWO_52", "MAX_SIGNIFICAND",
+                          "BuildMaxDouble", "MAX_DOUBLE"):
+            assert forbidden not in _procedure_body(module, procedure), (
+                f"{procedure} uses {forbidden}"
+            )
 
 
 def test_57_no_double_literal_survives_a_fifteen_digit_parse_out_of_range() -> None:
@@ -2422,7 +2471,15 @@ def test_81_the_canonical_encoder_generates_digits_from_exact_integers() -> None
     # Scaling by two only: the one operation that is exact in binary floating
     # point, which is what makes M and E exact.
     assert "scaled = scaled * 2#" in decompose and "scaled = scaled / 2#" in decompose
-    assert "FP_TWO_52" in decompose and "FP_TWO_53" in decompose
+    assert "CalcFpIntegerPower(2#, FP_MANTISSA_BITS)" in decompose, (
+        "the lower bound is spelled rather than built"
+    )
+    assert "CalcFpIntegerPower(2#, FP_SIGNIFICAND_BITS)" in decompose, (
+        "the upper bound is spelled rather than built"
+    )
+    assert "4503599627370496" not in module.code and "9007199254740992" not in module.code, (
+        "a sixteen-digit decomposition bound is back"
+    )
     assert "guard > 1200" in decompose and "guard > 2400" in decompose, (
         "the normalisation loops are unbounded"
     )
@@ -2442,6 +2499,12 @@ def test_81_the_canonical_encoder_generates_digits_from_exact_integers() -> None
     # The limb width is what keeps every product inside the exact-integer range.
     assert "Private Const FP_LIMB_BASE As Double = 10000000#" in module.raw
     assert "Private Const FP_LIMB_DIGITS As Long = 7" in module.raw
+    assert "Private Const FP_MANTISSA_BITS As Long = 52" in module.raw
+    assert "Private Const FP_SIGNIFICAND_BITS As Long = 53" in module.raw
+    # 10^15 is built, not spelled, for the same reason.
+    limbs = _procedure_body(module, "CalcFpLimbsFromMantissa")
+    assert "CalcFpIntegerPower(10#, FP_MANTISSA_DIGITS - 1)" in limbs
+    assert "1000000000000000" not in module.code
 
 
 def test_82_the_rounding_is_half_to_even_and_the_tie_is_exact() -> None:
@@ -2549,43 +2612,73 @@ VBA_RESERVED_IDENTIFIERS = frozenset({
     "long", "longlong", "longptr", "object", "single", "string", "variant", "any",
 })
 
-# Declaration sites that use one of the names above AND ARE PROVEN TO COMPILE:
+# Declaration SITES that use one of the names above and are PROVEN TO COMPILE.
+#
 # Runtime Run 2 imported all fifteen modules, reached P5-M, and confirmed every
 # API procedure callable, which is only possible if the whole project compiled.
-# Every one of these was present in that build. They are grandfathered on that
-# evidence and on nothing else - a NEW one is rejected.
+# Every site below was present in that build. That is empirical evidence about
+# these exact occurrences in the target Excel environment, and it is NOT a
+# general claim that a reserved identifier is legal in some positions - no such
+# rule is asserted anywhere here.
 #
-# Note what they have in common and what the Run-3 failure did not: in each of
-# these the reserved name is a LATER item in its Dim list or a later parameter,
-# never the token immediately after `Dim`.
-COMPILE_PROVEN_RESERVED_DECLARATIONS = frozenset({
-    ("modCalcAnalytical", "scale"),
-    ("modCalcAnalytical", "width"),
-    ("modCalcFactors", "scale"),
-    ("modCalcFactors", "width"),
-    ("modCalcFingerprint", "name"),
-    ("modCalcReport", "currency"),
-    ("modCalcResolve", "name"),
-})
+# THE IDENTITY IS THE SITE, NOT THE NAME. A (module, identifier) pair would
+# grandfather a brand-new procedure that happened to reuse a name already
+# present in that module, which is exactly the hole this replaces. The key is
+#
+#     (module, enclosing scope, declaration kind, identifier, normalised statement)
+#
+# counted as a MULTISET, so a second identical declaration inside an already
+# grandfathered procedure raises the count and fails. No line numbers: those
+# move whenever anything above them does.
+COMPILE_PROVEN_RESERVED_SITES: dict[tuple[str, str, str, str, str], int] = {
+    ('modCalcAnalytical', 'AnnualSeries', 'variable', 'width', 'Dim flat() As Double, starts() As Long, lengths() As Long, width As Long'): 1,
+    ('modCalcAnalytical', 'Contribute', 'parameter', 'scale', 'Private Function Contribute(ByRef terms() As Double, ByVal slot As Long, ByVal value As Double, ByRef scale As Double, ByVal coefficient As Double, ByVal measure As String, ByVal who As String, ByRef detail As String) As Boolean'): 1,
+    ('modCalcAnalytical', 'Identity', 'parameter', 'scale', 'Private Function Identity(ByRef check As IdentityCheck, ByVal label As String, ByVal leftValue As Double, ByVal rightValue As Double, ByVal scale As Double) As Boolean'): 1,
+    ('modCalcAnalytical', 'Pair', 'parameter', 'scale', 'Private Function Pair(ByVal firstScale As Double, ByVal secondScale As Double, ByVal thirdScale As Double, ByRef scale As Double) As Boolean'): 1,
+    ('modCalcAnalytical', 'Reconcile', 'variable', 'scale', 'Dim series() As Double, total As Double, scale As Double'): 1,
+    ('modCalcAnalytical', 'ScaleOne', 'parameter', 'scale', 'Private Function ScaleOne(ByRef scale As Double, ByRef group() As Double, ByVal value As Double, ByVal present As Boolean, ByVal coefficient As Double) As Boolean'): 1,
+    ('modCalcAnalytical', 'TotalIdentity', 'variable', 'scale', 'Dim summed As Double, scale As Double'): 1,
+    ('modCalcFactors', 'BuildFactor', 'variable', 'width', 'Dim group() As Double, width As Long'): 1,
+    ('modCalcFactors', 'ExactAddShifted', 'variable', 'scale', 'Dim index As Long, scale As Double, rest As Double'): 1,
+    ('modCalcFactors', 'ExactAnyBelow', 'variable', 'scale', 'Dim index As Long, offset As Long, lower As Long, scale As Double'): 1,
+    ('modCalcFactors', 'IdentityAllowance', 'parameter', 'scale', 'Public Function IdentityAllowance(ByVal scale As Double, ByVal absoluteFloor As Double, ByVal coefficient As Double, ByVal scaleFloor As Double, ByRef result As Double) As Boolean'): 1,
+    ('modCalcFactors', 'RoundExact', 'variable', 'scale', 'Dim quotient As Double, scale As Long'): 1,
+    ('modCalcFingerprint', 'CalcFpEncodeSection', 'parameter', 'name', 'Private Function CalcFpEncodeSection(ByVal name As String, ByRef records() As String, ByVal count As Long, ByRef section As String) As Boolean'): 1,
+    ('modCalcReport', 'CountCurrencyReferences', 'variable', 'currency', 'Dim currency As Long, driver As Long'): 1,
+    ('modCalcResolve', 'DistributionKindOf', 'parameter', 'name', 'Private Function DistributionKindOf(ByVal name As String) As Long'): 1,
+}
 
 
-def _vba_declarations(module: VbaModule) -> list[tuple[str, str, int]]:
-    """(kind, identifier, line) for every declaration in EXECUTABLE code.
+def _reserved_site_key(module_name, scope, kind, identifier, statement):
+    return (module_name, scope, kind, identifier.lower(), re.sub(r"\s+", " ", statement.strip()))
 
-    Driven from `logical_statements` over comment-stripped source, so a
-    continued declaration is read as one statement and a comment or a string
-    literal naming a keyword is not read as a declaration at all.
+
+def _vba_declarations(module: VbaModule) -> list[tuple[str, str, int, str, str]]:
+    """(kind, identifier, line, scope, statement) for every declaration.
+
+    `scope` is the enclosing procedure name, or "<module>" for the declarations
+    section. It is what makes a grandfathered site an OCCURRENCE rather than a
+    name: a new procedure is a new scope, whatever it declares.
+
+    Driven from `logical_statements` over comment-stripped source, so a continued
+    declaration is read as one statement and a comment or a string literal naming
+    a keyword is not read as a declaration at all.
     """
-    found: list[tuple[str, str, int]] = []
+    found: list[tuple[str, str, int, str, str]] = []
+    scope = "<module>"
     for lineno, statement in logical_statements(module.code_without_string_removal):
         text = statement.strip()
+        if re.match(r"^End\s+(Sub|Function|Property)\b", text, re.IGNORECASE):
+            scope = "<module>"
+            continue
         head = re.match(
             r"^(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?"
             r"(Sub|Function|Property\s+\w+)\s+(\w+)\s*\((.*)\)",
             text, re.IGNORECASE,
         )
         if head:
-            found.append(("procedure", head.group(2), lineno))
+            scope = head.group(2)
+            found.append(("procedure", head.group(2), lineno, scope, text))
             for part in re.split(r",(?![^()]*\))", head.group(3)):
                 parameter = re.search(
                     r"(?:ByVal\s+|ByRef\s+|Optional\s+|ParamArray\s+)*(\w+)"
@@ -2593,14 +2686,14 @@ def _vba_declarations(module: VbaModule) -> list[tuple[str, str, int]]:
                     part.strip(), re.IGNORECASE,
                 )
                 if parameter:
-                    found.append(("parameter", parameter.group(1), lineno))
+                    found.append(("parameter", parameter.group(1), lineno, scope, text))
             continue
         constant = re.match(r"^(?:Public\s+|Private\s+)?Const\s+(.*)$", text, re.IGNORECASE)
         if constant:
             for part in constant.group(1).split(","):
                 name = re.match(r"\s*(\w+)", part)
                 if name:
-                    found.append(("const", name.group(1), lineno))
+                    found.append(("const", name.group(1), lineno, scope, text))
             continue
         variable = re.match(
             r"^(?:Dim|ReDim|Static|Public|Private)\s+"
@@ -2611,79 +2704,142 @@ def _vba_declarations(module: VbaModule) -> list[tuple[str, str, int]]:
             for part in re.split(r",(?![^()]*\))", variable.group(1)):
                 name = re.match(r"\s*(?:Preserve\s+)?(\w+)", part)
                 if name:
-                    found.append(("variable", name.group(1), lineno))
+                    found.append(("variable", name.group(1), lineno, scope, text))
     return found
 
 
+def _reserved_sites(modules: dict) -> "collections.Counter":
+    """The multiset of reserved-identifier declaration sites in the project."""
+    counts: collections.Counter = collections.Counter()
+    for name, module in modules.items():
+        for kind, identifier, _, scope, statement in _vba_declarations(module):
+            if identifier.lower() in VBA_RESERVED_IDENTIFIERS:
+                counts[_reserved_site_key(name, scope, kind, identifier, statement)] += 1
+    return counts
+
+
 def test_86_no_production_declaration_introduces_a_reserved_identifier() -> None:
-    """CLASS 1. The `scale` blocker, closed as a class.
+    """CLASS 1. The `scale` blocker, closed as a class, SITE by SITE.
 
     Run 3's VBE stopped at `Dim scale As Long, exp10 As Long` in
-    modCalcFingerprint with a Syntax error. Every other reserved-name
-    declaration in the project is grandfathered on Run 2's successful compile;
-    anything new is rejected.
+    modCalcFingerprint with a Syntax error. The reserved-name declarations that
+    remain are the exact occurrences Runtime Run 2 compiled; the multiset is
+    compared in both directions, so a new site fails and a vanished site fails.
     """
-    # EVERY production module, not just the numerical kernel: a compile stops
-    # the whole project, wherever it lives.
     modules = _modules()
-    scanned = 0
-    offenders: list[str] = []
-    for name, module in sorted(modules.items()):
-        for kind, identifier, lineno in _vba_declarations(module):
-            scanned += 1
-            if identifier.lower() not in VBA_RESERVED_IDENTIFIERS:
-                continue
-            if (name, identifier.lower()) in COMPILE_PROVEN_RESERVED_DECLARATIONS:
-                continue
-            offenders.append(
-                f"{name}:{lineno} declares {kind} `{identifier}`, which is a VBA "
-                "statement keyword or type name"
-            )
-    assert scanned > 1500, f"the declaration scan found only {scanned} declarations"
-    assert not offenders, "\n  ".join(["reserved identifiers in declarations:"] + offenders)
-
     assert len(modules) >= 13, f"only {len(modules)} production modules were scanned"
+    scanned = sum(len(_vba_declarations(module)) for module in modules.values())
+    assert scanned > 1500, f"the declaration scan found only {scanned} declarations"
+
+    present = _reserved_sites(modules)
+    expected = collections.Counter(COMPILE_PROVEN_RESERVED_SITES)
+    extra = present - expected
+    missing = expected - present
+    assert not extra, (
+        "reserved identifiers declared at sites Runtime Run 2 never compiled:\n  "
+        + "\n  ".join(f"{key} x{count}" for key, count in sorted(extra.items()))
+    )
+    assert not missing, (
+        "grandfathered sites that no longer exist (stale exemptions are holes):\n  "
+        + "\n  ".join(f"{key} x{count}" for key, count in sorted(missing.items()))
+    )
+
     # The specific site Run 3 rejected must not come back, in any module.
     for name, module in sorted(modules.items()):
-        for kind, identifier, lineno in _vba_declarations(module):
-            if identifier.lower() == "scale" and name == "modCalcFingerprint":
-                raise AssertionError(f"`scale` is declared again at {name}:{lineno}")
+        for kind, identifier, lineno, scope, _ in _vba_declarations(module):
+            assert not (identifier.lower() == "scale" and name == "modCalcFingerprint"), (
+                f"`scale` is declared again at {name}.{scope}:{lineno}"
+            )
     assert "decimalScale" in modules["modCalcFingerprint"].code
 
 
-def test_87_the_grandfathered_list_is_evidence_not_a_blanket_exemption() -> None:
-    """Every entry must correspond to a declaration that actually exists.
+def test_87_the_grandfathered_authority_is_site_specific_not_name_wide() -> None:
+    """A (module, name) exemption would grandfather a brand-new procedure.
 
-    A stale exemption is a hole: it would silently cover a NEW use of the same
-    name in the same module.
+    That was the hole: modCalcFactors already declares `scale`, so a pair-based
+    rule accepted any NEW `scale` anywhere in that module. The key carries the
+    enclosing scope and the normalised statement, and is counted, so none of the
+    four ways a new occurrence can appear is covered by an old one.
     """
     modules = _modules()
-    present = {
-        (name, identifier.lower())
-        for name, module in modules.items()
-        for _, identifier, _ in _vba_declarations(module)
-    }
-    stale = sorted(COMPILE_PROVEN_RESERVED_DECLARATIONS - present)
-    assert not stale, f"grandfathered entries with no declaration behind them: {stale}"
-    # BOTH DIRECTIONS, as a set. The reserved declarations that exist in the
-    # project must be EXACTLY the grandfathered ones - independently of how
-    # test_86 walks the sites, so a new one cannot slip past either formulation.
-    reserved_present = {
-        (name, identifier.lower())
-        for name, module in modules.items()
-        for _, identifier, _ in _vba_declarations(module)
-        if identifier.lower() in VBA_RESERVED_IDENTIFIERS
-    }
-    assert reserved_present == set(COMPILE_PROVEN_RESERVED_DECLARATIONS), (
-        "the reserved-declaration set drifted from the compile-proven list: "
-        f"new {sorted(reserved_present - set(COMPILE_PROVEN_RESERVED_DECLARATIONS))}, "
-        f"gone {sorted(set(COMPILE_PROVEN_RESERVED_DECLARATIONS) - reserved_present)}"
+    # THE REAL SOURCE, as a plain dict equality - a second formulation of the
+    # same requirement, so neither can be the only thing standing between a new
+    # reserved declaration and the gate.
+    assert dict(_reserved_sites(modules)) == dict(COMPILE_PROVEN_RESERVED_SITES), (
+        "the reserved declaration sites in the project are not exactly the "
+        "compile-proven ones"
     )
-    # And each one really is a reserved name, or it has no business on the list.
-    for _, identifier in COMPILE_PROVEN_RESERVED_DECLARATIONS:
+    for key in COMPILE_PROVEN_RESERVED_SITES:
+        module_name, scope, kind, identifier, statement = key
+        assert module_name in modules, f"{module_name} is not a production module"
         assert identifier in VBA_RESERVED_IDENTIFIERS, identifier
-    # modCalcFingerprint may keep `base` and `name`; it may not keep `scale`.
-    assert ("modCalcFingerprint", "scale") not in COMPILE_PROVEN_RESERVED_DECLARATIONS
+        assert scope != "<module>" or kind == "const", key
+        assert statement.strip() == statement and "  " not in statement, (
+            "the recorded statement is not normalised"
+        )
+    assert not any(key[0] == "modCalcFingerprint" and key[3] == "scale"
+                   for key in COMPILE_PROVEN_RESERVED_SITES)
+
+    # 1. A NEW procedure in a module that already has a grandfathered `scale`.
+    factors = modules["modCalcFactors"]
+    planted = VbaModule(
+        name="modCalcFactors", path=factors.path,
+        raw=factors.raw + (
+            "\nPrivate Sub Probe()\n"
+            "    Dim scale As Long\n"
+            "End Sub\n"
+        ),
+    )
+    extra = _reserved_sites({"modCalcFactors": planted}) - collections.Counter(
+        {k: v for k, v in COMPILE_PROVEN_RESERVED_SITES.items() if k[0] == "modCalcFactors"}
+    )
+    assert extra, "a new procedure reusing an already-present reserved name was accepted"
+    assert any(key[1] == "Probe" for key in extra), extra
+
+    # 2. A SECOND reserved declaration inside an ALREADY GRANDFATHERED procedure.
+    doubled = VbaModule(
+        name="modCalcFactors", path=factors.path,
+        raw=factors.raw.replace(
+            "    Dim quotient As Double, scale As Long\n",
+            "    Dim quotient As Double, scale As Long\n    Dim scale2 As Long, width As Long\n",
+            1,
+        ),
+    )
+    extra = _reserved_sites({"modCalcFactors": doubled}) - collections.Counter(
+        {k: v for k, v in COMPILE_PROVEN_RESERVED_SITES.items() if k[0] == "modCalcFactors"}
+    )
+    assert extra, "a second reserved declaration in a grandfathered procedure was accepted"
+    assert any(key[1] == "RoundExact" and key[3] == "width" for key in extra), extra
+
+    # 3. An IDENTICAL repeat of a grandfathered declaration - caught by COUNT.
+    repeated = VbaModule(
+        name="modCalcFactors", path=factors.path,
+        raw=factors.raw.replace(
+            "    Dim quotient As Double, scale As Long\n",
+            "    Dim quotient As Double, scale As Long\n    Dim quotient As Double, scale As Long\n",
+            1,
+        ),
+    )
+    counts = _reserved_sites({"modCalcFactors": repeated})
+    key = ("modCalcFactors", "RoundExact", "variable", "scale",
+           "Dim quotient As Double, scale As Long")
+    assert counts[key] == 2, counts[key]
+    assert counts[key] != COMPILE_PROVEN_RESERVED_SITES[key], (
+        "an identical repeat must change the count"
+    )
+
+    # 4. The same reserved identifier in a NEW module.
+    fresh = VbaModule(
+        name="modBrandNew", path=factors.path,
+        raw=("Private Function Probe() As Long\n"
+             "    Dim scale As Long\n"
+             "End Function\n"),
+    )
+    extra = _reserved_sites({"modBrandNew": fresh})
+    assert extra and all(key[0] == "modBrandNew" for key in extra)
+    assert not (collections.Counter(COMPILE_PROVEN_RESERVED_SITES) & extra), (
+        "a new module's reserved declaration matched a grandfathered site"
+    )
 
 
 def test_88_comments_and_string_literals_are_not_declarations() -> None:
@@ -2695,7 +2851,7 @@ def test_88_comments_and_string_literals_are_not_declarations() -> None:
     """
     module = _kernel()["modCalcFingerprint"]
     assert "scale" in module.raw.lower(), "the explanatory comment was removed"
-    declared = {identifier.lower() for _, identifier, _ in _vba_declarations(module)}
+    declared = {identifier.lower() for _, identifier, _, _, _ in _vba_declarations(module)}
     assert "scale" not in declared, "a comment was read as a declaration"
 
     planted = VbaModule(
@@ -2712,19 +2868,22 @@ def test_88_comments_and_string_literals_are_not_declarations() -> None:
             "End Function\n"
         ),
     )
-    names = {identifier.lower() for _, identifier, _ in _vba_declarations(planted)}
+    names = {identifier.lower() for _, identifier, _, _, _ in _vba_declarations(planted)}
     assert "safename" in names, "a real declaration was missed"
     for prose in ("scale", "width", "currency"):
         assert prose not in names, f"{prose} was read out of prose as a declaration"
+    assert not _reserved_sites({"planted": planted}), "prose produced a reserved site"
 
-    # And a real one IS caught.
+    # And a real one IS caught, with its scope.
     real = VbaModule(
         name="real", path=SRC_VBA / "real.bas",
         raw=("Private Function Probe() As Long\n"
              "    Dim scale As Long, other As Long\n"
              "End Function\n"),
     )
-    assert "scale" in {identifier.lower() for _, identifier, _ in _vba_declarations(real)}
+    sites = _reserved_sites({"real": real})
+    assert list(sites) == [("real", "Probe", "variable", "scale",
+                           "Dim scale As Long, other As Long")], list(sites)
 
 
 def test_89_every_const_literal_matches_its_declared_type() -> None:
@@ -2788,9 +2947,9 @@ def test_90_the_new_canonical_encoder_has_no_other_compile_blocker() -> None:
                 )
 
     # No local shadows its own procedure name, which VBA rejects.
-    for _, procedure, _ in [d for d in declarations if d[0] == "procedure"]:
+    for _, procedure, _, _, _ in [d for d in declarations if d[0] == "procedure"]:
         body = _procedure_body(module, procedure)
-        for kind, identifier, _ in _vba_declarations(
+        for kind, identifier, _, _, _ in _vba_declarations(
             VbaModule(name=module.name, path=module.path, raw=body)
         ):
             if kind == "variable":
@@ -2799,15 +2958,16 @@ def test_90_the_new_canonical_encoder_has_no_other_compile_blocker() -> None:
                 )
 
     # Every Const the encoder references is declared in this module.
-    for token in ("FP_LIMB_BASE", "FP_LIMB_DIGITS", "FP_TWO_52", "FP_TWO_53",
-                  "FP_MANTISSA_DIGITS", "FP_MAX_LIMBS", "FP_SIGNIFICANT_DIGITS",
-                  "FP_FRACTION_DIGITS", "FP_DIGIT_TABLE"):
+    for token in ("FP_LIMB_BASE", "FP_LIMB_DIGITS", "FP_MANTISSA_BITS",
+                  "FP_SIGNIFICAND_BITS", "FP_MANTISSA_DIGITS", "FP_MAX_LIMBS",
+                  "FP_SIGNIFICANT_DIGITS", "FP_FRACTION_DIGITS", "FP_DIGIT_TABLE"):
         assert f"Const {token} As" in module.code, f"{token} is referenced but not declared"
 
     # And the module-level declaration section really does precede every
     # procedure - a Const after the first Sub is an immediate compile stop.
-    first_procedure = min(lineno for kind, _, lineno in declarations if kind == "procedure")
-    for kind, identifier, lineno in declarations:
+    first_procedure = min(lineno for kind, _, lineno, _, _ in declarations
+                          if kind == "procedure")
+    for kind, identifier, lineno, _, _ in declarations:
         if kind == "const":
             assert lineno < first_procedure, (
                 f"Const {identifier} at line {lineno} appears after the first "
@@ -2819,8 +2979,9 @@ def test_91_modcalcfactors_declaration_order_survives_the_new_function() -> None
     """MAX_DOUBLE became a Function, which had to go BELOW the declarations."""
     module = _kernel()["modCalcFactors"]
     declarations = _vba_declarations(module)
-    first_procedure = min(lineno for kind, _, lineno in declarations if kind == "procedure")
-    late = [(identifier, lineno) for kind, identifier, lineno in declarations
+    first_procedure = min(lineno for kind, _, lineno, _, _ in declarations
+                          if kind == "procedure")
+    late = [(identifier, lineno) for kind, identifier, lineno, _, _ in declarations
             if kind == "const" and lineno > first_procedure]
     assert not late, f"module-level constants after the first procedure: {late}"
     # The cache variables are module level and precede every procedure too.

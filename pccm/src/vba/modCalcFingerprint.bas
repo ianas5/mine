@@ -58,8 +58,13 @@ Private Const FP_SIGNIFICANT_DIGITS As Long = 17
 ' an EXACT Double integer (the exact-integer ceiling is 2^53, about 9.007e15).
 Private Const FP_LIMB_BASE As Double = 10000000#
 Private Const FP_LIMB_DIGITS As Long = 7
-Private Const FP_TWO_52 As Double = 4503599627370496#
-Private Const FP_TWO_53 As Double = 9007199254740992#
+' The decomposition bounds, as BIT WIDTHS rather than as decimal spellings.
+' These were sixteen-significant-digit Double Consts, and this module's own
+' account of Runtime Run 3 is that VBA's literal conversion cannot be assumed to
+' preserve more than about fifteen. CalcFpDecompose builds them with
+' CalcFpIntegerPower, which doubles from 1# and is exact.
+Private Const FP_MANTISSA_BITS As Long = 52
+Private Const FP_SIGNIFICAND_BITS As Long = 53
 Private Const FP_MANTISSA_DIGITS As Long = 16
 ' M * 5^1126 is at most 804 decimal digits, so 115 limbs; 200 is headroom, and
 ' CalcFpMultiplySmall refuses rather than overruns if it is ever reached.
@@ -230,15 +235,19 @@ Private Function CalcFpDecompose(ByVal value As Double, ByRef mantissa As Double
     ' or above 2^52 so it cannot underflow. Subnormals are covered: the smallest
     ' positive Double, 2^-1074, normalises to M = 2^52 with E = -1126.
     Dim scaled As Double, guard As Long
+    Dim lowerBound As Double, upperBound As Double
+    ' Built once per call, by exact doubling. No decimal literal is trusted.
+    lowerBound = CalcFpIntegerPower(2#, FP_MANTISSA_BITS)
+    upperBound = CalcFpIntegerPower(2#, FP_SIGNIFICAND_BITS)
     scaled = Abs(value)
     exponent = 0
-    Do While scaled < FP_TWO_52
+    Do While scaled < lowerBound
         scaled = scaled * 2#
         exponent = exponent - 1
         guard = guard + 1
         If guard > 1200 Then Exit Function
     Loop
-    Do While scaled >= FP_TWO_53
+    Do While scaled >= upperBound
         scaled = scaled / 2#
         exponent = exponent + 1
         guard = guard + 1
@@ -258,7 +267,10 @@ Private Function CalcFpLimbsFromMantissa(ByVal mantissa As Double, ByRef limbs()
     Dim place As Long, count As Long, first As Long, index As Long
 
     remainder = mantissa
-    power = 1000000000000000#
+    ' 10^15, built by exact multiplication rather than spelled as a sixteen-digit
+    ' literal. Every intermediate 10^k for k <= 15 is exactly representable, so
+    ' each step is exact.
+    power = CalcFpIntegerPower(10#, FP_MANTISSA_DIGITS - 1)
     For place = 1 To FP_MANTISSA_DIGITS
         count = 0
         Do While remainder >= power

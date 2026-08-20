@@ -375,8 +375,10 @@ def test_11_every_constant_the_vba_references_is_emitted() -> None:
     # built rather than spelled - see modCalcFactors. The rule this test enforces
     # is "referenced and defined somewhere", and a public function defines it
     # just as a Public Const does.
-    exported |= {name for module in handwritten for name in module.public_procedures
-                 if name.isupper() or (name.upper() == name and "_" in name)}
+    # PRIVATE procedures count too: TWO_52 and MAX_SIGNIFICAND are private and
+    # built, for the same reason MAX_DOUBLE is.
+    exported |= {name for module in handwritten for name in module.procedures
+                 if name.upper() == name}
     for module in handwritten:
         local = set(module.constants)
         for name in sorted(module.referenced_upper_identifiers):

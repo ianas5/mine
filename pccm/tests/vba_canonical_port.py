@@ -21,8 +21,8 @@ FP_FRACTION_DIGITS = 16
 FP_SIGNIFICANT_DIGITS = 17
 FP_LIMB_BASE = 10000000.0
 FP_LIMB_DIGITS = 7
-FP_TWO_52 = 4503599627370496.0
-FP_TWO_53 = 9007199254740992.0
+FP_MANTISSA_BITS = 52
+FP_SIGNIFICAND_BITS = 53
 FP_MANTISSA_DIGITS = 16
 FP_MAX_LIMBS = 200
 FP_DIGIT_TABLE = "0123456789"
@@ -40,12 +40,19 @@ def utf16_length(t):
     return sum(2 if ord(c) > 0xFFFF else 1 for c in t)
 
 
+def integer_power(base, power):
+    result = 1.0
+    for _ in range(power): result = result * base
+    return result
+
 def decompose(value):
+    lower_bound = integer_power(2.0, FP_MANTISSA_BITS)
+    upper_bound = integer_power(2.0, FP_SIGNIFICAND_BITS)
     scaled = abs(value); exponent = 0; guard = 0
-    while scaled < FP_TWO_52:
+    while scaled < lower_bound:
         scaled = scaled * 2.0; exponent -= 1; guard += 1
         if guard > 1200: return None
-    while scaled >= FP_TWO_53:
+    while scaled >= upper_bound:
         scaled = scaled / 2.0; exponent += 1; guard += 1
         if guard > 2400: return None
     return scaled, exponent
@@ -54,7 +61,7 @@ def decompose(value):
 def limbs_from_mantissa(mantissa):
     digits = [0] * (FP_MANTISSA_DIGITS + 1)
     remainder = mantissa
-    power = 1000000000000000.0
+    power = integer_power(10.0, FP_MANTISSA_DIGITS - 1)
     for place in range(1, FP_MANTISSA_DIGITS + 1):
         count = 0
         while remainder >= power:
@@ -80,17 +87,14 @@ def limbs_from_mantissa(mantissa):
     return limbs, limb_count
 
 
-def integer_power(base, power):
-    result = 1.0
-    for _ in range(power): result = result * base
-    return result
 
 
 def multiply_small(limbs, limb_count, factor):
     carry = 0.0
     for index in range(limb_count):
         product = limbs[index] * factor + carry
-        assert product < FP_TWO_53, "exact-integer ceiling exceeded"
+        assert product < integer_power(2.0, FP_SIGNIFICAND_BITS), \
+            "exact-integer ceiling exceeded"
         quotient = float(int(product / FP_LIMB_BASE))
         limbs[index] = product - quotient * FP_LIMB_BASE
         carry = quotient

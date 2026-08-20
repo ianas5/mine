@@ -954,14 +954,14 @@ def test_51_the_accepted_modules_were_not_modified() -> None:
     frozen = {
         "modCalcResolve": "3c67584390516a8a1c811df62d650749f6ef71518c649d7f1bb88dc753a837c1",
         "modCalcCheck": "738343945932150470233cb2a0b7e6fea7617db1a877cae8e09d19085e39c43b",
-        "modCalcFactors": "da7156b6ac9766d25ae167c1b1fcd7ee9a37476eae78bf0895ea4425f9bacf1c",
+        "modCalcFactors": "4909856581ed3ca2a81b13647e1c6e2977f10fcb5a9e4a71cfa6fa36d6e6d308",
         "modCalcAnalytical": "e234b3adacdb443c8c7b2b5072c311e7622405c3ec2e2987a750d85400299e0d",
         # Its CURRENT bytes. Step 7's correction round carried the ONE authorised
         # reopening of this accepted module - CalcFpNumberField became Public so
         # the reporter could reach the accepted N-field framing authority instead
         # of framing a number as text. FINGERPRINT_STEP4_BODY_SHA256 is what says
         # nothing else moved with it.
-        "modCalcFingerprint": "05d6a06fdf153538bfc7e1f1850e444bd6e62e09e89dd1c51a54385a499f14b9",
+        "modCalcFingerprint": "9081dc05bddf052fdcb172a34eed588fef1637b89212b14a515539590e265fcf",
         "modWorkbook": "9cfa8f130c5bcdee783948654c969d4b0d6589fe7059c126f88c7676ca5405bf",
         "modAppState": "ef0b5c64a7a3b5aeeef5ef0797cd160071a7eda6a7d8cef9cb98301f1504672f",
         "modTimeline": "4a4f24d17b65bcbc0e46b1a74213b6a02eab6ab492b1788476d66eb7807b9e3f",

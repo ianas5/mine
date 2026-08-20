@@ -73,8 +73,30 @@ Option Explicit
 ' range of a Double. Nothing here relies on extended precision.
 Private Const LIMB_BITS As Long = 24
 Private Const LIMB_BASE As Double = 16777216#
-Private Const TWO_52 As Double = 4503599627370496#
-Private Const MAX_SIGNIFICAND As Double = 9007199254740991#
+' THE BOUNDARIES ARE BUILT, NOT SPELLED - all three. They were sixteen-digit
+' decimal Consts (4503599627370496# and 9007199254740991#), and this file's own
+' account of Runtime Run 3 is that VBA's literal conversion cannot be assumed to
+' preserve more than about fifteen significant digits. Building MAX_DOUBLE from
+' a sixteen-digit literal would have carried that unproven assumption one level
+' down and failed SILENTLY: a significand parsed one unit low still compiles and
+' yields the Double just below the maximum.
+'
+' Nothing here depends on a long decimal. Every value is reached by doubling,
+' which is exact, from 1# and 2#:
+'
+'   2^52        ExactPowerOfTwo(52)
+'   2^53-1      ExactPowerOfTwo(53) - 1#   exact: it needs exactly 53 bits
+'   MAX_DOUBLE  (2^53-1) * 2^971           971 doublings, no intermediate above
+'                                          the final value
+'
+' Cached Functions rather than Consts because a Const initialiser cannot
+' compute. Every call site reads them exactly as before.
+Private Const SIGNIFICAND_BITS As Long = 53
+Private Const MANTISSA_BITS As Long = 52
+Private mTwo52 As Double
+Private mTwo52Built As Boolean
+Private mMaxSignificand As Double
+Private mMaxSignificandBuilt As Boolean
 Private Const MAX_EXPONENT As Long = 971
 ' MAX_EXPONENT is also the binary exponent that lifts MAX_SIGNIFICAND to the
 ' maximum finite Double - (2^53 - 1) * 2^971 - so BuildMaxDouble reuses it
@@ -131,6 +153,36 @@ End Type
 ' ==========================================================================
 ' The predicate
 ' ==========================================================================
+Private Function ExactPowerOfTwo(ByVal bits As Long) As Double
+    ' 2^bits by repeated doubling from 1. Doubling is exact in binary floating
+    ' point and every intermediate below 2^1024 is representable, so the result
+    ' is exact for every bit width this module asks for. No literal above 2#.
+    Dim result As Double, doubling As Long
+    result = 1#
+    For doubling = 1 To bits
+        result = result * 2#
+    Next doubling
+    ExactPowerOfTwo = result
+End Function
+
+Private Function TWO_52() As Double
+    If Not mTwo52Built Then
+        mTwo52 = ExactPowerOfTwo(MANTISSA_BITS)
+        mTwo52Built = True
+    End If
+    TWO_52 = mTwo52
+End Function
+
+Private Function MAX_SIGNIFICAND() As Double
+    ' 2^53 - 1. The subtraction is exact: the result needs exactly 53 bits and
+    ' is therefore representable, so no rounding occurs.
+    If Not mMaxSignificandBuilt Then
+        mMaxSignificand = ExactPowerOfTwo(SIGNIFICAND_BITS) - 1#
+        mMaxSignificandBuilt = True
+    End If
+    MAX_SIGNIFICAND = mMaxSignificand
+End Function
+
 Public Function MAX_DOUBLE() As Double
     If Not mMaxDoubleBuilt Then
         mMaxDouble = BuildMaxDouble()
@@ -140,7 +192,7 @@ Public Function MAX_DOUBLE() As Double
 End Function
 
 Private Function BuildMaxDouble() As Double
-    ' (2^53 - 1) * 2^971, by exact doubling.
+    ' (2^53 - 1) * 2^971, by exact doubling from a BUILT significand.
     Dim result As Double, doubling As Long
     result = MAX_SIGNIFICAND
     For doubling = 1 To MAX_EXPONENT
