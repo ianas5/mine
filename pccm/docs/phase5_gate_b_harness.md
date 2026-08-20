@@ -1882,3 +1882,51 @@ rebuilt from its **IEEE-754 bit pattern**, never parsed from a decimal literal,
 and the expected text is read from the corpus: the harness computes no canonical
 string of its own. Nine neighbour triples double as a collision proof — three
 distinct Doubles must give three distinct canonical strings.
+
+---
+
+## Build-artifact isolation
+
+The first full-suite run of the canonical-encoder correction on Windows reported
+`1609 passed, 2 failed`, both with `KeyError: 'canonical_parity'`. Rebuilding
+Stage A by hand made the same suite report `1611 passed`. The production encoder
+was never implicated.
+
+The cause was mine, in the new suite's corpus helper:
+
+```python
+if not BUILD.is_file():
+    subprocess.run([... build_stage_a.py ...])
+return json.loads(BUILD.read_text(...))["fingerprint"]["canonical_parity"]
+```
+
+It rebuilt only when the file was **absent**, which treats "a file exists" as
+"an artifact generated from this source". A checkout carrying `build/` from the
+previous commit satisfies the first and not the second. **A suite that requires
+the operator to know it must rebuild first is not a suite that can be trusted
+after `git pull`.**
+
+The corpus is now emitted by the real builder — `emit_calc_artifacts`, the same
+entry point `build_stage_a.py` calls — into a test-owned temporary directory,
+once per session. Nothing consults `pccm/build` at all, no subprocess is
+spawned, and there is no second implementation of the corpus. This is the
+pattern `tests/test_phase5_gate_b_harness_source.py::_emitted` already used,
+whose docstring already said *"Never read from `build/`"*.
+
+One other site had the same defect and is closed with it: `test_113` read
+`build/phase5_gate_b_inspection.json` when it happened to exist and skipped
+silently when it did not — trusting a stale file, and proving nothing when the
+build is broken. It now reads the freshly emitted projection.
+
+`test_phase4_oracle.py::test_43` also names a path under `build/`, and was
+examined and **left alone**: it asserts the artifact *matches* the oracle, so a
+stale file makes it fail loudly rather than pass falsely. Different failure
+direction, accepted Phase-4 source, out of scope.
+
+The regression plants a previous-schema corpus at the real repository path,
+clears the session cache so the helper must fetch again, and runs the two tests
+that failed on Windows. Corrupt payloads — unparseable, empty, `{}`, and one
+carrying a tampered expectation — are proved unable to become an oracle. The
+whole condition is reproduced end to end: with a genuine `build/` from the
+previous commit in place, the accepted commit's suite fails on exactly tests 11
+and 12 with `KeyError`, and the corrected suite passes.

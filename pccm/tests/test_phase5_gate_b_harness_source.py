@@ -4487,14 +4487,18 @@ def test_113_get_calc_scalar_reads_the_block_into_its_own_local() -> None:
     assert "$blockSpec.value_column" in body
     assert "\n    $block =" not in body, "the shadowing assignment is back"
     # The receiver really does carry `rows`: the projection was never at fault.
-    inspection = json.loads(_text(PCCM_ROOT / "build" / "phase5_gate_b_inspection.json")) \
-        if (PCCM_ROOT / "build" / "phase5_gate_b_inspection.json").is_file() else None
-    if inspection is not None:
-        for block in ("calc_state", "calc_totals"):
-            spec = inspection["calc"]["scalar_blocks"][block]
-            assert "rows" in spec, f"{block} has no rows mapping"
-            assert "value_column" in spec
-            assert spec["rows"], f"{block}.rows is empty"
+    #
+    # Read from the FRESHLY EMITTED projection, never from `build/`. The earlier
+    # form here read the repository artifact when it happened to exist and
+    # skipped silently when it did not - which trusts a stale file and proves
+    # nothing when the build is broken. Same defect class as the canonical
+    # parity helper; both are closed.
+    inspection = _emitted()["inspection"]
+    for block in ("calc_state", "calc_totals"):
+        spec = inspection["calc"]["scalar_blocks"][block]
+        assert "rows" in spec, f"{block} has no rows mapping"
+        assert "value_column" in spec
+        assert spec["rows"], f"{block}.rows is empty"
 
 
 def test_114_the_rows_receiver_is_the_block_not_the_key() -> None:

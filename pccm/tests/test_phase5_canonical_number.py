@@ -19,11 +19,13 @@ Runs standalone or under pytest.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import re
 import struct
 import sys
+import tempfile
 from pathlib import Path
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
@@ -35,7 +37,10 @@ import vba_canonical_port as port                        # noqa: E402
 
 SRC_VBA = PCCM_ROOT / "src" / "vba"
 MODULE = SRC_VBA / "modCalcFingerprint.bas"
-BUILD = PCCM_ROOT / "build" / "phase5_cases.json"
+# The repository build directory. Named ONLY so the regression below can
+# plant a stale artifact there and prove the tests ignore it.
+REPO_BUILD = PCCM_ROOT / "build"
+REPO_CASES = REPO_BUILD / "phase5_cases.json"
 
 MAX_DOUBLE = 1.7976931348623157e308
 MIN_NORMAL = 2.2250738585072014e-308
@@ -213,12 +218,58 @@ def test_10_negative_zero_normalises_to_positive_zero() -> None:
 # ===========================================================================
 # 3. the emitted parity corpus
 # ===========================================================================
+_FRESH: dict = {}
+
+
+def _fresh_cases() -> dict:
+    """`phase5_cases.json` EMITTED HERE, into a test-owned temporary directory.
+
+    THE DEFECT THIS REPLACES. This used to read `pccm/build/phase5_cases.json`
+    and rebuild only when that file was ABSENT:
+
+        if not BUILD.is_file():
+            subprocess.run([... build_stage_a.py ...])
+        return json.loads(BUILD.read_text(...))["fingerprint"]["canonical_parity"]
+
+    which treats "a file exists" as "an artifact generated from THIS source". It
+    is not. On a Windows checkout carrying `build/` from the previous commit,
+    both parity tests failed with `KeyError: 'canonical_parity'` - not a
+    production defect, not a runtime defect, just a test reading a stale file.
+    A rebuild made the same suite pass, which is exactly the operator knowledge
+    a test must never require.
+
+    So nothing here consults `build/` at all. The artifact is emitted by the
+    real builder - `emit_calc_artifacts`, the same entry point `build_stage_a.py`
+    calls - into a fresh temporary directory, once per session. There is no
+    second implementation of the corpus, and no repository state is read or
+    written.
+
+    This is the pattern `tests/test_phase5_gate_b_harness_source.py::_emitted`
+    already used, and whose docstring already said "Never read from `build/`".
+    """
+    if _FRESH:
+        return _FRESH["cases"]
+    from pccm_builder import emit_calc_artifacts, load_calc_contract, load_spec
+
+    directory = Path(tempfile.mkdtemp(prefix="pccm-canonical-"))
+    spec = load_spec(PCCM_ROOT / "spec" / "workbook.yaml")
+    calc = load_calc_contract(PCCM_ROOT / "spec" / "calc_contract.yaml")
+    artifacts = emit_calc_artifacts(directory, spec, calc)
+    assert artifacts.cases_path.is_file(), "the builder produced no phase5_cases.json"
+    # An emitted artifact that returns early when a key is missing proves nothing;
+    # it would pass loudest exactly when the emission is broken.
+    document = json.loads(artifacts.cases_path.read_text(encoding="utf-8"))
+    assert "fingerprint" in document, "the freshly emitted corpus has no fingerprint section"
+    _FRESH.update(cases=document, directory=directory, path=artifacts.cases_path)
+    return document
+
+
 def _corpus() -> dict:
-    if not BUILD.is_file():
-        import subprocess
-        subprocess.run([sys.executable, str(PCCM_ROOT / "builder" / "build_stage_a.py")],
-                       check=True, capture_output=True)
-    return json.loads(BUILD.read_text(encoding="utf-8"))["fingerprint"]["canonical_parity"]
+    document = _fresh_cases()
+    assert "canonical_parity" in document["fingerprint"], (
+        "the freshly emitted corpus carries no canonical_parity section"
+    )
+    return document["fingerprint"]["canonical_parity"]
 
 
 def test_11_the_emitted_parity_corpus_spans_the_domain() -> None:
@@ -421,3 +472,214 @@ def test_nc_05_a_non_finite_value_is_never_encoded() -> None:
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ===========================================================================
+# 6. BUILD-ARTIFACT ISOLATION
+# ===========================================================================
+# The exact Windows observation this section closes. On a checkout carrying
+# `pccm/build/phase5_cases.json` from the PREVIOUS commit, the first full-suite
+# run after pulling the canonical-encoder correction reported:
+#
+#     1609 passed, 2 failed
+#     test_11_the_emitted_parity_corpus_spans_the_domain            KeyError: 'canonical_parity'
+#     test_12_the_shipped_algorithm_reproduces_every_emitted_...    KeyError: 'canonical_parity'
+#
+# Rebuilding Stage A by hand made the same suite report 1611 passed. So the
+# production encoder was never implicated: a test was reading a stale file and
+# only rebuilding when the file was ABSENT, which treats "a file exists" as
+# "an artifact generated from this source".
+#
+# A suite that requires the operator to know it must rebuild first is not a
+# suite that can be trusted after `git pull`.
+def _previous_schema_document() -> str:
+    """A VALID corpus in the previous schema: no `canonical_parity` section."""
+    document = json.loads(json.dumps(_fresh_cases()))
+    del document["fingerprint"]["canonical_parity"]
+    assert "canonical_parity" not in document["fingerprint"]
+    assert document["fingerprint"]["reference"]["digest"], "still a real corpus"
+    return json.dumps(document, indent=2)
+
+
+@contextlib.contextmanager
+def _planted_repository_artifact(payload: str):
+    """Plant `payload` at pccm/build/phase5_cases.json, then restore exactly.
+
+    The session cache is cleared inside the block, so the helper under test has
+    to go and fetch the corpus again while the stale file is in place. Without
+    that, a previously cached corpus would make the test pass for the wrong
+    reason.
+    """
+    REPO_BUILD.mkdir(parents=True, exist_ok=True)
+    original = REPO_CASES.read_bytes() if REPO_CASES.is_file() else None
+    cached = dict(_FRESH)
+    REPO_CASES.write_text(payload, encoding="utf-8")
+    _FRESH.clear()
+    try:
+        yield
+    finally:
+        _FRESH.clear()
+        _FRESH.update(cached)
+        if original is None:
+            REPO_CASES.unlink()
+        else:
+            REPO_CASES.write_bytes(original)
+
+
+def test_16_a_stale_repository_artifact_is_ignored_entirely() -> None:
+    """The Windows observation, reproduced and then defeated."""
+    stale = _previous_schema_document()
+    assert json.loads(stale), "the planted artifact must be syntactically valid"
+    with _planted_repository_artifact(stale):
+        # 1. The stale file really is there, valid, and really lacks the section.
+        planted = json.loads(REPO_CASES.read_text(encoding="utf-8"))
+        assert "canonical_parity" not in planted["fingerprint"]
+
+        # 2. The OLD helper would have raised exactly what Windows reported.
+        try:
+            planted["fingerprint"]["canonical_parity"]
+        except KeyError as error:
+            assert "canonical_parity" in str(error)
+        else:
+            raise AssertionError("the planted artifact does not reproduce the defect")
+
+        # 3. The CURRENT helper obtains a fresh corpus regardless.
+        parity = _corpus()
+        assert len(parity["vectors"]) > 2000
+        assert parity["neighbours"]
+
+        # 4. And the two tests that failed on Windows both pass with it planted.
+        test_11_the_emitted_parity_corpus_spans_the_domain()
+        test_12_the_shipped_algorithm_reproduces_every_emitted_expectation()
+
+    # The repository artifact is exactly as it was found.
+    if REPO_CASES.is_file():
+        assert "fingerprint" in json.loads(REPO_CASES.read_text(encoding="utf-8"))
+
+
+def test_17_a_corrupt_repository_artifact_cannot_become_an_oracle() -> None:
+    """Not merely stale: unreadable, truncated, or the wrong shape entirely."""
+    for payload in ("{ this is not json",
+                    "{}",
+                    '{"fingerprint": {}}',
+                    '{"fingerprint": {"canonical_parity": {"vectors": [], "neighbours": []}}}',
+                    ""):
+        with _planted_repository_artifact(payload):
+            parity = _corpus()
+            assert len(parity["vectors"]) > 2000, (
+                f"a corrupt artifact reached the tests: {payload[:40]!r}"
+            )
+            # The tampered expectation in the fourth payload must not be adopted.
+            assert parity["vectors"][0]["expected"] == fp.canonical_number(
+                _from_bits(parity["vectors"][0]["bits"])
+            )
+            test_12_the_shipped_algorithm_reproduces_every_emitted_expectation()
+
+
+def test_18_the_canonical_suite_never_reads_or_writes_the_repository_build() -> None:
+    """Isolation, stated as a property of the source and of the behaviour."""
+    text = Path(__file__).read_text(encoding="utf-8")
+    # The corpus comes from the real emitter, into a temporary directory.
+    assert "emit_calc_artifacts(directory, spec, calc)" in text
+    assert 'tempfile.mkdtemp(prefix="pccm-canonical-")' in text
+    # No path under the repository build directory is ever read as a corpus.
+    # Judged on the two helpers' CODE: the docstring deliberately quotes the
+    # defective form and names the CLI builder, and prose is not behaviour, so
+    # the docstring is cut out rather than filtered line by line.
+    body = text[text.index("def _fresh_cases"):text.index("def _previous_schema_document")]
+    body = body[:body.index("def _corpus") + body[body.index("def _corpus"):].index("\n\n\n")]
+    opening = body.index('"""')
+    closing = body.index('"""', opening + 3) + 3
+    code = body[:opening] + body[closing:]
+    assert "emit_calc_artifacts" in code, "the slice did not capture the helper body"
+    assert "REPO_CASES" not in code and "REPO_BUILD" not in code, (
+        "the corpus helper still refers to the repository build directory"
+    )
+    assert "subprocess" not in code and "build_stage_a" not in code, (
+        "the helper shells out to the CLI builder instead of emitting in process"
+    )
+    assert "is_file()" not in code.replace("artifacts.cases_path.is_file()", ""), (
+        "the helper still branches on whether some other file happens to exist"
+    )
+    # And there is no second implementation of the corpus. Naming the emitter's
+    # generators to assert they still exist is fine; DEFINING one here is not.
+    #
+    # The tokens are ASSEMBLED rather than written out, because a literal list of
+    # them inside this file would match itself - the same reason test_39 in the
+    # Gate-B suite assembles its forbidden list.
+    define = "def " + "_parity_"
+    for suffix in ("vectors", "neighbour_triples", "bit_stream"):
+        assert define + suffix not in text, (
+            f"the suite reimplements corpus generation ({define + suffix})"
+        )
+    constant = "_PARITY" + "_LCG_START"
+    assert constant not in text, "the suite restates the emitter's generator constants"
+
+    # BEHAVIOUR: emitting a fresh corpus leaves the repository build untouched.
+    before = sorted(p.name for p in REPO_BUILD.iterdir()) if REPO_BUILD.is_dir() else None
+    stamp = REPO_CASES.stat().st_mtime_ns if REPO_CASES.is_file() else None
+    _FRESH.clear()
+    parity = _corpus()
+    assert len(parity["vectors"]) > 2000
+    after = sorted(p.name for p in REPO_BUILD.iterdir()) if REPO_BUILD.is_dir() else None
+    assert before == after, "the suite created or removed a repository build artifact"
+    if stamp is not None:
+        assert REPO_CASES.stat().st_mtime_ns == stamp, (
+            "the suite rewrote the repository corpus"
+        )
+    # The temporary directory really is outside the repository.
+    assert PCCM_ROOT not in _FRESH["directory"].parents, _FRESH["directory"]
+
+
+def test_19_the_expectations_still_come_from_the_fingerprint_oracle() -> None:
+    """Isolation must not have turned the port, or the corpus, into an authority."""
+    generator = (PCCM_ROOT / "builder" / "pccm_builder" / "calc_cases.py").read_text(
+        encoding="utf-8")
+    assert 'fp.canonical_number(value, ".")' in generator
+    parity = _corpus()
+    # Every emitted expectation is reproducible from the oracle alone.
+    for vector in parity["vectors"][::97]:
+        value = _from_bits(vector["bits"])
+        assert vector["expected"] == fp.canonical_number(value, "."), vector["label"]
+    suite = Path(__file__).read_text(encoding="utf-8")
+    assert "import vba_canonical_port as port" in suite
+    # The port is compared AGAINST the oracle; it never supplies an expectation.
+    assert "port.canonical_number" in suite and "fp.canonical_number" in suite
+    ported = (Path(__file__).resolve().parent / "vba_canonical_port.py").read_text(
+        encoding="utf-8")
+    # The port must not IMPORT the oracle. Its docstring names it, to say that it
+    # is not one, and prose is not behaviour.
+    for forbidden in ("import calc_fingerprint", "from pccm_builder", "import pccm_builder"):
+        assert forbidden not in ported, (
+            f"the port reaches the oracle it is checked against ({forbidden})"
+        )
+    assert ported.count("import ") == 1 and "import math" in ported, (
+        "the port gained a dependency"
+    )
+
+
+def test_20_the_isolation_fix_touches_no_production_file() -> None:
+    """A test-plumbing correction has no business in shipped source."""
+    raw = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
+    # EXECUTABLE lines only. The module quotes Format$ in a comment, to record
+    # what it replaced and why, and prose is not behaviour.
+    module = "\n".join(line for line in raw.splitlines()
+                       if line.strip() and not line.strip().startswith("'"))
+    # The corrected encoder is exactly as accepted: still generated, never formatted.
+    assert "Format$" not in module and "FP_NUMBER_FORMAT" not in module
+    assert "Private Function CalcFpBuildCanonical(" in module
+    assert "Private Const FP_LIMB_BASE As Double = 10000000#" in module
+    assert "CalcFpIsOddDigit(lastDigit)" in module
+    # The emitter and the oracle are untouched by anything in this suite.
+    generator = (PCCM_ROOT / "builder" / "pccm_builder" / "calc_cases.py").read_text(
+        encoding="utf-8")
+    assert "_parity_vectors()" in generator and "_parity_neighbour_triples()" in generator
+    oracle = (PCCM_ROOT / "builder" / "pccm_builder" / "calc_fingerprint.py").read_text(
+        encoding="utf-8")
+    assert "_SIGNIFICAND_DIGITS_AFTER_POINT = 16" in oracle
+    # And the P5-DP scenario is unchanged plumbing-wise: it reads BuildDir, which
+    # the harness is GIVEN, not a path this suite decides.
+    harness = (PCCM_ROOT / "bootstrap" / "windows" / "phase5_gate_b_scenarios.ps1").read_text(
+        encoding="utf-8")
+    assert "$parity = $Cases.fingerprint.canonical_parity" in harness
+    assert "Join-Path $BuildDir 'phase5_cases.json'" in harness
