@@ -186,7 +186,7 @@ function Add-Phase4FinalCompletenessResult {
              (($record | ForEach-Object { [string]$_.Status }) -join ', '))
     }
 
-    Add-Result 'P5-FIN' `
+    Add-Phase5Result 'P5-FIN' `
         'Final Phase-4 completeness: 35/35 PASS, 0 FAIL, 0 SKIP, deferred lifecycle cases included' `
         $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
 }
@@ -201,6 +201,11 @@ function Add-Phase4FinalCompletenessResult {
 function Invoke-Phase5CoveragePreflight {
     param([string]$BuildDir)
 
+    # THE FIRST PHASE-5 ENTRY POINT, so the one-result ledger starts here. It is
+    # deliberately NOT reset again in Invoke-Phase5GateBScenarios: that would
+    # discard P5-PRE's record and let a later catch emit it a second time.
+    Reset-Phase5ResultLedger
+
     $list = New-Checklist
     $casesPath = Join-Path $BuildDir 'phase5_cases.json'
     $inspectPath = Join-Path $BuildDir 'phase5_gate_b_inspection.json'
@@ -212,7 +217,7 @@ function Invoke-Phase5CoveragePreflight {
     $null = Add-Check $list 'build/phase5_gate_b_inspection.json exists (the address authority)' `
         $haveInspect $inspectPath
     if (-not ($haveCases -and $haveInspect)) {
-        Add-Result 'P5-PRE' 'Phase-5 coverage preflight (pure PowerShell, no Excel)' 'FAIL' `
+        Add-Phase5Result 'P5-PRE' 'Phase-5 coverage preflight (pure PowerShell, no Excel)' 'FAIL' `
             (Format-Checklist $list)
         return $false
     }
@@ -319,7 +324,7 @@ function Invoke-Phase5CoveragePreflight {
         (@($cases.fingerprint.collision_probes).Count -ge 8)
 
     $ok = Test-ChecklistOk $list
-    Add-Result 'P5-PRE' `
+    Add-Phase5Result 'P5-PRE' `
         ("Phase-5 coverage preflight: " + $emitted.Count + " plan cases mapped (no Excel)") `
         $(if ($ok) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     return $ok
@@ -638,6 +643,55 @@ function Add-Phase5ModuleInventoryChecks {
 }
 
 # ===========================================================================
+# ONE RESULT PER SCENARIO ID
+# ===========================================================================
+# RUNTIME RUN 4 LEDGER DEFECT. The final report said 19 failed over 17 unique
+# Phase-5 IDs, because P5-S2 and P5-ST were each recorded TWICE: the try block
+# recorded both scenarios on their real evidence, then a LATER setup step in the
+# same try - restoring the base fixture - threw, and the enclosing catch
+# recorded both IDs again as failures. The second record overwrote nothing; it
+# simply appended, so "38 Phase-5 scenarios reported" was a count of records,
+# not of scenarios.
+#
+# Two things are wrong there and both are fixed:
+#
+#   OWNERSHIP  a setup step that runs AFTER a scenario has been recorded does
+#              not belong inside that scenario's try. Those steps now sit in
+#              their own try/catch and report as P5-SU, a setup failure, which
+#              is what they actually are.
+#
+#   STRUCTURE  a catch that emits several IDs must not re-emit one that already
+#              has a result. Add-Phase5Result records every ID it emits and
+#              refuses a second, turning the attempt into a NOTE so the
+#              suppression is visible rather than silent.
+#
+# The guard is not a print-time filter: nothing downstream de-duplicates, and
+# the ledger genuinely contains one record per ID.
+$script:Phase5RecordedIds = New-Object System.Collections.ArrayList
+
+function Reset-Phase5ResultLedger {
+    $script:Phase5RecordedIds = New-Object System.Collections.ArrayList
+}
+
+function Test-Phase5ResultRecorded {
+    param([string]$Id)
+    return (@($script:Phase5RecordedIds) -contains $Id)
+}
+
+function Add-Phase5Result {
+    param([string]$Id, [string]$Name, [string]$Status, [string]$Detail = '')
+    if (Test-Phase5ResultRecorded -Id $Id) {
+        Add-Note ('P5 ledger: a second result for ' + $Id + ' was suppressed (' +
+                  $Status + '). The first result stands; this usually means a ' +
+                  'later setup step failed inside a scenario that had already ' +
+                  'completed. Detail: ' + $Detail)
+        return
+    }
+    $null = $script:Phase5RecordedIds.Add($Id)
+    Add-Result $Id $Name $Status $Detail
+}
+
+# ===========================================================================
 # UNEXPECTED-ERROR EVIDENCE
 # ===========================================================================
 # RUN-2 DIAGNOSTIC GAP. Every Phase-5 catch site reported through the accepted
@@ -900,13 +954,10 @@ function Get-Phase5TypedCell {
 function Set-Phase5TypedCell {
     param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowIndex,
           [int]$ColumnIndex, $Value)
-    # WRITES THE VALUE IT WAS GIVEN, with no coercion.
-    #
-    # The accepted Set-TableCell decides between [string] and [double] by
-    # inspecting the argument, which is right for fixture authoring. It is wrong
-    # for restoring a CAPTURED value: converting a captured text seed into a
-    # number would repair a defective workbook into agreement with the contract.
-    # Phase-4's helper is not modified; this one simply does not choose.
+    # WRITES BACK THE TYPE EXCEL PUBLISHED, never a type inferred from the
+    # contract. See the dispatch below for why there is one COM assignment site
+    # per type and why that is not the same thing as coercion.
+    # The accepted Phase-4 Set-TableCell is not modified.
     $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null
     $body = $null; $cell = $null
     try {
@@ -916,10 +967,52 @@ function Set-Phase5TypedCell {
         $lo = $los.Item($TableName)
         $body = $lo.DataBodyRange
         $cell = $body.Cells($RowIndex, $ColumnIndex)
+        # ONE COM ASSIGNMENT SITE PER TYPE. Runtime Run 4 located R5 here:
+        #
+        #   System.InvalidCastException: Unable to cast object of type
+        #   'System.Double' to type 'System.String'.
+        #     at phase5_gate_b_scenarios.ps1:922   source: $cell.Value2 = $Value
+        #     at Set-Phase5TypedCell -> Reset-Phase5FxTable -> Set-Phase5Fixture
+        #
+        # The locked seed is String 'SAR' then Double 1, restored through this
+        # one helper. The String assignment succeeded; the Double assignment
+        # through the SAME source line failed. PowerShell caches the COM
+        # property binding PER CALL SITE, so the site had already been bound for
+        # a String argument and the Double could not be marshalled through it.
+        #
+        # The accepted Phase-4 Set-TableCell never hit this because it has two
+        # distinct assignment lines, one per branch, and each gets its own
+        # binding. The polymorphic single line was written to avoid coercion and
+        # instead produced a defect that no Linux test could see.
+        #
+        # THIS IS NOT A RETREAT TO INFERENCE. Set-TableCell asks what the value
+        # OUGHT to be; this asks what Excel ACTUALLY PUBLISHED and writes that
+        # same type back. A captured String '1' is written as String '1' and a
+        # captured Double 1 as Double 1 - a defective text seed is still
+        # restored as text, which is the whole point of the helper. The dispatch
+        # is on the CAPTURED CLR type, and the cast on each branch is a no-op
+        # that exists only to give the branch its own bound call site.
+        #
+        # An unsupported type FAILS LOUDLY rather than being coerced by
+        # whichever branch happens to accept it.
         if ($null -eq $Value) {
             $null = $cell.ClearContents()
+        } elseif ($Value -is [string]) {
+            $cell.Value2 = [string]$Value
+        } elseif ($Value -is [bool]) {
+            $cell.Value2 = [bool]$Value
+        } elseif (($Value -is [double]) -or ($Value -is [single]) -or
+                  ($Value -is [int]) -or ($Value -is [long]) -or
+                  ($Value -is [decimal]) -or ($Value -is [int16]) -or
+                  ($Value -is [byte])) {
+            $cell.Value2 = [double]$Value
+        } elseif ($Value -is [datetime]) {
+            $cell.Value2 = [datetime]$Value
         } else {
-            $cell.Value2 = $Value
+            throw ("Set-Phase5TypedCell cannot restore a value of type " +
+                   $Value.GetType().FullName + "; Excel Value2 publishes String, " +
+                   "Double, Boolean, Date or an empty cell, and a type outside that " +
+                   "set must be reported rather than coerced")
         }
     } finally {
         if ($null -ne $cell)            { Release-Transient $cell            'Range(cell)';  $cell            = $null }
@@ -2149,7 +2242,7 @@ function Invoke-Phase5GateBScenarios {
         ($passed.Count -eq $prerequisite.Count) `
         ("passed " + $passed.Count + " of " + $prerequisite.Count)
     $phase4Ok = Test-ChecklistOk $list
-    Add-Result 'P5-P4' `
+    Add-Phase5Result 'P5-P4' `
         ('Phase-4 prerequisite before Phase 5: ' + $prerequisite.Count + '/' +
          $prerequisite.Count + ' PASS, 0 FAIL, 0 SKIP (' + ($deferred -join ', ') +
          ' deferred to P5-FIN)') `
@@ -2157,7 +2250,7 @@ function Invoke-Phase5GateBScenarios {
     if (-not $phase4Ok) {
         # A FAIL, never a SKIP. "Phase 5 was not attempted" must be as loud as
         # "Phase 5 failed", or a broken prerequisite reads as a quiet clean run.
-        Add-Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `
+        Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `
             'not attempted: the Phase-4 structural matrix is not intact, so no Phase-5 result would mean anything'
         return
     }
@@ -2184,10 +2277,59 @@ function Invoke-Phase5GateBScenarios {
         Add-Note ("P5-FX: locked FX seed captured as " + (Format-Phase5Typed $seed.Currency) +
                   " / " + (Format-Phase5Typed $seed.Rate) +
                   " from the untouched Stage-B workbook")
-        Add-Result 'P5-FX' 'Locked FX seed captured before any Phase-5 mutation' `
-            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+
+        # THE RESTORATION PATH IS EXERCISED HERE, BEFORE ANYTHING DEPENDS ON IT.
+        #
+        # Runtime Run 4 failed eleven scenarios on one line inside this exact
+        # path - Set-Phase5TypedCell, reached through Reset-Phase5FxTable - and
+        # every one of them reported it as its own failure, forty lines into a
+        # scenario that had never started. The path is a PREREQUISITE, so it is
+        # proved like one.
+        #
+        # This restores the seed to ITS OWN CAPTURED VALUE, so the workbook is
+        # left exactly as the capture found it; the write is a round trip, not a
+        # mutation. The read-back is the strict typed comparator, so a String
+        # that came back as a Double, or a Double as a String, fails here rather
+        # than being discovered as a wrong analytical answer later.
+        Reset-Phase5FxTable -Workbook $Workbook -Inspection $Inspection -Seed $seed
+        $fx = $Inspection.input_tables.fx_rates
+        $restored = @(Get-Phase5TypedTableBody -Workbook $Workbook -SheetName $fx.sheet `
+            -TableName $fx.table_name)
+        $null = Add-Check $list 'the seed round-trips through the real restoration path' `
+            ($restored.Count -ge 1) ("body rows after restore: " + $restored.Count)
+        if ($restored.Count -ge 1) {
+            $null = Add-Check $list `
+                'the restored currency is the captured value AND the captured type' `
+                (Test-Phase5ExactValue -Actual $restored[0][0] -Expected $seed.Currency) `
+                ("restored " + (Format-Phase5Typed $restored[0][0]) + ", captured " +
+                 (Format-Phase5Typed $seed.Currency))
+            $null = Add-Check $list `
+                'the restored rate is the captured value AND the captured type' `
+                (Test-Phase5ExactValue -Actual $restored[0][1] -Expected $seed.Rate) `
+                ("restored " + (Format-Phase5Typed $restored[0][1]) + ", captured " +
+                 (Format-Phase5Typed $seed.Rate))
+        }
+
+        $fxOk = Test-ChecklistOk $list
+        Add-Phase5Result 'P5-FX' `
+            'Locked FX seed captured, and its typed restoration path proved, before any Phase-5 mutation' `
+            $(if ($fxOk) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+        if (-not $fxOk) {
+            # A FAIL, never a SKIP, and the same shape as the Phase-4 prerequisite
+            # refusal: every fixture below restores this seed, so dozens of
+            # analytical results built on a broken restoration would be noise.
+            # Returning here leaves the caller's shutdown and P5-FIN untouched,
+            # so the lifecycle evidence is still produced.
+            Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `
+                ('not attempted: the locked FX seed does not survive its own restoration ' +
+                 'path, so every fixture below would start from an unrestored workbook')
+            return
+        }
     } catch {
-        Add-Result 'P5-FX' 'Locked FX seed capture' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-FX' 'Locked FX seed capture and typed restoration' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `
+            'not attempted: the locked FX seed could not be captured or restored'
+        return
     }
 
     # -------------------------------------------------------------------
@@ -2395,10 +2537,10 @@ function Invoke-Phase5GateBScenarios {
             } catch { $detail = (Format-Phase5Err $_) }
             $null = Add-Check $list ('the API procedure ' + $name + ' is callable') $callable $detail
         }
-        Add-Result 'P5-M' 'Persisted project: 15 modules by name, 5 buttons, 6 API procedures' `
+        Add-Phase5Result 'P5-M' 'Persisted project: 15 modules by name, 5 buttons, 6 API procedures' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-M' 'Persisted project inventory' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-M' 'Persisted project inventory' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -2458,10 +2600,10 @@ function Invoke-Phase5GateBScenarios {
             if ($null -ne $components) { Release-Transient $components 'VBComponents'; $components = $null }
             if ($null -ne $project) { Release-Transient $project 'VBProject'; $project = $null }
         }
-        Add-Result 'P5-EV' 'No change events: the status cell is last-evaluated, not live' `
+        Add-Phase5Result 'P5-EV' 'No change events: the status cell is last-evaluated, not live' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-EV' 'No change events' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-EV' 'No change events' 'FAIL' (Format-Phase5Err $_)
     }
 
     # ===================================================================
@@ -2497,10 +2639,10 @@ function Invoke-Phase5GateBScenarios {
 
         $ping = [string]$Excel.Run('GBD_Ping')
         $null = Add-Check $list 'the diagnostic module is callable' ($ping -eq ('OK|' + $diagnosticName)) $ping
-        Add-Result 'P5-D0' 'Transient diagnostic module imported AFTER the A1 production compile' `
+        Add-Phase5Result 'P5-D0' 'Transient diagnostic module imported AFTER the A1 production compile' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-D0' 'Transient diagnostic module import' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-D0' 'Transient diagnostic module import' 'FAIL' (Format-Phase5Err $_)
     }
 
     if ($diagnosticImported) {
@@ -2531,10 +2673,10 @@ function Invoke-Phase5GateBScenarios {
                         ($built -eq $reply) ("marshalled " + $reply + " / constructed " + $built)
                 }
             }
-            Add-Result 'P5-D1' 'Direct VBA: ten canonical numeric encodings (plan case 26)' `
+            Add-Phase5Result 'P5-D1' 'Direct VBA: ten canonical numeric encodings (plan case 26)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D1' 'Direct VBA: canonical numeric encodings' 'FAIL' (Format-Phase5Err $_)
+            Add-Phase5Result 'P5-D1' 'Direct VBA: canonical numeric encodings' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2603,12 +2745,12 @@ function Invoke-Phase5GateBScenarios {
                     ($ok -and ($distinct.Count -eq 3)) `
                     (($texts -join ' | '))
             }
-            Add-Result 'P5-DP' `
+            Add-Phase5Result 'P5-DP' `
                 ('Canonical-Double parity across the binary64 domain (' +
                  [string]$vectors.Count + ' vectors, plan case 26)') `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-DP' 'Canonical-Double parity' 'FAIL' (Format-Phase5Err $_)
+            Add-Phase5Result 'P5-DP' 'Canonical-Double parity' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2648,10 +2790,10 @@ function Invoke-Phase5GateBScenarios {
             # form is the model's, not the host's.
             $null = Add-Check $list 'the canonical form does not depend on the injected separator' `
                 (@($vectors | Where-Object { [string]$_.point -cne [string]$_.comma }).Count -eq 0)
-            Add-Result 'P5-D2' 'Direct VBA: decimal-separator injection, both separators (plan case 35)' `
+            Add-Phase5Result 'P5-D2' 'Direct VBA: decimal-separator injection, both separators (plan case 35)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D2' 'Direct VBA: decimal-separator injection' 'FAIL' (Format-Phase5Err $_)
+            Add-Phase5Result 'P5-D2' 'Direct VBA: decimal-separator injection' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2678,10 +2820,10 @@ function Invoke-Phase5GateBScenarios {
                     ("the fixture's double-only remainder equals its exact remainder for " + [string]$vector.modulus_name) `
                     ([double]$vector.double_only_remainder -eq [double]$vector.remainder)
             }
-            Add-Result 'P5-D3' 'Direct VBA: the four Double-only reductions (plan case 36)' `
+            Add-Phase5Result 'P5-D3' 'Direct VBA: the four Double-only reductions (plan case 36)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D3' 'Direct VBA: the Double-only reducer' 'FAIL' (Format-Phase5Err $_)
+            Add-Phase5Result 'P5-D3' 'Direct VBA: the Double-only reducer' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2737,10 +2879,10 @@ function Invoke-Phase5GateBScenarios {
                 $null = Add-Check $list ($key + ': its length prefix is the UTF-16 unit count') `
                     ($field.StartsWith('OK|S' + [string]$vector.utf16_length + ':')) $field
             }
-            Add-Result 'P5-D4' 'Direct VBA: UTF-16 signed AscW, unit counting and prefixes (plan case 26)' `
+            Add-Phase5Result 'P5-D4' 'Direct VBA: UTF-16 signed AscW, unit counting and prefixes (plan case 26)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D4' 'Direct VBA: UTF-16 behaviour' 'FAIL' (Format-Phase5Err $_)
+            Add-Phase5Result 'P5-D4' 'Direct VBA: UTF-16 behaviour' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2761,10 +2903,10 @@ function Invoke-Phase5GateBScenarios {
             $null = Add-Check $list 'the reference digest matches the emitted digest on real VBA' `
                 ($digest -eq ('OK|' + [string]$reference.digest)) `
                 ("got " + $digest + ", expected OK|" + [string]$reference.digest)
-            Add-Result 'P5-D5' 'Direct VBA: the complete reference stream, units and digest (plan case 26)' `
+            Add-Phase5Result 'P5-D5' 'Direct VBA: the complete reference stream, units and digest (plan case 26)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D5' 'Direct VBA: the reference stream' 'FAIL' (Format-Phase5Err $_)
+            Add-Phase5Result 'P5-D5' 'Direct VBA: the reference stream' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2795,10 +2937,10 @@ function Invoke-Phase5GateBScenarios {
             # The point of the probes: hostile content must not COLLIDE.
             $null = Add-Check $list 'every probe digest is distinct' `
                 ((@($seenDigests | Select-Object -Unique)).Count -eq $seenDigests.Count)
-            Add-Result 'P5-D6' 'Direct VBA: delimiter-hostile field content (plan case 27)' `
+            Add-Phase5Result 'P5-D6' 'Direct VBA: delimiter-hostile field content (plan case 27)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D6' 'Direct VBA: delimiter-hostile field content' 'FAIL' (Format-Phase5Err $_)
+            Add-Phase5Result 'P5-D6' 'Direct VBA: delimiter-hostile field content' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2823,10 +2965,10 @@ function Invoke-Phase5GateBScenarios {
                     ([string]$vector.statistic + ' survives the naive sum overflow') `
                     ($reply -eq $wanted) ("got " + $reply + ", expected " + $wanted)
             }
-            Add-Result 'P5-D7' 'Direct VBA: convex statistics at the overflow boundary (plan case 28)' `
+            Add-Phase5Result 'P5-D7' 'Direct VBA: convex statistics at the overflow boundary (plan case 28)' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-D7' 'Direct VBA: convex statistics at the overflow boundary' 'FAIL' (Format-Phase5Err $_)
+            Add-Phase5Result 'P5-D7' 'Direct VBA: convex statistics at the overflow boundary' 'FAIL' (Format-Phase5Err $_)
         }
 
         # ---------------------------------------------------------------
@@ -2872,16 +3014,16 @@ function Invoke-Phase5GateBScenarios {
                     ($id + ': the control model with the predicate satisfied is ACCEPTED') `
                     ($accepted -like 'OK|*') ("got " + $accepted)
             }
-            Add-Result 'P5-DC' `
+            Add-Phase5Result 'P5-DC' `
                 'Direct VBA: plan section 18 predicates the workbook cannot reach, through modCalcCheck' `
                 $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         } catch {
-            Add-Result 'P5-DC' 'Direct VBA: modCalcCheck predicates' 'FAIL' (Format-Phase5Err $_)
+            Add-Phase5Result 'P5-DC' 'Direct VBA: modCalcCheck predicates' 'FAIL' (Format-Phase5Err $_)
         }
     } else {
         foreach ($id in 'P5-D1', 'P5-D2', 'P5-D3', 'P5-D4', 'P5-D5', 'P5-D6', 'P5-D7',
                         'P5-DC') {
-            Add-Result $id 'Direct VBA diagnostic vector' 'FAIL' `
+            Add-Phase5Result $id 'Direct VBA diagnostic vector' 'FAIL' `
                 'the transient diagnostic module did not import, so no locked vector was exercised on real VBA'
         }
     }
@@ -2937,10 +3079,10 @@ function Invoke-Phase5GateBScenarios {
         $stillCallable = $false
         try { $null = $Excel.Run('GBD_Ping'); $stillCallable = $true } catch { $stillCallable = $false }
         $null = Add-Check $list 'no diagnostic procedure is callable any more' (-not $stillCallable)
-        Add-Result 'P5-D8' 'Transient diagnostic module removed; inventory back to 15' `
+        Add-Phase5Result 'P5-D8' 'Transient diagnostic module removed; inventory back to 15' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-D8' 'Transient diagnostic module removal' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-D8' 'Transient diagnostic module removal' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3003,11 +3145,11 @@ function Invoke-Phase5GateBScenarios {
         }
         $null = Add-Check $list 'every analytical plan case was driven' ($covered.Count -eq 19) `
             ("covered " + $covered.Count + ": " + ($covered -join ', '))
-        Add-Result 'P5-AN' `
+        Add-Phase5Result 'P5-AN' `
             ('Analytical fixtures through PCCM_Calculate: ' + $covered.Count + ' cases, all emitted values') `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-AN' 'Analytical fixtures through PCCM_Calculate' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-AN' 'Analytical fixtures through PCCM_Calculate' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3085,11 +3227,11 @@ function Invoke-Phase5GateBScenarios {
         }
         $null = Add-Check $list 'every refusal plan case was driven' ($covered.Count -eq 9) `
             ("covered " + $covered.Count + ": " + ($covered -join ', '))
-        Add-Result 'P5-RF' `
+        Add-Phase5Result 'P5-RF' `
             ('Prerequisite refusals: ' + $covered.Count + ' cases; the prior successful snapshot survives each') `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-RF' 'Prerequisite refusals' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-RF' 'Prerequisite refusals' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3158,11 +3300,11 @@ function Invoke-Phase5GateBScenarios {
         $null = Add-Check $list 'every emitted prerequisite case was driven' `
             ($covered.Count -eq $prerequisites.Count) `
             ("covered " + $covered.Count + " of " + $prerequisites.Count)
-        Add-Result 'P5-PQ' `
+        Add-Phase5Result 'P5-PQ' `
             ('Plan section 18 prerequisite matrix: ' + $covered.Count + ' predicates, each with its own detail discriminator') `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-PQ' 'Plan section 18 prerequisite matrix' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-PQ' 'Plan section 18 prerequisite matrix' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3236,11 +3378,11 @@ function Invoke-Phase5GateBScenarios {
         $null = Add-Check $list 'every emitted no-block case was driven' `
             ($covered.Count -eq $noBlock.Count) `
             ("covered " + $covered.Count + " of " + $noBlock.Count)
-        Add-Result 'P5-PN' `
+        Add-Phase5Result 'P5-PN' `
             ('Referenced-only no-block semantics: ' + $covered.Count + ' assumptions that must not block') `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-PN' 'Referenced-only no-block semantics' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-PN' 'Referenced-only no-block semantics' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3340,11 +3482,11 @@ function Invoke-Phase5GateBScenarios {
                 (Test-CalcValue -Actual $headline -Expected $sum -Tolerance 0.0) `
                 ("calc_totals " + (Format-CalcValue $headline) + ", reconstructed " + (Format-CalcValue $sum))
         }
-        Add-Result 'P5-AR' `
+        Add-Phase5Result 'P5-AR' `
             'Driver-audit reconstruction: A/B/C/D from the ACTUAL tblCalcDrivers columns to the ACTUAL calc_totals' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-AR' 'Driver-audit reconstruction' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-AR' 'Driver-audit reconstruction' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3536,11 +3678,11 @@ function Invoke-Phase5GateBScenarios {
         }
         $null = Add-Check $list 'the cancellation-heavy fixture (plan case 30) was among them' `
             ($seen -contains '30') ("covered " + ($seen -join ', '))
-        Add-Result 'P5-ID' `
+        Add-Phase5Result 'P5-ID' `
             'Reconciliation identities I1, I2, I3a-c, I4a-c, I5 - production Reconcile is the authority' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-ID' 'Reconciliation identities' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-ID' 'Reconciliation identities' 'FAIL' (Format-Phase5Err $_)
     }
 
     # ===================================================================
@@ -3612,10 +3754,10 @@ function Invoke-Phase5GateBScenarios {
         $establishedState = Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state'
         $null = Add-Check $list 'row 1: calc_state carries a fingerprint version' `
             (-not (Test-CalcBlank -Actual $establishedState['fingerprint_version']))
-        Add-Result 'P5-S1' 'Status row 1: successful calculation, unchanged inputs' `
+        Add-Phase5Result 'P5-S1' 'Status row 1: successful calculation, unchanged inputs' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-S1' 'Status row 1' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-S1' 'Status row 1' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3703,7 +3845,7 @@ function Invoke-Phase5GateBScenarios {
             ("got " + (Format-CalcValue $rowTwoAfter.State['calculation_status']))
         $null = Add-Check $list 'row 2: C20 carries a status-evaluation timestamp' `
             (-not (Test-CalcBlank -Actual $rowTwoAfter.State['status_evaluated_at']))
-        Add-Result 'P5-S2' 'Status row 2: valid fingerprinted input changed, no Calculate' `
+        Add-Phase5Result 'P5-S2' 'Status row 2: valid fingerprinted input changed, no Calculate' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
 
         # --- the rest of the primary staleness sequence ---------------------
@@ -3729,20 +3871,34 @@ function Invoke-Phase5GateBScenarios {
             Add-Phase5SuccessStateChecks -List $list -Excel $Excel -Workbook $Workbook `
                 -Inspection $Inspection -Case $targetCase -Cases $Cases -Label 'staleness target'
         }
-        Add-Result 'P5-ST' `
+        Add-Phase5Result 'P5-ST' `
             'Primary staleness sequence: case 3 -> Discount Rate -> case 19, verified against case 19s oracle' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
 
-        # Restore the source fixture exactly, so the scenarios below start from
-        # the model the corpus describes rather than from an edited one.
+    } catch {
+        Add-Phase5Result 'P5-S2' 'Status row 2' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-ST' 'Primary staleness sequence' 'FAIL' (Format-Phase5Err $_)
+    }
+
+    # --- SETUP, NOT A SCENARIO ------------------------------------------
+    # Restore the source fixture exactly, so the scenarios below start from the
+    # model the corpus describes rather than from an edited one.
+    #
+    # THIS USED TO SIT INSIDE THE BLOCK ABOVE, after both scenarios had already
+    # been recorded. When Runtime Run 4's typed-write defect made it throw, the
+    # enclosing catch recorded P5-S2 and P5-ST a second time - two real results
+    # followed by two spurious ones. A step that runs after a scenario has
+    # finished is not part of that scenario, and it now owns its own failure.
+    try {
         $null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
             -Inspection $Inspection -Model $baseCase.model
         $Excel.Run('PCCM_Calculate') | Out-Null
         $establishedFingerprint = [string]$Excel.Run('PCCM_CalculationFingerprint')
         $establishedState = Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state'
     } catch {
-        Add-Result 'P5-S2' 'Status row 2' 'FAIL' (Format-Phase5Err $_)
-        Add-Result 'P5-ST' 'Primary staleness sequence' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-SU' `
+            'Re-establishing the base fixture after the staleness sequence' 'FAIL' `
+            (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3886,11 +4042,11 @@ function Invoke-Phase5GateBScenarios {
         $establishedFingerprint = [string]$Excel.Run('PCCM_CalculationFingerprint')
         $establishedState = Get-CalcScalarBlock -Workbook $Workbook -Inspection $Inspection -Block 'calc_state'
 
-        Add-Result 'P5-NS' `
+        Add-Phase5Result 'P5-NS' `
             'Non-staleness, four INDEPENDENT probes: description, real multi-row reorder, confidence level, unreferenced FX' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-NS' 'Non-staleness proofs' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-NS' 'Non-staleness proofs' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------
@@ -3921,7 +4077,7 @@ function Invoke-Phase5GateBScenarios {
         $afterRow3 = Get-Phase5Snapshot -Workbook $Workbook -Inspection $Inspection
         Add-SnapshotUnchangedChecks -List $list -Before $before -After $afterRow3 -Label 'row 3' `
             -SuccessFields $successRecordFields
-        Add-Result 'P5-S3' 'Status row 3: invalid current input, no Calculate attempted' `
+        Add-Phase5Result 'P5-S3' 'Status row 3: invalid current input, no Calculate attempted' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
 
         # ROW 4 / P5-KP: the SAME invalid input, WITH Calculate.
@@ -3946,10 +4102,10 @@ function Invoke-Phase5GateBScenarios {
             ([string]$afterRow4.State['calculation_status'] -eq 'INVALID')
         $null = Add-Check $list 'row 4: C20 carries a status-evaluation timestamp' `
             (-not (Test-CalcBlank -Actual $afterRow4.State['status_evaluated_at']))
-        Add-Result 'P5-S4' 'Status row 4: invalid current input + PCCM_Calculate' `
+        Add-Phase5Result 'P5-S4' 'Status row 4: invalid current input + PCCM_Calculate' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
 
-        Add-Result 'P5-KP' 'Refusal preserves the prior successful snapshot (C13:C16, C23:C32, five tables)' `
+        Add-Phase5Result 'P5-KP' 'Refusal preserves the prior successful snapshot (C13:C16, C23:C32, five tables)' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) `
             'the two mutation groups are compared separately; see P5-S4'
 
@@ -3972,14 +4128,14 @@ function Invoke-Phase5GateBScenarios {
         $afterRow5 = Get-Phase5Snapshot -Workbook $Workbook -Inspection $Inspection
         Add-SnapshotUnchangedChecks -List $list -Before $before -After $afterRow5 -Label 'row 5' `
             -SuccessFields $successRecordFields
-        Add-Result 'P5-S5' 'Status row 5: exact restoration of the prior input, no Calculate' `
+        Add-Phase5Result 'P5-S5' 'Status row 5: exact restoration of the prior input, no Calculate' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
-        Add-Result 'P5-RC' 'Revert to CURRENT without calculating (plan case 32)' `
+        Add-Phase5Result 'P5-RC' 'Revert to CURRENT without calculating (plan case 32)' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) `
             'CURRENT status with a historical REFUSED attempt; see P5-S5'
     } catch {
         foreach ($id in 'P5-S3', 'P5-S4', 'P5-S5', 'P5-KP', 'P5-RC') {
-            Add-Result $id 'Refusal / revert sequence' 'FAIL' (Format-Phase5Err $_)
+            Add-Phase5Result $id 'Refusal / revert sequence' 'FAIL' (Format-Phase5Err $_)
         }
     }
 
@@ -4181,7 +4337,7 @@ function Invoke-Phase5GateBScenarios {
     # Status row 6 IS the injected-failure row, and it is recorded as its own
     # result so the six-row matrix is complete in the report rather than implied
     # by two rollback scenarios.
-    Add-Result 'P5-S6' 'Status row 6: injected write failure on valid changed inputs' `
+    Add-Phase5Result 'P5-S6' 'Status row 6: injected write failure on valid changed inputs' `
         $(if ($analyticalOk -and $commitOk) { 'PASS' } else { 'FAIL' }) `
         ('STALE / FAILED / specific detail / previous snapshot restored, at both locked boundaries: ' +
          $failpoints.AnalyticalWrite + ' (P5-FA) and ' + $failpoints.SuccessCommit + ' (P5-FC)')
@@ -4224,10 +4380,10 @@ function Invoke-Phase5GateBScenarios {
         Add-Note ('P5-AX: a committed-SUCCESS / cleanup-FAIL disagreement was not induced; ' +
                   'the accepted harness has no safe way to make FinishOperation fail, and ' +
                   'forcing it would prove the forcing. Both axes are read separately.')
-        Add-Result 'P5-AX' 'Automation/invocation axis read separately from the calculation attempt' `
+        Add-Phase5Result 'P5-AX' 'Automation/invocation axis read separately from the calculation attempt' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P5-AX' 'Automation/invocation axis' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-AX' 'Automation/invocation axis' 'FAIL' (Format-Phase5Err $_)
     }
 
     # -------------------------------------------------------------------

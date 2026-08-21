@@ -310,7 +310,7 @@ def test_13_the_emitted_expectations_come_from_the_oracle_not_from_powershell() 
     assert 'fp.canonical_number(value, ".")' in generator
     harness = (PCCM_ROOT / "bootstrap" / "windows" / "phase5_gate_b_scenarios.ps1").read_text(
         encoding="utf-8")
-    block = harness[harness.index("P5-DP."):harness.index("Add-Result 'P5-DP'")]
+    block = harness[harness.index("P5-DP."):harness.index("Add-Phase5Result 'P5-DP'")]
     # The harness reads the expectation and reconstructs the Double. It does not
     # compute a canonical string of its own.
     assert "[string]$vector.expected" in block

@@ -374,7 +374,7 @@ try {
         exit 1
     }
 } catch {
-    Add-Result 'P5-PRE' 'Phase-5 coverage preflight' 'FAIL' (Format-Err $_)
+    Add-Phase5Result 'P5-PRE' 'Phase-5 coverage preflight' 'FAIL' (Format-Err $_)
     Write-Host ''
     Write-Host 'PHASE-4/5 FUNCTIONAL TEST ABORTED before Excel was started.' -ForegroundColor Red
     exit 1
@@ -2928,7 +2928,9 @@ if ($buildOk) {
             -Inspection $inspection -Cases $cases -ScriptDir $scriptDir `
             -TempRoot $tempRoot -Results $results
     } catch {
-        Add-Result 'P5-XX' 'Driving the Phase-5 Gate-B scenarios' 'FAIL' (Format-Err $_)
+        # Through the Phase-5 guard, so a scenario that already recorded a
+        # result is not recorded again by this catch-all.
+        Add-Phase5Result 'P5-XX' 'Driving the Phase-5 Gate-B scenarios' 'FAIL' (Format-Err $_)
     }
 
     $excel.Run('PCCM_AutomationEnd') | Out-Null

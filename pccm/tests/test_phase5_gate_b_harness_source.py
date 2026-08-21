@@ -75,6 +75,19 @@ STATUS_ROW_IDS = ("P5-S1", "P5-S2", "P5-S3", "P5-S4", "P5-S5", "P5-S6")
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+# Phase-4 scenarios report through the accepted Add-Result. Phase-5 scenarios
+# report through Add-Phase5Result, the one-result-per-ID guard added after
+# Runtime Run 4 recorded P5-S2 and P5-ST twice each. Tests that locate a result
+# by ID must accept either, or they would silently stop finding half of them.
+RESULT_CALL = r"Add-(?:Phase5)?Result"
+
+
+def _result_call(identifier: str) -> str:
+    """The emitter token for a scenario ID, whichever family it belongs to."""
+    return ("Add-Phase5Result" if identifier.startswith("P5-") else "Add-Result") \
+        + f" '{identifier}'"
+
+
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -183,7 +196,7 @@ def test_02_there_is_exactly_one_com_lifecycle_and_one_bootstrap() -> None:
 def test_03_every_phase_4_scenario_id_survives() -> None:
     """The accepted matrix is not rewritten to make room for Phase 5."""
     source = _text(HARNESS)
-    reported = set(re.findall(r"Add-Result\s+'([^']+)'", source))
+    reported = set(re.findall(RESULT_CALL + r"\s+'([^']+)'", source))
     reported |= {f"D-J.{index}" for index in range(1, 11)} if "'D-J.' + $stepIndex" in source else set()
     missing = [name for name in PHASE4_SCENARIO_IDS if name not in reported]
     assert not missing, f"Phase-4 scenario IDs disappeared: {missing}"
@@ -205,7 +218,7 @@ def test_04_the_full_phase_4_matrix_is_a_gate_b_prerequisite() -> None:
     assert re.search(r"\$passed\.Count -eq 35", source), "35/35 is not asserted"
     # A broken prerequisite is a FAIL, not a quiet SKIP.
     block = source[source.index("if (-not $phase4Ok)"):]
-    assert "Add-Result 'P5-ALL'" in block[:600]
+    assert "Add-Phase5Result 'P5-ALL'" in block[:600]
     assert "'FAIL'" in block[:600], "an unmet prerequisite is reported as something other than FAIL"
     assert "'SKIP'" not in block[:600]
 
@@ -317,7 +330,7 @@ def test_09_what_phase_5_added_to_the_phase_4_harness_is_plumbing_only() -> None
     # The Phase-5 scenarios themselves live in their own file. The only two
     # P5 results the accepted harness may report are its own ERROR paths: the
     # preflight raising, and the scenario invocation raising.
-    reported = set(re.findall(r"Add-Result '(P5-[A-Z]+)'", source))
+    reported = set(re.findall(RESULT_CALL + r"\s+'(P5-[A-Z]+)'", source))
     assert reported == {"P5-PRE", "P5-XX"}, (
         f"Phase-5 scenario bodies were written into the Phase-4 harness: {sorted(reported)}"
     )
@@ -353,7 +366,7 @@ def test_11_every_mapping_names_a_scenario_the_harness_defines() -> None:
     ))
     referenced = set(re.findall(r"'(P5-[A-Z0-9]+)'", source))
     # Reported directly, or through the shared rollback runner's -ScenarioId.
-    reported = set(re.findall(r"Add-Result\s+'(P5-[A-Z0-9]+)'", source))
+    reported = set(re.findall(RESULT_CALL + r"\s+'(P5-[A-Z0-9]+)'", source))
     reported |= set(re.findall(r"-ScenarioId\s+'(P5-[A-Z0-9]+)'", source))
     unknown = sorted(name for name in declared if name not in reported)
     assert not unknown, f"scenario IDs declared but never reported: {unknown}"
@@ -409,7 +422,7 @@ def test_14_all_six_api_procedures_are_exercised() -> None:
 def test_15_all_six_status_rows_exist_and_assert_all_four_accessors() -> None:
     source = _executable(SCENARIOS)
     for row in STATUS_ROW_IDS:
-        assert f"Add-Result '{row}'" in source, f"status-matrix row {row} is missing"
+        assert _result_call(row) in source, f"status-matrix row {row} is missing"
     helper = source[source.index("function Add-StatusRowChecks"):]
     helper = helper[:helper.index("\n    }") + 6]
     for accessor in ("PCCM_CalculationStatus", "PCCM_CalculationAttemptResult",
@@ -544,7 +557,7 @@ def test_22_the_diagnostic_import_happens_only_after_the_a1_compile_proof() -> N
     scenarios = _executable(SCENARIOS)
     assert "$components.Import($source)" in scenarios
     imported = scenarios.index("$components.Import($source)")
-    prerequisite = scenarios.index("Add-Result 'P5-P4'")
+    prerequisite = scenarios.index("Add-Phase5Result 'P5-P4'")
     assert prerequisite < imported, (
         "the diagnostic module is imported before the Phase-4 prerequisite is checked"
     )
@@ -557,9 +570,9 @@ def test_22_the_diagnostic_import_happens_only_after_the_a1_compile_proof() -> N
 def test_23_the_diagnostic_module_is_removed_after_the_vector_section() -> None:
     source = _executable(SCENARIOS)
     assert "$components.Remove($target)" in source, "the diagnostic module is never removed"
-    removal = source.index("Add-Result 'P5-D8'")
+    removal = source.index("Add-Phase5Result 'P5-D8'")
     for vector in ("P5-D1", "P5-D2", "P5-D3", "P5-D4", "P5-D5", "P5-D6", "P5-D7"):
-        assert source.index(f"Add-Result '{vector}'") < removal, (
+        assert source.index(_result_call(vector)) < removal, (
             f"{vector} runs after the diagnostic module was removed"
         )
     tail = source[removal:]
@@ -576,7 +589,7 @@ def test_23_the_diagnostic_module_is_removed_after_the_vector_section() -> None:
     )
     assert "-Label 'after removal'" in d8
     # The inventory re-assertion happens BEFORE the analytical acceptance work.
-    assert source.index("Add-Result 'P5-AN'") > removal, (
+    assert source.index("Add-Phase5Result 'P5-AN'") > removal, (
         "analytical acceptance runs while the diagnostic module is still installed"
     )
     # And no workbook is saved anywhere in the Phase-5 scenarios.
@@ -593,7 +606,7 @@ def test_24_the_canonical_number_vectors_are_complete_and_locked() -> None:
     assert labels == ["0", "-0", "1", "-1", "0.1", "1e-20", "1e+20", "0.1 + 0.2",
                       "MAX_DOUBLE", "minimum subnormal"]
     source = _executable(SCENARIOS)
-    block = source[source.index("Add-Result 'P5-D1'") - 3000:source.index("Add-Result 'P5-D1'")]
+    block = source[source.index("Add-Phase5Result 'P5-D1'") - 3000:source.index("Add-Phase5Result 'P5-D1'")]
     assert "$vectors = @($Cases.fingerprint.numeric_encodings.vectors)" in block
     assert "foreach ($vector in $vectors)" in block, "the vectors are not all iterated"
     assert "$vectors.Count -eq 10" in block, "the vector count is not asserted"
@@ -615,7 +628,7 @@ def test_24_the_canonical_number_vectors_are_complete_and_locked() -> None:
 
 def test_25_both_decimal_separators_are_injected() -> None:
     source = _executable(SCENARIOS)
-    block = source[source.index("Add-Result 'P5-D2'") - 3000:source.index("Add-Result 'P5-D2'")]
+    block = source[source.index("Add-Phase5Result 'P5-D2'") - 3000:source.index("Add-Phase5Result 'P5-D2'")]
     assert "separator = '.'" in block and "separator = ','" in block, (
         "only one decimal separator is exercised"
     )
@@ -634,7 +647,7 @@ def test_26_all_four_reduction_vectors_are_exercised_in_vba() -> None:
     cases = _emitted()["cases"]
     assert len(cases["fingerprint"]["reduction_vectors"]) == 4
     source = _executable(SCENARIOS)
-    block = source[source.index("Add-Result 'P5-D3'") - 2500:source.index("Add-Result 'P5-D3'")]
+    block = source[source.index("Add-Phase5Result 'P5-D3'") - 2500:source.index("Add-Phase5Result 'P5-D3'")]
     assert "$vectors = @($Cases.fingerprint.reduction_vectors)" in block
     assert "$vectors.Count -eq 4" in block, "the four-vector count is not asserted"
     assert "GBD_ReduceDouble" in block, "the accepted VBA reducer is never called"
@@ -653,7 +666,7 @@ def test_27_the_utf16_vectors_including_non_bmp_are_exercised() -> None:
     keys = [vector["key"] for vector in cases["fingerprint"]["utf16_vectors"]["vectors"]]
     assert keys == ["bmp_above_7fff", "non_bmp", "mixed_length_prefix"]
     source = _executable(SCENARIOS)
-    block = source[source.index("Add-Result 'P5-D4'") - 4000:source.index("Add-Result 'P5-D4'")]
+    block = source[source.index("Add-Phase5Result 'P5-D4'") - 4000:source.index("Add-Phase5Result 'P5-D4'")]
     assert "$Cases.fingerprint.utf16_vectors.vectors" in block
     assert "GBD_Utf16Length" in block, "the unit count is never asked of VBA"
     assert "GBD_RawAscW" in block, "the SIGNED AscW result is never observed"
@@ -671,7 +684,7 @@ def test_28_the_reference_stream_asserts_units_and_digest_together() -> None:
     reference = cases["fingerprint"]["reference"]
     assert reference["code_units"] == len(reference["stream"])
     source = _executable(SCENARIOS)
-    block = source[source.index("Add-Result 'P5-D5'") - 1600:source.index("Add-Result 'P5-D5'")]
+    block = source[source.index("Add-Phase5Result 'P5-D5'") - 1600:source.index("Add-Phase5Result 'P5-D5'")]
     assert "GBD_StreamLength" in block, "the code-unit count is never asserted"
     assert "GBD_DigestStream" in block, "the digest is never asserted"
     assert "$reference.code_units" in block and "$reference.digest" in block
@@ -791,7 +804,7 @@ def test_33_the_rollback_asserts_every_required_final_state() -> None:
 def test_34_the_refusal_compares_the_two_groups_separately() -> None:
     source = _executable(SCENARIOS)
     row4 = source[source.index("$Excel.Run('PCCM_Calculate') | Out-Null\n        $row4"):
-                  source.index("Add-Result 'P5-S4'")]
+                  source.index("Add-Phase5Result 'P5-S4'")]
     assert "Add-SnapshotUnchangedChecks" in row4, (
         "row 4 never asserts the prior snapshot survived"
     )
@@ -882,7 +895,7 @@ def test_38_the_production_modules_are_asserted_by_name_not_by_count() -> None:
     assert "': no standard module outside the manifest persists'" in helper
     assert "$ExpectedModules -notcontains $_" in helper
     # P5-M reaches the production namespace through that helper.
-    block = source[source.index("Add-Result 'P5-M'") - 8000:source.index("Add-Result 'P5-M'")]
+    block = source[source.index("Add-Phase5Result 'P5-M'") - 8000:source.index("Add-Phase5Result 'P5-M'")]
     assert "Add-Phase5ModuleInventoryChecks -List $list -Components $components" in block
 
 
@@ -977,7 +990,7 @@ def test_nc_03_a_mapping_to_a_nonexistent_scenario_is_caught() -> None:
                source.index("function Get-Phase5FailpointNames")]
     ))
     assert "P5-NOPE" not in declared
-    reported = set(re.findall(r"Add-Result\s+'(P5-[A-Z0-9]+)'", source))
+    reported = set(re.findall(RESULT_CALL + r"\s+'(P5-[A-Z0-9]+)'", source))
     reported |= set(re.findall(r"-ScenarioId\s+'(P5-[A-Z0-9]+)'", source))
     planted = declared | {"P5-NOPE"}
     assert sorted(name for name in planted if name not in reported) == ["P5-NOPE"], (
@@ -1010,7 +1023,7 @@ def test_nc_06_a_removed_phase_4_prerequisite_is_caught() -> None:
 def test_nc_07_a_prerequisite_failure_reported_as_skip_is_caught() -> None:
     planted = _synthetic(
         "if (-not $phase4Ok) {\n"
-        "    Add-Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'SKIP' 'phase 4 not intact'\n"
+        "    Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'SKIP' 'phase 4 not intact'\n"
         "    return\n}\n"
     )
     block = planted[planted.index("if (-not $phase4Ok)"):]
@@ -1041,9 +1054,9 @@ def test_nc_09_a_calculate_button_is_caught() -> None:
 
 def test_nc_10_an_omitted_status_row_is_caught() -> None:
     source = _executable(SCENARIOS)
-    planted = source.replace("Add-Result 'P5-S5'", "Add-Result 'P5-SX'")
-    assert "Add-Result 'P5-S5'" not in planted, "the missing status row must be visible"
-    present = [row for row in STATUS_ROW_IDS if f"Add-Result '{row}'" in planted]
+    planted = source.replace("Add-Phase5Result 'P5-S5'", "Add-Phase5Result 'P5-SX'")
+    assert "Add-Phase5Result 'P5-S5'" not in planted, "the missing status row must be visible"
+    present = [row for row in STATUS_ROW_IDS if _result_call(row) in planted]
     assert len(present) == 5
 
 
@@ -1359,7 +1372,7 @@ def test_46_the_harness_source_states_that_no_run_has_happened() -> None:
 
 def test_47_the_transient_module_is_never_persisted() -> None:
     source = _executable(SCENARIOS)
-    removal = source.index("Add-Result 'P5-D8'")
+    removal = source.index("Add-Phase5Result 'P5-D8'")
     for forbidden in (".Save()", ".SaveAs(", "SaveCopyAs", "xlOpenXMLWorkbookMacroEnabled"):
         assert forbidden not in source, f"the Phase-5 scenarios persist a workbook ({forbidden})"
     harness = _executable(HARNESS)
@@ -1380,8 +1393,8 @@ def _scenario_block(source: str, after: str, upto: str) -> str:
     by its banner. It is located by the Add-Result that closes the scenario
     before it and the one that closes it.
     """
-    start = source.index(f"Add-Result '{after}'") if after else 0
-    return source[start:source.index(f"Add-Result '{upto}'")]
+    start = source.index(_result_call(after)) if after else 0
+    return source[start:source.index(_result_call(upto))]
 
 
 def _procedure(source: str, name: str) -> str:
@@ -1640,7 +1653,7 @@ def test_56_the_golden_case_asserts_the_emitted_reference_digest() -> None:
     assert "PCCM_CurrentInputFingerprint() on plan case 1 equals the emitted reference digest" in block
     assert "PCCM_CalculationFingerprint() after the commit equals the emitted reference digest" in block
     # The direct primitive proof is a DIFFERENT claim and both survive.
-    assert "Add-Result 'P5-D5'" in source
+    assert "Add-Phase5Result 'P5-D5'" in source
     assert "GBD_DigestStream" in source
 
 
@@ -1650,7 +1663,7 @@ def test_57_the_utf16_canonical_field_is_compared_in_full() -> None:
     for vector in vectors:
         assert vector["canonical_text_field"], "the corpus emits no canonical field"
     source = _executable(SCENARIOS)
-    block = source[source.index("Add-Result 'P5-D4'") - 5000:source.index("Add-Result 'P5-D4'")]
+    block = source[source.index("Add-Phase5Result 'P5-D4'") - 5000:source.index("Add-Phase5Result 'P5-D4'")]
     assert "$vector.canonical_text_field" in block, (
         "the emitted canonical field is never used"
     )
@@ -2785,7 +2798,7 @@ def test_79_the_unreachable_predicate_is_proved_by_calling_the_checker() -> None
 
     # The scenario runs BEFORE the diagnostic module is removed.
     source = _executable(SCENARIOS)
-    assert source.index("Add-Result 'P5-DC'") < source.index("Add-Result 'P5-D8'"), (
+    assert source.index("Add-Phase5Result 'P5-DC'") < source.index("Add-Phase5Result 'P5-D8'"), (
         "the direct check runs after the diagnostic module was removed"
     )
     block = _scenario_block(source, "P5-D7", "P5-DC")
@@ -3095,14 +3108,14 @@ def test_84_the_capture_precedes_every_phase_5_mutation() -> None:
         "the seed is captured after a fixture has already rewritten the FX table"
     )
     # And after the Phase-4 prerequisite, so the workbook is known good.
-    prerequisite_at = scenarios.index("Add-Result 'P5-P4'")
+    prerequisite_at = scenarios.index("Add-Phase5Result 'P5-P4'")
     assert prerequisite_at < capture_at, (
         "the seed is captured before the Phase-4 matrix is known intact"
     )
     assert scenarios.count("Save-Phase5LockedFxSeed -Workbook $Workbook") == 1, (
         "the seed is re-captured, so a mutated table could become the new baseline"
     )
-    assert "Add-Result 'P5-FX'" in scenarios, "the capture is not reported as a scenario"
+    assert "Add-Phase5Result 'P5-FX'" in scenarios, "the capture is not reported as a scenario"
 
 
 def test_85_the_fixture_restores_the_seed_before_appending() -> None:
@@ -3588,9 +3601,25 @@ def test_94_the_fx_seed_is_captured_and_restored_without_coercion() -> None:
     assert "[double]$Seed.Rate" not in reset, "the captured rate is converted on the way back"
     assert "Set-Phase5TypedCell" in reset, "the restoration goes through a coercing setter"
     setter = _procedure(source, "Set-Phase5TypedCell")
-    assert "$cell.Value2 = $Value" in setter, "the typed setter does not assign Value2 directly"
-    assert "[double]$Value" not in setter and "[string]$Value" not in setter, (
-        "the typed setter chooses a type for its caller"
+    # RUNTIME RUN 4 RETIRED THE GENERIC SITE. `$cell.Value2 = $Value` on one
+    # line bound to String on its first call and then could not marshal a Double
+    # through the same cached call site - the whole R5 family. The setter now
+    # dispatches on the CAPTURED CLR type, one COM assignment per branch.
+    #
+    # That is not the same as choosing a type for the caller: the branch is
+    # selected by what Excel published, so a captured String '1' is still
+    # written back as String '1'. What the earlier form of this assertion was
+    # protecting - no inference from the contract - is protected below by the
+    # dispatch being on $Value's own type and by the read-back comparator.
+    assert "$cell.Value2 = $Value" not in setter, (
+        "the generic polymorphic COM assignment is back; Runtime Run 4 proved a "
+        "second type cannot be marshalled through the same cached call site"
+    )
+    assert "$cell.Value2 = [string]$Value" in setter
+    assert "$cell.Value2 = [double]$Value" in setter
+    assert "$Value -is [string]" in setter, "the dispatch is not on the captured type"
+    assert "$Value.GetType().FullName" in setter, (
+        "an unsupported captured type is coerced rather than reported"
     )
     assert "$cell.ClearContents()" in setter, "a null cannot be written as a genuine blank"
     # The accepted Phase-4 setter is untouched and still chooses, which is right
@@ -3892,11 +3921,11 @@ def test_99_p5_all_is_refused_when_any_reachable_prerequisite_is_not_pass() -> N
     )
     source = _executable(SCENARIOS)
     block = source[source.index("if (-not $phase4Ok)"):]
-    assert "Add-Result 'P5-ALL'" in block[:600]
+    assert "Add-Phase5Result 'P5-ALL'" in block[:600]
     assert "'FAIL'" in block[:600], "an unmet prerequisite is reported as something other than FAIL"
     assert "'SKIP'" not in block[:600], "an unmet prerequisite must not read as a quiet skip"
     # AND IT RETURNS. Reporting the refusal and then running anyway would be worse.
-    assert re.search(r"Add-Result 'P5-ALL'.*?\n\s*return\b", block[:900], re.S), (
+    assert re.search(r"Add-Phase5Result 'P5-ALL'.*?\n\s*return\b", block[:900], re.S), (
         "the refusal does not stop the Phase-5 scenarios from running"
     )
 
@@ -3910,7 +3939,7 @@ def test_100_the_final_gate_still_demands_the_whole_35_case_matrix() -> None:
     assert "'all 35 Phase-4 scenarios reported a result'" in final
     assert "'the final Phase-4 matrix is 35/35 PASS'" in final
     assert "$passed.Count -eq 35" in final, "35/35 is not asserted at the final gate"
-    assert "Add-Result 'P5-FIN'" in final
+    assert "Add-Phase5Result 'P5-FIN'" in final
     assert "Get-Phase4PrerequisiteScenarioIds" not in final, (
         "the final gate must judge the whole matrix, not the reduced entry set"
     )
@@ -4013,10 +4042,10 @@ def test_104_the_accepted_gate_b_scenario_topology_is_preserved() -> None:
                  "P5-AX", "P5-EV", "P5-XX", "P5-FIN"):
         # P5-FA and P5-FC are emitted through the shared failpoint driver, which
         # takes the ID as a parameter; both emission forms count.
-        assert (f"Add-Result '{name}'" in both
+        assert (_result_call(name) in both
                 or f"-ScenarioId '{name}'" in both), f"scenario {name} no longer emits"
     for name in STATUS_ROW_IDS:
-        assert (f"Add-Result '{name}'" in both
+        assert (_result_call(name) in both
                 or f"-ScenarioId '{name}'" in both), f"status row {name} no longer emits"
     # The plan-case scenario registry is unchanged: P5-FIN is a gate, not a
     # mapping target, exactly as P5-PRE, P5-P4 and P5-ALL are not.
@@ -4287,7 +4316,7 @@ def test_108_a_stray_or_missing_standard_module_still_fails() -> None:
 def test_109_the_diagnostic_module_absence_is_proved_in_its_own_partition() -> None:
     """R1. The diagnostic module is a STANDARD module, so that is where it is denied."""
     source = _executable(SCENARIOS)
-    d8 = source[source.index("$components.Remove($target)"):source.index("Add-Result 'P5-D8'")]
+    d8 = source[source.index("$components.Remove($target)"):source.index("Add-Phase5Result 'P5-D8'")]
     assert "'the diagnostic module is absent from the standard modules'" in d8
     assert "$standardNames -notcontains $diagnosticName" in d8, (
         "absence is not proved against the partition the module would reappear in"
@@ -4296,7 +4325,7 @@ def test_109_the_diagnostic_module_absence_is_proved_in_its_own_partition() -> N
     assert "'no diagnostic procedure is callable any more'" in source
     # P5-M and P5-D8 share one helper, so the two judgements cannot drift.
     assert d8.count("Add-Phase5ModuleInventoryChecks") == 1
-    m = source[source.index("Add-Result 'P5-FX'"):source.index("Add-Result 'P5-M'")]
+    m = source[source.index("Add-Phase5Result 'P5-FX'"):source.index("Add-Phase5Result 'P5-M'")]
     assert "Add-Phase5ModuleInventoryChecks" in m
 
 
@@ -4304,7 +4333,7 @@ def test_109_the_diagnostic_module_absence_is_proved_in_its_own_partition() -> N
 def test_110_the_forbidden_construct_scan_reads_code_not_commentary() -> None:
     """R2. modAppState's explanatory comments are prose, and stay."""
     source = _executable(SCENARIOS)
-    ev = source[source.index("Add-Result 'P5-D0'") - 6000:source.index("Add-Result 'P5-EV'")]
+    ev = source[source.index("Add-Phase5Result 'P5-D0'") - 6000:source.index("Add-Phase5Result 'P5-EV'")]
     assert "$code = Get-VbaExecutableCode -Code $raw" in ev, (
         "the scan still runs over the raw module text"
     )
@@ -4520,7 +4549,7 @@ def test_114_the_rows_receiver_is_the_block_not_the_key() -> None:
 def test_115_command_buttons_are_counted_by_macro_binding_not_by_shape() -> None:
     """R4. `found 6` counted every Shape; a command button is a bound shape."""
     source = _executable(SCENARIOS)
-    block = source[source.index("Add-Result 'P5-FX'"):source.index("Add-Result 'P5-M'")]
+    block = source[source.index("Add-Phase5Result 'P5-FX'"):source.index("Add-Phase5Result 'P5-M'")]
     assert "$commandButtons = @($shapeRecords | Where-Object {" in block
     assert "-not [string]::IsNullOrWhiteSpace([string]$_.OnAction) })" in block
     assert "'exactly the five declared (sheet, shape, macro) bindings exist'" in block
@@ -4542,7 +4571,7 @@ def test_115_command_buttons_are_counted_by_macro_binding_not_by_shape() -> None
 def test_116_the_no_calculate_button_requirement_is_unchanged_and_widened() -> None:
     """R4. Strictly stronger than the count it replaces."""
     source = _executable(SCENARIOS)
-    block = source[source.index("Add-Result 'P5-FX'"):source.index("Add-Result 'P5-M'")]
+    block = source[source.index("Add-Phase5Result 'P5-FX'"):source.index("Add-Phase5Result 'P5-M'")]
     # The declared macro is compared against THAT shape's own OnAction, so a
     # button bound to another declared button's macro cannot pass.
     assert "$bound = ($actual -ceq $wantAction)" in block, (
@@ -4743,7 +4772,7 @@ def test_119_the_error_evidence_names_the_call_chain_not_only_the_line() -> None
 # ===========================================================================
 def _button_block() -> str:
     source = _executable(SCENARIOS)
-    return source[source.index("Add-Result 'P5-FX'"):source.index("Add-Result 'P5-M'")]
+    return source[source.index("Add-Phase5Result 'P5-FX'"):source.index("Add-Phase5Result 'P5-M'")]
 
 
 # --- BLOCKER 1: the inventory emits records, not one nested array -----------
@@ -5394,13 +5423,13 @@ def test_133_the_rem_decision_is_taken_inside_the_single_pass() -> None:
 def _parity_block() -> str:
     source = _executable(SCENARIOS)
     return source[source.index("$parity = $Cases.fingerprint.canonical_parity"):
-                  source.index("Add-Result 'P5-DP'")]
+                  source.index("Add-Phase5Result 'P5-DP'")]
 
 
 def test_134_the_parity_scenario_drives_the_emitted_corpus() -> None:
     """Ten vectors exposed the defect; they cannot accept the correction."""
     source = _executable(SCENARIOS)
-    assert "Add-Result 'P5-DP'" in source, "the parity scenario does not emit a result"
+    assert "Add-Phase5Result 'P5-DP'" in source, "the parity scenario does not emit a result"
     block = _parity_block()
     assert "$vectors = @($parity.vectors)" in block
     assert "($vectors.Count -gt 2000)" in block, "the corpus size is not gated"
@@ -5409,8 +5438,8 @@ def test_134_the_parity_scenario_drives_the_emitted_corpus() -> None:
     )
     assert "($checked -eq $vectors.Count)" in block
     # It runs BEFORE the diagnostic module is removed, or GBD_ would not answer.
-    assert source.index("Add-Result 'P5-DP'") < source.index("Add-Result 'P5-D8'")
-    assert source.index("Add-Result 'P5-D0'") < source.index("Add-Result 'P5-DP'")
+    assert source.index("Add-Phase5Result 'P5-DP'") < source.index("Add-Phase5Result 'P5-D8'")
+    assert source.index("Add-Phase5Result 'P5-D0'") < source.index("Add-Phase5Result 'P5-DP'")
 
 
 def test_135_the_parity_probe_is_rebuilt_from_its_bit_pattern() -> None:
@@ -5473,10 +5502,364 @@ def test_138_the_parity_failures_are_reported_not_just_counted() -> None:
 def test_139_the_locked_ten_vector_scenarios_are_not_weakened() -> None:
     """P5-DP is additional evidence, never a replacement for P5-D1 or P5-D2."""
     source = _executable(SCENARIOS)
-    assert "Add-Result 'P5-D1'" in source and "Add-Result 'P5-D2'" in source
+    assert "Add-Phase5Result 'P5-D1'" in source and "Add-Phase5Result 'P5-D2'" in source
     assert "'ten locked numeric vectors were emitted'" in source
     assert "($vectors.Count -eq 10)" in source, "the ten locked vectors are no longer required"
     assert "'the separator vector set was emitted'" in source
     assert "'the canonical form does not depend on the injected separator'" in source
     corpus = _emitted()["cases"]["fingerprint"]
     assert len(corpus["numeric_encodings"]["vectors"]) == 10
+
+
+# ===========================================================================
+# 27. RUNTIME RUN 4: the typed COM write, and one result per ID
+# ===========================================================================
+# Run 4 located R5 exactly, with the stack the round-2 diagnostics were added
+# to produce:
+#
+#   System.InvalidCastException: Unable to cast object of type 'System.Double'
+#   to type 'System.String'.
+#     at phase5_gate_b_scenarios.ps1:922   source: $cell.Value2 = $Value
+#     at Set-Phase5TypedCell -> Reset-Phase5FxTable -> Set-Phase5Fixture
+#
+# The locked seed is String 'SAR' then Double 1. The String assignment
+# succeeded; the Double assignment through the SAME source line failed. The
+# accepted Phase-4 Set-TableCell never hit it because it has one assignment line
+# per branch.
+def _typed_setter() -> str:
+    return _procedure(_executable(SCENARIOS), "Set-Phase5TypedCell")
+
+
+def test_140_the_generic_com_assignment_site_is_gone() -> None:
+    """R5, closed at the line Run 4 named."""
+    setter = _typed_setter()
+    assert "$cell.Value2 = $Value" not in setter, (
+        "the polymorphic single assignment site is back"
+    )
+    # One COM assignment per supported type, each its own source line.
+    sites = re.findall(r"\$cell\.Value2 = (\[[a-z]+\]\$Value)", setter)
+    assert sites == sorted(set(sites), key=sites.index), "a branch assigns twice"
+    assert "[string]$Value" in sites and "[double]$Value" in sites, sites
+    assert len(sites) >= 2, sites
+    # And the null branch still clears rather than writing anything.
+    assert "$null = $cell.ClearContents()" in setter
+    assert "if ($null -eq $Value) {" in setter
+
+
+def test_141_the_dispatch_is_on_the_captured_type_not_on_the_contract() -> None:
+    """Explicit dispatch is NOT permission to repair text into a number."""
+    setter = _typed_setter()
+    for probe in ("$Value -is [string]", "$Value -is [bool]", "$Value -is [double]"):
+        assert probe in setter, f"the setter does not dispatch on {probe}"
+    # Nothing consults the model, the contract, the column or the format.
+    for forbidden in ("$Inspection", "NumberFormat", "$Case", "$Model", "expected",
+                      "ColumnKey", "-as [double]", "[double]::Parse"):
+        assert forbidden not in setter, (
+            f"the setter infers a type from {forbidden} instead of using the captured one"
+        )
+    # An unsupported captured type FAILS, naming the real CLR type - and the
+    # throw is the LAST branch, not a dead one with a coercion in front of it.
+    assert "throw (" in setter and "$Value.GetType().FullName" in setter
+    assert setter.count("$cell.Value2 = [double]$Value") == 1, (
+        "a second numeric assignment was added, so an unsupported type is "
+        "coerced before it can reach the throw"
+    )
+    assert "if ($false)" not in setter, "a branch was disabled rather than removed"
+    tail = setter[setter.index("throw ("):]
+    assert "$cell.Value2" not in tail, "an assignment follows the refusal branch"
+    assert "cannot restore a value of type" in _procedure(
+        _text(SCENARIOS).replace("\r\n", "\n"), "Set-Phase5TypedCell"
+    )
+
+    # The decision table the dispatch has to implement.
+    def branch(value):
+        if value is None:
+            return "clear"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, (int, float)):
+            return "double"
+        return "throw"
+
+    assert branch("1") == "string", "a captured text seed must be written back as text"
+    assert branch(1.0) == "double", "a captured numeric seed must be written back numeric"
+    assert branch(None) == "clear"
+    assert branch(True) == "bool"
+    assert branch(object()) == "throw"
+    # The two that matter: same digit, different types, different branches.
+    assert branch("1") != branch(1.0)
+
+
+def test_142_the_captured_seed_is_restored_not_repaired() -> None:
+    """No hard-coded SAR/1 and no cast at the call site."""
+    source = _executable(SCENARIOS)
+    reset = _procedure(source, "Reset-Phase5FxTable")
+    assert "-Value $Seed.Currency" in reset and "-Value $Seed.Rate" in reset
+    for forbidden in ("[double]$Seed.Rate", "[string]$Seed.Rate",
+                      "[string]$Seed.Currency", "'SAR'", "-Value 1#", "-Value 1.0"):
+        assert forbidden not in reset, f"the restoration repairs the seed ({forbidden})"
+    # The strict typed read-back is still mandatory.
+    assert "Test-Phase5ExactValue -Actual $body[0][0] -Expected $Seed.Currency" in reset
+    assert "Test-Phase5ExactValue -Actual $body[0][1] -Expected $Seed.Rate" in reset
+    assert "throw (" in reset, "a failed restoration does not stop the run"
+    # And the comparator is still type-sensitive.
+    comparator = _procedure(source, "Test-Phase5ExactValue")
+    assert "if ($Actual -is [string]) { return $false }" in comparator
+    assert "if ($null -eq $Expected) {" in comparator
+    assert "return ($null -eq $Actual)" in comparator
+    # Nothing anywhere stringifies Value2 or compares display text.
+    assert "Format-CalcValue" not in _procedure(source, "Get-Phase5TypedTableBody")
+    # And the restoration path is exercised at P5-FX, before any fixture needs
+    # it - eleven Run-4 scenarios reported this path as their own failure.
+    assert "Reset-Phase5FxTable -Workbook $Workbook -Inspection $Inspection -Seed $seed" in source, (
+        "P5-FX no longer proves the restoration path it gates"
+    )
+
+
+def test_143_p5_fx_proves_the_restoration_path_before_anything_depends_on_it() -> None:
+    """Eleven scenarios reported R5 as their own failure. Prove it once, early."""
+    source = _executable(SCENARIOS)
+    block = source[source.index("Save-Phase5LockedFxSeed -Workbook"):
+                   source.index("Add-Phase5Result 'P5-FX'")]
+    # Capture still happens first, on the untouched workbook.
+    assert block.index("Save-Phase5LockedFxSeed") < block.index("Reset-Phase5FxTable"), (
+        "the restoration is exercised before the seed is captured"
+    )
+    # The REAL path, not a re-implementation.
+    assert "Reset-Phase5FxTable -Workbook $Workbook -Inspection $Inspection -Seed $seed" in block
+    assert "Get-Phase5TypedTableBody" in block
+    # VALUE AND TYPE, through the strict comparator.
+    assert "Test-Phase5ExactValue -Actual $restored[0][0] -Expected $seed.Currency" in block
+    assert "Test-Phase5ExactValue -Actual $restored[0][1] -Expected $seed.Rate" in block
+    assert "the restored currency is the captured value AND the captured type" in block
+    assert "the restored rate is the captured value AND the captured type" in block
+    # It restores the seed to its OWN value, so the workbook is left as found.
+    assert "-Seed $seed" in block and "-Model" not in block
+
+    # A failure stops Phase-5 rather than producing dozens of misleading results,
+    # as a FAIL and with the lifecycle evidence still to come.
+    gate = source[source.index("Add-Phase5Result 'P5-FX'"):]
+    head = gate[:1200]
+    assert "if (-not $fxOk) {" in head
+    assert "Add-Phase5Result 'P5-ALL'" in head
+    assert "'FAIL'" in head and "'SKIP'" not in head, "an unmet prerequisite must be a FAIL"
+    assert re.search(r"Add-Phase5Result 'P5-ALL'.*?\n\s*return\b", head, re.S), (
+        "the refusal does not stop the scenarios below"
+    )
+    # P5-FIN, Y and Z are emitted by the driver after the return, so cleanup
+    # evidence survives.
+    harness = _executable(HARNESS)
+    assert harness.index("Invoke-Phase5GateBScenarios -Excel") < harness.index(
+        "Add-Result 'Z' 'Excel closed naturally")
+    assert "Add-Phase4FinalCompletenessResult -Results $results" in harness
+
+
+# --- the result ledger ------------------------------------------------------
+def test_144_a_scenario_id_can_be_recorded_only_once() -> None:
+    """Run 4 reported 19 failures over 17 unique IDs."""
+    source = _executable(SCENARIOS)
+    guard = _procedure(source, "Add-Phase5Result")
+    assert "if (Test-Phase5ResultRecorded -Id $Id) {" in guard
+    assert "Add-Note (" in guard, "a suppressed duplicate is silent"
+    assert "return" in guard
+    assert "$null = $script:Phase5RecordedIds.Add($Id)" in guard
+    assert "Add-Result $Id $Name $Status $Detail" in guard, (
+        "the guard does not delegate to the accepted reporter"
+    )
+    # The ledger is per run, and it starts at the FIRST Phase-5 entry point so
+    # P5-PRE is inside it. Resetting again in the scenarios would discard that
+    # record and let a later catch emit P5-PRE a second time.
+    assert "Reset-Phase5ResultLedger" in _procedure(source, "Invoke-Phase5CoveragePreflight")
+    assert "Reset-Phase5ResultLedger" not in _procedure(source, "Invoke-Phase5GateBScenarios"), (
+        "the ledger is reset after P5-PRE has already been recorded"
+    )
+
+    # EVERY Phase-5 emission goes through the guard, in both files.
+    both = source + "\n" + _executable(HARNESS)
+    stray = re.findall(r"(?<!Phase5)Add-Result\s+'(P5-[A-Z0-9]+)'", both)
+    assert not stray, f"these Phase-5 IDs bypass the one-result guard: {sorted(set(stray))}"
+    assert not re.search(r"(?<!Phase5)Add-Result \$id ", source), (
+        "a grouped catch emits IDs without the guard"
+    )
+    # And no setup step runs inside a scenario block after that scenario has
+    # been recorded - the ownership half of the Run-4 defect.
+    st_record = source.index("Add-Phase5Result 'P5-ST' `")
+    st_catch = source.index("Add-Phase5Result 'P5-ST' 'Primary staleness sequence' 'FAIL'")
+    between = source[st_record:st_catch]
+    assert "Set-Phase5Fixture" not in between, (
+        "a fixture restore still runs inside the S2/ST try after both scenarios "
+        "have been recorded"
+    )
+
+
+def test_145_a_late_setup_failure_cannot_re_emit_a_finished_scenario() -> None:
+    """The exact Run-4 topology: P5-S2 and P5-ST recorded, then setup threw."""
+    source = _executable(SCENARIOS)
+    # The re-establishment step now owns its own failure, as P5-SU.
+    assert "Add-Phase5Result 'P5-SU'" in source, (
+        "the post-scenario setup step has no result of its own"
+    )
+    setup = source[source.index("Add-Phase5Result 'P5-ST'"):]
+    setup = setup[:setup.index("Add-Phase5Result 'P5-SU'") + 200]
+    assert "} catch {" in setup
+    # The S2/ST catch is guarded, and the guard really does check.
+    assert "Add-Phase5Result 'P5-S2' 'Status row 2' 'FAIL'" in source
+    assert "Add-Result 'P5-S2' 'Status row 2' 'FAIL'" not in source, (
+        "the S2 catch bypasses the one-result guard"
+    )
+    assert "Add-Result 'P5-ST' 'Primary staleness sequence' 'FAIL'" not in source
+    guard = _procedure(source, "Add-Phase5Result")
+    assert "Test-Phase5ResultRecorded -Id $Id" in guard, (
+        "the guard no longer checks whether the ID was already recorded"
+    )
+    assert "if ($false)" not in guard
+    # The fixture restore is OUTSIDE the S2/ST try block.
+    st_catch = source.index("Add-Phase5Result 'P5-ST' 'Primary staleness sequence' 'FAIL'")
+    restore = source.index("$null = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest",
+                           source.index("Add-Phase5Result 'P5-ST' `"))
+    assert st_catch < restore, (
+        "the base-fixture restore still sits inside the scenario try block"
+    )
+
+    # The model: two scenarios recorded, then a late setup failure.
+    recorded: list[str] = []
+
+    def add(identifier: str) -> None:
+        if identifier in recorded:
+            return                      # the guard: a note, not a record
+        recorded.append(identifier)
+
+    add("P5-S2")
+    add("P5-ST")
+    add("P5-SU")                        # the late setup failure, owning itself
+    assert recorded == ["P5-S2", "P5-ST", "P5-SU"]
+    # And even if the old catch shape returned, the guard holds the line.
+    add("P5-S2")
+    add("P5-ST")
+    assert recorded.count("P5-S2") == 1 and recorded.count("P5-ST") == 1
+
+
+def test_146_the_grouped_status_catch_cannot_duplicate_a_recorded_id() -> None:
+    """The same risk in S3/S4/S5/KP/RC, audited without waiting for a runtime."""
+    source = _executable(SCENARIOS)
+    grouped = source[source.index("foreach ($id in 'P5-S3', 'P5-S4', 'P5-S5', 'P5-KP', 'P5-RC')"):]
+    grouped = grouped[:400]
+    assert "Add-Phase5Result $id" in grouped, "the grouped catch bypasses the guard"
+    assert "Add-Result $id" not in grouped
+
+    # Run 4's own shape: S3, S4 and KP recorded, then the S5/RC step throws.
+    recorded: list[str] = []
+
+    def add(identifier: str) -> None:
+        if identifier not in recorded:
+            recorded.append(identifier)
+
+    for done in ("P5-S3", "P5-S4", "P5-KP"):
+        add(done)
+    for identifier in ("P5-S3", "P5-S4", "P5-S5", "P5-KP", "P5-RC"):
+        add(identifier)                 # the catch fires over the whole group
+    assert recorded == ["P5-S3", "P5-S4", "P5-KP", "P5-S5", "P5-RC"]
+    assert len(recorded) == len(set(recorded)), "the grouped catch duplicated an ID"
+
+    # The other grouped catch, over the direct vectors, is guarded too.
+    vectors = source[source.index("foreach ($id in 'P5-D1', 'P5-D2', 'P5-D3'"):]
+    assert "Add-Phase5Result $id 'Direct VBA diagnostic vector'" in vectors[:400]
+
+
+def test_147_every_phase5_scenario_has_exactly_one_result_in_both_paths() -> None:
+    """Success path and late-failure path, both modelled."""
+    source = _executable(SCENARIOS)
+    emitted = set(re.findall(r"Add-Phase5Result\s+'(P5-[A-Z0-9]+)'", source))
+    emitted |= set(re.findall(r"-ScenarioId '(P5-[A-Z0-9]+)'", source))
+    emitted |= set(re.findall(r"Add-Phase5Result\s+'(P5-[A-Z0-9]+)'", _executable(HARNESS)))
+    for required in ("P5-PRE", "P5-P4", "P5-ALL", "P5-FX", "P5-M", "P5-EV",
+                     "P5-D0", "P5-D1", "P5-DP", "P5-D2", "P5-D8", "P5-DC",
+                     "P5-AN", "P5-RF", "P5-PQ", "P5-PN", "P5-AR", "P5-ID",
+                     "P5-ST", "P5-NS", "P5-KP", "P5-RC", "P5-FA", "P5-FC",
+                     "P5-AX", "P5-XX", "P5-SU"):
+        assert required in emitted, f"{required} is never emitted"
+    for row in STATUS_ROW_IDS:
+        assert row in emitted, f"{row} is never emitted"
+
+    # P5-DP is a runtime-only diagnostic scenario and deliberately NOT a
+    # plan-case mapping target - the coverage ledger is unchanged by it.
+    registry = _procedure(source, "Get-Phase5ScenarioIds")
+    for gate in ("P5-DP", "P5-FIN", "P5-SU", "P5-PRE", "P5-P4", "P5-ALL", "P5-XX"):
+        assert f"'{gate}'" not in registry, f"{gate} became a plan-case mapping target"
+    # The 37-plan-case coverage ledger is untouched. It is built with loops, so
+    # the plan-case IDs are counted rather than the Add calls.
+    ledger = _procedure(source, "Get-Phase5CoverageLedger")
+    looped = sum(len(re.findall(r"\d+", group))
+                 for group in re.findall(r"foreach \(\$id in ([\d, ]+)\)", ledger))
+    singles = len(re.findall(r"\$ledger\.Add\('(\d+)'", ledger))
+    assert looped + singles == 37, (
+        f"the 37-plan-case ledger changed: {looped} looped + {singles} single"
+    )
+
+    # Modelled: a success path emits each once; a late failure adds only P5-SU.
+    def run(recorded: list[str], ids: list[str]) -> list[str]:
+        for identifier in ids:
+            if identifier not in recorded:
+                recorded.append(identifier)
+        return recorded
+
+    success = run([], ["P5-FX", "P5-M", "P5-S2", "P5-ST", "P5-S3", "P5-S4", "P5-S5"])
+    assert len(success) == len(set(success)) == 7
+    late = run(list(success), ["P5-SU", "P5-S2", "P5-ST"])
+    assert late == success + ["P5-SU"], late
+    assert len(late) == len(set(late))
+
+
+# --- negative controls -----------------------------------------------------
+def test_nc_96_the_generic_polymorphic_setter_is_caught() -> None:
+    """The Run-4 design, kept forbidden.
+
+    This models the SHAPE - one call site reached first with a String and then
+    with a Double. It does NOT claim to reproduce the Excel COM binder: no
+    non-COM model can, and the real proof is the next Windows run. What is
+    modelled here is why one shared site is the wrong architecture.
+    """
+    planted = _synthetic("        $cell.Value2 = $Value\n")
+    assert "[string]$Value" not in planted and "[double]$Value" not in planted, (
+        "the generic assignment must be visible as one"
+    )
+    # One site, two types, in the order Reset-Phase5FxTable uses.
+    site_types: list[type] = []
+
+    def generic_site(value):
+        site_types.append(type(value))
+
+    for value in ("SAR", 1.0):
+        generic_site(value)
+    assert site_types == [str, float]
+    assert len(set(site_types)) == 2, (
+        "the same call site is reached with two different CLR types, which is "
+        "the condition Run 4 failed on"
+    )
+    # The corrected shape gives each type its own site.
+    per_type: dict[type, int] = {}
+
+    def dispatched(value):
+        per_type[type(value)] = per_type.get(type(value), 0) + 1
+
+    for value in ("SAR", 1.0):
+        dispatched(value)
+    assert set(per_type) == {str, float} and all(n == 1 for n in per_type.values())
+
+
+def test_nc_97_a_duplicate_scenario_result_is_caught() -> None:
+    planted = _synthetic(
+        "    } catch {\n"
+        "        Add-Result 'P5-S2' 'Status row 2' 'FAIL' (Format-Phase5Err $_)\n"
+        "        Add-Result 'P5-ST' 'Primary staleness sequence' 'FAIL' (Format-Phase5Err $_)\n"
+        "    }\n"
+    )
+    assert "Add-Phase5Result" not in planted, "the unguarded catch must be visible"
+    # Run 4's arithmetic: 19 records over 17 unique IDs.
+    records = ["P5-AN", "P5-RF", "P5-PQ", "P5-PN", "P5-AR", "P5-ID", "P5-S1",
+               "P5-S2", "P5-ST", "P5-NS", "P5-S3", "P5-S5", "P5-RC", "P5-FA",
+               "P5-FC", "P5-S6", "P5-AX", "P5-S2", "P5-ST"]
+    assert len(records) == 19 and len(set(records)) == 17
+    assert records.count("P5-S2") == 2 and records.count("P5-ST") == 2

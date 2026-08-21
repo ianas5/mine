@@ -2118,3 +2118,87 @@ not the basis of any exemption.** It is an observation about the failing site.
 What the exemptions rest on is narrower and empirical: Runtime Run 2 compiled
 these exact occurrences in the target Excel environment, and nothing more is
 claimed for them.
+
+---
+
+## Runtime Run 4: R5 located, and one result per scenario
+
+Run 4 is the first run in which the production side is largely proved. The VBA
+project **compiled**, Phase-4 was 35/35, and P5-M, P5-EV, P5-D0 through P5-D8,
+P5-DC, Y, Z and P5-FIN all passed. In particular:
+
+* **P5-D1** — all ten locked canonical numeric vectors
+* **P5-DP** — all **2 432** binary64 parity vectors on real VBA, every neighbour
+  triple still distinct
+* **P5-D2** — both decimal-separator injections
+
+The canonical encoder and the compile-safety corrections now have real
+target-runtime evidence. Nothing in production VBA is touched this round.
+
+### R5 — located exactly
+
+The diagnostics added after Run 2 did the job they were added for:
+
+```
+System.InvalidCastException: Unable to cast object of type 'System.Double'
+to type 'System.String'.
+  at phase5_gate_b_scenarios.ps1:922   source: $cell.Value2 = $Value
+  at Set-Phase5TypedCell -> Reset-Phase5FxTable -> Set-Phase5Fixture
+```
+
+The locked seed is `String 'SAR'` then `Double 1`, restored through one helper.
+The **String assignment succeeded; the Double assignment through the same source
+line failed.** PowerShell binds a COM property setter per call site, so the site
+was already bound for a String and the Double could not be marshalled through
+it. The accepted Phase-4 `Set-TableCell` never hit this because it has one
+assignment line per branch.
+
+This is a harness COM-binding defect. It is not evidence that the workbook wrote
+a number as text — it happened while the harness was restoring **its own
+captured fixture**.
+
+`Set-Phase5TypedCell` now dispatches on the **captured CLR type**, one COM
+assignment site per branch, and refuses an unsupported type by name rather than
+coercing it. That is not a retreat to inference: `Set-TableCell` asks what a
+value *ought* to be, this asks what Excel *actually published*. A captured
+`String '1'` is still written back as `String '1'`; a captured `Double 1` as
+`Double 1`. The strict `Test-Phase5ExactValue` read-back is unchanged.
+
+### P5-FX proves the path before anything depends on it
+
+Eleven scenarios reported R5 as their own failure, forty lines into work that
+had never started. The restoration path is a prerequisite, so it is now proved
+like one: P5-FX captures the untouched seed, restores it **to its own captured
+value** through the real `Reset-Phase5FxTable`, and checks value *and* type with
+the strict comparator. If that fails, P5-ALL is a FAIL and the scenarios return
+— leaving Y, Z and P5-FIN to run, so the lifecycle evidence still arrives.
+
+### The ledger defect: 19 records over 17 IDs
+
+`P5-S2` and `P5-ST` were each recorded twice. The try block recorded both on
+real evidence; a **later setup step in the same try** — restoring the base
+fixture — then threw, and the enclosing catch recorded both IDs again. Two
+things were wrong, and both are fixed:
+
+* **Ownership.** A step that runs after a scenario has been recorded is not part
+  of that scenario. The re-establishment now sits in its own try/catch and
+  reports as `P5-SU`, a setup failure.
+* **Structure.** `Add-Phase5Result` records every ID it emits and refuses a
+  second, turning the attempt into a visible Note. Every Phase-5 emission in
+  both files goes through it, including the grouped `P5-D1..P5-DC` and
+  `P5-S3..P5-RC` catches — the second of which had the same latent risk and is
+  audited now rather than after another run. The ledger starts at the first
+  Phase-5 entry point, so `P5-PRE` is inside it.
+
+This is not a print-time filter: nothing downstream de-duplicates, and the
+ledger genuinely contains one record per ID.
+
+### Why the status failures are not production findings
+
+P5-S1 is what establishes the successful baseline, and it failed **inside**
+`Set-Phase5Fixture`, before its calculation. `establishedFingerprint` stayed
+empty, so P5-S2 saw `NONE`/`INVALID` with blank fingerprints, P5-ST recalculated
+from an unestablished state, and P5-S3 inherited `REFUSED` and
+`STRUCTURE CHANGE PENDING`. None of that is evidence about production status
+behaviour. Those scenarios must be rerun unchanged on a valid baseline once R5
+is confirmed fixed. P5-S4 and P5-KP passed and are untouched.
