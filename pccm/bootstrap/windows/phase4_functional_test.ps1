@@ -2988,6 +2988,14 @@ if ($transient.Count -gt 0) {
     Add-Result 'Y' 'Transient COM releases' 'PASS' 'every transient object released cleanly'
 }
 
+# --- Phase-5 result-ledger integrity ---------------------------------------
+# After Y and Z, so every Phase-5 result that will ever be recorded has been.
+# Emitted unconditionally and exactly once: PASS when no scenario ID was
+# attempted twice, FAIL naming the duplicates when one was. A duplicate attempt
+# is a harness-integrity failure, and this is what stops the run finishing green
+# on one - the first result stands, but the run does not pass.
+Add-Phase5LedgerIntegrityResult
+
 # --- final Phase-4 completeness, now that Y and Z exist --------------------
 # HERE, and nowhere earlier. P5-P4 gates entry to Phase 5 on the cases that can
 # exist while the automation session is live; Y and Z are recorded after it is

@@ -3505,8 +3505,10 @@ def test_92_snapshot_identity_uses_the_strict_comparator() -> None:
     assert "if ($Expected -is [string]) {" in strict
     assert "-ceq [string]$Expected" in strict, "text is compared case-insensitively"
     assert "if ($Expected -is [bool]) {" in strict
-    assert "if ($Actual -is [string]) { return $false }" in strict, (
-        "a String that looks numeric is accepted against a number"
+    # Review round 4A: one exact CLR type-identity gate replaces the three
+    # separate probes, and also rejects Int32 1 against Double 1.
+    assert "if ($Actual.GetType().FullName -cne $Expected.GetType().FullName) { return $false }" in strict, (
+        "a String that looks numeric, or a boxed Int32, is accepted against a number"
     )
     assert "Tolerance" not in strict, "the strict comparator carries a tolerance"
     assert "Format-" not in strict, "the strict comparator compares display text"
@@ -4674,9 +4676,14 @@ def test_118_the_typed_reader_is_confirmed_by_run_2_and_unchanged() -> None:
     for forbidden in ("[string]$cell.Value2", "Format-CalcValue", "$line += "):
         assert forbidden not in reader, f"the reader now stringifies or appends ({forbidden})"
     comparator = _procedure(_executable(SCENARIOS), "Test-Phase5ExactValue")
-    assert "if ($Actual -is [string]) { return $false }" in comparator, (
-        "the exact comparator was widened to accept display text"
+    # Review round 4A: the three separate type probes became ONE exact CLR
+    # type-identity gate, which subsumes them and also catches Int32 1 vs
+    # Double 1 - a pair the old `[double] -eq [double]` tail compared EQUAL.
+    assert "if ($Actual.GetType().FullName -cne $Expected.GetType().FullName) { return $false }" in comparator, (
+        "the comparator no longer establishes exact CLR type identity first"
     )
+    assert "[double]$Actual -eq [double]$Expected" in comparator
+    assert "[string]$Actual -ceq [string]$Expected" in comparator
 
 
 # --- negative controls -----------------------------------------------------
@@ -5549,7 +5556,8 @@ def test_140_the_generic_com_assignment_site_is_gone() -> None:
 def test_141_the_dispatch_is_on_the_captured_type_not_on_the_contract() -> None:
     """Explicit dispatch is NOT permission to repair text into a number."""
     setter = _typed_setter()
-    for probe in ("$Value -is [string]", "$Value -is [bool]", "$Value -is [double]"):
+    for probe in ("$Value -is [string]", "$Value -is [bool]",
+                  "$Value.GetType().FullName -ceq 'System.Double'"):
         assert probe in setter, f"the setter does not dispatch on {probe}"
     # Nothing consults the model, the contract, the column or the format.
     for forbidden in ("$Inspection", "NumberFormat", "$Case", "$Model", "expected",
@@ -5606,7 +5614,14 @@ def test_142_the_captured_seed_is_restored_not_repaired() -> None:
     assert "throw (" in reset, "a failed restoration does not stop the run"
     # And the comparator is still type-sensitive.
     comparator = _procedure(source, "Test-Phase5ExactValue")
-    assert "if ($Actual -is [string]) { return $false }" in comparator
+    # Review round 4A: the three separate type probes became ONE exact CLR
+    # type-identity gate, which subsumes them and also catches Int32 1 vs
+    # Double 1 - a pair the old `[double] -eq [double]` tail compared EQUAL.
+    assert "if ($Actual.GetType().FullName -cne $Expected.GetType().FullName) { return $false }" in comparator, (
+        "the comparator no longer establishes exact CLR type identity first"
+    )
+    assert "[double]$Actual -eq [double]$Expected" in comparator
+    assert "[string]$Actual -ceq [string]$Expected" in comparator
     assert "if ($null -eq $Expected) {" in comparator
     assert "return ($null -eq $Actual)" in comparator
     # Nothing anywhere stringifies Value2 or compares display text.
@@ -5678,8 +5693,27 @@ def test_144_a_scenario_id_can_be_recorded_only_once() -> None:
 
     # EVERY Phase-5 emission goes through the guard, in both files.
     both = source + "\n" + _executable(HARNESS)
-    stray = re.findall(r"(?<!Phase5)Add-Result\s+'(P5-[A-Z0-9]+)'", both)
+    stray = [identifier for identifier
+             in re.findall(r"(?<!Phase5)Add-Result\s+'(P5-[A-Z0-9]+)'", both)
+             # P5-LDG is the ledger's own report. It is emitted through
+             # Add-Result deliberately, so the ledger can never suppress the
+             # result that reports on the ledger, and it carries its own
+             # emitted-once flag instead.
+             if identifier != "P5-LDG"]
     assert not stray, f"these Phase-5 IDs bypass the one-result guard: {sorted(set(stray))}"
+    integrity = _procedure(source, "Add-Phase5LedgerIntegrityResult")
+    assert "if ($script:Phase5LedgerReported) { return }" in integrity, (
+        "P5-LDG has no emitted-once flag of its own"
+    )
+    # A duplicate attempt is a VIOLATION, not a note, and P5-LDG is actually
+    # called - a guard that records nothing, or a report nobody emits, is the
+    # fail-open shape this round replaced.
+    assert "$script:Phase5LedgerViolations.Add(" in guard, (
+        "a duplicate attempt is not recorded as a violation"
+    )
+    assert "Add-Phase5LedgerIntegrityResult" in _executable(HARNESS), (
+        "the ledger integrity result is never emitted"
+    )
     assert not re.search(r"(?<!Phase5)Add-Result \$id ", source), (
         "a grouped catch emits IDs without the guard"
     )
@@ -5863,3 +5897,306 @@ def test_nc_97_a_duplicate_scenario_result_is_caught() -> None:
                "P5-FC", "P5-S6", "P5-AX", "P5-S2", "P5-ST"]
     assert len(records) == 19 and len(set(records)) == 17
     assert records.count("P5-S2") == 2 and records.count("P5-ST") == 2
+
+
+# ===========================================================================
+# 28. REVIEW ROUND 4A: exact captured types, and a ledger that fails closed
+# ===========================================================================
+# The Run-4 correction accepted Single, Int16, Int32, Int64, Byte and Decimal
+# and wrote all of them as Double - normalisation, not restoration - and the
+# comparator ended in `[double]$Actual -eq [double]$Expected`, so a captured
+# Int32 1 compared EQUAL to a restored Double 1. The setter now fails closed and
+# the comparator establishes exact CLR type identity before any value is read.
+SUPPORTED_CAPTURED_TYPES = ("System.String", "System.Double", "System.Boolean")
+REFUSED_CAPTURED_TYPES = ("System.Single", "System.Int16", "System.Int32",
+                          "System.Int64", "System.Byte", "System.Decimal",
+                          "System.DateTime")
+
+
+def test_148_the_setter_supports_only_the_approved_captured_types() -> None:
+    setter = _typed_setter()
+    # The whole supported set, each on its own COM assignment line.
+    assert "if ($null -eq $Value) {" in setter
+    assert "$null = $cell.ClearContents()" in setter
+    assert "$cell.Value2 = [string]$Value" in setter
+    assert "$cell.Value2 = [bool]$Value" in setter
+    assert "$cell.Value2 = [double]$Value" in setter
+    assert setter.count("$cell.Value2") == 3, (
+        "there is not exactly one COM assignment per supported type"
+    )
+    # Double is matched by EXACT type name, not by `-is [double]`, which would
+    # be true for a boxed Int32 under PowerShell's numeric conversions.
+    assert "$Value.GetType().FullName -ceq 'System.Double'" in setter, (
+        "the numeric branch matches by convertibility rather than by exact type"
+    )
+    # Every widened numeric alias, and the DateTime branch, are gone.
+    for retired in ("$Value -is [single]", "$Value -is [int]", "$Value -is [long]",
+                    "$Value -is [decimal]", "$Value -is [int16]", "$Value -is [byte]",
+                    "$Value -is [datetime]", "$cell.Value2 = [datetime]$Value"):
+        assert retired not in setter, f"{retired} is back; it normalises the capture"
+    # Anything else throws BEFORE any assignment.
+    assert "throw (" in setter and "$Value.GetType().FullName" in setter
+    tail = setter[setter.index("throw ("):]
+    assert "$cell.Value2" not in tail and "ClearContents" not in tail, (
+        "an assignment follows the refusal branch"
+    )
+
+
+def test_149_unsupported_numeric_types_are_refused_not_normalised() -> None:
+    """The decision table the setter has to implement."""
+    def branch(type_name: str | None) -> str:
+        if type_name is None:
+            return "clear"
+        if type_name == "System.String":
+            return "string"
+        if type_name == "System.Boolean":
+            return "bool"
+        if type_name == "System.Double":
+            return "double"
+        return "throw"
+
+    assert branch(None) == "clear"
+    for supported, expected in (("System.String", "string"),
+                                ("System.Boolean", "bool"),
+                                ("System.Double", "double")):
+        assert branch(supported) == expected
+    for refused in REFUSED_CAPTURED_TYPES:
+        assert branch(refused) == "throw", (
+            f"{refused} is converted instead of refused, which normalises the capture"
+        )
+    # The refusal happens in the SETTER, before the write - not discovered later
+    # by the read-back.
+    setter = _typed_setter()
+    assert setter.index("throw (") > setter.index("$cell = $body.Cells(")
+    assert "Test-Phase5ExactValue" not in setter, (
+        "the setter defers its own type decision to the read-back comparator"
+    )
+
+
+def test_150_the_comparator_requires_exact_clr_type_identity() -> None:
+    comparator = _procedure(_executable(SCENARIOS), "Test-Phase5ExactValue")
+    assert "if ($null -eq $Expected) { return ($null -eq $Actual) }" in comparator
+    assert "if ($null -eq $Actual) { return $false }" in comparator
+    gate = "if ($Actual.GetType().FullName -cne $Expected.GetType().FullName) { return $false }"
+    assert gate in comparator, "there is no exact type-identity gate"
+    # The gate comes BEFORE any value comparison.
+    assert comparator.index(gate) < comparator.index("[string]$Actual -ceq")
+    assert comparator.index(gate) < comparator.index("[double]$Actual -eq")
+    assert "-ceq [string]$Expected" in comparator, "text is compared case-insensitively"
+    assert "Tolerance" not in comparator, "the strict comparator carries a tolerance"
+    for forbidden in ("Format-CalcValue", "NumberFormat", ".Text", "-as [double]"):
+        assert forbidden not in comparator, f"{forbidden} reached the exact comparator"
+
+
+def test_151_the_exact_comparator_decision_table() -> None:
+    """Every pair the review named, plus the ones that must still pass."""
+    class Boxed:
+        """A value with an explicit CLR type name, as the comparator sees it."""
+        def __init__(self, type_name: str, value):
+            self.type_name = type_name
+            self.value = value
+
+    def exact(actual, expected) -> bool:
+        if expected is None:
+            return actual is None
+        if actual is None:
+            return False
+        if actual.type_name != expected.type_name:
+            return False
+        if expected.type_name == "System.String":
+            return actual.value == expected.value          # case-sensitive
+        return actual.value == expected.value
+
+    string_one = Boxed("System.String", "1")
+    double_one = Boxed("System.Double", 1.0)
+    empty = Boxed("System.String", "")
+
+    # MUST FAIL - every one of these passed the old comparator or the old setter.
+    for captured, restored, why in (
+        (Boxed("System.Int32", 1), double_one, "Int32 1 -> Double 1"),
+        (Boxed("System.Int64", 1), double_one, "Int64 1 -> Double 1"),
+        (Boxed("System.Single", 1.0), double_one, "Single 1 -> Double 1"),
+        (Boxed("System.Decimal", 1), double_one, "Decimal 1 -> Double 1"),
+        (string_one, double_one, 'String "1" -> Double 1'),
+        (double_one, string_one, 'Double 1 -> String "1"'),
+        (None, empty, "null -> empty String"),
+    ):
+        assert not exact(restored, captured), f"{why} was accepted as an exact restoration"
+
+    # MUST PASS.
+    assert exact(string_one, Boxed("System.String", "1"))
+    assert exact(double_one, Boxed("System.Double", 1.0))
+    assert exact(Boxed("System.Boolean", True), Boxed("System.Boolean", True))
+    assert exact(None, None)
+    # And case still matters for text.
+    assert not exact(Boxed("System.String", "sar"), Boxed("System.String", "SAR"))
+
+
+def test_152_p5_fx_proves_exact_type_through_the_strict_comparator() -> None:
+    """The early gate is only worth having if it can see a normalisation."""
+    source = _executable(SCENARIOS)
+    block = source[source.index("Save-Phase5LockedFxSeed -Workbook"):
+                   source.index("Add-Phase5Result 'P5-FX'")]
+    assert "Test-Phase5ExactValue -Actual $restored[0][0] -Expected $seed.Currency" in block
+    assert "Test-Phase5ExactValue -Actual $restored[0][1] -Expected $seed.Rate" in block
+    assert "the captured value AND the captured type" in block
+    # It goes through the same comparator that now gates on type identity.
+    comparator = _procedure(source, "Test-Phase5ExactValue")
+    assert "GetType().FullName -cne" in comparator
+    # And through the real restoration path, so a refused type throws there.
+    assert "Reset-Phase5FxTable -Workbook $Workbook -Inspection $Inspection -Seed $seed" in block
+
+
+# --- the ledger fails closed ------------------------------------------------
+def test_153_a_duplicate_attempt_is_recorded_as_a_violation() -> None:
+    source = _executable(SCENARIOS)
+    guard = _procedure(source, "Add-Phase5Result")
+    assert "$script:Phase5LedgerViolations.Add(" in guard, (
+        "a duplicate attempt is not recorded anywhere"
+    )
+    assert "Add-Note (" in guard, "the duplicate attempt is invisible"
+    assert "return" in guard, "a second result is appended"
+    # It must NOT throw: that would take Y, Z and P5-FIN down with it.
+    assert "throw" not in guard, (
+        "the guard throws, which would destroy the cleanup and lifecycle evidence"
+    )
+    assert "$null = $script:Phase5RecordedIds.Add($Id)" in guard
+    reset = _procedure(source, "Reset-Phase5ResultLedger")
+    for field in ("Phase5RecordedIds", "Phase5LedgerViolations", "Phase5LedgerReported"):
+        assert field in reset, f"{field} is not reset at the start of a run"
+    # And the report is conditional on the violations, not on nothing.
+    integrity = _procedure(source, "Add-Phase5LedgerIntegrityResult")
+    assert "$violations = @($script:Phase5LedgerViolations)" in integrity
+    assert "if ($violations.Count -eq 0) {" in integrity, (
+        "P5-LDG reports the same verdict whether or not a duplicate was attempted"
+    )
+    assert "if ($true)" not in integrity
+
+
+def test_154_any_duplicate_attempt_forces_the_run_to_fail() -> None:
+    """Notes do not contribute to the FAIL count. P5-LDG does."""
+    source = _executable(SCENARIOS)
+    integrity = _procedure(source, "Add-Phase5LedgerIntegrityResult")
+    assert "if ($script:Phase5LedgerReported) { return }" in integrity, (
+        "many duplicate attempts could produce many P5-LDG results"
+    )
+    assert "$script:Phase5LedgerReported = $true" in integrity
+    assert "Add-Result 'P5-LDG'" in integrity
+    assert "'FAIL'" in integrity and "'PASS'" in integrity
+    assert "($violations.Count -eq 0)" in integrity
+    assert "'SKIP'" not in integrity, "an integrity violation must never be a skip"
+
+    # Wired after Y and Z, so cleanup evidence survives, and before the summary.
+    harness = _executable(HARNESS)
+    assert "Add-Phase5LedgerIntegrityResult" in harness, "P5-LDG is never emitted"
+    assert harness.index("Add-Result 'Y' 'Transient COM releases' 'PASS'") < \
+        harness.index("Add-Phase5LedgerIntegrityResult")
+    assert harness.index("Add-Phase5LedgerIntegrityResult") < \
+        harness.index("$failed = @($results | Where-Object { $_.Status -eq 'FAIL' })")
+    # The run's verdict is the FAIL count, so a P5-LDG FAIL makes it red.
+    assert "if ($failed.Count -eq 0) {" in harness and "exit 1" in harness
+    # And nothing de-duplicates at print time.
+    for forbidden in ("Select-Object -Unique -Property Id", "Group-Object Id",
+                      "Sort-Object Id -Unique"):
+        assert forbidden not in harness, f"the report de-duplicates ({forbidden})"
+
+
+def test_155_the_ledger_models_both_paths_and_the_grouped_catch() -> None:
+    """Success, duplicate, and the grouped-catch shape, end to end."""
+    class Ledger:
+        def __init__(self):
+            self.results: list[tuple[str, str]] = []
+            self.violations: list[str] = []
+            self.reported = False
+
+        def add(self, identifier: str, status: str) -> None:
+            if any(i == identifier for i, _ in self.results):
+                self.violations.append(f"{identifier} (attempted as {status})")
+                return
+            self.results.append((identifier, status))
+
+        def integrity(self) -> None:
+            if self.reported:
+                return
+            self.reported = True
+            self.results.append(
+                ("P5-LDG", "PASS" if not self.violations else "FAIL"))
+
+        @property
+        def failed(self) -> list[str]:
+            return [i for i, s in self.results if s == "FAIL"]
+
+    # SUCCESS PATH: no duplicate, no violation, no integrity FAIL.
+    clean = Ledger()
+    for identifier in ("P5-FX", "P5-S2", "P5-ST", "P5-S3", "P5-S4"):
+        clean.add(identifier, "PASS")
+    clean.integrity()
+    assert not clean.violations
+    assert ("P5-LDG", "PASS") in clean.results
+    assert clean.failed == [], clean.failed
+
+    # DUPLICATE PATH: P5-S2 PASS, then attempted FAIL.
+    duplicate = Ledger()
+    duplicate.add("P5-S2", "PASS")
+    duplicate.add("P5-S2", "FAIL")
+    duplicate.integrity()
+    assert [i for i, _ in duplicate.results].count("P5-S2") == 1, "a second result appeared"
+    assert duplicate.results[0] == ("P5-S2", "PASS"), "the first result did not stand"
+    assert duplicate.violations, "the duplicate attempt vanished"
+    assert duplicate.failed == ["P5-LDG"], duplicate.failed
+    assert duplicate.failed, "the run could still finish green on a duplicate attempt"
+
+    # GROUPED CATCH: S3 and S4 recorded, then the catch attempts the whole group.
+    grouped = Ledger()
+    grouped.add("P5-S3", "PASS")
+    grouped.add("P5-S4", "PASS")
+    for identifier in ("P5-S3", "P5-S4", "P5-S5", "P5-KP", "P5-RC"):
+        grouped.add(identifier, "FAIL")
+    grouped.integrity()
+    ids = [i for i, _ in grouped.results]
+    assert ids.count("P5-S3") == 1 and ids.count("P5-S4") == 1
+    assert ("P5-S3", "PASS") in grouped.results and ("P5-S4", "PASS") in grouped.results
+    assert ("P5-S5", "FAIL") in grouped.results
+    assert len(grouped.violations) == 2, grouped.violations
+    assert "P5-LDG" in grouped.failed
+
+    # MANY duplicates still produce exactly ONE integrity result.
+    many = Ledger()
+    many.add("P5-S2", "PASS")
+    for _ in range(5):
+        many.add("P5-S2", "FAIL")
+    many.integrity()
+    many.integrity()
+    assert [i for i, _ in many.results].count("P5-LDG") == 1
+    assert len(many.violations) == 5
+
+
+# --- negative controls -----------------------------------------------------
+def test_nc_98_a_normalising_numeric_branch_is_caught() -> None:
+    planted = _synthetic(
+        "        } elseif (($Value -is [double]) -or ($Value -is [int])) {\n"
+        "            $cell.Value2 = [double]$Value\n"
+    )
+    assert "-is [int]" in planted, "the widened branch must be visible"
+    assert "GetType().FullName -ceq 'System.Double'" not in planted
+    # And the old comparator could not see the result.
+    assert float(1) == float(1.0), (
+        "Int32 1 and Double 1 compare equal once both are cast to Double, which "
+        "is why the type gate has to come first"
+    )
+
+
+def test_nc_99_a_note_only_duplicate_guard_is_caught() -> None:
+    planted = _synthetic(
+        "    if (Test-Phase5ResultRecorded -Id $Id) {\n"
+        "        Add-Note ('suppressed')\n"
+        "        return\n"
+        "    }\n"
+    )
+    assert "Phase5LedgerViolations" not in planted, "the fail-open guard must be visible"
+    # The arithmetic of failing open: a PASS, a suppressed FAIL, and a green run.
+    results = [("P5-X", "PASS")]
+    notes = ["P5-X attempted as FAIL"]
+    assert [i for i, s in results if s == "FAIL"] == []
+    assert notes, "the only trace of the failure is a note"
+    assert len([i for i, _ in results]) == len({i for i, _ in results})

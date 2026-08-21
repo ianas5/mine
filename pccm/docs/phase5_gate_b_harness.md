@@ -2202,3 +2202,86 @@ from an unestablished state, and P5-S3 inherited `REFUSED` and
 `STRUCTURE CHANGE PENDING`. None of that is evidence about production status
 behaviour. Those scenarios must be rerun unchanged on a valid baseline once R5
 is confirmed fixed. P5-S4 and P5-KP passed and are untouched.
+
+---
+
+## Review round 4A: exact captured types, and a ledger that fails closed
+
+### Blocker 1 — "exact typed" was not exact for numeric types
+
+The Run-4 setter accepted `Single`, `Int16`, `Int32`, `Int64`, `Byte` and
+`Decimal` and wrote all of them as `Double`. That is normalisation, not
+restoration: a captured `Int32 1` came back as `Double 1`. And the comparator
+could not see it, because it ended in
+
+```powershell
+return ([double]$Actual -eq [double]$Expected)
+```
+
+so `Int32 1` compared **equal** to `Double 1`. The helper that exists to prove
+exact restoration was proving something weaker than it claimed. A `DateTime`
+branch was there too, with no runtime evidence behind it and no defined
+exact-type contract.
+
+**Supported captured types are now exactly:** an empty cell (`$null`),
+`System.String`, `System.Double`, `System.Boolean`. `Double` is matched by exact
+type name — `-is [double]` would be true for a boxed `Int32` under PowerShell's
+numeric conversions. Everything else reaches the throw, **before any
+assignment**, naming the real CLR type. The harness does not get to decide that
+some other numeric type "is really" a Double.
+
+**The comparator establishes exact CLR type identity first:**
+
+```powershell
+if ($null -eq $Expected) { return ($null -eq $Actual) }
+if ($null -eq $Actual) { return $false }
+if ($Actual.GetType().FullName -cne $Expected.GetType().FullName) { return $false }
+```
+
+then compares by that one already-equal type — text case-sensitively, Double
+exactly with no tolerance, Boolean as Boolean. One gate subsumes the three
+separate probes it replaces and also catches the numeric pairs they missed. All
+nine call sites compare Excel-read against Excel-read or Excel-captured, never
+against a JSON-derived expectation, so type identity is the right rule
+everywhere it is used.
+
+| captured → restored | verdict |
+|---|---|
+| `Int32 1` → `Double 1` | **FAIL** |
+| `Int64 1` → `Double 1` | **FAIL** |
+| `Single 1` → `Double 1` | **FAIL** |
+| `Decimal 1` → `Double 1` | **FAIL** |
+| `String "1"` → `Double 1` | **FAIL** |
+| `Double 1` → `String "1"` | **FAIL** |
+| `null` → `""` | **FAIL** |
+| `String "1"` → `String "1"` | PASS |
+| `Double 1` → `Double 1` | PASS |
+| `Boolean True` → `Boolean True` | PASS |
+| `null` → `null` | PASS |
+
+### Blocker 2 — a duplicate attempt could still finish green
+
+The one-result guard turned a duplicate into a **Note**, and the driver declares
+success from the FAIL count. Notes do not contribute to it. So a future
+ownership defect could record `P5-X` as PASS, attempt `P5-X` as FAIL, have the
+attempt suppressed, and the run could still report ALL CHECKS PASSED. Fail-open
+behaviour in an evidence harness.
+
+A duplicate attempt is now recorded in `$script:Phase5LedgerViolations`, and
+**`P5-LDG`** reports on it: PASS when there were none, FAIL naming every
+duplicate when there were. It is emitted from the driver **after Y and Z** and
+before the summary, so cleanup and lifecycle evidence still arrive; it goes
+through `Add-Result` rather than the guard, so the ledger can never suppress its
+own report; and it carries its own emitted-once flag, so many duplicate attempts
+still produce exactly one `P5-LDG`.
+
+The guard deliberately does **not** throw — that would take the shutdown ledger,
+Y, Z and P5-FIN down with it. The invariants hold together:
+
+1. one scenario result per ID — the first stands, no second is appended;
+2. the attempt is visible, as a violation and as a Note;
+3. any attempt forces the run to FAIL, through `P5-LDG`;
+4. it cannot be reduced to a non-failing Note;
+5. many attempts still give one integrity result;
+6. Y, Z and P5-FIN still run;
+7. nothing de-duplicates at print time.

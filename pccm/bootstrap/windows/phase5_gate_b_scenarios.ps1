@@ -668,9 +668,13 @@ function Add-Phase5ModuleInventoryChecks {
 # The guard is not a print-time filter: nothing downstream de-duplicates, and
 # the ledger genuinely contains one record per ID.
 $script:Phase5RecordedIds = New-Object System.Collections.ArrayList
+$script:Phase5LedgerViolations = New-Object System.Collections.ArrayList
+$script:Phase5LedgerReported = $false
 
 function Reset-Phase5ResultLedger {
     $script:Phase5RecordedIds = New-Object System.Collections.ArrayList
+    $script:Phase5LedgerViolations = New-Object System.Collections.ArrayList
+    $script:Phase5LedgerReported = $false
 }
 
 function Test-Phase5ResultRecorded {
@@ -678,17 +682,53 @@ function Test-Phase5ResultRecorded {
     return (@($script:Phase5RecordedIds) -contains $Id)
 }
 
+function Get-Phase5LedgerViolations { return @($script:Phase5LedgerViolations) }
+
 function Add-Phase5Result {
     param([string]$Id, [string]$Name, [string]$Status, [string]$Detail = '')
     if (Test-Phase5ResultRecorded -Id $Id) {
-        Add-Note ('P5 ledger: a second result for ' + $Id + ' was suppressed (' +
-                  $Status + '). The first result stands; this usually means a ' +
-                  'later setup step failed inside a scenario that had already ' +
-                  'completed. Detail: ' + $Detail)
+        # A DUPLICATE ATTEMPT IS ITSELF A HARNESS-INTEGRITY FAILURE, and it must
+        # not be reducible to a Note. Review round 4A: the driver declares
+        # success from the FAIL count, and Notes do not contribute to it - so a
+        # future ownership defect could record P5-X as PASS, attempt P5-X as
+        # FAIL, have the attempt suppressed, and still finish green. That is
+        # fail-open behaviour in an evidence harness.
+        #
+        # The first result still stands and no second result with this ID is
+        # appended, so the one-result-per-ID property is unchanged. What changes
+        # is that the attempt is recorded as a violation, and P5-LDG turns any
+        # violation into a real FAIL. Throwing from here instead would take the
+        # shutdown ledger, Y, Z and P5-FIN down with it.
+        $null = $script:Phase5LedgerViolations.Add(
+            $Id + ' (attempted as ' + $Status + '): ' + $Detail)
+        Add-Note ('P5 ledger VIOLATION: a second result for ' + $Id +
+                  ' was attempted (' + $Status + ') and refused. The first result ' +
+                  'stands and P5-LDG will FAIL the run. Detail: ' + $Detail)
         return
     }
     $null = $script:Phase5RecordedIds.Add($Id)
     Add-Result $Id $Name $Status $Detail
+}
+
+function Add-Phase5LedgerIntegrityResult {
+    # ONE result, always, whatever happened above. It is emitted through
+    # Add-Result rather than Add-Phase5Result so that the ledger's own report can
+    # never be suppressed by the ledger, and it carries its own emitted-once
+    # flag so that many duplicate attempts still produce exactly one P5-LDG.
+    if ($script:Phase5LedgerReported) { return }
+    $script:Phase5LedgerReported = $true
+    $violations = @($script:Phase5LedgerViolations)
+    if ($violations.Count -eq 0) {
+        Add-Result 'P5-LDG' 'Phase-5 result ledger: one result per scenario ID' 'PASS' `
+            ('scenario results recorded: ' + @($script:Phase5RecordedIds).Count +
+             '; duplicate attempts: 0')
+        return
+    }
+    Add-Result 'P5-LDG' 'Phase-5 result ledger: one result per scenario ID' 'FAIL' `
+        ('a scenario result was attempted more than once. The first result for ' +
+         'each ID stands, but a duplicate attempt means a scenario boundary owns ' +
+         'a failure that is not its own, so the run cannot be trusted: ' +
+         ($violations -join ' | '))
 }
 
 # ===========================================================================
@@ -995,24 +1035,33 @@ function Set-Phase5TypedCell {
         #
         # An unsupported type FAILS LOUDLY rather than being coerced by
         # whichever branch happens to accept it.
+        # THE SUPPORTED CAPTURED TYPES, AND ONLY THOSE. Review round 4A: the
+        # earlier form accepted Single, Int16, Int32, Int64, Byte and Decimal and
+        # wrote all of them as Double. That is NORMALISATION, not restoration -
+        # a captured Int32 1 came back as Double 1 - and the read-back could not
+        # see it, because the comparator ended in [double]$Actual -eq
+        # [double]$Expected. A DateTime branch was there too, with no runtime
+        # evidence behind it and no defined exact-type contract, so it is gone.
+        #
+        # What Run 4's restoration path actually needs is $null, String and
+        # Double. Boolean is kept because Excel Value2 really does publish it and
+        # it round-trips as itself. Everything else FAILS CLOSED, before any
+        # assignment, naming the real CLR type - the harness does not get to
+        # decide that some other numeric type "is really" a Double.
         if ($null -eq $Value) {
             $null = $cell.ClearContents()
         } elseif ($Value -is [string]) {
             $cell.Value2 = [string]$Value
         } elseif ($Value -is [bool]) {
             $cell.Value2 = [bool]$Value
-        } elseif (($Value -is [double]) -or ($Value -is [single]) -or
-                  ($Value -is [int]) -or ($Value -is [long]) -or
-                  ($Value -is [decimal]) -or ($Value -is [int16]) -or
-                  ($Value -is [byte])) {
+        } elseif ($Value.GetType().FullName -ceq 'System.Double') {
             $cell.Value2 = [double]$Value
-        } elseif ($Value -is [datetime]) {
-            $cell.Value2 = [datetime]$Value
         } else {
             throw ("Set-Phase5TypedCell cannot restore a value of type " +
-                   $Value.GetType().FullName + "; Excel Value2 publishes String, " +
-                   "Double, Boolean, Date or an empty cell, and a type outside that " +
-                   "set must be reported rather than coerced")
+                   $Value.GetType().FullName + "; this helper restores exactly " +
+                   "what Excel Value2 published - an empty cell, System.String, " +
+                   "System.Double or System.Boolean - and converting any other " +
+                   "type would normalise the capture instead of restoring it")
         }
     } finally {
         if ($null -ne $cell)            { Release-Transient $cell            'Range(cell)';  $cell            = $null }
@@ -1088,23 +1137,23 @@ function Test-CalcValue {
 # tolerance, no display-text conversion, and $null is never "".
 function Test-Phase5ExactValue {
     param($Actual, $Expected)
-    if ($null -eq $Expected) {
-        # A genuine absence. An empty String is a value the user entered.
-        return ($null -eq $Actual)
-    }
+    # EXACT CLR TYPE IDENTITY FIRST, then the value. Review round 4A: this used
+    # to end in [double]$Actual -eq [double]$Expected, so a captured Int32 1
+    # compared EQUAL to a restored Double 1 and the setter's normalisation was
+    # invisible. Rule A - absence - is unchanged; rules B, C and D are now
+    # consequences of one type gate rather than three separate probes.
+    if ($null -eq $Expected) { return ($null -eq $Actual) }
     if ($null -eq $Actual) { return $false }
-    if ($Expected -is [string]) {
-        if (-not ($Actual -is [string])) { return $false }
-        return ([string]$Actual -ceq [string]$Expected)
-    }
-    if ($Expected -is [bool]) {
-        if (-not ($Actual -is [bool])) { return $false }
-        return ([bool]$Actual -eq [bool]$Expected)
-    }
-    # Numeric. A String that merely LOOKS numeric is not equal to a number.
-    if ($Actual -is [string]) { return $false }
-    if ($Actual -is [bool]) { return $false }
-    return ([double]$Actual -eq [double]$Expected)
+    if ($Actual.GetType().FullName -cne $Expected.GetType().FullName) { return $false }
+    # The types are identical from here, so each comparison is between two
+    # values of that one type.
+    if ($Expected -is [string]) { return ([string]$Actual -ceq [string]$Expected) }
+    if ($Expected -is [bool]) { return ([bool]$Actual -eq [bool]$Expected) }
+    if ($Expected -is [double]) { return ([double]$Actual -eq [double]$Expected) }
+    # A type outside the restoration set can still be READ from a cell, and a
+    # snapshot must compare it faithfully rather than refuse it. Same type, so
+    # this is a comparison of like with like.
+    return ($Actual -eq $Expected)
 }
 
 function Format-Phase5Typed {
