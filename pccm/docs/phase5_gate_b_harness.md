@@ -2541,3 +2541,196 @@ Gate B is **not** accepted. Phase 5 is **not** accepted. No runtime execution is
 requested yet.
 
 **NO WINDOWS/EXCEL RUNTIME WAS EXECUTED DURING THIS CORRECTION ROUND.**
+
+## Runtime Run 6: `{}` is a valid rate mapping
+
+**Run 6 is VALID EVIDENCE — RUN-5 FIXTURE CHOREOGRAPHY PROGRESSED THROUGH
+STRUCTURAL APPLY AND CHECKED DRIVER CREATION; P5-FIX THEN EXPOSED AN
+EMPTY-OBJECT POWERSHELL PROPERTY-ENUMERATION DEFECT.** It ran once on real
+Windows against `5fd8992`, it is not rerun and not overwritten.
+
+Result: **53 passed, 2 failed, 0 skipped** — `P5-FIX` and `P5-ALL`. `P5-ALL` is
+not an independent defect: it is the dependency gate reporting that the
+dependent scenarios were not attempted. **Run 6 exposes one root.**
+
+### What the gate bought
+
+This is what `P5-FIX` was added for. A fixture defect was reported as a fixture
+defect, with the failing statement named, instead of nineteen downstream
+scenarios each reporting the same inherited symptom as its own predicate
+failing. Run 5 needed a review round to locate its root from the cascade; Run 6
+handed it over in one result.
+
+### The root
+
+```
+phase5_gate_b_scenarios.ps1:1847
+    foreach ($year in $rates.PSObject.Properties.Name) {
+
+System.Management.Automation.RuntimeException:
+    The property 'Name' cannot be found on this object.
+
+Write-Phase5InflationRates -> Set-Phase5Fixture -> P5-FIX
+```
+
+The golden fixture is plan case 1, *SAR, no inflation, one project year*, and
+its emitted model carries
+
+```json
+"inflation": { "Standard": {} }
+```
+
+**That is not malformed data.** The inflation grid spans Base Year + 1 through
+Start Year + Duration − 1. Case 1 is Base 2026, Start 2026, Duration 1, so that
+span runs 2027..2026 — it is empty, and there is no calendar year a rate could
+belong to. `{}` is the correct encoding of "there is nothing to inflate".
+
+It is not a one-case curiosity either. **Eleven of the twenty-eight emitted
+models carry an empty rate mapping**, and they are exactly the eleven whose
+span is zero: cases 1, 2, 6, 7, 8, 16, 17, 18, 22, 25 and 30. The correlation is
+proved in both directions by regression, so a rate map that were empty for any
+*other* reason would fail as a corpus defect rather than pass as a harness one.
+
+### Why the expression fails
+
+`$collection.Name` is **member enumeration**: PowerShell projects the member
+across every element. Under `Set-StrictMode -Version 2.0` an empty collection
+cannot answer it and raises `The property 'Name' cannot be found on this
+object.` rather than returning zero names.
+
+`.PSObject.Properties` has no such edge. It is a real property of a real
+`PSObject` whether or not the object holds any members, and `foreach` over an
+empty collection is zero iterations. So the correction is to enumerate the
+`PSPropertyInfo` objects and read `Name` and `Value` off each individual one:
+
+```powershell
+foreach ($profileProperty in $Model.inflation.PSObject.Properties) {
+    $name  = [string]$profileProperty.Name
+    $rates = $profileProperty.Value
+    $rowIndex = Find-GridRow -Workbook $Workbook -Grid $grid -Key $name
+    foreach ($rateProperty in $rates.PSObject.Properties) {
+        $year      = [string]$rateProperty.Name
+        $rateValue = $rateProperty.Value
+        ...
+    }
+}
+```
+
+There is **no guard, no count test and no early return.** An empty collection is
+simply an empty collection. A `Count -gt 0` guard would have worked and would
+still have been wrong: it leaves the projection in place for every non-empty
+case and puts the harness one corpus change away from the same failure
+elsewhere.
+
+The value now comes off the **same property object** the year name came from,
+which also removes the `$rates.$year` dynamic lookup — the blank branch can no
+longer be reached through a lookup that missed.
+
+### `{}` versus `{"2028": null}`
+
+These are different, and both survive:
+
+| Shape | Meaning | Cells written | Where |
+|---|---|---|---|
+| `{}` | zero rate entries | **none** — the loop body never runs | cases 1, 2, 6, 7, 8, 16, 17, 18, 22, 25, 30 |
+| `{"2028": null}` | calendar year 2028 **is** an entry, and its cell must be **BLANK** | **one**, blank | case 14, the blank-required-rate refusal |
+
+Collapsing the second into the first destroys case 14: the refusal it exists to
+prove could never fire, because the rate the model says is blank would simply
+never be written. Collapsing the first into an error is what Run 6 did. The
+`[double]$null` guard from the Run-4 round is unchanged and still branches
+before the cast, so a blank never becomes a numeric zero.
+
+### The audit: every `.PSObject.Properties.Name` site
+
+| Function / site | Container enumerated | Can legally be empty? | Evidence | Action |
+|---|---|---|---|---|
+| `Write-Phase5InflationRates` | **`$rates`** (a profile's rate map) | **YES** | empty in 11 of 28 emitted models, exactly the zero-span timelines | **CORRECTED** — enumerates `PSPropertyInfo` objects |
+| `Write-Phase5InflationRates` | `$Model.inflation` | no | every model has ≥1 driver, and the profile set **equals** the set of profiles those drivers reference | converted with the inner loop — same procedure, same expression class, one line apart |
+| `Set-Phase5Fixture` | `$Model.inflation` | no | same derivation | left as it is — proven site, no churn; pinned by regression |
+| `Invoke-Phase5GateBScenarios`, in the `P5-FIX` block | `$golden.model.inflation` | no | same derivation | left as it is; pinned by regression |
+| `Get-CalcScalarBlock` | `$Inspection.calc.scalar_blocks.<block>.rows` | no | both emitted blocks carry rows | left as it is; pinned by regression |
+| `Get-Phase5Snapshot` | `$Inspection.calc.tables` | no | five tables, always emitted | left as it is; pinned by regression |
+| `Add-Phase5AnalyticalChecks` ×4 | `$wanted` — one emitted `calc_years` / `resolved_fx_rows` / `drivers` / `annual` row | no | 40 + 19 + 21 + 40 row objects emitted, none empty | left as it is; pinned by regression |
+| `Add-Phase5AnalyticalChecks` | `$expected.resolved_fx` | no | non-empty in all 19 expected blocks | left as it is; pinned by regression |
+| `Add-Phase5AnalyticalChecks`, `P5-ID` ×2 | `$expected.totals` | no | ten fields, all 19 expected blocks | left as it is; pinned by regression |
+
+The "no churn" half of that instruction and the "nothing waiting for Run 7" half
+are both honoured by making the audit **executable**. `test_183` re-derives the
+projection list from the source, refuses an unclassified container outright, and
+re-proves every class-B non-emptiness claim against the artifacts the builder
+actually emits. A future corpus case that makes any of those containers empty
+fails that test by name, here, rather than failing the next Windows run.
+
+Note that the class-B claim for `$Model.inflation` is a *derivation*, not a
+tally: it is non-empty **because** every model has at least one driver and every
+driver names a profile. The test asserts that derivation, not just the current
+counts.
+
+### What Run 6 proved works
+
+`P5-FIX` entered the real `Set-Phase5Fixture` and reached **step G**. Every
+production mutation before step G is fail-closed and throws on any failed
+postcondition, so reaching `Write-Phase5InflationRates` at all is real-Windows
+evidence that, on the path taken:
+
+* the registers emptied and the counters reset (step A);
+* `PCCM_ApplyTimeline` returned `OK|*` with a blank `PCCM_StructuralReport`
+  (step E);
+* every checked `PCCM_AddCostLine` / `PCCM_AddRisk` returned `OK|*` and its row
+  carried the emitted `permanent_id` before any driver data was written
+  (step F).
+
+**The Run-5 orphan/add-order root was not reproduced on the path reached.** That
+is not the same as a `P5-FIX` PASS — `P5-FIX` failed before completing, and the
+closing coherence proof at step H never ran.
+
+Also PASS in Run 6: the Phase-4 matrix 35/35, `P5-FX`, `P5-M`, `P5-EV`,
+`P5-D0`–`P5-D8`, `P5-DP` at 2 432/2 432, `P5-DC`, `Y`, `Z`, `P5-LDG` with zero
+duplicate attempts, and `P5-FIN`. `Workbook.Close`, `Application.Quit` and the
+natural PID exit all true.
+
+### The gate itself behaved correctly
+
+`P5-FIX` FAIL → `P5-ALL` FAIL, *not attempted*, and the analytical, status and
+rollback scenarios were not allowed to emit a cascade — while `Z`, `Y`,
+`P5-LDG` and `P5-FIN` all still completed. That behaviour is preserved
+unchanged, and `test_182` pins it, including the exact message Run 6 recorded.
+
+No production calculation or status finding is available from Run 6, because the
+dependent Phase-5 scenarios were correctly not attempted.
+
+### The limit of the proof in this round
+
+Seven source mutations were planted against the corrected writer and each was
+caught by at least two independent tests: the exact Run-6 projection restored
+(6 tests), the profile loop projecting `.Name` again (4), a `Count` guard that
+leaves the projection in place (6), a null rate skipped instead of written blank
+(2), the rate value resolved dynamically again (2), the profile row located
+inside the rate loop (2), and the gate message reduced to a bare "not attempted"
+(2).
+
+The regressions that model the enumeration semantics are **Python models of the
+intended behaviour**. They prove what the corrected shape must do with `{}`,
+with one rate, with several, and with a null-valued rate, and that the first two
+shapes are distinct paths. They do **not** claim to reproduce the Windows
+PowerShell property adapter. Whether the real adapter yields zero properties for
+an empty `PSCustomObject` is a runtime fact, and the next Windows run is where
+it is proved.
+
+### What did not change
+
+No production VBA — `modInflation`, `modStructuralCheck`, `modDrivers`,
+`modCalcReport`, `modCalcFingerprint`, `modCalcFactors` and every other module
+are byte-identical. No builder, spec, oracle or corpus change: plan case 1 still
+carries `{}`, plan case 14 still carries its blank required rate, and the
+canonical parity corpus is untouched. No calculation or status logic was
+touched. This was a PowerShell harness enumeration defect and the fix is
+confined to one procedure.
+
+### Status
+
+Gate B is **not** accepted. Phase 5 is **not** accepted. No runtime execution is
+requested yet.
+
+**NO WINDOWS/EXCEL RUNTIME WAS EXECUTED DURING THIS CORRECTION ROUND.**

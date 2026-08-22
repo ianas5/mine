@@ -1841,11 +1841,48 @@ function Write-Phase5InflationRates {
         }
     }
 
-    foreach ($name in $Model.inflation.PSObject.Properties.Name) {
-        $rowIndex = Find-GridRow -Workbook $Workbook -Grid $grid -Key ([string]$name)
-        $rates = $Model.inflation.$name
-        foreach ($year in $rates.PSObject.Properties.Name) {
-            $ordinal = [array]::IndexOf($headers, [string]$year) + 1
+    # RUN-6 ROOT. THE PROPERTY COLLECTION IS ENUMERATED; ITS `.Name` IS NOT
+    # PROJECTED ACROSS IT.
+    #
+    # The inner loop used to read
+    #
+    #     foreach ($year in $rates.PSObject.Properties.Name)
+    #
+    # and `$rates` is legitimately an EMPTY object in 11 of the 28 emitted
+    # models. `{}` is not malformed data: the rate map is empty exactly when the
+    # timeline requires no inflation calendar year at all, which for the golden
+    # plan case 1 - Base Year 2026, Start Year 2026, Duration 1 - is the correct
+    # encoding of "there is nothing to inflate".
+    #
+    # `$collection.Name` is MEMBER ENUMERATION, and under Set-StrictMode -Version
+    # 2.0 an empty collection cannot answer it: PowerShell raises
+    #
+    #     The property 'Name' cannot be found on this object.
+    #
+    # rather than returning zero names. Enumerating the PSPropertyInfo objects
+    # themselves has no such edge: `.PSObject.Properties` is a real property of a
+    # real PSObject whether or not it holds any members, and `foreach` over an
+    # empty collection is zero iterations. Name and Value are then read from each
+    # INDIVIDUAL property, which also removes the `$rates.$year` dynamic lookup.
+    #
+    # THE TWO EMPTINESSES ARE DIFFERENT AND BOTH ARE PRESERVED:
+    #
+    #   {}                 zero rate entries. The loop body never runs and no
+    #                      cell is written. Plan cases 1, 2, 6, 7, 8, 16, 17,
+    #                      18, 22, 25 and 30.
+    #   {"2028": null}     calendar year 2028 IS an entry and its cell must be
+    #                      BLANK. Plan case 14, the blank-required-rate refusal.
+    #
+    # Collapsing the second into the first would destroy case 14; collapsing the
+    # first into an error is what Run 6 did.
+    foreach ($profileProperty in $Model.inflation.PSObject.Properties) {
+        $name = [string]$profileProperty.Name
+        $rates = $profileProperty.Value
+        $rowIndex = Find-GridRow -Workbook $Workbook -Grid $grid -Key $name
+        foreach ($rateProperty in $rates.PSObject.Properties) {
+            $year = [string]$rateProperty.Name
+            $rateValue = $rateProperty.Value
+            $ordinal = [array]::IndexOf($headers, $year) + 1
             if ($ordinal -lt 1) { throw ("no generated inflation column for calendar year " + $year) }
             # A NULL RATE IS A BLANK CELL, and the branch is BEFORE the cast.
             #
@@ -1854,14 +1891,18 @@ function Write-Phase5InflationRates {
             # which is a VALID model. The refusal the case exists to prove could
             # never have fired, and the fixture would have quietly destroyed the
             # condition it was written to exercise.
-            if ($null -eq $rates.$year) {
+            #
+            # The value now comes off the SAME property object the year came
+            # from, so the blank branch cannot be reached through a lookup that
+            # missed.
+            if ($null -eq $rateValue) {
                 Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
                     -TableName $grid.table_name -RowIndex $rowIndex `
                     -ColumnIndex $ordinal -Value $null
             } else {
                 Set-TableCell -Workbook $Workbook -SheetName $grid.sheet `
                     -TableName $grid.table_name -RowIndex $rowIndex `
-                    -ColumnIndex $ordinal -Value ([double]$rates.$year)
+                    -ColumnIndex $ordinal -Value ([double]$rateValue)
             }
         }
     }

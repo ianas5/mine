@@ -1414,8 +1414,13 @@ def test_48_a_null_fixture_value_is_written_as_a_blank_cell() -> None:
     refusal each case exists to prove could never have fired: the fixture was
     quietly destroying the condition it was written to exercise.
     """
+    # The CLAIM is unchanged by the Run-6 correction; only the expression the
+    # inflation writer branches on moved. It used to be the dynamic lookup
+    # `$rates.$year`; it is now the Value of the same PSPropertyInfo the year
+    # name came from, which is strictly tighter - the blank branch can no longer
+    # be reached through a lookup that missed.
     source = _executable(SCENARIOS)
-    for procedure, subject in (("Write-Phase5InflationRates", "$rates.$year"),
+    for procedure, subject in (("Write-Phase5InflationRates", "$rateValue"),
                                ("Write-Phase5Weights", "$weight")):
         body = _procedure(source, procedure)
         guard = f"if ($null -eq {subject}) {{"
@@ -2764,12 +2769,19 @@ def test_78_inflation_rates_are_placed_by_profile_name() -> None:
     """
     source = _executable(SCENARIOS)
     body = _procedure(source, "Write-Phase5InflationRates")
-    assert "$rowIndex = Find-GridRow -Workbook $Workbook -Grid $grid -Key ([string]$name)" in body, (
+    # `$name` is already [string], taken off the PSPropertyInfo since Run 6.
+    assert "$rowIndex = Find-GridRow -Workbook $Workbook -Grid $grid -Key $name" in body, (
         "the profile row is not located by name"
+    )
+    assert "$name = [string]$profileProperty.Name" in body, (
+        "the profile name no longer comes from an individual property object"
     )
     assert "$rowIndex++" not in body, "the profile row is still an incremented counter"
     # The column axis stays keyed by calendar-year header.
-    assert "[array]::IndexOf($headers, [string]$year)" in body
+    assert "[array]::IndexOf($headers, $year)" in body
+    assert "$year = [string]$rateProperty.Name" in body, (
+        "the calendar year no longer comes from an individual property object"
+    )
     # And a rate a previous fixture left on a surviving profile is cleared first:
     # SyncProfileRows keeps rates by name, so inheritance is real.
     assert "-Value $null" in body, (
@@ -7023,3 +7035,457 @@ def test_174_no_phase5_gate_downgrades_a_failure_to_a_skip() -> None:
     assert fix_block.count("Add-Phase5Result 'P5-ALL'") == 2, (
         "the fixture self-proof does not gate on both its success and its catch path"
     )
+
+
+# ===========================================================================
+# 24. RUNTIME RUN 6: the empty rate object
+# ===========================================================================
+# Run 6 carried the Run-5 fixture choreography onto real Excel and reached
+# step G, which is runtime evidence that the checked Adds and the structural
+# Apply before it did what they claim. P5-FIX then failed inside
+# Write-Phase5InflationRates on
+#
+#     foreach ($year in $rates.PSObject.Properties.Name)
+#
+# with "The property 'Name' cannot be found on this object", because `$rates` is
+# legitimately `{}` for the golden plan case. `{}` is the CORRECT encoding of
+# "this timeline needs no inflation calendar year", not malformed data.
+def _rate_maps() -> list[tuple[str, str, dict]]:
+    """(plan case id, profile name, rate mapping) for every emitted model."""
+    out = []
+    for case in _emitted()["cases"]["plan_cases"]:
+        model = case.get("model")
+        if not model:
+            continue
+        for name, rates in (model.get("inflation") or {}).items():
+            out.append((str(case["id"]), str(name), rates))
+    return out
+
+
+def test_175_r1_the_golden_plan_case_carries_an_empty_rate_object() -> None:
+    """R1. `inflation["Standard"] == {}` for plan case 1, and it is intentional.
+
+    Intentional is proved from the TIMELINE, not asserted: the inflation grid
+    spans Base Year + 1 .. Start Year + Duration - 1, and for case 1 that span
+    is empty, so there is no calendar year a rate could belong to.
+    """
+    cases = _emitted()["cases"]
+    golden = next(case for case in cases["plan_cases"] if str(case["id"]) == "1")
+    timeline = golden["model"]["timeline"]
+    assert timeline == {"base_year": 2026, "start_year": 2026, "duration": 1}, timeline
+    first_year = int(timeline["base_year"]) + 1
+    last_year = int(timeline["start_year"]) + int(timeline["duration"]) - 1
+    assert last_year < first_year, (
+        f"case 1 does span calendar years {first_year}..{last_year}, so an empty "
+        "rate map would NOT be the correct encoding"
+    )
+    assert golden["model"]["inflation"] == {"Standard": {}}, golden["model"]["inflation"]
+
+    # AND THE EMPTINESS IS EXACTLY THE ZERO-SPAN CASES, corpus-wide. A rate map
+    # that were empty for any other reason would be a corpus defect, not a
+    # harness one.
+    for case in cases["plan_cases"]:
+        model = case.get("model")
+        if not model:
+            continue
+        timeline = model["timeline"]
+        first_year = int(timeline["base_year"]) + 1
+        last_year = int(timeline["start_year"]) + int(timeline["duration"]) - 1
+        span = max(last_year - first_year + 1, 0)
+        for name, rates in (model.get("inflation") or {}).items():
+            assert (len(rates) == 0) == (span == 0), (
+                f"plan case {case['id']} profile {name}: {len(rates)} rate(s) for a "
+                f"span of {span} calendar year(s)"
+            )
+
+
+def test_176_r2_the_writer_treats_an_empty_rate_object_as_zero_assignments() -> None:
+    """R2. Enumerating the property COLLECTION, never projecting its `.Name`."""
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Write-Phase5InflationRates")
+    assert "foreach ($rateProperty in $rates.PSObject.Properties)" in body, (
+        "the rate mapping is not enumerated as property objects"
+    )
+    # There is no guard, no count test and no early return: zero properties
+    # simply means zero iterations, which is what the loop already does.
+    for crutch in ("$rates.PSObject.Properties.Count", "if ($null -eq $rates)",
+                   "Get-Member", "-eq 0) { continue }"):
+        assert crutch not in body, (
+            f"the writer special-cases the empty rate object with {crutch} instead "
+            "of enumerating a collection that is simply empty"
+        )
+
+
+def test_177_r3_no_fixture_invents_an_inflation_year_to_avoid_the_empty_case() -> None:
+    """R3. The corpus is not repaired to make the loop non-empty."""
+    cases = _emitted()["cases"]
+    empty = [(cid, name) for cid, name, rates in _rate_maps() if not rates]
+    assert len(empty) == 11, f"the empty-rate cases changed: {empty}"
+    assert ("1", "Standard") in empty, "the golden case no longer carries the empty map"
+    # And nothing in the harness writes a rate the corpus did not emit.
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Write-Phase5InflationRates")
+    assert not re.search(r"-Value \(\[double\]0", body), "the writer plants a zero rate"
+    assert "$rateValue" in body and "$Model.inflation" in body, (
+        "the writer no longer takes its rates from the emitted model"
+    )
+    # The corpus itself is untouched by this round.
+    golden = next(case for case in cases["plan_cases"] if str(case["id"]) == "1")
+    assert golden["model"]["inflation"]["Standard"] == {}
+
+
+def test_178_r4_the_empty_rate_path_still_locates_the_profile_row() -> None:
+    """R4. An empty rate map does not skip the profile.
+
+    The OUTER loop is over profiles and the inner one over that profile's rates.
+    An empty rate map therefore still runs the outer body - the row is still
+    located, and the profile still exists in the Config master and the grid.
+    """
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Write-Phase5InflationRates")
+    outer = body.index("foreach ($profileProperty in $Model.inflation.PSObject.Properties)")
+    find = body.index("Find-GridRow")
+    inner = body.index("foreach ($rateProperty in $rates.PSObject.Properties)")
+    assert outer < find < inner, (
+        "the profile row is located inside the rate loop, so an empty rate map "
+        "would skip the profile entirely"
+    )
+    # And the profile identity still reaches the Config master, which is what
+    # creates the grid row in the first place.
+    fixture = _procedure(source, "Set-Phase5Fixture")
+    assert "Set-Phase5InflationProfileMaster" in fixture
+    assert "$Model.inflation.PSObject.Properties.Name" in fixture, (
+        "the profile master is no longer driven from the emitted profile set"
+    )
+
+
+def test_179_r5_r6_r7_r8_the_enumeration_semantics_modelled() -> None:
+    """R5-R8. One rate, several rates, a null rate, and the empty object.
+
+    A pure-Python model of the INTENDED behaviour. It proves what the corrected
+    loop is supposed to do with each shape and that `{}` and `{"2028": null}`
+    are different paths. It does NOT claim to reproduce the Windows PowerShell
+    property adapter: whether the real adapter yields zero properties for an
+    empty PSCustomObject is a runtime fact, and the next Windows run is where
+    that is proved.
+    """
+    HEADERS = ["2027", "2028", "2029"]
+
+    def write_rates(rates: dict) -> list[tuple[str, object]]:
+        """The corrected loop: enumerate properties, read Name and Value."""
+        written: list[tuple[str, object]] = []
+        for year, value in rates.items():          # zero properties -> zero passes
+            assert year in HEADERS, f"no generated inflation column for {year}"
+            written.append((year, None if value is None else float(value)))
+        return written
+
+    # R5: one property, one rate.
+    assert write_rates({"2028": 0.05}) == [("2028", 0.05)]
+    # R6: several properties, each written once.
+    assert write_rates({"2027": 0.05, "2028": 0.06, "2029": 0.07}) == [
+        ("2027", 0.05), ("2028", 0.06), ("2029", 0.07)]
+    # R7: a property whose value is null still ENTERS the loop and writes BLANK.
+    assert write_rates({"2028": None}) == [("2028", None)]
+    # R8: `{}` and `{"2028": null}` are different paths.
+    assert write_rates({}) == []
+    assert write_rates({"2028": None}) != write_rates({})
+    assert len(write_rates({})) == 0, "the empty object wrote a cell"
+    assert len(write_rates({"2028": None})) == 1, "the null rate wrote no cell"
+    # And the blank is a genuine blank, never a zero. [double]$null is 0.0 in
+    # PowerShell, which is the Run-4 defect this must not reintroduce.
+    assert write_rates({"2028": None})[0][1] is None
+    assert write_rates({"2028": 0})[0][1] == 0.0
+    assert write_rates({"2028": None})[0][1] != write_rates({"2028": 0})[0][1]
+
+    # THE TWO SHAPES BOTH EXIST IN THE CORPUS, so neither path is hypothetical.
+    maps = dict(((cid, name), rates) for cid, name, rates in _rate_maps())
+    assert maps[("1", "Standard")] == {}
+    assert maps[("14", "Standard")] == {"2027": 0.05, "2028": None, "2029": 0.05}
+    assert None in maps[("14", "Standard")].values(), (
+        "plan case 14 no longer carries the blank required rate"
+    )
+
+
+def test_180_r9_r10_the_failing_expression_is_gone_from_the_empty_capable_site() -> None:
+    """R9 and R10. No `.Properties.Name` projection over a rate mapping."""
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Write-Phase5InflationRates")
+    assert "$rates.PSObject.Properties.Name" not in body, (
+        "the exact Run-6 expression is still present"
+    )
+    # Names come from INDIVIDUAL property objects, in both loops.
+    assert "$name = [string]$profileProperty.Name" in body
+    assert "$year = [string]$rateProperty.Name" in body
+    # And the value comes off the SAME property object, so no dynamic lookup
+    # can disagree with the name that selected it.
+    assert "$rates = $profileProperty.Value" in body
+    assert "$rateValue = $rateProperty.Value" in body
+    for lookup in ("$rates.$year", "$Model.inflation.$name"):
+        assert lookup not in body, f"the writer still resolves {lookup} dynamically"
+
+
+def test_181_r11_the_run_6_shape_does_not_raise_in_the_modelled_enumeration() -> None:
+    """R11. `Standard -> {}` driven end to end through the modelled loop.
+
+    Again: this proves the INTENDED semantics of the corrected shape. The real
+    PowerShell property adapter is proved by the next Windows run, not here.
+    """
+    written: list[tuple[str, str, object]] = []
+    model_inflation = {"Standard": {}}          # the exact Run-6 shape
+    for profile, rates in model_inflation.items():
+        located = f"row for {profile}"
+        assert located, "the profile row must still be located"
+        for year, value in rates.items():
+            written.append((profile, year, value))
+    assert written == [], "the empty rate map wrote something"
+
+    # And the same walk over the golden model as the builder actually emits it.
+    golden = next(case for case in _emitted()["cases"]["plan_cases"]
+                  if str(case["id"]) == "1")
+    seen = 0
+    for profile, rates in golden["model"]["inflation"].items():
+        assert isinstance(rates, dict), f"{profile} maps to {type(rates).__name__}"
+        for _year, _value in rates.items():
+            seen += 1
+    assert seen == 0, f"the golden model yielded {seen} rate assignments"
+
+
+def test_182_r12_the_run_6_gate_is_unchanged() -> None:
+    """R12. P5-FIX failing still means P5-ALL not attempted, Y/Z/LDG/FIN alive.
+
+    Run 6 proved the gate itself works. Nothing in this round may weaken it.
+    """
+    scenarios = _executable(SCENARIOS)
+    driver = scenarios[scenarios.index("function Invoke-Phase5GateBScenarios"):]
+    block = driver[driver.index("Add-Phase5Result 'P5-D8'"):
+                   driver.index("Add-Phase5Result 'P5-AN'")]
+    assert "Add-Phase5Result 'P5-FIX'" in block
+    assert block.count("Add-Phase5Result 'P5-ALL'") == 2, (
+        "the self-proof no longer gates on both its success and its catch path"
+    )
+    assert "'SKIP'" not in block, "a broken fixture became a SKIP"
+    assert block.count("return") >= 2
+    # The catch path carries the message Run 6 actually recorded.
+    assert ("'not attempted: Gate-B fixture establishment failed on the golden plan case'"
+            in block), "the Run-6 gate message changed"
+    # AND THE LIFECYCLE EVIDENCE IS STILL DOWNSTREAM OF THE GATE.
+    harness = _executable(HARNESS)
+    order = [harness.index(token) for token in (
+        "Invoke-Phase5GateBScenarios -Excel",
+        "Add-Result 'Z' 'Excel closed naturally",
+        "$transient = @(Get-TransientFailures)",
+        "Add-Phase5LedgerIntegrityResult",
+        "Add-Phase4FinalCompletenessResult -Results $results")]
+    assert order == sorted(order), (
+        "the gate would take Z, Y, P5-LDG or P5-FIN down with it"
+    )
+
+
+def test_183_every_property_name_projection_is_classified() -> None:
+    """THE AUDIT, as an executable ledger rather than a note in a document.
+
+    Every executable `.PSObject.Properties.Name` site in the harness is listed
+    with the container it enumerates and whether that container can legally be
+    empty. A site that is only PROVEN non-empty is pinned against the corpus
+    here, so a future case that makes it empty-capable fails this test instead
+    of failing Run 7.
+    """
+    source = _executable(SCENARIOS)
+    projections = re.findall(r"([\w$.\[\]()]*)\.PSObject\.Properties\.Name", source)
+    # `@(` and `(` are wrapping syntax, not part of the container expression.
+    containers = sorted({token.lstrip("@(") for token in projections})
+    # The classified set. Anything new must be classified before it can ship.
+    classified = {
+        "$rows",                            # inspection scalar_blocks.<block>.rows
+        "$Model.inflation",                 # the profile map
+        "$golden.model.inflation",          # the same map, in P5-FIX
+        "$wanted",                          # one emitted expected-row object
+        "$expected.resolved_fx",
+        "$expected.totals",
+        "$Inspection.calc.tables",
+    }
+    assert set(containers) == classified, (
+        f"an unclassified .Properties.Name projection appeared: "
+        f"{sorted(set(containers) - classified)}"
+    )
+    # The rate mapping is NOT among them any more.
+    assert "$rates" not in containers, (
+        "the empty-capable rate mapping is still projected"
+    )
+
+    # --- and the non-empty claims, proved against the emitted artifacts ------
+    emitted = _emitted()
+    cases, inspection = emitted["cases"], emitted["inspection"]
+
+    for block, spec in inspection["calc"]["scalar_blocks"].items():
+        assert spec["rows"], f"scalar block {block} has no rows"
+    assert inspection["calc"]["tables"], "the inspection projects no calc tables"
+
+    models = 0
+    for case in cases["plan_cases"]:
+        model = case.get("model")
+        if model is not None:
+            models += 1
+            # $Model.inflation is non-empty BECAUSE every model has at least one
+            # driver and every driver names a profile. That derivation is what
+            # makes it class B rather than "empty so far".
+            drivers = (model.get("cost_lines") or []) + (model.get("risks") or [])
+            assert drivers, f"plan case {case['id']} has no driver"
+            referenced = {str(d["inflation_profile"]) for d in drivers}
+            assert set(model["inflation"]) == referenced, (
+                f"plan case {case['id']}: profiles {sorted(model['inflation'])} "
+                f"but drivers reference {sorted(referenced)}"
+            )
+            assert model["inflation"], f"plan case {case['id']} has no profile"
+        expected = case.get("expected")
+        if not expected:
+            continue
+        assert expected["totals"], f"plan case {case['id']} emits no totals"
+        assert expected["resolved_fx"], f"plan case {case['id']} emits no resolved_fx"
+        for key in ("calc_years", "resolved_fx_rows", "drivers", "annual"):
+            for index, wanted in enumerate(expected.get(key) or []):
+                assert wanted, f"plan case {case['id']} {key}[{index}] is empty"
+    assert models == 28, f"the model count changed: {models}"
+
+
+# --- negative controls -----------------------------------------------------
+def test_nc_104_the_run_6_expression_is_caught() -> None:
+    """The literal failing line, planted, fails R9."""
+    planted = _synthetic(
+        "        foreach ($year in $rates.PSObject.Properties.Name) {\n"
+        "            $ordinal = [array]::IndexOf($headers, [string]$year) + 1\n"
+    )
+    assert "$rates.PSObject.Properties.Name" in planted, (
+        "the planted regression must contain the failing projection"
+    )
+    assert "$rateProperty" not in planted, "the planted regression must not enumerate objects"
+    # And it is a MEMBER ENUMERATION over a collection, which is the shape that
+    # cannot answer when the collection is empty. Modelled:
+    def project_name(collection: list) -> list:
+        if not collection:
+            raise AttributeError("The property 'Name' cannot be found on this object.")
+        return [item["Name"] for item in collection]
+
+    assert project_name([{"Name": "2028"}]) == ["2028"]
+    try:
+        project_name([])
+    except AttributeError as error:
+        assert "cannot be found" in str(error)
+    else:
+        raise AssertionError("the empty projection must be the failing path")
+    # Enumerating the collection itself has no such edge.
+    assert [item["Name"] for item in []] == []
+
+
+def test_nc_105_collapsing_the_null_rate_into_the_empty_object_is_caught() -> None:
+    """A writer that skipped null-valued rates, planted, fails R7 and R8."""
+    def broken(rates: dict) -> list:
+        return [(y, float(v)) for y, v in rates.items() if v is not None]
+
+    assert broken({}) == []
+    assert broken({"2028": None}) == [], (
+        "the planted regression must make the two shapes indistinguishable"
+    )
+    assert broken({}) == broken({"2028": None}), "the regression must be visible"
+    # Which is exactly the case-14 damage: a required rate that is meant to be
+    # BLANK would simply never be written, and the refusal could not fire.
+    maps = dict(((cid, name), rates) for cid, name, rates in _rate_maps())
+    assert None in maps[("14", "Standard")].values()
+    assert len(broken(maps[("14", "Standard")])) == 2, (
+        "case 14 would lose its blank year under the planted regression"
+    )
+    assert len(maps[("14", "Standard")]) == 3
+
+
+def test_nc_106_a_count_guard_instead_of_an_enumeration_is_caught() -> None:
+    """Special-casing the empty object, planted, fails R2.
+
+    A guard would work and is still wrong: it leaves the projection in place for
+    every non-empty case and puts the harness one corpus change away from the
+    same failure somewhere else.
+    """
+    planted = _synthetic(
+        "        if ($rates.PSObject.Properties.Count -gt 0) {\n"
+        "            foreach ($year in $rates.PSObject.Properties.Name) {\n"
+    )
+    assert "$rates.PSObject.Properties.Count" in planted
+    assert "$rates.PSObject.Properties.Name" in planted, (
+        "the planted guard leaves the failing projection in place"
+    )
+    assert "foreach ($rateProperty in $rates.PSObject.Properties)" not in planted
+
+
+def test_184_the_inflation_writer_walks_as_a_fixed_sequence() -> None:
+    """The corrected writer stated as an ORDERED walk, not as membership.
+
+    The rules above compare a handful of indices and check for the absence of
+    the failing projection. This walks the procedure once and requires the whole
+    sequence, so a step that is deleted, hoisted or replaced is caught by its
+    position rather than by a rule that happens to mention it.
+    """
+    source = _executable(SCENARIOS)
+    body = _procedure(source, "Write-Phase5InflationRates")
+    cursor = 0
+    for token in (
+        # the stale-rate blanking pass, which must still run first
+        "-ColumnIndex $column -Value $null",
+        # the profile loop, over property OBJECTS
+        "foreach ($profileProperty in $Model.inflation.PSObject.Properties)",
+        "$name = [string]$profileProperty.Name",
+        "$rates = $profileProperty.Value",
+        # the row is located ONCE per profile, outside the rate loop, so an
+        # empty rate map still resolves its profile
+        "$rowIndex = Find-GridRow -Workbook $Workbook -Grid $grid -Key $name",
+        # the rate loop, over property OBJECTS
+        "foreach ($rateProperty in $rates.PSObject.Properties)",
+        "$year = [string]$rateProperty.Name",
+        "$rateValue = $rateProperty.Value",
+        "[array]::IndexOf($headers, $year)",
+        "throw (",
+        # the blank branch WRITES A BLANK; it does not skip the year
+        "if ($null -eq $rateValue) {",
+        "-ColumnIndex $ordinal -Value $null",
+        "} else {",
+        "-ColumnIndex $ordinal -Value ([double]$rateValue)",
+    ):
+        at = body.find(token, cursor)
+        assert at >= 0, (
+            f"Write-Phase5InflationRates no longer performs '{token}' in order; "
+            f"the sequence broke after position {cursor}"
+        )
+        cursor = at + len(token)
+
+    # A NULL RATE IS WRITTEN, NEVER SKIPPED. `continue` in the blank branch
+    # would make `{"2028": null}` indistinguishable from `{}` at the worksheet.
+    blank = body[body.index("if ($null -eq $rateValue) {"):body.index("} else {")]
+    assert "Set-TableCell" in blank, "the blank branch writes nothing"
+    for skip in ("continue", "break", "return"):
+        assert skip not in blank, (
+            f"the blank branch {skip}s instead of writing the blank cell, which "
+            "collapses a null rate into an absent one"
+        )
+    # And the two loops are genuinely nested, not sequential.
+    inner = body.index("foreach ($rateProperty in $rates.PSObject.Properties)")
+    outer = body.index("foreach ($profileProperty in $Model.inflation.PSObject.Properties)")
+    assert outer < inner < body.rindex("}"), "the rate loop is not inside the profile loop"
+
+
+def test_185_every_gate_states_why_it_did_not_attempt() -> None:
+    """A gate that says only 'not attempted' has thrown its evidence away.
+
+    Run 6's whole value was that the gate named the reason: P5-ALL carried
+    'not attempted: Gate-B fixture establishment failed on the golden plan
+    case', which is what made one result enough to locate the root.
+    """
+    source = _executable(SCENARIOS)
+    reasons = re.findall(r"'not attempted:? ?([^']*)'", source)
+    assert len(reasons) >= 5, f"only {len(reasons)} gate messages found"
+    for reason in reasons:
+        assert len(reason.strip()) >= 20, (
+            f"a gate reports 'not attempted' with no usable reason: {reason!r}"
+        )
+    # Every P5-ALL emission is one of them.
+    gates = re.findall(
+        r"Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `\s*\n\s*\(?'"
+        r"not attempted:", source)
+    assert len(gates) == 5, f"the P5-ALL gate set changed: {len(gates)}"
