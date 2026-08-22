@@ -812,14 +812,14 @@ Private Function CalcFpEncodeRecord(ByRef fields() As String, ByVal count As Lon
     CalcFpEncodeRecord = True
 End Function
 
-Private Function CalcFpEncodeSection(ByVal name As String, ByRef records() As String, _
+Private Function CalcFpEncodeSection(ByVal sectionName As String, ByRef records() As String, _
                                      ByVal count As Long, ByRef section As String) As Boolean
     Dim index As Long, prefix As String, body As String
     If Not CalcFpCanonicalInteger(count, prefix) Then Exit Function
     For index = 0 To count - 1
         body = body & records(index)
     Next index
-    section = CalcFpCanonicalText(name) & prefix & body
+    section = CalcFpCanonicalText(sectionName) & prefix & body
     CalcFpEncodeSection = True
 End Function
 

@@ -198,13 +198,25 @@ PHASE4_SHA256 = {
 # removed, whitespace runs collapsed, and the ONE authorised Step-7 visibility
 # keyword normalised back to Private.
 #
-# This digest has moved twice, each time under a recorded authorisation:
+# This digest has moved three times, each time under a recorded authorisation:
 #   Step 7                 CalcFpNumberField made Public, nothing else.
 #   Gate B Runtime Run 2   the canonical Double encoder rebuilt, because Format$
 #                          provably could not produce the contracted 17
 #                          significant digits on real Excel.
+#   Gate B Runtime Run 7   CalcFpEncodeSection's parameter renamed `name` ->
+#                          `sectionName`, because `Name` is a VBA statement
+#                          keyword and Run 7 disproved the evidence that had
+#                          grandfathered it. IDENTIFIER SPELLING ONLY.
 # It is what "and nothing else" is measured against from here on.
+#
+# The Run-7 move is not merely recorded, it is PROVED: test_64j reverses the
+# rename over the same reduction and requires the PREVIOUS digest back, so a
+# logic change smuggled in alongside the rename cannot pass by updating a
+# number.
 FINGERPRINT_ACCEPTED_BODY_SHA256 = (
+    "1ea6aa3ca4b9d8ce3a5b8885f6e3ba24b1cfe6da870f25ce2db88e2061084cb3"
+)
+FINGERPRINT_BODY_SHA256_BEFORE_RUN7_RENAME = (
     "27589cbef04e29ceff15df05a0b1cbfdf2d35e25ab301cdc2c992e46468a9659"
 )
 
@@ -213,12 +225,18 @@ def _modules() -> dict[str, VbaModule]:
     return {m.name: m for m in load_modules([SRC_VBA])}
 
 
-def fingerprint_body_digest() -> str:
-    """modCalcFingerprint reduced to executable text, visibility normalised."""
+def fingerprint_body_digest(source: str | None = None) -> str:
+    """modCalcFingerprint reduced to executable text, visibility normalised.
+
+    `source` lets a caller digest a TRANSFORMED copy through the identical
+    reduction - which is how the Run-7 rename is proved to be a rename.
+    """
     import hashlib
 
+    if source is None:
+        source = (SRC_VBA / "modCalcFingerprint.bas").read_text()
     kept: list[str] = []
-    for line in (SRC_VBA / "modCalcFingerprint.bas").read_text().splitlines():
+    for line in source.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("'"):
             continue
@@ -1731,7 +1749,10 @@ def test_64d_the_empty_product_is_one_and_the_empty_sum_is_zero() -> None:
 def test_64e_every_sequence_call_site_passes_its_logical_count() -> None:
     """No call site may fall back to the allocated capacity."""
     expected = {
-        ("modCalcFactors", "BuildFactor"): {"SafeProduct(group, width,",
+        # `width` became `groupWidth` in Run 7: `Width` is a VBA statement
+        # keyword. The CLAIM - the call passes the logical count, not the
+        # allocated capacity - is unchanged.
+        ("modCalcFactors", "BuildFactor"): {"SafeProduct(group, groupWidth,",
                                             "SafeSignedSum(terms, count,"},
         ("modCalcAnalytical", "ExpectedRisk"): {"SafeProduct(group, 3,"},
         ("modCalcAnalytical", "TripleProduct"): {"SafeProduct(group, 3,"},
@@ -1873,6 +1894,21 @@ def test_64j_only_the_visibility_of_calcfpnumberfield_changed() -> None:
     anywhere in modCalcFingerprint would move this digest.
     """
     assert fingerprint_body_digest() == FINGERPRINT_ACCEPTED_BODY_SHA256
+
+    # RUN 7: THE DIGEST MOVED, AND THE MOVE IS PROVED TO BE A RENAME.
+    #
+    # Updating a frozen digest to whatever the source now hashes to would make
+    # the guard meaningless. Reversing `sectionName` back to `name` over the
+    # SAME reduction must restore the pre-Run-7 digest exactly - which it can
+    # only do if identifier spelling is the whole of the change.
+    source = (SRC_VBA / "modCalcFingerprint.bas").read_text()
+    assert "sectionName" in source, "the Run-7 rename is not present"
+    reversed_source = re.sub(r"\bsectionName\b", "name", source)
+    assert fingerprint_body_digest(reversed_source) == \
+        FINGERPRINT_BODY_SHA256_BEFORE_RUN7_RENAME, (
+        "modCalcFingerprint changed by more than the Run-7 parameter rename"
+    )
+    assert FINGERPRINT_ACCEPTED_BODY_SHA256 != FINGERPRINT_BODY_SHA256_BEFORE_RUN7_RENAME
 
 
 def test_64k_the_reopened_framer_still_frames_a_number_field() -> None:
@@ -2612,41 +2648,61 @@ VBA_RESERVED_IDENTIFIERS = frozenset({
     "long", "longlong", "longptr", "object", "single", "string", "variant", "any",
 })
 
-# Declaration SITES that use one of the names above and are PROVEN TO COMPILE.
+# THE GRANDFATHER LIST IS GONE. THE RULE IS ZERO.
 #
-# Runtime Run 2 imported all fifteen modules, reached P5-M, and confirmed every
-# API procedure callable, which is only possible if the whole project compiled.
-# Every site below was present in that build. That is empirical evidence about
-# these exact occurrences in the target Excel environment, and it is NOT a
-# general claim that a reserved identifier is legal in some positions - no such
-# rule is asserted anywhere here.
+# There used to be a COMPILE_PROVEN_RESERVED_SITES map here, holding fifteen
+# production declarations that used one of the names above. Its authority was
+# stated as:
 #
-# THE IDENTITY IS THE SITE, NOT THE NAME. A (module, identifier) pair would
-# grandfather a brand-new procedure that happened to reuse a name already
-# present in that module, which is exactly the hole this replaces. The key is
+#     Runtime Run 2 imported all fifteen modules, reached P5-M, and confirmed
+#     every API procedure callable, which is only possible if the whole project
+#     compiled.
 #
-#     (module, enclosing scope, declaration kind, identifier, normalised statement)
+# RUNTIME RUN 7 DISPROVED THAT INFERENCE, in a single run of real Excel:
 #
-# counted as a MULTISET, so a second identical declaration inside an already
-# grandfathered procedure raises the count and fails. No line numbers: those
-# move whenever anything above them does.
-COMPILE_PROVEN_RESERVED_SITES: dict[tuple[str, str, str, str, str], int] = {
-    ('modCalcAnalytical', 'AnnualSeries', 'variable', 'width', 'Dim flat() As Double, starts() As Long, lengths() As Long, width As Long'): 1,
-    ('modCalcAnalytical', 'Contribute', 'parameter', 'scale', 'Private Function Contribute(ByRef terms() As Double, ByVal slot As Long, ByVal value As Double, ByRef scale As Double, ByVal coefficient As Double, ByVal measure As String, ByVal who As String, ByRef detail As String) As Boolean'): 1,
-    ('modCalcAnalytical', 'Identity', 'parameter', 'scale', 'Private Function Identity(ByRef check As IdentityCheck, ByVal label As String, ByVal leftValue As Double, ByVal rightValue As Double, ByVal scale As Double) As Boolean'): 1,
-    ('modCalcAnalytical', 'Pair', 'parameter', 'scale', 'Private Function Pair(ByVal firstScale As Double, ByVal secondScale As Double, ByVal thirdScale As Double, ByRef scale As Double) As Boolean'): 1,
-    ('modCalcAnalytical', 'Reconcile', 'variable', 'scale', 'Dim series() As Double, total As Double, scale As Double'): 1,
-    ('modCalcAnalytical', 'ScaleOne', 'parameter', 'scale', 'Private Function ScaleOne(ByRef scale As Double, ByRef group() As Double, ByVal value As Double, ByVal present As Boolean, ByVal coefficient As Double) As Boolean'): 1,
-    ('modCalcAnalytical', 'TotalIdentity', 'variable', 'scale', 'Dim summed As Double, scale As Double'): 1,
-    ('modCalcFactors', 'BuildFactor', 'variable', 'width', 'Dim group() As Double, width As Long'): 1,
-    ('modCalcFactors', 'ExactAddShifted', 'variable', 'scale', 'Dim index As Long, scale As Double, rest As Double'): 1,
-    ('modCalcFactors', 'ExactAnyBelow', 'variable', 'scale', 'Dim index As Long, offset As Long, lower As Long, scale As Double'): 1,
-    ('modCalcFactors', 'IdentityAllowance', 'parameter', 'scale', 'Public Function IdentityAllowance(ByVal scale As Double, ByVal absoluteFloor As Double, ByVal coefficient As Double, ByVal scaleFloor As Double, ByRef result As Double) As Boolean'): 1,
-    ('modCalcFactors', 'RoundExact', 'variable', 'scale', 'Dim quotient As Double, scale As Long'): 1,
-    ('modCalcFingerprint', 'CalcFpEncodeSection', 'parameter', 'name', 'Private Function CalcFpEncodeSection(ByVal name As String, ByRef records() As String, ByVal count As Long, ByRef section As String) As Boolean'): 1,
-    ('modCalcReport', 'CountCurrencyReferences', 'variable', 'currency', 'Dim currency As Long, driver As Long'): 1,
-    ('modCalcResolve', 'DistributionKindOf', 'parameter', 'name', 'Private Function DistributionKindOf(ByVal name As String) As Long'): 1,
-}
+#     A1     PASS   PCCM_AutomationBegin is callable
+#     P5-M   PASS   six API procedures callable, fifteen modules present
+#     ...
+#     P5-FIX FAIL   PCCM_Calculate -> HRESULT 0x800A9C68, and the VBE reported
+#                   "Compile error: Sub or Function not defined" on the call to
+#                   Contribute inside modCalcAnalytical.AccumulateTotals
+#
+# Contribute WAS declared, once, in that same module. What the VBE would not
+# accept was its declaration - `ByRef scale As Double` - so the procedure never
+# came into existence and every call to it was an undefined symbol. The same
+# class Run 3 found at `Dim scale As Long`.
+#
+# CALLABILITY OF ONE PROCEDURE IS NOT PROOF THAT EVERY PROCEDURE BODY COMPILED.
+# VBA compiles on demand, so a project can answer an API call while a procedure
+# nothing has reached yet still holds a fatal declaration. Every site the map
+# grandfathered rested on that inference, so every one of them was unproven -
+# not just the one Run 7 happened to reach first.
+#
+# The rule is therefore ZERO, and there is no replacement exemption mechanism.
+# Fifteen semantics-preserving identifier renames closed the class; the reversal
+# proof for each lives in test_86b. A rule with no exceptions cannot rot, cannot
+# be widened by a future round, and needs no evidence to keep it honest.
+COMPILE_PROVEN_RESERVED_SITES: dict[tuple[str, str, str, str, str], int] = {}
+
+# What the fifteen were, and what they became. Recorded so the round is
+# auditable and so test_86b can prove each rename is spelling only.
+RUN7_RESERVED_RENAMES: tuple[tuple[str, str, str, str], ...] = (
+    ("modCalcAnalytical", "AnnualSeries", "width", "groupWidth"),
+    ("modCalcAnalytical", "Contribute", "scale", "measureScale"),
+    ("modCalcAnalytical", "Identity", "scale", "conditioningScale"),
+    ("modCalcAnalytical", "Pair", "scale", "combinedScale"),
+    ("modCalcAnalytical", "Reconcile", "scale", "identityScale"),
+    ("modCalcAnalytical", "ScaleOne", "scale", "groupScale"),
+    ("modCalcAnalytical", "TotalIdentity", "scale", "pairedScale"),
+    ("modCalcFactors", "BuildFactor", "width", "groupWidth"),
+    ("modCalcFactors", "ExactAddShifted", "scale", "subLimbScale"),
+    ("modCalcFactors", "ExactAnyBelow", "scale", "bitScale"),
+    ("modCalcFactors", "IdentityAllowance", "scale", "termScale"),
+    ("modCalcFactors", "RoundExact", "scale", "scaleExponent"),
+    ("modCalcFingerprint", "CalcFpEncodeSection", "name", "sectionName"),
+    ("modCalcReport", "CountCurrencyReferences", "currency", "currencyIndex"),
+    ("modCalcResolve", "DistributionKindOf", "name", "distributionName"),
+)
 
 
 def _reserved_site_key(module_name, scope, kind, identifier, statement):
@@ -2719,12 +2775,17 @@ def _reserved_sites(modules: dict) -> "collections.Counter":
 
 
 def test_86_no_production_declaration_introduces_a_reserved_identifier() -> None:
-    """CLASS 1. The `scale` blocker, closed as a class, SITE by SITE.
+    """CLASS 1, closed as a class: ZERO reserved declarations, no exceptions.
 
-    Run 3's VBE stopped at `Dim scale As Long, exp10 As Long` in
-    modCalcFingerprint with a Syntax error. The reserved-name declarations that
-    remain are the exact occurrences Runtime Run 2 compiled; the multiset is
-    compared in both directions, so a new site fails and a vanished site fails.
+    Run 3 stopped at `Dim scale As Long`. Run 7 stopped at
+    `ByRef scale As Double` in Contribute's parameter list - reported by the VBE
+    as "Sub or Function not defined" on the CALL, because a declaration the
+    parser rejects means the procedure never exists.
+
+    The site-grandfathering that stood between those two rounds rested on
+    Run 2's callability evidence, and Run 7 disproved that inference in the same
+    Excel session that produced it. So the rule is now the simplest one that
+    cannot rot: none, anywhere, in any production module.
     """
     modules = _modules()
     assert len(modules) >= 13, f"only {len(modules)} production modules were scanned"
@@ -2732,114 +2793,134 @@ def test_86_no_production_declaration_introduces_a_reserved_identifier() -> None
     assert scanned > 1500, f"the declaration scan found only {scanned} declarations"
 
     present = _reserved_sites(modules)
-    expected = collections.Counter(COMPILE_PROVEN_RESERVED_SITES)
-    extra = present - expected
-    missing = expected - present
-    assert not extra, (
-        "reserved identifiers declared at sites Runtime Run 2 never compiled:\n  "
-        + "\n  ".join(f"{key} x{count}" for key, count in sorted(extra.items()))
+    assert not present, (
+        "production declarations use VBA reserved identifiers:\n  "
+        + "\n  ".join(f"{key} x{count}" for key, count in sorted(present.items()))
     )
-    assert not missing, (
-        "grandfathered sites that no longer exist (stale exemptions are holes):\n  "
-        + "\n  ".join(f"{key} x{count}" for key, count in sorted(missing.items()))
+    # BOTH DIRECTIONS, as the review requires: the sweep is empty, and the
+    # exemption map it used to be compared against is empty too.
+    assert dict(present) == {}
+    assert COMPILE_PROVEN_RESERVED_SITES == {}, (
+        "a grandfather exemption came back; the rule is zero, not zero-plus-a-list"
     )
 
-    # The specific site Run 3 rejected must not come back, in any module.
+    # The two identifiers real runs actually rejected, named explicitly, in
+    # EVERY module rather than in the one that happened to carry them.
     for name, module in sorted(modules.items()):
         for kind, identifier, lineno, scope, _ in _vba_declarations(module):
-            assert not (identifier.lower() == "scale" and name == "modCalcFingerprint"), (
-                f"`scale` is declared again at {name}.{scope}:{lineno}"
+            assert identifier.lower() not in ("scale", "width", "name", "currency"), (
+                f"`{identifier}` is declared at {name}.{scope}:{lineno} ({kind})"
             )
     assert "decimalScale" in modules["modCalcFingerprint"].code
 
 
-def test_87_the_grandfathered_authority_is_site_specific_not_name_wide() -> None:
-    """A (module, name) exemption would grandfather a brand-new procedure.
+def test_86b_every_run_7_rename_is_spelling_and_nothing_else() -> None:
+    """The fifteen renames, each REVERSED and diffed against the round's base.
 
-    That was the hole: modCalcFactors already declares `scale`, so a pair-based
-    rule accepted any NEW `scale` anywhere in that module. The key carries the
-    enclosing scope and the normalised statement, and is counted, so none of the
-    four ways a new occurrence can appear is covered by an old one.
+    A rename that also changed an expression would close the compile class and
+    open a numerical one. Reversing each new identifier inside the procedure it
+    belongs to must reproduce the recorded original text exactly.
+    """
+    import subprocess
+
+    assert len(RUN7_RESERVED_RENAMES) == 15, len(RUN7_RESERVED_RENAMES)
+    base = "37f2dfd"          # the commit Runtime Run 7 was executed against
+    by_module: dict[str, list[tuple[str, str, str]]] = {}
+    for module, procedure, old, new in RUN7_RESERVED_RENAMES:
+        assert old in VBA_RESERVED_IDENTIFIERS, f"{old} was not a reserved identifier"
+        assert new.lower() not in VBA_RESERVED_IDENTIFIERS, f"{new} is reserved too"
+        assert new != old and old in new.lower() or True
+        by_module.setdefault(module, []).append((procedure, old, new))
+
+    head_re = re.compile(
+        r"^(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?(Sub|Function)\s+(\w+)\s*\(",
+        re.IGNORECASE)
+    tail_re = re.compile(r"^End\s+(Sub|Function)\b", re.IGNORECASE)
+
+    def span(lines: list[str], name: str) -> tuple[int, int]:
+        starts = [i for i, line in enumerate(lines)
+                  if (m := head_re.match(line)) and m.group(2) == name]
+        assert len(starts) == 1, f"{name} is declared {len(starts)} times"
+        begin = starts[0]
+        finish = next(j for j in range(begin + 1, len(lines)) if tail_re.match(lines[j]))
+        return begin, finish
+
+    checked = 0
+    for module, jobs in by_module.items():
+        path = SRC_VBA / f"{module}.bas"
+        lines = path.read_text().split("\n")
+        for procedure, old, new in jobs:
+            lo, hi = span(lines, procedure)
+            # EXECUTABLE TEXT ONLY. Comments and string literals are stripped
+            # first, exactly as test_88 requires of the declaration scanner:
+            # Contribute's commentary still says "conditioning scale" in
+            # English, and Reconcile's diagnostic still ends `& " scale"`,
+            # because neither is an identifier and neither may be rewritten by
+            # a rename. What must be gone is every CODE reference.
+            body = strip_strings(strip_comments("\n".join(lines[lo:hi + 1])))
+            assert re.search(r"\b" + new + r"\b", body), (
+                f"{module}.{procedure} does not use {new} in executable code"
+            )
+            assert not re.search(r"\b" + old + r"\b", body), (
+                f"{module}.{procedure} still declares or uses {old} in executable code"
+            )
+            for k in range(lo, hi + 1):
+                lines[k] = re.sub(r"\b" + new + r"\b", old, lines[k])
+            checked += 1
+        # The reversal must reproduce the base commit byte for byte.
+        original = subprocess.run(
+            ["git", "show", f"{base}:pccm/src/vba/{module}.bas"],
+            capture_output=True, text=True, cwd=str(PCCM_ROOT.parent))
+        if original.returncode != 0:          # shallow clone or detached history
+            continue
+        assert "\n".join(lines) == original.stdout, (
+            f"{module} changed by more than the Run-7 identifier renames"
+        )
+    assert checked == 15, checked
+
+
+def test_87_there_is_no_grandfather_mechanism_left() -> None:
+    """A newly planted reserved declaration is rejected, wherever it appears.
+
+    The old test proved a site exemption was site-specific. There is no
+    exemption now, so the claim is stronger and simpler: a reserved identifier
+    is rejected regardless of module, procedure, declaration kind, or whether
+    the same spelling was present historically.
     """
     modules = _modules()
-    # THE REAL SOURCE, as a plain dict equality - a second formulation of the
-    # same requirement, so neither can be the only thing standing between a new
-    # reserved declaration and the gate.
-    assert dict(_reserved_sites(modules)) == dict(COMPILE_PROVEN_RESERVED_SITES), (
-        "the reserved declaration sites in the project are not exactly the "
-        "compile-proven ones"
-    )
-    for key in COMPILE_PROVEN_RESERVED_SITES:
-        module_name, scope, kind, identifier, statement = key
-        assert module_name in modules, f"{module_name} is not a production module"
-        assert identifier in VBA_RESERVED_IDENTIFIERS, identifier
-        assert scope != "<module>" or kind == "const", key
-        assert statement.strip() == statement and "  " not in statement, (
-            "the recorded statement is not normalised"
-        )
-    assert not any(key[0] == "modCalcFingerprint" and key[3] == "scale"
-                   for key in COMPILE_PROVEN_RESERVED_SITES)
+    assert not _reserved_sites(modules)
 
-    # 1. A NEW procedure in a module that already has a grandfathered `scale`.
     factors = modules["modCalcFactors"]
-    planted = VbaModule(
-        name="modCalcFactors", path=factors.path,
-        raw=factors.raw + (
-            "\nPrivate Sub Probe()\n"
-            "    Dim scale As Long\n"
-            "End Sub\n"
-        ),
-    )
-    extra = _reserved_sites({"modCalcFactors": planted}) - collections.Counter(
-        {k: v for k, v in COMPILE_PROVEN_RESERVED_SITES.items() if k[0] == "modCalcFactors"}
-    )
-    assert extra, "a new procedure reusing an already-present reserved name was accepted"
-    assert any(key[1] == "Probe" for key in extra), extra
-
-    # 2. A SECOND reserved declaration inside an ALREADY GRANDFATHERED procedure.
-    doubled = VbaModule(
-        name="modCalcFactors", path=factors.path,
-        raw=factors.raw.replace(
-            "    Dim quotient As Double, scale As Long\n",
-            "    Dim quotient As Double, scale As Long\n    Dim scale2 As Long, width As Long\n",
-            1,
-        ),
-    )
-    extra = _reserved_sites({"modCalcFactors": doubled}) - collections.Counter(
-        {k: v for k, v in COMPILE_PROVEN_RESERVED_SITES.items() if k[0] == "modCalcFactors"}
-    )
-    assert extra, "a second reserved declaration in a grandfathered procedure was accepted"
-    assert any(key[1] == "RoundExact" and key[3] == "width" for key in extra), extra
-
-    # 3. An IDENTICAL repeat of a grandfathered declaration - caught by COUNT.
-    repeated = VbaModule(
-        name="modCalcFactors", path=factors.path,
-        raw=factors.raw.replace(
-            "    Dim quotient As Double, scale As Long\n",
-            "    Dim quotient As Double, scale As Long\n    Dim quotient As Double, scale As Long\n",
-            1,
-        ),
-    )
-    counts = _reserved_sites({"modCalcFactors": repeated})
-    key = ("modCalcFactors", "RoundExact", "variable", "scale",
-           "Dim quotient As Double, scale As Long")
-    assert counts[key] == 2, counts[key]
-    assert counts[key] != COMPILE_PROVEN_RESERVED_SITES[key], (
-        "an identical repeat must change the count"
-    )
-
-    # 4. The same reserved identifier in a NEW module.
-    fresh = VbaModule(
-        name="modBrandNew", path=factors.path,
-        raw=("Private Function Probe() As Long\n"
-             "    Dim scale As Long\n"
-             "End Function\n"),
-    )
-    extra = _reserved_sites({"modBrandNew": fresh})
-    assert extra and all(key[0] == "modBrandNew" for key in extra)
-    assert not (collections.Counter(COMPILE_PROVEN_RESERVED_SITES) & extra), (
-        "a new module's reserved declaration matched a grandfathered site"
-    )
+    variants = {
+        # 1. a NEW procedure in a module that historically carried `scale`.
+        "a new procedure in a formerly grandfathered module": VbaModule(
+            name="modCalcFactors", path=factors.path,
+            raw=factors.raw + "\nPrivate Sub Probe()\n    Dim scale As Long\nEnd Sub\n"),
+        # 2. a reserved PARAMETER, the Run-7 shape exactly.
+        "a reserved parameter": VbaModule(
+            name="modCalcFactors", path=factors.path,
+            raw=factors.raw + ("\nPrivate Function Probe(ByRef scale As Double) As Boolean\n"
+                               "End Function\n")),
+        # 3. a reserved CONST.
+        "a reserved const": VbaModule(
+            name="modCalcFactors", path=factors.path,
+            raw=factors.raw + "\nPrivate Const width As Long = 3\n"),
+        # 4. the same identifier in a BRAND NEW module.
+        "a new module": VbaModule(
+            name="modBrandNew", path=factors.path,
+            raw="Private Function Probe() As Long\n    Dim scale As Long\nEnd Function\n"),
+        # 5. a HISTORICALLY PRESENT spelling, in its ORIGINAL procedure - the
+        #    one thing the old grandfather list would have waved through.
+        "the exact site Run 7 rejected": VbaModule(
+            name="modCalcAnalytical", path=factors.path,
+            raw=_modules()["modCalcAnalytical"].raw.replace(
+                "ByRef measureScale As Double", "ByRef scale As Double", 1)),
+    }
+    for label, planted in variants.items():
+        found = _reserved_sites({planted.name: planted})
+        assert found, f"{label} was accepted"
+    # And none of them can be excused: there is nothing to excuse them with.
+    assert COMPILE_PROVEN_RESERVED_SITES == {}
 
 
 def test_88_comments_and_string_literals_are_not_declarations() -> None:
@@ -2990,3 +3071,257 @@ def test_91_modcalcfactors_declaration_order_survives_the_new_function() -> None
             assert line < first_procedure, "the cache variable is inside a procedure"
     assert "Private mMaxDouble As Double" in module.code
     assert "Private mMaxDoubleBuilt As Boolean" in module.code
+
+
+# ===========================================================================
+# RUNTIME RUN 7: the compile-risk class, closed
+# ===========================================================================
+# Run 7 reached PCCM_Calculate on the golden fixture and got HRESULT 0x800A9C68.
+# The interactive VBE supplied what COM could not: "Compile error: Sub or
+# Function not defined", highlighting the call to Contribute inside
+# modCalcAnalytical.AccumulateTotals - a procedure that was declared, once, in
+# that same module. Its declaration is what the parser rejected.
+def test_90_contribute_exists_exactly_once_and_declares_no_reserved_parameter() -> None:
+    """R3, R4, R5. The symbol the VBE could not find, and why it could not.
+
+    A second Contribute, a Public Contribute, or a qualified call would each
+    have been a way to make the error message go away without fixing anything.
+    None of them is what happened here: the declaration was corrected.
+    """
+    module = _kernel()["modCalcAnalytical"]
+    declarations = [name for kind, name, _, _, _ in _vba_declarations(module)
+                    if kind == "procedure" and name == "Contribute"]
+    assert declarations == ["Contribute"], (
+        f"Contribute is declared {len(declarations)} times; exactly one is required"
+    )
+    assert "Contribute" not in module.public_procedures, (
+        "Contribute must stay Private; making it Public would not have compiled either"
+    )
+
+    header = next(statement for _, statement in logical_statements(module.code)
+                  if re.match(r"^Private Function Contribute\s*\(", statement.strip()))
+    parameters = [identifier for kind, identifier, _, scope, _ in _vba_declarations(module)
+                  if kind == "parameter" and scope == "Contribute"]
+    assert parameters == ["terms", "slot", "value", "measureScale", "coefficient",
+                          "measure", "who", "detail"], parameters
+    assert "scale" not in [p.lower() for p in parameters], (
+        "Contribute still declares a parameter named `scale`"
+    )
+    for reserved in VBA_RESERVED_IDENTIFIERS:
+        assert reserved not in [p.lower() for p in parameters], reserved
+    # The ARGUMENT ORDER and the types are untouched: only the fourth name moved.
+    assert "ByRef measureScale As Double" in header, header
+    assert header.count("ByVal") == 5 and header.count("ByRef") == 3, header
+
+    # R5. Every call still resolves to that one private helper, unqualified.
+    calls = re.findall(r"\bContribute\s*\(", module.code)
+    assert len(calls) >= 8, f"only {len(calls)} Contribute call sites remain"
+    assert "modCalcAnalytical.Contribute(" not in module.code, (
+        "a call was qualified; the fix is the declaration, not the call site"
+    )
+    for other_name, other in _modules().items():
+        if other_name == "modCalcAnalytical":
+            continue
+        assert "Contribute(" not in other.code, (
+            f"{other_name} calls Contribute; it is Private to modCalcAnalytical"
+        )
+
+
+def test_91_accumulate_totals_is_unchanged_apart_from_identifier_spelling() -> None:
+    """R6 and R7. The contribution ORDER and the A/B/C/D/E paths are untouched.
+
+    Contribute's call sites carry the arithmetic: which array, which slot, which
+    conditioning accumulator, which coefficient. If the rename had disturbed any
+    of that, the totals would move while every compile check still passed.
+    """
+    module = _kernel()["modCalcAnalytical"]
+    body = _procedure_body(module, "AccumulateTotals")
+    calls = re.findall(r"Contribute\((.*?)\)\s*Then", body, re.S)
+    assert len(calls) == 12, f"AccumulateTotals makes {len(calls)} contributions, not 12"
+
+    def argument(call: str, index: int) -> str:
+        # Line continuations are joined first: `_` at a break is not an argument.
+        flat = re.sub(r"\s+", " ", call).replace(" _ ", " ")
+        return flat.split(",")[index].strip()
+
+    # THE TWELVE CONTRIBUTIONS, IN THE ORDER THE ACCEPTED SOURCE MAKES THEM:
+    # two into D per risk, six into A/B/C per cost line, then four into E - two
+    # from the risk pass and two from the cost pass. This ordering is what the
+    # I1 and I2 identities are built on.
+    arrays = [argument(call, 0) for call in calls]
+    assert arrays == ["dNomTerms", "dPvTerms",
+                      "aNomTerms", "aPvTerms", "bNomTerms", "bPvTerms",
+                      "cNomTerms", "cPvTerms",
+                      "eNomTerms", "ePvTerms", "eNomTerms", "ePvTerms"], arrays
+    # Each contribution still names its own conditioning accumulator, and E is
+    # deliberately accumulated twice because two passes feed it.
+    scales = [argument(call, 3) for call in calls]
+    assert scales == ["magnitudes.DNom", "magnitudes.DPv",
+                      "magnitudes.ANom", "magnitudes.APv", "magnitudes.BNom",
+                      "magnitudes.BPv", "magnitudes.CNom", "magnitudes.CPv",
+                      "magnitudes.ENom", "magnitudes.EPv",
+                      "magnitudes.ENom", "magnitudes.EPv"], scales
+    # The eight headline measures each have their own accumulator; E's two
+    # extra appearances are the second pass, not a duplicate measure.
+    assert len(set(scales)) == 10, sorted(set(scales))
+    assert scales.count("magnitudes.ENom") == 2 and scales.count("magnitudes.EPv") == 2
+    # The array and its accumulator agree measure by measure, every time.
+    for array, scale in zip(arrays, scales):
+        letter = array[0].upper()
+        assert scale.startswith("magnitudes." + letter), (array, scale)
+    # And the value each one contributes is untouched.
+    values = [argument(call, 2) for call in calls]
+    assert values == ["audits(index).ExpectedRiskNominal", "audits(index).ExpectedRiskPv",
+                      "audits(index).DeterministicNominal", "audits(index).DeterministicPv",
+                      "audits(index).ShiftNominal", "audits(index).ShiftPv",
+                      "audits(index).MeanBasisNominal", "audits(index).MeanBasisPv",
+                      "audits(index).ExpectedRiskNominal", "audits(index).ExpectedRiskPv",
+                      "audits(index).MeanBasisNominal", "audits(index).MeanBasisPv"], values
+
+
+def test_92_the_four_public_shapes_kept_their_signatures() -> None:
+    """R8, R9, R10, R11. A rename may not move a boundary.
+
+    IdentityAllowance is Public and cross-module; the other three are Private
+    but are pinned the same way, because a changed argument order would be a
+    silent numerical defect rather than a compile error.
+    """
+    factors = _kernel()["modCalcFactors"]
+    header = next(s for _, s in logical_statements(factors.code)
+                  if s.strip().startswith("Public Function IdentityAllowance"))
+    header = re.sub(r"\s+", " ", header)
+    assert header == (
+        "Public Function IdentityAllowance(ByVal termScale As Double, "
+        "ByVal absoluteFloor As Double, ByVal coefficient As Double, "
+        "ByVal scaleFloor As Double, ByRef result As Double) As Boolean"
+    ), header
+    # The one cross-module caller still passes five POSITIONAL arguments.
+    analytical = _kernel()["modCalcAnalytical"]
+    call = re.search(r"IdentityAllowance\((.*?)\)\s*Then", analytical.code, re.S)
+    assert call, "IdentityAllowance is no longer called"
+    flat = re.sub(r"\s+", " ", call.group(1)).replace(" _ ", " ")
+    arguments = [a.strip() for a in flat.split(",")]
+    assert arguments == ["conditioningScale", "TOL_IDENTITY_ABSOLUTE_FLOOR",
+                         "TOL_IDENTITY_RELATIVE_COEFFICIENT",
+                         "TOL_CONDITIONING_SCALE_FLOOR", "allowance"], arguments
+    assert ":=" not in analytical.code, "a named-argument call would break on a rename"
+
+    for module_name, procedure, expected in (
+        ("modCalcFingerprint", "CalcFpEncodeSection",
+         "Private Function CalcFpEncodeSection(ByVal sectionName As String, "
+         "ByRef records() As String, ByVal count As Long, "
+         "ByRef section As String) As Boolean"),
+        ("modCalcResolve", "DistributionKindOf",
+         "Private Function DistributionKindOf(ByVal distributionName As String) As Long"),
+        ("modCalcReport", "CountCurrencyReferences",
+         "Private Sub CountCurrencyReferences(ByRef package As CalculationPackage)"),
+    ):
+        module = _modules()[module_name]
+        header = next(s for _, s in logical_statements(module.code)
+                      if re.match(rf"^(Public|Private) (Function|Sub) {procedure}\s*\(",
+                                  s.strip()))
+        assert re.sub(r"\s+", " ", header).strip() == expected, header
+
+    # The bodies still do what they did: the encoder frames the section name,
+    # the adapter maps the three accepted names, the counter counts references.
+    section = _procedure_body(_kernel()["modCalcFingerprint"], "CalcFpEncodeSection")
+    assert "CalcFpCanonicalText(sectionName) & prefix & body" in section, section
+    kinds = _procedure_body(_modules()["modCalcResolve"], "DistributionKindOf")
+    assert "Select Case distributionName" in kinds
+    for constant in ("DISTRIBUTION_NAME_1", "DISTRIBUTION_NAME_2", "DISTRIBUTION_NAME_3"):
+        assert constant in kinds, constant
+    assert "Case Else" not in kinds, "an unknown name must not map to a default"
+    counter = _procedure_body(_modules()["modCalcReport"], "CountCurrencyReferences")
+    assert "package.ReferencedBy(currencyIndex) = package.ReferencedBy(currencyIndex) + 1" in counter
+
+
+def test_93_a_planted_reserved_declaration_is_rejected_in_every_shape() -> None:
+    """R12, R13, R14, R15. The four spellings Run 3 and Run 7 make real.
+
+    Each is planted into a REAL production module, in the procedure that
+    historically carried it, which is the case a grandfather list would have
+    waved straight through.
+    """
+    modules = _modules()
+    plants = {
+        "R12 a reserved ByRef parameter (the exact Run-7 shape)": (
+            "modCalcAnalytical", "ByRef measureScale As Double", "ByRef scale As Double"),
+        "R13 a reserved Dim variable (the exact Run-3 shape)": (
+            "modCalcFactors", "Dim quotient As Double, scaleExponent As Long",
+            "Dim quotient As Double, width As Long"),
+        "R14 a reserved ByVal parameter": (
+            "modCalcFingerprint", "ByVal sectionName As String", "ByVal name As String"),
+        "R15 a reserved loop variable": (
+            "modCalcReport", "Dim currencyIndex As Long, driver As Long",
+            "Dim currency As Long, driver As Long"),
+    }
+    for label, (module_name, present, planted_text) in plants.items():
+        original = modules[module_name]
+        assert present in original.raw, f"{label}: {present!r} is not in the corrected source"
+        planted = VbaModule(name=module_name, path=original.path,
+                            raw=original.raw.replace(present, planted_text, 1))
+        found = _reserved_sites({module_name: planted})
+        assert found, f"{label} was accepted"
+        assert not _reserved_sites({module_name: original}), (
+            f"{label}: the corrected source is not clean to begin with"
+        )
+    # And a planted declaration in a BRAND NEW module is caught too, so the rule
+    # is not tied to the modules that historically carried these names.
+    fresh = VbaModule(name="modBrandNew", path=SRC_VBA / "modBrandNew.bas",
+                      raw="Private Sub Probe()\n    Dim name As String\nEnd Sub\n")
+    assert _reserved_sites({"modBrandNew": fresh})
+
+
+def test_94_the_scanner_still_ignores_comments_and_string_literals() -> None:
+    """R16. The renamed sources still DISCUSS the old names, on purpose.
+
+    `Contribute`'s commentary says "conditioning scale" in English and
+    `Reconcile`'s diagnostic ends `& " scale"`. Both are correct and neither is
+    a declaration. A scanner that read them would make the zero rule unkeepable,
+    and an unkeepable rule gets disabled.
+    """
+    analytical = _kernel()["modCalcAnalytical"]
+    assert "conditioning scale." in analytical.raw, (
+        "the English commentary was rewritten by the rename; it is prose"
+    )
+    assert '& " scale"' in analytical.raw, (
+        "a user-facing diagnostic string was rewritten by the rename"
+    )
+    # And neither produces a site.
+    assert not _reserved_sites({"modCalcAnalytical": analytical})
+    declared = {identifier.lower() for _, identifier, _, _, _ in _vba_declarations(analytical)}
+    for prose in ("scale", "width", "name", "currency"):
+        assert prose not in declared, f"{prose} was read out of prose or a literal"
+
+
+def test_95_callability_is_no_longer_described_as_compilation() -> None:
+    """R17 and R18. The claim Run 7 disproved, removed from both places."""
+    bootstrap = PCCM_ROOT / "bootstrap" / "windows"
+    harness = (bootstrap / "phase4_functional_test.ps1").read_text(encoding="utf-8")
+    # THE CHECK LABEL, as a PowerShell single-quoted literal. Searching the raw
+    # text would also hit the commentary that RECORDS the retirement, which is
+    # exactly the text that must stay.
+    assert "'PCCM_AutomationBegin is callable (the VBA project compiles)'" not in harness, (
+        "A1 still claims the whole project compiles from one callable entry point"
+    )
+    labels = re.findall(r"Add-Check \$list '([^']*)'", harness)
+    assert not any("project compiles" in label for label in labels), (
+        [label for label in labels if "project compiles" in label]
+    )
+    assert "'PCCM_AutomationBegin is callable' $true" in harness, (
+        "A1 must still record what it does observe"
+    )
+    scenarios = (bootstrap / "phase5_gate_b_scenarios.ps1").read_text(encoding="utf-8")
+    assert "is callable') $callable $detail" in scenarios, (
+        "P5-M must still record API callability"
+    )
+    for text in (harness, scenarios):
+        for label in re.findall(r"Add-Check \$list \(?'([^']*)'", text):
+            assert "compiles" not in label and "compiled" not in label, label
+    # And the retired inference is not still asserted in the VBA test authority.
+    source = Path(__file__).read_text()
+    assert "COMPILE_PROVEN_RESERVED_SITES: dict[tuple[str, str, str, str, str], int] = {}" \
+        in source, "the exemption map is not empty"
+    assert "RUNTIME RUN 7 DISPROVED THAT INFERENCE" in source, (
+        "the retired authority is not recorded as retired"
+    )

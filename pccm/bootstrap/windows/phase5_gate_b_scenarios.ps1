@@ -71,7 +71,7 @@ function Get-Phase5CoverageLedger {
 # naming anything outside this set, so a typo cannot silently drop a case.
 function Get-Phase5ScenarioIds {
     return @(
-        'P5-FX', 'P5-FIX', 'P5-M',
+        'P5-CMP', 'P5-FX', 'P5-FIX', 'P5-M',
         'P5-D0', 'P5-D1', 'P5-D2', 'P5-D3', 'P5-D4', 'P5-D5', 'P5-D6', 'P5-D7',
         'P5-DC', 'P5-D8',
         'P5-AN', 'P5-RF', 'P5-PQ', 'P5-PN', 'P5-AR', 'P5-ID',
@@ -2666,6 +2666,111 @@ function Invoke-Phase5GateBScenarios {
     }
 
     # -------------------------------------------------------------------
+    # P5-CMP. THE WHOLE PROJECT COMPILES. NOT "an entry point answered."
+    # -------------------------------------------------------------------
+    # RUNTIME RUN 7. In one session of real Excel:
+    #
+    #   A1     PASS   PCCM_AutomationBegin is callable
+    #   P5-M   PASS   six API procedures callable, fifteen modules present
+    #   P5-FIX FAIL   PCCM_Calculate -> HRESULT 0x800A9C68, and the VBE reported
+    #                 "Compile error: Sub or Function not defined" on the call
+    #                 to Contribute inside modCalcAnalytical.AccumulateTotals
+    #
+    # Contribute was declared, once, in that module. Its declaration carried
+    # `ByRef scale As Double`, and `Scale` is a VBA statement keyword, so the
+    # procedure never came into existence and every call to it was an undefined
+    # symbol. VBA COMPILES ON DEMAND: a project answers an API call while a
+    # procedure body nothing has reached yet still holds a fatal declaration.
+    #
+    # So callability is not compilation, and this scenario exists to make the
+    # stronger claim separately, once, BEFORE anything relies on it.
+    #
+    # THE MECHANISM. The VBE exposes Compile VBAProject as a command bar control,
+    # and it is addressed BY ID (578), never by caption: the caption is localised
+    # and an English-only lookup would silently find nothing on a non-English
+    # Excel and report success for a project that was never compiled.
+    #
+    # WHAT AN ENABLED CONTROL MEANS. The VBE enables Compile VBAProject when
+    # there is something left to compile and disables it once the project is
+    # fully compiled. So `Enabled = False` BEFORE the call means the project was
+    # already compiled, and `Enabled = False` AFTER a successful Execute is the
+    # positive evidence that the compilation completed. A control that is still
+    # enabled afterwards is reported as a FAIL, not explained away.
+    #
+    # FAIL CLOSED, AND KEEP THE EVIDENCE. Every step is inside try/catch and any
+    # throw is a FAIL carrying Excel's own message. Nothing here suppresses,
+    # auto-answers or dismisses a compile-error dialog: DisplayAlerts is left
+    # exactly as the accepted lifecycle set it, because a dialog that was
+    # dismissed is a diagnostic that was destroyed. If VBProject access is
+    # denied by Trust Center policy the scenario says so and FAILS rather than
+    # assuming the project is fine.
+    try {
+        $list = New-Checklist
+        $vbe = $null; $bars = $null; $control = $null
+        try {
+            $vbe = $Excel.VBE
+            $null = Add-Check $list 'the VBE object model is reachable' ($null -ne $vbe)
+            if ($null -ne $vbe) {
+                $bars = $vbe.CommandBars
+                $null = Add-Check $list 'the VBE command bars are reachable' ($null -ne $bars)
+            }
+            if ($null -ne $bars) {
+                # BY ID. 578 is Compile VBAProject. FindControl is asked for the
+                # control, and its ABSENCE is a failure of this gate: a missing
+                # control means the project cannot be proved to compile here,
+                # which is not the same as a project that compiles.
+                $control = $bars.FindControl($null, 578)
+                $null = Add-Check $list 'the Compile VBAProject command (ID 578) exists' `
+                    ($null -ne $control)
+            }
+            if ($null -ne $control) {
+                $before = [bool]$control.Enabled
+                Add-Note ('P5-CMP: Compile VBAProject enabled before the attempt: ' +
+                          [string]$before)
+                if ($before) {
+                    # There is something to compile, so compile it. A throw here
+                    # is the compile failure and is reported as one.
+                    $null = $control.Execute()
+                }
+                $after = [bool]$control.Enabled
+                # THE POSITIVE EVIDENCE. Either it was already fully compiled, or
+                # it was compiled just now and the command went quiet.
+                $null = Add-Check $list `
+                    'the project is fully compiled: Compile VBAProject is no longer enabled' `
+                    (-not $after) `
+                    ('enabled before ' + [string]$before + ', after ' + [string]$after)
+            }
+        } finally {
+            if ($null -ne $control) { Release-Transient $control 'CommandBarControl'; $control = $null }
+            if ($null -ne $bars)    { Release-Transient $bars    'CommandBars';       $bars    = $null }
+            if ($null -ne $vbe)     { Release-Transient $vbe     'VBE';               $vbe     = $null }
+        }
+
+        $compileOk = Test-ChecklistOk $list
+        Add-Phase5Result 'P5-CMP' `
+            'Whole VBA project compiled through the VBE Compile command (ID 578)' `
+            $(if ($compileOk) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+        if (-not $compileOk) {
+            # A FAIL, never a SKIP, and it gates like P5-FX and P5-FIX do.
+            # Nothing below can mean anything if a procedure body does not
+            # compile, and Run 7 is the demonstration: nineteen scenarios would
+            # have reported one compile defect as their own predicates failing.
+            # Returning here leaves the caller's shutdown, Z, Y, P5-LDG and
+            # P5-FIN untouched.
+            Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `
+                ('not attempted: the VBA project does not compile, so no scenario ' +
+                 'below would be testing the model it claims to test. See the ' +
+                 'P5-CMP checklist and the VBE for the failing declaration')
+            return
+        }
+    } catch {
+        Add-Phase5Result 'P5-CMP' 'Whole VBA project compile gate' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `
+            'not attempted: the whole-project compile gate could not be completed'
+        return
+    }
+
+    # -------------------------------------------------------------------
     # THE LOCKED FX SEED, CAPTURED ONCE
     # -------------------------------------------------------------------
     # Here, and nowhere later: the Phase-4 matrix has just been proved intact, so
@@ -2947,6 +3052,12 @@ function Invoke-Phase5GateBScenarios {
             } catch { $detail = (Format-Phase5Err $_) }
             $null = Add-Check $list ('the API procedure ' + $name + ' is callable') $callable $detail
         }
+        # RUN-7 CORRECTION, THE SAME ONE A1 CARRIES. These six checks are
+        # PATHWAY evidence: the name resolves, the call crosses the COM boundary
+        # and something answers. They are NOT evidence that every deferred
+        # procedure body in every production module has compiled - Run 7 passed
+        # all six and then met a VBE compile error inside the analytical path.
+        # That claim belongs to P5-CMP alone.
         Add-Phase5Result 'P5-M' 'Persisted project: 15 modules by name, 5 buttons, 6 API procedures' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {

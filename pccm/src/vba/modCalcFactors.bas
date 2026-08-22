@@ -413,16 +413,16 @@ Private Sub ExactAddShifted(ByRef value As ExactNumber, ByVal mantissa As Double
     ' value += mantissa * 2^offsetBits, offsetBits >= 0. The 53-bit mantissa is
     ' cut into three 24-bit pieces so each piece, shifted by the sub-limb
     ' remainder, stays an exact integer below 2^47.
-    Dim index As Long, scale As Double, rest As Double
+    Dim index As Long, subLimbScale As Double, rest As Double
     Dim quotient As Double, low As Double, piece As Long
     index = Fix(offsetBits / LIMB_BITS)
-    scale = PowerOfTwo(offsetBits - index * LIMB_BITS)
+    subLimbScale = PowerOfTwo(offsetBits - index * LIMB_BITS)
     rest = mantissa
     For piece = 0 To 2
         quotient = FixNonNegative(rest / LIMB_BASE)
         low = rest - quotient * LIMB_BASE
         rest = quotient
-        If low <> 0# Then ExactAddAt value, index + piece, low * scale
+        If low <> 0# Then ExactAddAt value, index + piece, low * subLimbScale
         If rest = 0# Then Exit For
     Next piece
 End Sub
@@ -537,7 +537,7 @@ Private Function ExactBit(ByRef value As ExactNumber, ByVal position As Long) As
 End Function
 
 Private Function ExactAnyBelow(ByRef value As ExactNumber, ByVal position As Long) As Boolean
-    Dim index As Long, offset As Long, lower As Long, scale As Double
+    Dim index As Long, offset As Long, lower As Long, bitScale As Double
     index = Fix(position / LIMB_BITS)
     offset = position - index * LIMB_BITS
     For lower = 0 To index - 1
@@ -549,8 +549,8 @@ Private Function ExactAnyBelow(ByRef value As ExactNumber, ByVal position As Lon
         End If
     Next lower
     If offset = 0 Or index > value.Count - 1 Then Exit Function
-    scale = PowerOfTwo(offset)
-    ExactAnyBelow = (value.Limbs(index) - FixNonNegative(value.Limbs(index) / scale) * scale) <> 0#
+    bitScale = PowerOfTwo(offset)
+    ExactAnyBelow = (value.Limbs(index) - FixNonNegative(value.Limbs(index) / bitScale) * bitScale) <> 0#
 End Function
 
 Private Function ExactHighPart(ByRef value As ExactNumber, ByVal drop As Long) As Double
@@ -581,7 +581,7 @@ Private Function RoundExact(ByRef value As ExactNumber, ByRef result As Double, 
     ' exceed MAX_DOUBLE by less than half an ulp and still round to it; the
     ' q = 971 branch below refuses that rather than fabricating MAX_DOUBLE.
     Dim top As Long, exponent As Long, target As Long, drop As Long
-    Dim quotient As Double, scale As Long
+    Dim quotient As Double, scaleExponent As Long
     Dim roundBit As Boolean, sticky As Boolean, odd As Boolean
     top = ExactTopBit(value)
     If top < 0 Then
@@ -598,7 +598,7 @@ Private Function RoundExact(ByRef value As ExactNumber, ByRef result As Double, 
     If drop <= 0 Then
         If stickyBelow Then Exit Function
         quotient = ExactHighPart(value, 0)
-        scale = value.Shift
+        scaleExponent = value.Shift
     Else
         quotient = ExactHighPart(value, drop)
         roundBit = ExactBit(value, drop - 1)
@@ -616,9 +616,9 @@ Private Function RoundExact(ByRef value As ExactNumber, ByRef result As Double, 
             RoundExact = True
             Exit Function
         End If
-        scale = target
+        scaleExponent = target
     End If
-    quotient = ScaleByPowerOfTwo(quotient, scale)
+    quotient = ScaleByPowerOfTwo(quotient, scaleExponent)
     If Not IsUsableDouble(quotient) Then Exit Function
     If value.Sign < 0 Then quotient = -quotient
     result = quotient
@@ -1058,20 +1058,20 @@ Private Function BuildFactor(ByVal fxRate As Double, ByRef weights() As Double, 
     ' boundary; Knom is published, so it is.
     Dim index As Long, count As Long, ok As Boolean
     Dim terms() As Double, staged As Double, scaled As Double
-    Dim group() As Double, width As Long
+    Dim group() As Double, groupWidth As Long
     Dim flat() As Double, starts() As Long, lengths() As Long
     detail = vbNullString
     count = UBound(weights) - LBound(weights) + 1
     If count < 1 Then Exit Function
     ReDim terms(0 To count - 1)
-    If withDiscount Then width = 3 Else width = 2
-    ReDim group(0 To width - 1)
+    If withDiscount Then groupWidth = 3 Else groupWidth = 2
+    ReDim group(0 To groupWidth - 1)
     ok = True
     For index = 0 To count - 1
         group(0) = weights(LBound(weights) + index)
         group(1) = inflation(LBound(inflation) + index)
         If withDiscount Then group(2) = discount(LBound(discount) + index)
-        If Not SafeProduct(group, width, terms(index)) Then
+        If Not SafeProduct(group, groupWidth, terms(index)) Then
             ok = False
             detail = "project year " & CStr(index + 1)
             Exit For
@@ -1089,17 +1089,17 @@ Private Function BuildFactor(ByVal fxRate As Double, ByRef weights() As Double, 
     End If
     ' The exact expression as a FLAT TYPED VECTOR: FX distributed into every
     ' group, project year by project year.
-    width = width + 1
-    ReDim flat(0 To count * width - 1)
+    groupWidth = groupWidth + 1
+    ReDim flat(0 To count * groupWidth - 1)
     ReDim starts(0 To count - 1)
     ReDim lengths(0 To count - 1)
     For index = 0 To count - 1
-        starts(index) = index * width
-        lengths(index) = width
-        flat(index * width) = fxRate
-        flat(index * width + 1) = weights(LBound(weights) + index)
-        flat(index * width + 2) = inflation(LBound(inflation) + index)
-        If withDiscount Then flat(index * width + 3) = discount(LBound(discount) + index)
+        starts(index) = index * groupWidth
+        lengths(index) = groupWidth
+        flat(index * groupWidth) = fxRate
+        flat(index * groupWidth + 1) = weights(LBound(weights) + index)
+        flat(index * groupWidth + 2) = inflation(LBound(inflation) + index)
+        If withDiscount Then flat(index * groupWidth + 3) = discount(LBound(discount) + index)
     Next index
     detail = "compound factor expression"
     If ExactSumOfProducts(flat, starts, lengths, count, result) Then
@@ -1172,20 +1172,20 @@ Private Function ConditioningScaledExact(ByRef group() As Double, _
                                                      True, scaled)
 End Function
 
-Public Function IdentityAllowance(ByVal scale As Double, ByVal absoluteFloor As Double, _
+Public Function IdentityAllowance(ByVal termScale As Double, ByVal absoluteFloor As Double, _
                                   ByVal coefficient As Double, ByVal scaleFloor As Double, _
                                   ByRef result As Double) As Boolean
     ' max(absoluteFloor, coefficient * max(scaleFloor, sum |terms|)).
     '
     ' NOTE THE TWO MAXIMA. The inner one is a MAXIMUM and not an addition:
     ' adding coefficient * scaleFloor to the scaled sum silently widens every
-    ' allowance. `scale` already carries the coefficient distributed over the
+    ' allowance. `termScale` already carries the coefficient distributed over the
     ' terms, so the floor is scaled once, here, and compared in the same units.
     Dim scaledFloor As Double, relative As Double
-    If Not IsUsableDouble(scale) Then Exit Function
+    If Not IsUsableDouble(termScale) Then Exit Function
     If Not SafeMultiply(coefficient, scaleFloor, scaledFloor) Then Exit Function
     relative = scaledFloor
-    If scale > relative Then relative = scale
+    If termScale > relative Then relative = termScale
     result = absoluteFloor
     If relative > result Then result = relative
     IdentityAllowance = True

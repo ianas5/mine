@@ -717,7 +717,15 @@ def test_21_the_encoder_changed_only_where_compile_safety_required() -> None:
                 if line.strip() and not line.strip().startswith("'")]
 
     before = executable(accepted.stdout)
-    after = executable((SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8"))
+    current = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
+    # RUNTIME RUN 7 rename, REVERSED before the comparison rather than added to
+    # the allowed-token list. `Name` is a VBA statement keyword, so
+    # CalcFpEncodeSection's parameter became `sectionName`. Reversing it means
+    # the comparison below still asks the ORIGINAL question - did anything move
+    # outside the boundary constructions - and a widened token list could not
+    # have said that.
+    assert "sectionName" in current, "the Run-7 rename is missing"
+    after = executable(re.sub(r"\bsectionName\b", "name", current))
     changed = set(before).symmetric_difference(after)
 
     # Every changed line must carry a boundary token. Nothing else moved.
@@ -733,7 +741,6 @@ def test_21_the_encoder_changed_only_where_compile_safety_required() -> None:
     )
 
     # The round-3 renames are still in place and still invisible.
-    current = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
     assert "decimalScale" in current and "powerBase" in current
     body = "\n".join(after)
     assert not re.search(r"\bscale\b", body), "`scale` is back in executable text"

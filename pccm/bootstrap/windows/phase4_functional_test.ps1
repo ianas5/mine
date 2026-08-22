@@ -1071,7 +1071,18 @@ if ($buildOk) {
         # Automation on: confirmations are answered by the harness, not by a human.
         # No failure stage is armed, so every operation runs its real path.
         $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
-        $null = Add-Check $list 'PCCM_AutomationBegin is callable (the VBA project compiles)' $true
+        # RUN-7 CORRECTION. This line used to read "(the VBA project compiles)".
+        # It does not prove that, and Runtime Run 7 disproved the inference in a
+        # single session: A1 PASSED here, P5-M PASSED six API procedures as
+        # callable, and PCCM_Calculate later failed with the VBE reporting
+        # "Compile error: Sub or Function not defined". VBA compiles on demand,
+        # so a project can answer an API call while a procedure body nothing has
+        # reached yet still holds a declaration the parser rejects.
+        #
+        # A1 claims exactly what it observes: this entry point answered. Whole
+        # project compilation is P5-CMP's claim, and P5-CMP runs before anything
+        # that depends on it.
+        $null = Add-Check $list 'PCCM_AutomationBegin is callable' $true
 
         $probe = [string]$excel.Run('PCCM_AutomationResult')
         $null = Add-Check $list 'PCCM_AutomationResult is callable and starts empty' `

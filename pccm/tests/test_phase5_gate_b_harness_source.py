@@ -3820,11 +3820,12 @@ def _prerequisite_gate() -> str:
     """The P5-P4 block: entry into Invoke-Phase5GateBScenarios, up to P5-FX."""
     source = _executable(SCENARIOS)
     body = _procedure(source, "Invoke-Phase5GateBScenarios")
-    # Bounded at both ends: after the procedure's own param block, and before the
-    # locked FX capture, which is the first statement that touches the workbook
-    # and belongs to P5-FX rather than to the gate.
+    # Bounded at both ends: after the procedure's own param block, and before
+    # `$vbe = $Excel.VBE`, the first statement that touches anything outside the
+    # result ledger. That statement opens P5-CMP, the Run-7 compile gate, which
+    # now sits between P5-P4 and the locked FX capture.
     return body[body.index("$required = Get-Phase4RequiredScenarioIds"):
-                body.index("Save-Phase5LockedFxSeed")]
+                body.index("$vbe = $Excel.VBE")]
 
 
 def _final_gate() -> str:
@@ -7488,4 +7489,158 @@ def test_185_every_gate_states_why_it_did_not_attempt() -> None:
     gates = re.findall(
         r"Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `\s*\n\s*\(?'"
         r"not attempted:", source)
-    assert len(gates) == 5, f"the P5-ALL gate set changed: {len(gates)}"
+    # Five before Run 7, seven after: P5-CMP added a success gate and a catch
+    # gate of its own, exactly as P5-FX and P5-FIX each carry.
+    assert len(gates) == 7, f"the P5-ALL gate set changed: {len(gates)}"
+
+
+# ===========================================================================
+# 25. RUNTIME RUN 7: a real whole-project compile gate
+# ===========================================================================
+# Run 7 passed A1 ("PCCM_AutomationBegin is callable") and P5-M (six API
+# procedures callable) and then met a VBE compile error inside the analytical
+# path. Callability is not compilation, so the stronger claim gets a scenario of
+# its own, before anything that depends on it.
+def _compile_gate() -> str:
+    """The P5-CMP block: from the P5-P4 gate's return to the FX capture."""
+    driver = _executable(SCENARIOS)
+    driver = driver[driver.index("function Invoke-Phase5GateBScenarios"):]
+    return driver[driver.index("$vbe = $Excel.VBE"):
+                  driver.index("Save-Phase5LockedFxSeed")]
+
+
+def test_186_r19_the_compile_gate_runs_before_anything_that_depends_on_it() -> None:
+    """R19. P5-CMP precedes P5-FX, P5-FIX and every fixture."""
+    scenarios = _executable(SCENARIOS)
+    driver = scenarios[scenarios.index("function Invoke-Phase5GateBScenarios"):]
+    order = {
+        name: driver.index(f"Add-Phase5Result '{name}'")
+        for name in ("P5-P4", "P5-CMP", "P5-FX", "P5-FIX", "P5-AN")
+    }
+    assert order["P5-P4"] < order["P5-CMP"] < order["P5-FX"] < order["P5-FIX"] < order["P5-AN"], (
+        f"the gate order is wrong: {sorted(order, key=order.get)}"
+    )
+    # Nothing touches the workbook before the compile gate does.
+    before = driver[:driver.index("$vbe = $Excel.VBE")]
+    for touch in ("Save-Phase5LockedFxSeed", "Set-Phase5Fixture", "Set-TableCell",
+                  "$Excel.Run(", "Get-TableBody"):
+        assert touch not in before, (
+            f"{touch} runs before the project is proved to compile"
+        )
+    # It is a declared scenario.
+    assert "'P5-CMP'" in _procedure(scenarios, "Get-Phase5ScenarioIds")
+
+
+def test_187_the_compile_gate_addresses_the_command_by_id_and_proves_it_exists() -> None:
+    """The mechanism, and the three ways it could have been fake.
+
+    A caption lookup would find nothing on a non-English Excel and would report
+    success for a project that never compiled. A missing control would do the
+    same. And executing without reading Enabled afterwards would prove only that
+    a menu command was invoked.
+    """
+    block = _compile_gate()
+    assert "FindControl($null, 578)" in block, (
+        "the Compile VBAProject command is not addressed by its stable ID"
+    )
+    # THE LOOKUP, not the prose. "Compile VBAProject" is fine in a check LABEL;
+    # what may never appear is a caption reaching FindControl, or any read of
+    # .Caption, because both are localised.
+    lookups = re.findall(r"FindControl\(([^)]*)\)", block)
+    assert lookups == ["$null, 578"], lookups
+    assert ".Caption" not in block, "the gate reads a localised caption"
+    assert "FindControl('" not in block and 'FindControl("' not in block
+    # The control must EXIST, and its absence is a failure of this gate.
+    assert "'the Compile VBAProject command (ID 578) exists'" in block
+    assert "($null -ne $control)" in block
+    # It is EXECUTED when there is something to compile...
+    assert "$control.Execute()" in block
+    assert "$before = [bool]$control.Enabled" in block
+    assert "if ($before) {" in block
+    # ...and the positive evidence is that the command has gone quiet.
+    assert "$after = [bool]$control.Enabled" in block
+    assert "(-not $after)" in block, (
+        "the gate never checks that the project is fully compiled afterwards"
+    )
+    # VBProject access is COM: every transient is released.
+    for handle in ("'CommandBarControl'", "'CommandBars'", "'VBE'"):
+        assert f"Release-Transient" in block and handle in block, handle
+    assert block.count("Release-Transient") == 3
+
+
+def test_188_the_compile_gate_fails_closed_and_destroys_no_evidence() -> None:
+    """It may not pass by accident, and it may not tidy away a dialog."""
+    scenarios = _executable(SCENARIOS)
+    block = _compile_gate()
+    # NO SUPPRESSION. An unexpected compile-error dialog is diagnostic evidence.
+    for suppressor in ("-ErrorAction SilentlyContinue", "-ErrorAction Ignore",
+                       "DisplayAlerts = $true", "DisplayAlerts=$true",
+                       "SendKeys", "$ErrorActionPreference"):
+        assert suppressor not in block, f"the compile gate {suppressor}s"
+    # NO SUCCESS FROM IMPORTING OR FROM ONE MACRO. The gate's own checks are the
+    # control's existence and the control's state, nothing else.
+    for false_proof in ("VBComponents.Import", "PCCM_AutomationBegin", "PCCM_Calculate"):
+        assert false_proof not in block, (
+            f"the compile gate claims success from {false_proof}"
+        )
+    # EXACTLY ONE RESULT, on both paths.
+    whole = scenarios[scenarios.index("function Invoke-Phase5GateBScenarios"):]
+    section = whole[:whole.index("Save-Phase5LockedFxSeed")]
+    assert section.count("Add-Phase5Result 'P5-CMP'") == 2, (
+        "P5-CMP must emit on exactly its success path and its catch path"
+    )
+    assert "Add-Phase5Result 'P5-CMP' 'Whole VBA project compile gate' 'FAIL' (Format-Phase5Err $_)" \
+        in section, "a throw inside the gate is not reported as a FAIL"
+    # A FAIL, never a SKIP - checked over the gate's OWN block, because the
+    # P5-P4 gate above it legitimately counts SKIPs in the Phase-4 matrix.
+    assert "'SKIP'" not in block, "the compile gate can be skipped"
+    gate_tail = section[section.index("$vbe = $Excel.VBE"):]
+    assert "'SKIP'" not in gate_tail, "the compile gate reports a SKIP"
+
+
+def test_189_r20_a_compile_gate_failure_leaves_the_lifecycle_evidence_reachable() -> None:
+    """R20. Y, Z, P5-LDG and P5-FIN still run after the gate fails."""
+    scenarios = _executable(SCENARIOS)
+    whole = scenarios[scenarios.index("function Invoke-Phase5GateBScenarios"):]
+    section = whole[:whole.index("Save-Phase5LockedFxSeed")]
+    # It RETURNS from the scenario driver; it does not exit the process.
+    assert section.count("return") >= 2, "the compile gate does not stop the run below it"
+    for fatal in ("exit 1", "exit(", "throw", "[Environment]::Exit"):
+        assert fatal not in section.split("$vbe = $Excel.VBE")[1], (
+            f"the compile gate {fatal}s, which would take the shutdown with it"
+        )
+    assert "Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL'" in section
+    # And the caller's lifecycle path is downstream of the whole scenario call.
+    harness = _executable(HARNESS)
+    order = [harness.index(token) for token in (
+        "Invoke-Phase5GateBScenarios -Excel",
+        "Add-Result 'Z' 'Excel closed naturally",
+        "$transient = @(Get-TransientFailures)",
+        "Add-Phase5LedgerIntegrityResult",
+        "Add-Phase4FinalCompletenessResult -Results $results")]
+    assert order == sorted(order)
+
+
+def test_190_a1_and_p5_m_claim_only_what_they_observe() -> None:
+    """R17 and R18, from the harness side.
+
+    Run 7 is the counterexample that retires the inference, and it is recorded
+    where the claim used to be so a future round cannot quietly restore it.
+    """
+    harness = _text(HARNESS)
+    assert "'PCCM_AutomationBegin is callable' $true" in harness
+    assert "'PCCM_AutomationBegin is callable (the VBA project compiles)'" not in harness
+    assert "RUN-7 CORRECTION" in harness, (
+        "the retirement of the compile claim is not recorded where it was made"
+    )
+    scenarios = _text(SCENARIOS)
+    assert "That claim belongs to P5-CMP alone." in scenarios, (
+        "P5-M does not record that callability is not compilation"
+    )
+    # No check label anywhere in either file claims compilation except P5-CMP's.
+    for text in (_executable(HARNESS), _executable(SCENARIOS)):
+        for label in re.findall(r"Add-Check \$list \(?'([^']*)'", text):
+            if "compil" in label:
+                assert label == (
+                    "the project is fully compiled: Compile VBAProject is no longer enabled"
+                ) or label == "the Compile VBAProject command (ID 578) exists", label

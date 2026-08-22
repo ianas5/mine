@@ -390,12 +390,12 @@ Private Function ReadDriverRow(ByVal kind As Long, ByVal table As ListObject, _
     ReadDriverRow = True
 End Function
 
-Private Function DistributionKindOf(ByVal name As String) As Long
+Private Function DistributionKindOf(ByVal distributionName As String) As Long
     ' ADAPTER, NOT AUTHORITY. The master list of distribution names is owned by
     ' the input contract and reaches VBA as the projected DISTRIBUTION_NAME_*
     ' constants; this says only which internal shape each accepted name selects.
     ' A name absent from the list is refused, never mapped to a default.
-    Select Case name
+    Select Case distributionName
     Case DISTRIBUTION_NAME_1
         DistributionKindOf = DIST_TRIANGULAR
     Case DISTRIBUTION_NAME_2

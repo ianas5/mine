@@ -1099,15 +1099,15 @@ Private Function HostDecimalSeparator() As String
 End Function
 
 Private Sub CountCurrencyReferences(ByRef package As CalculationPackage)
-    Dim currency As Long, driver As Long
+    Dim currencyIndex As Long, driver As Long
     If package.Model.CurrencyCount < 1 Then Exit Sub
     ReDim package.ReferencedBy(0 To package.Model.CurrencyCount - 1)
-    For currency = 0 To package.Model.CurrencyCount - 1
+    For currencyIndex = 0 To package.Model.CurrencyCount - 1
         For driver = 0 To package.Model.DriverCount - 1
             If StrComp(package.Model.Drivers(driver).Currency, _
-                       package.Model.Currencies(currency), vbBinaryCompare) = 0 Then
-                package.ReferencedBy(currency) = package.ReferencedBy(currency) + 1
+                       package.Model.Currencies(currencyIndex), vbBinaryCompare) = 0 Then
+                package.ReferencedBy(currencyIndex) = package.ReferencedBy(currencyIndex) + 1
             End If
         Next driver
-    Next currency
+    Next currencyIndex
 End Sub

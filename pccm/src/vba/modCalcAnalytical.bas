@@ -626,14 +626,14 @@ Public Function AccumulateTotals(ByRef audits() As DriverAudit, ByVal auditCount
 End Function
 
 Private Function Contribute(ByRef terms() As Double, ByVal slot As Long, ByVal value As Double, _
-                            ByRef scale As Double, ByVal coefficient As Double, _
+                            ByRef measureScale As Double, ByVal coefficient As Double, _
                             ByVal measure As String, ByVal who As String, _
                             ByRef detail As String) As Boolean
     ' One contribution: into its own measure's list, and into that measure's own
     ' conditioning scale. A failure names the measure and the driver, because a
     ' total that came out unusable is not a diagnosis.
     terms(slot) = value
-    If ConditioningScaledMagnitude(scale, value, coefficient) Then
+    If ConditioningScaledMagnitude(measureScale, value, coefficient) Then
         Contribute = True
         Exit Function
     End If
@@ -918,12 +918,12 @@ Private Function RecordAnnual(ByRef factorsOf() As Double, ByVal slot As Long, _
     RecordAnnual = ok
 End Function
 
-Private Function ScaleOne(ByRef scale As Double, ByRef group() As Double, ByVal value As Double, _
+Private Function ScaleOne(ByRef groupScale As Double, ByRef group() As Double, ByVal value As Double, _
                           ByVal present As Boolean, ByVal coefficient As Double) As Boolean
     If present Then
-        ScaleOne = ConditioningScaledMagnitude(scale, value, coefficient)
+        ScaleOne = ConditioningScaledMagnitude(groupScale, value, coefficient)
     Else
-        ScaleOne = ConditioningScaledProduct(scale, group, coefficient)
+        ScaleOne = ConditioningScaledProduct(groupScale, group, coefficient)
     End If
 End Function
 
@@ -932,7 +932,7 @@ Private Function AnnualSeries(ByRef values() As Double, ByRef present() As Boole
                               ByVal count As Long, ByVal discounted As Boolean, _
                               ByVal discount As Double, ByRef result As Double) As Boolean
     Dim terms() As Double, group() As Double
-    Dim flat() As Double, starts() As Long, lengths() As Long, width As Long
+    Dim flat() As Double, starts() As Long, lengths() As Long, groupWidth As Long
     Dim index As Long, position As Long, complete As Boolean, staged As Double
     If count < 1 Then
         result = 0#
@@ -960,19 +960,19 @@ Private Function AnnualSeries(ByRef values() As Double, ByRef present() As Boole
     ' The exact expression as a FLAT TYPED VECTOR of Doubles, described by two
     ' Long index vectors. No Variant appears anywhere in the numerical path.
     If discounted Then
-        width = ANNUAL_FACTOR_COUNT + 1
+        groupWidth = ANNUAL_FACTOR_COUNT + 1
     Else
-        width = ANNUAL_FACTOR_COUNT
+        groupWidth = ANNUAL_FACTOR_COUNT
     End If
-    ReDim flat(0 To count * width - 1)
+    ReDim flat(0 To count * groupWidth - 1)
     ReDim starts(0 To count - 1)
     ReDim lengths(0 To count - 1)
     For index = 0 To count - 1
         group = GroupOf(factorsOf, first + index, discounted, discount)
-        starts(index) = index * width
-        lengths(index) = width
-        For position = 0 To width - 1
-            flat(index * width + position) = group(position)
+        starts(index) = index * groupWidth
+        lengths(index) = groupWidth
+        For position = 0 To groupWidth - 1
+            flat(index * groupWidth + position) = group(position)
         Next position
     Next index
     AnnualSeries = ExactSumOfProducts(flat, starts, lengths, count, result)
@@ -1002,7 +1002,7 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
     ' drivers() nor weights() is touched.
     Dim order() As Long, count As Long, yearCount As Long
     Dim index As Long, slot As Long, position As Long
-    Dim series() As Double, total As Double, scale As Double
+    Dim series() As Double, total As Double, identityScale As Double
     Dim labels(0 To 5) As String
     Dim headline(0 To 5) As Double, annualScale(0 To 5) As Double, headScale(0 To 5) As Double
     Dim seriesValue() As Double
@@ -1080,12 +1080,12 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
             detail = labels(position)
             Exit Function
         End If
-        If Not Pair(annualScale(position), 0#, headScale(position), scale) Then
+        If Not Pair(annualScale(position), 0#, headScale(position), identityScale) Then
             detail = labels(position) & " scale"
             Exit Function
         End If
         If Not Identity(checks(4 + position), labels(position), total, headline(position), _
-                        scale) Then
+                        identityScale) Then
             detail = labels(position)
             Exit Function
         End If
@@ -1139,20 +1139,20 @@ Private Function TotalIdentity(ByRef check As IdentityCheck, ByVal label As Stri
                                ByVal against As Double, ByVal firstScale As Double, _
                                ByVal secondScale As Double, ByVal againstScale As Double, _
                                ByRef detail As String) As Boolean
-    Dim summed As Double, scale As Double
+    Dim summed As Double, pairedScale As Double
     detail = label
     If Not SafeAdd(firstTerm, secondTerm, summed) Then Exit Function
-    If Not Pair(firstScale, secondScale, againstScale, scale) Then Exit Function
-    If Not Identity(check, label, summed, against, scale) Then Exit Function
+    If Not Pair(firstScale, secondScale, againstScale, pairedScale) Then Exit Function
+    If Not Identity(check, label, summed, against, pairedScale) Then Exit Function
     detail = vbNullString
     TotalIdentity = True
 End Function
 
 Private Function Identity(ByRef check As IdentityCheck, ByVal label As String, _
                           ByVal leftValue As Double, ByVal rightValue As Double, _
-                          ByVal scale As Double) As Boolean
+                          ByVal conditioningScale As Double) As Boolean
     Dim allowance As Double, difference As Double
-    If Not IdentityAllowance(scale, TOL_IDENTITY_ABSOLUTE_FLOOR, _
+    If Not IdentityAllowance(conditioningScale, TOL_IDENTITY_ABSOLUTE_FLOOR, _
                              TOL_IDENTITY_RELATIVE_COEFFICIENT, _
                              TOL_CONDITIONING_SCALE_FLOOR, allowance) Then Exit Function
     If Not SafeSubtract(leftValue, rightValue, difference) Then Exit Function
@@ -1166,12 +1166,12 @@ Private Function Identity(ByRef check As IdentityCheck, ByVal label As String, _
 End Function
 
 Private Function Pair(ByVal firstScale As Double, ByVal secondScale As Double, _
-                      ByVal thirdScale As Double, ByRef scale As Double) As Boolean
+                      ByVal thirdScale As Double, ByRef combinedScale As Double) As Boolean
     ' The already-scaled magnitudes of the measures an identity accumulated.
     ' They arrive pre-multiplied by the coefficient, so this is a plain sum and
     ' the coefficient is never applied twice.
-    scale = 0#
-    If Not SafeAccumulate(scale, firstScale) Then Exit Function
-    If Not SafeAccumulate(scale, secondScale) Then Exit Function
-    Pair = SafeAccumulate(scale, thirdScale)
+    combinedScale = 0#
+    If Not SafeAccumulate(combinedScale, firstScale) Then Exit Function
+    If Not SafeAccumulate(combinedScale, secondScale) Then Exit Function
+    Pair = SafeAccumulate(combinedScale, thirdScale)
 End Function

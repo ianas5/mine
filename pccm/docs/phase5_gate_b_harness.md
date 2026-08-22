@@ -2734,3 +2734,242 @@ Gate B is **not** accepted. Phase 5 is **not** accepted. No runtime execution is
 requested yet.
 
 **NO WINDOWS/EXCEL RUNTIME WAS EXECUTED DURING THIS CORRECTION ROUND.**
+
+## Runtime Run 7: callability is not compilation
+
+**Run 7 is VALID EVIDENCE — RUN-6 EMPTY-INFLATION ENUMERATION CORRECTION PASSED
+THE PREVIOUS RUNTIME FAILURE AND THE GOLDEN FIXTURE REACHED PCCM_CALCULATE;
+PCCM_CALCULATE THEN EXPOSED A REAL PRODUCTION VBA COMPILE DEFECT IN THE
+ANALYTICAL PATH.** It ran once on real Windows against `37f2dfd`; it is not
+rerun and not overwritten.
+
+Result: **53 passed, 2 failed, 0 skipped** — `P5-FIX` and `P5-ALL`, and `P5-ALL`
+is the dependency gate reporting that the dependent scenarios were not
+attempted. One root.
+
+### The Run-6 correction is closed by real runtime evidence
+
+Run 6 died at `$rates.PSObject.Properties.Name` inside
+`Write-Phase5InflationRates`. Run 7 went straight past it and reached
+`PCCM_Calculate`. The empty-object enumeration correction now has real Windows
+evidence behind it and is frozen; the `{}` versus `{"year": null}` semantics are
+not reopened.
+
+### The root
+
+```
+$Excel.Run('PCCM_Calculate')   ->   HRESULT 0x800A9C68
+
+VBE:  Compile error: Sub or Function not defined
+      highlighting   Contribute(...)
+      inside         modCalcAnalytical.AccumulateTotals
+```
+
+### Why a procedure that exists is reported as not defined
+
+`Contribute` was declared, exactly once, in that same module — and its
+declaration read
+
+```vba
+Private Function Contribute(ByRef terms() As Double, ByVal slot As Long, _
+                            ByVal value As Double, ByRef scale As Double, ...
+```
+
+`Scale` is a VB statement keyword. The parser rejects it in a declaration
+position, so the declaration never produced a procedure, so every call to
+`Contribute` was a call to a name that did not exist. The VBE reports the
+*symptom* at the call site; the *cause* is four parameters into the declaration
+forty lines away.
+
+This is the same class Run 3 found at `Dim scale As Long` in
+`modCalcFingerprint`. What changed is that Run 3 looked like one bad line and
+Run 7 proves it is a class.
+
+### The authority that let it through
+
+`test_phase5_vba_source.py` held a `COMPILE_PROVEN_RESERVED_SITES` map of
+fifteen grandfathered declarations. Its stated authority was:
+
+> Runtime Run 2 imported all fifteen modules, reached P5-M, and confirmed every
+> API procedure callable, **which is only possible if the whole project
+> compiled.**
+
+**Run 7 disproved that inference inside a single Excel session:**
+
+| | |
+|---|---|
+| `A1` | **PASS** — `PCCM_AutomationBegin` is callable |
+| `P5-M` | **PASS** — six API procedures callable, fifteen modules present |
+| `P5-FIX` | **FAIL** — `PCCM_Calculate` → VBE compile error |
+
+VBA compiles on demand. A project answers an API call while a procedure body
+nothing has reached yet still holds a fatal declaration. So callability of one
+procedure — or of six — is not proof that every deferred body compiled, and
+**every one of the fifteen sites rested on that inference, not just the one Run
+7 happened to reach first.**
+
+### The correction: fifteen renames, and no exemption mechanism
+
+All fifteen were renamed from the procedure's own semantics. No numerical
+change, no reordering, no new helper, no tolerance change.
+
+| # | Module | Procedure | Kind | Was | Now |
+|---|---|---|---|---|---|
+| 1 | `modCalcAnalytical` | `AnnualSeries` | variable | `width` | `groupWidth` |
+| 2 | `modCalcAnalytical` | `Contribute` | parameter | `scale` | `measureScale` |
+| 3 | `modCalcAnalytical` | `Identity` | parameter | `scale` | `conditioningScale` |
+| 4 | `modCalcAnalytical` | `Pair` | parameter | `scale` | `combinedScale` |
+| 5 | `modCalcAnalytical` | `Reconcile` | variable | `scale` | `identityScale` |
+| 6 | `modCalcAnalytical` | `ScaleOne` | parameter | `scale` | `groupScale` |
+| 7 | `modCalcAnalytical` | `TotalIdentity` | variable | `scale` | `pairedScale` |
+| 8 | `modCalcFactors` | `BuildFactor` | variable | `width` | `groupWidth` |
+| 9 | `modCalcFactors` | `ExactAddShifted` | variable | `scale` | `subLimbScale` |
+| 10 | `modCalcFactors` | `ExactAnyBelow` | variable | `scale` | `bitScale` |
+| 11 | `modCalcFactors` | `IdentityAllowance` | parameter | `scale` | `termScale` |
+| 12 | `modCalcFactors` | `RoundExact` | variable | `scale` | `scaleExponent` |
+| 13 | `modCalcFingerprint` | `CalcFpEncodeSection` | parameter | `name` | `sectionName` |
+| 14 | `modCalcReport` | `CountCurrencyReferences` | variable | `currency` | `currencyIndex` |
+| 15 | `modCalcResolve` | `DistributionKindOf` | parameter | `name` | `distributionName` |
+
+The names come from what each identifier *is*: `groupWidth` is the number of
+factors in one project year's product group; `subLimbScale` is the power of two
+for the sub-limb remainder of a shift; `scaleExponent` is a binary exponent, not
+a magnitude, which is why it is `As Long`.
+
+**The grandfather mechanism is gone, and nothing replaced it.**
+`COMPILE_PROVEN_RESERVED_SITES` is now empty and the rule is: **zero
+declarations using a curated reserved identifier, in any production module.**
+`test_86` asserts the sweep is empty in both directions; `test_87` proves a
+planted reserved declaration is rejected regardless of module, procedure,
+declaration kind, or whether that spelling was there historically — including
+the exact site Run 7 rejected. A rule with no exceptions cannot rot.
+
+### Proof that the calculation did not move
+
+Three independent proofs, because a rename that also changed an expression would
+close a compile class and open a numerical one:
+
+1. **Reversal to the base commit.** `test_86b` reverses each new identifier
+   inside the procedure it belongs to and requires the result to equal
+   `37f2dfd`'s blob **byte for byte**, for all five modules.
+2. **The frozen fingerprint digest.** `modCalcFingerprint`'s body digest moved,
+   and `test_64j` does not merely accept the new number: it reverses
+   `sectionName` → `name` over the identical reduction and requires the
+   *previous* digest back.
+3. **The contribution structure.** `test_91` reads all twelve `Contribute` calls
+   in `AccumulateTotals` and pins the array, the conditioning accumulator and
+   the contributed value of each, in order — two into D, six into A/B/C, then
+   four into E from two passes. `test_92` pins `IdentityAllowance`'s full
+   signature and its one caller's five positional arguments.
+
+Comments and string literals were deliberately **not** rewritten: `Contribute`'s
+commentary still says "conditioning scale" in English, and `Reconcile`'s
+diagnostic still ends `& " scale"` — that literal is user-facing text, and
+renaming it would have been a behaviour change smuggled in as a refactor. Three
+such hits were reverted after the mechanical pass, and `test_94` pins them.
+
+### `P5-CMP` — a real whole-project compile gate
+
+The claim "the project compiles" now has a scenario of its own, and it runs
+**after `P5-P4` and before `P5-FX`, `P5-FIX` and every fixture** — before any
+statement that touches the workbook.
+
+It drives the VBE's own Compile VBAProject command:
+
+```powershell
+$control = $bars.FindControl($null, 578)
+```
+
+- **By ID, never by caption.** 578 is Compile VBAProject. A caption lookup finds
+  nothing on a non-English Excel and would report success for a project that
+  never compiled. `test_187` asserts `FindControl` receives only `$null, 578`
+  and that `.Caption` is never read.
+- **The control must exist.** Its absence is a failure of the gate, not a pass —
+  a project that cannot be proved to compile here is not a project that
+  compiles.
+- **Enabled is the evidence.** The VBE enables the command while something is
+  left to compile and disables it once the project is fully compiled. So
+  `Enabled = False` before means already compiled, and `Enabled = False` after a
+  successful `Execute` is the positive proof. Still enabled afterwards is a
+  FAIL, not an explanation.
+- **Fail closed, evidence intact.** Every step is inside try/catch and a throw
+  is a FAIL carrying Excel's own message. Nothing suppresses, auto-answers or
+  dismisses a compile-error dialog — `DisplayAlerts` is left exactly as the
+  accepted lifecycle set it, because a dismissed dialog is a destroyed
+  diagnostic. `test_188` sweeps for `-ErrorAction SilentlyContinue`, `SendKeys`,
+  `$ErrorActionPreference` and the rest.
+- **No false proof.** The gate never claims success from importing modules or
+  from invoking a macro; `test_188` asserts `VBComponents.Import`,
+  `PCCM_AutomationBegin` and `PCCM_Calculate` appear nowhere inside it.
+- **One result, and the lifecycle survives.** Exactly two `Add-Phase5Result
+  'P5-CMP'` sites — the success path and the catch path — and a failure gates
+  through `P5-ALL` and **returns**, leaving shutdown, `Z`, `Y`, `P5-LDG` and
+  `P5-FIN` reachable. All three COM transients are released.
+
+**A caveat stated rather than hidden:** whether `Execute()` on control 578 is
+reliable in every VBE build, and whether `Enabled` is a dependable
+post-condition there, are runtime facts. The gate is written so that any
+deviation is a **FAIL with evidence** rather than a silent pass, and it does not
+fall back to the retired A1 assumption under any circumstance. If the next
+Windows run shows the mechanism is unreliable, that is a finding about the gate,
+which is exactly what a gate is for.
+
+### The corrected claims
+
+`A1`'s check label was `PCCM_AutomationBegin is callable (the VBA project
+compiles)`. It is now `PCCM_AutomationBegin is callable` — what it actually
+observes. `P5-M`'s six API callability checks are unchanged and still recorded;
+what is removed is the conclusion drawn from them. Both files carry the Run-7
+counterexample where the claim used to be, so it cannot be quietly restored, and
+`test_190` asserts no check label in either file claims compilation except
+`P5-CMP`'s own two.
+
+The useful callability evidence is kept. Only the overstated conclusion is gone.
+
+### What Run 7 positively proved
+
+The Run-6 root did not recur; the golden fixture progressed to
+`PCCM_Calculate`; `P5-FX`, `P5-M`, `P5-EV`, `P5-D0`–`P5-D8`, `P5-DP` at
+2 432/2 432 and `P5-DC` all PASSED; the Phase-4 matrix was 35/35; `P5-LDG`
+recorded zero duplicate attempts; `Y`, `Z` and `P5-FIN` PASSED;
+`Workbook.Close`, `Application.Quit` and the natural PID exit were all true.
+
+`P5-FIX` **did not pass** — it failed before completing. No analytical, refusal,
+prerequisite, audit, status or rollback evidence exists from Run 7, because the
+dependency gate correctly prevented those scenarios from running, and none of it
+is interpreted here.
+
+### Scope
+
+Production VBA changed in exactly one way: fifteen declaration identifiers.
+`modCalcAnalytical`, `modCalcFactors`, `modCalcFingerprint`, `modCalcReport` and
+`modCalcResolve` are otherwise byte-identical to `37f2dfd`, proved by reversal.
+No builder, spec, oracle or corpus change. The Run-6 PowerShell enumeration
+correction is untouched; the only harness changes are `P5-CMP` and the two
+corrected labels.
+
+### Mutation controls
+
+Eight mutations were planted and each was caught by at least two independent
+tests:
+
+| | Mutation | Detectors |
+|---|---|---|
+| M1 | `Contribute`'s parameter back to `ByRef scale As Double` | 6 |
+| M2 | a different analytical `scale` declaration restored (`TotalIdentity`) | 5 |
+| M3 | a `modCalcFactors` `scale` declaration restored (`ExactAnyBelow`) | 4 |
+| M4 | `CalcFpEncodeSection`'s `name` restored | 6 (incl. the frozen digest) |
+| M5 | `CountCurrencyReferences`' `currency` restored | 4 |
+| M6 | `DistributionKindOf`'s `name` restored | 4 |
+| M7 | a one-site grandfather exemption reintroduced | 2 |
+| M8 | the false A1 text restored | 2 |
+
+### Status
+
+Gate B is **not** accepted. Phase 5 is **not** accepted. No runtime execution is
+requested yet.
+
+**NO WINDOWS/EXCEL RUNTIME WAS EXECUTED DURING THIS CORRECTION ROUND.** The
+static tests above do not execute the VBA compiler and do not claim to; the
+compile class is closed by construction, and `P5-CMP` is what will test it on
+real Excel.

@@ -117,6 +117,48 @@ def assignments_into(module: VbaModule, target: str) -> list[str]:
 # ===========================================================================
 # 1. the module, the inventory and the boundary
 # ===========================================================================
+
+# ---------------------------------------------------------------------------
+# RUNTIME RUN 7. Four accepted modules moved, and the authorisation is narrow:
+# fifteen declaration identifiers that the VBA parser rejects in a declaration
+# position. `Contribute`'s `ByRef scale As Double` is why Run 7's VBE reported
+# "Sub or Function not defined" on a procedure that was declared exactly once.
+#
+# A FROZEN DIGEST IS NEVER JUST UPDATED. The map below carries the digests from
+# BEFORE the rename as well, and the test reverses the renames and requires
+# those back - so a logic change smuggled in beside a rename cannot pass by
+# editing a number.
+RUN7_RENAMES_BY_MODULE: dict[str, dict[str, str]] = {
+    "modCalcAnalytical": {"groupWidth": "width", "measureScale": "scale",
+                          "conditioningScale": "scale", "combinedScale": "scale",
+                          "identityScale": "scale", "groupScale": "scale",
+                          "pairedScale": "scale"},
+    "modCalcFactors": {"groupWidth": "width", "subLimbScale": "scale",
+                       "bitScale": "scale", "termScale": "scale",
+                       "scaleExponent": "scale"},
+    "modCalcFingerprint": {"sectionName": "name"},
+    "modCalcResolve": {"distributionName": "name"},
+}
+SHA256_BEFORE_RUN7_RENAMES: dict[str, str] = {
+    "modCalcResolve": "3c67584390516a8a1c811df62d650749f6ef71518c649d7f1bb88dc753a837c1",
+    "modCalcFactors": "4909856581ed3ca2a81b13647e1c6e2977f10fcb5a9e4a71cfa6fa36d6e6d308",
+    "modCalcAnalytical": "e234b3adacdb443c8c7b2b5072c311e7622405c3ec2e2987a750d85400299e0d",
+    "modCalcFingerprint": "9081dc05bddf052fdcb172a34eed588fef1637b89212b14a515539590e265fcf",}
+
+
+def _assert_run7_rename_only(module: str) -> None:
+    """Reversing the Run-7 renames must restore the pre-Run-7 byte digest."""
+    import hashlib
+
+    text = (SRC_VBA / f"{module}.bas").read_text(encoding="utf-8")
+    for new, old in RUN7_RENAMES_BY_MODULE[module].items():
+        assert new in text, f"{module}: the Run-7 rename {new} is missing"
+        text = re.sub(r"\b" + new + r"\b", old, text)
+    restored = hashlib.sha256(text.encode()).hexdigest()
+    assert restored == SHA256_BEFORE_RUN7_RENAMES[module], (
+        f"{module}.bas changed by more than the Run-7 identifier renames"
+    )
+
 def test_01_the_checker_exists_and_declares_itself() -> None:
     lines = _checker().raw.splitlines()
     assert lines[0] == f'Attribute VB_Name = "{CHECKER}"'
@@ -625,12 +667,12 @@ def test_43_no_numerical_kernel_is_duplicated() -> None:
 # Recorded as digests rather than asked of git, so the check holds in a
 # reconstructed tree that has no repository.
 FROZEN_SHA256 = {
-    "modCalcResolve": "3c67584390516a8a1c811df62d650749f6ef71518c649d7f1bb88dc753a837c1",
+    "modCalcResolve": "0890c612ade1b00b93568bcb32b42121f83bff1ec6647224cccaa59322b15afe",
     # Runtime Run 3 authorisation: the MAX_DOUBLE Const overflowed VBA's
     # fifteen-significant-digit literal parser, so the boundary is now BUILT
     # from MAX_SIGNIFICAND * 2^971. See test_57 in test_phase5_vba_source.py.
-    "modCalcFactors": "4909856581ed3ca2a81b13647e1c6e2977f10fcb5a9e4a71cfa6fa36d6e6d308",
-    "modCalcAnalytical": "e234b3adacdb443c8c7b2b5072c311e7622405c3ec2e2987a750d85400299e0d",
+    "modCalcFactors": "701097ab3092a1fdec9ef7168d55f50248df1acf11e2517f0ea3c18fed278128",
+    "modCalcAnalytical": "affea282af14c70ff5bf6dd19fab6e56174c39b0e9cba251495cdf1bfaac39b7",
     # Its CURRENT bytes, and they have now moved TWICE, both times under an
     # explicit authorisation recorded here:
     #   Step 7  - CalcFpNumberField made Public, nothing else.
@@ -639,7 +681,7 @@ FROZEN_SHA256 = {
     #     digits on real Excel. That correction is confined to this module and
     #     to the canonical-number path inside it; FINGERPRINT_ACCEPTED_BODY_SHA256
     #     below is what proves nothing else moved with it.
-    "modCalcFingerprint": "9081dc05bddf052fdcb172a34eed588fef1637b89212b14a515539590e265fcf",
+    "modCalcFingerprint": "39e80b9ef9252a9822cd57c8ae441b67571ca3725b3d78124bd6af2ddccc4744",
     "modWorkbook": "9cfa8f130c5bcdee783948654c969d4b0d6589fe7059c126f88c7676ca5405bf",
     "modAppState": "ef0b5c64a7a3b5aeeef5ef0797cd160071a7eda6a7d8cef9cb98301f1504672f",
     "modTimeline": "4a4f24d17b65bcbc0e46b1a74213b6a02eab6ab492b1788476d66eb7807b9e3f",
@@ -655,7 +697,7 @@ FROZEN_SHA256 = {
 # normalised back to Private. A byte digest alone would say only "this file
 # changed"; this one says what the change was allowed to be.
 FINGERPRINT_ACCEPTED_BODY_SHA256 = (
-    "27589cbef04e29ceff15df05a0b1cbfdf2d35e25ab301cdc2c992e46468a9659"
+    "1ea6aa3ca4b9d8ce3a5b8885f6e3ba24b1cfe6da870f25ce2db88e2061084cb3"
 )
 
 
@@ -691,6 +733,10 @@ def test_44_the_accepted_modules_were_not_modified() -> None:
     assert _fingerprint_body_digest() == FINGERPRINT_ACCEPTED_BODY_SHA256, (
         "modCalcFingerprint changed beyond the authorised visibility of CalcFpNumberField"
     )
+
+    # AND THE FOUR THAT MOVED IN RUN 7 MOVED BY A RENAME AND NOTHING ELSE.
+    for module in RUN7_RENAMES_BY_MODULE:
+        _assert_run7_rename_only(module)
 
 
 def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
