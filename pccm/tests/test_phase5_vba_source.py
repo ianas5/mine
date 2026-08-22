@@ -3301,7 +3301,8 @@ def test_95_callability_is_no_longer_described_as_compilation() -> None:
     # THE CHECK LABEL, as a PowerShell single-quoted literal. Searching the raw
     # text would also hit the commentary that RECORDS the retirement, which is
     # exactly the text that must stay.
-    assert "'PCCM_AutomationBegin is callable (the VBA project compiles)'" not in harness, (
+    retired = "'PCCM_AutomationBegin is callable (the VBA project compiles)'"  # retired-authority
+    assert retired not in harness, (
         "A1 still claims the whole project compiles from one callable entry point"
     )
     labels = re.findall(r"Add-Check \$list '([^']*)'", harness)

@@ -15,7 +15,8 @@ What this file DOES establish:
   * expected analytical values are LOADED from build/phase5_cases.json and are
     not hand-maintained anywhere in the harness
   * the transient diagnostic module is absent from the production manifest,
-    declares no PCCM_ endpoint, is imported only after the A1 production compile
+    declares no PCCM_ endpoint, is imported only after P5-CMP has proved the
+    whole production project compiles
     proof, and is removed again
   * the locked direct-vector sets are complete, both decimal separators are
     injected, and the reference stream is asserted by BOTH unit count and digest
@@ -541,25 +542,37 @@ def test_21_the_diagnostic_module_only_wraps_accepted_public_helpers() -> None:
         assert forbidden not in source, f"the diagnostic module reimplements ({forbidden})"
 
 
-def test_22_the_diagnostic_import_happens_only_after_the_a1_compile_proof() -> None:
-    """A1 IS the first real VBA compilation boundary, and it must stay production-only."""
+def test_22_the_diagnostic_import_happens_only_after_the_compile_proof() -> None:
+    """No test module may exist before the production project is proved to compile.
+
+    A1 is the first `Application.Run` boundary and nothing more. It used to be
+    described here as the first VBA COMPILATION boundary; Runtime Run 7 passed
+    A1, passed P5-M's API callability checks, and then met a VBE compile error
+    in the analytical path, so that description was retired. P5-CMP owns the
+    whole-project compile claim, and the diagnostic import must follow IT.
+    """
     harness = _executable(HARNESS)
     a1 = harness.index("Add-Result 'A1'")
     invoke = harness.index("Invoke-Phase5GateBScenarios")
-    assert a1 < invoke, "the Phase-5 scenarios run before the A1 production compile proof"
-    # A1 is still the FIRST Application.Run in the harness.
+    assert a1 < invoke, "the Phase-5 scenarios run before the automation surface is proved"
+    # A1 is still the FIRST Application.Run in the harness - that claim survives.
     first_run = harness.index("$excel.Run(")
     assert first_run < a1, "A1 does not contain the first Application.Run"
     assert "PCCM_AutomationBegin" in harness[first_run:first_run + 80], (
         "the first Application.Run is not a production procedure"
     )
-    # And the import is inside the scenario file, after the prerequisite gate.
+    # And the import is inside the scenario file, after BOTH gates.
     scenarios = _executable(SCENARIOS)
     assert "$components.Import($source)" in scenarios
     imported = scenarios.index("$components.Import($source)")
     prerequisite = scenarios.index("Add-Phase5Result 'P5-P4'")
+    compiled = scenarios.index("Add-Phase5Result 'P5-CMP'")
     assert prerequisite < imported, (
         "the diagnostic module is imported before the Phase-4 prerequisite is checked"
+    )
+    assert compiled < imported, (
+        "the diagnostic module is imported before the whole-project compile gate, so "
+        "a test module could mask the compile proof it is supposed to follow"
     )
     # Nothing in the harness or the bootstrap imports it earlier.
     assert "phase5_gate_b_diagnostics.bas" not in harness, (
@@ -894,8 +907,11 @@ def test_38_the_production_modules_are_asserted_by_name_not_by_count() -> None:
     # module and lost a real one.
     assert "': no standard module outside the manifest persists'" in helper
     assert "$ExpectedModules -notcontains $_" in helper
-    # P5-M reaches the production namespace through that helper.
-    block = source[source.index("Add-Phase5Result 'P5-M'") - 8000:source.index("Add-Phase5Result 'P5-M'")]
+    # P5-M reaches the production namespace through that helper. The block is
+    # bounded by its neighbours' results rather than by a character count, which
+    # a growing scenario silently outruns.
+    block = source[source.index("Add-Phase5Result 'P5-FX'"):
+                   source.index("Add-Phase5Result 'P5-M'")]
     assert "Add-Phase5ModuleInventoryChecks -List $list -Components $components" in block
 
 
@@ -1131,7 +1147,7 @@ def test_nc_17_the_diagnostic_imported_before_a1_is_caught() -> None:
         "Add-Result 'A1' 'VBA automation surface callable' 'PASS' ''\n"
     )
     assert planted.index("$components.Import($source)") < planted.index("Add-Result 'A1'"), (
-        "an import that precedes the A1 production compile proof must be visible"
+        "an import that precedes the first production Application.Run must be visible"
     )
 
 
@@ -7629,18 +7645,322 @@ def test_190_a1_and_p5_m_claim_only_what_they_observe() -> None:
     """
     harness = _text(HARNESS)
     assert "'PCCM_AutomationBegin is callable' $true" in harness
-    assert "'PCCM_AutomationBegin is callable (the VBA project compiles)'" not in harness
+    retired = "'PCCM_AutomationBegin is callable (the VBA project compiles)'"  # retired-authority
+    assert retired not in harness
     assert "RUN-7 CORRECTION" in harness, (
         "the retirement of the compile claim is not recorded where it was made"
     )
     scenarios = _text(SCENARIOS)
-    assert "That claim belongs to P5-CMP alone." in scenarios, (
+    assert "whole-project claim belongs to P5-CMP alone." in scenarios, (
         "P5-M does not record that callability is not compilation"
+    )
+    assert "runtime execution is deferred to P5-FIX" in scenarios, (
+        "P5-M does not record that PCCM_Calculate's execution is deferred"
     )
     # No check label anywhere in either file claims compilation except P5-CMP's.
     for text in (_executable(HARNESS), _executable(SCENARIOS)):
-        for label in re.findall(r"Add-Check \$list \(?'([^']*)'", text):
-            if "compil" in label:
+        for label in _check_labels(text):
+            if "compil" in label.lower():
                 assert label == (
                     "the project is fully compiled: Compile VBAProject is no longer enabled"
                 ) or label == "the Compile VBAProject command (ID 578) exists", label
+
+
+# ===========================================================================
+# 26. REVIEW OF ae52bdd: one compile authority, and no borrowed evidence
+# ===========================================================================
+# Two blockers, both about evidence AUTHORITY rather than behaviour.
+#
+#   1. The Run-7 round retired "A1 proves the project compiles" from A1's own
+#      check label and stopped there. The same claim was still standing in the
+#      harness overview, the diagnostic module header, the scenario commentary,
+#      the P5-D0 result title, two docs and this suite's own docstrings.
+#   2. P5-M emitted "the API procedure PCCM_Calculate is callable" as a PASS
+#      without ever invoking it.
+RETIRED_AUTHORITY_PHRASES = (
+    "A1 has proved the production project compiles",  # retired-authority
+    "A1 has proved the production VBA project compiles",  # retired-authority
+    "AFTER the A1 production compile",  # retired-authority
+    "A1 production compile",  # retired-authority
+    "A1 IS the first real VBA compilation boundary",  # retired-authority
+    "A1 is the first real VBA compilation boundary",  # retired-authority
+    "A1 remains the first real VBA compilation boundary",  # retired-authority
+    "A1 first Application.Run of the run  ->  the PRODUCTION project compiles",  # retired-authority
+    "the VBA project compiles)",  # retired-authority
+)
+
+# A line may quote a retired phrase for exactly one reason: it is the test or
+# the note that FORBIDS it. Those lines carry this marker, in the same spirit as
+# the `# refusal-list` marker the COM-lifecycle sweep already uses.
+AUTHORITY_EXEMPTION_MARKER = "retired-authority"
+
+
+def _authority_scan_files() -> list[Path]:
+    """Every .ps1, .bas, .py and .md the correction has to cover."""
+    roots = (PCCM_ROOT / "bootstrap", PCCM_ROOT / "docs", PCCM_ROOT / "tests",
+             PCCM_ROOT / "src", PCCM_ROOT / "builder", PCCM_ROOT / "spec")
+    found: list[Path] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for pattern in ("**/*.ps1", "**/*.bas", "**/*.py", "**/*.md"):
+            found.extend(path for path in root.glob(pattern)
+                         if "__pycache__" not in path.parts)
+    found.append(PCCM_ROOT / "README.md")
+    return [path for path in found if path.is_file()]
+
+
+
+def _check_labels(text: str) -> list[str]:
+    """Every Add-Check label, including those on a backtick continuation line.
+
+    `Add-Check $list `\n    'the label'` is the harness's normal shape for a
+    long label, and a regex anchored to `$list` sees none of them. That is how a
+    label scan can report zero offenders while the offending label is right
+    there - so the continuations are joined first.
+    """
+    joined = re.sub(r"`\s*\n\s*", " ", text)
+    # `\s+`, not a single space: joining a continuation leaves the space that was
+    # before the backtick as well as the one it became.
+    return re.findall(r"Add-Check \$list\s+\(?'([^']*)'", joined)
+
+
+def test_191_r1_r2_r3_no_file_claims_a1_proved_the_project_compiles() -> None:
+    """R1, R2, R3. The whole subtree, not just executable check labels.
+
+    Run 7 is the counterexample: A1 PASS, P5-M PASS, then a VBE compile error in
+    the analytical path. Any surviving statement of the retired inference is a
+    false authority wherever it sits - a comment, a result title, a docstring,
+    an assertion message or documentation prose.
+    """
+    files = _authority_scan_files()
+    assert len(files) >= 25, f"the sweep only found {len(files)} files"
+    assert any(path.suffix == ".bas" for path in files)
+    assert any(path.suffix == ".ps1" for path in files)
+    assert any(path.suffix == ".md" for path in files)
+
+    offenders: list[str] = []
+    exempted = 0
+    for path in files:
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for phrase in RETIRED_AUTHORITY_PHRASES:
+                if phrase not in line:
+                    continue
+                if AUTHORITY_EXEMPTION_MARKER in line:
+                    exempted += 1
+                    continue
+                offenders.append(
+                    f"{path.relative_to(PCCM_ROOT)}:{number}: {phrase!r}")
+    assert not offenders, (
+        "the retired A1 whole-project compile authority is still asserted:\n  "
+        + "\n  ".join(offenders)
+    )
+    # The exemption is real and narrow: only the sites that FORBID the phrases
+    # may contain them, and there must be some, or this sweep proves nothing.
+    assert exempted >= 3, (
+        f"only {exempted} marked exemption(s); the sweep may be matching nothing"
+    )
+
+
+def test_192_r4_r5_only_p5_cmp_owns_the_whole_project_compile_claim() -> None:
+    """R4 and R5. P5-D0 follows P5-CMP, and one scenario owns the claim."""
+    scenarios = _text(SCENARIOS)
+    harness = _text(HARNESS)
+    diagnostics = DIAGNOSTIC.read_text(encoding="utf-8")
+
+    # THE DOCUMENTATION STATES THE CORRECTED HIERARCHY POSITIVELY, not merely
+    # by the absence of the retired one. A doc that deleted the sentence would
+    # pass a sweep for forbidden phrases and still leave the reader guessing.
+    doc = (PCCM_ROOT / "docs" / "phase5_gate_b_harness.md").read_text(encoding="utf-8")
+    assert "A1 is the first `Application.Run` boundary, not a compilation boundary." in doc, (
+        "the harness doc does not state what A1 actually proves"
+    )
+    assert "P5-CMP  the WHOLE production project compiles" in doc, (
+        "the lifecycle diagram does not name the compile gate"
+    )
+
+    # R4. The module header, the harness overview and the result title all name
+    # P5-CMP, and none of them names A1.
+    assert "only AFTER scenario P5-CMP has proved the production VBA project compiles" \
+        in diagnostics
+    assert "imported only AFTER P5-CMP has\n          proved the production project compiles" \
+        in harness
+    assert ("Add-Phase5Result 'P5-D0' 'Transient diagnostic module imported AFTER "
+            "the P5-CMP whole-project compile'") in scenarios
+
+    # R5. Exactly one scenario claims whole-project compilation, and its checks
+    # are the only ones that mention compiling.
+    executable_scenarios = _executable(SCENARIOS)
+    labels = _check_labels(executable_scenarios) + _check_labels(_executable(HARNESS))
+    # Not every label is a literal - many are built by concatenation from a case
+    # id - so this is a floor on the LITERAL labels, not a total.
+    assert len(labels) > 140, f"the label scan found only {len(labels)} labels"
+    compile_labels = sorted({label for label in labels if "compil" in label.lower()})
+    assert compile_labels == [
+        "the Compile VBAProject command (ID 578) exists",
+        "the project is fully compiled: Compile VBAProject is no longer enabled",
+    ], compile_labels
+    # And the result TITLES. Any title that mentions compilation must either be
+    # P5-CMP's own, or must name P5-CMP as the authority it defers to. A title
+    # that mentions a compile and names A1 is the defect this round removed.
+    joined = re.sub(r"`\s*\n\s*", " ", executable_scenarios)
+    pairs = re.findall(r"Add-Phase5Result '([\w-]+)' \(?'([^']*)'", joined)
+    mentions = [(sid, title) for sid, title in pairs if "compil" in title.lower()]
+    assert mentions, "no result title mentions compilation at all"
+    for sid, title in mentions:
+        if sid == "P5-CMP":
+            continue
+        assert "P5-CMP" in title, (
+            f"{sid} mentions a compile without naming P5-CMP as the authority: {title!r}"
+        )
+        assert "A1" not in title, f"{sid} still attributes a compile to A1: {title!r}"
+    assert {sid for sid, _ in mentions} == {"P5-CMP", "P5-D0"}, sorted(
+        {sid for sid, _ in mentions})
+
+
+def test_193_r12_r13_the_compile_gate_still_precedes_everything_it_gates() -> None:
+    """R12 and R13, restated now that P5-D0 depends on it too."""
+    scenarios = _executable(SCENARIOS)
+    driver = scenarios[scenarios.index("function Invoke-Phase5GateBScenarios"):]
+    order = {name: driver.index(f"Add-Phase5Result '{name}'")
+             for name in ("P5-P4", "P5-CMP", "P5-FX", "P5-M", "P5-D0", "P5-FIX", "P5-AN")}
+    assert order["P5-P4"] < order["P5-CMP"], "the compile gate runs before the Phase-4 gate"
+    for dependent in ("P5-FX", "P5-M", "P5-D0", "P5-FIX", "P5-AN"):
+        assert order["P5-CMP"] < order[dependent], (
+            f"{dependent} runs before the whole-project compile gate"
+        )
+    # The diagnostic IMPORT itself, not just its result, follows the gate.
+    assert driver.index("$components.Import($source)") > order["P5-CMP"], (
+        "a test module is imported before the production project is proved to compile"
+    )
+    # R13. The lifecycle evidence is still downstream of the whole scenario call.
+    harness = _executable(HARNESS)
+    positions = [harness.index(token) for token in (
+        "Invoke-Phase5GateBScenarios -Excel",
+        "Add-Result 'Z' 'Excel closed naturally",
+        "$transient = @(Get-TransientFailures)",
+        "Add-Phase5LedgerIntegrityResult",
+        "Add-Phase4FinalCompletenessResult -Results $results")]
+    assert positions == sorted(positions)
+
+
+def _p5m_block() -> str:
+    source = _executable(SCENARIOS)
+    return source[source.index("Add-Phase5Result 'P5-FX'"):
+                  source.index("Add-Phase5Result 'P5-M'")]
+
+
+def test_194_r6_r7_pccm_calculate_is_never_called_callable_without_being_called() -> None:
+    """R6 and R7. The overclaim, removed at its source.
+
+    P5-M used to set `$callable = $true` inside a branch whose whole purpose was
+    to NOT invoke PCCM_Calculate, then emit the callability label anyway.
+    """
+    block = _p5m_block()
+    # THE BRANCH THAT LIED IS GONE.
+    assert "$detail = 'exercised by the analytical scenarios below'" not in block, (
+        "P5-M still counts a future exercise as present evidence"
+    )
+    # No assignment of the callability flag survives inside a PCCM_Calculate branch.
+    calculate_branch = re.search(
+        r"if \(\$name -eq 'PCCM_Calculate'\) \{(.*?)\n            \}", block, re.S)
+    assert calculate_branch, "the PCCM_Calculate branch is gone entirely"
+    body = calculate_branch.group(1)
+    assert "$callable = $true" not in body, (
+        "PCCM_Calculate is still marked callable without being called"
+    )
+    assert "Add-Check" not in body, (
+        "the PCCM_Calculate branch still emits a check of its own"
+    )
+    assert "continue" in body, "the branch does not skip the callability check"
+    assert "deferred to P5-FIX" in body, (
+        "the branch does not say where the runtime evidence actually comes from"
+    )
+
+    # R7. The callability label exists only where an Excel.Run precedes it.
+    label = "('the API procedure ' + $name + ' is callable')"
+    assert block.count(label) == 1, block.count(label)
+    before = block[:block.index(label)]
+    run_at = before.rindex("$probe = $Excel.Run($name)")
+    assert run_at > before.rindex("continue"), (
+        "the callability check is not downstream of a real Application.Run"
+    )
+    # And PCCM_Calculate is not invoked anywhere in P5-M.
+    assert "$Excel.Run('PCCM_Calculate')" not in block, (
+        "P5-M drives the stateful calculation just to satisfy a label"
+    )
+
+    # NO CHECK IN P5-M IS VACUOUSLY TRUE. `$callable = $true` in a branch that
+    # never called anything was one shape of that; a condition written as a bare
+    # ($true) is the other, and it is how a real check gets hollowed out while
+    # its label survives. Every condition here must read something.
+    for vacuous in ("($true)", "($true) `", "-Value $true"):
+        assert vacuous not in block, (
+            f"P5-M emits a check whose condition is the constant {vacuous}"
+        )
+    # Every one of the six is still asked a real question about the project.
+    assert block.count("($declared -contains $name)") == 1
+    assert "Get-Phase5ProjectProcedureNames" in block
+
+
+def test_195_r8_r9_declaration_for_six_callability_for_five() -> None:
+    """R8 and R9. Each of the six gets the evidence it actually has."""
+    block = _p5m_block()
+    # R8. All six are proved DECLARED, out of the persisted project's own code.
+    assert "Get-Phase5ProjectProcedureNames -Workbook $Workbook" in block
+    assert "($declared -contains $name)" in block
+    assert "is declared in the persisted project'" in block
+    # The declaration reader is not a manifest re-read: it goes to CodeModule
+    # text and strips comments and literals first, like P5-EV does.
+    reader = _procedure(_executable(SCENARIOS), "Get-Phase5ProjectProcedureNames")
+    assert "$component.CodeModule" in reader
+    assert "Get-VbaExecutableCode -Code $raw" in reader, (
+        "a procedure named in a comment or a string would count as declared"
+    )
+    assert "$Manifest" not in reader, "the reader reads the manifest, not the project"
+    for handle in ("'CodeModule'", "'VBComponent'", "'VBComponents'", "'VBProject'"):
+        assert handle in reader, f"{handle} is not released"
+
+    # R9. The five that ARE claimed callable really cross Application.Run.
+    assert "$probe = $Excel.Run($name)" in block
+    assert "$callable = $true" in block
+    flag = block.index("$callable = $true")
+    assert block.index("$probe = $Excel.Run($name)") < flag, (
+        "the callability flag is set before the call that justifies it"
+    )
+    # The manifest still projects six, and the split is five plus one.
+    assert "'the manifest projects exactly six API procedures'" in block
+    assert "($api.Count -eq 6)" in block
+    api = {name for name in _emitted()["manifest"]["vba"]["api_procedures"]}
+    assert len(api) == 6 and "PCCM_Calculate" in api, sorted(api)
+
+
+def test_196_r10_r11_p5_fix_is_the_first_valid_fixture_calculate() -> None:
+    """R10 and R11. The commentary matches the evidence, and P5-FIX owns first run."""
+    scenarios_raw = _text(SCENARIOS)
+    # R10. The retired claim about all six crossing COM is gone.
+    assert "the call crosses the COM boundary" not in scenarios_raw, (
+        "P5-M still claims all six API procedures cross the COM boundary"
+    )
+    assert "DECLARATION   the name exists in the persisted VBA project" in scenarios_raw
+    assert "CALLABILITY   Application.Run reached it and it answered" in scenarios_raw
+    assert "EXECUTION     it ran against a valid fixture and did its work" in scenarios_raw
+
+    # R11. The first PCCM_Calculate of the run is P5-FIX's, on a real fixture.
+    source = _executable(SCENARIOS)
+    driver = source[source.index("function Invoke-Phase5GateBScenarios"):]
+    calls = [m.start() for m in re.finditer(r"\$Excel\.Run\('PCCM_Calculate'\)", driver)]
+    assert calls, "PCCM_Calculate is never executed at all"
+    fix_at = driver.index("Add-Phase5Result 'P5-FIX'")
+    an_at = driver.index("Add-Phase5Result 'P5-AN'")
+    assert calls[0] < fix_at, "the first PCCM_Calculate is not inside P5-FIX"
+    assert calls[1] < an_at, "P5-AN does not drive the calculation after P5-FIX"
+    # And it is preceded by a real fixture in the same block.
+    block = driver[driver.index("Add-Phase5Result 'P5-D8'"):fix_at]
+    assert block.index("Set-Phase5Fixture -Excel $Excel") < block.index(
+        "$Excel.Run('PCCM_Calculate')"), (
+        "P5-FIX calculates before it establishes a fixture"
+    )
+    # Nothing earlier in the run touches it.
+    assert driver.index("Add-Phase5Result 'P5-M'") < calls[0]
+    assert driver.index("Add-Phase5Result 'P5-CMP'") < calls[0]

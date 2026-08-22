@@ -120,8 +120,12 @@
           shape with OnAction = PCCM_Calculate, six api_procedures consumed AS
           api_procedures and not folded into entry_points
       P5-EV  No Worksheet_Change / Workbook_SheetChange in the real project
-      P5-D0  The TRANSIENT diagnostic module, imported only AFTER A1 has proved
-          the production project compiles
+      P5-CMP The WHOLE production project compiled, through the VBE's own
+          Compile VBAProject command. The only whole-project compile authority
+          there is: Runtime Run 7 passed A1 and P5-M and then met a VBE compile
+          error, so callability never proved compilation
+      P5-D0  The TRANSIENT diagnostic module, imported only AFTER P5-CMP has
+          proved the production project compiles
       P5-D1..D7 The locked section-24.1 vectors on real VBA: ten canonical numeric
           encodings, both decimal separators injected into the accepted encoder,
           all four Double-only reductions, the UTF-16 set, the 366-unit
@@ -1071,7 +1075,7 @@ if ($buildOk) {
         # Automation on: confirmations are answered by the harness, not by a human.
         # No failure stage is armed, so every operation runs its real path.
         $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
-        # RUN-7 CORRECTION. This line used to read "(the VBA project compiles)".
+        # RUN-7 CORRECTION. This line used to read "(the VBA project compiles)".  # retired-authority
         # It does not prove that, and Runtime Run 7 disproved the inference in a
         # single session: A1 PASSED here, P5-M PASSED six API procedures as
         # callable, and PCCM_Calculate later failed with the VBE reporting

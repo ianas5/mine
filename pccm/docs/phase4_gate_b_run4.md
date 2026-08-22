@@ -26,7 +26,7 @@ cannot be used to judge a model.
 | `PRE0` checklist-factory prerequisite | PASS |
 | `PRE` collection-shape preflight | PASS |
 | `A` Stage-B bootstrap, complete | PASS |
-| `A1` VBA automation surface — **the real VBA project compiled and was callable** | PASS |
+| `A1` VBA automation surface — **the real VBA automation surface answered** (this row read "the real VBA project compiled and was callable" until Phase-5 Runtime Run 7 disproved the compile half; see `phase5_gate_b_harness.md`) | PASS |
 | `B` Permanent Cost Line IDs | PASS |
 | `B2` Real ListObject reorder | PASS |
 | `C` Permanent Risk IDs | PASS |

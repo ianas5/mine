@@ -2144,7 +2144,7 @@ recorded here as a Gate-B acceptance requirement only.
 | all Phase-5 modules persist | same list, new names asserted present by name |
 | all 5 Phase-4 command buttons still persist | asserted by shape name from the manifest, exactly as today |
 | **no Phase-5 button was added** | the manifest's button count is asserted `= 5`, and the sheet shape inventory is asserted to contain **no** shape whose `OnAction` is `PCCM_Calculate` (§17) |
-| the VBA project still compiles | `A1` unchanged — still the first `Application.Run` of the run |
+| the VBA project still compiles | `P5-CMP`, the VBE's own Compile VBAProject command. `A1` is unchanged and is still the first `Application.Run` of the run, but Runtime Run 7 proved that answering a call is not compiling: A1 passed, P5-M passed, and a later `PCCM_Calculate` met a VBE compile error |
 
 **The full 35/35 Phase-4 functional matrix remains mandatory** and must pass before
 any Phase-5 scenario is considered accepted.

@@ -1073,17 +1073,22 @@ in the accepted production source: **no production visibility was reopened.**
 ### Lifecycle
 
 ```
-A1  first Application.Run of the run  ->  the PRODUCTION project compiles
+A1  first Application.Run of the run  ->  the automation surface ANSWERS
 P5-P4  the Phase-4 matrix is intact
+P5-CMP  the WHOLE production project compiles (VBE Compile VBAProject)
 P5-D0  the diagnostic module is imported into the DISPOSABLE workbook
 P5-D1 .. P5-D7  the locked vectors
 P5-D8  the diagnostic module is REMOVED; inventory re-asserted at 15
 P5-AN onward  the analytical acceptance work, with no test module installed
 ```
 
-A1 remains the first real VBA compilation boundary and stays production-only
-(`test_22`): a test module must never mask or contaminate proof that the accepted
-project itself compiles. The module is not in the manifest, not in the structure
+**A1 is the first `Application.Run` boundary, not a compilation boundary.** It
+proves the automation surface answers; Runtime Run 7 passed it and then met a
+VBE compile error, so the whole-project claim belongs to `P5-CMP` alone. What
+`test_22` preserves is the ORDERING that matters: the diagnostic module is
+imported only after the production project has been proved to compile, and it
+stays production-only so a test module can never mask or contaminate that
+proof. The module is not in the manifest, not in the structure
 contract, not imported by `build_stage_b.ps1`, not under `src/vba`, creates no
 button, declares no `PCCM_` endpoint, and no workbook is ever saved with it
 installed (`test_19`, `test_20`, `test_23`, `test_47`).
@@ -2973,3 +2978,102 @@ requested yet.
 static tests above do not execute the VBA compiler and do not claim to; the
 compile class is closed by construction, and `P5-CMP` is what will test it on
 real Excel.
+
+## Review of ae52bdd: one compile authority, and no borrowed evidence
+
+Independent review accepted the Run-7 production renames provisionally and
+rejected the package on two evidence-authority blockers. Both were real.
+
+### Blocker 1 — the retired A1 authority was still standing
+
+The Run-7 round retired "A1 proves the project compiles" from A1's own check
+label and stopped there. The same claim was still asserted in eight other
+places. What was there, and what is there now:
+
+| File | Was | Now |
+|---|---|---|
+| `phase4_functional_test.ps1` (Phase-5 overview) | `P5-D0 … imported only AFTER A1 has proved the production project compiles` | a `P5-CMP` entry was added above it, and P5-D0 now names `P5-CMP` |  <!-- retired-authority: quoted to record what was removed -->
+| `phase5_gate_b_diagnostics.bas` (module header) | `only AFTER scenario A1 has proved the production VBA project compiles` | `only AFTER scenario P5-CMP has proved …` |  <!-- retired-authority: quoted to record what was removed -->
+| `phase5_gate_b_scenarios.ps1` (import commentary) | `Scenario A1 has already made the first Application.Run … so the proof that the accepted project compiles is complete and unmasked` | P5-CMP has driven Compile VBAProject; the paragraph records why A1 was demoted |
+| `phase5_gate_b_scenarios.ps1` (P5-D0 result title) | `Transient diagnostic module imported AFTER the A1 production compile` | `… AFTER the P5-CMP whole-project compile` |  <!-- retired-authority: quoted to record what was removed -->
+| `docs/phase5_gate_b_harness.md` (lifecycle) | `A1 … -> the PRODUCTION project compiles` | `A1 … -> the automation surface ANSWERS`, with a `P5-CMP` line added |
+| `docs/phase5_gate_b_harness.md` (prose) | `A1 remains the first real VBA compilation boundary` | **A1 is the first `Application.Run` boundary, not a compilation boundary** |  <!-- retired-authority: quoted to record what was removed -->
+| `docs/phase5_plan.md` (Phase-4 preservation) | `the VBA project still compiles \| A1 unchanged` | `P5-CMP`, with A1's real role stated |
+| `docs/phase4_gate_b_run4.md` (run record) | `the real VBA project compiled and was callable` | `the real VBA automation surface answered`, with the correction dated |
+| `docs/phase4_gate_b_final.md` | `real VBA compilation and callability, through A1` | `real VBA automation-surface callability, through A1` |
+| `tests/…harness_source.py` | module docstring, `test_22`'s name, docstring and messages | all restated; `test_22` now also requires the import to follow **P5-CMP** |
+
+The two Phase-4 run records were **corrected in place, not rewritten**. Those
+runs did report A1 PASS and that observation stands; what was wrong was the
+conclusion drawn from it, so each line now says what was observed and names the
+round that retired the rest.
+
+`test_191` sweeps every `.ps1`, `.bas`, `.py` and `.md` under `bootstrap`,
+`docs`, `tests`, `src`, `builder` and `spec` for nine retired formulations. A
+line may quote one only if it carries a `retired-authority` marker — the same
+idiom the COM-lifecycle sweep already uses for its refusal list — and the test
+requires at least three such markers to exist, so a sweep that had stopped
+matching anything would fail rather than pass quietly.
+
+### The evidence hierarchy
+
+| Scenario | Claims | Does not claim |
+|---|---|---|
+| `A1` | the first production `Application.Run` returned; the automation surface answers | anything about compilation |
+| `P5-CMP` | the **whole** VBA project compiles, via the VBE's Compile VBAProject command | — |
+| `P5-D0` | the diagnostic module was imported **after** `P5-CMP` passed | — |
+| `P5-M` | six API procedures are **declared**; five of them are **callable** | that `PCCM_Calculate` is callable |
+| `P5-FIX` | the **first** `PCCM_Calculate` of the run, on a valid fixture | — |
+
+### Blocker 2 — P5-M passed PCCM_Calculate as callable without calling it
+
+The old loop branched on the name, skipped the invocation, set `$callable =
+$true` anyway, and emitted **"the API procedure PCCM_Calculate is callable"** as
+a PASS with the detail "exercised by the analytical scenarios below". The name
+had not crossed `Application.Run`. An expected future exercise was counted as
+present evidence — the same species of overclaim as A1's.
+
+The fix is not to call it. `PCCM_Calculate` is stateful: it resolves the model,
+writes the `_Calc` block and publishes a status, so running it at inventory time
+against whatever the workbook happened to hold would establish a snapshot no
+scenario asked for. Three kinds of evidence are now distinguished, and each of
+the six gets the one it actually has:
+
+* **Declaration**, for all six — read from the persisted project's own
+  `CodeModule` text through `Get-Phase5ProjectProcedureNames`, which strips
+  comments and string literals with the same `Get-VbaExecutableCode` that P5-EV
+  uses. A procedure named only in a comment is not declared, and a manifest that
+  names it is not the project that holds it.
+* **Callability**, for the five read-only procedures — and callable means
+  `Excel.Run` returned. The single `is callable` label in P5-M sits downstream
+  of `$probe = $Excel.Run($name)`.
+* **Execution**, for `PCCM_Calculate` — deferred, in a Note that says where it
+  goes: P5-FIX is the first valid-fixture execution and P5-AN drives the corpus.
+
+`test_194` proves the branch sets no flag and emits no check; `test_195` proves
+the declaration reader reads the project and not the manifest, and that no check
+in P5-M has a constant condition — the other shape a hollowed-out check takes.
+
+### Mutation controls
+
+| | Mutation | Detectors |
+|---|---|---|
+| M1 | `A1 has proved the production project compiles` restored | 2 |  <!-- retired-authority: quoted to record what was removed -->
+| M2 | `A1 remains the first real VBA compilation boundary` restored | 2 |  <!-- retired-authority: quoted to record what was removed -->
+| M3 | the P5-D0 title back to `AFTER the A1 production compile` | 2 |  <!-- retired-authority: quoted to record what was removed -->
+| M4 | `PCCM_Calculate` marked callable without being called | 2 |
+| M5 | the persisted-project declaration check removed | 2 |
+| M6 | one of the five callable APIs loses its `Excel.Run` | 2 |
+
+### Scope
+
+Production VBA is **byte-identical to ae52bdd**: the fifteen renames were not
+reopened. `P5-CMP`'s mechanism is unchanged. No builder, spec, oracle or corpus
+change.
+
+### Status
+
+Gate B is **not** accepted. Phase 5 is **not** accepted. No runtime execution is
+requested yet.
+
+**NO WINDOWS/EXCEL RUNTIME WAS EXECUTED DURING THIS CORRECTION ROUND.**

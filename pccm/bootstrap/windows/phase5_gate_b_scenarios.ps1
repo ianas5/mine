@@ -514,6 +514,59 @@ $script:VbextComponentTypes = @{
     Document         = 100   # vbext_ct_Document     - sheets and ThisWorkbook
 }
 
+# ===========================================================================
+# WHAT THE PERSISTED PROJECT ACTUALLY DECLARES
+# ===========================================================================
+# REVIEW OF ae52bdd, BLOCKER 2. P5-M reported "the API procedure PCCM_Calculate
+# is callable" as a PASS while never invoking it: the branch that skipped the
+# call set the flag to true and carried a note about a future exercise. An
+# expected future exercise is not present evidence.
+#
+# The honest replacement for the six is DECLARATION evidence, read from the
+# persisted project's own code through the SAME machinery P5-EV uses -
+# CodeModule text, comment- and literal-stripped by Get-VbaExecutableCode, and
+# matched as a real declaration by Test-VbaProcedureDeclared. A procedure named
+# only in a comment or a string is not declared, and a manifest that names it is
+# not the project that holds it.
+#
+# This is deliberately NOT callability. It says the name exists in code. What
+# crossing Application.Run proves is a different claim, made only where it is
+# actually observed.
+function Get-Phase5ProjectProcedureNames {
+    param($Workbook)
+    $names = @()
+    $project = $null; $components = $null
+    try {
+        $project = $Workbook.VBProject
+        $components = $project.VBComponents
+        $count = [int]$components.Count
+        for ($i = 1; $i -le $count; $i++) {
+            $component = $null; $module = $null
+            try {
+                $component = $components.Item($i)
+                $module = $component.CodeModule
+                if ([int]$module.CountOfLines -gt 0) {
+                    $raw = [string]$module.Lines(1, [int]$module.CountOfLines)
+                    $code = Get-VbaExecutableCode -Code $raw
+                    foreach ($line in ($code -split "`n")) {
+                        $match = [regex]::Match(
+                            $line,
+                            '^\s*(?:Public\s+|Private\s+|Friend\s+)?(?:Static\s+)?(?:Sub|Function)\s+(\w+)\s*\(')
+                        if ($match.Success) { $names += [string]$match.Groups[1].Value }
+                    }
+                }
+            } finally {
+                if ($null -ne $module)    { Release-Transient $module    'CodeModule';  $module    = $null }
+                if ($null -ne $component) { Release-Transient $component 'VBComponent'; $component = $null }
+            }
+        }
+    } finally {
+        if ($null -ne $components) { Release-Transient $components 'VBComponents'; $components = $null }
+        if ($null -ne $project)    { Release-Transient $project    'VBProject';    $project    = $null }
+    }
+    return $names
+}
+
 function Get-VbComponentTypeName {
     param([int]$TypeValue)
     foreach ($key in $script:VbextComponentTypes.Keys) {
@@ -3036,28 +3089,64 @@ function Invoke-Phase5GateBScenarios {
             (@($api | Where-Object { $entry -contains $_ }).Count -eq 0)
         $null = Add-Check $list 'no API procedure is bound to a button' `
             (@($api | Where-Object { $onActions -contains $_ }).Count -eq 0)
+        # THREE KINDS OF EVIDENCE, AND THEY ARE NOT INTERCHANGEABLE.
+        #
+        #   A  DECLARATION   the name exists in the persisted VBA project
+        #   B  CALLABILITY   Application.Run reached it and it answered
+        #   C  EXECUTION     it ran against a valid fixture and did its work
+        #
+        # This block used to report B for all six API procedures. It did not
+        # have B for all six: PCCM_Calculate was never invoked here, and the
+        # branch that skipped it set $callable = $true anyway and emitted "the
+        # API procedure PCCM_Calculate is callable" as a PASS. The name had not
+        # crossed Application.Run and no COM callability had been observed. That
+        # is an expected future exercise counted as a present proof, which is the
+        # exact overclaim Run 7 exists to have taught us to stop making.
+        #
+        # PCCM_Calculate IS NOT INVOKED HERE TO MAKE THE OLD LABEL TRUE EITHER.
+        # It is stateful: it resolves the model, writes the _Calc block and
+        # publishes a status, and running it against whatever the workbook
+        # happens to hold at inventory time would establish a snapshot no
+        # scenario asked for. Its first execution belongs on a valid fixture,
+        # which is P5-FIX; P5-AN then drives it across the analytical corpus.
+        #
+        # So each of the six gets the evidence it actually has.
+        $declared = @(Get-Phase5ProjectProcedureNames -Workbook $Workbook)
+        $null = Add-Check $list 'the persisted project could be read for declared procedures' `
+            ($declared.Count -gt 0) ("declared procedures found: " + $declared.Count)
         foreach ($name in $api) {
+            # A. DECLARED, for all six, read out of the persisted project's own
+            #    code rather than assumed from the manifest that names them.
+            $null = Add-Check $list ('the API procedure ' + $name + ' is declared in the persisted project') `
+                ($declared -contains $name) `
+                ("declared: " + ((@($declared | Where-Object { $_ -like 'PCCM_*' })) -join ', '))
+
+            if ($name -eq 'PCCM_Calculate') {
+                # B is DEFERRED, and saying so is the whole correction. No
+                # $callable flag is set, no callability check is emitted, and
+                # nothing here is recorded as a pass on its behalf.
+                Add-Note ('P5-M: PCCM_Calculate is declared; it is stateful, so its ' +
+                          'runtime execution is deferred to P5-FIX, which is the first ' +
+                          'valid-fixture PCCM_Calculate of the run. P5-M records no ' +
+                          'callability evidence for it.')
+                continue
+            }
+
+            # B. CALLABLE, for the five read-only procedures, and callable means
+            #    Application.Run actually returned.
             $callable = $false; $detail = ''
             try {
-                if ($name -eq 'PCCM_Calculate') {
-                    # Callability alone, without driving a calculation here: the
-                    # analytical scenarios below do that against real fixtures.
-                    $callable = $true
-                    $detail = 'exercised by the analytical scenarios below'
-                } else {
-                    $probe = $Excel.Run($name)
-                    $callable = $true
-                    $detail = "returned '" + [string]$probe + "'"
-                }
+                $probe = $Excel.Run($name)
+                $callable = $true
+                $detail = "returned '" + [string]$probe + "'"
             } catch { $detail = (Format-Phase5Err $_) }
             $null = Add-Check $list ('the API procedure ' + $name + ' is callable') $callable $detail
         }
-        # RUN-7 CORRECTION, THE SAME ONE A1 CARRIES. These six checks are
-        # PATHWAY evidence: the name resolves, the call crosses the COM boundary
-        # and something answers. They are NOT evidence that every deferred
-        # procedure body in every production module has compiled - Run 7 passed
-        # all six and then met a VBE compile error inside the analytical path.
-        # That claim belongs to P5-CMP alone.
+        # AND NONE OF IT IS COMPILATION. Run 7 passed every check in this
+        # scenario and then met a VBE compile error inside the analytical path:
+        # VBA compiles on demand, so a project answers a call while an unreached
+        # procedure body still holds a declaration the parser rejects. The
+        # whole-project claim belongs to P5-CMP alone.
         Add-Phase5Result 'P5-M' 'Persisted project: 15 modules by name, 5 buttons, 6 API procedures' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
@@ -3130,10 +3219,18 @@ function Invoke-Phase5GateBScenarios {
     # ===================================================================
     # THE TRANSIENT DIAGNOSTIC SECTION
     #
-    # Imported HERE and nowhere earlier. Scenario A1 has already made the first
-    # Application.Run of the run against the PRODUCTION project, so the proof
-    # that the accepted project compiles is complete and unmasked before a
-    # test-only module exists in the VBA project at all.
+    # Imported HERE and nowhere earlier. P5-CMP has already driven the VBE's
+    # Compile VBAProject command over the PRODUCTION project, so the proof that
+    # the accepted project compiles is complete and unmasked before a test-only
+    # module exists in the VBA project at all.
+    #
+    # IT USED TO SAY A1 DID THAT. Scenario A1 makes the first Application.Run of
+    # the run, which proves the automation surface answers and nothing more.
+    # Runtime Run 7 passed A1, passed P5-M's API callability checks, and then met
+    # a VBE compile error inside the analytical path - VBA compiles on demand, so
+    # a project answers a call while an unreached procedure body still holds a
+    # declaration the parser rejects. P5-CMP is the whole-project authority now,
+    # and it is the only one.
     # ===================================================================
     $diagnosticName = 'modPhase5GateBDiagnostics'
     $diagnosticImported = $false
@@ -3160,7 +3257,7 @@ function Invoke-Phase5GateBScenarios {
 
         $ping = [string]$Excel.Run('GBD_Ping')
         $null = Add-Check $list 'the diagnostic module is callable' ($ping -eq ('OK|' + $diagnosticName)) $ping
-        Add-Phase5Result 'P5-D0' 'Transient diagnostic module imported AFTER the A1 production compile' `
+        Add-Phase5Result 'P5-D0' 'Transient diagnostic module imported AFTER the P5-CMP whole-project compile' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Phase5Result 'P5-D0' 'Transient diagnostic module import' 'FAIL' (Format-Phase5Err $_)

@@ -10,7 +10,7 @@ Option Explicit
 '   * it is NOT imported by build_stage_b.ps1
 '   * it creates no button and declares no PCCM_ endpoint
 '   * it is imported into the DISPOSABLE functional-test workbook only, and
-'     only AFTER scenario A1 has proved the production VBA project compiles
+'     only AFTER scenario P5-CMP has proved the production VBA project compiles
 '   * it is removed again as soon as the direct-vector section finishes, and
 '     the module inventory is re-asserted at exactly 15 before anything else
 '   * no accepted workbook is ever saved with it installed

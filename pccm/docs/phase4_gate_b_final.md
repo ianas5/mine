@@ -52,7 +52,10 @@ inferred or invented.
 
 **Runtime surface**
 
-- real VBA compilation and callability, through `A1`
+- real VBA automation-surface callability, through `A1`
+  (this line read "real VBA compilation and callability" until Phase-5 Runtime
+  Run 7 showed A1 can pass while a procedure body still fails to compile;
+  whole-project compilation is proved by `P5-CMP`)
 - Stage-A Data Validation baseline, through `A2`
 
 **Permanent identity**
