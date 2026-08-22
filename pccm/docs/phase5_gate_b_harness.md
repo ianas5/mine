@@ -2285,3 +2285,259 @@ Y, Z and P5-FIN down with it. The invariants hold together:
 5. many attempts still give one integrity result;
 6. Y, Z and P5-FIN still run;
 7. nothing de-duplicates at print time.
+
+## Runtime Run 5: R5 closed, and a fixture-establishment ordering defect
+
+**Run 5 is VALID EVIDENCE — R5 CLOSED ON REAL WINDOWS; HARNESS
+FIXTURE-ESTABLISHMENT ORDERING DEFECT DISCOVERED.** It ran on real Windows
+against `a291853`, it is not rerun and not overwritten, and everything below is
+read from it.
+
+### What Run 5 closed
+
+**R5 is closed on real Windows.** `P5-FX` PASSED: the locked FX seed was captured
+from the untouched Stage-B workbook, written back through the real restoration
+path, and read back through the strict typed comparator with its captured CLR
+type intact. The typed COM write from Run 4 and the exact-type comparator from
+review 4A therefore hold against real Excel, and the failure mode Run 4 recorded
+eleven times on one line inside `Set-Phase5TypedCell` did not recur.
+
+That is the finding this section records. The scenarios that DID fail in Run 5
+failed for the new root below, which is a different fault in a different place —
+it is not R5 returning under another name.
+
+### The new root
+
+`Set-Phase5Fixture` performed its production mutations in an order in which the
+driver Adds **could not** succeed, discarded their results, and wrote fixture
+data into the rows they had failed to key.
+
+```
+Set-Phase5InflationProfileMaster    rewrites Config!tblInflationProfiles
+                                    -> Inflation!tblInflation still holds the
+                                       PREVIOUS fixture's applied profiles
+$Excel.Run('PCCM_AddCostLine')      -> RunDriverOperation
+      | Out-Null                    -> AddDriver allocates CL-001, writes it
+                                    -> ValidateStructure
+                                    -> CheckInflationProfiles: master and grid
+                                       disagree
+                                    -> Err.Raise 5002
+                                    -> TryRestoreDriver rolls the register, the
+                                       profiling grid AND the ID counter back
+                                    -> RecordResult "FAIL|..."
+                                    -> the harness reads nothing
+Write-Phase5Driver ... -RowIndex 1  writes description, quantity, unit costs,
+                                    currency, profile and distribution into a
+                                    row that carries no key
+$Excel.Run('PCCM_ApplyTimeline')    -> PreMutationCheck
+                                    -> [no_orphan_structural_data]
+                                       tblCostLines row(s) 1 hold data but
+                                       carry no key.
+```
+
+**The refusal is correct production behaviour.** `PCCM_ApplyTimeline` refused to
+synchronise over unkeyed structural data because synchronisation would have
+erased it silently, which is exactly what `PreMutationCheck` exists to prevent.
+Production is not at fault anywhere in this chain. The orphan row was
+manufactured by the harness.
+
+### Root and cascade
+
+| | |
+|---|---|
+| **Root** | `Set-Phase5Fixture` invoked `PCCM_AddCostLine` / `PCCM_AddRisk` while the Config profile master and `Inflation!tblInflation` disagreed, discarded `PCCM_AutomationResult`, and wrote driver data into the unkeyed row the failed Add left behind |
+| **Production defect** | none |
+| **Reported as** | `[no_orphan_structural_data] tblCostLines row(s) 1 hold data but carry no key.` from `PCCM_ApplyTimeline`, several statements after the operation that actually failed |
+| **Cascade** | every scenario that establishes a fixture. Derived from the harness source — the scenarios that call `Set-Phase5Fixture` — not counted from the run transcript: `P5-AN`, `P5-RF`, `P5-PQ`, `P5-PN`, `P5-AR`, `P5-ID`, `P5-S1`, `P5-S2`, `P5-ST`, `P5-SU`, `P5-NS`, `P5-S3`, `P5-S4`, `P5-S5`, `P5-KP`, `P5-RC`, `P5-S6`, `P5-FA`, `P5-FC` |
+| **Not cascade** | `P5-PRE`, `P5-P4`, `P5-FX`, `P5-M`, `P5-EV`, `P5-D0`–`P5-D8`, `P5-DP`, `P5-DC`, `P5-LDG`, `P5-FIN` — none of them establishes a fixture |
+| **Scenarios that reached their own predicate** | none of the cascade |
+
+Not one cascade scenario reached the predicate it exists to test, and that is a
+consequence of the mechanism rather than a tally: `Set-Phase5Fixture` **throws**,
+so the scenario's own `catch` records a FAIL before a single one of its checks is
+evaluated, and the text it records is the fixture's message about `tblCostLines`
+row 1. The thing that was actually broken — the order in which the fixture
+performs its production mutations — had no result of its own anywhere in the
+ledger.
+
+### Why the order was wrong, and why moving one call fixes it
+
+`Config!tblInflationProfiles` is the profile master. `modInflation.SyncProfileRows`
+rebuilds `Inflation!tblInflation` from it, and it runs inside
+`PCCM_ApplyTimeline`. So writing the master **creates** a disagreement that only
+an Apply can close.
+
+`modDrivers.RunDriverOperation` runs `modStructuralCheck.ValidateStructure()`
+after every successful Add, and `ValidateStructure` includes
+`CheckInflationProfiles`, which compares the grid against the master. An Add
+attempted between "master rewritten" and "Apply" is therefore an Add attempted
+over a workbook production is **required** to call incoherent. It cannot succeed.
+
+Moving the Apply above the Adds makes that window empty. By the time the first
+Add runs, the grid has been rebuilt from the master and the two agree. Nothing
+about production changed: the operations are simply performed in an order where
+each one's preconditions actually hold.
+
+The Adds need no second Apply behind them. `modProfiling.SyncRows` preserves the
+year columns Apply generated and only adds the new driver's profiling row, and
+each Add revalidates the structure itself.
+
+### The corrected choreography
+
+`Set-Phase5Fixture` is now eight marked steps, and **every production mutation
+begins and ends structurally coherent**:
+
+| Step | What happens | What is proved |
+|---|---|---|
+| **A** | empty the registers, reset the identity counters | every delete returns `OK\|*`; the identifier is gone; no keyed row and no unkeyed data survives, checked on the way in **and** on the way out; each counter reads back through the typed reader as the exact numeric initial |
+| **B** | the Setup scalars | — |
+| **C** | restore the captured FX seed, append the fixture's rows | the seed round-trips with its captured type (unchanged from `P5-FX`) |
+| **D** | write the Config profile master | the workbook is now **knowingly incoherent**; no production endpoint may be called until E |
+| **E** | `PCCM_ApplyTimeline`, **with no driver added yet** | `PCCM_AutomationResult` is `OK\|*`; `PCCM_StructuralReport` is blank |
+| **F** | the drivers, one checked Add each | per Add: result is `OK\|*`; the register holds exactly *n* keyed rows; the target row carries a permanent identifier; that identifier **is** the emitted `permanent_id`, compared binary — and only then `Write-Phase5Driver` |
+| **G** | inflation rates and profiling weights | (both already keyed by name and by header) |
+| **H** | — | `PCCM_StructuralReport` is blank again |
+
+Every one of those checks **throws**. Fixture establishment fails loudly or not
+at all: a postcondition that returned a diagnostic, wrote a note or continued to
+the next driver would put the run back where Run 5 was.
+
+### `PCCM_AutomationResult` is the authority — and it must be this operation's
+
+Two rules came out of the root, and both are structural now.
+
+**The result is the verdict.** That `Excel.Run` returned says only that VBA did
+not raise across the COM boundary. `modAppState.Announce` records `OK|…` or
+`FAIL|…`, and that recorded string is the operation's own judgement. Every
+production mutation the Phase-5 harness makes now goes through
+`Invoke-Phase5ProductionOperation`, which reads it and requires `OK|*`.
+
+**The result is cleared first.** `gAutomationLastResult` is a single global that
+survives until something overwrites it. An endpoint that failed *before* reaching
+`RecordResult` would leave the previous operation's `OK|…` in place, and a reader
+that did not clear first would accept a stale success as this operation's own —
+fail-open, in exactly the place the correction is about.
+`PCCM_AutomationBegin` calls `ClearAutomation`, so the helper arms immediately
+before the call and the value that comes back is this operation's or nothing at
+all. This is not an invention: the accepted Phase-4 `Set-AppliedTimeline` has
+used that idiom since the matrix was written.
+
+That reasoning also applied to two sites in `Invoke-Phase5Mutation`, and both now
+go through the same helper. Requiring `OK|*` there is **not** the clean-structure
+gate that `test_77` forbids: the deformation the mutation applier exists to
+perform is still free to make the model refuse at calculation time. It only
+requires that the operation the corpus asked for actually happened.
+
+### The harness must expose contamination, not launder it
+
+`Assert-Phase5NoUnkeyedRegisterData` is the harness-side mirror of
+`modWorkbook.OrphanRows`, term for term: the key column's text is empty and some
+other column in the row is not. It runs **before** `Clear-Phase5Registers`
+empties a register as well as after.
+
+Before, because a fixture that inherits a contaminated register from an earlier
+scenario must fail naming the earlier scenario's damage — not silently delete it
+and carry on. There is deliberately **no repair path**: an orphan row is not
+blanked, not adopted and not deleted. It is left exactly where it is so the run
+reports it rather than erasing the evidence.
+
+`Clear-Phase5Registers` also proves each delete **took**. A production `Delete`
+answers a declined confirmation with a *success* that removes nothing, so `OK|`
+alone does not mean gone.
+
+And the counters are read back through `Get-Phase5TypedNamedValue` and compared
+with `Test-Phase5ExactValue`. The accepted `Get-NamedValue` stringifies, and it
+cannot tell a numeric counter of `0` from a **text** counter of `"0"` —
+`modDrivers.TryReadCounter` draws exactly that distinction and refuses a counter
+that is not a whole number, so a reset that landed as text would make the very
+first Add refuse. Same typed discipline the Run-4 correction established for
+cells.
+
+### `P5-FIX` — the fixture proves itself first
+
+Run 5 reported an ordering defect only through the scenarios that inherited it,
+none of which had reached its own predicate. A prerequisite is proved like a prerequisite:
+once, at the point where it can still be reported as itself. That is what `P5-FX`
+already does for the FX seed, and `P5-FIX` now does for fixture establishment.
+
+It runs immediately after `P5-D8` and before `P5-AN` — the first fixture the run
+establishes is its own — and it drives the **real** `Set-Phase5Fixture`, not a
+copy. It asserts what fixture establishment is supposed to have achieved:
+
+1. the Apply reported `OK|*`;
+2. `PCCM_StructuralReport` is blank;
+3. each register carries exactly the emitted identifiers, in order, compared
+   binary;
+4. no register row holds data without a key;
+5. the Config master holds exactly the emitted profiles;
+6. `SyncProfileRows` rebuilt `tblInflation` to agree with the master — the check
+   that names the *reason* rather than the symptom if the order ever regresses;
+7. the baseline actually calculates.
+
+Checks 1 to 6 are claims about what the **harness** did. Check 7 can fail for a
+production reason instead, so the gate below reports what was observed rather
+than deciding whose fault it is, and the attempt detail is carried into the
+checklist so the distinction can be made from the evidence.
+
+A failure is a **FAIL**, never a SKIP, and it gates through `P5-ALL` and
+`return` exactly as `P5-FX` does. Returning from the scenario driver leaves the
+caller's shutdown, `Z`, `Y`, `P5-LDG` and `P5-FIN` untouched, so the lifecycle
+evidence is still produced.
+
+### What did not change
+
+No production VBA. `modDrivers`, `modStructuralCheck`, `modInflation`,
+`modProfiling`, `modTimeline`, `modAppState`, `modCalcResolve`, `modCalcCheck`,
+`modCalcReport`, `modCalcFingerprint`, `modCalcFactors` and every other
+production module are byte-identical. The orphan refusal is correct production
+behaviour and `ValidateStructure` is not suppressed, weakened or worked around
+anywhere: the correction is entirely an ordering and result-checking change in
+the harness. The builder, the spec, the canonical oracle and the emitted corpus
+are unchanged, and no status logic was touched.
+
+### The fifteen regressions
+
+| | Claim |
+|---|---|
+| R1 | the timeline is applied before the first driver Add, exactly once |
+| R2 | no production mutation runs inside the D→E incoherence window |
+| R3 | no production endpoint is invoked with its result discarded |
+| R4 | every checked operation requires `OK\|*` and throws otherwise |
+| R5 | the result is cleared before the operation it is supposed to describe |
+| R6 | the row is proved keyed before any fixture data is written |
+| R7 | the issued identifier is the emitted `permanent_id`, compared binary |
+| R8 | `Write-Phase5Driver` has exactly one call site, inside the checked Add |
+| R9 | every delete is checked, and proved to have taken |
+| R10 | the registers are proved empty and free of unkeyed data, at both ends, with no repair path |
+| R11 | the identity counters are proved typed and exact |
+| R12 | coherence is proved at both ends of the fixture |
+| R13 | a failed fixture postcondition throws — no note, no warning, no continue |
+| R14 | `P5-FIX` gates the scenarios that depend on it, and the lifecycle evidence survives the gate |
+| R15 | the Run-5 defect replayed as a state machine, both orders |
+
+R15 models production from its own source contract — an Add revalidates the
+structure and rolls its identifier allocation back when that fails, Apply
+rebuilds the inflation grid from the Config master, and a mutation over an
+unkeyed row is refused — then runs the old order and the new one and compares the
+outcomes. The old order reproduces
+`[no_orphan_structural_data] tblCostLines row(s) 1 hold data but carry no key`
+and leaves the counter rolled back to 0. The new order ends with `CL-001` in row
+1, no orphan, and a coherent structure. A third replay shows the harness half of
+the correction: with the ordering regressed, the checked Add still refuses to let
+fixture data reach the unkeyed row.
+
+Twelve source mutations were planted against the corrected harness and each was
+caught by at least two independent tests: the Run-5 order restored (5 tests), an
+unchecked cost Add (2), an unchecked risk Add (2), the result no longer cleared
+before the operation (2), a case-insensitive identifier comparison (3), the
+delete postcondition dropped (3), the entry orphan scan dropped (2), the counter
+read-back stringified (3), the closing coherence gate dropped (2), the driver
+write hoisted above the key proof (2), the self-proof gate downgraded to a SKIP
+that does not return (2), and the operation-result gate disarmed (3).
+
+### Status
+
+Gate B is **not** accepted. Phase 5 is **not** accepted. No runtime execution is
+requested yet.
+
+**NO WINDOWS/EXCEL RUNTIME WAS EXECUTED DURING THIS CORRECTION ROUND.**

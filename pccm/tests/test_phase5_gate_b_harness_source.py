@@ -2691,30 +2691,52 @@ def test_75_the_config_master_owns_inflation_profile_rows() -> None:
 
 
 def test_76_the_fixture_proves_its_own_structural_prerequisites() -> None:
-    """BLOCKER 2. A broken fixture must fail at fixture establishment."""
+    """BLOCKER 2, carried forward and tightened by Runtime Run 5.
+
+    The claim is unchanged: a broken fixture must fail at fixture establishment,
+    loudly, and never surface as a scenario predicate. What Run 5 changed is
+    WHERE the two gates sit. They used to sit after the driver Adds, which is
+    what let a failed Add write an orphan row and then be reported by the Apply
+    that refused to mutate over it. They now sit before the first Add, so the
+    baseline every Add depends on is proved before any Add is attempted.
+    """
     source = _executable(SCENARIOS)
     fixture = _procedure(source, "Set-Phase5Fixture")
-    apply_at = fixture.index("$Excel.Run('PCCM_ApplyTimeline')")
-    assert "$applied -notlike 'OK|*'" in fixture, (
-        "the Apply result is not required to be a success"
+
+    # THE APPLY IS A CHECKED PRODUCTION MUTATION, not a piped-away call.
+    apply_at = fixture.index("-Operation 'PCCM_ApplyTimeline'")
+    assert "$Excel.Run('PCCM_ApplyTimeline') | Out-Null" not in fixture, (
+        "the fixture still discards the Apply result"
     )
-    assert "throw (\"Gate-B fixture establishment failed: PCCM_ApplyTimeline" in fixture, (
-        "a refused or failed Apply does not stop the fixture"
+    checked = _procedure(source, "Invoke-Phase5ProductionOperation")
+    assert "$result -notlike 'OK|*'" in checked, (
+        "the checked-operation helper does not require a success result"
     )
-    assert "PCCM_StructuralReport" in fixture, (
-        "the fixture never asks whether the generated structure is coherent"
+    assert "throw (" in checked, "a failed production mutation does not stop the fixture"
+
+    # AND THE STRUCTURE IS PRODUCTION'S OWN JUDGEMENT, which also throws.
+    coherent = _procedure(source, "Assert-Phase5StructurallyCoherent")
+    assert "PCCM_StructuralReport" in coherent, (
+        "the coherence gate never asks production whether the structure is coherent"
     )
-    assert "throw (\"Gate-B fixture establishment failed: the generated structure" in fixture
-    # BOTH GATES PRECEDE the value writers.
+    assert "throw (" in coherent, "an incoherent structure does not stop the fixture"
+
+    # BOTH GATES PRECEDE THE FIRST DRIVER ADD - the Run-5 correction itself.
+    report_at = fixture.index("Assert-Phase5StructurallyCoherent")
+    add_at = fixture.index("Invoke-Phase5AddDriverAndRequireSuccess")
+    assert apply_at < report_at < add_at, (
+        "a fixture driver is added before the structural baseline is proved"
+    )
+
+    # AND THEY STILL PRECEDE the value writers, exactly as before.
     rates_at = fixture.index("Write-Phase5InflationRates")
     weights_at = fixture.index("Write-Phase5Weights")
-    report_at = fixture.index("PCCM_StructuralReport")
-    assert apply_at < report_at < rates_at, (
-        "inflation rates are written before the structural gate"
-    )
+    assert report_at < rates_at, "inflation rates are written before the structural gate"
     assert report_at < weights_at, "profiling weights are written before the structural gate"
+
     # It THROWS. It does not return a diagnostic the caller may ignore.
-    assert fixture.count("throw (") >= 2
+    assert "throw (" in _procedure(source, "Invoke-Phase5AddDriverAndRequireSuccess")
+    assert "throw (" in _procedure(source, "Clear-Phase5Registers")
 
 
 def test_77_the_baseline_gate_is_not_applied_to_deliberate_mutations() -> None:
@@ -6200,3 +6222,804 @@ def test_nc_99_a_note_only_duplicate_guard_is_caught() -> None:
     assert [i for i, s in results if s == "FAIL"] == []
     assert notes, "the only trace of the failure is a note"
     assert len([i for i, _ in results]) == len({i for i, _ in results})
+
+
+# ===========================================================================
+# 23. RUNTIME RUN 5: the fixture-establishment ordering defect
+# ===========================================================================
+# Run 5 is VALID EVIDENCE. It ran on real Windows against a291853, it closed R5
+# (P5-FX PASS), and it found a new root: Set-Phase5Fixture performed its
+# production mutations in an order where the driver Adds could not succeed, then
+# ignored their results and wrote fixture data into the rows they had failed to
+# key. The refusal that followed was correct production behaviour reporting a
+# workbook the harness had corrupted.
+#
+# The fifteen regressions below are the enumerated contract for that correction.
+def test_156_r1_the_timeline_is_applied_before_the_first_driver_add() -> None:
+    """R1. THE RUN-5 ROOT, stated as an ordering invariant.
+
+    Every driver Add runs modStructuralCheck.ValidateStructure on its way out.
+    An Add attempted while the Config profile master and Inflation!tblInflation
+    disagree therefore CANNOT succeed - so the Apply that reconciles them must
+    come first, with no driver added yet.
+    """
+    source = _executable(SCENARIOS)
+    fixture = _procedure(source, "Set-Phase5Fixture")
+    apply_at = fixture.index("-Operation 'PCCM_ApplyTimeline'")
+    add_at = fixture.index("Invoke-Phase5AddDriverAndRequireSuccess")
+    assert apply_at < add_at, (
+        "PCCM_ApplyTimeline is still invoked after the fixture drivers are added"
+    )
+    # And there is exactly ONE Apply in the fixture: a second one after the Adds
+    # would restore the old shape while leaving this assertion true.
+    assert fixture.count("PCCM_ApplyTimeline'") == 1, (
+        "the fixture applies the timeline more than once"
+    )
+    # The step order is declared where the procedure is, not only implied.
+    for step in ("--- A.", "--- B.", "--- C.", "--- D.", "--- E.", "--- F.",
+                 "--- G.", "--- H."):
+        assert step in _text(SCENARIOS), f"fixture step {step} is not marked in the source"
+
+
+def test_157_r2_no_production_mutation_runs_inside_the_incoherent_window() -> None:
+    """R2. Step D deliberately creates the disagreement; step E closes it.
+
+    Between Set-Phase5InflationProfileMaster and the Apply, the workbook is
+    KNOWINGLY incoherent - the master has the fixture's profiles and the grid
+    still has the previous fixture's. No production endpoint may be called in
+    that window, because production is required to refuse there.
+    """
+    source = _executable(SCENARIOS)
+    fixture = _procedure(source, "Set-Phase5Fixture")
+    master_at = fixture.index("Set-Phase5InflationProfileMaster")
+    apply_at = fixture.index("$applied = Invoke-Phase5ProductionOperation")
+    assert master_at < apply_at, (
+        "the Config profile master is written after the Apply that reads it"
+    )
+    assert fixture.index("-Operation 'PCCM_ApplyTimeline'") > apply_at, (
+        "the Apply statement was not located; the window below would be wrong"
+    )
+    window = fixture[master_at:apply_at]
+    for endpoint in ("PCCM_AddCostLine", "PCCM_AddRisk", "PCCM_DeleteCostLineById",
+                     "PCCM_DeleteRiskById", "PCCM_Calculate",
+                     "Invoke-Phase5AddDriverAndRequireSuccess",
+                     "Invoke-Phase5ProductionOperation"):
+        assert endpoint not in window, (
+            f"{endpoint} is invoked while the master and the inflation grid disagree"
+        )
+    # And production really does rebuild the grid from the master during Apply,
+    # which is why moving the Apply is the fix rather than a workaround.
+    inflation = _text(SRC_VBA / "modInflation.bas")
+    sync = inflation[inflation.index("Public Sub SyncProfileRows"):]
+    sync = sync[:sync.index("\nEnd Sub")]
+    assert "TBL_INFLATION_PROFILES" in sync and "SH_CONFIG" in sync
+    assert "modInflation.SyncProfileRows" in _text(SRC_VBA / "modTimeline.bas")
+    # And the structural check really is what refuses in the window.
+    structural = _text(SRC_VBA / "modStructuralCheck.bas")
+    assert "CheckInflationProfiles" in structural
+    check = structural[structural.index("Private Function CheckInflationProfiles"):]
+    check = check[:check.index("\nEnd Function")]
+    assert "modInflation.ProfileNameSet()" in check, (
+        "the structural check no longer compares the grid against the Config master"
+    )
+    drivers = _vba_executable(SRC_VBA / "modDrivers.bas")
+    assert "modStructuralCheck.ValidateStructure()" in drivers, (
+        "a driver Add no longer revalidates the structure, so the reasoning needs restating"
+    )
+
+
+def test_158_r3_no_production_endpoint_is_invoked_with_its_result_discarded() -> None:
+    """R3. `$Excel.Run('PCCM_Add...') | Out-Null` is the defect itself.
+
+    Every mutating endpoint the Phase-5 harness drives goes through the checked
+    helper. A bare invocation whose result is piped away is the exact shape that
+    let a failed Add look like a successful one.
+    """
+    source = _executable(SCENARIOS)
+    for endpoint in ("PCCM_AddCostLine", "PCCM_AddRisk", "PCCM_DeleteCostLineById",
+                     "PCCM_DeleteRiskById", "PCCM_ApplyTimeline"):
+        for shape in (f"$Excel.Run('{endpoint}') | Out-Null",
+                      f"$Excel.Run('{endpoint}', $id) | Out-Null",
+                      f"$Excel.Run('{endpoint}', [string]$id) | Out-Null"):
+            assert shape not in source, (
+                f"a production mutation is still invoked as {shape}"
+            )
+    # The endpoints are named ONLY where they are dispatched through the helper.
+    for endpoint in ("PCCM_AddCostLine", "PCCM_AddRisk"):
+        add_helper = _procedure(source, "Invoke-Phase5AddDriverAndRequireSuccess")
+        assert f"'{endpoint}'" in add_helper, f"{endpoint} is not dispatched by the checked Add"
+    clear = _procedure(source, "Clear-Phase5Registers")
+    for endpoint in ("PCCM_DeleteCostLineById", "PCCM_DeleteRiskById"):
+        assert f"'{endpoint}'" in clear, f"{endpoint} is not dispatched by the checked clear"
+
+
+def test_159_r4_every_checked_operation_requires_an_ok_result() -> None:
+    """R4. PCCM_AutomationResult is the authority, not the fact that Run returned."""
+    source = _executable(SCENARIOS)
+    checked = _procedure(source, "Invoke-Phase5ProductionOperation")
+    assert "$Excel.Run('PCCM_AutomationResult')" in checked, (
+        "the checked helper never reads the operation result"
+    )
+    assert "$result -notlike 'OK|*'" in checked, (
+        "the checked helper accepts a result that is not a success"
+    )
+    assert "throw (" in checked, "a failed operation does not stop the caller"
+    # The failure text names the operation AND what production said, so the
+    # report identifies the statement that failed rather than a later symptom.
+    assert "$Operation" in checked and "$result" in checked and "$Stage" in checked
+    # NOTHING downgrades the failure to a note or a warning.
+    for soft in ("Add-Note", "Write-Warning", "Write-Host", "return $false"):
+        assert soft not in checked, f"the checked helper softens a failure with {soft}"
+
+
+def test_160_r5_the_result_is_cleared_before_the_operation_runs() -> None:
+    """R5. gAutomationLastResult is a global that survives until overwritten.
+
+    An endpoint that fails BEFORE reaching RecordResult leaves the previous
+    operation's `OK|...` in place, so a reader that did not clear first would
+    accept a stale success as this operation's own. PCCM_AutomationBegin calls
+    ClearAutomation, and the accepted Phase-4 Set-AppliedTimeline has used that
+    idiom since the matrix was written.
+    """
+    source = _executable(SCENARIOS)
+    checked = _procedure(source, "Invoke-Phase5ProductionOperation")
+    begin_at = checked.index("$Excel.Run('PCCM_AutomationBegin', $true, '')")
+    run_at = checked.index("$Excel.Run($Operation")
+    read_at = checked.index("$Excel.Run('PCCM_AutomationResult')")
+    assert begin_at < run_at < read_at, (
+        "the result is not cleared before the operation it is supposed to describe"
+    )
+    # Production really does clear it there.
+    app_state = _vba_executable(SRC_VBA / "modAppState.bas")
+    begin = app_state[app_state.index("Public Sub PCCM_AutomationBegin"):]
+    begin = begin[:begin.index("End Sub")]
+    assert "ClearAutomation" in begin, (
+        "PCCM_AutomationBegin no longer clears the last result"
+    )
+    clear_sub = app_state[app_state.index("Sub ClearAutomation"):]
+    clear_sub = clear_sub[:clear_sub.index("End Sub")]
+    assert "gAutomationLastResult = vbNullString" in clear_sub, (
+        "ClearAutomation no longer resets the recorded result"
+    )
+    # And the accepted Phase-4 helper is the precedent, not an invention here.
+    applied = _procedure(_executable(HARNESS), "Set-AppliedTimeline")
+    assert applied.index("PCCM_AutomationBegin") < applied.index("PCCM_ApplyTimeline")
+
+    # THE ARITHMETIC OF THE HOLE, modelled.
+    def read(last: str, cleared: bool, recorded: str | None) -> str:
+        state = "" if cleared else last
+        return recorded if recorded is not None else state
+
+    # An endpoint that raised before RecordResult, after a previous success.
+    assert read("OK|Cost Line CL-001 added.", cleared=False, recorded=None).startswith("OK|"), (
+        "without the clear, a stale success is read as this operation's result"
+    )
+    assert read("OK|Cost Line CL-001 added.", cleared=True, recorded=None) == "", (
+        "with the clear, an operation that recorded nothing reads as nothing"
+    )
+    assert not "".startswith("OK|"), "an empty result must not satisfy the OK gate"
+
+
+def test_161_r6_the_key_is_proved_before_any_fixture_data_is_written() -> None:
+    """R6. The postcondition that would have stopped Run 5 dead."""
+    source = _executable(SCENARIOS)
+    add = _procedure(source, "Invoke-Phase5AddDriverAndRequireSuccess")
+    invoke_at = add.index("Invoke-Phase5ProductionOperation")
+    ids_at = add.index("Get-IdColumnValues")
+    body_at = add.index("Get-TableBody")
+    write_at = add.index("Write-Phase5Driver")
+    assert invoke_at < ids_at < body_at < write_at, (
+        "the Add postconditions do not all precede the driver write"
+    )
+    assert "IsNullOrWhiteSpace($issued)" in add, (
+        "the row is not proved to carry a permanent identifier at all"
+    )
+    assert add.index("IsNullOrWhiteSpace($issued)") < write_at, (
+        "fixture data is written before the row is proved to be keyed"
+    )
+    # The register grew by exactly one keyed row per Add.
+    assert "$ids.Count -ne $RowIndex" in add, (
+        "the register is not proved to hold exactly one keyed row per Add"
+    )
+
+
+def test_162_r7_the_issued_identifier_is_the_emitted_one_binary() -> None:
+    """R7. Not merely `a key`, but THE key the corpus names, case-sensitively."""
+    source = _executable(SCENARIOS)
+    add = _procedure(source, "Invoke-Phase5AddDriverAndRequireSuccess")
+    assert "$Driver.permanent_id" in add, "the emitted identifier is never consulted"
+    assert "$issued -cne $expected" in add, (
+        "the identifier comparison is not binary; 'cl-001' would pass as 'CL-001'"
+    )
+    assert "-ne $expected" not in add.replace("-cne $expected", ""), (
+        "a case-insensitive identifier comparison survives"
+    )
+    # A driver with no emitted identifier is a fixture that cannot be checked,
+    # and that is a failure rather than a skipped check.
+    assert "IsNullOrEmpty($expected)" in add, (
+        "a driver with no permanent_id silently skips the identity proof"
+    )
+
+    # AND THE CORPUS REALLY DOES NAME THEM IN ISSUE ORDER, which is what makes
+    # the Nth-Add-issues-the-Nth-id postcondition a proof rather than a guess.
+    cases = _emitted()["cases"]
+    models = 0
+    for case in cases["plan_cases"]:
+        model = case.get("model")
+        if not model:
+            continue
+        models += 1
+        costs = [d["permanent_id"] for d in model.get("cost_lines", [])]
+        risks = [d["permanent_id"] for d in model.get("risks", [])]
+        assert costs == [f"CL-{i:03d}" for i in range(1, len(costs) + 1)], (
+            f"plan case {case['id']} names cost identifiers out of issue order: {costs}"
+        )
+        assert risks == [f"R-{i:03d}" for i in range(1, len(risks) + 1)], (
+            f"plan case {case['id']} names risk identifiers out of issue order: {risks}"
+        )
+    assert models >= 20, f"only {models} plan cases carry a model"
+    # And the counters really are reset to an initial the first Add turns into 1.
+    counters = _emitted()["manifest"]["counters"]
+    assert counters, "the manifest declares no identity counters"
+    for counter in counters:
+        assert int(counter["initial"]) == 0, (
+            f"{counter['defined_name']} does not reset to 0, so CL-001 is not the first issue"
+        )
+
+
+def test_163_r8_write_phase5_driver_has_exactly_one_call_site() -> None:
+    """R8. The check cannot be bypassed by reaching past it."""
+    source = _executable(SCENARIOS)
+    calls = [line for line in source.splitlines()
+             if "Write-Phase5Driver" in line and "function Write-Phase5Driver" not in line]
+    assert len(calls) == 1, (
+        f"Write-Phase5Driver is called from {len(calls)} places: {calls}"
+    )
+    # And that one site is INSIDE the checked Add, by position in the file.
+    add_at = source.index("function Invoke-Phase5AddDriverAndRequireSuccess")
+    add_end = add_at + len(_procedure(source, "Invoke-Phase5AddDriverAndRequireSuccess"))
+    site_at = source.index(calls[0])
+    assert add_at < site_at < add_end, (
+        "the single Write-Phase5Driver call site is outside the checked Add"
+    )
+
+
+def test_164_r9_every_delete_is_checked_and_proved_to_have_taken() -> None:
+    """R9. A register that refuses to empty must not reach the next fixture."""
+    source = _executable(SCENARIOS)
+    clear = _procedure(source, "Clear-Phase5Registers")
+    assert "Invoke-Phase5ProductionOperation" in clear, (
+        "the delete endpoints are still invoked without a result check"
+    )
+    assert "$remaining -contains $id" in clear, (
+        "a delete that reported success is not proved to have removed the row"
+    )
+    # WHY that second check exists: DeleteDriver answers a declined confirmation
+    # with a SUCCESS that removes nothing, so OK| alone does not mean gone.
+    drivers = _text(SRC_VBA / "modDrivers.bas")
+    delete = drivers[drivers.index("Public Function DeleteDriver"):]
+    delete = delete[:delete.index("\nEnd Function")]
+    assert "If Not modAppState.AskConfirm" in delete and "Succeeded(vbNullString)" in delete, (
+        "a declined delete no longer reports success, so the reasoning needs restating"
+    )
+
+
+def test_165_r10_the_registers_are_proved_empty_and_free_of_unkeyed_data() -> None:
+    """R10. Contamination is EXPOSED, at both ends, and never repaired."""
+    source = _executable(SCENARIOS)
+    clear = _procedure(source, "Clear-Phase5Registers")
+    assert clear.count("Assert-Phase5NoUnkeyedRegisterData") == 2, (
+        "the unkeyed-data scan does not run both before and after the emptying"
+    )
+    assert "$left.Count -ne 0" in clear, (
+        "the register is not proved to hold no identifier afterwards"
+    )
+    scan = _procedure(source, "Assert-Phase5NoUnkeyedRegisterData")
+    assert "throw (" in scan, "an orphan row does not stop the fixture"
+    # THE HARNESS MUST EXPOSE CONTAMINATION, NOT LAUNDER IT. No repair path.
+    for repair in ("Set-TableCell", "Remove-TableRow", "Set-Phase5TypedCell",
+                   "Add-BlankTableRow", "$Excel.Run"):
+        assert repair not in scan, (
+            f"the orphan scan {repair}s the row it found instead of reporting it"
+        )
+    # The predicate is production's own, term for term.
+    workbook = _text(SRC_VBA / "modWorkbook.bas")
+    orphan = workbook[workbook.index("Public Function OrphanRows"):]
+    orphan = orphan[:orphan.index("\nEnd Function")]
+    assert "Len(TextOf(CellIn(Target, r, KeyColumn))) = 0" in orphan and \
+           "Not IsEmptyCell(CellIn(Target, r, c))" in orphan, (
+        "production's orphan predicate changed; the harness mirror needs restating"
+    )
+    assert "IsNullOrWhiteSpace" in scan, (
+        "the mirror does not use a trimmed-empty test, so it is not production's predicate"
+    )
+
+
+def test_166_r11_the_identity_counters_are_proved_typed_and_exact() -> None:
+    """R11. modDrivers.TryReadCounter refuses a counter that is not a number."""
+    source = _executable(SCENARIOS)
+    clear = _procedure(source, "Clear-Phase5Registers")
+    assert "Get-Phase5TypedNamedValue" in clear, (
+        "the counter is read back through the stringifying reader"
+    )
+    assert "Test-Phase5ExactValue" in clear, (
+        "the counter read-back does not use the strict comparator"
+    )
+    assert "Get-NamedValue -Workbook $Workbook -DefinedName $counter.defined_name)" not in clear
+    typed = _procedure(source, "Get-Phase5TypedNamedValue")
+    assert "return $rng.Value2" in typed, "the typed named reader does not return Value2"
+    body = typed[typed.index("try {"):]
+    for lossy in ("[string]", "Format", "IsNullOrEmpty", "[double]"):
+        assert lossy not in body, (
+            f"the typed named reader {lossy}s the value on the way out"
+        )
+    # Production's own refusal is what makes a text counter fatal.
+    drivers = _vba_executable(SRC_VBA / "modDrivers.bas")
+    assert "IsWholeInRange(raw, 0, ID_COUNTER_MAX, d)" in drivers, (
+        "TryReadCounter no longer requires a whole number; the reasoning needs restating"
+    )
+
+
+def test_167_r12_coherence_is_proved_at_both_ends_of_the_fixture() -> None:
+    """R12. Every production mutation begins and ends structurally coherent."""
+    source = _executable(SCENARIOS)
+    fixture = _procedure(source, "Set-Phase5Fixture")
+    assert fixture.count("Assert-Phase5StructurallyCoherent") == 2, (
+        "the fixture does not prove coherence both after the Apply and at the end"
+    )
+    first = fixture.index("Assert-Phase5StructurallyCoherent")
+    last = fixture.rindex("Assert-Phase5StructurallyCoherent")
+    add_at = fixture.index("Invoke-Phase5AddDriverAndRequireSuccess")
+    weights_at = fixture.index("Write-Phase5Weights")
+    assert first < add_at, "the first coherence gate is after the driver Adds"
+    assert weights_at < last, "the closing coherence gate is before the value writers"
+    coherent = _procedure(source, "Assert-Phase5StructurallyCoherent")
+    assert "$Excel.Run('PCCM_StructuralReport')" in coherent, (
+        "coherence is judged by something other than production"
+    )
+    # And PCCM_StructuralReport really is ValidateStructure.
+    structural = _text(SRC_VBA / "modStructuralCheck.bas")
+    assert "PCCM_StructuralReport = ValidateStructure()" in structural
+
+
+def test_168_r13_a_failed_fixture_postcondition_throws() -> None:
+    """R13. Fixture establishment fails LOUDLY or not at all.
+
+    A postcondition that returned a diagnostic, wrote a note or continued to the
+    next driver would put the run back where Run 5 was: a broken baseline
+    carried into scenarios that report it as their own predicate failing.
+    """
+    source = _executable(SCENARIOS)
+    for name in ("Invoke-Phase5ProductionOperation", "Assert-Phase5StructurallyCoherent",
+                 "Assert-Phase5NoUnkeyedRegisterData",
+                 "Invoke-Phase5AddDriverAndRequireSuccess", "Clear-Phase5Registers",
+                 "Set-Phase5Fixture"):
+        body = _procedure(source, name)
+        for soft in ("Add-Note", "Write-Warning", "Write-Host", "-ErrorAction SilentlyContinue",
+                     "try {"):
+            assert soft not in body, (
+                f"{name} softens or swallows a fixture-establishment failure ({soft})"
+            )
+    # Each guard actually raises.
+    for name, count in (("Invoke-Phase5ProductionOperation", 1),
+                        ("Assert-Phase5StructurallyCoherent", 1),
+                        ("Assert-Phase5NoUnkeyedRegisterData", 1),
+                        ("Invoke-Phase5AddDriverAndRequireSuccess", 5),
+                        ("Clear-Phase5Registers", 3)):
+        body = _procedure(source, name)
+        assert body.count("throw (") >= count, (
+            f"{name} has {body.count('throw (')} throws, expected at least {count}"
+        )
+
+
+def test_169_r14_the_fixture_self_proof_gates_the_scenarios_that_depend_on_it() -> None:
+    """R14. A fixture defect gets a result of its own, before thirteen symptoms.
+
+    Run 5 reported an ordering defect as thirteen separate scenario failures,
+    none of which had reached its own predicate, and the defect itself had no
+    result anywhere in the ledger.
+    """
+    scenarios = _executable(SCENARIOS)
+    assert _result_call("P5-FIX") in scenarios, "the fixture self-proof emits no result"
+    # It runs BEFORE the first scenario that establishes a fixture for itself.
+    driver = scenarios[scenarios.index("function Invoke-Phase5GateBScenarios"):]
+    fix_at = driver.index("Add-Phase5Result 'P5-FIX'")
+    an_at = driver.index("Add-Phase5Result 'P5-AN'")
+    assert fix_at < an_at, "the self-proof is recorded after the analytical scenarios"
+    # THE VERY FIRST fixture the run establishes is the self-proof's own: the
+    # next one after it comes only after P5-FIX has been recorded.
+    first_fixture = driver.index("Set-Phase5Fixture -Excel $Excel")
+    second_fixture = driver.index("Set-Phase5Fixture -Excel $Excel", first_fixture + 1)
+    assert first_fixture < fix_at < second_fixture, (
+        "a scenario other than the self-proof establishes the first fixture"
+    )
+    # It uses the REAL fixture procedure, not a copy of it.
+    block = driver[driver.index("Add-Phase5Result 'P5-D8'"):an_at]
+    assert "Set-Phase5Fixture -Excel $Excel" in block, (
+        "the self-proof does not drive the real fixture procedure"
+    )
+    # A FAIL, never a SKIP, and it gates through P5-ALL exactly as P5-FX does.
+    assert "'SKIP'" not in block, "a broken fixture is recorded as a SKIP"
+    assert "Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL'" in block
+    assert block.count("return") >= 2, (
+        "a broken fixture does not stop the dependent scenarios on both paths"
+    )
+    # AND THE LIFECYCLE EVIDENCE SURVIVES THE GATE. Returning from the scenario
+    # driver leaves the caller's shutdown, Z, Y, the ledger report and the final
+    # completeness gate untouched.
+    harness = _executable(HARNESS)
+    phase5_at = harness.index("Invoke-Phase5GateBScenarios -Excel")
+    z_at = harness.index("Add-Result 'Z' 'Excel closed naturally")
+    y_at = harness.index("$transient = @(Get-TransientFailures)")
+    ledger_at = harness.index("Add-Phase5LedgerIntegrityResult")
+    fin_at = harness.index("Add-Phase4FinalCompletenessResult -Results $results")
+    assert phase5_at < z_at < y_at < ledger_at < fin_at, (
+        "the gate would take the post-session lifecycle evidence down with it"
+    )
+    assert "exit" not in block, "the gate exits the process instead of returning"
+    # And it is registered, so a coverage mapping could name it.
+    registry = _procedure(scenarios, "Get-Phase5ScenarioIds")
+    assert "'P5-FIX'" in registry, "the self-proof is not a scenario the harness declares"
+
+
+def test_170_r15_the_run_5_defect_replayed_as_a_state_machine() -> None:
+    """R15. THE MUTATION CONTROL: the exact Run-5 bug, both orders.
+
+    Production is modelled from its own source contract - an Add revalidates the
+    structure and rolls its identifier allocation back when that fails, Apply
+    rebuilds the inflation grid from the Config master, and a mutation over an
+    unkeyed row is refused. Neither order is asserted to be correct; the model
+    is run and the outcomes are compared.
+    """
+    class Workbook:
+        def __init__(self, applied_profiles):
+            self.master = list(applied_profiles)       # Config!tblInflationProfiles
+            self.grid = list(applied_profiles)         # Inflation!tblInflation
+            self.rows: list[dict] = []                 # tblCostLines
+            self.counter = 0
+            self.result = ""
+
+        # --- modStructuralCheck ------------------------------------------
+        def orphan_rows(self) -> list[int]:
+            return [i + 1 for i, row in enumerate(self.rows)
+                    if not row["id"] and any(v not in (None, "") for k, v in row.items()
+                                             if k != "id")]
+
+        def validate_structure(self) -> str:
+            problems = []
+            if sorted(self.master) != sorted(self.grid):
+                problems.append("[inflation_profile_rows] tblInflation and the Config "
+                                "profile master disagree.")
+            if self.orphan_rows():
+                problems.append("[no_orphan_structural_data] tblCostLines row(s) "
+                                + ", ".join(str(r) for r in self.orphan_rows())
+                                + " hold data but carry no key.")
+            return "".join(problems)
+
+        def pre_mutation_check(self) -> str:
+            return ("[no_orphan_structural_data] tblCostLines row(s) "
+                    + ", ".join(str(r) for r in self.orphan_rows())
+                    + " hold data but carry no key.") if self.orphan_rows() else ""
+
+        # --- modDrivers.RunDriverOperation -------------------------------
+        def add_cost_line(self) -> None:
+            self.result = ""
+            problems = self.pre_mutation_check()
+            if problems:
+                self.result = "FAIL|Add Cost Line was refused.|" + problems
+                return
+            before_rows, before_counter = [dict(r) for r in self.rows], self.counter
+            self.counter += 1
+            self.rows.append({"id": f"CL-{self.counter:03d}", "description": None})
+            problems = self.validate_structure()
+            if problems:
+                # Failure: the register and the counter are restored exactly.
+                self.rows, self.counter = before_rows, before_counter
+                self.rows.append({"id": "", "description": None})   # the reserved blank row
+                self.result = "FAIL|Structural revalidation failed:|" + problems
+                return
+            self.result = f"OK|Cost Line CL-{self.counter:03d} added."
+
+        # --- modTimeline.PCCM_ApplyTimeline ------------------------------
+        def apply_timeline(self) -> None:
+            self.result = ""
+            problems = self.pre_mutation_check()
+            if problems:
+                self.result = ("FAIL|Apply / Update Timeline was refused. Nothing has "
+                               "been changed.|" + problems)
+                return
+            self.grid = list(self.master)               # SyncProfileRows
+            self.result = "OK|Timeline applied."
+
+    def set_master(book: Workbook, profiles) -> None:
+        book.master = list(profiles)
+
+    def write_driver(book: Workbook, row_index: int) -> None:
+        book.rows[row_index - 1]["description"] = "GateB CL-001"
+
+    fixture_profiles = ["GateBEscalation"]
+    previous_profiles = ["Standard"]
+
+    # --- THE RUN-5 ORDER: master, Add, write, Apply ----------------------
+    old = Workbook(previous_profiles)
+    set_master(old, fixture_profiles)
+    old.add_cost_line()
+    assert old.result.startswith("FAIL|"), "the Add would have succeeded; the model is wrong"
+    assert "Config profile" in old.result or "disagree" in old.result
+    # The harness discarded that result and wrote the data anyway.
+    write_driver(old, 1)
+    assert old.orphan_rows() == [1], "the orphan the harness manufactured is missing"
+    old.apply_timeline()
+    assert old.result.startswith("FAIL|"), "Apply did not refuse over the orphan"
+    assert "no_orphan_structural_data" in old.result
+    assert "tblCostLines row(s) 1 hold data but carry no key" in old.result, old.result
+    assert old.counter == 0, "a failed Add left its identifier allocation behind"
+
+    # --- THE CORRECTED ORDER: master, Apply, checked Add, write ----------
+    new = Workbook(previous_profiles)
+    set_master(new, fixture_profiles)
+    new.apply_timeline()
+    assert new.result.startswith("OK|"), new.result
+    assert new.validate_structure() == "", "the baseline is not coherent before the Adds"
+    new.add_cost_line()
+    assert new.result.startswith("OK|"), new.result
+    assert new.rows[0]["id"] == "CL-001", new.rows
+    write_driver(new, 1)
+    assert new.orphan_rows() == [], "the corrected order still manufactures an orphan"
+    assert new.validate_structure() == "", "the fixture does not end coherent"
+
+    # --- AND THE CHECKED ADD REFUSES TO WRITE UNDER THE OLD ORDER --------
+    # This is the harness half of the correction: even with the ordering
+    # regressed, no fixture data reaches an unkeyed row.
+    guarded = Workbook(previous_profiles)
+    set_master(guarded, fixture_profiles)
+    guarded.add_cost_line()
+    stopped = not guarded.result.startswith("OK|")
+    assert stopped, "the checked Add would have proceeded past a failed operation"
+    assert guarded.orphan_rows() == [], "data was written before the result was checked"
+    # The row exists and is unkeyed; the guard is what keeps data out of it.
+    assert guarded.rows and guarded.rows[0]["id"] == "", guarded.rows
+
+
+# --- negative controls -----------------------------------------------------
+def test_nc_100_the_run_5_ordering_is_caught() -> None:
+    """The old fixture order, planted, fails R1."""
+    planted = _synthetic(
+        "    Set-Phase5InflationProfileMaster -Workbook $Workbook -Inspection $Inspection\n"
+        "    foreach ($line in @($Model.cost_lines)) {\n"
+        "        Invoke-Phase5AddDriverAndRequireSuccess -Excel $Excel\n"
+        "    }\n"
+        "    $applied = Invoke-Phase5ProductionOperation -Operation 'PCCM_ApplyTimeline'\n"
+    )
+    apply_at = planted.index("-Operation 'PCCM_ApplyTimeline'")
+    add_at = planted.index("Invoke-Phase5AddDriverAndRequireSuccess")
+    assert not (apply_at < add_at), "the planted regression must violate R1"
+    window = planted[planted.index("Set-Phase5InflationProfileMaster"):apply_at]
+    assert "Invoke-Phase5AddDriverAndRequireSuccess" in window, (
+        "the planted regression must also violate R2"
+    )
+
+
+def test_nc_101_a_discarded_add_result_is_caught() -> None:
+    """The literal Run-5 statement, planted, fails R3."""
+    planted = _synthetic(
+        "        $Excel.Run('PCCM_AddCostLine') | Out-Null\n"
+        "        Write-Phase5Driver -Workbook $Workbook -Register $costReg\n"
+    )
+    assert "$Excel.Run('PCCM_AddCostLine') | Out-Null" in planted
+    assert "PCCM_AutomationResult" not in planted, "the planted regression checks nothing"
+    assert planted.index("Out-Null") < planted.index("Write-Phase5Driver"), (
+        "the planted regression must write data behind an unchecked Add"
+    )
+
+
+def test_nc_102_reading_a_stale_result_is_caught() -> None:
+    """A result read without clearing first, planted, fails R5."""
+    planted = _synthetic(
+        "    $Excel.Run($Operation) | Out-Null\n"
+        "    $result = [string]$Excel.Run('PCCM_AutomationResult')\n"
+    )
+    assert "PCCM_AutomationBegin" not in planted, "the planted regression must not clear"
+    # And it is not a theoretical hole: the previous success is what comes back.
+    last = "OK|Cost Line CL-001 added."
+    recorded = None                      # the endpoint raised before RecordResult
+    assert (recorded if recorded is not None else last).startswith("OK|"), (
+        "the stale success must be what an unguarded read returns"
+    )
+
+
+def test_nc_103_writing_before_the_key_proof_is_caught() -> None:
+    """The driver write hoisted above the postconditions, planted, fails R6."""
+    planted = _synthetic(
+        "    $null = Invoke-Phase5ProductionOperation -Excel $Excel -Operation $endpoint\n"
+        "    Write-Phase5Driver -Workbook $Workbook -Register $Register -RowIndex $RowIndex\n"
+        "    $ids = @(Get-IdColumnValues -Workbook $Workbook -Info $Register)\n"
+        "    if ($ids.Count -ne $RowIndex) { throw ('...') }\n"
+    )
+    assert planted.index("Write-Phase5Driver") < planted.index("Get-IdColumnValues"), (
+        "the planted regression must write before it proves"
+    )
+    assert "IsNullOrWhiteSpace($issued)" not in planted, (
+        "the planted regression must skip the key proof entirely"
+    )
+
+
+# --- the same contract, stated a second way --------------------------------
+# Every rule above is pinned by the test that names it. These four state the
+# same contract in a DIFFERENT formulation - statement order rather than
+# membership, a regex sweep rather than a literal absence, a forbidden-reader
+# sweep rather than a required-reader presence - so no single planted regression
+# is caught by only one assertion.
+def test_171_the_statement_order_of_every_checked_step_is_fixed() -> None:
+    """Each fixture-establishment procedure walked as an ORDERED sequence.
+
+    The per-rule tests above compare a handful of indices. This walks each
+    procedure once and requires the whole sequence, so a step that is deleted or
+    moved is caught by its position in the walk rather than by a rule that
+    happens to mention it.
+    """
+    source = _executable(SCENARIOS)
+
+    def walk(name: str, tokens: tuple[str, ...]) -> None:
+        body = _procedure(source, name)
+        cursor = 0
+        for token in tokens:
+            at = body.find(token, cursor)
+            assert at >= 0, (
+                f"{name} no longer performs '{token}' in order; the sequence broke "
+                f"after position {cursor}"
+            )
+            cursor = at + len(token)
+
+    # THE CHECKED OPERATION: clear, invoke, read, gate.
+    walk("Invoke-Phase5ProductionOperation", (
+        "$Excel.Run('PCCM_AutomationBegin', $true, '')",
+        "$Excel.Run($Operation",
+        "$Excel.Run('PCCM_AutomationResult')",
+        "$result -notlike 'OK|*'",
+        "throw (",
+    ))
+    # EMPTYING A REGISTER: scan, enumerate, delete, prove gone, prove empty,
+    # scan again, then the counters.
+    walk("Clear-Phase5Registers", (
+        "Assert-Phase5NoUnkeyedRegisterData",
+        "Get-IdColumnValues",
+        "Invoke-Phase5ProductionOperation",
+        "$remaining -contains $id",
+        "$left.Count -ne 0",
+        "Assert-Phase5NoUnkeyedRegisterData",
+        "$Manifest.counters",
+        "Get-Phase5TypedNamedValue",
+        "Test-Phase5ExactValue",
+    ))
+    # ONE ADD: invoke, count, read the row, prove keyed, prove WHICH key, write.
+    walk("Invoke-Phase5AddDriverAndRequireSuccess", (
+        "Invoke-Phase5ProductionOperation",
+        "$ids.Count -ne $RowIndex",
+        "Get-TableBody",
+        "IsNullOrWhiteSpace($issued)",
+        "$issued -cne $expected",
+        "Write-Phase5Driver",
+    ))
+    # THE FIXTURE: A to H, in order.
+    walk("Set-Phase5Fixture", (
+        "Clear-Phase5Registers",
+        "Reset-Phase5FxTable",
+        "Set-Phase5InflationProfileMaster",
+        "Invoke-Phase5ProductionOperation",
+        "-Operation 'PCCM_ApplyTimeline'",
+        "Assert-Phase5StructurallyCoherent",
+        "Invoke-Phase5AddDriverAndRequireSuccess",
+        "Write-Phase5InflationRates",
+        "Write-Phase5Weights",
+        "Assert-Phase5StructurallyCoherent",
+        "return $applied",
+    ))
+    # AND THE CLOSING GATE IS THE LAST THING THAT HAPPENS. A coherence proof
+    # with a mutation after it proves the state before the mutation.
+    fixture = _procedure(source, "Set-Phase5Fixture")
+    tail = fixture[fixture.rindex("Assert-Phase5StructurallyCoherent"):]
+    for later in ("$Excel.Run", "Set-TableCell", "Set-NamedValue", "Write-Phase5",
+                  "Invoke-Phase5"):
+        assert later not in tail, (
+            f"the fixture {later}s after it claims to have proved itself coherent"
+        )
+    # AND THE DRIVER WRITE IS THE LAST THING THE CHECKED ADD DOES.
+    add = _procedure(source, "Invoke-Phase5AddDriverAndRequireSuccess")
+    after_write = add[add.index("Write-Phase5Driver"):]
+    assert "throw (" not in after_write, (
+        "a postcondition runs after the data it was supposed to gate has been written"
+    )
+
+
+def test_172_no_identity_comparison_in_the_correction_is_case_insensitive() -> None:
+    """An identifier is an identity: 'cl-001' is not 'CL-001'.
+
+    A sweep over the comparison operators actually present, rather than a check
+    that one particular lax spelling is absent.
+    """
+    source = _executable(SCENARIOS)
+    # The PERMANENT IDENTIFIERS and the PROFILE NAMES - the values production
+    # treats as identities. A plan-case ID and a manifest key are neither, and
+    # the accepted harness compares those with -eq throughout.
+    identity_holders = ("$issued", "$expected", "$declared",
+                        "$gridRows", "$emittedProfiles")
+    regions = {
+        "Invoke-Phase5AddDriverAndRequireSuccess":
+            _procedure(source, "Invoke-Phase5AddDriverAndRequireSuccess"),
+        "the P5-FIX self-proof":
+            source[source.index("Add-Phase5Result 'P5-D8'"):
+                   source.index("Add-Phase5Result 'P5-AN'")],
+    }
+    lax = re.compile(r"(\$[A-Za-z0-9_.\[\]$-]+)\s+-(eq|ne|ceq|cne)\s+(\S+)")
+    for label, body in regions.items():
+        for left, operator, right in lax.findall(body):
+            touches_identity = any(
+                holder in left or holder in right for holder in identity_holders)
+            # A COUNT comparison is not an identity comparison.
+            if ".Count" in left or ".Count" in right:
+                continue
+            if not touches_identity:
+                continue
+            assert operator in ("ceq", "cne"), (
+                f"{label} compares identities case-insensitively: "
+                f"{left} -{operator} {right}"
+            )
+    # The self-proof's own identifier comparison is binary too.
+    assert "-ceq ($expected -join" in regions["the P5-FIX self-proof"], (
+        "the self-proof compares the issued identifier list case-insensitively"
+    )
+
+
+def test_173_the_fixture_reads_identity_state_through_typed_readers() -> None:
+    """A stringifying reader cannot tell a numeric 0 from the text "0".
+
+    Stated as a sweep for the LOSSY readers, which is the opposite direction
+    from asserting that the typed one is present.
+    """
+    source = _executable(SCENARIOS)
+    clear = _procedure(source, "Clear-Phase5Registers")
+    counters = clear[clear.index("$Manifest.counters"):]
+    for lossy in ("Get-NamedValue", "[string]$readBack", "[double]$readBack",
+                  "Format-CalcValue", "Test-CalcValue"):
+        assert lossy not in counters, (
+            f"the counter read-back goes through {lossy}, which cannot see the type"
+        )
+    assert "Get-Phase5TypedNamedValue" in counters
+    assert "Test-Phase5ExactValue" in counters
+    # The strict comparator really is type-first, so using it is the whole claim.
+    comparator = _procedure(source, "Test-Phase5ExactValue")
+    assert "GetType().FullName -cne" in comparator, (
+        "the strict comparator no longer gates on CLR type identity"
+    )
+
+
+def test_174_no_phase5_gate_downgrades_a_failure_to_a_skip() -> None:
+    """A prerequisite that did not hold is a FAIL, and it stops the run below it.
+
+    Every `P5-ALL` emission in the harness is a gate. A SKIP would leave the
+    dependent scenarios running against a baseline nobody proved, and a gate
+    that did not return would run them anyway.
+    """
+    source = _executable(SCENARIOS)
+    emissions = [match for match in re.finditer(
+        r"Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' '(\w+)'", source)]
+    assert len(emissions) >= 4, f"only {len(emissions)} P5-ALL gates exist"
+    for match in emissions:
+        assert match.group(1) == "FAIL", (
+            f"a P5-ALL gate reports {match.group(1)} instead of FAIL"
+        )
+        # ... and the next statement of substance is the return.
+        tail = source[match.end():match.end() + 700]
+        assert "return" in tail, "a P5-ALL gate does not stop the scenarios below it"
+        before_return = tail[:tail.index("return")]
+        for runs_on in ("$Excel.Run", "Set-Phase5Fixture", "Add-Check"):
+            assert runs_on not in before_return, (
+                f"a P5-ALL gate {runs_on}s before it returns"
+            )
+    # And the self-proof is one of them.
+    fix_block = source[source.index("Add-Phase5Result 'P5-D8'"):
+                       source.index("Add-Phase5Result 'P5-AN'")]
+    assert fix_block.count("Add-Phase5Result 'P5-ALL'") == 2, (
+        "the fixture self-proof does not gate on both its success and its catch path"
+    )

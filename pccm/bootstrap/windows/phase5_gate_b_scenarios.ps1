@@ -71,7 +71,7 @@ function Get-Phase5CoverageLedger {
 # naming anything outside this set, so a typo cannot silently drop a case.
 function Get-Phase5ScenarioIds {
     return @(
-        'P5-FX', 'P5-M',
+        'P5-FX', 'P5-FIX', 'P5-M',
         'P5-D0', 'P5-D1', 'P5-D2', 'P5-D3', 'P5-D4', 'P5-D5', 'P5-D6', 'P5-D7',
         'P5-DC', 'P5-D8',
         'P5-AN', 'P5-RF', 'P5-PQ', 'P5-PN', 'P5-AR', 'P5-ID',
@@ -1184,23 +1184,215 @@ function Format-CalcValue {
 #
 # A FIXTURE MUST NOT BREAK THE INVARIANT IT IS TESTING - the Phase-4 rule, and it
 # holds here too. Registers are emptied through the production delete endpoints
-# and rows are keyed by the production add endpoints, so no orphan row is ever
-# fabricated; only the ID counters are set directly, because the fixtures name
-# CL-001 and R-001 and a permanent identifier is not re-issued by design.
-function Clear-Phase5Registers {
-    param($Excel, $Workbook, $Manifest)
-    foreach ($register in @($Manifest.registers)) {
-        $ids = @(Get-IdColumnValues -Workbook $Workbook -Info $register)
-        foreach ($id in $ids) {
-            if ($register.key -eq 'cost_lines') {
-                $Excel.Run('PCCM_DeleteCostLineById', $id) | Out-Null
-            } else {
-                $Excel.Run('PCCM_DeleteRiskById', $id) | Out-Null
+# and rows are keyed by the production add endpoints; only the ID counters are
+# set directly, because the fixtures name CL-001 and R-001 and a permanent
+# identifier is not re-issued by design.
+#
+# Calling those endpoints was never enough on its own. Run 5 called them and
+# ignored what they said, and the fixture fabricated the orphan row this rule
+# exists to forbid. What follows is that claim made checkable.
+# ===========================================================================
+# EVERY PRODUCTION MUTATION THE HARNESS MAKES IS CHECKED
+# ===========================================================================
+# RUNTIME RUN 5 ROOT. Set-Phase5Fixture invoked PCCM_AddCostLine and
+# PCCM_AddRisk as `$Excel.Run(...) | Out-Null` and then wrote driver data into
+# the row it ASSUMED the Add had just keyed. Whether the Add succeeded was never
+# read. It had not:
+#
+#   Set-Phase5InflationProfileMaster rewrote the Config profile master
+#   -> Inflation!tblInflation still held the PREVIOUS fixture's applied profiles
+#   -> PCCM_AddCostLine -> RunDriverOperation -> ValidateStructure
+#      -> CheckInflationProfiles found master and grid disagreeing
+#   -> the Add raised, rolled its own ID allocation back, and recorded FAIL
+#   -> the harness discarded that result and wrote description, quantity,
+#      unit costs, currency, profile and distribution into row 1 anyway
+#   -> row 1 held data and carried no key
+#   -> PCCM_ApplyTimeline, several statements later, CORRECTLY refused with
+#      [no_orphan_structural_data] tblCostLines row(s) 1 hold data but carry
+#      no key.
+#
+# The refusal is right. The orphan was manufactured by the harness, and the
+# harness reported it as a fixture-establishment failure fifty lines away from
+# the operation that actually failed.
+#
+# TWO RULES COME OUT OF THAT, AND BOTH ARE STRUCTURAL HERE:
+#
+#   1. PCCM_AutomationResult IS THE AUTHORITY. That Excel.Run returned says only
+#      that VBA did not raise across the COM boundary; the operation's own
+#      verdict is the recorded result, and every production mutation below reads
+#      it and requires OK|*.
+#
+#   2. THE RESULT IS CLEARED BEFORE THE OPERATION RUNS. gAutomationLastResult is
+#      a single global that survives until something overwrites it, so an
+#      endpoint that failed BEFORE reaching RecordResult would present the
+#      PREVIOUS operation's OK| to anyone who read it afterwards - a fail-open
+#      read of a stale success. PCCM_AutomationBegin calls ClearAutomation, so
+#      arming immediately before the call makes the value that comes back this
+#      operation's own or nothing at all. This is the accepted Phase-4 idiom;
+#      Set-AppliedTimeline has used it since the Phase-4 matrix was written.
+#
+# Nothing here changes production behaviour. It reads production's own verdict
+# instead of assuming it.
+function Invoke-Phase5ProductionOperation {
+    param($Excel, [string]$Operation, [string]$Stage, [string]$Argument = '',
+          [switch]$WithArgument)
+    $Excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+    if ($WithArgument) {
+        $Excel.Run($Operation, $Argument) | Out-Null
+    } else {
+        $Excel.Run($Operation) | Out-Null
+    }
+    $result = [string]$Excel.Run('PCCM_AutomationResult')
+    if ($result -notlike 'OK|*') {
+        throw ('Gate-B harness failure at ' + $Stage + ': the production operation ' +
+               $Operation + $(if ($WithArgument) { " '" + $Argument + "'" } else { '' }) +
+               ' did not succeed. PCCM_AutomationResult returned ' + [char]39 +
+               $result + [char]39 + '.')
+    }
+    return $result
+}
+
+# The workbook must be structurally coherent at both ends of every production
+# mutation the fixture makes, and coherence is production's own judgement -
+# PCCM_StructuralReport is ValidateStructure - never the harness's.
+function Assert-Phase5StructurallyCoherent {
+    param($Excel, [string]$Stage)
+    $report = [string]$Excel.Run('PCCM_StructuralReport')
+    if (-not [string]::IsNullOrWhiteSpace($report)) {
+        throw ('Gate-B fixture establishment failed: the workbook is not structurally ' +
+               'coherent ' + $Stage + '. PCCM_StructuralReport returned:' + [char]10 + $report)
+    }
+    return $report
+}
+
+# THE HARNESS-SIDE MIRROR OF modWorkbook.OrphanRows, and the detector for exactly
+# what Run 5 manufactured: a register row holding data under a blank key.
+#
+# It exists so contamination is named WHERE IT IS CREATED. Production already
+# refuses to mutate over an orphan - that is the refusal Run 5 recorded - but by
+# then the operation being blamed is several statements away from the one that
+# left the row behind. This is checked on the way in to Clear-Phase5Registers as
+# well as on the way out, so a fixture that inherits a contaminated register from
+# an earlier scenario fails naming the earlier scenario's damage rather than
+# silently deleting it and carrying on.
+#
+# THE HARNESS MUST EXPOSE CONTAMINATION, NOT LAUNDER IT. There is deliberately no
+# repair path here: an orphan row is not blanked, not adopted and not deleted.
+#
+# The predicate is production's, term for term: the key column's text is empty
+# and some other column in the row is not. Get-TableBody reads Value2 and renders
+# it as text, and IsNullOrWhiteSpace is Len(Trim$()) = 0, which is what
+# modWorkbook.IsEmptyCell tests.
+function Assert-Phase5NoUnkeyedRegisterData {
+    param($Workbook, $Register, [string]$Stage)
+    $body = @(Get-TableBody -Workbook $Workbook -SheetName $Register.sheet `
+        -TableName $Register.table_name)
+    $orphans = @()
+    for ($row = 0; $row -lt $body.Count; $row++) {
+        $cells = @($body[$row])
+        if (-not [string]::IsNullOrWhiteSpace([string]$cells[0])) { continue }
+        for ($column = 1; $column -lt $cells.Count; $column++) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$cells[$column])) {
+                $orphans += [string]($row + 1)
+                break
             }
         }
     }
+    if ($orphans.Count -gt 0) {
+        throw ('Gate-B fixture establishment failed: ' + [string]$Register.table_name +
+               ' row(s) ' + ($orphans -join ', ') + ' hold data but carry no key ' +
+               $Stage + '. Unkeyed structural data is contamination, not a fixture ' +
+               'state: it is left exactly where it is so the run reports it rather ' +
+               'than erasing the evidence.')
+    }
+}
+
+# The Value2 of a defined name, with no [string] on the way out.
+#
+# Get-NamedValue is the accepted Phase-4 reader and it stringifies, which is
+# right for every Phase-4 caller. It cannot tell a numeric counter of 0 from a
+# TEXT counter of "0" - and production draws exactly that distinction:
+# modDrivers.TryReadCounter refuses a counter that is not a whole number, so a
+# reset that produced text would make the next Add refuse. The reset is proved
+# with the same typed discipline the Run-4 correction established for cells.
+function Get-Phase5TypedNamedValue {
+    param($Workbook, [string]$DefinedName)
+    $names = $null; $nm = $null; $rng = $null
+    try {
+        $names = $Workbook.Names
+        $nm = $names.Item($DefinedName)
+        $rng = $nm.RefersToRange
+        return $rng.Value2
+    } finally {
+        if ($null -ne $rng)   { Release-Transient $rng   'Range(name)'; $rng   = $null }
+        if ($null -ne $nm)    { Release-Transient $nm    'Name';        $nm    = $null }
+        if ($null -ne $names) { Release-Transient $names 'Names';       $names = $null }
+    }
+}
+
+function Clear-Phase5Registers {
+    param($Excel, $Workbook, $Manifest)
+    # FAIL CLOSED, AT EVERY STEP. This used to run the two delete endpoints with
+    # their results piped to Out-Null and then write the counters, which meant a
+    # register that refused to empty - because an earlier scenario left an orphan
+    # row, because the counter was corrupt, because a delete raised - carried its
+    # rows straight into the next fixture. Every scenario built on that fixture
+    # would then be testing a model nobody wrote.
+    foreach ($register in @($Manifest.registers)) {
+        # ON THE WAY IN: contamination inherited from an earlier scenario is
+        # named here, by the table and row that hold it, rather than surfacing
+        # later as production's refusal to mutate over an orphan.
+        Assert-Phase5NoUnkeyedRegisterData -Workbook $Workbook -Register $register `
+            -Stage 'before the Gate-B fixture emptied the registers'
+
+        $endpoint = 'PCCM_DeleteRiskById'
+        if ([string]$register.key -eq 'cost_lines') { $endpoint = 'PCCM_DeleteCostLineById' }
+
+        foreach ($id in @(Get-IdColumnValues -Workbook $Workbook -Info $register)) {
+            $null = Invoke-Phase5ProductionOperation -Excel $Excel -Operation $endpoint `
+                -Argument ([string]$id) -WithArgument `
+                -Stage ('step A, emptying ' + [string]$register.table_name)
+            # AND THE DELETE TOOK. A production Delete that recorded OK|cancelled
+            # is a legitimate OK| and removes nothing, so the identifier is
+            # proved gone rather than assumed gone.
+            $remaining = @(Get-IdColumnValues -Workbook $Workbook -Info $register)
+            if ($remaining -contains $id) {
+                throw ('Gate-B fixture establishment failed at step A: ' + $endpoint +
+                       ' reported success for ' + [string]$id + ' but ' +
+                       [string]$register.table_name + ' still carries that identifier.')
+            }
+        }
+
+        # POSTCONDITION: no keyed row survives, and no unkeyed row was created by
+        # the emptying itself.
+        $left = @(Get-IdColumnValues -Workbook $Workbook -Info $register)
+        if ($left.Count -ne 0) {
+            throw ('Gate-B fixture establishment failed at step A: ' +
+                   [string]$register.table_name + ' still carries ' + [string]$left.Count +
+                   ' identifier(s) after every one of them was deleted: ' +
+                   ($left -join ', ') + '.')
+        }
+        Assert-Phase5NoUnkeyedRegisterData -Workbook $Workbook -Register $register `
+            -Stage 'after the Gate-B fixture emptied the registers'
+    }
+
+    # THE COUNTERS ARE THE ONLY VALUES WRITTEN DIRECTLY, and only because the
+    # emitted fixtures name CL-001 and R-001 while a permanent identifier is
+    # never re-issued by design. The write is proved through the TYPED reader and
+    # the strict comparator: modDrivers.TryReadCounter refuses a counter that is
+    # not a whole number, so a reset that landed as text would make the very
+    # first Add refuse - and Get-NamedValue would have reported "0" either way.
     foreach ($counter in @($Manifest.counters)) {
-        Set-NamedValue -Workbook $Workbook -DefinedName $counter.defined_name -Value ([double]$counter.initial)
+        $initial = [double]$counter.initial
+        Set-NamedValue -Workbook $Workbook -DefinedName $counter.defined_name -Value $initial
+        $readBack = Get-Phase5TypedNamedValue -Workbook $Workbook `
+            -DefinedName $counter.defined_name
+        if (-not (Test-Phase5ExactValue -Actual $readBack -Expected $initial)) {
+            throw ('Gate-B fixture establishment failed at step A: the identity counter ' +
+                   [string]$counter.defined_name + ' reads back as ' +
+                   (Format-Phase5Typed $readBack) + ', not the numeric ' +
+                   (Format-Phase5Typed $initial) + ' it was reset to.')
+        }
     }
 }
 
@@ -1332,13 +1524,126 @@ function Reset-Phase5FxTable {
     }
 }
 
+# ONE ADD, FULLY CHECKED, AND ONLY THEN THE DATA.
+#
+# This is the whole of the Run-5 correction expressed as a procedure: the
+# endpoint is invoked, production's own verdict is read, the row is proved to
+# carry the permanent identifier the emitted fixture expects, and ONLY THEN does
+# fixture data reach the worksheet. There is no path through this function that
+# writes into a row production has not keyed, which is exactly the path that
+# manufactured the orphan.
+#
+# Write-Phase5Driver is called from here and from nowhere else, so the check
+# cannot be bypassed by a future caller reaching past it.
+function Invoke-Phase5AddDriverAndRequireSuccess {
+    param($Excel, $Workbook, $Register, [bool]$IsRisk, [int]$RowIndex, $Driver)
+    $endpoint = 'PCCM_AddCostLine'
+    if ($IsRisk) { $endpoint = 'PCCM_AddRisk' }
+    $where = 'step F, ' + $endpoint + ' number ' + [string]$RowIndex
+
+    # 1 and 2. Invoke, and read production's verdict for THIS invocation.
+    $null = Invoke-Phase5ProductionOperation -Excel $Excel -Operation $endpoint -Stage $where
+
+    # 3. The register grew by exactly this one keyed row. An Add that succeeded
+    #    without keying a row, or that keyed two, is a different workbook from
+    #    the one the fixture is describing.
+    $ids = @(Get-IdColumnValues -Workbook $Workbook -Info $Register)
+    if ($ids.Count -ne $RowIndex) {
+        throw ('Gate-B fixture establishment failed at ' + $where + ': ' +
+               [string]$Register.table_name + ' carries ' + [string]$ids.Count +
+               ' keyed row(s) after ' + [string]$RowIndex + ' successful Add(s): ' +
+               ($ids -join ', ') + '.')
+    }
+
+    # 4. THE ROW THE FIXTURE IS ABOUT TO WRITE INTO CARRIES A PERMANENT ID.
+    #    The identifier is the register's FIRST declared column - the same fact
+    #    Get-IdColumnValues reads as $row[0] and modConstants projects as
+    #    REG_*_ID_COL - and the physical row is read directly, not through the
+    #    blank-filtered identifier list.
+    $body = @(Get-TableBody -Workbook $Workbook -SheetName $Register.sheet `
+        -TableName $Register.table_name)
+    if ($body.Count -lt $RowIndex) {
+        throw ('Gate-B fixture establishment failed at ' + $where + ': ' +
+               [string]$Register.table_name + ' has only ' + [string]$body.Count +
+               ' body row(s), so row ' + [string]$RowIndex + ' does not exist.')
+    }
+    $issued = [string]@($body[$RowIndex - 1])[0]
+    if ([string]::IsNullOrWhiteSpace($issued)) {
+        throw ('Gate-B fixture establishment failed at ' + $where + ': row ' +
+               [string]$RowIndex + ' of ' + [string]$Register.table_name +
+               ' carries no permanent identifier. Writing fixture data into it ' +
+               'would create exactly the unkeyed structural row production ' +
+               'refuses to mutate over.')
+    }
+
+    # 5. AND IT IS THE IDENTIFIER THE EMITTED FIXTURE EXPECTS. The corpus names
+    #    CL-001, CL-002, ... and R-001, R-002, ... in order, the counters were
+    #    reset to their initial values at step A, and identifiers are issued in
+    #    sequence - so the Nth Add must issue the model's Nth permanent_id.
+    #
+    #    Binary comparison. An identifier is an identity and 'cl-001' is not
+    #    'CL-001'. This check also proves the identifier column is where the
+    #    harness read it: a wrong column could not hold the expected value.
+    $expected = [string]$Driver.permanent_id
+    if ([string]::IsNullOrEmpty($expected)) {
+        throw ('Gate-B fixture establishment failed at ' + $where +
+               ': the emitted fixture driver declares no permanent_id, so the ' +
+               'identifier production issued cannot be checked against anything.')
+    }
+    if ($issued -cne $expected) {
+        throw ('Gate-B fixture establishment failed at ' + $where + ': row ' +
+               [string]$RowIndex + ' of ' + [string]$Register.table_name +
+               ' carries ' + [char]39 + $issued + [char]39 + ', but the emitted ' +
+               'fixture expects ' + [char]39 + $expected + [char]39 + '.')
+    }
+
+    # 6. ONLY NOW.
+    Write-Phase5Driver -Workbook $Workbook -Register $Register -RowIndex $RowIndex `
+        -Driver $Driver -IsRisk $IsRisk
+}
+
+# ===========================================================================
+# THE FIXTURE CHOREOGRAPHY
+# ===========================================================================
+# EVERY PRODUCTION MUTATION BEGINS AND ENDS STRUCTURALLY COHERENT. That is the
+# ordering contract Run 5 broke, and the order below is the whole correction:
+#
+#   A  empty the registers and reset the identity counters   (checked, fail closed)
+#   B  the Setup scalars
+#   C  the FX table: the captured seed, then the fixture's rows
+#   D  the Config profile master
+#   E  PCCM_ApplyTimeline - HERE, with no driver added yet - then require OK|*
+#      and a blank PCCM_StructuralReport
+#   F  the drivers, one checked production Add each, data written only into a
+#      row production has keyed
+#   G  inflation rates and profiling weights, into the generated columns
+#   H  prove the fixture ENDS coherent
+#
+# WHY E MOVED. Config!tblInflationProfiles is the profile master and
+# modInflation.SyncProfileRows rebuilds Inflation!tblInflation from it during
+# PCCM_ApplyTimeline. Step D therefore leaves master and grid deliberately
+# DISAGREEING until an Apply reconciles them - and modStructuralCheck's
+# CheckInflationProfiles reports exactly that disagreement. Every driver Add runs
+# ValidateStructure on the way out, so an Add attempted between D and E is an Add
+# attempted over a workbook that production is required to call incoherent. It
+# fails, it rolls its own identifier allocation back, and the row it was supposed
+# to key stays blank.
+#
+# Apply first makes the window empty: by the time the first Add runs, the grid
+# has been rebuilt from the master and the two agree. Nothing about production
+# changed to make this work - the operations are simply performed in an order
+# where each one's preconditions actually hold.
+#
+# The Adds do not need a second Apply behind them: SyncRows preserves the year
+# columns Apply generated and only adds the new driver's profiling row, and each
+# Add revalidates the structure itself.
 function Set-Phase5Fixture {
     param($Excel, $Workbook, $Manifest, $Inspection, $Model)
 
-    # --- 1. empty the registers and reset the identity counters -------------
+    # --- A. empty the registers and reset the identity counters -------------
     Clear-Phase5Registers -Excel $Excel -Workbook $Workbook -Manifest $Manifest
 
-    # --- 2. the Setup scalars ----------------------------------------------
+    # --- B. the Setup scalars ----------------------------------------------
     $inputs = $Inspection.inputs
     Set-NamedValue -Workbook $Workbook -DefinedName $inputs.base_year.defined_name `
         -Value ([double]$Model.timeline.base_year)
@@ -1349,7 +1654,7 @@ function Set-Phase5Fixture {
     Set-NamedValue -Workbook $Workbook -DefinedName $inputs.discount_rate.defined_name `
         -Value ([double]$Model.discount_rate)
 
-    # --- 3. FX: RESTORE THE CAPTURED SEED, then append the fixture's rows ---
+    # --- C. FX: RESTORE THE CAPTURED SEED, then append the fixture's rows ---
     #
     # The reset comes FIRST and rewrites row 1 from the capture. It is not
     # enough to keep row 1: PQ-10 deletes the reporting row and shifts a foreign
@@ -1376,7 +1681,7 @@ function Set-Phase5Fixture {
         }
     }
 
-    # --- 4. the CONFIG PROFILE MASTER, which owns inflation profile rows ----
+    # --- D. the CONFIG PROFILE MASTER, which owns inflation profile rows ----
     #
     # Config!tblInflationProfiles is the Phase-4 source of truth, and
     # modInflation.SyncProfileRows REBUILDS Inflation!tblInflation from it during
@@ -1386,10 +1691,27 @@ function Set-Phase5Fixture {
     # a row production had just deleted.
     #
     # The master is synchronised here; the grid rows are created by production.
+    # From this statement until step E the workbook is KNOWINGLY incoherent, and
+    # no production mutation may be attempted inside that window.
     Set-Phase5InflationProfileMaster -Workbook $Workbook -Inspection $Inspection `
         -Profiles @($Model.inflation.PSObject.Properties.Name)
 
-    # --- 5. the drivers ------------------------------------------------------
+    # --- E. APPLY NOW, BEFORE ANY DRIVER IS ADDED ---------------------------
+    #
+    # A FIXTURE MUST PROVE ITS OWN PREREQUISITES BEFORE THE OPERATION UNDER TEST
+    # RUNS. Both gates THROW: an unusable baseline must fail at fixture
+    # establishment, loudly, and never masquerade as anything else.
+    #
+    # Production creates the structure here: SetYearColumns for the profiling and
+    # inflation year bands, and SyncProfileRows for the inflation rows from the
+    # Config master step D just rewrote. That second one is what closes the
+    # incoherence window, and the structural report proves it closed.
+    $applied = Invoke-Phase5ProductionOperation -Excel $Excel `
+        -Operation 'PCCM_ApplyTimeline' -Stage 'step E, the structural baseline'
+    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `
+        -Stage 'after PCCM_ApplyTimeline and before the first fixture driver was added'
+
+    # --- F. the drivers, each Add proved before its data is written ---------
     $costReg = $null; $riskReg = $null
     foreach ($register in @($Manifest.registers)) {
         if ($register.key -eq 'cost_lines') { $costReg = $register }
@@ -1398,45 +1720,28 @@ function Set-Phase5Fixture {
     $costIndex = 0
     foreach ($line in @($Model.cost_lines)) {
         $costIndex++
-        $Excel.Run('PCCM_AddCostLine') | Out-Null
-        Write-Phase5Driver -Workbook $Workbook -Register $costReg -RowIndex $costIndex `
-            -Driver $line -IsRisk $false
+        Invoke-Phase5AddDriverAndRequireSuccess -Excel $Excel -Workbook $Workbook `
+            -Register $costReg -IsRisk $false -RowIndex $costIndex -Driver $line
     }
     $riskIndex = 0
     foreach ($risk in @($Model.risks)) {
         $riskIndex++
-        $Excel.Run('PCCM_AddRisk') | Out-Null
-        Write-Phase5Driver -Workbook $Workbook -Register $riskReg -RowIndex $riskIndex `
-            -Driver $risk -IsRisk $true
+        Invoke-Phase5AddDriverAndRequireSuccess -Excel $Excel -Workbook $Workbook `
+            -Register $riskReg -IsRisk $true -RowIndex $riskIndex -Driver $risk
     }
 
-    # --- 6. APPLY, AND PROVE THE FIXTURE'S OWN PREREQUISITES ----------------
-    #
-    # A FIXTURE MUST PROVE ITS OWN PREREQUISITES BEFORE THE OPERATION UNDER TEST
-    # RUNS. The first version discarded the Apply result and carried on, so a
-    # refused or failed Apply surfaced later as a calculation defect instead of
-    # as the fixture fault it was. Both gates THROW: an unusable baseline must
-    # fail at fixture establishment, loudly, and never masquerade as anything
-    # else.
-    #
-    # Production creates the structure here: SetYearColumns for the profiling and
-    # inflation year bands, SyncProfileRows for the inflation rows from the
-    # Config master, and the driver profiling rows.
-    $Excel.Run('PCCM_ApplyTimeline') | Out-Null
-    $applied = [string]$Excel.Run('PCCM_AutomationResult')
-    if ($applied -notlike 'OK|*') {
-        throw ("Gate-B fixture establishment failed: PCCM_ApplyTimeline did not succeed. " +
-               "PCCM_AutomationResult returned '" + $applied + "'.")
-    }
-    $report = [string]$Excel.Run('PCCM_StructuralReport')
-    if (-not [string]::IsNullOrWhiteSpace($report)) {
-        throw ("Gate-B fixture establishment failed: the generated structure is not " +
-               "coherent. PCCM_StructuralReport returned:" + [char]10 + $report)
-    }
-
-    # --- 7. ONLY NOW: rates and weights, into the generated columns ---------
+    # --- G. rates and weights, into the generated columns -------------------
     Write-Phase5InflationRates -Workbook $Workbook -Manifest $Manifest -Model $Model
     Write-Phase5Weights -Workbook $Workbook -Manifest $Manifest -Model $Model
+
+    # --- H. THE FIXTURE ENDS COHERENT ---------------------------------------
+    #
+    # Step G writes values into rows and columns production generated, so it can
+    # only break the structure by writing somewhere production did not. Proving
+    # it did not is one COM call, and the alternative is discovering it as a
+    # wrong analytical answer in a scenario that has nothing to do with it.
+    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `
+        -Stage 'at the end of Gate-B fixture establishment'
 
     return $applied
 }
@@ -1644,7 +1949,19 @@ function Invoke-Phase5Mutation {
                 -DefinedName $Manifest.defined_names.($names[[string]$Mutation.target]) `
                 -Value ([double]$Mutation.value)
             if ($Mutation.apply_timeline) {
-                $Excel.Run('PCCM_ApplyTimeline') | Out-Null
+                # THE APPLY IS A PRODUCTION MUTATION AND ITS RESULT IS READ.
+                # This branch is where the mutation asks for the applied
+                # structure to be REFRESHED, so an Apply that did not take means
+                # the mutation did not take and the scenario below would be
+                # asserting a predicate against the unmutated model.
+                #
+                # Requiring OK|* is not the clean-structure gate: the deformation
+                # this applier exists to perform is still free to make the model
+                # refuse at calculation time. It only requires that the operation
+                # the corpus asked for actually happened.
+                $null = Invoke-Phase5ProductionOperation -Excel $Excel `
+                    -Operation 'PCCM_ApplyTimeline' `
+                    -Stage ('mutation ' + [string]$Mutation.kind + '/' + [string]$Mutation.target)
             }
         }
         'named_number' {
@@ -1731,11 +2048,14 @@ function Invoke-Phase5Mutation {
                 # SyncProfileRows creates the matching Inflation row, with BLANK
                 # rates: a new profile arrives incomplete by construction, which
                 # is exactly the condition under test.
-                $Excel.Run('PCCM_ApplyTimeline') | Out-Null
-                $applied = [string]$Excel.Run('PCCM_AutomationResult')
-                if ($applied -notlike 'OK|*') {
-                    throw ("the Config-master profile addition could not be applied: " + $applied)
-                }
+                # Through the checked helper, so the result this reads is
+                # THIS Apply's own: gAutomationLastResult survives until
+                # something overwrites it, and an endpoint that failed before
+                # reaching RecordResult would otherwise present the previous
+                # operation's OK| as its own success.
+                $null = Invoke-Phase5ProductionOperation -Excel $Excel `
+                    -Operation 'PCCM_ApplyTimeline' `
+                    -Stage 'mutation inflation_profile_add, applying the Config-master addition'
             }
             if ($Mutation.require_clean_structure) {
                 # The workbook must still be STRUCTURALLY VALID: that is half the
@@ -3132,6 +3452,151 @@ function Invoke-Phase5GateBScenarios {
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Phase5Result 'P5-D8' 'Transient diagnostic module removal' 'FAIL' (Format-Phase5Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # P5-FIX. THE FIXTURE PROVES ITSELF BEFORE ANY SCENARIO DEPENDS ON IT
+    # -------------------------------------------------------------------
+    # RUN-5 SEQUENCING LESSON, the same one P5-FX carries for the FX seed: a
+    # prerequisite is proved like a prerequisite, once, at the point where it can
+    # still be reported as itself.
+    #
+    # Run 5 discovered a fixture-establishment ordering defect only through the
+    # scenarios that inherited it. Each of them reported the same sentence about
+    # an orphan row in tblCostLines, none of them had reached the predicate it
+    # exists to test, and the thing that was actually broken - the order in which
+    # the fixture performs its production mutations - had no result of its own
+    # anywhere in the ledger.
+    #
+    # This runs ONE fixture, the golden plan case, and asserts what fixture
+    # establishment is supposed to have achieved: production keyed every driver
+    # row, the identifiers are the emitted ones, the inflation grid matches the
+    # Config master, and the workbook production hands back is structurally
+    # coherent. A failure here is a HARNESS failure and says so.
+    try {
+        $list = New-Checklist
+        $golden = $null
+        foreach ($candidate in @($Cases.plan_cases)) {
+            if ([string]$candidate.id -eq '1') { $golden = $candidate }
+        }
+        $null = Add-Check $list 'the golden fixture (plan case 1) was emitted' ($null -ne $golden)
+
+        # THE REAL Set-Phase5Fixture, not a reimplementation of it. A self-proof
+        # that exercised a copy would prove the copy.
+        $applied = Set-Phase5Fixture -Excel $Excel -Workbook $Workbook -Manifest $Manifest `
+            -Inspection $Inspection -Model $golden.model
+        $null = Add-Check $list 'fixture establishment reported OK from PCCM_ApplyTimeline' `
+            ($applied -like 'OK|*') $applied
+
+        # 1. THE STRUCTURE PRODUCTION HANDED BACK IS COHERENT, read again here
+        #    rather than trusted from inside the fixture.
+        $report = [string]$Excel.Run('PCCM_StructuralReport')
+        $null = Add-Check $list 'PCCM_StructuralReport is blank after fixture establishment' `
+            ([string]::IsNullOrWhiteSpace($report)) $report
+
+        # 2. EVERY DRIVER ROW IS KEYED, WITH THE IDENTIFIER THE CORPUS NAMES.
+        #    This is the exact condition Run 5 violated: row 1 of tblCostLines
+        #    held data and carried no key.
+        foreach ($pair in @(
+            @{ key = 'cost_lines';    drivers = @($golden.model.cost_lines) },
+            @{ key = 'risk_register'; drivers = @($golden.model.risks) })) {
+            $register = $null
+            foreach ($candidate in @($Manifest.registers)) {
+                if ($candidate.key -eq $pair.key) { $register = $candidate }
+            }
+            $expected = @($pair.drivers | ForEach-Object { [string]$_.permanent_id })
+            $ids = @(Get-IdColumnValues -Workbook $Workbook -Info $register)
+            $null = Add-Check $list `
+                ([string]$register.table_name + ' carries exactly the emitted identifiers, in order') `
+                (($ids.Count -eq $expected.Count) -and `
+                 ((($ids | ForEach-Object { [string]$_ }) -join '|') -ceq ($expected -join '|'))) `
+                ("issued: " + ($ids -join ', ') + "; emitted: " + ($expected -join ', '))
+            # AND NO ROW HOLDS DATA WITHOUT ONE. The harness-side mirror of
+            # production's own orphan predicate, asserted rather than thrown, so
+            # the checklist carries the evidence.
+            $orphans = @()
+            $body = @(Get-TableBody -Workbook $Workbook -SheetName $register.sheet `
+                -TableName $register.table_name)
+            for ($row = 0; $row -lt $body.Count; $row++) {
+                $cells = @($body[$row])
+                if (-not [string]::IsNullOrWhiteSpace([string]$cells[0])) { continue }
+                for ($column = 1; $column -lt $cells.Count; $column++) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$cells[$column])) {
+                        $orphans += [string]($row + 1)
+                        break
+                    }
+                }
+            }
+            $null = Add-Check $list `
+                ('no row of ' + [string]$register.table_name + ' holds data without a key') `
+                ($orphans.Count -eq 0) ("unkeyed data in row(s): " + ($orphans -join ', '))
+        }
+
+        # 3. THE CONFIG MASTER AND THE INFLATION GRID AGREE. Their disagreement
+        #    is the state step D creates and step E closes, and it is what made
+        #    every Run-5 Add refuse. If the order ever regresses, this is the
+        #    check that names the reason rather than the symptom.
+        $master = $Inspection.input_tables.inflation_profiles
+        $declared = @()
+        foreach ($row in @(Get-TableBody -Workbook $Workbook -SheetName $master.sheet `
+                -TableName $master.table_name)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$row[0])) { $declared += [string]$row[0] }
+        }
+        $grid = $null
+        foreach ($candidate in @($Manifest.grids)) { if ($candidate.key -eq 'inflation') { $grid = $candidate } }
+        $gridRows = @()
+        foreach ($row in @(Get-TableBody -Workbook $Workbook -SheetName $grid.sheet `
+                -TableName $grid.table_name)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$row[0])) { $gridRows += [string]$row[0] }
+        }
+        $emittedProfiles = @($golden.model.inflation.PSObject.Properties.Name |
+            ForEach-Object { [string]$_ })
+        $null = Add-Check $list 'the Config profile master holds exactly the emitted profiles' `
+            ((@($declared | Sort-Object) -join '|') -ceq (@($emittedProfiles | Sort-Object) -join '|')) `
+            ("master: " + ($declared -join ', ') + "; emitted: " + ($emittedProfiles -join ', '))
+        $null = Add-Check $list `
+            'SyncProfileRows rebuilt tblInflation to agree with the master, so no Add can be refused for it' `
+            ((@($gridRows | Sort-Object) -join '|') -ceq (@($declared | Sort-Object) -join '|')) `
+            ("grid: " + ($gridRows -join ', ') + "; master: " + ($declared -join ', '))
+
+        # 4. AND THE BASELINE IS USABLE. A fixture that establishes a coherent
+        #    but uncalculable workbook has not established anything.
+        #
+        #    THIS CHECK DOES NOT DIAGNOSE. Checks 1 to 3 are claims about what
+        #    the harness did; this one can fail for a production reason instead,
+        #    and the gate below is worded so that it reports what was observed
+        #    rather than deciding whose fault it is. The attempt detail is
+        #    carried into the checklist so the distinction can be made from the
+        #    evidence.
+        $Excel.Run('PCCM_Calculate') | Out-Null
+        $null = Add-Check $list 'the self-proof fixture calculates successfully' `
+            ([string]$Excel.Run('PCCM_CalculationAttemptResult') -eq 'SUCCESS') `
+            ([string]$Excel.Run('PCCM_CalculationAttemptDetail'))
+
+        $fixtureOk = Test-ChecklistOk $list
+        Add-Phase5Result 'P5-FIX' `
+            'Fixture establishment proves itself: production keyed every driver row before any data was written' `
+            $(if ($fixtureOk) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
+        if (-not $fixtureOk) {
+            # A FAIL, never a SKIP, and the same shape as P5-FX. Every scenario
+            # below establishes a fixture; if establishment is broken, their
+            # results would all be restatements of this one failure attributed to
+            # predicates that were never reached. Returning here leaves the
+            # caller's shutdown, Y, Z, P5-LDG and P5-FIN untouched, so the
+            # lifecycle evidence is still produced.
+            Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `
+                ('not attempted: the fixture self-proof did not hold, so the baseline ' +
+                 'every scenario below builds on is unproven and each of them would ' +
+                 'report this one failure as its own predicate failing. The P5-FIX ' +
+                 'checklist carries which claim failed: checks 1 to 3 are claims about ' +
+                 'the harness, check 4 can fail for a production reason instead')
+            return
+        }
+    } catch {
+        Add-Phase5Result 'P5-FIX' 'Fixture establishment self-proof' 'FAIL' (Format-Phase5Err $_)
+        Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `
+            'not attempted: Gate-B fixture establishment failed on the golden plan case'
+        return
     }
 
     # -------------------------------------------------------------------
