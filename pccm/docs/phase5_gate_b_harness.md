@@ -2804,7 +2804,7 @@ fifteen grandfathered declarations. Its stated authority was:
 | | |
 |---|---|
 | `A1` | **PASS** — `PCCM_AutomationBegin` is callable |
-| `P5-M` | **PASS** — six API procedures callable, fifteen modules present |
+| `P5-M` | **PASS** — fifteen modules present, and six API procedures *reported* callable under the evidence model P5-M then had. One of the six, `PCCM_Calculate`, had never crossed `Application.Run`; that borrowed claim was removed in the review of ae52bdd, and P5-M now proves **six declared, five callable** |
 | `P5-FIX` | **FAIL** — `PCCM_Calculate` → VBE compile error |
 
 VBA compiles on demand. A project answers an API call while a procedure body
@@ -2923,7 +2923,9 @@ which is exactly what a gate is for.
 
 `A1`'s check label was `PCCM_AutomationBegin is callable (the VBA project
 compiles)`. It is now `PCCM_AutomationBegin is callable` — what it actually
-observes. `P5-M`'s six API callability checks are unchanged and still recorded;
+observes. `P5-M`'s API checks are unchanged by THIS round and still recorded
+(the review of ae52bdd later found that one of its six callability claims was
+itself borrowed, and split them into six declared and five callable);
 what is removed is the conclusion drawn from them. Both files carry the Run-7
 counterexample where the claim used to be, so it cannot be quietly restored, and
 `test_190` asserts no check label in either file claims compilation except
@@ -3070,6 +3072,118 @@ in P5-M has a constant condition — the other shape a hollowed-out check takes.
 Production VBA is **byte-identical to ae52bdd**: the fifteen renames were not
 reopened. `P5-CMP`'s mechanism is unchanged. No builder, spec, oracle or corpus
 change.
+
+### Status
+
+Gate B is **not** accepted. Phase 5 is **not** accepted. No runtime execution is
+requested yet.
+
+**NO WINDOWS/EXCEL RUNTIME WAS EXECUTED DURING THIS CORRECTION ROUND.**
+
+## Review of d21e1d7: which VBProject did command 578 compile?
+
+Independent review accepted the ae52bdd corrections and rejected d21e1d7 on one
+material blocker plus two evidence-wording overclaims. All three were real.
+
+### Blocker 1 — P5-CMP did not prove which project it compiled
+
+Command 578 is a **VBE** command and it acts on the VBE's **active** project.
+`P5-CMP` read `Enabled` and called `Execute` without ever reading
+`$vbe.ActiveVBProject` or binding it to `$Workbook.VBProject`. So it proved at
+most *"the VBE's active project compiled"*, and a fresh owned Excel instance can
+still carry an add-in, a startup workbook or `PERSONAL.XLSB`, each with its own
+`VBProject`. Gate B may not assume the right one is active.
+
+**The identity gate.** Both projects are now read, and compared, before the
+command is touched at all:
+
+```powershell
+$targetProject = $Workbook.VBProject      # checked: must be readable
+$activeProject = $vbe.ActiveVBProject     # checked: must be readable
+
+$targetFull = [System.IO.Path]::GetFullPath($targetFile)
+$activeFull = [System.IO.Path]::GetFullPath($activeFile)
+$sameFile   = [string]::Equals($targetFull, $activeFull,
+                  [System.StringComparison]::OrdinalIgnoreCase)
+$targetIsActive = $haveFiles -and $sameFile
+```
+
+**The identity is the file path.** `VBAProject` is the default name every
+project gets, so two unrelated projects routinely share it; a name comparison
+would report identity between them. The Stage-B workbook is saved to a concrete
+`.xlsm` path before this runs, so `FileName` is available and is what
+distinguishes them. `GetFullPath` normalises separators and relative segments,
+and the comparison is case-insensitive because NTFS paths are. No caption is
+read, and both sides must actually name a file — two empty `FileName`s are not
+an identity, which is what `$haveFiles` exists to catch.
+
+The two project **names** are recorded as diagnostic context and are never the
+test.
+
+**Fail closed rather than activate.** A mismatch does not compile something
+else and report PASS. It does not activate the target project either: doing that
+through the VBIDE model is possible, but it is UI manipulation this round has no
+runtime evidence for, and compiling the wrong project is the failure being
+corrected. So a mismatch records a Note naming both projects, leaves
+`$targetIsActive` false — which is itself an `Add-Check`, so the checklist that
+decides the result fails — and never reaches `FindControl`, `Enabled` or
+`Execute`.
+
+That last point matters: a **disabled** Compile command is not evidence either.
+"Nothing left to compile" over somebody else's project says nothing about this
+one, so the `Enabled` reads live on the same guarded branch as the `Execute`.
+
+**COM lifecycle.** Five transients — `$control`, `$bars`, `$activeProject`,
+`$targetProject`, `$vbe` — released in one `finally`, each under its own label,
+each cleared to `$null`. No `VBProject` RCW outlives `P5-CMP`.
+
+`P5-CMP`'s claim is now *the PCCM production VBProject compiled*, not *some
+active VBProject compiled*.
+
+### Blocker 2 — the stale "six API procedures callable" history  <!-- retired-authority: quoted to record what was removed -->
+
+The Run-7 history block still read `P5-M PASS six API procedures callable`. Run 7  <!-- retired-authority: quoted to record what was removed -->
+did print those six PASS lines, but the review of ae52bdd established that one of
+them — `PCCM_Calculate` — had never crossed `Application.Run`. The history now
+records what the harness **reported** and names the claim that was borrowed,
+here and in the VBA-source suite, the harness commentary and this document.
+
+### Blocker 3 — `test_14` claimed six exercises from name presence
+
+`test_14_all_six_api_procedures_are_exercised` searched the scenario source for  <!-- retired-authority: quoted to record what was removed -->
+each API name as a string literal. A name in source is not an exercise. It is now
+`test_14_each_api_procedure_has_the_evidence_the_hierarchy_gives_it`, and it
+asserts the hierarchy: **six declared** (P5-M, against the persisted project),
+**five callable** (P5-M, downstream of `Excel.Run`), **`PCCM_Calculate` executed
+first in P5-FIX** and again across the corpus in P5-AN.
+
+### Mutation controls
+
+| | Mutation | Detectors |
+|---|---|---|
+| M1 | the `ActiveVBProject` read deleted | 2 |
+| M2 | the identity check forced `$true` | 2 |
+| M3 | `Name` compared instead of `FileName` | 2 |
+| M4 | `Execute` hoisted above the identity proof | 2 |
+| M5 | `P5-M PASS six API procedures callable` restored | 2 |  <!-- retired-authority: quoted to record what was removed -->
+| M6 | `test_14` back to the retired name | 2 |
+
+Three of these survived or were weak on the first pass, and two of the three
+exposed defects in the regressions rather than in the harness: the identity test
+checked that `GetFullPath` appeared *near* the comparison instead of pinning the
+comparison's **operands**, and the stale-phrase sweep compared a phrase
+containing `API` against an already-lowercased line, so it matched nothing at
+all. That second one is the same shape as the defect the sweep exists to catch —
+a check that reports clean because it is looking at the wrong thing — and it is
+recorded here rather than quietly fixed.
+
+### Scope
+
+Production VBA is **byte-identical to ae52bdd**: all 13 modules verified by
+digest. The fifteen reserved-identifier renames, `Contribute`, the Run-6
+enumeration correction, P5-M's six-declared/five-callable split, P5-FIX's
+calculation ownership and command ID 578 itself are all untouched apart from
+binding the command to its target project.
 
 ### Status
 

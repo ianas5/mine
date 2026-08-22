@@ -2661,7 +2661,10 @@ VBA_RESERVED_IDENTIFIERS = frozenset({
 # RUNTIME RUN 7 DISPROVED THAT INFERENCE, in a single run of real Excel:
 #
 #     A1     PASS   PCCM_AutomationBegin is callable
-#     P5-M   PASS   six API procedures callable, fifteen modules present
+#     P5-M   PASS   fifteen modules present, and six API procedures REPORTED
+#                   callable under the evidence model P5-M then had. One of the
+#                   six had never crossed Application.Run; P5-M now proves six
+#                   declared and five callable.
 #     ...
 #     P5-FIX FAIL   PCCM_Calculate -> HRESULT 0x800A9C68, and the VBE reported
 #                   "Compile error: Sub or Function not defined" on the call to

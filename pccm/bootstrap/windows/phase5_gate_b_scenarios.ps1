@@ -2724,7 +2724,12 @@ function Invoke-Phase5GateBScenarios {
     # RUNTIME RUN 7. In one session of real Excel:
     #
     #   A1     PASS   PCCM_AutomationBegin is callable
-    #   P5-M   PASS   six API procedures callable, fifteen modules present
+    #   P5-M   PASS   fifteen modules present, and six API procedures reported
+    #                 callable - under the evidence model P5-M had at the time.
+    #                 One of those six, PCCM_Calculate, had never crossed
+    #                 Application.Run; that borrowed claim was removed in the
+    #                 review of ae52bdd. P5-M now proves six DECLARED and five
+    #                 CALLABLE.
     #   P5-FIX FAIL   PCCM_Calculate -> HRESULT 0x800A9C68, and the VBE reported
     #                 "Compile error: Sub or Function not defined" on the call
     #                 to Contribute inside modCalcAnalytical.AccumulateTotals
@@ -2760,45 +2765,141 @@ function Invoke-Phase5GateBScenarios {
     try {
         $list = New-Checklist
         $vbe = $null; $bars = $null; $control = $null
+        $targetProject = $null; $activeProject = $null
+        $targetIsActive = $false; $identity = 'not read'
         try {
             $vbe = $Excel.VBE
             $null = Add-Check $list 'the VBE object model is reachable' ($null -ne $vbe)
+
+            # --- WHICH PROJECT IS THIS COMMAND GOING TO COMPILE? -------------
+            #
+            # REVIEW OF d21e1d7. Command 578 is a VBE command and it acts on the
+            # VBE's ACTIVE project, not on a project the caller names. Reading
+            # Enabled and calling Execute without binding that to the workbook
+            # under test proves only that SOME active project compiled.
+            #
+            # A fresh owned Excel instance is not a guarantee of one project: an
+            # add-in, a startup workbook or PERSONAL.XLSB each carry their own
+            # VBProject, and Gate B may not assume the right one is active.
+            #
+            # NAME IS NOT IDENTITY. "VBAProject" is the default name every
+            # project gets, so two projects routinely share it. The Stage-B
+            # workbook is saved to a concrete .xlsm path before this runs, so
+            # FileName is available and is the identity that distinguishes them.
             if ($null -ne $vbe) {
-                $bars = $vbe.CommandBars
-                $null = Add-Check $list 'the VBE command bars are reachable' ($null -ne $bars)
+                $targetProject = $Workbook.VBProject
+                $null = Add-Check $list 'the Stage-B workbook exposes its VBProject' `
+                    ($null -ne $targetProject)
+                $activeProject = $vbe.ActiveVBProject
+                $null = Add-Check $list 'the VBE reports an active VBProject' `
+                    ($null -ne $activeProject)
             }
-            if ($null -ne $bars) {
-                # BY ID. 578 is Compile VBAProject. FindControl is asked for the
-                # control, and its ABSENCE is a failure of this gate: a missing
-                # control means the project cannot be proved to compile here,
-                # which is not the same as a project that compiles.
-                $control = $bars.FindControl($null, 578)
-                $null = Add-Check $list 'the Compile VBAProject command (ID 578) exists' `
-                    ($null -ne $control)
-            }
-            if ($null -ne $control) {
-                $before = [bool]$control.Enabled
-                Add-Note ('P5-CMP: Compile VBAProject enabled before the attempt: ' +
-                          [string]$before)
-                if ($before) {
-                    # There is something to compile, so compile it. A throw here
-                    # is the compile failure and is reported as one.
-                    $null = $control.Execute()
-                }
-                $after = [bool]$control.Enabled
-                # THE POSITIVE EVIDENCE. Either it was already fully compiled, or
-                # it was compiled just now and the command went quiet.
+            if (($null -ne $targetProject) -and ($null -ne $activeProject)) {
+                # PLAIN DATA, read before anything is released.
+                $targetName = [string]$targetProject.Name
+                $activeName = [string]$activeProject.Name
+                $targetFile = [string]$targetProject.FileName
+                $activeFile = [string]$activeProject.FileName
+                $identity = ('target: ' + $targetName + ' <' + $targetFile + '>; ' +
+                             'active: ' + $activeName + ' <' + $activeFile + '>')
+                Add-Note ('P5-CMP: VBProject identity - ' + $identity)
+
+                # A project that has never been saved has no FileName, and an
+                # empty string would compare equal to another empty string. Both
+                # sides must actually name a file.
+                $haveFiles = (-not [string]::IsNullOrWhiteSpace($targetFile)) -and `
+                             (-not [string]::IsNullOrWhiteSpace($activeFile))
                 $null = Add-Check $list `
-                    'the project is fully compiled: Compile VBAProject is no longer enabled' `
-                    (-not $after) `
-                    ('enabled before ' + [string]$before + ', after ' + [string]$after)
+                    'both VBProjects name a file, so identity is comparable at all' `
+                    $haveFiles $identity
+
+                # WINDOWS FILESYSTEM EQUIVALENCE ONLY. GetFullPath normalises
+                # separators and relative segments; the comparison is
+                # case-insensitive because NTFS paths are. No display caption is
+                # involved and no substring match is accepted.
+                $sameFile = $false
+                if ($haveFiles) {
+                    $targetFull = [System.IO.Path]::GetFullPath($targetFile)
+                    $activeFull = [System.IO.Path]::GetFullPath($activeFile)
+                    $sameFile = [string]::Equals($targetFull, $activeFull,
+                        [System.StringComparison]::OrdinalIgnoreCase)
+                    $identity = ('target: ' + $targetName + ' <' + $targetFull + '>; ' +
+                                 'active: ' + $activeName + ' <' + $activeFull + '>')
+                }
+                $targetIsActive = $haveFiles -and $sameFile
+                $null = Add-Check $list `
+                    'the active VBE project IS the Stage-B workbook project (by file path)' `
+                    $targetIsActive $identity
+                # The names are recorded as CONTEXT, never as the identity test.
+                $null = Add-Check $list `
+                    'the two VBProject names are recorded for diagnosis' `
+                    ($targetName.Length -gt 0) `
+                    ('target name ' + $targetName + ', active name ' + $activeName +
+                     ' (names are context; the file path above is the identity)')
+            }
+
+            # --- AND ONLY NOW THE COMMAND ------------------------------------
+            #
+            # THE GATE IS ON $targetIsActive, ON BOTH BRANCHES. Neither reading
+            # Enabled nor calling Execute may happen against a project this
+            # scenario has not identified, and a Compile command that is already
+            # disabled is not evidence either: a disabled command over somebody
+            # else's project says nothing about this one.
+            #
+            # FAIL CLOSED RATHER THAN ACTIVATE. Making the target project active
+            # through the VBIDE model is possible, but it is UI manipulation this
+            # round has no runtime evidence for, and compiling the wrong project
+            # and reporting PASS is the failure mode being corrected. So a
+            # mismatch is reported precisely and fails.
+            if (-not $targetIsActive) {
+                Add-Note ('P5-CMP: the VBE active project is NOT the PCCM workbook ' +
+                          'project, so the Compile VBAProject command was NOT executed. ' +
+                          'Compiling whatever happened to be active would prove nothing ' +
+                          'about the project under test. ' + $identity)
+            } else {
+                if ($null -ne $vbe) {
+                    $bars = $vbe.CommandBars
+                    $null = Add-Check $list 'the VBE command bars are reachable' ($null -ne $bars)
+                }
+                if ($null -ne $bars) {
+                    # BY ID. 578 is Compile VBAProject. FindControl is asked for
+                    # the control, and its ABSENCE is a failure of this gate: a
+                    # missing control means the project cannot be proved to
+                    # compile here, which is not the same as a project that
+                    # compiles.
+                    $control = $bars.FindControl($null, 578)
+                    $null = Add-Check $list 'the Compile VBAProject command (ID 578) exists' `
+                        ($null -ne $control)
+                }
+                if ($null -ne $control) {
+                    $before = [bool]$control.Enabled
+                    Add-Note ('P5-CMP: Compile VBAProject enabled before the attempt: ' +
+                              [string]$before)
+                    if ($before) {
+                        # There is something to compile, so compile it. A throw
+                        # here is the compile failure and is reported as one.
+                        $null = $control.Execute()
+                    }
+                    $after = [bool]$control.Enabled
+                    # THE POSITIVE EVIDENCE. Either the target project was
+                    # already fully compiled, or it was compiled just now and
+                    # the command went quiet. Both readings are about the target
+                    # project, because the identity gate above is what let this
+                    # branch run at all.
+                    $null = Add-Check $list `
+                        'the project is fully compiled: Compile VBAProject is no longer enabled' `
+                        (-not $after) `
+                        ('enabled before ' + [string]$before + ', after ' + [string]$after +
+                         '; ' + $identity)
+                }
             }
         } finally {
-            if ($null -ne $control) { Release-Transient $control 'CommandBarControl'; $control = $null }
-            if ($null -ne $bars)    { Release-Transient $bars    'CommandBars';       $bars    = $null }
-            if ($null -ne $vbe)     { Release-Transient $vbe     'VBE';               $vbe     = $null }
+            if ($null -ne $control)       { Release-Transient $control       'CommandBarControl'; $control       = $null }
+            if ($null -ne $bars)          { Release-Transient $bars          'CommandBars';       $bars          = $null }
+            if ($null -ne $activeProject) { Release-Transient $activeProject 'VBProject(active)'; $activeProject = $null }
+            if ($null -ne $targetProject) { Release-Transient $targetProject 'VBProject(target)'; $targetProject = $null }
+            if ($null -ne $vbe)           { Release-Transient $vbe           'VBE';               $vbe           = $null }
         }
-
         $compileOk = Test-ChecklistOk $list
         Add-Phase5Result 'P5-CMP' `
             'Whole VBA project compiled through the VBE Compile command (ID 578)' `
@@ -3226,7 +3327,7 @@ function Invoke-Phase5GateBScenarios {
     #
     # IT USED TO SAY A1 DID THAT. Scenario A1 makes the first Application.Run of
     # the run, which proves the automation surface answers and nothing more.
-    # Runtime Run 7 passed A1, passed P5-M's API callability checks, and then met
+    # Runtime Run 7 passed A1, passed P5-M as it then stood, and then met
     # a VBE compile error inside the analytical path - VBA compiles on demand, so
     # a project answers a call while an unreached procedure body still holds a
     # declaration the parser rejects. P5-CMP is the whole-project authority now,

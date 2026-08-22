@@ -406,18 +406,70 @@ def test_13_the_preflight_checks_the_corpus_in_both_directions() -> None:
 # ===========================================================================
 # 4. the six API names, and the six status rows
 # ===========================================================================
-def test_14_all_six_api_procedures_are_exercised() -> None:
+def test_14_each_api_procedure_has_the_evidence_the_hierarchy_gives_it() -> None:
+    """The six API procedures, and what the harness actually establishes for each.
+
+    This test was called `test_14_all_six_api_procedures_are_exercised` and its  # retired-authority
+    body searched the scenario source for each name as a string literal. A name
+    appearing in source is not an exercise, and the review of ae52bdd is exactly
+    about not letting a label outrun its evidence - so the name went with the
+    claim. What replaces it is the hierarchy now in force:
+
+        DECLARED    all six, in the persisted project        (P5-M)
+        CALLABLE    the five read-only ones, via Excel.Run   (P5-M)
+        EXECUTED    PCCM_Calculate, on a valid fixture       (P5-FIX, then P5-AN)
+    """
     source = _executable(SCENARIOS)
-    for name in PHASE5_API:
-        assert f"'{name}'" in source, f"{name} is never invoked by the harness"
     emitted = _emitted()["manifest"]["vba"]["api_procedures"]
     assert sorted(emitted) == sorted(PHASE5_API)
+
     # api_procedures is consumed AS api_procedures, not folded into entry_points.
     assert "$Manifest.vba.api_procedures" in source, (
         "the manifest's api_procedures projection is never read"
     )
     assert "'no API procedure is also an entry point'" in source
     assert "'no API procedure is bound to a button'" in source
+
+    # DECLARED: all six, driven from the manifest list, checked against the
+    # persisted project rather than against the manifest that named them.
+    p5m = source[source.index("Add-Phase5Result 'P5-FX'"):
+                 source.index("Add-Phase5Result 'P5-M'")]
+    assert "foreach ($name in $api) {" in p5m
+    assert "'the API procedure ' + $name + ' is declared in the persisted project'" in p5m
+    assert "($declared -contains $name)" in p5m
+    assert "Get-Phase5ProjectProcedureNames -Workbook $Workbook" in p5m
+
+    # CALLABLE: the five, and only through a real Application.Run.
+    assert "$probe = $Excel.Run($name)" in p5m
+    callable_label = "('the API procedure ' + $name + ' is callable')"
+    assert p5m.count(callable_label) == 1
+    assert p5m.index("$probe = $Excel.Run($name)") < p5m.index(callable_label)
+    # PCCM_Calculate is skipped before that label can be reached. The branch is
+    # bounded by its OWN closing brace, not by the label: everything between the
+    # two belongs to the five, and slicing that far would read their code as the
+    # branch's.
+    branch_at = p5m.index("if ($name -eq 'PCCM_Calculate') {")
+    branch = p5m[branch_at:p5m.index("\n            }", branch_at)]
+    assert "continue" in branch, "the calculation endpoint is not skipped"
+    assert "$callable = $true" not in branch, (
+        "the calculation endpoint is marked callable inside the branch that skips it"
+    )
+    assert "Add-Check" not in branch, "the skipping branch emits a check of its own"
+    assert branch_at < p5m.index(callable_label), (
+        "the skip does not precede the callability label it must avoid"
+    )
+
+    # EXECUTED: PCCM_Calculate, first in P5-FIX, then across the corpus in P5-AN.
+    driver = source[source.index("function Invoke-Phase5GateBScenarios"):]
+    runs = [m.start() for m in re.finditer(r"\$Excel\.Run\('PCCM_Calculate'\)", driver)]
+    assert len(runs) >= 2, f"PCCM_Calculate is executed {len(runs)} time(s)"
+    assert runs[0] < driver.index("Add-Phase5Result 'P5-FIX'") < runs[1], (
+        "the first PCCM_Calculate is not P5-FIX's"
+    )
+    assert runs[1] < driver.index("Add-Phase5Result 'P5-AN'")
+    # And the other five are never executed for their own sake anywhere else -
+    # they are read-only probes, which is why callability is safe for them.
+    assert "$Excel.Run('PCCM_Calculate')" not in p5m
 
 
 def test_15_all_six_status_rows_exist_and_assert_all_four_accessors() -> None:
@@ -547,7 +599,7 @@ def test_22_the_diagnostic_import_happens_only_after_the_compile_proof() -> None
 
     A1 is the first `Application.Run` boundary and nothing more. It used to be
     described here as the first VBA COMPILATION boundary; Runtime Run 7 passed
-    A1, passed P5-M's API callability checks, and then met a VBE compile error
+    A1, passed P5-M as it then stood, and then met a VBE compile error
     in the analytical path, so that description was retired. P5-CMP owns the
     whole-project compile claim, and the diagnostic import must follow IT.
     """
@@ -7578,10 +7630,25 @@ def test_187_the_compile_gate_addresses_the_command_by_id_and_proves_it_exists()
     assert "(-not $after)" in block, (
         "the gate never checks that the project is fully compiled afterwards"
     )
-    # VBProject access is COM: every transient is released.
-    for handle in ("'CommandBarControl'", "'CommandBars'", "'VBE'"):
-        assert f"Release-Transient" in block and handle in block, handle
-    assert block.count("Release-Transient") == 3
+    # VBProject access is COM: every transient is released, including the two
+    # project handles the target-project identity gate opens. Each release is
+    # matched as a whole statement - variable AND label - so a handle released
+    # under the wrong label, or a label with no release, is caught.
+    flat = re.sub(r"[ \t]+", " ", block)   # the releases are column-aligned
+    for variable, label in (("$control", "CommandBarControl"),
+                            ("$bars", "CommandBars"),
+                            ("$activeProject", "VBProject(active)"),
+                            ("$targetProject", "VBProject(target)"),
+                            ("$vbe", "VBE")):
+        assert f"Release-Transient {variable} '{label}'" in flat, (
+            f"{variable} is not released as '{label}'"
+        )
+    assert block.count("Release-Transient") == 5, block.count("Release-Transient")
+    # And they are all in the same finally, so no path can skip one.
+    finally_at = block.rindex("} finally {")
+    assert block.count("Release-Transient", finally_at) == 5, (
+        "a release happens outside the finally that guarantees it"
+    )
 
 
 def test_188_the_compile_gate_fails_closed_and_destroys_no_evidence() -> None:
@@ -7656,6 +7723,20 @@ def test_190_a1_and_p5_m_claim_only_what_they_observe() -> None:
     )
     assert "runtime execution is deferred to P5-FIX" in scenarios, (
         "P5-M does not record that PCCM_Calculate's execution is deferred"
+    )
+    # AND THE RUN-7 HISTORY LINE DISTINGUISHES REPORT FROM PROOF. A per-line
+    # claim, deliberately not the file-wide phrase sweep test_201 runs: the line
+    # that remembers Run 7 may not assert callability as fact, because one of
+    # the six claims it is remembering was borrowed evidence.
+    history_line = next(line for line in scenarios.splitlines()
+                        if "#   P5-M   PASS" in line)
+    assert "reported" in history_line, (
+        "the P5-M history line states callability as fact rather than as what "
+        f"the then-current harness reported: {history_line.strip()!r}"
+    )
+    assert "procedures callable" not in history_line, history_line.strip()
+    assert scenarios.count("#   P5-M   PASS") == 1, (
+        "the Run-7 P5-M history is told more than once"
     )
     # No check label anywhere in either file claims compilation except P5-CMP's.
     for text in (_executable(HARNESS), _executable(SCENARIOS)):
@@ -7964,3 +8045,247 @@ def test_196_r10_r11_p5_fix_is_the_first_valid_fixture_calculate() -> None:
     # Nothing earlier in the run touches it.
     assert driver.index("Add-Phase5Result 'P5-M'") < calls[0]
     assert driver.index("Add-Phase5Result 'P5-CMP'") < calls[0]
+
+
+# ===========================================================================
+# 27. REVIEW OF d21e1d7: which VBProject did command 578 compile?
+# ===========================================================================
+# Command 578 is a VBE command and it acts on the VBE's ACTIVE project. Reading
+# Enabled and calling Execute without binding that to the workbook under test
+# proves "some active project compiled" - and a fresh owned Excel instance can
+# still carry an add-in, a startup workbook or PERSONAL.XLSB, each with its own
+# VBProject. Gate B may not assume the right one is active.
+def test_197_r1_r2_r3_the_gate_binds_the_command_to_the_workbook_project() -> None:
+    """R1, R2, R3. Both projects are read, and compared, BEFORE the command."""
+    block = _compile_gate()
+    # R1 and R2: both handles are obtained.
+    assert "$targetProject = $Workbook.VBProject" in block, (
+        "the gate never reads the Stage-B workbook's own VBProject"
+    )
+    assert "$activeProject = $vbe.ActiveVBProject" in block, (
+        "the gate never reads the project the VBE command will actually act on"
+    )
+    # Each read is checked, so an unreadable project fails rather than passing
+    # through as $null.
+    assert "'the Stage-B workbook exposes its VBProject'" in block
+    assert "'the VBE reports an active VBProject'" in block
+
+    # R3: the identity comparison precedes the command entirely - not just the
+    # Execute, but FindControl and the Enabled read too.
+    identity_at = block.index("$targetIsActive =")
+    for later in ("FindControl", "$control.Enabled", "$control.Execute()"):
+        assert identity_at < block.index(later), (
+            f"{later} is reached before the target-project identity is established"
+        )
+    assert "'the active VBE project IS the Stage-B workbook project (by file path)'" in block
+
+
+def test_198_r4_identity_is_the_file_path_not_the_project_name() -> None:
+    """R4. `VBAProject` is the default name every project gets."""
+    block = _compile_gate()
+    assert "$targetFile = [string]$targetProject.FileName" in block
+    assert "$activeFile = [string]$activeProject.FileName" in block
+    # Normalised for Windows filesystem equivalence, and ONLY for that.
+    assert "[System.IO.Path]::GetFullPath($targetFile)" in block
+    assert "[System.IO.Path]::GetFullPath($activeFile)" in block
+    assert "[System.StringComparison]::OrdinalIgnoreCase" in block, (
+        "the path comparison is case-sensitive; NTFS paths are not"
+    )
+    # THE OPERANDS ARE THE PATHS. Checking that GetFullPath appears somewhere
+    # nearby is not enough: the comparison itself could still be handed the
+    # names while the path lines sit unused above it.
+    comparison = re.search(
+        r"\$sameFile = \[string\]::Equals\(([^,]+), ([^,]+),", block)
+    assert comparison, "the identity comparison is not a [string]::Equals"
+    assert comparison.group(1).strip() == "$targetFull", comparison.group(1)
+    assert comparison.group(2).strip() == "$activeFull", comparison.group(2)
+    # And $targetFull / $activeFull are the NORMALISED FILE PATHS, nothing else.
+    assert "$targetFull = [System.IO.Path]::GetFullPath($targetFile)" in block
+    assert "$activeFull = [System.IO.Path]::GetFullPath($activeFile)" in block
+    # THE NAMES ARE CONTEXT, NEVER THE TEST.
+    assert "$targetIsActive = $haveFiles -and $sameFile" in block, (
+        "the identity decision is not the path comparison"
+    )
+    assert "$targetIsActive = $true" not in block, (
+        "the identity decision is hard-coded true"
+    )
+    # An unsaved project has no FileName, and two empty strings are not an
+    # identity: both sides must actually name a file.
+    assert "$haveFiles = (-not [string]::IsNullOrWhiteSpace($targetFile)) -and `" in block
+    assert "'both VBProjects name a file, so identity is comparable at all'" in block
+    # No caption, no substring, no display text anywhere in the decision.
+    for forbidden in (".Caption", "-like", "-match", "Contains("):
+        assert forbidden not in block, f"the identity gate uses {forbidden}"
+
+
+def test_199_r5_r6_r7_a_mismatched_active_project_is_a_fail_and_no_compile() -> None:
+    """R5, R6, R7. Wrong project: no Execute, no PASS, and a reason."""
+    block = _compile_gate()
+    # R6: Execute is inside the branch the identity gate guards.
+    guard = block.index("if (-not $targetIsActive) {")
+    else_at = block.index("} else {", guard)
+    mismatch = block[guard:else_at]
+    matched = block[else_at:]
+    assert "$control.Execute()" in matched, "the compile never happens on the good path"
+    assert "$control.Execute()" not in mismatch, (
+        "the gate compiles a project it has not identified"
+    )
+    assert "FindControl" not in mismatch, (
+        "the gate even looks the command up before knowing whose project it is"
+    )
+    # THE ACTIVE PROJECT IS READ FROM THE VBE, NOT ALIASED TO THE TARGET.
+    # Aliasing would make the comparison compare a thing with itself, which
+    # passes always and proves nothing.
+    assert "$activeProject = $vbe.ActiveVBProject" in block
+    for alias in ("$activeProject = $targetProject", "$targetProject = $activeProject"):
+        assert alias not in block, f"the two projects are aliased ({alias})"
+    # And the decision cannot be short-circuited to a constant.
+    for constant in ("$targetIsActive = $true", "$targetIsActive = $True",
+                     "$sameFile = $true", "$haveFiles = $true"):
+        assert constant not in block, f"the identity gate is hard-coded ({constant})"
+    # NOR DECIDED ON THE NAMES. `VBAProject` is the default name every project
+    # gets, so a name comparison would report identity between two unrelated
+    # projects. The names may be REPORTED; they may not be compared.
+    for named in ("[string]::Equals($targetName", "[string]::Equals($activeName",
+                  "$targetName -eq $activeName", "$activeName -eq $targetName",
+                  "$sameFile = [string]::Equals($targetName"):
+        assert named not in block, (
+            f"the identity gate decides on the project NAME ({named})"
+        )
+    decision_line = next(line for line in block.splitlines()
+                         if "$sameFile = [string]::Equals" in line)
+    assert "Name" not in decision_line, decision_line
+
+    # R5: the mismatch cannot be a PASS. `$targetIsActive` is itself an
+    # Add-Check, so a false one fails the checklist that decides the result.
+    assert "$null = Add-Check $list `\n                    'the active VBE project IS the Stage-B workbook project (by file path)' `\n                    $targetIsActive" in _text(SCENARIOS), (
+        "the identity is not itself a recorded check, so a mismatch could pass"
+    )
+    assert "$compileOk = Test-ChecklistOk $list" in _executable(SCENARIOS)
+    # And the mismatch says WHY, rather than failing silently.
+    assert "is NOT the PCCM workbook" in mismatch
+    assert "was NOT executed" in mismatch
+
+    # R7: a DISABLED command is not evidence either, unless the identity held -
+    # the Enabled read is on the same guarded branch as the Execute.
+    assert "$before = [bool]$control.Enabled" in matched
+    assert "$before = [bool]$control.Enabled" not in mismatch
+    assert "$after = [bool]$control.Enabled" in matched
+    assert "$after = [bool]$control.Enabled" not in mismatch
+
+
+def test_200_r8_every_new_com_reference_is_released_on_every_path() -> None:
+    """R8. A VBProject RCW may not outlive P5-CMP."""
+    block = _compile_gate()
+    flat = re.sub(r"[ \t]+", " ", block)
+    for variable, label in (("$targetProject", "VBProject(target)"),
+                            ("$activeProject", "VBProject(active)")):
+        assert f"Release-Transient {variable} '{label}'" in flat, variable
+        assert f"{variable} = $null }}" in flat, f"{variable} is not cleared after release"
+    # One finally, five releases, and nothing released anywhere else.
+    finally_at = block.rindex("} finally {")
+    assert block.count("Release-Transient") == 5
+    assert block.count("Release-Transient", finally_at) == 5
+    # The handles are declared before the try, so the finally can always see them.
+    scenarios = _executable(SCENARIOS)
+    declaration = "$targetProject = $null; $activeProject = $null"
+    assert declaration in scenarios
+    assert scenarios.index(declaration) < scenarios.index("$targetProject = $Workbook.VBProject")
+
+
+def test_201_r12_the_p5m_history_is_stated_precisely() -> None:
+    """R12. Run 7 reported six PASS lines; one of them was borrowed evidence.
+
+    The historical fact that P5-M printed PASS may stay. The conclusion drawn
+    from it may not, and "six API procedures callable" states the conclusion.  # retired-authority
+    """
+    # ASSEMBLED, not written out. A phrase list that bans a phrase and then
+    # spells it would find itself - the codebase's established idiom for a
+    # self-matching sweep.
+    six = "six "  # retired-authority
+    stale = (six + "API procedures callable", six + "APIs callable",  # retired-authority
+             six + "callable APIs", "all " + six + "are callable",  # retired-authority
+             "all " + six + "api procedures are exercised")  # retired-authority
+    # ALSO THE UNDERSCORED FORM, so a test or function NAME making the claim is
+    # swept by the same rule as prose.
+    stale = stale + tuple(phrase.replace(" ", "_") for phrase in stale)
+    # BOTH SIDES LOWERCASED. The first version of this sweep compared a phrase
+    # containing "API" against `line.lower()`, so it matched nothing at all and
+    # reported a clean file while the claim sat in it. That is the same shape as
+    # the defect the sweep exists to catch, one level up.
+    offenders: list[str] = []
+    for path in _authority_scan_files():
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            lowered = line.lower()
+            for phrase in stale:
+                if phrase.lower() in lowered and AUTHORITY_EXEMPTION_MARKER not in line:
+                    offenders.append(f"{path.relative_to(PCCM_ROOT)}:{number}: {phrase!r}")
+    assert not offenders, (
+        "an unqualified six-callable claim survives:\n  " + "\n  ".join(offenders))
+    # AND THE HISTORY BLOCK ITSELF, positively. A sweep for banned phrases
+    # passes on a file that simply deleted the history; this requires the
+    # correction to be stated where the history is told.
+    scenarios = _text(SCENARIOS)
+    history = scenarios[scenarios.index("#   P5-M   PASS"):]
+    history = history[:900]
+    for required in ("under the evidence model", "had never crossed",
+                     "six DECLARED and five", "PCCM_Calculate"):
+        assert required in history, (
+            f"the Run-7 P5-M history does not say {required!r}"
+        )
+
+    # And where the history IS recorded, it is recorded precisely.
+    assert "reported" in scenarios[scenarios.index("P5-M   PASS"):
+                                   scenarios.index("P5-M   PASS") + 400], (
+        "the Run-7 history does not distinguish what P5-M reported from what was proved"
+    )
+    assert "had never crossed" in scenarios, (
+        "the borrowed claim is not identified where the history is told"
+    )
+
+
+def test_202_r13_r14_the_evidence_hierarchy_is_what_the_tests_assert() -> None:
+    """R13 and R14. No test claims an exercise it has not looked for."""
+    own = Path(__file__).read_text()
+    retired = "def " + "test_14_all_six_api_procedures" + "_are_exercised"
+    assert retired not in own, (
+        "the test that claimed six exercises from name presence is back"
+    )
+    assert "def test_14_each_api_procedure_has_the_evidence_the_hierarchy_gives_it" in own
+    # No test NAME anywhere in this suite claims an exercise of all six.
+    for name in re.findall(r"^def (test_\w+)", own, re.M):
+        assert not ("six" in name and "exercis" in name), name
+    # The hierarchy itself, restated once here so a future edit to P5-M has to
+    # come past this too.
+    source = _executable(SCENARIOS)
+    p5m = source[source.index("Add-Phase5Result 'P5-FX'"):
+                 source.index("Add-Phase5Result 'P5-M'")]
+    assert "is declared in the persisted project'" in p5m       # six
+    assert p5m.count("('the API procedure ' + $name + ' is callable')") == 1   # five
+    driver = source[source.index("function Invoke-Phase5GateBScenarios"):]
+    first_calculate = driver.index("$Excel.Run('PCCM_Calculate')")
+    assert driver.index("Add-Phase5Result 'P5-M'") < first_calculate, (
+        "PCCM_Calculate runs before P5-M, so P5-M could have claimed it"
+    )
+    assert first_calculate < driver.index("Add-Phase5Result 'P5-FIX'")
+
+
+def test_203_r15_the_compile_gate_failure_still_reaches_the_lifecycle() -> None:
+    """R15, restated after the identity gate was added."""
+    scenarios = _executable(SCENARIOS)
+    whole = scenarios[scenarios.index("function Invoke-Phase5GateBScenarios"):]
+    section = whole[:whole.index("Save-Phase5LockedFxSeed")]
+    gate_tail = section[section.index("$vbe = $Excel.VBE"):]
+    for fatal in ("exit 1", "exit(", "throw", "[Environment]::Exit"):
+        assert fatal not in gate_tail, f"the compile gate {fatal}s"
+    assert "'SKIP'" not in gate_tail
+    assert section.count("Add-Phase5Result 'P5-CMP'") == 2
+    assert "Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL'" in section
+    harness = _executable(HARNESS)
+    order = [harness.index(token) for token in (
+        "Invoke-Phase5GateBScenarios -Excel",
+        "Add-Result 'Z' 'Excel closed naturally",
+        "$transient = @(Get-TransientFailures)",
+        "Add-Phase5LedgerIntegrityResult",
+        "Add-Phase4FinalCompletenessResult -Results $results")]
+    assert order == sorted(order)
