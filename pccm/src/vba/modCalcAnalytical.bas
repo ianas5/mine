@@ -44,10 +44,12 @@ Private Const ANNUAL_FACTOR_COUNT As Long = 5
 ' One per-driver audit record.
 '
 ' Fields that do not apply to a kind are NOT reused and NOT zeroed to mean
-' something: IsRisk decides which half of the record is meaningful. A cost line
-' owns Central, Deterministic*, MeanBasis* and Shift*; a risk owns
-' ExpectedRisk*. Reading the other half is a caller error, exactly as reading a
-' blank _Calc cell would be.
+' something. The record has three parts; IsRisk decides only the last two:
+'   SHARED     PermanentId, IsRisk, CentralBasis, MeanValue, Knom, Kpv.
+'   COST LINE  Central, Deterministic*, MeanBasis*, Shift*.
+'   RISK       ExpectedRisk*.
+' CentralBasis is the DISTRIBUTION's label, declared for both kinds; reading
+' the other kind's half is a caller error, as a blank _Calc cell is.
 Public Type DriverAudit
     PermanentId As String
     IsRisk As Boolean
@@ -226,18 +228,32 @@ Private Function DistributionMean(ByVal distKind As Long, ByVal minimum As Doubl
     End Select
 End Function
 
+Private Function CentralBasisOf(ByVal distKind As Long, ByRef basis As String) As Boolean
+    ' THE CENTRAL BASIS LABEL, FROM THE DISTRIBUTION AND NOTHING ELSE. Shared
+    ' audit metadata, applies_to ["cost_line", "risk"]: a Risk has no central
+    ' value but still has a distribution. AN UNKNOWN KIND IS REFUSED.
+    Select Case distKind
+    Case DIST_UNIFORM
+        basis = CENTRAL_BASIS_MIDPOINT
+    Case DIST_TRIANGULAR, DIST_BETA_PERT
+        basis = CENTRAL_BASIS_ML
+    Case Else
+        Exit Function
+    End Select
+    CentralBasisOf = True
+End Function
+
 Public Function DeterministicCentral(ByVal distKind As Long, ByVal minimum As Double, _
                                      ByVal mostLikely As Double, ByVal maximum As Double, _
                                      ByRef result As Double, ByRef basis As String) As Boolean
-    ' The DETERMINISTIC central value - risks excluded, and never called a mean.
-    ' Uniform has no Most Likely, so its central value is the midpoint; every
-    ' other accepted distribution centres on Most Likely.
+    ' The DETERMINISTIC central VALUE - risks excluded, never called a mean.
+    ' Uniform has no Most Likely so its central value is the midpoint; every
+    ' other centres on Most Likely. The LABEL comes from CentralBasisOf.
+    If Not CentralBasisOf(distKind, basis) Then Exit Function
     If distKind = DIST_UNIFORM Then
-        basis = CENTRAL_BASIS_MIDPOINT
         DeterministicCentral = UniformMean(minimum, maximum, result)
         Exit Function
     End If
-    basis = CENTRAL_BASIS_ML
     If Not IsUsableDouble(mostLikely) Then Exit Function
     result = mostLikely
     DeterministicCentral = True
@@ -429,11 +445,18 @@ Public Function BuildDriverAudit(ByRef driver As DriverFactors, ByRef audit As D
     driver.MeanValue = mean
     audit.MeanValue = mean
 
+    ' SHARED METADATA, RESOLVED FOR BOTH KINDS ABOVE THE BRANCH.
+    If Not CentralBasisOf(driver.DistKind, basis) Then
+        detail = "central basis"
+        Exit Function
+    End If
+    driver.CentralBasis = basis
+    audit.CentralBasis = basis
+
     If driver.IsRisk Then
-        ' A risk has no deterministic basis at all: the deterministic measures
-        ' are defined over cost lines, and a risk contributes only its expected
-        ' value. Central and CentralBasis stay unset rather than being given a
-        ' zero that would read as a real central value.
+        ' A risk has no deterministic central VALUE: Central, Deterministic*,
+        ' MeanBasis* and the mean shift are cost-line measures and stay unset
+        ' rather than given a zero. CentralBasis is NOT one of them.
         If Not ExpectedRisk(driver.Probability, mean, driver.Knom, _
                             audit.ExpectedRiskNominal) Then
             detail = "expected risk nominal"
@@ -452,10 +475,9 @@ Public Function BuildDriverAudit(ByRef driver As DriverFactors, ByRef audit As D
         detail = "deterministic central value"
         Exit Function
     End If
+    ' The VALUE only; the basis was resolved once, above the branch.
     driver.Central = central
-    driver.CentralBasis = basis
     audit.Central = central
-    audit.CentralBasis = basis
 
     If Not SafeSubtract(mean, central, shift) Then
         detail = "uncertainty mean shift"

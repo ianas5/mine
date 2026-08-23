@@ -2817,6 +2817,49 @@ def test_86_no_production_declaration_introduces_a_reserved_identifier() -> None
     assert "decimalScale" in modules["modCalcFingerprint"].code
 
 
+# The ONLY functions the post-Run-10 P5-ID authority decision licences to move.
+# Everything else in these modules must still reverse to the pre-Run-7 text.
+P5ID_AUTHORISED_FUNCTIONS: dict[str, set[str]] = {
+    # The label is RESOLVED here, once, for both driver kinds.
+    "modCalcAnalytical": {"CentralBasisOf", "DeterministicCentral", "BuildDriverAudit"},
+    # ...and PUBLISHED here, in the Risk branch that used to write Empty.
+    "modCalcReport": {"DriversBlock"},
+}
+
+# Per module, the calculations that must be byte-identical across that change.
+P5ID_MUST_NOT_MOVE: dict[str, tuple[str, ...]] = {
+    "modCalcAnalytical": ("ExpectedRisk", "TriangularMean", "PertMean", "UniformMean",
+                          "DistributionMean", "TripleProduct", "AccumulateTotals",
+                          "Reconcile", "BuildAnnualSeries", "StableConvex",
+                          "Contribute", "SumMeasure", "TotalIdentity"),
+    "modCalcReport": ("AnnualBlock", "FxBlock", "BuildAudits", "BuildAnnual",
+                      "BuildDriverFactors"),
+}
+
+
+def _vba_function_texts(source: str) -> dict[str, str]:
+    """Every Sub/Function in a module, by name, as executable text."""
+    out: dict[str, str] = {}
+    name: str | None = None
+    buffer: list[str] = []
+    for line in source.replace("\r\n", "\n").split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("'"):
+            continue
+        head = re.match(
+            r"^(?:Public |Private |Friend )?(?:Static )?(?:Function|Sub) (\w+)", stripped)
+        if head:
+            name, buffer = head.group(1), []
+        if name is None:
+            continue
+        if stripped:
+            buffer.append(re.sub(r"\s+", " ", stripped))
+        if stripped in ("End Function", "End Sub"):
+            out[name] = "\n".join(buffer)
+            name = None
+    return out
+
+
 def test_86b_every_run_7_rename_is_spelling_and_nothing_else() -> None:
     """The fifteen renames, each REVERSED and diffed against the round's base.
 
@@ -2876,9 +2919,42 @@ def test_86b_every_run_7_rename_is_spelling_and_nothing_else() -> None:
             capture_output=True, text=True, cwd=str(PCCM_ROOT.parent))
         if original.returncode != 0:          # shallow clone or detached history
             continue
-        assert "\n".join(lines) == original.stdout, (
+        reversed_text = "\n".join(lines)
+        if reversed_text == original.stdout:
+            continue
+
+        # THE ONE MODULE THAT HAS LEGITIMATELY MOVED SINCE. The post-Run-10
+        # P5-ID decision authorised Central Basis to be published for Risk, and
+        # that lands in modCalcAnalytical. A byte-equality proof cannot survive
+        # an authorised change - but the proof it was standing in for can: every
+        # function OUTSIDE the authorised set must still reverse to the base
+        # text exactly. That is a strictly narrower licence than "this module
+        # may differ", and it is what says no arithmetic moved with the label.
+        assert module in P5ID_AUTHORISED_FUNCTIONS, (
             f"{module} changed by more than the Run-7 identifier renames"
         )
+        authorised = P5ID_AUTHORISED_FUNCTIONS[module]
+        now = _vba_function_texts(reversed_text)
+        before = _vba_function_texts(original.stdout)
+        moved = {name for name in set(now) & set(before) if now[name] != before[name]}
+        moved |= set(now) ^ set(before)
+        assert moved == authorised, (
+            f"{module}: the P5-ID correction moved {sorted(moved)}, "
+            f"but only {sorted(authorised)} were authorised"
+        )
+        untouched = {name for name in set(now) & set(before) if now[name] == before[name]}
+        assert len(untouched) >= 30, (
+            f"{module}: only {len(untouched)} functions are unchanged; the "
+            "correction was supposed to be confined to the basis label"
+        )
+        # NAMED, not counted. These are the functions that compute the numbers
+        # a Risk contributes and the totals it rolls into; the P5-ID correction
+        # adds a LABEL and must not touch one of them.
+        for arithmetic in P5ID_MUST_NOT_MOVE.get(module, ()):
+            assert arithmetic in untouched, (
+                f"{module}.{arithmetic} moved; the P5-ID correction adds an audit "
+                "label and may not change any calculation"
+            )
     assert checked == 15, checked
 
 
@@ -3329,3 +3405,216 @@ def test_95_callability_is_no_longer_described_as_compilation() -> None:
     assert "RUNTIME RUN 7 DISPROVED THAT INFERENCE" in source, (
         "the retired authority is not recorded as retired"
     )
+
+
+# =====================================================================
+# P5-ID: CENTRAL BASIS APPLIES TO BOTH DRIVER KINDS
+# =====================================================================
+# Runtime Run 10 reported case 9 / R-001.central_basis as actual BLANK against
+# an expected 'ML'. The authority review resolved it after Run 10: the accepted
+# contract's applies_to, the accepted plan's tblCalcDrivers table and the Python
+# oracle all say Central Basis applies to Cost Line AND Risk, so production was
+# the defect.
+#
+# THE SEMANTIC BOUNDARY MATTERS AS MUCH AS THE DECISION. A Risk gains the
+# distribution's LABEL and nothing else: no central value, no deterministic
+# contribution, and expected risk stays Probability x mean severity x factor.
+# These tests hold both halves.
+
+CALC_CONTRACT_PATH = PCCM_ROOT / "spec" / "calc_contract.yaml"
+
+
+def _analytical_text() -> str:
+    return (SRC_VBA / "modCalcAnalytical.bas").read_text(encoding="utf-8")
+
+
+def _drivers_block_halves() -> tuple[str, str]:
+    text = (SRC_VBA / "modCalcReport.bas").read_text(encoding="utf-8")
+    start = text.index("Private Function DriversBlock(")
+    body = text[start:text.index("\nEnd Function", start)]
+    risk_at = body.index("If package.Model.Drivers(index).IsRisk Then")
+    else_at = body.index("\n        Else\n", risk_at)
+    return body[risk_at:else_at], body[else_at:]
+
+
+def test_p5id_01_the_risk_branch_publishes_the_central_basis() -> None:
+    """1. The Risk half of DriversBlock no longer writes Empty."""
+    risk_half, cost_half = _drivers_block_halves()
+    published = "block(row, COL_CALC_DRIVERS_CENTRAL_BASIS) = package.Audits(index).CentralBasis"
+    assert published in risk_half, (
+        "the Risk branch does not publish CentralBasis from the audit record"
+    )
+    assert published in cost_half, "the Cost Line branch stopped publishing CentralBasis"
+    assert "block(row, COL_CALC_DRIVERS_CENTRAL_BASIS) = Empty" not in risk_half, (
+        "the P5-ID defect is back: Central Basis is blanked for Risk"
+    )
+    # It comes from the AUDIT RECORD, not re-derived at the report layer.
+    assert "CentralBasisOf" not in risk_half and "CentralBasisOf" not in cost_half, (
+        "the reporter resolves the label itself instead of publishing the audit's"
+    )
+
+
+def test_p5id_02_build_driver_audit_populates_the_basis_for_a_risk() -> None:
+    """2. Set BEFORE the Risk branch returns, for both kinds, from one authority."""
+    text = _analytical_text()
+    start = text.index("Public Function BuildDriverAudit(")
+    body = text[start:text.index("\nEnd Function", start)]
+    resolve = body.index("If Not CentralBasisOf(driver.DistKind, basis) Then")
+    branch = body.index("If driver.IsRisk Then")
+    assert resolve < branch, (
+        "the basis is resolved after the Risk branch, so a Risk still returns without it"
+    )
+    for assignment in ("driver.CentralBasis = basis", "audit.CentralBasis = basis"):
+        assert assignment in body[resolve:branch], (
+            f"{assignment} does not happen before the Risk branch"
+        )
+        assert body.count(assignment) == 1, (
+            f"{assignment} happens more than once; there is more than one authority"
+        )
+    # A refusal is a refusal, not a blank label.
+    assert 'detail = "central basis"' in body[resolve:branch]
+    # AND THE LABEL IS NOT OBTAINED BY RUNNING THE DETERMINISTIC CALCULATION.
+    assert "DeterministicCentral" not in body[:branch], (
+        "the risk path reaches the deterministic central value to get a label"
+    )
+
+
+def test_p5id_03_the_basis_resolver_is_the_single_authority_and_refuses_unknowns() -> None:
+    """3, 4, 5. Triangular -> ML, Beta-PERT -> ML, Uniform -> Midpoint."""
+    text = _analytical_text()
+    start = text.index("Private Function CentralBasisOf(")
+    body = text[start:text.index("\nEnd Function", start)]
+    assert "Case DIST_UNIFORM" in body
+    assert "basis = CENTRAL_BASIS_MIDPOINT" in body
+    assert "Case DIST_TRIANGULAR, DIST_BETA_PERT" in body
+    assert "basis = CENTRAL_BASIS_ML" in body
+    # Each label appears exactly once in the resolver, so the mapping is a
+    # mapping and not a sequence of overwrites.
+    assert body.count("CENTRAL_BASIS_MIDPOINT") == 1
+    assert body.count("CENTRAL_BASIS_ML") == 1
+    # AN UNKNOWN KIND FAILS. `Case Else` exits without setting the return, so
+    # the caller sees False rather than a default label.
+    assert "Case Else" in body
+    else_at = body.index("Case Else")
+    assert "Exit Function" in body[else_at:body.index("End Select", else_at)], (
+        "an unrecognised distribution is given a default basis"
+    )
+    assert body.index("CentralBasisOf = True") > body.index("End Select"), (
+        "the resolver reports success before it has decided anything"
+    )
+    # ONE AUTHORITY: the labels are set nowhere else in the module.
+    whole = text
+    for label in ("CENTRAL_BASIS_ML", "CENTRAL_BASIS_MIDPOINT"):
+        assignments = re.findall(rf"basis = {label}\b", whole)
+        assert len(assignments) == 1, f"{label} is assigned {len(assignments)} times"
+    assert "DeterministicCentral" in whole
+    deterministic = whole[whole.index("Public Function DeterministicCentral("):]
+    deterministic = deterministic[:deterministic.index("\nEnd Function")]
+    assert "If Not CentralBasisOf(distKind, basis) Then Exit Function" in deterministic, (
+        "DeterministicCentral decides the label itself instead of deferring"
+    )
+
+
+def test_p5id_04_a_risk_gains_a_label_and_nothing_else() -> None:
+    """6, 7. Central Value and every deterministic field stay blank for Risk."""
+    risk_half, _ = _drivers_block_halves()
+    for blank in ("COL_CALC_DRIVERS_CENTRAL_VALUE", "COL_CALC_DRIVERS_QUANTITY",
+                  "COL_CALC_DRIVERS_DETERMINISTIC_NOMINAL",
+                  "COL_CALC_DRIVERS_DETERMINISTIC_PV",
+                  "COL_CALC_DRIVERS_MEAN_BASIS_NOMINAL",
+                  "COL_CALC_DRIVERS_MEAN_BASIS_PV",
+                  "COL_CALC_DRIVERS_UNCERTAINTY_MEAN_SHIFT_NOMINAL",
+                  "COL_CALC_DRIVERS_UNCERTAINTY_MEAN_SHIFT_PV"):
+        assert f"block(row, {blank}) = Empty" in risk_half, (
+            f"{blank} is no longer blank for Risk; the label decision was over-applied"
+        )
+    # And the in-memory record is not given a central value either.
+    text = _analytical_text()
+    start = text.index("Public Function BuildDriverAudit(")
+    body = text[start:text.index("\nEnd Function", start)]
+    branch = body.index("If driver.IsRisk Then")
+    risk_body = body[branch:body.index("If Not DeterministicCentral(", branch)]
+    for forbidden in ("audit.Central =", "driver.Central =", "audit.DeterministicNominal =",
+                      "audit.MeanBasisNominal =", "audit.ShiftNominal ="):
+        assert forbidden not in risk_body, (
+            f"the Risk path now sets {forbidden.strip()}, which it must not"
+        )
+
+
+def test_p5id_05_the_expected_risk_arithmetic_is_untouched() -> None:
+    """8. Probability x mean severity x factor, exactly as before."""
+    text = _analytical_text()
+    start = text.index("Public Function ExpectedRisk(")
+    body = text[start:text.index("\nEnd Function", start)]
+    assert "CentralBasis" not in body and "basis" not in body, (
+        "the expected-risk calculation now mentions the basis label"
+    )
+    # The Risk branch still computes both expected-risk measures from the mean.
+    audit_start = text.index("Public Function BuildDriverAudit(")
+    audit = text[audit_start:text.index("\nEnd Function", audit_start)]
+    branch = audit.index("If driver.IsRisk Then")
+    risk_body = audit[branch:audit.index("If Not DeterministicCentral(", branch)]
+    assert "ExpectedRisk(driver.Probability, mean, driver.Knom, _" in risk_body
+    assert "ExpectedRisk(driver.Probability, mean, driver.Kpv, audit.ExpectedRiskPv)" in risk_body
+    # Executable text only: the branch's COMMENTARY names CentralBasis in order
+    # to say it is not a deterministic field, which is documentation.
+    code = strip_strings(strip_comments(risk_body))
+    assert "CentralBasis" not in code, (
+        "the basis is assigned inside the Risk branch rather than above it for both kinds"
+    )
+
+
+def test_p5id_06_the_emitted_corpus_labels_every_risk_by_its_distribution() -> None:
+    """3, 4, 5 end to end: the mapping, checked against real emitted rows.
+
+    The resolver is static text; this is the same mapping applied to every
+    Risk row the oracle actually emits, so a resolver that agreed with itself
+    but not with the corpus would still be caught.
+    """
+    import json
+
+    cases = json.loads((PCCM_ROOT / "build" / "phase5_cases.json").read_text(encoding="utf-8"))
+    # The names come from the GENERATED constants, so a renamed distribution
+    # cannot silently fall out of this mapping.
+    constants = (PCCM_ROOT / "build" / "vba" / "modConstants.bas").read_text(encoding="utf-8")
+    names = dict(re.findall(r'DISTRIBUTION_NAME_(\d) As String = "([^"]+)"', constants))
+    assert set(names) == {"1", "2", "3"}, names
+    expected_label = {names["1"]: "ML", names["2"]: "ML", names["3"]: "Midpoint"}
+    fixtures = [(f"plan {case['id']}", case) for case in cases["plan_cases"]]
+    fixtures.append(("audit_reconstruction", cases["gate_b"]["audit_reconstruction"]))
+    seen: dict[str, int] = {}
+    problems: list[str] = []
+    for where, fixture in fixtures:
+        for row in (fixture.get("expected") or {}).get("drivers", []):
+            distribution = row.get("distribution")
+            wanted = expected_label.get(distribution)
+            if wanted is None:
+                problems.append(f"{where}: unmapped distribution {distribution!r}")
+                continue
+            if row.get("central_basis") != wanted:
+                problems.append(
+                    f"{where} {row.get('permanent_id')} ({row.get('driver_kind')}, "
+                    f"{distribution}): central_basis {row.get('central_basis')!r}, "
+                    f"expected {wanted!r}")
+            if row.get("driver_kind") == "Risk":
+                seen[distribution] = seen.get(distribution, 0) + 1
+    assert not problems, "the emitted basis labels disagree:\n  " + "\n  ".join(problems)
+    assert seen, "no Risk rows are emitted at all, so the mapping is untested"
+
+
+def test_p5id_07_the_contract_and_the_plan_still_say_both_kinds() -> None:
+    """The authority the correction was made to satisfy, asserted directly."""
+    contract = CALC_CONTRACT_PATH.read_text(encoding="utf-8")
+    entry = contract[contract.index('- key: "central_basis"'):]
+    entry = entry[:entry.index('- key: "currency"')]
+    assert 'applies_to: ["cost_line", "risk"]' in entry, entry
+    assert 'units: "ML / Midpoint"' in entry
+    plan = (PCCM_ROOT / "docs" / "phase5_plan.md").read_text(encoding="utf-8")
+    row = next(line for line in plan.splitlines()
+               if line.strip().startswith("| 4 | Central Basis"))
+    cells = [cell.strip() for cell in row.split("|")]
+    assert cells[6] == "yes" and cells[7] == "yes", row
+    # The same table still says blank where blank is meant, so `yes` is a choice.
+    quantity = next(line for line in plan.splitlines()
+                    if line.strip().startswith("| 8 | Quantity"))
+    assert quantity.split("|")[7].strip() == "**blank**", quantity

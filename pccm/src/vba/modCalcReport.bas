@@ -904,6 +904,13 @@ Private Function DriversBlock(ByRef package As CalculationPackage) As Variant
     ' AN INAPPLICABLE FIELD IS BLANK. Never the in-memory identity 1, and never
     ' zero: a Quantity of 1 shown against a risk would read as a real entry, and
     ' a zero would read as a real amount.
+    '
+    ' WHICH FIELDS ARE INAPPLICABLE IS THE CONTRACT'S DECISION, not this
+    ' function's. calc_contract declares applies_to per column, and Central
+    ' Basis is declared for BOTH kinds - it labels the distribution, not the
+    ' deterministic value. Publishing it blank for a Risk was a defect, found
+    ' by Runtime Run 10 as case 9 / R-001.central_basis actual BLANK against an
+    ' expected 'ML'.
     Dim block() As Variant, index As Long, rows As Long, row As Long
     rows = package.Model.DriverCount
     If rows < 1 Then Exit Function
@@ -921,7 +928,7 @@ Private Function DriversBlock(ByRef package As CalculationPackage) As Variant
         block(row, COL_CALC_DRIVERS_KPV) = package.Audits(index).Kpv
         If package.Model.Drivers(index).IsRisk Then
             block(row, COL_CALC_DRIVERS_DRIVER_KIND) = DRIVER_KIND_RISK
-            block(row, COL_CALC_DRIVERS_CENTRAL_BASIS) = Empty
+            block(row, COL_CALC_DRIVERS_CENTRAL_BASIS) = package.Audits(index).CentralBasis
             block(row, COL_CALC_DRIVERS_QUANTITY) = Empty
             block(row, COL_CALC_DRIVERS_PROBABILITY) = package.Model.Drivers(index).Probability
             block(row, COL_CALC_DRIVERS_CENTRAL_VALUE) = Empty

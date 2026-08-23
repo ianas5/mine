@@ -3595,3 +3595,91 @@ same mismatch had they run.
 `test_227` pins the three-way agreement so the oracle cannot be quietly changed.
 `test_228` bounds production's deviation to exactly one column as a **subset**
 assertion, so a new deviation fails but resolving this one does not.
+
+## P5-ID: RESOLVED AFTER RUN 10 — production defect
+
+The Run-10 observation stands unchanged as history:
+
+> **case 9, `R-001.central_basis`, actual BLANK, expected `ML`.**
+
+The authority review returned a decision: **Central Basis applies to both Cost
+Line and Risk.** Production must conform; the contract, plan and Python oracle
+are retained exactly as they were.
+
+The decisive evidence, all three agreeing and none of them altered:
+
+1. `spec/calc_contract.yaml` — `central_basis` → `applies_to: ["cost_line", "risk"]`
+2. `docs/phase5_plan.md`, tblCalcDrivers — Central Basis: Cost Line `yes`, Risk
+   `yes`; the same table writes **blank** for the fields that really are
+   inapplicable to Risk, including Quantity and Central Value
+3. the Python oracle — Risk drivers carry `central_basis=central_basis_label(kind)`
+
+### The semantic boundary
+
+This does **not** give a Risk a deterministic central value. A Risk gains the
+distribution's label and nothing else:
+
+| | Cost Line | Risk |
+|---|---|---|
+| Central Basis | `ML` / `Midpoint` | `ML` / `Midpoint` |
+| Central Value | populated | **blank** |
+| Deterministic / mean-basis / mean-shift | populated | **blank** |
+| Expected severity | — | distribution mean |
+| Expected risk | — | `Probability × mean severity × factor` |
+
+`Central Basis` is not repurposed to mean the risk mean.
+
+### What changed in production
+
+**`src/vba/modCalcAnalytical.bas`**
+
+- **`CentralBasisOf` (new, `Private`)** — the single distribution-to-basis
+  authority. Uniform → `Midpoint`; Triangular and Beta-PERT → `ML`; **an
+  unknown kind is refused, not defaulted**, because a label for a distribution
+  the resolver does not recognise would be invented audit evidence.
+- **`DeterministicCentral`** — keeps its `basis` out-parameter but no longer
+  decides it; it defers to `CentralBasisOf`.
+- **`BuildDriverAudit`** — resolves the basis **above** the `IsRisk` branch and
+  sets both `driver.CentralBasis` and `audit.CentralBasis` there, so a Risk
+  carries it before its branch returns. The label is deliberately *not* obtained
+  by running the deterministic calculation, which would couple a Risk to a
+  central value it does not have. A failed resolution is `detail = "central
+  basis"`, not a blank label.
+
+**`src/vba/modCalcReport.bas`**
+
+- **`DriversBlock`** — the Risk branch publishes
+  `package.Audits(index).CentralBasis` where it previously wrote `Empty`. Every
+  other Risk-inapplicable field is untouched.
+
+Stale commentary was corrected narrowly: the `DriverAudit` type comment now
+names three parts — shared metadata (including `CentralBasis`), Cost-Line-only
+deterministic fields, Risk-only expected-risk fields — instead of splitting the
+record in two, and the Risk branch comment no longer says a risk has "no
+deterministic basis at all".
+
+### Bounded-diff proof
+
+`modCalcAnalytical`: `CentralBasisOf` added; `DeterministicCentral` and
+`BuildDriverAudit` changed; **31 functions byte-identical**, including
+`ExpectedRisk`, `TriangularMean`, `PertMean`, `UniformMean`, `DistributionMean`,
+`TripleProduct`, `AccumulateTotals`, `Reconcile`, `BuildAnnualSeries`,
+`StableConvex` and `Contribute`.
+
+`modCalcReport`: `DriversBlock` changed; **51 functions byte-identical**.
+
+`test_86b` now enforces this: reversing the Run-7 renames must reproduce the
+base text for every function *outside* the authorised set, and the calculations
+named in `P5ID_MUST_NOT_MOVE` must be among the unchanged.
+
+The module also had to stay under the 1200-raw-line responsibility ceiling that
+`test_05_no_module_is_a_dumping_ground` enforces. The added commentary was
+trimmed to fit rather than the ceiling raised; the module is at 1199 lines.
+
+### The exception is retired
+
+`test_228` previously allowed `risk_deviation <= {"central_basis"}` while the
+question was open. It now requires **zero** applicability deviations in both
+directions. `test_38` in the report suite no longer carries a hand-written list
+of inapplicable fields — that list is what agreed with the defect — and derives
+applicability from `calc_contract.yaml` instead.

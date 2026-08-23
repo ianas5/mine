@@ -9474,17 +9474,15 @@ def test_227_e_the_three_declared_authorities_agree_on_central_basis() -> None:
     assert cost_rows >= 20
 
 
-def test_228_e_production_deviates_on_exactly_one_column_and_no_more() -> None:
-    """E. The blast radius, bounded in the direction that stays useful.
+def test_228_e_production_matches_the_contract_applicability_exactly() -> None:
+    """E. RESOLVED after Run 10: zero deviations, in both directions.
 
-    Production's DriversBlock blanks `central_basis` for Risk. Every OTHER
-    column it blanks is a column the contract already excludes for that kind, so
-    the disagreement is exactly one column wide.
-
-    The assertion is a SUBSET, deliberately. A new deviation fails this test; a
-    RESOLVED central_basis does not, because resolving it is the outcome the
-    authority trace may legitimately reach and this test must not stand in the
-    way of it.
+    This test used to allow one - `risk_deviation <= {"central_basis"}` - while
+    the authority question was open. The decision came back: Central Basis
+    applies to Cost Line AND Risk, per the contract's applies_to, the accepted
+    plan's own column table and the Python oracle. Production was the defect and
+    has been corrected, so the exception is retired and the requirement is now
+    exact agreement.
     """
     applies = _calc_drivers_applies_to()
     risk_blank, cost_blank = _drivers_block_branches()
@@ -9492,16 +9490,20 @@ def test_228_e_production_deviates_on_exactly_one_column_and_no_more() -> None:
     assert cost_blank, "the Cost Line branch of DriversBlock blanks nothing at all"
 
     risk_deviation = {name for name in risk_blank
-                      if "risk" in applies.get(name, []) }
+                      if "risk" in applies.get(name, [])}
     cost_deviation = {name for name in cost_blank
                       if "cost_line" in applies.get(name, [])}
-    assert risk_deviation <= {"central_basis"}, (
-        "production blanks a column the contract says applies to Risk, beyond the "
-        f"one known open item: {sorted(risk_deviation)}"
+    assert not risk_deviation, (
+        "production blanks a column the contract says applies to Risk: "
+        f"{sorted(risk_deviation)}"
     )
     assert not cost_deviation, (
         "production blanks a column the contract says applies to Cost Line: "
         f"{sorted(cost_deviation)}"
+    )
+    # central_basis specifically: it is published for Risk now, not blanked.
+    assert "central_basis" not in risk_blank, (
+        "the P5-ID defect is back: the Risk branch publishes Central Basis blank"
     )
     # AND THE OTHER DIRECTION: production must never publish a column the
     # contract excludes for that kind.
@@ -9515,10 +9517,11 @@ def test_228_e_production_deviates_on_exactly_one_column_and_no_more() -> None:
                 f"the contract excludes {name} for Cost Line but production does not "
                 "blank it"
             )
-    # The open item is recorded where a reader will find it.
+    # The decision is recorded where a reader will find it, as a decision.
     record = (PCCM_ROOT / "docs" / "phase5_gate_b_harness.md").read_text(encoding="utf-8")
-    assert "central_basis" in record, (
-        "the one unresolved Run-10 authority question is not written down"
+    assert "central_basis" in record
+    assert "RESOLVED AFTER RUN 10" in record, (
+        "the record does not mark the P5-ID authority question as decided"
     )
 
 

@@ -167,7 +167,10 @@ RUN7_RENAMES_BY_MODULE: dict[str, dict[str, str]] = {
 SHA256_BEFORE_RUN7_RENAMES: dict[str, str] = {
     "modCalcResolve": "3c67584390516a8a1c811df62d650749f6ef71518c649d7f1bb88dc753a837c1",
     "modCalcFactors": "4909856581ed3ca2a81b13647e1c6e2977f10fcb5a9e4a71cfa6fa36d6e6d308",
-    "modCalcAnalytical": "e234b3adacdb443c8c7b2b5072c311e7622405c3ec2e2987a750d85400299e0d",
+    # Reversing the Run-7 renames on the CURRENT module. The digest moved
+    # once more under the post-Run-10 P5-ID decision; the rename proof
+    # still says the renames are intact and nothing else rides on them.
+    "modCalcAnalytical": "314e83f8e9fe4762114203acb6e7b23e98d75fe464cfee7f0eb1163d6d7f8f95",
     "modCalcFingerprint": "9081dc05bddf052fdcb172a34eed588fef1637b89212b14a515539590e265fcf",}
 
 
@@ -795,23 +798,64 @@ def test_37_the_read_accessors_mutate_nothing() -> None:
 # ===========================================================================
 # 8. the audit blocks
 # ===========================================================================
+def _calc_drivers_applies_to() -> dict[str, list[str]]:
+    """`applies_to` per tblCalcDrivers column, read from the accepted contract."""
+    text = (PCCM_ROOT / "spec" / "calc_contract.yaml").read_text(encoding="utf-8")
+    start = text.rfind("columns:", 0, text.index('- key: "central_basis"'))
+    found: dict[str, list[str]] = {}
+    for name, entry in re.findall(
+            r'- key: "(\w+)"(.*?)(?=\n      - key: "|\Z)', text[start:], re.S):
+        applies = re.search(r"applies_to: \[([^\]]*)\]", entry)
+        if applies and name not in found:
+            found[name] = re.findall(r'"(\w+)"', applies.group(1))
+    return found
+
+
+def _drivers_block_branches() -> tuple[str, str]:
+    """The Risk half and the Cost Line half of DriversBlock."""
+    body = _body(_reporter(), "DriversBlock")
+    risk_at = body.index("If package.Model.Drivers(index).IsRisk Then")
+    else_at = body.index("Else", risk_at)
+    return body[risk_at:else_at], body[else_at:]
+
+
 def test_38_an_inapplicable_driver_field_is_blank() -> None:
     """Never the in-memory identity 1, and never zero.
 
     A Quantity of 1 shown against a risk would read as a real entry; a zero
     would read as a real amount.
+
+    WHICH FIELDS ARE INAPPLICABLE IS THE CONTRACT'S DECISION. This test used to
+    carry its own hand-written list, and that list said Central Basis was
+    inapplicable to Risk while `calc_contract.yaml` said the opposite - so the
+    test agreed with the defect Runtime Run 10 found rather than with the
+    schema. The applicability now comes from the contract, both ways round.
     """
-    module = _reporter()
-    body = _body(module, "DriversBlock")
-    for blanked in ("COL_CALC_DRIVERS_QUANTITY", "COL_CALC_DRIVERS_PROBABILITY",
-                    "COL_CALC_DRIVERS_CENTRAL_VALUE", "COL_CALC_DRIVERS_CENTRAL_BASIS",
-                    "COL_CALC_DRIVERS_DETERMINISTIC_NOMINAL",
-                    "COL_CALC_DRIVERS_MEAN_BASIS_NOMINAL",
-                    "COL_CALC_DRIVERS_UNCERTAINTY_MEAN_SHIFT_NOMINAL",
-                    "COL_CALC_DRIVERS_EXPECTED_RISK_NOMINAL"):
-        assert re.search(rf"block\(row, {blanked}\) = Empty", body), (
-            f"{blanked} is never blanked for the kind it does not apply to"
-        )
+    applies = _calc_drivers_applies_to()
+    assert applies, "the contract's applies_to could not be read"
+    risk_half, cost_half = _drivers_block_branches()
+
+    for column, kinds in applies.items():
+        constant = "COL_CALC_DRIVERS_" + column.upper()
+        blanked = rf"block\(row, {constant}\) = Empty"
+        if "risk" not in kinds:
+            assert re.search(blanked, risk_half), (
+                f"{constant} does not apply to Risk but the Risk branch does not blank it"
+            )
+        else:
+            assert not re.search(blanked, risk_half), (
+                f"{constant} applies to Risk but the Risk branch publishes it blank"
+            )
+        if "cost_line" not in kinds:
+            assert re.search(blanked, cost_half), (
+                f"{constant} does not apply to Cost Line but that branch does not blank it"
+            )
+        else:
+            assert not re.search(blanked, cost_half), (
+                f"{constant} applies to Cost Line but that branch publishes it blank"
+            )
+
+    body = _body(_reporter(), "DriversBlock")
     assert not re.search(r"block\(row, COL_CALC_DRIVERS_\w+\) = 1#", body), (
         "an identity 1 is written into the audit"
     )
@@ -997,7 +1041,16 @@ def test_51_the_accepted_modules_were_not_modified() -> None:
         "modCalcResolve": "0890c612ade1b00b93568bcb32b42121f83bff1ec6647224cccaa59322b15afe",
         "modCalcCheck": "738343945932150470233cb2a0b7e6fea7617db1a877cae8e09d19085e39c43b",
         "modCalcFactors": "701097ab3092a1fdec9ef7168d55f50248df1acf11e2517f0ea3c18fed278128",
-        "modCalcAnalytical": "affea282af14c70ff5bf6dd19fab6e56174c39b0e9cba251495cdf1bfaac39b7",
+        # ITS CURRENT BYTES. Moved ONCE, under the P5-ID authority decision taken
+        # after Runtime Run 10: Central Basis applies to Cost Line AND Risk, per
+        # spec/calc_contract.yaml applies_to, the accepted plan's tblCalcDrivers
+        # table, and the Python oracle. Production published it blank for Risk,
+        # which was the defect. The change is CentralBasisOf (new), and the two
+        # functions that now read it - DeterministicCentral and BuildDriverAudit.
+        # ANALYTICAL_UNCHANGED_BODIES_SHA256 in test_phase5_vba_source.py is what
+        # proves the other thirty-one functions, including every arithmetic one,
+        # did not move with it.
+        "modCalcAnalytical": "79c4f5f32e8a09db2d2300922c9e20ceacbefc44c2aa2e4be95c6bafeca92208",
         # Its CURRENT bytes. Step 7's correction round carried the ONE authorised
         # reopening of this accepted module - CalcFpNumberField became Public so
         # the reporter could reach the accepted N-field framing authority instead
