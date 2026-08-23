@@ -3191,3 +3191,155 @@ Gate B is **not** accepted. Phase 5 is **not** accepted. No runtime execution is
 requested yet.
 
 **NO WINDOWS/EXCEL RUNTIME WAS EXECUTED DURING THIS CORRECTION ROUND.**
+
+## Runtime Run 8: the compiler was never invoked
+
+Run 8 executed once against `1d3f766`, with the full Python suite at 1707/1707,
+Stage-A at 351/351, a clean tree and no pre-existing Excel process. It is valid
+historical evidence and is not to be rerun.
+
+**Result: 39 passed, 2 failed, 0 skipped.** The two failures were `P5-CMP` and
+`P5-ALL`, and `P5-ALL` is `P5-CMP`'s dependency-gate consequence rather than an
+independent root.
+
+### What P5-CMP printed
+
+    PASS   the VBE object model is reachable
+    PASS   the Stage-B workbook exposes its VBProject
+    PASS   the VBE reports an active VBProject
+    PASS   both VBProjects name a file, so identity is comparable at all
+    PASS   the active VBE project IS the Stage-B workbook project (by file path)
+    PASS   the two VBProject names are recorded for diagnosis
+    PASS   the VBE command bars are reachable
+    FAIL   the Compile VBAProject command (ID 578) exists
+
+The chain stopped one link before the compiler. `Execute` was never called, so
+**no compile verdict of any kind is available from Run 8** — not a good one and
+not a bad one. Reading this transcript as "the production project does not
+compile" would be inventing evidence.
+
+### What Run 8 settled
+
+The target-project identity correction, which the previous round could argue for
+but not demonstrate, now has Windows evidence behind it. The transcript recorded:
+
+    target: VBAProject <C:\...\PCCM_stageB.xlsm>
+    active: VBAProject <C:\...\PCCM_stageB.xlsm>
+
+Both projects carry the default name `VBAProject`, which is precisely why the
+comparison is on `FileName`. On this instance the VBE's active project **was**
+the Stage-B workbook project. The whole chain — `Workbook.VBProject` acquisition,
+`VBE.ActiveVBProject` acquisition, `FileName` identity, `GetFullPath`
+normalisation, `OrdinalIgnoreCase` comparison, the fail-closed mismatch branch,
+the Name-as-context-only diagnostic, and the two new COM releases — is frozen,
+and `test_208` pins it statement by statement so a later edit has to come past it.
+
+### The root: `$null` is not an omission
+
+`CommandBars.FindControl(Type, Id, Tag, Visible)` takes four optional arguments.
+VBA omits three of them by name (`FindControl(ID:=578)`); PowerShell has no
+named-argument syntax for a COM method, and the harness wrote:
+
+    $control = $bars.FindControl($null, 578)     <!-- retired-authority -->
+
+Passing `$null` positionally is not the same as omitting an argument. The leading
+hypothesis is that `$null` was marshalled as a real `Type` criterion matching no
+control — which is consistent with the observed null return, but is **a
+hypothesis until the next Windows runtime confirms it**. Notably, ID 578 is not
+implicated: Run 8 proved the call failed, not that the ID is wrong, so the ID is
+unchanged.
+
+The corrected lookup states everything and omits only what VBA omits:
+
+    $msoControlButton = 1                          # MsoControlType
+    $missing = [System.Reflection.Missing]::Value  # a truly omitted argument
+    $control = $bars.FindControl($msoControlButton, 578, $missing, $missing)
+
+### A returned control now proves what it is
+
+A non-null return says the collection handed something back, not that the
+something is Compile VBAProject. Before `Execute` is reachable the control
+answers for itself:
+
+    $controlId = [int]$control.Id
+    $controlType = [int]$control.Type
+    $idOk = ($controlId -eq 578)
+    $typeOk = ($controlType -eq $msoControlButton)
+    $controlProved = ($idOk -and $typeOk)
+
+Both answers are recorded checks, so a wrong `Id` or a wrong `Type` fails P5-CMP
+rather than passing quietly, and `$controlProved` starts `$false` so every
+unproven path leaves `Execute` unreached. `Caption` is deliberately never read,
+not even as diagnostic text: it is localised, and keeping it out of the file
+keeps it out of any future acceptance path.
+
+### The diagnostic probe
+
+If the exact lookup still returns nothing, `FindControls` is called with the same
+explicit criteria and its count recorded. It is an `Add-Note` and never an
+`Add-Check`, it has its own `try/catch` so a failing diagnostic cannot fail the
+gate, it never yields a control to execute, and its collection is released in its
+own `finally`. It reads `.Count` only inside a null guard — Run 6's lesson about
+member access under `Set-StrictMode -Version 2.0`.
+
+### The wording defect Run 8 exposed
+
+`P5-ALL`'s dependency line read *"not attempted: the VBA project does not
+compile"* <!-- retired-authority --> — a diagnosis of the prerequisite, not a
+statement about the gate. Run 8 showed the two coming apart: P5-CMP failed at
+command discovery with the compiler untouched, and the transcript nevertheless
+announced a compile defect.
+
+P5-CMP can fail because VBProject access is denied, the target cannot be
+identified, the VBE or its command bars are unreachable, the command cannot be
+discovered, `Execute` throws, the command stays enabled afterwards, or the
+compiler genuinely objects. **Only the last is a statement about the production
+project.** The line now says the prerequisite was not established, names the
+alternatives without picking one, and sends the reader to the checklist, which is
+what actually knows. `test_207` bans the retired phrase across the subtree;
+`test_210` reads every `P5-ALL` dependency line so a rephrasing of the same
+overclaim is caught too.
+
+### Also preserved from Run 8
+
+Phase-4 final matrix 35/35, `P5-P4` 33/33 before Phase 5, VBE and CommandBars
+access, `P5-LDG` duplicate attempts 0, `Y`, `Z` and `P5-FIN` all PASS,
+`Workbook.Close` True, `Application.Quit` True, natural PID exit True, transient
+releases PASS. No Phase-5 analytical, status or rollback evidence exists, because
+P5-CMP correctly gated it.
+
+### Two defects in this round's own regressions
+
+Both were surfaced by the mutation controls, and both are the same class as the
+thing being corrected, so they are recorded rather than quietly fixed.
+
+**M2 survived with one detector.** `test_204` asserted
+`"$msoControlButton = 1" in block` — which is also true of `= 10`. A substring
+test cannot pin a numeric value, and the constant could have moved to another
+`MsoControlType` with only `test_205` objecting. The assertion now matches the
+digits whole (`\$msoControlButton = (\d+)\b`).
+
+**M6 survived with one detector.** `test_187` asserted that
+`$controlProved = ($idOk -and $typeOk)` appears textually before
+`$control.Execute()`. Hoisting `Execute` back under `if ($null -ne $control)`
+leaves that ordering intact while destroying the guarantee: the assignment sits
+above an `Execute` it no longer controls. The test now reads the branch
+condition itself and requires it to be `$controlProved`.
+
+### Regressions and mutation matrix
+
+| Mutation | Caught by |
+| --- | --- |
+| M1 `FindControl($null, 578)` restored | `test_187`, `test_204` |
+| M2 Type changed to another `MsoControlType` | `test_204`, `test_205` |
+| M3 `Missing` sentinel replaced with `$null` | `test_187`, `test_204` |
+| M4 returned control's `Id` assertion removed | `test_205`, `test_211` |
+| M5 returned control's `Type` assertion removed | `test_205`, `test_211` |
+| M6 `Execute` hoisted above the verification | `test_187`, `test_206` |
+| M7 generic `P5-ALL` compile verdict restored | `test_207`, `test_210` |
+
+R1–R4 are `test_204`; R5 is `test_187` and `test_204`; R6, R7, R10, R11 are
+`test_205`; R8 and R9 are `test_206`; R12 and R13 are `test_207` and `test_210`;
+R14 is `test_208`; R15 is `test_187` and `test_200`; R16 is `test_209`; R17 is
+`test_186` and `test_193`; R18 is `test_189` and `test_203`. `test_211` pins the
+whole evidence chain in order and keeps P5-CMP a single scenario ID.

@@ -7608,23 +7608,42 @@ def test_187_the_compile_gate_addresses_the_command_by_id_and_proves_it_exists()
     a menu command was invoked.
     """
     block = _compile_gate()
-    assert "FindControl($null, 578)" in block, (
-        "the Compile VBAProject command is not addressed by its stable ID"
-    )
     # THE LOOKUP, not the prose. "Compile VBAProject" is fine in a check LABEL;
     # what may never appear is a caption reaching FindControl, or any read of
     # .Caption, because both are localised.
-    lookups = re.findall(r"FindControl\(([^)]*)\)", block)
-    assert lookups == ["$null, 578"], lookups
+    #
+    # RUN 8 retired the old one-argument-plus-$null form: the whole argument
+    # list is now pinned, so neither a reintroduced $null nor a changed Type
+    # can slip through as "still by ID".
+    lookups = re.findall(r"FindControls?\(([^)]*)\)", block)
+    assert lookups == ["$msoControlButton, 578, $missing, $missing"] * 2, lookups
     assert ".Caption" not in block, "the gate reads a localised caption"
     assert "FindControl('" not in block and 'FindControl("' not in block
+    # `$missing` has to BE Missing. Named arguments would omit Tag and Visible;
+    # PowerShell cannot, so the sentinel is the only thing standing between
+    # "omitted" and "supplied as a criterion nothing matches".
+    assert "$missing = [System.Reflection.Missing]::Value" in block, (
+        "the omitted arguments are not omitted with a Missing sentinel"
+    )
     # The control must EXIST, and its absence is a failure of this gate.
     assert "'the Compile VBAProject command (ID 578) exists'" in block
     assert "($null -ne $control)" in block
-    # It is EXECUTED when there is something to compile...
+    # It is EXECUTED when there is something to compile, and only once the
+    # control has said what it is.
     assert "$control.Execute()" in block
     assert "$before = [bool]$control.Enabled" in block
     assert "if ($before) {" in block
+    # AND THE BRANCH IS GUARDED BY THE PROOF, not merely preceded by it. The M6
+    # run showed the difference: swapping the condition back to
+    # `$null -ne $control` leaves the assignment sitting harmlessly above an
+    # Execute it no longer controls, so an ordering assertion sees nothing.
+    guard = re.search(
+        r"if \(([^)]*)\) \{\n\s+\$before = \[bool\]\$control\.Enabled", block)
+    assert guard, "the Enabled read is not inside a guarded branch at all"
+    assert guard.group(1).strip() == "$controlProved", (
+        f"Execute is guarded by {guard.group(1).strip()}, not by the control-identity proof"
+    )
+    assert "$controlProved = ($idOk -and $typeOk)" in block
     # ...and the positive evidence is that the command has gone quiet.
     assert "$after = [bool]$control.Enabled" in block
     assert "(-not $after)" in block, (
@@ -7643,8 +7662,14 @@ def test_187_the_compile_gate_addresses_the_command_by_id_and_proves_it_exists()
         assert f"Release-Transient {variable} '{label}'" in flat, (
             f"{variable} is not released as '{label}'"
         )
-    assert block.count("Release-Transient") == 5, block.count("Release-Transient")
-    # And they are all in the same finally, so no path can skip one.
+    # Six in total: the five above plus the Run-8 diagnostic collection, which
+    # is released in its own finally because it is opened inside one branch.
+    assert block.count("Release-Transient") == 6, block.count("Release-Transient")
+    assert "Release-Transient $probeControls 'CommandBarControls(probe)'" in flat, (
+        "the diagnostic FindControls collection is never released"
+    )
+    # And the five accepted handles are all in the same, last finally, so no
+    # path through the gate can skip one.
     finally_at = block.rindex("} finally {")
     assert block.count("Release-Transient", finally_at) == 5, (
         "a release happens outside the finally that guarantees it"
@@ -8182,10 +8207,14 @@ def test_200_r8_every_new_com_reference_is_released_on_every_path() -> None:
                             ("$activeProject", "VBProject(active)")):
         assert f"Release-Transient {variable} '{label}'" in flat, variable
         assert f"{variable} = $null }}" in flat, f"{variable} is not cleared after release"
-    # One finally, five releases, and nothing released anywhere else.
+    # The five accepted handles are all in the last finally. The sixth release
+    # is the Run-8 diagnostic collection, and it has a finally of its own.
     finally_at = block.rindex("} finally {")
-    assert block.count("Release-Transient") == 5
+    assert block.count("Release-Transient") == 6
     assert block.count("Release-Transient", finally_at) == 5
+    probe = block[block.index("$probeControls = $null"):finally_at]
+    assert "} finally {" in probe, "the diagnostic probe has no finally"
+    assert "Release-Transient $probeControls" in re.sub(r"[ \t]+", " ", probe)
     # The handles are declared before the try, so the finally can always see them.
     scenarios = _executable(SCENARIOS)
     declaration = "$targetProject = $null; $activeProject = $null"
@@ -8289,3 +8318,330 @@ def test_203_r15_the_compile_gate_failure_still_reaches_the_lifecycle() -> None:
         "Add-Phase5LedgerIntegrityResult",
         "Add-Phase4FinalCompletenessResult -Results $results")]
     assert order == sorted(order)
+
+
+# =====================================================================
+# RUNTIME RUN 8. THE COMPILER WAS NEVER INVOKED.
+# =====================================================================
+# Run 8's P5-CMP walked the whole target-project identity chain and passed
+# every link of it against real Windows - the active VBE project WAS the PCCM
+# Stage-B project, by full path - and then failed on the next line:
+#
+#     FAIL   the Compile VBAProject command (ID 578) exists
+#
+# So no compiler ran, and Run 8 licenses no verdict about whether the
+# production project compiles. What it proves is about this harness: the
+# FindControl call, as written, returned nothing.
+#
+# CommandBars.FindControl(Type, Id, Tag, Visible) has four optional arguments.
+# VBA omits three of them by name; PowerShell cannot, and $null in argument one
+# is a supplied criterion, not an omission. The tests below pin the corrected
+# call, the identity the returned control has to prove about itself, and the
+# wording that may no longer read a discovery failure as a compile defect.
+
+
+def test_204_r1_r2_r3_r4_the_compile_control_lookup_is_explicit() -> None:
+    """R1, R2, R3, R4. Type, Id, and two genuinely omitted arguments."""
+    block = _compile_gate()
+
+    # R1. The Run-8 form is gone, in every spelling of it. `$null` in the Type
+    # position is a criterion that matches no control, not an omission.
+    for retired in ("FindControl($null,", "FindControl($null ,", "FindControls($null,"):
+        assert retired not in block, f"the retired lookup {retired} is back"
+    assert "$null, 578" not in block, "a $null is still being passed positionally"
+
+    # R2. Type and Id are both explicit, and they are the ONLY argument shape
+    # used - the whole list is pinned, not just its first element.
+    lookups = re.findall(r"FindControls?\(([^)]*)\)", block)
+    assert lookups, "the gate no longer looks the command up at all"
+    for arguments in lookups:
+        assert arguments == "$msoControlButton, 578, $missing, $missing", arguments
+
+    # R3. 1 is named, not written as a bare literal at the call site. A reader
+    # and a mutation both have to go through the name.
+    #
+    # THE VALUE IS MATCHED WHOLE. `"$msoControlButton = 1" in block` is true of
+    # `= 10` as well, and the M2 run proved it: a substring test let the
+    # constant change to another MsoControlType with only one detector left
+    # standing. The digits are bounded now.
+    named = re.search(r"\$msoControlButton = (\d+)\b", block)
+    assert named, "the source never says what msoControlButton is"
+    assert named.group(1) == "1", (
+        f"msoControlButton is {named.group(1)}; the Compile command is a button (1)"
+    )
+    assert "msoControlButton" in _text(SCENARIOS), "the constant is not named in the source"
+    # And it is named ONCE, so the call site and the Type assertion cannot drift.
+    assert block.count("$msoControlButton = ") == 1, block.count("$msoControlButton = ")
+
+    # R4. The sentinel is a real Missing, not $null and not an empty string.
+    assert "$missing = [System.Reflection.Missing]::Value" in block, (
+        "Tag and Visible are not omitted with a Missing sentinel"
+    )
+    for fake in ("$missing = $null", "$missing = ''", '$missing = ""',
+                 "$missing = 0", "[System.DBNull]"):
+        assert fake not in block, f"the omission sentinel is faked as {fake}"
+
+    # R5. No caption anywhere - not as the lookup, not as an acceptance
+    # predicate, not as a fallback. Captions are localised.
+    for caption in (".Caption", "'Compile VBAProject'", '"Compile VBAProject"'):
+        assert caption not in block, f"the gate uses {caption} as a lookup or predicate"
+    assert "578" in block, "the stable command ID was dropped"
+
+    # AND ID 578 ITSELF IS NOT THE THING THAT CHANGED. Run 8 proved the call
+    # failed, not that the ID is wrong; nothing here may quietly try another.
+    ids = set(re.findall(r"FindControls?\(\$msoControlButton, (\d+),", block))
+    assert ids == {"578"}, ids
+
+
+def test_205_r6_r7_r10_r11_the_returned_control_proves_its_own_identity() -> None:
+    """R6, R7, R10, R11. A non-null return is not an identification."""
+    block = _compile_gate()
+    # The control is asked what it is...
+    assert "$controlId = [int]$control.Id" in block, (
+        "the returned control is never asked for its Id"
+    )
+    assert "$controlType = [int]$control.Type" in block, (
+        "the returned control is never asked for its Type"
+    )
+    # ...and its answers are compared to the criteria that were requested.
+    assert "$idOk = ($controlId -eq 578)" in block, "the Id answer is not checked"
+    assert "$typeOk = ($controlType -eq $msoControlButton)" in block, (
+        "the Type answer is not checked"
+    )
+    # R10 and R11: both are RECORDED CHECKS, so a wrong Id or a wrong Type
+    # fails the checklist that decides P5-CMP rather than passing quietly.
+    labels = _check_labels(_text(SCENARIOS))
+    assert "the control returned IS command Id 578" in labels, labels
+    assert "the control returned IS an msoControlButton (Type 1)" in labels, labels
+    # Neither answer may be short-circuited to a constant.
+    for constant in ("$idOk = $true", "$typeOk = $true", "$controlProved = $true",
+                     "$idOk = $True", "$typeOk = $True", "$controlProved = $True"):
+        assert constant not in block, f"the control identity is hard-coded ({constant})"
+    # THE CONSTANT AND THE LABEL AGREE. Changing msoControlButton's value in
+    # one place would leave the checklist promising Type 1 while the gate asked
+    # for something else, and the transcript would read as if nothing moved.
+    value = re.search(r"\$msoControlButton = (\d+)", block)
+    assert value, "msoControlButton has no value in the source"
+    assert value.group(1) == "1", f"msoControlButton is {value.group(1)}, not 1"
+    assert f"the control returned IS an msoControlButton (Type {value.group(1)})" in labels
+    # And BOTH are required, not either.
+    assert "$controlProved = ($idOk -and $typeOk)" in block, (
+        "the two answers are not both required"
+    )
+    for weak in ("($idOk -or $typeOk)", "($typeOk -or $idOk)"):
+        assert weak not in block, f"one answer alone proves the control ({weak})"
+
+
+def test_206_r8_r9_execute_is_unreachable_without_a_proved_control() -> None:
+    """R8, R9. No identification, no Enabled read, no Execute, no PASS."""
+    block = _compile_gate()
+    # R8, first half: the target-project gate still comes first.
+    assert block.index("$targetIsActive =") < block.index("FindControl"), (
+        "discovery happens before the gate knows whose project this is"
+    )
+    # R8, second half: Execute and BOTH Enabled reads live inside the branch
+    # the control-identity proof guards, and nowhere else.
+    guard = block.index("if ($controlProved) {")
+    unproved, proved = block[:guard], block[guard:]
+    for gated in ("$control.Execute()", "$before = [bool]$control.Enabled",
+                  "$after = [bool]$control.Enabled"):
+        assert gated in proved, f"{gated} is not on the proved-control path"
+        assert gated not in unproved, (
+            f"{gated} runs before the control has proved what it is"
+        )
+    # The old guard may not survive alongside the new one: `$null -ne $control`
+    # is exactly the weaker test Run 8's correction replaces.
+    assert "if ($null -ne $control) {\n                    $before" not in block, (
+        "Execute is still reachable from a merely non-null control"
+    )
+    # R9: a null control is a FAIL. The existence check is a recorded check,
+    # and the checklist is what decides the result.
+    assert "'the Compile VBAProject command (ID 578) exists'" in block
+    assert "($null -ne $control)" in block
+    assert "$compileOk = Test-ChecklistOk $list" in _executable(SCENARIOS)
+    # Nothing downgrades a missing control to a skip or a note-only outcome.
+    assert "'SKIP'" not in block, "a missing control could be skipped"
+    # And $controlProved starts false, so every path that does not prove the
+    # control leaves Execute unreached.
+    assert "$controlProved = $false" in block, (
+        "the control-identity flag does not start closed"
+    )
+    assert block.index("$controlProved = $false") < guard
+
+
+def test_207_r12_r13_a_compile_gate_failure_is_not_a_compile_verdict() -> None:
+    """R12, R13. P5-CMP can fail for six reasons; one of them is a defect.
+
+    Run 8 failed at command discovery with the compiler never invoked, and the
+    dependency-gate line said the project does not compile. That reading was
+    unavailable from the evidence.
+    """
+    scenarios = _text(SCENARIOS)
+    # R13: the corrected statement is about the PREREQUISITE, and it sends the
+    # reader to the checklist rather than naming a cause.
+    assert "the whole-project VBA compile prerequisite was not " in scenarios, (
+        "P5-ALL no longer states that the prerequisite was not established"
+    )
+    assert "See the P5-CMP checklist for the exact reason" in scenarios, (
+        "the dependency gate does not point at the evidence"
+    )
+    # R12: and the reading Run 8 disproved is gone from the whole subtree.
+    # ASSEMBLED, NOT WRITTEN OUT. A ban list that contains its own banned
+    # phrases matches itself; the marker idiom exists for the lines that must
+    # quote a phrase in order to forbid it.
+    project = "the VBA project "                    # retired-authority
+    banned = (project + "does not compile",         # retired-authority
+              project + "doesn't compile",          # retired-authority
+              "failing declaration")                # retired-authority
+    offenders: list[str] = []
+    for path in _authority_scan_files():
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            lowered = line.lower()
+            for phrase in banned:
+                if phrase.lower() in lowered and AUTHORITY_EXEMPTION_MARKER not in line:
+                    offenders.append(f"{path.relative_to(PCCM_ROOT)}:{number}: {phrase!r}")
+    assert not offenders, (
+        "a P5-CMP failure is still read as a production compile defect:\n        "
+        + "\n        ".join(offenders)
+    )
+    # The catch path says the same kind of thing: not completed, not "broken".
+    assert "'not attempted: the whole-project compile gate could not be completed'" in scenarios
+
+
+def test_208_r14_the_run_8_target_project_identity_code_is_unchanged() -> None:
+    """R14. Run 8 proved this chain on Windows. It is frozen verbatim."""
+    block = _compile_gate()
+    for frozen in (
+            "$targetProject = $Workbook.VBProject",
+            "$activeProject = $vbe.ActiveVBProject",
+            "$targetFile = [string]$targetProject.FileName",
+            "$activeFile = [string]$activeProject.FileName",
+            "$targetFull = [System.IO.Path]::GetFullPath($targetFile)",
+            "$activeFull = [System.IO.Path]::GetFullPath($activeFile)",
+            "[System.StringComparison]::OrdinalIgnoreCase",
+            "$targetIsActive = $haveFiles -and $sameFile",
+            "if (-not $targetIsActive) {"):
+        assert frozen in block, f"Run-8-proved identity code changed: {frozen}"
+    # The four labels Run 8 printed PASS for, still spelled the same way.
+    labels = _check_labels(_text(SCENARIOS))
+    for label in ("the Stage-B workbook exposes its VBProject",
+                  "the VBE reports an active VBProject",
+                  "both VBProjects name a file, so identity is comparable at all",
+                  "the active VBE project IS the Stage-B workbook project (by file path)",
+                  "the two VBProject names are recorded for diagnosis",
+                  "the VBE command bars are reachable"):
+        assert label in labels, f"a Run-8 PASS label was reworded: {label}"
+    # And the run itself is recorded, so the freeze has a stated reason.
+    assert "RUNTIME RUN 8" in _text(SCENARIOS), "Run 8 is not recorded in the harness"
+
+
+def test_209_r16_the_diagnostic_probe_is_diagnostic_only_and_released() -> None:
+    """R16. The second probe may inform. It may not decide, and it may not run."""
+    block = _compile_gate()
+    if "FindControls(" not in block:
+        return                      # the probe is optional; nothing to police
+    start = block.index("$probeControls = $null")
+    end = block.index("$controlProved = $false")
+    probe = block[start:end]
+    # It only runs when the real lookup came back empty.
+    assert "if ($null -eq $control) {" in block[:start + 200], (
+        "the diagnostic probe runs even when the command was found"
+    )
+    # DIAGNOSTIC ONLY. It records notes; it contributes no check, so it cannot
+    # move the verdict in either direction.
+    assert "Add-Note" in probe, "the probe records nothing"
+    assert "Add-Check" not in probe, "the diagnostic probe votes on the verdict"
+    assert "Add-Phase5Result" not in probe, "the diagnostic probe emits a result"
+    # AND IT IS NEVER A FALLBACK. Nothing it finds is executed, enabled-read,
+    # or assigned into the control the gate acts on.
+    for fallback in ("Execute()", ".Enabled", "$control = $probeControls",
+                     "$probeControls.Item", "$probeControls[", "Item(1)"):
+        assert fallback not in probe, f"the diagnostic probe became a fallback ({fallback})"
+    # Its own throw is contained: a failed diagnostic is a note, not a FAIL.
+    assert "} catch {" in probe, "a throw in the probe would fail the gate"
+    # R16: the collection is released, on every path, in its own finally.
+    assert "} finally {" in probe, "the probe has no finally"
+    flat = re.sub(r"[ \t]+", " ", probe)
+    assert "Release-Transient $probeControls 'CommandBarControls(probe)'" in flat, (
+        "the diagnostic collection is never released"
+    )
+    assert "$probeControls = $null" in probe.split("Release-Transient", 1)[1], (
+        "the diagnostic collection is not cleared after release"
+    )
+    # StrictMode 2.0 raises on a member read against $null, and Run 6 is the
+    # precedent: the count is only read once the collection is known non-null.
+    count_at = probe.index("$probeControls.Count")
+    guard_at = probe.index("if ($null -eq $probeControls) {")
+    assert guard_at < count_at, "the probe reads .Count without a null guard"
+
+
+def test_210_r12_no_result_line_reads_a_gate_failure_as_a_compile_defect() -> None:
+    """R12, from the other side: every P5-ALL dependency line, checked.
+
+    test_207 bans the phrase Run 8 disproved. This one reads the lines that
+    would carry it, so a rephrasing of the same overclaim is caught too.
+    """
+    scenarios = _text(SCENARIOS)
+    lines = scenarios.splitlines()
+    dependency_texts: list[str] = []
+    for index, line in enumerate(lines):
+        if "Add-Phase5Result 'P5-ALL'" not in line:
+            continue
+        chunk = "\n".join(lines[index:index + 8])
+        dependency_texts.append(chunk[:chunk.index("return")] if "return" in chunk else chunk)
+    assert len(dependency_texts) >= 3, len(dependency_texts)
+    for text in dependency_texts:
+        assert "not attempted" in text, text
+        # A dependency gate reports that it did not run. It does not diagnose
+        # the thing it was waiting for.
+        for verdict in ("does not compile", "is broken", "has a compile error",
+                        "the production project fails", "compile error in"):
+            assert verdict not in text.lower(), (
+                f"a dependency line diagnoses its prerequisite: {verdict!r}\n{text}"
+            )
+    # The compile prerequisite's own line names the alternatives rather than
+    # picking one, and command discovery is among them because of Run 8.
+    compile_line = next(text for text in dependency_texts
+                        if "compile prerequisite" in text)
+    for alternative in ("VBE access", "target-project identity",
+                        "command discovery", "compiler diagnostic"):
+        assert alternative in compile_line, (
+            f"the compile prerequisite line does not admit {alternative!r}"
+        )
+
+
+def test_211_the_p5_cmp_evidence_chain_is_visible_and_in_order() -> None:
+    """One scenario, one result, and a checklist that reads as a chain.
+
+    P5-CMP answers one question, so it stays one scenario ID. But a reader has
+    to be able to see WHERE it stopped, which is exactly what Run 8 needed: the
+    identity links passed and the discovery link failed, and the transcript said
+    so line by line. Each link is a recorded check, and they are recorded in the
+    order they are established.
+    """
+    scenarios = _text(SCENARIOS)
+    labels = _check_labels(scenarios)
+    chain = ["the VBE object model is reachable",
+             "the Stage-B workbook exposes its VBProject",
+             "the VBE reports an active VBProject",
+             "both VBProjects name a file, so identity is comparable at all",
+             "the active VBE project IS the Stage-B workbook project (by file path)",
+             "the two VBProject names are recorded for diagnosis",
+             "the VBE command bars are reachable",
+             "the Compile VBAProject command (ID 578) exists",
+             "the control returned IS command Id 578",
+             "the control returned IS an msoControlButton (Type 1)",
+             "the project is fully compiled: Compile VBAProject is no longer enabled"]
+    missing = [link for link in chain if link not in labels]
+    assert not missing, f"links missing from the P5-CMP evidence chain: {missing}"
+    positions = [labels.index(link) for link in chain]
+    assert positions == sorted(positions), (
+        "the evidence chain is recorded out of order: "
+        f"{[chain[i] for i in sorted(range(len(chain)), key=lambda n: positions[n])]}"
+    )
+    # ONE SCENARIO, not one per link. Internal stages do not get their own IDs.
+    ids = _executable(SCENARIOS)
+    declared = _procedure(ids, "Get-Phase5ScenarioIds")
+    for invented in ("P5-CMP1", "P5-CMPD", "P5-CMP-ID", "P5-DISC", "P5-CMP2"):
+        assert invented not in declared, f"the gate split into {invented}"
+    assert declared.count("'P5-CMP'") == 1

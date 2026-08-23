@@ -2743,6 +2743,30 @@ function Invoke-Phase5GateBScenarios {
     # So callability is not compilation, and this scenario exists to make the
     # stronger claim separately, once, BEFORE anything relies on it.
     #
+    # RUNTIME RUN 8. This scenario's first real Windows execution, 39 passed /
+    # 2 failed, the second failure being P5-ALL's dependency gate. It settled
+    # one question and opened another:
+    #
+    #   PASS   the VBE object model is reachable
+    #   PASS   the Stage-B workbook exposes its VBProject
+    #   PASS   the VBE reports an active VBProject
+    #   PASS   both VBProjects name a file
+    #   PASS   the active VBE project IS the Stage-B workbook project, by full
+    #          path - both VBAProject, both C:\...\PCCM_stageB.xlsm
+    #   PASS   the two VBProject names are recorded for diagnosis
+    #   PASS   the VBE command bars are reachable
+    #   FAIL   the Compile VBAProject command (ID 578) exists
+    #
+    # SETTLED: on a real owned Excel instance the ACTIVE project WAS the PCCM
+    # Stage-B project, and the whole target-project identity chain above is now
+    # backed by Windows evidence rather than by argument. It is frozen.
+    #
+    # OPENED: the run stopped at command discovery, so THE VBA COMPILER WAS
+    # NEVER INVOKED. Run 8 licenses no verdict at all about whether the
+    # production project compiles - not a good one and not a bad one. What it
+    # proves is narrower and entirely about this harness: the FindControl call
+    # as it was written returned no control for ID 578.
+    #
     # THE MECHANISM. The VBE exposes Compile VBAProject as a command bar control,
     # and it is addressed BY ID (578), never by caption: the caption is localised
     # and an English-only lookup would silently find nothing on a non-English
@@ -2857,21 +2881,91 @@ function Invoke-Phase5GateBScenarios {
                           'Compiling whatever happened to be active would prove nothing ' +
                           'about the project under test. ' + $identity)
             } else {
+                # THE TWO CONSTANTS THE LOOKUP AND THE VERIFICATION SHARE, named
+                # once and above every branch that reads them. PowerShell has no
+                # Office type library to take msoControlButton from, so its value
+                # is written down with the name it has in that enumeration.
+                $msoControlButton = 1                          # MsoControlType
+                $missing = [System.Reflection.Missing]::Value  # a truly omitted argument
                 if ($null -ne $vbe) {
                     $bars = $vbe.CommandBars
                     $null = Add-Check $list 'the VBE command bars are reachable' ($null -ne $bars)
                 }
                 if ($null -ne $bars) {
-                    # BY ID. 578 is Compile VBAProject. FindControl is asked for
-                    # the control, and its ABSENCE is a failure of this gate: a
-                    # missing control means the project cannot be proved to
-                    # compile here, which is not the same as a project that
-                    # compiles.
-                    $control = $bars.FindControl($null, 578)
+                    # BY ID, AND THE CALL IS SPELLED OUT --------------------
+                    #
+                    # RUNTIME RUN 8. This lookup was `FindControl($null, 578)`
+                    # and it returned nothing on real Windows, so the compiler
+                    # was never invoked at all. CommandBars.FindControl takes
+                    # (Type, Id, Tag, Visible) and every one of them is
+                    # OPTIONAL. VBA writes `FindControl(ID:=578)` and omits the
+                    # rest; PowerShell has no named-argument syntax for a COM
+                    # method, and passing $null positionally is NOT the same as
+                    # omitting an argument - the leading hypothesis for Run 8 is
+                    # that $null was marshalled as a real Type criterion that
+                    # matched no control. That remains a HYPOTHESIS until a
+                    # Windows runtime confirms it.
+                    #
+                    # So: state Type explicitly, state Id explicitly, and omit
+                    # Tag and Visible with the sentinel that actually means
+                    # "omitted".
+                    $control = $bars.FindControl($msoControlButton, 578, $missing, $missing)
                     $null = Add-Check $list 'the Compile VBAProject command (ID 578) exists' `
                         ($null -ne $control)
+
+                    # DIAGNOSTIC ONLY, AND ONLY WHEN THE LOOKUP CAME BACK EMPTY.
+                    # FindControls answers a different question with the same
+                    # criteria: how many matching controls the collection API
+                    # can see. It is an Add-Note, never an Add-Check, so it
+                    # cannot move the verdict, and it NEVER yields a control to
+                    # execute. If it throws, the throw is recorded and dropped.
+                    if ($null -eq $control) {
+                        $probeControls = $null
+                        try {
+                            $probeControls = $bars.FindControls($msoControlButton, 578, $missing, $missing)
+                            if ($null -eq $probeControls) {
+                                Add-Note ('P5-CMP: diagnostic - FindControls also returned ' +
+                                          'nothing for Type 1 / Id 578.')
+                            } else {
+                                Add-Note ('P5-CMP: diagnostic - FindControls reported ' +
+                                          [string]$probeControls.Count +
+                                          ' control(s) for Type 1 / Id 578.')
+                            }
+                        } catch {
+                            Add-Note ('P5-CMP: diagnostic - FindControls itself failed: ' +
+                                      $_.Exception.Message)
+                        } finally {
+                            if ($null -ne $probeControls) {
+                                Release-Transient $probeControls 'CommandBarControls(probe)'
+                                $probeControls = $null
+                            }
+                        }
+                    }
                 }
+
+                # --- IS THIS THE CONTROL WE ASKED FOR? ----------------------
+                #
+                # A non-null return is weaker evidence than it looks: it says
+                # the collection handed something back, not that the something
+                # is Compile VBAProject. Ask the control what it is, and let
+                # its own answer decide. Caption is deliberately not read: it
+                # is localised, and an English caption is not a fact about a
+                # non-English Excel.
+                $controlProved = $false
                 if ($null -ne $control) {
+                    $controlId = [int]$control.Id
+                    $controlType = [int]$control.Type
+                    $idOk = ($controlId -eq 578)
+                    $typeOk = ($controlType -eq $msoControlButton)
+                    $null = Add-Check $list `
+                        'the control returned IS command Id 578' `
+                        $idOk ('Id ' + [string]$controlId)
+                    $null = Add-Check $list `
+                        'the control returned IS an msoControlButton (Type 1)' `
+                        $typeOk ('Type ' + [string]$controlType)
+                    $controlProved = ($idOk -and $typeOk)
+                }
+                if ($controlProved) {
                     $before = [bool]$control.Enabled
                     Add-Note ('P5-CMP: Compile VBAProject enabled before the attempt: ' +
                               [string]$before)
@@ -2885,7 +2979,8 @@ function Invoke-Phase5GateBScenarios {
                     # already fully compiled, or it was compiled just now and
                     # the command went quiet. Both readings are about the target
                     # project, because the identity gate above is what let this
-                    # branch run at all.
+                    # branch run at all, and about the Compile command, because
+                    # the control proved its own Id and Type first.
                     $null = Add-Check $list `
                         'the project is fully compiled: Compile VBAProject is no longer enabled' `
                         (-not $after) `
@@ -2906,15 +3001,24 @@ function Invoke-Phase5GateBScenarios {
             $(if ($compileOk) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
         if (-not $compileOk) {
             # A FAIL, never a SKIP, and it gates like P5-FX and P5-FIX do.
-            # Nothing below can mean anything if a procedure body does not
-            # compile, and Run 7 is the demonstration: nineteen scenarios would
-            # have reported one compile defect as their own predicates failing.
-            # Returning here leaves the caller's shutdown, Z, Y, P5-LDG and
-            # P5-FIN untouched.
+            # Nothing below can mean anything while the whole-project compile is
+            # unestablished, and Run 7 is the demonstration: nineteen scenarios
+            # would have reported one compile defect as their own predicates
+            # failing. Returning here leaves the caller's shutdown, Z, Y, P5-LDG
+            # and P5-FIN untouched.
+            #
+            # WHAT THIS FAILURE DOES NOT SAY. A P5-CMP FAIL means the
+            # prerequisite was not established, and Run 8 is why that
+            # distinction is written down: the gate failed at command discovery
+            # with the compiler never invoked. The CHECKLIST says which link
+            # broke; the result line may not guess.
             Add-Phase5Result 'P5-ALL' 'Phase-5 Gate-B scenarios' 'FAIL' `
-                ('not attempted: the VBA project does not compile, so no scenario ' +
-                 'below would be testing the model it claims to test. See the ' +
-                 'P5-CMP checklist and the VBE for the failing declaration')
+                ('not attempted: the whole-project VBA compile prerequisite was not ' +
+                 'established, so no scenario below would be testing the model it ' +
+                 'claims to test. See the P5-CMP checklist for the exact reason: it ' +
+                 'may be VBE access, target-project identity, command discovery, or ' +
+                 'a compiler diagnostic, and only the last of those is a statement ' +
+                 'about the production project')
             return
         }
     } catch {
