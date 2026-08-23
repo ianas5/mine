@@ -1,7 +1,14 @@
 # Phase 5 — Gate B — Step B1: the Windows harness extension
 
-**Status: correction round 5 — harness source, ready for independent review.
-NOTHING HAS BEEN RUN.**
+**Status: ACCEPTED AND CLOSED at `f571154118083e569e1fb9fbf9bf72852cc2d568`,
+on the evidence of Windows Runtime Run 12. Gate B accepted; Phase 5 closed.**
+
+This line previously read *"correction round 5 — harness source, ready for
+independent review. NOTHING HAS BEEN RUN."* It stopped being true at Runtime
+Run 5 and is corrected here rather than quietly deleted: a stale status claim in
+the first line a reader sees is the same defect class this document spends most
+of its length recording. See **[Phase 5 closure](#phase-5-closure)** at the end
+for the acceptance record and the full runtime chain.
 
 Gate A is accepted and closed at `1968fb8`. This step authors the Windows Gate-B
 harness required by `phase5_plan.md` §24, §25 and implementation-sequence item 11,
@@ -42,6 +49,11 @@ asserted, and semantic values in an address projection.
 ---
 
 ## What this step does NOT claim
+
+*As submitted, before any Windows run.* The four statements below were true of
+the harness source at submission and are kept verbatim as part of the audit
+trail. They were overtaken by Runtime Runs 1–12; **Gate B is accepted and
+Phase 5 is closed** on Run 12 — see [Phase 5 closure](#phase-5-closure).
 
 1. **NO WINDOWS RUN HAS BEEN MADE.** No Excel COM session was started, no
    `.xlsm` was driven, and `phase4_functional_test.ps1` was not executed.
@@ -1304,7 +1316,9 @@ Everything about behaviour, and specifically:
 * that the six status rows come out as the matrix says
 * that no owned Excel process leaks and the instance exits naturally
 
-Gate A established what the source says. Gate B has not been run.
+Gate A established what the source says. Gate B has not been run — *as of
+this point in the record.* The runtime history begins immediately below and
+ends at Run 12's acceptance.
 
 ---
 
@@ -3774,3 +3788,106 @@ construction.
 
 **Gate B is not accepted.** The canonical harness emitted one FAIL, and the
 corrected matcher has not been executed on Windows.
+
+---
+
+# Phase 5 closure
+
+**Runtime Run 12 — ACCEPTED. Gate B — ACCEPTED. Phase 5 — CLOSED.**
+
+Accepted baseline:
+
+```
+f571154118083e569e1fb9fbf9bf72852cc2d568
+```
+
+Run 12 executed the full broad Phase-4 + Phase-5 Windows/Excel matrix and
+returned:
+
+```
+74 passed
+ 0 failed
+ 0 skipped
+
+Phase-4 structural matrix: 35 of 35
+Phase-5 Gate-B scenarios:  39 reported
+
+PHASE-4 / PHASE-5 FUNCTIONAL TEST: ALL CHECKS PASSED
+```
+
+**Run 12 supersedes every earlier runtime run for the purposes of Gate-B
+acceptance.** Runs 1–11 remain valid historical evidence for what they actually
+established, and none of them is rewritten or withdrawn.
+
+## Accepted Run-12 findings
+
+| Scenario | Result | Evidence |
+|---|---|---|
+| **P5-CMP** | PASS | correct PCCM VBProject active-project authority; Compile VBAProject command ID 578, Type 1; compile executed at most once; settlement `1 observation(s) over 108 ms; last Enabled False` |
+| **P5-FIX** | PASS | |
+| **P5-AN** | PASS | 19 analytical cases, all emitted analytical values checked, golden current/stored fingerprint evidence included |
+| **P5-DC** | PASS | |
+| **P5-RF** | PASS | |
+| **P5-PQ** | PASS | all 25 prerequisite predicates driven; PQ-02 reached the intended structure-change predicate; PQ-25 `probability_below_zero` PASS; PQ-26 `probability_above_one` PASS; the literal token `fraction in [0, 1]` matched in both — the Run-11 wildcard false negative is closed |
+| **P5-PN** | PASS | referenced-only no-block semantics executed; the corrected optional-property / StrictMode path is accepted |
+| **P5-AR** | PASS | driver-audit A/B/C/D reconstruction over the actual `tblCalcDrivers` and the actual `calc_totals` |
+| **P5-ID** | PASS | reconciliation identities accepted; the post-Run-10 Central Basis production correction remains proven; Risk central-basis publication accepted; Risk deterministic fields remain correctly inapplicable and blank |
+| **P5-AX** | PASS | |
+| **Z** | PASS | Excel closed naturally, no forced termination |
+| **Y** | PASS | transient COM releases clean |
+| **P5-LDG** | PASS | 35 scenario results recorded, 0 duplicate attempts |
+| **P5-FIN** | PASS | final Phase-4 matrix 35/35, 0 FAIL, 0 SKIP; Y and Z each ran exactly once and passed |
+
+Shutdown ledger: `Workbook.Close = True`, `Application.Quit = True`, natural PID
+exit `True`, emergency required `False`.
+
+## Exit-code evidence boundary
+
+The Run-12 transcript does **not** contain the separately printed
+`RUN12_EXIT_CODE=` line, because that line was emitted after the `Tee-Object`
+capture ended. **No numeric exit-code value is recorded here, and none is
+inferred.**
+
+This does not weaken the acceptance. The canonical harness reached its own final
+completeness checks, every scenario passed, none failed or skipped, Excel shut
+down naturally, and the harness itself printed `PHASE-4 / PHASE-5 FUNCTIONAL
+TEST: ALL CHECKS PASSED`. No further runtime was performed to capture the shell
+line.
+
+## The runtime chain, as it actually happened
+
+Each blocker below was discovered by a real Windows execution, classified, then
+corrected under an explicit authorisation. None is rewritten as though it had
+not occurred.
+
+| Run | Commit | Outcome | What it established |
+|---|---|---|---|
+| **5** | | FAIL | Fixture-establishment root in `Set-Phase5Fixture` — the choreography, `Clear-Phase5Registers` failing closed, endpoint postconditions |
+| **6** | | FAIL | Empty-inflation enumeration: a `.Properties.Name` projection over an empty `PSCustomObject` raises under StrictMode 2.0 |
+| **7** | | FAIL | **A production compile class.** `Contribute` was declared but its `ByRef scale As Double` used a VBA statement keyword in declaration position, so the procedure never existed. Fifteen reserved-identifier renames; the grandfather mechanism retired; A1's whole-project-compile claim withdrawn |
+| **8** | `1d3f766` | FAIL | The compiler was **never invoked**: `FindControl($null, 578)` returned nothing, because `$null` positionally is a supplied criterion, not an omitted argument. Target-project identity (`ActiveVBProject` == the workbook's own project by `FileName`) passed on real Windows and was frozen |
+| **9** | `0d75c0b` | FAIL | Discovery worked and `Execute()` was reached; the immediate `Enabled` read on the same cached handle said True. A later **manual** compile of the retained artifact completed with no error — the production project compiles. Root: an immediate post-Execute read measures the harness's timing, not the compiler's outcome |
+| **10** | `d515dd8` | 69/5/0 | First run to clear the compile and fixture boundary. Four harness roots — P5-AN pipeline pollution, P5-PQ address-for-name, P5-PN StrictMode optional property, P5-AR audit schema — plus **one production discrepancy**: Risk `central_basis` BLANK against an expected `ML` |
+| — | `35f12c8` | — | **P5-ID authority decision.** Contract `applies_to`, the accepted plan's column table and the Python oracle all said Central Basis applies to Risk; production was the defect. `CentralBasisOf` introduced as the single distribution-to-basis authority; `DriversBlock` publishes it for Risk. A Risk gained the label and nothing else |
+| **11** | `35f12c8` | 73/1/0 | P5-ID proven corrected on real Windows. Sole failure: a **checker** false negative — `-like` is a wildcard operator, so the accepted token `fraction in [0, 1]` was read as a character class. Production behaviour for PQ-25/PQ-26 was correct |
+| — | `f571154` | — | Harness-only literal-token correction: `IndexOf` with `OrdinalIgnoreCase`, no pattern language, corpus token untouched |
+| **12** | `f571154` | **74/0/0** | **Acceptance run.** All scenarios pass, natural shutdown, ledger clean |
+
+Two of those roots deserve their place in the record for what they were *not*:
+
+- **Run 8 licensed no compile verdict at all.** The gate failed at command
+  discovery, so reading it as "the production project does not compile"
+  <!-- retired-authority: quoted to record what was removed --> would have been
+  inventing evidence. That distinction is why the dependency-gate wording now
+  says the prerequisite was not established and names the alternatives.
+- **Run 11's failure was in the checker, not the model.** Production returned the
+  accepted message verbatim; the harness rejected it. An evidence harness that
+  fails a correct predicate is a defect of the same seriousness as one that
+  passes an incorrect one.
+
+## What the closure round changed
+
+Documentation and evidence only. No production, specification, oracle,
+workbook-contract, fingerprint, numerical, harness-semantic or expected-value
+change. The accepted baseline `f571154` is frozen: every `.bas`, every `.ps1`,
+every spec file and the whole builder are byte-identical to it.
