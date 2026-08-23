@@ -2585,11 +2585,42 @@ function Add-Phase5DetailTokenChecks {
     # message that names the PREDICATE, so a harmless wording edit elsewhere in
     # the sentence does not break the proof but a refusal from the WRONG
     # predicate does.
+    #
+    # RUNTIME RUN 11. This read:
+    #
+    #     ($Detail -like ('*' + $token + '*'))
+    #
+    # and PowerShell's -like is a WILDCARD operator, not a substring test: it
+    # interprets * ? and [ ] in the pattern. The corpus emits one token that
+    # contains them -
+    #
+    #     fraction in [0, 1]
+    #
+    # - so `[0, 1]` was read as a character class matching ONE character from
+    # {0 , space 1}. Production returned the accepted detail verbatim,
+    # "risk R-001: Probability must be a fraction in [0, 1]", and the check
+    # still failed, because the character after "fraction in " is "[", which is
+    # not in that set. PQ-25 and PQ-26 were reported as failures of a predicate
+    # that had in fact fired correctly.
+    #
+    # THE CONTRACT IS LITERAL CONTAINMENT: every emitted discriminator token
+    # must occur as literal text inside the production detail. So the comparison
+    # is a literal substring search, with no pattern language anywhere near it.
+    # OrdinalIgnoreCase preserves the case-insensitivity -like had by default;
+    # nothing else about the semantics is meant to change.
     $null = Add-Check $List ($Label + ': the refusal detail is specific, not empty') `
         (-not [string]::IsNullOrWhiteSpace($Detail)) $Detail
     foreach ($token in @($Tokens)) {
+        # An EMPTY token would be found at index 0 by any substring search and
+        # would prove nothing at all, so it is a failure rather than a free pass.
+        $literal = [string]$token
+        $found = $false
+        if (-not [string]::IsNullOrWhiteSpace($literal)) {
+            $found = ($Detail.IndexOf($literal,
+                [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+        }
         $null = Add-Check $List ($Label + ": the detail names the predicate ('" + $token + "')") `
-            ($Detail -like ('*' + $token + '*')) ("detail: " + $Detail)
+            $found ("detail: " + $Detail)
     }
 }
 

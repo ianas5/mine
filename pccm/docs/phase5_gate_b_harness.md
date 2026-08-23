@@ -3683,3 +3683,94 @@ question was open. It now requires **zero** applicability deviations in both
 directions. `test_38` in the report suite no longer carries a hand-written list
 of inapplicable fields — that list is what agreed with the defect — and derives
 applicability from `calc_contract.yaml` instead.
+
+## Runtime Run 11: the P5-ID correction proven, and one checker defect
+
+Run 11 executed once against `35f12c8` from a freshly generated Stage-A build,
+and completed the broad matrix:
+
+**73 PASS / 1 FAIL / 0 SKIP.** The sole scenario failure was P5-PQ.
+
+### Proven on real Windows
+
+- **P5-CMP PASS** — exact Compile VBAProject control ID 578, correct
+  `ActiveVBProject` authority, settlement `1 observation(s) over 116 ms; last
+  Enabled False`.
+- **P5-FIX PASS** — the fixture path again.
+- **P5-AN PASS** — 19 analytical cases, all emitted values checked. The Run-10
+  fixture-output pollution is closed: the boundary returned one `OK|*` String.
+- **P5-PN PASS** — under `Set-StrictMode -Version 2.0`, with the optional
+  `repeat` / `append` properties no longer raising.
+- **P5-AR PASS** — against `gate_b.audit_reconstruction`, no invented `id`.
+- **P5-ID PASS**, and **case 9 / `R-001.central_basis` PASS**. *The Run-10
+  production discrepancy is closed on real Windows.*
+- **Z PASS** — Excel PID exited naturally, no forced termination.
+- **Y PASS** — transient COM releases clean.
+- **P5-LDG PASS** — 35 scenario results, 0 duplicate attempts.
+- **P5-FIN PASS** — Phase-4 35/35, 0 FAIL, 0 SKIP.
+
+All four Run-10 harness roots (P5-AN, P5-PQ, P5-PN, P5-AR) executed to their
+production assertions rather than dying in the harness.
+
+### PQ-02 was not the defect
+
+PQ-02 executed through the corrected mutation mapping and reached its intended
+production predicate: `structure_change_pending`, attempt `REFUSED`, status
+`INVALID`, detail carrying both `STRUCTURE CHANGE PENDING` and `structural
+prerequisite`, prior successful snapshot unchanged. The Run-10 named-mutation
+root is closed.
+
+### The actual failure: a wildcard operator where a substring test belonged
+
+Only two subchecks failed in the 25-predicate matrix — **PQ-25**
+(`probability_below_zero`) and **PQ-26** (`probability_above_one`). For both,
+production returned the accepted detail verbatim:
+
+> `risk R-001: Probability must be a fraction in [0, 1]`
+
+against the accepted token `fraction in [0, 1]`. The token is visibly inside the
+detail, and the check still reported
+
+> `FAIL ... the detail names the predicate ('fraction in [0, 1]')`
+
+`Add-Phase5DetailTokenChecks` compared with
+`$Detail -like ('*' + $token + '*')`
+<!-- retired-authority: quoted to record what was removed -->
+and **PowerShell's `-like` is a wildcard operator, not a substring test**. It
+interprets `*`, `?` and `[ ]`, so `[0, 1]` became a character class matching one
+character from `{0, ',', ' ', '1'}` — and the character following `fraction in `
+is `[`, which is not one of them. The predicate had fired correctly; the checker
+was wrong.
+
+**Production behaviour for PQ-25 and PQ-26 is supported as correct by Run 11.**
+No Run-11 evidence supports a production defect.
+
+### The correction
+
+The shared matcher now implements the contract directly — every emitted
+discriminator token must occur as **literal text** in the production detail:
+
+```powershell
+$found = ($Detail.IndexOf($literal,
+    [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+```
+
+`OrdinalIgnoreCase` preserves the case-insensitivity `-like` had by default;
+nothing else about the semantics changes. No wildcards, no regular expressions,
+no per-case special handling, and the token in the corpus is untouched. An empty
+token — which any substring search finds at index 0 — is now a failure rather
+than a free pass.
+
+Of the **39 distinct detail tokens** the corpus emits, exactly **one** contains
+wildcard metacharacters: `fraction in [0, 1]`. That is the whole blast radius in
+the corpus, but the matcher is shared by **P5-DC, P5-RF and P5-PQ**, so all
+three paths change behaviour and all three need fresh runtime evidence.
+
+The regressions test semantics, not spelling: `test_236`–`test_240` model both
+matchers, assert the Run-11 reproducer matches literally and would not have
+matched by wildcard, assert a constructed pair where wildcard says yes and
+literal says no, sweep every emitted token, and source-lock the retired
+construction.
+
+**Gate B is not accepted.** The canonical harness emitted one FAIL, and the
+corrected matcher has not been executed on Windows.

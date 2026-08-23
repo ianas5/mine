@@ -2318,7 +2318,23 @@ def test_65_every_prerequisite_has_a_specific_detail_discriminator() -> None:
     assert "foreach ($token in @($Tokens))" in helper, (
         "the discriminator tokens are never compared"
     )
-    assert "-like ('*' + $token + '*')" in helper
+    # RUN 11 replaced the wildcard comparison with a literal substring search:
+    # -like read `fraction in [0, 1]` as a character class and rejected a detail
+    # that visibly contained it. The rule asserted here is the CONTRACT - the
+    # token occurs as literal text - not the spelling of the expression.
+    assert "IndexOf(" in helper and "OrdinalIgnoreCase" in helper, (
+        "the discriminator is not a literal substring search"
+    )
+    assert "-like" not in helper, "the wildcard matcher is back"  # refusal-list
+    # AND AN EMPTY TOKEN IS NOT A DISCRIMINATOR. Any substring search finds ""
+    # at index 0, so without a guard an emitted blank would pass every detail
+    # and this test's whole subject - specificity - would be unenforced.
+    assert "IsNullOrWhiteSpace($literal)" in helper, (
+        "an empty discriminator token would pass vacuously"
+    )
+    assert helper.index("IndexOf(") > helper.index("IsNullOrWhiteSpace($literal)"), (
+        "the token reaches IndexOf before it is known to be non-empty"
+    )
     assert "Add-Phase5DetailTokenChecks" in _scenario_block(source, "P5-AN", "P5-RF"), (
         "the plan-case refusals still check only that a detail exists"
     )
@@ -9767,3 +9783,196 @@ def test_235_the_labelling_contract_is_enforced_at_both_ends() -> None:
     assert "if ($false)" not in checker and "if ($true)" not in checker
     guard = checker[checker.index("IsNullOrWhiteSpace($Label)"):]
     assert "throw (" in guard[:400], "an unlabelled call does not throw"
+
+
+# =====================================================================
+# RUNTIME RUN 11: A WILDCARD OPERATOR WHERE A SUBSTRING TEST BELONGED
+# =====================================================================
+# Run 11 returned 73 PASS / 1 FAIL / 0 SKIP. The single failure was P5-PQ, and
+# within it only the detail-token subchecks of PQ-25 and PQ-26. Production had
+# returned the accepted message verbatim:
+#
+#     risk R-001: Probability must be a fraction in [0, 1]
+#
+# against the accepted token `fraction in [0, 1]` - the token is visibly inside
+# the detail - and the check still failed.
+#
+# PowerShell's -like is a WILDCARD operator. `[0, 1]` is a character class
+# matching ONE character from {0 , space 1}, and the character after
+# "fraction in " is "[", which is not one of them. The predicate had fired
+# correctly; the checker was wrong.
+#
+# These tests are about SEMANTICS, not spelling. They model both matchers and
+# assert what each decides, so a future rewrite that happens to avoid the exact
+# retired line but reintroduces pattern matching is still caught.
+
+RUN11_DETAIL = "risk R-001: Probability must be a fraction in [0, 1]"
+RUN11_TOKEN = "fraction in [0, 1]"
+
+
+def _wildcard_like(text: str, pattern: str) -> bool:
+    """PowerShell `-like`, modelled: * ? and [...] are pattern syntax.
+
+    fnmatch implements the same three constructs with the same meanings, which
+    is all this needs: the point is that a bracket expression is a character
+    class in both, and that is the whole of the Run-11 root.
+    """
+    import fnmatch
+
+    return fnmatch.fnmatchcase(text.lower(), pattern.lower())
+
+
+def _literal_contains(text: str, token: str) -> bool:
+    """The accepted contract: the token occurs as literal text, case-insensitively."""
+    if not token.strip():
+        return False
+    return token.lower() in text.lower()
+
+
+def test_236_a_the_run_11_reproducer_matches_literally() -> None:
+    """A. The exact detail and token Run 11 rejected."""
+    # THE OLD MATCHER REJECTED IT. If this stops being true the reproducer has
+    # gone stale and the rest of this test proves nothing.
+    assert not _wildcard_like(RUN11_DETAIL, "*" + RUN11_TOKEN + "*"), (
+        "the wildcard matcher no longer fails the Run-11 case; the modelled "
+        "semantics have drifted from PowerShell's"
+    )
+    # THE ACCEPTED CONTRACT ACCEPTS IT.
+    assert _literal_contains(RUN11_DETAIL, RUN11_TOKEN)
+    assert RUN11_TOKEN in RUN11_DETAIL, "the token is not literally in the detail at all"
+
+    # AND THE HARNESS IMPLEMENTS THE LITERAL RULE.
+    body = _procedure(_executable(SCENARIOS), "Add-Phase5DetailTokenChecks")
+    assert "IndexOf(" in body, "the matcher does not perform a substring search"
+    assert "[System.StringComparison]::OrdinalIgnoreCase" in body, (
+        "the substring search is not case-insensitive; -like was"
+    )
+    assert "-ge 0" in body, "the IndexOf result is not tested for a hit"
+
+
+def test_237_b_a_wildcard_match_is_not_accepted_as_a_literal_one() -> None:
+    """B. The divergence, in the direction that matters for evidence.
+
+    A pattern match that is not a substring match would let a token "find" a
+    predicate name that was never printed. That is a false PASS in an evidence
+    harness, which is worse than Run 11's false FAIL.
+    """
+    detail, token = "the value is 7 units", "is [0-9] units"
+    assert _wildcard_like(detail, "*" + token + "*"), (
+        "the control pair no longer diverges; pick another"
+    )
+    assert not _literal_contains(detail, token), (
+        "the literal rule accepts a token the detail does not contain"
+    )
+    # The same shape for the other two metacharacters.
+    for detail, token in (("refused: rate 3 missing", "rate ? missing"),
+                          ("refused: quantity absent", "quantity*absent")):
+        assert _wildcard_like(detail, "*" + token + "*"), (detail, token)
+        assert not _literal_contains(detail, token), (detail, token)
+
+
+def test_238_c_every_emitted_token_is_found_by_the_literal_rule() -> None:
+    """C. The whole corpus, swept through the accepted semantics.
+
+    For each emitted token, a detail that literally contains it must match. The
+    tokens carrying wildcard metacharacters are the ones the old matcher could
+    have rejected, and they are named so the sweep cannot quietly become empty.
+    """
+    gate_b = _gate_b()
+    tokens: set[str] = set()
+    for bucket in ("prerequisite_cases", "direct_check_cases", "no_block_cases"):
+        for case in gate_b.get(bucket, []) or []:
+            tokens.update(case.get("detail_tokens", []) or [])
+    for values in (gate_b.get("plan_refusal_tokens") or {}).values():
+        tokens.update(values or [])
+    assert len(tokens) >= 30, f"only {len(tokens)} detail tokens were found"
+
+    # NO EMPTY TOKEN. One would be found at index 0 by any substring search and
+    # would prove nothing; the matcher fails it, and the corpus must not emit one.
+    assert not [token for token in tokens if not token.strip()], "an empty token is emitted"
+
+    wildcard_bearing = sorted(token for token in tokens
+                              if any(ch in token for ch in "[]*?"))
+    assert RUN11_TOKEN in wildcard_bearing, (
+        "the Run-11 token is no longer emitted, or no longer contains brackets"
+    )
+    for token in tokens:
+        detail = f"production refused: {token} and nothing else"
+        assert _literal_contains(detail, token), token
+    # ...and for the metacharacter-bearing ones, the OLD matcher would have
+    # rejected that very detail. That is the blast radius, measured.
+    for token in wildcard_bearing:
+        detail = f"production refused: {token} and nothing else"
+        assert not _wildcard_like(detail, "*" + token + "*"), (
+            f"{token!r} no longer demonstrates the wildcard defect"
+        )
+
+
+def test_239_d_the_wildcard_anti_pattern_cannot_return() -> None:
+    """D. Source-locked, across the harness, in every spelling."""
+    body = _procedure(_executable(SCENARIOS), "Add-Phase5DetailTokenChecks")
+    for retired in ("$Detail -like", "-like ('*'", "-match", "-notlike",
+                    "[regex]", "Select-String"):
+        assert retired not in body, f"the token matcher uses {retired}"
+    # The token never becomes part of a pattern anywhere in the function.
+    assert "'*' + $token" not in body and "$token + '*'" not in body, (
+        "the token is still being wrapped in wildcards"
+    )
+    # EVERY CALLER GOES THROUGH THE SHARED MATCHER. A caller that rolled its own
+    # comparison would not be fixed by fixing this one.
+    scenarios = _executable(SCENARIOS)
+    callers = re.findall(r"Add-Phase5DetailTokenChecks -List", scenarios)
+    assert len(callers) == 3, f"{len(callers)} callers; P5-DC, P5-RF and P5-PQ expected"
+    for scenario in ("P5-DC", "P5-RF", "P5-PQ"):
+        assert f"'{scenario}'" in scenarios
+    # No scenario compares a detail token itself.
+    stray = [line.strip() for line in scenarios.splitlines()
+             if "detail_tokens" in line and "-like" in line]
+    assert not stray, stray
+
+
+def test_240_the_matcher_fails_an_empty_token_rather_than_passing_it() -> None:
+    """An empty discriminator is found at index 0 by any substring search."""
+    body = _procedure(_executable(SCENARIOS), "Add-Phase5DetailTokenChecks")
+    assert "$found = $false" in body, "the result does not start closed"
+    assert "if (-not [string]::IsNullOrWhiteSpace($literal)) {" in body, (
+        "an empty token is passed straight to IndexOf, which finds it at 0"
+    )
+    assert body.index("$found = $false") < body.index("IndexOf(")
+    # And the modelled rule agrees.
+    assert not _literal_contains("anything at all", "")
+    assert not _literal_contains("anything at all", "   ")
+    # The old matcher passed it vacuously, which is what this closes.
+    assert _wildcard_like("anything at all", "**")
+
+
+def test_241_the_index_of_result_is_tested_as_a_found_threshold() -> None:
+    """W5. `IndexOf` returns -1 for absent and >= 0 for present.
+
+    test_236 asserts the search exists. This asserts the COMPARISON decides the
+    right way round, by evaluating it against the two results IndexOf can
+    actually produce - so a threshold that accepts -1 (a token that was never
+    printed, reported as found) fails here whatever it is spelled.
+    """
+    body = _procedure(_executable(SCENARIOS), "Add-Phase5DetailTokenChecks")
+    match = re.search(r"::OrdinalIgnoreCase\)\s*(-\w+)\s*(-?\d+)\)", body)
+    assert match, f"the IndexOf result is not compared to a number:\n{body}"
+    operator, operand = match.group(1), int(match.group(2))
+
+    def decides(result: int) -> bool:
+        table = {"-ge": result >= operand, "-gt": result > operand,
+                 "-ne": result != operand, "-eq": result == operand,
+                 "-lt": result < operand, "-le": result <= operand}
+        assert operator in table, f"unmodelled comparison operator {operator}"
+        return table[operator]
+
+    # NOT FOUND must be rejected. This is the half that matters: accepting -1
+    # would report every token as present, including one production never wrote.
+    assert not decides(-1), (
+        f"`{operator} {operand}` treats IndexOf's not-found result as a hit"
+    )
+    # FOUND, at any position, must be accepted.
+    for position in (0, 1, 12, 4096):
+        assert decides(position), (
+            f"`{operator} {operand}` rejects a token found at index {position}"
+        )
