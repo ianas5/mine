@@ -3343,3 +3343,105 @@ R1–R4 are `test_204`; R5 is `test_187` and `test_204`; R6, R7, R10, R11 are
 R14 is `test_208`; R15 is `test_187` and `test_200`; R16 is `test_209`; R17 is
 `test_186` and `test_193`; R18 is `test_189` and `test_203`. `test_211` pins the
 whole evidence chain in order and keeps P5-CMP a single scenario ID.
+
+## Runtime Run 9, and the manual compile that settled it
+
+Run 9 executed once against `0d75c0b`. With the explicit four-argument lookup in
+place, discovery worked, and the gate reached the compiler:
+
+    PASS   target VBProject acquired
+    PASS   ActiveVBProject acquired
+    PASS   active == target, by FileName
+    PASS   CommandBars reachable
+    PASS   the exact command ID 578 found
+    PASS   control.Id == 578
+    PASS   control.Type == msoControlButton (1)
+    PASS   Enabled before Execute == True
+           Execute() reached
+    FAIL   Enabled immediately after Execute == True
+
+One failing observation, and it was the last statement in the chain.
+
+### The manual compile
+
+The retained artifact —
+
+    C:\Users\pcd\AppData\Local\Temp\pccm-phase4-20260823-165820\PCCM_stageB.xlsm
+
+— was then opened by hand. In the VBE, **Debug > Compile VBAProject** was
+enabled; it was invoked exactly once; no compile error and no undefined-symbol
+error appeared; compilation completed; the command went grey.
+
+**The PCCM production VBA project compiles on the real target Windows/Excel
+environment.** The Run-7 reserved-identifier defect class is closed, and Run 9
+is not a production compile failure.
+
+### What that settles, and what it does not
+
+The manual compile happened in a *different* Excel session, on a *reopened*
+file. So it does not establish whether Run 9's own programmatic `Execute`
+eventually completed after the harness stopped looking. Both of these are
+unavailable from the evidence:
+
+- "Run 9's Execute definitely succeeded"
+- "Run 9's Execute definitely failed"
+
+The conclusion that *is* available is narrower, and it is the one the harness
+now acts on: **Run 9's immediate post-Execute observation is insufficient.** A
+`CommandBarControl`'s `Enabled` is cached UI state. Read one statement after
+`Execute`, it measures the harness's timing, not the compiler's outcome — and
+the same handle may never refresh at all. Settlement has to be observed *within
+the same Excel session*, by asking the collection again.
+
+### The correction
+
+Only the post-Execute logic changed. Execute still happens once, still guarded
+by `$before`, and is now counted so the transcript carries the evidence:
+
+    $executeCount = 0
+    if ($before) {
+        $null = $control.Execute()
+        $executeCount = 1
+    }
+
+The stale handle is then dropped immediately — its `Enabled` is exactly the
+value that may not be trusted:
+
+    Release-Transient $control 'CommandBarControl'
+    $control = $null
+
+and a bounded poll observes settlement: **at most 5 seconds, ~100 ms apart,
+stopping the instant the command goes quiet.** Each iteration reacquires the
+control through the identical criteria, re-proves `Id == 578` and `Type == 1`,
+reads `Enabled`, and releases the handle in its own `finally` before the next
+iteration. `Execute` is never called again.
+
+A vanished control, a drifted identity, or a throw during reacquisition each
+break the loop and record the exact reason, and `$settleIdentityHeld` /
+`$settleError` / `$observations` are checked so an empty or drifting poll cannot
+be read as a settlement.
+
+### The wording at the deadline
+
+PASS is `'the target PCCM VBProject reached the VBE compiled state'`. A deadline
+expiry says:
+
+> Compile VBAProject did not settle to the disabled/compiled state within the
+> bounded observation window: enabled before True, still enabled after N
+> observation(s) over M ms. This is a settlement observation that was not
+> established, not a compiler diagnostic.
+
+It does not say the production project does not compile — `test_216` reads the
+whole tail of that check and rejects `does not compile`, `compile error`,
+`is broken`, `failing declaration` and `undefined`, <!-- retired-authority: quoted to record what the check forbids -->
+and `test_207`'s subtree
+sweep bans the retired phrasing everywhere.
+
+### COM lifecycle
+
+Eight releases in the gate now. The five accepted long-lived handles
+(`CommandBarControl`, `CommandBars`, `VBProject(active)`, `VBProject(target)`,
+`VBE`) stay in the outer `finally`; the Run-8 diagnostic collection, the stale
+control dropped after `Execute`, and each reacquired settlement handle are
+released where they are opened. No handle survives an iteration, and the poll
+never touches `$bars`, `$vbe` or either project handle.

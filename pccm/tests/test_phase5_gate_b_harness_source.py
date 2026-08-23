@@ -44,6 +44,7 @@ sys.path.insert(0, str(PCCM_ROOT / "builder"))
 BOOTSTRAP = PCCM_ROOT / "bootstrap" / "windows"
 HARNESS = BOOTSTRAP / "phase4_functional_test.ps1"
 SCENARIOS = BOOTSTRAP / "phase5_gate_b_scenarios.ps1"
+LIFECYCLE = BOOTSTRAP / "com_lifecycle.ps1"
 DIAGNOSTIC = BOOTSTRAP / "phase5_gate_b_diagnostics.bas"
 BUILD_STAGE_B = BOOTSTRAP / "build_stage_b.ps1"
 SRC_VBA = PCCM_ROOT / "src" / "vba"
@@ -7615,8 +7616,11 @@ def test_187_the_compile_gate_addresses_the_command_by_id_and_proves_it_exists()
     # RUN 8 retired the old one-argument-plus-$null form: the whole argument
     # list is now pinned, so neither a reintroduced $null nor a changed Type
     # can slip through as "still by ID".
+    # THREE lookups, all identical: the discovery call, the Run-8 diagnostic
+    # probe, and the Run-9 settlement reacquisition. Pinning the whole list
+    # keeps a fourth from appearing with looser criteria.
     lookups = re.findall(r"FindControls?\(([^)]*)\)", block)
-    assert lookups == ["$msoControlButton, 578, $missing, $missing"] * 2, lookups
+    assert lookups == ["$msoControlButton, 578, $missing, $missing"] * 3, lookups
     assert ".Caption" not in block, "the gate reads a localised caption"
     assert "FindControl('" not in block and 'FindControl("' not in block
     # `$missing` has to BE Missing. Named arguments would omit Tag and Visible;
@@ -7644,10 +7648,20 @@ def test_187_the_compile_gate_addresses_the_command_by_id_and_proves_it_exists()
         f"Execute is guarded by {guard.group(1).strip()}, not by the control-identity proof"
     )
     assert "$controlProved = ($idOk -and $typeOk)" in block
-    # ...and the positive evidence is that the command has gone quiet.
-    assert "$after = [bool]$control.Enabled" in block
-    assert "(-not $after)" in block, (
-        "the gate never checks that the project is fully compiled afterwards"
+    # ...and the positive evidence is that the command has gone quiet. RUN 9
+    # retired the immediate read on the SAME handle: Enabled is cached UI state,
+    # and one statement after Execute it measures the harness's timing rather
+    # than the compiler's outcome. The evidence is now a REACQUIRED control that
+    # reports the command disabled.
+    assert "$after = [bool]$control.Enabled" not in block, (
+        "the compiled state is still read from the cached post-Execute handle"
+    )
+    assert "$lastEnabled = [bool]$poll.Enabled" in block, (
+        "the gate never reads Enabled from a reacquired control"
+    )
+    assert "if (-not $lastEnabled) { $settled = $true }" in block
+    assert "$settled `" in block, (
+        "the compiled-state check is not decided by the settlement observation"
     )
     # VBProject access is COM: every transient is released, including the two
     # project handles the target-project identity gate opens. Each release is
@@ -7662,9 +7676,15 @@ def test_187_the_compile_gate_addresses_the_command_by_id_and_proves_it_exists()
         assert f"Release-Transient {variable} '{label}'" in flat, (
             f"{variable} is not released as '{label}'"
         )
-    # Six in total: the five above plus the Run-8 diagnostic collection, which
-    # is released in its own finally because it is opened inside one branch.
-    assert block.count("Release-Transient") == 6, block.count("Release-Transient")
+    # Eight in total: the five above, the Run-8 diagnostic collection, the
+    # stale control dropped straight after Execute, and the handle each Run-9
+    # settlement observation reacquires. The last three are released where they
+    # are opened, inside the branches that open them.
+    assert block.count("Release-Transient") == 8, block.count("Release-Transient")
+    assert "Release-Transient $control 'CommandBarControl'" in flat
+    assert "Release-Transient $poll 'CommandBarControl(settle)'" in flat, (
+        "the reacquired settlement control is never released"
+    )
     assert "Release-Transient $probeControls 'CommandBarControls(probe)'" in flat, (
         "the diagnostic FindControls collection is never released"
     )
@@ -7767,9 +7787,7 @@ def test_190_a1_and_p5_m_claim_only_what_they_observe() -> None:
     for text in (_executable(HARNESS), _executable(SCENARIOS)):
         for label in _check_labels(text):
             if "compil" in label.lower():
-                assert label == (
-                    "the project is fully compiled: Compile VBAProject is no longer enabled"
-                ) or label == "the Compile VBAProject command (ID 578) exists", label
+                assert label in P5_CMP_COMPILE_LABELS, label
 
 
 # ===========================================================================
@@ -7799,6 +7817,17 @@ RETIRED_AUTHORITY_PHRASES = (
 # the note that FORBIDS it. Those lines carry this marker, in the same spirit as
 # the `# refusal-list` marker the COM-lifecycle sweep already uses.
 AUTHORITY_EXEMPTION_MARKER = "retired-authority"
+
+# The ONLY check labels in either PowerShell file that may mention compiling.
+# They all belong to P5-CMP, which is the single whole-project compile
+# authority; anything else claiming a compile is the defect ae52bdd removed.
+# Kept in one place so the census tests cannot drift from the evidence chain.
+P5_CMP_COMPILE_LABELS = (
+    "Compile VBAProject was executed at most once",
+    "the Compile VBAProject command (ID 578) exists",
+    "the compiled state was read by reacquiring the exact Id-578 control",
+    "the target PCCM VBProject reached the VBE compiled state",
+)
 
 
 def _authority_scan_files() -> list[Path]:
@@ -7902,10 +7931,7 @@ def test_192_r4_r5_only_p5_cmp_owns_the_whole_project_compile_claim() -> None:
     # id - so this is a floor on the LITERAL labels, not a total.
     assert len(labels) > 140, f"the label scan found only {len(labels)} labels"
     compile_labels = sorted({label for label in labels if "compil" in label.lower()})
-    assert compile_labels == [
-        "the Compile VBAProject command (ID 578) exists",
-        "the project is fully compiled: Compile VBAProject is no longer enabled",
-    ], compile_labels
+    assert compile_labels == sorted(P5_CMP_COMPILE_LABELS), compile_labels
     # And the result TITLES. Any title that mentions compilation must either be
     # P5-CMP's own, or must name P5-CMP as the authority it defers to. A title
     # that mentions a compile and names A1 is the defect this round removed.
@@ -8195,8 +8221,9 @@ def test_199_r5_r6_r7_a_mismatched_active_project_is_a_fail_and_no_compile() -> 
     # the Enabled read is on the same guarded branch as the Execute.
     assert "$before = [bool]$control.Enabled" in matched
     assert "$before = [bool]$control.Enabled" not in mismatch
-    assert "$after = [bool]$control.Enabled" in matched
-    assert "$after = [bool]$control.Enabled" not in mismatch
+    # ...and so is the settlement poll that replaced the immediate read.
+    assert "$lastEnabled = [bool]$poll.Enabled" in matched
+    assert "$lastEnabled = [bool]$poll.Enabled" not in mismatch
 
 
 def test_200_r8_every_new_com_reference_is_released_on_every_path() -> None:
@@ -8210,7 +8237,7 @@ def test_200_r8_every_new_com_reference_is_released_on_every_path() -> None:
     # The five accepted handles are all in the last finally. The sixth release
     # is the Run-8 diagnostic collection, and it has a finally of its own.
     finally_at = block.rindex("} finally {")
-    assert block.count("Release-Transient") == 6
+    assert block.count("Release-Transient") == 8
     assert block.count("Release-Transient", finally_at) == 5
     probe = block[block.index("$probeControls = $null"):finally_at]
     assert "} finally {" in probe, "the diagnostic probe has no finally"
@@ -8444,7 +8471,7 @@ def test_206_r8_r9_execute_is_unreachable_without_a_proved_control() -> None:
     guard = block.index("if ($controlProved) {")
     unproved, proved = block[:guard], block[guard:]
     for gated in ("$control.Execute()", "$before = [bool]$control.Enabled",
-                  "$after = [bool]$control.Enabled"):
+                  "$lastEnabled = [bool]$poll.Enabled"):
         assert gated in proved, f"{gated} is not on the proved-control path"
         assert gated not in unproved, (
             f"{gated} runs before the control has proved what it is"
@@ -8631,7 +8658,9 @@ def test_211_the_p5_cmp_evidence_chain_is_visible_and_in_order() -> None:
              "the Compile VBAProject command (ID 578) exists",
              "the control returned IS command Id 578",
              "the control returned IS an msoControlButton (Type 1)",
-             "the project is fully compiled: Compile VBAProject is no longer enabled"]
+             "Compile VBAProject was executed at most once",
+             "the compiled state was read by reacquiring the exact Id-578 control",
+             "the target PCCM VBProject reached the VBE compiled state"]
     missing = [link for link in chain if link not in labels]
     assert not missing, f"links missing from the P5-CMP evidence chain: {missing}"
     positions = [labels.index(link) for link in chain]
@@ -8645,3 +8674,290 @@ def test_211_the_p5_cmp_evidence_chain_is_visible_and_in_order() -> None:
     for invented in ("P5-CMP1", "P5-CMPD", "P5-CMP-ID", "P5-DISC", "P5-CMP2"):
         assert invented not in declared, f"the gate split into {invented}"
     assert declared.count("'P5-CMP'") == 1
+
+
+# =====================================================================
+# RUNTIME RUN 9, AND THE MANUAL COMPILE THAT SETTLED IT
+# =====================================================================
+# Run 9 reached Execute(). Every link before it passed: the right project was
+# active, the exact Id-578 msoControlButton was discovered, Enabled read True.
+# Then the gate read Enabled again on the SAME handle, in the next statement,
+# saw True, and called the project uncompiled.
+#
+# The retained artifact was afterwards opened by hand, and Debug > Compile
+# VBAProject completed with no error and went grey. THE PRODUCTION PROJECT
+# COMPILES. What the immediate read measured was the harness's own timing.
+#
+# The manual compile does not say whether Run 9's programmatic Execute finished
+# after the harness stopped looking - that was a different session on a reopened
+# file - so the conclusion these tests encode is the narrow one: an immediate
+# post-Execute read of a cached handle is not a settlement proof, and settlement
+# has to be observed in the same session by reacquiring the control.
+
+
+def _settlement() -> str:
+    """The bounded poll: from the released stale handle to the elapsed read."""
+    block = _compile_gate()
+    return block[block.index("$settled = $false"):block.index("$settleMs =")]
+
+
+def test_212_r1_the_compile_command_is_executed_exactly_once() -> None:
+    """R1. One Execute, guarded, and none inside the settlement poll."""
+    block = _compile_gate()
+    assert block.count("$control.Execute()") == 1, block.count("$control.Execute()")
+    assert block.count(".Execute()") == 1, (
+        "something other than the one proved control is being executed"
+    )
+    # It is counted at runtime too, so the transcript carries the evidence.
+    assert "$executeCount = 0" in block and "$executeCount = 1" in block
+    assert "'Compile VBAProject was executed at most once'" in block
+    assert "($executeCount -le 1)" in block, "the execution count is never checked"
+    # AND THE POLL NEVER RE-EXECUTES. This is the failure mode a naive retry
+    # loop would have: compile, look, compile again, and call the second one
+    # evidence about the first.
+    settle = _settlement()
+    for again in ("Execute()", "$executeCount = 2", "$executeCount + 1", "$executeCount++"):
+        assert again not in settle, f"the settlement poll re-invokes the command ({again})"
+
+
+def test_213_r2_the_compiled_state_is_not_read_from_the_cached_handle() -> None:
+    """R2. The Run-9 root: `Enabled` one statement after Execute."""
+    block = _compile_gate()
+    # The retired read is gone in every spelling.
+    for retired in ("$after = [bool]$control.Enabled", "$after = $control.Enabled",
+                    "(-not $after)"):
+        assert retired not in block, f"the immediate post-Execute read is back ({retired})"
+    # And the handle it was read from is dropped straight after Execute, before
+    # any settlement observation - so there is nothing stale left to read.
+    execute_at = block.index("$control.Execute()")
+    drop_at = block.index("Release-Transient $control 'CommandBarControl'")
+    poll_at = block.index("$settled = $false")
+    assert execute_at < drop_at < poll_at, (
+        "the stale control is not released between Execute and the settlement poll"
+    )
+    assert "$control = $null" in block[drop_at:poll_at], (
+        "the stale control handle is not cleared after being released"
+    )
+    # The verdict is the settlement flag, not any cached value.
+    assert "'the target PCCM VBProject reached the VBE compiled state' `\n" \
+           "                        $settled `" in _text(SCENARIOS), (
+        "the compiled-state check is not decided by the settlement observation"
+    )
+
+
+def test_214_r3_the_settlement_poll_is_bounded_in_time_and_terminates() -> None:
+    """R3. Five seconds, ~100 ms apart, and it stops on success."""
+    settle = _settlement()
+    block = _compile_gate()
+    # A DEADLINE, computed once, from the clock.
+    assert "$settleStarted = Get-Date" in block
+    assert "$settleDeadline = $settleStarted.AddSeconds(5)" in block, (
+        "the settlement window is not a five-second deadline"
+    )
+    assert "while ((-not $settled) -and ((Get-Date) -lt $settleDeadline)) {" in settle, (
+        "the poll is not bounded by both the deadline and the success flag"
+    )
+    # THE INTERVAL.
+    assert "Start-Sleep -Milliseconds 100" in settle, "the poll has no interval"
+    assert settle.count("Start-Sleep") == 1, settle.count("Start-Sleep")
+    # NO UNBOUNDED FORM. Any of these would let the gate hang a Windows run.
+    for unbounded in ("while ($true)", "while (-not $settled) {", "do {", "for (;;)"):
+        assert unbounded not in settle, f"the poll can run forever ({unbounded})"
+    # It stops the moment the command goes quiet.
+    assert "if (-not $lastEnabled) { $settled = $true }" in settle, (
+        "the poll never sets its own success flag"
+    )
+    assert "$settled = $false" in block, "the settlement flag does not start closed"
+    assert block.index("$settled = $false") < block.index("while ((-not $settled)")
+    # And every early exit is a break out of the loop, never a swallow.
+    assert settle.count("break") == 3, settle.count("break")
+    # The elapsed time is measured and reported, so a transcript shows the shape
+    # of the wait rather than only its verdict.
+    assert "$settleMs = [int]((Get-Date) - $settleStarted).TotalMilliseconds" in block
+    assert "'P5-CMP: settlement - '" in block, "the settlement is never reported"
+
+
+def test_215_r4_r5_every_observation_reacquires_and_releases_the_exact_control() -> None:
+    """R4, R5. A fresh handle each time, re-proved, and let go."""
+    settle = _settlement()
+    # R4: reacquisition through the same explicit criteria, inside the loop.
+    assert "$poll = $bars.FindControl($msoControlButton, 578, $missing, $missing)" in settle, (
+        "the poll does not reacquire the control through the exact criteria"
+    )
+    assert settle.index("Start-Sleep") < settle.index("$poll = $bars.FindControl"), (
+        "the poll reacquires before waiting, so the first look is the stale one"
+    )
+    # ...and the reacquired control re-proves what it is, every time.
+    assert "$pollId = [int]$poll.Id" in settle
+    assert "$pollType = [int]$poll.Type" in settle
+    assert "if (($pollId -ne 578) -or ($pollType -ne $msoControlButton)) {" in settle, (
+        "a reacquired control's identity is not re-proved"
+    )
+    assert "$settleIdentityHeld = $false" in settle
+    # A vanished control is a stated failure, not a silent end of loop.
+    assert "$settleError = 'the Compile VBAProject control could not be reacquired'" in settle
+    # R5: released before the next iteration, on every path out of the body,
+    # including the two breaks and the throw.
+    assert "} finally {" in settle, "the reacquired control has no finally"
+    flat = re.sub(r"[ \t]+", " ", settle)
+    assert "Release-Transient $poll 'CommandBarControl(settle)'" in flat
+    assert settle.count("Release-Transient") == 1, settle.count("Release-Transient")
+    assert "$poll = $null" in settle.split("Release-Transient", 1)[1], (
+        "the reacquired handle is not cleared after release"
+    )
+    # It is re-nulled at the TOP of each iteration too, so a failed reacquisition
+    # cannot leave the previous iteration's handle in scope.
+    body = settle[settle.index("Start-Sleep"):]
+    assert body.index("$poll = $null") < body.index("try {"), (
+        "the poll handle is not reset before each reacquisition"
+    )
+    # StrictMode 2.0 raises on a member read against $null; the guard comes first.
+    assert settle.index("if ($null -eq $poll) {") < settle.index("$pollId = [int]$poll.Id")
+    # And the four accepted long-lived handles are untouched by the poll.
+    for outer in ("$bars = $null", "$vbe = $null", "$targetProject = $null",
+                  "$activeProject = $null"):
+        assert outer not in settle, f"the poll disturbs a long-lived handle ({outer})"
+
+
+def test_216_r6_r7_only_a_disabled_command_passes_and_a_timeout_diagnoses_nothing() -> None:
+    """R6, R7. False is the PASS, and the deadline is not a compile verdict."""
+    block = _compile_gate()
+    settle = _settlement()
+    # R6: PASS requires Enabled False, observed at least once, from a control
+    # whose identity held throughout.
+    assert "$lastEnabled = [bool]$poll.Enabled" in settle
+    assert "$lastEnabled = $true" in block, (
+        "the last-seen state does not start at the pessimistic value"
+    )
+    assert "if (-not $lastEnabled) { $settled = $true }" in settle
+    for forced in ("$settled = $true\n", "$settled = $True\n"):
+        assert forced not in block.replace(
+            "if (-not $lastEnabled) { $settled = $true }", ""), (
+            f"the settlement flag is set unconditionally somewhere ({forced!r})"
+        )
+    # A poll that never observed anything, or lost the control's identity, is
+    # not a settlement - that is its own recorded check.
+    assert "'the compiled state was read by reacquiring the exact Id-578 control'" in block
+    assert "(($observations -gt 0) -and $settleIdentityHeld -and" in block, (
+        "an empty or drifting poll could still be read as evidence"
+    )
+
+    # R7: the deadline wording says what was not established, and refuses to
+    # diagnose the thing it was waiting for. The manual compile of this very
+    # artifact is why that distinction is not cosmetic.
+    assert "Compile VBAProject did not settle to the disabled/compiled " in block
+    assert "state within the bounded observation window" in block
+    assert "not a " in block and "compiler diagnostic. " in block, (
+        "the timeout detail does not disclaim being a compiler diagnostic"
+    )
+    tail = block[block.index("'the target PCCM VBProject reached the VBE compiled state'"):]
+    for verdict in ("does not compile", "compile error", "is broken",
+                    "failing declaration", "undefined"):  # retired-authority
+        assert verdict not in tail.lower(), (
+            f"the settlement failure diagnoses the production project ({verdict})"
+        )
+    # And no caption is consulted anywhere in the settlement path.
+    assert ".Caption" not in block
+
+
+def test_217_r8_r9_the_accepted_gates_survive_the_settlement_correction() -> None:
+    """R8, R9. Nothing above the poll moved, and nothing below it is lost."""
+    block = _compile_gate()
+    # R8: the Run-8-proved identity chain, statement by statement.
+    for frozen in ("$targetProject = $Workbook.VBProject",
+                   "$activeProject = $vbe.ActiveVBProject",
+                   "$targetFull = [System.IO.Path]::GetFullPath($targetFile)",
+                   "$activeFull = [System.IO.Path]::GetFullPath($activeFile)",
+                   "[System.StringComparison]::OrdinalIgnoreCase",
+                   "$targetIsActive = $haveFiles -and $sameFile",
+                   "if (-not $targetIsActive) {",
+                   "$controlProved = ($idOk -and $typeOk)"):
+        assert frozen in block, f"an accepted check was disturbed: {frozen}"
+    # The whole poll lives inside the identity-gated branch.
+    else_at = block.index("} else {")
+    assert block.index("$settled = $false") > else_at
+    assert "$settled" not in block[:else_at], (
+        "the settlement poll escaped the target-project gate"
+    )
+    # R9: a P5-CMP failure is still a return, and the lifecycle is downstream.
+    scenarios = _executable(SCENARIOS)
+    whole = scenarios[scenarios.index("function Invoke-Phase5GateBScenarios"):]
+    section = whole[:whole.index("Save-Phase5LockedFxSeed")]
+    gate_tail = section[section.index("$vbe = $Excel.VBE"):]
+    for fatal in ("exit 1", "exit(", "[Environment]::Exit"):
+        assert fatal not in gate_tail, f"the compile gate {fatal}s"
+    assert "'SKIP'" not in gate_tail
+    harness = _executable(HARNESS)
+    order = [harness.index(token) for token in (
+        "Invoke-Phase5GateBScenarios -Excel",
+        "Add-Result 'Z' 'Excel closed naturally",
+        "$transient = @(Get-TransientFailures)",
+        "Add-Phase5LedgerIntegrityResult",
+        "Add-Phase4FinalCompletenessResult -Results $results")]
+    assert order == sorted(order)
+    # And the manual evidence is recorded, so the freeze has a stated reason.
+    text = _text(SCENARIOS)
+    assert "RUNTIME RUN 9" in text
+    assert "THE PRODUCTION VBA PROJECT COMPILES ON THE REAL TARGET ENVIRONMENT." in text
+
+
+def test_218_every_wait_loop_in_the_gate_b_harness_is_bounded() -> None:
+    """No loop in this harness may run forever on a Windows machine.
+
+    The S2 mutation removed the settlement deadline and only one test noticed.
+    A Gate-B run that hangs is worse than one that fails: it holds an Excel
+    process open and produces no transcript at all. So the rule is stated once,
+    over every loop in the harness, rather than only over the poll that
+    happened to prompt it.
+    """
+    # A loop is bounded when its own head consults a clock or compares against
+    # a finite quantity. A head that reads only a boolean flag is not: nothing
+    # makes the flag change if the awaited thing never happens.
+    bounded_by = ("Get-Date", "-lt ", "-le ", "-gt ", "-ge ")
+    problems: list[str] = []
+    for path in (SCENARIOS, HARNESS, LIFECYCLE):
+        source = _executable(path)
+        for match in re.finditer(r"^\s*(?:(do)\s*\{|while\s*\((.*)\)\s*\{)",
+                                 source, re.MULTILINE):
+            condition = (match.group(2) or "").strip()
+            line = source[:match.start()].count("\n") + 1
+            if match.group(1):
+                problems.append(f"{path.name}:{line}: a do-loop, whose bound is not in its head")
+                continue
+            if not any(token in condition for token in bounded_by):
+                problems.append(
+                    f"{path.name}:{line}: while ({condition}) has no clock and no bound")
+    assert not problems, "unbounded loops:\n  " + "\n  ".join(problems)
+    # And the two that exist name their limit explicitly.
+    assert "$settleDeadline = $settleStarted.AddSeconds(5)" in _executable(SCENARIOS)
+    assert "$deadline = (Get-Date).AddSeconds($TimeoutSeconds)" in _executable(LIFECYCLE)
+
+
+def test_219_the_settlement_poll_observes_and_never_acts() -> None:
+    """A poll that acts on the thing it is measuring measures itself.
+
+    The S8 mutation put a second `Execute()` inside the loop body. That is the
+    shape of a retry masquerading as an observation: it would drive the command
+    to disabled and then report the disabled state as evidence about the FIRST
+    compile. Only one test caught it, so the read-only rule is stated here in
+    its own right.
+    """
+    settle = _settlement()
+    # NOTHING IN THE LOOP INVOKES ANYTHING. The only members touched on the
+    # reacquired control are the three the observation needs.
+    members = set(re.findall(r"\$poll\.(\w+)", settle))
+    assert members == {"Id", "Type", "Enabled"}, members
+    for action in ("Execute", "Delete", "Reset", "SetFocus", "Move", "Copy",
+                   "$poll.Enabled =", "$poll.Visible ="):
+        assert action not in settle, f"the settlement poll acts on the command ({action})"
+    # NOR ON ANYTHING ELSE. No Run, no Import, no workbook or VBE mutation can
+    # ride along inside a loop whose job is to look.
+    for side_effect in ("$Excel.Run", "VBComponents", "$Workbook.", "Set-TableCell",
+                        "Add-Phase5Result", "$vbe.", "$targetProject.", "$activeProject."):
+        assert side_effect not in settle, f"the settlement poll has a side effect ({side_effect})"
+    # The one Execute in the whole gate is upstream of the loop entirely.
+    block = _compile_gate()
+    assert block.count(".Execute()") == 1
+    assert block.index(".Execute()") < block.index("$settled = $false"), (
+        "the compile is invoked from inside the settlement window"
+    )

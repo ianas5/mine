@@ -2767,6 +2767,34 @@ function Invoke-Phase5GateBScenarios {
     # proves is narrower and entirely about this harness: the FindControl call
     # as it was written returned no control for ID 578.
     #
+    # RUNTIME RUN 9, AND THE MANUAL COMPILE THAT SETTLED IT. With the explicit
+    # four-argument lookup, discovery worked. Run 9 got all the way through:
+    #
+    #   target VBProject acquired, ActiveVBProject acquired, active == target
+    #   by FileName, CommandBars reachable, ID 578 found, control.Id == 578,
+    #   control.Type == 1, Enabled before Execute == True, Execute() reached
+    #
+    # and then failed on one thing only: Enabled read True again in the
+    # statement straight after Execute.
+    #
+    # THE RETAINED ARTIFACT WAS THEN COMPILED BY HAND. The same
+    # PCCM_stageB.xlsm Run 9 left behind was opened, Debug > Compile VBAProject
+    # was enabled, and invoking it once produced NO compile error, NO undefined
+    # symbol, and left the command greyed out. So:
+    #
+    #   THE PRODUCTION VBA PROJECT COMPILES ON THE REAL TARGET ENVIRONMENT.
+    #   The Run-7 reserved-identifier defect class is closed.
+    #
+    # WHAT THAT DOES AND DOES NOT SETTLE. It does not say whether Run 9's own
+    # programmatic Execute finished after the harness looked - the manual
+    # compile happened in a different Excel session, on a reopened file. The
+    # honest conclusion is narrower and is the one this scenario now acts on:
+    # RUN 9'S IMMEDIATE POST-EXECUTE OBSERVATION IS INSUFFICIENT. A
+    # CommandBarControl's Enabled is cached UI state; reading it one statement
+    # after Execute measures the harness's timing, not the compiler's outcome.
+    # Settlement has to be observed in the SAME session, by reacquiring the
+    # control, which is what the bounded poll below does.
+    #
     # THE MECHANISM. The VBE exposes Compile VBAProject as a command bar control,
     # and it is addressed BY ID (578), never by caption: the caption is localised
     # and an English-only lookup would silently find nothing on a non-English
@@ -2969,23 +2997,123 @@ function Invoke-Phase5GateBScenarios {
                     $before = [bool]$control.Enabled
                     Add-Note ('P5-CMP: Compile VBAProject enabled before the attempt: ' +
                               [string]$before)
+                    $executeCount = 0
                     if ($before) {
                         # There is something to compile, so compile it. A throw
                         # here is the compile failure and is reported as one.
+                        # ONCE. Nothing below invokes the command again.
                         $null = $control.Execute()
+                        $executeCount = 1
                     }
-                    $after = [bool]$control.Enabled
+                    $null = Add-Check $list `
+                        'Compile VBAProject was executed at most once' `
+                        ($executeCount -le 1) ('executions ' + [string]$executeCount)
+
+                    # --- SETTLEMENT, NOT THE CACHED HANDLE ------------------
+                    #
+                    # RUNTIME RUN 9. Everything above passed - the right project
+                    # was active, the exact Id-578 msoControlButton was found,
+                    # Enabled read True, and Execute() was reached - and then
+                    # the gate read `$control.Enabled` on the SAME handle in the
+                    # next statement and saw True. It called that a failure.
+                    #
+                    # It was not one. The same retained Stage-B artifact was
+                    # later opened by hand and Debug > Compile VBAProject
+                    # completed with no error and went grey, so the production
+                    # project is compile-clean. What the immediate read actually
+                    # measured is unknown: a control's Enabled is a cached UI
+                    # state, and one statement after Execute the VBE has not
+                    # necessarily refreshed it.
+                    #
+                    # SO DROP THE HANDLE AND ASK AGAIN. The stale control is
+                    # released here rather than at the end, because its Enabled
+                    # is exactly the value that may not be trusted.
+                    Release-Transient $control 'CommandBarControl'
+                    $control = $null
+
+                    # A BOUNDED POLL. At most five seconds, ~100 ms apart, and
+                    # it stops the moment the command goes quiet. Every
+                    # iteration REACQUIRES the control through the same explicit
+                    # criteria and re-proves its Id and Type, so a settled
+                    # reading is never taken from something that drifted into
+                    # the collection; every acquired handle is released before
+                    # the next iteration. Execute is NOT called again.
+                    $settled = $false
+                    $observations = 0
+                    $lastEnabled = $true
+                    $settleError = ''
+                    $settleIdentityHeld = $true
+                    $settleStarted = Get-Date
+                    $settleDeadline = $settleStarted.AddSeconds(5)
+                    while ((-not $settled) -and ((Get-Date) -lt $settleDeadline)) {
+                        Start-Sleep -Milliseconds 100
+                        $poll = $null
+                        try {
+                            $poll = $bars.FindControl($msoControlButton, 578, $missing, $missing)
+                            if ($null -eq $poll) {
+                                $settleError = 'the Compile VBAProject control could not be reacquired'
+                                break
+                            }
+                            $pollId = [int]$poll.Id
+                            $pollType = [int]$poll.Type
+                            if (($pollId -ne 578) -or ($pollType -ne $msoControlButton)) {
+                                $settleIdentityHeld = $false
+                                $settleError = ('reacquired control Id ' + [string]$pollId +
+                                                ' Type ' + [string]$pollType)
+                                break
+                            }
+                            $lastEnabled = [bool]$poll.Enabled
+                            $observations = $observations + 1
+                            if (-not $lastEnabled) { $settled = $true }
+                        } catch {
+                            $settleError = ('reacquisition threw: ' + $_.Exception.Message)
+                            break
+                        } finally {
+                            if ($null -ne $poll) {
+                                Release-Transient $poll 'CommandBarControl(settle)'
+                                $poll = $null
+                            }
+                        }
+                    }
+                    $settleMs = [int]((Get-Date) - $settleStarted).TotalMilliseconds
+                    Add-Note ('P5-CMP: settlement - ' + [string]$observations +
+                              ' observation(s) over ' + [string]$settleMs +
+                              ' ms; last Enabled ' + [string]$lastEnabled +
+                              $(if ($settleError) { '; ' + $settleError } else { '' }))
+
+                    # THE OBSERVATION HAS TO HAVE HAPPENED, AND HAVE BEEN OF THE
+                    # RIGHT CONTROL. A poll that never reacquired anything, or
+                    # reacquired the wrong thing, is not evidence of settlement
+                    # and fails here rather than being read as one.
+                    $null = Add-Check $list `
+                        'the compiled state was read by reacquiring the exact Id-578 control' `
+                        (($observations -gt 0) -and $settleIdentityHeld -and
+                         ($settleError.Length -eq 0)) `
+                        ([string]$observations + ' observation(s) over ' + [string]$settleMs +
+                         ' ms; ' + $(if ($settleError) { $settleError } else { 'no error' }))
+
                     # THE POSITIVE EVIDENCE. Either the target project was
                     # already fully compiled, or it was compiled just now and
-                    # the command went quiet. Both readings are about the target
-                    # project, because the identity gate above is what let this
-                    # branch run at all, and about the Compile command, because
-                    # the control proved its own Id and Type first.
+                    # the command went quiet within the window. Both readings
+                    # are about the target project, because the identity gate
+                    # above is what let this branch run at all, and about the
+                    # Compile command, because every observation re-proved the
+                    # control's own Id and Type.
+                    #
+                    # AND IF IT NEVER SETTLES, SAY THAT AND ONLY THAT. Run 9 is
+                    # the reason the detail is worded the way it is: a command
+                    # still enabled at the deadline is an observation that was
+                    # not established. It is not a compiler diagnostic, and the
+                    # manual compile of that very artifact is why.
                     $null = Add-Check $list `
-                        'the project is fully compiled: Compile VBAProject is no longer enabled' `
-                        (-not $after) `
-                        ('enabled before ' + [string]$before + ', after ' + [string]$after +
-                         '; ' + $identity)
+                        'the target PCCM VBProject reached the VBE compiled state' `
+                        $settled `
+                        ('Compile VBAProject did not settle to the disabled/compiled ' +
+                         'state within the bounded observation window: enabled before ' +
+                         [string]$before + ', still enabled after ' + [string]$observations +
+                         ' observation(s) over ' + [string]$settleMs + ' ms. This is a ' +
+                         'settlement observation that was not established, not a ' +
+                         'compiler diagnostic. ' + $identity)
                 }
             }
         } finally {
