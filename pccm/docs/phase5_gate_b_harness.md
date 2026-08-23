@@ -3445,3 +3445,153 @@ Eight releases in the gate now. The five accepted long-lived handles
 control dropped after `Execute`, and each reacquired settlement handle are
 released where they are opened. No handle survives an iteration, and the poll
 never touches `$bars`, `$vbe` or either project handle.
+
+## Runtime Run 10: the first deep Phase-5 execution
+
+Run 10 executed once against `d515dd8` and was the first runtime to clear the
+compile and fixture boundary and reach the broad Phase-5 functional matrix:
+**69 PASS / 5 FAIL / 0 SKIP**.
+
+### Closed by real Windows evidence
+
+**P5-CMP passed.** VBE reachable, target `Workbook.VBProject` acquired,
+`VBE.ActiveVBProject` acquired, active project equal to the Stage-B project by
+`FileName`, CommandBars reachable, the exact ID 578 / Type 1 control discovered,
+`Execute` performed once, the stale handle discarded, the exact control
+reacquired, and the target project reaching the compiled state — with the
+settlement note reading `1 observation(s) over 121 ms; last Enabled False`. The
+Run-8 and Run-9 corrections are closed and frozen.
+
+**P5-FIX passed.** The golden fixture applied its timeline, was structurally
+clean, carried exactly the emitted driver identifiers, held no unkeyed driver
+data, synchronised the inflation master and grid, and calculated through
+`PCCM_Calculate`. The Run-5 and Run-6 fixture-establishment roots are closed.
+
+Also preserved: Phase-4 final matrix 35/35, P5-FX, P5-M, P5-EV, P5-D0…D8,
+P5-DP 2432/2432, P5-DC, P5-RF (all nine refusal cases), P5-S1, P5-S2, P5-ST,
+P5-NS, P5-S3, P5-S4, P5-KP, P5-S5, P5-RC, P5-FA, P5-FC, P5-S6, P5-AX,
+P5-LDG duplicate attempts 0, Y, Z, P5-FIN, `Workbook.Close` True,
+`Application.Quit` True, natural PID exit True.
+
+### P5-AN — the fixture emitted an array
+
+`Set-Phase5Fixture` returned `System.Object[]`, and the run printed naked `2`,
+`3`, `2` between scenarios. One cause: **a PowerShell function emits every
+uncaptured value from every statement in its body**, not only what it returns.
+`Add-BlankTableRow` returns the new row's `Index`, and six call sites ignored
+it — three inside the fixture tree.
+
+P5-FIX did not expose this because the golden fixture appends no FX row and no
+profile row. The analytical fixtures, applied over a workbook already carrying
+the previous fixture's state, do. That is why `test_222` asserts the corpus
+actually contains an appending model.
+
+The fix is not at the caller. `[string]$applied` or `$applied[-1]` would have
+turned P5-AN green while still selecting one object out of a polluted pipeline.
+Instead each leak is suppressed at source with `$null =`, the choreography moved
+into `Invoke-Phase5FixtureSteps`, and `Set-Phase5Fixture` became a boundary that
+captures its body's output, requires exactly one object, checks its type and
+value, and — on a breach — throws naming every leaked object and its CLR type.
+`test_221` walks the whole fixture tree so a future helper that starts emitting
+is caught statically.
+
+### P5-PQ — an address where a name belonged
+
+`COMException 0x800A03EC` at `$nm = $names.Item($DefinedName)`. The
+`entered_structure` branch resolved its defined name as:
+
+```powershell
+-DefinedName $Manifest.defined_names.($names[$target])   <!-- retired-authority -->
+```
+
+but the manifest's `defined_names` map is keyed **by name** with the **cell
+address** as its value — `nmDuration_Entered` → `'Setup'!$C$48`. Excel was handed
+an address, found no such name, and raised before the mutation happened. **PQ-02
+produced no production predicate verdict at all**; it is not evidence about the
+`structure_change_pending` predicate in either direction.
+
+The hashtable already held the correct defined name, which is what every other
+`Set-NamedValue` site in the harness passes. The manifest's role is to *declare*
+that the name exists, and that is now checked rather than dereferenced.
+
+### P5-PN — StrictMode throws on the read, not the guard
+
+`PropertyNotFoundException: The property 'repeat' cannot be found`, from
+
+```powershell
+if ($null -ne $Mutation.repeat) { ... }   <!-- retired-authority -->
+```
+
+Under `Set-StrictMode -Version 2.0` the *read* throws before the comparison, so
+the guard tested something it could never reach. Seven of the eight emitted
+`fx_row` mutations carry no `repeat`; four carry no `append`.
+
+Optional properties now go through `$Object.PSObject.Properties[$Name]`, which
+preserves the distinction the corpus depends on: **absent** takes the declared
+default, **present with JSON null** returns null and means *write a blank cell*.
+Required fields never default — `Get-Phase5RequiredProperty` throws.
+
+### The mutation schema, stated once
+
+`Get-Phase5MutationSchema` is now the single table for all ten kinds, naming
+`Required`, `NullMeansBlank` and `Optional` with defaults. It is read by both
+the runtime applier and — the point of the exercise — the **pure preflight**, so
+a malformed corpus or an unresolvable target fails **P5-PRE before Excel is
+open** rather than as a COM exception deep inside a scenario. `test_223` parses
+that table out of the PowerShell rather than restating it, so the test cannot
+drift from the harness.
+
+### P5-AR — a display label demanded a plan-case field
+
+`PropertyNotFoundException: The property 'id' cannot be found`, from
+`$label = 'case ' + [string]$Case.id` <!-- retired-authority: quoted to record what was removed -->
+inside `Add-Phase5AnalyticalChecks`, which
+P5-AR calls with `gate_b.audit_reconstruction` — emitted as
+`{title, model, expected, relationships}`, with no `id`.
+
+The audit fixture emits the **identical `expected` shape** a plan case does, from
+the same oracle, for its own `model`. So the expected block was always the right
+authority and no `id` is invented: the **label is now the caller's**, stated
+deliberately, and the checker refuses a call with no label or no expected block.
+
+### P5-ID — one authority discrepancy, deliberately unresolved
+
+Cases 3, 9 and 30 all committed and the reconciliation checks passed. One value
+disagreed: **case 9, `R-001.central_basis`, actual BLANK, expected `ML`.**
+
+The authority trace:
+
+| Authority | Says |
+|---|---|
+| `spec/calc_contract.yaml` | `central_basis` → `applies_to: ["cost_line", "risk"]` |
+| `docs/phase5_plan.md` §1546 | Central Basis — Cost Line **yes**, Risk **yes** |
+| Python oracle | `central_basis=central_basis_label(kind)` on the Risk builder |
+| Production `DriversBlock` | Risk → `CENTRAL_BASIS = Empty` |
+
+`applies_to` is used discriminatingly in that same contract table — `quantity` is
+`["cost_line"]`, `probability` is `["risk"]`, `central_value` is `["cost_line"]` —
+and the plan's own column table writes **blank** for Quantity and Central Value
+on Risk in the very row-set where it writes **yes** for Central Basis. The plan
+also heads §5.1 "Deterministic central value — risks excluded", so it knows a
+risk has no central *value* and still requires the *basis* label.
+
+Production's counter-argument is stated in `modCalcAnalytical`: a risk exits
+before `DeterministicCentral`, which produces `central` and `basis` together, and
+the comment says *"Central and CentralBasis stay unset rather than being given a
+zero that would read as a real central value."* That is coherent — but it is an
+argument, not the accepted contract.
+
+**Three declared authorities agree, and production is the one that differs.**
+Under the review's own branch that means this is a production defect, and
+production is not changed here. The oracle is not changed either: setting
+`central_basis` to null would make P5-ID green while putting the oracle at odds
+with both the contract and the plan.
+
+Blast radius: **4 Risk expected-driver rows across 3 fixtures** — plan 8, plan 9
+and `audit_reconstruction` — every one of them carrying a basis where production
+publishes blank. All 22 Cost Line rows agree. P5-AN and P5-AR would have hit the
+same mismatch had they run.
+
+`test_227` pins the three-way agreement so the oracle cannot be quietly changed.
+`test_228` bounds production's deviation to exactly one column as a **subset**
+assertion, so a new deviation fails but resolving this one does not.

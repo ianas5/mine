@@ -24,8 +24,24 @@
     build/stage_b_manifest.json or build/phase5_gate_b_inspection.json, both of
     which the Stage-A build emits from the accepted contracts.
 
-    NOTHING HERE HAS BEEN EXECUTED. No Windows run has been made and no Excel COM
-    session has been started for Phase 5. This file is source under review.
+    RUNTIME HISTORY. This paragraph used to read "NOTHING HERE HAS BEEN
+    EXECUTED", which stopped being true at Runtime Run 5 and was left standing
+    through Run 10 - a stale evidence claim in the one place a reader looks
+    first. What is true, as of Runtime Run 10 against d515dd8:
+
+      Run 5   the fixture choreography root
+      Run 6   the empty-inflation enumeration root
+      Run 7   the reserved-identifier production compile class
+      Run 8   the VBE compile-command discovery root
+      Run 9   the post-Execute settlement root; a later MANUAL compile of the
+              retained artifact proved the production project compile-clean
+      Run 10  69 PASS / 5 FAIL / 0 SKIP. P5-CMP and P5-FIX both PASSED on real
+              Windows and are closed. Four of the five failures - P5-AN, P5-PQ,
+              P5-PN, P5-AR - are HARNESS execution/schema defects corrected in
+              this file. The fifth, P5-ID, is one published-value authority
+              discrepancy (Risk central_basis) that is NOT resolved here.
+
+    Gate B is not accepted. Phase 5 is not accepted.
 #>
 
 Set-StrictMode -Version 2.0
@@ -223,6 +239,14 @@ function Invoke-Phase5CoveragePreflight {
     }
 
     $cases = Get-Content -LiteralPath $casesPath -Raw | ConvertFrom-Json
+    $inspection = Get-Content -LiteralPath $inspectPath -Raw | ConvertFrom-Json
+    $manifestPath = Join-Path $BuildDir 'stage_b_manifest.json'
+    $manifest = $null
+    if (Test-Path -LiteralPath $manifestPath) {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    }
+    $null = Add-Check $list 'build/stage_b_manifest.json exists (the defined-name authority)' `
+        ($null -ne $manifest) $manifestPath
     $ledger = Get-Phase5CoverageLedger
     $known = Get-Phase5ScenarioIds
 
@@ -285,6 +309,41 @@ function Invoke-Phase5CoveragePreflight {
     }
     $null = Add-Check $list 'every mapped fixture carries the evidence its kind promises' `
         ($hollow.Count -eq 0) ($hollow -join '; ')
+
+    # EVERY EMITTED MUTATION IS WELL FORMED, AND ITS TARGET RESOLVES.
+    #
+    # RUN-10 ROOT, MOVED FORWARD. P5-PQ discovered a mutation whose target could
+    # not be turned into a workbook name only when Excel raised COM 0x800A03EC
+    # from inside Names.Item - by which point no production predicate verdict
+    # existed for that case at all. Every one of these checks is pure: the
+    # emitted corpus, the emitted inspection metadata and the emitted manifest,
+    # with no workbook open. A malformed mutation corpus now fails P5-PRE.
+    $malformed = @()
+    $mutationCount = 0
+    foreach ($bucket in 'prerequisite_cases', 'no_block_cases', 'direct_check_cases') {
+        foreach ($case in @($cases.gate_b.$bucket)) {
+            $where = $bucket + ' ' + [string](Get-Phase5OptionalProperty -Object $case `
+                -Name 'id' -Default '<no id>')
+            $mutations = @()
+            if (Test-Phase5HasProperty -Object $case -Name 'mutation') {
+                $mutations += $case.mutation
+            }
+            if (Test-Phase5HasProperty -Object $case -Name 'mutations') {
+                foreach ($entry in @($case.mutations)) { $mutations += $entry }
+            }
+            foreach ($mutation in $mutations) {
+                if ($null -eq $mutation) { continue }
+                $mutationCount++
+                $malformed += @(Test-Phase5MutationSchema -Mutation $mutation `
+                    -Inspection $inspection -Manifest $manifest -Where $where)
+            }
+        }
+    }
+    $null = Add-Check $list 'the corpus emitted at least one Gate-B mutation' `
+        ($mutationCount -gt 0) ("mutations " + $mutationCount)
+    $null = Add-Check $list `
+        'every emitted mutation is well formed and every target resolves (no Excel)' `
+        ($malformed.Count -eq 0) ($malformed -join '; ')
 
     # THE DIRECT-VECTOR SETS ARE COMPLETE. Counted from the corpus, so a vector
     # dropped upstream cannot shrink Gate-B coverage silently.
@@ -1543,7 +1602,7 @@ function Reset-Phase5FxTable {
     $fx = $Inspection.input_tables.fx_rates
     $rows = Get-TableRowCount -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
     if ($rows -lt 1) {
-        Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
+        $null = Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
         $rows = 1
     }
     # Everything after the seed row goes, whatever it is.
@@ -1690,7 +1749,71 @@ function Invoke-Phase5AddDriverAndRequireSuccess {
 # The Adds do not need a second Apply behind them: SyncRows preserves the year
 # columns Apply generated and only adds the new driver's profiling row, and each
 # Add revalidates the structure itself.
+# ===========================================================================
+# THE FIXTURE BOUNDARY: EXACTLY ONE OBJECT COMES OUT OF IT
+# ===========================================================================
+# RUNTIME RUN 10. P5-AN died at
+#
+#     ($applied -like 'OK|*') $applied
+#
+#     ParameterBindingArgumentTransformationException
+#     Cannot convert value "System.Object[]" to type "System.Boolean"
+#
+# and the run also printed naked 2 / 3 / 2 between scenarios. Both have one
+# cause: a PowerShell function emits EVERY uncaptured value from every statement
+# in its body, not just the one it returns. Add-BlankTableRow returns the new
+# row's Index, and six call sites - three of them inside the fixture tree -
+# ignored it, so the row indices joined the return value in the pipeline and the
+# caller received an array where it expected a String.
+#
+# P5-FIX did not expose this because the golden fixture appended no FX rows and
+# no profile rows; the analytical fixtures, applied over a workbook that already
+# carried the previous fixture's state, did.
+#
+# THE FIX IS NOT AT THE CALLER. Writing [string]$applied or $applied[-1] would
+# have made P5-AN green while still silently selecting one object out of a
+# polluted pipeline - and the next leak would have selected the wrong one.
+# Instead each leaking call site is suppressed at source, and this boundary
+# CAPTURES its own body's output and refuses to return anything it cannot
+# account for. A future helper that starts emitting is named and thrown, never
+# swallowed.
 function Set-Phase5Fixture {
+    param($Excel, $Workbook, $Manifest, $Inspection, $Model)
+
+    $emitted = @(Invoke-Phase5FixtureSteps -Excel $Excel -Workbook $Workbook `
+        -Manifest $Manifest -Inspection $Inspection -Model $Model)
+
+    if ($emitted.Count -ne 1) {
+        # NAMED, NOT DISCARDED. The diagnostic that would have solved Run 10 in
+        # one line is exactly the list of what leaked and what type it was.
+        $described = @()
+        foreach ($item in $emitted) {
+            $described += ('<' + $(if ($null -eq $item) { 'null' }
+                                   else { $item.GetType().Name }) + '> ' + [string]$item)
+        }
+        throw ('Gate-B fixture establishment broke its output contract: it emitted ' +
+               [string]$emitted.Count + ' objects where exactly one was expected. ' +
+               'An uncaptured value from a helper inside the fixture tree is in the ' +
+               'pipeline. Emitted: ' + ($described -join ' | ') + '.')
+    }
+    $applied = $emitted[0]
+    if ($applied -isnot [string]) {
+        throw ('Gate-B fixture establishment broke its output contract: the single ' +
+               'emitted object is a ' + $applied.GetType().Name + ', not the String ' +
+               'result of PCCM_ApplyTimeline.')
+    }
+    if ($applied -notlike 'OK|*') {
+        throw ('Gate-B fixture establishment broke its output contract: the emitted ' +
+               'result is ' + [char]39 + $applied + [char]39 + ', which is not an ' +
+               'automation success.')
+    }
+    return $applied
+}
+
+# The steps themselves. Every statement that calls a value-returning helper
+# either captures the value or suppresses it with $null =; the boundary above
+# is what proves that stayed true.
+function Invoke-Phase5FixtureSteps {
     param($Excel, $Workbook, $Manifest, $Inspection, $Model)
 
     # --- A. empty the registers and reset the identity counters -------------
@@ -1724,7 +1847,7 @@ function Set-Phase5Fixture {
     foreach ($entry in @($Model.fx)) {
         if ([string]$entry.currency -eq $reporting) { continue }
         $fxRow++
-        Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
+        $null = Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
         $target = [int]$fx.locked_seed_rows + $fxRow
         Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
             -RowIndex $target -ColumnIndex 1 -Value ([string]$entry.currency)
@@ -1824,7 +1947,7 @@ function Set-Phase5InflationProfileMaster {
         $index++
         if ($index -gt (Get-TableRowCount -Workbook $Workbook -SheetName $master.sheet `
                 -TableName $master.table_name)) {
-            Add-BlankTableRow -Workbook $Workbook -SheetName $master.sheet `
+            $null = Add-BlankTableRow -Workbook $Workbook -SheetName $master.sheet `
                 -TableName $master.table_name
         }
         # EXACT text, binary. A profile name is an identity and is never trimmed
@@ -2019,8 +2142,194 @@ function Write-Phase5Weights {
 # PowerShell holds no list of its own. Every predicate, target and expected
 # detail token comes from the corpus, so a locked prerequisite cannot be dropped
 # by editing this file.
+# ===========================================================================
+# RUNTIME RUN 10: OPTIONAL PROPERTIES UNDER Set-StrictMode -Version 2.0
+# ===========================================================================
+# P5-PN died on:
+#
+#     PropertyNotFoundException: The property 'repeat' cannot be found
+#
+# from the idiom `if ($null -ne $Mutation.repeat) { ... }`. Under StrictMode 2.0  retired-authority
+# the READ throws before the comparison ever happens, so the guard tests
+# something it can never reach. Seven of the eight emitted fx_row mutations carry
+# no `repeat` at all, and four carry no `append`.
+#
+# The property COLLECTION is the safe question, and it also preserves the
+# distinction the corpus depends on:
+#
+#   ABSENT               - the property is not in the JSON; the default applies
+#   PRESENT, JSON null   - the corpus deliberately says "no value here", which
+#                          for a cell mutation means WRITE A BLANK, not zero
+#
+# Those are not the same thing and neither may be collapsed into the other.
+# StrictMode is not weakened anywhere to make this work.
+function Test-Phase5HasProperty {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $false }
+    return ($null -ne $Object.PSObject.Properties[$Name])
+}
+
+function Get-Phase5OptionalProperty {
+    param($Object, [string]$Name, $Default = $null)
+    # ABSENT yields the default. PRESENT-WITH-NULL yields $null, deliberately:
+    # a corpus that states null is stating something.
+    if (-not (Test-Phase5HasProperty -Object $Object -Name $Name)) { return $Default }
+    return $Object.PSObject.Properties[$Name].Value
+}
+
+function Get-Phase5RequiredProperty {
+    param($Object, [string]$Name, [string]$Where)
+    # A REQUIRED FIELD NEVER DEFAULTS. Silently substituting a value for a
+    # missing required field is how a malformed corpus becomes a green run.
+    if (-not (Test-Phase5HasProperty -Object $Object -Name $Name)) {
+        throw ($Where + ": the required property '" + $Name + "' is absent from the " +
+               'emitted object. A required field is never defaulted.')
+    }
+    return $Object.PSObject.Properties[$Name].Value
+}
+
+# ===========================================================================
+# THE MUTATION SCHEMA, STATED ONCE
+# ===========================================================================
+# ONE TABLE, read by BOTH the pure preflight and the runtime applier, so a
+# malformed mutation fails in P5-PRE - before Excel is even open - rather than
+# discovering itself as a COM exception deep inside a scenario.
+#
+#   Required        must be PRESENT. Presence, not truthiness.
+#   NullMeansBlank  a required property whose JSON null is meaningful: it says
+#                   "write a blank cell", which is a locked prerequisite in
+#                   several cases and is not the same as zero or "".
+#   Optional        ABSENT is legal and the stated default applies.
+function Get-Phase5MutationSchema {
+    return @{
+        'entered_structure'  = @{ Required = @('target', 'value', 'apply_timeline')
+                                  NullMeansBlank = @(); Optional = @{} }
+        'named_number'       = @{ Required = @('target', 'value')
+                                  NullMeansBlank = @(); Optional = @{} }
+        'named_text'         = @{ Required = @('target', 'value')
+                                  NullMeansBlank = @(); Optional = @{} }
+        'named_blank'        = @{ Required = @('target')
+                                  NullMeansBlank = @(); Optional = @{} }
+        'register_cell'      = @{ Required = @('register', 'permanent_id', 'column', 'value')
+                                  NullMeansBlank = @('value'); Optional = @{} }
+        'fx_row'             = @{ Required = @('currency', 'rate')
+                                  NullMeansBlank = @('rate')
+                                  Optional = @{ repeat = 1; append = $false } }
+        'fx_remove'          = @{ Required = @('currency')
+                                  NullMeansBlank = @(); Optional = @{} }
+        'inflation_cell'     = @{ Required = @('profile', 'calendar_year', 'value')
+                                  NullMeansBlank = @('value'); Optional = @{} }
+        'config_profile_add' = @{ Required = @('profile', 'apply_timeline', 'require_clean_structure')
+                                  NullMeansBlank = @(); Optional = @{} }
+        'profiling_cell'     = @{ Required = @('grid', 'permanent_id', 'project_year', 'value')
+                                  NullMeansBlank = @('value'); Optional = @{} }
+    }
+}
+
+# The three entered structural inputs the corpus may name, and the DEFINED NAME
+# each one is written through. These are the names themselves - the manifest's
+# defined_names map holds ADDRESSES against these keys, and an address is not
+# something Workbook.Names.Item can resolve.
+function Get-Phase5EnteredStructureNames {
+    return @{
+        base_year  = 'nmBaseYear_Entered'
+        start_year = 'nmStartYear_Entered'
+        duration   = 'nmDuration_Entered'
+    }
+}
+
+# Returns the problems as plain strings; an empty result means the mutation is
+# well formed. Pure: no Excel, no workbook, no COM.
+function Test-Phase5MutationSchema {
+    param($Mutation, $Inspection, $Manifest, [string]$Where = 'a Gate-B mutation')
+    $problems = @()
+    if ($null -eq $Mutation) { return @($Where + ': the mutation object is absent') }
+    if (-not (Test-Phase5HasProperty -Object $Mutation -Name 'kind')) {
+        return @($Where + ": the mutation states no 'kind'")
+    }
+    $kind = [string]$Mutation.kind
+    $schema = Get-Phase5MutationSchema
+    if (-not $schema.ContainsKey($kind)) {
+        return @($Where + ": unknown mutation kind '" + $kind + "'")
+    }
+    $rule = $schema[$kind]
+    foreach ($name in @($rule.Required)) {
+        if (-not (Test-Phase5HasProperty -Object $Mutation -Name $name)) {
+            $problems += ($Where + ' [' + $kind + "]: the required property '" + $name +
+                          "' is absent")
+            continue
+        }
+        # A required property may be null ONLY where the schema says its null is
+        # the blank-cell instruction.
+        $value = $Mutation.PSObject.Properties[$name].Value
+        if (($null -eq $value) -and (@($rule.NullMeansBlank) -notcontains $name)) {
+            $problems += ($Where + ' [' + $kind + "]: the required property '" + $name +
+                          "' is present but null, and null is not meaningful here")
+        }
+    }
+
+    # AND THE TARGETS RESOLVE. This is the P5-PQ root: a mutation whose target
+    # cannot be turned into a real defined name has no business reaching Excel.
+    if ($kind -like 'named_*') {
+        $target = [string](Get-Phase5OptionalProperty -Object $Mutation -Name 'target')
+        if ($null -eq $Inspection) {
+            $problems += ($Where + ' [' + $kind + ']: no inspection metadata to resolve ' +
+                          "target '" + $target + "'")
+        } elseif (-not (Test-Phase5HasProperty -Object $Inspection.inputs -Name $target)) {
+            $problems += ($Where + ' [' + $kind + "]: target '" + $target +
+                          "' names no declared input")
+        } else {
+            $entry = $Inspection.inputs.PSObject.Properties[$target].Value
+            $declared = [string](Get-Phase5OptionalProperty -Object $entry -Name 'defined_name')
+            if ([string]::IsNullOrWhiteSpace($declared)) {
+                $problems += ($Where + ' [' + $kind + "]: input '" + $target +
+                              "' carries no defined_name")
+            }
+        }
+    }
+    if ($kind -eq 'entered_structure') {
+        $target = [string](Get-Phase5OptionalProperty -Object $Mutation -Name 'target')
+        $entered = Get-Phase5EnteredStructureNames
+        if (-not $entered.ContainsKey($target)) {
+            $problems += ($Where + " [entered_structure]: target '" + $target +
+                          "' is not one of base_year, start_year, duration")
+        } elseif ($null -ne $Manifest) {
+            $definedName = [string]$entered[$target]
+            if (-not (Test-Phase5HasProperty -Object $Manifest.defined_names -Name $definedName)) {
+                $problems += ($Where + ' [entered_structure]: the manifest declares no ' +
+                              "defined name '" + $definedName + "'")
+            }
+        }
+    }
+    return @($problems)
+}
+
+function Assert-Phase5MutationSchema {
+    param($Mutation, $Inspection, $Manifest, [string]$Where = 'a Gate-B mutation')
+    $problems = @(Test-Phase5MutationSchema -Mutation $Mutation -Inspection $Inspection `
+        -Manifest $Manifest -Where $Where)
+    if ($problems.Count -gt 0) {
+        throw ('the Gate-B mutation corpus is malformed: ' + ($problems -join '; ') + '.')
+    }
+}
+
 function Invoke-Phase5Mutation {
     param($Excel, $Workbook, $Manifest, $Inspection, $Mutation)
+
+    # RUN 10. THE SHAPE IS PROVED BEFORE ANY OF IT IS USED. P5-PRE already
+    # rejected a malformed corpus without opening Excel; this is the same table
+    # applied again at the point of use, so a mutation reaching COM has been
+    # checked twice and defaulted never.
+    Assert-Phase5MutationSchema -Mutation $Mutation -Inspection $Inspection `
+        -Manifest $Manifest -Where ('Gate-B mutation ' +
+            [string](Get-Phase5OptionalProperty -Object $Mutation -Name 'kind' -Default '<no kind>'))
+
+    # EVERYTHING BELOW READS PROPERTIES THE SCHEMA HAS JUST PROVED PRESENT.
+    # Required fields are read directly and deliberately: the assertion above is
+    # what makes a direct read safe under StrictMode, and a field that is not in
+    # the schema table has no business being read here at all. The only reads
+    # that go through the optional accessor are the ones the schema declares
+    # optional - which is the whole of the P5-PN root.
 
     $registers = @{}
     foreach ($register in @($Manifest.registers)) { $registers[$register.key] = $register }
@@ -2034,15 +2343,29 @@ function Invoke-Phase5Mutation {
             # applied structure is refreshed: false is how STRUCTURE CHANGE
             # PENDING is produced, and it is the only mutation that leaves the
             # Phase-4 structural gate holding the refusal.
-            $names = @{
-                base_year  = 'nmBaseYear_Entered'
-                start_year = 'nmStartYear_Entered'
-                duration   = 'nmDuration_Entered'
-            }
-            Set-NamedValue -Workbook $Workbook `
-                -DefinedName $Manifest.defined_names.($names[[string]$Mutation.target]) `
-                -Value ([double]$Mutation.value)
-            if ($Mutation.apply_timeline) {
+            # RUN-10 ROOT. This wrote:
+            #
+            #     -DefinedName $Manifest.defined_names.($names[$target])   retired-authority
+            #
+            # and the manifest's defined_names map is keyed BY NAME with the
+            # cell ADDRESS as its value - nmDuration_Entered -> 'Setup'!$C$48.
+            # So Workbook.Names.Item was handed an address, found no such name,
+            # and raised COMException 0x800A03EC before the mutation happened.
+            # No production predicate verdict existed for PQ-02 at all.
+            #
+            # The hashtable already holds the defined NAME, which is what
+            # Names.Item resolves and what every other Set-NamedValue call site
+            # in this harness passes. The manifest's role here is to DECLARE
+            # that the name exists, which the schema check above proved.
+            $names = Get-Phase5EnteredStructureNames
+            $target = [string](Get-Phase5RequiredProperty -Object $Mutation -Name 'target' `
+                -Where 'the entered_structure mutation')
+            $definedName = [string]$names[$target]
+            Set-NamedValue -Workbook $Workbook -DefinedName $definedName `
+                -Value ([double](Get-Phase5RequiredProperty -Object $Mutation -Name 'value' `
+                    -Where 'the entered_structure mutation'))
+            if (Get-Phase5RequiredProperty -Object $Mutation -Name 'apply_timeline' `
+                    -Where 'the entered_structure mutation') {
                 # THE APPLY IS A PRODUCTION MUTATION AND ITS RESULT IS READ.
                 # This branch is where the mutation asks for the applied
                 # structure to be REFRESHED, so an Apply that did not take means
@@ -2059,6 +2382,9 @@ function Invoke-Phase5Mutation {
             }
         }
         'named_number' {
+            # The target's declared defined_name. Test-Phase5MutationSchema has
+            # already proved this input exists and carries a non-blank
+            # defined_name, so the dynamic lookup cannot raise here.
             Set-NamedValue -Workbook $Workbook `
                 -DefinedName $Inspection.inputs.([string]$Mutation.target).defined_name `
                 -Value ([double]$Mutation.value)
@@ -2083,18 +2409,22 @@ function Invoke-Phase5Mutation {
                 -Value (Get-MutationValue $Mutation)
         }
         'fx_row' {
-            $repeat = 1
-            if ($null -ne $Mutation.repeat) { $repeat = [int]$Mutation.repeat }
+            # RUN-10 ROOT. `if ($null -ne $Mutation.repeat)` throws under  retired-authority
+            # StrictMode 2.0 when the property is absent, which is seven of the
+            # eight emitted fx_row mutations. The property collection answers
+            # without reading a property that is not there.
+            $repeat = [int](Get-Phase5OptionalProperty -Object $Mutation -Name 'repeat' -Default 1)
+            $append = [bool](Get-Phase5OptionalProperty -Object $Mutation -Name 'append' -Default $false)
             for ($copy = 1; $copy -le $repeat; $copy++) {
                 $row = 0
-                if (-not $Mutation.append) {
+                if (-not $append) {
                     $row = Find-FxRow -Workbook $Workbook -Table $fx `
                         -Currency ([string]$Mutation.currency)
                 }
                 if ($row -lt 1) {
                     $row = (Get-TableRowCount -Workbook $Workbook -SheetName $fx.sheet `
                         -TableName $fx.table_name) + 1
-                    Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet `
+                    $null = Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet `
                         -TableName $fx.table_name
                     Set-TableCell -Workbook $Workbook -SheetName $fx.sheet `
                         -TableName $fx.table_name -RowIndex $row -ColumnIndex 1 `
@@ -2133,12 +2463,13 @@ function Invoke-Phase5Mutation {
             $master = $Inspection.input_tables.inflation_profiles
             $row = (Get-TableRowCount -Workbook $Workbook -SheetName $master.sheet `
                 -TableName $master.table_name) + 1
-            Add-BlankTableRow -Workbook $Workbook -SheetName $master.sheet `
+            $null = Add-BlankTableRow -Workbook $Workbook -SheetName $master.sheet `
                 -TableName $master.table_name
             Set-TableCell -Workbook $Workbook -SheetName $master.sheet `
                 -TableName $master.table_name -RowIndex $row -ColumnIndex 1 `
                 -Value ([string]$Mutation.profile)
-            if ($Mutation.apply_timeline) {
+            if (Get-Phase5RequiredProperty -Object $Mutation -Name 'apply_timeline' `
+                    -Where 'the config_profile_add mutation') {
                 # SyncProfileRows creates the matching Inflation row, with BLANK
                 # rates: a new profile arrives incomplete by construction, which
                 # is exactly the condition under test.
@@ -2151,7 +2482,8 @@ function Invoke-Phase5Mutation {
                     -Operation 'PCCM_ApplyTimeline' `
                     -Stage 'mutation inflation_profile_add, applying the Config-master addition'
             }
-            if ($Mutation.require_clean_structure) {
+            if (Get-Phase5RequiredProperty -Object $Mutation -Name 'require_clean_structure' `
+                    -Where 'the config_profile_add mutation') {
                 # The workbook must still be STRUCTURALLY VALID: that is half the
                 # claim. An unreferenced incomplete profile is legitimate
                 # structure that the calculation ignores, not a fault.
@@ -2181,7 +2513,11 @@ function Get-MutationValue {
     # rule the fixture writers follow, applied to the mutation matrix: several
     # locked prerequisites ARE the blank, and casting first would write the very
     # value the predicate exists to refuse the absence of.
-    $raw = $Mutation.$Property
+    # RUN 10. `$Mutation.$Property` is a direct property read and throws under
+    # StrictMode 2.0 when the property is absent. Absent and present-with-null
+    # both mean "no value to write" HERE, but they are distinguished by the
+    # schema, which decides whether the absence was legal in the first place.
+    $raw = Get-Phase5OptionalProperty -Object $Mutation -Name $Property
     if ($null -eq $raw) { return $null }
     if ($raw -is [string]) { return [string]$raw }
     return [double]$raw
@@ -2264,11 +2600,33 @@ function Add-Phase5DetailTokenChecks {
 # ListObjects, calc_totals and calc_state are all compared, and a row count that
 # does not match the fixture is a failure in its own right rather than a reason
 # to compare fewer rows.
+# RUNTIME RUN 10. P5-AR died here on
+#
+#     PropertyNotFoundException: The property 'id' cannot be found
+#
+# because it passed gate_b.audit_reconstruction, which the corpus emits with
+# {title, model, expected, relationships} and no `id`. The helper had been
+# reading `$Case.id` for one purpose only - building a display label - and so a
+# schema mismatch in a field nothing asserts took the whole scenario down.
+#
+# THE EXPECTED BLOCK IS THE AUTHORITY, AND IT WAS ALWAYS THE RIGHT ONE. The
+# audit fixture emits the identical `expected` shape a plan case does, from the
+# same oracle, for its own `model`. So the correction is to stop demanding a
+# field the checker never needed: the LABEL is now the caller's, stated
+# deliberately, and no expected value is manufactured in PowerShell.
 function Add-Phase5AnalyticalChecks {
-    param($List, $Workbook, $Inspection, $Case, $Tolerances)
+    param($List, $Workbook, $Inspection, $Case, $Tolerances, [string]$Label)
 
     $expected = $Case.expected
-    $label = 'case ' + [string]$Case.id
+    if ([string]::IsNullOrWhiteSpace($Label)) {
+        throw ('Add-Phase5AnalyticalChecks was called with no Label. Every ' +
+               'analytical check names the fixture it is about, and the caller ' +
+               'is what knows that name.')
+    }
+    if ($null -eq $expected) {
+        throw ($Label + ': the fixture carries no emitted expected block, so there ' +
+               'is nothing to assert it against.')
+    }
     $tolerance = [double]$Tolerances.identity_relative_coefficient
 
     # --- tblCalcYears: EVERY column, including Calendar Year ----------------
@@ -2278,7 +2636,7 @@ function Add-Phase5AnalyticalChecks {
     # rather than derived here as `start_year + index - 1`.
     $years = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_years')
     $expectedYears = @($expected.calc_years)
-    $null = Add-Check $List ($label + ': tblCalcYears has one row per applied project year') `
+    $null = Add-Check $List ($Label + ': tblCalcYears has one row per applied project year') `
         ($years.Count -eq $expectedYears.Count) `
         ("rows " + $years.Count + ", expected " + $expectedYears.Count)
     $indexColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_years' -ColumnKey 'project_index'
@@ -2288,16 +2646,16 @@ function Add-Phase5AnalyticalChecks {
             if ([int]$row[$indexColumn] -eq [int]$wanted.project_index) { $found = $row }
         }
         if ($null -eq $found) {
-            $null = Add-Check $List ($label + ': tblCalcYears row ' + [string]$wanted.project_index) $false 'no such row'
+            $null = Add-Check $List ($Label + ': tblCalcYears row ' + [string]$wanted.project_index) $false 'no such row'
             continue
         }
         foreach ($field in $wanted.PSObject.Properties.Name) {
             $ordinal = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_years' -ColumnKey $field
             if ($ordinal -lt 0) {
-                $null = Add-Check $List ($label + ': tblCalcYears has a column for ' + $field) $false
+                $null = Add-Check $List ($Label + ': tblCalcYears has a column for ' + $field) $false
                 continue
             }
-            $null = Add-Check $List ($label + ': years ' + [string]$wanted.project_index + '.' + $field) `
+            $null = Add-Check $List ($Label + ': years ' + [string]$wanted.project_index + '.' + $field) `
                 (Test-CalcValue -Actual $found[$ordinal] -Expected $wanted.$field -Tolerance $tolerance) `
                 ("got " + (Format-CalcValue $found[$ordinal]) + ", expected " + (Format-CalcValue $wanted.$field))
         }
@@ -2308,7 +2666,7 @@ function Add-Phase5AnalyticalChecks {
     foreach ($row in $years) {
         $projectIndex = [string][int]$row[$indexColumn]
         $wanted = $expected.discount_factors.$projectIndex
-        $null = Add-Check $List ($label + ': discount factor at project index ' + $projectIndex) `
+        $null = Add-Check $List ($Label + ': discount factor at project index ' + $projectIndex) `
             (Test-CalcValue -Actual $row[$factorColumn] -Expected $wanted -Tolerance $tolerance) `
             ("got " + (Format-CalcValue $row[$factorColumn]) + ", expected " + (Format-CalcValue $wanted))
     }
@@ -2319,7 +2677,7 @@ function Add-Phase5AnalyticalChecks {
     # a numeric zero in its place.
     $factors = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_inflation_factors')
     $expectedFactors = @($expected.inflation_factors)
-    $null = Add-Check $List ($label + ': tblCalcInflationFactors row count') `
+    $null = Add-Check $List ($Label + ': tblCalcInflationFactors row count') `
         ($factors.Count -eq $expectedFactors.Count) `
         ("rows " + $factors.Count + ", expected " + $expectedFactors.Count)
     $profileColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_inflation_factors' -ColumnKey 'inflation_profile'
@@ -2332,7 +2690,7 @@ function Add-Phase5AnalyticalChecks {
             if (([string]$row[$profileColumn] -eq [string]$wanted.profile) -and `
                 ([int]$row[$yearColumn] -eq [int]$wanted.calendar_year)) { $found = $row }
         }
-        $key = $label + ': inflation ' + [string]$wanted.profile + ' ' + [string]$wanted.calendar_year
+        $key = $Label + ': inflation ' + [string]$wanted.profile + ' ' + [string]$wanted.calendar_year
         if ($null -eq $found) {
             $null = Add-Check $List ($key + ' row exists') $false 'no such row'
             continue
@@ -2352,7 +2710,7 @@ function Add-Phase5AnalyticalChecks {
     # the model the oracle was given.
     $fxRows = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_fx')
     $expectedFx = @($expected.resolved_fx_rows)
-    $null = Add-Check $List ($label + ': tblCalcFX carries the referenced currencies only') `
+    $null = Add-Check $List ($Label + ': tblCalcFX carries the referenced currencies only') `
         ($fxRows.Count -eq $expectedFx.Count) `
         ("rows " + $fxRows.Count + ", expected " + $expectedFx.Count)
     $currencyColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_fx' -ColumnKey 'currency'
@@ -2362,16 +2720,16 @@ function Add-Phase5AnalyticalChecks {
             if ([string]$row[$currencyColumn] -eq [string]$wanted.currency) { $found = $row }
         }
         if ($null -eq $found) {
-            $null = Add-Check $List ($label + ': FX row for ' + [string]$wanted.currency) $false 'no such row'
+            $null = Add-Check $List ($Label + ': FX row for ' + [string]$wanted.currency) $false 'no such row'
             continue
         }
         foreach ($field in $wanted.PSObject.Properties.Name) {
             $ordinal = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_fx' -ColumnKey $field
             if ($ordinal -lt 0) {
-                $null = Add-Check $List ($label + ': tblCalcFX has a column for ' + $field) $false
+                $null = Add-Check $List ($Label + ': tblCalcFX has a column for ' + $field) $false
                 continue
             }
-            $null = Add-Check $List ($label + ': FX ' + [string]$wanted.currency + '.' + $field) `
+            $null = Add-Check $List ($Label + ': FX ' + [string]$wanted.currency + '.' + $field) `
                 (Test-CalcValue -Actual $found[$ordinal] -Expected $wanted.$field -Tolerance $tolerance) `
                 ("got " + (Format-CalcValue $found[$ordinal]) + ", expected " + (Format-CalcValue $wanted.$field))
         }
@@ -2382,7 +2740,7 @@ function Add-Phase5AnalyticalChecks {
     foreach ($currency in @($expected.resolved_fx.PSObject.Properties.Name)) {
         $found = $null
         foreach ($row in $fxRows) { if ([string]$row[$currencyColumn] -eq $currency) { $found = $row } }
-        $null = Add-Check $List ($label + ': FX rate for ' + $currency) `
+        $null = Add-Check $List ($Label + ': FX rate for ' + $currency) `
             (($null -ne $found) -and (Test-CalcValue -Actual $found[$rateColumn] `
                 -Expected $expected.resolved_fx.$currency -Tolerance $tolerance))
     }
@@ -2390,7 +2748,7 @@ function Add-Phase5AnalyticalChecks {
     # --- tblCalcDrivers: every emitted field of every driver ----------------
     $driverRows = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_drivers')
     $expectedDrivers = @($expected.drivers)
-    $null = Add-Check $List ($label + ': tblCalcDrivers row count') `
+    $null = Add-Check $List ($Label + ': tblCalcDrivers row count') `
         ($driverRows.Count -eq $expectedDrivers.Count) `
         ("rows " + $driverRows.Count + ", expected " + $expectedDrivers.Count)
     $idColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_drivers' -ColumnKey 'permanent_id'
@@ -2400,7 +2758,7 @@ function Add-Phase5AnalyticalChecks {
             if ([string]$row[$idColumn] -eq [string]$wanted.permanent_id) { $found = $row }
         }
         if ($null -eq $found) {
-            $null = Add-Check $List ($label + ': driver row ' + [string]$wanted.permanent_id) $false 'no such row'
+            $null = Add-Check $List ($Label + ': driver row ' + [string]$wanted.permanent_id) $false 'no such row'
             continue
         }
         # Driven from the FIXTURE's own field names, so a field added to the
@@ -2411,10 +2769,10 @@ function Add-Phase5AnalyticalChecks {
             $ordinal = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_drivers' -ColumnKey $field
             if ($ordinal -lt 0) {
                 $null = Add-Check $List `
-                    ($label + ': tblCalcDrivers has a column for expected field ' + $field) $false
+                    ($Label + ': tblCalcDrivers has a column for expected field ' + $field) $false
                 continue
             }
-            $null = Add-Check $List ($label + ': ' + [string]$wanted.permanent_id + '.' + $field) `
+            $null = Add-Check $List ($Label + ': ' + [string]$wanted.permanent_id + '.' + $field) `
                 (Test-CalcValue -Actual $found[$ordinal] -Expected $wanted.$field -Tolerance $tolerance) `
                 ("got " + (Format-CalcValue $found[$ordinal]) + ", expected " + (Format-CalcValue $wanted.$field))
         }
@@ -2423,7 +2781,7 @@ function Add-Phase5AnalyticalChecks {
     # --- tblCalcAnnual ------------------------------------------------------
     $annualRows = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_annual')
     $expectedAnnual = @($expected.annual)
-    $null = Add-Check $List ($label + ': tblCalcAnnual row count') `
+    $null = Add-Check $List ($Label + ': tblCalcAnnual row count') `
         ($annualRows.Count -eq $expectedAnnual.Count) `
         ("rows " + $annualRows.Count + ", expected " + $expectedAnnual.Count)
     $annualIndexColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_annual' -ColumnKey 'project_index'
@@ -2433,16 +2791,16 @@ function Add-Phase5AnalyticalChecks {
             if ([int]$row[$annualIndexColumn] -eq [int]$wanted.project_index) { $found = $row }
         }
         if ($null -eq $found) {
-            $null = Add-Check $List ($label + ': annual row ' + [string]$wanted.project_index) $false 'no such row'
+            $null = Add-Check $List ($Label + ': annual row ' + [string]$wanted.project_index) $false 'no such row'
             continue
         }
         foreach ($field in $wanted.PSObject.Properties.Name) {
             $ordinal = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_annual' -ColumnKey $field
             if ($ordinal -lt 0) {
-                $null = Add-Check $List ($label + ': tblCalcAnnual has a column for ' + $field) $false
+                $null = Add-Check $List ($Label + ': tblCalcAnnual has a column for ' + $field) $false
                 continue
             }
-            $null = Add-Check $List ($label + ': annual ' + [string]$wanted.project_index + '.' + $field) `
+            $null = Add-Check $List ($Label + ': annual ' + [string]$wanted.project_index + '.' + $field) `
                 (Test-CalcValue -Actual $found[$ordinal] -Expected $wanted.$field -Tolerance $tolerance) `
                 ("got " + (Format-CalcValue $found[$ordinal]) + ", expected " + (Format-CalcValue $wanted.$field))
         }
@@ -2452,7 +2810,7 @@ function Add-Phase5AnalyticalChecks {
     foreach ($field in @($expected.totals.PSObject.Properties.Name)) {
         $actual = Get-CalcScalar -Workbook $Workbook -Inspection $Inspection `
             -Block 'calc_totals' -FieldKey $field
-        $null = Add-Check $List ($label + ': calc_totals.' + $field) `
+        $null = Add-Check $List ($Label + ': calc_totals.' + $field) `
             (Test-CalcValue -Actual $actual -Expected $expected.totals.$field -Tolerance $tolerance) `
             ("got " + (Format-CalcValue $actual) + ", expected " + (Format-CalcValue $expected.totals.$field))
     }
@@ -4233,7 +4591,7 @@ function Invoke-Phase5GateBScenarios {
 
             if ($attempt -eq 'SUCCESS') {
                 Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook -Inspection $Inspection `
-                    -Case $case -Tolerances $Cases.tolerances
+                    -Case $case -Tolerances $Cases.tolerances -Label ('case ' + [string]$case.id)
                 Add-Phase5SuccessStateChecks -List $list -Excel $Excel -Workbook $Workbook `
                     -Inspection $Inspection -Case $case -Cases $Cases -Label ('case ' + $id)
             }
@@ -4461,7 +4819,8 @@ function Invoke-Phase5GateBScenarios {
             # four green flags.
             if ($attempt -eq 'SUCCESS') {
                 Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook `
-                    -Inspection $Inspection -Case $base -Tolerances $Cases.tolerances
+                    -Inspection $Inspection -Case $base -Tolerances $Cases.tolerances `
+                    -Label ('case ' + [string]$base.id)
                 # The successful record too. The two timestamps are NOT required
                 # to equal the first calculation's: a recalculation may refresh
                 # them, and the contract does not say otherwise.
@@ -4516,8 +4875,12 @@ function Invoke-Phase5GateBScenarios {
 
         # The published values still equal the oracle - the audit relationship is
         # an ADDITIONAL claim, not a replacement for value equality.
+        # THE AUDIT FIXTURE'S OWN EMITTED EXPECTED BLOCK, with a label that says
+        # what it is. No `id` is invented, and no expected value is constructed
+        # here: the block came from the oracle for $audit.model.
         Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook -Inspection $Inspection `
-            -Case $audit -Tolerances $Cases.tolerances
+            -Case $audit -Tolerances $Cases.tolerances `
+            -Label ('audit fixture: ' + [string]$audit.title)
 
         $rows = @(Get-CalcTableRows -Workbook $Workbook -Inspection $Inspection -TableKey 'calc_drivers')
         $kindColumn = Get-CalcTableColumnIndex -Inspection $Inspection -TableKey 'calc_drivers' -ColumnKey 'driver_kind'
@@ -4641,7 +5004,8 @@ function Invoke-Phase5GateBScenarios {
             # B. Every published value equals the oracle. Same path as P5-AN, run
             #    again here so the identity evidence is self-contained.
             Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook -Inspection $Inspection `
-                -Case $candidate -Tolerances $Cases.tolerances
+                -Case $candidate -Tolerances $Cases.tolerances `
+                -Label ('case ' + [string]$candidate.id)
 
             $expected = $candidate.expected
             $totals = @{}
@@ -4963,7 +5327,8 @@ function Invoke-Phase5GateBScenarios {
         # block - the whole block, not a row count.
         if ($attempt -eq 'SUCCESS') {
             Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook -Inspection $Inspection `
-                -Case $targetCase -Tolerances $Cases.tolerances
+                -Case $targetCase -Tolerances $Cases.tolerances `
+                -Label ('case ' + [string]$targetCase.id)
             Add-Phase5SuccessStateChecks -List $list -Excel $Excel -Workbook $Workbook `
                 -Inspection $Inspection -Case $targetCase -Cases $Cases -Label 'staleness target'
         }
@@ -5121,7 +5486,7 @@ function Invoke-Phase5GateBScenarios {
         # consulted, so it cannot change the digest - and it must not.
         $fx = $Inspection.input_tables.fx_rates
         $fxRows = Get-TableRowCount -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
-        Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
+        $null = Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
         Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
             -RowIndex ($fxRows + 1) -ColumnIndex 1 -Value 'ZZZ'
         Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `

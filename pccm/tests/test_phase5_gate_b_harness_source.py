@@ -1466,6 +1466,17 @@ def _scenario_block(source: str, after: str, upto: str) -> str:
     return source[start:source.index(_result_call(upto))]
 
 
+def _fixture_steps(source: str) -> str:
+    """The fixture CHOREOGRAPHY, which Run 10 moved behind an output boundary.
+
+    `Set-Phase5Fixture` is now a thin boundary that calls the steps, counts what
+    they emitted and refuses to return anything it cannot account for. Steps A-H
+    live in `Invoke-Phase5FixtureSteps`, so every choreography assertion reads
+    that; the boundary has assertions of its own.
+    """
+    return _procedure(source, "Invoke-Phase5FixtureSteps")
+
+
 def _procedure(source: str, name: str) -> str:
     start = source.index(f"function {name} ")if f"function {name} " in source \
         else source.index(f"function {name}")
@@ -2246,9 +2257,20 @@ def test_64_structure_change_pending_is_covered_and_is_not_re_applied() -> None:
     # And the harness really honours the flag.
     source = _executable(SCENARIOS)
     body = _procedure(source, "Invoke-Phase5Mutation")
-    assert "if ($Mutation.apply_timeline) {" in body, (
-        "the mutation applier always re-applies, so the pending state is unreachable"
+    # And the harness really honours the flag. Run 10 routed the read through
+    # the required-property accessor - the direct read is a StrictMode hazard
+    # for optional properties and the schema table is now the single authority
+    # on which is which - so the assertion follows the read, not its spelling.
+    assert "-Name 'apply_timeline'" in body, (
+        "the mutation applier never consults apply_timeline at all"
     )
+    guard = "if (Get-Phase5RequiredProperty -Object $Mutation -Name 'apply_timeline'"
+    assert body.count(guard) == 2, (
+        "the applier does not BRANCH on apply_timeline in both the "
+        f"entered_structure and config_profile_add kinds: {body.count(guard)}"
+    )
+    for always in ("if ($true)", "if (1)"):
+        assert always not in body, f"the apply is unconditional ({always})"
 
 
 def test_65_every_prerequisite_has_a_specific_detail_discriminator() -> None:
@@ -2742,7 +2764,7 @@ def test_75_the_config_master_owns_inflation_profile_rows() -> None:
     )
 
     source = _executable(SCENARIOS)
-    fixture = _procedure(source, "Set-Phase5Fixture")
+    fixture = _fixture_steps(source)
     assert "Set-Phase5InflationProfileMaster" in fixture, (
         "the fixture does not populate the Config profile master"
     )
@@ -2775,7 +2797,7 @@ def test_76_the_fixture_proves_its_own_structural_prerequisites() -> None:
     baseline every Add depends on is proved before any Add is attempted.
     """
     source = _executable(SCENARIOS)
-    fixture = _procedure(source, "Set-Phase5Fixture")
+    fixture = _fixture_steps(source)
 
     # THE APPLY IS A CHECKED PRODUCTION MUTATION, not a piped-away call.
     apply_at = fixture.index("-Operation 'PCCM_ApplyTimeline'")
@@ -3224,7 +3246,7 @@ def test_84_the_capture_precedes_every_phase_5_mutation() -> None:
 def test_85_the_fixture_restores_the_seed_before_appending() -> None:
     """BLOCKER 1. Row 1 is rewritten from the capture, not preserved."""
     source = _executable(SCENARIOS)
-    fixture = _procedure(source, "Set-Phase5Fixture")
+    fixture = _fixture_steps(source)
     assert "Reset-Phase5FxTable -Workbook $Workbook -Inspection $Inspection" in fixture, (
         "the fixture does not reset the FX table from the capture"
     )
@@ -6326,7 +6348,7 @@ def test_156_r1_the_timeline_is_applied_before_the_first_driver_add() -> None:
     come first, with no driver added yet.
     """
     source = _executable(SCENARIOS)
-    fixture = _procedure(source, "Set-Phase5Fixture")
+    fixture = _fixture_steps(source)
     apply_at = fixture.index("-Operation 'PCCM_ApplyTimeline'")
     add_at = fixture.index("Invoke-Phase5AddDriverAndRequireSuccess")
     assert apply_at < add_at, (
@@ -6352,7 +6374,7 @@ def test_157_r2_no_production_mutation_runs_inside_the_incoherent_window() -> No
     that window, because production is required to refuse there.
     """
     source = _executable(SCENARIOS)
-    fixture = _procedure(source, "Set-Phase5Fixture")
+    fixture = _fixture_steps(source)
     master_at = fixture.index("Set-Phase5InflationProfileMaster")
     apply_at = fixture.index("$applied = Invoke-Phase5ProductionOperation")
     assert master_at < apply_at, (
@@ -6645,7 +6667,7 @@ def test_166_r11_the_identity_counters_are_proved_typed_and_exact() -> None:
 def test_167_r12_coherence_is_proved_at_both_ends_of_the_fixture() -> None:
     """R12. Every production mutation begins and ends structurally coherent."""
     source = _executable(SCENARIOS)
-    fixture = _procedure(source, "Set-Phase5Fixture")
+    fixture = _fixture_steps(source)
     assert fixture.count("Assert-Phase5StructurallyCoherent") == 2, (
         "the fixture does not prove coherence both after the Apply and at the end"
     )
@@ -6984,7 +7006,7 @@ def test_171_the_statement_order_of_every_checked_step_is_fixed() -> None:
         "Write-Phase5Driver",
     ))
     # THE FIXTURE: A to H, in order.
-    walk("Set-Phase5Fixture", (
+    walk("Invoke-Phase5FixtureSteps", (
         "Clear-Phase5Registers",
         "Reset-Phase5FxTable",
         "Set-Phase5InflationProfileMaster",
@@ -6999,7 +7021,7 @@ def test_171_the_statement_order_of_every_checked_step_is_fixed() -> None:
     ))
     # AND THE CLOSING GATE IS THE LAST THING THAT HAPPENS. A coherence proof
     # with a mutation after it proves the state before the mutation.
-    fixture = _procedure(source, "Set-Phase5Fixture")
+    fixture = _fixture_steps(source)
     tail = fixture[fixture.rindex("Assert-Phase5StructurallyCoherent"):]
     for later in ("$Excel.Run", "Set-TableCell", "Set-NamedValue", "Write-Phase5",
                   "Invoke-Phase5"):
@@ -7222,7 +7244,7 @@ def test_178_r4_the_empty_rate_path_still_locates_the_profile_row() -> None:
     )
     # And the profile identity still reaches the Config master, which is what
     # creates the grid row in the first place.
-    fixture = _procedure(source, "Set-Phase5Fixture")
+    fixture = _fixture_steps(source)
     assert "Set-Phase5InflationProfileMaster" in fixture
     assert "$Model.inflation.PSObject.Properties.Name" in fixture, (
         "the profile master is no longer driven from the emitted profile set"
@@ -8961,3 +8983,784 @@ def test_219_the_settlement_poll_observes_and_never_acts() -> None:
     assert block.index(".Execute()") < block.index("$settled = $false"), (
         "the compile is invoked from inside the settlement window"
     )
+
+
+# =====================================================================
+# RUNTIME RUN 10: FOUR HARNESS DEFECTS AND ONE AUTHORITY DISCREPANCY
+# =====================================================================
+# Run 10 was the first runtime to clear the compile and fixture boundary and
+# reach the broad Phase-5 functional matrix: 69 PASS / 5 FAIL / 0 SKIP, with
+# P5-CMP and P5-FIX both passing on real Windows.
+#
+# Four of the five failures never reached a production predicate at all:
+#
+#   P5-AN  Set-Phase5Fixture returned System.Object[] - Add-BlankTableRow's row
+#          index leaked into the pipeline alongside the Apply result
+#   P5-PQ  COM 0x800A03EC from Names.Item - a defined-name MAP was dereferenced,
+#          handing Excel a cell address where a name belonged
+#   P5-PN  PropertyNotFoundException on 'repeat' - StrictMode 2.0 throws on the
+#          read, so the $null guard around it was unreachable
+#   P5-AR  PropertyNotFoundException on 'id' - the audit fixture was passed to a
+#          checker that demanded a plan-case field it never needed
+#
+# The fifth, P5-ID's Risk central_basis, is an authority question and is NOT
+# decided here. See test_226.
+
+
+def _mutation_schema_model() -> dict[str, dict[str, object]]:
+    """A pure port of Get-Phase5MutationSchema, read OUT OF the PowerShell.
+
+    The table is parsed from the harness source rather than restated here, so a
+    kind added or a field reclassified in one place cannot pass this suite while
+    the other place still says something different.
+    """
+    block = _procedure(_executable(SCENARIOS), "Get-Phase5MutationSchema")
+    schema: dict[str, dict[str, object]] = {}
+    for match in re.finditer(r"'(\w+)'\s*=\s*@\{", block):
+        kind = match.group(1)
+        index, depth = match.end() - 1, 0
+        while index < len(block):
+            if block[index] == "{":
+                depth += 1
+            elif block[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            index += 1
+        body = block[match.end():index]
+        required = re.search(r"Required = @\(([^)]*)\)", body, re.S)
+        nullable = re.search(r"NullMeansBlank = @\(([^)]*)\)", body, re.S)
+        optional = re.search(r"Optional = @\{([^}]*)\}", body, re.S)
+        schema[kind] = {
+            "required": re.findall(r"'(\w+)'", required.group(1)) if required else [],
+            "null_ok": re.findall(r"'(\w+)'", nullable.group(1)) if nullable else [],
+            "optional": {name: value.rstrip(";").strip()
+                         for name, value in re.findall(r"(\w+) = (\S+)", optional.group(1))}
+            if optional else {},
+        }
+    return schema
+
+
+def _emitted_mutations() -> list[tuple[str, dict]]:
+    gate_b = _gate_b()
+    found: list[tuple[str, dict]] = []
+    for bucket in ("prerequisite_cases", "no_block_cases", "direct_check_cases"):
+        for case in gate_b.get(bucket, []) or []:
+            where = f"{bucket} {case.get('id', '<no id>')}"
+            if isinstance(case.get("mutation"), dict):
+                found.append((where, case["mutation"]))
+            for entry in case.get("mutations", []) or []:
+                found.append((where, entry))
+    return found
+
+
+def test_220_a_the_fixture_boundary_emits_exactly_one_object() -> None:
+    """A. P5-AN's root: a PowerShell function emits every uncaptured value."""
+    source = _executable(SCENARIOS)
+    boundary = _procedure(source, "Set-Phase5Fixture")
+    # THE BOUNDARY COUNTS WHAT ITS BODY EMITTED, and refuses anything else.
+    assert "$emitted = @(Invoke-Phase5FixtureSteps" in boundary, (
+        "the boundary does not capture the steps' output at all"
+    )
+    assert "if ($emitted.Count -ne 1) {" in boundary, (
+        "the boundary does not require exactly one emitted object"
+    )
+    assert "throw (" in boundary
+    # AND IT NAMES WHAT LEAKED. A count alone would have left Run 10's
+    # "System.Object[]" exactly as opaque as it was.
+    assert "$item.GetType().Name" in boundary, (
+        "a contract breach does not report what was in the pipeline"
+    )
+    # The single object is type- and value-checked before it is returned.
+    assert "$applied = $emitted[0]" in boundary
+    assert "if ($applied -isnot [string]) {" in boundary
+    assert "if ($applied -notlike 'OK|*') {" in boundary
+    assert "return $applied" in boundary
+    # NOT FIXED AT THE CALLER. Either of these would have made P5-AN green while
+    # still selecting one object out of a polluted pipeline.
+    for laundering in ("$applied[-1]", "$applied[0] =", "[string]$emitted)",
+                       "| Select-Object -Last 1", "$emitted[-1]"):
+        assert laundering not in boundary, f"the boundary launders its input ({laundering})"
+
+
+def test_221_a_no_helper_in_the_fixture_tree_leaks_a_return_value() -> None:
+    """A. The leak itself, closed at every site and kept closed.
+
+    Add-BlankTableRow returns the new row's Index. Six call sites ignored it and
+    three of those are inside the fixture tree, so the indices joined the Apply
+    result in Set-Phase5Fixture's output - the naked 2 / 3 / 2 in Run 10's
+    transcript. This walks the whole harness, so a NEW value-returning helper
+    called and ignored is caught before a runtime finds it.
+    """
+    sources = {path.name: _executable(path)
+               for path in (SCENARIOS, HARNESS, LIFECYCLE)}
+    bodies: dict[str, tuple[str, str]] = {}
+    for name, text in sources.items():
+        for match in re.finditer(r"^function ([\w-]+) \{", text, re.M):
+            index, depth = match.end() - 1, 0
+            while index < len(text):
+                if text[index] == "{":
+                    depth += 1
+                elif text[index] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                index += 1
+            bodies[match.group(1)] = (name, text[match.start():index + 1])
+    returning = {name for name, (_, body) in bodies.items()
+                 if re.search(r"^\s*return\s+\S", body, re.M)}
+    assert "Add-BlankTableRow" in returning, (
+        "the helper whose return value caused the Run-10 leak no longer returns one; "
+        "this test is no longer watching what it thinks it is"
+    )
+
+    # THE FIXTURE TREE, transitively, from the boundary down.
+    tree, queue = set(), ["Set-Phase5Fixture"]
+    while queue:
+        name = queue.pop()
+        if name in tree or name not in bodies:
+            continue
+        tree.add(name)
+        queue.extend(re.findall(r"\b([A-Z][a-z]+-[A-Za-z][\w]*)\b", bodies[name][1]))
+    for expected in ("Invoke-Phase5FixtureSteps", "Clear-Phase5Registers",
+                     "Reset-Phase5FxTable", "Set-Phase5InflationProfileMaster",
+                     "Write-Phase5InflationRates", "Write-Phase5Weights",
+                     "Add-BlankTableRow"):
+        assert expected in tree, f"{expected} is not reachable from the fixture boundary"
+
+    leaks: list[str] = []
+    for name in sorted(tree):
+        file_name, body = bodies[name]
+        for offset, line in enumerate(body.split("\n"), 1):
+            statement = line.strip()
+            if not statement:
+                continue
+            call = re.match(r"^([A-Z][a-z]+-[A-Za-z][\w]*)\b", statement)
+            if call and call.group(1) in returning:
+                leaks.append(f"{file_name}:{name}: {statement[:70]}")
+    assert not leaks, (
+        "a value-returning helper is called and ignored inside the fixture tree, "
+        "so its result joins the fixture's own:\n  " + "\n  ".join(leaks)
+    )
+
+
+def test_222_a_the_second_fixture_is_the_condition_that_exposed_the_leak() -> None:
+    """A. P5-FIX passed and P5-AN did not, and the difference is real.
+
+    The golden fixture appended no FX row and no profile row, so nothing leaked.
+    The analytical fixtures append both. A regression that only ever establishes
+    the first fixture would not have caught this, which is why the corpus is
+    asserted to contain a model that actually appends.
+    """
+    cases = _emitted()["cases"]
+    # The FX seed is one row; a model naming more currencies than the reporting
+    # one forces Add-BlankTableRow to run, which is the leak's precondition.
+    appending = []
+    for case in cases["plan_cases"]:
+        model = case.get("model") or {}
+        currencies = {entry["currency"] for entry in model.get("fx", []) or []}
+        profiles = set((model.get("inflation") or {}).keys())
+        if len(currencies) > 1 or len(profiles) > 1:
+            appending.append(case["id"])
+    assert appending, (
+        "no emitted plan case appends an FX or profile row, so no fixture in the "
+        "corpus reaches the append path that leaked in Run 10"
+    )
+    # And the appending models are analytical, so P5-AN really does re-fixture
+    # over a workbook that already carries a previous fixture's state.
+    analytical = {case["id"] for case in cases["plan_cases"]
+                  if case.get("kind") == "analytical"}
+    assert analytical.intersection(appending), (
+        "the appending fixtures are never applied by the analytical scenario"
+    )
+    # The audit fixture appends too - P5-AR re-fixtures after P5-AN.
+    audit = cases["gate_b"]["audit_reconstruction"]["model"]
+    audit_currencies = {entry["currency"] for entry in audit["fx"]}
+    assert len(audit_currencies) > 1 or len(audit["inflation"]) > 1, (
+        "the audit fixture appends nothing, so P5-AR would not have re-exposed the leak"
+    )
+
+
+def test_223_b_every_emitted_mutation_is_well_formed_against_the_schema() -> None:
+    """B. The schema table is real, and the emitted corpus satisfies it.
+
+    The table is parsed out of the PowerShell rather than restated, so this
+    cannot drift into asserting a schema the harness does not use.
+    """
+    schema = _mutation_schema_model()
+    assert schema, "the mutation schema table could not be read from the harness"
+    mutations = _emitted_mutations()
+    assert len(mutations) >= 25, f"only {len(mutations)} mutations were found"
+
+    problems: list[str] = []
+    for where, mutation in mutations:
+        kind = mutation.get("kind")
+        if kind not in schema:
+            problems.append(f"{where}: unknown kind {kind!r}")
+            continue
+        rule = schema[kind]
+        for field in rule["required"]:
+            if field not in mutation:
+                problems.append(f"{where} [{kind}]: required {field!r} absent")
+            elif mutation[field] is None and field not in rule["null_ok"]:
+                problems.append(f"{where} [{kind}]: required {field!r} is null")
+        for field in mutation:
+            if field == "kind":
+                continue
+            if field not in rule["required"] and field not in rule["optional"]:
+                problems.append(f"{where} [{kind}]: {field!r} is in no schema class")
+    assert not problems, "the emitted mutation corpus is malformed:\n  " + "\n  ".join(problems)
+
+    # EVERY KIND THE APPLIER HANDLES IS IN THE TABLE, and vice versa: a kind the
+    # switch accepts but the schema does not describe would reach Excel unchecked.
+    applier = _procedure(_executable(SCENARIOS), "Invoke-Phase5Mutation")
+    handled = set(re.findall(r"^        '(\w+)' \{", applier, re.M))
+    assert handled == set(schema), f"applier {sorted(handled)} vs schema {sorted(schema)}"
+
+
+def test_224_b_every_named_and_entered_target_resolves_without_excel() -> None:
+    """B. P5-PQ's root, proved against the emitted authorities.
+
+    The harness dereferenced the manifest's defined_names MAP, which is keyed by
+    name with the cell ADDRESS as its value, and handed Excel `'Setup'!$C$48`
+    where `nmDuration_Entered` belonged. Names.Item raised COM 0x800A03EC and
+    PQ-02 produced no production verdict at all.
+    """
+    source = _executable(SCENARIOS)
+    applier = _procedure(source, "Invoke-Phase5Mutation")
+    # THE RETIRED DEREFERENCE IS GONE, everywhere in the harness.
+    for path in (SCENARIOS, HARNESS, LIFECYCLE):
+        assert "defined_names.(" not in _executable(path), (  # retired-authority
+            f"{path.name} still dereferences the defined_names map to build a name"
+        )
+    assert "$Manifest.defined_names" not in applier, (
+        "the applier still reads a defined name out of the manifest's address map"
+    )
+    # The names come from the one table that holds NAMES.
+    assert "$names = Get-Phase5EnteredStructureNames" in applier
+    assert "$definedName = [string]$names[$target]" in applier
+    assert "Set-NamedValue -Workbook $Workbook -DefinedName $definedName" in applier
+
+    # AND THE TABLE IS RIGHT, checked against the emitted manifest: each value is
+    # a declared defined NAME, and no value is an address.
+    entered = _procedure(source, "Get-Phase5EnteredStructureNames")
+    pairs = dict(re.findall(r"^\s+(\w+)\s*=\s*'([^']+)'", entered, re.M))
+    assert set(pairs) == {"base_year", "start_year", "duration"}, pairs
+    declared = set(_emitted()["manifest"]["defined_names"])
+    for target, name in pairs.items():
+        assert name in declared, f"{target} -> {name!r} is not a declared defined name"
+        assert "!" not in name and "$" not in name, (
+            f"{target} -> {name!r} looks like a cell address, not a name"
+        )
+
+    # THE PREFLIGHT CATCHES IT WITHOUT EXCEL. Same table, run in P5-PRE.
+    preflight = _procedure(source, "Invoke-Phase5CoveragePreflight")
+    assert "Test-Phase5MutationSchema" in preflight, (
+        "a malformed mutation still has to reach Excel to be discovered"
+    )
+    assert "'every emitted mutation is well formed and every target resolves (no Excel)'" \
+        in preflight
+    assert "stage_b_manifest.json" in preflight, (
+        "the preflight cannot check entered-structure names without the manifest"
+    )
+    # And the schema really does resolve the two target classes.
+    checker = _procedure(source, "Test-Phase5MutationSchema")
+    assert "$kind -like 'named_*'" in checker
+    assert "$kind -eq 'entered_structure'" in checker
+    assert "names no declared input" in checker
+    assert "carries no defined_name" in checker
+    # A required target that does not resolve is an ERROR, never a default.
+    assert "-Default" not in checker.split("$kind -like 'named_*'")[1].split("}")[0]
+
+
+def test_225_c_optional_properties_are_read_through_the_property_collection() -> None:
+    """C. P5-PN's root: under StrictMode 2.0 the READ throws, not the guard."""
+    source = _executable(SCENARIOS)
+    applier = _procedure(source, "Invoke-Phase5Mutation")
+    value = _procedure(source, "Get-MutationValue")
+
+    # THE RETIRED IDIOM IS GONE. `$null -ne $Mutation.<optional>` cannot run.
+    for retired in ("$null -ne $Mutation.repeat", "$null -ne $Mutation.append",  # retired-authority
+                    "if ($Mutation.append)", "if ($Mutation.apply_timeline)",  # retired-authority
+                    "if ($Mutation.require_clean_structure)", "$raw = $Mutation.$Property"):  # retired-authority
+        assert retired not in applier + value, f"the StrictMode hazard is back ({retired})"
+
+    # The two genuinely optional properties go through the collection, with the
+    # defaults the schema states.
+    assert "Get-Phase5OptionalProperty -Object $Mutation -Name 'repeat' -Default 1" in applier
+    assert "Get-Phase5OptionalProperty -Object $Mutation -Name 'append' -Default $false" in applier
+    assert "$raw = Get-Phase5OptionalProperty -Object $Mutation -Name $Property" in value
+
+    # ABSENT AND PRESENT-WITH-NULL STAY DIFFERENT. The accessor returns the
+    # default only when the property is not there; a stated null is returned.
+    accessor = _procedure(source, "Get-Phase5OptionalProperty")
+    assert "if (-not (Test-Phase5HasProperty -Object $Object -Name $Name)) { return $Default }" \
+        in accessor
+    assert "return $Object.PSObject.Properties[$Name].Value" in accessor
+    has = _procedure(source, "Test-Phase5HasProperty")
+    assert "$Object.PSObject.Properties[$Name]" in has
+    assert "$Object.$Name" not in has, "the presence test itself reads the property"
+
+    # REQUIRED FIELDS NEVER DEFAULT.
+    required = _procedure(source, "Get-Phase5RequiredProperty")
+    assert "throw (" in required
+    assert "A required field is never defaulted." in required
+    assert "-Default" not in required
+    # And the required flags are read through it, not directly.
+    assert applier.count("Get-Phase5RequiredProperty -Object $Mutation -Name 'apply_timeline'") == 2
+    assert "Get-Phase5RequiredProperty -Object $Mutation -Name 'require_clean_structure'" in applier
+
+    # STRICTMODE IS NOT WEAKENED ANYWHERE.
+    for path in (SCENARIOS, HARNESS, LIFECYCLE):
+        text = _executable(path)
+        for weakening in ("Set-StrictMode -Off", "-Version 1.0", "-Version Latest"):
+            assert weakening not in text, f"{path.name} weakens StrictMode ({weakening})"
+    assert "Set-StrictMode -Version 2.0" in _executable(SCENARIOS)
+
+    # THE CORPUS REALLY EXERCISES BOTH SHAPES, so this is not a hypothetical.
+    fx_rows = [m for _, m in _emitted_mutations() if m.get("kind") == "fx_row"]
+    assert any("repeat" not in m for m in fx_rows), "no fx_row mutation omits repeat"
+    assert any("repeat" in m for m in fx_rows), "no fx_row mutation states repeat"
+    assert any("append" not in m for m in fx_rows), "no fx_row mutation omits append"
+    assert any(m.get("rate") is None for m in fx_rows), (
+        "no fx_row mutation states a null rate, so the blank-cell semantic is untested"
+    )
+
+
+def test_226_d_the_audit_fixture_is_checked_against_its_own_expected_block() -> None:
+    """D. P5-AR's root: a display label demanded a plan-case field."""
+    source = _executable(SCENARIOS)
+    checker = _procedure(source, "Add-Phase5AnalyticalChecks")
+    # THE LABEL IS THE CALLER'S, and `id` is not read at all.
+    assert "[string]$Label" in checker
+    assert "$Case.id" not in checker, (
+        "the analytical checker still demands a plan-case id"
+    )
+    assert "$Label" in checker
+    # A caller that forgets, or a fixture with no expected block, fails loudly
+    # rather than asserting nothing.
+    assert "if ([string]::IsNullOrWhiteSpace($Label)) {" in checker
+    assert "if ($null -eq $expected) {" in checker
+    assert checker.count("throw (") >= 2
+
+    # EVERY CALL SITE NAMES ITS FIXTURE.
+    joined = re.sub(r"`\s*\n\s*", " ", source)
+    calls = re.findall(r"Add-Phase5AnalyticalChecks -List[^\n]*", joined)
+    assert len(calls) == 5, f"{len(calls)} call sites"
+    for call in calls:
+        assert "-Label " in call, call[:120]
+    audit_calls = [call for call in calls if "-Case $audit" in call]
+    assert len(audit_calls) == 1
+    assert "$audit.title" in audit_calls[0], (
+        "the audit fixture's label does not come from the emitted fixture itself"
+    )
+    assert "$audit.id" not in source, "an id is invented for the audit fixture"
+
+    # NO EXPECTED VALUE IS CONSTRUCTED IN POWERSHELL. The audit fixture carries
+    # the same emitted `expected` shape a plan case does, from the same oracle.
+    cases = _emitted()["cases"]
+    audit = cases["gate_b"]["audit_reconstruction"]
+    plan = next(case for case in cases["plan_cases"] if case.get("kind") == "analytical")
+    assert set(audit["expected"]) == set(plan["expected"]), (
+        f"the audit expected block has a different shape: "
+        f"{sorted(set(audit['expected']) ^ set(plan['expected']))}"
+    )
+    assert set(audit["model"]) == set(plan["model"])
+    assert "id" not in audit, (
+        "the corpus now emits an id for the audit fixture; the harness must not "
+        "start depending on it without the schema saying so"
+    )
+
+
+# ---------------------------------------------------------------------
+# E. P5-ID: Risk central_basis. AN AUTHORITY QUESTION, NOT A HARNESS BUG
+# ---------------------------------------------------------------------
+# P5-ID ran deeply. Cases 3, 9 and 30 all committed, and the reconciliation,
+# annual, totals and weights checks passed. One published value disagreed:
+#
+#     case 9, R-001.central_basis, actual BLANK, expected 'ML'
+#
+# That is not arithmetic. It is a question about which side owns the field, and
+# these two tests answer only what the evidence answers: the three declared
+# authorities agree with each other, and production is the one that differs.
+# NOTHING IS CHANGED IN EITHER PRODUCTION OR THE ORACLE on this round.
+
+CALC_DRIVERS_CONTRACT_PATH = PCCM_ROOT / "spec" / "calc_contract.yaml"
+DRIVERS_BLOCK_PATH = PCCM_ROOT / "src" / "vba" / "modCalcReport.bas"
+
+
+def _calc_drivers_applies_to() -> dict[str, list[str]]:
+    """`applies_to` for every tblCalcDrivers column, from the accepted contract."""
+    text = CALC_DRIVERS_CONTRACT_PATH.read_text(encoding="utf-8")
+    start = text.rfind("columns:", 0, text.index('- key: "central_basis"'))
+    segment = text[start:]
+    found: dict[str, list[str]] = {}
+    for name, body in re.findall(
+            r'- key: "(\w+)"(.*?)(?=\n      - key: "|\Z)', segment, re.S):
+        applies = re.search(r"applies_to: \[([^\]]*)\]", body)
+        if applies and name not in found:
+            found[name] = re.findall(r'"(\w+)"', applies.group(1))
+    return found
+
+
+def _drivers_block_branches() -> tuple[set[str], set[str]]:
+    """The calc_drivers columns production leaves Empty, per driver kind."""
+    text = DRIVERS_BLOCK_PATH.read_text(encoding="utf-8")
+    start = text.index("Private Function DriversBlock(")
+    body = text[start:text.index("\nEnd Function", start)]
+    risk_at = body.index("If package.Model.Drivers(index).IsRisk Then")
+    else_at = body.index("\n        Else\n", risk_at)
+    def blanked(chunk: str) -> set[str]:
+        return {name.lower() for name in re.findall(
+            r"COL_CALC_DRIVERS_(\w+)\) = Empty", chunk)}
+    return blanked(body[risk_at:else_at]), blanked(body[else_at:])
+
+
+def test_227_e_the_three_declared_authorities_agree_on_central_basis() -> None:
+    """E. Contract, plan and oracle say the same thing. They must keep doing so.
+
+    This is the test that stops `central_basis` being quietly set to null in the
+    Python oracle to make P5-ID green. Doing that would put the oracle at odds
+    with both the accepted contract and the accepted plan, which is a bigger
+    problem than the one it would appear to solve.
+    """
+    # 1. THE CONTRACT.
+    applies = _calc_drivers_applies_to()
+    assert applies["central_basis"] == ["cost_line", "risk"], applies["central_basis"]
+    # It is used discriminatingly elsewhere, so it is a real applicability
+    # statement rather than boilerplate on every column.
+    assert applies["quantity"] == ["cost_line"], applies["quantity"]
+    assert applies["probability"] == ["risk"], applies["probability"]
+    assert applies["central_value"] == ["cost_line"], applies["central_value"]
+    assert applies["expected_risk_nominal"] == ["risk"]
+
+    # 2. THE PLAN's own column table, which spells out blank where it means it.
+    plan = (PCCM_ROOT / "docs" / "phase5_plan.md").read_text(encoding="utf-8")
+    rows = {}
+    for line in plan.splitlines():
+        cells = [cell.strip() for cell in line.split("|")]
+        if len(cells) >= 9 and cells[1].isdigit():
+            rows[cells[2]] = (cells[6], cells[7])
+    assert rows.get("Central Basis") == ("yes", "yes"), rows.get("Central Basis")
+    assert rows.get("Quantity") == ("yes", "**blank**"), rows.get("Quantity")
+    assert rows.get("Central Value") == ("yes", "**blank**"), rows.get("Central Value")
+
+    # 3. THE ORACLE. Every emitted Risk driver row carries a basis, and every
+    # Cost Line row does too - the sweep the review asked for, over every case
+    # rather than only case 9.
+    risk_rows, risk_with_basis, cost_rows, cost_missing = 0, 0, 0, 0
+    offenders: list[str] = []
+    cases = _emitted()["cases"]
+    fixtures = [(f"plan {case['id']}", case) for case in cases["plan_cases"]]
+    fixtures.append(("audit_reconstruction", cases["gate_b"]["audit_reconstruction"]))
+    for where, fixture in fixtures:
+        for row in (fixture.get("expected") or {}).get("drivers", []):
+            if row.get("driver_kind") == "Risk":
+                risk_rows += 1
+                if row.get("central_basis") is not None:
+                    risk_with_basis += 1
+                else:
+                    offenders.append(f"{where}: {row.get('permanent_id')}")
+            else:
+                cost_rows += 1
+                if row.get("central_basis") is None:
+                    cost_missing += 1
+    assert risk_rows >= 4, f"only {risk_rows} Risk rows are emitted at all"
+    assert risk_with_basis == risk_rows, (
+        "the oracle no longer publishes central_basis for every Risk row, which "
+        "puts it at odds with the accepted contract and plan: " + "; ".join(offenders)
+    )
+    assert cost_missing == 0, f"{cost_missing} Cost Line rows carry no central_basis"
+    assert cost_rows >= 20
+
+
+def test_228_e_production_deviates_on_exactly_one_column_and_no_more() -> None:
+    """E. The blast radius, bounded in the direction that stays useful.
+
+    Production's DriversBlock blanks `central_basis` for Risk. Every OTHER
+    column it blanks is a column the contract already excludes for that kind, so
+    the disagreement is exactly one column wide.
+
+    The assertion is a SUBSET, deliberately. A new deviation fails this test; a
+    RESOLVED central_basis does not, because resolving it is the outcome the
+    authority trace may legitimately reach and this test must not stand in the
+    way of it.
+    """
+    applies = _calc_drivers_applies_to()
+    risk_blank, cost_blank = _drivers_block_branches()
+    assert risk_blank, "the Risk branch of DriversBlock blanks nothing at all"
+    assert cost_blank, "the Cost Line branch of DriversBlock blanks nothing at all"
+
+    risk_deviation = {name for name in risk_blank
+                      if "risk" in applies.get(name, []) }
+    cost_deviation = {name for name in cost_blank
+                      if "cost_line" in applies.get(name, [])}
+    assert risk_deviation <= {"central_basis"}, (
+        "production blanks a column the contract says applies to Risk, beyond the "
+        f"one known open item: {sorted(risk_deviation)}"
+    )
+    assert not cost_deviation, (
+        "production blanks a column the contract says applies to Cost Line: "
+        f"{sorted(cost_deviation)}"
+    )
+    # AND THE OTHER DIRECTION: production must never publish a column the
+    # contract excludes for that kind.
+    for name, kinds in applies.items():
+        if "risk" not in kinds:
+            assert name in risk_blank, (
+                f"the contract excludes {name} for Risk but production does not blank it"
+            )
+        if "cost_line" not in kinds:
+            assert name in cost_blank, (
+                f"the contract excludes {name} for Cost Line but production does not "
+                "blank it"
+            )
+    # The open item is recorded where a reader will find it.
+    record = (PCCM_ROOT / "docs" / "phase5_gate_b_harness.md").read_text(encoding="utf-8")
+    assert "central_basis" in record, (
+        "the one unresolved Run-10 authority question is not written down"
+    )
+
+
+def test_229_the_row_index_of_every_added_table_row_is_accounted_for() -> None:
+    """A, harness-wide. The specific helper whose index leaked in Run 10.
+
+    test_221 walks the fixture tree and bans ANY ignored value-returning helper.
+    This one follows Add-BlankTableRow everywhere, including the three call sites
+    outside that tree - a leak in a mutation applier or in P5-NS pollutes
+    whatever function encloses it just as surely, and the naked 2 / 3 / 2 in
+    Run 10's transcript came from exactly that class of site.
+    """
+    unaccounted: list[str] = []
+    for path in (SCENARIOS, HARNESS, LIFECYCLE):
+        source = _executable(path)
+        for number, line in enumerate(source.split("\n"), 1):
+            statement = line.strip()
+            if "Add-BlankTableRow" not in statement:
+                continue
+            if statement.startswith("$null = Add-BlankTableRow"):
+                continue
+            if re.match(r"^\$\w+ = Add-BlankTableRow", statement):
+                continue
+            if "Add-BlankTableRow" not in statement.split("#")[0]:
+                continue
+            if not statement.startswith("Add-BlankTableRow"):
+                continue
+            unaccounted.append(f"{path.name}:{number}: {statement[:70]}")
+    assert not unaccounted, (
+        "Add-BlankTableRow returns the new row's Index and it is being dropped "
+        "into the enclosing function's output:\n  " + "\n  ".join(unaccounted)
+    )
+    # The helper still returns what this test thinks it returns.
+    assert "return [int]$added.Index" in _executable(HARNESS)
+    # And every site is suppressed rather than captured-and-ignored, so a reader
+    # sees the intent at the call.
+    suppressed = _executable(SCENARIOS).count("$null = Add-BlankTableRow")
+    assert suppressed == 6, f"{suppressed} suppressed Add-BlankTableRow calls, expected 6"
+
+
+def test_230_the_four_run_10_idioms_stay_retired_across_the_subtree() -> None:
+    """A second, independent reading of all four Run-10 roots.
+
+    The structural tests above prove the corrected code is present. This one
+    proves the DEFECTIVE code is absent, everywhere, by the text that made it
+    defective - so a correction reverted in one file while the structure stays
+    plausible elsewhere is still caught.
+    """
+    mutation = "$Mutation."  # retired-authority
+    retired = (
+        # P5-AN: the leak, at the site that caused it
+        "\nAdd-BlankTableRow -Workbook",                         # retired-authority
+        # P5-PQ: a defined-name MAP dereferenced into a name argument
+        "defined_names.(",                                       # retired-authority
+        # P5-PN: a direct read of an optional property under StrictMode 2.0
+        "$null -ne " + mutation + "repeat",                      # retired-authority
+        "$null -ne " + mutation + "append",                      # retired-authority
+        "if (" + mutation + "append)",                           # retired-authority
+        "if (" + mutation + "apply_timeline)",                   # retired-authority
+        "if (" + mutation + "require_clean_structure)",          # retired-authority
+        "$raw = " + mutation + "$Property",                      # retired-authority
+        "[int]" + mutation + "repeat",                           # retired-authority
+        "[bool]" + mutation + "append",                          # retired-authority
+        # P5-AR: a plan-case field demanded of a fixture that has none
+        "'case ' + [string]$Case.id",                            # retired-authority
+        "[string]$Case.id",                                      # retired-authority
+    )
+    offenders: list[str] = []
+    for path in _authority_scan_files():
+        text = path.read_text(encoding="utf-8")
+        for number, line in enumerate(text.splitlines(), 1):
+            if AUTHORITY_EXEMPTION_MARKER in line:
+                continue
+            for phrase in retired:
+                needle = phrase.lstrip("\n")
+                if phrase.startswith("\n"):
+                    if line.startswith(needle) or line.strip().startswith(needle):
+                        offenders.append(f"{path.relative_to(PCCM_ROOT)}:{number}: {phrase!r}")
+                elif needle in line:
+                    offenders.append(f"{path.relative_to(PCCM_ROOT)}:{number}: {phrase!r}")
+    assert not offenders, (
+        "a Run-10 defect idiom is back:\n  " + "\n  ".join(offenders)
+    )
+
+
+# ---------------------------------------------------------------------
+# SECOND DETECTORS. The A2/A3/B2/C2/C3/C4/D2/D3 mutations each tripped
+# exactly one test, because the tests above bundle several claims each.
+# These split those claims along their real seams: the tests below ask
+# the same questions from a different angle, not the same assertion twice.
+# ---------------------------------------------------------------------
+
+
+def test_231_the_fixture_boundary_decision_table_is_exactly_three_refusals() -> None:
+    """A. WHEN the boundary refuses, enumerated - not merely THAT it refuses.
+
+    test_220 reads the boundary structurally. This reads it as a decision table,
+    so widening a guard (`-ne 1` to `-lt 1`, which would wave an array through)
+    or changing which object is taken is a change to the table.
+    """
+    boundary = _procedure(_executable(SCENARIOS), "Set-Phase5Fixture")
+    conditions: list[str] = []
+    for match in re.finditer(r"if \((.*?)\) \{", boundary):
+        index, depth = boundary.index("{", match.start()), 0
+        while index < len(boundary):
+            if boundary[index] == "{":
+                depth += 1
+            elif boundary[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            index += 1
+        if "throw (" in boundary[match.end():index]:
+            conditions.append(re.sub(r"\s+", " ", match.group(1)).strip())
+    assert conditions == [
+        "$emitted.Count -ne 1",
+        "$applied -isnot [string]",
+        "$applied -notlike 'OK|*'",
+    ], conditions
+    # EXACTLY ONE means exactly one. A lower bound would accept the array that
+    # Run 10 actually received.
+    assert "-lt 1" not in boundary and "-gt 1" not in boundary and "-ge 1" not in boundary, (
+        "the count guard is a bound, not an equality, so a polluted pipeline passes"
+    )
+    # AND THE OBJECT TAKEN IS INDEX 0 - the only index that means anything once
+    # the count is known to be exactly one. Any other index is a selection out
+    # of a pipeline the boundary has just refused to accept.
+    taken = re.search(r"\$applied = \$emitted\[([^\]]*)\]", boundary)
+    assert taken and taken.group(1) == "0", taken.group(1) if taken else None
+    assert boundary.count("$emitted[") == 1, boundary.count("$emitted[")
+
+
+def test_232_the_preflight_really_walks_the_corpus_and_records_what_it_finds() -> None:
+    """B. The preflight's mutation loop, as a loop - not as a call that exists.
+
+    Emptying the body while leaving the check label in place would report
+    "every emitted mutation is well formed" over nothing at all.
+    """
+    preflight = _procedure(_executable(SCENARIOS), "Invoke-Phase5CoveragePreflight")
+    # ALL THREE BUCKETS, by name.
+    assert "foreach ($bucket in 'prerequisite_cases', 'no_block_cases', 'direct_check_cases')" \
+        in preflight, "the preflight does not walk every bucket of mutations"
+    # BOTH SHAPES: a case with one `mutation` and a case with a `mutations` list.
+    assert "-Name 'mutation'" in preflight and "-Name 'mutations'" in preflight
+    # THE RESULT IS ACCUMULATED FROM THE CHECKER, not assigned a constant.
+    accumulation = re.search(
+        r"\$malformed \+= @\(([^)]*)", preflight)
+    assert accumulation, "the preflight never accumulates a schema result"
+    assert "Test-Phase5MutationSchema" in accumulation.group(1), accumulation.group(1)
+    assert "$malformed += @()" not in preflight, "the accumulation was emptied"
+    # AND IT IS COUNTED, so a walk that found nothing to check is itself a FAIL.
+    assert "$mutationCount++" in preflight
+    assert "'the corpus emitted at least one Gate-B mutation'" in preflight
+    assert "($mutationCount -gt 0)" in preflight
+    assert "($malformed.Count -eq 0)" in preflight
+
+
+def test_233_the_optional_accessor_defaults_on_absence_only() -> None:
+    """C. The semantics, stated as semantics.
+
+    test_225 proves the retired reads are gone and the accessors are called.
+    This proves the accessors MEAN what the schema assumes: absence takes the
+    default, a stated null is returned as null, and a required field throws.
+    """
+    source = _executable(SCENARIOS)
+    accessor = _procedure(source, "Get-Phase5OptionalProperty")
+    # THE DEFAULT IS REACHED FROM THE PRESENCE TEST, never from the value.
+    assert "if (-not (Test-Phase5HasProperty -Object $Object -Name $Name)) { return $Default }" \
+        in accessor, "the accessor does not default on absence"
+    assert "$null -eq $value" not in accessor and "$null -eq $raw" not in accessor, (
+        "the accessor defaults on a NULL VALUE, which collapses 'absent' into "
+        "'present and deliberately null' - the corpus distinguishes them"
+    )
+    assert accessor.count("return $Default") == 1, accessor.count("return $Default")
+    assert "return $Object.PSObject.Properties[$Name].Value" in accessor
+
+    # THE REQUIRED ACCESSOR HAS NO DEFAULT AT ALL.
+    required = _procedure(source, "Get-Phase5RequiredProperty")
+    assert "-Default" not in required, "the required accessor can default"
+    assert "return $null" not in required, "a missing required field returns null"
+    assert "A required field is never defaulted." in required
+
+    # AND THE DEFAULTS AT THE CALL SITES ARE THE ONES THE SCHEMA DECLARES.
+    schema = _mutation_schema_model()
+    declared = schema["fx_row"]["optional"]
+    assert declared == {"repeat": "1", "append": "$false"}, declared
+    applier = _procedure(source, "Invoke-Phase5Mutation")
+    for field, value in declared.items():
+        assert f"-Name '{field}' -Default {value}" in applier, (
+            f"the applier's default for {field} does not match the schema's {value}"
+        )
+
+
+def test_234_a_corpus_null_still_writes_a_blank_cell() -> None:
+    """C. The distinction the accessor exists to protect, at its consumer.
+
+    Several locked prerequisites ARE the blank. If the accessor defaulted on a
+    null value, `Get-MutationValue` would stop returning $null and the writers
+    would put a real number where the predicate needs an absence.
+    """
+    source = _executable(SCENARIOS)
+    value = _procedure(source, "Get-MutationValue")
+    assert "$raw = Get-Phase5OptionalProperty -Object $Mutation -Name $Property" in value
+    # No default is supplied here, so a stated null stays null...
+    assert "-Name $Property -Default" not in value, (
+        "Get-MutationValue supplies a default, so a corpus null becomes a value"
+    )
+    assert "if ($null -eq $raw) { return $null }" in value
+    # ...and the accessor it relies on must not default on a value either.
+    accessor = _procedure(source, "Get-Phase5OptionalProperty")
+    assert "$null -eq" not in accessor.split("return $Object.PSObject")[0].split(
+        "Test-Phase5HasProperty")[-1], "the accessor inspects the value before defaulting"
+    # THE SCHEMA NAMES WHICH NULLS ARE MEANINGFUL, and the corpus really has them.
+    schema = _mutation_schema_model()
+    assert "rate" in schema["fx_row"]["null_ok"]
+    assert "value" in schema["register_cell"]["null_ok"]
+    nulls = [(where, mutation) for where, mutation in _emitted_mutations()
+             if any(mutation.get(field) is None for field in mutation)]
+    assert nulls, "no emitted mutation states a null, so the blank path is untested"
+
+
+def test_235_the_labelling_contract_is_enforced_at_both_ends() -> None:
+    """D. Every call names its fixture, and the checker refuses one that does not."""
+    source = _executable(SCENARIOS)
+    joined = re.sub(r"`\s*\n\s*", " ", source)
+    calls = re.findall(r"Add-Phase5AnalyticalChecks -List[^\n]*", joined)
+    unlabelled = [call for call in calls if "-Label " not in call]
+    assert not unlabelled, (
+        "an analytical call site does not name the fixture it is about:\n  "
+        + "\n  ".join(call[:110] for call in unlabelled)
+    )
+    # Each label is BUILT, not a bare constant repeated at every site.
+    for call in calls:
+        label = call.split("-Label ", 1)[1]
+        assert label.startswith("("), label[:80]
+        assert "$" in label.split(")")[0], f"a label names no fixture: {label[:80]}"
+    # THE OTHER END. A caller that forgets is refused rather than labelled
+    # 'case ' with nothing after it.
+    checker = _procedure(source, "Add-Phase5AnalyticalChecks")
+    assert "if ([string]::IsNullOrWhiteSpace($Label)) {" in checker, (
+        "the checker accepts a call with no label"
+    )
+    assert "if ($false)" not in checker and "if ($true)" not in checker
+    guard = checker[checker.index("IsNullOrWhiteSpace($Label)"):]
+    assert "throw (" in guard[:400], "an unlabelled call does not throw"
