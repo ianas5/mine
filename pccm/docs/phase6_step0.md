@@ -10,9 +10,40 @@ contract and no VBA.
 
 | | |
 |---|---|
-| **Accepted Phase-6 planning baseline** | `03aa5044cb535513976f0ec3840bc332747678c8` |
+| **Accepted Phase-6 planning authority** | `03aa5044cb535513976f0ec3840bc332747678c8` |
 | **Accepted Phase-5 executable baseline** | `f571154118083e569e1fb9fbf9bf72852cc2d568` |
+| **First Step-0 evidence commit** | `c121cc63563b5997050ab9518cf31ea250a41aa4` |
+| **Step-0 evidence / authority settlement** | this commit — reported in the delivery message |
 | **Authority for this round** | `pccm/docs/phase6_plan.md` at revision 6 |
+
+`c121cc6` is the historical first Step-0 evidence commit and stays in the
+history unrewritten. The settlement commit is based on the current branch HEAD,
+which contains `c121cc6` and one repo-root `.gitignore` housekeeping commit that
+widens the review-ZIP ignore rule. **That housekeeping commit is not Phase-6
+semantic evidence**; it touches no file under `pccm/`.
+
+### What the settlement round changed, and what it did not
+
+Independent review of `c121cc6` returned NOT YET ACCEPTED with no architecture
+reset: D6-04 (b) and D6-18 (b) stand. This round settles authority and exact
+semantics only.
+
+| Settled | Where |
+|---|---|
+| the exact Cheng numerical formulation, locked and hashed to its source | §5.2a |
+| deterministic Cheng authority vectors | §5.2b |
+| D6-18b reconciled with the degenerate zero-consumption rule | §6.1 |
+| expectation vs realisation in the D6-18 operation model | §6.2 |
+| the `p − 1` factorisation wording, and the AUTO nonce lifecycle | §4, D6-03 |
+| `RNG_VERSION`, `SIM_METHOD_VERSION`, the `PCCM-RD` version field | §9 |
+| the numeric comparison tolerance — ownership and exact values | §10 |
+
+**Every Cheng, D6-04 and acceptance-margin raw file, and every vector file
+issued in `c121cc6`, is byte-identical in this commit.** Only
+`raw/d6_18_operation_model.json` (terminology) and `raw/seed_map.json`
+(factorisation and lifecycle) changed among the previously-issued raw files,
+plus five new files. Nothing was regenerated for a formulation change, because
+there was none.
 
 One docs-only change was made to `phase6_plan.md` in this round: the §14 wording
 correction authorised in §0 of the Step-0 authorisation. It replaces "for
@@ -85,8 +116,14 @@ detection fires. A control that cannot fail proves nothing.
 | 12 | result-stream framing tag mutation | yes |
 | 13 | stream assignment under a different ordering rule | yes |
 | 14 | Family B collision under the accepted unbounded ID pattern | yes |
+| 15 | degenerate driver consuming a uniform | yes |
+| 16 | an expected count presented as a realised one | yes |
+| 17 | a listed change classified against no version | yes |
+| 18 | `log(u1/(1−u1))` replaced by `log(u1) − log1p(−u1)` | yes |
+| 18b | Cheng literal `1.3862944` replaced by `log(4)` | yes |
+| 19 | the AUTO-seed power authority diverging from the stepped cycle | yes |
 
-**14 / 14 fired.** Recorded in `summaries/controls.json` and `summaries/controls.txt`.
+**20 / 20 fired.** Recorded in `summaries/controls.json` and `summaries/controls.txt`.
 
 ---
 
@@ -110,12 +147,55 @@ A full-period multiplicative cycle over the seed domain. Evidence:
 | Exhaustion point | nonce `2147483646`, which returns to seed `1` |
 | Refusal behaviour | **refuse to run**; never wrap silently |
 
-**Full period is proved, not asserted.** `48271` is a primitive root mod
-`2^31 − 1`: `2147483646 = 2 · 3 · 7 · 11 · 31 · 151 · 331` (complete
-factorisation, computed in the package), and `48271^((p−1)/q) ≠ 1 mod p` for
-every one of those seven primes. The order is therefore exactly `p − 1`. The
-package additionally checks `48271^(p−1) ≡ 1` and that the first 200,000 nonces
-produce no repeat.
+**Full period is proved, not asserted**, and the earlier factorisation wording
+is corrected. The two facts are different and `c121cc6` conflated them:
+
+```
+complete prime factorisation   2147483646 = 2 · 3^2 · 7 · 11 · 31 · 151 · 331
+distinct prime divisors        {2, 3, 7, 11, 31, 151, 331}   product = 715827882
+```
+
+`c121cc6` labelled the distinct divisors as the complete factorisation. Their
+product is `715827882`, not `2147483646`, so the labelling was arithmetically
+wrong. **The proof is unaffected**: the primitive-root test
+`g^((p−1)/q) ≠ 1 mod p` ranges over the **distinct** prime divisors, and
+multiplicity is irrelevant to it. `48271` passes for all seven, so its order is
+exactly `p − 1`. The package now computes and checks both forms, including that
+the complete factorisation multiplies back to `2147483646` and that the distinct
+product does not. It additionally checks `48271^(p−1) ≡ 1` and that the first
+200,000 nonces produce no repeat.
+
+**The AUTO nonce lifecycle, locked.** Evidence: `raw/seed_map.json`,
+`nonce_lifecycle`.
+
+| Element | Rule |
+|---|---|
+| What `auto_nonce` means | **the NEXT nonce to allocate** — not the last one used. A "next" value is meaningful before any run has happened, and it makes allocation read-then-advance rather than advance-then-read |
+| Initial persisted value | `0` |
+| Allocation point | on an AUTO run, where the effective seed is derived and **before any sampling**: read `auto_nonce`, compute the seed, then persist `auto_nonce + 1` |
+| Nonce advance | **immediately at allocation**, not at successful commit |
+| Failure **before** allocation | consumes **no** nonce — an input-validation refusal leaves `auto_nonce` untouched |
+| Failure **after** allocation | **consumes** the nonce. The seed is spent even though the run failed |
+| Retry after failure | receives a **new** sequence, never a replay of the failed one |
+| Attempt metadata | a failed AUTO attempt records the allocated `effective_seed` **and** the `auto_nonce` it consumed, alongside the failure. The prior successful result is untouched, but the consumed nonce is visible — otherwise the sequence would appear to skip with no trace |
+| Exhaustion | `auto_nonce == 2147483646` must **not** be allocated: `48271^2147483646 ≡ 1`, the seed for nonce `0`, so allocating it would silently reissue the first seed. **Refuse the run** |
+
+**This is stated as an ordering rule, not left to implementation order.** "Read,
+then advance, then sample" is what makes an allocated seed consumed on failure;
+any other order silently gives a retry the same sequence.
+
+**Authority versus implementation.** The authority is
+
+```
+effective_seed = 48271^auto_nonce mod 2147483647
+```
+
+— a modular **power**. Stating it as a power is what tells a later
+implementation that an exact `O(log nonce)` square-and-multiply is required;
+`O(nonce)` repeated multiplication is not what the authority says and is not
+acceptable at large nonce. The package computes it both ways and checks they
+agree over the first 3,000 nonces, and control 19 fires when they diverge. **No
+implementation is proposed in this round.**
 
 **The period equals the seed domain exactly.** `2147483646` values, and the
 accepted D6-20 FIXED domain is `1 … 2147483646` — also `2147483646` values. The
@@ -398,6 +478,122 @@ because `α` and `β` are per-driver constants. The `sqrt` breakdown shows exact
 one per sample for BB shapes, so hoisting would remove exactly `1.0` from those
 rows. The figures below are the **un-hoisted**, i.e. pessimistic, ones.
 
+### 5.2a The locked Cheng numerical formulation
+
+`raw/cheng_formulation.json`.
+
+**"Cheng 1978" is not a reproducibility contract.** Recognised implementations
+differ in their literals — `1.3862944` against `log(4)`, `0.0138889` against
+`1/72`, `0.777778` against `7/9` — and in the logit form —
+`log(u1/(1−u1))` against `log(u1) − log1p(−u1)`. Those are algebraically equal
+and floating-point distinct. **One formulation is therefore locked**, and it
+belongs to `SIM_METHOD_VERSION` (§9).
+
+**The locked formulation is exactly the one already measured** in
+`scripts/beta_ref.py`. Nothing was changed to settle this item, so no Cheng,
+D6-04 or acceptance-margin evidence was regenerated — and the retained files
+prove it: every one of them is byte-identical to `c121cc6`.
+
+**Dispatch.** `BB` when `min(α, β) > 1.0` (strict), `BC` otherwise. Equality
+belongs to BC.
+
+**BB**, for `min(α,β) > 1`. Orientation `a = min(α₀,β₀)`, `b = max(α₀,β₀)`.
+
+| Once per driver | Per proposal attempt |
+|---|---|
+| `α = a + b` | `u1 = next_u(); u2 = next_u()` — exactly two uniforms |
+| `β = sqrt((α − 2) / (2ab − α))` | `vlog = log(u1 / (1 − u1))` — the locked logit form |
+| `γ = a + 1/β` | `v = β · vlog` |
+| | `w = a · exp(v)` |
+| | `z = u1 · u1 · u2` |
+| | `rr = γ·v − 1.3862944` |
+| | `s = a + rr − w` |
+| | accept if `s + 2.609438 >= 5.0·z` |
+| | else `t = log(z)`; accept if `s >= t` |
+| | else accept if `rr + α·log(α/(b + w)) >= t` |
+| | else reject and retry |
+
+Return `w/(b + w)` when the caller's first parameter was the min, `b/(b + w)`
+otherwise.
+
+**BC**, for `min(α,β) ≤ 1`. Orientation `a = max(α₀,β₀)`, `b = min(α₀,β₀)` —
+**the opposite of BB**. Inverting it is a silent defect that returns the
+mirrored distribution; it happened once in this package and the theoretical-mean
+check caught it.
+
+| Once per driver | Per proposal attempt |
+|---|---|
+| `α = a + b` | `u1 = next_u(); u2 = next_u()` — exactly two uniforms |
+| `β = 1/b` | if `u1 < 0.5`: `y = u1·u2`; `z = u1·y`; reject if `0.25·u2 + z − y >= k1` |
+| `δ = 1 + a − b` | else `z = u1·u1·u2` |
+| `k1 = δ(0.0138889 + 0.0416667·b) / (a·β − 0.777778)` | if `z <= 0.25`: `vlog = log(u1/(1−u1))`; `v = β·vlog`; `w = a·exp(v)`; **accept** |
+| `k2 = 0.25 + (0.5 + 0.25/δ)·b` | if `z >= k2`: reject |
+| | `vlog = log(u1/(1−u1))`; `v = β·vlog`; `w = a·exp(v)` |
+| | accept if `α·(log(α/(b + w)) + v) − 1.3862944 >= log(z)` |
+| | else reject and retry |
+
+Return `w/(b + w)` when the caller's first parameter was the max, `b/(b + w)`
+otherwise.
+
+**Every literal is a LITERAL, not a computed value.** `1.3862944` is written as
+those eight digits and is **not** evaluated as `log(4)`; `2.609438` is not
+evaluated as `1 + log(5)`; `0.0138889`, `0.0416667` and `0.777778` are not
+evaluated as `1/72`, `3/72` and `7/9`. `5.0`, `2.0`, `1.0`, `0.5` and `0.25` are
+exact.
+
+**What the literals actually control — measured, not assumed.** The squeeze
+literals **never change the value of an accepted proposal**. They change *which*
+proposals are accepted, and therefore consumption and every draw after it.
+Control 18b constructs a witness `(u1, u2)` where `1.3862944` and `log(4)` give
+opposite accept decisions. The **logit form** is different in kind: it changes
+the returned value itself, in the tails, and control 18 demonstrates it. Both
+must be locked; the reasons are not the same.
+
+**Degenerate `a = m = b`** is handled **before** dispatch and before
+parameterisation, per plan §4.0: the driver returns `a`, enters no sampler, never
+forms `r = (m−a)/(b−a)`, and consumes **zero** uniforms. Cheng is never reached,
+`α` and `β` are never formed, and `0/0` cannot arise. Evidence: §6.1.
+
+**Source binding.** The record carries the SHA-256 of the three function bodies
+(`cheng_dispatch`, `cheng_bb`, `cheng_bc`) as retained:
+
+```
+d5ca71b806015ed9039f713295dca3b45d2f66dbcabe60b6709896e3a89eed90
+```
+
+That binds this prose to the code that produced every Cheng number in the
+package, so the two cannot drift apart silently.
+
+### 5.2b Cheng authority vectors
+
+`vectors/cheng_vectors.json`. **These vectors define the locked formulation**:
+an implementation that reproduces them reproduces the formulation, and one that
+does not, does not.
+
+Five cases, both dispatches, 24 samples each, from distinct jump-ladder streams:
+
+| Case | `α` / `β` | dispatch | stream | max attempts | total attempts | total uniforms |
+|---|---|---|---|---|---|---|
+| BB interior | 2 / 4 | BB | 0 | 3 | 28 | 56 |
+| BB symmetric | 3 / 3 | BB | 1 | 3 | 27 | 54 |
+| BB near-boundary | 1.04 / 4.96 | BB | 2 | 4 | 35 | 70 |
+| BC | 1 / 5 | BC | 3 | 4 | 31 | 62 |
+| BC | 5 / 1 | BC | 4 | 2 | 30 | 60 |
+
+Per sample the file retains: input state and stream identity, `α`, `β`,
+dispatch, the accepted sample, **proposal attempts for that sample**, **uniforms
+for that sample**, **cumulative uniforms**, and the **post-sample RNG state**.
+
+**`N = 24` is chosen, not guessed.** Every case must exercise both an immediate
+acceptance and at least one retry. The earliest retry in the highest-acceptance
+case is sample 18, so 24 covers the family with margin, and **the generator
+refuses to emit vectors that miss either path** rather than retaining incomplete
+ones.
+
+**These are Gate-A reference vectors.** They do **not** imply Python/VBA
+sample-for-sample identity in a full seeded Beta run. Revision 6's Layer G is
+unchanged.
+
 ### 5.3 Floating acceptance-path evidence
 
 `raw/cheng.json` (per-shape margins) and `raw/acceptance_margin_model.json`.
@@ -656,21 +852,101 @@ architectural argument above, **not** on the withdrawn revision-6 figures.
 
 ---
 
-## 6. D6-18 — when the Risk severity stream advances
+## 6. D6-18 — when the Risk severity sampler is invoked
 
-`raw/d6_18_operation_model.json`. Shared in both options: the occurrence stream
-advances **once per Risk per iteration**, `1.0 × 10^7` uniforms at the design
-target. Consumption estimates use the **measured** Cheng behaviour — the worst
-shape (`2.6795` uniforms, `4.825` transcendentals per sample) is quoted below,
-and the mid shape is also retained in the raw file so the figures are not tied to
-one arbitrary shape.
+**The section heading has changed, and so has the contract.** `c121cc6` stated
+D6-18b as *"the severity stream advances unconditionally, once per Risk per
+iteration"*. **That is false for a degenerate severity**, and it contradicts the
+accepted plan §4.0 rule, which is itself an RNG and replay contract.
 
-| `p` | A invocations | B invocations | A severity uniforms | B severity uniforms | A transcendentals | B transcendentals |
+### 6.1 D6-18b, reconciled with the degenerate rule
+
+**The corrected contract:**
+
+> The severity **sampler is invoked** every Risk iteration.
+>
+> - If the distribution is **non-degenerate**, the selected sampler consumes its
+>   contract-defined number of uniforms.
+> - If the distribution is **degenerate** (`a = m = b`), it returns the constant
+>   and consumes **zero** uniforms; the component stream is unchanged.
+>
+> The sampled severity value is used only when `occurrence = True`.
+
+**"The stream advances once per iteration" is not the D6-18 contract** and must
+not be used as one. Invocation is unconditional; *consumption* is a property of
+the distribution.
+
+**The two-uniforms rule is scoped accordingly.** "Each Cheng proposal attempt
+consumes exactly two uniforms" applies to **non-degenerate** Cheng BB/BC proposal
+attempts only. A degenerate driver makes no proposal attempt at all.
+
+Measured, `raw/degenerate_d6_18.json` — one Risk, 1,000 iterations, D6-18b:
+
+| severity | `p` | sampler invocations | invoked every iteration | severity uniforms | stream unchanged | distinct severity values |
+|---|---|---|---|---|---|---|
+| degenerate `7/7/7` | 1.00 | 1,000 | yes | **0** | **yes** | 1 |
+| degenerate `7/7/7` | 0.50 | 1,000 | yes | **0** | **yes** | 1 |
+| degenerate `7/7/7` | 0.10 | 1,000 | yes | **0** | **yes** | 1 |
+| degenerate `7/7/7` | 0.01 | 1,000 | yes | **0** | **yes** | 1 |
+| degenerate `7/7/7` | 0.00 | 1,000 | yes | **0** | **yes** | 1 |
+| non-degenerate `0/50/100` | 1.00 | 1,000 | yes | 2,174 | no | 1,000 |
+| non-degenerate `0/50/100` | 0.50 | 1,000 | yes | 2,174 | no | 1,000 |
+| non-degenerate `0/50/100` | 0.10 | 1,000 | yes | 2,174 | no | 1,000 |
+| non-degenerate `0/50/100` | 0.01 | 1,000 | yes | 2,174 | no | 1,000 |
+| non-degenerate `0/50/100` | 0.00 | 1,000 | yes | 2,174 | no | 1,000 |
+
+Three things are visible at once. The degenerate rows prove **zero consumption**
+in the way the plan requires — the component's stream state after 1,000
+iterations equals its initial state. The non-degenerate rows consume **2,174
+severity uniforms at every probability including `p = 0`**, which is exactly the
+property Option B exists to provide. And the contribution follows the Bernoulli
+occurrence decision in both cases while the degenerate severity stays the
+constant `7`.
+
+Control 15 fires when a degenerate driver consumes a uniform — the withdrawn
+"consume one" rule from revision 3.
+
+### 6.2 Expectation versus realisation — corrected
+
+`c121cc6` printed Option-A invocations as `N · p` for `p = 0.5, 0.1, 0.01`
+without saying what that number is. **Under conditional Bernoulli occurrence
+`N · p` is the EXPECTATION, not a realised or guaranteed count.** The realised
+count is the Bernoulli occurrence count and is random except at `p = 0` and
+`p = 1`, where the Bernoulli is deterministic.
+
+The measurement makes it concrete. Over 1,000 iterations the realised occurrence
+counts were:
+
+| `p` | expected | **realised** |
+|---|---|---|
+| 1.00 | 1,000 | 1,000 |
+| 0.50 | 500 | **506** |
+| 0.10 | 100 | **93** |
+| 0.01 | 10 | **7** |
+
+Every Option-A field in `raw/d6_18_operation_model.json` is therefore renamed to
+`option_A_expected_*` and carries `option_A_invocation_count_is_random`. Option B
+keeps `option_B_severity_invocations_exact`, because `N` is exact for every `p` —
+not an expectation. The derived uniform and transcendental figures for Option A
+are labelled **expected work estimates**. Control 16 fires when an expected count
+is presented as a realised one.
+
+The operation model at the design target, with that labelling:
+
+| `p` | A **expected** invocations | B invocations (exact) | A **expected** severity uniforms | B severity uniforms | A **expected** transcendentals | B transcendentals |
 |---|---|---|---|---|---|---|
 | 1.00 | 10,000,000 | 10,000,000 | 26,795,000 | 26,795,000 | 48,253,000 | 48,253,000 |
 | 0.50 | 5,000,000 | 10,000,000 | 13,397,500 | 26,795,000 | 24,126,500 | 48,253,000 |
 | 0.10 | 1,000,000 | 10,000,000 | 2,679,500 | 26,795,000 | 4,825,300 | 48,253,000 |
 | 0.01 | 100,000 | 10,000,000 | 267,950 | 26,795,000 | 482,530 | 48,253,000 |
+
+Shared and exact in both options: the occurrence stream consumes one uniform per
+Risk per iteration, `1.0 × 10^7` at the design target. Consumption estimates use
+the **measured** worst Cheng shape (`2.6795` uniforms, `4.825` transcendentals
+per sample); the mid shape is retained alongside in the raw file so no figure is
+tied to one arbitrary shape.
+
+### 6.3 The decision, unchanged
 
 **Memory impact: none.** Both options need the same 400 component stream states,
 19,200 bytes. The difference is work, not storage.
@@ -683,12 +959,13 @@ sampler the stream position at iteration `i` is not an arithmetic function of `i
 **Effect on probability-only scenario comparability — the decisive difference.**
 Under **B**, the number of severity sampler *invocations* before iteration `i` is
 exactly `i − 1`, independent of the occurrence path. Change only a risk's
-`Probability` and the severity sequence is **unchanged**; what changes is which
-iterations use it. Under **A**, changing `Probability` changes which iterations
-invoke the sampler, so the entire severity sequence shifts and two runs differing
-only in a probability are no longer comparable draw for draw. Attribution — "this
-risk contributed more because it occurred more often", not "because it also drew
-different severities" — is only available under B.
+`Probability` and, **for a non-degenerate severity**, the severity sequence is
+unchanged; what changes is which iterations use it. The measured 2,174 uniforms
+at every `p` is that property. Under **A**, changing `Probability` changes which
+iterations invoke the sampler, so the entire severity sequence shifts and two
+runs differing only in a probability are no longer comparable draw for draw.
+Attribution — "this risk contributed more because it occurred more often", not
+"because it also drew different severities" — is only available under B.
 
 **The cost objection, examined as the authorisation requires.** Option B's
 severity work at **any** probability is exactly its work at `p = 1`, and at
@@ -700,7 +977,10 @@ workload were infeasible, that would be evidence about D6-04, the sampler, or th
 implementation strategy — it would not be evidence for changing what a
 probability-only comparison means.
 
-**Selected: B — unconditional advancement, value used only on occurrence.**
+**Selected: B**, unchanged. Neither correction in §6.1 nor §6.2 exposes a
+contradiction: the degenerate reconciliation narrows what "invocation" consumes
+without touching the comparability argument, and the expectation correction
+relabels Option A's figures without moving them.
 
 **Wording correction recorded.** Revision 6 §14's "identical statistical output"
 is corrected to "the same target probability law / intended distribution". A
@@ -763,7 +1043,120 @@ classification stated.
 
 ---
 
-## 9. What Step 0 does NOT prove
+## 9. Version semantics — settled
+
+`raw/version_register.json`. **Step 1 must not invent version semantics while
+writing the contract**, so every version is settled here, with one owner each and
+every listed change classified against exactly one of them.
+
+| Version | Initial | Owner | Status | Covers |
+|---|---|---|---|---|
+| `FP_VERSION` | `1` | `spec/calc_contract.yaml` | **INHERITED, unchanged** | the Phase-5 calculation **input** fingerprint algorithm |
+| `RNG_VERSION` | **`1`** | `spec/sim_contract.yaml` | **NEW, settled here** | everything determining the uniform stream a component sees |
+| `SIM_METHOD_VERSION` | **`1`** | `spec/sim_contract.yaml` | **NEW, settled here** | everything turning uniforms into published numbers |
+| `PCCM-RD` version field | **`1`** | `spec/sim_contract.yaml` | **NEW, settled as (b)** | the result-stream framing |
+
+**The `PCCM-RD` version field IS `SIM_METHOD_VERSION`.** Option (b): no separate
+`RESULT_DIGEST_VERSION` is created. The digest exists to compare runs, and two
+runs are comparable exactly when the method that produced the numbers is the
+same. A framing change with no method change still bumps `SIM_METHOD_VERSION`,
+because it changes what the digest means. A third version would add a field for
+which no distinct rule could be stated — which is how ownerless version fields
+happen. The field is therefore **not semantically ownerless**; it has an owner
+and that owner is named.
+
+**What bumps what:**
+
+| Change | Bumps |
+|---|---|
+| MRG constants or the uniform combination | `RNG_VERSION` |
+| scalar-seed → six-word state mapping | `RNG_VERSION` |
+| AUTO-seed `nonce → effective_seed` mapping | `RNG_VERSION` |
+| stream-assignment rule (D6-16) | `RNG_VERSION` |
+| jump algorithm semantics — matrices, exponent, arithmetic path | `RNG_VERSION` |
+| **Cheng formulation, literals or expression order** | `SIM_METHOD_VERSION` |
+| D6-18 advancement rule | `SIM_METHOD_VERSION` |
+| degenerate-driver rule | `SIM_METHOD_VERSION` |
+| accumulation order | `SIM_METHOD_VERSION` |
+| percentile or statistical method | `SIM_METHOD_VERSION` |
+| result-digest framing or hash stream | `SIM_METHOD_VERSION`, carried by the `PCCM-RD` version field |
+| Phase-5 input fingerprint encoding | `FP_VERSION` |
+
+The `2^127` jump exponent sits **inside** `RNG_VERSION`, not as a constant free
+to vary: changing it changes every stream after `0`. A change may bump **both**
+versions. **Nothing here permits a change that bumps neither while altering a
+retained number** — control 17 fires when a listed change maps to no version.
+
+---
+
+## 10. Numeric comparison tolerance — settled as an evidence policy
+
+`raw/tolerance_model.json`. Revision 6 §15.1 still said transformed floating
+samples use "a locked tolerance — ULP or relative — fixed in the contract", and
+`c121cc6` settled no such tolerance. That was a hidden semantic choice.
+
+### 10.1 Ownership — option B
+
+**The tolerance is not a simulation-runtime contract and does not belong in
+`sim_contract.yaml`.** The engine never compares two Doubles for approximate
+equality at runtime: replay comparison is by `result_digest`, which is **exact**,
+and no published number is produced by a tolerance test. A tolerance exists only
+when two **implementations** are compared — which is oracle, Gate-A and Gate-B
+evidence.
+
+**Single owner: the Phase-6 oracle and evidence policy (plan §15.1).**
+`sim_contract.yaml` stores **no tolerance at all**, so the rule cannot come to
+live in two files.
+
+### 10.2 The measurement the values rest on
+
+Two independent sources of cross-implementation difference were measured rather
+than assumed:
+
+| Source | Method | Worst measured |
+|---|---|---|
+| **Expression order** | the accepted form against an algebraically equivalent one, over the accepted extreme Double domain, in ULPs | **1 ULP** (`≈ 2.14e-16` relative), on the Uniform and PERT rescale; **0 ULP** on the Triangular |
+| **Libm** | a one-ULP perturbation of the `log` result inside Cheng, propagated through `exp` and the final ratio, **acceptance path held fixed** | **`1.961e-15`** relative change in the returned sample |
+
+The libm amplifier is `|v|`, worst measured `13.18`: `exp` converts an absolute
+error in its argument into a relative error in its result, so a one-ULP `log`
+difference does not stay one ULP.
+
+**A finding worth stating on its own.** Over the extreme-domain triples, the
+*rejected* naive form `a + u·(b − a)` **overflowed to non-finite in 11 cases**
+where the accepted convex form `(1 − u)·a + u·b` returned finite correct values.
+That is direct measured support for the plan §4.6 rule, which until now rested on
+an argument.
+
+### 10.3 The policy
+
+| Subject | Rule | Value | Basis |
+|---|---|---|---|
+| individual Uniform / Triangular / PERT-rescale transformed samples | relative, with an absolute floor keyed to the driver's conditioning scale `s = max(|a|,|m|,|b|)` | `rel ≤ 1e-12`, or `abs ≤ 1e-12 · s` | measured worst expression-order gap is 1 ULP ≈ `2.22e-16` relative; ≈ 4,500× headroom |
+| deterministic Cheng vector outputs | relative | `rel ≤ 1e-11` | measured worst one-ULP-libm output change is `1.961e-15`; ≈ 5,100× headroom, still far tighter than any real algorithmic error |
+| F1 per-iteration no-Beta end-to-end totals | relative, with an absolute floor keyed to the iteration's accumulation scale `S = max |contribution|` over the drivers summed | `rel ≤ 3e-10`, or `abs ≤ 3e-10 · S` | composition, not a new measurement: ≤ 300 contributions each at ≤ `1e-12` relative bounds the absolute error by `300 · 1e-12 · S` |
+| summary statistics compared cross-language | relative, same accumulation-scale floor | `rel ≤ 3e-10`, or `abs ≤ 3e-10 · S` | a percentile is one order statistic — an element of the sorted sample or a convex blend of two adjacent ones — so it inherits the per-iteration bound and no more; mean and SD inherit it under the accepted scale-aware accumulation |
+
+**Why every rule is scale-aware and none is purely relative.** Cancellation can
+drive an iteration total near zero while every contribution is large. A purely
+relative test is then unusable — it demands agreement to a precision neither
+implementation carries — and a purely absolute one is meaningless across the
+accepted Double domain. The floor is keyed to the scale that actually produced
+the number, not to the number itself.
+
+### 10.4 What stays exact
+
+No tolerance applies to any of these, in either direction:
+
+- MRG32k3a state and uniform values
+- jump state
+- Bernoulli occurrence decisions
+- proposal and draw counts, where the arithmetic path is fixed
+- same-runtime G2/G3 `result_digest`
+
+---
+
+## 11. What Step 0 does NOT prove
 
 - **It does not prove VBA or Excel performance.** No runtime measurement exists.
   Whether 100,000 iterations complete within any threshold is Gate-B evidence.
@@ -782,10 +1175,17 @@ classification stated.
   arithmetic on data-structure sizes, not measurements of a running workbook.
 - **It does not establish that any implementation exists.** No Phase-6 production
   code was written.
+- **It does not prove the locked Cheng formulation is the best one.** It proves
+  that *a* formulation is now named exactly, hashed to its source and anchored by
+  vectors, so two implementations can be compared at all. Whether another
+  formulation would be marginally faster or more accurate is not asked here.
+- **It does not prove the settled tolerances are achievable in VBA.** They are
+  derived from Python-measured sensitivity plus composition. Whether a VBA
+  implementation lands inside them is Gate-A and Gate-B evidence.
 
 ---
 
-## 10. Exact semantics Step 1 must encode
+## 12. Exact semantics Step 1 must encode
 
 `sim_contract.yaml` does not exist and was not created. When Step 1 writes it, it
 must encode exactly this and nothing not decided here:
@@ -800,52 +1200,75 @@ must encode exactly this and nothing not decided here:
 3. State stored oldest-first `[s10, s11, s12, s20, s21, s22]`; matrices operate
    newest-first; the reversal at the boundary is part of the contract.
 4. Scalar seed → state: `[seed] × 6` (D6-05a).
-5. AUTO seed: `effective_seed = 48271^auto_nonce mod 2147483647`, `auto_nonce`
-   persisted, starting at `0`, refusing at `2147483646` (D6-03b). Freshness scope
-   is **one workbook**.
-6. The admissible seed domain lives in `input_contract.yaml`; `sim_contract.yaml`
+5. AUTO seed: `effective_seed = 48271^auto_nonce mod 2147483647` — a modular
+   **power**, requiring an exact `O(log nonce)` method, never `O(nonce)` repeated
+   multiplication (D6-03b). Freshness scope is **one workbook**.
+6. The AUTO nonce lifecycle exactly as §4/D6-03: `auto_nonce` is the **next**
+   nonce to allocate, persisted, initial `0`; allocation is **read, advance, then
+   sample**; a failure before allocation consumes nothing, a failure after
+   allocation **consumes** the nonce and the attempt metadata records both the
+   allocated `effective_seed` and the consumed nonce; `2147483646` is refused.
+7. The admissible seed domain lives in `input_contract.yaml`; `sim_contract.yaml`
    **references** it and stores no copy (D6-19a).
 
 **Streams**
 
-7. Components: Cost Line → 1; Risk → occurrence + severity. `C + 2R`; 400 at the
+8. Components: Cost Line → 1; Risk → occurrence + severity. `C + 2R`; 400 at the
    design target.
-8. Assignment: sort by `(ComponentKind, PermanentId, Role)` with Permanent ID
+9. Assignment: sort by `(ComponentKind, PermanentId, Role)` with Permanent ID
    compared ordinally on UTF-16 code units, using the accepted Phase-5 sort key;
    stream `k` is the base state advanced by `k` applications of the `2^127` jump
    (D6-16a).
-9. The two jump matrices, exactly as in §5.6, with the `MultModM` `H = 2^17`
-   decomposition mandatory — a naive `Mod` is forbidden and is a silent-error
-   path.
-10. Advancement is sequential per stream across iterations. **No arithmetic seek
+10. The two jump matrices, exactly as in §5.6, with the `MultModM` `H = 2^17`
+    decomposition mandatory — a naive `Mod` is forbidden and is a silent-error
+    path.
+11. Advancement is sequential per stream across iterations. **No arithmetic seek
     to iteration `i`.** Replay = reset to initial state and re-run.
 
 **Sampling**
 
-11. Beta-PERT via Cheng, dispatched **BB when `min(α,β) > 1`, BC otherwise** —
+12. Beta-PERT via Cheng, dispatched **BB when `min(α,β) > 1`, BC otherwise** —
     equality belongs to BC (D6-04b).
-12. Risk severity advances **unconditionally**, once per Risk per iteration; the
-    value is used only on occurrence (D6-18b).
-13. Per attempt: exactly two uniforms. The definitions of attempt, uniform
-    consumed and accepted sample in §5.2 are the contract's definitions.
+13. **The exact Cheng formulation of §5.2a**: both orientations, every setup
+    constant, every literal *as a literal*, the locked `log(u1/(1−u1))` logit
+    form, the expression order and the comparison operators. `vectors/cheng_vectors.json`
+    is the conformance target.
+14. **The degenerate rule of plan §4.0**, before dispatch and before
+    parameterisation: return `a`, enter no sampler, form no `r`, consume **zero**
+    uniforms.
+15. **D6-18b as corrected in §6.1**: the severity **sampler is invoked** every
+    Risk iteration; a non-degenerate distribution consumes its contract-defined
+    uniforms, a degenerate one consumes zero; the value is used only on
+    occurrence. **Not** "the stream advances once per iteration".
+16. Per **non-degenerate Cheng** proposal attempt: exactly two uniforms. The
+    definitions of attempt, uniform consumed and accepted sample in §5.2 are the
+    contract's definitions.
 
-**Identities**
+**Identities and versions**
 
-14. `result_digest` exactly as §4/D6-17, over iteration-ordered totals, using the
+17. `result_digest` exactly as §4/D6-17, over iteration-ordered totals, using the
     accepted Phase-5 encoder, with the `PCCM-RD` tag, the version, the record
     count and the iteration index all inside the hashed stream.
-15. `run_id`: monotonic success counter, first successful commit allocates `1`,
+18. `RNG_VERSION = 1` and `SIM_METHOD_VERSION = 1`, with the scope and bump rules
+    of §9. The `PCCM-RD` version field **is** `SIM_METHOD_VERSION`; no third
+    version is created.
+19. `run_id`: monotonic success counter, first successful commit allocates `1`,
     maximum `2147483647`, refusal at exhaustion, no relationship to `auto_nonce`
     or `effective_seed` (D6-15a).
 
 **Prerequisite**
 
-16. Phase-5 analytical results must be `CURRENT`; Phase 6 never recalculates them
+20. Phase-5 analytical results must be `CURRENT`; Phase 6 never recalculates them
     (D6-14a).
+
+**And one thing Step 1 must NOT encode**
+
+21. **No comparison tolerance.** It is an oracle/evidence policy with a single
+    owner outside the contract (§10). `sim_contract.yaml` stores no tolerance.
 
 ---
 
-## 11. D6-08 remains Step-1 layout-derived
+## 13. D6-08 remains Step-1 layout-derived
 
 **D6-08 — the technical storage ceiling constant (`1048576 − H`) — is Class 3 and
 is not a Step-0 blocker.** It is not a semantic choice; it is a constant that the
@@ -855,27 +1278,30 @@ decides it nor guesses `H`.
 
 ---
 
-## 12. Decision status after Step 0
+## 14. Decision status after Step 0
 
 | # | Class | Decision | Status |
 |---|---|---|---|
-| **D6-03** | 2 | AUTO seed source / freshness / exhaustion | **CLOSED — (b)** full-period cycle, `48271` mod `2^31−1` |
-| **D6-04** | 1 | Beta sampler + streams + jump arithmetic | **CLOSED — (b)** Cheng BB/BC + component streams + `2^127` jumps |
+| **D6-03** | 2 | AUTO seed source / freshness / exhaustion | **CLOSED — (b)** full-period cycle, `48271` mod `2^31−1`, **with the nonce lifecycle locked** (§4) |
+| **D6-04** | 1 | Beta sampler + streams + jump arithmetic | **CLOSED — (b)** Cheng BB/BC + component streams + `2^127` jumps, **with the exact formulation locked** (§5.2a) and anchored by vectors (§5.2b) |
 | **D6-05** | 2 | scalar seed → six-word state | **CLOSED — (a)** repeated scalar |
 | **D6-14** | 2 | analytical prerequisite | **CLOSED — (a)** require Phase-5 `CURRENT` |
 | **D6-15** | 2 | `run_id` semantics and exhaustion | **CLOSED — (a)** monotonic success counter |
 | **D6-16** | 2 | stream assignment rule | **CLOSED — (a)** canonical sorted order, on authority |
-| **D6-17** | 2 | `result_digest` canonicalisation | **CLOSED — (a)** accepted encoder, `PCCM-RD` framing |
-| **D6-18** | 1 | when the severity stream advances | **CLOSED — (b)** unconditional |
+| **D6-17** | 2 | `result_digest` canonicalisation | **CLOSED — (a)** accepted encoder, `PCCM-RD` framing, version field owned by `SIM_METHOD_VERSION` (§9) |
+| **D6-18** | 1 | when the severity **sampler is invoked** | **CLOSED — (b)** unconditional invocation, **reconciled with the degenerate zero-consumption rule** (§6.1) |
 | **D6-19** | 2 | Random Seed domain ownership | **CLOSED — (a)** input-contract ownership |
 | **D6-20** | — | Random Seed admissible domain | accepted at plan level; **not reopened**; evidence supports it |
+| — | — | **version semantics** (`RNG_VERSION`, `SIM_METHOD_VERSION`, `PCCM-RD` field) | **CLOSED** — §9 |
+| — | — | **numeric comparison tolerance** | **CLOSED** — §10, owned outside `sim_contract.yaml` |
 | **D6-08** | 3 | technical storage ceiling | **OPEN by design** — Step-1, layout-derived |
 
-**No Class-1 or Class-2 decision remains open. D6-08 alone remains for Step 1.**
+**No Class-1 or Class-2 decision remains open. No hidden version decision and no
+hidden tolerance decision remains. D6-08 alone remains for Step 1.**
 
 ---
 
-## 13. Static baseline protection
+## 15. Static baseline protection
 
 Production trees against the accepted planning baseline `03aa5044`:
 
@@ -893,7 +1319,10 @@ Accepted static baseline, re-run at the Step-0 tree:
 
 | Check | Result |
 |---|---|
-| Full Python suite (`python3 -m pytest pccm/tests -q`) | **1752 passed, 0 failed** (2 warnings, 127.62 s) |
+| Evidence generator (`python3 scripts/run_all.py`) | completes; two consecutive runs give a byte-identical `manifest.json` |
+| Evidence controls | **20 / 20 fired** |
+| Manifest verification | **36 files, 0 SHA-256 or byte-count mismatches** |
+| Full Python suite (`python3 -m pytest pccm/tests -q`) | **1752 passed, 0 failed** (2 warnings, 161.60 s) |
 | Stage-A verifier / build (`python3 pccm/builder/build_stage_a.py`) | **351 passed, 0 failed**; "Stage A build complete." |
 
 **No test was altered.** The suites are byte-identical to the accepted baseline,
@@ -901,23 +1330,26 @@ which is what the empty `pccm/tests` diff above establishes.
 
 ---
 
-## 14. Step-0 completion gate
+## 16. Step-0 completion gate
 
 | Requirement | Status |
 |---|---|
 | Retained evidence exists and is reproducible | yes — one command, byte-identical manifest across runs |
-| D6-04 explicitly resolved | yes — §5.7 |
-| D6-18 explicitly resolved | yes — §6 |
-| D6-03, D6-05, D6-14, D6-15, D6-16, D6-17, D6-19 resolved | yes — §4 |
-| No unresolved Class-1 or Class-2 decision | yes — §12 |
-| D6-08 alone remains for Step 1 | yes — §11 |
+| D6-04 explicitly resolved, with an exact locked Cheng formulation | yes — §5.2a, §5.2b, §5.7 |
+| D6-18 explicitly resolved, degenerate semantics reconciled | yes — §6.1, §6.2, §6.3 |
+| D6-03 resolved, with a precise nonce lifecycle | yes — §4 |
+| D6-05, D6-14, D6-15, D6-16, D6-17, D6-19 resolved and unchanged | yes — §4 |
+| No hidden version decision remains | yes — §9 |
+| No hidden tolerance decision remains | yes — §10 |
+| No unresolved Class-1 or Class-2 decision | yes — §14 |
+| D6-08 alone remains for Step 1 | yes — §13 |
 | No Phase-6 production implementation exists | yes — `pccm/src` diff empty |
 | No `sim_contract.yaml` exists | yes — `spec/` diff empty; the file was not created |
 | No Windows/Excel runtime was executed | yes — Linux only; recorded in `environment.txt` |
 
 ---
 
-## 15. Two prior figures that did not reproduce
+## 17. Two prior figures that did not reproduce
 
 Recorded as findings in their own right, because a number that does not reproduce
 is evidence about the number.
@@ -938,4 +1370,4 @@ also withdrawn; no such multiplier appears in any retained number.
 
 ---
 
-**STEP 0 — ACCEPTANCE REQUESTED**
+**STEP 0 — ACCEPTANCE REQUESTED (SETTLED)**

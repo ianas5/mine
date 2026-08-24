@@ -56,6 +56,39 @@ def tr_snapshot():
     return dict(TR)
 
 
+# --- libm sensitivity probe (settlement section 7) ------------------------
+# A cross-language difference in `log` or `exp` of one ULP does not stay one
+# ULP: `exp` turns an ABSOLUTE error in its argument into a RELATIVE error in
+# its result, so the amplification is |v|. This measures the resulting relative
+# change in the RETURNED SAMPLE, holding the acceptance path fixed, so the
+# tolerance policy rests on a measurement rather than on a chosen number.
+#
+# Off by default. Enabling it changes no arithmetic on the accepted path: the
+# perturbed twin is computed alongside and never fed back.
+SENS = {"on": False, "max_rel_out": 0.0, "max_abs_v": 0.0, "samples": 0}
+
+
+def sens_reset(on=True):
+    SENS["on"] = on
+    SENS["max_rel_out"] = 0.0
+    SENS["max_abs_v"] = 0.0
+    SENS["samples"] = 0
+
+
+def sens_snapshot():
+    return {k: v for k, v in SENS.items() if k != "on"}
+
+
+def _sens_record(out, out_pert, v):
+    SENS["samples"] += 1
+    if abs(v) > SENS["max_abs_v"]:
+        SENS["max_abs_v"] = abs(v)
+    denom = abs(out) if out != 0.0 else 1.0
+    rel = abs(out_pert - out) / denom
+    if rel > SENS["max_rel_out"]:
+        SENS["max_rel_out"] = rel
+
+
 # --- floating acceptance-path margins (authorisation section 5.3) --------
 # Every accept/reject predicate in Cheng BB and BC is a comparison of two
 # Doubles. This records how close each evaluated comparison came to its own
@@ -178,7 +211,8 @@ def cheng_bb(a0, b0, rng, counter):
         counter["attempts"] += 1
         u1 = rng(); u2 = rng()
         counter["uniforms"] += 2
-        v = beta * _log(u1 / (1.0 - u1))
+        vlog = _log(u1 / (1.0 - u1))
+        v = beta * vlog
         w = a * _exp(v)
         z = u1 * u1 * u2
         rr = gamma * v - 1.3862944
@@ -190,7 +224,11 @@ def cheng_bb(a0, b0, rng, counter):
             break
         if _ge(rr + alpha * _log(alpha / (b + w)), t):
             break
-    return (w / (b + w)) if a0 == a else (b / (b + w))
+    out = (w / (b + w)) if a0 == a else (b / (b + w))
+    if SENS["on"]:
+        wp = a * math.exp(beta * math.nextafter(vlog, math.inf))
+        _sens_record(out, (wp / (b + wp)) if a0 == a else (b / (b + wp)), v)
+    return out
 
 
 def cheng_bc(a0, b0, rng, counter):
@@ -213,12 +251,14 @@ def cheng_bc(a0, b0, rng, counter):
         else:
             z = u1 * u1 * u2
             if _ge(0.25, z):
-                v = beta * _log(u1 / (1.0 - u1))
+                vlog = _log(u1 / (1.0 - u1))
+                v = beta * vlog
                 w = a * _exp(v)
                 break
             if _ge(z, k2):
                 continue
-        v = beta * _log(u1 / (1.0 - u1))
+        vlog = _log(u1 / (1.0 - u1))
+        v = beta * vlog
         w = a * _exp(v)
         if _ge(alpha * (_log(alpha / (b + w)) + v) - 1.3862944, _log(z)):
             break

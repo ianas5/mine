@@ -43,6 +43,10 @@ Requires Python 3.11 (see `environment.txt` for the exact interpreter used).
 | File | Subject |
 |---|---|
 | `rng_backbone.json` | MRG32k3a, two independent arithmetic paths |
+| `cheng_formulation.json` | the LOCKED Cheng formulation, enumerated and hashed to its source |
+| `degenerate_d6_18.json` | degenerate severity under D6-18b: invoked every iteration, zero uniforms, stream unchanged |
+| `version_register.json` | RNG_VERSION, SIM_METHOD_VERSION, the `PCCM-RD` version field, and what bumps each |
+| `tolerance_model.json` | measured expression-order and libm sensitivity, and the comparison-tolerance policy derived from it |
 | `jump.json` | the `2^127` jump matrices and the safe modular arithmetic |
 | `seed_map.json` | D6-03 auto-seed cycle, D6-05 scalar → six-word state |
 | `cheng.json` | D6-04 candidate B: Cheng BB/BC, measured per shape |
@@ -54,6 +58,11 @@ Requires Python 3.11 (see `environment.txt` for the exact interpreter used).
 | `stream_architecture.json` | D6-16 stream assignment, families A and B |
 | `digest.json` | D6-17 `result_digest` |
 | `run_log.txt` | what the last generation run did |
+
+`vectors/cheng_vectors.json` holds the deterministic sampler vectors that define
+the locked formulation: five shapes covering both dispatches, 24 samples each,
+every case exercising both an immediate acceptance and at least one retry, with
+per-sample attempts, uniforms, cumulative uniforms and post-sample RNG state.
 
 ## Two things this package deliberately does NOT do
 

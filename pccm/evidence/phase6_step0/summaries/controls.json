@@ -54,5 +54,29 @@
   {
     "control": "Family B collision under the unbounded ID pattern",
     "detected": true
+  },
+  {
+    "control": "degenerate driver consuming a uniform",
+    "detected": true
+  },
+  {
+    "control": "expected count presented as realised",
+    "detected": true
+  },
+  {
+    "control": "a change classified against no version",
+    "detected": true
+  },
+  {
+    "control": "log(u1/(1-u1)) replaced by log(u1)-log1p(-u1)",
+    "detected": true
+  },
+  {
+    "control": "Cheng literal 1.3862944 replaced by log(4)",
+    "detected": true
+  },
+  {
+    "control": "auto-seed power authority diverging from the stepped cycle",
+    "detected": true
   }
 ]

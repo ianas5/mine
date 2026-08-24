@@ -1,0 +1,196 @@
+{
+  "d6_18b_contract": "The severity SAMPLER IS INVOKED every Risk iteration. A non-degenerate distribution consumes its contract-defined uniforms; a degenerate distribution returns the constant and consumes zero. The sampled value is used only when occurrence is True. 'The stream advances once per iteration' is NOT the contract - it is false for a degenerate severity.",
+  "rows": [
+    {
+      "contribution_total": "7000.0",
+      "degenerate": true,
+      "distinct_severity_values": 1,
+      "expected_occurrences": 1000.0,
+      "iterations": 1000,
+      "occurrence_uniforms_consumed": 1000,
+      "probability": 1.0,
+      "realised_occurrences": 1000,
+      "severity_sampler_invocations": 1000,
+      "severity_sampler_invoked_every_iteration": true,
+      "severity_stream_unchanged": true,
+      "severity_uniforms_consumed": 0,
+      "triple": [
+        7.0,
+        7.0,
+        7.0
+      ]
+    },
+    {
+      "contribution_total": "3542.0",
+      "degenerate": true,
+      "distinct_severity_values": 1,
+      "expected_occurrences": 500.0,
+      "iterations": 1000,
+      "occurrence_uniforms_consumed": 1000,
+      "probability": 0.5,
+      "realised_occurrences": 506,
+      "severity_sampler_invocations": 1000,
+      "severity_sampler_invoked_every_iteration": true,
+      "severity_stream_unchanged": true,
+      "severity_uniforms_consumed": 0,
+      "triple": [
+        7.0,
+        7.0,
+        7.0
+      ]
+    },
+    {
+      "contribution_total": "651.0",
+      "degenerate": true,
+      "distinct_severity_values": 1,
+      "expected_occurrences": 100.0,
+      "iterations": 1000,
+      "occurrence_uniforms_consumed": 1000,
+      "probability": 0.1,
+      "realised_occurrences": 93,
+      "severity_sampler_invocations": 1000,
+      "severity_sampler_invoked_every_iteration": true,
+      "severity_stream_unchanged": true,
+      "severity_uniforms_consumed": 0,
+      "triple": [
+        7.0,
+        7.0,
+        7.0
+      ]
+    },
+    {
+      "contribution_total": "49.0",
+      "degenerate": true,
+      "distinct_severity_values": 1,
+      "expected_occurrences": 10.0,
+      "iterations": 1000,
+      "occurrence_uniforms_consumed": 1000,
+      "probability": 0.01,
+      "realised_occurrences": 7,
+      "severity_sampler_invocations": 1000,
+      "severity_sampler_invoked_every_iteration": true,
+      "severity_stream_unchanged": true,
+      "severity_uniforms_consumed": 0,
+      "triple": [
+        7.0,
+        7.0,
+        7.0
+      ]
+    },
+    {
+      "contribution_total": "0.0",
+      "degenerate": true,
+      "distinct_severity_values": 1,
+      "expected_occurrences": 0.0,
+      "iterations": 1000,
+      "occurrence_uniforms_consumed": 1000,
+      "probability": 0.0,
+      "realised_occurrences": 0,
+      "severity_sampler_invocations": 1000,
+      "severity_sampler_invoked_every_iteration": true,
+      "severity_stream_unchanged": true,
+      "severity_uniforms_consumed": 0,
+      "triple": [
+        7.0,
+        7.0,
+        7.0
+      ]
+    },
+    {
+      "contribution_total": "49955.0375662272",
+      "degenerate": false,
+      "distinct_severity_values": 1000,
+      "expected_occurrences": 1000.0,
+      "iterations": 1000,
+      "occurrence_uniforms_consumed": 1000,
+      "probability": 1.0,
+      "realised_occurrences": 1000,
+      "severity_sampler_invocations": 1000,
+      "severity_sampler_invoked_every_iteration": true,
+      "severity_stream_unchanged": false,
+      "severity_uniforms_consumed": 2174,
+      "triple": [
+        0.0,
+        50.0,
+        100.0
+      ]
+    },
+    {
+      "contribution_total": "25593.06451316885",
+      "degenerate": false,
+      "distinct_severity_values": 1000,
+      "expected_occurrences": 500.0,
+      "iterations": 1000,
+      "occurrence_uniforms_consumed": 1000,
+      "probability": 0.5,
+      "realised_occurrences": 506,
+      "severity_sampler_invocations": 1000,
+      "severity_sampler_invoked_every_iteration": true,
+      "severity_stream_unchanged": false,
+      "severity_uniforms_consumed": 2174,
+      "triple": [
+        0.0,
+        50.0,
+        100.0
+      ]
+    },
+    {
+      "contribution_total": "4535.395769655689",
+      "degenerate": false,
+      "distinct_severity_values": 1000,
+      "expected_occurrences": 100.0,
+      "iterations": 1000,
+      "occurrence_uniforms_consumed": 1000,
+      "probability": 0.1,
+      "realised_occurrences": 93,
+      "severity_sampler_invocations": 1000,
+      "severity_sampler_invoked_every_iteration": true,
+      "severity_stream_unchanged": false,
+      "severity_uniforms_consumed": 2174,
+      "triple": [
+        0.0,
+        50.0,
+        100.0
+      ]
+    },
+    {
+      "contribution_total": "358.56128441361375",
+      "degenerate": false,
+      "distinct_severity_values": 1000,
+      "expected_occurrences": 10.0,
+      "iterations": 1000,
+      "occurrence_uniforms_consumed": 1000,
+      "probability": 0.01,
+      "realised_occurrences": 7,
+      "severity_sampler_invocations": 1000,
+      "severity_sampler_invoked_every_iteration": true,
+      "severity_stream_unchanged": false,
+      "severity_uniforms_consumed": 2174,
+      "triple": [
+        0.0,
+        50.0,
+        100.0
+      ]
+    },
+    {
+      "contribution_total": "0.0",
+      "degenerate": false,
+      "distinct_severity_values": 1000,
+      "expected_occurrences": 0.0,
+      "iterations": 1000,
+      "occurrence_uniforms_consumed": 1000,
+      "probability": 0.0,
+      "realised_occurrences": 0,
+      "severity_sampler_invocations": 1000,
+      "severity_sampler_invoked_every_iteration": true,
+      "severity_stream_unchanged": false,
+      "severity_uniforms_consumed": 2174,
+      "triple": [
+        0.0,
+        50.0,
+        100.0
+      ]
+    }
+  ],
+  "two_uniforms_per_attempt_scope": "'each Cheng proposal attempt consumes exactly two uniforms' applies to NON-DEGENERATE Cheng BB/BC proposal attempts only. A degenerate driver makes no proposal attempt at all."
+}

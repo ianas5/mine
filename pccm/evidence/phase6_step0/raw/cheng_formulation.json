@@ -1,0 +1,137 @@
+{
+  "BB": {
+    "applies_when": "min(alpha, beta) > 1",
+    "literals": [
+      {
+        "kind": "LITERAL, 8 significant digits - NOT computed as log(4)",
+        "role": "log(4) in the squeeze",
+        "value": "1.3862944"
+      },
+      {
+        "kind": "LITERAL, 7 significant digits - NOT computed",
+        "role": "1 + log(5) in the squeeze",
+        "value": "2.609438"
+      },
+      {
+        "kind": "LITERAL, exact",
+        "role": "squeeze coefficient on z",
+        "value": "5.0"
+      },
+      {
+        "kind": "LITERAL, exact",
+        "role": "in the beta setup",
+        "value": "2.0"
+      },
+      {
+        "kind": "LITERAL, exact",
+        "role": "in 1 - u1 and 1/beta",
+        "value": "1.0"
+      }
+    ],
+    "parameter_orientation": "a = min(alpha0, beta0); b = max(alpha0, beta0)",
+    "per_proposal_attempt": [
+      "u1 = next_u(); u2 = next_u()      (exactly two uniforms)",
+      "vlog = log(u1 / (1 - u1))         (LOCKED logit form)",
+      "v = beta * vlog",
+      "w = a * exp(v)",
+      "z = u1 * u1 * u2",
+      "rr = gamma * v - 1.3862944",
+      "s = a + rr - w",
+      "accept if  s + 2.609438 >= 5.0 * z",
+      "else t = log(z); accept if s >= t",
+      "else accept if rr + alpha * log(alpha / (b + w)) >= t",
+      "else reject and retry"
+    ],
+    "precomputed_once_per_driver": [
+      "alpha = a + b",
+      "beta  = sqrt((alpha - 2) / (2*a*b - alpha))",
+      "gamma = a + 1/beta"
+    ],
+    "return": "w / (b + w) when the caller's FIRST parameter was the min; b / (b + w) otherwise"
+  },
+  "BC": {
+    "applies_when": "min(alpha, beta) <= 1",
+    "literals": [
+      {
+        "kind": "LITERAL, 6 significant digits - NOT computed as 1/72",
+        "role": "1/72 in k1",
+        "value": "0.0138889"
+      },
+      {
+        "kind": "LITERAL, 6 significant digits - NOT computed",
+        "role": "3/72 in k1",
+        "value": "0.0416667"
+      },
+      {
+        "kind": "LITERAL, 6 significant digits - NOT computed",
+        "role": "7/9 in k1",
+        "value": "0.777778"
+      },
+      {
+        "kind": "LITERAL, same 8-digit value as BB",
+        "role": "log(4) in the acceptance test",
+        "value": "1.3862944"
+      },
+      {
+        "kind": "LITERAL, exact",
+        "role": "squeeze bound and k2 terms",
+        "value": "0.25"
+      },
+      {
+        "kind": "LITERAL, exact",
+        "role": "the u1 branch split and k2",
+        "value": "0.5"
+      }
+    ],
+    "parameter_orientation": "a = max(alpha0, beta0); b = min(alpha0, beta0) - the OPPOSITE of BB, and inverting it is a silent defect that returns the mirrored distribution",
+    "per_proposal_attempt": [
+      "u1 = next_u(); u2 = next_u()      (exactly two uniforms)",
+      "if u1 < 0.5:  y = u1*u2; z = u1*y; reject if 0.25*u2 + z - y >= k1",
+      "else:         z = u1*u1*u2",
+      "              if z <= 0.25: vlog = log(u1/(1-u1)); v = beta*vlog; w = a*exp(v); ACCEPT",
+      "              if z >= k2: reject",
+      "vlog = log(u1 / (1 - u1)); v = beta * vlog; w = a * exp(v)",
+      "accept if alpha * (log(alpha / (b + w)) + v) - 1.3862944 >= log(z)",
+      "else reject and retry"
+    ],
+    "precomputed_once_per_driver": [
+      "alpha = a + b",
+      "beta  = 1 / b",
+      "delta = 1 + a - b",
+      "k1 = delta * (0.0138889 + 0.0416667 * b) / (a * beta - 0.777778)",
+      "k2 = 0.25 + (0.5 + 0.25 / delta) * b"
+    ],
+    "return": "w / (b + w) when the caller's FIRST parameter was the max; b / (b + w) otherwise"
+  },
+  "belongs_to": "SIM_METHOD_VERSION",
+  "comparison_operators": {
+    "BC branch split": "u1 < 0.5",
+    "BC fast accept": "z <= 0.25",
+    "BC k2 reject": "z >= k2",
+    "dispatch": "min(alpha, beta) > 1.0",
+    "squeeze and acceptance tests": ">= , evaluated left >= right exactly as written above"
+  },
+  "degenerate_a_m_b": "Handled BEFORE dispatch and before parameterisation, per plan section 4.0: a degenerate driver returns `a`, enters no sampler, forms no r = (m-a)/(b-a), and consumes ZERO uniforms. Cheng is never reached, so alpha and beta are never formed and 0/0 cannot arise. Evidence: raw/degenerate_d6_18.json.",
+  "dispatch": {
+    "boundary": "equality belongs to BC",
+    "operator": "strict >, on min(alpha, beta)",
+    "rule": "BB when min(alpha, beta) > 1.0; BC otherwise"
+  },
+  "logit_form": {
+    "locked": "log(u1 / (1.0 - u1))",
+    "rejected_alternative": "log(u1) - log1p(-u1)",
+    "why_it_matters": "the two disagree in the tails and the difference reaches the RETURNED SAMPLE, not merely the acceptance decision (control 18)"
+  },
+  "source_binding": {
+    "file": "pccm/evidence/phase6_step0/scripts/beta_ref.py",
+    "functions": [
+      "cheng_dispatch",
+      "cheng_bb",
+      "cheng_bc"
+    ],
+    "note": "The hash covers the three function bodies as retained. It binds this record to the code that produced every Cheng number in the package, so the two cannot drift apart silently.",
+    "sha256": "d5ca71b806015ed9039f713295dca3b45d2f66dbcabe60b6709896e3a89eed90"
+  },
+  "status": "The locked formulation is EXACTLY the one already measured in beta_ref.py. Nothing was changed to settle this item, and every Cheng, D6-04 and acceptance-margin raw file is byte-identical to the c121cc6 package. No evidence was regenerated for a formulation change, because there was none.",
+  "what_the_literals_actually_control": "MEASURED, not assumed: the squeeze literals never change the value of an accepted proposal - they change WHICH proposals are accepted, and therefore consumption and the whole subsequent sequence. The logit form changes the value itself. Both must be locked, for different reasons. Controls 18 and 18b demonstrate each."
+}

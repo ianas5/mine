@@ -12,5 +12,11 @@ DETECTED seed 0 gives the forbidden all-zero state
 DETECTED result-stream framing tag mutation
 DETECTED stream assignment under a different ordering rule
 DETECTED Family B collision under the unbounded ID pattern
+DETECTED degenerate driver consuming a uniform
+DETECTED expected count presented as realised
+DETECTED a change classified against no version
+DETECTED log(u1/(1-u1)) replaced by log(u1)-log1p(-u1)
+DETECTED Cheng literal 1.3862944 replaced by log(4)
+DETECTED auto-seed power authority diverging from the stepped cycle
 
-14/14 controls fired
+20/20 controls fired

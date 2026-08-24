@@ -11,10 +11,23 @@
     "seed_zero_state_valid": false,
     "therefore_every_admissible_seed_is_a_valid_residue_in_both_components": true
   },
+  "distinct_product_is_not_the_order": true,
   "modulus": 2147483647,
   "multiplier": 48271,
   "multiplier_is_primitive_root": true,
   "no_repeat_in_first_200000_nonces": true,
+  "nonce_lifecycle": {
+    "advance_point": "Immediately at allocation, not at successful commit. This is what makes an allocated seed consumed.",
+    "allocation": "On an AUTO run, at the point the effective seed is derived and BEFORE any sampling: read the persisted auto_nonce, compute effective_seed = 48271^auto_nonce mod 2147483647, then persist auto_nonce + 1. Read-then-advance, in that order.",
+    "attempt_metadata": "A failed AUTO attempt records the allocated effective_seed and the auto_nonce it consumed, alongside the failure. The prior successful result is untouched, but the failed allocation is visible - otherwise a consumed nonce would leave no trace and the sequence would appear to skip.",
+    "authority_vs_implementation": "The AUTHORITY is effective_seed = 48271^auto_nonce mod 2147483647 - a modular power. A later VBA implementation must use an exact O(log nonce) modular exponentiation; O(nonce) repeated multiplication is not acceptable at large nonce and is not what the authority says. No implementation is proposed here.",
+    "auto_nonce_meaning": "THE NEXT NONCE TO ALLOCATE. Not the last one used.",
+    "both_paths_agree_over_first_3000_nonces": true,
+    "exhaustion": "auto_nonce == 2147483646 must NOT be allocated: 48271^2147483646 == 1 == the seed for nonce 0, so allocating it silently reissues the first seed. Refuse the run.",
+    "failure_after_allocation": "CONSUMES the nonce. The seed is spent even though the simulation failed, so a retry receives a NEW sequence rather than replaying the failed one. This is the inherited behaviour and it is a property of the ALLOCATION ORDER, which is why the order is stated above rather than left to the implementation.",
+    "failure_before_allocation": "Consumes NO nonce. Nothing was allocated, so nothing is spent - a refusal on input validation leaves auto_nonce untouched.",
+    "initial_persisted_value": 0
+  },
   "nonce_to_seed_pairs": [
     {
       "auto_nonce": 0,
@@ -49,7 +62,40 @@
       "effective_seed": 1
     }
   ],
-  "order_factorisation": [
+  "order_complete_factorisation": [
+    [
+      2,
+      1
+    ],
+    [
+      3,
+      2
+    ],
+    [
+      7,
+      1
+    ],
+    [
+      11,
+      1
+    ],
+    [
+      31,
+      1
+    ],
+    [
+      151,
+      1
+    ],
+    [
+      331,
+      1
+    ]
+  ],
+  "order_complete_factorisation_product": 2147483646,
+  "order_complete_factorisation_product_correct": true,
+  "order_complete_factorisation_text": "2147483646 = 2 * 3^2 * 7 * 11 * 31 * 151 * 331",
+  "order_distinct_prime_divisors": [
     2,
     3,
     7,
@@ -58,8 +104,10 @@
     151,
     331
   ],
+  "order_distinct_prime_divisors_product": 715827882,
   "period": 2147483646,
   "period_equals_seed_domain_size": true,
+  "primitive_root_test_uses": "the DISTINCT prime divisors only - multiplicity is irrelevant to the test g^((p-1)/q) != 1, so the proof is unaffected by the earlier wording error",
   "seed_domain": [
     1,
     2147483646

@@ -1,0 +1,216 @@
+{
+  "cheng_sensitivity_rows": [
+    {
+      "alpha": 1.0,
+      "beta": 5.0,
+      "max_abs_v": 0.0,
+      "max_rel_out": 0.0,
+      "r": 0.0,
+      "samples": 0
+    },
+    {
+      "alpha": 1.04,
+      "beta": 4.96,
+      "max_abs_v": 13.184499964918238,
+      "max_rel_out": 1.9003612713621977e-15,
+      "r": 0.01,
+      "samples": 5000
+    },
+    {
+      "alpha": 1.2,
+      "beta": 4.8,
+      "max_abs_v": 11.65937010875564,
+      "max_rel_out": 1.9612426892396385e-15,
+      "r": 0.05,
+      "samples": 5000
+    },
+    {
+      "alpha": 1.4,
+      "beta": 4.6,
+      "max_abs_v": 10.44360429739744,
+      "max_rel_out": 1.9105731209505482e-15,
+      "r": 0.1,
+      "samples": 5000
+    },
+    {
+      "alpha": 1.8,
+      "beta": 4.2,
+      "max_abs_v": 5.874765351832232,
+      "max_rel_out": 1.7251232892785793e-15,
+      "r": 0.2,
+      "samples": 5000
+    },
+    {
+      "alpha": 2.0,
+      "beta": 4.0,
+      "max_abs_v": 5.610324015638375,
+      "max_rel_out": 1.7806898881798184e-15,
+      "r": 0.25,
+      "samples": 5000
+    },
+    {
+      "alpha": 2.2,
+      "beta": 3.8,
+      "max_abs_v": 5.418643153024709,
+      "max_rel_out": 1.5246625310492664e-15,
+      "r": 0.3,
+      "samples": 5000
+    },
+    {
+      "alpha": 2.6,
+      "beta": 3.4,
+      "max_abs_v": 5.191185195430893,
+      "max_rel_out": 1.0354367451164807e-15,
+      "r": 0.4,
+      "samples": 5000
+    },
+    {
+      "alpha": 3.0,
+      "beta": 3.0,
+      "max_abs_v": 4.9237541194094945,
+      "max_rel_out": 1.802176949107534e-15,
+      "r": 0.5,
+      "samples": 5000
+    },
+    {
+      "alpha": 3.4,
+      "beta": 2.6,
+      "max_abs_v": 5.191185195430893,
+      "max_rel_out": 7.649448607286558e-16,
+      "r": 0.6,
+      "samples": 5000
+    },
+    {
+      "alpha": 3.8,
+      "beta": 2.2,
+      "max_abs_v": 5.418643153024709,
+      "max_rel_out": 8.523410075080622e-16,
+      "r": 0.7,
+      "samples": 5000
+    },
+    {
+      "alpha": 4.0,
+      "beta": 2.0,
+      "max_abs_v": 5.610324015638375,
+      "max_rel_out": 7.75666924160525e-16,
+      "r": 0.75,
+      "samples": 5000
+    },
+    {
+      "alpha": 4.2,
+      "beta": 1.7999999999999998,
+      "max_abs_v": 5.874765351832232,
+      "max_rel_out": 6.672382465290453e-16,
+      "r": 0.8,
+      "samples": 5000
+    },
+    {
+      "alpha": 4.6,
+      "beta": 1.4,
+      "max_abs_v": 10.44360429739744,
+      "max_rel_out": 5.424495511028037e-16,
+      "r": 0.9,
+      "samples": 5000
+    },
+    {
+      "alpha": 4.8,
+      "beta": 1.2000000000000002,
+      "max_abs_v": 11.659370108755637,
+      "max_rel_out": 5.330121767738349e-16,
+      "r": 0.95,
+      "samples": 5000
+    },
+    {
+      "alpha": 4.96,
+      "beta": 1.04,
+      "max_abs_v": 13.184499964918238,
+      "max_rel_out": 6.070033411740875e-16,
+      "r": 0.99,
+      "samples": 5000
+    },
+    {
+      "alpha": 5.0,
+      "beta": 1.0,
+      "max_abs_v": 0.0,
+      "max_rel_out": 0.0,
+      "r": 1.0,
+      "samples": 0
+    }
+  ],
+  "cheng_worst_abs_v_amplifier": 13.184499964918238,
+  "cheng_worst_relative_output_change_from_one_ulp_log": 1.9612426892396385e-15,
+  "exact_subjects_remain_exact": [
+    "MRG32k3a state and uniform values",
+    "jump state",
+    "Bernoulli occurrence decisions",
+    "proposal and draw counts where the arithmetic path is fixed",
+    "same-runtime G2/G3 result_digest"
+  ],
+  "method": "Expression order: the accepted form against an algebraically equivalent one over the accepted extreme Double domain, in ULPs. Libm: a one-ULP perturbation of the `log` result inside Cheng, propagated through `exp` and the final ratio, with the acceptance path held FIXED - this measures output sensitivity, not branch stability, which is section 5.3's separate subject.",
+  "ownership_decision": "B",
+  "ownership_rationale": "The tolerance is NOT a simulation-runtime contract and does not belong in sim_contract.yaml. The engine never compares two Doubles for approximate equality at runtime: replay comparison is by result_digest, which is EXACT, and no published number is produced by a tolerance test. A tolerance exists only when two IMPLEMENTATIONS are compared, which is oracle/Gate-A/Gate-B evidence. Its single owner is therefore the Phase-6 oracle and evidence policy (plan section 15.1), and sim_contract.yaml stores no tolerance at all.",
+  "policy": [
+    {
+      "basis": "measured worst expression-order gap 1 ULP ~ 2.22e-16 relative; the policy leaves about 4504x headroom",
+      "rule": "relative, with an absolute floor keyed to the driver's conditioning scale s = max(|a|,|m|,|b|)",
+      "subject": "individual Uniform / Triangular / PERT-rescale transformed samples",
+      "value": "rel <= 1e-12, or abs <= 1e-12 * s"
+    },
+    {
+      "basis": "measured worst relative output change from a one-ULP `log` difference is 1.961e-15; the amplifier is |v|, worst 13.184. The policy leaves about 5099x headroom over a one-ULP libm difference, and is still far tighter than any real algorithmic error",
+      "rule": "relative",
+      "subject": "deterministic Cheng vector outputs",
+      "value": "rel <= 1e-11"
+    },
+    {
+      "basis": "composition, not a new measurement: an iteration total sums at most 300 driver contributions each carrying at most the per-sample relative error above, so the absolute error is bounded by 300 * 1e-12 * S. A purely relative test is unusable here because cancellation can drive a total near zero while every contribution is large - hence the scale floor",
+      "rule": "relative, with an absolute floor keyed to the iteration's accumulation scale S = max |contribution| over the drivers summed",
+      "subject": "F1 per-iteration no-Beta end-to-end totals",
+      "value": "rel <= 3e-10, or abs <= 3e-10 * S"
+    },
+    {
+      "basis": "a percentile is one order statistic - an element of the sorted sample, or a convex blend of two adjacent ones - so it inherits the per-iteration bound and no more. The mean and standard deviation inherit the same bound under the accepted scale-aware accumulation",
+      "rule": "relative, with the same accumulation-scale floor",
+      "subject": "summary statistics compared cross-language",
+      "value": "rel <= 3e-10, or abs <= 3e-10 * S"
+    }
+  ],
+  "transform_rows": [
+    {
+      "alternate_form_overflowed_cases": 11,
+      "expression_order_max_rel_diff": 2.140188963132832e-16,
+      "expression_order_max_ulp_gap": 1.0,
+      "subject": "uniform_transform",
+      "worst_at": {
+        "triple": [
+          -100.0,
+          0.0,
+          100.0
+        ],
+        "u": 0.001
+      }
+    },
+    {
+      "alternate_form_overflowed_cases": 0,
+      "expression_order_max_rel_diff": 0.0,
+      "expression_order_max_ulp_gap": 0.0,
+      "subject": "triangular_transform",
+      "worst_at": null
+    },
+    {
+      "alternate_form_overflowed_cases": 11,
+      "expression_order_max_rel_diff": 2.140188963132832e-16,
+      "expression_order_max_ulp_gap": 1.0,
+      "subject": "pert_rescale",
+      "worst_at": {
+        "triple": [
+          -100.0,
+          0.0,
+          100.0
+        ],
+        "u": 0.001
+      }
+    }
+  ],
+  "transform_worst_ulp_gap": 1.0
+}

@@ -29,13 +29,21 @@
       "bytes": 20466,
       "sha256": "76eeb3cb8ed75740aa32bd1791b22c12e1b443fd13f6cba81a5163d77c185980"
     },
+    "raw/cheng_formulation.json": {
+      "bytes": 5660,
+      "sha256": "a5caaf6e1bfd293426d166d271e136cf439b2c47f9f136c02b1cf566ec554807"
+    },
     "raw/d6_04_comparison.json": {
       "bytes": 2092,
       "sha256": "57600696bc26dd51973578571109678ad0c5eb4b1b8bc54e5278fbfa78020aea"
     },
     "raw/d6_18_operation_model.json": {
-      "bytes": 3098,
-      "sha256": "ef9c655adb31769d1e1c5ee6338e63eda3055366311e2697184de06d54802adf"
+      "bytes": 5166,
+      "sha256": "9af8e51bc69ebf3118db24cf3284cc9aa27699b686e0b7360a76f0ed69fb6efe"
+    },
+    "raw/degenerate_d6_18.json": {
+      "bytes": 5945,
+      "sha256": "5cd5e69c756be57fac8077295d199a9abd5e8ec4027dac4d5137b43879ea8d61"
     },
     "raw/digest.json": {
       "bytes": 5302,
@@ -51,23 +59,31 @@
     },
     "raw/run_log.txt": {
       "bytes": 286,
-      "sha256": "738bc68974cb2778e03aac6467ea390d49bc2ad7cff3f2f7758c69093953e246"
+      "sha256": "b36b8ff86f0c333dffdb9528b7c465debb1bc60b7a8ac50452fad7d8ce1f0d07"
     },
     "raw/seed_map.json": {
-      "bytes": 1304,
-      "sha256": "bb500957a15412ac500a1a2ceed1508b023ce957cec6fd5f89d12c09c5b6ee82"
+      "bytes": 3956,
+      "sha256": "2c82fec74bb9de9f33ffc3d0fa245c92c9ed95da15f35d7135a17aa7bb9df6f7"
     },
     "raw/stream_architecture.json": {
       "bytes": 3743,
       "sha256": "dfa2be7cc73cc97eeedcf03f95d20282b611dc6b36f62f7d1538c7a2fc6afb61"
     },
+    "raw/tolerance_model.json": {
+      "bytes": 7104,
+      "sha256": "4640576d323f4a57449f39483f227d84b0288d13aad3c4596824438c27cb335d"
+    },
+    "raw/version_register.json": {
+      "bytes": 3429,
+      "sha256": "ed8db92be28b950376267ac6f5b4d650a9503fb656d7a5196bd5312f8db45713"
+    },
     "scripts/beta_ref.py": {
-      "bytes": 10287,
-      "sha256": "90bb179d4676b92bb3f23e73ae43830831a738a858dec5c4ac2d7b886c629a62"
+      "bytes": 11696,
+      "sha256": "4cad1d9d857351d8444d7b66fbc33cf30aa302a65be605edd178bd559bb28dd6"
     },
     "scripts/controls.py": {
-      "bytes": 4658,
-      "sha256": "4b6c0fc76e4032838a36d739d7c12d03e9eedcef2af5f36a104433741137bf99"
+      "bytes": 7918,
+      "sha256": "7963b56b71a7f395134a19ea0ddc0effde37ea445aa3252d0a599d721eb3ce2c"
     },
     "scripts/digest.py": {
       "bytes": 2454,
@@ -78,28 +94,36 @@
       "sha256": "bbb2b8b487dd699960513a9368602546cca48a37e783516196ba87f97ac0fdde"
     },
     "scripts/run_all.py": {
-      "bytes": 32851,
-      "sha256": "056c4216241ef46ffbe1a8fe37436ab00ff0dae8e39698443bb95f007e4bc4c7"
+      "bytes": 64926,
+      "sha256": "d0d7fa3e12de2aa6ee4e17855ba73ccdc67f8005b5ec3df1d8fc62b53b621e61"
     },
     "scripts/seed_map.py": {
-      "bytes": 1122,
-      "sha256": "56a226bbdd849775d31170515724eff89458a4b8223d60b2fe79f8b9ae59bd26"
+      "bytes": 3100,
+      "sha256": "a9e88cba084775859b3bc37e8ec8083b2063196485524fd037215c0521357b98"
     },
     "scripts/stream_map.py": {
       "bytes": 3118,
       "sha256": "2bcdb961ad8c429f25bbe52cbf41b316f1de09a9ccccd1076a86e1962f9a27e3"
     },
+    "scripts/transforms.py": {
+      "bytes": 3288,
+      "sha256": "cc9ef4a9f372fada21c5b1a8684b43e4aae8f18fd0e7be39307e49cb00ce03ad"
+    },
     "summaries/controls.json": {
-      "bytes": 1155,
-      "sha256": "5ca6a39f9500ec1c5e01aac8f17eb82a556717a1e2bb1aa0f965c3de1d426f75"
+      "bytes": 1705,
+      "sha256": "4e28e2f72c4d0bb95cf75bb130f8bd48b254283c778de77661491d98bb406dfc"
     },
     "summaries/controls.txt": {
-      "bytes": 629,
-      "sha256": "1a090116a7cc4b48dc4888dc474d5cf8042f2fd9862d3d2267eb4b53f571ab08"
+      "bytes": 945,
+      "sha256": "604a37b6a0fc1f2282b390b52b12ed97e87736ea35b2ffd3295d85d325dd138d"
     },
     "summaries/environment.json": {
       "bytes": 159,
       "sha256": "11637dff15f842512d8e86c00f2edd37d671a922f635fb1ece9b7d33328d225b"
+    },
+    "vectors/cheng_vectors.json": {
+      "bytes": 54099,
+      "sha256": "578591d0730dead7882f39eceeea0cf3b5440f87fe66aeb1f9a6917163ef6a7c"
     },
     "vectors/digest_vectors.json": {
       "bytes": 4486,
@@ -123,7 +147,7 @@
     }
   },
   "generator": "pccm/evidence/phase6_step0/scripts/run_all.py",
-  "git_head_at_generation": "03aa5044cb535513976f0ec3840bc332747678c8",
+  "git_head_at_generation": "172a870730e42e0b1faa883931894c9aaf32bdd0",
   "grid": {
     "note": "PCCM Beta-PERT with lambda=4 is ONE-DIMENSIONAL: alpha=1+4r, beta=5-4r, alpha+beta=6. Nothing outside this line can arise from a PCCM driver.",
     "probabilities": [

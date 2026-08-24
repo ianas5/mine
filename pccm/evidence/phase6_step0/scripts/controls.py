@@ -9,6 +9,8 @@ import mrg32k3a as R
 import beta_ref as BR
 from digest import result_digest
 import stream_map as STM
+import transforms as TX
+import seed_map as SM2
 from digest import result_stream, RESULT_STREAM_TAG
 from seed_map import is_primitive_root, nonce_to_seed, seed_to_state, state_is_valid, P
 
@@ -109,6 +111,83 @@ wt = STM.family_b_collision_witness(1000)
 fb = STM.family_b([wt[0]], [wt[1]], 1000)
 check("Family B collision under the unbounded ID pattern",
       wt is not None and len(set(fb.values())) < len(fb))
+
+# 15. a degenerate driver that consumes a uniform is detected
+def degenerate_consumption(correct):
+    g = R.ExactMrg(list(ST))
+    c = {"attempts": 0, "uniforms": 0}
+    for _ in range(50):
+        if correct:
+            TX.sample_driver("pert", 7.0, 7.0, 7.0, g.next_u, c)
+        else:
+            g.next_u(); c["uniforms"] += 1        # the withdrawn "consume one" rule
+    return g.s == list(ST) and c["uniforms"] == 0
+check("degenerate driver consuming a uniform",
+      degenerate_consumption(True) and not degenerate_consumption(False))
+
+# 16. an EXPECTED count presented as a realised one is detected
+def realised_occurrences(p, n=1000):
+    g = R.ExactMrg(list(ST))
+    return sum(1 for _ in range(n) if g.next_u() < p)
+check("expected count presented as realised",
+      realised_occurrences(0.1) != int(1000 * 0.1))
+
+# 17. the version register classifies every listed change
+import run_all as RA
+_reg = RA.version_register()
+_names = {v["name"].split()[0] for v in _reg["versions"]}
+check("a change classified against no version",
+      all(any(r["bumps"].startswith(n) for n in _names)
+          for r in _reg["change_classification"]))
+
+# 18. the log formulation is load-bearing for the RETURNED VALUE
+def bb_value(u1, use_locked):
+    """Only the value-producing part of BB, both log formulations."""
+    import math as _m
+    a, b = BR.pert_shape(0.5)
+    aa, bb_ = min(a, b), max(a, b)
+    alpha = aa + bb_
+    beta = _m.sqrt((alpha - 2.0) / (2.0 * aa * bb_ - alpha))
+    v = beta * (_m.log(u1 / (1.0 - u1)) if use_locked
+                else (_m.log(u1) - _m.log1p(-u1)))
+    w = aa * _m.exp(v)
+    return w / (bb_ + w)
+check("log(u1/(1-u1)) replaced by log(u1)-log1p(-u1)",
+      any(repr(bb_value(u, True)) != repr(bb_value(u, False))
+          for u in (0.999, 0.9999, 0.001, 0.0001)))
+
+# 18b. the squeeze literal is load-bearing for the ACCEPTANCE DECISION
+# It never changes the value of an accepted proposal - it changes WHICH
+# proposals are accepted, and therefore consumption and the whole sequence.
+# A constructed witness beats a long random search: place 5z exactly between
+# the two literals' thresholds.
+def squeeze_witness():
+    import math as _m
+    a, b = BR.pert_shape(0.5)
+    aa, bb_ = min(a, b), max(a, b)
+    alpha = aa + bb_
+    beta = _m.sqrt((alpha - 2.0) / (2.0 * aa * bb_ - alpha))
+    gamma = aa + 1.0 / beta
+    for u1 in (0.3, 0.5, 0.7):
+        v = beta * _m.log(u1 / (1.0 - u1))
+        w = aa * _m.exp(v)
+        s1 = aa + (gamma * v - 1.3862944) - w
+        s2 = aa + (gamma * v - _m.log(4.0)) - w
+        lo, hi = sorted((s1 + 2.609438, s2 + 2.609438))
+        z = ((lo + hi) / 2.0) / 5.0
+        u2 = z / (u1 * u1)
+        if not 0.0 < u2 < 1.0:
+            continue
+        zz = u1 * u1 * u2
+        if (s1 + 2.609438 >= 5.0 * zz) != (s2 + 2.609438 >= 5.0 * zz):
+            return True
+    return False
+check("Cheng literal 1.3862944 replaced by log(4)", squeeze_witness())
+
+# 19. the nonce authority and the stepped cycle must agree
+check("auto-seed power authority diverging from the stepped cycle",
+      all(SM2.nonce_to_seed(n) == SM2.nonce_to_seed_iterative(n) for n in range(500))
+      and SM2.nonce_to_seed(5) != SM2.nonce_to_seed_iterative(6))
 
 if __name__ == "__main__":
     import json

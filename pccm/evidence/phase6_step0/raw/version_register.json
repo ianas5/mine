@@ -1,0 +1,86 @@
+{
+  "change_classification": [
+    {
+      "bumps": "RNG_VERSION",
+      "change": "MRG constants or uniform combination"
+    },
+    {
+      "bumps": "RNG_VERSION",
+      "change": "scalar-seed -> six-word state mapping"
+    },
+    {
+      "bumps": "RNG_VERSION",
+      "change": "AUTO-seed nonce -> effective_seed mapping"
+    },
+    {
+      "bumps": "RNG_VERSION",
+      "change": "stream-assignment rule (D6-16)"
+    },
+    {
+      "bumps": "RNG_VERSION",
+      "change": "jump algorithm semantics (matrices, exponent, arithmetic path)"
+    },
+    {
+      "bumps": "SIM_METHOD_VERSION",
+      "change": "Cheng formulation, literals or expression order"
+    },
+    {
+      "bumps": "SIM_METHOD_VERSION",
+      "change": "D6-18 advancement rule"
+    },
+    {
+      "bumps": "SIM_METHOD_VERSION",
+      "change": "degenerate-driver rule"
+    },
+    {
+      "bumps": "SIM_METHOD_VERSION",
+      "change": "accumulation order"
+    },
+    {
+      "bumps": "SIM_METHOD_VERSION",
+      "change": "percentile or statistical method"
+    },
+    {
+      "bumps": "SIM_METHOD_VERSION (the PCCM-RD version field carries it)",
+      "change": "result-digest framing or hash stream"
+    },
+    {
+      "bumps": "FP_VERSION",
+      "change": "Phase-5 input fingerprint encoding"
+    }
+  ],
+  "note_on_jump_exponent": "The 2^127 exponent is inside RNG_VERSION, not a separate constant to vary freely: changing it changes every stream after 0.",
+  "note_on_ordering": "A change may bump BOTH. Nothing here permits a change that bumps NEITHER while altering a retained number.",
+  "principle": "Every version is owned by exactly one authority and every listed change is classified against exactly one version. A change that would alter retained numbers without bumping some version is the defect this register exists to prevent.",
+  "versions": [
+    {
+      "covers": "the Phase-5 calculation INPUT fingerprint algorithm",
+      "initial": 1,
+      "name": "FP_VERSION",
+      "owner": "spec/calc_contract.yaml",
+      "status": "INHERITED - unchanged by Phase 6"
+    },
+    {
+      "covers": "everything that determines the uniform stream a component sees: MRG constants and combination, scalar-seed mapping, AUTO-seed mapping, stream assignment, jump semantics",
+      "initial": 1,
+      "name": "RNG_VERSION",
+      "owner": "spec/sim_contract.yaml",
+      "status": "NEW - settled here"
+    },
+    {
+      "covers": "everything that turns uniforms into published numbers: the Cheng formulation and its expression order, D6-18 advancement, the degenerate rule, accumulation order, percentile/statistical method",
+      "initial": 1,
+      "name": "SIM_METHOD_VERSION",
+      "owner": "spec/sim_contract.yaml",
+      "status": "NEW - settled here"
+    },
+    {
+      "covers": "the PCCM-RD stream framing only",
+      "decision": "The version integer inside the PCCM-RD stream IS SIM_METHOD_VERSION. No separate RESULT_DIGEST_VERSION is created. Rationale: the digest exists to compare runs, and two runs are comparable exactly when the method that produced the numbers is the same. A framing change without a method change still bumps SIM_METHOD_VERSION, because it changes what the digest means; a third version would add a field nobody could state a distinct rule for.",
+      "initial": 1,
+      "name": "result_digest version field",
+      "owner": "spec/sim_contract.yaml",
+      "status": "NEW - settled here as option (b)"
+    }
+  ]
+}
