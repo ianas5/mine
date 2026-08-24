@@ -1,0 +1,5 @@
+{
+  "fixed_seeds": [1, 2, 12345, 2147483646],
+  "cheng_stream_seed": 987654321,
+  "note": "12345 is retained because the all-12345 state is the published RngStreams default and permits direct comparison against independent MRG32k3a material."
+}

@@ -1,0 +1,176 @@
+{
+  "component_rule": "Cost Line -> 1 stream; Risk -> 2 streams (occurrence, severity)",
+  "design_target": {
+    "cost_components": 200,
+    "risk_components": 200,
+    "total_components": 400
+  },
+  "family_a": {
+    "all_ids_ascii_so_utf16_ordinal_equals_codepoint_order": true,
+    "assignment_is_a_bijection_onto_0_to_n_minus_1": true,
+    "first_10_streams": [
+      {
+        "component": [
+          "COST",
+          "CL-001",
+          "value"
+        ],
+        "stream": 0
+      },
+      {
+        "component": [
+          "COST",
+          "CL-002",
+          "value"
+        ],
+        "stream": 1
+      },
+      {
+        "component": [
+          "COST",
+          "CL-003",
+          "value"
+        ],
+        "stream": 2
+      },
+      {
+        "component": [
+          "COST",
+          "CL-004",
+          "value"
+        ],
+        "stream": 3
+      },
+      {
+        "component": [
+          "COST",
+          "CL-005",
+          "value"
+        ],
+        "stream": 4
+      },
+      {
+        "component": [
+          "COST",
+          "CL-006",
+          "value"
+        ],
+        "stream": 5
+      },
+      {
+        "component": [
+          "COST",
+          "CL-007",
+          "value"
+        ],
+        "stream": 6
+      },
+      {
+        "component": [
+          "COST",
+          "CL-008",
+          "value"
+        ],
+        "stream": 7
+      },
+      {
+        "component": [
+          "COST",
+          "CL-009",
+          "value"
+        ],
+        "stream": 8
+      },
+      {
+        "component": [
+          "COST",
+          "CL-010",
+          "value"
+        ],
+        "stream": 9
+      }
+    ],
+    "last_4_streams": [
+      {
+        "component": [
+          "RISK",
+          "R-099",
+          "occurrence"
+        ],
+        "stream": 396
+      },
+      {
+        "component": [
+          "RISK",
+          "R-099",
+          "severity"
+        ],
+        "stream": 397
+      },
+      {
+        "component": [
+          "RISK",
+          "R-100",
+          "occurrence"
+        ],
+        "stream": 398
+      },
+      {
+        "component": [
+          "RISK",
+          "R-100",
+          "severity"
+        ],
+        "stream": 399
+      }
+    ],
+    "ordinal_order_is_not_numeric_order": {
+      "input": [
+        "CL-001",
+        "CL-002",
+        "CL-999",
+        "CL-1000",
+        "CL-0001"
+      ],
+      "note": "CL-1000 sorts before CL-999 under ordinal comparison. Deterministic and portable, but not numeric.",
+      "ordinal_sorted": [
+        "CL-0001",
+        "CL-001",
+        "CL-002",
+        "CL-1000",
+        "CL-999"
+      ]
+    },
+    "row_order_invariant": true
+  },
+  "family_b_under_accepted_unbounded_id_pattern": {
+    "accepted_cost_pattern": "^CL-[0-9]{3,}$",
+    "accepted_risk_pattern": "^R-[0-9]{3,}$",
+    "collision_witnesses": [
+      {
+        "colliding_cost_id": "CL-1000",
+        "colliding_risk_id": "R-000",
+        "collision_exists": true,
+        "proposed_risk_offset": 1000,
+        "shared_stream_index": 1000
+      },
+      {
+        "colliding_cost_id": "CL-100000",
+        "colliding_risk_id": "R-000",
+        "collision_exists": true,
+        "proposed_risk_offset": 100000,
+        "shared_stream_index": 100000
+      },
+      {
+        "colliding_cost_id": "CL-2147483647",
+        "colliding_risk_id": "R-000",
+        "collision_exists": true,
+        "proposed_risk_offset": 2147483647,
+        "shared_stream_index": 2147483647
+      }
+    ],
+    "conclusion": "No finite kind_offset is collision-free over the representable ID domain, because the numeric part is unbounded. Family B needs a bound the accepted contract does not provide.",
+    "numeric_part_is_bounded_above": false
+  },
+  "stream_state_memory_bytes": 19200
+}

@@ -1,0 +1,83 @@
+{
+  "examples": [
+    {
+      "seed": 1,
+      "state": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "seed": 2,
+      "state": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ]
+    },
+    {
+      "seed": 12345,
+      "state": [
+        12345,
+        12345,
+        12345,
+        12345,
+        12345,
+        12345
+      ]
+    },
+    {
+      "seed": 2147483646,
+      "state": [
+        2147483646,
+        2147483646,
+        2147483646,
+        2147483646,
+        2147483646,
+        2147483646
+      ]
+    }
+  ],
+  "nonce_to_seed_pairs": [
+    {
+      "auto_nonce": 0,
+      "effective_seed": 1
+    },
+    {
+      "auto_nonce": 1,
+      "effective_seed": 48271
+    },
+    {
+      "auto_nonce": 2,
+      "effective_seed": 182605794
+    },
+    {
+      "auto_nonce": 3,
+      "effective_seed": 1291394886
+    },
+    {
+      "auto_nonce": 10,
+      "effective_seed": 1596680831
+    },
+    {
+      "auto_nonce": 1000,
+      "effective_seed": 429183498
+    },
+    {
+      "auto_nonce": 2147483645,
+      "effective_seed": 1899818559
+    },
+    {
+      "auto_nonce": 2147483646,
+      "effective_seed": 1
+    }
+  ],
+  "seed_to_state_rule": "state = [seed] * 6"
+}

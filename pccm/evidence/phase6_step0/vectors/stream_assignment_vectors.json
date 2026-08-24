@@ -1,0 +1,119 @@
+{
+  "family_a_first_10": [
+    {
+      "component": [
+        "COST",
+        "CL-001",
+        "value"
+      ],
+      "stream": 0
+    },
+    {
+      "component": [
+        "COST",
+        "CL-002",
+        "value"
+      ],
+      "stream": 1
+    },
+    {
+      "component": [
+        "COST",
+        "CL-003",
+        "value"
+      ],
+      "stream": 2
+    },
+    {
+      "component": [
+        "COST",
+        "CL-004",
+        "value"
+      ],
+      "stream": 3
+    },
+    {
+      "component": [
+        "COST",
+        "CL-005",
+        "value"
+      ],
+      "stream": 4
+    },
+    {
+      "component": [
+        "COST",
+        "CL-006",
+        "value"
+      ],
+      "stream": 5
+    },
+    {
+      "component": [
+        "COST",
+        "CL-007",
+        "value"
+      ],
+      "stream": 6
+    },
+    {
+      "component": [
+        "COST",
+        "CL-008",
+        "value"
+      ],
+      "stream": 7
+    },
+    {
+      "component": [
+        "COST",
+        "CL-009",
+        "value"
+      ],
+      "stream": 8
+    },
+    {
+      "component": [
+        "COST",
+        "CL-010",
+        "value"
+      ],
+      "stream": 9
+    }
+  ],
+  "family_a_last_4": [
+    {
+      "component": [
+        "RISK",
+        "R-099",
+        "occurrence"
+      ],
+      "stream": 396
+    },
+    {
+      "component": [
+        "RISK",
+        "R-099",
+        "severity"
+      ],
+      "stream": 397
+    },
+    {
+      "component": [
+        "RISK",
+        "R-100",
+        "occurrence"
+      ],
+      "stream": 398
+    },
+    {
+      "component": [
+        "RISK",
+        "R-100",
+        "severity"
+      ],
+      "stream": 399
+    }
+  ],
+  "total_components": 400
+}

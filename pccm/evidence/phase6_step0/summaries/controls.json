@@ -1,0 +1,58 @@
+[
+  {
+    "control": "wrong MRG modulus m1",
+    "detected": true
+  },
+  {
+    "control": "wrong jump matrix element",
+    "detected": true
+  },
+  {
+    "control": "naive float matrix-vector loses exactness",
+    "detected": true
+  },
+  {
+    "control": "BB/BC dispatch boundary moved",
+    "detected": true
+  },
+  {
+    "control": "occurrence and severity streams merged",
+    "detected": true
+  },
+  {
+    "control": "row-order stream assignment",
+    "detected": true
+  },
+  {
+    "control": "D6-18 advancement rule swapped",
+    "detected": true
+  },
+  {
+    "control": "result-digest order mutation",
+    "detected": true
+  },
+  {
+    "control": "non-primitive multiplier detected",
+    "detected": true
+  },
+  {
+    "control": "counter exhaustion wrap",
+    "detected": true
+  },
+  {
+    "control": "seed 0 gives the forbidden all-zero state",
+    "detected": true
+  },
+  {
+    "control": "result-stream framing tag mutation",
+    "detected": true
+  },
+  {
+    "control": "stream assignment under a different ordering rule",
+    "detected": true
+  },
+  {
+    "control": "Family B collision under the unbounded ID pattern",
+    "detected": true
+  }
+]

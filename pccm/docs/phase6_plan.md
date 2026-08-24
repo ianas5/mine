@@ -1455,8 +1455,16 @@ They coincide only at `p = 1`. **The `p = 1` case is therefore useless for
 comparing A against B** — it is the one point where the options are identical.
 §20.2 requires at least one representative **lower-probability** operation
 comparison, because that is where the cost difference lives: at `p = 0.1`,
-Option A performs one tenth the severity work Option B performs, for identical
-statistical output but a different iteration-indexed severity path.
+Option A performs one tenth the severity work Option B performs, targeting the
+same probability law but following a different iteration-indexed severity path.
+
+*(Wording corrected after Revision 6 was accepted: this sentence previously read
+"for identical statistical output". Both options draw severities from the same
+intended distribution, but they do not produce identical output — they consume
+the stream differently, so the realised severity sequence differs. The
+correction is **non-semantic**: it changes no decision, no number and no
+requirement, and the surrounding argument — that the options differ in work and
+in severity path, and coincide only at `p = 1` — is unchanged.)*
 
 **No flop total is asserted here.** Revision 2 quoted `~3 × 10^9` for Option B;
 that was a desk estimate, and per §17 no such number is an accepted input to

@@ -1,0 +1,67 @@
+{
+  "cycle_closes_at_period": true,
+  "d6_05_repeated_scalar": {
+    "m1": 4294967087,
+    "m2": 4294944443,
+    "m2_lt_m1": true,
+    "seed_max": 2147483646,
+    "seed_max_lt_m2": true,
+    "seed_max_state_valid": true,
+    "seed_min_state_valid": true,
+    "seed_zero_state_valid": false,
+    "therefore_every_admissible_seed_is_a_valid_residue_in_both_components": true
+  },
+  "modulus": 2147483647,
+  "multiplier": 48271,
+  "multiplier_is_primitive_root": true,
+  "no_repeat_in_first_200000_nonces": true,
+  "nonce_to_seed_pairs": [
+    {
+      "auto_nonce": 0,
+      "effective_seed": 1
+    },
+    {
+      "auto_nonce": 1,
+      "effective_seed": 48271
+    },
+    {
+      "auto_nonce": 2,
+      "effective_seed": 182605794
+    },
+    {
+      "auto_nonce": 3,
+      "effective_seed": 1291394886
+    },
+    {
+      "auto_nonce": 10,
+      "effective_seed": 1596680831
+    },
+    {
+      "auto_nonce": 1000,
+      "effective_seed": 429183498
+    },
+    {
+      "auto_nonce": 2147483645,
+      "effective_seed": 1899818559
+    },
+    {
+      "auto_nonce": 2147483646,
+      "effective_seed": 1
+    }
+  ],
+  "order_factorisation": [
+    2,
+    3,
+    7,
+    11,
+    31,
+    151,
+    331
+  ],
+  "period": 2147483646,
+  "period_equals_seed_domain_size": true,
+  "seed_domain": [
+    1,
+    2147483646
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "note": "PCCM Beta-PERT with lambda=4 is ONE-DIMENSIONAL: alpha=1+4r, beta=5-4r, alpha+beta=6. Nothing outside this line can arise from a PCCM driver.",
+  "probabilities": [
+    1.0,
+    0.5,
+    0.1,
+    0.01
+  ],
+  "r_values": [
+    0.0,
+    0.01,
+    0.05,
+    0.1,
+    0.2,
+    0.25,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.75,
+    0.8,
+    0.9,
+    0.95,
+    0.99,
+    1.0
+  ],
+  "table_nodes": [
+    256,
+    1024,
+    4096,
+    16384
+  ],
+  "table_note": "Table shapes are a stated subset: the tails (r=0, r=1) are where a uniform node grid fails, plus interior points to show the error is not an artefact of the extremes.",
+  "table_r_values": [
+    0.0,
+    0.05,
+    0.5,
+    0.95,
+    1.0
+  ],
+  "u_probes": [
+    0.001,
+    0.01,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    0.75,
+    0.9,
+    0.95,
+    0.99,
+    0.999
+  ]
+}

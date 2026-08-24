@@ -1,0 +1,138 @@
+[
+  {
+    "alpha": 1.0,
+    "beta": 5.0,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.0,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 5
+  },
+  {
+    "alpha": 1.04,
+    "beta": 4.96,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.01,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 14
+  },
+  {
+    "alpha": 1.2,
+    "beta": 4.8,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.05,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 14
+  },
+  {
+    "alpha": 1.4,
+    "beta": 4.6,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.1,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 13
+  },
+  {
+    "alpha": 1.8,
+    "beta": 4.2,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.2,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 11
+  },
+  {
+    "alpha": 2.0,
+    "beta": 4.0,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.25,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 4
+  },
+  {
+    "alpha": 2.2,
+    "beta": 3.8,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.3,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 10
+  },
+  {
+    "alpha": 2.6,
+    "beta": 3.4,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.4,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 9
+  },
+  {
+    "alpha": 3.0,
+    "beta": 3.0,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.5,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 3
+  },
+  {
+    "alpha": 3.4,
+    "beta": 2.6,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.6,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 9
+  },
+  {
+    "alpha": 3.8,
+    "beta": 2.2,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.7,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 10
+  },
+  {
+    "alpha": 4.0,
+    "beta": 2.0,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.75,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 4
+  },
+  {
+    "alpha": 4.2,
+    "beta": 1.7999999999999998,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.8,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 11
+  },
+  {
+    "alpha": 4.6,
+    "beta": 1.4,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.9,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 13
+  },
+  {
+    "alpha": 4.8,
+    "beta": 1.2000000000000002,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.95,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 14
+  },
+  {
+    "alpha": 4.96,
+    "beta": 1.04,
+    "betai_evaluations_per_sample": 60,
+    "r": 0.99,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 14
+  },
+  {
+    "alpha": 5.0,
+    "beta": 1.0,
+    "betai_evaluations_per_sample": 60,
+    "r": 1.0,
+    "transcendental_calls_per_sample": 360,
+    "worst_continued_fraction_iterations": 5
+  }
+]

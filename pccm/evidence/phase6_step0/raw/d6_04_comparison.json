@@ -1,0 +1,51 @@
+{
+  "counting_method": "transcendental calls counted by beta_ref.TR, the SAME instrumented functions in every candidate. No flops-per-iteration multiplier is applied.",
+  "rows": [
+    {
+      "candidate": "A1 naive inverse CDF (60 bisection halvings)",
+      "error_basis": "exact to the bisection tolerance; this row IS the accuracy reference",
+      "extra_resident_bytes": 0,
+      "one_off_setup_transcendental_calls": 0,
+      "transcendental_calls_per_run": 10800000000,
+      "transcendental_calls_per_sample": 360,
+      "uniforms_per_run": 40000000,
+      "worst_sampling_error": 0.0
+    },
+    {
+      "candidate": "A2 safeguarded Newton inverse CDF",
+      "error_basis": "max abs difference from A1 over the probe grid",
+      "extra_resident_bytes": 0,
+      "one_off_setup_transcendental_calls": 900,
+      "transcendental_calls_per_run": 1980000900,
+      "transcendental_calls_per_sample": 66,
+      "uniforms_per_run": 40000000,
+      "worst_sampling_error": 4.107825191113079e-15
+    },
+    {
+      "candidate": "B Cheng BB/BC rejection",
+      "error_basis": "no per-sample error: the sampler is exact in distribution; correctness shown by theoretical mean/variance agreement",
+      "extra_resident_bytes": 0,
+      "one_off_setup_transcendental_calls": 0,
+      "transcendental_calls_per_run": 144759000.0,
+      "transcendental_calls_per_sample": 4.8253,
+      "uniforms_per_run": 90385000.0,
+      "worst_sampling_error": null
+    },
+    {
+      "candidate": "C table + linear interpolation, 4096 nodes",
+      "error_basis": "max abs normalised interpolation error over the measured shapes",
+      "extra_resident_bytes": 9832800,
+      "one_off_setup_transcendental_calls": 81120600,
+      "transcendental_calls_per_run": 81120600,
+      "transcendental_calls_per_sample": 0,
+      "uniforms_per_run": 40000000,
+      "worst_sampling_error": 9.329388876744282e-05
+    }
+  ],
+  "workload": {
+    "assumption": "worst case: every driver Beta-PERT, every risk Probability = 1",
+    "beta_samples": 30000000,
+    "drivers": 300,
+    "occurrence_uniforms": 10000000
+  }
+}

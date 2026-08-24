@@ -1,0 +1,7 @@
+Step-0 evidence generation
+python      3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]
+platform    Linux-6.18.44-fc-v21-x86_64-with-glibc2.39
+cheng n     17 shapes x 20000 samples
+candidate C 4 node counts x 5 shapes
+controls    14/14 fired
+No Windows or Excel runtime was involved.

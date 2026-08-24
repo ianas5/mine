@@ -1,0 +1,199 @@
+{
+  "accepted_planning_baseline": "03aa5044cb535513976f0ec3840bc332747678c8",
+  "files": {
+    "inputs/pert_grid.json": {
+      "bytes": 849,
+      "sha256": "a33ac36c6cb731d658a5ae6002f0cde36cc18902865938cd7b919b5e3676d161"
+    },
+    "inputs/seeds.json": {
+      "bytes": 245,
+      "sha256": "db23e3c7d5c21ce18ac428e16728adca17d7688761820bb86cbf65e74f4b0bcc"
+    },
+    "raw/acceptance_margin_model.json": {
+      "bytes": 10214,
+      "sha256": "6f291a000463e4f87cd74d373a08cd6b1351ca58c7c0472be661c364e171c429"
+    },
+    "raw/candidate_a2_newton.json": {
+      "bytes": 5897,
+      "sha256": "7f8a5bcf58797621720bb2522c4956ef9ffe8e04b1d9a9aa8cccca1684605b43"
+    },
+    "raw/candidate_a_inverse_cdf.json": {
+      "bytes": 3231,
+      "sha256": "0c75a1799b9e74a7a4dc7b206617f0b1ce84fb5b387d9f5194f5871b072b0738"
+    },
+    "raw/candidate_c_table.json": {
+      "bytes": 1483,
+      "sha256": "dda2dedcf7156ad04a13036f4751fb409c331975969ea0b0b6455b547091c5b6"
+    },
+    "raw/cheng.json": {
+      "bytes": 20466,
+      "sha256": "76eeb3cb8ed75740aa32bd1791b22c12e1b443fd13f6cba81a5163d77c185980"
+    },
+    "raw/d6_04_comparison.json": {
+      "bytes": 2092,
+      "sha256": "57600696bc26dd51973578571109678ad0c5eb4b1b8bc54e5278fbfa78020aea"
+    },
+    "raw/d6_18_operation_model.json": {
+      "bytes": 3098,
+      "sha256": "ef9c655adb31769d1e1c5ee6338e63eda3055366311e2697184de06d54802adf"
+    },
+    "raw/digest.json": {
+      "bytes": 5302,
+      "sha256": "0d22b123bea14a220ef4dde891cbb7cef6b92a1ded868cc8a94b799922c4c714"
+    },
+    "raw/jump.json": {
+      "bytes": 2943,
+      "sha256": "136dadf2a27774c57a676dc0bb058221c2f18c71762755b6ef2b37049800cbc5"
+    },
+    "raw/rng_backbone.json": {
+      "bytes": 2135,
+      "sha256": "e9985e859bc87e18b84c36021971d5ef2b62890ae80b9cdb11b6de1ec8d0e77f"
+    },
+    "raw/run_log.txt": {
+      "bytes": 286,
+      "sha256": "738bc68974cb2778e03aac6467ea390d49bc2ad7cff3f2f7758c69093953e246"
+    },
+    "raw/seed_map.json": {
+      "bytes": 1304,
+      "sha256": "bb500957a15412ac500a1a2ceed1508b023ce957cec6fd5f89d12c09c5b6ee82"
+    },
+    "raw/stream_architecture.json": {
+      "bytes": 3743,
+      "sha256": "dfa2be7cc73cc97eeedcf03f95d20282b611dc6b36f62f7d1538c7a2fc6afb61"
+    },
+    "scripts/beta_ref.py": {
+      "bytes": 10287,
+      "sha256": "90bb179d4676b92bb3f23e73ae43830831a738a858dec5c4ac2d7b886c629a62"
+    },
+    "scripts/controls.py": {
+      "bytes": 4658,
+      "sha256": "4b6c0fc76e4032838a36d739d7c12d03e9eedcef2af5f36a104433741137bf99"
+    },
+    "scripts/digest.py": {
+      "bytes": 2454,
+      "sha256": "50091a82c4152c29f69744e001d04370e6692733d913a6cf09ced80da3ad0d2d"
+    },
+    "scripts/mrg32k3a.py": {
+      "bytes": 4860,
+      "sha256": "bbb2b8b487dd699960513a9368602546cca48a37e783516196ba87f97ac0fdde"
+    },
+    "scripts/run_all.py": {
+      "bytes": 32851,
+      "sha256": "056c4216241ef46ffbe1a8fe37436ab00ff0dae8e39698443bb95f007e4bc4c7"
+    },
+    "scripts/seed_map.py": {
+      "bytes": 1122,
+      "sha256": "56a226bbdd849775d31170515724eff89458a4b8223d60b2fe79f8b9ae59bd26"
+    },
+    "scripts/stream_map.py": {
+      "bytes": 3118,
+      "sha256": "2bcdb961ad8c429f25bbe52cbf41b316f1de09a9ccccd1076a86e1962f9a27e3"
+    },
+    "summaries/controls.json": {
+      "bytes": 1155,
+      "sha256": "5ca6a39f9500ec1c5e01aac8f17eb82a556717a1e2bb1aa0f965c3de1d426f75"
+    },
+    "summaries/controls.txt": {
+      "bytes": 629,
+      "sha256": "1a090116a7cc4b48dc4888dc474d5cf8042f2fd9862d3d2267eb4b53f571ab08"
+    },
+    "summaries/environment.json": {
+      "bytes": 159,
+      "sha256": "11637dff15f842512d8e86c00f2edd37d671a922f635fb1ece9b7d33328d225b"
+    },
+    "vectors/digest_vectors.json": {
+      "bytes": 4486,
+      "sha256": "2e98f52a213199e0b69a57c1f8baa402c77bce4d1c54f37eeb417f57502280c1"
+    },
+    "vectors/jump_vectors.json": {
+      "bytes": 3138,
+      "sha256": "ffe4969d6f4a3bec537f3aa8aaf5fce93618c0bfdb6fc97c1903f9a61a575b3f"
+    },
+    "vectors/rng_vectors.json": {
+      "bytes": 2249,
+      "sha256": "ca65318143cbc3cadbd92c18359ea5278011ebb895c18d0d4abcae40f8dd7ad7"
+    },
+    "vectors/seed_vectors.json": {
+      "bytes": 1235,
+      "sha256": "0b0014410b4e46d131408010451a14bdbdd38eeb355951386464ebf541efb7ea"
+    },
+    "vectors/stream_assignment_vectors.json": {
+      "bytes": 1659,
+      "sha256": "67bfa5c81eb27398704ab0430d9ad1d838b02014ad9c6e662a22315f3b58e79e"
+    }
+  },
+  "generator": "pccm/evidence/phase6_step0/scripts/run_all.py",
+  "git_head_at_generation": "03aa5044cb535513976f0ec3840bc332747678c8",
+  "grid": {
+    "note": "PCCM Beta-PERT with lambda=4 is ONE-DIMENSIONAL: alpha=1+4r, beta=5-4r, alpha+beta=6. Nothing outside this line can arise from a PCCM driver.",
+    "probabilities": [
+      1.0,
+      0.5,
+      0.1,
+      0.01
+    ],
+    "r_values": [
+      0.0,
+      0.01,
+      0.05,
+      0.1,
+      0.2,
+      0.25,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.75,
+      0.8,
+      0.9,
+      0.95,
+      0.99,
+      1.0
+    ],
+    "table_nodes": [
+      256,
+      1024,
+      4096,
+      16384
+    ],
+    "table_note": "Table shapes are a stated subset: the tails (r=0, r=1) are where a uniform node grid fails, plus interior points to show the error is not an artefact of the extremes.",
+    "table_r_values": [
+      0.0,
+      0.05,
+      0.5,
+      0.95,
+      1.0
+    ],
+    "u_probes": [
+      0.001,
+      0.01,
+      0.05,
+      0.1,
+      0.25,
+      0.5,
+      0.75,
+      0.9,
+      0.95,
+      0.99,
+      0.999
+    ]
+  },
+  "phase5_executable_baseline": "f571154118083e569e1fb9fbf9bf72852cc2d568",
+  "platform": "Linux-6.18.44-fc-v21-x86_64-with-glibc2.39",
+  "provenance": "All numbers in raw/, vectors/ and summaries/ are produced by the scripts listed here from the inputs listed here. No value was copied from prior prose. No Windows or Excel runtime was involved; nothing here is runtime evidence.",
+  "python_implementation": "CPython",
+  "python_version": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "seeds": {
+    "cheng_stream_seed": 987654321,
+    "fixed_seeds": [
+      1,
+      2,
+      12345,
+      2147483646
+    ],
+    "note": "12345 is retained because the all-12345 state is the published RngStreams default and permits direct comparison against independent MRG32k3a material."
+  },
+  "step0_commit": null,
+  "step0_commit_note": "A commit cannot contain its own hash, so this field stays null. git_head_at_generation above is the PARENT of the Step-0 commit, and it equals the accepted planning baseline. The Step-0 commit hash itself is reported in the delivery message; `git log -1` on the branch gives it directly."
+}

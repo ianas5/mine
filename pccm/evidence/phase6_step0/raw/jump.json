@@ -1,0 +1,111 @@
+{
+  "A1p127_derived_from_recurrence": [
+    [
+      1230515664,
+      986791581,
+      1988835001
+    ],
+    [
+      3580155704,
+      1230515664,
+      226153695
+    ],
+    [
+      949770784,
+      3580155704,
+      2427906178
+    ]
+  ],
+  "A1p127_hash": {
+    "canonical_text": "1230515664,986791581,1988835001;3580155704,1230515664,226153695;949770784,3580155704,2427906178",
+    "sha256": "e31a727398a2d4461cf708f77034b9bc5e60f88c54556c56c3f4b015a813b66a"
+  },
+  "A2p127_derived_from_recurrence": [
+    [
+      2093834863,
+      32183930,
+      2824425944
+    ],
+    [
+      1022607788,
+      1464411153,
+      32183930
+    ],
+    [
+      1610723613,
+      277697599,
+      1464411153
+    ]
+  ],
+  "A2p127_hash": {
+    "canonical_text": "2093834863,32183930,2824425944;1022607788,1464411153,32183930;1610723613,277697599,1464411153",
+    "sha256": "0d20b47aa206b1231c22e20afaa84e71b81cff52a2395be9aeb0bbb97b1e8208"
+  },
+  "base_state": [
+    12345,
+    12345,
+    12345,
+    12345,
+    12345,
+    12345
+  ],
+  "eight_step_jump_equals_eight_steps": true,
+  "naive_overflow_note": "The plan's 2048x is the bound for the largest REPRESENTABLE entry. These are the actual worst values for the actual derived J1 against a maximal state vector: a single product, and the three-term row sum the naive form would accumulate before reducing. Both overflow 2^53 by three orders of magnitude, so the conclusion is unchanged and now rests on measured values.",
+  "one_step_matrix_equals_recurrence": true,
+  "provenance": "A1p127 and A2p127 are DERIVED here by repeated squaring of the transition matrices A1 and A2, which are written directly from the MRG32k3a recurrence in mrg32k3a.py. They are not copied from any published table and no published table is treated as evidence. Correctness is established by the three checks below, not by resemblance to remembered literature values.",
+  "safe_multmodm_equals_exact_integer": true,
+  "state_vector_convention": "A1/A2 act on NEWEST-FIRST [x_{n-1},x_{n-2},x_{n-3}]; PCCM stores OLDEST-FIRST [s10,s11,s12]",
+  "stream_initial_states": {
+    "0": [
+      12345,
+      12345,
+      12345,
+      12345,
+      12345,
+      12345
+    ],
+    "1": [
+      3692455944,
+      1366884236,
+      2968912127,
+      335948734,
+      4161675175,
+      475798818
+    ],
+    "399": [
+      2260181002,
+      1948664812,
+      612976419,
+      1919355493,
+      2890171896,
+      2701138777
+    ],
+    "401": [
+      215541976,
+      1807926449,
+      2979430890,
+      2228004365,
+      3803991720,
+      370726289
+    ],
+    "7": [
+      3281794178,
+      2616230133,
+      1457051261,
+      2762791137,
+      2480527362,
+      2282316169
+    ]
+  },
+  "streams_recorded": [
+    0,
+    1,
+    7,
+    399,
+    401
+  ],
+  "worst_naive_row_sum": 29883662290365631276,
+  "worst_naive_row_sum_over_2_53": 3317.7529934886466,
+  "worst_naive_term": 15376650911435158544,
+  "worst_naive_term_over_2_53": 1707.1511883498713
+}

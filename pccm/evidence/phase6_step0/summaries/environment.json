@@ -1,0 +1,5 @@
+{
+  "implementation": "CPython",
+  "platform": "Linux-6.18.44-fc-v21-x86_64-with-glibc2.39",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]"
+}

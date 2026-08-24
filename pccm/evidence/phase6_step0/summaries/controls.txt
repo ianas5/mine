@@ -1,0 +1,16 @@
+DETECTED wrong MRG modulus m1
+DETECTED wrong jump matrix element
+DETECTED naive float matrix-vector loses exactness
+DETECTED BB/BC dispatch boundary moved
+DETECTED occurrence and severity streams merged
+DETECTED row-order stream assignment
+DETECTED D6-18 advancement rule swapped
+DETECTED result-digest order mutation
+DETECTED non-primitive multiplier detected
+DETECTED counter exhaustion wrap
+DETECTED seed 0 gives the forbidden all-zero state
+DETECTED result-stream framing tag mutation
+DETECTED stream assignment under a different ordering rule
+DETECTED Family B collision under the unbounded ID pattern
+
+14/14 controls fired

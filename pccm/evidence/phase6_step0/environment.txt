@@ -1,0 +1,21 @@
+PCCM Phase-6 Step-0 evidence — generation environment
+
+python            3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]
+implementation    CPython
+platform          Linux-6.18.44-fc-v21-x86_64-with-glibc2.39
+machine           x86_64
+processor         x86_64
+float repr        short
+maxsize           9223372036854775807
+float mant dig    53
+float epsilon     2.220446049250313e-16
+byte order        little
+C compiler        x86_64-linux-gnu-gcc
+
+Third-party packages used: NONE. The evidence uses only the Python
+standard library plus pccm/builder/pccm_builder/calc_fingerprint.py,
+which is accepted Phase-5 production code imported read-only.
+
+NO WINDOWS AND NO EXCEL RUNTIME WAS INVOLVED IN PRODUCING ANY FILE IN
+THIS PACKAGE. Nothing here is runtime evidence, a VBA measurement, or a
+Windows performance benchmark.
