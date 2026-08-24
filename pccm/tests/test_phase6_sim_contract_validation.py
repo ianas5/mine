@@ -718,6 +718,8 @@ def test_47_an_approximate_digest_comparison_is_rejected() -> None:
               "digest equality weakened to approximate")
     _rejected(lambda d: d["result_digest"].__setitem__("tolerance", 1e-12),
               "a tolerance attached to the digest")
+    _rejected(lambda d: d["result_digest"].__setitem__("tolerance", None),
+              "a NULL tolerance field, which is still the semantic in the wrong file")
 
 
 # ===========================================================================
@@ -794,8 +796,8 @@ def test_53_a_fourth_simulation_state_is_rejected() -> None:
         "the rejected UNSELECTED state added to the label set",
     )
     _rejected(
-        lambda d: d["sim_state"].__setitem__("never_evaluated_status", "NOT SIMULATED"),
-        "a fourth state introduced through the never-evaluated field",
+        lambda d: d["sim_state"].__setitem__("no_success_valid_status", "NOT SIMULATED"),
+        "a fourth state introduced through the no-success field",
     )
 
 
@@ -842,7 +844,7 @@ def test_57_a_layout_change_that_does_not_move_the_ceiling_is_rejected() -> None
     a derived constant exists to prevent."""
 
     def mutate(d):
-        d["sim_data"]["reserved_rows"].append({"rows": [33, 33], "purpose": "smuggled row"})
+        d["sim_data"]["reserved_rows"].append({"rows": [34, 34], "purpose": "smuggled row"})
 
     _rejected(mutate, "an extra reserved row with the ceiling left unchanged")
 
@@ -897,11 +899,11 @@ def test_61_a_ceiling_refusal_that_consumes_a_nonce_is_rejected() -> None:
 
 def test_62_a_misplaced_iteration_header_row_is_rejected() -> None:
     _rejected(
-        lambda d: d["sim_data"]["iteration_records"].__setitem__("header_row", 31),
+        lambda d: d["sim_data"]["iteration_records"].__setitem__("header_row", 32),
         "iteration header row disagreeing with the reserved-row count",
     )
     _rejected(
-        lambda d: d["sim_data"]["iteration_records"].__setitem__("first_iteration_row", 34),
+        lambda d: d["sim_data"]["iteration_records"].__setitem__("first_iteration_row", 35),
         "a gap between the header row and the first iteration row",
     )
 
@@ -933,6 +935,18 @@ def test_64_a_run_identity_field_dropped_is_rejected() -> None:
             for offset, field in enumerate(fields):
                 field["row"] = 8 + offset
             d["sim_data"]["run_identity"]["last_row"] = 8 + len(fields) - 1
+            rows = d["sim_data"]["reserved_rows"]
+            entry = next(e for e in rows if e["rows"][0] == 8)
+            entry["rows"][1] -= 1
+            for later in rows[rows.index(entry) + 1:]:
+                later["rows"][0] -= 1
+                later["rows"][1] -= 1
+            records = d["sim_data"]["iteration_records"]
+            records["header_row"] -= 1
+            records["first_iteration_row"] -= 1
+            ceiling = d["iterations"]["technical_ceiling"]
+            ceiling["reserved_rows_h"] -= 1
+            ceiling["max_iterations_representable"] += 1
 
         _rejected(mutate, f"run identity field {key} dropped")
 
@@ -1253,6 +1267,596 @@ def test_85_the_globally_forbidden_set_is_not_weakened() -> None:
     for construct in ("Rnd(", "Randomize", "NPV", "Percentile"):
         assert construct in structure.forbidden_constructs, construct
         assert construct not in scoped, f"{construct} acquired a scoped exception"
+
+
+# ===========================================================================
+# Q. closed-world schema - unknown keys fail EVERYWHERE
+# ===========================================================================
+def _closed_paths() -> list[str]:
+    from pccm_builder.sim_loader import CLOSED_KEYS
+
+    return sorted(CLOSED_KEYS)
+
+
+def _node_at(data: dict, path: str):
+    """Reach the first mapping at a schema path, resolving `[]` to element 0."""
+    node = data
+    if path:
+        for part in path.split("."):
+            if part.endswith("[]"):
+                node = node[part[:-2]][0]
+            else:
+                node = node[part]
+    return node
+
+
+def test_86_an_unknown_key_at_the_root_is_rejected() -> None:
+    _rejected(lambda d: d.__setitem__("future_semantic", True), "unknown root key")
+
+
+def test_87_an_unknown_key_in_EVERY_closed_mapping_is_rejected() -> None:
+    """Systematic. One injection per declared mapping shape, no exceptions.
+
+    Six of these were silently ACCEPTED before this correction, which meant a
+    semantic could be added to the authority document and go entirely unread by
+    the validator that exists to enforce it.
+    """
+    paths = _closed_paths()
+    assert len(paths) >= 70, f"only {len(paths)} mappings are closed"
+    for path in paths:
+        def mutate(d, p=path):
+            _node_at(d, p)["pccm_unknown_probe"] = "x"
+
+        _rejected(mutate, f"unknown key injected at {path or 'root'!r}")
+
+
+def test_88_a_mapping_at_an_undeclared_path_is_rejected() -> None:
+    _rejected(
+        lambda d: d.__setitem__("future_block", {"a": 1}),
+        "a whole mapping at a path the schema does not describe",
+    )
+    _rejected(
+        lambda d: d["rng"].__setitem__("future_block", {"a": 1}),
+        "a nested mapping at an undeclared path",
+    )
+
+
+def test_89_an_extra_run_identity_field_is_rejected() -> None:
+    """The layout is exact authority; it is not extensible by accident."""
+
+    def mutate(d):
+        d["sim_data"]["run_identity"]["fields"].append(
+            {"key": "invented", "row": 30, "group": "snapshot",
+             "label": "Invented", "value_type": "text", "initial": None}
+        )
+        d["sim_data"]["run_identity"]["last_row"] = 30
+
+    _rejected(mutate, "an invented run-identity field appended on the next row")
+
+    def reorder(d):
+        fields = d["sim_data"]["run_identity"]["fields"]
+        fields[0]["row"], fields[1]["row"] = fields[1]["row"], fields[0]["row"]
+        fields[0], fields[1] = fields[1], fields[0]
+
+    _rejected(reorder, "two run-identity fields swapped")
+
+    _rejected(
+        lambda d: d["sim_data"]["run_identity"]["fields"][11].__setitem__(
+            "group", "derived"
+        ),
+        "model_version moved out of the snapshot group",
+    )
+
+
+def test_90_a_missing_model_version_is_rejected() -> None:
+    def mutate(d):
+        fields = d["sim_data"]["run_identity"]["fields"]
+        index = next(i for i, f in enumerate(fields) if f["key"] == "model_version")
+        fields.pop(index)
+        for offset, field in enumerate(fields):
+            field["row"] = 8 + offset
+        d["sim_data"]["run_identity"]["last_row"] = 8 + len(fields) - 1
+        rows = d["sim_data"]["reserved_rows"]
+        entry = next(e for e in rows if e["rows"][0] == 8)
+        entry["rows"][1] -= 1
+        for later in rows[rows.index(entry) + 1:]:
+            later["rows"][0] -= 1
+            later["rows"][1] -= 1
+        records = d["sim_data"]["iteration_records"]
+        records["header_row"] -= 1
+        records["first_iteration_row"] -= 1
+        ceiling = d["iterations"]["technical_ceiling"]
+        ceiling["reserved_rows_h"] -= 1
+        ceiling["max_iterations_representable"] += 1
+
+    _rejected(mutate, "model_version dropped from the Run Stamp")
+
+
+# ===========================================================================
+# R. the corrected state authority
+# ===========================================================================
+def test_91_a_state_rule_that_reads_the_attempt_history_is_rejected() -> None:
+    _rejected(
+        lambda d: d["sim_state"]["derivation"]["rules"][2].__setitem__(
+            "condition", "request_fingerprint_matches_and_last_attempt_succeeded"
+        ),
+        "CURRENT made conditional on the attempt result",
+    )
+    _rejected(
+        lambda d: d["sim_state"]["derivation"]["rules"][0].__setitem__(
+            "condition", "prerequisites_refuse_or_last_attempt_failed"
+        ),
+        "INVALID made conditional on a FAILED attempt - revision 6's overlap",
+    )
+    _rejected(
+        lambda d: d["sim_state"].__setitem__(
+            "attempt_result_participates_in_derivation", True
+        ),
+        "the attempt axis declared part of the derivation",
+    )
+    _rejected(
+        lambda d: d["sim_state"]["definitions"].__setitem__(
+            "CURRENT", "the fingerprint matches and the last attempt succeeded"
+        ),
+        "the CURRENT definition reintroducing the attempt history",
+    )
+
+
+def test_92_a_reordered_or_incomplete_state_derivation_is_rejected() -> None:
+    def swap(d):
+        rules = d["sim_state"]["derivation"]["rules"]
+        rules[0], rules[1] = rules[1], rules[0]
+        rules[0]["order"], rules[1]["order"] = 1, 2
+
+    _rejected(swap, "the INVALID and BLANK rules swapped, breaking totality order")
+    _rejected(
+        lambda d: d["sim_state"]["derivation"]["rules"].pop(1),
+        "the no-snapshot rule removed, leaving a case with no state",
+    )
+    _rejected(
+        lambda d: d["sim_state"]["derivation"].__setitem__("ordered", False),
+        "the rules declared unordered, so they stop being mutually exclusive",
+    )
+
+
+def test_93_a_fourth_state_through_the_blank_field_is_rejected() -> None:
+    _rejected(
+        lambda d: d["sim_state"].__setitem__("no_success_valid_status", "NOT SIMULATED"),
+        "the blank status given a label",
+    )
+    _rejected(
+        lambda d: d["sim_state"]["derivation"]["rules"][1].__setitem__(
+            "status", "NOT SIMULATED"
+        ),
+        "a fourth status returned by rule 2",
+    )
+
+
+# ===========================================================================
+# S. the contribution contract
+# ===========================================================================
+def test_94_sampling_the_cost_line_total_instead_of_unit_cost_is_rejected() -> None:
+    _rejected(
+        lambda d: d["contribution"]["cost_line"].__setitem__("sampled_quantity", "total_cost"),
+        "Cost Line total sampled instead of unit cost",
+    )
+    _rejected(
+        lambda d: d["contribution"]["cost_line"].__setitem__(
+            "total_cost_uncertainty_sampled", True
+        ),
+        "total-cost uncertainty sampled directly",
+    )
+    _rejected(
+        lambda d: d["contribution"]["cost_line"].__setitem__(
+            "quantity_inside_distribution", True
+        ),
+        "Quantity moved inside the distribution",
+    )
+
+
+def test_95_omitting_or_doubling_quantity_is_rejected() -> None:
+    _rejected(
+        lambda d: d["contribution"]["cost_line"].__setitem__("nominal", "unit_cost * Knom"),
+        "Quantity omitted from the Cost Line contribution",
+    )
+    _rejected(
+        lambda d: d["contribution"]["cost_line"].__setitem__(
+            "nominal", "unit_cost * Quantity * Quantity * Knom"
+        ),
+        "Quantity applied twice",
+    )
+    _rejected(
+        lambda d: d["contribution"]["cost_line"].__setitem__("quantity_applications", 2),
+        "two declared Quantity applications",
+    )
+    _rejected(
+        lambda d: d["contribution"]["cost_line"].__setitem__("quantity_is_deterministic", False),
+        "Quantity declared stochastic",
+    )
+
+
+def test_96_folding_probability_into_risk_k_factors_is_rejected() -> None:
+    _rejected(
+        lambda d: d["contribution"]["risk"].__setitem__(
+            "probability_folded_into_k_factors", True
+        ),
+        "Probability folded into the Risk K factors",
+    )
+    _rejected(
+        lambda d: d["contribution"]["risk"].__setitem__(
+            "nominal_when_occurred", "severity * Probability * Knom"
+        ),
+        "Probability multiplied into the Risk contribution",
+    )
+
+
+def test_97_multiplying_a_risk_by_quantity_is_rejected() -> None:
+    _rejected(
+        lambda d: d["contribution"]["risk"].__setitem__("quantity_applies", True),
+        "Quantity applied to a Risk",
+    )
+    _rejected(
+        lambda d: d["contribution"]["risk"].__setitem__(
+            "nominal_when_occurred", "severity * Quantity * Knom"
+        ),
+        "Quantity multiplied into the Risk contribution",
+    )
+
+
+def test_98_ignoring_occurrence_is_rejected() -> None:
+    _rejected(
+        lambda d: d["contribution"]["risk"].__setitem__("nominal_when_not_occurred", "severity * Knom"),
+        "a non-occurring Risk still contributing its severity",
+    )
+    _rejected(
+        lambda d: d["contribution"]["risk"].__setitem__("pv_when_not_occurred", 1),
+        "a non-occurring Risk contributing to PV",
+    )
+    _rejected(
+        lambda d: d["contribution"]["risk"].__setitem__(
+            "occurred", "occurrence_uniform <= Probability"
+        ),
+        "the occurrence comparison weakened in the contribution contract",
+    )
+
+
+def test_99_deriving_pv_from_nominal_is_rejected() -> None:
+    _rejected(
+        lambda d: d["contribution"].__setitem__("pv_derived_from_nominal", True),
+        "PV discounted from the nominal total instead of computed with Kpv",
+    )
+    _rejected(
+        lambda d: d["contribution"]["cost_line"].__setitem__(
+            "pv", "unit_cost * Quantity * Knom * discount"
+        ),
+        "PV expressed through Knom rather than Kpv",
+    )
+    _rejected(
+        lambda d: d["contribution"]["iteration_total"].__setitem__(
+            "measures_independent", False
+        ),
+        "the two measures declared dependent",
+    )
+
+
+# ===========================================================================
+# T. kernel, numerical domain, dependence, publication, cancellation
+# ===========================================================================
+def test_100_worksheet_or_com_access_in_the_hot_loop_is_rejected() -> None:
+    for flag in (
+        "worksheet_access_inside_iteration_loop",
+        "range_access_inside_iteration_loop",
+        "listobject_access_inside_iteration_loop",
+        "application_object_access_inside_iteration_loop",
+        "thisworkbook_or_activeworkbook_access_inside_iteration_loop",
+        "com_round_trip_inside_iteration_loop",
+        "recomputes_worksheet_inflation_inside_loop",
+        "recomputes_worksheet_fx_inside_loop",
+        "recomputes_worksheet_profiles_inside_loop",
+    ):
+        _rejected(lambda d, f=flag: d["kernel"].__setitem__(f, True), f"kernel {flag} permitted")
+    _rejected(
+        lambda d: d["kernel"].__setitem__("inputs_resolved_once_before_simulation", False),
+        "inputs resolved inside the loop",
+    )
+    _rejected(
+        lambda d: d["kernel"]["resolved_before_loop"].remove("knom_per_driver"),
+        "Knom no longer resolved before the loop",
+    )
+
+
+def test_101_a_correlated_driver_policy_is_rejected() -> None:
+    _rejected(
+        lambda d: d["dependence"].__setitem__("inter_driver_dependence", "correlated"),
+        "inter-driver correlation introduced",
+    )
+    _rejected(
+        lambda d: d["dependence"].__setitem__("correlation_matrix_supported", True),
+        "a correlation matrix declared supported",
+    )
+    _rejected(
+        lambda d: d["dependence"].__setitem__("copula_supported", True),
+        "a copula declared supported",
+    )
+    _rejected(
+        lambda d: d["dependence"].__setitem__("shared_or_hidden_dependence_permitted", True),
+        "hidden dependence permitted",
+    )
+
+
+def test_102_a_hidden_positivity_or_magnitude_restriction_is_rejected() -> None:
+    _rejected(
+        lambda d: d["numerical_domain"].__setitem__("positivity_rule", "min > 0"),
+        "a positivity rule invented for Phase 6",
+    )
+    _rejected(
+        lambda d: d["numerical_domain"].__setitem__("magnitude_restriction", "abs(x) < 1e15"),
+        "a magnitude restriction invented for Phase 6",
+    )
+    _rejected(
+        lambda d: d["numerical_domain"].__setitem__("negative_values_legal", False),
+        "negative values made illegal",
+    )
+    _rejected(
+        lambda d: d["numerical_domain"].__setitem__("supports_crossing_zero_legal", False),
+        "supports crossing zero made illegal",
+    )
+    _rejected(
+        lambda d: d["numerical_domain"].__setitem__("narrower_than_phase5", True),
+        "the Phase-6 domain declared narrower than Phase 5's",
+    )
+
+
+def test_103_an_unsafe_arithmetic_policy_is_rejected() -> None:
+    _rejected(
+        lambda d: d["numerical_domain"]["disciplines"].__setitem__(
+            "accumulation", "naive_running_sum"
+        ),
+        "naive accumulation substituted for the safe signed sum",
+    )
+    _rejected(
+        lambda d: d["numerical_domain"]["disciplines"].__setitem__(
+            "percentile_interpolation", "difference_form"
+        ),
+        "the overflow-prone percentile difference form substituted",
+    )
+    _rejected(
+        lambda d: d["numerical_domain"]["disciplines"].__setitem__(
+            "driver_contribution", "naive_product"
+        ),
+        "naive multiplication substituted for the safe product",
+    )
+    _rejected(
+        lambda d: d["numerical_domain"].__setitem__(
+            "representable_result_refused_for_naive_intermediate_overflow", True
+        ),
+        "a valid representable result refused because a naive intermediate overflows",
+    )
+    _rejected(
+        lambda d: d["numerical_domain"].__setitem__("silent_non_finite_result_permitted", True),
+        "a silent non-finite result permitted",
+    )
+
+
+def test_104_enabling_cancellation_is_rejected() -> None:
+    _rejected(
+        lambda d: d["interruption"].__setitem__("user_cancellation_supported_in_phase_6", True),
+        "user cancellation enabled in Phase 6",
+    )
+
+
+def test_105_partial_publication_or_results_recomputation_is_rejected() -> None:
+    _rejected(
+        lambda d: d["publication"].__setitem__("results_recomputes_monte_carlo", True),
+        "Results recomputing its own Monte Carlo",
+    )
+    _rejected(
+        lambda d: d["publication"].__setitem__(
+            "partial_new_distribution_published_on_refusal_or_failure", True
+        ),
+        "a partial distribution published on failure",
+    )
+    _rejected(
+        lambda d: d["publication"].__setitem__("commit_last", False),
+        "commit-last abandoned",
+    )
+    _rejected(
+        lambda d: d["publication"].__setitem__(
+            "publish_only_after_simulation_and_statistics_complete", False
+        ),
+        "publication permitted before the statistics complete",
+    )
+    _rejected(
+        lambda d: d["publication"].__setitem__("results_derives_from", "recomputation"),
+        "Results no longer derived from _SimData",
+    )
+    _rejected(
+        lambda d: d["command_surface"].__setitem__("user_facing_run_button_in_phase_6", True),
+        "a Phase-6 user-facing Run Simulation button",
+    )
+
+
+# ===========================================================================
+# U. the ladder and content-bound authority
+# ===========================================================================
+def test_106_dropping_the_full_ladder_rule_is_rejected() -> None:
+    _rejected(
+        lambda d: d["statistics"].__setitem__("include_all_selectable_ladder_values", False),
+        "the full selectable ladder no longer retained",
+    )
+    _rejected(
+        lambda d: d["statistics"].__setitem__("fixed_nonselectable_percentiles", []),
+        "P10 dropped from the fixed headline percentiles",
+    )
+    _rejected(
+        lambda d: d["statistics"].__setitem__(
+            "selectable_ladder_locator", "config_tables.distributions"
+        ),
+        "the ladder locator redirected at the wrong table",
+    )
+    _rejected(
+        lambda d: d["statistics"].__setitem__("p10_selectable", True),
+        "P10 made selectable",
+    )
+
+
+def _rejected_cross_workbook(mutate, reason: str) -> None:
+    """The contract must fail when the WORKBOOK authority's content drifts."""
+    with tempfile.TemporaryDirectory(prefix="pccm-badwb-") as tmp:
+        sim = load_sim_contract(SIM_PATH)
+        document = yaml.safe_load(SPEC_PATH.read_text(encoding="utf-8"))
+        mutate(document)
+        broken = _write(document, tmp, "broken_workbook.yaml")
+        try:
+            validate_sim_against(
+                sim,
+                load_spec(broken),
+                load_contract(CONTRACT_PATH),
+                load_driver_contract(DRIVERS_PATH),
+                load_structure_contract(STRUCTURE_PATH),
+                yaml.safe_load(CALC_PATH.read_text(encoding="utf-8")),
+            )
+        except SimContractError:
+            return
+        except Exception as error:  # noqa: BLE001
+            raise AssertionError(
+                f"{reason}: raised {type(error).__name__} instead of SimContractError"
+            ) from error
+    raise AssertionError(f"{reason}: a broken content binding was silently accepted")
+
+
+def test_107_simdata_visibility_drift_is_rejected() -> None:
+    """Previously ACCEPTED: veryHidden -> hidden resolved, so the binding was false."""
+
+    def mutate(d):
+        sheet = next(s for s in d["sheets"] if s["name"] == "_SimData")
+        sheet["visibility"] = "hidden"
+
+    _rejected_cross_workbook(mutate, "_SimData downgraded from veryHidden to hidden")
+
+
+def test_108_a_broken_results_placeholder_binding_is_rejected() -> None:
+    def mutate(d):
+        results = next(s for s in d["sheets"] if s["name"] == "Results")
+        results["blocks"] = [b for b in results["blocks"] if b.get("title") != "Run Stamp"]
+
+    _rejected_cross_workbook(mutate, "the Run Stamp section removed from the Results placeholder")
+
+    def rename(d):
+        results = next(s for s in d["sheets"] if s["name"] == "Results")
+        for block in results["blocks"]:
+            if block.get("title") == "Summary Statistics":
+                block["title"] = "Statistics"
+
+    _rejected_cross_workbook(rename, "the Summary Statistics section renamed")
+
+
+class _Document:
+    """A stand-in exposing a raw YAML document, for binding-level tests.
+
+    `load_spec` and `load_contract` refuse several of these mutations at THEIR
+    own boundary, which is correct layering and stronger protection. This
+    bypasses them so the SIM contract's own content binding is what gets tested,
+    rather than the upstream loader's.
+    """
+
+    def __init__(self, document):
+        self.raw = document
+
+
+def test_109_a_missing_model_version_authority_is_rejected() -> None:
+    document = yaml.safe_load(SPEC_PATH.read_text(encoding="utf-8"))
+    document["model"].pop("model_version")
+    try:
+        validate_sim_against(
+            load_sim_contract(SIM_PATH),
+            _Document(document),
+            load_contract(CONTRACT_PATH),
+            load_driver_contract(DRIVERS_PATH),
+            load_structure_contract(STRUCTURE_PATH),
+            yaml.safe_load(CALC_PATH.read_text(encoding="utf-8")),
+        )
+    except SimContractError:
+        return
+    raise AssertionError("a missing model_version authority was silently accepted")
+
+
+def test_109b_the_upstream_loader_also_refuses_a_blank_model_version() -> None:
+    """Layering, recorded: the workbook contract guards this at its own boundary."""
+    from pccm_builder import SpecError
+
+    with tempfile.TemporaryDirectory(prefix="pccm-badwb-") as tmp:
+        document = yaml.safe_load(SPEC_PATH.read_text(encoding="utf-8"))
+        document["model"]["model_version"] = "   "
+        try:
+            load_spec(_write(document, tmp, "broken_workbook.yaml"))
+        except SpecError:
+            return
+    raise AssertionError("a blank model_version was silently accepted")
+
+
+def test_110_a_distribution_master_disagreement_is_rejected() -> None:
+    """Previously ACCEPTED: the master list could be changed outright."""
+
+    def _retable(master, values):
+        master["values"] = values
+        master["data_rows"] = len(values)
+
+    def drop(d):
+        master = next(t for t in d["config_tables"] if t["key"] == "distributions")
+        _retable(master, [v for v in master["values"] if v != "Beta-PERT"])
+
+    def add(d):
+        master = next(t for t in d["config_tables"] if t["key"] == "distributions")
+        _retable(master, list(master["values"]) + ["Normal"])
+
+    def duplicate(d):
+        master = next(t for t in d["config_tables"] if t["key"] == "distributions")
+        _retable(master, list(master["values"]) + ["Uniform"])
+
+    _rejected_cross(drop, "an accepted family removed from the master list")
+    _rejected_cross(add, "an extra family added to the master list")
+    _rejected_cross(duplicate, "a duplicate family in the master list")
+
+
+def test_111_reordering_the_master_list_is_ACCEPTED() -> None:
+    """Membership is the binding, not presentation order.
+
+    The user-facing order of `lstDistributions` has no reason to become the
+    simulation's dispatch order, so a reordering must NOT fail - a validator that
+    refused it would be enforcing something no authority says.
+    """
+    with tempfile.TemporaryDirectory(prefix="pccm-order-") as tmp:
+        document = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+        master = next(t for t in document["config_tables"] if t["key"] == "distributions")
+        master["values"] = list(reversed(master["values"]))
+        broken = _write(document, tmp, "reordered_input.yaml")
+        validate_sim_against(
+            load_sim_contract(SIM_PATH),
+            load_spec(SPEC_PATH),
+            load_contract(broken),
+            load_driver_contract(DRIVERS_PATH),
+            load_structure_contract(STRUCTURE_PATH),
+            yaml.safe_load(CALC_PATH.read_text(encoding="utf-8")),
+        )
+
+
+def test_112_an_empty_or_missing_confidence_ladder_is_rejected() -> None:
+    document = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    ladder = next(t for t in document["config_tables"] if t["key"] == "confidence_levels")
+    ladder["values"] = []
+    try:
+        validate_sim_against(
+            load_sim_contract(SIM_PATH),
+            load_spec(SPEC_PATH),
+            _Document(document),
+            load_driver_contract(DRIVERS_PATH),
+            load_structure_contract(STRUCTURE_PATH),
+            yaml.safe_load(CALC_PATH.read_text(encoding="utf-8")),
+        )
+    except SimContractError:
+        return
+    raise AssertionError("an empty selectable ladder was silently accepted")
 
 
 if __name__ == "__main__":

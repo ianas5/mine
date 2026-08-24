@@ -345,7 +345,7 @@ def test_25_result_digest_framing_matches_the_retained_digest_evidence() -> None
     assert block["iteration_index_origin"] == 1
     assert block["samples_sorted_for_digest"] is False
     assert block["equality"] == "exact"
-    assert block["tolerance"] is None
+    assert "tolerance" not in block, "the tolerance key was removed entirely"
 
 
 def test_26_digest_version_field_is_sim_method_version() -> None:
@@ -388,11 +388,11 @@ def test_28_reserved_rows_tile_the_sheet_head_with_no_gap() -> None:
 
 def test_29_d6_08_ceiling_is_derived_from_the_layout() -> None:
     sim = _sim()
-    assert sim.reserved_rows_h == 32
-    assert sim.layout.header_row == 32
-    assert sim.layout.first_iteration_row == 33
+    assert sim.reserved_rows_h == 33
+    assert sim.layout.header_row == 33
+    assert sim.layout.first_iteration_row == 34
     assert sim.layout.footer_rows == 0
-    assert sim.max_iterations_representable == MAX_EXCEL_ROWS - 32 == 1048544
+    assert sim.max_iterations_representable == MAX_EXCEL_ROWS - 33 == 1048543
     ceiling = _raw()["iterations"]["technical_ceiling"]
     assert ceiling["reserved_rows_h"] == sim.reserved_rows_h
     assert ceiling["max_iterations_representable"] == sim.max_iterations_representable
@@ -458,7 +458,7 @@ def test_34_run_identity_carries_every_required_field() -> None:
 def test_35_exactly_three_simulation_states() -> None:
     assert _raw()["sim_state"]["states"] == list(LOCKED_SIM_STATES)
     assert _raw()["label_sets"]["sim_state"] == list(LOCKED_SIM_STATES)
-    assert _raw()["sim_state"]["never_evaluated_status"] is None
+    assert _raw()["sim_state"]["no_success_valid_status"] is None
 
 
 def test_36_a_failure_publishes_nothing_partial() -> None:
@@ -559,20 +559,36 @@ def test_44_the_monte_carlo_minimum_did_not_move() -> None:
 
 
 def test_45_no_comparison_tolerance_lives_in_the_sim_contract() -> None:
-    text = SIM_PATH.read_text(encoding="utf-8")
-    body = "\n".join(
-        line for line in text.splitlines() if not line.lstrip().startswith("#")
-    )
-    lowered = body.lower()
-    assert "tolerance: null" in lowered
-    assert lowered.count("tolerance") == 1, "the only tolerance mention is the null statement"
-    for token in ("rel_tol", "abs_tol", "rtol", "atol", "ulp"):
-        assert token not in lowered, token
+    """ZERO tolerance semantics in the parsed contract - not even a null field.
+
+    Comments may explain where the tolerance lives; the parsed document may not
+    carry the semantic at all.
+    """
+    keys = []
+    values = []
+
+    def walk(node, prefix=()):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                keys.append(str(key).lower())
+                walk(value, prefix + (key,))
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                walk(value, prefix + (i,))
+        else:
+            values.append(str(node).lower())
+
+    walk(_raw())
+    for key in keys:
+        for token in ("tolerance", "ulp", "rel_tol", "abs_tol", "rtol", "atol", "epsilon"):
+            assert token not in key, f"key {key!r} carries a tolerance semantic"
+    for value in values:
+        assert "tolerance" not in value, f"value {value!r} mentions a tolerance"
 
 
 def test_46_every_authority_reference_resolves() -> None:
     sim = _sim()
-    assert len(sim.authority_references) == 10
+    assert len(sim.authority_references) == 12
     owners = {r.owner for r in sim.authority_references}
     assert owners == {
         "input_contract.yaml", "driver_contract.yaml", "structure_contract.yaml",
@@ -631,6 +647,269 @@ def test_50_no_phase6_vba_or_emission_exists() -> None:
     for path in sorted(src.glob("*.bas")):
         text = path.read_text(encoding="utf-8", errors="replace")
         assert "MRG32k3a" not in text, f"{path.name} references MRG32k3a"
+
+
+# ===========================================================================
+# J. the corrected state authority - full truth table
+# ===========================================================================
+def test_51_the_state_derivation_is_total_and_mutually_exclusive() -> None:
+    """Every combination lands in exactly one outcome, and none lands nowhere.
+
+    Revision 6's predicates had a hole - a corrected-then-restored request was
+    none of the three - and an overlap. The corrected rules are ordered, so
+    exclusivity is structural and totality is checked here by exhaustion.
+    """
+    from pccm_builder.sim_loader import derive_sim_status
+
+    outcomes = {}
+    for prereq in (True, False):
+        for snapshot in (True, False):
+            for matches in (True, False):
+                outcomes[(prereq, snapshot, matches)] = derive_sim_status(
+                    prereq, snapshot, matches
+                )
+    assert len(outcomes) == 8
+    assert set(outcomes.values()) == {"INVALID", "CURRENT", "STALE", None}
+    for key, value in outcomes.items():
+        assert value in ("INVALID", "CURRENT", "STALE", None), key
+
+
+def test_52_the_required_state_cases_resolve_as_the_correction_specifies() -> None:
+    """A .. F from the Step-1 review, one assertion each."""
+    from pccm_builder.sim_loader import derive_sim_status
+
+    # A. success A -> REFUSED invalid edit -> restore A. Attempt is REFUSED and
+    #    must not matter: the request matches, so the result is CURRENT.
+    assert derive_sim_status(True, True, True) == "CURRENT"
+    # B. success A -> valid changed request B.
+    assert derive_sim_status(True, True, False) == "STALE"
+    # C. success A -> FAILED on B, rolled back. Viewing B is STALE; restored A
+    #    is CURRENT. The FAILED attempt changes neither.
+    assert derive_sim_status(True, True, False) == "STALE"
+    assert derive_sim_status(True, True, True) == "CURRENT"
+    # D. current prerequisites invalid, whatever the history.
+    for snapshot in (True, False):
+        for matches in (True, False):
+            assert derive_sim_status(False, snapshot, matches) == "INVALID"
+    # E. no successful simulation, current request valid -> BLANK.
+    assert derive_sim_status(True, False, True) is None
+    assert derive_sim_status(True, False, False) is None
+    # F. no successful simulation, current request invalid -> INVALID.
+    assert derive_sim_status(False, False, True) == "INVALID"
+
+
+def test_53_attempt_history_cannot_change_the_derived_status() -> None:
+    """The derivation takes no attempt argument at all - it CANNOT read it.
+
+    That is stronger than asserting the outcome is unchanged for each attempt
+    label: the parameter does not exist, so no future edit can quietly add a
+    branch on it without changing the signature this test pins.
+    """
+    import inspect
+
+    from pccm_builder.sim_loader import derive_sim_status
+
+    parameters = list(inspect.signature(derive_sim_status).parameters)
+    assert parameters == [
+        "prerequisites_resolve",
+        "successful_snapshot_exists",
+        "request_fingerprint_matches",
+    ]
+    for token in ("attempt", "refused", "failed"):
+        assert token not in inspect.getsource(derive_sim_status).lower(), token
+
+    contract = _raw()["sim_state"]
+    assert contract["attempt_result_participates_in_derivation"] is False
+    assert contract["attempt_axis_is_orthogonal"] is True
+    for rule in contract["derivation"]["rules"]:
+        for token in ("attempt", "refused", "failed"):
+            assert token not in rule["condition"].lower(), rule
+
+
+def test_54_the_contract_derivation_matches_the_function() -> None:
+    """The YAML rules and the callable must not drift apart."""
+    from pccm_builder.sim_loader import derive_sim_status
+
+    rules = _raw()["sim_state"]["derivation"]["rules"]
+    assert [r["order"] for r in rules] == [1, 2, 3, 4]
+    assert _raw()["sim_state"]["derivation"]["ordered"] is True
+    by_status = {r["order"]: r["status"] for r in rules}
+    assert by_status[1] == "INVALID" and derive_sim_status(False, True, True) == "INVALID"
+    assert by_status[2] is None and derive_sim_status(True, False, True) is None
+    assert by_status[3] == "CURRENT" and derive_sim_status(True, True, True) == "CURRENT"
+    assert by_status[4] == "STALE" and derive_sim_status(True, True, False) == "STALE"
+
+
+# ===========================================================================
+# K. the contribution contract
+# ===========================================================================
+def test_55_cost_line_samples_unit_cost_with_quantity_outside() -> None:
+    cost = _raw()["contribution"]["cost_line"]
+    assert cost["sampled_quantity"] == "unit_cost"
+    assert cost["total_cost_uncertainty_sampled"] is False
+    assert cost["quantity_inside_distribution"] is False
+    assert cost["quantity_is_deterministic"] is True
+    assert cost["quantity_applications"] == 1
+    assert cost["probability_applies"] is False
+    assert cost["nominal"] == "unit_cost * Quantity * Knom"
+    assert cost["pv"] == "unit_cost * Quantity * Kpv"
+
+
+def test_56_risk_contributes_severity_without_quantity() -> None:
+    risk = _raw()["contribution"]["risk"]
+    assert risk["quantity_applies"] is False
+    assert risk["probability_folded_into_k_factors"] is False
+    assert risk["occurrence_and_severity_share_a_stream"] is False
+    assert risk["nominal_when_occurred"] == "severity * Knom"
+    assert risk["pv_when_occurred"] == "severity * Kpv"
+    assert risk["nominal_when_not_occurred"] == 0
+    assert risk["pv_when_not_occurred"] == 0
+    assert risk["occurred"] == "occurrence_uniform < Probability"
+
+
+def test_57_pv_is_an_independent_contribution_not_a_discounted_nominal() -> None:
+    assert _raw()["contribution"]["pv_derived_from_nominal"] is False
+    assert _raw()["contribution"]["iteration_total"]["measures_independent"] is True
+    assert _raw()["contribution"]["iteration_total"]["order_source"] == "accumulation"
+
+
+# ===========================================================================
+# L. kernel, numerical domain, dependence, publication
+# ===========================================================================
+def test_58_the_hot_loop_touches_no_worksheet_or_com_object() -> None:
+    kernel = _raw()["kernel"]
+    for flag in (
+        "worksheet_access_inside_iteration_loop",
+        "range_access_inside_iteration_loop",
+        "listobject_access_inside_iteration_loop",
+        "application_object_access_inside_iteration_loop",
+        "thisworkbook_or_activeworkbook_access_inside_iteration_loop",
+        "com_round_trip_inside_iteration_loop",
+        "recomputes_worksheet_inflation_inside_loop",
+        "recomputes_worksheet_fx_inside_loop",
+        "recomputes_worksheet_profiles_inside_loop",
+    ):
+        assert kernel[flag] is False, flag
+    assert kernel["inputs_resolved_once_before_simulation"] is True
+    for resolved in ("knom_per_driver", "kpv_per_driver", "quantities", "probabilities"):
+        assert resolved in kernel["resolved_before_loop"], resolved
+
+
+def test_59_the_phase5_numerical_domain_is_inherited_unnarrowed() -> None:
+    domain = _raw()["numerical_domain"]
+    assert domain["negative_values_legal"] is True
+    assert domain["supports_crossing_zero_legal"] is True
+    assert domain["positivity_rule"] is None
+    assert domain["magnitude_restriction"] is None
+    assert domain["narrower_than_phase5"] is False
+    assert domain["representable_result_refused_for_naive_intermediate_overflow"] is False
+    assert domain["silent_non_finite_result_permitted"] is False
+    assert domain["disciplines"]["accumulation"] == "accepted_safe_signed_sum"
+    assert domain["disciplines"]["percentile_interpolation"] == "convex"
+
+
+def test_60_drivers_are_sampled_independently() -> None:
+    dep = _raw()["dependence"]
+    assert dep["inter_driver_dependence"] == "independent"
+    assert dep["correlation_matrix_supported"] is False
+    assert dep["copula_supported"] is False
+    assert dep["shared_or_hidden_dependence_permitted"] is False
+
+
+def test_61_publication_is_commit_last_and_results_never_recomputes() -> None:
+    pub = _raw()["publication"]
+    assert pub["persisted_source_of_truth"] == "_SimData"
+    assert pub["results_derives_from"] == "_SimData"
+    assert pub["results_recomputes_monte_carlo"] is False
+    assert pub["commit_last"] is True
+    assert pub["partial_new_distribution_published_on_refusal_or_failure"] is False
+    assert pub["prior_successful_publication_survives"] is True
+
+
+def test_62_phase6_adds_no_user_surface_and_no_cancellation() -> None:
+    surface = _raw()["command_surface"]
+    assert surface["automation_endpoint"] == "PCCM_RunSimulation"
+    for flag in ("user_facing_run_button_in_phase_6", "msgbox_introduced_by_phase_6",
+                 "userform_introduced_by_phase_6", "ribbon_introduced_by_phase_6",
+                 "read_accessor_names_settled"):
+        assert surface[flag] is False, flag
+    assert _raw()["interruption"]["user_cancellation_supported_in_phase_6"] is False
+
+
+# ===========================================================================
+# M. the ladder, the run stamp, and content-bound authority
+# ===========================================================================
+def test_63_every_selectable_percentile_is_retained_by_reference() -> None:
+    """Resolved from the OWNER. No ladder values are copied into sim_contract."""
+    from pccm_builder.sim_loader import retained_percentiles
+
+    document = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    ladder = next(
+        t for t in document["config_tables"] if t["key"] == "confidence_levels"
+    )["values"]
+    retained = retained_percentiles(_sim(), document)
+
+    assert retained[0] == "P10", "P10 is the fixed headline"
+    for value in ladder:
+        assert value in retained, f"{value} is selectable but would not be stored"
+    assert len(retained) == len(ladder) + 1 == 11
+    assert set(retained) == {"P10"} | set(ladder)
+
+    # The values must NOT appear in the simulation contract itself.
+    text = SIM_PATH.read_text(encoding="utf-8")
+    for value in ladder:
+        if value in ("P50", "P70", "P90"):
+            continue  # legitimately named as headline percentiles
+        assert value not in text, f"{value} was copied into sim_contract"
+
+
+def test_64_model_version_is_persisted_in_the_run_stamp() -> None:
+    fields = {f["key"]: f for f in _raw()["sim_data"]["run_identity"]["fields"]}
+    assert "model_version" in fields, "the Run Stamp requires a model version"
+    assert fields["model_version"]["group"] == "snapshot", (
+        "the model version at the time of the successful run is snapshot data, "
+        "not a live lookup when Results is displayed"
+    )
+    assert fields["model_version"]["value_type"] == "text"
+    document = yaml.safe_load(SPEC_PATH.read_text(encoding="utf-8"))
+    assert str(document["model"]["model_version"]).strip()
+    concepts = {r.concept for r in _sim().authority_references}
+    assert "model version" in concepts
+
+
+def test_65_the_authority_bindings_check_content_not_only_resolution() -> None:
+    """Both bindings that were false before: visibility and family membership."""
+    document = yaml.safe_load(SPEC_PATH.read_text(encoding="utf-8"))
+    sheet = next(s for s in document["sheets"] if s["name"] == "_SimData")
+    assert sheet["visibility"] == _raw()["sim_data"]["required_visibility"] == "veryHidden"
+
+    results = next(s for s in document["sheets"] if s["name"] == "Results")
+    titles = {b.get("title") for b in results["blocks"]}
+    for section in _raw()["results_minimum"]["sections"]:
+        assert section in titles, section
+
+    inputs = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    master = next(t for t in inputs["config_tables"] if t["key"] == "distributions")
+    assert set(master["values"]) == set(_raw()["distributions"]["families"])
+
+
+def test_66_the_run_identity_layout_is_exact() -> None:
+    from pccm_builder.sim_loader import LOCKED_RUN_IDENTITY
+
+    fields = _raw()["sim_data"]["run_identity"]["fields"]
+    actual = tuple((f["key"], f["row"], f["group"], f["value_type"]) for f in fields)
+    assert actual == LOCKED_RUN_IDENTITY
+    assert len(actual) == 22
+    assert [f["row"] for f in fields] == list(range(8, 30))
+
+
+def test_67_d6_11_activation_precondition_is_recorded() -> None:
+    """No scoped grant exists, and the precondition for the first one is written."""
+    structure = load_structure_contract(STRUCTURE_PATH)
+    assert not [r for r in structure.forbidden_construct_rules if r.is_scoped]
+    record = (PCCM_ROOT / "docs" / "phase6_step1.md").read_text(encoding="utf-8")
+    assert "activation precondition" in record.lower()
+    assert "forbidden_in" in record
 
 
 if __name__ == "__main__":

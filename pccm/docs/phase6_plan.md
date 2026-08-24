@@ -1113,13 +1113,62 @@ positions and bytes, so the Phase-5 subset stays comparable across phases.
 
 ### 10.3 The three states
 
-| State | Meaning |
-|---|---|
-| **CURRENT** | the recomputed `request_fingerprint` matches the stored one, and the last attempt succeeded |
-| **STALE** | a stored successful result exists, but `request_fingerprint` no longer matches |
-| **INVALID** | prerequisites refuse (including §10.4), or the last attempt failed |
+> **POST-ACCEPTANCE AUTHORITY CORRECTION — Phase-6 Step-1 review.**
+>
+> Revision 6's predicates were **neither mutually exclusive nor collectively
+> complete**, and they contradicted the inherited Phase-5 orthogonality this
+> document's own authority matrix records: *current state decides; the
+> historical attempt result is a separate axis*.
+>
+> **The hole.** Success `A` → an invalid edit → `RunSimulation` REFUSED → the
+> user restores exactly request `A`. The fingerprint now matches and the last
+> attempt is `REFUSED`, so CURRENT was false, STALE was false and INVALID was
+> false. **There was no state.**
+>
+> **The overlap.** A stored success, valid but changed inputs, and a `FAILED`
+> last attempt made STALE and INVALID both true.
+>
+> The three LABELS are unchanged and no fourth state is created. What is
+> corrected is the DERIVATION, which no longer reads the attempt history at all.
 
-**There is no fourth state.**
+**The derived status, in order. The first matching rule wins:**
+
+| # | Condition | Status |
+|---|---|---|
+| 1 | current simulation prerequisites do not resolve | **INVALID** |
+| 2 | prerequisites resolve **and** no successful simulation snapshot exists | **BLANK** — see below |
+| 3 | prerequisites resolve, a snapshot exists, and the recomputed `request_fingerprint` **equals** the stored successful one | **CURRENT** |
+| 4 | prerequisites resolve, a snapshot exists, and the fingerprints **differ** | **STALE** |
+
+The rules are ordered, so they are **mutually exclusive** by construction, and
+they are **total**: rule 1 or rule 2 catches everything rules 3 and 4 do not.
+
+**The attempt result — `NONE`, `SUCCESS`, `REFUSED`, `FAILED` — MUST NOT
+participate in the derivation.** It is an orthogonal audit axis, exactly as
+`last_attempt_result` is in the accepted Phase-5 calculation state. A refusal
+that the user has since corrected does not make a matching request stale, and a
+failure does not make a valid changed request invalid.
+
+**BLANK is the absence of a successful-comparison state, not a fourth label.** A
+status can only be CURRENT or STALE *relative to a stored success*, so with no
+success there is nothing to be relative to. `status_evaluated_at` may still be
+populated while the status is blank, which is what distinguishes *never
+evaluated* from *evaluated, and there is no successful simulation to compare
+against*.
+
+**Worked cases:**
+
+| Case | Status | `last_attempt_result` |
+|---|---|---|
+| success `A` → REFUSED invalid edit → restore `A` | **CURRENT** | `REFUSED` |
+| success `A` → valid changed request `B` | **STALE** | any |
+| success `A` → FAILED on `B`, rolled back; viewing `B` | **STALE** | `FAILED` |
+| success `A` → FAILED on `B`, rolled back; restored to `A` | **CURRENT** | `FAILED` |
+| current prerequisites invalid | **INVALID** | any |
+| no successful simulation, current request valid | **BLANK** | `NONE`/`REFUSED`/`FAILED` |
+| no successful simulation, current request invalid | **INVALID** | any |
+
+**There is still no fourth state.**
 
 ### 10.4 The Phase-5 analytical prerequisite — D6-14
 

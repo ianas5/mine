@@ -423,6 +423,143 @@ accumulation:
   accumulators_share_driver_order: true
 
 # -----------------------------------------------------------------------------
+# What a driver actually CONTRIBUTES to one iteration.
+#
+# Without this, a future engine could satisfy every other section and still
+# implement the most important arithmetic wrongly. The rules are inherited from
+# the accepted Phase-5 analytical semantics; Phase 6 replaces the deterministic
+# central value with a sampled one and changes nothing else.
+# -----------------------------------------------------------------------------
+contribution:
+  cost_line:
+    # The sample is UNIT COST uncertainty. Quantity is deterministic and sits
+    # OUTSIDE the distribution, so total-cost uncertainty is never sampled
+    # directly.
+    sampled_quantity: "unit_cost"
+    sampled_from: "distribution(Min, MostLikely, Max)"
+    total_cost_uncertainty_sampled: false
+    quantity_is_deterministic: true
+    quantity_inside_distribution: false
+    quantity_applications: 1
+    probability_applies: false
+    nominal: "unit_cost * Quantity * Knom"
+    pv: "unit_cost * Quantity * Kpv"
+
+  risk:
+    # No Quantity. A Risk's severity IS its money amount.
+    occurred: "occurrence_uniform < Probability"
+    severity_source: "severity_sampler_under_d6_18b"
+    quantity_applies: false
+    probability_folded_into_k_factors: false
+    occurrence_and_severity_share_a_stream: false
+    nominal_when_occurred: "severity * Knom"
+    pv_when_occurred: "severity * Kpv"
+    nominal_when_not_occurred: 0
+    pv_when_not_occurred: 0
+
+  # PV is an INDEPENDENT contribution computed with Kpv, never a post-hoc
+  # discount applied to the nominal total.
+  pv_derived_from_nominal: false
+
+  iteration_total:
+    rule: "canonical sum of every Cost Line contribution, then every Risk contribution"
+    order_source: "accumulation"
+    measures_independent: true
+
+# -----------------------------------------------------------------------------
+# The hot-kernel execution boundary - INHERITED, and locked here.
+#
+# The accepted plan's central performance invariant. It is semantic authority,
+# not an implementation note: an engine that touches a worksheet inside the loop
+# is wrong even if its numbers are right.
+# -----------------------------------------------------------------------------
+kernel:
+  inputs_resolved_once_before_simulation: true
+  operates_on_resolved_in_memory_structures: true
+  worksheet_access_inside_iteration_loop: false
+  range_access_inside_iteration_loop: false
+  listobject_access_inside_iteration_loop: false
+  application_object_access_inside_iteration_loop: false
+  thisworkbook_or_activeworkbook_access_inside_iteration_loop: false
+  com_round_trip_inside_iteration_loop: false
+  resolved_before_loop:
+    - "knom_per_driver"
+    - "kpv_per_driver"
+    - "quantities"
+    - "probabilities"
+    - "distribution_parameters"
+    - "component_stream_initial_states"
+  recomputes_worksheet_inflation_inside_loop: false
+  recomputes_worksheet_fx_inside_loop: false
+  recomputes_worksheet_profiles_inside_loop: false
+
+# -----------------------------------------------------------------------------
+# The numerical domain - plan section 4.6, encoded in full.
+#
+# Phase 5 accepted ANY finite, correctly ordered triple, including negatives and
+# supports crossing zero, and built overflow-safe primitives rather than
+# narrowing the domain. Phase 6 may not silently narrow it.
+# -----------------------------------------------------------------------------
+numerical_domain:
+  negative_values_legal: true
+  supports_crossing_zero_legal: true
+  positivity_rule: null
+  magnitude_restriction: null
+  narrower_than_phase5: false
+
+  # The rule that makes "overflow-safe" mean something: a representable, valid
+  # result must not be refused merely because a NAIVE intermediate would overflow.
+  representable_result_refused_for_naive_intermediate_overflow: false
+  refusal_when_no_valid_double_result: "explicit_and_names_the_numerical_stage"
+  silent_non_finite_result_permitted: false
+
+  disciplines:
+    driver_contribution: "accepted_safe_product"
+    accumulation: "accepted_safe_signed_sum"
+    percentile_interpolation: "convex"
+    contingency_subtraction: "accepted_safe_subtract"
+    statistics: "scale_safe"
+
+# -----------------------------------------------------------------------------
+# Driver dependence.
+#
+# The component-stream architecture makes independence achievable; it does not
+# STATE it, and an unstated invariant is one a later phase can quietly break.
+# -----------------------------------------------------------------------------
+dependence:
+  inter_driver_dependence: "independent"
+  correlation_matrix_supported: false
+  copula_supported: false
+  shared_or_hidden_dependence_permitted: false
+  authority: "no inter-driver correlation authority exists in the repository"
+
+# -----------------------------------------------------------------------------
+# Publication and the Phase-6 command surface.
+# -----------------------------------------------------------------------------
+publication:
+  persisted_source_of_truth: "_SimData"
+  results_derives_from: "_SimData"
+  results_recomputes_monte_carlo: false
+  publish_only_after_simulation_and_statistics_complete: true
+  commit_last: true
+  partial_new_distribution_published_on_refusal_or_failure: false
+  prior_successful_publication_survives: true
+
+command_surface:
+  automation_endpoint: "PCCM_RunSimulation"
+  user_facing_run_button_in_phase_6: false
+  msgbox_introduced_by_phase_6: false
+  userform_introduced_by_phase_6: false
+  ribbon_introduced_by_phase_6: false
+  # Deliberately NOT named here: no accepted authority names the reporting read
+  # accessors yet, and inventing them now would create authority this step was
+  # not given. They are settled at the reporting/public-API implementation step.
+  read_accessor_names_settled: false
+
+interruption:
+  user_cancellation_supported_in_phase_6: false
+
+# -----------------------------------------------------------------------------
 # Simulation request identity.
 #
 # The accepted Phase-5 canonical sections are a PREFIX. Phase 6 appends SIM and
@@ -474,7 +611,11 @@ result_digest:
   order_source: "persisted_iteration_order"
   samples_sorted_for_digest: false
   equality: "exact"
-  tolerance: null
+  # NO tolerance key exists here, or anywhere in this document. Step 0 section 10
+  # settled the comparison tolerance as an ORACLE/EVIDENCE policy owned outside
+  # the contract; `equality: exact` already states the runtime rule, and a
+  # null-valued tolerance field would still be a tolerance semantic living in the
+  # wrong file. The loader rejects any tolerance-shaped field, null included.
 
 # -----------------------------------------------------------------------------
 # Iterations. The BUSINESS minimum is owned by input_contract.yaml and is not
@@ -488,8 +629,8 @@ iterations:
     max_excel_rows: 1048576
     # Derived from the _SimData layout below; the loader recomputes it and
     # refuses a free literal that disagrees.
-    reserved_rows_h: 32
-    max_iterations_representable: 1048544
+    reserved_rows_h: 33
+    max_iterations_representable: 1048543
     refusal_kind: "technical"
     presented_as_business_validation: false
     refusal_precedes:
@@ -534,15 +675,15 @@ sim_data:
       purpose: "run identity section heading"
     - rows: [7, 7]
       purpose: "run identity section note"
-    - rows: [8, 28]
+    - rows: [8, 29]
       purpose: "run identity fields"
-    - rows: [29, 29]
-      purpose: "spacer"
     - rows: [30, 30]
-      purpose: "iteration records section heading"
+      purpose: "spacer"
     - rows: [31, 31]
-      purpose: "iteration records section note"
+      purpose: "iteration records section heading"
     - rows: [32, 32]
+      purpose: "iteration records section note"
+    - rows: [33, 33]
       purpose: "iteration table header"
 
   run_identity:
@@ -550,7 +691,7 @@ sim_data:
     value_column: "D"
     note_column: "F"
     first_row: 8
-    last_row: 28
+    last_row: 29
     fields:
       - key: "last_successful_stamp"
         row: 8
@@ -619,73 +760,84 @@ sim_data:
         label: "Simulation Method Version"
         value_type: "integer"
         initial: null
-      - key: "applied_timeline"
+      # The model version AT THE TIME OF THE SUCCESSFUL RUN. It is snapshot data,
+      # which is why it sits with the other version fields rather than being
+      # appended after the derived group. Results must not look this up live: the
+      # workbook's current model version is not necessarily the version that
+      # produced the retained samples.
+      - key: "model_version"
         row: 19
+        group: "snapshot"
+        label: "Model Version"
+        value_type: "text"
+        initial: null
+      - key: "applied_timeline"
+        row: 20
         group: "snapshot"
         label: "Applied Timeline"
         value_type: "text"
         initial: null
       - key: "next_auto_nonce"
-        row: 20
+        row: 21
         group: "counter"
         label: "Next AUTO Nonce"
         value_type: "integer"
         initial: 0
       - key: "last_run_id"
-        row: 21
+        row: 22
         group: "counter"
         label: "Last Run ID"
         value_type: "integer"
         initial: 0
       - key: "last_attempt_result"
-        row: 22
+        row: 23
         group: "attempt"
         label: "Last Attempt Result"
         value_type: "enum"
         enum: "attempt_result"
         initial: "NONE"
       - key: "last_attempt_detail"
-        row: 23
+        row: 24
         group: "attempt"
         label: "Last Attempt Detail"
         value_type: "text"
         initial: null
       - key: "last_attempt_seed_mode"
-        row: 24
+        row: 25
         group: "attempt"
         label: "Last Attempt Seed Mode"
         value_type: "enum"
         enum: "seed_mode"
         initial: null
       - key: "last_attempt_effective_seed"
-        row: 25
+        row: 26
         group: "attempt"
         label: "Last Attempt Effective Seed"
         value_type: "integer"
         initial: null
       - key: "last_attempt_auto_nonce"
-        row: 26
+        row: 27
         group: "attempt"
         label: "Last Attempt AUTO Nonce"
         value_type: "integer"
         initial: null
       - key: "simulation_status"
-        row: 27
+        row: 28
         group: "derived"
         label: "Simulation Status (last evaluated)"
         value_type: "enum"
         enum: "sim_state"
         initial: null
       - key: "status_evaluated_at"
-        row: 28
+        row: 29
         group: "derived"
         label: "Status Evaluated At"
         value_type: "timestamp"
         initial: null
 
   iteration_records:
-    header_row: 32
-    first_iteration_row: 33
+    header_row: 33
+    first_iteration_row: 34
     footer_rows: 0
     order: "canonical_iteration_order"
     sorted: false
@@ -736,11 +888,51 @@ label_sets:
 # -----------------------------------------------------------------------------
 sim_state:
   states: ["CURRENT", "STALE", "INVALID"]
+
+  # ORDERED. The first matching rule wins, so the rules are mutually exclusive by
+  # construction, and rules 1 and 2 make them total: everything rules 3 and 4 do
+  # not catch is caught above them.
+  #
+  # POST-ACCEPTANCE AUTHORITY CORRECTION (plan section 10.3). Revision 6's
+  # predicates were neither exclusive nor complete - a corrected-then-restored
+  # request had NO state, and a failed attempt on a changed request was both
+  # STALE and INVALID - and they read the attempt history, contradicting the
+  # inherited Phase-5 orthogonality.
+  derivation:
+    ordered: true
+    rules:
+      - order: 1
+        condition: "current_prerequisites_do_not_resolve"
+        status: "INVALID"
+      - order: 2
+        condition: "no_successful_snapshot_exists"
+        status: null
+      - order: 3
+        condition: "request_fingerprint_equals_stored_successful"
+        status: "CURRENT"
+      - order: 4
+        condition: "request_fingerprint_differs_from_stored_successful"
+        status: "STALE"
+
+  # The audit axis. It is recorded, and it NEVER participates in the derivation.
+  attempt_result_participates_in_derivation: false
+  attempt_axis_is_orthogonal: true
+
+  # The absence of a successful-comparison state, not a fourth label: a status can
+  # only be CURRENT or STALE RELATIVE TO a stored success, so with no success
+  # there is nothing to be relative to.
+  #
+  # Renamed from `never_evaluated_status`, which was too narrow: a blank status
+  # also occurs after an attempted-but-unsuccessful run when no successful
+  # snapshot exists and the current request is now valid.
+  no_success_valid_status: null
+  status_evaluated_at_may_be_populated_while_status_is_blank: true
+
   definitions:
-    CURRENT: "the recomputed request fingerprint matches the stored successful request fingerprint and the last attempt succeeded"
-    STALE: "a prior successful simulation exists and the current request fingerprint differs"
-    INVALID: "prerequisites refuse, or the last simulation attempt failed"
-  never_evaluated_status: null
+    CURRENT: "prerequisites resolve, a successful snapshot exists, and the recomputed request fingerprint equals the stored successful one"
+    STALE: "prerequisites resolve, a successful snapshot exists, and the recomputed request fingerprint differs from the stored successful one"
+    INVALID: "current simulation prerequisites do not resolve"
+
   on_failure:
     prior_sim_data_preserved: true
     prior_results_publication_preserved: true
@@ -789,16 +981,21 @@ statistics:
     interpolation: "convex"
   sorting: "on_copies_only"
   measures: ["nominal", "pv"]
-  reported:
-    - "P10"
-    - "P50"
-    - "P70"
-    - "P90"
+  # Phase 6 stores the WHOLE ladder a selection could ask for, so Selected Px is
+  # a deterministic lookup rather than a computation over samples. The ladder's
+  # VALUES are not copied here: they are resolved from the owner through the
+  # authority reference, so a legitimate future change to the ladder flows
+  # through one authority instead of requiring a duplicate list to be edited.
+  fixed_nonselectable_percentiles: ["P10"]
+  include_all_selectable_ladder_values: true
+  selectable_ladder_owner: "input_contract.yaml"
+  selectable_ladder_locator: "config_tables.confidence_levels"
+  headline_percentiles: ["P10", "P50", "P70", "P90"]
+  moments_and_extremes:
     - "mean"
     - "sample_standard_deviation"
     - "minimum"
     - "maximum"
-  selectable_ladder_owner: "input_contract.yaml"
   p10_selectable: false
   selected_confidence_level:
     role: "reporting_selector"
@@ -866,4 +1063,10 @@ authority_references:
     locator: "scalar_blocks.calc_totals"
   - concept: "_SimData sheet declaration and visibility"
     owner: "workbook.yaml"
-    locator: "sheets"
+    locator: "sheets._SimData"
+  - concept: "Results sheet placeholder sections"
+    owner: "workbook.yaml"
+    locator: "sheets.Results"
+  - concept: "model version"
+    owner: "workbook.yaml"
+    locator: "model.model_version"

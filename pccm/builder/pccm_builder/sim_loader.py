@@ -232,6 +232,44 @@ LOCKED_SIM_METHOD_VERSION_BUMPS = (
 
 LOCKED_SIM_DATA_SHEET = "_SimData"
 LOCKED_ITERATION_COLUMNS = ("iteration_index", "total_nominal", "total_pv")
+LOCKED_RUN_IDENTITY = (
+    ("last_successful_stamp", 8, "snapshot", "timestamp"),
+    ("run_id", 9, "snapshot", "integer"),
+    ("request_fingerprint", 10, "snapshot", "text"),
+    ("result_digest", 11, "snapshot", "text"),
+    ("seed_mode", 12, "snapshot", "enum"),
+    ("supplied_seed", 13, "snapshot", "integer"),
+    ("effective_seed", 14, "snapshot", "integer"),
+    ("consumed_auto_nonce", 15, "snapshot", "integer"),
+    ("iterations_run", 16, "snapshot", "integer"),
+    ("rng_version", 17, "snapshot", "integer"),
+    ("sim_method_version", 18, "snapshot", "integer"),
+    ("model_version", 19, "snapshot", "text"),
+    ("applied_timeline", 20, "snapshot", "text"),
+    ("next_auto_nonce", 21, "counter", "integer"),
+    ("last_run_id", 22, "counter", "integer"),
+    ("last_attempt_result", 23, "attempt", "enum"),
+    ("last_attempt_detail", 24, "attempt", "text"),
+    ("last_attempt_seed_mode", 25, "attempt", "enum"),
+    ("last_attempt_effective_seed", 26, "attempt", "integer"),
+    ("last_attempt_auto_nonce", 27, "attempt", "integer"),
+    ("simulation_status", 28, "derived", "enum"),
+    ("status_evaluated_at", 29, "derived", "timestamp"),
+)
+"""The run-identity block is EXACT authority: key, row, group and type, in order.
+
+"Contains these required fields" was not enough - an invented field could be
+appended on the next free row and the loader accepted it. A snapshot layout that
+can grow by accident is one whose meaning drifts silently."""
+
+LOCKED_SIM_STATE_RULES = (
+    (1, "current_prerequisites_do_not_resolve", "INVALID"),
+    (2, "no_successful_snapshot_exists", None),
+    (3, "request_fingerprint_equals_stored_successful", "CURRENT"),
+    (4, "request_fingerprint_differs_from_stored_successful", "STALE"),
+)
+"""The corrected derivation - ordered, total, and blind to the attempt history."""
+
 LOCKED_SIM_DATA_EXCLUDED = (
     "per_driver_samples",
     "annual_stochastic_samples",
@@ -250,6 +288,13 @@ REQUIRED_SECTIONS = (
     "cheng",
     "risk",
     "accumulation",
+    "contribution",
+    "kernel",
+    "numerical_domain",
+    "dependence",
+    "publication",
+    "command_surface",
+    "interruption",
     "request_fingerprint",
     "result_digest",
     "iterations",
@@ -290,7 +335,9 @@ REQUIRED_AUTHORITY_REFERENCES = (
         "calc_contract.yaml",
         "scalar_blocks.calc_totals",
     ),
-    ("_SimData sheet declaration and visibility", "workbook.yaml", "sheets"),
+    ("_SimData sheet declaration and visibility", "workbook.yaml", "sheets._SimData"),
+    ("Results sheet placeholder sections", "workbook.yaml", "sheets.Results"),
+    ("model version", "workbook.yaml", "model.model_version"),
 )
 """(concept, owner, locator) - the COMPLETE required set, exactly.
 
@@ -334,6 +381,297 @@ TOLERANCE_TOKENS = (
 )
 
 WILDCARD_TOKENS = ("*", "all", "any", "all_modules", "*.bas", "**")
+
+
+# ---------------------------------------------------------------------------
+# CLOSED-WORLD SCHEMA
+#
+# Every mapping in the contract has an explicit allowed-key set, and a mapping
+# reached by a path that is not listed here is itself a defect. An unknown key
+# was previously ACCEPTED - `root.future_semantic`, `rng.future_semantic` and
+# four more were demonstrated - which meant a semantic could be added to the
+# authority document and go unread by the validator that is supposed to enforce
+# it. Silence is the worst possible answer there: the field looks authoritative
+# and governs nothing.
+#
+# `[]` in a path denotes a list element, so `components.kinds[]` is the shape of
+# every record in that list. Membership of the LISTS themselves is locked
+# separately by the section validators - closing the mappings alone would still
+# let an invented record be appended.
+# ---------------------------------------------------------------------------
+CLOSED_KEYS: dict[str, frozenset[str]] = {
+    '': frozenset({
+        'accumulation', 'authority_references', 'cheng', 'command_surface', 'components',
+        'contingency', 'contribution', 'dependence', 'distributions', 'interruption',
+        'iterations', 'jump', 'kernel', 'label_sets', 'numerical_domain', 'prerequisite',
+        'publication', 'request_fingerprint', 'result_digest', 'results_minimum', 'risk',
+        'rng', 'run_id', 'seeding', 'sim_contract_version', 'sim_data', 'sim_state',
+        'statistics', 'stream_assignment', 'versions'
+    }),
+    'accumulation': frozenset({
+        'accumulators', 'accumulators_share_driver_order', 'driver_kind_order',
+        'permanent_id_comparison', 'physical_row_order_permitted', 'within_kind_order'
+    }),
+    'authority_references[]': frozenset({'concept', 'locator', 'owner'}),
+    'cheng': frozenset({
+        'algebraic_simplification_permitted', 'bb', 'bc', 'conformance_vectors',
+        'literal_effect', 'literals_are_literal', 'logit_form',
+        'logit_form_rejected_alternative', 'source_binding',
+        'uniforms_per_non_degenerate_proposal_attempt'
+    }),
+    'cheng.bb': frozenset({
+        'acceptance_operator', 'applies_when', 'literals', 'orientation', 'per_attempt',
+        'per_driver', 'return'
+    }),
+    'cheng.bb.orientation': frozenset({'a', 'b'}),
+    'cheng.bc': frozenset({
+        'acceptance_operator', 'applies_when', 'literals', 'orientation', 'per_attempt',
+        'per_driver', 'return'
+    }),
+    'cheng.bc.orientation': frozenset({'a', 'b'}),
+    'cheng.conformance_vectors': frozenset({'evidence_file', 'role', 'runtime_lookup_table'}),
+    'cheng.literal_effect': frozenset({'logit_form_affects', 'squeeze_literals_affect'}),
+    'cheng.source_binding': frozenset({'evidence_file', 'functions_sha256'}),
+    'command_surface': frozenset({
+        'automation_endpoint', 'msgbox_introduced_by_phase_6', 'read_accessor_names_settled',
+        'ribbon_introduced_by_phase_6', 'user_facing_run_button_in_phase_6',
+        'userform_introduced_by_phase_6'
+    }),
+    'components': frozenset({'count_rule', 'kinds'}),
+    'components.kinds[]': frozenset({'driver_kind', 'key', 'per_driver', 'role'}),
+    'contingency': frozenset({
+        'baseline', 'forbidden_baselines', 'formula', 'measures',
+        'workbook_recommends_a_confidence_level'
+    }),
+    'contribution': frozenset({
+        'cost_line', 'iteration_total', 'pv_derived_from_nominal', 'risk'
+    }),
+    'contribution.cost_line': frozenset({
+        'nominal', 'probability_applies', 'pv', 'quantity_applications',
+        'quantity_inside_distribution', 'quantity_is_deterministic', 'sampled_from',
+        'sampled_quantity', 'total_cost_uncertainty_sampled'
+    }),
+    'contribution.iteration_total': frozenset({'measures_independent', 'order_source', 'rule'}),
+    'contribution.risk': frozenset({
+        'nominal_when_not_occurred', 'nominal_when_occurred', 'occurred',
+        'occurrence_and_severity_share_a_stream', 'probability_folded_into_k_factors',
+        'pv_when_not_occurred', 'pv_when_occurred', 'quantity_applies', 'severity_source'
+    }),
+    'dependence': frozenset({
+        'authority', 'copula_supported', 'correlation_matrix_supported',
+        'inter_driver_dependence', 'shared_or_hidden_dependence_permitted'
+    }),
+    'distributions': frozenset({'beta_pert', 'degenerate', 'families', 'triangular', 'uniform'}),
+    'distributions.beta_pert': frozenset({
+        'alpha', 'alpha_plus_beta', 'beta', 'conditioning_scale', 'dispatch', 'lambda',
+        'normalised_formulation_required', 'rescale', 'rescale_formulation', 'shape_lower',
+        'shape_ratio', 'shape_upper'
+    }),
+    'distributions.beta_pert.dispatch': frozenset({
+        'comparison_operator', 'equality_belongs_to', 'rule'
+    }),
+    'distributions.degenerate': frozenset({
+        'applies_to_all_families', 'condition', 'detected_before_dispatch',
+        'detected_before_parameterisation', 'returns', 'sampler_entered',
+        'stream_state_changed', 'uniforms_consumed'
+    }),
+    'distributions.triangular': frozenset({
+        'boundary_cases', 'branch_point', 'conditioning_scale', 'lower_branch', 'method',
+        'normalised_formulation_required', 'rng_endpoints_open',
+        'uniforms_per_non_degenerate_sample', 'upper_branch'
+    }),
+    'distributions.triangular.boundary_cases': frozenset({'m_equals_a', 'm_equals_b'}),
+    'distributions.uniform': frozenset({
+        'formulation', 'most_likely_used', 'transform', 'uniforms_per_non_degenerate_sample'
+    }),
+    'interruption': frozenset({'user_cancellation_supported_in_phase_6'}),
+    'iterations': frozenset({'business_maximum', 'business_minimum_owner', 'technical_ceiling'}),
+    'iterations.technical_ceiling': frozenset({
+        'consumes_auto_nonce', 'max_excel_rows', 'max_iterations_representable',
+        'presented_as_business_validation', 'refusal_kind', 'refusal_precedes',
+        'reserved_rows_h'
+    }),
+    'jump': frozenset({
+        'a1_p127', 'a1_p127_sha256', 'a2_p127', 'a2_p127_sha256', 'decomposition',
+        'decomposition_h', 'naive_floating_matrix_product_permitted',
+        'stream_spacing_exponent', 'substream_spacing_exponent', 'substreams_used_in_phase_6'
+    }),
+    'kernel': frozenset({
+        'application_object_access_inside_iteration_loop',
+        'com_round_trip_inside_iteration_loop', 'inputs_resolved_once_before_simulation',
+        'listobject_access_inside_iteration_loop', 'operates_on_resolved_in_memory_structures',
+        'range_access_inside_iteration_loop', 'recomputes_worksheet_fx_inside_loop',
+        'recomputes_worksheet_inflation_inside_loop',
+        'recomputes_worksheet_profiles_inside_loop', 'resolved_before_loop',
+        'thisworkbook_or_activeworkbook_access_inside_iteration_loop',
+        'worksheet_access_inside_iteration_loop'
+    }),
+    'label_sets': frozenset({'attempt_result', 'seed_mode', 'sim_state'}),
+    'numerical_domain': frozenset({
+        'disciplines', 'magnitude_restriction', 'narrower_than_phase5',
+        'negative_values_legal', 'positivity_rule', 'refusal_when_no_valid_double_result',
+        'representable_result_refused_for_naive_intermediate_overflow',
+        'silent_non_finite_result_permitted', 'supports_crossing_zero_legal'
+    }),
+    'numerical_domain.disciplines': frozenset({
+        'accumulation', 'contingency_subtraction', 'driver_contribution',
+        'percentile_interpolation', 'statistics'
+    }),
+    'prerequisite': frozenset({
+        'phase5_analytical_state_required', 'phase6_may_call_pccm_calculate',
+        'silent_recalculation_permitted'
+    }),
+    'publication': frozenset({
+        'commit_last', 'partial_new_distribution_published_on_refusal_or_failure',
+        'persisted_source_of_truth', 'prior_successful_publication_survives',
+        'publish_only_after_simulation_and_statistics_complete', 'results_derives_from',
+        'results_recomputes_monte_carlo'
+    }),
+    'request_fingerprint': frozenset({
+        'analytical_prefix', 'auto_blank_seed_remains_recomputable',
+        'existing_sections_modified', 'extension_semantics', 'section_order', 'sim_section'
+    }),
+    'request_fingerprint.sim_section': frozenset({
+        'analytical_fingerprint_hashed_as_a_field', 'excluded_fields', 'fields', 'name',
+        'supplied_seed_present_only_when'
+    }),
+    'result_digest': frozenset({
+        'equality', 'field_types', 'grammar', 'iteration_index_origin', 'order_source',
+        'record_field_count', 'record_fields', 'samples_sorted_for_digest', 'section_name',
+        'stream_tag', 'version_field_source'
+    }),
+    'result_digest.grammar': frozenset({'record', 'section', 'stream'}),
+    'results_minimum': frozenset({'annual_simulated_samples_contracted', 'deferred', 'sections'}),
+    'risk': frozenset({
+        'occurrence', 'probability_folded_into_knom', 'probability_folded_into_kpv',
+        'severity'
+    }),
+    'risk.occurrence': frozenset({
+        'comparison_operator', 'probability_one_always_occurs',
+        'probability_zero_never_occurs', 'rule', 'uniforms_per_risk_per_iteration'
+    }),
+    'risk.severity': frozenset({
+        'degenerate_consumption', 'degenerate_stream_state_changed', 'invocation_policy',
+        'non_degenerate_consumption', 'sampler_invoked_every_risk_iteration',
+        'value_used_only_when_occurred'
+    }),
+    'rng': frozenset({
+        'arithmetic', 'combination', 'constants', 'family', 'output_domain', 'recurrence',
+        'state'
+    }),
+    'rng.arithmetic': frozenset({
+        'implementation_requirement', 'modulo_semantics', 'naive_floating_modulo_permitted'
+    }),
+    'rng.combination': frozenset({'comparison_operator', 'rule'}),
+    'rng.constants': frozenset({'a12', 'a13n', 'a21', 'a23n', 'm1', 'm2', 'norm'}),
+    'rng.output_domain': frozenset({'lower', 'lower_inclusive', 'upper', 'upper_inclusive'}),
+    'rng.recurrence': frozenset({'advance', 'p1', 'p2'}),
+    'rng.state': frozenset({
+        'matrix_operand_orientation', 'order', 'orientation',
+        'reversal_required_at_matrix_boundary', 'words'
+    }),
+    'run_id': frozenset({
+        'allocated_on', 'failure_consumes', 'first_successful_value', 'independent_of',
+        'initial', 'maximum', 'on_exhaustion', 'persisted', 'reuse_permitted',
+        'wrap_permitted'
+    }),
+    'seeding': frozenset({
+        'auto', 'blank_input_means', 'modes', 'nonce_lifecycle', 'populated_input_means',
+        'scalar_to_state'
+    }),
+    'seeding.auto': frozenset({
+        'cross_workbook_uniqueness_claimed', 'freshness_scope',
+        'implementation_complexity_requirement', 'mapping', 'mapping_kind', 'modulus',
+        'multiplier', 'period', 'stepped_multiplication_is_the_authority',
+        'timestamp_derived_uniqueness_permitted'
+    }),
+    'seeding.nonce_lifecycle': frozenset({
+        'attempt_metadata_preserves', 'exhausted_value',
+        'failure_after_allocation_consumes_nonce', 'failure_before_allocation_consumes_nonce',
+        'first_valid_allocation', 'initial', 'last_valid_allocation', 'meaning',
+        'on_exhaustion', 'order', 'prior_successful_publication_untouched', 'reuse_permitted',
+        'wrap_permitted'
+    }),
+    'seeding.scalar_to_state': frozenset({
+        'alternate_expansion_permitted', 'expansion', 'mixer', 'rule'
+    }),
+    'sim_data': frozenset({
+        'excluded', 'iteration_records', 'required_visibility', 'reserved_rows',
+        'run_identity', 'sheet'
+    }),
+    'sim_data.iteration_records': frozenset({
+        'columns', 'first_iteration_row', 'footer_rows', 'header_row', 'order', 'sorted'
+    }),
+    'sim_data.iteration_records.columns[]': frozenset({'column', 'header', 'key', 'value_type'}),
+    'sim_data.reserved_rows[]': frozenset({'purpose', 'rows'}),
+    'sim_data.run_identity': frozenset({
+        'fields', 'first_row', 'label_column', 'last_row', 'note_column', 'value_column'
+    }),
+    'sim_data.run_identity.fields[]': frozenset({
+        'enum', 'group', 'initial', 'key', 'label', 'row', 'value_type'
+    }),
+    'sim_state': frozenset({
+        'attempt_axis_is_orthogonal', 'attempt_result_participates_in_derivation',
+        'definitions', 'derivation', 'no_success_valid_status', 'on_failure', 'states',
+        'status_evaluated_at_may_be_populated_while_status_is_blank'
+    }),
+    'sim_state.definitions': frozenset({'CURRENT', 'INVALID', 'STALE'}),
+    'sim_state.derivation': frozenset({'ordered', 'rules'}),
+    'sim_state.derivation.rules[]': frozenset({'condition', 'order', 'status'}),
+    'sim_state.on_failure': frozenset({
+        'attempt_metadata_updated', 'partial_distribution_published',
+        'prior_results_publication_preserved', 'prior_sim_data_preserved'
+    }),
+    'statistics': frozenset({
+        'fixed_nonselectable_percentiles', 'headline_percentiles',
+        'include_all_selectable_ladder_values', 'mean', 'measures', 'moments_and_extremes',
+        'p10_selectable', 'percentile', 'selectable_ladder_locator', 'selectable_ladder_owner',
+        'selected_confidence_level', 'sorting', 'standard_deviation'
+    }),
+    'statistics.mean': frozenset({'method', 'scale_safe_required'}),
+    'statistics.percentile': frozenset({'formula', 'interpolation', 'method'}),
+    'statistics.percentile.formula': frozenset({'f', 'h', 'hi', 'lo', 'value'}),
+    'statistics.selected_confidence_level': frozenset({
+        'affects_staleness', 'enters_request_fingerprint', 'enters_simulation_execution',
+        'role'
+    }),
+    'statistics.standard_deviation': frozenset({
+        'divisor', 'method', 'naive_sum_of_squares_permitted'
+    }),
+    'stream_assignment': frozenset({
+        'accepted_consequence', 'case_insensitive_order_permitted', 'index_origin',
+        'index_rule', 'locale_order_permitted', 'numeric_suffix_interpretation_permitted',
+        'permanent_id_comparison', 'physical_row_order_permitted', 'policy', 'sort_keys'
+    }),
+    'versions': frozenset({
+        'bump_ownership', 'result_digest_version_source', 'rng_version', 'sim_method_version'
+    }),
+    'versions.bump_ownership': frozenset({'rng_version', 'sim_method_version'}),
+}
+
+
+def _check_closed_world(node: Any, path: str, source: Path) -> None:
+    """Refuse an unknown key, and refuse a mapping at an unknown path."""
+    if isinstance(node, dict):
+        allowed = CLOSED_KEYS.get(path)
+        if allowed is None:
+            raise SimContractError(
+                f"{source}: a mapping appears at {path or 'the document root'!r}, which the "
+                "closed-world schema does not describe. Every mapping in this contract must "
+                "have a declared shape."
+            )
+        unknown = sorted(set(node) - allowed)
+        if unknown:
+            raise SimContractError(
+                f"{source}: {path or 'root'} declares unknown key(s) {unknown}. This contract is "
+                "CLOSED: a key the validator does not know is a semantic nobody enforces, and a "
+                "field that looks authoritative while governing nothing is worse than no field."
+            )
+        for key, value in node.items():
+            _check_closed_world(value, f"{path}.{key}" if path else key, source)
+    elif isinstance(node, list):
+        for value in node:
+            _check_closed_world(value, f"{path}[]", source)
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +744,8 @@ def load_sim_contract(path: Path) -> SimContract:
             "a missing one is an unowned semantic, not a default."
         )
 
+    _check_closed_world(raw, "", path)
+
     version = _req_str(raw, "sim_contract_version", str(path))
     if version != LOCKED_SIM_CONTRACT_VERSION:
         raise SimContractError(
@@ -424,6 +764,12 @@ def load_sim_contract(path: Path) -> SimContract:
     _validate_cheng(raw, path)
     _validate_risk(raw, path)
     _validate_accumulation(raw, path)
+    _validate_contribution(raw, path)
+    _validate_kernel(raw, path)
+    _validate_numerical_domain(raw, path)
+    _validate_dependence(raw, path)
+    _validate_publication(raw, path)
+    _validate_command_surface(raw, path)
     _validate_request_fingerprint(raw, path)
     _validate_result_digest(raw, path)
     _validate_label_sets(raw, path)
@@ -884,6 +1230,153 @@ def _validate_accumulation(raw: dict, path: Path) -> None:
     _require_true(block, "accumulators_share_driver_order", where)
 
 
+def _validate_contribution(raw: dict, path: Path) -> None:
+    """What a driver actually contributes to one iteration.
+
+    Without this, an engine could satisfy every other section and still sample
+    total cost instead of unit cost, drop Quantity, apply it twice, or discount
+    the nominal total instead of computing PV independently.
+    """
+    block = _map(raw, "contribution", path)
+    where = f"{path}: contribution"
+
+    cost = _map(block, "cost_line", where)
+    cwhere = f"{where}: cost_line"
+    _require_value(cost, "sampled_quantity", "unit_cost", cwhere)
+    _require_value(cost, "sampled_from", "distribution(Min, MostLikely, Max)", cwhere)
+    _require_false(cost, "total_cost_uncertainty_sampled", cwhere)
+    _require_true(cost, "quantity_is_deterministic", cwhere)
+    _require_false(cost, "quantity_inside_distribution", cwhere)
+    _require_value(cost, "quantity_applications", 1, cwhere)
+    _require_false(cost, "probability_applies", cwhere)
+    _require_value(cost, "nominal", "unit_cost * Quantity * Knom", cwhere)
+    _require_value(cost, "pv", "unit_cost * Quantity * Kpv", cwhere)
+
+    risk = _map(block, "risk", where)
+    rwhere = f"{where}: risk"
+    _require_value(risk, "occurred", "occurrence_uniform < Probability", rwhere)
+    _require_value(risk, "severity_source", "severity_sampler_under_d6_18b", rwhere)
+    _require_false(risk, "quantity_applies", rwhere)
+    _require_false(risk, "probability_folded_into_k_factors", rwhere)
+    _require_false(risk, "occurrence_and_severity_share_a_stream", rwhere)
+    _require_value(risk, "nominal_when_occurred", "severity * Knom", rwhere)
+    _require_value(risk, "pv_when_occurred", "severity * Kpv", rwhere)
+    _require_value(risk, "nominal_when_not_occurred", 0, rwhere)
+    _require_value(risk, "pv_when_not_occurred", 0, rwhere)
+
+    _require_false(block, "pv_derived_from_nominal", where)
+
+    total = _map(block, "iteration_total", where)
+    _require_value(
+        total, "rule",
+        "canonical sum of every Cost Line contribution, then every Risk contribution",
+        f"{where}: iteration_total",
+    )
+    _require_value(total, "order_source", "accumulation", f"{where}: iteration_total")
+    _require_true(total, "measures_independent", f"{where}: iteration_total")
+
+
+def _validate_kernel(raw: dict, path: Path) -> None:
+    """The inherited hot-kernel boundary. Semantic authority, not a note."""
+    block = _map(raw, "kernel", path)
+    where = f"{path}: kernel"
+    _require_true(block, "inputs_resolved_once_before_simulation", where)
+    _require_true(block, "operates_on_resolved_in_memory_structures", where)
+    for flag in (
+        "worksheet_access_inside_iteration_loop",
+        "range_access_inside_iteration_loop",
+        "listobject_access_inside_iteration_loop",
+        "application_object_access_inside_iteration_loop",
+        "thisworkbook_or_activeworkbook_access_inside_iteration_loop",
+        "com_round_trip_inside_iteration_loop",
+        "recomputes_worksheet_inflation_inside_loop",
+        "recomputes_worksheet_fx_inside_loop",
+        "recomputes_worksheet_profiles_inside_loop",
+    ):
+        _require_false(block, flag, where)
+    _exact_sequence(
+        block.get("resolved_before_loop"),
+        ("knom_per_driver", "kpv_per_driver", "quantities", "probabilities",
+         "distribution_parameters", "component_stream_initial_states"),
+        f"{where}: resolved_before_loop",
+    )
+
+
+def _validate_numerical_domain(raw: dict, path: Path) -> None:
+    """Plan section 4.6 in full. Phase 6 may not silently narrow Phase 5's domain."""
+    block = _map(raw, "numerical_domain", path)
+    where = f"{path}: numerical_domain"
+    _require_true(block, "negative_values_legal", where)
+    _require_true(block, "supports_crossing_zero_legal", where)
+    for key in ("positivity_rule", "magnitude_restriction"):
+        if block.get(key) is not None:
+            raise SimContractError(
+                f"{where}: {key} must be null. Phase 5 accepted any finite, correctly ordered "
+                "triple and built overflow-safe primitives rather than restricting the domain; "
+                "Phase 6 inherits that domain and may not narrow it."
+            )
+    _require_false(block, "narrower_than_phase5", where)
+    _require_false(
+        block, "representable_result_refused_for_naive_intermediate_overflow", where
+    )
+    _require_value(
+        block, "refusal_when_no_valid_double_result",
+        "explicit_and_names_the_numerical_stage", where,
+    )
+    _require_false(block, "silent_non_finite_result_permitted", where)
+    disciplines = _map(block, "disciplines", where)
+    for key, value in (
+        ("driver_contribution", "accepted_safe_product"),
+        ("accumulation", "accepted_safe_signed_sum"),
+        ("percentile_interpolation", "convex"),
+        ("contingency_subtraction", "accepted_safe_subtract"),
+        ("statistics", "scale_safe"),
+    ):
+        _require_value(disciplines, key, value, f"{where}: disciplines")
+
+
+def _validate_dependence(raw: dict, path: Path) -> None:
+    """The component-stream architecture makes independence achievable. This
+    STATES it, because an unstated invariant is one a later phase can break."""
+    block = _map(raw, "dependence", path)
+    where = f"{path}: dependence"
+    _require_value(block, "inter_driver_dependence", "independent", where)
+    _require_false(block, "correlation_matrix_supported", where)
+    _require_false(block, "copula_supported", where)
+    _require_false(block, "shared_or_hidden_dependence_permitted", where)
+    _req_str(block, "authority", where)
+
+
+def _validate_publication(raw: dict, path: Path) -> None:
+    block = _map(raw, "publication", path)
+    where = f"{path}: publication"
+    _require_value(block, "persisted_source_of_truth", "_SimData", where)
+    _require_value(block, "results_derives_from", "_SimData", where)
+    _require_false(block, "results_recomputes_monte_carlo", where)
+    _require_true(block, "publish_only_after_simulation_and_statistics_complete", where)
+    _require_true(block, "commit_last", where)
+    _require_false(block, "partial_new_distribution_published_on_refusal_or_failure", where)
+    _require_true(block, "prior_successful_publication_survives", where)
+
+
+def _validate_command_surface(raw: dict, path: Path) -> None:
+    block = _map(raw, "command_surface", path)
+    where = f"{path}: command_surface"
+    _require_value(block, "automation_endpoint", "PCCM_RunSimulation", where)
+    for flag in (
+        "user_facing_run_button_in_phase_6",
+        "msgbox_introduced_by_phase_6",
+        "userform_introduced_by_phase_6",
+        "ribbon_introduced_by_phase_6",
+        "read_accessor_names_settled",
+    ):
+        _require_false(block, flag, where)
+    interruption = _map(raw, "interruption", path)
+    _require_false(
+        interruption, "user_cancellation_supported_in_phase_6", f"{path}: interruption"
+    )
+
+
 def _validate_request_fingerprint(raw: dict, path: Path) -> None:
     block = _map(raw, "request_fingerprint", path)
     where = f"{path}: request_fingerprint"
@@ -962,6 +1455,7 @@ def _validate_label_sets(raw: dict, path: Path) -> None:
 
 
 def _validate_sim_state(raw: dict, path: Path) -> None:
+    """The corrected derivation: ordered, total, and blind to attempt history."""
     block = _map(raw, "sim_state", path)
     where = f"{path}: sim_state"
     states = tuple(block.get("states") or ())
@@ -970,22 +1464,85 @@ def _validate_sim_state(raw: dict, path: Path) -> None:
             f"{where}: states must be exactly {list(LOCKED_SIM_STATES)}, got {list(states)}. "
             "There is no fourth simulation state; revision 1's UNSELECTED was rejected."
         )
+
+    derivation = _map(block, "derivation", where)
+    dwhere = f"{where}: derivation"
+    _require_true(derivation, "ordered", dwhere)
+    rules = _seq(derivation, "rules", dwhere)
+    actual = tuple(
+        (rule.get("order"), rule.get("condition"), rule.get("status"))
+        if isinstance(rule, dict) else rule
+        for rule in rules
+    )
+    if actual != LOCKED_SIM_STATE_RULES:
+        raise SimContractError(
+            f"{dwhere}: the derivation must be exactly {[list(r) for r in LOCKED_SIM_STATE_RULES]}, "
+            f"in that order, got {[list(r) if isinstance(r, tuple) else r for r in actual]}. "
+            "The order is what makes the rules mutually exclusive, and rules 1 and 2 are what "
+            "make them total: without them a corrected-then-restored request has no state at all."
+        )
+
+    # The whole point of the correction.
+    _require_false(block, "attempt_result_participates_in_derivation", where)
+    _require_true(block, "attempt_axis_is_orthogonal", where)
+    for rule in rules:
+        condition = str(rule.get("condition", ""))
+        # The prohibited concepts are the ATTEMPT-RESULT labels. "successful
+        # snapshot" is a different thing - the stored result the fingerprint is
+        # compared against - so `success` is deliberately not in this list.
+        for token in ("attempt", "refused", "failed"):
+            if token in condition.lower():
+                raise SimContractError(
+                    f"{dwhere}: rule condition {condition!r} reads the attempt history. The "
+                    "attempt result is an ORTHOGONAL audit axis and must not decide the "
+                    "derived status - that is the authority conflict this correction fixes."
+                )
+
+    if block.get("no_success_valid_status") is not None:
+        raise SimContractError(
+            f"{where}: no_success_valid_status must be null. A blank status is the ABSENCE of a "
+            "successful-comparison state, not a fourth label; naming it would create one."
+        )
+    _require_true(
+        block, "status_evaluated_at_may_be_populated_while_status_is_blank", where
+    )
+
     definitions = _map(block, "definitions", where)
     if tuple(definitions) != LOCKED_SIM_STATES:
         raise SimContractError(
             f"{where}: definitions must define exactly the three states, in order"
         )
-    if block.get("never_evaluated_status") is not None:
-        raise SimContractError(
-            f"{where}: never_evaluated_status must be null. A blank status is the ABSENCE of "
-            "an evaluation, not a fourth state; naming it would create one."
-        )
+    for name, text in definitions.items():
+        for token in ("attempt", "refused", "failed"):
+            if token in str(text).lower():
+                raise SimContractError(
+                    f"{where}: the definition of {name} mentions the attempt history"
+                )
+
     failure = _map(block, "on_failure", where)
     fwhere = f"{where}: on_failure"
     _require_true(failure, "prior_sim_data_preserved", fwhere)
     _require_true(failure, "prior_results_publication_preserved", fwhere)
     _require_true(failure, "attempt_metadata_updated", fwhere)
     _require_false(failure, "partial_distribution_published", fwhere)
+
+
+def derive_sim_status(
+    prerequisites_resolve: bool,
+    successful_snapshot_exists: bool,
+    request_fingerprint_matches: bool,
+) -> str | None:
+    """The contract's derivation, as a total function. Returns None for BLANK.
+
+    This is SEMANTICS, not simulation: it advances no state, draws nothing and
+    reads no workbook. It exists so the truth table can be tested as a function
+    rather than re-derived by prose in every test.
+    """
+    if not prerequisites_resolve:
+        return "INVALID"
+    if not successful_snapshot_exists:
+        return None
+    return "CURRENT" if request_fingerprint_matches else "STALE"
 
 
 def _validate_prerequisite(raw: dict, path: Path) -> None:
@@ -1042,12 +1599,28 @@ def _validate_statistics(raw: dict, path: Path) -> None:
 
     _require_value(block, "sorting", "on_copies_only", where)
     _exact_sequence(block.get("measures"), ("nominal", "pv"), f"{where}: measures")
-    reported = tuple(block.get("reported") or ())
-    for required in ("P10", "P50", "P70", "P90", "mean", "sample_standard_deviation",
-                     "minimum", "maximum"):
-        if required not in reported:
-            raise SimContractError(f"{where}: reported omits {required!r}")
+
+    # The ladder is retained BY REFERENCE. Its values are not copied here, so a
+    # legitimate future change to the owner's list flows through one authority
+    # instead of requiring a duplicate to be edited in step.
+    _exact_sequence(
+        block.get("fixed_nonselectable_percentiles"), ("P10",),
+        f"{where}: fixed_nonselectable_percentiles",
+    )
+    _require_true(block, "include_all_selectable_ladder_values", where)
     _require_value(block, "selectable_ladder_owner", "input_contract.yaml", where)
+    _require_value(
+        block, "selectable_ladder_locator", "config_tables.confidence_levels", where
+    )
+    _exact_sequence(
+        block.get("headline_percentiles"), ("P10", "P50", "P70", "P90"),
+        f"{where}: headline_percentiles",
+    )
+    _exact_sequence(
+        block.get("moments_and_extremes"),
+        ("mean", "sample_standard_deviation", "minimum", "maximum"),
+        f"{where}: moments_and_extremes",
+    )
     _require_false(block, "p10_selectable", where)
     scl = _map(block, "selected_confidence_level", where)
     _require_value(scl, "role", "reporting_selector", f"{where}: selected_confidence_level")
@@ -1188,17 +1761,27 @@ def _parse_sim_data(raw: dict, path: Path) -> SimDataLayout:
             f"{iwhere}: the run-identity block ends at row {last_field_row}, at or below the "
             f"iteration header row {header_row}"
         )
-    field_keys = [_req_str(f, "key", iwhere) for f in fields]
-    if len(set(field_keys)) != len(field_keys):
-        raise SimContractError(f"{iwhere}: duplicate field key(s) in {field_keys}")
-    required_identity = (
-        "run_id", "request_fingerprint", "result_digest", "seed_mode", "supplied_seed",
-        "effective_seed", "consumed_auto_nonce", "iterations_run", "rng_version",
-        "sim_method_version", "last_successful_stamp", "applied_timeline",
+    # EXACT, not "contains the required fields". An invented field appended on
+    # the next free row was previously accepted, and a snapshot layout that can
+    # grow by accident is one whose meaning drifts silently.
+    actual = tuple(
+        (
+            _req_str(f, "key", iwhere),
+            _req_int(f, "row", iwhere),
+            _req_str(f, "group", iwhere),
+            _req_str(f, "value_type", iwhere),
+        )
+        for f in fields
     )
-    missing = [k for k in required_identity if k not in field_keys]
-    if missing:
-        raise SimContractError(f"{iwhere}: fields omit the required run identity {missing}")
+    if actual != LOCKED_RUN_IDENTITY:
+        extra = [a[0] for a in actual if a[0] not in {r[0] for r in LOCKED_RUN_IDENTITY}]
+        missing = [r[0] for r in LOCKED_RUN_IDENTITY if r[0] not in {a[0] for a in actual}]
+        raise SimContractError(
+            f"{iwhere}: the run-identity block must be exactly the accepted layout - key, row, "
+            f"group and value type, in order. unexpected={extra} missing={missing}. "
+            "The persisted simulation identity is exact authority, not an extensible list."
+        )
+    field_keys = [a[0] for a in actual]
     label_sets = raw.get("label_sets") or {}
     for entry in fields:
         if entry.get("value_type") == "enum":
@@ -1304,24 +1887,27 @@ def _forbid_seed_range(raw: dict, path: Path) -> None:
 
 
 def _forbid_tolerance(raw: dict, path: Path) -> None:
-    """No oracle comparison tolerance may live in this contract.
+    """No comparison tolerance may live in this contract - not even a null one.
 
-    Settled in Step-0 section 10 as an evidence policy with a single owner outside
-    the contract: the engine performs no approximate comparison at run time.
-    `result_digest.tolerance: null` is the one permitted mention, and it is a
-    STATEMENT OF ABSENCE - the validator requires it to be null.
+    Step-0 section 10 settled the tolerance as an evidence policy with a single
+    owner OUTSIDE the contract. A `tolerance: null` field was previously allowed
+    by a special case; that has been removed. Null is not an approximate value,
+    but the FIELD is still a tolerance semantic sitting in the wrong file, and
+    the declared boundary says there is none here. `result_digest.equality:
+    exact` already states the runtime rule.
+
+    Comments may explain where the tolerance lives. The parsed contract may not
+    contain the semantic.
     """
     for location, value in _walk(raw):
         key = str(location[-1] if location else "").lower()
-        if location == ("result_digest", "tolerance"):
-            continue
         for token in TOLERANCE_TOKENS:
             if token in key:
                 raise SimContractError(
                     f"{path}: {'.'.join(str(p) for p in location)} declares a comparison "
-                    "tolerance. Step 0 settled the tolerance as an ORACLE/EVIDENCE policy "
-                    "owned outside this contract; the engine performs no approximate "
-                    "comparison at run time."
+                    "tolerance. Step 0 settled the tolerance as an ORACLE/EVIDENCE policy owned "
+                    "outside this contract; the engine performs no approximate comparison at "
+                    "run time, and a null-valued field is still the semantic in the wrong file."
                 )
         if isinstance(value, str) and "tolerance" in value.lower():
             raise SimContractError(
@@ -1415,6 +2001,96 @@ def validate_sim_against(
                     f"{part!r}). References borrow values; they never copy them."
                 )
 
+    # ---- CONTENT bindings ------------------------------------------------
+    # A locator that merely reaches SOME node is not enough where this contract
+    # also restates or depends on that node's content: `_SimData` visibility could
+    # be changed from veryHidden to hidden, and the distribution master list could
+    # be changed outright, and both were accepted. Those were false bindings.
+    workbook_doc = owners["workbook.yaml"]
+
+    sheets = workbook_doc.get("sheets") if isinstance(workbook_doc, dict) else None
+    sim_sheet = _step(sheets, sim.layout.sheet)
+    if sim_sheet is _MISSING or not isinstance(sim_sheet, dict):
+        raise SimContractError(
+            f"{sim.source_path}: workbook.yaml declares no sheet named {sim.layout.sheet!r}"
+        )
+    if sim_sheet.get("visibility") != sim.layout.required_visibility:
+        raise SimContractError(
+            f"{sim.source_path}: sim_contract requires {sim.layout.sheet} visibility "
+            f"{sim.layout.required_visibility!r}, but workbook.yaml declares "
+            f"{sim_sheet.get('visibility')!r}. _SimData is machine data with no audit value in "
+            "raw form; a visible or merely hidden sheet invites hand editing of retained samples."
+        )
+
+    results_sheet = _step(sheets, "Results")
+    if results_sheet is _MISSING or not isinstance(results_sheet, dict):
+        raise SimContractError(f"{sim.source_path}: workbook.yaml declares no Results sheet")
+    titles = {
+        block.get("title")
+        for block in (results_sheet.get("blocks") or [])
+        if isinstance(block, dict)
+    }
+    required_sections = tuple(sim.raw["results_minimum"]["sections"])
+    missing_sections = [name for name in required_sections if name not in titles]
+    if missing_sections:
+        raise SimContractError(
+            f"{sim.source_path}: the Results placeholder no longer declares section(s) "
+            f"{missing_sections}, which results_minimum relies on. sim_contract must not depend "
+            "on a placeholder that has moved."
+        )
+
+    model = workbook_doc.get("model") if isinstance(workbook_doc, dict) else None
+    if not isinstance(model, dict) or not str(model.get("model_version") or "").strip():
+        raise SimContractError(
+            f"{sim.source_path}: workbook.yaml declares no model.model_version, but the run "
+            "identity persists one"
+        )
+
+    # Distribution families: compare MEMBERSHIP, not order. The owner's list is
+    # user-facing presentation order and has no reason to match dispatch order.
+    input_doc = owners["input_contract.yaml"]
+    master = _step(input_doc.get("config_tables"), "distributions")
+    if master is _MISSING or not isinstance(master, dict):
+        raise SimContractError(
+            f"{sim.source_path}: input_contract.yaml declares no distributions master list"
+        )
+    owner_values = list(master.get("values") or [])
+    if len(owner_values) != len(set(owner_values)):
+        raise SimContractError(
+            f"{sim.source_path}: the distributions master list contains a duplicate: "
+            f"{owner_values}"
+        )
+    declared_families = list(sim.raw["distributions"]["families"])
+    if set(declared_families) != set(owner_values):
+        raise SimContractError(
+            f"{sim.source_path}: the simulation families {sorted(declared_families)} and the "
+            f"master list {sorted(owner_values)} disagree. Every accepted family must be "
+            "simulable and no family may be simulable that the model does not offer."
+        )
+
+    # The selectable ladder is retained BY REFERENCE, so what is checked is that
+    # the rule "store every selectable value" resolves against a real ladder.
+    ladder = _step(input_doc.get("config_tables"), "confidence_levels")
+    if ladder is _MISSING or not isinstance(ladder, dict):
+        raise SimContractError(
+            f"{sim.source_path}: input_contract.yaml declares no confidence-levels ladder"
+        )
+    ladder_values = list(ladder.get("values") or [])
+    if not ladder_values:
+        raise SimContractError(f"{sim.source_path}: the confidence-levels ladder is empty")
+    if sim.raw["statistics"]["include_all_selectable_ladder_values"] is not True:
+        raise SimContractError(
+            f"{sim.source_path}: statistics must retain every selectable ladder value, so "
+            "Selected Px is a deterministic lookup rather than a computation over samples"
+        )
+    fixed = list(sim.raw["statistics"]["fixed_nonselectable_percentiles"])
+    overlap = set(fixed) & set(ladder_values)
+    if overlap:
+        raise SimContractError(
+            f"{sim.source_path}: {sorted(overlap)} is both a fixed non-selectable percentile "
+            "and a selectable ladder value"
+        )
+
     # The one reference whose CONTENT this contract depends on: the seed domain
     # must actually be a whole-number BETWEEN rule that permits blank, or the
     # reference points at an authority that no longer says what is assumed here.
@@ -1451,6 +2127,20 @@ def validate_sim_against(
         raise SimContractError(
             f"{sim.source_path}: random_seed must remain optional; blank means AUTO"
         )
+
+
+def retained_percentiles(sim: SimContract, contract_document: dict[str, Any]) -> tuple[str, ...]:
+    """The percentiles a run must store, RESOLVED from the owning authority.
+
+    The ladder's values live in `input_contract.yaml` and are not copied into the
+    simulation contract, so this is how a caller - or a test - learns what the
+    "store every selectable value" rule actually amounts to today.
+    """
+    ladder = _step(contract_document.get("config_tables"), "confidence_levels")
+    if ladder is _MISSING or not isinstance(ladder, dict):
+        raise SimContractError("input_contract.yaml declares no confidence-levels ladder")
+    fixed = tuple(sim.raw["statistics"]["fixed_nonselectable_percentiles"])
+    return fixed + tuple(ladder.get("values") or ())
 
 
 _MISSING = object()
