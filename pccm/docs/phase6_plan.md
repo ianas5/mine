@@ -1,6 +1,6 @@
 # Phase 6 — Stochastic simulation layer
 
-**Status: PLANNING ONLY — revision 4, after review round 4.
+**Status: PLANNING ONLY — revision 5, after review round 5.
 NOT ACCEPTED. NO IMPLEMENTATION EXISTS. NO WINDOWS/EXCEL RUNTIME HAS BEEN
 EXECUTED. `spec/sim_contract.yaml` DOES NOT EXIST.**
 
@@ -9,7 +9,7 @@ Phase 5 is closed. The accepted executable baseline is
 document proposes what Phase 6 should be, from the authorities already in the
 repository. It changes no code, no contract and no generated artefact.
 
-**Revision 3 describes ONE candidate architecture throughout.** Revision 2
+**This document describes ONE candidate architecture throughout.** Revision 2
 recommended a variable-draw Beta sampler while several sections still described
 the one-uniform fixed-consumption design it replaced. Every such statement has
 been rewritten; the stale-statement ledger is §21.
@@ -43,11 +43,14 @@ state and re-running.
 ## 1. Authority matrix
 
 Every existing statement found in the sweep that constrains or anticipates
-Phase 6. Classification is deliberate: **LOCKED** means an accepted authority
-already decides it and Phase 6 may not reopen it; **inherited invariant** means
-an accepted design property Phase 6 must preserve; **placeholder only** means a
-reserved surface with no committed semantics; **unresolved** means an authority
-explicitly deferred the decision to this phase.
+Phase 6. **Every classification in this section is INHERITED authority** in the
+sense of the legend above — these are statements already accepted, not Phase-6
+proposals. Within that, the sub-classifications mean: **LOCKED** — an accepted
+authority decides it and Phase 6 may not reopen it; **inherited invariant** — an
+accepted design property Phase 6 must preserve; **placeholder only** — a reserved
+surface with no committed semantics; **unresolved** — an authority explicitly
+deferred the decision to this phase. The word LOCKED in this section always
+refers to prior accepted authority, never to anything this plan invents.
 
 ### 1.1 What Phase 6 is
 
@@ -67,7 +70,7 @@ explicitly deferred the decision to this phase.
 | Seed range | "Discount Rate and Random Seed have no range. The seed's admissible domain is fixed when the RNG is implemented; inventing one now would be a guess." | `phase2.md` | **unresolved — assigned to this phase** |
 | Blank seed | "Optional. Blank means a new random sequence." | `input_contract.yaml` `random_seed.note` | **LOCKED intent**, mechanism unresolved |
 | Seed cell | `inpRandomSeed`, Setup `C21`, integer, `required: false`, `default: null`, `validation: null` | `input_contract.yaml` | **LOCKED** |
-| `Rnd` / `Randomize` forbidden | `Rnd(`, `Randomize`, `MRG32k3a`, `NPV`, `Percentile`, `RunSimulation` in `forbidden_constructs` | `structure_contract.yaml` | **LOCKED for Phase 4**; Phase 6 must decide how the list is narrowed rather than deleted (open decision **D6-11**) |
+| `Rnd` / `Randomize` forbidden | `Rnd(`, `Randomize`, `MRG32k3a`, `NPV`, `Percentile`, `RunSimulation` in `forbidden_constructs` | `structure_contract.yaml` | **LOCKED for Phase 4.** How Phase 6 narrows the list without deleting protections is decided in **§10.4a (D6-11)**, which also records that the extension reopens this accepted authority |
 
 ### 1.3 The numerical kernel Phase 6 inherits
 
@@ -152,7 +155,10 @@ The simulation **engine** and its **persisted results**, with the minimum
 Results-sheet output needed to make those results auditable:
 
 - MRG32k3a RNG, seeding, stream discipline, and its locked vectors
-- inverse-CDF sampling for Triangular, Uniform and Beta-PERT
+- **Uniform** sampling by affine transform of one uniform
+- **Triangular** sampling by inverse CDF of one uniform
+- **Beta-PERT** sampling by Cheng BB/BC acceptance/rejection — **not** inverse
+  CDF, and a variable number of uniforms
 - Bernoulli risk occurrence
 - the per-iteration total accumulation, nominal and PV
 - percentile / moment statistics over the retained totals
@@ -240,7 +246,7 @@ iteration identity.
 | **once, before the loop** | resolve inputs; run the Phase-5 checks; build `DriverFactors`, `YearFactors` and the weight vectors; read Iterations and Random Seed; derive the effective seed; build the `C + 2R` component streams by jump-ahead from the base state; allocate the two sample arrays |
 | **once per driver, before the loop** | Cheng dispatch and its shape-dependent constants, which depend only on `α, β` and are therefore fixed for the whole run (§4.3) |
 | **per iteration, per Cost Line** | draw from its sampling stream — **a variable number of uniforms**, distribution-dependent; one Cheng evaluation; two multiply-accumulates |
-| **per iteration, per Risk** | one uniform from its **occurrence** stream, always; a Cheng draw from its **severity** stream **only if it occurred**; two multiply-accumulates if it occurred |
+| **per iteration, per Risk** | one uniform from its **occurrence** stream, **always**; then per D6-18 — **Option A:** invoke the severity sampler only if the risk occurred. **Option B:** invoke it every iteration and use the value only if the risk occurred. Two multiply-accumulates when it occurred |
 | **per iteration** | write the two accumulated totals into the sample arrays at index `i` |
 | **after the loop** | copy each sample array and sort the copies; compute moments and percentiles; compute contingency; compute the result digest; compute the request fingerprint; write `_SimData` in iteration order and Results in one transactional publish |
 
@@ -277,11 +283,31 @@ Stated exactly:
 This is the identical ordering the Phase-5 fingerprint already locks for driver
 records, so no new collation authority is created.
 
-**Gate-A control required.** A mutation that **keeps every stream identity fixed**
-and reverses only the accumulation order must be caught. That mutation produces
-the same random draws and different totals, which is precisely the defect stream
-assignment alone cannot detect — and a detector that only checks stream
-assignment would pass it.
+**Gate-A control required, on a rounding-sensitive fixture.** A mutation that
+**keeps every stream identity fixed** and reverses only the accumulation order
+must be caught.
+
+**The difference is not universal and the test must not assume it is.** Many
+legal contribution sets sum to the same binary64 value in either order — small
+integers, values sharing an exponent, anything that happens not to round. The
+control therefore uses a **deliberately constructed non-associative fixture**:
+
+| Requirement | |
+|---|---|
+| 1 | contributions chosen so that canonical order and reversed order give **different binary64 totals**, proved by the independent oracle before the control is written |
+| 2 | every RNG stream and every sampled driver value held **identical** between the two orders |
+| 3 | the mutation detector must catch the reversed order on that fixture |
+
+Vector family 21 states that the difference is required **only** for this
+constructed fixture.
+
+**Row-order invariance itself remains universal**, and is a different claim:
+
+> a physical worksheet reorder leaves the canonical execution order unchanged,
+> and therefore produces an identical same-runtime `result_digest`
+
+— which holds for every model, rounding-sensitive or not, because the additions
+happen in the same order regardless of where the rows sit.
 
 **G3 and the Gate-B row-order test must therefore prove both:** that stream
 assignment is invariant, and that accumulation order is invariant. One without
@@ -432,16 +458,34 @@ unchanged.
 
 ### 4.5 Risk — two streams, not two draws from one
 
+**Shared invariant, whichever option D6-18 settles on:**
+
+> the occurrence stream advances **exactly once per Risk per iteration**,
+> unconditionally.
+
 ```
-occurred = ( u_occurrence < Probability )      ' 1 uniform, OCCURRENCE stream,
-                                               ' always, every iteration
+' --- OPTION A: severity sampler invoked only on occurrence -----------------
+occurred = ( u_occurrence < Probability )      ' 1 uniform, OCCURRENCE stream
 if occurred:
     severity   = sample(dist, a, m, b)         ' SEVERITY stream, variable count
     contribNom = severity × Knom
     contribPv  = severity × Kpv
 else:
-    contribNom = 0 ;  contribPv = 0            ' severity stream not advanced
+    contribNom = 0 ;  contribPv = 0            ' severity stream NOT advanced
+
+' --- OPTION B: severity sampler invoked every iteration --------------------
+occurred = ( u_occurrence < Probability )      ' 1 uniform, OCCURRENCE stream
+severity = sample(dist, a, m, b)               ' SEVERITY stream, ALWAYS advanced
+if occurred:
+    contribNom = severity × Knom
+    contribPv  = severity × Kpv
+else:
+    contribNom = 0 ;  contribPv = 0            ' value discarded, stream advanced
 ```
+
+**Neither is chosen here.** Revision 4 recommended B in the decision table while
+its pseudocode silently implemented A; both are now written out, and the main
+execution path stays neutral until D6-18 closes.
 
 `Probability` is **not** folded into `Knom`/`Kpv` — the locked Phase-5 rule.
 Strict `<`, so `Probability = 0` never occurs and `Probability = 1` always
@@ -549,7 +593,7 @@ Cases 9 and 10 are new in revision 3 and are the ones that decide whether the
 *statistics* preserved the accepted domain.
 
 ---
-## 5. RNG — the locked contract
+## 5. RNG — the proposed contract
 
 ### 5.1 Algorithm
 
@@ -651,8 +695,9 @@ Consequences:
 - A successful AUTO run stays **CURRENT** while `C21` remains blank. The request
   has not changed.
 - Running again while blank is a **deliberate new run**: same request
-  fingerprint, new nonce, new effective seed, new `run_id`, **new result
-  digest**. §11 explains why that is not a contradiction.
+  fingerprint, new nonce, new effective seed, new `run_id`, and a **result digest
+  that may differ and normally does** — though on a degenerate model it legally
+  will not (§11, §15.3). §11 explains why that is not a contradiction.
 - Typing the published effective seed into `C21` switches `seed_mode` to `FIXED`.
   A different request, so the fingerprint changes and the prior result becomes
   STALE — correctly, because a different question is being asked. Re-running then
@@ -1041,6 +1086,96 @@ prior successful simulation is untouched, and the detail names the analytical
 state. The proof that both layers describe one model is §10.1's shared prefix.
 **D6-14 OPEN**, A recommended.
 
+### 10.4a D6-11 — narrowing the Phase-4 guards without deleting them
+
+Revision 4 called D6-11 OPEN in §1.2 and SETTLED-IN-PLAN in §20 and specified no
+decision at all. Specified here.
+
+**The mechanism that actually exists.** `structure_contract.yaml` declares
+`vba.forbidden_constructs` as a **flat list of strings**, and it is enforced in
+two places, both **global**:
+
+| Enforcement | Scope |
+|---|---|
+| `test_15_no_forbidden_construct_appears_in_phase_4_vba` | every hand-written module, no exceptions |
+| the Gate-B P5-EV sweep over the persisted project | every component, over *executable* code with comments and string literals stripped |
+
+**The existing schema cannot express "allowed in this module only".** There is no
+per-module field, so any narrowing is a **schema extension to an accepted
+Phase-4 authority**, and that reopening must be authorised rather than assumed.
+
+**Construct by construct:**
+
+| Construct | Phase-6 need | Resolution |
+|---|---|---|
+| `Rnd(` | none — Phase 6 never uses it | **remains globally forbidden**, unchanged |
+| `Randomize` | none | **remains globally forbidden**, unchanged |
+| `NPV` | none | **remains globally forbidden**, unchanged. Not loosened merely because Phase 6 begins |
+| `Percentile` | Phase 6 computes percentiles | **resolvable by naming discipline, with no contract change**: the internal implementation is named `…Quantile…`, never `…Percentile…`, so the guard never fires. Worksheet and library percentile calls stay forbidden, which is what the guard was protecting |
+| `MRG32k3a` | the RNG module must name it | **requires scoping** — no naming trick avoids it |
+| `RunSimulation` | the endpoint is `PCCM_RunSimulation`, which contains it as a substring | **requires scoping** — renaming the endpoint would contradict the Phase-5 out-of-scope list, which names `RunSimulation` as the future entry point |
+
+**Proposed extension, minimal and backward-compatible.** An entry may optionally
+carry an `allowed_in` module list; an entry without one behaves exactly as today:
+
+```yaml
+forbidden_constructs:
+  - "Rnd("                      # global, unchanged
+  - "Randomize"                 # global, unchanged
+  - "NPV"                       # global, unchanged
+  - "Percentile"                # global, unchanged - naming discipline avoids it
+  - construct: "MRG32k3a"
+    allowed_in: ["modSimRng"]
+  - construct: "RunSimulation"
+    allowed_in: ["modSimReport"]
+```
+
+**This narrows nothing that was protecting anything.** A duplicate RNG
+implementation in a second module still fails; a stray `PCCM_RunSimulation` call
+outside the declared owner still fails. What changes is that the declared owner
+is allowed to exist.
+
+**Consequences that must be carried in Step 1:** the loader and validator must
+accept both entry shapes; `test_15` and the Gate-B P5-EV sweep must both learn
+the scoped form; and a mutation control must prove that an `allowed_in` module
+list cannot be widened silently — an entry whose `allowed_in` names a module that
+does not exist, or names every module, must fail.
+
+**D6-11 is SETTLED-IN-PLAN** — one classification, not two — with the schema
+extension flagged as a reopening of an accepted Phase-4 authority that Step 1
+must carry out explicitly.
+
+### 10.4b D6-19 — who owns the Random Seed admissible domain
+
+Revision 4 proposed putting the seed domain in `sim_contract.yaml` while
+`input_contract.yaml` already owns `inpRandomSeed` and says its admissible domain
+"is fixed when the RNG is implemented". **Without an ownership rule that is two
+authorities for one semantic rule**, which is the defect this project has spent
+five phases avoiding.
+
+| | Architecture |
+|---|---|
+| **A** | **Input-contract ownership.** Step 1 updates `input_contract.yaml` with the now-resolved admissibility (`1 … 2147483646`, whole). `sim_contract.yaml` **references** that rule and owns only RNG and seeding *semantics* — never a duplicate range |
+| **B** | **Split ownership.** `input_contract` stays the authority for what may physically exist in `C21`; `sim_contract` owns a stricter execution-time admissibility checked at `PCCM_RunSimulation` |
+
+**Recommendation: A.** The input contract's own note says the domain is to be
+fixed when the RNG exists — it is *waiting* for this decision, not declining it.
+Resolving it there discharges that note, keeps one rule in one file, and needs no
+argument about why two files disagree.
+
+**B is defensible only with an explicit justification** for why `validation:
+null` should remain — for instance, that Excel data validation cannot express the
+rule cleanly and a storable-but-invalid value must be refused at simulation time
+instead. If B is chosen, that justification must be written down, not implied.
+
+**The same discipline applies to every other Phase-6 input whose business rule
+already belongs to `input_contract.yaml`** — `monte_carlo_iterations` most of
+all. Its `≥ 1000` minimum stays where it is; Phase 6 adds only the *technical*
+storage ceiling (§6.1), which is a different category and belongs in
+`sim_contract.yaml`. **No semantic rule is maintained in two files.**
+
+**D6-19 is OPEN**, with A recommended.
+
 ### 10.5 What survives a refusal
 
 A refused simulation **preserves the prior successful results** and leaves them
@@ -1070,12 +1205,22 @@ revision 2 could distinguish two such runs. For an AUTO re-run:
 
 ```
 request_fingerprint   unchanged        ← the same question was asked
-run_id                changes
+run_id                changes          ← on successful commit
 effective_seed        changes
-result_digest         changes          ← a different answer came back
+result_digest         MAY change       ← and normally does; see below
 ```
 
 That is correct, not contradictory.
+
+**`result_digest` inequality is not guaranteed even here.** Consistently with
+§15.3, a different effective seed always produces a different RNG stream, but it
+does not always produce different retained outputs: a fully degenerate model, or
+one whose Risks all sit at `Probability = 0`, maps every seed to the same totals.
+Equal digests across two AUTO runs of such a model are **legal**, not a defect.
+
+**Run identity survives that.** Two AUTO runs remain distinguishable by `run_id`
+and `effective_seed` whether or not their digests coincide — which is exactly why
+those are separate identities from the digest.
 
 **`result_digest` definition — D6-17.** The accepted Phase-5 canonical encoder
 and hash, applied to the iteration-ordered outputs: for `i = 1 … n`, the
@@ -1179,13 +1324,28 @@ a mean.
 **Recommendation: defer to Phase 7**, and get the distribution accepted first.
 
 **How Phase 7 replays without Phase 6 retaining anything.** Revision 2 claimed a
-"direct seek" to iteration `i`; **that claim is withdrawn** (§5.8). What the
-component-stream architecture actually provides is better than nothing and weaker
-than random access: Phase 7 can **reset any component's stream to its initial
-state and replay iterations `1 … i` deterministically**, in isolation, without
-disturbing or needing any other component. That is sufficient for sensitivity —
-which needs whole columns, not arbitrary single cells — and it is a direct
-consequence of §5.6's separation.
+"direct seek" to iteration `i`; that claim is withdrawn (§5.8). Revision 4 then
+over-corrected in the other direction, saying **any component's** stream can be
+replayed "in isolation, without needing any other component". **That is too broad
+for a Risk**, and the correct statement is at driver granularity:
+
+> Phase 7 can replay **one driver** without replaying unrelated drivers:
+> a **Cost Line** needs its one sampling stream; a **Risk** needs **both** its
+> occurrence and severity streams, paired by iteration.
+
+A Risk's contribution is not a function of the severity stream alone — the
+occurrence draw decides whether the severity value contributes at all, so
+reconstructing a Risk's per-iteration column requires both, advanced together.
+
+**And the replay procedure differs by D6-18:**
+
+| | Replay of one Risk |
+|---|---|
+| **Option A** | The severity stream's iteration mapping **depends on the occurrence path**, because it advances only when the risk occurred. Both streams must be replayed **in lockstep from iteration 1** — the severity stream cannot be positioned without knowing how many occurrences preceded |
+| **Option B** | Both streams are independently deterministic per iteration, so each can be advanced separately; the contribution still requires **pairing them by iteration index** |
+
+Under either option the guarantee is per-driver isolation, not per-component
+isolation — sufficient for sensitivity, which needs whole driver columns.
 
 ---
 
@@ -1270,7 +1430,8 @@ The oracle is not weakened. What each layer *can* prove is stated honestly.
 | **C** | Uniform / Triangular transforms | **injected** uniforms, not generated ones; expected outputs | locked numeric comparison policy (§15.1) |
 | **D** | Bernoulli decisions | locked uniforms × locked probabilities, including `p = 0`, `p = 1`, and `u` either side of `p` | **EXACT** — a comparison, not arithmetic |
 | **E** | Cheng BB/BC | locked deterministic test streams; branch-covering vectors for BB and BC; **expected draw counts**; outputs under §15.1; independent theoretical mean/variance checks | mixed: draw counts exact, outputs tolerance-bounded, distribution independently verified |
-| **F** | full seeded simulation, **no Beta drivers** | Python vs VBA end-to-end | **EXACT and strong** — no rejection path to desynchronise |
+| **F1** | full seeded simulation, **no Beta drivers**, general fixture | Python vs VBA end-to-end, per-iteration and summary outputs | **tolerance-bounded** under §15.1 — no rejection path to desynchronise, but a transformed sample may still differ by an ULP |
+| **F2** | full seeded simulation, **no Beta drivers**, **exact-friendly fixture** | Python vs VBA `result_digest` | **EXACT**, for that fixture only — see §15.4 |
 | **G** | full seeded simulation, **with Beta drivers** | **not** required to match sample-for-sample across languages | see below |
 
 **Layer G is the honest one.** Cross-language sample-for-sample identity with a
@@ -1284,11 +1445,28 @@ Beta simulation comes from combining:
 - deterministic Cheng vector cases (layer E) — exact draw counts
 - independent statistical checks: simulated moments and quantiles against
   independently computed Beta-PERT theory, at a stated sample size and tolerance
-- layer F, which exercises the *whole engine* end to end with no rejection path
+- layers F1 and F2, which exercise the *whole engine* end to end with no
+  rejection path — F1 broadly under tolerance, F2 exactly on one constructed
+  fixture
 
 **The Python oracle stays genuinely independent.** Forcing bit-identical Beta
 results by transcribing the VBA into Python would manufacture agreement and
 destroy the only reason to keep two implementations.
+
+### 15.0 Why layer F had to be split
+
+Revision 4 said layer F was "EXACT and strong" while §15.1 said transformed
+Uniform and Triangular samples are **not** universally bit-identical across
+independent runtimes. **Both cannot be true.** A single-ULP difference in one
+transformed sample changes that sample's canonical `Double` encoding, which
+changes the accumulated total, which changes `result_digest` — so a
+cross-language digest comparison over an arbitrary no-Beta fixture is asserting
+exactly the universal exactness §15.1 declines to claim.
+
+Split into **F1** (general, tolerance-bounded) and **F2** (one constructed
+fixture where exactness is *justified*, not assumed). Nothing about the
+same-runtime guarantees changes: **G2 and G3 remain exact**, because they compare
+one implementation against itself.
 
 ### 15.1 The numeric comparison policy
 
@@ -1308,6 +1486,24 @@ independent runtimes, and asserting it without proof would put an unprovable
 claim in the contract. Exactness is asserted per case, where the arithmetic
 justifies it — never universally.
 
+### 15.1a The exact-friendly fixture — F2
+
+Cross-language `result_digest` equality is required **only** for a fixture
+deliberately constructed so that every value is binary-exact at every step:
+
+| Requirement | Why |
+|---|---|
+| Uniform and Triangular drivers only | no rejection path |
+| Endpoints, quantities and factors chosen as **small dyadic rationals** — values with short binary expansions | `(1 − u)·a + u·b` is then exact |
+| Uniforms whose products with those endpoints are exactly representable | no rounding in the transform |
+| Triangular cases restricted to those whose `sqrt` argument is a **perfect square** in binary64, or avoided entirely | `Sqr` is the least portable operation in §15.1 |
+| Few drivers and few iterations, so the accumulation cannot round | the sum is exact term by term |
+| The exactness of each step **demonstrated in the fixture's own documentation**, not assumed | this is the justification that makes the claim admissible |
+
+If a candidate fixture cannot be shown exact at every step, it belongs to **F1**
+and is compared under tolerance. **F2 is a narrow, justified exception; it is not
+a general claim about the engine.**
+
 ### 15.2 Vector families
 
 | # | Family |
@@ -1326,14 +1522,15 @@ justifies it — never universally.
 | 12 | Beta-PERT simulated moments vs independent theory |
 | 13 | degenerate `a = m = b` |
 | 14 | one-driver simulation, 1000 iterations, `result_digest` |
-| 15 | mixed 3 cost + 2 risk, **no Beta**, full Python-vs-VBA end-to-end |
+| 15a | mixed 3 cost + 2 risk, **no Beta**, general fixture — full Python-vs-VBA end-to-end **under the §15.1 tolerance policy**; no cross-language digest equality required |
+| 15b | the **exact-friendly** fixture of §15.1a — cross-language `result_digest` equality **required**, with the step-by-step exactness justification attached |
 | 16 | same seed → identical `result_digest` |
 | 17 | changed seed → different RNG stream, **always**; and on a **deliberately non-degenerate stochastic fixture** whose sampled uncertainty affects the retained total, different `result_digest`. See §15.3 |
 | 18 | **row reorder → identical `result_digest`** |
 | 19 | percentile vectors for `n = 1, 2, 3, 4, 10` |
 | 20 | extreme-domain pipeline vectors, §4.6 cases 1–10 |
 | 13a–c | degenerate `a = m = b` for **each** family: returned value, **zero consumption** proved by the component's stream state after `n` iterations equalling its initial state, and no Beta parameterisation attempted (§4.0) |
-| 21 | **accumulation-order invariance**: stream identities held fixed, driver accumulation order reversed — the totals must change, and the detector must catch it (§3.5) |
+| 21 | **accumulation-order control** on a **constructed non-associative fixture** (§3.5): stream identities and sampled values held fixed, accumulation order reversed, the oracle having first proved the two orders give different binary64 totals. The difference is required only for this fixture; row-order invariance itself is universal and is family 18 |
 | 22 | counter exhaustion: `auto_nonce` and `run_id` at their limits refuse explicitly, without wrap (§11.2) |
 
 ### 15.3 Digest inequality is not a universal invariant
@@ -1431,7 +1628,7 @@ after it exists.
 
 | # | Step | Files | New authority | Gate-A acceptance |
 |---|---|---|---|---|
-| **0** | **Authority closure**, including the **retained D6-04 feasibility package** of §20.2 | `docs/`, plus a non-production evidence area for the retained package | the closed decisions | every open §20 item resolved and independently reviewed; the evidence package committed and reproducible; **no contract file yet** |
+| **0** | **Authority closure**, including the **retained D6-04 feasibility package** of §20.2 | `docs/`, plus a non-production evidence area for the retained package | the closed decisions | **every Class-1 and Class-2 decision closed and independently accepted**; the retained evidence package accepted; **no unresolved semantic choice remains for `sim_contract.yaml`**. **D6-08 is explicitly not a Step-0 blocker** — it is a Class-3 constant derived in Step 1. **No contract file yet** |
 | 1 | **`spec/sim_contract.yaml`** — RNG and jump constants, seed domain, AUTO nonce mapping, stream assignment, Cheng dispatch, percentile method, standard-deviation method, contingency, `SIM` fields, `result_digest` canonicalisation, `sim_state` schema, `_SimData` layout and therefore `H`, versions. Loader + validator, fail-loud | `spec/`, `builder/`, `tests/` | the sixth contract | validator rejects every malformed shape; mutation controls per rule |
 | 2 | **RNG + jump reference in Python**, exact integers; families 1–5 | `builder/`, `tests/` | locked vectors | canonical published vectors reproduced |
 | 3 | **Samplers in Python** — Uniform, Triangular, **Cheng BB/BC**, Bernoulli; families 6–13 | `builder/`, `tests/` | — | every boundary in §4 has a hand-derived expectation; BB and BC branches both covered |
@@ -1461,11 +1658,16 @@ step 2 onward implements against the contract rather than against the probe.
 ## 20. Open decisions
 
 **Settled in this plan** (proposals, not authority until the plan is accepted):
-D6-01 · D6-02 · D6-06 · D6-07 · D6-09 · D6-10 · D6-11 · D6-12 · D6-13.
+D6-01 · D6-02 · D6-06 · D6-07 · D6-09 · D6-10 · **D6-11 (§10.4a)** · D6-12 ·
+D6-13. Each is SETTLED-IN-PLAN in exactly one place; revision 4 listed D6-11 as
+both open and settled, and specified it nowhere.
 
 Revision 3 said "eight open" in §20 and "one blocker" in §22 without saying how
 those relate. They are different things, and the open items now fall into three
 classes:
+
+**Every decision listed in Classes 1, 2 and 3 below is OPEN.** No item appears in
+both the settled list above and a class table below.
 
 ### Class 1 — architectural feasibility blockers
 
@@ -1489,6 +1691,7 @@ Close on argument and review; no measurement required.
 | **D6-15** | `run_id` semantics and **exhaustion**, jointly with D6-03 | (a) **monotonic success counter, separate from `auto_nonce`**; (b) GUID; (c) timestamp | **(a)** | audit identity; no computational effect |
 | **D6-16** | stream assignment rule | (a) **canonical sorted order → sequential streams**; (b) direct ID-derived index | **(a)**, revisit (b) if the ID numeric bound can be contracted | whether an unrelated driver's samples move when a driver is added |
 | **D6-17** | `result_digest` canonicalisation | (a) **accepted encoder over iteration-ordered totals, with `n` and index in the stream**; (b) a separate scheme | **(a)** | what G2/G3 actually compare |
+| **D6-19** | **who owns the Random Seed admissible domain** (§10.4b) | (a) **input-contract ownership, `sim_contract` references it**; (b) split ownership with a written justification for keeping `validation: null` | **(a)** | whether one semantic rule lives in two files |
 
 ### Class 3 — Step-1 constants derived from layout
 
@@ -1499,6 +1702,12 @@ Close on argument and review; no measurement required.
 **The end state before `sim_contract.yaml` exists is ZERO unresolved semantics
 that the contract must encode.** Class 1 and Class 2 close in Step 0; Class 3 is
 a constant the contract itself determines in Step 1, not a semantic question.
+
+**Step-0 acceptance therefore reads:** every Class-1 and Class-2 decision closed
+and independently accepted · the retained feasibility evidence accepted · no
+unresolved semantic choice remaining for the contract. **D6-08 is not a Step-0
+blocker**; it is derived in Step 1 from the accepted `_SimData` layout, before the
+contract and its validator are considered complete.
 
 ### 20.2 The retained D6-04 Step-0 evidence package
 
@@ -1595,6 +1804,23 @@ other correction from review round 3:
 
 ---
 
+### 21.2 Revision 4 → revision 5
+
+| # | Where | Corrected |
+|---|---|---|
+| 38 | §2.1 | "inverse-CDF sampling for Triangular, Uniform and **Beta-PERT**" — a scope statement contradicting §4. Split by family: Uniform affine, Triangular inverse-CDF, **Beta-PERT Cheng BB/BC acceptance/rejection** |
+| 39 | **§15.0 new**, §15 table, **§15.1a new**, family 15 | **Layer F claimed cross-language exactness that §15.1 denies.** One ULP in a transformed sample changes the digest. Split into **F1** (general, tolerance-bounded) and **F2** (one constructed exact-friendly fixture whose exactness is demonstrated, not assumed). G2 and G3 stay exact — they compare one implementation against itself |
+| 40 | §5.4, §11 | The AUTO re-run no longer asserts `result_digest` **changes**; it **may change and normally does**, and equality is legal on a degenerate or zero-probability model. Run identity survives through `run_id` + `effective_seed` regardless |
+| 41 | §3.5, family 21 | The accumulation-order control now requires a **constructed non-associative fixture**, with the oracle proving the two orders differ in binary64 first. Row-order invariance itself stays universal |
+| 42 | **§10.4a new** | **D6-11 specified.** Revision 4 called it open in §1.2 and settled in §20 and defined nothing. The existing schema is a **flat global list with no per-module scoping**, so narrowing requires a schema extension to an accepted Phase-4 authority — stated as such. `Percentile` is resolved by naming discipline with no contract change; `MRG32k3a` and `RunSimulation` need scoping; `Rnd(`, `Randomize` and `NPV` stay globally forbidden |
+| 43 | **§10.4b new**, D6-19 | **Seed-domain authority ownership** decided as a question. Input-contract ownership recommended, because that contract's own note is waiting on this decision. No semantic rule in two files |
+| 44 | §3.4, §4.5 | **D6-18 was hard-coded to option A** in the execution path while the table recommended B. Both options are now written out, with the shared invariant stated: the occurrence stream advances exactly once per Risk per iteration |
+| 45 | §12.1 | **Phase-7 replay claim corrected from component to driver granularity.** A Risk needs both its streams paired by iteration; under option A they must be replayed in lockstep from iteration 1 |
+| 46 | §19, §20 | **Step-0 acceptance no longer requires "every open §20 item"**, which contradicted D6-08's Class-3 status. It requires Class-1 and Class-2 closed, the evidence accepted, and no unresolved semantics for the contract |
+| 47 | header, §1, §5 | Stale governance text: "Revision 3 describes ONE candidate architecture"; the §1 legend now states that every LOCKED there is prior accepted authority; "RNG — the locked contract" retitled "the proposed contract" |
+
+---
+
 ## 22. Remaining unresolved blockers
 
 **Two, both in Class 1, and both need measurement rather than argument.**
@@ -1633,10 +1859,11 @@ not depend on measurement.
    §4.3 figures are prior indications from unretained scripts, not evidence.
 6. **Step 0 has not been executed.** No feasibility measurement has been run
    under this plan, and none is authorised.
-7. **Nothing here is accepted.** Nine decisions remain open across three
-   classes, and **two of them — D6-04 and D6-18 — could still change the
-   architecture this revision describes**. Every `SETTLED-IN-PLAN` item is a
-   proposal, not authority.
+7. **Nothing here is accepted.** Ten decisions remain open across three classes,
+   and **two of them — D6-04 and D6-18 — could still change the architecture this
+   revision describes**. Every `SETTLED-IN-PLAN` item is a proposal, not
+   authority. D6-04 and D6-18 are *expected* to remain open pending Step-0
+   measurement; §20.2 states exactly what Step 0 must measure to close them.
 8. **The Phase-5 baseline is untouched.** `f571154` remains the accepted
    executable baseline; this document changes no file under `src/`, `spec/`,
    `builder/`, `bootstrap/` or `tests/`.
