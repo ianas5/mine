@@ -6,21 +6,25 @@ contract and no VBA.
 
 ---
 
-## 1. Accepted planning baseline
+## 1. Authority chain
 
-| | |
+| Role | Commit |
 |---|---|
 | **Accepted Phase-6 planning authority** | `03aa5044cb535513976f0ec3840bc332747678c8` |
 | **Accepted Phase-5 executable baseline** | `f571154118083e569e1fb9fbf9bf72852cc2d568` |
-| **First Step-0 evidence commit** | `c121cc63563b5997050ab9518cf31ea250a41aa4` |
-| **Step-0 evidence / authority settlement** | this commit — reported in the delivery message |
-| **Authority for this round** | `pccm/docs/phase6_plan.md` at revision 6 |
+| **First Step-0 evidence** | `c121cc63563b5997050ab9518cf31ea250a41aa4` |
+| **Housekeeping** — repo-root `.gitignore` only, **no PCCM semantics** | `172a870730e42e0b1faa883931894c9aaf32bdd0` |
+| **Settled Step-0 evidence / authority** | `8ea4976eccb84612dbd7d6ec919d58f23c7fd8cb` |
+| **Final provenance correction** | this commit — reported by the delivery message and `PROVENANCE.txt` |
+| **Authority for the work** | `pccm/docs/phase6_plan.md` at revision 6 |
 
-`c121cc6` is the historical first Step-0 evidence commit and stays in the
-history unrewritten. The settlement commit is based on the current branch HEAD,
-which contains `c121cc6` and one repo-root `.gitignore` housekeeping commit that
-widens the review-ZIP ignore rule. **That housekeeping commit is not Phase-6
-semantic evidence**; it touches no file under `pccm/`.
+Each commit stays in the history unrewritten. The housekeeping commit widened the
+review-ZIP ignore rule at the repository root and **touches no file under
+`pccm/`**, so it carries no Phase-6 semantics.
+
+**The accepted planning authority never moves.** It is `03aa5044` regardless of
+how many evidence commits follow it, and it must not be confused with whichever
+commit an evidence generation happened to run from — see §2.
 
 ### What the settlement round changed, and what it did not
 
@@ -39,19 +43,49 @@ semantics only.
 | the numeric comparison tolerance — ownership and exact values | §10 |
 
 **Every Cheng, D6-04 and acceptance-margin raw file, and every vector file
-issued in `c121cc6`, is byte-identical in this commit.** Only
+issued in `c121cc6`, is byte-identical in `8ea4976`.** Only
 `raw/d6_18_operation_model.json` (terminology) and `raw/seed_map.json`
 (factorisation and lifecycle) changed among the previously-issued raw files,
 plus five new files. Nothing was regenerated for a formulation change, because
 there was none.
 
-One docs-only change was made to `phase6_plan.md` in this round: the §14 wording
-correction authorised in §0 of the Step-0 authorisation. It replaces "for
-identical statistical output" with a statement that both D6-18 options target the
-same probability law while following different realised severity paths, and it
-carries an inline note classifying itself as **non-semantic**. It changes no
-decision, no number and no requirement. **No other planning change was made and
-no new planning revision was created.**
+### What this provenance-correction round changed
+
+Independent review of `8ea4976` returned **STEP-0 TECHNICAL / SEMANTIC EVIDENCE:
+PASS**, with formal acceptance held only for a non-semantic provenance-metadata
+correction. **No Phase-6 decision is reopened and no feasibility measurement was
+rerun.** Three stale statements are corrected:
+
+| Corrected | Where |
+|---|---|
+| the manifest's `step0_commit_note`, which claimed `git_head_at_generation` equals the accepted planning baseline | §2 |
+| this document's §2, which made the same claim | §2 |
+| this document's claim that the `phase6_plan.md` §14 correction was made "in this round" — it was made in `c121cc6` | §1, below |
+
+**Three files changed: `docs/phase6_step0.md`, `scripts/run_all.py` and
+`manifest.json`.** Every other file in the evidence package — all sixteen raw
+results, all six vector files, both summaries, the run log, the environment
+record, the inputs and the other six scripts — is byte-identical to `8ea4976`.
+`phase6_plan.md` is untouched.
+
+### The one `phase6_plan.md` change, and when it happened
+
+One docs-only change was made to `phase6_plan.md` across the whole of Step 0: the
+§14 wording correction authorised in §0 of the Step-0 authorisation. It replaces
+"for identical statistical output" with a statement that both D6-18 options
+target the same probability law while following different realised severity
+paths, and it carries an inline note classifying itself as **non-semantic**.
+
+**It was applied in the FIRST Step-0 evidence round, `c121cc6`.** An earlier
+revision of this document said it was made "in this round" while describing the
+settlement round, which was false: `phase6_plan.md` is byte-identical between the
+`c121cc6` and `8ea4976` packages, and independent review confirmed that by byte
+comparison. The settlement round changed nothing in it, and neither does this
+provenance correction.
+
+The change itself alters no decision, no number and no requirement. **No other
+planning change was made in any round, and no new planning revision was
+created.**
 
 ---
 
@@ -67,12 +101,26 @@ no new planning revision was created.**
 | **Manifest** | `pccm/evidence/phase6_step0/manifest.json` — SHA-256 and byte count of every script, input, raw result, vector file and summary |
 | **Determinism check** | two consecutive runs produce a byte-identical `manifest.json`; because the manifest hashes every generated file, that single comparison covers all of them |
 
-**The manifest cannot contain its own commit hash** — a commit cannot record the
-hash it is about to be given. It records the accepted planning baseline, the
-accepted Phase-5 baseline, and `git_head_at_generation`, which is the **parent**
-of the Step-0 commit and equals the accepted planning baseline. The Step-0 commit
-hash is reported in the delivery message; `git log -1` on the branch gives it
-directly.
+### Two provenance fields that are different concepts
+
+| Field | Meaning |
+|---|---|
+| `accepted_planning_baseline` | the **immutable** accepted Phase-6 planning authority, `03aa5044`. It never moves, whatever later evidence commits exist |
+| `git_head_at_generation` | the repository **HEAD present when this particular evidence generation ran**. After any evidence settlement it is later than the planning baseline |
+
+**They are not required to be equal, and after the settlement round they are
+not.** They happened to coincide at `c121cc6`, because that generation ran from
+the planning baseline itself; an earlier revision of this document generalised
+that coincidence into a rule, which was wrong. At the settlement generation
+`git_head_at_generation` was `172a870` and at this generation it is `8ea4976` —
+neither is `03aa5044`.
+
+**The manifest also cannot contain its own commit hash**, because a commit cannot
+record the hash it is about to be given. `step0_commit` is therefore `null` by
+construction. **The final review-package commit is established by
+`PROVENANCE.txt` and the delivery provenance, not by `git_head_at_generation`** —
+that field describes the base HEAD at regeneration time and identifies neither
+the planning baseline nor the final evidence commit.
 
 **External reference provenance.** Two published values are used as *checks*, not
 as inputs: the RngStreams default initial state `[12345] × 6` and the first
@@ -1317,16 +1365,32 @@ No spec change was made; none is authorised in Step 0.
 
 Accepted static baseline, re-run at the Step-0 tree:
 
+Additionally, against the settlement commit `8ea4976`, these are unchanged by the
+provenance correction:
+
+| Path | `git diff 8ea4976 -- <path>` |
+|---|---|
+| `pccm/src` | **EMPTY** |
+| `pccm/bootstrap` | **EMPTY** |
+| `pccm/spec` | **EMPTY** |
+| `pccm/builder` | **EMPTY** |
+| `pccm/tests` | **EMPTY** |
+| `pccm/docs/phase6_plan.md` | **EMPTY** |
+
 | Check | Result |
 |---|---|
 | Evidence generator (`python3 scripts/run_all.py`) | completes; two consecutive runs give a byte-identical `manifest.json` |
 | Evidence controls | **20 / 20 fired** |
 | Manifest verification | **36 files, 0 SHA-256 or byte-count mismatches** |
-| Full Python suite (`python3 -m pytest pccm/tests -q`) | **1752 passed, 0 failed** (2 warnings, 161.60 s) |
-| Stage-A verifier / build (`python3 pccm/builder/build_stage_a.py`) | **351 passed, 0 failed**; "Stage A build complete." |
+| Numerical evidence unchanged by the provenance correction | **every raw, vector and summary file byte-identical to `8ea4976`** |
+| Full Python suite (`python3 -m pytest pccm/tests -q`) | **1752 passed, 0 failed** (2 warnings, 161.60 s), at `8ea4976` |
+| Stage-A verifier / build (`python3 pccm/builder/build_stage_a.py`) | **351 passed, 0 failed**; "Stage A build complete.", at `8ea4976` |
 
 **No test was altered.** The suites are byte-identical to the accepted baseline,
-which is what the empty `pccm/tests` diff above establishes.
+which is what the empty `pccm/tests` diff above establishes. The pytest and
+Stage-A counts are carried from `8ea4976` and are **not** re-asserted as fresh
+runs at this commit: no production, spec, builder or test file changed, and the
+empty diffs above are the proof of that rather than a repeated run.
 
 ---
 
@@ -1370,4 +1434,4 @@ also withdrawn; no such multiplier appears in any retained number.
 
 ---
 
-**STEP 0 — ACCEPTANCE REQUESTED (SETTLED)**
+**STEP 0 — ACCEPTANCE REQUESTED (PROVENANCE CORRECTED)**

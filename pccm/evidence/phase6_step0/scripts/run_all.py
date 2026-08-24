@@ -1140,12 +1140,21 @@ def write_manifest():
         "phase5_executable_baseline": "f571154118083e569e1fb9fbf9bf72852cc2d568",
         "git_head_at_generation": head,
         "step0_commit": None,
+        "accepted_planning_baseline_meaning":
+            "The immutable accepted Phase-6 planning authority. It never moves, "
+            "whatever later evidence commits exist.",
+        "git_head_at_generation_meaning":
+            "The repository HEAD present when THIS evidence generation ran. It "
+            "may be later than the accepted planning baseline, and after any "
+            "evidence settlement it will be. The two are different concepts and "
+            "are not required to be equal.",
         "step0_commit_note":
-            "A commit cannot contain its own hash, so this field stays null. "
-            "git_head_at_generation above is the PARENT of the Step-0 commit, "
-            "and it equals the accepted planning baseline. The Step-0 commit "
-            "hash itself is reported in the delivery message; `git log -1` on "
-            "the branch gives it directly.",
+            "git_head_at_generation records the repository HEAD present when "
+            "this evidence generation ran. It may be later than the accepted "
+            "planning baseline. Because the generated manifest cannot contain "
+            "the hash of the commit that will subsequently contain it, the final "
+            "review-package commit is established by PROVENANCE.txt / delivery "
+            "provenance, not by this field.",
         "generator": "pccm/evidence/phase6_step0/scripts/run_all.py",
         "python_version": sys.version,
         "python_implementation": platform.python_implementation(),

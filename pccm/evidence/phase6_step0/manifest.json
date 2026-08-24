@@ -1,5 +1,6 @@
 {
   "accepted_planning_baseline": "03aa5044cb535513976f0ec3840bc332747678c8",
+  "accepted_planning_baseline_meaning": "The immutable accepted Phase-6 planning authority. It never moves, whatever later evidence commits exist.",
   "files": {
     "inputs/pert_grid.json": {
       "bytes": 849,
@@ -94,8 +95,8 @@
       "sha256": "bbb2b8b487dd699960513a9368602546cca48a37e783516196ba87f97ac0fdde"
     },
     "scripts/run_all.py": {
-      "bytes": 64926,
-      "sha256": "d0d7fa3e12de2aa6ee4e17855ba73ccdc67f8005b5ec3df1d8fc62b53b621e61"
+      "bytes": 65522,
+      "sha256": "27cc41eb8316ee90436b2f5443674a5f85b502fe9271dc006d9e796bb3bb39a0"
     },
     "scripts/seed_map.py": {
       "bytes": 3100,
@@ -147,7 +148,8 @@
     }
   },
   "generator": "pccm/evidence/phase6_step0/scripts/run_all.py",
-  "git_head_at_generation": "172a870730e42e0b1faa883931894c9aaf32bdd0",
+  "git_head_at_generation": "8ea4976eccb84612dbd7d6ec919d58f23c7fd8cb",
+  "git_head_at_generation_meaning": "The repository HEAD present when THIS evidence generation ran. It may be later than the accepted planning baseline, and after any evidence settlement it will be. The two are different concepts and are not required to be equal.",
   "grid": {
     "note": "PCCM Beta-PERT with lambda=4 is ONE-DIMENSIONAL: alpha=1+4r, beta=5-4r, alpha+beta=6. Nothing outside this line can arise from a PCCM driver.",
     "probabilities": [
@@ -219,5 +221,5 @@
     "note": "12345 is retained because the all-12345 state is the published RngStreams default and permits direct comparison against independent MRG32k3a material."
   },
   "step0_commit": null,
-  "step0_commit_note": "A commit cannot contain its own hash, so this field stays null. git_head_at_generation above is the PARENT of the Step-0 commit, and it equals the accepted planning baseline. The Step-0 commit hash itself is reported in the delivery message; `git log -1` on the branch gives it directly."
+  "step0_commit_note": "git_head_at_generation records the repository HEAD present when this evidence generation ran. It may be later than the accepted planning baseline. Because the generated manifest cannot contain the hash of the commit that will subsequently contain it, the final review-package commit is established by PROVENANCE.txt / delivery provenance, not by this field."
 }
