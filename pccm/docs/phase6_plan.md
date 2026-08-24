@@ -1,6 +1,6 @@
 # Phase 6 — Stochastic simulation layer
 
-**Status: PLANNING ONLY — revision 5, after review round 5.
+**Status: PLANNING ONLY — revision 6, after review round 6.
 NOT ACCEPTED. NO IMPLEMENTATION EXISTS. NO WINDOWS/EXCEL RUNTIME HAS BEEN
 EXECUTED. `spec/sim_contract.yaml` DOES NOT EXIST.**
 
@@ -432,7 +432,20 @@ retained**. Under §20.2 that makes them **prior indications, not evidence**:
 |---|---|---|---|
 | A | one-uniform numerical inverse CDF | incomplete-beta continued fraction up to **~91 iterations** over this family; ~91,000 flops/sample; `~2.7 × 10^12` flops at the design target | *provisionally* infeasible |
 | C | precomputed per-driver table | max normalised error `~5.9 × 10^-3` at 4096 nodes — at `r = 0.01`, `α = 1.04`, near-infinite tail slope | *provisionally* indefensible |
-| **B** | **Cheng BB/BC** | peak density `~≤ 5.0` over the family, so acceptance is bounded away from zero | *provisionally* recommended |
+| **B** | **Cheng BB/BC** | prior exploration observed target peak density `~≤ 5.0` over the family. **This is NOT evidence of Cheng acceptance efficiency** — see below | *provisionally* recommended |
+
+**The density observation does not establish the acceptance rate.** Revision 5
+inferred that a bounded peak density means "acceptance is bounded away from
+zero". That inference is invalid: acceptance efficiency is a property of the
+**proposal and the algorithm**, not of the target's peak density. A bound of that
+kind would apply to a *uniform-envelope* rejection method, which is not what
+Cheng BB/BC does. The observation is retained as context and carries no weight.
+
+**The retained Step-0 package must measure Cheng's behaviour directly** (§20.2):
+acceptance rate · uniforms consumed per accepted sample · the mean · the
+high-percentile and tail of that consumption · **by shape, across the whole PERT
+family**. **D6-04 closes on measured Cheng behaviour, never on a density
+proxy.**
 
 **No option is finally accepted or rejected on these numbers.** A decision that
 changes the architecture may not rest on measurements nobody can re-run. The
@@ -497,10 +510,12 @@ sampler, and the contradiction is resolved by separating the streams**, not by
 drawing a uniform nobody uses:
 
 - the **occurrence** stream advances by exactly one uniform per iteration,
-  unconditionally, so the occurrence path is a function of `Probability` and the
-  seed alone
-- the **severity** stream advances only when the risk occurred, by however many
-  uniforms the sampler needed
+  **unconditionally, under both D6-18 options**, so the occurrence path is a
+  function of `Probability` and the seed alone
+- the **severity** stream advances per D6-18: under **Option A** the sampler is
+  invoked only when the risk occurred; under **Option B** it is invoked every
+  iteration and its value used only when the risk occurred. In both cases the
+  number of uniforms one invocation consumes is variable
 
 Because they are different streams, variable severity consumption **cannot**
 perturb the occurrence path. That is the property §5.6 exists to guarantee.
@@ -597,10 +612,25 @@ Cases 9 and 10 are new in revision 3 and are the ones that decide whether the
 
 ### 5.1 Algorithm
 
-**MRG32k3a** (L'Ecuyer 1999), as named in the locked roadmap. `Rnd` is not
-merely inadvisable: its period is `2^24`, and the design target needs
-`≥ 4 × 10^7` uniforms — exhausted by more than four orders of magnitude, quite
-apart from being unreproducible and version-dependent.
+**MRG32k3a** (L'Ecuyer 1999), as named in the locked roadmap.
+
+**`Rnd` is unacceptable, and revision 5 overstated by how much.** It said the
+period was "exhausted by more than four orders of magnitude". The arithmetic:
+
+```
+Rnd period          2^24 = 16,777,216
+design-target draws      ≈ 40,000,000
+ratio                    ≈ 2.4× the period      (0.38 orders of magnitude)
+```
+
+**A single run consumes roughly 2.4 times the period** — more under Option B,
+but nothing like 10,000×. The conclusion is unchanged and does not need the
+exaggeration: *a generator whose period is below a plausible single-run
+consumption is unacceptable*, because the run would revisit the same values
+within itself. `Rnd` and `Randomize` fail independently on reproducibility — no
+seeding contract, no explicit stream, undocumented and version-dependent
+behaviour — which alone disqualifies them from an evidence model built on exact
+vectors.
 
 ### 5.2 State, constants and output — INHERITED algorithm, SETTLED-IN-PLAN parameters
 
@@ -663,11 +693,35 @@ obtained independently of PCCM. A vector set generated only by PCCM's own
 implementation proves self-consistency and nothing else. Hard acceptance
 criterion for step 2.
 
-### 5.3 Seed domain — PROPOSED
+### 5.3 Seed admissible domain — D6-20
 
-- admissible domain **`1 … 2147483646`**, whole numbers
+Revision 5 added **D6-19**, which asks *who owns* this rule. It did not classify
+*what the rule is*: §5.3 proposed a domain that appeared in no decision table and
+carried no authority status. An accepted plan may not contain an unclassified
+semantic rule, so the domain is now **D6-20**.
+
+**Proposed domain:**
+
+- admissible **`1 … 2147483646`**, whole numbers
 - `0`, negatives and non-integers are **refused**, not coerced
 - blank is legal and means `seed_mode = AUTO` (§5.4)
+
+**Is there a credible alternative?** The constraints are tight enough to examine:
+
+| Candidate | Verdict |
+|---|---|
+| `1 … 2147483646` | fits signed `Long` with a spare value; every member is a valid six-word state under D6-05 candidate A (`2147483646 < m2 < m1`); excludes the all-zero state by construction |
+| include `0` | **rejected** — under D6-05 candidate A a seed of `0` produces the all-zero state, which MRG32k3a forbids. Admitting it would require a special case for exactly one value |
+| allow negatives | **rejected** — they would need folding into the positive range, and two distinct user seeds would then collide silently |
+| widen beyond `Long` | **rejected** — the cell is declared `integer`, `LongLong` is 64-bit-Office only, and nothing needs more than `2.1 × 10^9` distinct seeds |
+| `1 … m2 − 1` (`4294944442`) | technically valid for the state, but exceeds `Long` and buys nothing |
+
+**No credible alternative survives**, so D6-20 is **SETTLED-IN-PLAN** rather than
+left open — but its standing is now explicit rather than implied, and it is a
+proposal until the plan is accepted.
+
+**D6-20 states the rule. D6-19 states which file owns it.** They are separate
+questions and neither answers the other.
 
 **The seed is a `Long`; the state words are not.** `2147483646 < 2^31 − 1` fits
 VBA's signed `Long`. `m1 − 1 = 4294967086` does not, so `s10 … s22` are `Double`s
@@ -760,7 +814,9 @@ Separating them makes:
 - Beta consumption unable to perturb any other driver, **and** unable to perturb
   its own Risk's occurrence path
 - row-order invariance provable per component
-- Phase-7 replay a per-component operation
+- Phase-7 replay possible at **driver** granularity without replaying unrelated
+  drivers — a Cost Line through its one sampling component, a Risk through its
+  occurrence and severity components **together** (§12.1)
 - occurrence and severity independently testable in the oracle
 
 ### 5.7 Stream assignment — D6-16
@@ -927,7 +983,8 @@ Excel calculation. What is meant, precisely:
 **P10 is a fixed reported statistic**, not selectable. `lstConfidenceLevels`
 remains `P50…P95`; no accepted input contract is reopened.
 
-**D6-06 CLOSED. D6-10 CLOSED by rejection.**
+**D6-06 SETTLED-IN-PLAN. D6-10 SETTLED-IN-PLAN by rejection** — there is no
+`UNSELECTED` state.
 
 ---
 
@@ -939,7 +996,7 @@ remains `P50…P95`; no accepted input contract is reopened.
 - **Standard deviation — SETTLED-IN-PLAN: the sample standard deviation, divisor
   `n − 1`.** A **reporting-method decision taken here**, not inherited from Excel
   or any library: the run is a sample from the model's distribution, not the
-  population. **D6-09 CLOSED.**
+  population. **D6-09 SETTLED-IN-PLAN.**
 - Both computed with the accepted Phase-5 safe primitives and the scale-safe
   strategies of §4.6 — **not** naive `Σx²`, and **not** unguarded Welford.
 
@@ -1007,7 +1064,7 @@ including exactly-integral `h` and interpolated `h`.
 
 The baseline is the **deterministic base estimate**, not the simulation mean and
 not the analytical expected total. Nominal and PV separately, using
-`SafeSubtract`. **D6-07 CLOSED.**
+`SafeSubtract`. **D6-07 SETTLED-IN-PLAN.**
 
 **The workbook reports at the confidence level the user selected. It does not
 recommend one.**
@@ -1243,7 +1300,7 @@ order**:
 | `total_pv` | SAR present value |
 
 plus the run-identity block of §11. **Statistics sort copies in memory; the
-persisted arrays are never permuted.** **D6-13 CLOSED by adoption.**
+persisted arrays are never permuted.** **D6-13 SETTLED-IN-PLAN by adoption.**
 
 ### 11.2 Run ID and the AUTO nonce — D6-15, jointly with D6-03
 
@@ -1378,13 +1435,28 @@ consumption.** At the design target (200 Cost Lines, 100 Risks, 25 years,
 |---|---|---|
 | Occurrence uniforms | `1.0 × 10^7` | **fixed** — one per risk per iteration |
 | Cost-line sampling draws | `2.0 × 10^7` samples | **variable** uniform count per sample |
-| Severity sampling draws | `≤ 1.0 × 10^7` samples | **conditional** on occurrence; worst case `p = 1` |
+| Severity sampler invocations | **depends on D6-18** — see below | |
 | Total Beta samples, worst case | `3.0 × 10^7` | |
 | Uniforms consumed | **not a fixed number** | bounded by acceptance rate; the Step-0 package measures mean and high-percentile consumption per shape (§17) |
 | Multiply-accumulates | `≤ 6.0 × 10^7` | nominal + PV on evaluated contributions |
 | Sorts | 2 × `10^5` elements | `~3.4 × 10^6` comparisons |
 | Stream jumps | `400`, **once**, before the loop | §5.9 |
 | **Worksheet / COM calls inside the loop** | **0** | the locked invariant |
+
+**Severity sampler invocations, by D6-18 option**, at 100 Risks × 100,000
+iterations:
+
+| | Invocations | Depends on `Probability`? |
+|---|---|---|
+| **Option A** | the number of **occurrences**: `0 … 1.0 × 10^7`, determined by the probabilities and the occurrence path | **yes** |
+| **Option B** | **exactly `1.0 × 10^7`** | **no** |
+
+They coincide only at `p = 1`. **The `p = 1` case is therefore useless for
+comparing A against B** — it is the one point where the options are identical.
+§20.2 requires at least one representative **lower-probability** operation
+comparison, because that is where the cost difference lives: at `p = 0.1`,
+Option A performs one tenth the severity work Option B performs, for identical
+statistical output but a different iteration-indexed severity path.
 
 **No flop total is asserted here.** Revision 2 quoted `~3 × 10^9` for Option B;
 that was a desk estimate, and per §17 no such number is an accepted input to
@@ -1582,8 +1654,8 @@ been measured, and the variable-draw architecture makes an unproven duration
 claim less defensible, not more.** The real reasons are architectural:
 cancellation adds a second transactional exit path through a publish designed to
 have one; Phase 6 should establish correctness and the benchmark first; and it can
-be reconsidered only if measured Gate-B runtime justifies it. **D6-12 CLOSED**,
-on that basis.
+be reconsidered only if measured Gate-B runtime justifies it. **D6-12
+SETTLED-IN-PLAN**, on that basis.
 
 ---
 
@@ -1610,10 +1682,22 @@ artefacts and Stage-A verification; mutation controls on every new detector.
 
 **Gate B — real Windows/Excel.** Whole-project compile through the accepted
 P5-CMP gate; seeded simulation against Python expectations *at the layer each can
-prove* (§15); same-runtime replay digest; **row-order invariance digest**;
-different-seed divergence; the full 100,000-iteration run at the design target;
-the pre-flight storage-ceiling refusal; failure containment; natural Excel
-shutdown; clean COM release.
+prove* (§15); same-runtime replay digest; **row-order invariance digest** (both
+stream assignment **and** accumulation order, §3.5); the full 100,000-iteration
+run at the design target; the pre-flight storage-ceiling refusal; failure
+containment; natural Excel shutdown; clean COM release.
+
+**Different-seed evidence, scoped.** Revision 5's Gate-B line said only
+"different-seed divergence", which reads as a universal digest claim that §15.3
+explicitly denies. What Gate B proves is two separate things:
+
+| | Claim | Scope |
+|---|---|---|
+| **A** | two different accepted **FIXED** seeds produce the expected different RNG initial stream and state | **universal** |
+| **B** | on the **designated non-degenerate divergence fixture** — sampled uncertainty demonstrably reaching the retained total — the retained distribution and `result_digest` diverge as expected | **that fixture only** |
+
+**Equal `result_digest` across different seeds on a fully degenerate legal model
+remains valid**, and no Gate-B wording may imply otherwise.
 
 **A performance benchmark is not a semantic test.** The 100k run proves the
 budget is met and nothing about correctness; Gate B passes only if the semantic
@@ -1629,7 +1713,7 @@ after it exists.
 | # | Step | Files | New authority | Gate-A acceptance |
 |---|---|---|---|---|
 | **0** | **Authority closure**, including the **retained D6-04 feasibility package** of §20.2 | `docs/`, plus a non-production evidence area for the retained package | the closed decisions | **every Class-1 and Class-2 decision closed and independently accepted**; the retained evidence package accepted; **no unresolved semantic choice remains for `sim_contract.yaml`**. **D6-08 is explicitly not a Step-0 blocker** — it is a Class-3 constant derived in Step 1. **No contract file yet** |
-| 1 | **`spec/sim_contract.yaml`** — RNG and jump constants, seed domain, AUTO nonce mapping, stream assignment, Cheng dispatch, percentile method, standard-deviation method, contingency, `SIM` fields, `result_digest` canonicalisation, `sim_state` schema, `_SimData` layout and therefore `H`, versions. Loader + validator, fail-loud | `spec/`, `builder/`, `tests/` | the sixth contract | validator rejects every malformed shape; mutation controls per rule |
+| 1 | **`spec/sim_contract.yaml`** — RNG and jump constants, AUTO nonce mapping, stream assignment, Cheng dispatch, percentile method, standard-deviation method, contingency, `SIM` fields, `result_digest` canonicalisation, `sim_state` schema, `_SimData` layout and therefore `H`, versions. **Plus the seed-admissibility change in whichever contract D6-19 names as owner** — see below. Loader + validator, fail-loud | `spec/`, `builder/`, `tests/` | the sixth contract; possibly an update to an existing one | validator rejects every malformed shape; mutation controls per rule; **no duplicated seed range** |
 | 2 | **RNG + jump reference in Python**, exact integers; families 1–5 | `builder/`, `tests/` | locked vectors | canonical published vectors reproduced |
 | 3 | **Samplers in Python** — Uniform, Triangular, **Cheng BB/BC**, Bernoulli; families 6–13 | `builder/`, `tests/` | — | every boundary in §4 has a hand-derived expectation; BB and BC branches both covered |
 | 4 | **Simulation oracle** — the engine, `result_digest`, percentiles, contingency; families 14–20 | `builder/`, `tests/` | — | golden cases written first |
@@ -1642,6 +1726,27 @@ after it exists.
 | 11 | **`modSimReport`** — `_SimData`, the minimal Results block, transactional publish, `sim_state`, `PCCM_RunSimulation` | `src/vba/`, `tests/` | — | no partial-publish path exists |
 | 12 | **Gate-A source review** | — | — | independent review |
 | 13 | **Gate-B harness extension**, then Windows Run 1 | `bootstrap/`, `tests/` | — | §18 |
+
+**Step 1 is ownership-neutral on the seed range until D6-19 closes.** Revision 5
+listed "seed domain" among `sim_contract.yaml`'s contents, which pre-empts D6-19's
+own recommendation. The rule instead:
+
+- the contract **selected by D6-19** becomes the single owner of seed
+  admissibility and is the file Step 1 updates;
+- the other contract **references** that authority and **must not duplicate the
+  range**;
+- `sim_contract.yaml` owns RNG and seeding **execution semantics** regardless of
+  which file owns the range.
+
+If D6-19 closes on **A**: `input_contract.yaml` owns `1 … 2147483646` and
+`sim_contract` references it. If on **B**: the split is stated explicitly,
+together with the written justification for why `validation: null` remains
+intentional.
+
+**The same one-authority rule applies to every Phase-6 Setup input.**
+`monte_carlo_iterations` keeps its `≥ 1000` minimum in `input_contract.yaml`;
+only the *technical* storage ceiling (§6.1) — a different category — belongs to
+`sim_contract.yaml`.
 
 **The Step-0 feasibility work is retained evidence, not throwaway code.**
 Revision 3 called it throwaway; that is withdrawn. D6-04 changes the architecture
@@ -1659,8 +1764,12 @@ step 2 onward implements against the contract rather than against the probe.
 
 **Settled in this plan** (proposals, not authority until the plan is accepted):
 D6-01 · D6-02 · D6-06 · D6-07 · D6-09 · D6-10 · **D6-11 (§10.4a)** · D6-12 ·
-D6-13. Each is SETTLED-IN-PLAN in exactly one place; revision 4 listed D6-11 as
-both open and settled, and specified it nowhere.
+D6-13 · **D6-20 (§5.3)**. Each is SETTLED-IN-PLAN in exactly one place.
+
+**D6-20 is settled rather than open** because the analysis in §5.3 found no
+credible alternative — but it is stated as a decision with an explicit status,
+which revision 5 failed to do at all. **D6-19, which asks who *owns* that rule,
+remains OPEN** in Class 2; the two are separate questions.
 
 Revision 3 said "eight open" in §20 and "one blocker" in §22 without saying how
 those relate. They are different things, and the open items now fall into three
@@ -1717,18 +1826,21 @@ D6-04 closes on **evidence, not prose**. Required deliverables:
    when `min(α,β) ≤ 1`.
 2. **Parameter grid spanning the whole PERT family**, `α, β ∈ [1,5]`, including
    `1/5`, `5/1`, both near-1 boundaries, symmetric `3/3`, and interior shapes.
-3. **Per shape:** acceptance rate · mean uniforms consumed · high-percentile
-   uniforms consumed · numerical output checks · independent theoretical
-   mean/variance checks.
+3. **Per shape, measured directly and not inferred from any density proxy:**
+   **acceptance rate** · **uniforms consumed per accepted sample** · the **mean**
+   of that consumption · its **high percentile and tail** · numerical output
+   checks · independent theoretical mean/variance checks.
 4. **The component-stream architecture** demonstrated: Cost → one stream;
    Risk → occurrence + severity streams.
 5. **The exact stream-assignment rule** (D6-16), demonstrated row-order invariant.
 6. **The exact jump matrices and modular arithmetic design** (§5.9), with
    cross-language vectors.
 7. **Memory for all stream states** at the design target.
-8. **A worst-case operation model** — 200 Cost Lines, 100 Risks, all Beta-PERT,
-   `p = 1`, 100,000 iterations — under **both** D6-18 options, since B invokes the
-   severity sampler every iteration.
+8. **Operation models under both D6-18 options**, at **two probability points**:
+   the `p = 1` worst case *and* at least one representative lower probability
+   (`p = 0.1` or similar). At `p = 1` the two options coincide, so that point
+   alone cannot compare them; the lower-probability point is where A's saving and
+   B's cost actually appear.
 9. **Reproduction of the §4.3 prior indications** — the ~91 continued-fraction
    iterations, the `~5.9 × 10^-3` table error, and the `~≤ 5.0` peak density.
    Options A and C may not be finally rejected on unretained numbers.
@@ -1818,6 +1930,21 @@ other correction from review round 3:
 | 45 | §12.1 | **Phase-7 replay claim corrected from component to driver granularity.** A Risk needs both its streams paired by iteration; under option A they must be replayed in lockstep from iteration 1 |
 | 46 | §19, §20 | **Step-0 acceptance no longer requires "every open §20 item"**, which contradicted D6-08's Class-3 status. It requires Class-1 and Class-2 closed, the evidence accepted, and no unresolved semantics for the contract |
 | 47 | header, §1, §5 | Stale governance text: "Revision 3 describes ONE candidate architecture"; the §1 legend now states that every LOCKED there is prior accepted authority; "RNG — the locked contract" retitled "the proposed contract" |
+
+---
+
+### 21.3 Revision 5 → revision 6
+
+| # | Where | Corrected |
+|---|---|---|
+| 48 | §4.5, §5.6, §14, §20.2 | **Residual D6-18 Option-A hard-coding removed.** §4.5 still said the severity stream "advances only when the risk occurred"; §5.6 still called Phase-7 replay per-component; §14 still counted severity draws as conditional only. All three now branch explicitly, with the shared invariant stated: the occurrence stream advances exactly once per Risk per iteration under **both** options |
+| 49 | §14, §20.2 | Severity invocations given per option — Option A `0 … 1.0 × 10^7` depending on the occurrence path, Option B exactly `1.0 × 10^7`. **They coincide at `p = 1`, so that point cannot compare them**; a lower-probability comparison is now required in the evidence package |
+| 50 | **§5.3 → D6-20 new**, §20 | **The seed admissible domain had no authority status at all** — proposed in prose, absent from every table. Now a classified decision, SETTLED-IN-PLAN, with the alternatives examined and rejected on stated grounds. D6-19 (ownership) and D6-20 (the rule) are separate |
+| 51 | §19 step 1 | **Step 1 no longer pre-empts D6-19** by listing "seed domain" as `sim_contract.yaml` content. Ownership-neutral: the D6-19 winner owns the range, the other references it, `sim_contract` always owns execution semantics |
+| 52 | §18 | **Gate-B "different-seed divergence" scoped** into a universal RNG-stream claim and a fixture-scoped digest claim, consistent with §15.3 |
+| 53 | §5.1 | **Corrected arithmetic error.** `Rnd`'s `2^24` period is `≈ 2.4×` a single run's consumption — `0.38` orders of magnitude, not "more than four". The conclusion stands without the exaggeration |
+| 54 | §4.3, §20.2 | **The density-proxy inference withdrawn.** Peak density of the *target* says nothing about a rejection algorithm's acceptance rate, which depends on the proposal. Step 0 must measure acceptance rate and consumption directly, by shape |
+| 55 | §7, §8.1, §9, §11.1, §16 | Five `D6-xx CLOSED` labels changed to **SETTLED-IN-PLAN** — the plan is not accepted, so nothing it decides is closed in the sense an accepted authority is |
 
 ---
 
