@@ -38,12 +38,15 @@ from pccm_builder import (  # noqa: E402
     emit_calc_artifacts,
     emit_inspection,
     emit_stage_b,
+    SimContractError,
     load_calc_contract,
     load_contract,
     load_driver_contract,
+    load_sim_contract,
     load_spec,
     load_structure_contract,
     validate_calc_against,
+    validate_sim_against,
     verify_workbook,
 )
 
@@ -53,6 +56,7 @@ DEFAULT_CONTRACT = PCCM_ROOT / "spec" / "input_contract.yaml"
 DEFAULT_DRIVERS = PCCM_ROOT / "spec" / "driver_contract.yaml"
 DEFAULT_STRUCTURE = PCCM_ROOT / "spec" / "structure_contract.yaml"
 DEFAULT_CALC = PCCM_ROOT / "spec" / "calc_contract.yaml"
+DEFAULT_SIM = PCCM_ROOT / "spec" / "sim_contract.yaml"
 DEFAULT_BUILD_DIR = PCCM_ROOT / "build"
 
 
@@ -68,6 +72,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help=f"path to the structure contract (default: {DEFAULT_STRUCTURE})")
     parser.add_argument("--calc-contract", type=Path, default=DEFAULT_CALC,
                         help=f"path to the calculation contract (default: {DEFAULT_CALC})")
+    parser.add_argument("--sim-contract", type=Path, default=DEFAULT_SIM,
+                        help=f"path to the simulation contract (default: {DEFAULT_SIM})")
     parser.add_argument("--out", type=Path, default=None,
                         help="output path (default: <pccm>/build/<manifest filename>)")
     parser.add_argument("--quiet", action="store_true", help="suppress progress output")
@@ -84,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  drivers  : {args.drivers}")
     say(f"  structure: {args.structure}")
     say(f"  calc     : {args.calc_contract}")
+    say(f"  sim      : {args.sim_contract}")
 
     try:
         spec = load_spec(args.spec)
@@ -117,6 +124,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except ContractError as error:
         print(f"CALCULATION CONTRACT ERROR: {error}", file=sys.stderr)
+        return 2
+    # The simulation contract is a REQUIRED build input as of Phase 6 Step 1. It
+    # is loaded and cross-validated so a contract that disagrees with the other
+    # five authorities fails the build. It EMITS NOTHING: Phase 6 has no Stage-A
+    # emission, and the workbook is byte-identical with or without this step.
+    try:
+        import yaml as _yaml
+
+        sim = load_sim_contract(args.sim_contract)
+        validate_sim_against(
+            sim, spec, contract, drivers, structure,
+            _yaml.safe_load(args.calc_contract.read_text(encoding="utf-8")),
+        )
+    except SimContractError as error:
+        print(f"SIMULATION CONTRACT ERROR: {error}", file=sys.stderr)
+        return 2
+    except ContractError as error:
+        print(f"SIMULATION CONTRACT ERROR: {error}", file=sys.stderr)
         return 2
 
     out_path = args.out or (DEFAULT_BUILD_DIR / spec.stage_a_filename)

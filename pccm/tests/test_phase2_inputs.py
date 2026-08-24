@@ -323,12 +323,43 @@ def test_19b_duration_validation_is_positive_and_uncapped() -> None:
 
 
 def test_19c_no_unsupported_validation_invented() -> None:
-    """Start Year, Base Year, Discount Rate and Random Seed have no business limits yet."""
+    """Start Year, Base Year, Discount Rate still have no business limits.
+
+    Random Seed WAS in this list, with the docstring "no business limits YET" and
+    the contract note "the admissible domain is fixed when the RNG is
+    implemented". Phase-6 D6-19 and D6-20 discharged that deferral, so the seed
+    now HAS an accepted domain and is checked by test_19d below instead. This is
+    a deferral being resolved, not a limit being dropped: the seed moved from
+    "unvalidated" to "validated against an accepted authority", and the
+    protection here is strictly greater than before.
+    """
     contract = load_contract(CONTRACT_PATH)
     setup = _wb()["Setup"]
-    for key in ("project_start_year", "base_year", "discount_rate", "random_seed", "project_name"):
+    for key in ("project_start_year", "base_year", "discount_rate", "project_name"):
         assert contract.inputs[key].validation is None, f"{key} declares a validation rule"
         assert _dv_for(setup, contract.inputs[key].cell) is None, f"{key} has an applied validation"
+
+
+def test_19d_random_seed_carries_the_accepted_domain() -> None:
+    """D6-20: blank is AUTO; populated is FIXED over 1 .. 2147483646 inclusive."""
+    contract = load_contract(CONTRACT_PATH)
+    seed = contract.inputs["random_seed"]
+    assert seed.required is False, "blank must stay legal - it is the AUTO request"
+    assert seed.default is None
+    validation = seed.validation
+    assert validation is not None, "the admissible domain is no longer deferred"
+    assert validation["kind"] == "whole", "fractional seeds are refused"
+    assert validation["operator"] == "between"
+    assert validation["formula1"] == "1", "0 and negatives are refused"
+    assert validation["formula2"] == "2147483646"
+
+    dv = _dv_for(_wb()["Setup"], seed.cell)
+    assert dv is not None, "the accepted domain is not applied to the sheet"
+    assert dv.type == "whole"
+    assert dv.operator == "between"
+    assert (dv.formula1, dv.formula2) == ("1", "2147483646")
+    assert dv.allow_blank is True, "blank means AUTO and must remain enterable"
+    assert dv.errorStyle == "stop"
 
 
 # --- 20-23. nothing from a later phase --------------------------------------

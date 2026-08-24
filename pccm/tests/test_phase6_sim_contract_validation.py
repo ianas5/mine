@@ -1,0 +1,1261 @@
+#!/usr/bin/env python3
+"""PCCM Phase 6 Step-1 negative tests for the simulation contract.
+
+`spec/sim_contract.yaml` is the sixth authority. Two things have to be enforced,
+not merely documented:
+
+  AUTHORITY  the contract must ENCODE what Step 0 settled, not choose it. Every
+             RNG constant, jump element, Cheng literal, expression order,
+             comparison operator, version ownership and digest field is checked
+             against a locked constant in `sim_loader.py`. A ONE-TOKEN mutation
+             must fail.
+
+  BOUNDARY   the contract must not acquire authority it was not given. The
+             admissible seed range belongs to `input_contract.yaml`, the business
+             iteration minimum belongs there too, and every oracle comparison
+             tolerance belongs to the evidence policy outside the contract. A
+             second copy of any of them is the drift this architecture prevents.
+
+A validator that cannot detect a one-token authority mutation is not sufficient,
+so every rule below plants a defect and asserts the refusal fires.
+
+NO VBA IS EXECUTED HERE, and nothing simulates.
+
+Runs standalone or under pytest.
+"""
+
+from __future__ import annotations
+
+import copy
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any, Callable
+
+import yaml
+
+PCCM_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PCCM_ROOT / "builder"))
+
+from pccm_builder import (  # noqa: E402
+    SimContractError,
+    StructureContractError,
+    load_contract,
+    load_driver_contract,
+    load_sim_contract,
+    load_spec,
+    load_structure_contract,
+    validate_sim_against,
+)
+
+SPEC_PATH = PCCM_ROOT / "spec" / "workbook.yaml"
+CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
+DRIVERS_PATH = PCCM_ROOT / "spec" / "driver_contract.yaml"
+STRUCTURE_PATH = PCCM_ROOT / "spec" / "structure_contract.yaml"
+CALC_PATH = PCCM_ROOT / "spec" / "calc_contract.yaml"
+SIM_PATH = PCCM_ROOT / "spec" / "sim_contract.yaml"
+
+_BASE: dict[str, Any] | None = None
+_STRUCTURE_BASE: dict[str, Any] | None = None
+
+
+def _base() -> dict[str, Any]:
+    global _BASE
+    if _BASE is None:
+        _BASE = yaml.safe_load(SIM_PATH.read_text(encoding="utf-8"))
+    return copy.deepcopy(_BASE)
+
+
+def _structure_base() -> dict[str, Any]:
+    global _STRUCTURE_BASE
+    if _STRUCTURE_BASE is None:
+        _STRUCTURE_BASE = yaml.safe_load(STRUCTURE_PATH.read_text(encoding="utf-8"))
+    return copy.deepcopy(_STRUCTURE_BASE)
+
+
+def _write(data: dict[str, Any], tmp: str, name: str = "broken.yaml") -> Path:
+    path = Path(tmp) / name
+    path.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    return path
+
+
+def _rejected(mutate: Callable[[dict[str, Any]], None], reason: str) -> None:
+    """The mutated contract must fail at load time."""
+    data = _base()
+    mutate(data)
+    with tempfile.TemporaryDirectory(prefix="pccm-badsim-") as tmp:
+        path = _write(data, tmp)
+        try:
+            load_sim_contract(path)
+        except SimContractError:
+            return
+        except Exception as error:  # noqa: BLE001
+            raise AssertionError(
+                f"{reason}: raised {type(error).__name__} instead of SimContractError"
+            ) from error
+    raise AssertionError(f"{reason}: an invalid simulation contract was silently accepted")
+
+
+def _rejected_cross(mutate: Callable[[dict[str, Any]], None], reason: str) -> None:
+    """The contract must fail CROSS validation against the owning authorities."""
+    data = _base()
+    with tempfile.TemporaryDirectory(prefix="pccm-badsim-") as tmp:
+        sim = load_sim_contract(_write(data, tmp))
+        contract_doc = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+        mutate(contract_doc)
+        broken = _write(contract_doc, tmp, "broken_input.yaml")
+        try:
+            validate_sim_against(
+                sim,
+                load_spec(SPEC_PATH),
+                load_contract(broken),
+                load_driver_contract(DRIVERS_PATH),
+                load_structure_contract(STRUCTURE_PATH),
+                yaml.safe_load(CALC_PATH.read_text(encoding="utf-8")),
+            )
+        except SimContractError:
+            return
+        except Exception as error:  # noqa: BLE001
+            raise AssertionError(
+                f"{reason}: raised {type(error).__name__} instead of SimContractError"
+            ) from error
+    raise AssertionError(f"{reason}: a broken authority boundary was silently accepted")
+
+
+def _structure_rejected(mutate: Callable[[dict[str, Any]], None], reason: str) -> None:
+    data = _structure_base()
+    mutate(data)
+    with tempfile.TemporaryDirectory(prefix="pccm-badstruct-") as tmp:
+        path = _write(data, tmp)
+        try:
+            load_structure_contract(path)
+        except StructureContractError:
+            return
+        except Exception as error:  # noqa: BLE001
+            raise AssertionError(
+                f"{reason}: raised {type(error).__name__} instead of StructureContractError"
+            ) from error
+    raise AssertionError(f"{reason}: an invalid structure contract was silently accepted")
+
+
+# ===========================================================================
+# the control that makes every other control meaningful
+# ===========================================================================
+def test_00_the_unmutated_contract_loads() -> None:
+    """If the base contract failed, every rejection below would prove nothing."""
+    with tempfile.TemporaryDirectory(prefix="pccm-goodsim-") as tmp:
+        load_sim_contract(_write(_base(), tmp))
+
+
+# ===========================================================================
+# shape and parser boundary
+# ===========================================================================
+def test_01_a_missing_section_is_rejected() -> None:
+    for section in ("rng", "cheng", "risk", "sim_data", "result_digest", "versions",
+                    "iterations", "authority_references"):
+        _rejected(lambda d, s=section: d.pop(s), f"missing section {section}")
+
+
+def test_02_a_wrong_document_version_is_rejected() -> None:
+    _rejected(lambda d: d.__setitem__("sim_contract_version", "2.0.0"), "wrong document version")
+
+
+def test_03_a_duplicate_key_is_rejected_at_the_parser_boundary() -> None:
+    text = SIM_PATH.read_text(encoding="utf-8")
+    doubled = text.replace(
+        "sim_contract_version: \"1.0.0\"",
+        "sim_contract_version: \"1.0.0\"\nsim_contract_version: \"9.9.9\"",
+        1,
+    )
+    with tempfile.TemporaryDirectory(prefix="pccm-dupsim-") as tmp:
+        path = Path(tmp) / "dup.yaml"
+        path.write_text(doubled, encoding="utf-8")
+        try:
+            load_sim_contract(path)
+        except SimContractError as error:
+            assert "duplicate key" in str(error)
+            return
+    raise AssertionError("a duplicate key was silently resolved last-wins")
+
+
+# ===========================================================================
+# B. authoritative constants
+# ===========================================================================
+def test_04_a_wrong_rng_constant_is_rejected() -> None:
+    for key in ("m1", "m2", "a12", "a13n", "a21", "a23n"):
+        _rejected(
+            lambda d, k=key: d["rng"]["constants"].__setitem__(k, d["rng"]["constants"][k] + 1),
+            f"rng constant {key} off by one",
+        )
+
+
+def test_05_a_perturbed_norm_is_rejected() -> None:
+    import math
+
+    _rejected(
+        lambda d: d["rng"]["constants"].__setitem__(
+            "norm", math.nextafter(d["rng"]["constants"]["norm"], math.inf)
+        ),
+        "norm perturbed by one ULP",
+    )
+
+
+def test_06_an_extra_rng_constant_is_rejected() -> None:
+    _rejected(lambda d: d["rng"]["constants"].__setitem__("a11", 1), "unknown rng constant")
+
+
+def test_07_a_reversed_state_order_is_rejected() -> None:
+    _rejected(
+        lambda d: d["rng"]["state"].__setitem__("order", list(reversed(d["rng"]["state"]["order"]))),
+        "state order reversed",
+    )
+    _rejected(
+        lambda d: d["rng"]["state"].__setitem__("orientation", "newest_first"),
+        "state orientation flipped",
+    )
+
+
+def test_08_a_mutated_uniform_combination_is_rejected() -> None:
+    _rejected(
+        lambda d: d["rng"]["combination"].__setitem__(
+            "rule", "if p1 < p2 then u = (p1 - p2 + m1) * norm else u = (p1 - p2) * norm"
+        ),
+        "combination comparison changed from <= to <",
+    )
+    _rejected(
+        lambda d: d["rng"]["combination"].__setitem__("comparison_operator", "less_than"),
+        "combination operator relabelled",
+    )
+
+
+def test_09_an_inclusive_uniform_endpoint_is_rejected() -> None:
+    for key in ("lower_inclusive", "upper_inclusive"):
+        _rejected(
+            lambda d, k=key: d["rng"]["output_domain"].__setitem__(k, True),
+            f"uniform endpoint {key} made inclusive",
+        )
+
+
+def test_10_permitting_naive_floating_modulo_is_rejected() -> None:
+    _rejected(
+        lambda d: d["rng"]["arithmetic"].__setitem__("naive_floating_modulo_permitted", True),
+        "naive floating modulo permitted",
+    )
+
+
+# ===========================================================================
+# C. Cheng formulation
+# ===========================================================================
+def test_11_log4_substituted_for_the_literal_is_rejected() -> None:
+    def mutate(d):
+        lines = d["cheng"]["bb"]["per_attempt"]
+        d["cheng"]["bb"]["per_attempt"] = [
+            line.replace("1.3862944", "log(4)") for line in lines
+        ]
+
+    _rejected(mutate, "log(4) substituted for the locked literal 1.3862944")
+    _rejected(
+        lambda d: d["cheng"]["bb"]["literals"].__setitem__(0, "log(4)"),
+        "literal list records log(4) instead of 1.3862944",
+    )
+
+
+def test_12_the_log1p_formulation_is_rejected() -> None:
+    def mutate(d):
+        d["cheng"]["bb"]["per_attempt"] = [
+            line.replace("log(u1 / (1 - u1))", "log(u1) - log1p(-u1)")
+            for line in d["cheng"]["bb"]["per_attempt"]
+        ]
+
+    _rejected(mutate, "log1p formulation substituted for the locked logit form")
+    _rejected(
+        lambda d: d["cheng"].__setitem__("logit_form", "log(u1) - log1p(-u1)"),
+        "logit_form itself replaced by the rejected alternative",
+    )
+
+
+def test_13_a_bb_bc_boundary_mutation_is_rejected() -> None:
+    _rejected(
+        lambda d: d["distributions"]["beta_pert"]["dispatch"].__setitem__(
+            "rule", "min(alpha, beta) >= 1 -> BB; otherwise BC"
+        ),
+        "dispatch boundary moved from > to >=",
+    )
+    _rejected(
+        lambda d: d["distributions"]["beta_pert"]["dispatch"].__setitem__(
+            "equality_belongs_to", "BB"
+        ),
+        "equality reassigned from BC to BB",
+    )
+    _rejected(
+        lambda d: d["distributions"]["beta_pert"]["dispatch"].__setitem__(
+            "comparison_operator", "greater_than_or_equal"
+        ),
+        "dispatch comparison operator relabelled",
+    )
+
+
+def test_14_an_inverted_bc_orientation_is_rejected() -> None:
+    """The silent defect: a valid Beta variate of the MIRRORED distribution."""
+    _rejected(
+        lambda d: d["cheng"]["bc"]["orientation"].update(
+            {"a": "min(alpha0, beta0)", "b": "max(alpha0, beta0)"}
+        ),
+        "BC orientation inverted to match BB",
+    )
+    _rejected(
+        lambda d: d["cheng"]["bb"]["orientation"].update(
+            {"a": "max(alpha0, beta0)", "b": "min(alpha0, beta0)"}
+        ),
+        "BB orientation inverted to match BC",
+    )
+
+
+def test_15_a_reordered_cheng_expression_list_is_rejected() -> None:
+    def mutate(d):
+        lines = d["cheng"]["bb"]["per_attempt"]
+        lines[3], lines[4] = lines[4], lines[3]
+
+    _rejected(mutate, "BB per-attempt expression order swapped")
+
+
+def test_16_a_mutated_bc_literal_is_rejected() -> None:
+    for index, replacement in ((0, "1/72"), (1, "3/72"), (2, "7/9")):
+        _rejected(
+            lambda d, i=index, r=replacement: d["cheng"]["bc"]["literals"].__setitem__(i, r),
+            f"BC literal {index} expressed as the fraction {replacement}",
+        )
+
+
+def test_17_a_changed_attempt_uniform_count_is_rejected() -> None:
+    for value in (1, 3):
+        _rejected(
+            lambda d, v=value: d["cheng"].__setitem__(
+                "uniforms_per_non_degenerate_proposal_attempt", v
+            ),
+            f"proposal attempt consuming {value} uniforms",
+        )
+
+
+def test_18_a_broken_source_binding_is_rejected() -> None:
+    _rejected(
+        lambda d: d["cheng"]["source_binding"].__setitem__("functions_sha256", "not-a-digest"),
+        "malformed Cheng source binding",
+    )
+
+
+def test_19_treating_the_vectors_as_a_runtime_table_is_rejected() -> None:
+    _rejected(
+        lambda d: d["cheng"]["conformance_vectors"].__setitem__("runtime_lookup_table", True),
+        "conformance vectors relabelled as a runtime lookup table",
+    )
+
+
+# ===========================================================================
+# D. jump
+# ===========================================================================
+def test_20_a_single_altered_jump_element_is_rejected() -> None:
+    for matrix in ("a1_p127", "a2_p127"):
+        for i in range(3):
+            for j in range(3):
+                _rejected(
+                    lambda d, m=matrix, r=i, c=j: d["jump"][m][r].__setitem__(
+                        c, d["jump"][m][r][c] + 1
+                    ),
+                    f"{matrix}[{i}][{j}] off by one",
+                )
+
+
+def test_21_a_malformed_jump_matrix_is_rejected() -> None:
+    _rejected(lambda d: d["jump"].__setitem__("a1_p127", [[1, 2], [3, 4], [5, 6]]),
+              "jump matrix with the wrong width")
+    _rejected(lambda d: d["jump"].__setitem__("a1_p127", [[1, 2, 3], [4, 5, 6]]),
+              "jump matrix with the wrong height")
+
+
+def test_22_a_changed_jump_exponent_or_decomposition_is_rejected() -> None:
+    _rejected(lambda d: d["jump"].__setitem__("stream_spacing_exponent", 76),
+              "stream spacing changed to 2^76")
+    _rejected(lambda d: d["jump"].__setitem__("substream_spacing_exponent", 76),
+              "substreams reintroduced")
+    _rejected(lambda d: d["jump"].__setitem__("decomposition_h", 1 << 16),
+              "MultModM H changed")
+    _rejected(lambda d: d["jump"].__setitem__("naive_floating_matrix_product_permitted", True),
+              "naive floating matrix product permitted")
+
+
+# ===========================================================================
+# E. seed authority
+# ===========================================================================
+def test_23_a_seed_range_copied_into_the_sim_contract_is_rejected() -> None:
+    _rejected(
+        lambda d: d["seeding"].__setitem__("seed_min", 1),
+        "seed minimum duplicated into the simulation contract",
+    )
+    _rejected(
+        lambda d: d["seeding"].__setitem__("seed_max", 2147483646),
+        "seed maximum duplicated into the simulation contract",
+    )
+    _rejected(
+        lambda d: d["seeding"].__setitem__("admissible_seed_domain", [1, 2147483646]),
+        "the admissible domain restated in the simulation contract",
+    )
+
+
+def test_24_a_bare_seed_maximum_anywhere_else_is_rejected() -> None:
+    _rejected(
+        lambda d: d["statistics"].__setitem__("note", 2147483646),
+        "the seed-domain maximum appearing outside the nonce cycle",
+    )
+
+
+def test_25_a_wrong_input_contract_seed_range_is_rejected() -> None:
+    _rejected_cross(
+        lambda d: d["inputs"]["random_seed"]["validation"].__setitem__("formula2", "2147483647"),
+        "input-contract seed maximum widened past the accepted domain",
+    )
+    _rejected_cross(
+        lambda d: d["inputs"]["random_seed"]["validation"].__setitem__("formula1", "0"),
+        "input-contract seed minimum lowered to 0",
+    )
+    _rejected_cross(
+        lambda d: d["inputs"]["random_seed"].__setitem__("validation", None),
+        "input-contract seed validation removed",
+    )
+    _rejected_cross(
+        lambda d: d["inputs"]["random_seed"]["validation"].__setitem__(
+            "operator", "greaterThanOrEqual"
+        ),
+        "input-contract seed rule reduced to a minimum only",
+    )
+
+
+def test_26_forbidding_a_blank_seed_is_rejected() -> None:
+    """Blank is not an omission. It is the AUTO request."""
+    _rejected_cross(
+        lambda d: d["inputs"]["random_seed"]["validation"].__setitem__("allow_blank", False),
+        "blank forbidden on the Random Seed input",
+    )
+    _rejected_cross(
+        lambda d: d["inputs"]["random_seed"].__setitem__("required", True),
+        "Random Seed made mandatory",
+    )
+
+
+def test_27_a_mixer_or_alternate_seed_expansion_is_rejected() -> None:
+    _rejected(
+        lambda d: d["seeding"]["scalar_to_state"].__setitem__("mixer", "splitmix64"),
+        "a seed mixer introduced",
+    )
+    _rejected(
+        lambda d: d["seeding"]["scalar_to_state"].__setitem__("rule", "modular_expansion"),
+        "the rejected D6-05 expansion selected",
+    )
+
+
+# ===========================================================================
+# F. nonce semantics
+# ===========================================================================
+def test_28_a_reordered_nonce_lifecycle_is_rejected() -> None:
+    def mutate(d):
+        order = d["seeding"]["nonce_lifecycle"]["order"]
+        i = order.index("read_current_auto_nonce")
+        j = order.index("persist_auto_nonce_plus_one")
+        order[i], order[j] = order[j], order[i]
+
+    _rejected(mutate, "nonce lifecycle reordered to advance before reading")
+
+
+def test_29_a_lifecycle_step_dropped_is_rejected() -> None:
+    _rejected(
+        lambda d: d["seeding"]["nonce_lifecycle"]["order"].remove("persist_auto_nonce_plus_one"),
+        "the nonce advance step removed",
+    )
+
+
+def test_30_making_a_post_allocation_failure_free_is_rejected() -> None:
+    _rejected(
+        lambda d: d["seeding"]["nonce_lifecycle"].__setitem__(
+            "failure_after_allocation_consumes_nonce", False
+        ),
+        "an allocated seed reused after a failure",
+    )
+    _rejected(
+        lambda d: d["seeding"]["nonce_lifecycle"].__setitem__(
+            "failure_before_allocation_consumes_nonce", True
+        ),
+        "a validation refusal spending a nonce",
+    )
+
+
+def test_31_a_mutated_exhaustion_value_is_rejected() -> None:
+    _rejected(
+        lambda d: d["seeding"]["nonce_lifecycle"].__setitem__("exhausted_value", 2147483645),
+        "exhaustion value moved",
+    )
+    _rejected(
+        lambda d: d["seeding"]["nonce_lifecycle"].__setitem__("on_exhaustion", "WRAP"),
+        "wrapping at exhaustion",
+    )
+    _rejected(
+        lambda d: d["seeding"]["nonce_lifecycle"].__setitem__("wrap_permitted", True),
+        "wrap explicitly permitted",
+    )
+
+
+def test_32_stepped_multiplication_as_the_authority_is_rejected() -> None:
+    _rejected(
+        lambda d: d["seeding"]["auto"].__setitem__("stepped_multiplication_is_the_authority", True),
+        "O(nonce) stepped multiplication declared the authority",
+    )
+    _rejected(
+        lambda d: d["seeding"]["auto"].__setitem__("mapping_kind", "stepped_multiplication"),
+        "mapping kind changed away from modular exponentiation",
+    )
+
+
+def test_33_claiming_cross_workbook_uniqueness_is_rejected() -> None:
+    _rejected(
+        lambda d: d["seeding"]["auto"].__setitem__("cross_workbook_uniqueness_claimed", True),
+        "cross-workbook AUTO uniqueness claimed",
+    )
+    _rejected(
+        lambda d: d["seeding"]["auto"].__setitem__("timestamp_derived_uniqueness_permitted", True),
+        "timestamp-derived uniqueness permitted",
+    )
+
+
+# ===========================================================================
+# G. stream assignment
+# ===========================================================================
+def test_34_physical_row_order_is_rejected() -> None:
+    _rejected(
+        lambda d: d["stream_assignment"].__setitem__("physical_row_order_permitted", True),
+        "physical row order permitted for stream assignment",
+    )
+    _rejected(
+        lambda d: d["stream_assignment"].__setitem__("policy", "physical_row_order"),
+        "stream assignment policy set to physical row order",
+    )
+    _rejected(
+        lambda d: d["accumulation"].__setitem__("physical_row_order_permitted", True),
+        "physical row order permitted for accumulation",
+    )
+
+
+def test_35_numeric_id_sorting_is_rejected() -> None:
+    _rejected(
+        lambda d: d["stream_assignment"].__setitem__(
+            "numeric_suffix_interpretation_permitted", True
+        ),
+        "numeric interpretation of the Permanent-ID suffix permitted",
+    )
+    _rejected(
+        lambda d: d["stream_assignment"].__setitem__("permanent_id_comparison", "numeric"),
+        "Permanent-ID comparison changed to numeric",
+    )
+    _rejected(
+        lambda d: d["stream_assignment"].__setitem__(
+            "permanent_id_comparison", "locale_collation"
+        ),
+        "Permanent-ID comparison changed to locale collation",
+    )
+
+
+def test_36_a_wrong_component_kind_set_or_order_is_rejected() -> None:
+    def reorder(d):
+        kinds = d["components"]["kinds"]
+        kinds[1], kinds[2] = kinds[2], kinds[1]
+
+    _rejected(reorder, "component kind order swapped")
+    _rejected(
+        lambda d: d["components"]["kinds"].append(
+            {"key": "RISK_SEVERITY", "driver_kind": "risk", "per_driver": 1, "role": "severity"}
+        ),
+        "duplicate component kind",
+    )
+    _rejected(
+        lambda d: d["components"]["kinds"][0].__setitem__("per_driver", 2),
+        "a cost line given two sampling streams",
+    )
+    _rejected(
+        lambda d: d["stream_assignment"].__setitem__("sort_keys", ["permanent_id", "role"]),
+        "component kind dropped from the sort key",
+    )
+
+
+def test_37_hiding_the_accepted_stream_shift_consequence_is_rejected() -> None:
+    _rejected(
+        lambda d: d["stream_assignment"].__setitem__(
+            "accepted_consequence", "stream_identities_are_stable_across_driver_insertion"
+        ),
+        "the accepted stream-shift consequence contradicted",
+    )
+
+
+# ===========================================================================
+# H. D6-18
+# ===========================================================================
+def test_38_a_conditional_severity_policy_is_rejected() -> None:
+    _rejected(
+        lambda d: d["risk"]["severity"].__setitem__("invocation_policy", "conditional"),
+        "severity invocation made conditional on occurrence",
+    )
+    _rejected(
+        lambda d: d["risk"]["severity"].__setitem__(
+            "sampler_invoked_every_risk_iteration", False
+        ),
+        "severity sampler no longer invoked every iteration",
+    )
+
+
+def test_39_the_withdrawn_advancement_wording_is_rejected() -> None:
+    _rejected(
+        lambda d: d["risk"]["severity"].__setitem__(
+            "note", "the severity stream advances once per iteration"
+        ),
+        "the withdrawn 'advances once per iteration' wording reintroduced",
+    )
+
+
+def test_40_a_degenerate_driver_consuming_a_uniform_is_rejected() -> None:
+    _rejected(
+        lambda d: d["distributions"]["degenerate"].__setitem__("uniforms_consumed", 1),
+        "degenerate driver consuming one uniform",
+    )
+    _rejected(
+        lambda d: d["risk"]["severity"].__setitem__("degenerate_consumption", 1),
+        "degenerate severity consuming one uniform",
+    )
+    _rejected(
+        lambda d: d["distributions"]["degenerate"].__setitem__("stream_state_changed", True),
+        "degenerate driver advancing its stream",
+    )
+    _rejected(
+        lambda d: d["distributions"]["degenerate"].__setitem__(
+            "detected_before_parameterisation", False
+        ),
+        "degeneracy detected after parameterisation, where 0/0 can arise",
+    )
+
+
+def test_41_a_non_strict_occurrence_comparison_is_rejected() -> None:
+    _rejected(
+        lambda d: d["risk"]["occurrence"].__setitem__(
+            "comparison_operator", "less_than_or_equal"
+        ),
+        "occurrence comparison weakened to <=",
+    )
+    _rejected(
+        lambda d: d["risk"]["occurrence"].__setitem__(
+            "rule", "occurred = u_occurrence <= probability"
+        ),
+        "occurrence rule weakened to <=",
+    )
+
+
+def test_42_folding_probability_into_k_factors_is_rejected() -> None:
+    for key in ("probability_folded_into_knom", "probability_folded_into_kpv"):
+        _rejected(lambda d, k=key: d["risk"].__setitem__(k, True), f"{key} enabled")
+
+
+# ===========================================================================
+# I. result digest
+# ===========================================================================
+def test_43_a_digest_tag_mutation_is_rejected() -> None:
+    _rejected(lambda d: d["result_digest"].__setitem__("stream_tag", "PCCM-FP"),
+              "result stream tag collided with the input fingerprint tag")
+    _rejected(lambda d: d["result_digest"].__setitem__("section_name", "RESULTS"),
+              "digest section renamed")
+
+
+def test_44_a_digest_field_order_mutation_is_rejected() -> None:
+    def swap(d):
+        fields = d["result_digest"]["record_fields"]
+        fields[1], fields[2] = fields[2], fields[1]
+
+    _rejected(swap, "nominal and PV swapped in the digest record")
+    _rejected(
+        lambda d: d["result_digest"]["record_fields"].remove("iteration_index"),
+        "iteration index dropped from the digest record",
+    )
+    _rejected(
+        lambda d: d["result_digest"].__setitem__("record_field_count", 4),
+        "digest record field count disagreeing with the field list",
+    )
+    _rejected(
+        lambda d: d["result_digest"].__setitem__("iteration_index_origin", 0),
+        "digest iteration index rebased to 0",
+    )
+
+
+def test_45_sorting_samples_for_the_digest_is_rejected() -> None:
+    _rejected(
+        lambda d: d["result_digest"].__setitem__("samples_sorted_for_digest", True),
+        "samples sorted before digesting, destroying iteration identity",
+    )
+    _rejected(
+        lambda d: d["result_digest"].__setitem__("order_source", "sorted_ascending"),
+        "digest order taken from the sorted copies",
+    )
+
+
+def test_46_a_digest_version_ownership_mutation_is_rejected() -> None:
+    _rejected(
+        lambda d: d["result_digest"].__setitem__("version_field_source", "result_digest_version"),
+        "a third result-digest version introduced",
+    )
+    _rejected(
+        lambda d: d["versions"].__setitem__("result_digest_version_source", "rng_version"),
+        "digest version reassigned to RNG_VERSION",
+    )
+
+
+def test_47_an_approximate_digest_comparison_is_rejected() -> None:
+    _rejected(lambda d: d["result_digest"].__setitem__("equality", "approximate"),
+              "digest equality weakened to approximate")
+    _rejected(lambda d: d["result_digest"].__setitem__("tolerance", 1e-12),
+              "a tolerance attached to the digest")
+
+
+# ===========================================================================
+# J. request fingerprint
+# ===========================================================================
+def test_48_sim_before_risk_is_rejected() -> None:
+    _rejected(
+        lambda d: d["request_fingerprint"].__setitem__(
+            "section_order", ["HEADER", "COST", "SIM", "RISK"]
+        ),
+        "SIM inserted before RISK, breaking the Phase-5 prefix",
+    )
+    _rejected(
+        lambda d: d["request_fingerprint"].__setitem__(
+            "section_order", ["SIM", "HEADER", "COST", "RISK"]
+        ),
+        "SIM placed first",
+    )
+
+
+def test_49_adding_selected_confidence_level_to_the_request_is_rejected() -> None:
+    _rejected(
+        lambda d: d["request_fingerprint"]["sim_section"]["fields"].append(
+            "selected_confidence_level"
+        ),
+        "Selected Confidence Level added to the execution fingerprint",
+    )
+
+
+def test_50_adding_run_scoped_identities_to_the_request_is_rejected() -> None:
+    for field in ("effective_seed", "auto_nonce", "run_id"):
+        _rejected(
+            lambda d, f=field: d["request_fingerprint"]["sim_section"]["fields"].append(f),
+            f"{field} added to the request fingerprint",
+        )
+        _rejected(
+            lambda d, f=field: d["request_fingerprint"]["sim_section"]["excluded_fields"].remove(f),
+            f"{field} dropped from the exclusion list",
+        )
+
+
+def test_51_hashing_the_analytical_fingerprint_as_a_field_is_rejected() -> None:
+    _rejected(
+        lambda d: d["request_fingerprint"]["sim_section"].__setitem__(
+            "analytical_fingerprint_hashed_as_a_field", True
+        ),
+        "the analytical fingerprint hashed as a SIM field instead of extended",
+    )
+
+
+def test_52_modifying_the_existing_sections_is_rejected() -> None:
+    _rejected(
+        lambda d: d["request_fingerprint"].__setitem__("existing_sections_modified", True),
+        "existing HEADER/COST/RISK bytes declared modifiable",
+    )
+    _rejected(
+        lambda d: d["request_fingerprint"].__setitem__(
+            "analytical_prefix", ["HEADER", "COST", "RISK", "SIM"]
+        ),
+        "SIM folded into the analytical prefix",
+    )
+
+
+# ===========================================================================
+# K. simulation state
+# ===========================================================================
+def test_53_a_fourth_simulation_state_is_rejected() -> None:
+    _rejected(
+        lambda d: d["sim_state"]["states"].append("NOT SIMULATED"),
+        "a fourth simulation state added",
+    )
+    _rejected(
+        lambda d: d["label_sets"]["sim_state"].append("UNSELECTED"),
+        "the rejected UNSELECTED state added to the label set",
+    )
+    _rejected(
+        lambda d: d["sim_state"].__setitem__("never_evaluated_status", "NOT SIMULATED"),
+        "a fourth state introduced through the never-evaluated field",
+    )
+
+
+def test_54_publishing_a_partial_distribution_is_rejected() -> None:
+    _rejected(
+        lambda d: d["sim_state"]["on_failure"].__setitem__("partial_distribution_published", True),
+        "partial publication on failure",
+    )
+    _rejected(
+        lambda d: d["sim_state"]["on_failure"].__setitem__("prior_sim_data_preserved", False),
+        "a failure destroying the prior successful _SimData",
+    )
+
+
+def test_55_silent_phase5_recalculation_is_rejected() -> None:
+    _rejected(
+        lambda d: d["prerequisite"].__setitem__("silent_recalculation_permitted", True),
+        "Phase 6 permitted to recalculate Phase 5 silently",
+    )
+    _rejected(
+        lambda d: d["prerequisite"].__setitem__("phase5_analytical_state_required", "STALE"),
+        "the Phase-5 prerequisite weakened",
+    )
+
+
+# ===========================================================================
+# L. D6-08
+# ===========================================================================
+def test_56_a_free_ceiling_literal_that_disagrees_with_the_layout_is_rejected() -> None:
+    _rejected(
+        lambda d: d["iterations"]["technical_ceiling"].__setitem__(
+            "max_iterations_representable", 1000000
+        ),
+        "a plausible-looking ceiling literal that the layout does not produce",
+    )
+    _rejected(
+        lambda d: d["iterations"]["technical_ceiling"].__setitem__("reserved_rows_h", 30),
+        "H declared as a free constant disagreeing with the layout",
+    )
+
+
+def test_57_a_layout_change_that_does_not_move_the_ceiling_is_rejected() -> None:
+    """Adding a reserved row without recomputing the ceiling is the exact defect
+    a derived constant exists to prevent."""
+
+    def mutate(d):
+        d["sim_data"]["reserved_rows"].append({"rows": [33, 33], "purpose": "smuggled row"})
+
+    _rejected(mutate, "an extra reserved row with the ceiling left unchanged")
+
+
+def test_58_a_gap_or_overlap_in_the_reserved_rows_is_rejected() -> None:
+    def gap(d):
+        d["sim_data"]["reserved_rows"][2]["rows"] = [4, 4]
+
+    def overlap(d):
+        d["sim_data"]["reserved_rows"][2]["rows"] = [2, 3]
+
+    _rejected(gap, "a gap in the reserved-row tiling")
+    _rejected(overlap, "an overlap in the reserved-row tiling")
+
+
+def test_59_a_footer_that_silently_reduces_capacity_is_rejected() -> None:
+    _rejected(
+        lambda d: d["sim_data"]["iteration_records"].__setitem__("footer_rows", 1),
+        "a footer row below the iteration records",
+    )
+
+
+def test_60_a_business_iteration_maximum_is_rejected() -> None:
+    _rejected(
+        lambda d: d["iterations"].__setitem__("business_maximum", 1000000),
+        "a business maximum invented for iterations",
+    )
+    _rejected(
+        lambda d: d["iterations"].__setitem__("business_minimum", 1000),
+        "the business minimum duplicated out of the input contract",
+    )
+    _rejected(
+        lambda d: d["iterations"]["technical_ceiling"].__setitem__(
+            "presented_as_business_validation", True
+        ),
+        "the technical ceiling presented as business validation",
+    )
+
+
+def test_61_a_ceiling_refusal_that_consumes_a_nonce_is_rejected() -> None:
+    _rejected(
+        lambda d: d["iterations"]["technical_ceiling"].__setitem__("consumes_auto_nonce", True),
+        "a storage-ceiling refusal consuming an AUTO nonce",
+    )
+    _rejected(
+        lambda d: d["iterations"]["technical_ceiling"]["refusal_precedes"].remove(
+            "auto_seed_allocation"
+        ),
+        "the refusal no longer required to precede seed allocation",
+    )
+
+
+def test_62_a_misplaced_iteration_header_row_is_rejected() -> None:
+    _rejected(
+        lambda d: d["sim_data"]["iteration_records"].__setitem__("header_row", 31),
+        "iteration header row disagreeing with the reserved-row count",
+    )
+    _rejected(
+        lambda d: d["sim_data"]["iteration_records"].__setitem__("first_iteration_row", 34),
+        "a gap between the header row and the first iteration row",
+    )
+
+
+def test_63_a_sorted_or_extended_sim_data_table_is_rejected() -> None:
+    _rejected(
+        lambda d: d["sim_data"]["iteration_records"].__setitem__("sorted", True),
+        "_SimData sorted, destroying iteration identity",
+    )
+    _rejected(
+        lambda d: d["sim_data"]["iteration_records"]["columns"].append(
+            {"key": "driver_samples", "column": "E", "header": "Samples", "value_type": "double"}
+        ),
+        "per-driver samples added to _SimData",
+    )
+    _rejected(
+        lambda d: d["sim_data"]["excluded"].remove("per_driver_samples"),
+        "the per-driver-sample exclusion dropped",
+    )
+
+
+def test_64_a_run_identity_field_dropped_is_rejected() -> None:
+    for key in ("run_id", "effective_seed", "consumed_auto_nonce", "result_digest",
+                "request_fingerprint"):
+        def mutate(d, k=key):
+            fields = d["sim_data"]["run_identity"]["fields"]
+            index = next(i for i, f in enumerate(fields) if f["key"] == k)
+            fields.pop(index)
+            for offset, field in enumerate(fields):
+                field["row"] = 8 + offset
+            d["sim_data"]["run_identity"]["last_row"] = 8 + len(fields) - 1
+
+        _rejected(mutate, f"run identity field {key} dropped")
+
+
+# ===========================================================================
+# M. versions
+# ===========================================================================
+def test_65_a_change_owned_by_no_version_is_rejected() -> None:
+    for owner in ("rng_version", "sim_method_version"):
+        _rejected(
+            lambda d, o=owner: d["versions"]["bump_ownership"][o].pop(),
+            f"a change removed from the {owner} bump list, leaving it ownerless",
+        )
+
+
+def test_66_a_change_moved_to_the_wrong_version_is_rejected() -> None:
+    def mutate(d):
+        bumps = d["versions"]["bump_ownership"]
+        bumps["rng_version"].append(
+            bumps["sim_method_version"].pop(
+                bumps["sim_method_version"].index(
+                    "cheng_formulation_literals_or_expression_order"
+                )
+            )
+        )
+
+    _rejected(mutate, "the Cheng formulation reassigned from SIM_METHOD to RNG_VERSION")
+
+
+def test_67_an_invalid_version_value_is_rejected() -> None:
+    for value in (0, -1, "1", 1.0, True):
+        _rejected(lambda d, v=value: d["versions"].__setitem__("rng_version", v),
+                  f"rng_version = {value!r}")
+
+
+# ===========================================================================
+# N. tolerance and boundaries
+# ===========================================================================
+def test_68_a_comparison_tolerance_anywhere_is_rejected() -> None:
+    _rejected(
+        lambda d: d["statistics"].__setitem__("comparison_tolerance", 1e-12),
+        "a comparison tolerance added to statistics",
+    )
+    _rejected(
+        lambda d: d["cheng"].__setitem__("output_tolerance", 1e-11),
+        "a Cheng output tolerance added",
+    )
+    _rejected(
+        lambda d: d["rng"].__setitem__("ulp_tolerance", 4),
+        "a ULP tolerance added to the RNG section",
+    )
+    _rejected(
+        lambda d: d["statistics"].__setitem__("note", "compare within tolerance 1e-10"),
+        "a tolerance smuggled into a prose field",
+    )
+
+
+def test_69_a_missing_or_extra_authority_reference_is_rejected() -> None:
+    _rejected(lambda d: d["authority_references"].pop(0), "an authority reference deleted")
+    _rejected(
+        lambda d: d["authority_references"].append(
+            {"concept": "invented", "owner": "input_contract.yaml", "locator": "inputs"}
+        ),
+        "an unexpected authority reference added",
+    )
+    _rejected(
+        lambda d: d["authority_references"][0].__setitem__("owner", "workbook.yaml"),
+        "an authority reference redirected to the wrong owner",
+    )
+    _rejected(
+        lambda d: d["authority_references"][0].__setitem__("locator", "inputs.does_not_exist"),
+        "an authority reference locator moved",
+    )
+
+
+def test_70_an_unresolvable_authority_locator_fails_cross_validation() -> None:
+    """A reference that points at nothing must fail RESOLUTION, not merely shape.
+
+    The load-time set check (test_69) refuses a locator that differs from the
+    accepted boundary set, so a broken locator cannot reach cross-validation
+    through the YAML. It is injected directly into the parsed contract instead,
+    which is the only way to exercise the resolver itself.
+    """
+    import dataclasses
+
+    from pccm_builder.sim_loader import AuthorityReference
+
+    sim = load_sim_contract(SIM_PATH)
+    broken = dataclasses.replace(
+        sim,
+        authority_references=(
+            AuthorityReference(
+                concept="Random Seed admissible domain",
+                owner="input_contract.yaml",
+                locator="inputs.no_such_input",
+            ),
+        )
+        + sim.authority_references[1:],
+    )
+    try:
+        validate_sim_against(
+            broken,
+            load_spec(SPEC_PATH),
+            load_contract(CONTRACT_PATH),
+            load_driver_contract(DRIVERS_PATH),
+            load_structure_contract(STRUCTURE_PATH),
+            yaml.safe_load(CALC_PATH.read_text(encoding="utf-8")),
+        )
+    except SimContractError as error:
+        assert "does not resolve" in str(error)
+        return
+    raise AssertionError("an unresolvable authority locator was silently accepted")
+
+
+# ===========================================================================
+# O. statistics and contingency
+# ===========================================================================
+def test_71_a_percentile_method_change_is_rejected() -> None:
+    _rejected(
+        lambda d: d["statistics"]["percentile"].__setitem__("method", "nearest_rank"),
+        "percentile method changed away from Hyndman-Fan Type 7",
+    )
+    _rejected(
+        lambda d: d["statistics"]["percentile"]["formula"].__setitem__("h", "n * p"),
+        "the Type-7 h formula mutated",
+    )
+    _rejected(
+        lambda d: d["statistics"]["percentile"]["formula"].__setitem__(
+            "value", "x[lo] + f * (x[hi] - x[lo])"
+        ),
+        "convex interpolation replaced by the overflow-prone difference form",
+    )
+
+
+def test_72_a_population_standard_deviation_is_rejected() -> None:
+    _rejected(
+        lambda d: d["statistics"]["standard_deviation"].__setitem__("divisor", "n"),
+        "population divisor n instead of n-1",
+    )
+    _rejected(
+        lambda d: d["statistics"]["standard_deviation"].__setitem__(
+            "naive_sum_of_squares_permitted", True
+        ),
+        "naive sum of squares permitted",
+    )
+
+
+def test_73_a_forbidden_contingency_baseline_is_rejected() -> None:
+    for baseline in ("simulation_mean", "analytical_expected_total", "a_plus_emv"):
+        _rejected(
+            lambda d, b=baseline: d["contingency"].__setitem__("baseline", b),
+            f"contingency baselined on {baseline}",
+        )
+    _rejected(
+        lambda d: d["contingency"].__setitem__(
+            "formula", "selected_px_total - simulation_mean"
+        ),
+        "contingency formula rebaselined on the simulation mean",
+    )
+
+
+def test_74_making_selected_cl_execution_relevant_is_rejected() -> None:
+    for key in ("enters_simulation_execution", "enters_request_fingerprint",
+                "affects_staleness"):
+        _rejected(
+            lambda d, k=key: d["statistics"]["selected_confidence_level"].__setitem__(k, True),
+            f"Selected Confidence Level made {key}",
+        )
+    _rejected(
+        lambda d: d["statistics"].__setitem__("p10_selectable", True),
+        "P10 made selectable",
+    )
+
+
+def test_75_contracting_deferred_results_scope_is_rejected() -> None:
+    _rejected(
+        lambda d: d["results_minimum"].__setitem__(
+            "annual_simulated_samples_contracted", True
+        ),
+        "annual simulated samples contracted in Step 1",
+    )
+    _rejected(
+        lambda d: d["results_minimum"]["deferred"].remove("Sensitivity"),
+        "Sensitivity removed from the deferred list",
+    )
+
+
+def test_76_a_fourth_distribution_family_is_rejected() -> None:
+    _rejected(
+        lambda d: d["distributions"]["families"].append("Normal"),
+        "a fourth distribution family added",
+    )
+    _rejected(
+        lambda d: d["distributions"]["uniform"].__setitem__("most_likely_used", True),
+        "Most Likely read by the Uniform family",
+    )
+    _rejected(
+        lambda d: d["distributions"]["beta_pert"].__setitem__("lambda", 6),
+        "the PERT lambda changed",
+    )
+
+
+# ===========================================================================
+# P. D6-11 - the scoped forbidden-construct schema
+# ===========================================================================
+def _forbidden(data: dict) -> list:
+    return data["vba"]["forbidden_constructs"]
+
+
+def test_77_the_global_scalar_entry_still_works() -> None:
+    """Backward compatibility: nothing in the accepted contract changed shape."""
+    structure = load_structure_contract(STRUCTURE_PATH)
+    assert "Rnd(" in structure.forbidden_constructs
+    assert "MRG32k3a" in structure.forbidden_constructs
+    assert "RunSimulation" in structure.forbidden_constructs
+    for rule in structure.forbidden_construct_rules:
+        assert rule.is_scoped is False, f"{rule.construct} is scoped before its owner exists"
+        assert rule.forbidden_in("modAnything") is True
+
+
+def test_78_a_valid_synthetic_scoped_entry_is_accepted() -> None:
+    """A scoped exception works ONLY when its owner is a declared module.
+
+    Synthetic on purpose: `modSimRng` does not exist yet, so the real MRG32k3a
+    entry must stay globally forbidden. This fixture proves the schema works
+    without granting anything to code nobody has written.
+    """
+    data = _structure_base()
+    owner = data["vba"]["modules"][0]["name"]
+    _forbidden(data).append({"construct": "SyntheticFutureConstruct", "allowed_in": [owner]})
+    with tempfile.TemporaryDirectory(prefix="pccm-scoped-") as tmp:
+        structure = load_structure_contract(_write(data, tmp))
+    rule = next(
+        r for r in structure.forbidden_construct_rules
+        if r.construct == "SyntheticFutureConstruct"
+    )
+    assert rule.is_scoped is True
+    assert rule.forbidden_in(owner) is False
+    assert rule.forbidden_in("modSomethingElse") is True
+    assert "SyntheticFutureConstruct" in structure.forbidden_constructs
+
+
+def test_79_an_unknown_scoped_owner_is_rejected() -> None:
+    """This is what stops Step 1 pre-authorising code that does not exist."""
+    _structure_rejected(
+        lambda d: _forbidden(d).append({"construct": "MRG32k3a", "allowed_in": ["modSimRng"]}),
+        "MRG32k3a scoped to a module the contract does not declare",
+    )
+    _structure_rejected(
+        lambda d: _forbidden(d).append(
+            {"construct": "RunSimulation", "allowed_in": ["modSimReport"]}
+        ),
+        "RunSimulation scoped to a module the contract does not declare",
+    )
+
+
+def test_80_a_wildcard_owner_is_rejected() -> None:
+    for wildcard in ("*", "**", "all", "any", "all_modules", "*.bas"):
+        _structure_rejected(
+            lambda d, w=wildcard: _forbidden(d).append(
+                {"construct": "SyntheticFutureConstruct", "allowed_in": [w]}
+            ),
+            f"wildcard owner {wildcard!r}",
+        )
+
+
+def test_81_an_empty_allowed_in_is_rejected() -> None:
+    _structure_rejected(
+        lambda d: _forbidden(d).append(
+            {"construct": "SyntheticFutureConstruct", "allowed_in": []}
+        ),
+        "an empty exception list, which reads as a grant but grants nothing",
+    )
+
+
+def test_82_a_duplicate_owner_is_rejected() -> None:
+    def mutate(d):
+        owner = d["vba"]["modules"][0]["name"]
+        _forbidden(d).append(
+            {"construct": "SyntheticFutureConstruct", "allowed_in": [owner, owner]}
+        )
+
+    _structure_rejected(mutate, "the same owner declared twice")
+
+
+def test_83_a_malformed_or_ambiguous_entry_is_rejected() -> None:
+    _structure_rejected(
+        lambda d: _forbidden(d).append({"construct": "SyntheticFutureConstruct"}),
+        "a mapping carrying only 'construct'",
+    )
+    _structure_rejected(
+        lambda d: _forbidden(d).append({"allowed_in": ["modConstants"]}),
+        "a mapping carrying only 'allowed_in'",
+    )
+    _structure_rejected(
+        lambda d: _forbidden(d).append(
+            {"construct": "X", "allowed_in": ["modConstants"], "note": "why"}
+        ),
+        "an unknown key in the scoped shape",
+    )
+    _structure_rejected(lambda d: _forbidden(d).append(["MRG32k3a"]),
+                        "a list where a string or mapping is required")
+    _structure_rejected(lambda d: _forbidden(d).append(""), "an empty construct string")
+    _structure_rejected(lambda d: _forbidden(d).append(42), "a numeric entry")
+
+
+def test_84_a_duplicate_construct_is_rejected() -> None:
+    _structure_rejected(
+        lambda d: _forbidden(d).append("MRG32k3a"),
+        "the same construct declared twice, so two rules could disagree",
+    )
+
+
+def test_85_the_globally_forbidden_set_is_not_weakened() -> None:
+    """Rnd(, Randomize, NPV and Percentile stay globally forbidden."""
+    structure = load_structure_contract(STRUCTURE_PATH)
+    scoped = {r.construct for r in structure.forbidden_construct_rules if r.is_scoped}
+    for construct in ("Rnd(", "Randomize", "NPV", "Percentile"):
+        assert construct in structure.forbidden_constructs, construct
+        assert construct not in scoped, f"{construct} acquired a scoped exception"
+
+
+if __name__ == "__main__":
+    import pytest
+
+    raise SystemExit(pytest.main([__file__, "-q"]))

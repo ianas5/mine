@@ -234,6 +234,30 @@ class VbaModule:
 
 
 @dataclass(frozen=True)
+class ForbiddenConstruct:
+    """One forbidden-construct rule - D6-11.
+
+    Two shapes, one meaning. A bare string is GLOBALLY forbidden. A mapping
+    `{construct, allowed_in}` is forbidden everywhere EXCEPT the modules named as
+    its owners, which is how a construct can be introduced by the one module that
+    is meant to own it without becoming legal everywhere.
+
+    `allowed_in` is empty for the global shape, so a consumer that only cares
+    about the construct text keeps working unchanged.
+    """
+
+    construct: str
+    allowed_in: tuple[str, ...] = ()
+
+    @property
+    def is_scoped(self) -> bool:
+        return bool(self.allowed_in)
+
+    def forbidden_in(self, module_name: str) -> bool:
+        return module_name not in self.allowed_in
+
+
+@dataclass(frozen=True)
 class StructureContract:
     version: str
     limits: Limits
@@ -254,6 +278,7 @@ class StructureContract:
     entry_points: list[str]
     api_procedures: list[str]
     forbidden_constructs: list[str]
+    forbidden_construct_rules: list[ForbiddenConstruct]
     structural_checks: list[dict[str, str]]
     source_path: Path
 
@@ -433,7 +458,12 @@ def load_structure_contract(path: str | Path) -> StructureContract:
         # declared once they exist.
         api_procedures=[str(e) for e in raw_vba.get("api_procedures", [])],
         forbidden_constructs=[
-            str(c) for c in _req(raw_vba, "forbidden_constructs", f"{where}: vba")
+            _forbidden_construct_text(c, i, f"{where}: vba")
+            for i, c in enumerate(_req(raw_vba, "forbidden_constructs", f"{where}: vba"))
+        ],
+        forbidden_construct_rules=[
+            _parse_forbidden_construct(c, i, f"{where}: vba")
+            for i, c in enumerate(_req(raw_vba, "forbidden_constructs", f"{where}: vba"))
         ],
         structural_checks=[dict(c) for c in checks],
         source_path=path,
@@ -961,6 +991,7 @@ def _validate_buttons_and_vba(contract: StructureContract, path: Path) -> None:
             f"{path}: vba.forbidden_constructs must not be empty; the static tests rely on "
             "it to keep later-phase functionality out of Phase 4"
         )
+    _validate_forbidden_constructs(contract, path)
 
 
 def _validate_excel_bounds(contract: StructureContract, path: Path) -> None:
@@ -1257,3 +1288,115 @@ def _positive_int(mapping: dict[str, Any], key: str, where: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise StructureContractError(f"{where}: {key!r} must be a positive integer, got {value!r}")
     return value
+
+
+# ---------------------------------------------------------------------------
+# Forbidden constructs - D6-11's mixed scalar-or-scoped schema
+# ---------------------------------------------------------------------------
+FORBIDDEN_CONSTRUCT_KEYS = frozenset({"construct", "allowed_in"})
+
+FORBIDDEN_OWNER_WILDCARDS = ("*", "**", "all", "any", "all_modules", "*.bas", "?", "-")
+"""Owner spellings that mean "everywhere" and therefore mean nothing.
+
+A scoped exception exists to name ONE owner. A wildcard turns the rule into a
+deletion of the rule, which is the failure mode this schema is built to make
+impossible rather than merely discouraged."""
+
+
+def _forbidden_construct_text(entry: Any, index: int, where: str) -> str:
+    """The construct TEXT, whichever shape declared it.
+
+    Existing consumers - the Stage-B manifest and the Phase-4 static scan - ask
+    only "what strings must not appear", so they keep reading a flat list of
+    strings and are unaffected by the schema extension.
+    """
+    return _parse_forbidden_construct(entry, index, where).construct
+
+
+def _parse_forbidden_construct(entry: Any, index: int, where: str) -> ForbiddenConstruct:
+    """Parse one entry in either accepted shape, refusing every ambiguous one."""
+    at = f"{where}: forbidden_constructs[{index}]"
+
+    if isinstance(entry, str):
+        if not entry.strip():
+            raise StructureContractError(f"{at}: must be a non-empty construct string")
+        return ForbiddenConstruct(construct=entry)
+
+    if not isinstance(entry, dict):
+        raise StructureContractError(
+            f"{at}: must be either a construct STRING (globally forbidden) or a MAPPING with "
+            f"'construct' and 'allowed_in' (forbidden except in the declared owners), got "
+            f"{type(entry).__name__}"
+        )
+
+    extra = set(entry) - FORBIDDEN_CONSTRUCT_KEYS
+    if extra:
+        raise StructureContractError(
+            f"{at}: unknown key(s) {sorted(extra)}; the scoped shape is exactly "
+            f"{sorted(FORBIDDEN_CONSTRUCT_KEYS)}"
+        )
+    missing = FORBIDDEN_CONSTRUCT_KEYS - set(entry)
+    if missing:
+        raise StructureContractError(
+            f"{at}: the scoped shape requires {sorted(missing)}. A mapping carrying only one of "
+            "the two keys is ambiguous: it reads as a scoped rule but grants or forbids nothing."
+        )
+
+    construct = entry["construct"]
+    if not isinstance(construct, str) or not construct.strip():
+        raise StructureContractError(f"{at}: 'construct' must be a non-empty string")
+
+    owners = entry["allowed_in"]
+    if not isinstance(owners, list):
+        raise StructureContractError(
+            f"{at}: 'allowed_in' must be a list of module names, got {type(owners).__name__}"
+        )
+    if not owners:
+        raise StructureContractError(
+            f"{at}: 'allowed_in' must name at least one owner. An empty exception list is the "
+            "global shape written ambiguously - declare the bare string instead, so a reader "
+            "cannot mistake it for a granted exception."
+        )
+
+    seen: set[str] = set()
+    for owner in owners:
+        if not isinstance(owner, str) or not owner.strip():
+            raise StructureContractError(f"{at}: every 'allowed_in' entry must be a module name")
+        if owner in seen:
+            raise StructureContractError(
+                f"{at}: duplicate owner {owner!r} in 'allowed_in'. A module owns a construct "
+                "once or not at all."
+            )
+        seen.add(owner)
+        if owner.strip().lower() in FORBIDDEN_OWNER_WILDCARDS:
+            raise StructureContractError(
+                f"{at}: owner {owner!r} is a wildcard. A scoped exception names ONE owning "
+                "module; a wildcard silently deletes the rule it appears to scope."
+            )
+
+    return ForbiddenConstruct(construct=construct, allowed_in=tuple(owners))
+
+
+def _validate_forbidden_constructs(contract: StructureContract, path: Path) -> None:
+    """Every scoped owner must be a module the contract actually declares.
+
+    This is what stops a scoped exception from pre-authorising code that does not
+    exist yet: a construct cannot be granted to `modSimRng` before `modSimRng` is
+    a declared module, so the grant and the module arrive together or not at all.
+    """
+    declared = {module.name for module in contract.vba_modules}
+    seen: set[str] = set()
+    for rule in contract.forbidden_construct_rules:
+        if rule.construct in seen:
+            raise StructureContractError(
+                f"{path}: construct {rule.construct!r} is declared twice in "
+                "vba.forbidden_constructs; two rules for one construct can disagree"
+            )
+        seen.add(rule.construct)
+        unknown = [owner for owner in rule.allowed_in if owner not in declared]
+        if unknown:
+            raise StructureContractError(
+                f"{path}: forbidden construct {rule.construct!r} is scoped to module(s) "
+                f"{unknown}, which the contract does not declare. An exception granted to a "
+                "module that does not exist authorises code nobody has written."
+            )

@@ -1,0 +1,869 @@
+# =============================================================================
+# PCCM SIMULATION CONTRACT - the sixth authority.
+#
+# Owns the SIMULATION EXECUTION SEMANTICS settled by Phase-6 Step 0: the RNG and
+# its versions, seeding execution, the AUTO nonce lifecycle, component streams
+# and their assignment, jump-ahead, distribution sampling including the exact
+# Cheng formulation, Risk occurrence and severity semantics, the simulation
+# request identity, the result digest, iteration rules, statistics, contingency,
+# simulation state, run identity, the Phase-5 prerequisite, and the future
+# `_SimData` machine layout from which the technical storage ceiling follows.
+#
+# WHAT IS DELIBERATELY ABSENT, and why:
+#
+#   * the admissible Random Seed DOMAIN. D6-19 closed on input-contract
+#     ownership: `input_contract.yaml` owns `random_seed` and its admissibility.
+#     This file REFERENCES that authority in `authority_references` and stores no
+#     copy of the range. The loader FAILS if a seed minimum or maximum appears
+#     here, because two files holding one rule is the drift this architecture
+#     exists to prevent.
+#   * the Monte Carlo business minimum (>= 1000). Also owned by
+#     `input_contract.yaml`. This file owns only the TECHNICAL storage ceiling,
+#     which is a different category and must never be presented as validation.
+#   * every ORACLE COMPARISON TOLERANCE. Settled in Step 0 section 10 as an
+#     evidence policy, not a runtime contract: the engine performs no approximate
+#     comparison at run time - replay comparison is by `result_digest`, which is
+#     exact. The loader FAILS if a tolerance appears here.
+#   * the fingerprint hash mathematics. Defined once, in
+#     `builder/pccm_builder/calc_fingerprint.py`. Only version numbers live here.
+#   * any executable algorithm. This file states WHAT must hold. Step 2 onward
+#     implements it.
+#
+# Scope: Phase 6, Step 1. Contract only. No RNG implementation, no sampler, no
+# Monte Carlo, no VBA, no emission, no workbook change.
+# =============================================================================
+
+sim_contract_version: "1.0.0"
+
+# -----------------------------------------------------------------------------
+# Versions - Step-0 section 9.
+#
+# FP_VERSION is INHERITED from calc_contract.yaml and is not restated here as a
+# value; it appears in `authority_references` as a boundary. RNG_VERSION and
+# SIM_METHOD_VERSION are new and owned here.
+#
+# The `PCCM-RD` version field IS SIM_METHOD_VERSION. There is no third version:
+# the digest exists to compare runs, and two runs are comparable exactly when the
+# method that produced the numbers is the same.
+# -----------------------------------------------------------------------------
+versions:
+  rng_version: 1
+  sim_method_version: 1
+  result_digest_version_source: "sim_method_version"
+
+  # Every rule that can change a retained output or a stream identity is owned by
+  # exactly one version. A rule that can change either and is owned by neither is
+  # the defect this table exists to prevent.
+  bump_ownership:
+    rng_version:
+      - "mrg32k3a_constants_or_uniform_combination"
+      - "scalar_seed_to_state_mapping"
+      - "auto_seed_nonce_mapping"
+      - "component_stream_assignment"
+      - "jump_matrices_exponent_or_arithmetic_semantics"
+    sim_method_version:
+      - "cheng_formulation_literals_or_expression_order"
+      - "risk_severity_invocation_semantics"
+      - "degenerate_sampling_rule"
+      - "canonical_accumulation_order"
+      - "percentile_or_statistical_method"
+      - "result_digest_framing_or_hash_stream"
+
+# -----------------------------------------------------------------------------
+# The random number generator - MRG32k3a.
+#
+# `Rnd` and `Randomize` are forbidden constructs and appear nowhere in PCCM.
+# -----------------------------------------------------------------------------
+rng:
+  family: "MRG32k3a"
+  constants:
+    m1: 4294967087
+    m2: 4294944443
+    a12: 1403580
+    a13n: 810728
+    a21: 527612
+    a23n: 1370589
+    # Identical Double to 1.0 / (m1 + 1); both are 0x1.000000d00000bp-32.
+    norm: 2.328306549295727688e-10
+
+  # The state PCCM stores and exposes, oldest-first. The jump matrices operate on
+  # NEWEST-FIRST triples, so each triple is reversed at the matrix boundary and
+  # reversed back afterwards. Getting that wrong produces a plausible but wrong
+  # stream, which is why the orientation is contract text rather than a comment.
+  state:
+    words: 6
+    order: ["s10", "s11", "s12", "s20", "s21", "s22"]
+    orientation: "oldest_first"
+    matrix_operand_orientation: "newest_first"
+    reversal_required_at_matrix_boundary: true
+
+  recurrence:
+    p1: "(a12 * s11 - a13n * s10) mod m1"
+    p2: "(a21 * s22 - a23n * s20) mod m2"
+    advance: "[s10, s11, s12, s20, s21, s22] <- [s11, s12, p1, s21, s22, p2]"
+
+  combination:
+    rule: "if p1 <= p2 then u = (p1 - p2 + m1) * norm else u = (p1 - p2) * norm"
+    comparison_operator: "less_than_or_equal"
+
+  output_domain:
+    lower: 0
+    upper: 1
+    lower_inclusive: false
+    upper_inclusive: false
+
+  # MATHEMATICAL semantics above; IMPLEMENTATION obligation here. The two are
+  # separated deliberately: `mod` above is exact modular arithmetic, and a later
+  # implementation must realise it on an exact arithmetic path rather than a
+  # naive floating one. No such path is implemented in Step 1.
+  arithmetic:
+    modulo_semantics: "exact_non_negative_residue"
+    implementation_requirement: "exact_safe_double_path"
+    naive_floating_modulo_permitted: false
+
+# -----------------------------------------------------------------------------
+# Seeding execution semantics.
+#
+# The admissible FIXED domain is NOT here. See `authority_references`.
+# -----------------------------------------------------------------------------
+seeding:
+  modes: ["AUTO", "FIXED"]
+  blank_input_means: "AUTO"
+  populated_input_means: "FIXED"
+
+  # D6-05 (a). Every admissible seed is a valid residue in both components,
+  # because seed_max < m2 < m1 and the minimum admissible seed is 1.
+  scalar_to_state:
+    rule: "repeated_scalar"
+    expansion: "[seed, seed, seed, seed, seed, seed]"
+    mixer: null
+    alternate_expansion_permitted: false
+
+  # D6-03 (b). The authority is a modular POWER. Stating it as a power is what
+  # tells an implementation that an exact O(log nonce) method is required; O(nonce)
+  # stepped multiplication is not the authority and is not acceptable.
+  auto:
+    modulus: 2147483647
+    multiplier: 48271
+    mapping: "effective_seed = multiplier ^ auto_nonce mod modulus"
+    mapping_kind: "modular_exponentiation"
+    implementation_complexity_requirement: "O(log nonce)"
+    stepped_multiplication_is_the_authority: false
+    period: 2147483646
+    freshness_scope: "single_workbook_persisted_nonce_history"
+    cross_workbook_uniqueness_claimed: false
+    timestamp_derived_uniqueness_permitted: false
+
+  # The lifecycle is authoritative because it is what makes an allocated seed
+  # CONSUMED on failure. Any other order silently hands a retry the same sequence.
+  nonce_lifecycle:
+    meaning: "next_nonce_to_allocate"
+    initial: 0
+    first_valid_allocation: 0
+    last_valid_allocation: 2147483645
+    exhausted_value: 2147483646
+    on_exhaustion: "REFUSE"
+    wrap_permitted: false
+    reuse_permitted: false
+    order:
+      - "validate_pre_allocation_prerequisites"
+      - "read_current_auto_nonce"
+      - "derive_effective_seed"
+      - "persist_auto_nonce_plus_one"
+      - "begin_sampling"
+    failure_before_allocation_consumes_nonce: false
+    failure_after_allocation_consumes_nonce: true
+    attempt_metadata_preserves: ["consumed_auto_nonce", "effective_seed"]
+    prior_successful_publication_untouched: true
+
+# -----------------------------------------------------------------------------
+# Component streams - D6-16.
+# -----------------------------------------------------------------------------
+components:
+  kinds:
+    - key: "COST_SAMPLE"
+      driver_kind: "cost_line"
+      per_driver: 1
+      role: "value"
+    - key: "RISK_OCCURRENCE"
+      driver_kind: "risk"
+      per_driver: 1
+      role: "occurrence"
+    - key: "RISK_SEVERITY"
+      driver_kind: "risk"
+      per_driver: 1
+      role: "severity"
+  count_rule: "cost_line_count + 2 * risk_count"
+
+stream_assignment:
+  policy: "canonical_sorted_order"
+  sort_keys: ["component_kind", "permanent_id", "role"]
+  permanent_id_comparison: "ordinal_utf16_code_units"
+  physical_row_order_permitted: false
+  locale_order_permitted: false
+  case_insensitive_order_permitted: false
+  numeric_suffix_interpretation_permitted: false
+  index_origin: 0
+  index_rule: "stream k is the base state advanced by k canonical stream jumps"
+
+  # PRESERVED, not hidden. Adding or removing a driver changes the canonical
+  # order, so later components move to different streams and their samples change.
+  # Adding a driver changes the model, so the run is a new run - but a user may
+  # expect an unrelated driver's numbers to hold still, and they will not.
+  accepted_consequence: "inserting_or_removing_a_driver_may_change_later_stream_identities"
+
+# -----------------------------------------------------------------------------
+# Jump-ahead. Exact Step-0 authority.
+# -----------------------------------------------------------------------------
+jump:
+  stream_spacing_exponent: 127
+  substream_spacing_exponent: null
+  substreams_used_in_phase_6: false
+  decomposition: "mult_mod_m"
+  decomposition_h: 131072
+  naive_floating_matrix_product_permitted: false
+  a1_p127:
+    - [1230515664, 986791581, 1988835001]
+    - [3580155704, 1230515664, 226153695]
+    - [949770784, 3580155704, 2427906178]
+  a2_p127:
+    - [2093834863, 32183930, 2824425944]
+    - [1022607788, 1464411153, 32183930]
+    - [1610723613, 277697599, 1464411153]
+  # SHA-256 of the canonical matrix text retained in the accepted Step-0
+  # evidence. Present so silent drift between contract and evidence is
+  # detectable rather than a matter of reading nine numbers by eye.
+  a1_p127_sha256: "e31a727398a2d4461cf708f77034b9bc5e60f88c54556c56c3f4b015a813b66a"
+  a2_p127_sha256: "0d20b47aa206b1231c22e20afaa84e71b81cff52a2395be9aeb0bbb97b1e8208"
+
+# -----------------------------------------------------------------------------
+# Distributions. Exactly three families; no fourth may be added here.
+#
+# Negative values remain legal when correctly ordered. No positivity rule exists.
+# -----------------------------------------------------------------------------
+distributions:
+  families: ["Uniform", "Triangular", "Beta-PERT"]
+
+  # Plan section 4.0, uniform across all three families. Detected BEFORE dispatch
+  # and BEFORE parameterisation, so Beta's r = (m-a)/(b-a) is never formed and
+  # 0/0 cannot arise.
+  degenerate:
+    condition: "a == m == b"
+    detected_before_dispatch: true
+    detected_before_parameterisation: true
+    returns: "a"
+    uniforms_consumed: 0
+    sampler_entered: false
+    stream_state_changed: false
+    applies_to_all_families: true
+
+  uniform:
+    most_likely_used: false
+    transform: "x = (1 - u) * a + u * b"
+    formulation: "stable_convex"
+    uniforms_per_non_degenerate_sample: 1
+
+  triangular:
+    method: "inverse_cdf"
+    uniforms_per_non_degenerate_sample: 1
+    branch_point: "c = (m - a) / (b - a)"
+    lower_branch: "u <= c : x = a + sqrt(u * (b - a) * (m - a))"
+    upper_branch: "u >  c : x = b - sqrt((1 - u) * (b - a) * (b - m))"
+    boundary_cases:
+      m_equals_a: "c = 0; the upper branch is always taken"
+      m_equals_b: "c = 1; the lower branch is always taken"
+    rng_endpoints_open: true
+    normalised_formulation_required: true
+    conditioning_scale: "s = max(abs(a), abs(m), abs(b))"
+
+  beta_pert:
+    lambda: 4
+    shape_ratio: "r = (m - a) / (b - a)"
+    alpha: "1 + 4 * r"
+    beta: "1 + 4 * (1 - r)"
+    alpha_plus_beta: 6
+    shape_lower: 1
+    shape_upper: 5
+    rescale: "x = (1 - y) * a + y * b, y ~ Beta(alpha, beta)"
+    rescale_formulation: "stable_convex"
+    normalised_formulation_required: true
+    conditioning_scale: "s = max(abs(a), abs(m), abs(b))"
+    dispatch:
+      rule: "min(alpha, beta) > 1 -> BB; otherwise BC"
+      comparison_operator: "strictly_greater_than"
+      equality_belongs_to: "BC"
+
+# -----------------------------------------------------------------------------
+# The EXACT Cheng formulation - Step-0 section 5.2a.
+#
+# "Cheng 1978" is a citation, not a contract: recognised implementations differ
+# in their literals and in the logit form, and those choices change results. One
+# formulation is locked here. It belongs to SIM_METHOD_VERSION.
+#
+# EVERY literal below is a LITERAL. 1.3862944 is those eight digits and is NOT
+# evaluated as log(4); 2.609438 is not evaluated as 1 + log(5); 0.0138889,
+# 0.0416667 and 0.777778 are not evaluated as 1/72, 3/72 and 7/9.
+# -----------------------------------------------------------------------------
+cheng:
+  uniforms_per_non_degenerate_proposal_attempt: 2
+
+  logit_form: "log(u1 / (1.0 - u1))"
+  logit_form_rejected_alternative: "log(u1) - log1p(-u1)"
+
+  literals_are_literal: true
+  algebraic_simplification_permitted: false
+
+  bb:
+    applies_when: "min(alpha, beta) > 1"
+    orientation:
+      a: "min(alpha0, beta0)"
+      b: "max(alpha0, beta0)"
+    per_driver:
+      - "alpha = a + b"
+      - "beta = sqrt((alpha - 2) / (2 * a * b - alpha))"
+      - "gamma = a + 1 / beta"
+    per_attempt:
+      - "u1 = next_u(); u2 = next_u()"
+      - "vlog = log(u1 / (1 - u1))"
+      - "v = beta * vlog"
+      - "w = a * exp(v)"
+      - "z = u1 * u1 * u2"
+      - "rr = gamma * v - 1.3862944"
+      - "s = a + rr - w"
+      - "accept if s + 2.609438 >= 5.0 * z"
+      - "else t = log(z); accept if s >= t"
+      - "else accept if rr + alpha * log(alpha / (b + w)) >= t"
+      - "else reject and retry"
+    literals: ["1.3862944", "2.609438", "5.0", "2.0", "1.0"]
+    acceptance_operator: "greater_than_or_equal"
+    return: "w / (b + w) when the caller's first parameter was the min, else b / (b + w)"
+
+  bc:
+    applies_when: "min(alpha, beta) <= 1"
+    # The OPPOSITE of BB. Inverting it is a silent defect that returns a valid
+    # Beta variate of the MIRRORED distribution.
+    orientation:
+      a: "max(alpha0, beta0)"
+      b: "min(alpha0, beta0)"
+    per_driver:
+      - "alpha = a + b"
+      - "beta = 1 / b"
+      - "delta = 1 + a - b"
+      - "k1 = delta * (0.0138889 + 0.0416667 * b) / (a * beta - 0.777778)"
+      - "k2 = 0.25 + (0.5 + 0.25 / delta) * b"
+    per_attempt:
+      - "u1 = next_u(); u2 = next_u()"
+      - "if u1 < 0.5: y = u1 * u2; z = u1 * y; reject if 0.25 * u2 + z - y >= k1"
+      - "else: z = u1 * u1 * u2"
+      - "  if z <= 0.25: vlog = log(u1 / (1 - u1)); v = beta * vlog; w = a * exp(v); ACCEPT"
+      - "  if z >= k2: reject"
+      - "vlog = log(u1 / (1 - u1)); v = beta * vlog; w = a * exp(v)"
+      - "accept if alpha * (log(alpha / (b + w)) + v) - 1.3862944 >= log(z)"
+      - "else reject and retry"
+    literals: ["0.0138889", "0.0416667", "0.777778", "1.3862944", "0.25", "0.5"]
+    acceptance_operator: "greater_than_or_equal"
+    return: "w / (b + w) when the caller's first parameter was the max, else b / (b + w)"
+
+  # MEASURED in Step 0, not assumed: the squeeze literals never change the value
+  # of an accepted proposal - they change WHICH proposals are accepted, and
+  # therefore consumption and every draw after it. The logit form changes the
+  # value itself. Both are locked, for different reasons.
+  literal_effect:
+    squeeze_literals_affect: "acceptance_decision_only"
+    logit_form_affects: "returned_sample_value"
+
+  # Binding to the accepted Step-0 evidence, so silent drift is detectable.
+  # This is provenance, NOT a runtime dependency: no production code may import
+  # the evidence directory. Tests read it; the engine never does.
+  source_binding:
+    evidence_file: "evidence/phase6_step0/raw/cheng_formulation.json"
+    functions_sha256: "d5ca71b806015ed9039f713295dca3b45d2f66dbcabe60b6709896e3a89eed90"
+  conformance_vectors:
+    evidence_file: "evidence/phase6_step0/vectors/cheng_vectors.json"
+    role: "conformance_authority"
+    runtime_lookup_table: false
+
+# -----------------------------------------------------------------------------
+# Risk semantics - D6-18 (b), as corrected in Step-0 section 6.1.
+#
+# The withdrawn phrase "the severity stream advances once per iteration" is FALSE
+# for a degenerate severity and must not appear. Invocation is unconditional;
+# CONSUMPTION is a property of the distribution.
+# -----------------------------------------------------------------------------
+risk:
+  occurrence:
+    uniforms_per_risk_per_iteration: 1
+    rule: "occurred = u_occurrence < probability"
+    comparison_operator: "strictly_less_than"
+    probability_zero_never_occurs: true
+    probability_one_always_occurs: true
+
+  severity:
+    invocation_policy: "unconditional"
+    sampler_invoked_every_risk_iteration: true
+    non_degenerate_consumption: "as_the_selected_sampler_contract_requires"
+    degenerate_consumption: 0
+    degenerate_stream_state_changed: false
+    value_used_only_when_occurred: true
+
+  probability_folded_into_knom: false
+  probability_folded_into_kpv: false
+
+# -----------------------------------------------------------------------------
+# Canonical driver evaluation and accumulation order.
+#
+# Belongs to SIM_METHOD_VERSION: changing it changes retained totals.
+# -----------------------------------------------------------------------------
+accumulation:
+  driver_kind_order: ["cost_line", "risk"]
+  within_kind_order: "ascending_permanent_id"
+  permanent_id_comparison: "ordinal_utf16_code_units"
+  physical_row_order_permitted: false
+  accumulators: ["nominal", "pv"]
+  accumulators_share_driver_order: true
+
+# -----------------------------------------------------------------------------
+# Simulation request identity.
+#
+# The accepted Phase-5 canonical sections are a PREFIX. Phase 6 appends SIM and
+# changes no existing byte or ordering, so the analytical fingerprint remains
+# computable from the same stream prefix.
+# -----------------------------------------------------------------------------
+request_fingerprint:
+  section_order: ["HEADER", "COST", "RISK", "SIM"]
+  analytical_prefix: ["HEADER", "COST", "RISK"]
+  extension_semantics: "prefix_plus_extension"
+  existing_sections_modified: false
+
+  sim_section:
+    name: "SIM"
+    fields:
+      - "iterations"
+      - "seed_mode"
+      - "supplied_seed"
+      - "rng_version"
+      - "sim_method_version"
+    supplied_seed_present_only_when: "FIXED"
+    excluded_fields:
+      - "effective_seed"
+      - "auto_nonce"
+      - "run_id"
+      - "selected_confidence_level"
+    analytical_fingerprint_hashed_as_a_field: false
+
+  # An AUTO run leaves C21 blank, and blank is part of the request. Two AUTO runs
+  # of the same model therefore share one request fingerprint and stay CURRENT.
+  auto_blank_seed_remains_recomputable: true
+
+# -----------------------------------------------------------------------------
+# result_digest - D6-17. The accepted Phase-5 encoder and hash primitives.
+# No competing hash is defined here; only the framing.
+# -----------------------------------------------------------------------------
+result_digest:
+  stream_tag: "PCCM-RD"
+  version_field_source: "sim_method_version"
+  section_name: "RESULT"
+  record_field_count: 3
+  record_fields: ["iteration_index", "total_nominal", "total_pv"]
+  field_types: ["F_I", "F_N", "F_N"]
+  iteration_index_origin: 1
+  grammar:
+    stream: 'F_S("PCCM-RD") F_I(sim_method_version) section'
+    section: 'F_S("RESULT") F_I(record_count) record*'
+    record: "F_I(field_count) F_I(iteration_index) F_N(total_nominal) F_N(total_pv)"
+  order_source: "persisted_iteration_order"
+  samples_sorted_for_digest: false
+  equality: "exact"
+  tolerance: null
+
+# -----------------------------------------------------------------------------
+# Iterations. The BUSINESS minimum is owned by input_contract.yaml and is not
+# restated here. What lives here is the TECHNICAL storage ceiling and nothing
+# else - it is never presented as validation.
+# -----------------------------------------------------------------------------
+iterations:
+  business_minimum_owner: "input_contract.yaml"
+  business_maximum: null
+  technical_ceiling:
+    max_excel_rows: 1048576
+    # Derived from the _SimData layout below; the loader recomputes it and
+    # refuses a free literal that disagrees.
+    reserved_rows_h: 32
+    max_iterations_representable: 1048544
+    refusal_kind: "technical"
+    presented_as_business_validation: false
+    refusal_precedes:
+      - "sample_allocation"
+      - "stream_construction"
+      - "auto_seed_allocation"
+      - "any_random_draw"
+    # A storage-ceiling refusal must not consume an AUTO nonce. That is a
+    # consequence of the ordering above, and it is the reason the ordering is
+    # contract text.
+    consumes_auto_nonce: false
+
+# -----------------------------------------------------------------------------
+# `_SimData` - the FUTURE persisted machine layout.
+#
+# Owned here until the publication step materialises it. `workbook.yaml` still
+# declares the sheet as an intentionally empty placeholder and is NOT changed by
+# Step 1. Column widths remain presentation and remain workbook.yaml's; they are
+# adjusted when the layout is materialised, not now.
+#
+# EVERY row of the sheet is accounted for below. H is the count of rows an
+# iteration record cannot occupy, and there is no footer: iteration rows run from
+# `first_iteration_row` to the last representable Excel row with nothing after
+# them, so capacity cannot be silently reduced later.
+# -----------------------------------------------------------------------------
+sim_data:
+  sheet: "_SimData"
+  required_visibility: "veryHidden"
+
+  reserved_rows:
+    - rows: [1, 1]
+      purpose: "shell top margin"
+    - rows: [2, 2]
+      purpose: "shell title"
+    - rows: [3, 3]
+      purpose: "shell subtitle"
+    - rows: [4, 4]
+      purpose: "shell rule"
+    - rows: [5, 5]
+      purpose: "spacer"
+    - rows: [6, 6]
+      purpose: "run identity section heading"
+    - rows: [7, 7]
+      purpose: "run identity section note"
+    - rows: [8, 28]
+      purpose: "run identity fields"
+    - rows: [29, 29]
+      purpose: "spacer"
+    - rows: [30, 30]
+      purpose: "iteration records section heading"
+    - rows: [31, 31]
+      purpose: "iteration records section note"
+    - rows: [32, 32]
+      purpose: "iteration table header"
+
+  run_identity:
+    label_column: "B"
+    value_column: "D"
+    note_column: "F"
+    first_row: 8
+    last_row: 28
+    fields:
+      - key: "last_successful_stamp"
+        row: 8
+        group: "snapshot"
+        label: "Last Successful Simulation"
+        value_type: "timestamp"
+        initial: null
+      - key: "run_id"
+        row: 9
+        group: "snapshot"
+        label: "Run ID"
+        value_type: "integer"
+        initial: null
+      - key: "request_fingerprint"
+        row: 10
+        group: "snapshot"
+        label: "Request Fingerprint"
+        value_type: "text"
+        initial: null
+      - key: "result_digest"
+        row: 11
+        group: "snapshot"
+        label: "Result Digest"
+        value_type: "text"
+        initial: null
+      - key: "seed_mode"
+        row: 12
+        group: "snapshot"
+        label: "Seed Mode"
+        value_type: "enum"
+        enum: "seed_mode"
+        initial: null
+      - key: "supplied_seed"
+        row: 13
+        group: "snapshot"
+        label: "Supplied Seed"
+        value_type: "integer"
+        initial: null
+      - key: "effective_seed"
+        row: 14
+        group: "snapshot"
+        label: "Effective Seed"
+        value_type: "integer"
+        initial: null
+      - key: "consumed_auto_nonce"
+        row: 15
+        group: "snapshot"
+        label: "Consumed AUTO Nonce"
+        value_type: "integer"
+        initial: null
+      - key: "iterations_run"
+        row: 16
+        group: "snapshot"
+        label: "Iterations Run"
+        value_type: "integer"
+        initial: null
+      - key: "rng_version"
+        row: 17
+        group: "snapshot"
+        label: "RNG Version"
+        value_type: "integer"
+        initial: null
+      - key: "sim_method_version"
+        row: 18
+        group: "snapshot"
+        label: "Simulation Method Version"
+        value_type: "integer"
+        initial: null
+      - key: "applied_timeline"
+        row: 19
+        group: "snapshot"
+        label: "Applied Timeline"
+        value_type: "text"
+        initial: null
+      - key: "next_auto_nonce"
+        row: 20
+        group: "counter"
+        label: "Next AUTO Nonce"
+        value_type: "integer"
+        initial: 0
+      - key: "last_run_id"
+        row: 21
+        group: "counter"
+        label: "Last Run ID"
+        value_type: "integer"
+        initial: 0
+      - key: "last_attempt_result"
+        row: 22
+        group: "attempt"
+        label: "Last Attempt Result"
+        value_type: "enum"
+        enum: "attempt_result"
+        initial: "NONE"
+      - key: "last_attempt_detail"
+        row: 23
+        group: "attempt"
+        label: "Last Attempt Detail"
+        value_type: "text"
+        initial: null
+      - key: "last_attempt_seed_mode"
+        row: 24
+        group: "attempt"
+        label: "Last Attempt Seed Mode"
+        value_type: "enum"
+        enum: "seed_mode"
+        initial: null
+      - key: "last_attempt_effective_seed"
+        row: 25
+        group: "attempt"
+        label: "Last Attempt Effective Seed"
+        value_type: "integer"
+        initial: null
+      - key: "last_attempt_auto_nonce"
+        row: 26
+        group: "attempt"
+        label: "Last Attempt AUTO Nonce"
+        value_type: "integer"
+        initial: null
+      - key: "simulation_status"
+        row: 27
+        group: "derived"
+        label: "Simulation Status (last evaluated)"
+        value_type: "enum"
+        enum: "sim_state"
+        initial: null
+      - key: "status_evaluated_at"
+        row: 28
+        group: "derived"
+        label: "Status Evaluated At"
+        value_type: "timestamp"
+        initial: null
+
+  iteration_records:
+    header_row: 32
+    first_iteration_row: 33
+    footer_rows: 0
+    order: "canonical_iteration_order"
+    sorted: false
+    columns:
+      - key: "iteration_index"
+        column: "B"
+        header: "Iteration"
+        value_type: "integer"
+      - key: "total_nominal"
+        column: "C"
+        header: "Total Nominal"
+        value_type: "double"
+      - key: "total_pv"
+        column: "D"
+        header: "Total PV"
+        value_type: "double"
+
+  # Deliberately absent, and not to be added without a new authority: they are
+  # the retentions the accepted plan defers.
+  excluded:
+    - "per_driver_samples"
+    - "annual_stochastic_samples"
+    - "sensitivity_data"
+
+# -----------------------------------------------------------------------------
+# Enumerated label sets.
+# -----------------------------------------------------------------------------
+label_sets:
+  # EXACTLY three. There is no fourth simulation state. A never-evaluated
+  # workbook holds a BLANK status - the absence of an evaluation, not a state -
+  # exactly as the accepted calc contract leaves Fingerprint Version blank until
+  # a successful commit writes it.
+  sim_state:
+    - "CURRENT"
+    - "STALE"
+    - "INVALID"
+  attempt_result:
+    - "NONE"
+    - "SUCCESS"
+    - "REFUSED"
+    - "FAILED"
+  seed_mode:
+    - "AUTO"
+    - "FIXED"
+
+# -----------------------------------------------------------------------------
+# Simulation state.
+# -----------------------------------------------------------------------------
+sim_state:
+  states: ["CURRENT", "STALE", "INVALID"]
+  definitions:
+    CURRENT: "the recomputed request fingerprint matches the stored successful request fingerprint and the last attempt succeeded"
+    STALE: "a prior successful simulation exists and the current request fingerprint differs"
+    INVALID: "prerequisites refuse, or the last simulation attempt failed"
+  never_evaluated_status: null
+  on_failure:
+    prior_sim_data_preserved: true
+    prior_results_publication_preserved: true
+    attempt_metadata_updated: true
+    partial_distribution_published: false
+
+prerequisite:
+  phase5_analytical_state_required: "CURRENT"
+  silent_recalculation_permitted: false
+  phase6_may_call_pccm_calculate: false
+
+# -----------------------------------------------------------------------------
+# run_id - D6-15 (a).
+# -----------------------------------------------------------------------------
+run_id:
+  initial: 0
+  first_successful_value: 1
+  allocated_on: "successful_commit_only"
+  failure_consumes: false
+  maximum: 2147483647
+  on_exhaustion: "REFUSE_BEFORE_COMMIT"
+  wrap_permitted: false
+  reuse_permitted: false
+  persisted: true
+  independent_of: ["auto_nonce", "effective_seed", "request_fingerprint", "result_digest"]
+
+# -----------------------------------------------------------------------------
+# Statistics.
+# -----------------------------------------------------------------------------
+statistics:
+  mean:
+    method: "sample_mean"
+    scale_safe_required: true
+  standard_deviation:
+    method: "sample_standard_deviation"
+    divisor: "n_minus_1"
+    naive_sum_of_squares_permitted: false
+  percentile:
+    method: "hyndman_fan_type_7"
+    formula:
+      h: "(n - 1) * p"
+      lo: "floor(h)"
+      hi: "min(lo + 1, n - 1)"
+      f: "h - lo"
+      value: "(1 - f) * x[lo] + f * x[hi]"
+    interpolation: "convex"
+  sorting: "on_copies_only"
+  measures: ["nominal", "pv"]
+  reported:
+    - "P10"
+    - "P50"
+    - "P70"
+    - "P90"
+    - "mean"
+    - "sample_standard_deviation"
+    - "minimum"
+    - "maximum"
+  selectable_ladder_owner: "input_contract.yaml"
+  p10_selectable: false
+  selected_confidence_level:
+    role: "reporting_selector"
+    enters_simulation_execution: false
+    enters_request_fingerprint: false
+    affects_staleness: false
+
+# -----------------------------------------------------------------------------
+# Contingency.
+# -----------------------------------------------------------------------------
+contingency:
+  measures: ["nominal", "pv"]
+  formula: "selected_px_total - deterministic_base_estimate_a"
+  baseline: "deterministic_base_estimate_a"
+  forbidden_baselines:
+    - "simulation_mean"
+    - "analytical_expected_total"
+    - "a_plus_emv"
+  workbook_recommends_a_confidence_level: false
+
+# -----------------------------------------------------------------------------
+# Results - MINIMUM scope only. Everything else is explicitly deferred.
+# -----------------------------------------------------------------------------
+results_minimum:
+  sections: ["Run Stamp", "Summary Statistics"]
+  deferred:
+    - "Annual Cash Flow"
+    - "Reconciliation presentation"
+    - "Dashboard"
+    - "Charts"
+    - "Sensitivity"
+  annual_simulated_samples_contracted: false
+
+# -----------------------------------------------------------------------------
+# Boundaries. Every value this contract borrows is declared here as a reference
+# whose locator resolves against the owning file. The VALUE is never copied.
+# -----------------------------------------------------------------------------
+authority_references:
+  - concept: "Random Seed admissible domain"
+    owner: "input_contract.yaml"
+    locator: "inputs.random_seed"
+  - concept: "Monte Carlo iterations business minimum"
+    owner: "input_contract.yaml"
+    locator: "inputs.monte_carlo_iterations"
+  - concept: "selectable confidence level ladder"
+    owner: "input_contract.yaml"
+    locator: "config_tables.confidence_levels"
+  - concept: "distribution master list"
+    owner: "input_contract.yaml"
+    locator: "config_tables.distributions"
+  - concept: "Cost Line and Risk Register input schemas"
+    owner: "driver_contract.yaml"
+    locator: "registers"
+  - concept: "permanent-ID prefixes, patterns and counter rules"
+    owner: "structure_contract.yaml"
+    locator: "identity.counters"
+  - concept: "applied timeline and structural limits"
+    owner: "structure_contract.yaml"
+    locator: "timeline"
+  - concept: "fingerprint algorithm version"
+    owner: "calc_contract.yaml"
+    locator: "fingerprint.version"
+  - concept: "deterministic base estimate and analytical totals"
+    owner: "calc_contract.yaml"
+    locator: "scalar_blocks.calc_totals"
+  - concept: "_SimData sheet declaration and visibility"
+    owner: "workbook.yaml"
+    locator: "sheets"

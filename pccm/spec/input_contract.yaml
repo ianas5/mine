@@ -203,8 +203,21 @@ inputs:
     editable: true
     default: null
     number_format: "0"
-    validation: null
-    note: "Optional. Blank means a new random sequence. The admissible domain is fixed when the RNG is implemented."
+    # The admissible domain, resolved. This input contract OWNS it (D6-19a);
+    # sim_contract.yaml references this entry and stores no copy of the range.
+    # `allow_blank` stays at its default TRUE, because blank is not an omission
+    # here - it is the AUTO request, and refusing it would remove an accepted
+    # affordance.
+    validation:
+      kind: "whole"
+      operator: "between"
+      formula1: "1"
+      formula2: "2147483646"
+      prompt_title: "Random Seed"
+      prompt: "Leave blank for a new random sequence. Or enter a whole number from 1 to 2147483646 to reproduce a run."
+      error_title: "Invalid random seed"
+      error: "Random Seed must be blank, or a whole number from 1 to 2147483646."
+    note: "Optional. BLANK means AUTO - a new random sequence each run. POPULATED means FIXED - the run is reproducible from that seed. The FIXED domain is whole integers 1 to 2147483646 inclusive; 0, negatives, fractions and larger values are refused."
 
 # -----------------------------------------------------------------------------
 # Setup sheet body layout. Section headings and the FX block.

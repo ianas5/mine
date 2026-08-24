@@ -33,6 +33,11 @@ from .calc_loader import (
 )
 from .contract_loader import ContractError, load_contract
 from .driver_loader import DriverContractError, load_driver_contract
+from .sim_loader import (
+    SimContractError,
+    load_sim_contract,
+    validate_sim_against,
+)
 from .spec_loader import SpecError, load_spec
 from .stage_b_emit import emit_stage_b
 from .structure_loader import StructureContractError, load_structure_contract
@@ -44,6 +49,7 @@ __all__ = [
     "CalcContractError",         # Phase 5 Gate-A Step-1 tests
     "ContractError",             # build_stage_a.py, input contract tests
     "DriverContractError",       # build_stage_a.py, driver contract tests
+    "SimContractError",          # build_stage_a.py, Phase 6 Step-1 tests
     "SpecError",                 # build_stage_a.py, manifest tests
     "StructureContractError",    # build_stage_a.py, Phase 4 tests
     "build_workbook",            # build_stage_a.py, all structural test suites
@@ -53,9 +59,11 @@ __all__ = [
     "load_calc_contract",        # Phase 5 Gate-A Step-1 tests
     "load_contract",             # build_stage_a.py, all test suites
     "load_driver_contract",      # build_stage_a.py, Phase 3 and 4 tests
+    "load_sim_contract",         # build_stage_a.py, Phase 6 Step-1 tests
     "load_spec",                 # build_stage_a.py, all test suites
     "load_structure_contract",   # build_stage_a.py, Phase 4 tests
     "structural_digest",         # reproducibility test
     "validate_calc_against",     # build_stage_a.py, Phase 5 Gate-A tests
+    "validate_sim_against",      # build_stage_a.py, Phase 6 Step-1 tests
     "verify_workbook",           # build_stage_a.py
 ]
