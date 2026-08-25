@@ -45,6 +45,7 @@ from .sim_rng import (
     RngState,
     SimRngError,
 )
+from .sim_emit import emit_sim_artifacts
 from .sim_oracle import (
     AnalyticalExpectation,
     ComponentDiagnostics,
@@ -153,6 +154,7 @@ __all__ = [
     "build_workbook",            # build_stage_a.py, all structural test suites
     "emit_calc_artifacts",       # build_stage_a.py, Phase 5 Gate-A Step-3 tests
     "emit_inspection",           # build_stage_a.py, Phase 5 Gate-B harness
+    "emit_sim_artifacts",        # build_stage_a.py, Phase 6 Step-5 tests
     "emit_stage_b",              # build_stage_a.py, Phase 4 Stage-B emission tests
     "load_calc_contract",        # Phase 5 Gate-A Step-1 tests
     "load_contract",             # build_stage_a.py, all test suites

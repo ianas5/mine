@@ -6,12 +6,14 @@ Usage:
                                          [--calc-contract PATH]
                                          [--out PATH] [--quiet]
 
-Reads the structural manifest and all FOUR contracts, generates the Stage A
+Reads the structural manifest and all SIX contracts, generates the Stage A
 workbook, emits the Stage-B inputs (build/vba/modConstants.bas,
-build/stage_b_manifest.json, build/phase4_scenarios.json) and the Phase-5
-generated artifacts (build/vba/modCalcContract.bas, build/phase5_cases.json), then
-runs structural verification against every specification. Exits non-zero on a
-specification error (2) or a verification failure (1).
+build/stage_b_manifest.json, build/phase4_scenarios.json), the Phase-5 generated
+artifacts (build/vba/modCalcContract.bas, build/phase5_cases.json) and the
+Phase-6 generated artifacts (build/vba/modSimContract.bas,
+build/phase6_cases.json), then runs structural verification against every
+specification. Exits non-zero on a specification error (2) or a verification
+failure (1).
 
 The calculation contract is a REQUIRED build input as of Phase 5 Gate-A Step 3: it
 is loaded, validated against the other four authorities, projected into the
@@ -37,6 +39,7 @@ from pccm_builder import (  # noqa: E402
     build_workbook,
     emit_calc_artifacts,
     emit_inspection,
+    emit_sim_artifacts,
     emit_stage_b,
     SimContractError,
     load_calc_contract,
@@ -127,8 +130,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     # The simulation contract is a REQUIRED build input as of Phase 6 Step 1. It
     # is loaded and cross-validated so a contract that disagrees with the other
-    # five authorities fails the build. It EMITS NOTHING: Phase 6 has no Stage-A
-    # emission, and the workbook is byte-identical with or without this step.
+    # five authorities fails the build.
+    #
+    # It emits NO Phase-6 WORKBOOK content and NO executable simulation code -
+    # the workbook gains no simulation result, no formula, no _SimData row and no
+    # Phase-6 publication. As of Step 5 it IS projected into two external
+    # generated Stage-A artefacts: build/vba/modSimContract.bas, a constants-only
+    # module no Phase-6 VBA owner imports yet, and build/phase6_cases.json, the
+    # conformance corpus the later implementation steps assert against.
     try:
         import yaml as _yaml
 
@@ -157,6 +166,9 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  calc     : contract {calc.version}, sheet {calc.sheet}, "
         f"{len(calc.scalar_blocks)} scalar blocks, {len(calc.all_tables)} tables, "
         f"FP_VERSION {calc.fingerprint_version}")
+    say(f"  sim      : contract {sim.version}, RNG_VERSION {sim.rng_version}, "
+        f"SIM_METHOD_VERSION {sim.sim_method_version}, "
+        f"max iterations {sim.max_iterations_representable}")
 
     try:
         workbook, metadata = build_workbook(spec, contract, drivers, structure, calc)
@@ -171,6 +183,10 @@ def main(argv: list[str] | None = None) -> int:
 
     artifacts = emit_stage_b(out_path.parent, spec, contract, drivers, structure)
     calc_artifacts = emit_calc_artifacts(out_path.parent, spec, calc)
+    # Phase 6 Step 5. Emitted from the accepted authorities and from the accepted
+    # Step-2/3/4 reference; nothing here implements a generator, a sampler or a
+    # simulation of its own.
+    sim_artifacts = emit_sim_artifacts(out_path.parent, spec, sim, contract, calc)
     # Identities only, for the Gate-B Windows harness. No expected value lives
     # here; phase5_cases.json remains the sole expected-value authority.
     inspection = emit_inspection(out_path.parent, calc, contract)
@@ -181,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  emitted  : {artifacts.scenario_path}")
     say(f"  emitted  : {calc_artifacts.module_path}")
     say(f"  emitted  : {calc_artifacts.cases_path}")
+    say(f"  emitted  : {sim_artifacts.module_path}")
+    say(f"  emitted  : {sim_artifacts.cases_path}")
     say(f"  emitted  : {inspection.path}")
     say(f"  stamped  : builder {metadata.builder_version}, {metadata.build_timestamp}")
     say("")
