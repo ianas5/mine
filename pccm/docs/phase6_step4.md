@@ -10,6 +10,12 @@ statistics, the percentile ladder and the contingency lookup.
 VBA, no Stage-A Phase-6 emission, no sensitivity, no annual stochastic
 distributions. Step 4 produces pure Python values.
 
+> **ORACLE CORRECTION ROUND.** Independent review of `dd003ebe` found four
+> implementation defects. This revision corrects all four — the constant-sample
+> statistics invariant, the RNG reference binding, the immutability of the
+> successful result, and `describe()`'s sort count — and changes nothing else.
+> The core Monte Carlo architecture was not reopened. See §28.
+
 ---
 
 ## 1. Authority chain
@@ -38,8 +44,8 @@ are untouched.
 | `builder/pccm_builder/sim_stats.py` | **NEW** — scale-safe mean, SD, Type-7 percentiles |
 | `builder/pccm_builder/sim_sample.py` | the accepted §0 invalid-state cleanup **only** |
 | `builder/pccm_builder/__init__.py` | Step-4 public exports |
-| `tests/test_phase6_sim_oracle.py` | **NEW** — 74 conformance tests |
-| `tests/test_phase6_sim_oracle_validation.py` | **NEW** — 37 mutation controls and scope guards |
+| `tests/test_phase6_sim_oracle.py` | **NEW** — 85 conformance tests |
+| `tests/test_phase6_sim_oracle_validation.py` | **NEW** — 49 mutation controls and scope guards |
 | `tests/test_phase6_sim_sample_validation.py` | **+4** — the Step-3 invalid-state degenerate regressions |
 | `docs/phase6_step4.md` | **NEW** — this record |
 
@@ -77,6 +83,9 @@ run_simulation(reference, prepared)               -> SimulationResult
 result_digest(version, total_nominal, total_pv)        -> str
 result_digest_stream(version, total_nominal, total_pv) -> str
 validate_result_digest_contract(sim)                   -> None
+
+# RNG coherence
+rng_reference_signature(reference)                     -> tuple
 
 # reporting
 contingency_at(summary, selected_confidence_level, deterministic_base) -> Contingency
@@ -142,6 +151,77 @@ counter increment, no `run_id`, no attempt metadata, and no decision about
 whether a failed attempt consumed a nonce. Neither `prepare_simulation` nor
 `run_simulation` takes a nonce argument — there is nowhere for the transactional
 lifecycle to enter.
+
+---
+
+## 5a. The RNG reference binding
+
+A prepared model records `rng_version = 1`, and that claim has to mean
+something. Before this correction the same prepared model could be executed
+under a reference whose `a12` was one larger — a completely different digest,
+still reporting `RNG_VERSION = 1`. Two different generators cannot both be
+version 1.
+
+`rng_reference_signature(reference)` is a **canonical immutable tuple** covering
+every operational field able to change a number or a stream identity:
+
+```
+m1  m2  a12  a13n  a21  a23n  norm
+jump.a1_p127   jump.a2_p127
+auto.modulus   auto.multiplier   auto.exhausted_value
+seed_min   seed_max
+components.kind_order   components.role_order
+```
+
+It is a **value, not a pointer**: `RngReference` is frozen, but `role_order`
+inside it is a live `dict`, so keeping the object would let the ordering be
+rewritten after preparation. Every field is copied into tuples. It is **not a
+new hash authority** — the comparison is tuple equality, exact and needing no
+collision argument.
+
+**Both boundaries are enforced.**
+
+| Boundary | Check |
+|---|---|
+| `prepare_simulation` | the supplied reference must equal `RngReference.from_contracts(sim, inputs)` — refused before stream construction and before any draw |
+| `run_simulation` | the supplied reference must equal the signature the prepared model retained — refused before the first draw |
+
+Nine mutated references are refused at both boundaries — `a12`, `a13n`, `m1`,
+`norm`, a jump-matrix element, the AUTO multiplier, the seed domain, the kind
+order and the role order — and the refusal **names the field that moved**. That
+the check precedes any draw is proved rather than asserted: a reference subclass
+whose `next_uniform` raises still produces the binding refusal, while the same
+subclass with a *matching* signature does reach the sampler and raise.
+
+**RNG_VERSION remains 1. No RNG semantics changed.** The accepted reference
+reproduces every pinned number bit-identically — digest `7F58EA884DAA8D65`,
+mean `376.3270995496381`, SD `119.53338321454508`, `P50 335.15094832897046`,
+`P80` contingency `261.9975727286816`.
+
+---
+
+## 5b. The successful result is immutable
+
+`SimulationResult` was described as immutable while `summary.nominal.percentiles`
+was a live `dict`. A reported percentile could be rewritten after the run and a
+contingency computed from the new value — no new simulation, no new seed, no new
+digest, no refusal.
+
+`MeasureStatistics.__post_init__` now replaces the mapping with a
+`MappingProxyType` over a **private copy**, so:
+
+- `stats.percentiles[label] = x` raises `TypeError`;
+- a caller that keeps its own dictionary and mutates it later cannot change what
+  the record says;
+- manual construction of `MeasureStatistics` is covered too, not just `describe`.
+
+A tree walk over a complete successful run and its prepared model finds **no
+`list`, `dict` or `set` at any depth** — the retained totals, the diagnostics,
+the ladder and the RNG states are all tuples or frozen records. The guard is
+shown to be non-vacuous by finding a planted one.
+
+**The result digest is unchanged.** Summary statistics are derived reporting
+data and are not part of D6-17.
 
 ---
 
@@ -403,12 +483,62 @@ accepted helpers return mean `8.5e307` and SD `1.6999999999999997e308`.
 `n < 2` **refuses explicitly** rather than inventing a deviation. A real run has
 `N ≥ 1000`, so this only arises for a helper called directly.
 
-**What scale safety is not.** Left-to-right accumulation of `n` terms carries the
-usual `O(n·eps)` relative drift — about `1e-13` at `n = 1000` — and nothing here
-re-associates or compensates, because the accepted accumulation primitive is the
-one the contract names and a private summation algorithm would be a second
-numerical authority. Scale safety is a statement about RANGE: a statistic whose
-true value is representable is produced rather than refused.
+### The constant-sample invariant
+
+Ordinary `O(n·eps)` accumulation drift is acceptable on a sample that genuinely
+varies. It is **not** acceptable on one that does not: PCCM must never report
+stochastic dispersion for a distribution that has none.
+
+Each statistic therefore tests for a constant sample **after validation and
+before any accumulation**, and returns the exact answer:
+
+| Condition | Result |
+|---|---|
+| every observation is the same Double | mean = that value, sample SD = **`+0.0`** |
+| both bracketing order statistics are equal | the percentile **is** that value |
+
+This is not compensated summation and introduces no second summation authority.
+It is an exact mathematical invariant — the same one the accepted sampler
+already applies to a degenerate distribution: zero uncertainty returns the exact
+point, and no drift may appear from nowhere.
+
+**What it replaces.** For `[1.5e308] × 1000` the normalised two-pass path returns
+mean `1.4999999999999677e308` and SD `3.2348791455812365e294`. Both numbers are
+named in a control, so the correction cannot silently regress.
+
+| Constant sample | Mean | Sample SD | Every percentile |
+|---|---|---|---|
+| `[0.1] × 1000` | **exactly `0.1`** | **`0.0`** | `0.1` |
+| `[1.1] × 1000` | exactly `1.1` | `0.0` | `1.1` |
+| `[1e100] × 1000` | exactly `1e100` | `0.0` | `1e100` |
+| `[1.5e308] × 1000` | **exactly `1.5e308`** | **`0.0`** | `1.5e308` |
+| `[5e-324] × 1000` | exactly `5e-324` | `0.0` | `5e-324` |
+| `[-12345.678] × 1000` | exact | `0.0` | exact |
+| `[0.0] × 1000` | `0.0` | `0.0` | `0.0` |
+
+The test is on the **Double**, not on approximate closeness: `[1.0] × 999 +
+[nextafter(1.0, 2.0)]` is a real one-ulp dispersion and is **not** flattened —
+its SD stays above zero and `P0` and `P100` remain the two distinct values.
+
+**No non-degenerate statistic moved.** Re-running the whole Step-4 evidence
+capture before and after the correction produced one single difference: the
+degenerate accumulation fixture's sample SD, `3.23488e294 → 0`. Every other
+recorded number is bit-identical.
+
+**What scale safety still is not.** Once a sample varies, left-to-right
+accumulation carries the usual `O(n·eps)` relative drift, and nothing here
+re-associates or compensates — the accepted accumulation primitive is the one the
+contract names, and a private summation algorithm would be a second numerical
+authority. At near-maximum magnitudes that drift can put the mean marginally
+outside `[min, max]`: for `[1.5e308] × 999 + [nextafter(1.5e308, 0)]` the mean is
+about `2e-14` relative below the minimum. That is stated in the control rather
+than hidden. Scale safety is a statement about RANGE — a statistic whose true
+value is representable is produced rather than refused.
+
+A dispersion with **no** Double is refused, not reported as zero: `[5e-324] × 999
++ [1e-323]` varies, and its true deviation of about `1.6e-325` is below the
+smallest subnormal, so the rescale stage refuses by name. Returning `0.0` there
+would claim the sample has no dispersion.
 
 ### Type-7 hand vectors
 
@@ -432,6 +562,27 @@ true value is representable is produced rather than refused.
 The convex form is the point: between `−1.7e308` and `1.7e308` the difference
 form `x_lo + f(x_hi − x_lo)` overflows at every `f`, while the convex result is
 bracketed by its endpoints and always exists.
+
+### One sort per measure
+
+`_percentile_type7_sorted` holds the mathematics and sorts nothing; the public
+`percentile_type7` validates, sorts one copy and delegates; `describe` orders the
+measure **once** and evaluates the whole ladder against that copy.
+
+| | Sorts per measure |
+|---|---|
+| eleven percentiles through the public helper | 12 |
+| eleven percentiles through `describe` | **1** |
+
+A direct sort-count regression installs a counting `sorted` in the module's
+globals and asserts the count is exactly 1 for the full 11-point ladder, and
+exactly 1 for a standalone `percentile_type7` call. The caller's sequence is
+still never reordered, and **every hand vector is unchanged** — the split moved
+zero numerical output.
+
+The mean and the sample deviation are computed over the **original** order, not
+the sorted copy: `safe_signed_sum` accumulates left to right, so handing it a
+reordered sequence would move numbers.
 
 ---
 
@@ -536,7 +687,7 @@ narrowed**.
 | 1 large positive | 1.00024e307 | 1.49992e307 | 1.24546e307 | 1.43057e306 | 1.44037e307 |
 | 2 large negative | −1.49976e307 | −1.00008e307 | −1.25454e307 | 1.43057e306 | −1.05963e307 |
 | 3 crossing zero | −9.69082e306 | 9.81766e306 | −1.40843e305 | 4.0014e306 | 5.1163e306 |
-| 4 opposite-sign accumulation | 1.5e308 | 1.5e308 | 1.5e308 | 3.23e294 | 1.5e308 |
+| 4 opposite-sign accumulation | 1.5e308 | 1.5e308 | **1.5e308 exactly** | **0** | 1.5e308 |
 | 5 subnormal scale | 9.88131e−324 | 9.99989e−321 | 4.91101e−321 | 2.86064e−321 | 8.80919e−321 |
 | 6 degenerate | 42 | 42 | 42 | **0** | 42 |
 | 7 Beta BC `m = a` | 0.036335 | 69.8958 | 16.5126 | 14.0908 | 37.7141 |
@@ -618,7 +769,7 @@ driver is a `builtins`, `sim_rng` or `sim_sample` type, and none carries a
 
 ## 24. Test inventory
 
-`tests/test_phase6_sim_oracle.py` — **74 conformance tests**
+`tests/test_phase6_sim_oracle.py` — **85 conformance tests**
 
 | Plan letter | Coverage |
 |---|---|
@@ -647,8 +798,11 @@ driver is a `builtins`, `sim_rng` or `sim_sample` type, and none carries a
 | Y | ten extreme-domain families |
 | Z | no file access at run time; no evidence or workbook import |
 | — | iteration pre-flight; stream initialisation; retained shape; error semantics; analytical cross-check; package exports |
+| — | **constant-sample invariant** at seven magnitudes; fully degenerate simulation; near-maximum constant simulation; one-ulp dispersion preserved |
+| — | **`describe` sorts once**; public helper sorts one copy; hand vectors unchanged |
+| — | **RNG binding**: accepted reference reproduces every pinned number; the signature is a value, not a pointer |
 
-`tests/test_phase6_sim_oracle_validation.py` — **37 mutation controls and guards**
+`tests/test_phase6_sim_oracle_validation.py` — **49 mutation controls and guards**
 
 The instrument is a local re-implementation of one iteration, parameterised by
 exactly one mutation. **Run unmutated it reproduces the accepted engine bit for
@@ -685,6 +839,17 @@ non-vacuous.
 | 29 | contingency clamped | a negative contingency is reported |
 | 30 | Selected CL inserted into execution | one digest accepted, ten under the leak |
 | 31–37 | scope, publication, sensitivity, matrix, prepared-model and module-state guards | see §23 |
+| 38 | a prepared model run under a different reference | nine mutated references refused |
+| 39 | the binding checked after a draw | a no-draw reference still gives the binding refusal |
+| 40 | a foreign reference at preparation | refused before stream construction |
+| 41 | a refusal that does not say what moved | the differing field is named |
+| 42 | *(the demonstration)* the mutated references really are different generators | different uniform or different jump ladder |
+| 43, 44 | a rewritten reported percentile | `TypeError`; the caller's dictionary is copied |
+| 45 | a mutated percentile feeding a contingency | mutation impossible; digest, P50 and contingency unchanged |
+| 46 | a mutable container surviving a run | none at any depth, guard shown non-vacuous |
+| 47 | manufactured dispersion on a constant sample | `1.4999999999999677e308` / `3.23e294` versus `1.5e308` / `0.0` |
+| 48 | a real one-ulp dispersion flattened | SD stays above zero; P0 and P100 stay distinct |
+| 49 | an unrepresentable dispersion reported as zero | refused, naming the rescale stage |
 
 ---
 
@@ -692,11 +857,12 @@ non-vacuous.
 
 | Check | Result |
 |---|---|
-| Full Python suite | **2209 passed, 0 failed** |
+| Full Python suite | **2232 passed, 0 failed** |
 | Before Step 4 | 2094 passed |
-| New Step-4 tests | **+111** (74 conformance + 37 controls) |
-| New Step-3 regressions | **+4** (the §0 invalid-state cleanup) |
-| | 2094 + 111 + 4 = **2209** |
+| Step-4 conformance tests | **+85** |
+| Step-4 mutation controls and guards | **+49** |
+| Step-3 cleanup regressions | **+4** (the §0 invalid-state cleanup) |
+| | 2094 + 85 + 49 + 4 = **2232** |
 | Stage-A verifier / build | **351 passed, 0 failed** — unchanged, Step 4 emits nothing |
 | Step-1 contract tests | green |
 | Step-2 RNG and jump tests | green |
@@ -706,11 +872,12 @@ No test was deleted, skipped or weakened.
 
 ### Baseline preservation
 
-Byte-identical to the accepted Step-3 commit `e939d47`: `spec/` (whole
-directory), `src/`, `bootstrap/`, `evidence/`, `docs/phase6_plan.md`,
-`docs/phase6_step0.md`, `docs/phase6_step1.md`, `docs/phase6_step2.md`,
-`docs/phase6_step3.md`, `builder/build_stage_a.py`, `calc_oracle.py`,
-`calc_numeric.py`, `calc_fingerprint.py`.
+Byte-identical to the accepted Step-3 commit `e939d47` **and** to the reviewed
+Step-4 commit `dd003ebe`: `spec/` (whole directory), `src/`, `bootstrap/`,
+`evidence/`, `docs/phase6_plan.md`, `docs/phase6_step0.md`,
+`docs/phase6_step1.md`, `docs/phase6_step2.md`, `docs/phase6_step3.md`,
+`builder/build_stage_a.py`, `calc_oracle.py`, `calc_numeric.py`,
+`calc_fingerprint.py`.
 
 ### Phase-5 fingerprint vectors
 
@@ -762,4 +929,35 @@ where the failure mode is less obvious and the disk is not disposable.
 
 ---
 
-**STEP 4 — ACCEPTANCE REQUESTED**
+## 28. The oracle correction round
+
+Independent review of `dd003ebe` found four implementation defects. All four are
+corrected here and nothing else changed.
+
+| # | Defect | Correction |
+|---|---|---|
+| 1 | constant retained sample acquired false dispersion — `[1.5e308] × 1000` gave mean `1.4999999999999677e308` and SD `3.2348791455812365e294`; `[0.1] × 1000` also gave a non-zero SD | exact constant-sample invariant in `sample_mean`, `sample_standard_deviation` and the percentile bracket, applied after validation and before accumulation (§16) |
+| 2 | a prepared model could be run under a different `RngReference` while still reporting `RNG_VERSION = 1` | an immutable operational signature, verified at preparation against the contracts' own reference and again at run time before the first draw (§5a) |
+| 3 | `summary.nominal.percentiles` was a live `dict`; a reported percentile could be rewritten and fed to `contingency_at` with no new run | read-only proxy over a private copy, enforced in `__post_init__` so manual construction is covered too (§5b) |
+| 4 | `describe()` claimed one sort and performed `1 + K` — twelve per measure for the 11-value ladder | `_percentile_type7_sorted` holds the mathematics and sorts nothing; `describe` orders once and reuses it (§16) |
+
+**What did NOT change.** The core Monte Carlo architecture was not reopened.
+Re-running the entire Step-4 evidence capture before and after the correction
+produced exactly one difference — the degenerate accumulation fixture's sample
+standard deviation, `3.23488e294 → 0`, which is defect 1 being fixed. Every
+other number is bit-identical: the digests, the ladders, the contingencies, the
+D6-18b states, the cross-check means, the extreme-domain results.
+
+The accepted Step-3 cleanup is retained in full, with its three invalid-state
+refusal regressions and the control proving no valid-state number moved.
+
+**One limitation stated rather than hidden.** Once a sample genuinely varies,
+the ordinary accumulation drift returns, and at near-maximum magnitudes it can
+put the mean marginally outside `[min, max]` — about `2e-14` relative for
+`[1.5e308] × 999 + [nextafter(1.5e308, 0)]`. Removing that would take a
+compensated summation this module deliberately does not own. It is recorded in
+the control that exercises it.
+
+---
+
+**STEP 4 — ACCEPTANCE REQUESTED (ORACLE CORRECTED)**

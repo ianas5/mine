@@ -23,6 +23,7 @@ Runs standalone or under pytest.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import math
 import sys
 from pathlib import Path
@@ -48,7 +49,10 @@ from pccm_builder.calc_fingerprint import (  # noqa: E402
     number_field,
     text_field,
 )
-from pccm_builder.calc_numeric import safe_signed_sum  # noqa: E402
+from pccm_builder.calc_numeric import (  # noqa: E402
+    NumericalRangeRefusal,
+    safe_signed_sum,
+)
 from pccm_builder.calc_oracle import (  # noqa: E402
     AppliedTimeline,
     CalculationModel,
@@ -58,11 +62,13 @@ from pccm_builder.calc_oracle import (  # noqa: E402
 )
 from pccm_builder.sim_oracle import (  # noqa: E402
     DeterministicBase,
+    SimOracleError,
     contingency_at,
     deterministic_base_of,
     prepare_simulation,
     result_digest,
     result_digest_stream,
+    rng_reference_signature,
     run_simulation,
 )
 from pccm_builder.sim_sample import (  # noqa: E402
@@ -70,6 +76,8 @@ from pccm_builder.sim_sample import (  # noqa: E402
     FAMILY_UNIFORM,
 )
 from pccm_builder.sim_stats import (  # noqa: E402
+    MeasureStatistics,
+    describe,
     percentile_type7,
     sample_mean,
     sample_standard_deviation,
@@ -964,6 +972,355 @@ def test_37_the_engine_holds_no_module_level_mutable_simulation_state() -> None:
                 assert isinstance(node.value, (ast.Constant, ast.Call)), (
                     f"module-level {target.id} is not a constant or a compiled literal"
                 )
+
+
+# ===========================================================================
+# RNG reference binding
+#
+# A prepared model records `rng_version = 1`. Without a binding that claim is
+# unenforceable: the same prepared model run under a reference with `a12 + 1`
+# produced a completely different digest and still reported version 1. Two
+# different generators cannot both be version 1.
+# ===========================================================================
+class _NoDrawReference(RngReference):
+    """A reference that refuses to generate. Used to prove WHEN the check runs.
+
+    If the binding were verified after the loop had started - or not at all -
+    the engine would reach `next_uniform` and this would raise `AssertionError`
+    instead of the binding refusal.
+    """
+
+    def next_uniform(self, state):  # type: ignore[override]
+        raise AssertionError("a draw was taken before the binding was verified")
+
+
+def _variant(cls=RngReference, **changes) -> RngReference:
+    """The accepted reference with exactly one operational field replaced."""
+    base = _ref()
+    values = {field.name: getattr(base, field.name) for field in dataclasses.fields(base)}
+    values.update(changes)
+    return cls(**values)
+
+
+def _bumped_jump(reference: RngReference) -> tuple:
+    rows = [list(row) for row in reference.jump_a1]
+    rows[1][2] = (rows[1][2] + 1) % reference.m1
+    return tuple(tuple(row) for row in rows)
+
+
+def _wrong_references() -> tuple:
+    """Every operational axis the binding is required to cover."""
+    reference = _ref()
+    return (
+        ("recurrence a12", _variant(a12=reference.a12 + 1)),
+        ("recurrence a13n", _variant(a13n=reference.a13n + 1)),
+        ("modulus m1", _variant(m1=reference.m1 - 1)),
+        ("normalisation", _variant(norm=reference.norm * (1.0 + 2.0e-16))),
+        ("jump matrix element", _variant(jump_a1=_bumped_jump(reference))),
+        ("AUTO multiplier", _variant(auto_multiplier=reference.auto_multiplier + 1)),
+        ("seed domain", _variant(seed_max=reference.seed_max - 1)),
+        ("kind order", _variant(kind_order=tuple(reversed(reference.kind_order)))),
+        (
+            "role order",
+            _variant(
+                role_order={
+                    kind: (tuple(reversed(roles)) if kind == "RISK" else roles)
+                    for kind, roles in reference.role_order.items()
+                }
+            ),
+        ),
+    )
+
+
+def test_38_a_prepared_model_refuses_a_different_reference_at_run_time() -> None:
+    prepared, _ = _prepare(_mixed(), iterations=1000)
+    accepted = run_simulation(_ref(), prepared)
+
+    for label, wrong in _wrong_references():
+        try:
+            run_simulation(wrong, prepared)
+        except SimOracleError as error:
+            assert "prepared against" in str(error), (label, str(error))
+            continue
+        raise AssertionError(f"{label}: the run accepted a foreign reference")
+
+    # The control is not vacuous: the accepted reference still runs, unchanged.
+    assert run_simulation(_ref(), prepared).result_digest == accepted.result_digest
+
+
+def test_39_the_binding_is_checked_before_the_first_draw() -> None:
+    """A reference that cannot generate still produces the BINDING refusal."""
+    prepared, _ = _prepare(_mixed(), iterations=1000)
+    blocked = _variant(_NoDrawReference, a12=_ref().a12 + 1)
+
+    try:
+        run_simulation(blocked, prepared)
+    except SimOracleError as error:
+        assert "a12" in str(error)
+    else:
+        raise AssertionError("a foreign reference was accepted")
+
+    # And the guard itself works: a matching reference of the same class does
+    # reach the sampler, so the test above proved ordering rather than nothing.
+    matching = _variant(_NoDrawReference)
+    assert rng_reference_signature(matching) == prepared.rng_signature
+    try:
+        run_simulation(matching, prepared)
+    except AssertionError as error:
+        assert "before the binding was verified" in str(error)
+        return
+    raise AssertionError("the no-draw reference generated after all")
+
+
+def test_40_a_foreign_reference_is_refused_at_preparation() -> None:
+    """Refused before stream construction and before any draw."""
+    for label, wrong in _wrong_references():
+        try:
+            _prepare(_mixed(), iterations=1000)  # sanity: the accepted path works
+            prepare_simulation(
+                wrong, _sim(), _inputs(), _mixed(), _tolerances(),
+                effective_seed=12345, iterations=1000,
+            )
+        except SimOracleError as error:
+            assert "derive" in str(error), (label, str(error))
+            continue
+        raise AssertionError(f"{label}: preparation accepted a foreign reference")
+
+
+def test_41_the_binding_refusal_names_the_field_that_moved() -> None:
+    prepared, _ = _prepare(_mixed(), iterations=1000)
+    expected = {
+        "recurrence a12": "a12",
+        "jump matrix element": "jump.a1_p127",
+        "seed domain": "seed_max",
+        "role order": "components.role_order",
+        "kind order": "components.kind_order",
+    }
+    for label, wrong in _wrong_references():
+        if label not in expected:
+            continue
+        try:
+            run_simulation(wrong, prepared)
+        except SimOracleError as error:
+            assert expected[label] in str(error), (label, str(error))
+            continue
+        raise AssertionError(f"{label} was accepted")
+
+
+def test_42_the_divergence_the_binding_prevents_is_real() -> None:
+    """The defect this closes, demonstrated: two generators, one version number.
+
+    Each mutated reference is shown to be a genuinely different generator - a
+    different uniform from the same state, or a different stream ladder from the
+    same seed - while every one of them still carries the contract's
+    `rng_version`. That is why mixing them has to be refused rather than
+    detected afterwards.
+    """
+    prepared, _ = _prepare(_mixed(), seed=12345, iterations=1000)
+    accepted = run_simulation(_ref(), prepared)
+    assert prepared.rng_version == 1 and accepted.rng_version == 1
+
+    start = _ref().fixed_seed_to_state(12345)
+    baseline_uniform = _ref().next_uniform(start).uniform
+    baseline_jump = _ref().jump_to_next_stream(start)
+
+    diverged = 0
+    for label, wrong in _wrong_references():
+        assert rng_reference_signature(wrong) != prepared.rng_signature, label
+        try:
+            if wrong.next_uniform(start).uniform != baseline_uniform:
+                diverged += 1
+                continue
+        except Exception:  # a modulus change can make the start state illegal
+            diverged += 1
+            continue
+        if wrong.jump_to_next_stream(start) != baseline_jump:
+            diverged += 1
+
+    assert diverged >= 5, (
+        f"only {diverged} of the mutated references changed a number; the control "
+        "would be proving little"
+    )
+
+
+# ===========================================================================
+# immutability of the successful result
+# ===========================================================================
+def test_43_a_reported_percentile_cannot_be_rewritten() -> None:
+    stats = describe([float(index) for index in range(1000)], (("P50", 0.5),), "immutable")
+    try:
+        stats.percentiles["P50"] = -999.0
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("a reported percentile was rewritten")
+    assert not isinstance(stats.percentiles, dict)
+    assert stats.percentiles["P50"] == percentile_type7(
+        [float(index) for index in range(1000)], 0.5
+    )
+
+
+def test_44_a_manually_built_statistic_copies_its_percentile_mapping() -> None:
+    """A caller that keeps its own dictionary cannot reach in afterwards."""
+    owned = {"P50": 1.0, "P90": 2.0}
+    stats = MeasureStatistics(
+        count=3, mean=1.0, sample_standard_deviation=0.0,
+        minimum=1.0, maximum=2.0, percentiles=owned,
+    )
+    owned["P50"] = -999.0
+    assert stats.percentiles["P50"] == 1.0, "the caller's dictionary reached the record"
+    try:
+        stats.percentiles["P90"] = -999.0
+    except TypeError:
+        return
+    raise AssertionError("a manually built record exposed a mutable mapping")
+
+
+def test_45_mutating_reported_data_cannot_change_a_contingency() -> None:
+    """The defect this closes: a rewritten P50 fed a contingency with no new
+    simulation, no new seed and no new digest."""
+    prepared, result = _prepare(_mixed(), iterations=1500)
+    run = run_simulation(_ref(), prepared)
+    base = deterministic_base_of(result)
+
+    saved_digest = run.result_digest
+    saved_p50 = run.summary.nominal.percentiles["P50"]
+    saved_contingency = contingency_at(run.summary, "P50", base).nominal
+
+    try:
+        run.summary.nominal.percentiles["P50"] = -999.0
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("the reported P50 was rewritten after the run")
+
+    assert run.result_digest == saved_digest
+    assert run.summary.nominal.percentiles["P50"] == saved_p50
+    assert contingency_at(run.summary, "P50", base).nominal == saved_contingency
+    assert saved_contingency != -999.0 - base.nominal, "the control is vacuous"
+
+
+def _mutable_containers(value, path: str = "run", depth: int = 0) -> list:
+    """Every `list`, `dict` or `set` reachable in a result tree."""
+    if depth > 6:
+        return []
+    if isinstance(value, (list, dict, set)):
+        return [(path, type(value).__name__)]
+    found: list = []
+    if isinstance(value, tuple):
+        for index, item in enumerate(value[:6]):
+            found.extend(_mutable_containers(item, f"{path}[{index}]", depth + 1))
+    elif hasattr(value, "__dataclass_fields__"):
+        for field in value.__dataclass_fields__:
+            found.extend(
+                _mutable_containers(getattr(value, field), f"{path}.{field}", depth + 1)
+            )
+    return found
+
+
+def test_46_the_whole_successful_result_tree_is_immutable() -> None:
+    prepared, _ = _prepare(_mixed(), iterations=1000)
+    run = run_simulation(_ref(), prepared)
+
+    assert _mutable_containers(run, "run") == []
+    assert _mutable_containers(prepared, "prepared") == []
+    for record in run.diagnostics:
+        assert isinstance(record.initial_state.words, tuple)
+        assert isinstance(record.final_state.words, tuple)
+    assert isinstance(run.total_nominal, tuple) and isinstance(run.total_pv, tuple)
+
+    # The guard is not vacuous: it finds a mutable container when one is there.
+    assert _mutable_containers(({"a": 1},), "probe") == [("probe[0]", "dict")]
+
+
+# ===========================================================================
+# the constant-sample invariant, as a control
+# ===========================================================================
+def test_47_manufactured_dispersion_on_a_constant_sample_is_caught() -> None:
+    """The numbers the accepted implementation used to produce, named.
+
+    The normalised two-pass path is still exactly what runs for a sample that
+    varies; the invariant only intercepts one that does not.
+    """
+    values = [1.5e308] * 1000
+    scale = 8.98846567431158e307                     # 2**1023
+    scaled = [value / scale for value in values]
+    total = safe_signed_sum(scaled, "drifted")
+    centre = total / len(values)
+    drifted_mean = centre * scale
+    drifted_sd = math.sqrt(
+        safe_signed_sum([(x - centre) * (x - centre) for x in scaled], "drifted")
+        / (len(values) - 1)
+    ) * scale
+
+    assert drifted_mean == 1.4999999999999677e308, drifted_mean
+    assert drifted_sd == 3.2348791455812365e294, drifted_sd
+    assert sample_mean(values) == 1.5e308
+    assert sample_standard_deviation(values) == 0.0
+
+    ordinary = [0.1] * 1000
+    naive = 0.0
+    for value in ordinary:
+        naive += value
+    assert naive / len(ordinary) != 0.1, "the control is vacuous at ordinary scale"
+    assert sample_mean(ordinary) == 0.1
+    assert sample_standard_deviation(ordinary) == 0.0
+
+
+def test_48_the_invariant_does_not_flatten_a_real_dispersion() -> None:
+    """One ulp of variation is a real dispersion and is not intercepted.
+
+    A NOTE ON WHAT IS AND IS NOT PROMISED. Once a sample varies, the ordinary
+    left-to-right accumulation is what runs, and it carries the usual
+    `O(n * eps)` relative drift. At near-`Double`-maximum magnitudes that drift
+    can put the mean marginally OUTSIDE the closed interval `[min, max]` - for
+    `[1.5e308] * 999 + [nextafter(1.5e308, 0)]` the mean comes back as
+    `1.4999999999999677e308`, about `2e-14` relative below the minimum. That is
+    accumulation arithmetic, not a scale-safety defect, and removing it would
+    take a compensated summation this module deliberately does not own. The
+    bracket is therefore asserted to within that relative drift, and stated
+    rather than hidden.
+    """
+    for values in (
+        [1.0] * 999 + [math.nextafter(1.0, 2.0)],
+        [1.5e308] * 999 + [math.nextafter(1.5e308, 0.0)],
+        [1.0e-300] * 999 + [2.0e-300],
+    ):
+        assert len(set(values)) == 2
+        assert sample_standard_deviation(values) > 0.0, values[0]
+        # The dispersion survives even where the MEAN cannot show it: one ulp in
+        # a thousand observations is below the resolution of the average. The
+        # percentiles still separate the two distinct values exactly.
+        assert percentile_type7(values, 0.0) != percentile_type7(values, 1.0)
+        assert percentile_type7(values, 0.0) == min(values)
+        assert percentile_type7(values, 1.0) == max(values)
+
+        mean = sample_mean(values)
+        low, high = min(values), max(values)
+        allowance = 1e-12 * max(abs(low), abs(high))
+        assert low - allowance <= mean <= high + allowance, (values[0], mean)
+
+
+def test_49_a_dispersion_with_no_double_is_refused_not_reported_as_zero() -> None:
+    """The invariant must not be reachable by underflow.
+
+    `[5e-324] * 999 + [1e-323]` varies, so it is NOT a constant sample - but its
+    true sample deviation is about `1.6e-325`, below the smallest subnormal. The
+    only two wrong answers are `0.0`, which would claim the sample has no
+    dispersion, and a silent underflow. It is refused instead, naming the stage.
+    """
+    values = [5e-324] * 999 + [1e-323]
+    assert len(set(values)) == 2
+
+    try:
+        sample_standard_deviation(values)
+    except NumericalRangeRefusal as error:
+        assert "rescale" in str(error), str(error)
+    else:
+        raise AssertionError("an unrepresentable deviation was returned")
+
+    # The mean of the same sample IS representable and is produced.
+    assert 5e-324 <= sample_mean(values) <= 1e-323
 
 
 if __name__ == "__main__":

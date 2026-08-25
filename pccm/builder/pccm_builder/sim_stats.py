@@ -35,12 +35,40 @@ order and its exact-rescue tier are unchanged; normalisation decides only the
 SPACE the accepted primitive works in, never the order it works in.
 
 WHAT NORMALISATION DOES NOT DO is make a long sum exact. Left-to-right
-accumulation of `n` terms carries the usual `O(n * eps)` relative drift - about
-`1e-13` at `n = 1000` - and nothing here re-associates or compensates to remove
-it, because the accepted accumulation primitive is the one named by the
-contract and a private summation algorithm here would be a second numerical
-authority. Scale safety is a statement about RANGE: a statistic whose true value
-is representable is produced rather than refused. It is not a claim of exactness.
+accumulation of `n` terms carries the usual `O(n * eps)` relative drift, and
+nothing here re-associates or compensates to remove it: the accepted
+accumulation primitive is the one the contract names, and a private summation
+algorithm here would be a second numerical authority. Scale safety is a
+statement about RANGE - a statistic whose true value is representable is
+produced rather than refused - not a claim of exactness on a varying sample.
+
+--------------------------------------------------------------------------------
+THE CONSTANT-SAMPLE INVARIANT
+--------------------------------------------------------------------------------
+That drift is acceptable on a sample that genuinely varies. It is NOT acceptable
+on one that does not.
+
+If every retained observation is the same Double then the distribution has no
+dispersion at all, and the mean IS that Double while the sample standard
+deviation IS exactly zero. Rediscovering that by accumulating the value a
+thousand times produces `1.4999999999999677e308` where the answer is `1.5e308`,
+and a standard deviation of `3.2e294` where the answer is `0` - PCCM would be
+reporting stochastic dispersion for a distribution that has none.
+
+So each statistic tests for a constant sample AFTER validation and BEFORE any
+accumulation, and returns the exact answer:
+
+    every observation equal   ->  mean = that value, sample SD = +0.0
+    both bracketing order
+      statistics equal        ->  the percentile IS that value
+
+This is not compensated summation and introduces no second summation authority.
+It is an exact mathematical invariant, and it is the same one the accepted
+sampler already applies to a degenerate distribution: zero uncertainty returns
+the exact point, and no numerical drift is permitted to appear from nowhere.
+
+NO NON-DEGENERATE STATISTIC MOVES. The shortcut can only fire where the answer
+is already known exactly.
 
 A statistic whose true value has no `Double` refuses through the accepted
 Phase-5 numerical hierarchy, naming the stage. Nothing here returns `inf`,
@@ -53,6 +81,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Mapping, Sequence
 
 from .calc_numeric import (
@@ -76,7 +105,19 @@ class SimStatsError(CalculationRefusal):
 
 @dataclass(frozen=True)
 class MeasureStatistics:
-    """Every statistic of one measure - nominal or PV - over one run."""
+    """Every statistic of one measure - nominal or PV - over one run.
+
+    IMMUTABLE BY CONSTRUCTION, INCLUDING THE PERCENTILES. `percentiles` is
+    replaced at construction by a read-only proxy over a PRIVATE COPY, so
+    neither the caller's dictionary nor a later `stats.percentiles[label] = x`
+    can reach the stored ladder. A frozen dataclass holding a live `dict` is not
+    an immutable result: a reported percentile could be rewritten after the run
+    and a contingency computed from the new value, with no new simulation, no
+    new seed and no new digest to show for it.
+
+    The copy also means a caller that keeps its own dictionary and mutates it
+    later cannot change what this record says.
+    """
 
     count: int
     mean: float
@@ -84,6 +125,11 @@ class MeasureStatistics:
     minimum: float
     maximum: float
     percentiles: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "percentiles", MappingProxyType(dict(self.percentiles))
+        )
 
     def percentile(self, label: str) -> float:
         try:
@@ -111,6 +157,20 @@ def _values(values: Sequence[float], where: str) -> tuple[float, ...]:
             )
         out.append(float(value))
     return tuple(out)
+
+
+def _constant_value(values: Sequence[float]) -> float | None:
+    """The single value a constant sample holds, or `None` if it varies.
+
+    One pass, one comparison per observation. The test is on the DOUBLE, not on
+    an approximate closeness: two values that differ in the last bit are a real
+    (if tiny) dispersion and must not be flattened.
+    """
+    first = values[0]
+    for value in values:
+        if value != first:
+            return None
+    return first
 
 
 def _scale_of(values: Sequence[float]) -> float:
@@ -148,6 +208,13 @@ def sample_mean(values: Sequence[float], where: str = "sample mean") -> float:
     count = len(data)
     if count == 0:
         raise SimStatsError(f"{where}: the mean of an empty sequence does not exist")
+
+    constant = _constant_value(data)
+    if constant is not None:
+        # Exact, and checked BEFORE any accumulation. Adding one value to itself
+        # a thousand times to rediscover it is how `[1.5e308] * 1000` came back
+        # as `1.4999999999999677e308`.
+        return constant
 
     scale = _scale_of(data)
     if scale == 0.0:
@@ -188,10 +255,15 @@ def sample_standard_deviation(
             f"{count}. The divisor is n - 1, which does not exist here. No value is invented."
         )
 
+    if _constant_value(data) is not None:
+        # A sample with one distinct value has no dispersion. Returning +0.0
+        # here is the whole point: the normalised two-pass path would return
+        # `3.2e294` for `[1.5e308] * 1000`, which is dispersion this
+        # distribution does not have.
+        return 0.0
+
     scale = _scale_of(data)
-    if scale == 0.0:
-        # Every observation is exactly zero, so the spread is exactly zero. No
-        # arithmetic can improve on that and normalising by zero is undefined.
+    if scale == 0.0:  # pragma: no cover - an all-zero sample is constant above
         return 0.0
 
     scaled = [value / scale for value in data]
@@ -226,6 +298,52 @@ def maximum(values: Sequence[float], where: str = "maximum") -> float:
 # ---------------------------------------------------------------------------
 # Type-7 percentile
 # ---------------------------------------------------------------------------
+def _check_p(p: object, where: str) -> float:
+    if isinstance(p, bool) or not isinstance(p, (int, float)):
+        raise SimStatsError(f"{where}: p must be a number, got {p!r}")
+    p = float(p)
+    if not math.isfinite(p) or not 0.0 <= p <= 1.0:
+        raise SimStatsError(f"{where}: p must lie in [0, 1], got {p!r}")
+    return p
+
+
+def _percentile_type7_sorted(
+    ordered: Sequence[float], p: float, where: str = "percentile"
+) -> float:
+    """Type 7 over an ALREADY SORTED sequence. Sorts nothing.
+
+    This is the whole of the mathematics; the public entry point adds validation
+    and one sort. Keeping the sorted path separate is what lets `describe` order
+    a measure ONCE and evaluate every percentile of the ladder against it -
+    eleven percentiles used to mean twelve sorts.
+    """
+    count = len(ordered)
+    h = (count - 1) * p
+    lo = math.floor(h)
+    hi = min(lo + 1, count - 1)
+    f = h - lo
+    low, high = ordered[lo], ordered[hi]
+    if f == 0.0:
+        # An integral h selects an order statistic outright. Returning it
+        # untouched rather than forming 1.0 * low + 0.0 * high keeps p = 0 and
+        # p = 1 exact at every magnitude, including subnormals.
+        return low
+    if low == high:
+        # THE CONSTANT-BRACKET INVARIANT. A convex combination of two equal
+        # numbers IS that number, but `0.7 * 0.1 + 0.3 * 0.1` is
+        # `0.10000000000000002`. Where every observation is the same Double,
+        # every percentile must be that Double exactly - a run with no
+        # dispersion cannot be allowed to report a ladder that creeps.
+        return low
+    value = (1.0 - f) * low + f * high
+    if not math.isfinite(value):  # pragma: no cover - convex of two finite endpoints
+        raise NumericalRangeRefusal(
+            f"{where}: the convex interpolation between {low!r} and {high!r} produced "
+            f"{value!r} at the percentile stage"
+        )
+    return value
+
+
 def percentile_type7(
     values: Sequence[float], p: float, where: str = "percentile"
 ) -> float:
@@ -245,38 +363,14 @@ def percentile_type7(
     while every convex combination of two representable endpoints is bracketed by
     them and therefore always exists.
 
-    SORTING IS ON A COPY. The caller's sequence is never reordered - the retained
-    iteration arrays keep their original order for the digest, and a statistic
-    that mutated them would change the digest as a side effect.
+    SORTING IS ON A COPY, ONCE. The caller's sequence is never reordered - the
+    retained iteration arrays keep their original order for the digest, and a
+    statistic that mutated them would change the digest as a side effect.
     """
     data = _values(values, where)
-    count = len(data)
-    if count == 0:
+    if not data:
         raise SimStatsError(f"{where}: an empty sequence has no percentiles")
-    if isinstance(p, bool) or not isinstance(p, (int, float)):
-        raise SimStatsError(f"{where}: p must be a number, got {p!r}")
-    p = float(p)
-    if not math.isfinite(p) or not 0.0 <= p <= 1.0:
-        raise SimStatsError(f"{where}: p must lie in [0, 1], got {p!r}")
-
-    ordered = sorted(data)
-    h = (count - 1) * p
-    lo = math.floor(h)
-    hi = min(lo + 1, count - 1)
-    f = h - lo
-    low, high = ordered[lo], ordered[hi]
-    if f == 0.0:
-        # An integral h selects an order statistic outright. Returning it
-        # untouched rather than forming 1.0 * low + 0.0 * high keeps p = 0 and
-        # p = 1 exact at every magnitude, including subnormals.
-        return low
-    value = (1.0 - f) * low + f * high
-    if not math.isfinite(value):  # pragma: no cover - convex of two finite endpoints
-        raise NumericalRangeRefusal(
-            f"{where}: the convex interpolation between {low!r} and {high!r} produced "
-            f"{value!r} at the percentile stage"
-        )
-    return value
+    return _percentile_type7_sorted(sorted(data), _check_p(p, where), where)
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +387,13 @@ def describe(
     ladder of its own: the selectable levels belong to `input_contract.yaml` and
     the fixed ones to `sim_contract.yaml`, and a copy here would be a third
     authority able to drift from both.
+
+    EXACTLY ONE SORT PER MEASURE. The ordered copy is formed here and reused for
+    every requested percentile through `_percentile_type7_sorted`; the public
+    `percentile_type7` is not called in the loop, because it would sort again for
+    each label. The mean and the sample deviation are computed over the ORIGINAL
+    order, not the sorted copy - `safe_signed_sum` accumulates left to right, so
+    handing it a reordered sequence would move numbers.
     """
     data = _values(values, where)
     if not data:
@@ -303,7 +404,9 @@ def describe(
     for label, p in points:
         if label in percentiles:
             raise SimStatsError(f"{where}: percentile label {label!r} is requested twice")
-        percentiles[label] = percentile_type7(ordered, p, f"{where}: {label}")
+        percentiles[label] = _percentile_type7_sorted(
+            ordered, _check_p(p, f"{where}: {label}"), f"{where}: {label}"
+        )
 
     return MeasureStatistics(
         count=len(data),

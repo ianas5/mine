@@ -64,6 +64,7 @@ from .sim_oracle import (
     resolve_percentile_ladder,
     result_digest,
     result_digest_stream,
+    rng_reference_signature,
     run_simulation,
     validate_iterations,
     validate_result_digest_contract,
@@ -124,6 +125,7 @@ __all__ = [
     "resolve_percentile_ladder",  # Phase 6 Step-4 reference surface
     "result_digest",             # Phase 6 Step-4 reference surface
     "result_digest_stream",      # Phase 6 Step-4 reference surface
+    "rng_reference_signature",   # Phase 6 Step-4 reference surface
     "run_simulation",            # Phase 6 Step-4 reference surface
     "sample_mean",               # Phase 6 Step-4 reference surface
     "sample_standard_deviation",  # Phase 6 Step-4 reference surface

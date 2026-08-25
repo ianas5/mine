@@ -61,6 +61,7 @@ from pccm_builder.sim_oracle import (  # noqa: E402
     resolve_percentile_ladder,
     result_digest,
     result_digest_stream,
+    rng_reference_signature,
     run_simulation,
     validate_iterations,
     validate_result_digest_contract,
@@ -1389,16 +1390,14 @@ def test_66_the_largest_authorised_opposite_sign_accumulation() -> None:
         "the accumulation refused a representable total, or produced the wrong one"
     )
 
-    # The retained totals are EXACT. The mean of 1000 identical near-maximum
-    # totals is not, and that is arithmetic rather than a scale-safety defect:
-    # the accepted `safe_signed_sum` accumulates left to right and never
-    # re-associates, so a 1000-term sum carries the usual O(n * eps) relative
-    # drift - about 1e-13 here. What scale safety guarantees is that a
-    # representable mean is PRODUCED rather than refused, and it is.
-    mean = run.summary.nominal.mean
-    assert math.isfinite(mean)
-    assert math.isclose(mean, 1.5e308, rel_tol=1e-12), mean
-    assert run.summary.nominal.sample_standard_deviation / abs(mean) < 1e-12
+    # The retained totals are exact AND SO ARE THEIR STATISTICS. Every retained
+    # total is the same Double, so the distribution has no dispersion, and the
+    # constant-sample invariant returns the exact mean and exactly zero rather
+    # than accumulating the value a thousand times and rediscovering
+    # 1.4999999999999677e308 with a standard deviation of 3.2e294.
+    assert run.summary.nominal.mean == 1.5e308
+    assert run.summary.nominal.sample_standard_deviation == 0.0
+    assert set(run.summary.nominal.percentiles.values()) == {1.5e308}
 
 
 def test_67_tiny_and_subnormal_scale_values() -> None:
@@ -1542,6 +1541,7 @@ def test_74_the_package_re_exports_the_step4_surface() -> None:
         "effective_seed_from_nonce": sim_oracle.effective_seed_from_nonce,
         "result_digest": sim_oracle.result_digest,
         "result_digest_stream": sim_oracle.result_digest_stream,
+        "rng_reference_signature": sim_oracle.rng_reference_signature,
         "validate_result_digest_contract": sim_oracle.validate_result_digest_contract,
         "contingency_at": sim_oracle.contingency_at,
         "deterministic_base_of": sim_oracle.deterministic_base_of,
@@ -1569,6 +1569,247 @@ def test_74_the_package_re_exports_the_step4_surface() -> None:
     assert sorted(pccm_builder.__all__) == sorted(set(pccm_builder.__all__))
     for name in pccm_builder.__all__:
         assert hasattr(pccm_builder, name), name
+
+
+# ===========================================================================
+# the constant-sample invariant
+#
+# Ordinary O(n * eps) accumulation drift is acceptable on a sample that varies.
+# It is NOT acceptable to manufacture dispersion for a sample that does not:
+# PCCM must never report stochastic spread for a distribution that has none.
+# ===========================================================================
+_CONSTANT_CASES = (
+    ("ordinary", 0.1),
+    ("just above one", 1.1),
+    ("large", 1.0e100),
+    ("near Double maximum", 1.5e308),
+    ("subnormal", 5e-324),
+    ("negative", -12345.678),
+    ("zero", 0.0),
+)
+
+
+def test_75_a_constant_sample_has_an_exact_mean_and_exactly_zero_deviation() -> None:
+    for label, value in _CONSTANT_CASES:
+        values = [value] * 1000
+        assert len(set(values)) == 1, label
+
+        assert sample_mean(values) == value, (
+            f"{label}: mean of 1000 copies of {value!r} came back as "
+            f"{sample_mean(values)!r}"
+        )
+        assert sample_standard_deviation(values) == 0.0, (
+            f"{label}: a constant sample acquired dispersion "
+            f"{sample_standard_deviation(values)!r}"
+        )
+
+
+def test_76_every_statistic_of_a_constant_sample_is_that_value() -> None:
+    ladder = resolve_percentile_ladder(_sim(), _inputs())
+    for label, value in _CONSTANT_CASES:
+        stats = describe([value] * 1000, ladder.points, label)
+
+        assert stats.mean == value, label
+        assert stats.sample_standard_deviation == 0.0, label
+        assert stats.minimum == value and stats.maximum == value, label
+        assert set(stats.percentiles.values()) == {value}, (
+            f"{label}: the ladder is not flat: {sorted(set(stats.percentiles.values()))}"
+        )
+        for point in ladder.ordered:
+            assert stats.percentiles[point] == value, (label, point)
+
+
+def test_77_the_naive_paths_really_would_have_drifted() -> None:
+    """The controls above are not vacuous - the arithmetic they replace drifts."""
+    values = [1.5e308] * 1000
+    scale = 8.98846567431158e307              # 2**1023
+    scaled = [value / scale for value in values]
+    naive_total = 0.0
+    for value in scaled:
+        naive_total += value
+    drifted_mean = (naive_total / len(values)) * scale
+    assert drifted_mean != 1.5e308, "the accumulation used to be exact after all"
+    assert math.isclose(drifted_mean, 1.5e308, rel_tol=1e-12)
+
+    ordinary = [0.1] * 1000
+    naive = 0.0
+    for value in ordinary:
+        naive += value
+    assert naive / 1000 != 0.1, "even an ordinary constant sample drifted"
+    assert sample_mean(ordinary) == 0.1
+
+
+def test_78_a_fully_degenerate_simulation_reports_no_dispersion() -> None:
+    """End to end: every retained total identical, and every statistic exact.
+
+    The model has no uncertainty anywhere - a degenerate Uniform with an ignored
+    Most Likely, a degenerate Triangular, a degenerate Beta-PERT and a certain
+    risk with degenerate severity - so its iteration total is one representable
+    number repeated N times.
+    """
+    model = _model(
+        costs=[
+            _cost("CL-001", "Uniform", 256.0, 999.0, 256.0, quantity=2.0),   # 512
+            _cost("CL-002", "Triangular", 0.5, 0.5, 0.5, quantity=8.0),      # 4
+            _cost("CL-003", "Beta-PERT", -32.0, -32.0, -32.0, quantity=0.25),  # -8
+        ],
+        risks=[_risk("R-001", "Uniform", 64.0, None, 64.0, probability=1.0)],
+    )
+    run, prepared, _ = _run(model, iterations=1500)
+    expected = 572.0
+
+    assert set(run.total_nominal) == {expected}
+    assert set(run.total_pv) == {expected}
+    for measure in ("nominal", "pv"):
+        stats = run.summary.measure(measure)
+        assert stats.mean == expected, measure
+        assert stats.sample_standard_deviation == 0.0, measure
+        assert stats.minimum == expected and stats.maximum == expected, measure
+        for label in prepared.ladder.ordered:
+            assert stats.percentiles[label] == expected, (measure, label)
+
+    # Only the occurrence stream drew anything; no severity or cost uniform was
+    # consumed, so the run is degenerate in the sampler sense too.
+    assert sorted(record.uniforms_consumed for record in run.diagnostics) == [
+        0, 0, 0, 0, 1500
+    ]
+
+
+def test_79_a_near_maximum_constant_simulation_reports_no_dispersion() -> None:
+    """The same invariant at the top of the Double range."""
+    model = _model(
+        costs=[_cost("CL-001", "Uniform", 1.5e308, None, 1.5e308, quantity=1.0)]
+    )
+    run, prepared, _ = _run(model, iterations=1200)
+
+    assert set(run.total_nominal) == {1.5e308}
+    stats = run.summary.nominal
+    assert stats.mean == 1.5e308
+    assert stats.sample_standard_deviation == 0.0
+    assert stats.minimum == 1.5e308 and stats.maximum == 1.5e308
+    assert set(stats.percentiles.values()) == {1.5e308}
+    assert len(stats.percentiles) == len(prepared.ladder.ordered) == 11
+
+
+def test_80_a_sample_that_varies_by_one_ulp_is_not_flattened() -> None:
+    """The invariant tests the DOUBLE, not an approximate closeness."""
+    base = 1.0
+    nudged = math.nextafter(base, 2.0)
+    values = [base] * 999 + [nudged]
+
+    assert len(set(values)) == 2
+    assert sample_standard_deviation(values) > 0.0, (
+        "a real one-ulp dispersion was flattened to zero"
+    )
+    assert percentile_type7(values, 1.0) == nudged
+    assert percentile_type7(values, 0.0) == base
+
+
+# ===========================================================================
+# describe() sorts once
+# ===========================================================================
+def test_81_describe_sorts_exactly_once_per_measure() -> None:
+    """Eleven percentiles used to mean twelve sorts: one in `describe` and one
+    inside `percentile_type7` for every label."""
+    import pccm_builder.sim_stats as stats_module
+
+    ladder = resolve_percentile_ladder(_sim(), _inputs())
+    assert len(ladder.points) == 11
+
+    values = [float((index * 7919) % 1000) for index in range(1000)]
+    calls = []
+    real_sorted = sorted
+
+    def counting_sorted(*args, **kwargs):
+        calls.append(1)
+        return real_sorted(*args, **kwargs)
+
+    stats_module.sorted = counting_sorted          # shadows the builtin lookup
+    try:
+        described = stats_module.describe(values, ladder.points, "sort count")
+    finally:
+        del stats_module.sorted
+
+    assert len(calls) == 1, (
+        f"describe sorted {len(calls)} times for an 11-point ladder; the accepted "
+        "operation model is exactly one sort per measure"
+    )
+
+    # And the numbers are unchanged by the split.
+    for label, p in ladder.points:
+        assert described.percentiles[label] == percentile_type7(values, p)
+
+
+def test_82_the_public_percentile_helper_still_sorts_its_own_copy() -> None:
+    import pccm_builder.sim_stats as stats_module
+
+    values = [9.0, 1.0, 5.0, 3.0]
+    original = list(values)
+    calls = []
+    real_sorted = sorted
+
+    def counting_sorted(*args, **kwargs):
+        calls.append(1)
+        return real_sorted(*args, **kwargs)
+
+    stats_module.sorted = counting_sorted
+    try:
+        assert stats_module.percentile_type7(values, 0.5) == 4.0
+    finally:
+        del stats_module.sorted
+
+    assert len(calls) == 1
+    assert values == original, "the caller's sequence was reordered"
+
+
+def test_83_the_sorted_helper_refuses_nothing_the_public_one_accepts() -> None:
+    """Every hand vector of `test_36` is unchanged by the split."""
+    test_36_type_7_percentiles_match_hand_derived_vectors()
+    assert percentile_type7([1.0, 2.0, 3.0, 4.0], 0.9) == 3.7
+    assert percentile_type7([10.0, 20.0, 60.0], 0.5) == 20.0
+    assert percentile_type7([float(v) for v in range(1, 11)], 0.5) == 5.5
+
+
+# ===========================================================================
+# the RNG reference binding
+# ===========================================================================
+def test_84_the_accepted_reference_reproduces_every_pinned_number() -> None:
+    """The binding is coherence enforcement only: nothing moved."""
+    run, prepared, result = _run(_mixed_model(), seed=12345, iterations=2000)
+
+    assert run.result_digest == "7F58EA884DAA8D65"
+    assert run.total_nominal[0] == 641.731721357026
+    assert run.total_nominal[1] == 304.5370973159493
+    assert run.summary.nominal.mean == 376.3270995496381
+    assert run.summary.nominal.sample_standard_deviation == 119.53338321454508
+    assert run.summary.nominal.percentiles["P10"] == 253.0081369880356
+    assert run.summary.nominal.percentiles["P50"] == 335.15094832897046
+    assert run.summary.nominal.percentiles["P90"] == 574.8427214665053
+    assert run.summary.nominal.percentiles["P95"] == 612.8092541358852
+    assert contingency_at(
+        run.summary, "P80", deterministic_base_of(result)
+    ).nominal == 261.9975727286816
+    assert prepared.rng_version == 1 and run.rng_version == 1
+
+
+def test_85_the_binding_is_a_value_not_a_pointer() -> None:
+    """`role_order` inside a frozen `RngReference` is a live dict; the signature
+    must not be able to change underneath a prepared model."""
+    reference = _ref()
+    signature = rng_reference_signature(reference)
+
+    assert isinstance(signature, tuple)
+    assert signature == rng_reference_signature(reference), "the snapshot is unstable"
+    assert signature == rng_reference_signature(
+        RngReference.from_contracts(_sim(), _inputs())
+    ), "two references derived from the same contracts disagree"
+
+    def immutable(value) -> bool:
+        if isinstance(value, tuple):
+            return all(immutable(item) for item in value)
+        return isinstance(value, (int, float, str, bool)) or value is None
+
+    assert immutable(signature), "the signature holds something mutable"
 
 
 if __name__ == "__main__":

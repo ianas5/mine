@@ -124,6 +124,68 @@ class SimOracleError(ContractError):
 
 
 # ===========================================================================
+# RNG reference binding
+# ===========================================================================
+def rng_reference_signature(reference: RngReference) -> tuple:
+    """A canonical immutable snapshot of every operational field of a reference.
+
+    WHY THIS EXISTS. A prepared model records `rng_version = 1`, and that claim
+    has to mean something. Without a binding, a run prepared against the accepted
+    contracts could be executed under a reference whose `a12` is one larger,
+    producing a completely different digest while still reporting
+    `RNG_VERSION = 1`. Two different generators cannot both be version 1.
+
+    IT IS A VALUE, NOT A POINTER. `RngReference` is a frozen dataclass, but
+    `role_order` inside it is a live `dict`; keeping the object and calling that
+    a binding would let the ordering be rewritten after preparation. Every field
+    is therefore copied into tuples here.
+
+    IT IS NOT A HASH AUTHORITY. No digest is computed and no new hash is
+    introduced - the comparison is tuple equality, which is exact and needs no
+    collision argument.
+
+    Covered: the recurrence constants and normalisation, both jump matrices, the
+    AUTO seed cycle, the FIXED seed domain, and the component kind and role
+    orders - everything able to change a number or a stream identity.
+    """
+    if not isinstance(reference, RngReference):
+        raise SimOracleError(
+            f"expected an RngReference, got {type(reference).__name__}"
+        )
+    return (
+        reference.m1,
+        reference.m2,
+        reference.a12,
+        reference.a13n,
+        reference.a21,
+        reference.a23n,
+        reference.norm,
+        tuple(tuple(int(word) for word in row) for row in reference.jump_a1),
+        tuple(tuple(int(word) for word in row) for row in reference.jump_a2),
+        reference.auto_modulus,
+        reference.auto_multiplier,
+        reference.nonce_exhausted,
+        reference.seed_min,
+        reference.seed_max,
+        tuple(reference.kind_order),
+        tuple(sorted((kind, tuple(roles)) for kind, roles in reference.role_order.items())),
+    )
+
+
+def _binding_mismatch(expected: tuple, actual: tuple) -> str:
+    """Which operational fields differ, so a refusal can say what moved."""
+    labels = (
+        "m1", "m2", "a12", "a13n", "a21", "a23n", "norm",
+        "jump.a1_p127", "jump.a2_p127",
+        "auto.modulus", "auto.multiplier", "auto.exhausted_value",
+        "seed_min", "seed_max", "components.kind_order", "components.role_order",
+    )
+    return ", ".join(
+        label for label, want, got in zip(labels, expected, actual) if want != got
+    ) or "an unlabelled field"
+
+
+# ===========================================================================
 # the prepared model
 # ===========================================================================
 @dataclass(frozen=True)
@@ -213,6 +275,11 @@ class PreparedSimulationModel:
     deterministic_base: DeterministicBase
     analytical_expectation: AnalyticalExpectation
     term_labels: tuple[str, ...]
+    rng_signature: tuple
+    """The operational snapshot of the RNG reference this model was prepared
+    against. `run_simulation` refuses a reference that does not match it, before
+    the first draw, so `rng_version` cannot describe one generator while another
+    produced the numbers."""
 
     @property
     def drivers(self) -> tuple[PreparedSimulationDriver, ...]:
@@ -555,6 +622,23 @@ def prepare_simulation(
     from a 300-driver audit record survives into the hot loop.
     """
     validate_iterations(sim, inputs, iterations)
+
+    # THE SUPPLIED REFERENCE MUST BE THE ONE THESE CONTRACTS DERIVE. A
+    # caller-constructed RngReference is not trusted: it can hold any constants
+    # at all, and a run built on it would still report the contract's
+    # `rng_version`. Checked here - before stream construction and before any
+    # draw - and snapshotted so the run boundary can check it again.
+    signature = rng_reference_signature(reference)
+    expected = rng_reference_signature(RngReference.from_contracts(sim, inputs))
+    if signature != expected:
+        raise SimOracleError(
+            f"the supplied RngReference is not the one {sim.source_path.name} and "
+            f"{inputs.source_path.name} derive: "
+            f"{_binding_mismatch(expected, signature)} differs. A simulation prepared "
+            "against a reference the accepted contracts did not produce would report "
+            f"rng_version {sim.rng_version} for a different generator."
+        )
+
     ladder = resolve_percentile_ladder(sim, inputs)
 
     result = calculate(model, tolerances)
@@ -681,6 +765,7 @@ def prepare_simulation(
         deterministic_base=DeterministicBase(result.totals.a_nom, result.totals.a_pv),
         analytical_expectation=AnalyticalExpectation(result.totals.e_nom, result.totals.e_pv),
         term_labels=labels,
+        rng_signature=signature,
     )
     return prepared, result
 
@@ -751,6 +836,22 @@ def run_simulation(
         raise SimOracleError(
             f"expected a PreparedSimulationModel, got {type(prepared).__name__}"
         )
+
+    # Re-checked here, BEFORE THE FIRST DRAW. Preparation proved the reference
+    # was the contracts' own; this proves the reference actually handed to the
+    # engine is still that one. The component stream states were derived under
+    # the bound reference, so running them through a different recurrence, a
+    # different jump ladder or a different role order would produce numbers no
+    # `rng_version` describes.
+    supplied = rng_reference_signature(reference)
+    if supplied != prepared.rng_signature:
+        raise SimOracleError(
+            "the RngReference supplied to run_simulation is not the one this model was "
+            f"prepared against: {_binding_mismatch(prepared.rng_signature, supplied)} "
+            f"differs. The run is refused; rng_version {prepared.rng_version} describes "
+            "the bound reference and cannot be claimed for another."
+        )
+
     iterations = prepared.iterations
     costs = prepared.cost_drivers
     risks = prepared.risk_drivers
