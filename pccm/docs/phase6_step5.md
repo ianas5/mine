@@ -12,6 +12,15 @@ build/phase6_cases.json         the machine-readable conformance corpus the
 Both are **generated artefacts**. They create no modelling authority: every
 value in them is read from an owner that already existed.
 
+> **CORPUS CORRECTION ROUND.** Independent review of `d0fb374` accepted the
+> emission architecture and found three completion issues plus two record
+> corrections: semantic numbers were emitted as strings, which made
+> `allow_nan=False` a hollow guard; the corpus had no machine-readable type
+> validation; each case did not carry its own version identity;
+> `model_version` appeared only as a comment; and the public-API claim was
+> imprecise. All five are addressed here and **no accepted number moved**. See
+> §11.
+
 **Not in this step.** No `modSimRng`, no VBA generator, no VBA sampling, no VBA
 simulation engine, no VBA statistics, no VBA fingerprint implementation, no VBA
 reporting, no `_SimData` materialisation, no Results publication, no Gate B, no
@@ -46,14 +55,16 @@ module (`sim_rng.py`, `sim_sample.py`, `sim_oracle.py`, `sim_stats.py`,
 | `builder/pccm_builder/sim_cases.py` | **NEW** — builds the case corpus |
 | `builder/pccm_builder/__init__.py` | exports `emit_sim_artifacts` |
 | `builder/build_stage_a.py` | calls the emitter; the stale "EMITS NOTHING" comment corrected |
-| `tests/test_phase6_stage_a.py` | **NEW** — 64 tests, of which 9 are mutation controls |
+| `tests/test_phase6_stage_a.py` | **NEW** — 84 tests, of which 20 are mutation controls |
 | `docs/phase6_step5.md` | **NEW** — this record |
 
 ---
 
 ## 3. `modSimContract.bas` — constants only
 
-**181 `Public Const` declarations. Zero procedures.**
+**182 `Public Const` declarations. Zero procedures.** (The count is reported,
+not asserted as authority: the tests check the semantic set, and assert only
+that at least the projected constants are present.)
 
 A test walks every line of the module and asserts that each one is the
 `Attribute VB_Name`, `Option Explicit`, a comment, blank, or a `Public Const` —
@@ -69,12 +80,25 @@ digest step and no worksheet access.
 |---|---|
 | `sim_contract.yaml` | versions, generator constants and state order, AUTO cycle and nonce lifecycle, component kinds and roles, stream index origin and accumulation order, jump exponent / `H` / both matrices, the locked acceptance literals, risk and contribution rules, digest framing, state / attempt / seed-mode labels, `_SimData` geometry, run-id limits, statistical method names, contingency formula and baseline |
 | `input_contract.yaml` | the FIXED seed domain, the business minimum iteration count, the selectable confidence levels behind the ladder |
-| `workbook.yaml` | the model version stamped in the banner |
+| `workbook.yaml` | `SIM_MODEL_VERSION`, projected from `model.model_version` |
 
 Nothing is restated. A test compares each projected constant back to the value
 its owner holds; the two that most invite a hardcoded copy — the FIXED seed
 domain and the iteration minimum — are read through the same accessors the
 oracle uses.
+
+### The model version is a constant
+
+`SIM_MODEL_VERSION` is projected directly from `workbook.yaml:model.model_version`
+and is not hardcoded in the emitter. Step 1 requires a successful run to snapshot
+`model_version` in its metadata, and a **comment cannot be read by the code that
+has to write it** — leaving it in prose would invite the later VBA to declare a
+literal of its own, which is the single thing this module exists to prevent. The
+banner comment remains, but comments are not authority.
+
+A test binds the constant to its owner, and a second renders the module from a
+synthetic manifest carrying `9.9.9-test` and asserts that **exactly one**
+`Public Const` line changes.
 
 ### VBA type safety
 
@@ -147,12 +171,25 @@ data.
 
 ### No second implementation
 
-Every expected value is produced by calling the accepted public reference:
-`RngReference`, the Step-3 samplers, `prepare_simulation` / `run_simulation`,
-`result_digest`, `describe`, `contingency_at`. There is no generator, sampler,
-accumulation or statistic of the emitter's own. It imports nothing from
-`tests/`: fixtures are built from the accepted public `CalculationModel`
-vocabulary and materialised through the accepted Phase-5 `to_model` adapter.
+Stated precisely, because the earlier wording was not:
+
+- **The stochastic expectations use the accepted Step-2/3/4 public reference
+  APIs** — `RngReference`, the Step-3 samplers, `prepare_simulation` /
+  `run_simulation`, `result_digest`, `describe`, `contingency_at`.
+- **Fixture materialisation reuses the existing Phase-5 adapters** `to_model`
+  and `tolerances_from` from `calc_cases.py`. These are *not* re-exported from
+  `pccm_builder.__init__`, so the earlier claim that the emitter "calls only the
+  public Step-2/3/4 exports" was imprecise and is withdrawn.
+- **No test module is imported.**
+- **No calculation formula is duplicated**, and there is no generator, sampler,
+  accumulation or statistic of the emitter's own.
+
+Reusing those two adapters does not constitute a second calculation engine: they
+turn a plain fixture payload into the accepted `CalculationModel` and
+`Tolerances` value types, which is exactly the duplication Step 5 is meant to
+avoid. `__init__.py` was **not** expanded to re-export them — doing so purely for
+cosmetic purity would change the Phase-5 public API surface for no semantic
+reason.
 
 ### The layered evidence model is preserved, not strengthened
 
@@ -217,6 +254,101 @@ the implementation that produced it:
 The seven digests are additionally pinned as **literals** in the test file, so
 the corpus cannot drift silently even if an evidence file were ever regenerated.
 
+### Semantic numbers are JSON numbers
+
+Every finite semantic number is emitted as a **JSON number**, never as text.
+`repr(...)` no longer appears in the corpus builder: `_n()` returns a Python
+float and refuses a non-finite value by name, so the value stays a float all the
+way to `json.dumps`.
+
+**That is what makes `allow_nan=False` real.** `repr(float("nan"))` is the
+ordinary string `"nan"` and serialises without complaint; a textual scan for
+`NaN`/`Infinity` never saw it. With the numbers actually numeric, the serialiser
+is a fail-loud boundary, and mutation controls plant `nan`, `+inf` and `-inf` in
+a numeric leaf and require emission to fail.
+
+**Exact binary identity has an explicit sidecar.** Where a block is `EXACT`,
+every float leaf gains a sibling key `<name>_canonical` holding the **accepted
+Phase-5 canonical-number encoding** — `canonical_number` from
+`calc_fingerprint.py`, not a new floating format. So:
+
+```json
+"first_uniforms":           [0.12701112204657714, 0.3185275653967945, ...],
+"first_uniforms_canonical": ["1.2701112204657714E-01", "3.1852756539679450E-01", ...]
+```
+
+The semantic number stays a JSON number; the sidecar is an encoding and is
+labelled as one. A `TOLERANCE_BOUNDED` block gets **no** sidecar — an exact
+textual form there would invite precisely the comparison the accepted evidence
+model refuses.
+
+**Retained Step-0 evidence is not rewritten.** Those files store decimals as
+strings and stay exactly as they are. The emitter never reads them; at the
+projection boundary the tests parse the retained string to the accepted Double
+and require the corpus's JSON number to be that Double.
+
+**741 numeric leaves were converted, and every one parses to the identical
+binary64.** Verified once against the previous corpus built from `d0fb374`:
+741 converted, 741 identical, **0 moved**, 0 comparison policies changed. The
+durable form of the guarantee is a permanent test that the corpus is lossless and
+stable under a JSON round trip.
+
+### Numeric-looking strings that remain — and why
+
+272 strings still parse as numbers. **Every one is a declared encoding**, and a
+test asserts that no numeric-looking string exists outside a canonical sidecar:
+
+| Category | Legitimately textual because |
+|---|---|
+| `*_canonical` values (all 272) | the accepted Phase-5 canonical-number encoding, named as an encoding by its key suffix |
+
+Other textual fields do not parse as numbers at all and are unaffected: case ids,
+labels, enum values, formula and grammar productions, digest hex, canonical
+streams, refusal stages and reasons, and version strings such as `"1.0.0"` and
+`"0.5.0"`.
+
+### Machine-readable type validation
+
+`validate_corpus()` runs at the end of **every build**, so a typing regression
+fails Stage A rather than waiting for a reader. It is an artefact-shape
+validator, not another production contract.
+
+| Rule | Effect |
+|---|---|
+| generic | a string that parses as a number must sit under a key ending `_canonical` |
+| integer keys | counts, indices, states, seeds, nonces, row numbers must be `int` and never `bool` |
+| number keys | uniforms, samples, probabilities, α/β, means, deviations, quantiles, totals, contingencies, `p`/`h`/`f` must be `int`/`float` |
+| number-list keys | states, uniform vectors, windows, distinct totals, quantile mappings must hold numbers |
+| sidecars | a `_canonical` value must be text |
+| declared text subtrees | `grammar` and `formula` are text by declaration — their inner names (`stream`, `h`, `lo`) collide with numeric ones by coincidence |
+| finiteness | no float leaf may be non-finite |
+| version identity | every case carries a complete block equal to the artefact's |
+
+Mutating `1.25` to `"1.25"` anywhere numeric is detected, as is the string
+`"nan"`.
+
+### Every case is self-identifying
+
+Each of the 91 cases carries:
+
+```json
+"versions": {
+  "model_version": "0.5.0",
+  "sim_contract_version": "1.0.0",
+  "rng_version": 1,
+  "sim_method_version": 1
+}
+```
+
+These are **projections** of the four top-level values — literally assigned from
+the same objects — not independent copies. A case lifted out of the file now says
+what it applies to instead of relying on its surroundings. `FP_VERSION` is
+deliberately absent: no accepted authority requires it for these cases. Tests
+assert equality with the top level, and controls detect a changed one-case
+`rng_version` and a removed block.
+
+`schema_version` moves from **1 to 2** to mark the representation change.
+
 ### Determinism
 
 No timestamp, no absolute path, no hostname, no environment data, no random AUTO
@@ -239,8 +371,12 @@ carries no performance claim as an expected value.
 
 | Artefact | Bytes | SHA-256 |
 |---|---|---|
-| `build/vba/modSimContract.bas` | 13,574 | `f351a7c1cdd1bcf1362efc33e56a269f41ffdac41f6c1923b1da88bbbfad5b24` |
-| `build/phase6_cases.json` | 219,136 | `192d639443ec89ba0d38db7f73d39c4aebf342e0f0ff2affb2145385c65aeba9` |
+| `build/vba/modSimContract.bas` | 13,699 | `c7e7a78406345f98a3c2d0b90d63759b765a321aee99483fadd0f411f10c61be` |
+| `build/phase6_cases.json` | 251,702 | `5551606f7a0add5f980601b0a2cdd246130bd1e78678fd439bd5276cd36ec32c` |
+
+Both moved from the reviewed `d0fb374` values by design: the module gained
+`SIM_MODEL_VERSION`, and the corpus gained JSON numbers, canonical sidecars and
+per-case version identity. No numerical value changed.
 
 ---
 
@@ -284,8 +420,13 @@ varies by design.
 | 24–30 | corpus shape: valid deterministic JSON, no non-finite value, no environment data, version identity, unique ids and policies, all five classes used, no Python reprs |
 | 31–37 | every retained vector against the **evidence file**, plus the seven digests as literals |
 | 38–50 | accepted semantics: ignored Most Likely, D6-18b, row-order, seed scope, exact-friendly fixtures, Quantity once, the full ladder, constant samples, Type-7 row policies, contingency, extreme refusals, no performance claim, bounded size |
-| **51–59** | **9 mutation controls** |
+| **51–59** | mutation controls: vectors, policies, Quantity, module constant, planted construct and procedure |
 | 60–64 | the normal build emits both, prior artefacts unmoved, workbook free of Phase 6 |
+| 65–69 | semantic typing: no stringified number, representative fields are floats, counts stay integers, every exact number has a canonical sidecar, a bounded block has none |
+| **70–77** | non-finite rejection: `nan` / `+inf` / `-inf` refuse emission, the builder refuses first, `"nan"` and `"1.25"` fail validation, `1.25 -> "1.25"` anywhere is detected, the validator runs on every build |
+| 78–79 | per-case version identity, and its two mutation controls |
+| 80–82 | `SIM_MODEL_VERSION`: bound to its owner, follows a synthetic owner, module still constants-only |
+| 83–84 | JSON round-trip losslessness, and the comparison-policy distribution unchanged |
 
 ### Mutation controls
 
@@ -300,6 +441,16 @@ varies by design.
 | 57 | a module constant that stops equalling its owner | the owner comparison |
 | 58 | a forbidden construct planted in the module | the accepted scanner |
 | 59 | a procedure planted in the module | the procedure scan |
+| 70 | `nan` in a numeric leaf | emission refuses |
+| 71 | `+inf` in a numeric leaf | emission refuses |
+| 72 | `-inf` in a numeric leaf | emission refuses |
+| 73 | a non-finite value reaching `_n()` | refused before serialisation, naming the corpus |
+| 74 | the string `"nan"` in a numeric field | corpus validation fails |
+| 75 | the string `"1.25"` in a numeric field | corpus validation fails |
+| 76 | `1.25` turned into `"1.25"` in a contingency row | corpus validation fails |
+| 79 | a changed one-case `rng_version`, and a removed version block | corpus validation fails |
+| 81 | a synthetic manifest with a different model version | exactly one `Public Const` line moves |
+| 84 | any comparison policy moved | the pinned distribution |
 
 Each control mutates a **copy** and shows the accepted artefact still passes, so
 none of them is vacuous. Nothing in `spec/` or `evidence/` is touched.
@@ -310,10 +461,10 @@ none of them is vacuous. Nothing in `spec/` or `evidence/` is touched.
 
 | Check | Result |
 |---|---|
-| Full Python suite (Python 3.11.15) | **2299 passed, 0 failed** |
+| Full Python suite (Python 3.11.15) | **2319 passed, 0 failed** |
 | Before Step 5 | 2235 passed |
-| New Step-5 tests | **+64** |
-| Step-5 mutation controls | **9** (within the 64) |
+| New Step-5 tests | **+84** |
+| Step-5 mutation controls | **20** (within the 84) |
 | Stage-A build / verifier | **351 passed, 0 failed** |
 
 No test was deleted, skipped or weakened.
@@ -353,4 +504,32 @@ authorised Step-5 boundary and was not modified, and Gate B was not run.
 
 ---
 
-**STEP 5 — ACCEPTANCE REQUESTED**
+## 11. The corpus correction round
+
+Independent review of `d0fb374` accepted the Stage-A emission architecture and
+confirmed the Step-5 suite, Stage-A, both artefact hashes, the package digest and
+the byte-identity of all six prior artefacts. Five items were raised.
+
+| # | Issue | Correction |
+|---|---|---|
+| 1 | ~741 semantic numbers emitted as strings via `repr` | every finite semantic number is now a JSON number; exact blocks carry an accepted-encoding canonical sidecar; retained Step-0 evidence is parsed, never rewritten (§4) |
+| 2 | `allow_nan=False` was hollow while numbers were text | numbers stay Python floats to the serialiser; `_n()` refuses a non-finite value first; five mutation controls prove both boundaries (§4) |
+| 3 | no machine-readable type validation | `validate_corpus()` pins integer / number / list / text / sidecar types and runs on every build (§4) |
+| 4 | cases were not self-identifying | every case carries a `versions` block projected from the artefact's four values, with two mutation controls (§4) |
+| 5 | `model_version` appeared only as a comment | `SIM_MODEL_VERSION` is projected from `workbook.yaml`, with an owner-binding test and a synthetic-owner control (§3) |
+
+Plus one record correction: the public-API claim is now stated precisely (§4) —
+`to_model` and `tolerances_from` are existing Phase-5 adapters, are not public
+exports, and their reuse is not a second engine. `__init__.py` was not expanded.
+
+**No accepted number moved.** 741 leaves converted, 741 parse to the identical
+binary64, 0 moved, and the comparison-policy distribution is unchanged at
+61 / 23 / 1 / 3 / 3. The prior six Stage-A artefacts remain byte-identical, and
+the workbook gained no Phase-6 content.
+
+**No architecture was reopened**, no D6-11 exception exists, `modSimContract`
+remains constants-only, and Step 6 has not begun.
+
+---
+
+**STEP 5 — ACCEPTANCE REQUESTED (CORPUS CORRECTED)**

@@ -525,7 +525,9 @@ def test_26_the_corpus_is_free_of_environment_specific_data() -> None:
 
 def test_27_the_top_level_identity_pins_every_version() -> None:
     document = _cases_document()
-    assert document["schema_version"] == 1
+    assert document["schema_version"] == 2, (
+        "the schema version must move when the corpus typing changes"
+    )
     assert document["model_version"] == _spec().model["model_version"]
     assert document["sim_contract_version"] == _sim().version
     assert document["rng_version"] == _sim().rng_version == 1
@@ -588,9 +590,17 @@ def test_32_the_rng_uniform_vectors_match_the_retained_evidence() -> None:
     evidence = _evidence("rng_vectors")
     cases = _cases()
     for seed, retained in evidence["per_seed"].items():
-        case = cases[f"rng.fixed_seed.{seed}"]
-        assert case["expected_exact"]["initial_state"] == retained["initial_state"], seed
-        assert case["expected_exact"]["first_uniforms"] == retained["first_5"], seed
+        exact = cases[f"rng.fixed_seed.{seed}"]["expected_exact"]
+        assert exact["initial_state"] == retained["initial_state"], seed
+        # The retained evidence stores decimals AS TEXT. It is not rewritten:
+        # the string is parsed to the accepted Double here, and the corpus's
+        # JSON number must be that Double exactly.
+        emitted = exact["first_uniforms"]
+        assert all(isinstance(value, float) for value in emitted), seed
+        assert emitted == [float(text) for text in retained["first_5"]], seed
+        # And the exact textual form the corpus carries alongside it agrees.
+        for value, canonical in zip(emitted, exact["first_uniforms_canonical"]):
+            assert isinstance(canonical, str) and float(canonical) == value
     assert set(evidence["per_seed"]) == {"1", "2", "12345", "2147483646"}
 
 
@@ -599,9 +609,11 @@ def test_33_the_jump_stream_vectors_match_the_retained_evidence() -> None:
     cases = _cases()
     assert sorted(evidence["streams"], key=int) == ["0", "1", "7", "399", "401"]
     for index, retained in evidence["streams"].items():
-        case = cases[f"rng.stream.{index}"]
-        assert case["expected_exact"]["initial_state"] == retained["initial_state"], index
-        assert case["expected_exact"]["first_uniforms"] == retained["first_5_uniforms"], index
+        exact = cases[f"rng.stream.{index}"]["expected_exact"]
+        assert exact["initial_state"] == retained["initial_state"], index
+        emitted = exact["first_uniforms"]
+        assert all(isinstance(value, float) for value in emitted), index
+        assert emitted == [float(text) for text in retained["first_5_uniforms"]], index
 
 
 def test_34_the_stream_assignment_matches_the_retained_evidence() -> None:
@@ -668,8 +680,10 @@ def test_37_all_five_cheng_vectors_match_the_retained_evidence() -> None:
         assert exact["final_state"] == retained["final_state"], name
         assert exact["total_proposal_attempts"] == retained["total_attempts"], name
         assert exact["total_uniforms"] == retained["total_uniforms"], name
-        assert [row["value"] for row in emitted["expected"]["samples"]] == [
-            sample["accepted_sample"] for sample in retained["samples"]
+        values = [row["value"] for row in emitted["expected"]["samples"]]
+        assert all(isinstance(value, float) for value in values), name
+        assert values == [
+            float(sample["accepted_sample"]) for sample in retained["samples"]
         ], name
         for row, sample in zip(exact["per_sample"], retained["samples"]):
             assert row["proposal_attempts"] == sample["proposal_attempts_for_this_sample"]
@@ -865,15 +879,15 @@ def test_48_the_extreme_domain_refusals_are_explicit() -> None:
     contingency = cases["contingency.unrepresentable_subtraction"]["expected_refusal"]
     assert contingency["stage"] == "contingency nominal"
     neighbour = cases["contingency.unrepresentable_subtraction"]["expected_exact"]
-    assert float(neighbour["representable_neighbour"]["contingency_nominal"]) == 1.5e308
+    assert neighbour["representable_neighbour"]["contingency_nominal"] == 1.5e308
 
     dispersion = cases["statistics.scale_safety.unrepresentable_dispersion"]
     assert dispersion["expected_refusal"]["kind"] == "numerical_range"
     assert dispersion["expected_exact"]["mean_is_representable"] is True
 
     rescue = cases["domain.accumulation_partial_sum_out_of_range"]["expected_exact"]
-    assert rescue["distinct_totals"] == [repr(1.5e308)]
-    assert float(rescue["sample_standard_deviation"]) == 0.0
+    assert rescue["distinct_totals"] == [1.5e308]
+    assert rescue["sample_standard_deviation"] == 0.0
 
 
 def test_49_no_performance_claim_is_encoded_as_an_expectation() -> None:
@@ -954,16 +968,15 @@ def test_51_a_changed_rng_state_is_detectable() -> None:
 
 def test_52_a_changed_jump_stream_is_detectable() -> None:
     evidence = _evidence("jump_vectors")
+    retained = [float(text) for text in evidence["streams"]["401"]["first_5_uniforms"]]
     document = _mutated(
         ("rng.stream.401", "expected_exact", "first_uniforms"),
-        ["0.5", "0.5", "0.5", "0.5", "0.5"],
+        [0.5, 0.5, 0.5, 0.5, 0.5],
     )
     assert _lookup(document, "rng.stream.401")["expected_exact"]["first_uniforms"] != (
-        evidence["streams"]["401"]["first_5_uniforms"]
+        retained
     )
-    assert _cases()["rng.stream.401"]["expected_exact"]["first_uniforms"] == (
-        evidence["streams"]["401"]["first_5_uniforms"]
-    )
+    assert _cases()["rng.stream.401"]["expected_exact"]["first_uniforms"] == retained
 
 
 def test_53_a_changed_digest_is_detectable() -> None:
@@ -1192,6 +1205,413 @@ def test_64_the_generated_module_is_not_embedded_in_the_workbook() -> None:
     with zipfile.ZipFile(_built_tree() / "PCCM_stageA.xlsx") as archive:
         for name in archive.namelist():
             assert SIM_MODULE_NAME not in name, name
+
+
+# ===========================================================================
+# semantic JSON typing
+#
+# A finite number stringified to preserve `repr` is a number wearing a costume,
+# and it slips straight past `allow_nan=False` - `repr(float("nan"))` is the
+# ordinary string "nan". These tests pin the types so that guard is real.
+# ===========================================================================
+def _leaves(node, path="$", under_canonical=False):
+    """`(path, value, under_canonical)` for every leaf in the corpus."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _leaves(
+                value, f"{path}.{key}", under_canonical or key.endswith("_canonical")
+            )
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _leaves(value, f"{path}[{index}]", under_canonical)
+    else:
+        yield path, node, under_canonical
+
+
+def test_65_no_semantic_number_is_emitted_as_a_string() -> None:
+    """Every numeric-looking string must be a declared canonical encoding."""
+    offenders = []
+    for path, value, under_canonical in _leaves(_cases_document()):
+        if not isinstance(value, str) or under_canonical:
+            continue
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            continue
+        offenders.append((path, value))
+    assert not offenders, offenders[:10]
+
+
+def test_66_representative_numeric_fields_are_floats_after_json_loads() -> None:
+    cases = _cases()
+
+    uniforms = cases["rng.fixed_seed.12345"]["expected_exact"]["first_uniforms"]
+    assert all(isinstance(value, float) for value in uniforms), uniforms
+    assert uniforms[0] == 0.12701112204657714
+
+    sample = cases["sampler.beta.cheng.bb_interior"]["expected"]["samples"][0]["value"]
+    assert isinstance(sample, float) and sample == 0.12872280046553125
+
+    injected = cases["sampler.uniform.injected"]["expected"]["rows"][0]
+    assert isinstance(injected["u"], float) and isinstance(injected["value"], float)
+
+    statistics = cases["engine.general.no_beta"]["expected"]["statistics"]["nominal"]
+    for key in ("mean", "sample_standard_deviation", "minimum", "maximum"):
+        assert isinstance(statistics[key], float), key
+    assert all(isinstance(value, float) for value in statistics["quantiles"].values())
+
+    contingency = cases["contingency.selected_levels"]["expected"]["rows"][0]
+    for key in ("selected_nominal", "selected_pv",
+                "contingency_nominal", "contingency_pv"):
+        assert isinstance(contingency[key], float), key
+
+    totals = cases["engine.exact_friendly.unit_interval"]["expected_exact"]
+    assert all(isinstance(value, float) for value in totals["total_nominal"]["head"])
+    assert isinstance(totals["statistics"]["nominal"]["mean"], float)
+
+
+def test_67_counts_and_indices_stay_integers() -> None:
+    cases = _cases()
+    exact = cases["sampler.beta.cheng.bb_interior"]["expected_exact"]
+    for key in ("total_proposal_attempts", "total_uniforms", "uniforms_per_attempt"):
+        assert isinstance(exact[key], int) and not isinstance(exact[key], bool), key
+    assert all(isinstance(word, int) for word in exact["initial_state"])
+    for row in exact["per_sample"]:
+        assert isinstance(row["proposal_attempts"], int)
+        assert isinstance(row["cumulative_uniforms"], int)
+    assert isinstance(cases["seed.auto.nonce.1000"]["expected_exact"]["effective_seed"], int)
+
+
+def test_68_every_exact_number_carries_its_canonical_encoding() -> None:
+    """The sidecar is the accepted Phase-5 encoding and round-trips exactly."""
+    from pccm_builder.calc_fingerprint import canonical_number
+
+    checked = 0
+    for group in _cases_document()["groups"]:
+        for case in group["cases"]:
+            blocks = [case.get("expected_exact")]
+            if case["comparison"] == "EXACT":
+                blocks.append(case.get("expected"))
+            for block in blocks:
+                if block is None:
+                    continue
+                checked += _check_sidecars(block)
+    assert checked > 100, checked
+    assert canonical_number(0.12701112204657714) == "1.2701112204657714E-01"
+
+
+def _check_sidecars(node) -> int:
+    checked = 0
+    if isinstance(node, list):
+        for item in node:
+            checked += _check_sidecars(item)
+        return checked
+    if not isinstance(node, dict):
+        return 0
+    for key, value in node.items():
+        if key.endswith("_canonical"):
+            continue
+        sidecar = node.get(key + "_canonical")
+        if isinstance(value, float):
+            assert isinstance(sidecar, str), key
+            assert float(sidecar) == value, (key, sidecar, value)
+            checked += 1
+        elif isinstance(value, list) and value and all(
+            isinstance(item, float) for item in value
+        ):
+            assert isinstance(sidecar, list) and len(sidecar) == len(value), key
+            for text, number in zip(sidecar, value):
+                assert float(text) == number, (key, text, number)
+            checked += len(value)
+        elif isinstance(value, dict) and value and all(
+            isinstance(item, float) for item in value.values()
+        ):
+            assert isinstance(sidecar, dict), key
+            for label, number in value.items():
+                assert float(sidecar[label]) == number, (key, label)
+            checked += len(value)
+        else:
+            checked += _check_sidecars(value)
+    return checked
+
+
+def test_69_a_tolerance_bounded_block_carries_no_exact_sidecar() -> None:
+    """An exact textual form there would invite the comparison the accepted
+    evidence model refuses."""
+    bounded = _cases()["engine.general.no_beta"]["expected"]
+    assert not any(key.endswith("_canonical") for key in bounded), sorted(bounded)
+    statistics = bounded["statistics"]["nominal"]
+    assert not any(key.endswith("_canonical") for key in statistics)
+    # And the exact block of the same case does carry them.
+    assert "deterministic_base_a_nominal_canonical" in (
+        _cases()["engine.general.no_beta"]["expected_exact"]
+    )
+
+
+# ===========================================================================
+# non-finite rejection is real
+# ===========================================================================
+def _emit_with(document: dict) -> str:
+    """Serialise a corpus through the SAME boundary the emitter uses."""
+    return json.dumps(
+        document, indent=2, sort_keys=False, allow_nan=False, ensure_ascii=True
+    ) + "\n"
+
+
+def _numeric_document(replacement) -> dict:
+    document = json.loads(json.dumps(_cases_document()))
+    for group in document["groups"]:
+        for case in group["cases"]:
+            if case["id"] == "rng.fixed_seed.12345":
+                case["expected_exact"]["first_uniforms"][0] = replacement
+                return document
+    raise AssertionError("the target case was not found")
+
+
+def test_70_a_nan_in_a_numeric_leaf_refuses_emission() -> None:
+    document = _numeric_document(float("nan"))
+    try:
+        _emit_with(document)
+    except ValueError as error:
+        assert "NaN" in str(error) or "not JSON compliant" in str(error), str(error)
+        return
+    raise AssertionError("a NaN was serialised")
+
+
+def test_71_a_positive_infinity_in_a_numeric_leaf_refuses_emission() -> None:
+    try:
+        _emit_with(_numeric_document(float("inf")))
+    except ValueError:
+        return
+    raise AssertionError("an infinity was serialised")
+
+
+def test_72_a_negative_infinity_in_a_numeric_leaf_refuses_emission() -> None:
+    try:
+        _emit_with(_numeric_document(float("-inf")))
+    except ValueError:
+        return
+    raise AssertionError("a negative infinity was serialised")
+
+
+def test_73_the_corpus_builder_refuses_a_non_finite_value_before_serialisation() -> None:
+    """The failure names the corpus, not the serialiser."""
+    from pccm_builder.sim_cases import _n
+    from pccm_builder.sim_oracle import SimOracleError
+
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        try:
+            _n(bad)
+        except SimOracleError as error:
+            assert "non-finite" in str(error)
+            continue
+        raise AssertionError(f"{bad!r} was accepted as a semantic number")
+    assert _n(2) == 2.0 and isinstance(_n(2), float)
+
+
+def test_74_the_string_nan_in_a_numeric_field_fails_validation() -> None:
+    """Text is exactly how a non-finite value used to get past allow_nan."""
+    from pccm_builder.sim_cases import validate_corpus
+    from pccm_builder.sim_oracle import SimOracleError
+
+    assert _emit_with(_numeric_document("nan")), "a numeric string serialises happily"
+    try:
+        validate_corpus(_numeric_document("nan"))
+    except SimOracleError as error:
+        assert "first_uniforms" in str(error)
+        return
+    raise AssertionError("the string 'nan' passed corpus validation")
+
+
+def test_75_a_numeric_string_in_a_numeric_field_fails_validation() -> None:
+    from pccm_builder.sim_cases import validate_corpus
+    from pccm_builder.sim_oracle import SimOracleError
+
+    for planted in ("1.25", "0.12701112204657714"):
+        try:
+            validate_corpus(_numeric_document(planted))
+        except SimOracleError as error:
+            assert "first_uniforms" in str(error), planted
+            continue
+        raise AssertionError(f"the string {planted!r} passed corpus validation")
+
+    # The accepted document still validates, so the control is not vacuous.
+    validate_corpus(_cases_document())
+
+
+def test_76_a_number_turned_into_a_string_anywhere_is_detected() -> None:
+    from pccm_builder.sim_cases import validate_corpus
+    from pccm_builder.sim_oracle import SimOracleError
+
+    document = json.loads(json.dumps(_cases_document()))
+    for group in document["groups"]:
+        for case in group["cases"]:
+            if case["id"] == "contingency.selected_levels":
+                case["expected"]["rows"][0]["contingency_nominal"] = "1.25"
+    try:
+        validate_corpus(document)
+    except SimOracleError as error:
+        assert "contingency_nominal" in str(error)
+        return
+    raise AssertionError("1.25 -> \"1.25\" was not detected")
+
+
+def test_77_the_validator_runs_on_every_build() -> None:
+    """A typing regression fails the Stage-A build, not a later reader."""
+    import inspect
+
+    from pccm_builder import sim_cases
+
+    source = inspect.getsource(sim_cases.build_sim_cases)
+    assert "validate_corpus(document)" in source
+
+
+# ===========================================================================
+# per-case version identity
+# ===========================================================================
+def test_78_every_case_carries_a_complete_version_block() -> None:
+    document = _cases_document()
+    expected = {
+        "model_version": document["model_version"],
+        "sim_contract_version": document["sim_contract_version"],
+        "rng_version": document["rng_version"],
+        "sim_method_version": document["sim_method_version"],
+    }
+    groups = 0
+    for group in document["groups"]:
+        groups += 1
+        for case in group["cases"]:
+            assert "versions" in case, case["id"]
+            assert case["versions"] == expected, case["id"]
+            assert isinstance(case["versions"]["rng_version"], int)
+            assert isinstance(case["versions"]["model_version"], str)
+            assert "fp_version" not in case["versions"]
+    assert groups == 10
+    assert len(_cases()) == document["case_count"]
+
+
+def test_79_a_changed_case_version_is_detected() -> None:
+    from pccm_builder.sim_cases import validate_corpus
+    from pccm_builder.sim_oracle import SimOracleError
+
+    document = json.loads(json.dumps(_cases_document()))
+    _lookup(document, "digest.base")["versions"]["rng_version"] = 2
+    try:
+        validate_corpus(document)
+    except SimOracleError as error:
+        assert "digest.base" in str(error)
+    else:
+        raise AssertionError("a changed case RNG_VERSION was not detected")
+
+    document = json.loads(json.dumps(_cases_document()))
+    del _lookup(document, "digest.base")["versions"]
+    try:
+        validate_corpus(document)
+    except SimOracleError as error:
+        assert "no version identity" in str(error)
+        return
+    raise AssertionError("a missing case version block was not detected")
+
+
+# ===========================================================================
+# the projected model version
+# ===========================================================================
+def test_80_the_model_version_is_a_constant_not_only_a_comment() -> None:
+    owner = _spec().model["model_version"]
+    assert _string("SIM_MODEL_VERSION") == owner == "0.5.0"
+    assert "SIM_MODEL_VERSION" in _generated_module().constants
+    assert _long("SIM_RNG_VERSION") == 1
+
+
+def test_81_the_model_version_constant_follows_its_owner() -> None:
+    """A synthetic manifest with a different model version moves ONLY that
+    constant - the projection is a projection, not a hardcoded literal."""
+    import dataclasses
+
+    model = dict(_spec().model)
+    model["model_version"] = "9.9.9-test"
+    altered = dataclasses.replace(_spec(), model=model)
+
+    rendered = render_sim_contract_module(altered, _sim(), _inputs())
+    assert 'Public Const SIM_MODEL_VERSION As String = "9.9.9-test"' in rendered
+    assert 'Public Const SIM_MODEL_VERSION As String = "0.5.0"' not in rendered
+
+    baseline = _module_text()
+    moved = [
+        line for line in rendered.splitlines()
+        if line.startswith("Public Const") and line not in baseline.splitlines()
+    ]
+    assert moved == [
+        'Public Const SIM_MODEL_VERSION As String = "9.9.9-test"    '
+        "' workbook.yaml: model.model_version - snapshotted by a successful run"
+    ], moved
+
+
+def test_82_the_module_is_still_constants_only_with_the_new_constant() -> None:
+    assert _generated_module().procedures == []
+    assert len(_constants()) == len(_generated_module().constants) >= 182
+    structure = _structure()
+    assert not [
+        construct for construct in structure.forbidden_constructs
+        if contains_construct([_generated_module()], construct)
+    ]
+    raw = _module_text().lower()
+    for token in ("runsimulation", "mrg32k3a", "percentile"):
+        assert token not in raw, token
+
+
+def test_83_every_emitted_number_survives_the_json_round_trip_exactly() -> None:
+    """The durable form of the migration guarantee.
+
+    The one-off comparison against the previous corpus - 741 numeric strings
+    parsed to Double and found identical to the JSON numbers that replaced them -
+    cannot be repeated forever without shipping the old file. What CAN be
+    asserted forever is that the representation is lossless: every number written
+    reads back as the same binary64, and every exact one has a canonical sidecar
+    that parses to it as well.
+    """
+    text = (_emitted() / "phase6_cases.json").read_text(encoding="utf-8")
+    reloaded = json.loads(text)
+    assert reloaded == _cases_document()
+
+    again = json.dumps(reloaded, indent=2, sort_keys=False, allow_nan=False,
+                       ensure_ascii=True) + "\n"
+    assert again == text, "the corpus is not stable under a JSON round trip"
+
+    numbers = 0
+    for _path, value, under_canonical in _leaves(reloaded):
+        if isinstance(value, bool) or under_canonical:
+            continue
+        if isinstance(value, float):
+            assert math.isfinite(value)
+            assert float(repr(value)) == value
+            numbers += 1
+    assert numbers > 500, numbers
+
+
+def test_84_the_comparison_policy_distribution_is_unchanged() -> None:
+    """The typing correction is representation only. No case moved class."""
+    from collections import Counter
+
+    counts = Counter(case["comparison"] for case in _cases().values())
+    assert dict(counts) == {
+        "EXACT": 61,
+        "TOLERANCE_BOUNDED": 23,
+        "STATISTICAL": 1,
+        "SAME_RUNTIME_ONLY": 3,
+        "RUNTIME_ONLY": 3,
+    }, dict(counts)
+    assert sum(counts.values()) == 91
+
+    cases = _cases()
+    assert cases["engine.general.with_beta"]["comparison"] == "STATISTICAL"
+    assert cases["engine.general.no_beta"]["comparison"] == "TOLERANCE_BOUNDED"
+    assert cases["engine.replay.same_seed_identical"]["comparison"] == "SAME_RUNTIME_ONLY"
+    assert cases["engine.row_order.invariant"]["comparison"] == "SAME_RUNTIME_ONLY"
+    assert cases["engine.seed.non_degenerate_divergence"]["expected"]["scope"] == (
+        "this fixture only"
+    )
+    assert cases["engine.seed.degenerate_equal_digest"]["comparison"] == "EXACT"
 
 
 if __name__ == "__main__":

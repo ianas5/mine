@@ -30,6 +30,12 @@ authority that owns it:
     selectable confidence levels                      ->  spec/input_contract.yaml
     model version                                     ->  spec/workbook.yaml
 
+The model version is a CONSTANT, not only a banner comment. Step 1 requires a
+successful run to snapshot `model_version` in its metadata, and a comment cannot
+be read by the code that has to write it - leaving it in prose would invite the
+later VBA to declare a literal of its own, which is the single thing this module
+exists to prevent.
+
 --------------------------------------------------------------------------------
 TWO THINGS THE PROJECTION DELIBERATELY OMITS
 --------------------------------------------------------------------------------
@@ -197,6 +203,8 @@ def render_sim_contract_module(
 
     # --- versions -----------------------------------------------------------
     module.section("Versions")
+    module.const("SIM_MODEL_VERSION", str(spec.model["model_version"]),
+                 "workbook.yaml: model.model_version - snapshotted by a successful run")
     module.const("SIM_CONTRACT_VERSION", sim.version)
     module.const("SIM_RNG_VERSION", sim.rng_version,
                  "bumped by generator, seeding or stream-assignment changes")

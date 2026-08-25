@@ -44,6 +44,7 @@ import math
 from typing import Any
 
 from .calc_cases import to_model, tolerances_from
+from .calc_fingerprint import canonical_number
 from .calc_loader import CalcContract
 from .calc_numeric import CalculationRefusal
 from .contract_loader import ContractError, InputContract
@@ -73,7 +74,16 @@ from .sim_stats import (
     sample_standard_deviation,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+"""Bumped from 1: semantic numbers are JSON numbers, every case carries its own
+version identity, and an exact case additionally carries the accepted Phase-5
+canonical encoding of each of its numbers."""
+
+CANONICAL_SUFFIX = "_canonical"
+"""The sidecar key. `x` is the semantic JSON number; `x_canonical` is the same
+value in the ACCEPTED Phase-5 canonical-number encoding, so binary64 identity has
+an exact textual form without the number itself being stringified. No new
+floating encoding is invented here - `canonical_number` is Phase-5 authority."""
 
 # --- comparison policies ----------------------------------------------------
 EXACT = "EXACT"
@@ -119,6 +129,79 @@ _PYTHON_REFERENCE_NOTE = (
     "produced. They are context for a failing comparison, NEVER a "
     "cross-language expectation; the case policy governs what must match."
 )
+
+
+# ===========================================================================
+# numbers
+# ===========================================================================
+def _n(value) -> float:
+    """One semantic number, as a JSON number and never as text.
+
+    Stringifying a finite float to preserve `repr` would put it beyond
+    `allow_nan=False`: `repr(float("nan"))` is the ordinary string `"nan"`, which
+    serialises happily. Keeping the value a Python float all the way to
+    `json.dumps` makes that guard a real boundary, and this function refuses a
+    non-finite value here as well so the failure names the corpus rather than the
+    serialiser.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SimOracleError(f"not a semantic number: {value!r}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise SimOracleError(
+            f"a non-finite value {value!r} reached the corpus; it is refused here "
+            "rather than emitted"
+        )
+    return number
+
+
+def _canonical(value: float) -> str:
+    """The accepted Phase-5 canonical encoding of the same number."""
+    return canonical_number(float(value))
+
+
+def _with_canonical(node):
+    """Add a canonical sidecar beside every float leaf, recursively.
+
+    Applied to the blocks whose comparison is EXACT. An integer needs no sidecar
+    - JSON integers are exact - and a tolerance-bounded block gets none, because
+    an exact textual form there would invite exactly the comparison the accepted
+    evidence model refuses.
+    """
+    if isinstance(node, list):
+        return [_with_canonical(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key.endswith(CANONICAL_SUFFIX):
+            out[key] = value
+            continue
+        # A NUMERIC CONTAINER gets exactly one sidecar and is not descended
+        # into: recursing would also hang a sidecar off every label inside a
+        # quantile mapping, so the mapping would hold numbers and text at once.
+        if isinstance(value, float):
+            out[key] = value
+            out[key + CANONICAL_SUFFIX] = _canonical(value)
+        elif (
+            isinstance(value, list)
+            and value
+            and all(isinstance(item, float) for item in value)
+        ):
+            out[key] = value
+            out[key + CANONICAL_SUFFIX] = [_canonical(item) for item in value]
+        elif (
+            isinstance(value, dict)
+            and value
+            and all(isinstance(item, float) for item in value.values())
+        ):
+            out[key] = value
+            out[key + CANONICAL_SUFFIX] = {
+                label: _canonical(item) for label, item in value.items()
+            }
+        else:
+            out[key] = _with_canonical(value)
+    return out
 
 
 # ===========================================================================
@@ -217,9 +300,11 @@ def _case(
         "inputs": inputs,
     }
     if expected is not None:
-        record["expected"] = expected
+        # `expected` is governed by the case policy, so it only earns an exact
+        # sidecar when that policy IS exact.
+        record["expected"] = _with_canonical(expected) if comparison == EXACT else expected
     if expected_exact is not None:
-        record["expected_exact"] = expected_exact
+        record["expected_exact"] = _with_canonical(expected_exact)
     if expected_refusal is not None:
         record["expected_refusal"] = expected_refusal
     if python_reference is not None:
@@ -254,7 +339,7 @@ def _rng_cases(reference: RngReference) -> list[dict[str, Any]]:
             {"seed_mode": "FIXED", "seed": seed, "draws": 5},
             expected_exact={
                 "initial_state": _state_words(state),
-                "first_uniforms": [repr(value) for value in uniforms],
+                "first_uniforms": [_n(value) for value in uniforms],
                 "state_after": _state_words(after),
             },
             note="The scalar is repeated into all six words. No mixer, no hash.",
@@ -280,7 +365,7 @@ def _rng_cases(reference: RngReference) -> list[dict[str, Any]]:
             {"seed": 12345, "stream_index": index, "draws": 5},
             expected_exact={
                 "initial_state": _state_words(state),
-                "first_uniforms": [repr(value) for value in uniforms],
+                "first_uniforms": [_n(value) for value in uniforms],
                 "state_after": _state_words(after),
             },
             note=(
@@ -472,7 +557,7 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
 
     # --- Uniform, injected --------------------------------------------------
     uniform_rows = [
-        {"u": repr(u), "value": repr(_uniform_from_u(u, 0.0, 100.0))}
+        {"u": _n(u), "value": _n(_uniform_from_u(u, 0.0, 100.0))}
         for u in _INJECTED_UNIFORMS
     ]
     cases.append(_case(
@@ -496,7 +581,7 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
         "Uniform across the widest authorised span stays finite",
         TOLERANCE_BOUNDED,
         {"family": "Uniform", "a": -1.0e308, "b": 1.0e308, "injected_uniforms": [0.25]},
-        expected={"value": repr(extreme)},
+        expected={"value": _n(extreme)},
         expected_exact={"finite": True, "uniforms_per_sample": 1},
     ))
 
@@ -512,7 +597,7 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
             {"family": "Uniform", "a": 100.0, "most_likely": most_likely, "b": 100.0,
              "start_state": _state_words(start)},
             expected_exact={
-                "value": repr(result.value),
+                "value": _n(result.value),
                 "uniforms_consumed": 0,
                 "state_unchanged": True,
                 "state_after": _state_words(result.state),
@@ -527,7 +612,7 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
     # --- Triangular, injected, both branches and the boundary ---------------
     triangular_rows = []
     for u in (0.001, 0.29999999999999993, 0.3, 0.30000000000000004, 0.5, 0.999):
-        triangular_rows.append({"u": repr(u), "value": repr(_triangular_from_u(u, 0.0, 30.0, 100.0))})
+        triangular_rows.append({"u": _n(u), "value": _n(_triangular_from_u(u, 0.0, 30.0, 100.0))})
     cases.append(_case(
         "sampler.triangular.injected_branches",
         "C_transform",
@@ -536,7 +621,7 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
         {"family": "Triangular", "a": 0.0, "m": 30.0, "b": 100.0,
          "branch_point_c": 0.3, "comparison_operator": "u <= c takes the lower branch"},
         expected={"rows": triangular_rows},
-        expected_exact={"uniforms_per_sample": 1, "value_at_branch_point": repr(30.0)},
+        expected_exact={"uniforms_per_sample": 1, "value_at_branch_point": _n(30.0)},
         note="At u == c exactly the result is the mode. `<` instead of `<=` moves it.",
     ))
     for label, mode in (("m_equals_a", 0.0), ("m_equals_b", 100.0)):
@@ -547,7 +632,7 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
             TOLERANCE_BOUNDED,
             {"family": "Triangular", "a": 0.0, "m": mode, "b": 100.0,
              "injected_uniforms": [0.5]},
-            expected={"value": repr(_triangular_from_u(0.5, 0.0, mode, 100.0))},
+            expected={"value": _n(_triangular_from_u(0.5, 0.0, mode, 100.0))},
             expected_exact={"uniforms_per_sample": 1},
         ))
     degenerate_tri = sample_distribution(reference, start, "Triangular", 7.0, 7.0, 7.0)
@@ -559,7 +644,7 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
         {"family": "Triangular", "a": 7.0, "m": 7.0, "b": 7.0,
          "start_state": _state_words(start)},
         expected_exact={
-            "value": repr(degenerate_tri.value),
+            "value": _n(degenerate_tri.value),
             "uniforms_consumed": 0,
             "state_unchanged": True,
         },
@@ -591,7 +676,7 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
             uniforms += drawn.uniforms_consumed
             samples.append({
                 "index": ordinal,
-                "value": repr(drawn.value),
+                "value": _n(drawn.value),
                 "proposal_attempts": drawn.proposal_attempts,
                 "uniforms_for_this_sample": drawn.uniforms_consumed,
                 "cumulative_uniforms": uniforms,
@@ -604,15 +689,15 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
             TOLERANCE_BOUNDED,
             {
                 "family": "Beta-PERT", "a": 0.0, "m": ratio, "b": 1.0,
-                "seed": 12345, "stream_index": index, "samples": 24,
+                "seed": 12345, "stream_index": index, "sample_count": 24,
             },
             expected={"samples": [
                 {"index": row["index"], "value": row["value"]} for row in samples
             ]},
             expected_exact={
                 "dispatch": shape.dispatch,
-                "alpha": repr(shape.alpha),
-                "beta": repr(shape.beta),
+                "alpha": _n(shape.alpha),
+                "beta": _n(shape.beta),
                 "total_proposal_attempts": attempts,
                 "total_uniforms": uniforms,
                 "uniforms_per_attempt": 2,
@@ -647,7 +732,7 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
         {"family": "Beta-PERT", "a": -2.0, "m": -2.0, "b": -2.0,
          "start_state": _state_words(start)},
         expected_exact={
-            "value": repr(degenerate_beta.value),
+            "value": _n(degenerate_beta.value),
             "uniforms_consumed": 0,
             "state_unchanged": True,
             "shape_ratio_formed": False,
@@ -664,9 +749,9 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
             {"family": "Beta-PERT", "a": 0.0, "m": mode, "b": 100.0},
             expected_exact={
                 "dispatch": shape.dispatch,
-                "alpha": repr(shape.alpha),
-                "beta": repr(shape.beta),
-                "alpha_plus_beta": repr(shape.alpha + shape.beta),
+                "alpha": _n(shape.alpha),
+                "beta": _n(shape.beta),
+                "alpha_plus_beta": _n(shape.alpha + shape.beta),
             },
             note="Equality belongs to BC; the endpoints are not special-cased.",
         ))
@@ -678,8 +763,8 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
     for probability in (0.0, 0.25, 0.5, 1.0):
         for u in (0.0000001, 0.24999999, 0.25, 0.25000001, 0.5, 0.9999999):
             rows.append({
-                "u": repr(u),
-                "probability": repr(probability),
+                "u": _n(u),
+                "probability": _n(probability),
                 "occurred": _bernoulli_from_u(u, probability),
             })
     cases.append(_case(
@@ -702,7 +787,7 @@ def _sampler_cases(reference: RngReference) -> list[dict[str, Any]]:
         EXACT,
         {"probability": 0.5, "start_state": _state_words(start)},
         expected_exact={
-            "uniform": repr(occurrence.uniform),
+            "uniform": _n(occurrence.uniform),
             "occurred": occurrence.occurred,
             "uniforms_consumed": 1,
             "state_after": _state_words(occurrence.state),
@@ -737,8 +822,8 @@ _TAIL = 3
 def _window(values: tuple) -> dict[str, Any]:
     return {
         "count": len(values),
-        "head": [repr(value) for value in values[:_HEAD]],
-        "tail": [repr(value) for value in values[-_TAIL:]],
+        "head": [_n(value) for value in values[:_HEAD]],
+        "tail": [_n(value) for value in values[-_TAIL:]],
         "distinct_count": len(set(values)),
     }
 
@@ -761,11 +846,11 @@ def _components(run) -> list[dict[str, Any]]:
 def _statistics(stats) -> dict[str, Any]:
     return {
         "count": stats.count,
-        "mean": repr(stats.mean),
-        "sample_standard_deviation": repr(stats.sample_standard_deviation),
-        "minimum": repr(stats.minimum),
-        "maximum": repr(stats.maximum),
-        "quantiles": {label: repr(value) for label, value in stats.percentiles.items()},
+        "mean": _n(stats.mean),
+        "sample_standard_deviation": _n(stats.sample_standard_deviation),
+        "minimum": _n(stats.minimum),
+        "maximum": _n(stats.maximum),
+        "quantiles": {label: _n(value) for label, value in stats.percentiles.items()},
     }
 
 
@@ -833,8 +918,8 @@ def _engine_cases(engine: _Engine) -> list[dict[str, Any]]:
         expected_exact={
             "result_digest": run.result_digest,
             "total_nominal": _window(run.total_nominal),
-            "distinct_totals": sorted(repr(value) for value in set(run.total_nominal)),
-            "deterministic_base_a_nominal": repr(result.totals.a_nom),
+            "distinct_totals": sorted(_n(value) for value in set(run.total_nominal)),
+            "deterministic_base_a_nominal": _n(result.totals.a_nom),
             "components": _components(run),
         },
         note=(
@@ -850,9 +935,9 @@ def _engine_cases(engine: _Engine) -> list[dict[str, Any]]:
         payload = _payload(cost_lines=[_cost("CL-001", "Uniform", 250.0, None, 250.0, quantity)])
         one, _, _ = engine.run(payload, 12345)
         quantity_rows.append({
-            "quantity": repr(quantity),
-            "total": repr(one.total_nominal[0]),
-            "applied_twice_would_be": repr(250.0 * quantity * quantity),
+            "quantity": _n(quantity),
+            "total": _n(one.total_nominal[0]),
+            "applied_twice_would_be": _n(250.0 * quantity * quantity),
         })
     cases.append(_case(
         "engine.cost_line.quantity_applied_once",
@@ -880,7 +965,7 @@ def _engine_cases(engine: _Engine) -> list[dict[str, Any]]:
         severity = next(r for r in one.diagnostics if r.role == "severity")
         occurrence = next(r for r in one.diagnostics if r.role == "occurrence")
         d618_runs.append({
-            "probability": repr(probability),
+            "probability": _n(probability),
             "model": payload,
             "occurrences": sum(1 for total in one.total_nominal if total != 10.0),
             "occurrence_uniforms_consumed": occurrence.uniforms_consumed,
@@ -934,7 +1019,7 @@ def _engine_cases(engine: _Engine) -> list[dict[str, Any]]:
         {"model": degenerate_severity, "seed": 12345, "iterations": ENGINE_ITERATIONS},
         expected_exact={
             "result_digest": run.result_digest,
-            "distinct_totals": sorted(repr(value) for value in set(run.total_nominal)),
+            "distinct_totals": sorted(_n(value) for value in set(run.total_nominal)),
             "components": _components(run),
         },
     ))
@@ -965,8 +1050,8 @@ def _engine_cases(engine: _Engine) -> list[dict[str, Any]]:
         },
         expected_exact={
             "components": _components(run),
-            "deterministic_base_a_nominal": repr(result.totals.a_nom),
-            "analytical_expected_nominal": repr(result.totals.e_nom),
+            "deterministic_base_a_nominal": _n(result.totals.a_nom),
+            "analytical_expected_nominal": _n(result.totals.e_nom),
         },
         note=(
             "No rejection path, so the streams cannot desynchronise - but a "
@@ -995,7 +1080,7 @@ def _engine_cases(engine: _Engine) -> list[dict[str, Any]]:
                 "nominal": _statistics(run.summary.nominal),
                 "pv": _statistics(run.summary.pv),
             },
-            "analytical_expected_nominal": repr(result.totals.e_nom),
+            "analytical_expected_nominal": _n(result.totals.e_nom),
         },
         python_reference={
             "result_digest": run.result_digest,
@@ -1114,7 +1199,7 @@ def _engine_cases(engine: _Engine) -> list[dict[str, Any]]:
             "result_digests": {str(seed): digest
                                for seed, digest in degenerate_digests.items()},
             "all_equal": len(set(degenerate_digests.values())) == 1,
-            "distinct_totals": sorted(repr(value) for value in degenerate_totals),
+            "distinct_totals": sorted(_n(value) for value in degenerate_totals),
         },
         note=(
             "ACCEPTED behaviour, not a defect. A model with no uncertainty has "
@@ -1143,8 +1228,8 @@ def _digest_case(identifier: str, title: str, version: int,
         EXACT,
         {
             "sim_method_version": version,
-            "total_nominal": [repr(value) for value in nominal],
-            "total_pv": [repr(value) for value in pv],
+            "total_nominal": [_n(value) for value in nominal],
+            "total_pv": [_n(value) for value in pv],
         },
         expected_exact={
             "canonical_stream": result_digest_stream(version, nominal, pv),
@@ -1232,12 +1317,12 @@ def _type7_rows(values: tuple, points: tuple) -> list[dict[str, Any]]:
         hi = min(lo + 1, count - 1)
         exact_by_construction = (h - lo) == 0.0 or ordered[lo] == ordered[hi]
         rows.append({
-            "p": repr(p),
-            "h": repr(h),
+            "p": _n(p),
+            "h": _n(h),
             "lo": lo,
             "hi": hi,
-            "f": repr(h - lo),
-            "value": repr(percentile_type7(values, p)),
+            "f": _n(h - lo),
+            "value": _n(percentile_type7(values, p)),
             "comparison": EXACT if exact_by_construction else TOLERANCE_BOUNDED,
         })
     return rows
@@ -1261,7 +1346,7 @@ def _statistics_cases(sim: SimContract, inputs: InputContract) -> list[dict[str,
                 "fixed_non_selectable": list(ladder.fixed),
                 "selectable": list(ladder.selectable),
                 "headline": list(ladder.headline),
-                "points": [{"label": label, "p": repr(p)} for label, p in ladder.points],
+                "points": [{"label": label, "p": _n(p)} for label, p in ladder.points],
             },
             note="P10 is reported and is NOT selectable. No ladder is restated here.",
         ),
@@ -1270,22 +1355,22 @@ def _statistics_cases(sim: SimContract, inputs: InputContract) -> list[dict[str,
             "F_statistics",
             "Sample mean of an exactly representable hand vector",
             EXACT,
-            {"values": [repr(value) for value in _HAND_SAMPLE]},
-            expected_exact={"mean": repr(sample_mean(list(_HAND_SAMPLE)))},
+            {"values": [_n(value) for value in _HAND_SAMPLE]},
+            expected_exact={"mean": _n(sample_mean(list(_HAND_SAMPLE)))},
         ),
         _case(
             "statistics.sd.hand_vector",
             "F_statistics",
             "Sample standard deviation with divisor n - 1",
             TOLERANCE_BOUNDED,
-            {"values": [repr(value) for value in _HAND_SAMPLE], "divisor": "n_minus_1"},
+            {"values": [_n(value) for value in _HAND_SAMPLE], "divisor": "n_minus_1"},
             expected={
-                "sample_standard_deviation": repr(
+                "sample_standard_deviation": _n(
                     sample_standard_deviation(list(_HAND_SAMPLE))
                 ),
             },
             expected_exact={
-                "population_standard_deviation_would_be": repr(2.0),
+                "population_standard_deviation_would_be": _n(2.0),
                 "divisor": "n - 1",
             },
             note="sqrt(32/7) is not exactly representable, so the value is bounded; "
@@ -1296,10 +1381,10 @@ def _statistics_cases(sim: SimContract, inputs: InputContract) -> list[dict[str,
             "F_statistics",
             "A two-point sample with no spread has exactly zero deviation",
             EXACT,
-            {"values": [repr(10.0)] * 3},
+            {"values": [_n(10.0)] * 3},
             expected_exact={
-                "mean": repr(10.0),
-                "sample_standard_deviation": repr(0.0),
+                "mean": _n(10.0),
+                "sample_standard_deviation": _n(0.0),
             },
         ),
         _case(
@@ -1322,7 +1407,7 @@ def _statistics_cases(sim: SimContract, inputs: InputContract) -> list[dict[str,
             f"Hyndman-Fan type 7 hand vectors, n = {len(values)}",
             TOLERANCE_BOUNDED,
             {
-                "values": [repr(value) for value in values],
+                "values": [_n(value) for value in values],
                 "formula": {
                     "h": "(n - 1) * p", "lo": "floor(h)", "hi": "min(lo + 1, n - 1)",
                     "f": "h - lo", "value": "(1 - f) * x[lo] + f * x[hi]",
@@ -1345,12 +1430,12 @@ def _statistics_cases(sim: SimContract, inputs: InputContract) -> list[dict[str,
         sample = [value] * 1000
         stats = describe(sample, ladder.points, "constant")
         constant_rows.append({
-            "value": repr(value),
+            "value": _n(value),
             "count": 1000,
-            "mean": repr(stats.mean),
-            "sample_standard_deviation": repr(stats.sample_standard_deviation),
-            "minimum": repr(stats.minimum),
-            "maximum": repr(stats.maximum),
+            "mean": _n(stats.mean),
+            "sample_standard_deviation": _n(stats.sample_standard_deviation),
+            "minimum": _n(stats.minimum),
+            "maximum": _n(stats.maximum),
             "all_quantiles_equal_the_value": (
                 set(stats.percentiles.values()) == {value}
             ),
@@ -1360,7 +1445,7 @@ def _statistics_cases(sim: SimContract, inputs: InputContract) -> list[dict[str,
         "F_statistics",
         "A constant retained sample has an exact mean and exactly zero dispersion",
         EXACT,
-        {"repeated_values": [repr(value) for value in _CONSTANT_SAMPLES], "count": 1000},
+        {"repeated_values": [_n(value) for value in _CONSTANT_SAMPLES], "count": 1000},
         expected_exact={"rows": constant_rows},
         note=(
             "A distribution with one distinct value has no dispersion. "
@@ -1375,10 +1460,10 @@ def _statistics_cases(sim: SimContract, inputs: InputContract) -> list[dict[str,
         "H_domain",
         "Opposite-sign totals near Double maximum: the statistics exist",
         TOLERANCE_BOUNDED,
-        {"values": [repr(value) for value in extreme]},
+        {"values": [_n(value) for value in extreme]},
         expected={
-            "mean": repr(sample_mean(extreme)),
-            "sample_standard_deviation": repr(sample_standard_deviation(extreme)),
+            "mean": _n(sample_mean(extreme)),
+            "sample_standard_deviation": _n(sample_standard_deviation(extreme)),
         },
         expected_exact={
             "naive_sum_overflows": True,
@@ -1408,7 +1493,7 @@ def _statistics_cases(sim: SimContract, inputs: InputContract) -> list[dict[str,
             ),
         },
         expected_exact={"mean_is_representable": True,
-                        "mean": repr(sample_mean(subnormal))},
+                        "mean": _n(sample_mean(subnormal))},
     ))
     return cases
 
@@ -1436,10 +1521,10 @@ def _contingency_cases(engine: _Engine, sim: SimContract,
         contingency = contingency_at(run.summary, level, base)
         rows.append({
             "selected_confidence_level": level,
-            "selected_nominal": repr(contingency.selected_nominal),
-            "selected_pv": repr(contingency.selected_pv),
-            "contingency_nominal": repr(contingency.nominal),
-            "contingency_pv": repr(contingency.pv),
+            "selected_nominal": _n(contingency.selected_nominal),
+            "selected_pv": _n(contingency.selected_pv),
+            "contingency_nominal": _n(contingency.nominal),
+            "contingency_pv": _n(contingency.pv),
         })
     cases.append(_case(
         "contingency.selected_levels",
@@ -1451,8 +1536,8 @@ def _contingency_cases(engine: _Engine, sim: SimContract,
         expected={"rows": rows},
         expected_exact={
             "formula": "selected_px_total - deterministic_base_estimate_a",
-            "base_nominal": repr(base.nominal),
-            "base_pv": repr(base.pv),
+            "base_nominal": _n(base.nominal),
+            "base_pv": _n(base.pv),
             "forbidden_baselines": ["simulation_mean", "analytical_expected_total",
                                     "a_plus_emv"],
             "simulation_mean_is_a_different_number": (
@@ -1493,8 +1578,8 @@ def _contingency_cases(engine: _Engine, sim: SimContract,
         {"model": dyadic, "seed": 12345, "iterations": ENGINE_ITERATIONS,
          "deterministic_base_nominal": 1024.0, "level": "P50"},
         expected_exact={
-            "selected_nominal": repr(negative.selected_nominal),
-            "contingency_nominal": repr(negative.nominal),
+            "selected_nominal": _n(negative.selected_nominal),
+            "contingency_nominal": _n(negative.nominal),
             "is_negative": negative.nominal < 0.0,
             "clamped": False,
         },
@@ -1514,9 +1599,9 @@ def _contingency_cases(engine: _Engine, sim: SimContract,
         },
         expected_exact={
             "representable_neighbour": {
-                "selected_nominal": repr(1.0e308),
-                "deterministic_base_nominal": repr(-5.0e307),
-                "contingency_nominal": repr(1.5e308),
+                "selected_nominal": _n(1.0e308),
+                "deterministic_base_nominal": _n(-5.0e307),
+                "contingency_nominal": _n(1.5e308),
             },
         },
     ))
@@ -1568,10 +1653,10 @@ def _domain_cases(engine: _Engine) -> list[dict[str, Any]]:
         EXACT,
         {"model": rescue, "seed": 12345, "iterations": ENGINE_ITERATIONS},
         expected_exact={
-            "distinct_totals": sorted(repr(value) for value in set(run.total_nominal)),
+            "distinct_totals": sorted(_n(value) for value in set(run.total_nominal)),
             "naive_left_to_right_has_no_finite_result": True,
-            "mean": repr(run.summary.nominal.mean),
-            "sample_standard_deviation": repr(
+            "mean": _n(run.summary.nominal.mean),
+            "sample_standard_deviation": _n(
                 run.summary.nominal.sample_standard_deviation
             ),
         },
@@ -1672,6 +1757,175 @@ def _runtime_only_cases(sim: SimContract) -> list[dict[str, Any]]:
 
 
 # ===========================================================================
+# the artefact-shape validator
+#
+# NOT another production contract. It pins the JSON SEMANTIC TYPES of the
+# emitted corpus so that a number cannot quietly become text - which is what
+# `allow_nan=False` needs in order to mean anything, because `repr(float("nan"))`
+# is the ordinary string "nan" and would serialise without complaint.
+#
+# It runs at the end of every build, so a typing regression fails the Stage-A
+# build rather than waiting for a reader to notice.
+# ===========================================================================
+INTEGER_KEYS = frozenset({
+    "schema_version", "rng_version", "sim_method_version", "case_count",
+    "engine_iterations", "iterations", "count", "distinct_count", "draws",
+    "sample_count", "index", "lo", "hi", "seed", "auto_nonce", "effective_seed",
+    "seed_min", "seed_max", "stream_index", "stream", "total_components",
+    "cost_line_count", "risk_count", "base_year", "start_year", "duration",
+    "uniforms_consumed", "uniforms_per_sample", "uniforms_per_attempt",
+    "uniforms_for_this_sample", "cumulative_uniforms", "proposal_attempts",
+    "total_proposal_attempts", "total_uniforms", "occurrences",
+    "occurrence_uniforms_consumed", "severity_uniforms_consumed",
+    "sim_method_version", "selected_nominal_row", "field_count",
+    "record_field_count", "iteration_index_origin", "header_row",
+    "first_iteration_row", "reserved_rows", "max_iterations_representable",
+    "run_id_initial", "run_id_first_successful", "run_id_maximum",
+    "auto_nonce_initial",
+})
+
+NUMBER_KEYS = frozenset({
+    "u", "p", "h", "f", "value", "probability", "alpha", "beta",
+    "alpha_plus_beta", "mean", "sample_standard_deviation", "minimum",
+    "maximum", "total", "applied_twice_would_be", "quantity",
+    "selected_nominal", "selected_pv", "contingency_nominal", "contingency_pv",
+    "base_nominal", "base_pv", "deterministic_base_nominal",
+    "deterministic_base_a_nominal", "analytical_expected_nominal",
+    "population_standard_deviation_would_be", "a", "b", "m", "most_likely",
+    "min_value", "max_value", "discount_rate", "rate", "uniform",
+    "branch_point_c", "value_at_branch_point",
+})
+
+NUMBER_LIST_KEYS = frozenset({
+    "first_uniforms", "initial_state", "state_after", "final_state", "state",
+    "head", "tail", "distinct_totals", "injected_uniforms", "values",
+    "profile_weights", "seeds", "probabilities", "counts", "repeated_values",
+    "total_nominal", "total_pv", "quantiles",
+})
+
+_NULLABLE_NUMBER_KEYS = frozenset({"most_likely"})
+
+TEXT_SUBTREE_KEYS = frozenset({"grammar", "formula"})
+"""Subtrees that are textual by declaration - grammar productions and written
+formulas. Their inner key names collide with numeric ones by coincidence
+(`stream`, `h`, `lo`), so they are checked as text rather than as numbers."""
+
+
+def _looks_numeric(text: str) -> bool:
+    try:
+        float(text)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _validate_node(node: Any, path: str, problems: list[str]) -> None:
+    if isinstance(node, bool):
+        return
+    if isinstance(node, float):
+        if not math.isfinite(node):
+            problems.append(f"{path}: non-finite number {node!r}")
+        return
+    if isinstance(node, int) or node is None:
+        return
+    if isinstance(node, str):
+        return
+    if isinstance(node, list):
+        for index, item in enumerate(node):
+            _validate_node(item, f"{path}[{index}]", problems)
+        return
+    if not isinstance(node, dict):
+        problems.append(f"{path}: {type(node).__name__} is not a JSON type")
+        return
+
+    for key, value in node.items():
+        where = f"{path}.{key}"
+        if key in TEXT_SUBTREE_KEYS:
+            for label, leaf in (
+                value.items() if isinstance(value, dict) else [(key, value)]
+            ):
+                if not isinstance(leaf, str):
+                    problems.append(f"{where}.{label}: a declared text subtree must be text")
+            continue
+        if key.endswith(CANONICAL_SUFFIX):
+            # The sidecar is TEXT on purpose: it is an encoding, not a number.
+            leaves = value if isinstance(value, list) else (
+                list(value.values()) if isinstance(value, dict) else [value]
+            )
+            for leaf in leaves:
+                if not isinstance(leaf, str):
+                    problems.append(f"{where}: a canonical sidecar must be text")
+            continue
+        if key in INTEGER_KEYS:
+            for leaf in (value if isinstance(value, list) else [value]):
+                if leaf is None:
+                    continue
+                if isinstance(leaf, bool) or not isinstance(leaf, int):
+                    problems.append(
+                        f"{where}: expected an integer, got {type(leaf).__name__} "
+                        f"{leaf!r}"
+                    )
+        elif key in NUMBER_KEYS:
+            for leaf in (value if isinstance(value, list) else [value]):
+                if leaf is None and key in _NULLABLE_NUMBER_KEYS:
+                    continue
+                if isinstance(leaf, bool) or not isinstance(leaf, (int, float)):
+                    problems.append(
+                        f"{where}: expected a number, got {type(leaf).__name__} "
+                        f"{leaf!r}"
+                    )
+        elif key in NUMBER_LIST_KEYS:
+            leaves = value.values() if isinstance(value, dict) else (
+                value if isinstance(value, list) else [value]
+            )
+            for leaf in leaves:
+                if isinstance(leaf, (dict, list)):
+                    continue
+                if isinstance(leaf, bool) or not isinstance(leaf, (int, float)):
+                    problems.append(
+                        f"{where}: expected numbers, got {type(leaf).__name__} "
+                        f"{leaf!r}"
+                    )
+        elif isinstance(value, str) and _looks_numeric(value):
+            # THE GENERIC RULE. A string that parses as a number is a number
+            # wearing a costume; only an explicitly named encoding may do that.
+            problems.append(
+                f"{where}: the string {value!r} is a semantic number and must be "
+                "emitted as a JSON number"
+            )
+        _validate_node(value, where, problems)
+
+
+def validate_corpus(document: dict[str, Any]) -> None:
+    """Refuse a corpus whose semantic types have drifted. Raises, never repairs."""
+    problems: list[str] = []
+    _validate_node(document, "$", problems)
+
+    top = {
+        "model_version": document["model_version"],
+        "sim_contract_version": document["sim_contract_version"],
+        "rng_version": document["rng_version"],
+        "sim_method_version": document["sim_method_version"],
+    }
+    for group in document["groups"]:
+        for case in group["cases"]:
+            versions = case.get("versions")
+            if versions is None:
+                problems.append(f"case {case['id']}: no version identity")
+                continue
+            if versions != top:
+                problems.append(
+                    f"case {case['id']}: version identity {versions} does not "
+                    f"project the artefact's {top}"
+                )
+    if problems:
+        raise SimOracleError(
+            "the emitted corpus failed artefact-shape validation:\n  "
+            + "\n  ".join(problems[:20])
+        )
+
+
+# ===========================================================================
 # assembly
 # ===========================================================================
 def build_sim_cases(
@@ -1705,6 +1959,16 @@ def build_sim_cases(
          _runtime_only_cases(sim)),
     )
 
+    # Every case carries its own version identity, so a case lifted out of the
+    # file still says what it applies to. These are PROJECTIONS of the four
+    # top-level values - literally the same objects - not independent copies.
+    identity = {
+        "model_version": model_version,
+        "sim_contract_version": sim.version,
+        "rng_version": sim.rng_version,
+        "sim_method_version": sim.sim_method_version,
+    }
+
     seen: set[str] = set()
     rendered_groups = []
     for key, title, cases in groups:
@@ -1714,9 +1978,10 @@ def build_sim_cases(
             seen.add(case["id"])
             if case["comparison"] not in POLICIES:  # pragma: no cover - _case checks
                 raise SimOracleError(f"case {case['id']!r} has no comparison policy")
+            case["versions"] = dict(identity)
         rendered_groups.append({"group": key, "title": title, "cases": cases})
 
-    return {
+    document = {
         "schema_version": SCHEMA_VERSION,
         "model_version": model_version,
         "sim_contract_version": sim.version,
@@ -1738,7 +2003,16 @@ def build_sim_cases(
             "expected_refusal": "the case must be refused, not answered",
             "python_reference": _PYTHON_REFERENCE_NOTE,
         },
+        "canonical_sidecar": (
+            "A key ending in '" + CANONICAL_SUFFIX + "' holds the accepted "
+            "Phase-5 canonical-number encoding of the sibling number. It exists "
+            "so binary64 identity has an exact textual form WITHOUT the semantic "
+            "value being stringified, and it is emitted only where the "
+            "comparison is EXACT."
+        ),
         "engine_iterations": ENGINE_ITERATIONS,
         "case_count": len(seen),
         "groups": rendered_groups,
     }
+    validate_corpus(document)
+    return document
