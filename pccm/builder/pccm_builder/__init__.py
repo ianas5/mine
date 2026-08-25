@@ -38,6 +38,13 @@ from .sim_loader import (
     load_sim_contract,
     validate_sim_against,
 )
+from .sim_rng import (
+    Component,
+    Draw,
+    RngReference,
+    RngState,
+    SimRngError,
+)
 from .spec_loader import SpecError, load_spec
 from .stage_b_emit import emit_stage_b
 from .structure_loader import StructureContractError, load_structure_contract
@@ -49,7 +56,12 @@ __all__ = [
     "CalcContractError",         # Phase 5 Gate-A Step-1 tests
     "ContractError",             # build_stage_a.py, input contract tests
     "DriverContractError",       # build_stage_a.py, driver contract tests
+    "Component",                 # Phase 6 Step-2 tests
+    "Draw",                      # Phase 6 Step-2 tests
+    "RngReference",              # Phase 6 Step-2 reference surface
+    "RngState",                  # Phase 6 Step-2 reference surface
     "SimContractError",          # build_stage_a.py, Phase 6 Step-1 tests
+    "SimRngError",               # Phase 6 Step-2 tests
     "SpecError",                 # build_stage_a.py, manifest tests
     "StructureContractError",    # build_stage_a.py, Phase 4 tests
     "build_workbook",            # build_stage_a.py, all structural test suites
