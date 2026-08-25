@@ -14,8 +14,15 @@ non-vacuous. If the unmutated local engine drifted, a mutation could "differ"
 for the wrong reason.
 
 WHERE A MUTATION IS NOT DETECTABLE BY LUCK, IT IS DETECTED BY CONSTRUCTION.
-Substituting the built-in `sum` for the accepted accumulation changes nothing on
-an ordinary fixture, and both halves of that fact are recorded rather than one.
+Substituting naive left-to-right addition for the accepted accumulation changes
+nothing on an ordinary fixture - tier 1 of `safe_signed_sum` IS left-to-right
+addition - and both halves of that fact are recorded rather than one.
+
+THE INSTRUMENTS ARE VERSION-INDEPENDENT. That accumulation mutation is written
+out as an explicit loop, never as Python's built-in `sum`, which applies
+Neumaier compensation to float sequences from CPython 3.12 and is therefore no
+longer a definition of naive addition. A control built on it would be measuring
+the interpreter.
 
 Runs standalone or under pytest.
 """
@@ -32,6 +39,7 @@ PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
 
 from pccm_builder import (  # noqa: E402
+    Draw,
     RngReference,
     bernoulli_occurs,
     load_calc_contract,
@@ -169,6 +177,26 @@ def _mixed():
 # ---------------------------------------------------------------------------
 # the local engine
 # ---------------------------------------------------------------------------
+def naive_left_to_right(values) -> float:
+    """Ordinary unchecked left-to-right binary64 addition. Nothing else.
+
+    WHY THIS IS SPELLED OUT RATHER THAN CALLING `sum`. Python's built-in `sum`
+    is not a stable definition of naive accumulation: from CPython 3.12 it
+    applies Neumaier compensation to float sequences, so `sum([0.1] * 20)` is
+    `2.0` on 3.13 and `2.0000000000000004` on 3.11 - and the second is what a
+    plain accumulation loop produces on both. A mutation control built on `sum`
+    is therefore testing the host runtime rather than the mutation.
+
+    The mutation being modelled is exactly "substitute `safe_signed_sum` with
+    ordinary unchecked addition", so ordinary unchecked addition is written out.
+    No `sum`, no `math.fsum`, no compensated or pairwise algorithm.
+    """
+    total = 0.0
+    for value in values:
+        total = total + value
+    return total
+
+
 def _sample(state, driver):
     if driver.distribution == FAMILY_UNIFORM:
         return sample_uniform(_ref(), state, driver.minimum, driver.maximum, driver.most_likely)
@@ -252,9 +280,9 @@ def _local_run(prepared, *, mutation: str = "", row_order: tuple = ()):
         nominal_terms = [entry[2] for entry in entries]
         pv_terms = [entry[3] for entry in entries]
 
-        if mutation == "builtin_sum":
-            nominal.append(sum(nominal_terms))
-            pv.append(sum(pv_terms))
+        if mutation == "naive_accumulation":
+            nominal.append(naive_left_to_right(nominal_terms))
+            pv.append(naive_left_to_right(pv_terms))
         elif mutation == "pv_from_nominal":
             total = safe_signed_sum(nominal_terms, "nominal")
             first = (costs + risks)[0]
@@ -557,18 +585,19 @@ def test_14_the_order_controls_do_not_claim_reversal_always_matters() -> None:
     assert identical > 0, "the ordinary fixture is unexpectedly order-sensitive everywhere"
 
 
-def test_15_the_builtin_sum_is_caught_only_on_the_constructed_fixture() -> None:
+def test_15_naive_left_to_right_accumulation_is_caught_on_the_constructed_fixture() -> None:
     """BOTH HALVES, recorded honestly.
 
-    On an ordinary model `sum` and the accepted accumulation agree on every
-    iteration, because tier 1 of `safe_signed_sum` IS left-to-right addition.
-    The constructed fixture is the one where they part: a partial sum leaves
-    Double range, `sum` reports infinity, and the accepted primitive returns the
-    representable total the model actually has.
+    On an ordinary model naive left-to-right addition and the accepted
+    accumulation agree on every iteration, bit for bit, because tier 1 of
+    `safe_signed_sum` IS left-to-right addition with a range check. The
+    constructed fixture is the one where they part: a partial sum leaves Double
+    range, the naive path reports infinity, and the accepted primitive returns
+    the representable total the model actually has.
     """
     ordinary, _ = _prepare(_mixed(), iterations=1000)
     ordinary_run = run_simulation(_ref(), ordinary)
-    ordinary_mutated, _ = _local_run(ordinary, mutation="builtin_sum")
+    ordinary_mutated, _ = _local_run(ordinary, mutation="naive_accumulation")
     assert ordinary_mutated == ordinary_run.total_nominal, (
         "the two accumulations already differ on an ordinary model"
     )
@@ -582,11 +611,57 @@ def test_15_the_builtin_sum_is_caught_only_on_the_constructed_fixture() -> None:
     )
     prepared, _ = _prepare(constructed, iterations=1000)
     run = run_simulation(_ref(), prepared)
-    mutated, _ = _local_run(prepared, mutation="builtin_sum")
+    mutated, _ = _local_run(prepared, mutation="naive_accumulation")
 
     assert set(run.total_nominal) == {1.5e308}
     assert all(math.isinf(total) for total in mutated), sorted(set(mutated))[:3]
     assert mutated != run.total_nominal
+
+
+def test_15a_the_mutation_does_not_depend_on_the_built_in_sum() -> None:
+    """The instrument is version-independent, and the reason is recorded.
+
+    `sum` over floats is compensated from CPython 3.12, so it is no longer a
+    definition of naive accumulation. This test does not require the two to
+    agree or to disagree on the host runtime - it requires that the MUTATION is
+    the explicit accumulator either way, so the control behaves identically on
+    3.11 and on 3.13.
+    """
+    terms = [0.1] * 20
+    explicit = naive_left_to_right(terms)
+
+    # The explicit accumulator is pinned to a literal, so it cannot drift with
+    # the runtime, and it agrees with the accepted tier-1 accumulation exactly.
+    assert explicit == 2.0000000000000004, explicit
+    assert explicit == safe_signed_sum(terms, "tier 1"), (
+        "the accepted tier-1 accumulation is not plain left-to-right addition"
+    )
+
+    # Whether the HOST's `sum` agrees is a property of the interpreter, not of
+    # PCCM. It is neither asserted nor relied on - only that when it disagrees,
+    # it disagrees by being compensated, which is precisely why it cannot serve
+    # as the mutation.
+    if sum(terms) != explicit:
+        assert sum(terms) == 2.0, (
+            f"an unexpected built-in sum result {sum(terms)!r} on "
+            f"Python {sys.version_info.major}.{sys.version_info.minor}"
+        )
+
+    # THE STRUCTURAL GUARANTEE: the mutation instrument never calls `sum` or
+    # `math.fsum` at all, so no interpreter change can move it.
+    module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    guarded = {"naive_left_to_right", "_local_run"}
+    for node in ast.walk(module):
+        if not isinstance(node, ast.FunctionDef) or node.name not in guarded:
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call):
+                name = getattr(inner.func, "id", None) or getattr(inner.func, "attr", None)
+                assert name not in {"sum", "fsum"}, (
+                    f"{node.name} calls {name!r}; the mutation must be explicit addition"
+                )
+        guarded.discard(node.name)
+    assert not guarded, f"the guarded functions were not found: {sorted(guarded)}"
 
 
 # ===========================================================================
@@ -722,9 +797,9 @@ def test_26_a_naive_mean_accumulation_is_caught() -> None:
     assert math.isinf(naive / len(_EXTREME_SAMPLE))
     assert sample_mean(_EXTREME_SAMPLE) == 8.5e307
 
-    assert sum(_STATS_SAMPLE) / len(_STATS_SAMPLE) == sample_mean(_STATS_SAMPLE), (
-        "the two agree wherever the naive sum exists, which is the whole point"
-    )
+    assert naive_left_to_right(_STATS_SAMPLE) / len(_STATS_SAMPLE) == sample_mean(
+        _STATS_SAMPLE
+    ), "the two agree wherever the naive sum exists, which is the whole point"
 
 
 def test_27_an_unguarded_welford_deviation_is_caught() -> None:
@@ -982,24 +1057,40 @@ def test_37_the_engine_holds_no_module_level_mutable_simulation_state() -> None:
 # produced a completely different digest and still reported version 1. Two
 # different generators cannot both be version 1.
 # ===========================================================================
-class _NoDrawReference(RngReference):
-    """A reference that refuses to generate. Used to prove WHEN the check runs.
+class _BehaviourOverride(RngReference):
+    """Every accepted constant, a completely different generator.
 
-    If the binding were verified after the loop had started - or not at all -
-    the engine would reach `next_uniform` and this would raise `AssertionError`
-    instead of the binding refusal.
+    This is the hole a field snapshot cannot see: `rng_reference_signature`
+    returns the SAME tuple for this object and for the accepted reference,
+    because every operational field is identical. Only the method body differs -
+    and the method body is the generator. On one Uniform Cost Line the accepted
+    reference produces `88.8907785432604, 102.29692957777561, ...` and digest
+    `30F068CF20B784C6`; this one produces `115.0` forever and digest
+    `03B41CA3043133E0`. Both would claim `rng_version = 1`.
     """
 
     def next_uniform(self, state):  # type: ignore[override]
-        raise AssertionError("a draw was taken before the binding was verified")
+        self.validate_state(state)
+        return Draw(state, 0.5)
 
 
-def _variant(cls=RngReference, **changes) -> RngReference:
-    """The accepted reference with exactly one operational field replaced."""
+def _override_reference() -> RngReference:
+    base = _ref()
+    return _BehaviourOverride(
+        **{field.name: getattr(base, field.name) for field in dataclasses.fields(base)}
+    )
+
+
+def _variant(**changes) -> RngReference:
+    """The accepted reference with exactly one operational field replaced.
+
+    Always the EXACT accepted class, so these controls exercise the field
+    signature rather than the implementation-identity check.
+    """
     base = _ref()
     values = {field.name: getattr(base, field.name) for field in dataclasses.fields(base)}
     values.update(changes)
-    return cls(**values)
+    return RngReference(**values)
 
 
 def _bumped_jump(reference: RngReference) -> tuple:
@@ -1009,7 +1100,7 @@ def _bumped_jump(reference: RngReference) -> tuple:
 
 
 def _wrong_references() -> tuple:
-    """Every operational axis the binding is required to cover."""
+    """Every operational axis the field signature is required to cover."""
     reference = _ref()
     return (
         ("recurrence a12", _variant(a12=reference.a12 + 1)),
@@ -1049,27 +1140,116 @@ def test_38_a_prepared_model_refuses_a_different_reference_at_run_time() -> None
 
 
 def test_39_the_binding_is_checked_before_the_first_draw() -> None:
-    """A reference that cannot generate still produces the BINDING refusal."""
+    """Proved by instrumenting the ACCEPTED class, not by accepting a subclass.
+
+    `RngReference.next_uniform` is replaced for the duration of the call so that
+    any draw at all raises. A foreign reference must still produce the BINDING
+    refusal, which can only happen if the binding is checked first. The spy is
+    then shown to be live: the same instrumented class, handed the reference the
+    model was actually prepared against, does reach the sampler.
+    """
     prepared, _ = _prepare(_mixed(), iterations=1000)
-    blocked = _variant(_NoDrawReference, a12=_ref().a12 + 1)
+    wrong = _variant(a12=_ref().a12 + 1)
+    real_next_uniform = RngReference.next_uniform
 
+    def refuse_to_draw(self, state):
+        raise AssertionError("a draw was taken before the binding was verified")
+
+    RngReference.next_uniform = refuse_to_draw          # type: ignore[assignment]
     try:
-        run_simulation(blocked, prepared)
+        try:
+            run_simulation(wrong, prepared)
+        except SimOracleError as error:
+            assert "a12" in str(error), str(error)
+        else:
+            raise AssertionError("a foreign reference was accepted")
+
+        # The spy is live, so the test above proved ORDERING rather than nothing.
+        try:
+            run_simulation(_ref(), prepared)
+        except AssertionError as error:
+            assert "before the binding was verified" in str(error)
+        else:
+            raise AssertionError("the instrumented sampler was never reached")
+    finally:
+        RngReference.next_uniform = real_next_uniform   # type: ignore[assignment]
+
+    # And the class is intact afterwards.
+    assert run_simulation(_ref(), prepared).total_nominal == run_simulation(
+        _ref(), prepared
+    ).total_nominal
+
+
+def test_39a_a_behavioural_subclass_cannot_claim_the_accepted_rng_version() -> None:
+    """The field signature is identical; only the implementation differs.
+
+    A snapshot of data cannot see a method body, so the boundaries require the
+    EXACT accepted type. `RngReference` is the Step-2 oracle, not an extension
+    point.
+    """
+    override = _override_reference()
+    base = _ref()
+    for field in dataclasses.fields(base):
+        assert getattr(override, field.name) == getattr(base, field.name), field.name
+    assert isinstance(override, RngReference), "the control is not a subclass"
+    assert type(override) is not RngReference
+
+    # Preparation: refused before stream construction and before any draw.
+    try:
+        prepare_simulation(
+            override, _sim(), _inputs(), _mixed(), _tolerances(),
+            effective_seed=12345, iterations=1000,
+        )
     except SimOracleError as error:
-        assert "a12" in str(error)
+        assert "exactly RngReference" in str(error), str(error)
     else:
-        raise AssertionError("a foreign reference was accepted")
+        raise AssertionError("preparation accepted a behavioural subclass")
 
-    # And the guard itself works: a matching reference of the same class does
-    # reach the sampler, so the test above proved ordering rather than nothing.
-    matching = _variant(_NoDrawReference)
-    assert rng_reference_signature(matching) == prepared.rng_signature
+    # Run: refused too, on a model prepared against the accepted reference.
+    prepared, _ = _prepare(_mixed(), iterations=1000)
     try:
-        run_simulation(matching, prepared)
-    except AssertionError as error:
-        assert "before the binding was verified" in str(error)
+        run_simulation(override, prepared)
+    except SimOracleError as error:
+        assert "exactly RngReference" in str(error), str(error)
+    else:
+        raise AssertionError("the run accepted a behavioural subclass")
+
+    # And the signature helper itself refuses, so it cannot imply authority.
+    try:
+        rng_reference_signature(override)
+    except SimOracleError as error:
+        assert "exactly RngReference" in str(error)
         return
-    raise AssertionError("the no-draw reference generated after all")
+    raise AssertionError("the signature helper accepted a behavioural subclass")
+
+
+def test_39b_the_subclass_really_is_a_different_generator() -> None:
+    """The control is not vacuous: the two produce different numbers.
+
+    Run through the SAMPLERS directly - the engine refuses the override, which
+    is the point - so the divergence is demonstrated without the oracle ever
+    accepting it.
+    """
+    override = _override_reference()
+    state = _ref().fixed_seed_to_state(12345)
+
+    accepted_uniform = _ref().next_uniform(state).uniform
+    override_uniform = override.next_uniform(state).uniform
+    assert override_uniform == 0.5
+    assert accepted_uniform != 0.5
+
+    accepted_sample = sample_uniform(_ref(), state, 80.0, 150.0, None).value
+    override_sample = sample_uniform(override, state, 80.0, 150.0, None).value
+    assert override_sample == 115.0, override_sample
+    assert accepted_sample == 88.8907785432604, accepted_sample
+
+    # Identical field snapshots, so no data check could have separated them.
+    assert rng_reference_signature(_ref()) == rng_reference_signature(
+        RngReference(
+            **{field.name: getattr(override, field.name)
+               for field in dataclasses.fields(_ref())}
+        )
+    )
 
 
 def test_40_a_foreign_reference_is_refused_at_preparation() -> None:

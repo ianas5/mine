@@ -10,11 +10,13 @@ statistics, the percentile ladder and the contingency lookup.
 VBA, no Stage-A Phase-6 emission, no sensitivity, no annual stochastic
 distributions. Step 4 produces pure Python values.
 
-> **ORACLE CORRECTION ROUND.** Independent review of `dd003ebe` found four
-> implementation defects. This revision corrects all four — the constant-sample
-> statistics invariant, the RNG reference binding, the immutability of the
-> successful result, and `describe()`'s sort count — and changes nothing else.
-> The core Monte Carlo architecture was not reopened. See §28.
+> **ORACLE CORRECTION ROUNDS.** Independent review of `dd003ebe` found four
+> implementation defects — the constant-sample statistics invariant, the RNG
+> reference binding, the immutability of the successful result, and
+> `describe()`'s sort count. Review of `3dcf6ac5` confirmed all four corrected
+> and found two more — a version-sensitive mutation instrument and an RNG
+> subclass behaviour escape. Both rounds are applied here and nothing else
+> changed. The core Monte Carlo architecture was not reopened. See §28.
 
 ---
 
@@ -45,7 +47,7 @@ are untouched.
 | `builder/pccm_builder/sim_sample.py` | the accepted §0 invalid-state cleanup **only** |
 | `builder/pccm_builder/__init__.py` | Step-4 public exports |
 | `tests/test_phase6_sim_oracle.py` | **NEW** — 85 conformance tests |
-| `tests/test_phase6_sim_oracle_validation.py` | **NEW** — 49 mutation controls and scope guards |
+| `tests/test_phase6_sim_oracle_validation.py` | **NEW** — 52 mutation controls and scope guards |
 | `tests/test_phase6_sim_sample_validation.py` | **+4** — the Step-3 invalid-state degenerate regressions |
 | `docs/phase6_step4.md` | **NEW** — this record |
 
@@ -86,6 +88,7 @@ validate_result_digest_contract(sim)                   -> None
 
 # RNG coherence
 rng_reference_signature(reference)                     -> tuple
+    # exact `RngReference` only - see section 5a
 
 # reporting
 contingency_at(summary, selected_confidence_level, deterministic_base) -> Contingency
@@ -189,9 +192,43 @@ collision argument.
 Nine mutated references are refused at both boundaries — `a12`, `a13n`, `m1`,
 `norm`, a jump-matrix element, the AUTO multiplier, the seed domain, the kind
 order and the role order — and the refusal **names the field that moved**. That
-the check precedes any draw is proved rather than asserted: a reference subclass
-whose `next_uniform` raises still produces the binding refusal, while the same
-subclass with a *matching* signature does reach the sampler and raise.
+the check precedes any draw is proved rather than asserted, and proved by
+instrumenting the **accepted class itself** rather than by accepting a subclass:
+`RngReference.next_uniform` is replaced for the duration of the call so that any
+draw raises. A foreign reference still produces the *binding* refusal — which can
+only happen if the binding is checked first — and the spy is then shown to be
+live, because the same instrumented class handed the bound reference does reach
+the sampler. No test encodes "a subclass with matching fields is accepted".
+
+### A field snapshot cannot see a method body
+
+A snapshot of data closes the wrong-constants hole. It does not close the
+wrong-implementation one. A subclass can copy **every** accepted field and
+override `next_uniform`:
+
+```python
+class BehaviourOverride(RngReference):
+    def next_uniform(self, state):
+        self.validate_state(state)
+        return Draw(state, 0.5)
+```
+
+Its signature is **identical** to the accepted reference's, so no data check
+could ever separate them. On one Uniform Cost Line:
+
+| | First retained totals | Digest | Reports |
+|---|---|---|---|
+| accepted reference | `88.8907785432604`, `102.29692957777561`, `101.64302109082891` | `30F068CF20B784C6` | `rng_version = 1` |
+| behaviour override | `115.0`, `115.0`, `115.0`, … | `03B41CA3043133E0` | `rng_version = 1` |
+
+So the boundaries require the **exact** type — `type(reference) is RngReference`,
+never `isinstance`. `RngReference` is the accepted Step-2 oracle implementation,
+**not an extension point**: an alternate implementation cannot claim the
+contract's `RNG_VERSION` by inheriting from the accepted class and copying its
+constants, because a version identifies a generator and a generator is its
+behaviour. Enforced in `prepare_simulation` (before stream construction),
+`run_simulation` (before the first draw) **and** in `rng_reference_signature`
+itself, so the helper cannot imply that a behavioural subclass is authoritative.
 
 **RNG_VERSION remains 1. No RNG semantics changed.** The accepted reference
 reproduces every pinned number bit-identically — digest `7F58EA884DAA8D65`,
@@ -802,7 +839,7 @@ driver is a `builtins`, `sim_rng` or `sim_sample` type, and none carries a
 | — | **`describe` sorts once**; public helper sorts one copy; hand vectors unchanged |
 | — | **RNG binding**: accepted reference reproduces every pinned number; the signature is a value, not a pointer |
 
-`tests/test_phase6_sim_oracle_validation.py` — **49 mutation controls and guards**
+`tests/test_phase6_sim_oracle_validation.py` — **52 mutation controls and guards**
 
 The instrument is a local re-implementation of one iteration, parameterised by
 exactly one mutation. **Run unmutated it reproduces the accepted engine bit for
@@ -824,7 +861,8 @@ non-vacuous.
 | 12 | Risks accumulated before Costs | 1.0 versus canonical 0.0 |
 | 13 | accumulation reversed | 0.0 versus canonical 1.0 |
 | 14 | *(the honest half)* reversal on an ordinary model | changes nothing — recorded, not hidden |
-| 15 | built-in `sum` for the accepted accumulation | `inf` versus `1.5e308`, **only** on the constructed fixture |
+| 15 | **naive left-to-right accumulation** for the accepted primitive | `inf` versus `1.5e308`, **only** on the constructed fixture |
+| 15a | the mutation depending on the host's `sum` | the accumulator is explicit and pinned; a static guard proves `sum`/`fsum` are never called |
 | 17 | digest iteration index removed | different digest and stream |
 | 18 | digest nominal/PV swapped | the retained swapped vector |
 | 19 | digest version omitted / changed | different digest; version is load-bearing |
@@ -840,7 +878,9 @@ non-vacuous.
 | 30 | Selected CL inserted into execution | one digest accepted, ten under the leak |
 | 31–37 | scope, publication, sensitivity, matrix, prepared-model and module-state guards | see §23 |
 | 38 | a prepared model run under a different reference | nine mutated references refused |
-| 39 | the binding checked after a draw | a no-draw reference still gives the binding refusal |
+| 39 | the binding checked after a draw | the **accepted class** is instrumented; a foreign reference still gives the binding refusal, and the spy is shown live |
+| 39a | a behavioural subclass claiming `RNG_VERSION 1` | refused at preparation, at run, and by the signature helper |
+| 39b | *(the demonstration)* the subclass is a different generator | `115.0` versus `88.8907785432604` from the same state |
 | 40 | a foreign reference at preparation | refused before stream construction |
 | 41 | a refusal that does not say what moved | the differing field is named |
 | 42 | *(the demonstration)* the mutated references really are different generators | different uniform or different jump ladder |
@@ -857,12 +897,14 @@ non-vacuous.
 
 | Check | Result |
 |---|---|
-| Full Python suite | **2232 passed, 0 failed** |
+| Full Python suite (Python 3.11.15) | **2235 passed, 0 failed** |
 | Before Step 4 | 2094 passed |
 | Step-4 conformance tests | **+85** |
-| Step-4 mutation controls and guards | **+49** |
+| Step-4 mutation controls and guards | **+52** |
 | Step-3 cleanup regressions | **+4** (the §0 invalid-state cleanup) |
-| | 2094 + 85 + 49 + 4 = **2232** |
+| | 2094 + 85 + 52 + 4 = **2235** |
+| Focused Step-4 suite | **137** (85 + 52) |
+| Focused Phase-6 suite under **Python 3.13.12** | **324 passed, 0 failed** |
 | Stage-A verifier / build | **351 passed, 0 failed** — unchanged, Step 4 emits nothing |
 | Step-1 contract tests | green |
 | Step-2 RNG and jump tests | green |
@@ -872,8 +914,8 @@ No test was deleted, skipped or weakened.
 
 ### Baseline preservation
 
-Byte-identical to the accepted Step-3 commit `e939d47` **and** to the reviewed
-Step-4 commit `dd003ebe`: `spec/` (whole directory), `src/`, `bootstrap/`,
+Byte-identical to the accepted Step-3 commit `e939d47` and to both reviewed
+Step-4 commits `dd003ebe` and `3dcf6ac5`: `spec/` (whole directory), `src/`, `bootstrap/`,
 `evidence/`, `docs/phase6_plan.md`, `docs/phase6_step0.md`,
 `docs/phase6_step1.md`, `docs/phase6_step2.md`, `docs/phase6_step3.md`,
 `builder/build_stage_a.py`, `calc_oracle.py`, `calc_numeric.py`,
@@ -889,6 +931,51 @@ canonical_number(1/3)       3.3333333333333331E-01
 ```
 
 Unchanged.
+
+---
+
+## 25a. Python version portability
+
+| Runtime | Scope | Result |
+|---|---|---|
+| **Python 3.11.15** | full suite, Stage-A build/verifier | 2235 passed / 0 failed; 351 passed / 0 failed |
+| **Python 3.13.12** | focused Phase-6 suite (oracle, controls, samplers, RNG, contract) | **324 passed, 0 failed** |
+
+Independent review exercised the focused Step-4 tests under Python 3.13.5 and
+exposed a version-sensitive assumption in one mutation control, reproduced here
+under 3.13.12 as `320 passed, 1 failed`. The failure was in the INSTRUMENT, not
+in the oracle: the control substituted Python's built-in `sum` for the accepted
+accumulation, and from CPython 3.12 `sum` applies Neumaier compensation to float
+sequences, so it is no longer a definition of naive addition —
+`sum([0.1] * 20)` is `2.0` on 3.13 and `2.0000000000000004` on 3.11, while a
+plain accumulation loop gives the second on both.
+
+The mutation now writes the accumulator out:
+
+```python
+def naive_left_to_right(values):
+    total = 0.0
+    for value in values:
+        total = total + value
+    return total
+```
+
+No `sum`, no `math.fsum`, no compensated or pairwise algorithm — the mutation
+being modelled is exactly "substitute `safe_signed_sum` with ordinary unchecked
+left-to-right binary64 addition". Both halves are retained: on an ordinary model
+it agrees with the accepted tier-1 accumulation **bit for bit**, and on the
+constructed overflow fixture it reports `inf` where the accepted primitive
+returns `1.5e308`. A static guard parses the test module and asserts that
+neither `naive_left_to_right` nor `_local_run` calls `sum` or `fsum`, so no
+future interpreter change can move the control.
+
+**No oracle semantics were changed to chase a runtime difference.**
+`safe_signed_sum` is untouched, and the full Step-4 evidence capture is
+bit-identical before and after.
+
+This is not a commitment that every historical dependency supports every future
+Python. It is evidence that the retained mutation semantics no longer depend on
+the implementation of built-in `sum`.
 
 ---
 
@@ -929,10 +1016,11 @@ where the failure mode is less obvious and the disk is not disposable.
 
 ---
 
-## 28. The oracle correction round
+## 28. The oracle correction rounds
 
-Independent review of `dd003ebe` found four implementation defects. All four are
-corrected here and nothing else changed.
+### Round 1 — review of `dd003ebe`
+
+Four implementation defects, all corrected.
 
 | # | Defect | Correction |
 |---|---|---|
@@ -942,14 +1030,38 @@ corrected here and nothing else changed.
 | 4 | `describe()` claimed one sort and performed `1 + K` — twelve per measure for the 11-value ladder | `_percentile_type7_sorted` holds the mathematics and sorts nothing; `describe` orders once and reuses it (§16) |
 
 **What did NOT change.** The core Monte Carlo architecture was not reopened.
-Re-running the entire Step-4 evidence capture before and after the correction
-produced exactly one difference — the degenerate accumulation fixture's sample
-standard deviation, `3.23488e294 → 0`, which is defect 1 being fixed. Every
-other number is bit-identical: the digests, the ladders, the contingencies, the
-D6-18b states, the cross-check means, the extreme-domain results.
+Re-running the entire Step-4 evidence capture before and after produced exactly
+one difference — the degenerate accumulation fixture's sample standard
+deviation, `3.23488e294 → 0`, which is defect 1 being fixed. Every other number
+is bit-identical: the digests, the ladders, the contingencies, the D6-18b
+states, the cross-check means, the extreme-domain results.
 
-The accepted Step-3 cleanup is retained in full, with its three invalid-state
-refusal regressions and the control proving no valid-state number moved.
+### Round 2 — review of `3dcf6ac5`
+
+All four round-1 corrections were independently confirmed. Two further defects,
+both corrected here.
+
+| # | Defect | Correction |
+|---|---|---|
+| 5 | the retained accumulation mutation used Python's built-in `sum`, which is compensated from CPython 3.12 and is therefore no longer a definition of naive addition — the control failed under Python 3.13 | the mutation writes the accumulator out explicitly; a static guard proves `sum` and `fsum` are never called (§25a) |
+| 6 | a subclass copying **every** accepted RNG field while overriding `next_uniform` produced the identical signature, so both boundaries accepted it and it reported `RNG_VERSION = 1` for a different generator | the boundaries require the **exact** `RngReference` type, enforced at preparation, at run and in the signature helper itself (§5a) |
+
+**What did NOT change in round 2 either.** The evidence capture is bit-identical
+to round 1 — not one number moved. `sim_stats.py` was not touched, and neither
+were `sim_rng.py`, `sim_sample.py` or any accepted contract. The `_NoDrawReference`
+ordering test was rewritten rather than weakened: it now instruments the accepted
+class instead of relying on a subclass being accepted, and the "binding refusal
+before any draw" guarantee is unchanged.
+
+### Retained across both rounds
+
+The accepted Step-3 cleanup, in full, with its three invalid-state refusal
+regressions and the control proving no valid-state number moved; the exact
+constant-sample mean and zero deviation; the equal-order-statistic percentile
+shortcut; the refusal of an unrepresentable varying subnormal dispersion; the
+immutable percentile proxy over a private copy; whole-tree immutability; one
+sort per measure; the field-based RNG signature and every field-mutation
+refusal.
 
 **One limitation stated rather than hidden.** Once a sample genuinely varies,
 the ordinary accumulation drift returns, and at near-maximum magnitudes it can
@@ -960,4 +1072,4 @@ the control that exercises it.
 
 ---
 
-**STEP 4 — ACCEPTANCE REQUESTED (ORACLE CORRECTED)**
+**STEP 4 — ACCEPTANCE REQUESTED (FINAL HARDENING)**

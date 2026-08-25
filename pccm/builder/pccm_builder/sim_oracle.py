@@ -126,6 +126,25 @@ class SimOracleError(ContractError):
 # ===========================================================================
 # RNG reference binding
 # ===========================================================================
+def _require_exact_reference(reference: object, where: str) -> RngReference:
+    """`RngReference` is the accepted Step-2 oracle, not a plugin interface.
+
+    `isinstance` is deliberately NOT used. An alternate implementation cannot be
+    allowed to claim the contract's `rng_version` by inheriting from the
+    accepted class and copying its constants - the version identifies a
+    generator, and a generator is its behaviour, not its field values.
+    """
+    if type(reference) is not RngReference:
+        raise SimOracleError(
+            f"{where}: the RNG reference must be exactly {RngReference.__name__}, got "
+            f"{type(reference).__name__}. `RngReference` is the accepted Step-2 oracle "
+            "implementation, not an extension point: a subclass or alternate "
+            "implementation cannot claim the accepted RNG_VERSION by copying the same "
+            "constants, because the constants do not describe its behaviour."
+        )
+    return reference
+
+
 def rng_reference_signature(reference: RngReference) -> tuple:
     """A canonical immutable snapshot of every operational field of a reference.
 
@@ -147,11 +166,15 @@ def rng_reference_signature(reference: RngReference) -> tuple:
     Covered: the recurrence constants and normalisation, both jump matrices, the
     AUTO seed cycle, the FIXED seed domain, and the component kind and role
     orders - everything able to change a number or a stream identity.
+
+    WHAT A FIELD SNAPSHOT CANNOT COVER IS BEHAVIOUR, which is why the EXACT type
+    is required here too and not merely `isinstance`. A subclass can copy every
+    accepted constant and override `next_uniform` to return `0.5` forever; its
+    signature would be identical to the accepted reference's while its output is
+    a different generator's. Refusing the subclass at the boundary is the only
+    check that closes that, because no snapshot of data can see a method body.
     """
-    if not isinstance(reference, RngReference):
-        raise SimOracleError(
-            f"expected an RngReference, got {type(reference).__name__}"
-        )
+    _require_exact_reference(reference, "a reference signature")
     return (
         reference.m1,
         reference.m2,
@@ -623,11 +646,14 @@ def prepare_simulation(
     """
     validate_iterations(sim, inputs, iterations)
 
-    # THE SUPPLIED REFERENCE MUST BE THE ONE THESE CONTRACTS DERIVE. A
-    # caller-constructed RngReference is not trusted: it can hold any constants
-    # at all, and a run built on it would still report the contract's
-    # `rng_version`. Checked here - before stream construction and before any
-    # draw - and snapshotted so the run boundary can check it again.
+    # THE SUPPLIED REFERENCE MUST BE THE ONE THESE CONTRACTS DERIVE, AND MUST BE
+    # THE ACCEPTED IMPLEMENTATION. A caller-constructed RngReference is not
+    # trusted: it can hold any constants at all, and a behavioural subclass can
+    # hold the RIGHT constants and still generate something else entirely -
+    # either way a run built on it would report the contract's `rng_version`.
+    # Both are checked here, before stream construction and before any draw, and
+    # the signature is snapshotted so the run boundary can check it again.
+    _require_exact_reference(reference, "preparing a simulation")
     signature = rng_reference_signature(reference)
     expected = rng_reference_signature(RngReference.from_contracts(sim, inputs))
     if signature != expected:
@@ -837,12 +863,14 @@ def run_simulation(
             f"expected a PreparedSimulationModel, got {type(prepared).__name__}"
         )
 
-    # Re-checked here, BEFORE THE FIRST DRAW. Preparation proved the reference
-    # was the contracts' own; this proves the reference actually handed to the
-    # engine is still that one. The component stream states were derived under
-    # the bound reference, so running them through a different recurrence, a
-    # different jump ladder or a different role order would produce numbers no
-    # `rng_version` describes.
+    # Re-checked here, BEFORE THE FIRST DRAW - both the exact implementation and
+    # the field signature. Preparation proved the reference was the contracts'
+    # own; this proves the reference actually handed to the engine is still that
+    # one. The component stream states were derived under the bound reference, so
+    # running them through a different recurrence, a different jump ladder, a
+    # different role order - or the same constants with a different
+    # `next_uniform` - would produce numbers no `rng_version` describes.
+    _require_exact_reference(reference, "running a simulation")
     supplied = rng_reference_signature(reference)
     if supplied != prepared.rng_signature:
         raise SimOracleError(
