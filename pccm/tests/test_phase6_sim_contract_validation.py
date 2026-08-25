@@ -1859,6 +1859,467 @@ def test_112_an_empty_or_missing_confidence_ladder_is_rejected() -> None:
     raise AssertionError("an empty selectable ladder was silently accepted")
 
 
+# ===========================================================================
+# V. Uniform degeneracy must not read the ignored Most Likely
+# ===========================================================================
+def test_113_a_common_degeneracy_predicate_is_rejected() -> None:
+    """The inherited-authority contradiction, closed.
+
+    A single `a == m == b` for all three families made a degenerate Uniform
+    depend on Most Likely, which accepted Phase-5 D1 ignores numerically and
+    excludes from the calculation fingerprint. An ignored input would then decide
+    RNG consumption and every later draw on that stream.
+    """
+    _rejected(
+        lambda d: d["distributions"]["degenerate"]["conditions"].__setitem__(
+            "uniform", "a == m == b"
+        ),
+        "Uniform degeneracy reading Most Likely",
+    )
+    _rejected(
+        lambda d: d["distributions"]["degenerate"].__setitem__(
+            "most_likely_read_by_uniform_degeneracy", True
+        ),
+        "Most Likely declared readable for Uniform degeneracy",
+    )
+    _rejected(
+        lambda d: d["distributions"]["degenerate"]["conditions"].__setitem__(
+            "triangular", "a == b"
+        ),
+        "the Triangular condition weakened to two-way",
+    )
+    _rejected(
+        lambda d: d["distributions"]["degenerate"]["conditions"].__setitem__(
+            "beta_pert", "a == b"
+        ),
+        "the Beta-PERT condition weakened to two-way",
+    )
+    _rejected(
+        lambda d: d["distributions"]["uniform"].__setitem__(
+            "most_likely_affects_degeneracy", True
+        ),
+        "Most Likely declared to affect Uniform degeneracy",
+    )
+    _rejected(
+        lambda d: d["distributions"]["uniform"].__setitem__(
+            "most_likely_affects_uniform_consumption", True
+        ),
+        "Most Likely declared to affect Uniform RNG consumption",
+    )
+
+
+# ===========================================================================
+# W. pinned authority values
+# ===========================================================================
+def test_114_a_bumped_initial_version_is_rejected() -> None:
+    """Step 0 settled both at 1. A bump is an authority change, not a value."""
+    for key in ("rng_version", "sim_method_version"):
+        _rejected(lambda d, k=key: d["versions"].__setitem__(k, 2),
+                  f"versions.{key} bumped to 2")
+
+
+def test_115_a_mutated_state_transition_is_rejected() -> None:
+    _rejected(
+        lambda d: d["rng"]["recurrence"].__setitem__("advance", "banana"),
+        "the MRG state shift replaced with arbitrary text",
+    )
+    _rejected(
+        lambda d: d["rng"]["recurrence"].__setitem__(
+            "advance", "[s10, s11, s12, s20, s21, s22] <- [s11, s12, p1, s21, p2, s22]"
+        ),
+        "two words of the state shift transposed",
+    )
+
+
+def test_116_a_mutated_bc_expression_or_return_is_rejected() -> None:
+    """BC was validated far more weakly than BB. An arbitrary BC return is how a
+    mirrored distribution ships while every other check still passes."""
+    _rejected(lambda d: d["cheng"]["bc"].__setitem__("per_driver", ["banana"]),
+              "BC per_driver replaced")
+    _rejected(lambda d: d["cheng"]["bc"]["per_attempt"].__setitem__(3, "banana"),
+              "one BC per_attempt expression replaced")
+    _rejected(lambda d: d["cheng"]["bc"].__setitem__("return", "banana"),
+              "BC return replaced")
+    _rejected(lambda d: d["cheng"]["bb"].__setitem__("return", "banana"),
+              "BB return replaced")
+    _rejected(
+        lambda d: d["cheng"]["bc"].__setitem__(
+            "return", "w / (b + w) when the caller's first parameter was the min, "
+                      "else b / (b + w)"
+        ),
+        "BC return given BB's orientation - the mirrored-distribution defect",
+    )
+    _rejected(lambda d: d["cheng"]["bc"]["per_driver"].__setitem__(1, "beta = b"),
+              "the BC beta setup mutated")
+
+
+def test_117_a_mutated_evidence_binding_is_rejected() -> None:
+    _rejected(
+        lambda d: d["cheng"]["source_binding"].__setitem__("evidence_file", "banana"),
+        "the Cheng formulation evidence path pointed elsewhere",
+    )
+    _rejected(
+        lambda d: d["cheng"]["conformance_vectors"].__setitem__("evidence_file", "banana"),
+        "the Cheng vectors evidence path pointed elsewhere",
+    )
+    _rejected(
+        lambda d: d["cheng"]["source_binding"].__setitem__("functions_sha256", "0" * 64),
+        "the Cheng source hash zeroed while keeping its shape",
+    )
+
+
+def test_118_a_zeroed_jump_hash_is_rejected() -> None:
+    """Authoritative-looking metadata the validator ignores is worse than none."""
+    for key in ("a1_p127_sha256", "a2_p127_sha256"):
+        _rejected(lambda d, k=key: d["jump"].__setitem__(k, "0" * 64),
+                  f"{key} zeroed while the matrix stayed correct")
+
+
+def test_119_a_mutated_digest_grammar_is_rejected() -> None:
+    for key in ("stream", "section", "record"):
+        _rejected(lambda d, k=key: d["result_digest"]["grammar"].__setitem__(k, "banana"),
+                  f"result_digest.grammar.{key} replaced")
+    _rejected(
+        lambda d: d["result_digest"]["grammar"].__setitem__(
+            "record", "F_I(field_count) F_I(iteration_index) F_N(total_pv) F_N(total_nominal)"
+        ),
+        "nominal and PV transposed in the digest grammar",
+    )
+    _rejected(
+        lambda d: d["result_digest"]["grammar"].__setitem__(
+            "stream", 'F_S("PCCM-RD") F_I(rng_version) section'
+        ),
+        "the digest grammar reading RNG_VERSION instead of SIM_METHOD_VERSION",
+    )
+
+
+def test_120_a_mutated_conditioning_or_boundary_semantic_is_rejected() -> None:
+    for family in ("triangular", "beta_pert"):
+        _rejected(
+            lambda d, f=family: d["distributions"][f].__setitem__(
+                "conditioning_scale", "banana"
+            ),
+            f"{family} conditioning scale replaced",
+        )
+        _rejected(
+            lambda d, f=family: d["distributions"][f].__setitem__(
+                "conditioning_scale", "s = abs(b - a)"
+            ),
+            f"{family} conditioning scale changed to a width",
+        )
+    for key in ("m_equals_a", "m_equals_b"):
+        _rejected(
+            lambda d, k=key: d["distributions"]["triangular"]["boundary_cases"].__setitem__(
+                k, "banana"
+            ),
+            f"triangular boundary case {key} replaced",
+        )
+    _rejected(
+        lambda d: d["distributions"]["triangular"]["boundary_cases"].__setitem__(
+            "m_equals_a", "c = 0; the lower branch is always taken"
+        ),
+        "the m = a boundary sending sampling down the wrong branch",
+    )
+
+
+def test_121_mutated_run_identity_initials_or_enums_are_rejected() -> None:
+    def at(d, key):
+        return next(f for f in d["sim_data"]["run_identity"]["fields"] if f["key"] == key)
+
+    _rejected(lambda d: at(d, "next_auto_nonce").__setitem__("initial", 1),
+              "next_auto_nonce seeded at 1")
+    _rejected(lambda d: at(d, "last_run_id").__setitem__("initial", 1),
+              "last_run_id seeded at 1")
+    _rejected(lambda d: at(d, "last_attempt_result").__setitem__("initial", "FAILED"),
+              "last_attempt_result seeded as FAILED")
+    _rejected(lambda d: at(d, "simulation_status").__setitem__("initial", "CURRENT"),
+              "a never-run workbook presenting a derived status")
+    _rejected(lambda d: at(d, "run_id").__setitem__("initial", 0),
+              "run_id seeded, making a never-run workbook look like a partial success")
+    _rejected(lambda d: at(d, "result_digest").__setitem__("initial", "0000000000000000"),
+              "a result digest seeded at build time")
+    for key, wrong in (
+        ("seed_mode", "attempt_result"),
+        ("last_attempt_seed_mode", "attempt_result"),
+        ("simulation_status", "attempt_result"),
+        ("last_attempt_result", "sim_state"),
+    ):
+        _rejected(lambda d, k=key, w=wrong: at(d, k).__setitem__("enum", w),
+                  f"{key} pointed at the {wrong} label set")
+    _rejected(lambda d: at(d, "run_id").__setitem__("enum", "sim_state"),
+              "a non-enum field declaring a label set")
+    _rejected(lambda d: at(d, "run_id").__setitem__("label", "banana"),
+              "a run-identity label replaced")
+
+
+def test_122_mutated_run_identity_columns_are_rejected() -> None:
+    for key, wrong in (("label_column", "A"), ("value_column", "C"), ("note_column", "G")):
+        _rejected(
+            lambda d, k=key, w=wrong: d["sim_data"]["run_identity"].__setitem__(k, w),
+            f"run identity {key} moved",
+        )
+
+
+def test_123_mutated_iteration_columns_are_rejected() -> None:
+    def col(d, key):
+        return next(
+            c for c in d["sim_data"]["iteration_records"]["columns"] if c["key"] == key
+        )
+
+    _rejected(lambda d: col(d, "total_nominal").__setitem__("column", "E"),
+              "total_nominal moved to column E")
+    _rejected(lambda d: col(d, "total_nominal").__setitem__("value_type", "text"),
+              "total_nominal typed as text")
+    _rejected(lambda d: col(d, "iteration_index").__setitem__("header", "banana"),
+              "an iteration header replaced")
+    _rejected(lambda d: col(d, "iteration_index").__setitem__("value_type", "double"),
+              "the iteration index typed as a double")
+
+    def swap(d):
+        columns = d["sim_data"]["iteration_records"]["columns"]
+        columns[1], columns[2] = columns[2], columns[1]
+
+    _rejected(swap, "nominal and PV columns transposed")
+
+
+def test_124_a_mutated_reserved_row_purpose_is_rejected() -> None:
+    """The tiling IS the derivation of H, so its purposes are the audit trail."""
+    _rejected(
+        lambda d: d["sim_data"]["reserved_rows"][0].__setitem__("purpose", "banana"),
+        "a reserved-row purpose replaced",
+    )
+
+
+def test_125_a_mutated_state_definition_is_rejected() -> None:
+    _rejected(
+        lambda d: d["sim_state"]["definitions"].__setitem__("CURRENT", "banana"),
+        "a state definition replaced with arbitrary text",
+    )
+    _rejected(
+        lambda d: d["stream_assignment"].__setitem__("index_rule", "banana"),
+        "the stream index rule replaced",
+    )
+
+
+# ===========================================================================
+# X. systematic sweeps
+# ===========================================================================
+def _leaf_paths(node, path=""):
+    """Every scalar leaf, with `[]` for list elements - the schema's own idiom."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _leaf_paths(value, f"{path}.{key}" if path else key)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _leaf_paths(value, f"{path}[]")
+    else:
+        yield path, node
+
+
+def _mapping_keys(node, path=""):
+    """Every (mapping path, key) pair, once per distinct shape."""
+    seen = {}
+    def walk(n, p=""):
+        if isinstance(n, dict):
+            for key, value in n.items():
+                seen.setdefault((p, key), None)
+                walk(value, f"{p}.{key}" if p else key)
+        elif isinstance(n, list):
+            for value in n:
+                walk(value, f"{p}[]")
+    walk(node, path)
+    return sorted(seen)
+
+
+def _tokens(path):
+    """Split a schema path into (key, list_depth) steps.
+
+    A segment may carry several `[]`, because a value can be a list of lists -
+    `jump.a1_p127[][]` is the matrix's elements.
+    """
+    out = []
+    for segment in (path.split(".") if path else []):
+        depth = 0
+        while segment.endswith("[]"):
+            segment = segment[:-2]
+            depth += 1
+        out.append((segment, depth))
+    return out
+
+
+def _descend(node, steps):
+    """Every node reachable by following `steps`, expanding lists on the way."""
+    if not steps:
+        yield node
+        return
+    (key, depth), rest = steps[0], steps[1:]
+    target = node[key]
+    frontier = [target]
+    for _ in range(depth):
+        frontier = [item for group in frontier for item in group]
+    for item in frontier:
+        yield from _descend(item, rest)
+
+
+def _delete_at(data, path, key):
+    """Delete `key` from every mapping reachable at `path`."""
+    for node in _descend(data, _tokens(path)):
+        if isinstance(node, dict):
+            node.pop(key, None)
+
+
+DELETION_SWEEP_EXPECTED_MINIMUM = 440
+"""Distinct (mapping path, key) SHAPES, not instances.
+
+`_delete_at` removes the key from EVERY mapping at the path, so one shape-level
+mutation covers all of that shape's instances at once - a superset of deleting a
+single one. The instance count is larger (647 in the independent sweep); the
+shape count is what needs to be exhausted."""
+
+
+def test_126_deleting_ANY_required_key_is_rejected() -> None:
+    """The missing-key half of fail-loud.
+
+    Closure on unknown keys alone was not enough: an independent sweep deleted
+    647 keys and 55 were ACCEPTED, so a semantic could be REMOVED from the
+    authority document and the validator still called it valid.
+
+    Every deletion must now be refused. The only exemptions are the explicit
+    CONDITIONAL and INTENTIONALLY_OPTIONAL entries, each with a written reason,
+    and the test fails if either list grows silently.
+    """
+    from pccm_builder.sim_loader import CONDITIONAL_KEYS, INTENTIONALLY_OPTIONAL
+
+    assert INTENTIONALLY_OPTIONAL == {}, (
+        "a key was declared optional; every entry needs a written reason and a review"
+    )
+    assert set(CONDITIONAL_KEYS) == {("sim_data.run_identity.fields[]", "enum")}, (
+        "the conditional-key list changed; each entry states when the key is "
+        "required and when it is refused"
+    )
+    for reason in CONDITIONAL_KEYS.values():
+        assert len(reason) > 40, "a conditional key needs a written reason"
+
+    pairs = _mapping_keys(_base())
+    assert len(pairs) >= DELETION_SWEEP_EXPECTED_MINIMUM, (
+        f"only {len(pairs)} mapping keys were swept; the contract should not have shrunk"
+    )
+    exempt = set(CONDITIONAL_KEYS) | set(INTENTIONALLY_OPTIONAL)
+    swept = 0
+    for path, key in pairs:
+        if (path, key) in exempt:
+            continue
+        swept += 1
+        _rejected(
+            lambda d, p=path, k=key: _delete_at(d, p, k),
+            f"required key {key!r} deleted from {path or 'root'!r}",
+        )
+    assert swept >= DELETION_SWEEP_EXPECTED_MINIMUM - len(exempt)
+
+
+def test_127_the_conditional_enum_key_is_required_where_it_applies() -> None:
+    """The exemption is CONDITIONAL, not optional: both directions are enforced."""
+
+    def drop(d):
+        field = next(
+            f for f in d["sim_data"]["run_identity"]["fields"] if f["key"] == "seed_mode"
+        )
+        field.pop("enum")
+
+    _rejected(drop, "the enum owner dropped from an enum-typed run-identity field")
+
+    def add(d):
+        field = next(
+            f for f in d["sim_data"]["run_identity"]["fields"] if f["key"] == "run_id"
+        )
+        field["enum"] = "sim_state"
+
+    _rejected(add, "an enum owner added to a field that is not an enum")
+
+
+SEMANTIC_SWEEP_EXPECTED_MINIMUM = 360
+"""Distinct leaf PATHS. `_set_at` rewrites every leaf at the path."""
+
+
+def _wrong_value(value):
+    """A type-compatible wrong value, so the mutation tests SEMANTICS not shape."""
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, int):
+        return value + 1
+    if isinstance(value, float):
+        import math
+
+        return math.nextafter(value, math.inf)
+    if isinstance(value, str):
+        return "banana"
+    if value is None:
+        return "banana"
+    return None
+
+
+def _set_at(data, path, new):
+    """Set every leaf reachable at `path` to `new`, however deeply nested."""
+    steps = _tokens(path)
+    (key, depth) = steps[-1]
+    for parent in _descend(data, steps[:-1]):
+        if depth == 0:
+            parent[key] = new
+            continue
+        frontier = [parent[key]]
+        for _ in range(depth - 1):
+            frontier = [item for group in frontier for item in group]
+        for group in frontier:
+            for index in range(len(group)):
+                group[index] = new
+
+
+def test_128_changing_ANY_settled_semantic_leaf_is_rejected() -> None:
+    """The wrong-VALUE half.
+
+    The unknown-key sweep proved shape closure but said nothing about content:
+    `rng.recurrence.advance = "banana"` and a dozen more were accepted. Every
+    settled leaf is now mutated to a type-compatible wrong value and must be
+    refused.
+
+    The flexible allow-list is deliberately tiny and each entry carries a reason.
+    """
+    from pccm_builder.sim_loader import FLEXIBLE_LEAVES
+
+    assert set(FLEXIBLE_LEAVES) == {"dependence.authority"}, (
+        "the flexible-leaf list changed; every entry must state why its content "
+        "is descriptive rather than settled authority"
+    )
+    for reason in FLEXIBLE_LEAVES.values():
+        assert len(reason) > 40, "a flexible leaf needs a written reason"
+
+    leaves = {}
+    for path, value in _leaf_paths(_base()):
+        leaves.setdefault(path, value)
+    assert len(leaves) >= SEMANTIC_SWEEP_EXPECTED_MINIMUM, (
+        f"only {len(leaves)} leaves were swept; the contract should not have shrunk"
+    )
+
+    swept = 0
+    for path, value in sorted(leaves.items()):
+        if path in FLEXIBLE_LEAVES:
+            continue
+        swept += 1
+        _rejected(
+            lambda d, p=path, v=value: _set_at(d, p, _wrong_value(v)),
+            f"settled leaf {path!r} changed to a type-compatible wrong value",
+        )
+    assert swept >= SEMANTIC_SWEEP_EXPECTED_MINIMUM - len(FLEXIBLE_LEAVES)
+
+
+def test_129_the_flexible_leaf_really_is_flexible() -> None:
+    """The one exemption is exercised, so the allow-list is not decorative."""
+    data = _base()
+    data["dependence"]["authority"] = "restated for a different reader"
+    with tempfile.TemporaryDirectory(prefix="pccm-flex-") as tmp:
+        load_sim_contract(_write(data, tmp))
+
+
 if __name__ == "__main__":
     import pytest
 

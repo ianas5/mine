@@ -335,17 +335,46 @@ before anyone noticed. **This is an RNG and replay contract, not an
 implementation detail** — the same model and seed must advance each component
 stream the same way, always.
 
-**The rule, uniform across all three families:**
+**The rule:**
 
 > A degenerate driver is detected **before** sampler dispatch and before any
 > parameterisation. It returns `a`, enters no sampler, and **consumes zero
 > uniforms**.
 
-| Family | Returned sample | Uniforms consumed | Dispatch entered? | Stream position |
-|---|---|---|---|---|
-| Uniform | `a` | **0** | no | unchanged |
-| Triangular | `a` | **0** | no | unchanged |
-| Beta-PERT | `a` | **0** | no — `r` is never formed, so `0/0` cannot arise | unchanged |
+> **POST-ACCEPTANCE AUTHORITY CORRECTION — Phase-6 Step-1 review.**
+>
+> The *outcome* above is unchanged. The **detection predicate** was wrong for
+> Uniform, and the error was inherited from writing one condition for three
+> families.
+>
+> Revision 6 used `a = m = b` for every family. **Accepted Phase-5 D1 states
+> that Uniform's Most Likely is ignored numerically and excluded from the
+> calculation fingerprint.** A legal Uniform may therefore have `Min = Max` with
+> Most Likely blank, or with Most Likely populated and unrelated — and under the
+> common predicate the second case was **not** degenerate. It would enter the
+> sampler and consume a uniform.
+>
+> That let an input the model explicitly ignores change **RNG consumption**, and
+> therefore the stream position and every subsequent draw on that component.
+> An ignored input must not be able to do that.
+>
+> **Detection is family-specific:**
+>
+> | Family | Degenerate when |
+> |---|---|
+> | **Uniform** | `a = b` — Most Likely is not read |
+> | **Triangular** | `a = m = b` |
+> | **Beta-PERT** | `a = m = b` |
+>
+> For Triangular and Beta-PERT the accepted ordering `a ≤ m ≤ b` already makes
+> `a = b` imply `m = a`, so the three-way condition states the semantic rather
+> than adding a restriction. §4.1 is corrected with it.
+
+| Family | Degenerate when | Returned sample | Uniforms consumed | Dispatch entered? | Stream position |
+|---|---|---|---|---|---|
+| Uniform | **`a = b`** | `a` | **0** | no | unchanged |
+| Triangular | `a = m = b` | `a` | **0** | no | unchanged |
+| Beta-PERT | `a = m = b` | `a` | **0** | no — `r` is never formed, so `0/0` cannot arise | unchanged |
 
 **Why zero rather than one.** Revision 3 justified consuming one uniform for a
 degenerate Triangular on the grounds that it kept "stream position unaffected by
@@ -371,8 +400,12 @@ that no Beta parameterisation was attempted.
 x = (1 − u)·a + u·b                     ' stable convex form, §4.6
 ```
 
-`m` is not read (D1). Degenerate `a = b` is handled by §4.0 — returns `a`,
-consumes nothing, never reaches this formula.
+`m` is not read (D1) — **not for the value, and not for degeneracy either**.
+Degenerate `a = b` is handled by §4.0 — returns `a`, consumes nothing, never
+reaches this formula — **whatever Most Likely holds, including a populated,
+unrelated value**. Two Uniforms with the same `Min` and `Max` and different
+ignored Most Likely values have identical sampling semantics and identical RNG
+consumption.
 
 ### 4.2 Triangular — one uniform, inverse CDF
 

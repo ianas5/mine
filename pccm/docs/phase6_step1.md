@@ -18,7 +18,8 @@ VBA, no Stage-A emission, no workbook change, no Windows or Excel runtime.
 | Accepted Phase-6 Step-0 authority / evidence head | `49effe03b88ff113a49166d31065d1f4596f2936` |
 | Accepted Phase-5 executable baseline | `f571154118083e569e1fb9fbf9bf72852cc2d568` |
 | First Step-1 contract | `1be66d3f74c62377d26d6ddaa0741fc66be60684` |
-| Step-1 contract completion | this commit — reported by the delivery message and `PROVENANCE.txt` |
+| Step-1 contract completion | `35c2467c1f0852fd6cbe5285600c96baeedca2de` |
+| Step-1 authority hardening | this commit — reported by the delivery message and `PROVENANCE.txt` |
 
 ### What the completion round corrected
 
@@ -42,6 +43,28 @@ contract-completeness, fail-loud and authority-binding defects are corrected.
 | 12 | D6-11 had no **activation precondition** | recorded — §12 |
 | 13 | the Stage-A claim was **too broad** | corrected — §13 |
 
+### What the hardening round corrected
+
+Independent review of `35c2467` accepted the contract architecture in substance
+and returned NOT YET ACCEPTED on **enforcement**: the contract claimed to lock
+authority the loader did not actually check. One inherited-authority
+contradiction and eleven enforcement gaps are closed.
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | **Uniform degeneracy read the ignored Most Likely** | family-specific detection — §21 |
+| 2 | `RNG_VERSION = 2` was accepted | pinned to `1` — §22 |
+| 3 | `recurrence.advance = "banana"` was accepted | pinned — §22 |
+| 4 | BC expressions and **both** returns were free text | pinned; evidence paths pinned — §22 |
+| 5 | the whole digest grammar was free text | pinned token by token — §22 |
+| 6 | conditioning scales and triangular boundaries were free text | pinned — §22 |
+| 7 | run-identity initials, enum owners and block columns were free | complete record pinned — §23 |
+| 8 | iteration column letters, headers and types were free | pinned — §23 |
+| 9 | **55 of 647 key deletions were accepted** | required-key discipline + sweep — §24 |
+| 10 | wrong *values* were unchecked | semantic-leaf sweep — §24 |
+| 11 | a zeroed jump hash was accepted | hashes verified, not decorative — §22 |
+| 14 | D6-08 | **re-derived unchanged** at `H = 33` — §9 |
+
 **Step 1 encodes authority; it creates no modelling semantics.** Every value in
 `sim_contract.yaml` traces to Step 0 or to an accepted earlier contract. Where
 the two could disagree, the loader holds the Step-0 value as a locked constant
@@ -55,17 +78,17 @@ so nothing was resolved by inventing a Step-1 rule.
 
 | File | Change |
 |---|---|
-| `spec/sim_contract.yaml` | **NEW** — the sixth authority, 1072 lines, 30 sections |
+| `spec/sim_contract.yaml` | **NEW** — the sixth authority, 1091 lines, 30 sections |
 | `spec/input_contract.yaml` | seed admissibility resolved; deferred note discharged |
 | `builder/pccm_builder/sim_loader.py` | **NEW** — loader, validator, cross-validator |
 | `builder/pccm_builder/structure_loader.py` | D6-11 mixed scalar-or-scoped schema |
 | `builder/pccm_builder/__init__.py` | exports |
 | `builder/build_stage_a.py` | loads and cross-validates the sim contract; **emits nothing** |
-| `tests/test_phase6_sim_contract.py` | **NEW** — 67 positive / conformance tests |
-| `tests/test_phase6_sim_contract_validation.py` | **NEW** — 114 mutation controls |
+| `tests/test_phase6_sim_contract.py` | **NEW** — 71 positive / conformance tests |
+| `tests/test_phase6_sim_contract_validation.py` | **NEW** — 131 mutation controls |
 | `tests/test_phase2_inputs.py` | `test_19c` narrowed, `test_19d` added — see §9 |
 | `docs/phase6_step1.md` | **NEW** — this record |
-| `docs/phase6_plan.md` | §10.3 **post-acceptance authority correction** only — see §4 |
+| `docs/phase6_plan.md` | two **post-acceptance authority corrections**: §10.3 state derivation (§4) and §4.0/§4.1 Uniform degeneracy (§21) |
 
 **`spec/structure_contract.yaml` is unchanged.** The D6-11 capability lives in
 the loader; the contract's entries stay in their existing scalar shape, so
@@ -353,8 +376,13 @@ The refusal remains **technical, never business validation**, and still fires
 before sample allocation, stream construction, AUTO seed allocation and any
 random draw — so a storage refusal cannot consume an AUTO nonce.
 
-**The run-identity block is now exact authority**: key, row, group and value type,
-in order, for all 22 fields. "Contains these required fields" was not enough —
+**Re-derived again after the hardening round and unchanged.** The corrections in
+§21–§24 pin values and column letters; none of them adds or removes a row, so the
+tiling still covers rows 1–33 and `1048576 − 33 = 1048543` still follows from it.
+The loader recomputes it every load, so this is a derivation, not an assertion.
+
+**The run-identity block is now exact authority**: key, row, group, label, value
+type, enum owner and initial, in order, for all 22 fields. "Contains these required fields" was not enough —
 an invented field could be appended on the next free row and the loader accepted
 it. `test_89` rejects an appended field, a swapped pair, and `model_version`
 moved out of the snapshot group.
@@ -479,23 +507,28 @@ would be exactly the kind of unearned addition this process exists to prevent.
 
 | Suite | Tests | Kind |
 |---|---|---|
-| `test_phase6_sim_contract.py` | **67** | positive, authority conformance, evidence binding, state truth table, scope discipline |
-| `test_phase6_sim_contract_validation.py` | **114** | **mutation controls** |
+| `test_phase6_sim_contract.py` | **71** | positive, authority conformance, evidence binding, state truth table, Uniform degeneracy cases, scope discipline |
+| `test_phase6_sim_contract_validation.py` | **131** | **mutation controls**, including two systematic sweeps |
 | `test_phase2_inputs.py::test_19d` | **1** | the accepted seed domain, in contract and on the sheet |
-| **Total new** | **182** | |
+| **Total new** | **203** | |
 
-New in this round: the full state truth table and its exhaustion · the attempt
-axis proven unable to reach the derivation · systematic unknown-key injection
-into all 77 closed mappings · a mapping at an undeclared path · an appended,
-reordered or regrouped run-identity field · a missing `model_version` ·
-`_SimData` visibility drift · a broken Results placeholder binding · distribution
-master disagreement in three directions, with reordering explicitly accepted · an
-empty ladder · dropping the full-ladder rule · a null tolerance · ten contribution
-mutations · eleven kernel mutations · four dependence mutations · five
-numerical-domain mutations · five unsafe-arithmetic mutations · cancellation ·
-six publication mutations.
+**Sweep sizes:**
 
-Every mutation control from the first Step-1 round is retained; none was
+| Sweep | Shapes exercised | Instances covered |
+|---|---|---|
+| unknown-key injection (`test_87`) | **78** mappings | 78 |
+| missing-key deletion (`test_126`) | **444** (mapping, key) shapes | 653 |
+| semantic-value mutation (`test_128`) | **367** leaf paths | 714 |
+
+New in this round: six Uniform-degeneracy controls · both version bumps · the
+state transition · six Cheng BC/BB expression and return mutations · three
+evidence-binding mutations · two zeroed jump hashes · five digest-grammar
+mutations · six conditioning and boundary mutations · eleven run-identity initial
+and enum mutations · three block-column mutations · five iteration-column
+mutations · a reserved-row purpose · two definition mutations · and the three
+sweeps above.
+
+Every mutation control from both earlier Step-1 rounds is retained; none was
 weakened or deleted.
 
 ---
@@ -521,17 +554,20 @@ which nothing previously checked.
 
 | Check | Result |
 |---|---|
-| Full Python suite (`python3 -m pytest pccm/tests -q`) | **1934 passed, 0 failed** (174.24 s) |
+| Full Python suite (`python3 -m pytest pccm/tests -q`) | **1955 passed, 0 failed** (343.56 s) |
 | Baseline before Step 1 | 1752 passed |
-| New Step-1 tests | **+182** (67 + 114 + 1) |
-| Mutation controls | **114** |
+| New Step-1 tests | **+203** (71 + 131 + 1) |
+| Mutation controls | **131** |
+| Unknown-key sweep | **78** |
+| Missing-key deletion sweep | **444** shapes / 653 instances |
+| Semantic-value mutation sweep | **367** leaves / 714 instances |
 | Stage-A verifier / build | **351 passed, 0 failed**; "Stage A build complete." |
 
 ### Baseline preservation
 
-Byte-identical to the first Step-1 commit `1be66d3`:
+Byte-identical to the contract-completion commit `35c2467`:
 
-| Path | `git diff 1be66d3` |
+| Path | `git diff 35c2467` |
 |---|---|
 | `pccm/src` | **EMPTY** |
 | `pccm/bootstrap` | **EMPTY** |
@@ -542,6 +578,8 @@ Byte-identical to the first Step-1 commit `1be66d3`:
 | `pccm/spec/input_contract.yaml` | **EMPTY** — the accepted seed change was not touched again |
 | `pccm/evidence` | **EMPTY** |
 | `pccm/tests/test_phase2_inputs.py` | **EMPTY** — `test_19c`/`test_19d` not reverted |
+| `pccm/builder/pccm_builder/structure_loader.py` | **EMPTY** |
+| `pccm/builder/build_stage_a.py` | **EMPTY** |
 
 Phase-5 fingerprint vectors, recomputed live at this commit:
 
@@ -561,22 +599,30 @@ FP_BASE / FP_MOD_1 / FP_MOD_2   131 / 2147483647 / 2147483629
 
 | Requirement | Status |
 |---|---|
+| Uniform degeneracy no longer reads the ignored Most Likely | yes — §21 |
+| ignored Uniform ML cannot change RNG consumption | yes — contracted and mutation-controlled |
+| `RNG_VERSION` and `SIM_METHOD_VERSION` exactly `1` | yes — §22 |
+| complete MRG state transition pinned | yes — §22 |
+| complete BB/BC formulation **and returns** pinned | yes — §22 |
+| Cheng evidence bindings enforceable | yes — pinned **and** followed by `test_48b` |
+| complete result-digest grammar pinned | yes — §22 |
+| conditioning and boundary semantics pinned | yes — §22 |
+| run-identity initials, enums and columns exact | yes — §23 |
+| iteration columns, types and headers exact | yes — §23 |
+| missing required keys fail systematically | yes — 444 shapes, §24 |
+| wrong semantic values fail systematically | yes — 367 leaves, §24 |
+| jump hashes verified, not decorative | yes — option A, §22 |
+| D6-08 re-derived | yes — **unchanged at `H = 33`**, §9 |
 | state derivation total, exclusive, attempt-orthogonal | yes — §4 |
-| no fourth simulation state | yes — blank is an absence, `test_93` |
-| no-success/valid represented by blank status | yes — `no_success_valid_status: null` |
-| unknown semantic keys fail everywhere | yes — 77 mappings, `test_87` |
-| run-identity layout exact, not extensible | yes — `test_89` |
-| Cost Line and Risk contribution arithmetic contracted | yes — §6 |
-| zero worksheet/COM hot-loop boundary contracted | yes — §7 |
-| numerical-domain guarantees contracted | yes — §7 |
-| driver independence contracted | yes — §7 |
+| no fourth simulation state | yes — `test_93` |
+| unknown semantic keys fail everywhere | yes — 78 mappings, `test_87` |
+| contribution, kernel, numerical domain, dependence contracted | yes — §6, §7 |
 | full selectable ladder retained by reference | yes — 11 today, §8 |
 | `model_version` persisted in the Run Stamp | yes — §9 |
-| D6-08 re-derived from the final layout | yes — `H = 33`, max `1048543` |
 | borrowed-content bindings cannot silently drift | yes — §10 |
 | **zero** tolerance field in `sim_contract` | yes — §11 |
-| publication / cancellation / command surface encoded | yes — §7 |
 | D6-11 ungranted, activation precondition recorded | yes — §12 |
+| all previous Step-1 protections remain | yes — none weakened or deleted |
 | Phase-5 behaviour green | yes — §18 |
 | no Step-2 implementation, no VBA | yes — `test_47`, `test_50` |
 | no Windows/Excel runtime | yes — Linux only |
@@ -600,4 +646,146 @@ FP_BASE / FP_MOD_1 / FP_MOD_2   131 / 2147483647 / 2147483629
 
 ---
 
-**STEP 1 — ACCEPTANCE REQUESTED (CONTRACT COMPLETE)**
+## 21. Uniform degeneracy no longer reads the ignored Most Likely
+
+This was a real **inherited-authority contradiction**, not a validator gap.
+
+Accepted Phase-5 **D1**: Uniform's Most Likely is ignored numerically and
+excluded from the calculation fingerprint. Accepted plan **§4.1**: a degenerate
+Uniform `a = b` returns `a` and consumes nothing. But **§4.0 used one predicate
+for all three families** — `a = m = b`.
+
+**The consequence.** A legal Uniform with `Min = Max` and a populated, unrelated
+Most Likely was **not** degenerate under that predicate. It would enter the
+sampler and consume a uniform — so an input the model explicitly ignores changed
+**RNG consumption**, the stream position, and every subsequent draw on that
+component.
+
+**Detection is now family-specific:**
+
+| Family | Degenerate when |
+|---|---|
+| **Uniform** | **`a == b`** — Most Likely is not read |
+| Triangular | `a == m == b` |
+| Beta-PERT | `a == m == b` |
+
+For Triangular and Beta-PERT the accepted ordering `a ≤ m ≤ b` already makes
+`a = b` imply `m = a`, so the three-way condition states the semantic rather than
+adding a restriction. The outcome for every degenerate family is unchanged:
+return `a`, enter no sampler, consume **zero** uniforms, stream unchanged.
+
+The contract also states plainly that Most Likely affects neither degeneracy nor
+Uniform consumption. `phase6_plan.md` §4.0 and §4.1 carry a marked
+**POST-ACCEPTANCE AUTHORITY CORRECTION** explaining why the common predicate was
+wrong. Nothing else in the plan was reopened.
+
+**Conformance cases** (`test_69`), each asserted against the contract:
+
+| # | Case | Expected |
+|---|---|---|
+| A | Uniform `a = b`, Most Likely blank | degenerate, **0** uniforms |
+| B | Uniform `a = b`, Most Likely populated and unrelated | degenerate, **0** uniforms |
+| C | same `Min`/`Max`, two different ignored Most Likely values | identical semantics |
+| D | Uniform `a < b` | non-degenerate, **1** uniform |
+
+---
+
+## 22. Values that are now pinned, not merely shaped
+
+Each of these was demonstrated to be accepted before this round.
+
+| Was accepted | Now |
+|---|---|
+| `RNG_VERSION = 2`, `SIM_METHOD_VERSION = 2` | pinned to **`1`** — a bump is an authority change, not a value a validator waves through because 2 is also a positive integer |
+| `rng.recurrence.advance = "banana"` | the state shift is pinned exactly. A recurrence with the right `p1`/`p2` and the wrong word order is a plausible stream that is not MRG32k3a |
+| `cheng.bc.per_driver = ["banana"]`, a BC expression replaced, `cheng.bc.return = "banana"`, `cheng.bb.return = "banana"` | BB **and** BC per-driver, per-attempt and return all pinned. BB and BC orient **oppositely**, so a free BC return is exactly how a mirrored distribution ships while every other check passes |
+| the Cheng evidence paths pointed anywhere | both paths pinned, and `test_48b` **follows what the contract declares** and verifies the artefacts and hashes behind them |
+| all three `result_digest.grammar` productions | pinned token by token, including nominal/PV order and the version source |
+| `conditioning_scale = "banana"` on both families | pinned to `s = max(abs(a), abs(m), abs(b))` |
+| triangular `m_equals_a` / `m_equals_b` | pinned — which branch a boundary shape takes is sampling semantics, not documentation |
+| `a1_p127_sha256 = "0000…"` with the matrix still correct | both hashes verified against the accepted Step-0 values, and `test_48b` re-hashes the declared matrices |
+| `stream_assignment.index_rule`, the state definitions, the reserved-row purposes | pinned — the tiling's purposes are the audit trail for `H` |
+
+**Option A was taken on the jump hashes**, not removal: the hashes are now part
+of the enforced authority. Authoritative-looking metadata a validator ignores is
+worse than none, because it invites a reader to trust a binding that does not
+exist.
+
+---
+
+## 23. `_SimData` is now exact in every field
+
+The block was called "EXACT authority" while only key, row, group and type were
+checked. Initials could be seeded and enum owners swapped — so a materialiser
+could have written a **partial successful snapshot** into a workbook that had
+never run.
+
+**The locked record is now** `(key, row, group, label, value_type, enum,
+initial)` for all 22 fields, plus the block columns `B` / `D` / `F`.
+
+**Cross-semantic agreement is enforced**, because the same fact appears in two
+sections — one is the rule, the other the cell that carries it:
+
+| Field | Initial | Agrees with |
+|---|---|---|
+| `next_auto_nonce` | `0` | `seeding.nonce_lifecycle.initial` |
+| `last_run_id` | `0` | `run_id.initial` |
+| `last_attempt_result` | `NONE` | — |
+| `simulation_status` | **blank** | a never-run workbook presents no derived status |
+| `run_id`, `request_fingerprint`, `result_digest`, `effective_seed`, `last_successful_stamp`, `model_version` | **blank** | written only by a successful commit |
+
+**Enum ownership is exact and conditional**: `seed_mode → seed_mode`,
+`last_attempt_result → attempt_result`, `last_attempt_seed_mode → seed_mode`,
+`simulation_status → sim_state`. The `enum` key is **required** when
+`value_type == "enum"` and **refused** otherwise — both directions, because a
+label set that governs nothing is a semantic nobody reads.
+
+**Iteration columns are exact too**: `B` `Iteration` integer, `C` `Total Nominal`
+double, `D` `Total PV` double, in that order. This is column-layout hardening and
+**does not change `H`**.
+
+---
+
+## 24. Two systematic sweeps
+
+**Unknown keys** were already closed. Two further sweeps close the other two ways
+authority can be lost.
+
+### Missing keys — the deletion sweep
+
+An independent sweep deleted 647 keys and **55 were accepted**: a semantic could
+be *removed* from the authority document and the validator still called it valid.
+
+Every mapping now carries required keys as well as allowed keys, and
+`test_126` deletes **every one of the 444 distinct (mapping, key) shapes** —
+covering all 653 instances, since deleting a key removes it from every mapping at
+that path — and requires rejection.
+
+**`INTENTIONALLY_OPTIONAL` is deliberately empty.** Every key is required,
+*including the ones whose canonical value is `null`*: `positivity_rule: null` is
+the authority **saying** there is no positivity rule, and silent absence does not
+say that. The test fails if that list grows.
+
+**One conditional key**, with its rule written down and both directions enforced:
+`sim_data.run_identity.fields[].enum`. `test_127` proves it is required where it
+applies and refused where it does not — a conditional key is not an optional one.
+
+### Wrong values — the semantic-leaf sweep
+
+Shape closure said nothing about content. `test_128` mutates **each of the 367
+distinct settled leaves** (714 instances) to a **type-compatible wrong value** —
+`+1` for integers, the next float up, `not` for booleans, `"banana"` for strings,
+a value where the canonical content is `null` — and requires rejection.
+
+**`FLEXIBLE_LEAVES` holds exactly one entry**, with a reason:
+`dependence.authority`, a prose citation whose enforced semantics are the four
+booleans beside it. `test_129` proves that exemption is real by changing it and
+loading successfully, so the allow-list is not decorative, and `test_128` fails
+if it grows.
+
+The goal, stated plainly: **no settled semantic leaf in `sim_contract.yaml` can
+change while the loader still reports the accepted Step-1 authority as valid.**
+
+---
+
+**STEP 1 — ACCEPTANCE REQUESTED (AUTHORITY HARDENED)**

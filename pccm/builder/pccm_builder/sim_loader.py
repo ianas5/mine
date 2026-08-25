@@ -230,38 +230,135 @@ LOCKED_SIM_METHOD_VERSION_BUMPS = (
     "result_digest_framing_or_hash_stream",
 )
 
+LOCKED_RECURRENCE_ADVANCE = '[s10, s11, s12, s20, s21, s22] <- [s11, s12, p1, s21, s22, p2]'
+"""The state shift. Part of the exact MRG32k3a contract, not documentation: a
+recurrence that keeps the right p1/p2 but shifts the wrong words produces a
+plausible stream that is not MRG32k3a."""
+
+LOCKED_BC_PER_DRIVER = (
+    'alpha = a + b',
+    'beta = 1 / b',
+    'delta = 1 + a - b',
+    'k1 = delta * (0.0138889 + 0.0416667 * b) / (a * beta - 0.777778)',
+    'k2 = 0.25 + (0.5 + 0.25 / delta) * b',
+)
+LOCKED_BC_PER_ATTEMPT = (
+    'u1 = next_u(); u2 = next_u()',
+    'if u1 < 0.5: y = u1 * u2; z = u1 * y; reject if 0.25 * u2 + z - y >= k1',
+    'else: z = u1 * u1 * u2',
+    '  if z <= 0.25: vlog = log(u1 / (1 - u1)); v = beta * vlog; w = a * exp(v); ACCEPT',
+    '  if z >= k2: reject',
+    'vlog = log(u1 / (1 - u1)); v = beta * vlog; w = a * exp(v)',
+    'accept if alpha * (log(alpha / (b + w)) + v) - 1.3862944 >= log(z)',
+    'else reject and retry',
+)
+LOCKED_BB_RETURN = "w / (b + w) when the caller's first parameter was the min, else b / (b + w)"
+LOCKED_BC_RETURN = "w / (b + w) when the caller's first parameter was the max, else b / (b + w)"
+"""BB and BC orient OPPOSITELY, so their return rules are opposite too. Locking
+one and leaving the other free is how a mirrored distribution gets shipped."""
+
+LOCKED_CHENG_FORMULATION_EVIDENCE = 'evidence/phase6_step0/raw/cheng_formulation.json'
+LOCKED_CHENG_VECTORS_EVIDENCE = 'evidence/phase6_step0/vectors/cheng_vectors.json'
+"""A contract that claims to bind evidence but may point anywhere is not bound."""
+
+LOCKED_CHENG_SOURCE_SHA256 = "d5ca71b806015ed9039f713295dca3b45d2f66dbcabe60b6709896e3a89eed90"
+LOCKED_A1_P127_SHA256 = "e31a727398a2d4461cf708f77034b9bc5e60f88c54556c56c3f4b015a813b66a"
+LOCKED_A2_P127_SHA256 = "0d20b47aa206b1231c22e20afaa84e71b81cff52a2395be9aeb0bbb97b1e8208"
+"""Authoritative-looking metadata the validator ignores is worse than none, so
+these are checked against the accepted Step-0 values rather than merely
+shape-checked. They are LITERALS here: production never reads `evidence/`."""
+
+LOCKED_DIGEST_GRAMMAR = {
+    "stream": 'F_S("PCCM-RD") F_I(sim_method_version) section',
+    "section": 'F_S("RESULT") F_I(record_count) record*',
+    "record": 'F_I(field_count) F_I(iteration_index) F_N(total_nominal) F_N(total_pv)',
+}
+
+LOCKED_CONDITIONING_SCALE = 's = max(abs(a), abs(m), abs(b))'
+LOCKED_TRIANGULAR_BOUNDARY = {
+    "m_equals_a": 'c = 0; the upper branch is always taken',
+    "m_equals_b": 'c = 1; the lower branch is always taken',
+}
+LOCKED_DEGENERATE_CONDITIONS = {
+    "uniform": "a == b",
+    "triangular": "a == m == b",
+    "beta_pert": "a == m == b",
+}
+"""FAMILY-SPECIFIC. Uniform's Most Likely is ignored by accepted Phase-5 D1, so a
+common `a == m == b` predicate let an ignored input decide degeneracy - and
+therefore RNG consumption and every later draw on that stream."""
+
+LOCKED_RUN_IDENTITY = (
+    ('last_successful_stamp', 8, 'snapshot', 'Last Successful Simulation', 'timestamp', None, None),
+    ('run_id', 9, 'snapshot', 'Run ID', 'integer', None, None),
+    ('request_fingerprint', 10, 'snapshot', 'Request Fingerprint', 'text', None, None),
+    ('result_digest', 11, 'snapshot', 'Result Digest', 'text', None, None),
+    ('seed_mode', 12, 'snapshot', 'Seed Mode', 'enum', 'seed_mode', None),
+    ('supplied_seed', 13, 'snapshot', 'Supplied Seed', 'integer', None, None),
+    ('effective_seed', 14, 'snapshot', 'Effective Seed', 'integer', None, None),
+    ('consumed_auto_nonce', 15, 'snapshot', 'Consumed AUTO Nonce', 'integer', None, None),
+    ('iterations_run', 16, 'snapshot', 'Iterations Run', 'integer', None, None),
+    ('rng_version', 17, 'snapshot', 'RNG Version', 'integer', None, None),
+    ('sim_method_version', 18, 'snapshot', 'Simulation Method Version', 'integer', None, None),
+    ('model_version', 19, 'snapshot', 'Model Version', 'text', None, None),
+    ('applied_timeline', 20, 'snapshot', 'Applied Timeline', 'text', None, None),
+    ('next_auto_nonce', 21, 'counter', 'Next AUTO Nonce', 'integer', None, 0),
+    ('last_run_id', 22, 'counter', 'Last Run ID', 'integer', None, 0),
+    ('last_attempt_result', 23, 'attempt', 'Last Attempt Result', 'enum', 'attempt_result', 'NONE'),
+    ('last_attempt_detail', 24, 'attempt', 'Last Attempt Detail', 'text', None, None),
+    ('last_attempt_seed_mode', 25, 'attempt', 'Last Attempt Seed Mode', 'enum', 'seed_mode', None),
+    ('last_attempt_effective_seed', 26, 'attempt', 'Last Attempt Effective Seed', 'integer', None, None),
+    ('last_attempt_auto_nonce', 27, 'attempt', 'Last Attempt AUTO Nonce', 'integer', None, None),
+    ('simulation_status', 28, 'derived', 'Simulation Status (last evaluated)', 'enum', 'sim_state', None),
+    ('status_evaluated_at', 29, 'derived', 'Status Evaluated At', 'timestamp', None, None),
+)
+"""(key, row, group, label, value_type, enum, initial) - the COMPLETE record.
+
+Key/row/group/type alone was not exact authority: initials could be seeded and
+enum owners swapped, so a materialiser could have written a partial successful
+snapshot into a workbook that had never run."""
+
+LOCKED_RUN_IDENTITY_COLUMNS = {
+    "label_column": 'B',
+    "value_column": 'D',
+    "note_column": 'F',
+}
+
+LOCKED_RESERVED_ROWS = (
+    (1, 1, 'shell top margin'),
+    (2, 2, 'shell title'),
+    (3, 3, 'shell subtitle'),
+    (4, 4, 'shell rule'),
+    (5, 5, 'spacer'),
+    (6, 6, 'run identity section heading'),
+    (7, 7, 'run identity section note'),
+    (8, 29, 'run identity fields'),
+    (30, 30, 'spacer'),
+    (31, 31, 'iteration records section heading'),
+    (32, 32, 'iteration records section note'),
+    (33, 33, 'iteration table header'),
+)
+
+LOCKED_ITERATION_RECORD_COLUMNS = (
+    ('iteration_index', 'B', 'Iteration', 'integer'),
+    ('total_nominal', 'C', 'Total Nominal', 'double'),
+    ('total_pv', 'D', 'Total PV', 'double'),
+)
+
+LOCKED_SIM_STATE_DEFINITIONS = {
+    'CURRENT': 'prerequisites resolve, a successful snapshot exists, and the recomputed request fingerprint equals the stored successful one',
+    'STALE': 'prerequisites resolve, a successful snapshot exists, and the recomputed request fingerprint differs from the stored successful one',
+    'INVALID': 'current simulation prerequisites do not resolve',
+}
+
+LOCKED_INDEX_RULE = 'stream k is the base state advanced by k canonical stream jumps'
+LOCKED_RNG_VERSION = 1
+LOCKED_SIM_METHOD_VERSION = 1
+"""Settled by Step 0. A future bump is an explicit authority change, not
+something a validator should wave through because 2 is also a positive integer."""
+
 LOCKED_SIM_DATA_SHEET = "_SimData"
 LOCKED_ITERATION_COLUMNS = ("iteration_index", "total_nominal", "total_pv")
-LOCKED_RUN_IDENTITY = (
-    ("last_successful_stamp", 8, "snapshot", "timestamp"),
-    ("run_id", 9, "snapshot", "integer"),
-    ("request_fingerprint", 10, "snapshot", "text"),
-    ("result_digest", 11, "snapshot", "text"),
-    ("seed_mode", 12, "snapshot", "enum"),
-    ("supplied_seed", 13, "snapshot", "integer"),
-    ("effective_seed", 14, "snapshot", "integer"),
-    ("consumed_auto_nonce", 15, "snapshot", "integer"),
-    ("iterations_run", 16, "snapshot", "integer"),
-    ("rng_version", 17, "snapshot", "integer"),
-    ("sim_method_version", 18, "snapshot", "integer"),
-    ("model_version", 19, "snapshot", "text"),
-    ("applied_timeline", 20, "snapshot", "text"),
-    ("next_auto_nonce", 21, "counter", "integer"),
-    ("last_run_id", 22, "counter", "integer"),
-    ("last_attempt_result", 23, "attempt", "enum"),
-    ("last_attempt_detail", 24, "attempt", "text"),
-    ("last_attempt_seed_mode", 25, "attempt", "enum"),
-    ("last_attempt_effective_seed", 26, "attempt", "integer"),
-    ("last_attempt_auto_nonce", 27, "attempt", "integer"),
-    ("simulation_status", 28, "derived", "enum"),
-    ("status_evaluated_at", 29, "derived", "timestamp"),
-)
-"""The run-identity block is EXACT authority: key, row, group and type, in order.
-
-"Contains these required fields" was not enough - an invented field could be
-appended on the next free row and the loader accepted it. A snapshot layout that
-can grow by accident is one whose meaning drifts silently."""
-
 LOCKED_SIM_STATE_RULES = (
     (1, "current_prerequisites_do_not_resolve", "INVALID"),
     (2, "no_successful_snapshot_exists", None),
@@ -471,10 +568,11 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'comparison_operator', 'equality_belongs_to', 'rule'
     }),
     'distributions.degenerate': frozenset({
-        'applies_to_all_families', 'condition', 'detected_before_dispatch',
-        'detected_before_parameterisation', 'returns', 'sampler_entered',
-        'stream_state_changed', 'uniforms_consumed'
+        'applies_to_all_families', 'conditions', 'detected_before_dispatch',
+        'detected_before_parameterisation', 'most_likely_read_by_uniform_degeneracy',
+        'returns', 'sampler_entered', 'stream_state_changed', 'uniforms_consumed'
     }),
+    'distributions.degenerate.conditions': frozenset({'beta_pert', 'triangular', 'uniform'}),
     'distributions.triangular': frozenset({
         'boundary_cases', 'branch_point', 'conditioning_scale', 'lower_branch', 'method',
         'normalised_formulation_required', 'rng_endpoints_open',
@@ -482,7 +580,9 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
     }),
     'distributions.triangular.boundary_cases': frozenset({'m_equals_a', 'm_equals_b'}),
     'distributions.uniform': frozenset({
-        'formulation', 'most_likely_used', 'transform', 'uniforms_per_non_degenerate_sample'
+        'formulation', 'most_likely_affects_degeneracy',
+        'most_likely_affects_uniform_consumption', 'most_likely_used', 'transform',
+        'uniforms_per_non_degenerate_sample'
     }),
     'interruption': frozenset({'user_cancellation_supported_in_phase_6'}),
     'iterations': frozenset({'business_maximum', 'business_minimum_owner', 'technical_ceiling'}),
@@ -650,8 +750,50 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
 }
 
 
+
+CONDITIONAL_KEYS: dict[tuple[str, str], str] = {
+    ("sim_data.run_identity.fields[]", "enum"):
+        "present exactly when value_type == 'enum', and forbidden otherwise. "
+        "Checked by the run-identity validator against the complete locked "
+        "record, which is stricter than either 'required' or 'optional'.",
+}
+"""Keys whose presence is decided by another field, with the rule written down.
+
+A conditional key is NOT an optional one: its presence is required in one case
+and refused in the other, and the section validator enforces both directions."""
+
+INTENTIONALLY_OPTIONAL: dict[tuple[str, str], str] = {}
+"""Keys that may legitimately be absent, each with a written reason.
+
+DELIBERATELY EMPTY. Every remaining key in this contract is required, INCLUDING
+the ones whose canonical value is `null`: `positivity_rule: null` is the
+authority SAYING there is no positivity rule, and silent absence does not say
+that. Absence and an explicit null are only interchangeable where nothing reads
+the distinction, and nothing in this contract is in that position.
+
+An entry here needs a reason, and the deletion sweep fails if this list grows
+without one."""
+
+FLEXIBLE_LEAVES: dict[str, str] = {
+    "dependence.authority":
+        "a prose citation of why no correlation authority exists. The ENFORCED "
+        "semantics are the four booleans beside it; this sentence explains them "
+        "to a reader and locking its wording would freeze prose, not meaning.",
+}
+"""Scalar leaves that are descriptive rather than runtime-locked.
+
+Everything else in this contract is settled authority and must not be able to
+change while the loader still reports the same accepted Step-1 contract as
+valid. The semantic sweep fails if this list grows silently."""
+
+
 def _check_closed_world(node: Any, path: str, source: Path) -> None:
-    """Refuse an unknown key, and refuse a mapping at an unknown path."""
+    """Refuse an unknown key, a mapping at an unknown path, AND a missing key.
+
+    Closure on unknown keys alone was not fail-loud: a deletion sweep found 55
+    keys that could simply be removed, so a semantic could be DELETED from the
+    authority document and the validator would still report it valid.
+    """
     if isinstance(node, dict):
         allowed = CLOSED_KEYS.get(path)
         if allowed is None:
@@ -666,6 +808,17 @@ def _check_closed_world(node: Any, path: str, source: Path) -> None:
                 f"{source}: {path or 'root'} declares unknown key(s) {unknown}. This contract is "
                 "CLOSED: a key the validator does not know is a semantic nobody enforces, and a "
                 "field that looks authoritative while governing nothing is worse than no field."
+            )
+        excused = {
+            key for key in allowed
+            if (path, key) in CONDITIONAL_KEYS or (path, key) in INTENTIONALLY_OPTIONAL
+        }
+        missing = sorted((allowed - excused) - set(node))
+        if missing:
+            raise SimContractError(
+                f"{source}: {path or 'root'} is missing required key(s) {missing}. Absence is "
+                "not a value: a key whose canonical content is `null` says there is no such "
+                "rule, and deleting it says nothing at all."
             )
         for key, value in node.items():
             _check_closed_world(value, f"{path}.{key}" if path else key, source)
@@ -805,11 +958,20 @@ def load_sim_contract(path: Path) -> SimContract:
 # ---------------------------------------------------------------------------
 def _validate_versions(raw: dict, path: Path) -> None:
     block = _map(raw, "versions", path)
-    for key in ("rng_version", "sim_method_version"):
+    for key, expected in (
+        ("rng_version", LOCKED_RNG_VERSION),
+        ("sim_method_version", LOCKED_SIM_METHOD_VERSION),
+    ):
         value = _req(block, key, f"{path}: versions")
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise SimContractError(
                 f"{path}: versions.{key} must be a positive integer, got {value!r}"
+            )
+        if value != expected:
+            raise SimContractError(
+                f"{path}: versions.{key} is {value}; Step 0 settled it at {expected}. A version "
+                "bump is an explicit authority change with a written reason, not something a "
+                "validator waves through because the new number is also a positive integer."
             )
     source = _req_str(block, "result_digest_version_source", f"{path}: versions")
     if source != LOCKED_VERSION_FIELD_SOURCE:
@@ -869,7 +1031,7 @@ def _validate_rng(raw: dict, path: Path) -> None:
     recurrence = _map(block, "recurrence", where)
     _require_value(recurrence, "p1", "(a12 * s11 - a13n * s10) mod m1", f"{where}: recurrence")
     _require_value(recurrence, "p2", "(a21 * s22 - a23n * s20) mod m2", f"{where}: recurrence")
-    _req_str(recurrence, "advance", f"{where}: recurrence")
+    _require_value(recurrence, "advance", LOCKED_RECURRENCE_ADVANCE, f"{where}: recurrence")
 
     combination = _map(block, "combination", where)
     _require_value(
@@ -995,7 +1157,7 @@ def _validate_stream_assignment(raw: dict, path: Path) -> None:
     ):
         _require_false(block, flag, where)
     _require_value(block, "index_origin", 0, where)
-    _req_str(block, "index_rule", where)
+    _require_value(block, "index_rule", LOCKED_INDEX_RULE, where)
     _require_value(
         block, "accepted_consequence",
         "inserting_or_removing_a_driver_may_change_later_stream_identities", where,
@@ -1017,10 +1179,22 @@ def _validate_jump(raw: dict, path: Path) -> None:
     _require_false(block, "naive_floating_matrix_product_permitted", where)
     _check_matrix(block.get("a1_p127"), LOCKED_A1_P127, f"{where}: a1_p127")
     _check_matrix(block.get("a2_p127"), LOCKED_A2_P127, f"{where}: a2_p127")
-    for key in ("a1_p127_sha256", "a2_p127_sha256"):
+    # Verified, not merely shape-checked. Authoritative-looking metadata the
+    # validator ignores is worse than no metadata: it invites a reader to trust
+    # a binding that does not exist.
+    for key, expected in (
+        ("a1_p127_sha256", LOCKED_A1_P127_SHA256),
+        ("a2_p127_sha256", LOCKED_A2_P127_SHA256),
+    ):
         digest = _req_str(block, key, where)
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise SimContractError(f"{where}: {key} must be 64 lowercase hex characters")
+        if digest != expected:
+            raise SimContractError(
+                f"{where}: {key} is {digest}, but the accepted Step-0 hash of the canonical "
+                f"matrix text is {expected}. The hash is part of the authority or it should "
+                "not be in the contract."
+            )
 
 
 def _check_matrix(value: Any, expected: tuple, where: str) -> None:
@@ -1047,7 +1221,16 @@ def _validate_distributions(raw: dict, path: Path) -> None:
 
     degenerate = _map(block, "degenerate", where)
     dwhere = f"{where}: degenerate"
-    _require_value(degenerate, "condition", "a == m == b", dwhere)
+    conditions = _map(degenerate, "conditions", dwhere)
+    if dict(conditions) != LOCKED_DEGENERATE_CONDITIONS:
+        raise SimContractError(
+            f"{dwhere}: conditions must be exactly {LOCKED_DEGENERATE_CONDITIONS}, got "
+            f"{dict(conditions)}. Detection is FAMILY-SPECIFIC: Uniform's Most Likely is "
+            "ignored by accepted Phase-5 D1, so a common `a == m == b` predicate would let an "
+            "ignored input decide degeneracy - and therefore RNG consumption, the stream "
+            "position, and every later draw on that component."
+        )
+    _require_false(degenerate, "most_likely_read_by_uniform_degeneracy", dwhere)
     _require_true(degenerate, "detected_before_dispatch", dwhere)
     _require_true(degenerate, "detected_before_parameterisation", dwhere)
     _require_value(degenerate, "returns", "a", dwhere)
@@ -1058,6 +1241,8 @@ def _validate_distributions(raw: dict, path: Path) -> None:
 
     uniform = _map(block, "uniform", where)
     _require_false(uniform, "most_likely_used", f"{where}: uniform")
+    _require_false(uniform, "most_likely_affects_degeneracy", f"{where}: uniform")
+    _require_false(uniform, "most_likely_affects_uniform_consumption", f"{where}: uniform")
     _require_value(uniform, "transform", "x = (1 - u) * a + u * b", f"{where}: uniform")
     _require_value(uniform, "formulation", "stable_convex", f"{where}: uniform")
     _require_value(uniform, "uniforms_per_non_degenerate_sample", 1, f"{where}: uniform")
@@ -1074,11 +1259,14 @@ def _validate_distributions(raw: dict, path: Path) -> None:
         tri, "upper_branch", "u >  c : x = b - sqrt((1 - u) * (b - a) * (b - m))", twhere
     )
     boundary = _map(tri, "boundary_cases", twhere)
-    for key in ("m_equals_a", "m_equals_b"):
-        _req_str(boundary, key, f"{twhere}: boundary_cases")
+    if dict(boundary) != LOCKED_TRIANGULAR_BOUNDARY:
+        raise SimContractError(
+            f"{twhere}: boundary_cases must be exactly {LOCKED_TRIANGULAR_BOUNDARY}. Which "
+            "branch a boundary shape takes is sampling semantics, not documentation."
+        )
     _require_true(tri, "rng_endpoints_open", twhere)
     _require_true(tri, "normalised_formulation_required", twhere)
-    _req_str(tri, "conditioning_scale", twhere)
+    _require_value(tri, "conditioning_scale", LOCKED_CONDITIONING_SCALE, twhere)
 
     pert = _map(block, "beta_pert", where)
     pwhere = f"{where}: beta_pert"
@@ -1092,6 +1280,7 @@ def _validate_distributions(raw: dict, path: Path) -> None:
     _require_value(pert, "rescale", "x = (1 - y) * a + y * b, y ~ Beta(alpha, beta)", pwhere)
     _require_value(pert, "rescale_formulation", "stable_convex", pwhere)
     _require_true(pert, "normalised_formulation_required", pwhere)
+    _require_value(pert, "conditioning_scale", LOCKED_CONDITIONING_SCALE, pwhere)
     dispatch = _map(pert, "dispatch", pwhere)
     _require_value(dispatch, "rule", LOCKED_DISPATCH_RULE, f"{pwhere}: dispatch")
     _require_value(
@@ -1120,16 +1309,20 @@ def _validate_cheng(raw: dict, path: Path) -> None:
     _exact_sequence(bb.get("per_attempt"), LOCKED_BB_PER_ATTEMPT, f"{where}: bb.per_attempt")
     _exact_sequence(bb.get("literals"), LOCKED_BB_LITERALS, f"{where}: bb.literals")
     _require_value(bb, "acceptance_operator", "greater_than_or_equal", f"{where}: bb")
-    _req_str(bb, "return", f"{where}: bb")
+    _require_value(bb, "return", LOCKED_BB_RETURN, f"{where}: bb")
 
     bc = _map(block, "bc", where)
     _require_value(bc, "applies_when", "min(alpha, beta) <= 1", f"{where}: bc")
     _check_orientation(bc, LOCKED_BC_ORIENTATION, f"{where}: bc")
     _exact_sequence(bc.get("literals"), LOCKED_BC_LITERALS, f"{where}: bc.literals")
     _require_value(bc, "acceptance_operator", "greater_than_or_equal", f"{where}: bc")
-    for key in ("per_driver", "per_attempt"):
-        _seq(bc, key, f"{where}: bc")
-    _req_str(bc, "return", f"{where}: bc")
+    # BC was previously validated far more weakly than BB: its expressions and
+    # its return rule could be replaced with arbitrary text. BB and BC orient
+    # OPPOSITELY, so a free BC return is exactly how a mirrored distribution
+    # ships while every other check still passes.
+    _exact_sequence(bc.get("per_driver"), LOCKED_BC_PER_DRIVER, f"{where}: bc.per_driver")
+    _exact_sequence(bc.get("per_attempt"), LOCKED_BC_PER_ATTEMPT, f"{where}: bc.per_attempt")
+    _require_value(bc, "return", LOCKED_BC_RETURN, f"{where}: bc")
 
     effect = _map(block, "literal_effect", where)
     _require_value(
@@ -1140,14 +1333,16 @@ def _validate_cheng(raw: dict, path: Path) -> None:
     )
 
     binding = _map(block, "source_binding", where)
-    _req_str(binding, "evidence_file", f"{where}: source_binding")
-    digest = _req_str(binding, "functions_sha256", f"{where}: source_binding")
-    if not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise SimContractError(
-            f"{where}: source_binding.functions_sha256 must be 64 lowercase hex characters"
-        )
+    _require_value(
+        binding, "evidence_file", LOCKED_CHENG_FORMULATION_EVIDENCE, f"{where}: source_binding"
+    )
+    _require_value(
+        binding, "functions_sha256", LOCKED_CHENG_SOURCE_SHA256, f"{where}: source_binding"
+    )
     vectors = _map(block, "conformance_vectors", where)
-    _req_str(vectors, "evidence_file", f"{where}: conformance_vectors")
+    _require_value(
+        vectors, "evidence_file", LOCKED_CHENG_VECTORS_EVIDENCE, f"{where}: conformance_vectors"
+    )
     _require_value(vectors, "role", "conformance_authority", f"{where}: conformance_vectors")
     _require_false(vectors, "runtime_lookup_table", f"{where}: conformance_vectors")
 
@@ -1432,8 +1627,12 @@ def _validate_result_digest(raw: dict, path: Path) -> None:
     )
     _require_value(block, "iteration_index_origin", 1, where)
     grammar = _map(block, "grammar", where)
-    for key in ("stream", "section", "record"):
-        _req_str(grammar, key, f"{where}: grammar")
+    if dict(grammar) != LOCKED_DIGEST_GRAMMAR:
+        raise SimContractError(
+            f"{where}: grammar must be exactly {LOCKED_DIGEST_GRAMMAR}. D6-17 locks the stream "
+            "token by token; a grammar the validator does not check is a grammar the "
+            "implementation can choose."
+        )
     _require_value(block, "order_source", "persisted_iteration_order", where)
     _require_false(block, "samples_sorted_for_digest", where)
     _require_value(block, "equality", "exact", where)
@@ -1511,6 +1710,11 @@ def _validate_sim_state(raw: dict, path: Path) -> None:
     if tuple(definitions) != LOCKED_SIM_STATES:
         raise SimContractError(
             f"{where}: definitions must define exactly the three states, in order"
+        )
+    if dict(definitions) != LOCKED_SIM_STATE_DEFINITIONS:
+        raise SimContractError(
+            f"{where}: the state definitions must be exactly the accepted corrected wording. "
+            "They are the authority a later implementation reads, not commentary."
         )
     for name, text in definitions.items():
         for token in ("attempt", "refused", "failed"):
@@ -1694,6 +1898,14 @@ def _parse_sim_data(raw: dict, path: Path) -> SimDataLayout:
     # Contiguous from row 1, no gap and no overlap. A gap would be an
     # unaccounted-for row and an overlap would double-count one, and either makes
     # H unauditable.
+    if tuple(reserved) != LOCKED_RESERVED_ROWS:
+        raise SimContractError(
+            f"{where}: reserved_rows must be exactly the accepted tiling "
+            f"{[list(r) for r in LOCKED_RESERVED_ROWS]}, got {[list(r) for r in reserved]}. "
+            "The tiling IS the derivation of H, so its purposes are the audit trail for the "
+            "technical ceiling, not labels."
+        )
+
     expected_next = 1
     for first, last, purpose in reserved:
         if first != expected_next:
@@ -1732,18 +1944,26 @@ def _parse_sim_data(raw: dict, path: Path) -> SimDataLayout:
     _require_false(records, "sorted", rwhere)
 
     columns = _seq(records, "columns", rwhere)
-    keys = tuple(c.get("key") if isinstance(c, dict) else None for c in columns)
-    _exact_sequence(keys, LOCKED_ITERATION_COLUMNS, f"{rwhere}: columns")
-    seen_columns: set[str] = set()
-    for entry in columns:
-        column = _req_str(entry, "column", rwhere)
+    actual_columns = tuple(
+        (
+            _req_str(c, "key", rwhere),
+            _req_str(c, "column", rwhere),
+            _req_str(c, "header", rwhere),
+            _req_str(c, "value_type", rwhere),
+        )
+        for c in columns
+    )
+    if actual_columns != LOCKED_ITERATION_RECORD_COLUMNS:
+        raise SimContractError(
+            f"{rwhere}: the iteration columns must be exactly "
+            f"{[list(c) for c in LOCKED_ITERATION_RECORD_COLUMNS]}, in order, got "
+            f"{[list(c) for c in actual_columns]}. The contract already chose a deterministic "
+            "machine layout; a column letter, header or type that can drift is one a "
+            "materialiser and a reader can disagree about."
+        )
+    for _, column, _, _ in actual_columns:
         if not re.fullmatch(r"[A-Z]{1,3}", column):
             raise SimContractError(f"{rwhere}: column {column!r} is not a column letter")
-        if column in seen_columns:
-            raise SimContractError(f"{rwhere}: column {column!r} is declared twice")
-        seen_columns.add(column)
-        _req_str(entry, "header", rwhere)
-        _req_str(entry, "value_type", rwhere)
 
     identity = _map(block, "run_identity", where)
     iwhere = f"{where}: run_identity"
@@ -1761,36 +1981,87 @@ def _parse_sim_data(raw: dict, path: Path) -> SimDataLayout:
             f"{iwhere}: the run-identity block ends at row {last_field_row}, at or below the "
             f"iteration header row {header_row}"
         )
-    # EXACT, not "contains the required fields". An invented field appended on
-    # the next free row was previously accepted, and a snapshot layout that can
-    # grow by accident is one whose meaning drifts silently.
+    # The COMPLETE record, not just key/row/group/type. Initials could be seeded
+    # and enum owners swapped while every earlier check passed, which would have
+    # let a materialiser write a partial successful snapshot into a workbook that
+    # had never run.
+    for key, expected in LOCKED_RUN_IDENTITY_COLUMNS.items():
+        _require_value(identity, key, expected, iwhere)
+
     actual = tuple(
         (
             _req_str(f, "key", iwhere),
             _req_int(f, "row", iwhere),
             _req_str(f, "group", iwhere),
+            _req_str(f, "label", iwhere),
             _req_str(f, "value_type", iwhere),
+            f.get("enum"),
+            f.get("initial"),
         )
         for f in fields
     )
     if actual != LOCKED_RUN_IDENTITY:
+        differences = [
+            f"{a[0]}: {a} != {e}"
+            for a, e in zip(actual, LOCKED_RUN_IDENTITY)
+            if a != e
+        ]
         extra = [a[0] for a in actual if a[0] not in {r[0] for r in LOCKED_RUN_IDENTITY}]
         missing = [r[0] for r in LOCKED_RUN_IDENTITY if r[0] not in {a[0] for a in actual}]
         raise SimContractError(
             f"{iwhere}: the run-identity block must be exactly the accepted layout - key, row, "
-            f"group and value type, in order. unexpected={extra} missing={missing}. "
-            "The persisted simulation identity is exact authority, not an extensible list."
+            f"group, label, value type, enum owner and initial, in order. "
+            f"unexpected={extra} missing={missing} differing={differences[:4]}. "
+            "The persisted simulation identity is exact authority, not an extensible list, and "
+            "every field that must be blank before its event must be explicitly blank."
         )
+
+    # Cross-semantic agreement: the same fact must not be stated twice with two
+    # different values. These live in different sections precisely because one is
+    # the RULE and the other is the workbook cell that carries it.
+    initials = {a[0]: a[6] for a in actual}
+    if initials["next_auto_nonce"] != raw["seeding"]["nonce_lifecycle"]["initial"]:
+        raise SimContractError(
+            f"{iwhere}: next_auto_nonce.initial is {initials['next_auto_nonce']!r} but "
+            f"seeding.nonce_lifecycle.initial is "
+            f"{raw['seeding']['nonce_lifecycle']['initial']!r}"
+        )
+    if initials["last_run_id"] != raw["run_id"]["initial"]:
+        raise SimContractError(
+            f"{iwhere}: last_run_id.initial is {initials['last_run_id']!r} but run_id.initial "
+            f"is {raw['run_id']['initial']!r}"
+        )
+    if initials["simulation_status"] is not None:
+        raise SimContractError(
+            f"{iwhere}: simulation_status.initial must be blank. A workbook that has never run "
+            "must not present a derived status it never evaluated."
+        )
+    for key in ("run_id", "request_fingerprint", "result_digest", "effective_seed",
+                "result_digest", "last_successful_stamp", "model_version"):
+        if initials[key] is not None:
+            raise SimContractError(
+                f"{iwhere}: {key}.initial must be blank until a successful commit writes it; a "
+                "seeded value would make a never-run workbook look like a partial success."
+            )
+
     field_keys = [a[0] for a in actual]
+    # `enum` is CONDITIONAL, and both directions are enforced: required when the
+    # field is an enum, and refused when it is not.
     label_sets = raw.get("label_sets") or {}
     for entry in fields:
+        key = entry.get("key")
         if entry.get("value_type") == "enum":
             name = _req_str(entry, "enum", iwhere)
             if name not in label_sets:
                 raise SimContractError(
-                    f"{iwhere}: field {entry.get('key')!r} names enum {name!r}, which is not "
-                    "declared in label_sets"
+                    f"{iwhere}: field {key!r} names enum {name!r}, which is not declared in "
+                    "label_sets"
                 )
+        elif "enum" in entry:
+            raise SimContractError(
+                f"{iwhere}: field {key!r} is not an enum but declares one. A label set that "
+                "governs nothing is a semantic nobody reads."
+            )
 
     excluded = tuple(block.get("excluded") or ())
     for required in LOCKED_SIM_DATA_EXCLUDED:

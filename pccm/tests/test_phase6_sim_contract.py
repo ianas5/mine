@@ -614,15 +614,79 @@ def test_47_the_loader_implements_no_rng_or_sampler() -> None:
         assert token not in source, f"sim_loader.py contains {token!r}"
 
 
-def test_48_no_production_module_imports_the_evidence_package() -> None:
-    """Tests may read retained evidence for conformance. Production must not."""
+def test_48_no_production_module_reads_the_evidence_package() -> None:
+    """Tests may read retained evidence for conformance. Production must not.
+
+    SEMANTIC, not a substring scan. The loader legitimately holds the DECLARED
+    evidence paths as locked literals so a contract that claims to bind evidence
+    cannot point at "banana" - that is a comparison target, not a dependency.
+    What must not exist is production code that OPENS anything under `evidence/`,
+    or imports from it.
+    """
     builder = PCCM_ROOT / "builder"
+    readers = ("open", "read_text", "read_bytes", "load", "loads", "glob", "rglob")
     offenders = []
     for path in sorted(builder.rglob("*.py")):
         text = path.read_text(encoding="utf-8")
-        if "evidence/phase6_step0" in text or "phase6_step0" in text:
-            offenders.append(str(path.relative_to(PCCM_ROOT)))
-    assert not offenders, f"production modules reference the evidence package: {offenders}"
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = [a.name for a in getattr(node, "names", [])]
+                if getattr(node, "module", None):
+                    names.append(node.module)
+                for name in names:
+                    if "evidence" in (name or "") or "phase6_step0" in (name or ""):
+                        offenders.append(f"{path.name}: imports {name}")
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = getattr(func, "attr", None) or getattr(func, "id", None)
+                if name in readers:
+                    literals = " ".join(
+                        a.value for a in ast.walk(node)
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str)
+                    )
+                    if "evidence" in literals or "phase6_step0" in literals:
+                        offenders.append(f"{path.name}: {name}() over an evidence path")
+    assert not offenders, f"production reads the evidence package: {offenders}"
+
+
+def test_48b_the_declared_evidence_paths_resolve_to_the_retained_artefacts() -> None:
+    """The contract's OWN declared paths are followed and checked.
+
+    A contract that claims to bind evidence but can point at "banana" is not
+    bound. This resolves what the contract declares - not what the test assumes -
+    and verifies the artefacts and the hash behind them.
+    """
+    cheng = _raw()["cheng"]
+    for declared in (
+        cheng["source_binding"]["evidence_file"],
+        cheng["conformance_vectors"]["evidence_file"],
+    ):
+        assert declared.startswith("evidence/phase6_step0/"), declared
+        resolved = PCCM_ROOT / declared
+        assert resolved.is_file(), f"{declared} does not resolve to a retained artefact"
+
+    formulation = json.loads(
+        (PCCM_ROOT / cheng["source_binding"]["evidence_file"]).read_text(encoding="utf-8")
+    )
+    assert cheng["source_binding"]["functions_sha256"] == (
+        formulation["source_binding"]["sha256"]
+    )
+    vectors = json.loads(
+        (PCCM_ROOT / cheng["conformance_vectors"]["evidence_file"]).read_text(encoding="utf-8")
+    )
+    assert vectors["both_dispatches_covered"] == {"BB": 3, "BC": 2}
+
+    jump = _evidence("raw/jump.json")
+    declared_jump = _raw()["jump"]
+    assert declared_jump["a1_p127_sha256"] == jump["A1p127_hash"]["sha256"]
+    assert declared_jump["a2_p127_sha256"] == jump["A2p127_hash"]["sha256"]
+    # And the hashes actually hash the declared matrices.
+    import hashlib
+
+    for name, key in (("a1_p127", "a1_p127_sha256"), ("a2_p127", "a2_p127_sha256")):
+        text = ";".join(",".join(str(v) for v in row) for row in declared_jump[name])
+        assert hashlib.sha256(text.encode("ascii")).hexdigest() == declared_jump[key], name
 
 
 def test_49_the_loader_parses_but_never_evaluates_contract_expressions() -> None:
@@ -896,11 +960,49 @@ def test_65_the_authority_bindings_check_content_not_only_resolution() -> None:
 def test_66_the_run_identity_layout_is_exact() -> None:
     from pccm_builder.sim_loader import LOCKED_RUN_IDENTITY
 
-    fields = _raw()["sim_data"]["run_identity"]["fields"]
-    actual = tuple((f["key"], f["row"], f["group"], f["value_type"]) for f in fields)
+    identity = _raw()["sim_data"]["run_identity"]
+    fields = identity["fields"]
+    actual = tuple(
+        (f["key"], f["row"], f["group"], f["label"], f["value_type"],
+         f.get("enum"), f.get("initial"))
+        for f in fields
+    )
     assert actual == LOCKED_RUN_IDENTITY
     assert len(actual) == 22
     assert [f["row"] for f in fields] == list(range(8, 30))
+    assert (identity["label_column"], identity["value_column"], identity["note_column"]) == (
+        "B", "D", "F",
+    )
+
+    # Cross-semantic initials and enum ownership.
+    by_key = {f["key"]: f for f in fields}
+    assert by_key["next_auto_nonce"]["initial"] == 0 == (
+        _raw()["seeding"]["nonce_lifecycle"]["initial"]
+    )
+    assert by_key["last_run_id"]["initial"] == 0 == _raw()["run_id"]["initial"]
+    assert by_key["last_attempt_result"]["initial"] == "NONE"
+    assert by_key["simulation_status"]["initial"] is None
+    assert by_key["seed_mode"]["enum"] == "seed_mode"
+    assert by_key["last_attempt_result"]["enum"] == "attempt_result"
+    assert by_key["last_attempt_seed_mode"]["enum"] == "seed_mode"
+    assert by_key["simulation_status"]["enum"] == "sim_state"
+    for field in fields:
+        assert ("enum" in field) == (field["value_type"] == "enum"), field["key"]
+
+
+def test_66b_the_iteration_columns_are_exact() -> None:
+    from pccm_builder.sim_loader import LOCKED_ITERATION_RECORD_COLUMNS
+
+    columns = _raw()["sim_data"]["iteration_records"]["columns"]
+    actual = tuple(
+        (c["key"], c["column"], c["header"], c["value_type"]) for c in columns
+    )
+    assert actual == LOCKED_ITERATION_RECORD_COLUMNS
+    assert actual == (
+        ("iteration_index", "B", "Iteration", "integer"),
+        ("total_nominal", "C", "Total Nominal", "double"),
+        ("total_pv", "D", "Total PV", "double"),
+    )
 
 
 def test_67_d6_11_activation_precondition_is_recorded() -> None:
@@ -910,6 +1012,76 @@ def test_67_d6_11_activation_precondition_is_recorded() -> None:
     record = (PCCM_ROOT / "docs" / "phase6_step1.md").read_text(encoding="utf-8")
     assert "activation precondition" in record.lower()
     assert "forbidden_in" in record
+
+
+# ===========================================================================
+# N. Uniform degeneracy - the four required conformance cases
+# ===========================================================================
+def _degenerate_by_contract(family: str, a, m, b) -> bool:
+    """Evaluate the CONTRACT's declared condition for a family.
+
+    The predicate is read from the contract rather than restated here, so this
+    tests what the document says and not what the test author remembered.
+    """
+    condition = _raw()["distributions"]["degenerate"]["conditions"][family]
+    if condition == "a == b":
+        return a == b
+    if condition == "a == m == b":
+        return a == m == b
+    raise AssertionError(f"unrecognised degeneracy condition {condition!r}")
+
+
+def test_68_uniform_degeneracy_is_family_specific() -> None:
+    conditions = _raw()["distributions"]["degenerate"]["conditions"]
+    assert conditions["uniform"] == "a == b"
+    assert conditions["triangular"] == "a == m == b"
+    assert conditions["beta_pert"] == "a == m == b"
+    assert _raw()["distributions"]["degenerate"]["most_likely_read_by_uniform_degeneracy"] is False
+    assert _raw()["distributions"]["uniform"]["most_likely_used"] is False
+    assert _raw()["distributions"]["uniform"]["most_likely_affects_degeneracy"] is False
+    assert _raw()["distributions"]["uniform"]["most_likely_affects_uniform_consumption"] is False
+
+
+def test_69_the_four_required_uniform_cases() -> None:
+    """A .. D from the Step-1 hardening review.
+
+    Accepted Phase-5 D1 ignores Uniform's Most Likely numerically and excludes it
+    from the calculation fingerprint. It must therefore not be able to change
+    dispatch, RNG consumption, stream state or request identity.
+    """
+    degenerate = _raw()["distributions"]["degenerate"]
+    per_sample = _raw()["distributions"]["uniform"]["uniforms_per_non_degenerate_sample"]
+
+    # A. Min = Max, Most Likely BLANK -> degenerate, zero consumption.
+    assert _degenerate_by_contract("uniform", 100.0, None, 100.0)
+    # B. Min = Max, Most Likely POPULATED and unrelated -> still degenerate.
+    assert _degenerate_by_contract("uniform", 100.0, 42.0, 100.0)
+    # Under the withdrawn common predicate, case B was NOT degenerate: it would
+    # have entered the sampler and consumed a uniform.
+    assert not (100.0 == 42.0 == 100.0)
+
+    for case in (None, 42.0, 100.0, -7.5):
+        assert _degenerate_by_contract("uniform", 100.0, case, 100.0), case
+        assert degenerate["uniforms_consumed"] == 0
+        assert degenerate["sampler_entered"] is False
+        assert degenerate["stream_state_changed"] is False
+
+    # C. Two different ignored Most Likely values, same Min/Max: identical
+    #    semantics, so identical consumption.
+    assert _degenerate_by_contract("uniform", 5.0, 1.0, 5.0) == (
+        _degenerate_by_contract("uniform", 5.0, 999.0, 5.0)
+    )
+
+    # D. Non-degenerate Uniform a < b -> exactly one uniform.
+    assert not _degenerate_by_contract("uniform", 0.0, 50.0, 100.0)
+    assert not _degenerate_by_contract("uniform", 0.0, None, 100.0)
+    assert per_sample == 1
+
+    # Triangular and Beta-PERT keep the three-way condition, and under the
+    # accepted ordering a <= m <= b it is equivalent for legal input.
+    for family in ("triangular", "beta_pert"):
+        assert _degenerate_by_contract(family, 7.0, 7.0, 7.0)
+        assert not _degenerate_by_contract(family, 0.0, 50.0, 100.0)
 
 
 if __name__ == "__main__":

@@ -248,7 +248,22 @@ distributions:
   # and BEFORE parameterisation, so Beta's r = (m-a)/(b-a) is never formed and
   # 0/0 cannot arise.
   degenerate:
-    condition: "a == m == b"
+    # FAMILY-SPECIFIC, and it has to be. The previous common predicate
+    # `a == m == b` made a degenerate Uniform depend on Most Likely, which
+    # accepted Phase-5 D1 IGNORES numerically and excludes from the calculation
+    # fingerprint. A Uniform with Min = Max and a populated, unrelated Most
+    # Likely was therefore treated as non-degenerate: it would enter the sampler
+    # and consume a uniform, so an ignored input silently changed RNG
+    # consumption and every subsequent draw on that stream.
+    #
+    # For Triangular and Beta-PERT the accepted ordering a <= m <= b already
+    # makes a == b imply m == a, so the explicit three-way condition is a
+    # statement of the semantic rather than an extra restriction.
+    conditions:
+      uniform: "a == b"
+      triangular: "a == m == b"
+      beta_pert: "a == m == b"
+    most_likely_read_by_uniform_degeneracy: false
     detected_before_dispatch: true
     detected_before_parameterisation: true
     returns: "a"
@@ -258,7 +273,11 @@ distributions:
     applies_to_all_families: true
 
   uniform:
+    # Not read numerically, not read for degeneracy, and not in the calculation
+    # fingerprint. Phase-5 D1, inherited unchanged.
     most_likely_used: false
+    most_likely_affects_degeneracy: false
+    most_likely_affects_uniform_consumption: false
     transform: "x = (1 - u) * a + u * b"
     formulation: "stable_convex"
     uniforms_per_non_degenerate_sample: 1
