@@ -1,16 +1,22 @@
 <#
 .SYNOPSIS
     PCCM Stage-B bootstrap: turn the generated Stage-A .xlsx into the macro-enabled
-    .xlsm, with the locked worksheet CodeNames, the Phase-4 VBA modules and the
-    Phase-4 command buttons.
+    .xlsm, with the locked worksheet CodeNames, every manifest-declared VBA module
+    and the command buttons.
 
 .DESCRIPTION
-    Stage A (Linux, Python, openpyxl) produces PCCM_stageA.xlsx plus two generated
-    inputs this script consumes:
+    Stage A (Linux, Python, openpyxl) produces PCCM_stageA.xlsx, the manifest, and
+    the generated VBA projections this script consumes:
 
         build/stage_b_manifest.json   sheet CodeNames, module list, button
                                       definitions, entry points, file format
-        build/vba/modConstants.bas    the generated VBA constants module
+        build/vba/*.bas               the generated VBA projection modules
+
+    A module is generated when the MANIFEST says so - `generated: true` on its
+    vba.modules entry - and this script reads that flag rather than a list of its
+    own. At the time of writing the generated set is modConstants, modCalcContract
+    and modSimContract; that is the CURRENT INVENTORY, not a dependency. Adding or
+    removing a generated projection is a contract change and needs no edit here.
 
     Nothing about the model is restated here. Every sheet name, CodeName, macro
     name, button caption and module name comes from the manifest, so this script
@@ -21,8 +27,8 @@
       2. open a NEW, owned Excel instance and capture its process identity
       3. open the Stage-A workbook and save it as .xlsm (FileFormat 52)
       4. apply the 14 locked worksheet CodeNames
-      5. import every declared VBA module
-      6. create or refresh the Phase-4 buttons and assign OnAction
+      5. import every manifest-declared VBA module, source and generated alike
+      6. create or refresh the declared command buttons and assign OnAction
       7. save, close, and release COM in explicit named order
       8. reopen in a FRESH Excel instance and verify what actually persisted
       9. close naturally
@@ -106,11 +112,12 @@ try {
     #
     #   source modules     repository-relative. They are version-controlled input
     #                      and are the same files whatever build is being assembled.
-    #   generated modules  BUILD-DIRECTORY-relative. modConstants.bas is emitted
-    #                      beside the workbook, the manifest and the scenario fixture
-    #                      it belongs to, so it must come from the SUPPLIED BuildDir.
+    #   generated modules  BUILD-DIRECTORY-relative. A generated projection is
+    #                      emitted beside the workbook, the manifest and the
+    #                      scenario fixture it belongs to, so it must come from the
+    #                      SUPPLIED BuildDir.
     #
-    # Resolving the generated module against the repository root instead meant the
+    # Resolving a generated module against the repository root instead meant the
     # functional harness copied a disposable build to %TEMP% and then imported
     # modConstants.bas from the real repository build -- testing a different
     # generated source than the manifest and scenarios sitting beside the workbook.
@@ -209,7 +216,7 @@ try {
 
     # --- 5. import VBA ------------------------------------------------------
     # Remove any same-named component first so a re-run replaces rather than
-    # duplicating (Excel would otherwise create modConstants1).
+    # duplicating (Excel would otherwise create a modConstants1 beside it).
     foreach ($file in $moduleFiles) {
         $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($file)
         # The acquire/use path is wrapped. With the release written inline after
@@ -253,7 +260,7 @@ try {
         if ($importedNames -notcontains $m.name) { $missingModules += $m.name }
     }
     if ($missingModules.Count -gt 0) { throw ("VBA module(s) missing after import: " + ($missingModules -join ', ')) }
-    Add-Step 'Import the Phase-4 VBA modules' 'PASS' (($manifest.vba.modules | ForEach-Object { $_.name }) -join ', ')
+    Add-Step 'Import every manifest-declared VBA module' 'PASS' (($manifest.vba.modules | ForEach-Object { $_.name }) -join ', ')
 
     # --- 6. buttons ---------------------------------------------------------
     foreach ($button in $manifest.buttons) {

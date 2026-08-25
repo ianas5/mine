@@ -1179,9 +1179,11 @@ def test_77_the_global_scalar_entry_still_works_beside_the_one_grant() -> None:
 def test_78_a_valid_synthetic_scoped_entry_is_accepted() -> None:
     """A scoped exception works ONLY when its owner is a declared module.
 
-    Synthetic on purpose: `modSimRng` does not exist yet, so the real MRG32k3a
-    entry must stay globally forbidden. This fixture proves the schema works
-    without granting anything to code nobody has written.
+    Synthetic on purpose, and it stays synthetic: this fixture exercises the
+    SCHEMA on a contract of its own making, so it keeps proving the rule shape
+    whatever the real contract grants. Step 6 has since made the first real
+    grant - MRG32k3a to modSimRng - and that grant is asserted against the
+    actual contract in `test_phase6_sim_rng_vba.py`, not here.
     """
     data = _structure_base()
     owner = data["vba"]["modules"][0]["name"]

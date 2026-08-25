@@ -594,7 +594,8 @@ function Test-VbaProcedureDeclared {
 # THE VBPROJECT COMPONENT INVENTORY
 # ===========================================================================
 # RUN-2 ROOT. P5-M and P5-D8 both enumerated VBComponents and compared every
-# component NAME against the manifest's 15-entry vba.modules collection:
+# component NAME against the manifest's vba.modules collection, which held
+# fifteen entries at the time:
 #
 #   FAIL the inventory is exactly the 15 manifest modules again -- present 30 of 15
 #   FAIL no module outside the manifest persists -- extra: ThisWorkbook,
@@ -612,9 +613,9 @@ function Test-VbaProcedureDeclared {
 # Excel when a sheet exists, not imported by the bootstrap.
 #
 # So the inventory is partitioned BY COMPONENT TYPE and each partition is judged
-# against what actually governs it. Nothing is weakened to "at least 15": the
-# standard-module set must still equal the manifest set exactly, in both
-# directions, by name.
+# against what actually governs it. Nothing is weakened to a count comparison of
+# any kind: the standard-module set must still equal the manifest-declared
+# module set exactly, in both directions, by name.
 #
 # The VBIDE type constants, named rather than spelled as bare integers at the
 # comparison sites:
@@ -3684,9 +3685,24 @@ function Invoke-Phase5GateBScenarios {
         # project that had gained a stray module and lost a real one; a
         # name-only scan over every component fails on the sheet and
         # ThisWorkbook documents Excel creates, which is what Run 2 hit.
+        #
+        # NO PRODUCTION-MODULE COUNT APPEARS IN THIS BLOCK, AND NONE MAY BE
+        # ADDED. This gate used to read `$expected.Count -eq 15`, which was a
+        # SECOND AUTHORITY for something the manifest already states. The moment
+        # Phase 6 legitimately added modSimContract and modSimRng, a CORRECT
+        # workbook failed on the literal - the harness disagreed with the
+        # contract, and the contract was right. Replacing 15 with 17 would only
+        # move the next failure, so the literal is gone rather than updated.
+        #
+        # What is proved instead is the SET, by name and by type, in both
+        # directions, by Add-Phase5ModuleInventoryChecks below. A legitimate
+        # module addition needs no edit here at all.
         $expected = @($Manifest.vba.modules | ForEach-Object { [string]$_.name })
-        $null = Add-Check $list 'the manifest declares 15 production modules' `
-            ($expected.Count -eq 15) ("declared " + $expected.Count)
+        $blankNames = @($expected | Where-Object { [string]::IsNullOrWhiteSpace($_) })
+        $uniqueNames = @($expected | Sort-Object -Unique)
+        $null = Add-Check $list 'the manifest names a well-formed production module set' `
+            (($blankNames.Count -eq 0) -and ($expected.Count -eq $uniqueNames.Count)) `
+            ("declared: " + ($expected -join ', '))
         $components = @(Get-Phase5VbComponentInventory -Workbook $Workbook)
         Add-Phase5ModuleInventoryChecks -List $list -Components $components `
             -ExpectedModules $expected -ExpectedSheetCount (@($Manifest.sheets).Count) `
@@ -3922,7 +3938,8 @@ function Invoke-Phase5GateBScenarios {
         # VBA compiles on demand, so a project answers a call while an unreached
         # procedure body still holds a declaration the parser rejects. The
         # whole-project claim belongs to P5-CMP alone.
-        Add-Phase5Result 'P5-M' 'Persisted project: 15 modules by name, 5 buttons, 6 API procedures' `
+        Add-Phase5Result 'P5-M' `
+            'Persisted project: manifest module set by name, 5 buttons, 6 API procedures' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Phase5Result 'P5-M' 'Persisted project inventory' 'FAIL' (Format-Phase5Err $_)
@@ -4440,8 +4457,9 @@ function Invoke-Phase5GateBScenarios {
     # P5-D8. THE DIAGNOSTIC MODULE IS REMOVED AGAIN
     # -------------------------------------------------------------------
     # Evidence infrastructure, not product. The inventory must return to exactly
-    # the 15 manifest modules BEFORE anything else is asserted about the project,
-    # and no accepted workbook is ever saved with it installed.
+    # the manifest-declared production modules BEFORE anything else is asserted
+    # about the project, and no accepted workbook is ever saved with it
+    # installed.
     try {
         $list = New-Checklist
         $project = $null; $components = $null
@@ -4487,7 +4505,8 @@ function Invoke-Phase5GateBScenarios {
         $stillCallable = $false
         try { $null = $Excel.Run('GBD_Ping'); $stillCallable = $true } catch { $stillCallable = $false }
         $null = Add-Check $list 'no diagnostic procedure is callable any more' (-not $stillCallable)
-        Add-Phase5Result 'P5-D8' 'Transient diagnostic module removed; inventory back to 15' `
+        Add-Phase5Result 'P5-D8' `
+            'Transient diagnostic module removed; inventory back to the manifest module set' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         Add-Phase5Result 'P5-D8' 'Transient diagnostic module removal' 'FAIL' (Format-Phase5Err $_)

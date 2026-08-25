@@ -963,8 +963,32 @@ def test_37_no_calculate_button_and_no_new_production_module() -> None:
     assert "'every macro-bound shape is one of the five declared buttons'" in source
     assert "'no undeclared shape invokes a PCCM_ procedure'" in source
     assert "'the button ' + $wantSheet + '!' + $wantName + ' calls ' + $wantAction" in source
-    assert "'the manifest declares 15 production modules'" in source
+    assert "'the manifest names a well-formed production module set'" in source
     assert "': the production module ' + $name + ' is a standard module'" in source
+
+
+# A FIXED PRODUCTION-MODULE COUNT IS A SECOND AUTHORITY.
+#
+# P5-M used to gate on `$expected.Count -eq 15` beside the exact-set check. The
+# helper was already manifest-derived, so the literal proved nothing the set did
+# not - until Phase 6 legitimately added modSimContract and modSimRng, at which
+# point a CORRECT workbook failed on it.
+#
+# The defect is the SECOND AUTHORITY, not the number 15. `-eq 17` would be the
+# same defect one module later, so the assertions below reject a production-module
+# count literal of ANY value, in either direction, and `test_38b` proves that
+# rejection is real by reintroducing `-eq 17` and requiring a failure.
+_MODULE_COUNT_LITERAL = re.compile(
+    r"\$expected\.Count\s+-(?:eq|ge|gt|le|lt|ne)\s+\d+"
+    r"|manifest declares \d+ production modules"
+    r"|\d+\s+production modules"
+)
+
+
+def _active_p5m_block(source: str) -> str:
+    """The ACTIVE P5-M block, comment-free, bounded by its neighbours' results."""
+    return source[source.index("Add-Phase5Result 'P5-FX'"):
+                  source.index("Add-Phase5Result 'P5-M'")]
 
 
 def test_38_the_production_modules_are_asserted_by_name_not_by_count() -> None:
@@ -982,12 +1006,55 @@ def test_38_the_production_modules_are_asserted_by_name_not_by_count() -> None:
     # module and lost a real one.
     assert "': no standard module outside the manifest persists'" in helper
     assert "$ExpectedModules -notcontains $_" in helper
-    # P5-M reaches the production namespace through that helper. The block is
-    # bounded by its neighbours' results rather than by a character count, which
-    # a growing scenario silently outruns.
-    block = source[source.index("Add-Phase5Result 'P5-FX'"):
-                   source.index("Add-Phase5Result 'P5-M'")]
+    # The helper takes its expectation from its parameter and never from a
+    # number of its own.
+    assert not _MODULE_COUNT_LITERAL.search(helper), _MODULE_COUNT_LITERAL.search(helper)
+
+    block = _active_p5m_block(source)
+    # A. P5-M derives the expectation from the manifest.
+    assert ("$expected = @($Manifest.vba.modules | ForEach-Object { [string]$_.name })"
+            in block), "P5-M does not read the module set from the manifest"
+    # B. and reaches the production namespace through the shared helper, so P5-M
+    #    and P5-D8 cannot drift apart.
     assert "Add-Phase5ModuleInventoryChecks -List $list -Components $components" in block
+    assert "-ExpectedModules $expected" in block
+    # D. and states no production-module count of its own, at any value.
+    found = _MODULE_COUNT_LITERAL.search(block)
+    assert not found, f"P5-M reintroduced a production-module count literal: {found.group(0)!r}"
+
+
+def test_38a_p5_d8_returns_the_inventory_to_the_manifest_set_not_a_count() -> None:
+    source = _executable(SCENARIOS)
+    block = source[source.index("Add-Phase5Result 'P5-M'"):
+                   source.index("Add-Phase5Result 'P5-D8'")]
+    assert "Add-Phase5ModuleInventoryChecks -List $list -Components $inventory" in block
+    found = _MODULE_COUNT_LITERAL.search(block)
+    assert not found, f"P5-D8 carries a production-module count literal: {found.group(0)!r}"
+    # The CURRENT result titles say what is proved without saying how many.
+    raw = _text(SCENARIOS)
+    assert ("'Persisted project: manifest module set by name, 5 buttons, "
+            "6 API procedures'") in raw
+    assert ("'Transient diagnostic module removed; inventory back to the "
+            "manifest module set'") in raw
+
+
+def test_38b_reintroducing_a_hard_coded_module_count_is_refused() -> None:
+    """The mutation control: `-eq 17` is the same defect as `-eq 15`."""
+    source = _executable(SCENARIOS)
+    anchor = "$expected = @($Manifest.vba.modules | ForEach-Object { [string]$_.name })"
+    assert source.count(anchor) >= 1
+    for reintroduced in (
+        "$null = Add-Check $list 'the manifest declares 17 production modules' `\n"
+        "            ($expected.Count -eq 17) (\"declared \" + $expected.Count)",
+        "$null = Add-Check $list 'inventory' ($expected.Count -ge 17) ''",
+        "$null = Add-Check $list 'inventory' ($expected.Count -eq 15) ''",
+    ):
+        damaged = source.replace(anchor, anchor + "\n        " + reintroduced, 1)
+        assert damaged != source
+        found = _MODULE_COUNT_LITERAL.search(_active_p5m_block(damaged))
+        assert found, f"the detector missed a reintroduced count: {reintroduced!r}"
+    # And the accepted source is clean, so the control is not measuring noise.
+    assert not _MODULE_COUNT_LITERAL.search(_active_p5m_block(source))
 
 
 def test_39_no_linux_test_here_executes_windows_or_claims_a_run() -> None:

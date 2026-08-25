@@ -14,6 +14,15 @@ make the construct legal in a module that does not exist; the owner landed
 before the grant would make the module illegal the moment it was written. There
 is no ordering of two commits that is correct, so there is one commit.
 
+> **HARNESS SETTLEMENT ROUND.** Independent review of `45d40f2` confirmed the
+> Step-6 core — 74 conformance/mutation tests passing, Stage A green, all three
+> generated hashes as reported — and did **not** reopen `modSimRng`. It found one
+> defect this record had misclassified: P5-M still carried an obsolete
+> `$expected.Count -eq 15` gate beside the manifest-derived exact-set check, so a
+> **correct** 17-module workbook would fail Gate B. The first submission called
+> that cosmetic. It was not. It also corrected the test-count arithmetic. Both
+> are fixed here and recorded in §12; `modSimRng.bas` is byte-identical.
+
 **Not in this step.** No `modSimSample`, `modSimEngine`, `modSimStats`,
 `modSimFingerprint`, `modSimReport` or `PCCM_RunSimulation`. No sampler, no
 iteration loop, no statistic, no quantile, no contingency, no digest, no
@@ -303,9 +312,11 @@ emitted in Step 5 but did not enter the registry then: Step 6 is the first
 implementation step that depends on it, and the registry is a statement about
 what the Stage-B import must carry, not about what the emitter happens to write.
 
-`build_stage_b.ps1` needed no semantic change: it iterates
-`$manifest.vba.modules` rather than globbing a directory, so both new modules are
-imported by the existing generic algorithm.
+`build_stage_b.ps1` needed no **semantic** change: it iterates
+`$manifest.vba.modules` and branches on each entry's own `generated` flag rather
+than globbing a directory or holding a list of its own, so both new modules are
+imported by the existing generic algorithm. Its **documentation** was stale and
+is corrected in §12.3.
 
 **Stage A is unaffected.** The workbook remains `.xlsx` with no
 `vbaProject.bin` and no Phase-6 runtime content. Step 6 adds source VBA to the
@@ -424,6 +435,7 @@ None was deleted, skipped or weakened; all now decide per module.
 | `test_phase5_gate_b_harness_source.py` | `_scan_production_against_rules()`; the P5-EV manifest module list |
 | `test_phase6_sim_contract.py`, `test_phase6_sim_contract_validation.py` | the registry now contains `modSimContract` |
 | `test_phase6_stage_a.py` | `test_21`/`test_22` inverted: the registry entry and the grant now *must* exist |
+| `test_phase5_gate_b_harness_source.py` (settlement round) | `test_38` rebuilt, `test_38a`/`test_38b` added — see §12.4 |
 
 ### 8.4 Boundary excess, disclosed
 
@@ -444,12 +456,12 @@ tests/test_phase6_sim_sample.py        the projection's module registration
 
 `tests/test_phase4_structure.py` was allowed by §22 and needed no change.
 
-### 8.5 Cosmetic staleness left alone
+### 8.5 The P5-M module-inventory gate — CORRECTED IN THE SETTLEMENT ROUND
 
-The P5-M Gate-B result title still reads "15 modules by name" although the check
-is now manifest-derived and sees 17. The title is display text in
-`phase5_gate_b_scenarios.ps1`, whose §22 allowance covers **P5-EV structured-rule
-enforcement only**, so it was not touched. **Flagged for the Gate-B step.**
+The first submission of this step reported the P5-M "15 modules" wording as
+**cosmetic**. That was wrong, and §12 records the correction: the wording was the
+visible half of an executable `$expected.Count -eq 15` gate that would have failed
+a correct 17-module workbook.
 
 ---
 
@@ -466,12 +478,68 @@ mandatory before Gate-B harness extension or Windows execution.
 ### 10.1 Python suite
 
 ```
-2394 passed, 0 failed          (448.76s)
+2396 passed, 0 failed          (305.72s)
 ```
 
-The pre-Step-6 baseline was 2320. The 74 new tests are 47 Step-6 conformance
-tests and 27 mutation controls. **No test was deleted, skipped or weakened**;
-the 25 enforcement tests the activation turned red were made module-aware.
+**The collection arithmetic, corrected.** The first submission said the parent
+baseline was 2320. It was **2319**. Derived by collecting both revisions and
+diffing the node IDs, not by subtraction:
+
+| | Collected |
+|---|---|
+| Accepted Step-5 package `fa30424` | **2319** |
+| Step-6 package `45d40f2` | **2394** |
+| Step-6 after the settlement round | **2396** |
+
+Composition of the +75 from `fa30424` to `45d40f2`:
+
+```
++47  tests/test_phase6_sim_rng_vba.py             Step-6 conformance
++27  tests/test_phase6_sim_rng_vba_validation.py  Step-6 mutation controls
+ +1  tests/test_phase4_stage_b_source.py::test_15a_the_one_scoped_grant_is_real_and_is_the_only_one
+     an additional D6-11 scoped-source conformance test in an existing suite
+---
++75
+```
+
+and the +2 the settlement round adds (§12.4):
+
+```
++1  test_phase5_gate_b_harness_source.py::test_38a_p5_d8_returns_the_inventory_to_the_manifest_set_not_a_count
++1  test_phase5_gate_b_harness_source.py::test_38b_reintroducing_a_hard_coded_module_count_is_refused
+---
++2      total from fa30424: +77
+```
+
+Nine further tests were **renamed in place**, not added: their subject inverted
+from "no Phase-6 VBA exists" / "no D6-11 exception was granted" to "only the
+authorised Phase-6 VBA exists" / "the grant exists and is the only one". Nine
+node IDs left the collection and nine entered it, netting zero:
+
+```
+test_phase4_stage_b_source.py       test_15_no_forbidden_construct_appears_in_phase_4_vba
+                                 -> test_15_no_forbidden_construct_appears_where_it_is_forbidden
+test_phase5_report_source.py        test_02_the_final_phase_5_inventory_is_fifteen_modules
+                                 -> test_02_the_phase_5_inventory_is_complete_and_nothing_of_phase_5_moved
+test_phase6_sim_contract.py         test_50_no_phase6_vba_or_emission_exists
+                                 -> test_50_only_the_authorised_phase6_vba_exists
+test_phase6_sim_contract.py         test_67_d6_11_activation_precondition_is_recorded
+                                 -> test_67_d6_11_activated_exactly_once_and_only_with_its_owner
+test_phase6_sim_contract_validation.py  test_77_the_global_scalar_entry_still_works
+                                 -> test_77_the_global_scalar_entry_still_works_beside_the_one_grant
+test_phase6_sim_rng.py              test_36_no_phase6_vba_exists
+                                 -> test_36_the_only_phase6_vba_is_the_generator_backbone
+test_phase6_sim_sample.py           test_43_no_phase6_vba_exists
+                                 -> test_43_no_sampler_vba_exists
+test_phase6_stage_a.py              test_21_no_d6_11_exception_was_granted
+                                 -> test_21_the_generated_module_needs_no_d6_11_exception
+test_phase6_stage_a.py              test_22_the_module_is_not_in_the_stage_b_module_registry_yet
+                                 -> test_22_the_module_is_in_the_stage_b_registry_as_a_generated_module
+```
+
+**No test was deleted, skipped or weakened.** The 25 enforcement tests the
+activation turned red were made module-aware; the nine above changed their
+subject because the fact they assert changed.
 
 | Count | What |
 |---|---|
@@ -604,4 +672,179 @@ Unchanged.
 | `modSimContract` in the Stage-B registry | §7 |
 | no Step 7 | no `modSimSample`, `modSimEngine`, `modSimStats`, `modSimFingerprint`, `modSimReport`, `PCCM_RunSimulation` |
 | no Windows/Excel runtime ran | none was authorised and none was run |
-| Gate-B temp-dir debt | **OPEN**, §9 |
+| Gate-B temp-dir debt | **OPEN**, §9 and §12.6 |
+
+### Settlement-round targets
+
+| Target | Status |
+|---|---|
+| P5-M contains no fixed production-module count | §12.1, proved by `test_38` (D) |
+| P5-M inventory manifest-driven and bidirectional | §12.1, proved by `test_38` (A)(B)(C) |
+| P5-D8 current wording count-independent | §12.2, proved by `test_38a` |
+| historical Run-2 `15` evidence preserved | §12.2 |
+| `build_stage_b` documentation manifest-accurate | §12.3, algorithm unchanged |
+| Step-6 test-count record arithmetically correct | §10.1 |
+| `modSimRng.bas` byte-identical | `a258b0d6…`, §12.6 |
+| D6-11 scope unchanged | §12.6 |
+| all tests pass | 2396 passed, 0 failed |
+| Stage A passes | 351 passed, 0 failed |
+| no Step 7 exists | no `modSim{Sample,Engine,Stats,Fingerprint,Report}`, no `PCCM_RunSimulation` |
+| no Windows/Excel runtime ran | none was authorised and none was run |
+
+---
+
+## 12. Harness settlement round
+
+Independent review of `45d40f2` did not reopen `modSimRng` and confirmed the
+Step-6 core: 74 conformance/mutation tests passing, Stage A 351/0, and all three
+generated hashes as reported. Four things needed correcting.
+
+### 12.1 P5-M carried a second authority — and the first record misclassified it
+
+The exact-set inventory helper `Add-Phase5ModuleInventoryChecks` **was** already
+manifest-derived: it proves the persisted standard-module set equals
+`manifest.vba.modules` by name, in both directions, with no tolerance.
+
+But P5-M carried an **additional, executable** gate beside it:
+
+```powershell
+$expected = @($Manifest.vba.modules | ForEach-Object { [string]$_.name })
+$null = Add-Check $list 'the manifest declares 15 production modules' `
+    ($expected.Count -eq 15) ("declared " + $expected.Count)
+```
+
+After Step 6 the accepted manifest declares **17** production standard modules,
+so that check is guaranteed to fail on a **correct** workbook. The harness would
+have disagreed with the contract, and the contract would have been right.
+
+The first submission of this record described the issue as "cosmetic staleness"
+in the result *title*. It was not cosmetic; the title was the visible half of an
+executable gate. **That misclassification is withdrawn.**
+
+**The gate is removed, not renumbered.** `-eq 17` would be the identical defect
+one module later, so no production-module count literal appears in the block at
+all — the defect is the second authority, not the number 15. What P5-M now
+states about the declared list is that it is well-formed (no blank name, no
+duplicate) and what its members are; the **set** is proved by the helper.
+
+```powershell
+$expected    = @($Manifest.vba.modules | ForEach-Object { [string]$_.name })
+$blankNames  = @($expected | Where-Object { [string]::IsNullOrWhiteSpace($_) })
+$uniqueNames = @($expected | Sort-Object -Unique)
+$null = Add-Check $list 'the manifest names a well-formed production module set' `
+    (($blankNames.Count -eq 0) -and ($expected.Count -eq $uniqueNames.Count)) `
+    ("declared: " + ($expected -join ', '))
+```
+
+A future legitimate module addition now requires **no** edit to the Gate-B
+harness.
+
+### 12.2 Current result text is count-independent; historical evidence is not touched
+
+| | Before | After |
+|---|---|---|
+| P5-M title | `Persisted project: 15 modules by name, 5 buttons, 6 API procedures` | `Persisted project: manifest module set by name, 5 buttons, 6 API procedures` |
+| P5-D8 title | `Transient diagnostic module removed; inventory back to 15` | `Transient diagnostic module removed; inventory back to the manifest module set` |
+| P5-D8 comment | "must return to exactly the 15 manifest modules" | "must return to exactly the manifest-declared production modules" |
+| inventory header | "Nothing is weakened to *at least 15*" | "Nothing is weakened to a count comparison of any kind" |
+
+The button and API-procedure counts stay: they are five and six by contract and
+were not part of this defect.
+
+**Historical Run-2 evidence is preserved verbatim.** These are records of what
+Run 2 actually reported and remain unchanged:
+
+```
+FAIL the inventory is exactly the 15 manifest modules again -- present 30 of 15
+15 standard modules + 14 sheet documents + 1 ThisWorkbook = 30 components
+All fifteen production modules were individually confirmed present ...
+P5-M PASS fifteen modules present, and six API procedures reported callable
+          - under the evidence model P5-M had at the time            (Run 7)
+```
+
+One Run-2 sentence gained a clarifier — "the manifest's vba.modules collection,
+**which held fifteen entries at the time**" — so a reader cannot mistake the
+historical figure for a current one. The tests that model the historical Run-2
+topology (15 standard modules + 14 sheet documents + ThisWorkbook = 30
+components) keep their 15: they are proving the old failure mode, not the current
+inventory.
+
+### 12.3 `build_stage_b.ps1` documentation
+
+The import algorithm was already generic and is **unchanged**:
+
+```powershell
+foreach ($m in $manifest.vba.modules) {
+    $dir = $srcDir
+    if ($m.generated) { $dir = $genDir }
+    ...
+}
+```
+
+Only the comments, help block and one step label moved:
+
+- "PCCM_stageA.xlsx plus **two generated inputs**" → the workbook, the manifest,
+  and the generated VBA projections;
+- `build/vba/modConstants.bas — the generated VBA constants module` →
+  `build/vba/*.bas — the generated VBA projection modules`, with a note that a
+  module is generated when the **manifest** says so, and that the current
+  inventory — `modConstants`, `modCalcContract`, `modSimContract` — is an
+  inventory, not a dependency;
+- `Import the Phase-4 VBA modules` → `Import every manifest-declared VBA module`;
+- step 5 of the ordered description → "import every manifest-declared VBA
+  module, source and generated alike".
+
+No execution dependency on exactly three generated modules was introduced.
+
+### 12.4 The test that pinned the defect
+
+`tests/test_phase5_gate_b_harness_source.py` asserted the literal
+`'the manifest declares 15 production modules'` was present in the harness — it
+was protecting the bug. It is replaced by four future-proof requirements plus a
+mutation control:
+
+| Test | Proves |
+|---|---|
+| `test_38` (A) | P5-M derives `$expected` from `$Manifest.vba.modules` |
+| `test_38` (B) | P5-M calls `Add-Phase5ModuleInventoryChecks` with `-ExpectedModules $expected` |
+| `test_38` (C) | the helper requires exact set equality by name and rejects stray standard modules, in both directions — **unweakened** |
+| `test_38` (D) | the **active** P5-M block contains no production-module count literal, at any value |
+| `test_38a` | P5-D8 goes through the same helper, carries no count literal, and both current result titles are count-independent |
+| `test_38b` | the mutation control: reintroducing `-eq 17`, `-ge 17` **or** `-eq 15` is detected, and the accepted source is clean |
+
+The rejection pattern matches `$expected.Count -<op> <integer>` for any
+comparison operator and any integer, and `manifest declares <integer> production
+modules`. It runs over `_executable(SCENARIOS)`, which strips comments, so the
+explanatory comment naming the removed `-eq 15` does not satisfy or trip it.
+
+### 12.5 Out of boundary, disclosed
+
+Two further files still carry the number 15 in **current** display text and were
+**not** touched, because §10 of the settlement authorisation does not allow them:
+
+```
+bootstrap/windows/phase4_functional_test.ps1:134
+    "P5-D8  The diagnostic module REMOVED and the inventory back to 15"
+docs/phase5_gate_b_harness.md:1015
+    "| P5-D8 | The diagnostic module removed, inventory back to 15 |"
+```
+
+Both are descriptive text about P5-D8, not executable gates — no check reads
+either. **Flagged for whichever step next opens those files.**
+
+`tests/test_phase6_sim_contract_validation.py::test_78` had its stale docstring
+corrected (§7 of the settlement authorisation, optional and non-semantic): the
+fixture stays synthetic and unchanged, and the text no longer says `modSimRng`
+does not exist.
+
+### 12.6 Unchanged by this round
+
+`src/vba/modSimRng.bas` is **byte-identical** to `45d40f2`. `spec/**`,
+`evidence/**` and `builder/**` are untouched, so no contract or manifest
+authority moved and every generated hash is unchanged. D6-11 remains exactly as
+accepted: `MRG32k3a → [modSimRng]`, `RunSimulation` global, structured rules the
+enforcement authority, P5-EV module-aware.
+
+**GATE-B TEMP-DIR CLEANUP DEBT — OPEN.** This round fixed an inventory
+assertion. It did not touch the temp-directory lifecycle, and the debt must still
+close before Gate-B harness extension or Windows execution.
