@@ -28,6 +28,11 @@ implementation has to reproduce it exactly, not merely reproduce the value.
 A rejected Cheng proposal consumes both of its uniforms and the retry continues
 from the resulting state. There is no rewind.
 
+Every public sampler that receives RNG state validates that state once, before
+any path can return - the zero-consumption degenerate path included. Consuming
+nothing is a property of the distribution, not an exemption from the state
+contract.
+
 --------------------------------------------------------------------------------
 NUMERICS
 --------------------------------------------------------------------------------
@@ -255,6 +260,13 @@ def sample_uniform(
     a = _finite(a, "Min", FAMILY_UNIFORM)
     b = _finite(b, "Max", FAMILY_UNIFORM)
     _check_ordering(FAMILY_UNIFORM, a, None, b)
+    # The incoming state is validated ONCE, here, before any path can return -
+    # a degenerate distribution included. Without this an invalid state paired
+    # with a degenerate driver returned a constant and never touched the RNG, so
+    # the sampler boundary silently accepted a state the recurrence cannot
+    # legally be in. Zero consumption is a property of the DISTRIBUTION; it is
+    # not a licence to skip the state contract.
+    reference.validate_state(state)
     if is_degenerate(FAMILY_UNIFORM, a, None, b):
         return SampleResult(value=a, state=state, uniforms_consumed=0)
     draw = reference.next_uniform(state)
@@ -271,6 +283,9 @@ def sample_triangular(
     m = _finite(m, "Most Likely", FAMILY_TRIANGULAR)
     b = _finite(b, "Max", FAMILY_TRIANGULAR)
     _check_ordering(FAMILY_TRIANGULAR, a, m, b)
+    # Validated before any path can return, degenerate included - see
+    # `sample_uniform` for why zero consumption is not an exemption.
+    reference.validate_state(state)
     if is_degenerate(FAMILY_TRIANGULAR, a, m, b):
         return SampleResult(value=a, state=state, uniforms_consumed=0)
     draw = reference.next_uniform(state)
@@ -410,9 +425,11 @@ def sample_prepared_beta(
     """Sample a prepared shape. Two uniforms per proposal attempt, no rewind."""
     if not isinstance(shape, PreparedBetaPert):
         raise SimSampleError(f"expected a PreparedBetaPert, got {type(shape).__name__}")
+    # Validated before any path can return, degenerate included - see
+    # `sample_uniform` for why zero consumption is not an exemption.
+    reference.validate_state(state)
     if shape.degenerate:
         return SampleResult(value=shape.a, state=state, uniforms_consumed=0)
-    reference.validate_state(state)
     if shape.dispatch == "BB":
         y, advanced, attempts = _cheng_bb(reference, state, shape)
     elif shape.dispatch == "BC":

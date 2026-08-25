@@ -29,6 +29,7 @@ sys.path.insert(0, str(PCCM_ROOT / "builder"))
 from pccm_builder import (  # noqa: E402
     RngReference,
     RngState,
+    SimRngError,
     SimSampleError,
     bernoulli_occurs,
     load_contract,
@@ -627,6 +628,104 @@ def test_29_a_non_finite_result_is_refused_not_returned() -> None:
             assert "convex rescale" in str(error)
             continue
         raise AssertionError(f"{bad!r} was returned")
+
+
+# ===========================================================================
+# state validation on the zero-consumption path
+#
+# The accepted Step-4 authorisation closed a non-blocking Step-3 edge: the
+# degenerate paths could return before the incoming RNG state reached
+# `validate_state`, so an INVALID state paired with a degenerate distribution
+# returned a constant and the sampler boundary never noticed. Consuming nothing
+# is a property of the DISTRIBUTION, not an exemption from the state contract.
+# ===========================================================================
+def _illegal_states() -> tuple[RngState, ...]:
+    """States the recurrence cannot legally be in.
+
+    The all-zero component is ABSORBING - a stream started there never leaves it
+    - and an out-of-range word is not an MRG32k3a state at all. Both look
+    perfectly ordinary as six integers, which is exactly why the boundary has to
+    reject them rather than trust its caller.
+    """
+    return (
+        RngState((0, 0, 0, 1, 2, 3)),
+        RngState((1, 2, 3, 0, 0, 0)),
+        RngState((4294967087, 2, 3, 1, 2, 3)),
+        RngState((1, 2, 3, 1, 2, 4294944443)),
+        RngState((-1, 2, 3, 1, 2, 3)),
+    )
+
+
+def test_30_an_invalid_state_with_a_degenerate_uniform_is_refused() -> None:
+    from pccm_builder import sample_uniform
+
+    for state in _illegal_states():
+        try:
+            sample_uniform(_ref(), state, 5.0, 5.0, None)
+        except SimRngError:
+            continue
+        raise AssertionError(f"a degenerate Uniform accepted the illegal state {state.words}")
+    # The control is not vacuous: the SAME degenerate call on a legal state
+    # still returns the constant and still consumes nothing.
+    result = sample_uniform(_ref(), _state(), 5.0, 5.0, None)
+    assert result.value == 5.0 and result.uniforms_consumed == 0
+    assert result.state == _state()
+
+
+def test_31_an_invalid_state_with_a_degenerate_triangular_is_refused() -> None:
+    from pccm_builder import sample_triangular
+
+    for state in _illegal_states():
+        try:
+            sample_triangular(_ref(), state, 5.0, 5.0, 5.0)
+        except SimRngError:
+            continue
+        raise AssertionError(f"a degenerate Triangular accepted the illegal state {state.words}")
+    result = sample_triangular(_ref(), _state(), 5.0, 5.0, 5.0)
+    assert result.value == 5.0 and result.uniforms_consumed == 0
+    assert result.state == _state()
+
+
+def test_32_an_invalid_state_with_a_degenerate_beta_pert_is_refused() -> None:
+    from pccm_builder import prepare_beta_pert, sample_beta_pert, sample_prepared_beta
+
+    shape = prepare_beta_pert(5.0, 5.0, 5.0)
+    assert shape.degenerate is True
+    for state in _illegal_states():
+        for call in (
+            lambda s: sample_beta_pert(_ref(), s, 5.0, 5.0, 5.0),
+            lambda s: sample_prepared_beta(_ref(), s, shape),
+        ):
+            try:
+                call(state)
+            except SimRngError:
+                continue
+            raise AssertionError(
+                f"a degenerate Beta-PERT accepted the illegal state {state.words}"
+            )
+    result = sample_prepared_beta(_ref(), _state(), shape)
+    assert result.value == 5.0 and result.uniforms_consumed == 0
+    assert result.state == _state()
+
+
+def test_33_the_accepted_step3_vectors_are_unchanged_by_the_cleanup() -> None:
+    """The cleanup added a refusal; it moved no accepted number.
+
+    A guard that also perturbed a valid draw would be a semantic change wearing a
+    defensive label, so the first uniform of each family is pinned here against
+    the values the Step-3 reference produced before it.
+    """
+    from pccm_builder import sample_distribution
+
+    start = _state()
+    assert sample_distribution(_ref(), start, FAMILY_UNIFORM, 0.0, None, 100.0).value == (
+        12.701112204657713
+    )
+    assert sample_distribution(
+        _ref(), start, FAMILY_TRIANGULAR, 0.0, 30.0, 100.0
+    ).uniforms_consumed == 1
+    beta = sample_distribution(_ref(), start, FAMILY_BETA_PERT, 0.0, 50.0, 100.0)
+    assert beta.uniforms_consumed == 2 * beta.proposal_attempts
 
 
 if __name__ == "__main__":

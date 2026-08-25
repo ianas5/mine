@@ -45,6 +45,29 @@ from .sim_rng import (
     RngState,
     SimRngError,
 )
+from .sim_oracle import (
+    AnalyticalExpectation,
+    ComponentDiagnostics,
+    Contingency,
+    DeterministicBase,
+    PercentileLadder,
+    PreparedSimulationDriver,
+    PreparedSimulationModel,
+    SimOracleError,
+    SimulationResult,
+    SimulationSummary,
+    business_minimum_iterations,
+    contingency_at,
+    deterministic_base_of,
+    effective_seed_from_nonce,
+    prepare_simulation,
+    resolve_percentile_ladder,
+    result_digest,
+    result_digest_stream,
+    run_simulation,
+    validate_iterations,
+    validate_result_digest_contract,
+)
 from .sim_sample import (
     ACCEPTED_FAMILIES,
     BernoulliResult,
@@ -59,6 +82,14 @@ from .sim_sample import (
     sample_triangular,
     sample_uniform,
 )
+from .sim_stats import (
+    MeasureStatistics,
+    SimStatsError,
+    describe,
+    percentile_type7,
+    sample_mean,
+    sample_standard_deviation,
+)
 from .spec_loader import SpecError, load_spec
 from .stage_b_emit import emit_stage_b
 from .structure_loader import StructureContractError, load_structure_contract
@@ -71,6 +102,33 @@ __all__ = [
     "ContractError",             # build_stage_a.py, input contract tests
     "DriverContractError",       # build_stage_a.py, driver contract tests
     "ACCEPTED_FAMILIES",         # Phase 6 Step-3 reference surface
+    "AnalyticalExpectation",     # Phase 6 Step-4 reference surface
+    "ComponentDiagnostics",      # Phase 6 Step-4 reference surface
+    "Contingency",               # Phase 6 Step-4 reference surface
+    "DeterministicBase",         # Phase 6 Step-4 reference surface
+    "MeasureStatistics",         # Phase 6 Step-4 reference surface
+    "PercentileLadder",          # Phase 6 Step-4 reference surface
+    "PreparedSimulationDriver",  # Phase 6 Step-4 reference surface
+    "PreparedSimulationModel",   # Phase 6 Step-4 reference surface
+    "SimOracleError",            # Phase 6 Step-4 tests
+    "SimStatsError",             # Phase 6 Step-4 tests
+    "SimulationResult",          # Phase 6 Step-4 reference surface
+    "SimulationSummary",         # Phase 6 Step-4 reference surface
+    "business_minimum_iterations",  # Phase 6 Step-4 reference surface
+    "contingency_at",            # Phase 6 Step-4 reference surface
+    "describe",                  # Phase 6 Step-4 reference surface
+    "deterministic_base_of",     # Phase 6 Step-4 reference surface
+    "effective_seed_from_nonce",  # Phase 6 Step-4 reference surface
+    "percentile_type7",          # Phase 6 Step-4 reference surface
+    "prepare_simulation",        # Phase 6 Step-4 reference surface
+    "resolve_percentile_ladder",  # Phase 6 Step-4 reference surface
+    "result_digest",             # Phase 6 Step-4 reference surface
+    "result_digest_stream",      # Phase 6 Step-4 reference surface
+    "run_simulation",            # Phase 6 Step-4 reference surface
+    "sample_mean",               # Phase 6 Step-4 reference surface
+    "sample_standard_deviation",  # Phase 6 Step-4 reference surface
+    "validate_iterations",       # Phase 6 Step-4 reference surface
+    "validate_result_digest_contract",  # Phase 6 Step-4 reference surface
     "BernoulliResult",           # Phase 6 Step-3 reference surface
     "Component",                 # Phase 6 Step-2 tests
     "PreparedBetaPert",          # Phase 6 Step-3 reference surface
