@@ -543,6 +543,31 @@ def test_37_the_reference_holds_no_global_mutable_state() -> None:
     )
 
 
+def test_38_uniforms_validates_the_state_even_at_zero_count() -> None:
+    """Step-2 cleanup, authorised in the Step-3 round.
+
+    The zero-draw case previously returned whatever it was handed, because the
+    loop that would have validated never ran. Harmless in isolation; a hole worth
+    closing before samplers start passing states through this API.
+    """
+    from pccm_builder import SimRngError
+
+    for bad in (
+        RngState((0, 0, 0, 1, 1, 1)),
+        RngState((1, 1, 1, 0, 0, 0)),
+        RngState((_ref().m1, 1, 1, 1, 1, 1)),
+    ):
+        try:
+            _ref().uniforms(bad, 0)
+        except SimRngError:
+            continue
+        raise AssertionError(f"count 0 accepted the invalid state {bad.as_list()}")
+
+    good = _ref().fixed_seed_to_state(12345)
+    drawn, after = _ref().uniforms(good, 0)
+    assert drawn == () and after == good
+
+
 if __name__ == "__main__":
     import pytest
 

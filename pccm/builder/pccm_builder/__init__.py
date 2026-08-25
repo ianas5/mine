@@ -45,6 +45,20 @@ from .sim_rng import (
     RngState,
     SimRngError,
 )
+from .sim_sample import (
+    ACCEPTED_FAMILIES,
+    BernoulliResult,
+    PreparedBetaPert,
+    SampleResult,
+    SimSampleError,
+    bernoulli_occurs,
+    prepare_beta_pert,
+    sample_beta_pert,
+    sample_distribution,
+    sample_prepared_beta,
+    sample_triangular,
+    sample_uniform,
+)
 from .spec_loader import SpecError, load_spec
 from .stage_b_emit import emit_stage_b
 from .structure_loader import StructureContractError, load_structure_contract
@@ -56,7 +70,19 @@ __all__ = [
     "CalcContractError",         # Phase 5 Gate-A Step-1 tests
     "ContractError",             # build_stage_a.py, input contract tests
     "DriverContractError",       # build_stage_a.py, driver contract tests
+    "ACCEPTED_FAMILIES",         # Phase 6 Step-3 reference surface
+    "BernoulliResult",           # Phase 6 Step-3 reference surface
     "Component",                 # Phase 6 Step-2 tests
+    "PreparedBetaPert",          # Phase 6 Step-3 reference surface
+    "SampleResult",              # Phase 6 Step-3 reference surface
+    "SimSampleError",            # Phase 6 Step-3 tests
+    "bernoulli_occurs",          # Phase 6 Step-3 reference surface
+    "prepare_beta_pert",         # Phase 6 Step-3 reference surface
+    "sample_beta_pert",          # Phase 6 Step-3 reference surface
+    "sample_distribution",       # Phase 6 Step-3 reference surface
+    "sample_prepared_beta",      # Phase 6 Step-3 reference surface
+    "sample_triangular",         # Phase 6 Step-3 reference surface
+    "sample_uniform",            # Phase 6 Step-3 reference surface
     "Draw",                      # Phase 6 Step-2 tests
     "RngReference",              # Phase 6 Step-2 reference surface
     "RngState",                  # Phase 6 Step-2 reference surface

@@ -308,6 +308,11 @@ class RngReference:
         """`count` successive uniforms and the state that follows them."""
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             raise SimRngError(f"count must be a non-negative integer, got {count!r}")
+        # Validate ONCE up front, including at count == 0. Without this the
+        # zero-draw case returned whatever it was handed, because the loop that
+        # would have validated never ran - a defensive hole that only widens once
+        # samplers start passing states through this API.
+        self.validate_state(state)
         drawn: list[float] = []
         current = state
         for _ in range(count):
