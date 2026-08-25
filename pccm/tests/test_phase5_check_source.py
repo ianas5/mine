@@ -178,7 +178,7 @@ def test_02_the_checker_is_declared_hand_written_in_the_contract() -> None:
     assert CHECKER in modules, "the checker must be declared, or the inventory test fails"
     assert modules[CHECKER]["generated"] is False
     generated = [m["name"] for m in contract["vba"]["modules"] if m["generated"]]
-    assert sorted(generated) == ["modCalcContract", "modConstants"]
+    assert sorted(generated) == ["modCalcContract", "modConstants", "modSimContract"]
 
 
 def _emitted_manifest() -> dict:
@@ -751,12 +751,23 @@ def test_44_the_accepted_modules_were_not_modified() -> None:
         _assert_run7_rename_only(module)
 
 
+PHASE6_HANDWRITTEN = {"modSimRng"}
+"""The Phase-6 hand-written modules. Named here so the Phase-5 inventory below
+stays an exact statement about Phase 5 rather than becoming an open set."""
+
+
 def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
-    """Asserted in both directions, so Step 6 cannot have grown a second module."""
+    """Asserted in both directions, so a module cannot appear unremarked.
+
+    Phase-5 Step 6 could not grow a second module and still cannot: the Phase-5
+    half of this equality is unchanged. Phase-6 Step 6 adds modSimRng, which is
+    named on the right-hand side rather than allowed in by a loosened comparison.
+    """
     on_disk = set(_modules())
-    assert on_disk == set(FROZEN_SHA256) | {CHECKER, "modCalcReport"}, (
-        f"unexpected hand-written module inventory: {sorted(on_disk)}"
-    )
+    assert on_disk == (
+        set(FROZEN_SHA256) | {CHECKER, "modCalcReport"} | PHASE6_HANDWRITTEN
+    ), f"unexpected hand-written module inventory: {sorted(on_disk)}"
+    assert on_disk - PHASE6_HANDWRITTEN == set(FROZEN_SHA256) | {CHECKER, "modCalcReport"}
 
 
 # ===========================================================================

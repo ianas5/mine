@@ -109,6 +109,59 @@ function Get-Phase5FailpointNames {
     }
 }
 
+# ---------------------------------------------------------------------------
+# D6-11 forbidden-construct rules, module-aware.
+#
+# The manifest carries BOTH shapes. `vba.forbidden_construct_rules` is the
+# enforcement authority and holds every rule with its `allowed_in` owners;
+# `vba.forbidden_constructs` is the flattened display list and CANNOT express a
+# scope, so it is used only as a fallback for an OLD manifest emitted before the
+# structured field existed. In that fallback every entry is treated as global,
+# which is exactly what an old manifest meant.
+# ---------------------------------------------------------------------------
+function Get-ForbiddenConstructRules {
+    param([Parameter(Mandatory)] $Manifest)
+    $structured = $null
+    if ($null -ne $Manifest.vba.PSObject.Properties['forbidden_construct_rules']) {
+        $structured = $Manifest.vba.forbidden_construct_rules
+    }
+    if ($null -ne $structured) {
+        return @($structured | ForEach-Object {
+            [pscustomobject]@{
+                construct  = [string]$_.construct
+                allowed_in = @($_.allowed_in | ForEach-Object { [string]$_ })
+            }
+        })
+    }
+    return @($Manifest.vba.forbidden_constructs | ForEach-Object {
+        [pscustomobject]@{ construct = [string]$_; allowed_in = @() }
+    })
+}
+
+function Test-ConstructForbiddenIn {
+    param([Parameter(Mandatory)] $Rule, [Parameter(Mandatory)] [string] $ModuleName)
+    return (@($Rule.allowed_in) -notcontains $ModuleName)
+}
+
+function Test-ConstructForbiddenGlobally {
+    param([Parameter(Mandatory)] $Manifest, [Parameter(Mandatory)] [string] $Construct)
+    $rule = @(Get-ForbiddenConstructRules -Manifest $Manifest |
+              Where-Object { $_.construct -eq $Construct })
+    if ($rule.Count -ne 1) { return $false }
+    return (@($rule[0].allowed_in).Count -eq 0)
+}
+
+function Test-ConstructScopedTo {
+    param([Parameter(Mandatory)] $Manifest, [Parameter(Mandatory)] [string] $Construct,
+          [Parameter(Mandatory)] [string] $ModuleName)
+    $rule = @(Get-ForbiddenConstructRules -Manifest $Manifest |
+              Where-Object { $_.construct -eq $Construct })
+    if ($rule.Count -ne 1) { return $false }
+    $owners = @($rule[0].allowed_in)
+    if ($owners.Count -ne 1) { return $false }
+    return ($owners[0] -eq $ModuleName)
+}
+
 # The Phase-4 matrix that must be intact before a Phase-5 result means anything.
 # The timeline chain D..J is reported as the ten sequential steps D-J.1 .. D-J.10,
 # so the matrix is 35 results, not 35 letters.
@@ -3897,9 +3950,18 @@ function Invoke-Phase5GateBScenarios {
                         # Run-2 P5-EV flagged prose; a message text naming a
                         # forbidden construct would have been the same defect.
                         $code = Get-VbaExecutableCode -Code $raw
-                        foreach ($forbidden in @($Manifest.vba.forbidden_constructs)) {
-                            if ($code -match [regex]::Escape([string]$forbidden)) {
-                                $offenders += ([string]$component.Name + ': ' + [string]$forbidden)
+                        # D6-11 IS PER MODULE, NOT PER PROJECT. A scoped rule
+                        # names the one module allowed to contain the construct
+                        # in executable code; every other module is still
+                        # forbidden it, and every global rule still applies to
+                        # every module including the scoped one. Enforcing from
+                        # the flattened list would read the scoped construct as
+                        # global and reject the module that owns it.
+                        foreach ($rule in @(Get-ForbiddenConstructRules -Manifest $Manifest)) {
+                            if (Test-ConstructForbiddenIn -Rule $rule -ModuleName ([string]$component.Name)) {
+                                if ($code -match [regex]::Escape([string]$rule.construct)) {
+                                    $offenders += ([string]$component.Name + ': ' + [string]$rule.construct)
+                                }
                             }
                         }
                         # AND THE TWO EVENT HANDLERS ARE ALSO CHECKED AS
@@ -3925,9 +3987,15 @@ function Invoke-Phase5GateBScenarios {
                 'no change-event procedure is DECLARED anywhere in the project' `
                 ($declaredHandlers.Count -eq 0) ($declaredHandlers -join '; ')
             foreach ($handler in 'Worksheet_Change', 'Workbook_SheetChange') {
-                $null = Add-Check $list ('the manifest forbids ' + $handler) `
-                    (@($Manifest.vba.forbidden_constructs) -contains $handler)
+                $null = Add-Check $list ('the manifest forbids ' + $handler + ' globally') `
+                    (Test-ConstructForbiddenGlobally -Manifest $Manifest -Construct $handler)
             }
+            # THE SCOPED GRANT IS CHECKED AS A GRANT, not merely tolerated. One
+            # construct, one owner, and the endpoint still forbidden everywhere.
+            $null = Add-Check $list 'MRG32k3a is permitted in modSimRng and nowhere else' `
+                (Test-ConstructScopedTo -Manifest $Manifest -Construct 'MRG32k3a' -ModuleName 'modSimRng')
+            $null = Add-Check $list 'RunSimulation is still forbidden in every module' `
+                (Test-ConstructForbiddenGlobally -Manifest $Manifest -Construct 'RunSimulation')
         } finally {
             if ($null -ne $components) { Release-Transient $components 'VBComponents'; $components = $null }
             if ($null -ne $project) { Release-Transient $project 'VBProject'; $project = $null }

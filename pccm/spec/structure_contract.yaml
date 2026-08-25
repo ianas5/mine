@@ -478,6 +478,12 @@ vba:
     - name: "modCalcReport"
       generated: false
       responsibility: "The Phase-5 presentation and orchestration layer: one in-memory preparation path, the transactional _Calc snapshot with verify-then-commit and rollback, the derived-status axis, and the six calculation endpoints."
+    - name: "modSimContract"
+      generated: true
+      responsibility: "Simulation constants projected from spec/sim_contract.yaml, spec/input_contract.yaml and spec/workbook.yaml. Constants only: no generator, no sampler, no statistic, no digest recurrence and no worksheet access."
+    - name: "modSimRng"
+      generated: false
+      responsibility: "The pure Phase-6 generator backbone: state validation, FIXED and AUTO seeding mathematics, one recurrence step, the canonical 2^127 jump and canonical component-stream assignment. No sampling, no simulation and no worksheet access."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.
@@ -515,8 +521,22 @@ vba:
     - "PCCM_CalculationFingerprint"
     - "PCCM_CurrentInputFingerprint"
 
-  # Constructs that must NOT appear anywhere in Phase-4 VBA. The Linux static tests
-  # assert their absence, so a later phase's functionality cannot leak in early.
+  # Constructs that must NOT appear in VBA. The Linux static tests and the Gate-B
+  # persisted-project sweep assert their absence, so a later phase's
+  # functionality cannot leak in early.
+  #
+  # D6-11. A bare string is forbidden EVERYWHERE. A mapping with `allowed_in`
+  # names the module - and only that module - permitted to contain the
+  # construct in executable code. The scoped shape was added in Phase-6 Step 1
+  # and deliberately granted to nothing until an owner existed.
+  #
+  # THE FIRST AND ONLY GRANT is MRG32k3a to modSimRng, made in the same commit
+  # that introduces modSimRng. Landing a scoped rule before its owner would
+  # leave the construct legal in a module that does not exist; landing the owner
+  # first would leave it illegal in the module that must contain it.
+  #
+  # RunSimulation stays GLOBAL. Its owner is the later reporting module, and
+  # scoping it now would license the endpoint before the step that authorises it.
   forbidden_constructs:
     - "Worksheet_Change"
     - "Workbook_SheetChange"
@@ -524,7 +544,9 @@ vba:
     - "Workbook_Open"
     - "Rnd("
     - "Randomize"
-    - "MRG32k3a"
+    - construct: "MRG32k3a"
+      allowed_in:
+        - "modSimRng"
     - "NPV"
     - "Percentile"
     - "RunSimulation"

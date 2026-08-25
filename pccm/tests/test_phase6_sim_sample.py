@@ -593,14 +593,22 @@ def test_42_the_sampler_holds_no_global_mutable_state() -> None:
     assert not [n for n in ast.walk(tree) if isinstance(n, (ast.Global, ast.Nonlocal))]
 
 
-def test_43_no_phase6_vba_exists() -> None:
+def test_43_no_sampler_vba_exists() -> None:
+    """Step 6 authorised the generator backbone and nothing else.
+
+    A sampler module still does not exist, and no module - modSimRng included -
+    names Cheng in its source. The algorithm token is permitted in modSimRng
+    alone, by the one D6-11 grant.
+    """
     src = PCCM_ROOT / "src" / "vba"
     names = {p.name for p in src.glob("*.bas")}
-    for banned in ("modSimRng.bas", "modSimSample.bas", "modSimEngine.bas"):
+    for banned in ("modSimSample.bas", "modSimEngine.bas"):
         assert banned not in names, banned
     for path in sorted(src.glob("*.bas")):
         text = path.read_text(encoding="utf-8", errors="replace")
-        assert "Cheng" not in text and "MRG32k3a" not in text, path.name
+        assert "Cheng" not in text, path.name
+        if path.stem != "modSimRng":
+            assert "MRG32k3a" not in text, path.name
 
 
 if __name__ == "__main__":

@@ -193,14 +193,34 @@ def test_01_the_reporter_exists_and_declares_itself() -> None:
     assert lines[1] == "Option Explicit"
 
 
-def test_02_the_final_phase_5_inventory_is_fifteen_modules() -> None:
+def test_02_the_phase_5_inventory_is_complete_and_nothing_of_phase_5_moved() -> None:
+    """Phase 5 closed at fifteen modules and every one of them is still here.
+
+    The absolute count is no longer the assertion: Phase-6 Step 6 adds
+    modSimContract and modSimRng, which is growth the registry is meant to
+    record. What must not change is the Phase-5 set itself, so that is what is
+    stated - by name, in both directions.
+    """
     manifest = emitted_manifest()
     names = [m["name"] for m in manifest["vba"]["modules"]]
-    assert len(names) == 15, f"expected fifteen modules, found {len(names)}: {names}"
+    assert PHASE5_INVENTORY <= set(names), sorted(PHASE5_INVENTORY - set(names))
     assert REPORTER in names
     generated = [m["name"] for m in manifest["vba"]["modules"] if m["generated"]]
-    assert sorted(generated) == ["modCalcContract", "modConstants"]
-    assert set(_modules()) == set(names) - {"modConstants", "modCalcContract"}
+    assert sorted(generated) == ["modCalcContract", "modConstants", "modSimContract"]
+    assert set(_modules()) <= set(names) - {"modConstants", "modCalcContract",
+                                            "modSimContract"}
+    # Everything beyond the Phase-5 fifteen is Phase-6 and is named, so a
+    # module cannot appear here unremarked.
+    assert set(names) - PHASE5_INVENTORY == {"modSimContract", "modSimRng"}
+
+
+PHASE5_INVENTORY = {
+    "modConstants", "modWorkbook", "modAppState", "modTimeline", "modDrivers",
+    "modProfiling", "modInflation", "modStructuralCheck", "modCalcContract",
+    "modCalcFactors", "modCalcAnalytical", "modCalcFingerprint", "modCalcResolve",
+    "modCalcCheck", "modCalcReport",
+}
+"""The fifteen modules Phase 5 closed with. Frozen by name, not by count."""
 
 
 def test_03_no_extra_orchestration_module_was_invented() -> None:

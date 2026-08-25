@@ -360,7 +360,22 @@ def build_manifest(
             # to a button, and the manifest is where the harness learns the
             # difference.
             "api_procedures": list(structure.api_procedures),
+            # THE FLATTENED LIST IS DISPLAY ONLY, once a scoped rule exists.
+            # It cannot represent `allowed_in`, so a consumer that enforced from
+            # it would read the one scoped construct as globally forbidden and
+            # reject the module that owns it. It stays for backward-compatible
+            # display and for an old harness reading an old manifest.
             "forbidden_constructs": list(structure.forbidden_constructs),
+            # THE ENFORCEMENT AUTHORITY. Every rule, global ones carrying an
+            # empty `allowed_in`, so a consumer needs no second source to decide
+            # whether a construct is permitted in the module it is looking at.
+            "forbidden_construct_rules": [
+                {
+                    "construct": rule.construct,
+                    "allowed_in": list(rule.allowed_in),
+                }
+                for rule in structure.forbidden_construct_rules
+            ],
         },
         "buttons": [
             {

@@ -32,15 +32,18 @@ TABLE_NAME_RE = re.compile(r"^tbl[A-Z][A-Za-z0-9]*$")
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 STRUCTURE_NAME_RE = re.compile(r"^nm[A-Z][A-Za-z0-9_]*$")
 ENTRY_POINT_RE = re.compile(r"^PCCM_[A-Z][A-Za-z0-9]*$")
-GENERATED_MODULES = ("modConstants", "modCalcContract")
+GENERATED_MODULES = ("modConstants", "modCalcContract", "modSimContract")
 """Every VBA module the Stage-A builder emits, and therefore every module the
 contract may mark ``generated: true``.
 
 ``vba.generated_module`` names the PRIMARY generated module - the constants
 projection every phase depends on - and stays ``modConstants``. Phase 5 adds
-``modCalcContract``, emitted by ``calc_emit``. Both are build artifacts that must
-never be hand-edited, and a module outside this tuple claiming to be generated
-means the contract and the builder disagree about what the build produces."""
+``modCalcContract``, emitted by ``calc_emit``; Phase 6 Step 5 adds
+``modSimContract``, emitted by ``sim_emit``, and Step 6 is the first
+implementation step that depends on it, which is when it enters the registry.
+All three are build artifacts that must never be hand-edited, and a module
+outside this tuple claiming to be generated means the contract and the builder
+disagree about what the build produces."""
 
 MODULE_NAME_RE = re.compile(r"^mod[A-Z][A-Za-z0-9]*$")
 SHAPE_NAME_RE = re.compile(r"^btnPCCM[A-Z][A-Za-z0-9]*$")

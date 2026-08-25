@@ -448,24 +448,45 @@ def test_20_the_future_endpoint_and_algorithm_names_are_absent() -> None:
     assert "SIM_QUANTILE_COUNT" in _constants()
 
 
-def test_21_no_d6_11_exception_was_granted() -> None:
-    """`structure_contract.yaml` is untouched: every rule is still global."""
+def test_21_the_generated_module_needs_no_d6_11_exception() -> None:
+    """The projection passes the guard with nothing scoped ON ITS BEHALF.
+
+    Step 6 granted exactly one exception - MRG32k3a to modSimRng, the module
+    that owns the construct. `modSimContract` is not an owner of anything: it
+    is a constants projection and would fail the guard if it named the
+    algorithm, which is why the family name was deliberately left out of it.
+    """
     structure = _structure()
-    scoped = [rule for rule in structure.forbidden_construct_rules if rule.is_scoped] \
-        if hasattr(structure, "forbidden_construct_rules") else []
-    assert scoped == [], scoped
+    scoped = [rule for rule in structure.forbidden_construct_rules if rule.is_scoped]
+    assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
+        ("MRG32k3a", ("modSimRng",))
+    ], scoped
+    for rule in scoped:
+        assert SIM_MODULE_NAME not in rule.allowed_in, (
+            "the generated projection was given an exception it does not need"
+        )
+        assert rule.forbidden_in(SIM_MODULE_NAME) is True
     for construct in ("MRG32k3a", "RunSimulation", "Rnd(", "Percentile"):
         assert construct in structure.forbidden_constructs, construct
 
 
-def test_22_the_module_is_not_in_the_stage_b_module_registry_yet() -> None:
-    """Stage B imports the modules its manifest names, not a directory glob, so
-    an artefact with no Phase-6 VBA owner is simply not imported."""
-    declared = {module.name for module in _structure().vba_modules}
-    assert SIM_MODULE_NAME not in declared, (
-        "modSimContract was added to the Stage-B registry; that is the atomic "
-        "D6-11 activation the FIRST Phase-6 VBA implementation step must do"
+def test_22_the_module_is_in_the_stage_b_registry_as_a_generated_module() -> None:
+    """Step 5 kept it OUT of the registry because nothing depended on it.
+
+    Step 6 is the first implementation step that does, so it entered the
+    registry in the same commit as modSimRng - the atomic D6-11 activation.
+    """
+    modules = {module.name: module for module in _structure().vba_modules}
+    assert SIM_MODULE_NAME in modules
+    assert modules[SIM_MODULE_NAME].generated is True, (
+        "the projection must be declared generated; a hand-written copy would be "
+        "a second definition of every literal it projects"
     )
+    assert "modSimRng" in modules and modules["modSimRng"].generated is False
+    # And nothing further was declared early.
+    for premature in ("modSimSample", "modSimEngine", "modSimStats",
+                      "modSimFingerprint", "modSimReport"):
+        assert premature not in modules, premature
 
 
 def test_23_the_module_is_deterministic_across_two_emissions() -> None:

@@ -40,6 +40,8 @@ from pccm_builder import (  # noqa: E402
     load_structure_contract,
 )
 from pccm_builder.calc_emit import emit_calc_artifacts  # noqa: E402
+from pccm_builder.sim_emit import emit_sim_artifacts  # noqa: E402
+from pccm_builder.sim_loader import load_sim_contract  # noqa: E402
 from pccm_builder.structure_loader import GENERATED_MODULES  # noqa: E402
 from pccm_builder.calc_loader import load_calc_contract  # noqa: E402
 from pccm_builder.stage_b_emit import build_manifest, render_constants_module  # noqa: E402
@@ -54,6 +56,7 @@ CONTRACT_PATH = PCCM_ROOT / "spec" / "input_contract.yaml"
 DRIVERS_PATH = PCCM_ROOT / "spec" / "driver_contract.yaml"
 STRUCTURE_PATH = PCCM_ROOT / "spec" / "structure_contract.yaml"
 CALC_PATH = PCCM_ROOT / "spec" / "calc_contract.yaml"
+SIM_PATH = PCCM_ROOT / "spec" / "sim_contract.yaml"
 
 SRC_VBA = PCCM_ROOT / "src" / "vba"
 BOOTSTRAP = PCCM_ROOT / "bootstrap" / "windows"
@@ -90,6 +93,12 @@ def _emitted_dir() -> Path:
     # called here rather than folded into the first so there is still exactly one
     # generator per artifact and no chance of a duplicate modCalcContract.
     emit_calc_artifacts(tmp, spec, load_calc_contract(CALC_PATH))
+    # Phase 6 Step 5 emits a THIRD generated module. It entered the Stage-B
+    # registry in Step 6, when modSimRng - the first module that depends on it -
+    # arrived, so the inventory and constant-reference checks below must see it.
+    emit_sim_artifacts(
+        tmp, spec, load_sim_contract(SIM_PATH), contract, load_calc_contract(CALC_PATH)
+    )
     _EMITTED["dir"] = tmp
     return tmp
 
@@ -234,6 +243,14 @@ PHASE5_VBA_MODULES = (
     "modCalcCheck", "modCalcReport",
 )
 
+# The Phase-6 modules. Measured by the same policy as the Phase-5 kernel: a
+# coherent responsibility whose contract requires it to explain itself at
+# length. modSimRng carries the orientation, reduction and scope reasoning a
+# later reader cannot reconstruct from the code alone.
+PHASE6_VBA_MODULES = (
+    "modSimRng",
+)
+
 PHASE4_RAW_LINE_LIMIT = 900
 PHASE5_CODE_LINE_LIMIT = 900
 PHASE5_RAW_LINE_LIMIT = 1200
@@ -276,7 +293,9 @@ def test_05_no_module_is_a_dumping_ground() -> None:
     structure = _specs()[3]
     assert len(structure.vba_modules) >= 6, "the responsibility split collapsed"
     by_name = {m.name: m for m in _handwritten_modules()}
-    assert set(by_name) == set(PHASE4_VBA_MODULES) | set(PHASE5_VBA_MODULES), (
+    assert set(by_name) == (
+        set(PHASE4_VBA_MODULES) | set(PHASE5_VBA_MODULES) | set(PHASE6_VBA_MODULES)
+    ), (
         "the hand-written module inventory changed; the size limits below are "
         "assigned per module and must be assigned for the new one too"
     )
@@ -285,7 +304,7 @@ def test_05_no_module_is_a_dumping_ground() -> None:
         assert raw < PHASE4_RAW_LINE_LIMIT, (
             f"{name} is {raw} raw lines; split its responsibilities"
         )
-    for name in PHASE5_VBA_MODULES:
+    for name in PHASE5_VBA_MODULES + PHASE6_VBA_MODULES:
         raw, _, _, code = _line_metrics(by_name[name])
         assert code < PHASE5_CODE_LINE_LIMIT, (
             f"{name} is {code} code lines; split its responsibilities"
@@ -354,6 +373,28 @@ def test_10_the_five_required_buttons_are_declared_on_the_right_sheets() -> None
 # ===========================================================================
 # the constants module is the only source of structural literals
 # ===========================================================================
+_TYPE_MEMBER_RE = re.compile(r"^\s*(\w+)\s+As\s+\w", re.IGNORECASE)
+
+
+def _type_member_names(module) -> set[str]:
+    """Field names declared inside `Public Type` / `Private Type` blocks."""
+    names: set[str] = set()
+    inside = False
+    for line in module.code_without_string_removal.splitlines():
+        stripped = line.strip()
+        if re.match(r"^(Public\s+|Private\s+)?Type\s+\w+", stripped, re.IGNORECASE):
+            inside = True
+            continue
+        if re.match(r"^End\s+Type\b", stripped, re.IGNORECASE):
+            inside = False
+            continue
+        if inside:
+            match = _TYPE_MEMBER_RE.match(stripped)
+            if match:
+                names.add(match.group(1))
+    return names
+
+
 def test_11_every_constant_the_vba_references_is_emitted() -> None:
     """The substitute for a VBA compiler.
 
@@ -363,6 +404,14 @@ def test_11_every_constant_the_vba_references_is_emitted() -> None:
     or exported as a Public Const by another hand-written module.
     """
     emitted = _generated_constants()
+    # A PUBLIC TYPE MEMBER IS A DECLARATION TOO. The scanner reads `Const`
+    # declarations, which was the whole of the vocabulary until a module
+    # declared a user-defined type: `SimRngState.S10` is SCREAMING_CASE by the
+    # regex's reckoning and is defined in the same file that uses it. Missing
+    # that is a gap in the scanner, not a missing constant.
+    type_members = {
+        name for module in _all_modules() for name in _type_member_names(module)
+    }
     # VBA and Excel names that are language or library members, not our constants.
     builtin = {
         "VBA", "MSG", "TRUE", "FALSE", "OK", "PCCM", "ID", "URL", "UI",
@@ -382,7 +431,8 @@ def test_11_every_constant_the_vba_references_is_emitted() -> None:
     for module in handwritten:
         local = set(module.constants)
         for name in sorted(module.referenced_upper_identifiers):
-            if name in emitted or name in local or name in exported or name in builtin:
+            if (name in emitted or name in local or name in exported
+                    or name in builtin or name in type_members):
                 continue
             problems.append(f"{module.name}: {name}")
     assert not problems, (
@@ -432,15 +482,48 @@ def test_14_no_structural_literal_is_restated_in_hand_written_vba() -> None:
 # ===========================================================================
 # scope discipline in the VBA
 # ===========================================================================
-def test_15_no_forbidden_construct_appears_in_phase_4_vba() -> None:
+def test_15_no_forbidden_construct_appears_where_it_is_forbidden() -> None:
+    """D6-11 IS PER MODULE, and as of Phase-6 Step 6 that is not academic.
+
+    A bare rule is forbidden everywhere. A scoped rule names the one module
+    allowed to contain the construct in executable code, and every other module
+    is still forbidden it. Enforcing from the flattened construct list would
+    read the scoped construct as global and reject the module that owns it.
+    """
     structure = _specs()[3]
     modules = _all_modules()
     problems = []
-    for construct in structure.forbidden_constructs:
-        offenders = contains_construct(modules, construct)
-        if offenders:
-            problems.append(f"{construct} in {offenders}")
+    for rule in structure.forbidden_construct_rules:
+        for module in modules:
+            if not rule.forbidden_in(module.name):
+                continue
+            if contains_construct([module], rule.construct):
+                problems.append(f"{rule.construct} in {module.name}")
     assert not problems, "\n".join(problems)
+
+
+def test_15a_the_one_scoped_grant_is_real_and_is_the_only_one() -> None:
+    """The grant is exercised, and it is not a licence for anything else."""
+    structure = _specs()[3]
+    scoped = [r for r in structure.forbidden_construct_rules if r.is_scoped]
+    assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
+        ("MRG32k3a", ("modSimRng",))
+    ], scoped
+
+    modules = {m.name: m for m in _all_modules()}
+    assert contains_construct([modules["modSimRng"]], "MRG32k3a"), (
+        "the scoped grant is vacuous: modSimRng does not contain the construct "
+        "in executable code"
+    )
+    others = [m for name, m in modules.items() if name != "modSimRng"]
+    assert not contains_construct(others, "MRG32k3a")
+
+    # RunSimulation has no owner yet and must not have been scoped early.
+    endpoint = [r for r in structure.forbidden_construct_rules
+                if r.construct == "RunSimulation"]
+    assert len(endpoint) == 1 and not endpoint[0].is_scoped
+    for name in modules:
+        assert endpoint[0].forbidden_in(name), name
 
 
 def test_16_no_input_worksheet_change_automation_exists() -> None:
@@ -462,12 +545,20 @@ def test_17_no_calculation_or_simulation_code_leaked_in() -> None:
     constants module - which is exactly the territory it was written to protect.
     """
     everywhere = _all_modules()
-    for construct in ("Rnd(", "Randomize", "MRG32k3a", "WorksheetFunction.Percentile",
+    # STILL FORBIDDEN EVERYWHERE. No phase that exists yet draws a pseudo-random
+    # number, takes a quantile or exposes the simulation endpoint. MRG32k3a has
+    # left this list because it now has an owner - it is enforced per module by
+    # test_15 and test_15a instead, which is a stronger statement, not a weaker
+    # one: it must be in modSimRng and in nothing else.
+    for construct in ("Rnd(", "Randomize", "WorksheetFunction.Percentile",
                       "RunSimulation"):
         assert not contains_construct(everywhere, construct), (
             f"{construct} appears in code; no phase that exists yet simulates"
         )
-    phase4 = [m for m in everywhere if m.name not in PHASE5_VBA_MODULES]
+    outside_owner = [m for m in everywhere if m.name != "modSimRng"]
+    assert not contains_construct(outside_owner, "MRG32k3a")
+    phase4 = [m for m in everywhere
+              if m.name not in PHASE5_VBA_MODULES and m.name not in PHASE6_VBA_MODULES]
     for construct in ("ExpectedValue", "DiscountFactor", "EscalationFactor"):
         assert not contains_construct(phase4, construct), (
             f"{construct} appears in Phase-4 code; the calculation lives in the "

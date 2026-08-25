@@ -498,7 +498,7 @@ def test_the_generated_module_inventory_is_exactly_what_the_builder_emits() -> N
     """The current generated set, stated once and asserted in both directions."""
     from pccm_builder.structure_loader import GENERATED_MODULES
 
-    assert sorted(GENERATED_MODULES) == ["modCalcContract", "modConstants"]
+    assert sorted(GENERATED_MODULES) == ["modCalcContract", "modConstants", "modSimContract"]
     declared = [m["name"] for m in _base()["vba"]["modules"] if m.get("generated")]
     assert sorted(declared) == sorted(GENERATED_MODULES)
 

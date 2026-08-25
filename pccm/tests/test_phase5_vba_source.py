@@ -327,6 +327,11 @@ def test_01_the_three_kernel_modules_exist_and_declare_themselves() -> None:
         assert lines[1] == "Option Explicit", f"{name} must declare Option Explicit"
 
 
+PHASE6_MODULES = ("modSimRng",)
+"""Phase-6 hand-written source modules. Not Phase 5's, and named so the
+Phase-5 inventory equality below stays exact."""
+
+
 def test_02_step_4_added_exactly_three_modules_and_no_fourth() -> None:
     """The accepted Step-4 module split is deliberate.
 
@@ -335,11 +340,20 @@ def test_02_step_4_added_exactly_three_modules_and_no_fourth() -> None:
     Steps 5, 6 and 7 add exactly one further module each - the resolver, the
     checker and the reporter - and the inventory is asserted in both directions
     so no step can grow another.
+
+    PHASE 6 IS NAMED, NOT ADMITTED. Its first source module, modSimRng, is on
+    the right-hand side by name, so the Phase-5 half of this equality is
+    unchanged and a further Phase-5 module still cannot appear.
     """
     on_disk = set(_modules())
     assert on_disk == (set(PHASE4_MODULES) | set(KERNEL_MODULES)
-                       | {STEP5_MODULE, STEP6_MODULE, STEP7_MODULE}), (
+                       | {STEP5_MODULE, STEP6_MODULE, STEP7_MODULE}
+                       | set(PHASE6_MODULES)), (
         f"unexpected hand-written module inventory: {sorted(on_disk)}"
+    )
+    assert on_disk - set(PHASE6_MODULES) == (
+        set(PHASE4_MODULES) | set(KERNEL_MODULES)
+        | {STEP5_MODULE, STEP6_MODULE, STEP7_MODULE}
     )
     assert set(KERNEL_MODULES) == {
         "modCalcFactors", "modCalcAnalytical", "modCalcFingerprint"

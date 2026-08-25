@@ -154,7 +154,7 @@ def test_02_the_resolver_is_declared_in_the_structure_contract() -> None:
         "the resolver is hand-written; only modConstants and modCalcContract are generated"
     )
     generated = [m["name"] for m in contract["vba"]["modules"] if m["generated"]]
-    assert sorted(generated) == ["modCalcContract", "modConstants"]
+    assert sorted(generated) == ["modCalcContract", "modConstants", "modSimContract"]
 
 
 def _emitted_manifest() -> dict:

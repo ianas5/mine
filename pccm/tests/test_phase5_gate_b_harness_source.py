@@ -47,6 +47,15 @@ SCENARIOS = BOOTSTRAP / "phase5_gate_b_scenarios.ps1"
 LIFECYCLE = BOOTSTRAP / "com_lifecycle.ps1"
 DIAGNOSTIC = BOOTSTRAP / "phase5_gate_b_diagnostics.bas"
 BUILD_STAGE_B = BOOTSTRAP / "build_stage_b.ps1"
+_PHASE5_MANIFEST_MODULES = {
+    "modConstants", "modWorkbook", "modAppState", "modTimeline", "modDrivers",
+    "modProfiling", "modInflation", "modStructuralCheck", "modCalcContract",
+    "modCalcFactors", "modCalcAnalytical", "modCalcFingerprint", "modCalcResolve",
+    "modCalcCheck", "modCalcReport",
+}
+"""The fifteen modules the manifest declared when Phase 5 closed. Frozen by
+name so a Phase-6 addition is visible rather than absorbed into a count."""
+
 SRC_VBA = PCCM_ROOT / "src" / "vba"
 SPEC = PCCM_ROOT / "spec"
 
@@ -544,7 +553,14 @@ def test_19_the_diagnostic_module_is_not_a_production_module() -> None:
     assert DIAGNOSTIC_MODULE_NAME not in declared, (
         "the diagnostic module is declared in the production manifest"
     )
-    assert len(declared) == 15, f"the manifest declares {len(declared)} modules, not 15"
+    # PHASE 5 CLOSED AT FIFTEEN AND ALL FIFTEEN ARE STILL HERE. The absolute
+    # count stopped being the assertion when Phase-6 Step 6 added
+    # modSimContract and modSimRng to the registry; the Phase-5 set is
+    # asserted intact and everything beyond it is named.
+    assert _PHASE5_MANIFEST_MODULES <= set(declared), (
+        sorted(_PHASE5_MANIFEST_MODULES - set(declared))
+    )
+    assert set(declared) - _PHASE5_MANIFEST_MODULES == {"modSimContract", "modSimRng"}
     # Not in the structure contract either, so it can never be emitted into one.
     contract = _text(SPEC / "structure_contract.yaml")
     assert DIAGNOSTIC_MODULE_NAME not in contract
@@ -930,10 +946,16 @@ def test_37_no_calculate_button_and_no_new_production_module() -> None:
     assert "PCCM_Calculate" not in entry_points, "a Calculate button was introduced"
     assert entry_points == set(emitted["manifest"]["vba"]["entry_points"])
     modules = {module["name"] for module in emitted["manifest"]["vba"]["modules"]}
-    assert len(modules) == 15
+    assert _PHASE5_MANIFEST_MODULES <= set(modules)
+    assert set(modules) - _PHASE5_MANIFEST_MODULES == {"modSimContract", "modSimRng"}
     on_disk = {path.stem for path in SRC_VBA.glob("*.bas")}
     assert DIAGNOSTIC_MODULE_NAME not in on_disk
-    assert len(on_disk) == 13, f"a production module was added or removed: {sorted(on_disk)}"
+    # The thirteen Phase-5 hand-written modules, plus Phase 6's first source
+    # module. Named rather than counted, so an addition is visible.
+    assert on_disk == (_PHASE5_MANIFEST_MODULES
+                       - {"modConstants", "modCalcContract"}) | {"modSimRng"}, (
+        f"a production module was added or removed: {sorted(on_disk)}"
+    )
     # The harness asserts all three of those things at runtime too.
     source = _executable(SCENARIOS)
     assert "'NO shape has OnAction = PCCM_Calculate'" in source
@@ -1190,7 +1212,9 @@ def test_nc_16_the_diagnostic_module_in_the_production_manifest_is_caught() -> N
                     "responsibility": "diagnostics"})
     names = [module["name"] for module in modules]
     assert DIAGNOSTIC_MODULE_NAME in names, "the smuggled diagnostic module must be visible"
-    assert len(names) == 16, "the inventory growth must be visible"
+    assert len(names) == len(emitted["manifest"]["vba"]["modules"]) + 1, (
+        "the inventory growth must be visible"
+    )
 
 
 def test_nc_17_the_diagnostic_imported_before_a1_is_caught() -> None:
@@ -4481,7 +4505,7 @@ def test_110_the_forbidden_construct_scan_reads_code_not_commentary() -> None:
     assert "$code = Get-VbaExecutableCode -Code $raw" in ev, (
         "the scan still runs over the raw module text"
     )
-    assert "if ($code -match [regex]::Escape([string]$forbidden))" in ev, (
+    assert "if ($code -match [regex]::Escape([string]$rule.construct))" in ev, (
         "the manifest scan does not run over the stripped code"
     )
     assert "$raw -match" not in ev, "the raw text is still scanned somewhere"
@@ -4492,8 +4516,16 @@ def test_110_the_forbidden_construct_scan_reads_code_not_commentary() -> None:
         "the string-literal stripper returns its input unchanged"
     )
     assert "return $Code" not in stripper
-    # The requirement itself is untouched: the manifest list is still the source.
-    assert "@($Manifest.vba.forbidden_constructs)" in ev
+    # The requirement itself is untouched, but its SOURCE moved: once a scoped
+    # rule exists the flattened list cannot express `allowed_in`, so enforcement
+    # reads the structured rules and the flattened field is display only.
+    assert "Get-ForbiddenConstructRules -Manifest $Manifest" in ev
+    assert "Test-ConstructForbiddenIn -Rule $rule" in ev, (
+        "the scan is not module-aware, so a scoped construct would be read as global"
+    )
+    assert "@($Manifest.vba.forbidden_constructs)" not in ev, (
+        "the flattened list is still the enforcement authority"
+    )
     assert "'the manifest forbids ' + $handler" in source
 
     # The production comments that Run 2 flagged are still there, unedited.
@@ -4538,7 +4570,7 @@ def test_111_a_real_change_event_declaration_still_fails() -> None:
     assert "Test-VbaProcedureDeclared -Code $code" in source, (
         "the declaration test runs over raw text rather than stripped code"
     )
-    assert "if ($code -match [regex]::Escape([string]$forbidden))" in source, (
+    assert "if ($code -match [regex]::Escape([string]$rule.construct))" in source, (
         "the manifest forbidden-construct scan reads the raw text again"
     )
     declared = _procedure(source, "Test-VbaProcedureDeclared")
@@ -4843,7 +4875,7 @@ def test_nc_87_the_run_2_name_only_inventory_is_caught() -> None:
 
 
 def test_nc_88_a_raw_text_forbidden_scan_is_caught() -> None:
-    planted = _synthetic("if ($raw -match [regex]::Escape([string]$forbidden)) {\n")
+    planted = _synthetic("if ($raw -match [regex]::Escape([string]$rule.construct)) {\n")
     assert "Remove-VbaCommentary" not in planted, "a raw-text scan must be visible as one"
     comment = "' ... no input Worksheet_Change handler, and this guarantees that stays true"
     assert "Worksheet_Change" in comment, "the production comment really does contain the token"
@@ -5225,25 +5257,45 @@ def test_128_the_forbidden_construct_decision_table() -> None:
     assert "Randomize" in flags('MsgBox "he said ""hi""" : Randomize')
 
 
+def _scan_production_against_rules(strip=None) -> list:
+    """The corrected scan, MODULE-AWARE, over every frozen production module.
+
+    D6-11 is per module: a scoped rule names the one module allowed to contain
+    the construct in executable code, and the sweep must respect that or it
+    would flag the module that owns it. The structured rules are the authority;
+    the flattened list cannot express a scope.
+    """
+    sys.path.insert(0, str(PCCM_ROOT / "builder"))
+    from pccm_builder.vba_source import strip_comments, strip_strings
+
+    if strip is None:
+        strip = lambda text: strip_strings(strip_comments(text))  # noqa: E731
+
+    rules = _emitted()["manifest"]["vba"]["forbidden_construct_rules"]
+    offenders = []
+    for path in sorted(SRC_VBA.glob("*.bas")):
+        body = strip(_text(path))
+        for rule in rules:
+            if path.stem in rule["allowed_in"]:
+                continue
+            if rule["construct"] in body:
+                offenders.append(f"{path.name}: {rule['construct']}")
+    return offenders
+
+
 def test_129_the_production_source_still_passes_the_corrected_scan() -> None:
     """The accepted production VBA must be clean under the new semantics.
 
     A stricter scanner that flagged real production code would be a different
     defect, so this runs the corrected rule over every frozen module.
     """
-    manifest_forbidden = _emitted()["manifest"]["vba"]["forbidden_constructs"]
-    sys.path.insert(0, str(PCCM_ROOT / "builder"))
-    from pccm_builder.vba_source import strip_comments, strip_strings
-
-    offenders = []
-    for path in sorted(SRC_VBA.glob("*.bas")):
-        body = strip_strings(strip_comments(_text(path)))
-        for construct in manifest_forbidden:
-            if construct in body:
-                offenders.append(f"{path.name}: {construct}")
+    offenders = _scan_production_against_rules()
     assert not offenders, (
         "the corrected scan flags accepted production source: " + "; ".join(offenders)
     )
+    sys.path.insert(0, str(PCCM_ROOT / "builder"))
+    from pccm_builder.vba_source import strip_comments, strip_strings
+
     # And the two Run-2 false positives really were comment-only.
     app_state = _text(SRC_VBA / "modAppState.bas")
     assert "Worksheet_Change" in app_state and "NPV" in app_state
@@ -5469,13 +5521,15 @@ def test_131_the_rem_decision_table() -> None:
 
 def test_132_the_production_source_is_unaffected_by_the_rem_correction() -> None:
     """A stricter comment rule must not change what the frozen modules say."""
-    forbidden = _emitted()["manifest"]["vba"]["forbidden_constructs"]
+    rules = _emitted()["manifest"]["vba"]["forbidden_construct_rules"]
     offenders = []
     for path in sorted(SRC_VBA.glob("*.bas")) + [DIAGNOSTIC]:
         body = _model_executable(_text(path))
-        for construct in forbidden:
-            if construct in body:
-                offenders.append(f"{path.name}: {construct}")
+        for rule in rules:
+            if path.stem in rule["allowed_in"]:
+                continue
+            if rule["construct"] in body:
+                offenders.append(f"{path.name}: {rule['construct']}")
     assert not offenders, (
         "the corrected Rem rule flags accepted source: " + "; ".join(offenders)
     )

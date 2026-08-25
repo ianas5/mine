@@ -1156,15 +1156,24 @@ def _forbidden(data: dict) -> list:
     return data["vba"]["forbidden_constructs"]
 
 
-def test_77_the_global_scalar_entry_still_works() -> None:
-    """Backward compatibility: nothing in the accepted contract changed shape."""
+def test_77_the_global_scalar_entry_still_works_beside_the_one_grant() -> None:
+    """Backward compatibility: the scalar shape is unchanged by the first grant.
+
+    Every rule still appears in the flattened list, and every rule EXCEPT the
+    single scoped one is still global in exactly the way it was.
+    """
     structure = load_structure_contract(STRUCTURE_PATH)
     assert "Rnd(" in structure.forbidden_constructs
     assert "MRG32k3a" in structure.forbidden_constructs
     assert "RunSimulation" in structure.forbidden_constructs
+    scoped = []
     for rule in structure.forbidden_construct_rules:
-        assert rule.is_scoped is False, f"{rule.construct} is scoped before its owner exists"
-        assert rule.forbidden_in("modAnything") is True
+        if rule.is_scoped:
+            scoped.append(rule.construct)
+            continue
+        assert rule.forbidden_in("modAnything") is True, rule.construct
+        assert rule.forbidden_in("modSimRng") is True, rule.construct
+    assert scoped == ["MRG32k3a"], scoped
 
 
 def test_78_a_valid_synthetic_scoped_entry_is_accepted() -> None:

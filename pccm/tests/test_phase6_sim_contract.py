@@ -702,13 +702,23 @@ def test_49_the_loader_parses_but_never_evaluates_contract_expressions() -> None
         assert banned not in called, f"sim_loader.py calls {banned}()"
 
 
-def test_50_no_phase6_vba_or_emission_exists() -> None:
+def test_50_only_the_authorised_phase6_vba_exists() -> None:
+    """Step 1 authorised no Phase-6 VBA. Step 6 authorised exactly one module.
+
+    The rule has not loosened: a Phase-6 module still may not appear without a
+    step that authorises it, and the remaining five are still absent.
+    `modSimContract.bas` is still not in `src/vba` - it is GENERATED, and a
+    hand-written copy would be a second definition of every literal it projects.
+    """
     src = PCCM_ROOT / "src" / "vba"
     names = {p.name for p in src.glob("*.bas")} | {p.name for p in src.glob("*.cls")}
-    for banned in ("modSimRng.bas", "modSimEngine.bas", "modSimReport.bas",
-                   "modSimContract.bas"):
-        assert banned not in names, f"{banned} exists; Step 1 authorises no Phase-6 VBA"
+    for banned in ("modSimSample.bas", "modSimEngine.bas", "modSimStats.bas",
+                   "modSimFingerprint.bas", "modSimReport.bas", "modSimContract.bas"):
+        assert banned not in names, f"{banned} exists; no step authorises it there"
+    assert "modSimRng.bas" in names
     for path in sorted(src.glob("*.bas")):
+        if path.stem == "modSimRng":
+            continue
         text = path.read_text(encoding="utf-8", errors="replace")
         assert "MRG32k3a" not in text, f"{path.name} references MRG32k3a"
 
@@ -1005,10 +1015,25 @@ def test_66b_the_iteration_columns_are_exact() -> None:
     )
 
 
-def test_67_d6_11_activation_precondition_is_recorded() -> None:
-    """No scoped grant exists, and the precondition for the first one is written."""
+def test_67_d6_11_activated_exactly_once_and_only_with_its_owner() -> None:
+    """Step 1 wrote the precondition; Step 6 is the commit that satisfied it.
+
+    The precondition is unchanged and still recorded. What changed is that its
+    owner now exists, so exactly one grant has been made - to the module that
+    owns the construct, and to nothing else.
+    """
     structure = load_structure_contract(STRUCTURE_PATH)
-    assert not [r for r in structure.forbidden_construct_rules if r.is_scoped]
+    scoped = [r for r in structure.forbidden_construct_rules if r.is_scoped]
+    assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
+        ("MRG32k3a", ("modSimRng",))
+    ], scoped
+    declared = {m.name for m in structure.vba_modules}
+    for rule in scoped:
+        for owner in rule.allowed_in:
+            assert owner in declared, f"{owner} is not a declared module"
+    assert (PCCM_ROOT / "src" / "vba" / "modSimRng.bas").is_file(), (
+        "the grant landed without its owner"
+    )
     record = (PCCM_ROOT / "docs" / "phase6_step1.md").read_text(encoding="utf-8")
     assert "activation precondition" in record.lower()
     assert "forbidden_in" in record
