@@ -751,7 +751,7 @@ def test_44_the_accepted_modules_were_not_modified() -> None:
         _assert_run7_rename_only(module)
 
 
-PHASE6_HANDWRITTEN = {"modSimRng", "modSimSample"}
+PHASE6_HANDWRITTEN = {"modSimRng", "modSimSample", "modSimEngine"}
 """The Phase-6 hand-written modules. Named here so the Phase-5 inventory below
 stays an exact statement about Phase 5 rather than becoming an open set."""
 

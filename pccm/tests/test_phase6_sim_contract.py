@@ -712,9 +712,9 @@ def test_50_only_the_authorised_phase6_vba_exists() -> None:
     """
     src = PCCM_ROOT / "src" / "vba"
     names = {p.name for p in src.glob("*.bas")} | {p.name for p in src.glob("*.cls")}
-    for authorised in ("modSimRng.bas", "modSimSample.bas"):
+    for authorised in ("modSimRng.bas", "modSimSample.bas", "modSimEngine.bas"):
         assert authorised in names, authorised
-    for banned in ("modSimEngine.bas", "modSimStats.bas",
+    for banned in ("modSimStats.bas",
                    "modSimFingerprint.bas", "modSimReport.bas", "modSimContract.bas"):
         assert banned not in names, f"{banned} exists; no step authorises it there"
     assert "modSimRng.bas" in names

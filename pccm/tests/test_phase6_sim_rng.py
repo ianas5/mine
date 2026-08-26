@@ -528,9 +528,9 @@ def test_36_the_only_phase6_vba_is_the_generator_backbone() -> None:
     """
     src = PCCM_ROOT / "src" / "vba"
     names = {p.name for p in src.glob("*.bas")} | {p.name for p in src.glob("*.cls")}
-    for authorised in ("modSimRng.bas", "modSimSample.bas"):
+    for authorised in ("modSimRng.bas", "modSimSample.bas", "modSimEngine.bas"):
         assert authorised in names, authorised
-    for banned in ("modSimEngine.bas", "modSimStats.bas",
+    for banned in ("modSimStats.bas",
                    "modSimFingerprint.bas", "modSimReport.bas"):
         assert banned not in names, f"{banned} exists; no step authorises it yet"
     assert "modSimRng.bas" in names, "the Step-6 module is missing"

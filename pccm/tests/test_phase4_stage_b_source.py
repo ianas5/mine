@@ -250,6 +250,7 @@ PHASE5_VBA_MODULES = (
 PHASE6_VBA_MODULES = (
     "modSimRng",
     "modSimSample",
+    "modSimEngine",
 )
 
 PHASE4_RAW_LINE_LIMIT = 900

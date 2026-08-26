@@ -280,12 +280,10 @@ def test_02_the_module_is_registered_as_handwritten_source() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimSample" in modules
     assert modules["modSimSample"].generated is False
-    assert [m.name for m in structure.vba_modules][-1] == "modSimSample"
-    # The registry grew by exactly this module.
-    assert [m.name for m in structure.vba_modules][-3:] == [
-        "modSimContract", "modSimRng", "modSimSample"
+    assert [m.name for m in structure.vba_modules][-4:] == [
+        "modSimContract", "modSimRng", "modSimSample", "modSimEngine"
     ]
-    for absent in ("modSimEngine", "modSimStats", "modSimFingerprint", "modSimReport"):
+    for absent in ("modSimStats", "modSimFingerprint", "modSimReport"):
         assert absent not in modules, absent
 
 
@@ -412,11 +410,18 @@ def test_10_the_cheng_formulation_lives_here_and_nowhere_else() -> None:
     for module in load_modules([SRC_VBA]):
         if module.name == "modSimSample":
             continue
-        assert "Cheng" not in module.raw, module.name
-        for token in ("BetaPert", "ChengA", "ChengBeta", "ChengK1", "ChengK2",
-                      "SIM_CHENG", "SIM_PERT"):
+        # The scan is over EXECUTABLE code - comments and string literals
+        # stripped, the same discipline D6-11 enforcement uses. modSimEngine
+        # says in prose that no Cheng arithmetic lives in it, and a rule that
+        # forbade a module from naming what it refuses to contain would forbid
+        # the clearest thing it can say.
+        # `SimSamplePrepareBetaPert` is the accepted PUBLIC constructor, so a
+        # module naming it is calling the sampler rather than copying it.
+        # What must be unique here is the formulation: every Cheng term and
+        # every projected Cheng/PERT constant.
+        for token in ("Cheng", "SIM_CHENG", "SIM_PERT"):
             assert token not in module.code, (module.name, token)
-    assert "Cheng" in _module().raw
+    assert "Cheng" in _module().code
 
 
 # ===========================================================================

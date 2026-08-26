@@ -487,6 +487,9 @@ vba:
     - name: "modSimSample"
       generated: false
       responsibility: "The pure Phase-6 stochastic transforms: Uniform, Triangular, prepared Beta-PERT through the locked Cheng BB/BC formulation, and the Bernoulli occurrence primitive. All randomness arrives through the modSimRng public surface. No simulation orchestration and no worksheet access."
+    - name: "modSimEngine"
+      generated: false
+      responsibility: "The pure Phase-6 Monte Carlo iteration and canonical contribution accumulation over resolved in-memory DriverFactors; retains the nominal and PV iteration totals. No worksheet access, no statistics, no fingerprint and no publication."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.

@@ -231,7 +231,10 @@ def _split_assign(text: str) -> tuple[str, str] | None:
 
 def _parse_types(code: str) -> dict[str, list[tuple[str, str]]]:
     types: dict[str, list[tuple[str, str]]] = {}
-    for block in re.finditer(r"^Public Type (\w+)\n(.*?)^End Type", code, re.M | re.S):
+    # Private Type as well as Public: a module may keep its prepared
+    # representation private precisely so no caller can write it.
+    for block in re.finditer(r"^(?:Public|Private) Type (\w+)\n(.*?)^End Type",
+                             code, re.M | re.S):
         fields = []
         for line in block.group(2).splitlines():
             field = re.match(r"\s*(\w+)\s+As\s+(\w+)\s*$", line)
@@ -374,7 +377,7 @@ def _simple(text: str, env: dict, procs: dict, procname: str) -> str:
     return f"{_expr(lhs, env, procs)} = _copy({value})"
 
 
-def build(sources, constants, only=None, extra=None) -> dict:
+def build(sources, constants, only=None, extra=None, signature_only=None) -> dict:
     """Compile `.bas` modules into one namespace.
 
     `sources`     ordered {module name: Path}. Later modules may call earlier ones
@@ -385,6 +388,12 @@ def build(sources, constants, only=None, extra=None) -> dict:
                   without dragging in a module that does not belong to the step
                   under test.
     `extra`       optional additional namespace entries.
+    `signature_only`  optional {module name: {procedure names}} whose SIGNATURES
+                  are read from the source and registered, but whose bodies are
+                  NOT compiled - the caller binds them through `extra`. Used for
+                  accepted primitives whose VBA bodies are outside this engine's
+                  reach; reading the real declaration is what keeps the ByRef /
+                  ByVal call convention honest instead of retyped by hand.
 
     Returns the namespace, which also carries `_python_source`, `_types` and
     `_procs` for the tests that assert over them.
@@ -400,6 +409,13 @@ def build(sources, constants, only=None, extra=None) -> dict:
     for name, entries in per_module.items():
         for sig, _ in entries:
             procs[sig.group(3)] = _signature_params(sig, types)
+    for name, wanted in (signature_only or {}).items():
+        code = strip_comments(Path(sources[name]).read_text(encoding="utf-8"))
+        found = set()
+        for sig, _ in _split_procedures(code, wanted):
+            procs[sig.group(3)] = _signature_params(sig, types)
+            found.add(sig.group(3))
+        assert found == set(wanted), f"missing signatures: {sorted(set(wanted) - found)}"
 
     source: list[str] = []
     for name, entries in per_module.items():
