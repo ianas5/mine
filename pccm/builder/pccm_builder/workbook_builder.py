@@ -112,6 +112,7 @@ def build_workbook(
     drivers: DriverContract,
     structure: StructureContract,
     calc: CalcContract | None = None,
+    sim: Any = None,
 ) -> tuple[Workbook, BuildMetadata]:
     """Create the Stage A workbook from the manifest and every contract.
 
@@ -158,6 +159,14 @@ def build_workbook(
                     render_calc_workspace(worksheet, calc, styles)
         else:
             _populate_blocks(worksheet, sheet_spec, styles, metadata)
+
+        # THE PHASE-6 PUBLICATION SHELL. Labels, headers and presentation
+        # formulas only - no iteration row, no snapshot, no digest. It is
+        # materialised here rather than by the run precisely so a successful
+        # `_SimData` commit can never be followed by a failed Results write.
+        if sim is not None and spec.phase6_shell:
+            render_phase6_shell(worksheet, sheet_spec, spec.phase6_shell, sim, contract,
+                                styles)
 
     # Remove openpyxl's default sheet only after the real sheets exist, so the
     # workbook is never momentarily empty.
@@ -312,6 +321,148 @@ def _write_header(worksheet: Worksheet, sheet_spec: SheetSpec, styles: StyleBook
     for column in _rule_columns(sheet_spec):
         worksheet[f"{column}{layout.rule_row}"].border = styles.rule
     worksheet.row_dimensions[layout.rule_row].height = styles.row_height("spacer")
+
+
+def render_phase6_shell(
+    worksheet: Worksheet,
+    sheet_spec: SheetSpec,
+    shell: dict[str, Any],
+    sim: Any,
+    contract: InputContract,
+    styles: StyleBook,
+) -> None:
+    """Materialise the empty publication shell.
+
+    Every coordinate comes from `sim_contract.yaml`; this function reads the
+    manifest only for WHERE things sit on Results and for the wording. Nothing
+    written here is simulation output: no iteration record, no snapshot value,
+    no fingerprint and no digest.
+    """
+    raw = sim.raw
+    if sheet_spec.name == raw["sim_data"]["sheet"]:
+        _render_sim_data_shell(worksheet, shell["sim_data"], raw, sim, contract, styles)
+    elif sheet_spec.name == "Results":
+        _render_results_shell(worksheet, shell["results"], styles)
+
+
+def _render_sim_data_shell(
+    worksheet: Worksheet, block: dict[str, Any], raw: dict[str, Any], sim: Any,
+    contract: InputContract, styles: StyleBook,
+) -> None:
+    identity = raw["sim_data"]["run_identity"]
+    label_col = identity["label_column"]
+    shared_col = identity["value_column"]
+    banks = identity["bank_value_columns"]
+
+    _write(worksheet, f"{label_col}{block['heading_row']}", block["identity_heading"],
+           styles.section)
+    _write(worksheet, f"{label_col}{block['note_row']}", block["identity_note"], styles.note)
+
+    for field in identity["fields"]:
+        _write(worksheet, f"{label_col}{field['row']}", field["label"], styles.label)
+        if field["group"] == "snapshot":
+            continue
+        if field.get("initial") is not None:
+            _write(worksheet, f"{shared_col}{field['row']}", field["initial"], styles.value)
+
+    # The persisted summary and contingency blocks: labels and bank headers only.
+    ladder = _shell_ladder(sim, contract)
+    summary = raw["sim_data"]["summary_statistics"]
+    _render_persisted_block(worksheet, summary, summary["metrics"], ladder,
+                            block["summary_heading"], block["summary_headers"],
+                            block["heading_row"], block["note_row"], styles)
+    contingency = raw["sim_data"]["contingency_ladder"]
+    _render_persisted_block(worksheet, contingency, contingency["rungs"], ladder,
+                            block["contingency_heading"], block["contingency_headers"],
+                            block["heading_row"], block["note_row"], styles)
+
+    records = raw["sim_data"]["iteration_records"]
+    _write(worksheet, f"{label_col}{block['iteration_heading_row']}",
+           block["iteration_heading"], styles.section)
+    _write(worksheet, f"{label_col}{block['iteration_note_row']}",
+           block["iteration_note"], styles.note)
+    for bank, columns in records["banks"].items():
+        for key, column in columns.items():
+            _write(worksheet, f"{column}{records['header_row']}",
+                   block["bank_headers"][bank][key], styles.label)
+
+    for column, width in (block.get("column_widths") or {}).items():
+        worksheet.column_dimensions[column].width = width
+
+
+def _shell_ladder(sim: Any, contract: InputContract) -> tuple[str, ...]:
+    """The ladder, resolved from its OWNER through the accepted authority."""
+    from .sim_oracle import resolve_percentile_ladder
+
+    return tuple(resolve_percentile_ladder(sim, contract).ordered)
+
+
+def _render_persisted_block(
+    worksheet: Worksheet, block: dict[str, Any], entries: list[dict[str, Any]],
+    ladder: tuple[str, ...], heading: str, headers: dict[str, Any],
+    heading_row: int, note_row: int, styles: StyleBook,
+) -> None:
+    label_col = block["label_column"]
+    _write(worksheet, f"{label_col}{heading_row}", heading, styles.section)
+    for bank, columns in block["bank_value_columns"].items():
+        for measure, column in columns.items():
+            _write(worksheet, f"{column}{note_row}", headers[bank][measure], styles.label)
+    for entry in entries:
+        label = entry.get("label")
+        if label is None:
+            # THE LADDER LABEL COMES FROM ITS OWNER, never from this contract.
+            label = ladder[int(entry["key"].split("_")[1]) - 1]
+        _write(worksheet, f"{label_col}{entry['row']}", label, styles.label)
+
+
+def _render_results_shell(
+    worksheet: Worksheet, block: dict[str, Any], styles: StyleBook,
+) -> None:
+    label_col = block["label_column"]
+    nominal_col = block["nominal_column"]
+    pv_col = block["pv_column"]
+
+    for section in block["sections"]:
+        _write(worksheet, f"{label_col}{section['row']}", section["title"], styles.section)
+        _write(worksheet, f"{label_col}{section['note_row']}", section["note"], styles.note)
+
+    for field in block["run_stamp"]["fields"]:
+        _write(worksheet, f"{label_col}{field['row']}", field["label"], styles.label)
+        _write(worksheet, f"{nominal_col}{field['row']}", field["formula"], styles.value)
+
+    summary = block["summary"]
+    _write(worksheet, f"{label_col}{summary['header_row']}", summary["headers"]["label"],
+           styles.label)
+    _write(worksheet, f"{nominal_col}{summary['header_row']}", summary["headers"]["nominal"],
+           styles.label)
+    _write(worksheet, f"{pv_col}{summary['header_row']}", summary["headers"]["pv"],
+           styles.label)
+    for metric in summary["metrics"]:
+        _write(worksheet, f"{label_col}{metric['row']}", metric["label"], styles.label)
+        _write(worksheet, f"{nominal_col}{metric['row']}", metric["nominal"], styles.value)
+        _write(worksheet, f"{pv_col}{metric['row']}", metric["pv"], styles.value)
+
+    selected = block["selected"]
+    _write(worksheet, f"{label_col}{selected['confidence_level_row']}",
+           selected["labels"]["confidence_level"], styles.label)
+    _write(worksheet, f"{nominal_col}{selected['confidence_level_row']}",
+           selected["confidence_level_formula"], styles.value)
+    _write(worksheet, f"{label_col}{selected['quantile_row']}",
+           selected["labels"]["quantile"], styles.label)
+    _write(worksheet, f"{nominal_col}{selected['quantile_row']}",
+           selected["quantile_nominal"], styles.value)
+    _write(worksheet, f"{pv_col}{selected['quantile_row']}",
+           selected["quantile_pv"], styles.value)
+    _write(worksheet, f"{label_col}{selected['contingency_row']}",
+           selected["labels"]["contingency"], styles.label)
+    _write(worksheet, f"{nominal_col}{selected['contingency_row']}",
+           selected["contingency_nominal"], styles.value)
+    _write(worksheet, f"{pv_col}{selected['contingency_row']}",
+           selected["contingency_pv"], styles.value)
+
+    for deferred in block["deferred"]:
+        _write(worksheet, f"{label_col}{deferred['row']}", deferred["title"], styles.section)
+        _write(worksheet, f"{label_col}{deferred['note_row']}", deferred["note"], styles.note)
 
 
 def _populate_blocks(

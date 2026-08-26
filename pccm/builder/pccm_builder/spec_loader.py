@@ -51,6 +51,7 @@ class WorkbookSpec:
     presentation: dict[str, Any]
     sheets: list[SheetSpec]
     source_path: Path
+    phase6_shell: dict[str, Any] = field(default_factory=dict)
 
     @property
     def sheet_names(self) -> list[str]:
@@ -99,6 +100,55 @@ def _require_str(mapping: dict[str, Any], key: str, where: str) -> str:
     return value
 
 
+_SHELL_FORMULA_KEYS = ("formula", "nominal", "pv", "confidence_level_formula",
+                       "quantile_nominal", "quantile_pv", "contingency_nominal",
+                       "contingency_pv")
+
+
+def _parse_phase6_shell(raw: dict[str, Any], path: Path) -> dict[str, Any]:
+    """The Phase-6 publication shell: WHERE every label and formula sits.
+
+    Shape only here; WHICH fields must exist is `sim_contract.yaml`'s, and the
+    simulation loader cross-validates the two. What this does enforce is that
+    every formula is a formula and every row is a row, because a label silently
+    written into a formula cell is not something a later reader can see.
+    """
+    shell = raw.get("phase6_shell")
+    if shell is None:
+        return {}
+    if not isinstance(shell, dict):
+        raise SpecError(f"{path}: phase6_shell must be a mapping")
+    for section in ("sim_data", "results"):
+        if section not in shell:
+            raise SpecError(f"{path}: phase6_shell omits {section!r}")
+        if not isinstance(shell[section], dict):
+            raise SpecError(f"{path}: phase6_shell.{section} must be a mapping")
+
+    def walk(node: Any, where: str, formulas: bool) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                # `nominal` and `pv` are formula cells on Results and header TEXT
+                # on _SimData, so the rule is scoped to where formulas live.
+                if (formulas and key in _SHELL_FORMULA_KEYS
+                        and not where.endswith(".headers")
+                        and not where.endswith(".labels")):
+                    if not isinstance(value, str) or not value.startswith("="):
+                        raise SpecError(
+                            f"{where}.{key} must be a formula beginning with '='"
+                        )
+                if key == "row" or key.endswith("_row"):
+                    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                        raise SpecError(f"{where}.{key} must be a positive row number")
+                walk(value, f"{where}.{key}", formulas)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{where}[{index}]", formulas)
+
+    walk(shell["sim_data"], f"{path}: phase6_shell.sim_data", False)
+    walk(shell["results"], f"{path}: phase6_shell.results", True)
+    return shell
+
+
 def load_spec(path: str | Path) -> WorkbookSpec:
     """Parse and fully validate the manifest at *path*."""
     path = Path(path)
@@ -116,6 +166,7 @@ def load_spec(path: str | Path) -> WorkbookSpec:
     workbook = _require(raw, "workbook", str(path))
     presentation = _require(raw, "presentation", str(path))
     raw_sheets = _require(raw, "sheets", str(path))
+    shell = _parse_phase6_shell(raw, path)
 
     for key in ("name", "short_name", "model_version", "build_phase", "reporting_currency"):
         _require_str(model, key, f"{path}: model")
@@ -140,6 +191,7 @@ def load_spec(path: str | Path) -> WorkbookSpec:
         presentation=presentation,
         sheets=sheets,
         source_path=path,
+        phase6_shell=shell,
     )
 
 

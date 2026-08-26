@@ -339,6 +339,68 @@ def render_sim_contract_module(
     module.const("SIM_RISK_PV_RULE", str(raw["contribution"]["risk"]["pv_when_occurred"]))
     module.raw()
 
+    # --- publication banks --------------------------------------------------
+    identity = raw["sim_data"]["run_identity"]
+    banks = raw["publication"]["banks"]
+    module.section("Publication banks (the second bank consumes COLUMNS, not rows)")
+    for label in banks["labels"]:
+        module.const(f"SIM_BANK_{_identifier(label)}", str(label))
+    module.const("SIM_BANK_COUNT", int(banks["count"]))
+    module.const("SIM_ACTIVE_BANK_ROW", int(
+        next(f["row"] for f in identity["fields"] if f["key"] == "active_bank")))
+    module.const("SIM_SHARED_VALUE_COLUMN", str(identity["value_column"]))
+    for label, column in identity["bank_value_columns"].items():
+        module.const(f"SIM_SNAPSHOT_COLUMN_{_identifier(label)}", str(column))
+    records = raw["sim_data"]["iteration_records"]
+    for label, columns in records["banks"].items():
+        for key, column in columns.items():
+            module.const(
+                f"SIM_ITER_{_identifier(label)}_{_identifier(key)}_COLUMN", str(column))
+    transaction = raw["publication"]["transaction"]
+    module.const("SIM_FINAL_COMMIT_RANGE", str(transaction["final_commit_range"]))
+    module.raw()
+
+    # --- persisted summary and contingency ----------------------------------
+    summary = raw["sim_data"]["summary_statistics"]
+    module.section("Persisted summary statistics (computed by modSimStats, never by a formula)")
+    module.const("SIM_SUMMARY_LABEL_COLUMN", str(summary["label_column"]))
+    module.const("SIM_SUMMARY_FIRST_ROW", int(summary["first_row"]))
+    module.const("SIM_SUMMARY_LAST_ROW", int(summary["last_row"]))
+    for label, columns in summary["bank_value_columns"].items():
+        for measure, column in columns.items():
+            module.const(
+                f"SIM_SUMMARY_{_identifier(label)}_{_identifier(measure)}_COLUMN",
+                str(column))
+    for metric in summary["metrics"]:
+        module.const(f"SIM_SUMMARY_ROW_{_identifier(metric['key'])}", int(metric["row"]))
+    module.raw()
+
+    contingency = raw["sim_data"]["contingency_ladder"]
+    module.section("Persisted contingency ladder (the WHOLE ladder, before any commit)")
+    module.const("SIM_CONTINGENCY_LABEL_COLUMN", str(contingency["label_column"]))
+    module.const("SIM_CONTINGENCY_FIRST_ROW", int(contingency["first_row"]))
+    module.const("SIM_CONTINGENCY_LAST_ROW", int(contingency["last_row"]))
+    for label, columns in contingency["bank_value_columns"].items():
+        for measure, column in columns.items():
+            module.const(
+                f"SIM_CONTINGENCY_{_identifier(label)}_{_identifier(measure)}_COLUMN",
+                str(column))
+    for rung in contingency["rungs"]:
+        module.const(f"SIM_CONTINGENCY_ROW_{_identifier(rung['key'])}", int(rung["row"]))
+    module.raw()
+
+    # --- the Phase-5 bridge and the settled public surface ------------------
+    bridge = raw["phase5_bridge"]
+    module.section("The one Phase-5 preparation bridge, and the settled read accessors")
+    module.const("SIM_PREPARE_BRIDGE", str(bridge["procedure"]))
+    module.const("SIM_PREPARE_BRIDGE_OWNER", str(bridge["owner_module"]))
+    module.const("SIM_PREPARE_REQUIRES_STATUS", str(bridge["requires_phase5_status"]))
+    surface = raw["command_surface"]
+    for ordinal, name in enumerate(surface["read_accessors"], start=1):
+        module.const(f"SIM_READ_ACCESSOR_{ordinal}", str(name))
+    module.const("SIM_READ_ACCESSOR_COUNT", len(surface["read_accessors"]))
+    module.raw()
+
     # --- request fingerprint ------------------------------------------------
     # The SIM extension's FRAMING only. The stream tag, FP_VERSION and the hash
     # mathematics belong to modCalcContract and are deliberately not repeated

@@ -356,6 +356,7 @@ LOCKED_RUN_IDENTITY = (
     ('last_attempt_auto_nonce', 27, 'attempt', 'Last Attempt AUTO Nonce', 'integer', None, None),
     ('simulation_status', 28, 'derived', 'Simulation Status (last evaluated)', 'enum', 'sim_state', None),
     ('status_evaluated_at', 29, 'derived', 'Status Evaluated At', 'timestamp', None, None),
+    ('active_bank', 30, 'control', 'Active Bank', 'enum', 'bank', None),
 )
 """(key, row, group, label, value_type, enum, initial) - the COMPLETE record.
 
@@ -366,8 +367,117 @@ snapshot into a workbook that had never run."""
 LOCKED_RUN_IDENTITY_COLUMNS = {
     "label_column": 'B',
     "value_column": 'D',
-    "note_column": 'F',
+    "note_column": 'H',
 }
+LOCKED_BANK_LABELS = ('A', 'B')
+LOCKED_RUN_IDENTITY_BANK_COLUMNS = {'A': 'D', 'B': 'F'}
+'''The BANKED snapshot columns. Bank A reuses the shared value column, which is
+what keeps a first-ever successful run in exactly the place the accepted
+single-bank layout put it.'''
+
+LOCKED_ITERATION_BANKS = {
+    'A': {'iteration_index': 'B', 'total_nominal': 'C', 'total_pv': 'D'},
+    'B': {'iteration_index': 'F', 'total_nominal': 'G', 'total_pv': 'H'},
+}
+LOCKED_CANDIDATE_TARGET = {'': 'A', 'A': 'B', 'B': 'A'}
+
+LOCKED_TRANSACTION_ORDER = (
+    'prepare_phase5_inputs_and_require_current',
+    'validate_pre_allocation_prerequisites',
+    'allocate_auto_nonce_when_auto',
+    'run_simulation_and_statistics_in_memory',
+    'build_request_fingerprint_and_result_digest_in_memory',
+    'choose_inactive_bank',
+    'write_candidate_snapshot_to_inactive_bank',
+    'write_candidate_summary_to_inactive_bank',
+    'write_candidate_contingency_to_inactive_bank',
+    'write_candidate_iterations_to_inactive_bank',
+    'verify_inactive_bank_against_staged_package',
+    'final_commit_shared_block_including_active_bank',
+)
+LOCKED_FINAL_COMMIT_RANGE = 'D22:D30'
+LOCKED_FINAL_COMMIT_FIELDS = (
+    'last_run_id', 'last_attempt_result', 'last_attempt_detail',
+    'last_attempt_seed_mode', 'last_attempt_effective_seed', 'last_attempt_auto_nonce',
+    'simulation_status', 'status_evaluated_at', 'active_bank',
+)
+'''The shared block, CONTIGUOUS and in row order, ending with the publication
+selector. One Range write, and the active bank moves last inside it.'''
+
+LOCKED_READ_ACCESSORS = (
+    'PCCM_SimulationStatus',
+    'PCCM_SimulationRequestFingerprint',
+    'PCCM_CurrentSimulationRequestFingerprint',
+    'PCCM_SimulationResultDigest',
+    'PCCM_SimulationAttemptResult',
+    'PCCM_SimulationAttemptDetail',
+)
+
+LOCKED_READ_ACCESSOR_SEMANTICS = {
+    'PCCM_SimulationStatus':
+        'the derived status; writes only simulation_status and status_evaluated_at',
+    'PCCM_SimulationRequestFingerprint':
+        'the stored request fingerprint of the ACTIVE bank, blank when no bank is active',
+    'PCCM_CurrentSimulationRequestFingerprint':
+        'the request fingerprint recomputed through the SAME preparation path the run '
+        'uses, blank when the current prerequisites refuse',
+    'PCCM_SimulationResultDigest':
+        'the stored result digest of the ACTIVE bank, blank when no bank is active',
+    'PCCM_SimulationAttemptResult': 'the shared last attempt result',
+    'PCCM_SimulationAttemptDetail': 'the shared last attempt detail',
+}
+'''Exact wording, for the same reason the three simulation-state definitions are
+exact: `SimulationRequestFingerprint` reads a stored value and
+`CurrentSimulationRequestFingerprint` recomputes one, and a prose drift between
+them is the difference between a correct staleness answer and a wrong one.'''
+
+LOCKED_SUMMARY_METRICS = (
+    # (key, row, label, source). The QUANTILE labels are deliberately None: the
+    # selectable ladder belongs to input_contract.yaml, and spelling "P55" here
+    # would be a second ladder that could drift from the owning authority.
+    ('mean', 8, 'Mean', 'SimStatsMean'),
+    ('sample_standard_deviation', 9, 'Sample Standard Deviation',
+     'SimStatsSampleStandardDeviation'),
+    ('minimum', 10, 'Minimum', 'SimStatsDescribe'),
+    ('quantile_1', 11, None, 'SimStatsDescribe'),
+    ('quantile_2', 12, None, 'SimStatsDescribe'),
+    ('quantile_3', 13, None, 'SimStatsDescribe'),
+    ('quantile_4', 14, None, 'SimStatsDescribe'),
+    ('quantile_5', 15, None, 'SimStatsDescribe'),
+    ('quantile_6', 16, None, 'SimStatsDescribe'),
+    ('quantile_7', 17, None, 'SimStatsDescribe'),
+    ('quantile_8', 18, None, 'SimStatsDescribe'),
+    ('quantile_9', 19, None, 'SimStatsDescribe'),
+    ('quantile_10', 20, None, 'SimStatsDescribe'),
+    ('quantile_11', 21, None, 'SimStatsDescribe'),
+    ('maximum', 22, 'Maximum', 'SimStatsDescribe'),
+    ('deterministic_base_a', 23, 'Deterministic Base A', 'phase5_preparation'),
+)
+LOCKED_SUMMARY_COLUMNS = {
+    'label_column': 'J',
+    'A': {'nominal': 'K', 'pv': 'L'},
+    'B': {'nominal': 'M', 'pv': 'N'},
+}
+LOCKED_CONTINGENCY_COLUMNS = {
+    'label_column': 'P',
+    'A': {'nominal': 'Q', 'pv': 'R'},
+    'B': {'nominal': 'S', 'pv': 'T'},
+}
+LOCKED_RESULTS_RUN_STAMP_FIELDS = (
+    'last_successful_stamp', 'run_id', 'model_version', 'iterations_run', 'seed_mode',
+    'supplied_seed', 'effective_seed', 'consumed_auto_nonce', 'applied_timeline',
+    'rng_version', 'sim_method_version', 'request_fingerprint', 'result_digest',
+    'simulation_status', 'status_evaluated_at',
+)
+LOCKED_RESULTS_FORBIDDEN_FUNCTIONS = (
+    'AVERAGE', 'STDEV', 'STDEV.S', 'STDEVP', 'PERCENTILE', 'PERCENTILE.INC',
+    'PERCENTILE.EXC', 'QUARTILE', 'MEDIAN', 'OFFSET', 'INDIRECT', 'RAND',
+    'RANDBETWEEN', 'NOW', 'TODAY',
+)
+LOCKED_PHASE5_BRIDGE_RETURNS = (
+    'drivers', 'driver_count', 'analytical_fingerprint', 'deterministic_base_nominal',
+    'deterministic_base_pv', 'applied_timeline', 'decimal_separator',
+)
 
 LOCKED_RESERVED_ROWS = (
     (1, 1, 'shell top margin'),
@@ -377,8 +487,7 @@ LOCKED_RESERVED_ROWS = (
     (5, 5, 'spacer'),
     (6, 6, 'run identity section heading'),
     (7, 7, 'run identity section note'),
-    (8, 29, 'run identity fields'),
-    (30, 30, 'spacer'),
+    (8, 30, 'run identity fields'),
     (31, 31, 'iteration records section heading'),
     (32, 32, 'iteration records section note'),
     (33, 33, 'iteration table header'),
@@ -546,8 +655,9 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'accumulation', 'authority_references', 'cheng', 'command_surface', 'components',
         'contingency', 'contribution', 'dependence', 'distributions', 'interruption',
         'iterations', 'jump', 'kernel', 'label_sets', 'numerical_domain', 'prerequisite',
-        'publication', 'request_fingerprint', 'result_digest', 'results_minimum', 'risk',
-        'rng', 'run_id', 'seeding', 'sim_contract_version', 'sim_data', 'sim_state',
+        'phase5_bridge', 'publication', 'request_fingerprint', 'result_digest',
+        'results_minimum', 'risk', 'rng', 'run_id', 'seeding',
+        'selected_confidence_level', 'sim_contract_version', 'sim_data', 'sim_state',
         'statistics', 'stream_assignment', 'versions'
     }),
     'accumulation': frozenset({
@@ -575,10 +685,13 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
     'cheng.literal_effect': frozenset({'logit_form_affects', 'squeeze_literals_affect'}),
     'cheng.source_binding': frozenset({'evidence_file', 'functions_sha256'}),
     'command_surface': frozenset({
-        'automation_endpoint', 'msgbox_introduced_by_phase_6', 'read_accessor_names_settled',
-        'ribbon_introduced_by_phase_6', 'user_facing_run_button_in_phase_6',
+        'automation_endpoint', 'effective_seed_public_accessor_required_in_phase_6',
+        'msgbox_introduced_by_phase_6', 'read_accessor_names_settled', 'read_accessors',
+        'read_accessor_semantics', 'ribbon_introduced_by_phase_6',
+        'run_id_public_accessor_required_in_phase_6', 'user_facing_run_button_in_phase_6',
         'userform_introduced_by_phase_6'
     }),
+    'command_surface.read_accessor_semantics': frozenset(LOCKED_READ_ACCESSORS),
     'components': frozenset({'count_rule', 'kinds'}),
     'components.kinds[]': frozenset({'driver_kind', 'key', 'per_driver', 'role'}),
     'contingency': frozenset({
@@ -651,7 +764,7 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'thisworkbook_or_activeworkbook_access_inside_iteration_loop',
         'worksheet_access_inside_iteration_loop'
     }),
-    'label_sets': frozenset({'attempt_result', 'seed_mode', 'sim_state'}),
+    'label_sets': frozenset({'attempt_result', 'bank', 'seed_mode', 'sim_state'}),
     'numerical_domain': frozenset({
         'disciplines', 'magnitude_restriction', 'narrower_than_phase5',
         'negative_values_legal', 'positivity_rule', 'refusal_when_no_valid_double_result',
@@ -667,10 +780,62 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'silent_recalculation_permitted'
     }),
     'publication': frozenset({
-        'commit_last', 'partial_new_distribution_published_on_refusal_or_failure',
+        'banks', 'commit_last', 'failure_semantics',
+        'partial_new_distribution_published_on_refusal_or_failure',
         'persisted_source_of_truth', 'prior_successful_publication_survives',
         'publish_only_after_simulation_and_statistics_complete', 'results_derives_from',
-        'results_recomputes_monte_carlo'
+        'results_recomputes_monte_carlo', 'run_id_allocation', 'transaction'
+    }),
+    'publication.banks': frozenset({
+        'candidate_target', 'candidate_writes_to_active_bank', 'count',
+        'duplicate_workbook_required', 'inactive_bank_is_published',
+        'inactive_bank_is_staging_storage', 'initial_active_bank', 'labels',
+        'row_axis_shared_by_both_banks', 'temporary_worksheet_required',
+        'third_bank_permitted'
+    }),
+    'publication.banks.candidate_target': frozenset({'', 'A', 'B'}),
+    'publication.transaction': frozenset({
+        'final_commit_failure_restores_prior_block', 'final_commit_fields',
+        'final_commit_is_one_write', 'final_commit_range',
+        'million_row_rollback_required', 'order',
+        'prior_final_commit_block_captured_before_write',
+        'results_is_a_written_transaction'
+    }),
+    'publication.run_id_allocation': frozenset({
+        'allocated_by', 'candidate_value', 'headroom_checked_before_auto_allocation',
+        'held_locally_until_commit'
+    }),
+    'publication.failure_semantics': frozenset({
+        'final_commit_failure', 'inactive_bank_write_failure',
+        'refusal_before_auto_allocation', 'refusal_or_failure_after_auto_allocation'
+    }),
+    'publication.failure_semantics.refusal_before_auto_allocation': frozenset({
+        'active_bank_changed', 'attempt_metadata_updated', 'next_auto_nonce_advanced',
+        'successful_banks_changed'
+    }),
+    'publication.failure_semantics.refusal_or_failure_after_auto_allocation': frozenset({
+        'active_bank_changed', 'attempt_metadata_updated', 'next_auto_nonce_advanced',
+        'successful_banks_changed'
+    }),
+    'publication.failure_semantics.inactive_bank_write_failure': frozenset({
+        'active_bank_changed', 'corrupted_candidate_has_semantic_standing',
+        'prior_publication_remains_authoritative'
+    }),
+    'publication.failure_semantics.final_commit_failure': frozenset({
+        'active_bank_changed', 'prior_block_restored'
+    }),
+    'phase5_bridge': frozenset({
+        'analytical_fingerprint_is_current_not_stored', 'duplicates_factor_mathematics',
+        'is_automation_endpoint', 'name_prefix_pccm', 'owner_module', 'procedure',
+        'requires_phase5_status', 'returns', 'reuses_private_preparation',
+        'updates_phase5_status_or_attempt_metadata', 'writes_to_calc_sheet',
+        'zero_driver_model_succeeds'
+    }),
+    'selected_confidence_level': frozenset({
+        'change_requires_rerun', 'invalid_selector_blanks_selected_reporting_rows',
+        'invalid_selector_invalidates_simulation', 'participates_in_auto_allocation',
+        'participates_in_execution_validity', 'participates_in_request_fingerprint',
+        'participates_in_state_derivation', 'source', 'unselected_state_introduced'
     }),
     'request_fingerprint': frozenset({
         'analytical_prefix', 'auto_blank_seed_remains_recomputable',
@@ -702,7 +867,20 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'stream_tag', 'version_field_source'
     }),
     'result_digest.grammar': frozenset({'record', 'section', 'stream'}),
-    'results_minimum': frozenset({'annual_simulated_samples_contracted', 'deferred', 'sections'}),
+    'results_minimum': frozenset({
+        'annual_simulated_samples_contracted', 'deferred', 'presentation', 'sections'
+    }),
+    'results_minimum.presentation': frozenset({
+        'blank_when_no_active_bank', 'blank_when_selector_not_selectable',
+        'computes_contingency', 'computes_statistics',
+        'contingency_by_subtraction_on_results', 'forbidden_functions',
+        'materialised_by_stage_a', 'reads_a_fixed_bank', 'reads_only',
+        'recomputes_quantiles', 'run_stamp_fields', 'selected_rows',
+        'summary_metrics_source', 'written_by_the_run'
+    }),
+    'results_minimum.presentation.selected_rows[]': frozenset({
+        'key', 'lookup_only', 'source'
+    }),
     'risk': frozenset({
         'occurrence', 'probability_folded_into_knom', 'probability_folded_into_kpv',
         'severity'
@@ -757,17 +935,45 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'alternate_expansion_permitted', 'expansion', 'mixer', 'rule'
     }),
     'sim_data': frozenset({
-        'excluded', 'iteration_records', 'required_visibility', 'reserved_rows',
-        'run_identity', 'sheet'
+        'contingency_ladder', 'excluded', 'iteration_records', 'required_visibility',
+        'reserved_rows', 'run_identity', 'sheet', 'summary_statistics'
     }),
+    'sim_data.contingency_ladder': frozenset({
+        'all_values_representable_required_before_commit', 'bank_value_columns',
+        'baseline', 'computed_for_whole_ladder_before_commit',
+        'fixed_rung_persisted_though_not_selectable', 'first_row', 'label_column',
+        'last_row', 'rungs', 'source', 'worksheet_subtraction_permitted'
+    }),
+    'sim_data.contingency_ladder.bank_value_columns': frozenset({'A', 'B'}),
+    'sim_data.contingency_ladder.bank_value_columns.A': frozenset({'nominal', 'pv'}),
+    'sim_data.contingency_ladder.bank_value_columns.B': frozenset({'nominal', 'pv'}),
+    'sim_data.contingency_ladder.rungs[]': frozenset({'key', 'label', 'row'}),
+    'sim_data.summary_statistics': frozenset({
+        'bank_value_columns', 'first_row', 'label_column', 'last_row', 'metrics',
+        'recomputed_from_worksheet_data', 'source'
+    }),
+    'sim_data.summary_statistics.bank_value_columns': frozenset({'A', 'B'}),
+    'sim_data.summary_statistics.bank_value_columns.A': frozenset({'nominal', 'pv'}),
+    'sim_data.summary_statistics.bank_value_columns.B': frozenset({'nominal', 'pv'}),
+    'sim_data.summary_statistics.metrics[]': frozenset({'key', 'label', 'row', 'source'}),
     'sim_data.iteration_records': frozenset({
-        'columns', 'first_iteration_row', 'footer_rows', 'header_row', 'order', 'sorted'
+        'banks', 'columns', 'first_iteration_row', 'footer_rows', 'header_row', 'order',
+        'sorted'
+    }),
+    'sim_data.iteration_records.banks': frozenset({'A', 'B'}),
+    'sim_data.iteration_records.banks.A': frozenset({
+        'iteration_index', 'total_nominal', 'total_pv'
+    }),
+    'sim_data.iteration_records.banks.B': frozenset({
+        'iteration_index', 'total_nominal', 'total_pv'
     }),
     'sim_data.iteration_records.columns[]': frozenset({'column', 'header', 'key', 'value_type'}),
     'sim_data.reserved_rows[]': frozenset({'purpose', 'rows'}),
     'sim_data.run_identity': frozenset({
-        'fields', 'first_row', 'label_column', 'last_row', 'note_column', 'value_column'
+        'bank_value_columns', 'fields', 'first_row', 'label_column', 'last_row',
+        'note_column', 'value_column'
     }),
+    'sim_data.run_identity.bank_value_columns': frozenset({'A', 'B'}),
     'sim_data.run_identity.fields[]': frozenset({
         'enum', 'group', 'initial', 'key', 'label', 'row', 'value_type'
     }),
@@ -993,6 +1199,8 @@ def load_sim_contract(path: Path) -> SimContract:
     _validate_statistics(raw, path)
     _validate_contingency(raw, path)
     _validate_results_minimum(raw, path)
+    _validate_selected_confidence_level(raw, path)
+    _validate_phase5_bridge(raw, path)
 
     layout = _parse_sim_data(raw, path)
     _validate_iterations(raw, path, layout)
@@ -1613,6 +1821,107 @@ def _validate_publication(raw: dict, path: Path) -> None:
     _require_true(block, "commit_last", where)
     _require_false(block, "partial_new_distribution_published_on_refusal_or_failure", where)
     _require_true(block, "prior_successful_publication_survives", where)
+    _validate_banks(block, where)
+    _validate_transaction(block, where)
+
+
+def _validate_banks(block: dict, where: str) -> None:
+    """Two banks, one active, and a candidate that never touches the active one.
+
+    `prior_successful_publication_survives` was aspirational while a candidate
+    overwrote the published rows: a COM failure half way through a million rows
+    left a workbook that was neither the old distribution nor the new one, and no
+    million-row rollback is a transaction anybody should attempt.
+    """
+    banks = _map(block, "banks", where)
+    bwhere = f"{where}: banks"
+    _exact_sequence(banks.get("labels"), LOCKED_BANK_LABELS, f"{bwhere}: labels")
+    _require_value(banks, "count", len(LOCKED_BANK_LABELS), bwhere)
+    _require_false(banks, "third_bank_permitted", bwhere)
+    if banks.get("initial_active_bank") is not None:
+        raise SimContractError(
+            f"{bwhere}: initial_active_bank must be null. Blank is the ABSENCE of any "
+            "successful publication, not a bank; naming one would claim a workbook that "
+            "has never run already has a published distribution."
+        )
+    target = _map(banks, "candidate_target", bwhere)
+    if dict(target) != LOCKED_CANDIDATE_TARGET:
+        raise SimContractError(
+            f"{bwhere}: candidate_target must be exactly {LOCKED_CANDIDATE_TARGET}, got "
+            f"{dict(target)}. The first success targets A, and every success afterwards "
+            "targets whichever bank is NOT active."
+        )
+    _require_false(banks, "candidate_writes_to_active_bank", bwhere)
+    _require_false(banks, "inactive_bank_is_published", bwhere)
+    _require_true(banks, "inactive_bank_is_staging_storage", bwhere)
+    _require_false(banks, "temporary_worksheet_required", bwhere)
+    _require_false(banks, "duplicate_workbook_required", bwhere)
+    _require_true(banks, "row_axis_shared_by_both_banks", bwhere)
+
+
+def _validate_transaction(block: dict, where: str) -> None:
+    transaction = _map(block, "transaction", where)
+    twhere = f"{where}: transaction"
+    _exact_sequence(transaction.get("order"), LOCKED_TRANSACTION_ORDER, f"{twhere}: order")
+    order = tuple(transaction.get("order") or ())
+    if order[-1] != "final_commit_shared_block_including_active_bank":
+        raise SimContractError(
+            f"{twhere}: the active-bank switch must be the LAST step. A switch before the "
+            "candidate bank is verified publishes an unverified distribution."
+        )
+    if order.index("verify_inactive_bank_against_staged_package") >= order.index(
+            "final_commit_shared_block_including_active_bank"):
+        raise SimContractError(f"{twhere}: verification must precede the final commit")
+    if order.index("validate_pre_allocation_prerequisites") >= order.index(
+            "allocate_auto_nonce_when_auto"):
+        raise SimContractError(
+            f"{twhere}: every pre-allocation prerequisite must be checked BEFORE an AUTO "
+            "nonce is consumed. A run that can never be committed must not burn a "
+            "sequence."
+        )
+    _require_value(transaction, "final_commit_range", LOCKED_FINAL_COMMIT_RANGE, twhere)
+    _require_true(transaction, "final_commit_is_one_write", twhere)
+    _exact_sequence(transaction.get("final_commit_fields"), LOCKED_FINAL_COMMIT_FIELDS,
+                    f"{twhere}: final_commit_fields")
+    if tuple(transaction.get("final_commit_fields") or ())[-1] != "active_bank":
+        raise SimContractError(
+            f"{twhere}: active_bank must be the last field of the final commit block"
+        )
+    _require_true(transaction, "prior_final_commit_block_captured_before_write", twhere)
+    _require_true(transaction, "final_commit_failure_restores_prior_block", twhere)
+    _require_false(transaction, "million_row_rollback_required", twhere)
+    _require_false(transaction, "results_is_a_written_transaction", twhere)
+
+    allocation = _map(block, "run_id_allocation", where)
+    awhere = f"{where}: run_id_allocation"
+    _require_value(allocation, "candidate_value", "last_run_id + 1", awhere)
+    _require_true(allocation, "held_locally_until_commit", awhere)
+    _require_value(allocation, "allocated_by", "successful_final_commit", awhere)
+    _require_true(allocation, "headroom_checked_before_auto_allocation", awhere)
+
+    failure = _map(block, "failure_semantics", where)
+    fwhere = f"{where}: failure_semantics"
+    before = _map(failure, "refusal_before_auto_allocation", fwhere)
+    _require_false(before, "next_auto_nonce_advanced", f"{fwhere}: refusal_before_auto_allocation")
+    _require_false(before, "active_bank_changed", f"{fwhere}: refusal_before_auto_allocation")
+    _require_false(before, "successful_banks_changed", f"{fwhere}: refusal_before_auto_allocation")
+    _require_true(before, "attempt_metadata_updated", f"{fwhere}: refusal_before_auto_allocation")
+    after = _map(failure, "refusal_or_failure_after_auto_allocation", fwhere)
+    awh = f"{fwhere}: refusal_or_failure_after_auto_allocation"
+    # NOT rolled back, and deliberately: a consumed AUTO sequence is consumed.
+    _require_true(after, "next_auto_nonce_advanced", awh)
+    _require_false(after, "active_bank_changed", awh)
+    _require_false(after, "successful_banks_changed", awh)
+    _require_true(after, "attempt_metadata_updated", awh)
+    inactive = _map(failure, "inactive_bank_write_failure", fwhere)
+    iwh = f"{fwhere}: inactive_bank_write_failure"
+    _require_false(inactive, "active_bank_changed", iwh)
+    _require_true(inactive, "prior_publication_remains_authoritative", iwh)
+    _require_false(inactive, "corrupted_candidate_has_semantic_standing", iwh)
+    commit = _map(failure, "final_commit_failure", fwhere)
+    cwh = f"{fwhere}: final_commit_failure"
+    _require_true(commit, "prior_block_restored", cwh)
+    _require_false(commit, "active_bank_changed", cwh)
 
 
 def _validate_command_surface(raw: dict, path: Path) -> None:
@@ -1624,9 +1933,30 @@ def _validate_command_surface(raw: dict, path: Path) -> None:
         "msgbox_introduced_by_phase_6",
         "userform_introduced_by_phase_6",
         "ribbon_introduced_by_phase_6",
-        "read_accessor_names_settled",
     ):
         _require_false(block, flag, where)
+    # SETTLED at Step 11A, before the module exists, so it cannot invent a name.
+    _require_true(block, "read_accessor_names_settled", where)
+    _exact_sequence(block.get("read_accessors"), LOCKED_READ_ACCESSORS,
+                    f"{where}: read_accessors")
+    semantics = _map(block, "read_accessor_semantics", where)
+    if dict(semantics) != LOCKED_READ_ACCESSOR_SEMANTICS:
+        raise SimContractError(
+            f"{where}: read_accessor_semantics must be exactly the accepted wording, in "
+            f"order, got {dict(semantics)}. These are the authority a later implementation "
+            "reads, not commentary: 'the stored fingerprint' and 'the recomputed current "
+            "fingerprint' are different procedures and must stay different sentences."
+        )
+    if tuple(semantics) != LOCKED_READ_ACCESSORS:
+        raise SimContractError(
+            f"{where}: read_accessor_semantics must describe the accessors in the settled "
+            f"order, got {list(semantics)}"
+        )
+    endpoint = _req_str(block, "automation_endpoint", where)
+    if endpoint in LOCKED_READ_ACCESSORS:
+        raise SimContractError(f"{where}: the run endpoint may not also be a read accessor")
+    _require_false(block, "run_id_public_accessor_required_in_phase_6", where)
+    _require_false(block, "effective_seed_public_accessor_required_in_phase_6", where)
     interruption = _map(raw, "interruption", path)
     _require_false(
         interruption, "user_cancellation_supported_in_phase_6", f"{path}: interruption"
@@ -1797,6 +2127,13 @@ def _validate_label_sets(raw: dict, path: Path) -> None:
         block.get("attempt_result"), LOCKED_ATTEMPT_RESULTS, f"{where}: attempt_result"
     )
     _exact_sequence(block.get("seed_mode"), LOCKED_SEED_MODES, f"{where}: seed_mode")
+    _exact_sequence(block.get("bank"), LOCKED_BANK_LABELS, f"{where}: bank")
+    banks = tuple(raw["publication"]["banks"].get("labels") or ())
+    if banks != tuple(block.get("bank") or ()):
+        raise SimContractError(
+            f"{where}: bank labels {list(block.get('bank') or ())} disagree with "
+            f"publication.banks.labels {list(banks)}"
+        )
 
 
 def _validate_sim_state(raw: dict, path: Path) -> None:
@@ -1994,6 +2331,152 @@ def _validate_contingency(raw: dict, path: Path) -> None:
     _require_false(block, "workbook_recommends_a_confidence_level", where)
 
 
+def _validate_summary_statistics(block: dict, where: str, header_row: int) -> None:
+    """The Step-9 summary, PERSISTED.
+
+    `Results derives from _SimData` and `modSimStats` owns these numbers. Both
+    are true together only if the summary is stored: a worksheet AVERAGE or
+    PERCENTILE would be a second statistics engine, and reading the iteration
+    rows back to recompute would make the presentation layer a calculator.
+    """
+    summary = _map(block, "summary_statistics", where)
+    swhere = f"{where}: summary_statistics"
+    _require_value(summary, "label_column", LOCKED_SUMMARY_COLUMNS["label_column"], swhere)
+    columns = _map(summary, "bank_value_columns", swhere)
+    for bank in LOCKED_BANK_LABELS:
+        if dict(_map(columns, bank, swhere)) != LOCKED_SUMMARY_COLUMNS[bank]:
+            raise SimContractError(
+                f"{swhere}: bank {bank} columns must be {LOCKED_SUMMARY_COLUMNS[bank]}"
+            )
+    _require_value(summary, "source", "modSimStats", swhere)
+    _require_false(summary, "recomputed_from_worksheet_data", swhere)
+    metrics = _seq(summary, "metrics", swhere)
+    actual = tuple(
+        (_req_str(m, "key", swhere), _req_int(m, "row", swhere),
+         m.get("label"), _req_str(m, "source", swhere))
+        for m in metrics
+    )
+    for key, _row, label, _source in actual:
+        if key.startswith("quantile_"):
+            if label is not None:
+                raise SimContractError(
+                    f"{swhere}: rung {key} carries the label {label!r}. The selectable "
+                    "ladder belongs to input_contract.yaml; a label spelled here is a "
+                    "second ladder that can drift from its owner."
+                )
+        elif not isinstance(label, str) or not label.strip():
+            raise SimContractError(f"{swhere}: {key} carries no label")
+    if actual != LOCKED_SUMMARY_METRICS:
+        raise SimContractError(
+            f"{swhere}: the persisted summary must be exactly the accepted Step-9 surface - "
+            f"mean, sample deviation, minimum, the eleven projected rungs, maximum and the "
+            f"deterministic base - in order, got {[list(a) for a in actual]}"
+        )
+    _require_value(summary, "first_row", actual[0][1], swhere)
+    _require_value(summary, "last_row", actual[-1][1], swhere)
+    if [a[1] for a in actual] != list(range(actual[0][1], actual[-1][1] + 1)):
+        raise SimContractError(f"{swhere}: the metric rows must be contiguous and in order")
+    if actual[-1][1] >= header_row:
+        raise SimContractError(
+            f"{swhere}: the summary block reaches row {actual[-1][1]}, at or below the "
+            f"iteration header row {header_row}"
+        )
+
+
+def _validate_contingency_ladder(block: dict, where: str, header_row: int) -> None:
+    """THE WHOLE LADDER, precomputed before the candidate bank may commit.
+
+    Selected Confidence Level is reporting-only and may move without a rerun. A
+    publication holding only the selected rung would force either a rerun or a
+    worksheet subtraction the moment it did.
+    """
+    ladder = _map(block, "contingency_ladder", where)
+    cwhere = f"{where}: contingency_ladder"
+    _require_value(ladder, "label_column", LOCKED_CONTINGENCY_COLUMNS["label_column"], cwhere)
+    columns = _map(ladder, "bank_value_columns", cwhere)
+    for bank in LOCKED_BANK_LABELS:
+        if dict(_map(columns, bank, cwhere)) != LOCKED_CONTINGENCY_COLUMNS[bank]:
+            raise SimContractError(
+                f"{cwhere}: bank {bank} columns must be {LOCKED_CONTINGENCY_COLUMNS[bank]}"
+            )
+    _require_value(ladder, "source", "SimStatsContingency", cwhere)
+    _require_value(ladder, "baseline", LOCKED_CONTINGENCY_BASELINE, cwhere)
+    _require_false(ladder, "worksheet_subtraction_permitted", cwhere)
+    _require_true(ladder, "computed_for_whole_ladder_before_commit", cwhere)
+    _require_true(ladder, "all_values_representable_required_before_commit", cwhere)
+    _require_true(ladder, "fixed_rung_persisted_though_not_selectable", cwhere)
+    rungs = _seq(ladder, "rungs", cwhere)
+    actual = tuple(
+        (_req_str(r, "key", cwhere), _req_int(r, "row", cwhere), r.get("label"))
+        for r in rungs
+    )
+    for key, _row, label in actual:
+        if label is not None:
+            raise SimContractError(
+                f"{cwhere}: rung {key} spells its label; the ladder belongs to "
+                "input_contract.yaml"
+            )
+    expected = tuple(
+        (key, 8 + offset, label)
+        for offset, (key, _row, label, _source) in enumerate(
+            m for m in LOCKED_SUMMARY_METRICS if m[0].startswith("quantile_"))
+    )
+    if any(row[2] is not None for row in expected):  # pragma: no cover - locked above
+        raise SimContractError(f"{cwhere}: a rung label is spelled in this contract")
+    if actual != expected:
+        raise SimContractError(
+            f"{cwhere}: the contingency ladder must carry EVERY reported rung, in the "
+            f"projected order, got {[list(a) for a in actual]}. Storing only the selected "
+            "rung would force a rerun or a worksheet subtraction the moment the selector "
+            "moved."
+        )
+    _require_value(ladder, "first_row", actual[0][1], cwhere)
+    _require_value(ladder, "last_row", actual[-1][1], cwhere)
+    if actual[-1][1] >= header_row:
+        raise SimContractError(f"{cwhere}: the ladder reaches the iteration header row")
+
+
+def _validate_selected_confidence_level(raw: dict, path: Path) -> None:
+    block = _map(raw, "selected_confidence_level", path)
+    where = f"{path}: selected_confidence_level"
+    _require_value(block, "source", "inpSelectedConfidenceLevel", where)
+    for flag in ("participates_in_request_fingerprint", "participates_in_execution_validity",
+                 "participates_in_auto_allocation", "participates_in_state_derivation",
+                 "change_requires_rerun", "invalid_selector_invalidates_simulation",
+                 "unselected_state_introduced"):
+        _require_false(block, flag, where)
+    _require_true(block, "invalid_selector_blanks_selected_reporting_rows", where)
+
+
+def _validate_phase5_bridge(raw: dict, path: Path) -> None:
+    """ONE reusable surface into the accepted Phase-5 preparation.
+
+    A second construction of DriverFactors, the analytical fingerprint, the
+    deterministic base or the applied timeline is a second answer to the same
+    question, and the two would drift silently.
+    """
+    block = _map(raw, "phase5_bridge", path)
+    where = f"{path}: phase5_bridge"
+    _require_value(block, "owner_module", "modCalcReport", where)
+    procedure = _req_str(block, "procedure", where)
+    if procedure != "CalcPrepareSimulationInputs":
+        raise SimContractError(
+            f"{where}: procedure must be 'CalcPrepareSimulationInputs', got {procedure!r}"
+        )
+    if procedure.startswith("PCCM_"):
+        raise SimContractError(f"{where}: the bridge is internal, not an endpoint")
+    _require_false(block, "is_automation_endpoint", where)
+    _require_false(block, "name_prefix_pccm", where)
+    _require_value(block, "reuses_private_preparation", "PrepareCurrentCalculation", where)
+    _require_value(block, "requires_phase5_status", "CURRENT", where)
+    _require_false(block, "writes_to_calc_sheet", where)
+    _require_false(block, "updates_phase5_status_or_attempt_metadata", where)
+    _require_false(block, "duplicates_factor_mathematics", where)
+    _require_true(block, "zero_driver_model_succeeds", where)
+    _exact_sequence(block.get("returns"), LOCKED_PHASE5_BRIDGE_RETURNS, f"{where}: returns")
+    _require_true(block, "analytical_fingerprint_is_current_not_stored", where)
+
+
 def _validate_results_minimum(raw: dict, path: Path) -> None:
     block = _map(raw, "results_minimum", path)
     where = f"{path}: results_minimum"
@@ -2006,6 +2489,62 @@ def _validate_results_minimum(raw: dict, path: Path) -> None:
         if required not in deferred:
             raise SimContractError(f"{where}: deferred omits {required!r}")
     _require_false(block, "annual_simulated_samples_contracted", where)
+
+    # RESULTS IS PRESENTATION, and this is where that stops being a wish.
+    presentation = _map(block, "presentation", where)
+    pwhere = f"{where}: presentation"
+    _require_false(presentation, "written_by_the_run", pwhere)
+    _require_true(presentation, "materialised_by_stage_a", pwhere)
+    _exact_sequence(presentation.get("reads_only"),
+                    ("the active _SimData bank", "inpSelectedConfidenceLevel"),
+                    f"{pwhere}: reads_only")
+    for flag in ("computes_statistics", "computes_contingency", "recomputes_quantiles",
+                 "contingency_by_subtraction_on_results", "reads_a_fixed_bank"):
+        _require_false(presentation, flag, pwhere)
+    _exact_sequence(presentation.get("forbidden_functions"),
+                    LOCKED_RESULTS_FORBIDDEN_FUNCTIONS,
+                    f"{pwhere}: forbidden_functions")
+    _exact_sequence(presentation.get("run_stamp_fields"), LOCKED_RESULTS_RUN_STAMP_FIELDS,
+                    f"{pwhere}: run_stamp_fields")
+    # CROSS-VALIDATION: every field Results presents must be a real `_SimData`
+    # field identity, and every one of them must come from the right group.
+    identities = {row[0]: row[2] for row in LOCKED_RUN_IDENTITY}
+    for key in LOCKED_RESULTS_RUN_STAMP_FIELDS:
+        if key not in identities:
+            raise SimContractError(
+                f"{pwhere}: run_stamp_fields names {key!r}, which is not a _SimData field"
+            )
+        if identities[key] not in ("snapshot", "derived"):
+            raise SimContractError(
+                f"{pwhere}: {key!r} is a {identities[key]} field; the Run Stamp presents "
+                "the successful snapshot and the derived status, not the counters"
+            )
+    snapshot_keys = {k for k, group in identities.items() if group == "snapshot"}
+    missing = sorted(snapshot_keys - set(LOCKED_RESULTS_RUN_STAMP_FIELDS))
+    if missing:
+        raise SimContractError(
+            f"{pwhere}: the Run Stamp omits persisted snapshot field(s) {missing}"
+        )
+    _require_value(presentation, "summary_metrics_source",
+                   "sim_data.summary_statistics.metrics", pwhere)
+    rows = _seq(presentation, "selected_rows", pwhere)
+    actual = tuple(
+        (_req_str(r, "key", pwhere), _req_str(r, "source", pwhere), bool(r.get("lookup_only")))
+        for r in rows
+    )
+    expected = (
+        ("selected_confidence_level", "inpSelectedConfidenceLevel", False),
+        ("selected_quantile", "sim_data.summary_statistics", True),
+        ("selected_contingency", "sim_data.contingency_ladder", True),
+    )
+    if actual != expected:
+        raise SimContractError(
+            f"{pwhere}: the selected reporting rows must be exactly {expected}, got {actual}. "
+            "Selected Px and Contingency are LOOKUPS into the persisted ladders; computing "
+            "either on the sheet would be a second engine."
+        )
+    _require_true(presentation, "blank_when_no_active_bank", pwhere)
+    _require_true(presentation, "blank_when_selector_not_selectable", pwhere)
 
 
 # ---------------------------------------------------------------------------
@@ -2111,6 +2650,39 @@ def _parse_sim_data(raw: dict, path: Path) -> SimDataLayout:
         if not re.fullmatch(r"[A-Z]{1,3}", column):
             raise SimContractError(f"{rwhere}: column {column!r} is not a column letter")
 
+    # THE SECOND BANK CONSUMES COLUMNS, NOT ROWS. Everything above - the tiling,
+    # H, the header row and the first iteration row - has already been checked
+    # against its accepted value, so a bank that tried to buy itself capacity by
+    # moving the row axis has already failed.
+    banks = _map(records, "banks", rwhere)
+    bwhere = f"{rwhere}: banks"
+    if tuple(banks) != LOCKED_BANK_LABELS:
+        raise SimContractError(
+            f"{bwhere}: the iteration banks must be exactly {list(LOCKED_BANK_LABELS)}, "
+            f"in order, got {list(banks)}"
+        )
+    if {k: dict(v) for k, v in banks.items()} != LOCKED_ITERATION_BANKS:
+        raise SimContractError(
+            f"{bwhere}: the iteration bank columns must be exactly "
+            f"{LOCKED_ITERATION_BANKS}, got {{k: dict(v) for k, v in banks.items()}}"
+        )
+    bank_a = dict(banks["A"])
+    declared = {key: column for key, column, _h, _t in actual_columns}
+    if bank_a != declared:
+        raise SimContractError(
+            f"{bwhere}: bank A must be the SAME layout the accepted `columns` block "
+            f"declares, got {bank_a} against {declared}. Two spellings of one layout is "
+            "two layouts."
+        )
+    if set(banks["A"].values()) & set(banks["B"].values()):
+        raise SimContractError(
+            f"{bwhere}: the two banks share a column; a candidate write would land in the "
+            "published bank"
+        )
+
+    _validate_summary_statistics(block, where, header_row)
+    _validate_contingency_ladder(block, where, header_row)
+
     identity = _map(block, "run_identity", where)
     iwhere = f"{where}: run_identity"
     first_field_row = _req_int(identity, "first_row", iwhere)
@@ -2133,6 +2705,21 @@ def _parse_sim_data(raw: dict, path: Path) -> SimDataLayout:
     # had never run.
     for key, expected in LOCKED_RUN_IDENTITY_COLUMNS.items():
         _require_value(identity, key, expected, iwhere)
+    bank_columns = _map(identity, "bank_value_columns", iwhere)
+    if dict(bank_columns) != LOCKED_RUN_IDENTITY_BANK_COLUMNS:
+        raise SimContractError(
+            f"{iwhere}: bank_value_columns must be exactly "
+            f"{LOCKED_RUN_IDENTITY_BANK_COLUMNS}, got {dict(bank_columns)}"
+        )
+    if bank_columns["A"] != identity.get("value_column"):
+        raise SimContractError(
+            f"{iwhere}: bank A must reuse the shared value column, so a first-ever "
+            "successful run lands exactly where the accepted single-bank layout put it"
+        )
+    if bank_columns["A"] == bank_columns["B"]:
+        raise SimContractError(f"{iwhere}: the two banks share a value column")
+    if identity.get("note_column") in set(bank_columns.values()):
+        raise SimContractError(f"{iwhere}: the note column collides with a bank column")
 
     actual = tuple(
         (
@@ -2376,6 +2963,132 @@ def _validate_reference_set(references: tuple, path: Path) -> None:
         )
 
 
+def _validate_publication_shell(sim: SimContract, spec: WorkbookSpec) -> None:
+    """The workbook's Phase-6 shell must present exactly this contract's fields.
+
+    `workbook.yaml` owns WHERE each label and formula sits; this contract owns
+    WHICH fields exist. Two documents describing one layout drift the moment
+    either moves, so the cross-check is the thing that makes the split safe.
+
+    It also enforces the property the whole design rests on: every Results
+    formula is a LOOKUP. A formula that averaged, deviated, interpolated a
+    quantile or subtracted a contingency would be a second statistics engine on
+    a worksheet, and no test of the VBA would ever see it.
+    """
+    shell = getattr(spec, "phase6_shell", None) or {}
+    if not shell:
+        return
+    where = "workbook.yaml: phase6_shell"
+    results = shell["results"]
+    presentation = sim.raw["results_minimum"]["presentation"]
+
+    declared = tuple(f["key"] for f in results["run_stamp"]["fields"])
+    if declared != tuple(presentation["run_stamp_fields"]):
+        raise SimContractError(
+            f"{where}.results.run_stamp: presents {list(declared)}, but the contract's Run "
+            f"Stamp is {list(presentation['run_stamp_fields'])}"
+        )
+    identity_rows = {f["key"]: f["row"] for f in sim.raw["sim_data"]["run_identity"]["fields"]}
+    labels = {f["key"]: f["label"] for f in sim.raw["sim_data"]["run_identity"]["fields"]}
+    for field_ in results["run_stamp"]["fields"]:
+        if field_["key"] not in identity_rows:
+            raise SimContractError(
+                f"{where}.results.run_stamp: {field_['key']!r} is not a _SimData field"
+            )
+        if field_["label"] != labels[field_["key"]]:
+            raise SimContractError(
+                f"{where}.results.run_stamp: {field_['key']!r} is labelled "
+                f"{field_['label']!r} but the contract calls it {labels[field_['key']]!r}"
+            )
+        if f"${identity_rows[field_['key']]}" not in field_["formula"]:
+            raise SimContractError(
+                f"{where}.results.run_stamp: the formula for {field_['key']!r} does not "
+                f"read its _SimData row {identity_rows[field_['key']]}"
+            )
+
+    metrics = sim.raw["sim_data"]["summary_statistics"]["metrics"]
+    shell_metrics = results["summary"]["metrics"]
+    if tuple(m["key"] for m in shell_metrics) != tuple(m["key"] for m in metrics):
+        raise SimContractError(
+            f"{where}.results.summary: the presented metrics are not the persisted ones"
+        )
+    for shell_metric, metric in zip(shell_metrics, metrics):
+        for measure in ("nominal", "pv"):
+            if f"${metric['row']}" not in shell_metric[measure]:
+                raise SimContractError(
+                    f"{where}.results.summary: {metric['key']!r} does not read its "
+                    f"persisted row {metric['row']}"
+                )
+
+    # EVERY formula, checked as one body of text.
+    formulas = _shell_formulas(results)
+    active = (f"{sim.raw['sim_data']['sheet']}!"
+              f"${sim.raw['sim_data']['run_identity']['value_column']}"
+              f"${identity_rows['active_bank']}")
+    for formula in formulas:
+        upper = formula.upper()
+        for banned in LOCKED_RESULTS_FORBIDDEN_FUNCTIONS:
+            if f"{banned}(" in upper:
+                raise SimContractError(
+                    f"{where}.results: a formula calls {banned}. Results presents numbers "
+                    "the run persisted; it does not compute one."
+                )
+        if "-" in formula.split('"')[0] and "INDEX" not in formula:
+            raise SimContractError(
+                f"{where}.results: a formula subtracts. Contingency is persisted, not "
+                "derived on the sheet."
+            )
+    # EVERY BANKED FORMULA READS THE SELECTOR. A formula pinned to one bank shows
+    # the published distribution only half the time, and the half it gets wrong is
+    # invisible until the second successful run.
+    shared_keys = {key for key, group in
+                   ((f["key"], f["group"]) for f in
+                    sim.raw["sim_data"]["run_identity"]["fields"])
+                   if group != "snapshot"}
+    banked_formulas = [
+        (f["key"], f["formula"]) for f in results["run_stamp"]["fields"]
+        if f["key"] not in shared_keys
+    ]
+    banked_formulas.extend(
+        (metric["key"], metric[measure])
+        for metric in results["summary"]["metrics"] for measure in ("nominal", "pv")
+    )
+    for key, formula in banked_formulas:
+        if active not in formula:
+            raise SimContractError(
+                f"{where}.results: the formula for {key!r} does not read the active-bank "
+                "selector; a formula pinned to one bank shows the published distribution "
+                "only half the time"
+            )
+    for key, formula in ((f["key"], f["formula"]) for f in results["run_stamp"]["fields"]
+                         if f["key"] in shared_keys):
+        if active in formula:
+            raise SimContractError(
+                f"{where}.results: {key!r} is SHARED state and must not be read through "
+                "the bank selector"
+            )
+    selector = sim.raw["selected_confidence_level"]["source"]
+    selected = results["selected"]
+    for key in ("quantile_nominal", "quantile_pv", "contingency_nominal",
+                "contingency_pv"):
+        if selector not in selected[key] or "MATCH(" not in selected[key].upper():
+            raise SimContractError(
+                f"{where}.results.selected.{key}: must LOOK UP the selector in the "
+                "persisted ladder"
+            )
+
+
+def _shell_formulas(results: dict[str, Any]) -> list[str]:
+    out = [f["formula"] for f in results["run_stamp"]["fields"]]
+    for metric in results["summary"]["metrics"]:
+        out.extend([metric["nominal"], metric["pv"]])
+    selected = results["selected"]
+    out.extend([selected["confidence_level_formula"], selected["quantile_nominal"],
+                selected["quantile_pv"], selected["contingency_nominal"],
+                selected["contingency_pv"]])
+    return out
+
+
 def validate_sim_against(
     sim: SimContract,
     spec: WorkbookSpec,
@@ -2398,6 +3111,8 @@ def validate_sim_against(
     }
     if calc_document is not None:
         owners["calc_contract.yaml"] = calc_document
+
+    _validate_publication_shell(sim, spec)
 
     for reference in sim.authority_references:
         if reference.owner not in owners:

@@ -92,6 +92,221 @@ presentation:
 #   section - a heading, an optional note, and optional labelled rows
 #   note    - a standalone explanatory line
 # -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# THE PHASE-6 PUBLICATION SHELL - physical authority.
+#
+# sim_contract.yaml owns WHICH fields exist and what they mean; this block owns
+# WHERE each label and formula sits on a sheet. The loader cross-validates the
+# two, so a row here that names a field the contract does not have, or omits
+# one it does, is a build failure.
+#
+# EVERY RESULTS FORMULA IS A LOOKUP. Nothing on Results averages, deviates,
+# interpolates a quantile or subtracts a contingency: modSimStats computes
+# those numbers and the run PERSISTS them into _SimData. A formula that
+# recomputed one would be a second statistics engine living on a worksheet,
+# and the two would drift the first time either changed.
+#
+# Every banked lookup reads the ACTIVE bank. A formula pinned to one bank would
+# show the published distribution only half the time.
+# ---------------------------------------------------------------------------
+phase6_shell:
+  sim_data:
+    sheet: "_SimData"
+    identity_heading: "Run identity and publication state"
+    identity_note: "Machine data written by PCCM_RunSimulation. Bank A is column D, bank B is column F; D30 selects the published bank."
+    summary_heading: "Summary statistics (persisted)"
+    contingency_heading: "Contingency ladder (persisted)"
+    iteration_heading: "Iteration records"
+    iteration_note: "Both banks share these rows: the second bank consumes COLUMNS, so the technical ceiling is unchanged."
+    heading_row: 6
+    note_row: 7
+    iteration_heading_row: 31
+    iteration_note_row: 32
+    bank_headers:
+      A: {iteration_index: "Iteration (A)", total_nominal: "Total Nominal (A)", total_pv: "Total PV (A)"}
+      B: {iteration_index: "Iteration (B)", total_nominal: "Total Nominal (B)", total_pv: "Total PV (B)"}
+    summary_headers: {A: {nominal: "Nominal (A)", pv: "PV (A)"}, B: {nominal: "Nominal (B)", pv: "PV (B)"}}
+    contingency_headers: {A: {nominal: "Nominal (A)", pv: "PV (A)"}, B: {nominal: "Nominal (B)", pv: "PV (B)"}}
+    column_widths: {J: 30, K: 20, L: 20, M: 20, N: 20, P: 12, Q: 20, R: 20, S: 20, T: 20}
+  results:
+    sheet: "Results"
+    label_column: "B"
+    nominal_column: "D"
+    pv_column: "F"
+    sections:
+      - {row: 8, title: "Run Stamp", note_row: 9,
+         note: "The identity of the last successful simulation. Blank until one commits."}
+      - {row: 26, title: "Summary Statistics", note_row: 27,
+         note: "Persisted by the run. Nothing on this sheet recomputes a statistic."}
+    run_stamp:
+      first_row: 10
+      last_row: 24
+      fields:
+        - row: 10
+          key: "last_successful_stamp"
+          label: "Last Successful Simulation"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$8,_SimData!$F$8))'
+        - row: 11
+          key: "run_id"
+          label: "Run ID"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$9,_SimData!$F$9))'
+        - row: 12
+          key: "model_version"
+          label: "Model Version"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$19,_SimData!$F$19))'
+        - row: 13
+          key: "iterations_run"
+          label: "Iterations Run"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$16,_SimData!$F$16))'
+        - row: 14
+          key: "seed_mode"
+          label: "Seed Mode"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$12,_SimData!$F$12))'
+        - row: 15
+          key: "supplied_seed"
+          label: "Supplied Seed"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$13,_SimData!$F$13))'
+        - row: 16
+          key: "effective_seed"
+          label: "Effective Seed"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$14,_SimData!$F$14))'
+        - row: 17
+          key: "consumed_auto_nonce"
+          label: "Consumed AUTO Nonce"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$15,_SimData!$F$15))'
+        - row: 18
+          key: "applied_timeline"
+          label: "Applied Timeline"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$20,_SimData!$F$20))'
+        - row: 19
+          key: "rng_version"
+          label: "RNG Version"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$17,_SimData!$F$17))'
+        - row: 20
+          key: "sim_method_version"
+          label: "Simulation Method Version"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$18,_SimData!$F$18))'
+        - row: 21
+          key: "request_fingerprint"
+          label: "Request Fingerprint"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$10,_SimData!$F$10))'
+        - row: 22
+          key: "result_digest"
+          label: "Result Digest"
+          formula: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$D$11,_SimData!$F$11))'
+        - row: 23
+          key: "simulation_status"
+          label: "Simulation Status (last evaluated)"
+          formula: '=IF(_SimData!$D$28="","",_SimData!$D$28)'
+        - row: 24
+          key: "status_evaluated_at"
+          label: "Status Evaluated At"
+          formula: '=IF(_SimData!$D$29="","",_SimData!$D$29)'
+    summary:
+      header_row: 28
+      headers: {label: "Metric", nominal: "Nominal (SAR)", pv: "PV (SAR)"}
+      first_row: 29
+      last_row: 44
+      metrics:
+        - row: 29
+          key: "mean"
+          label: "Mean"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$8,_SimData!$M$8))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$8,_SimData!$N$8))'
+        - row: 30
+          key: "sample_standard_deviation"
+          label: "Sample Standard Deviation"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$9,_SimData!$M$9))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$9,_SimData!$N$9))'
+        - row: 31
+          key: "minimum"
+          label: "Minimum"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$10,_SimData!$M$10))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$10,_SimData!$N$10))'
+        - row: 32
+          key: "quantile_1"
+          label: "P10"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$11,_SimData!$M$11))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$11,_SimData!$N$11))'
+        - row: 33
+          key: "quantile_2"
+          label: "P50"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$12,_SimData!$M$12))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$12,_SimData!$N$12))'
+        - row: 34
+          key: "quantile_3"
+          label: "P55"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$13,_SimData!$M$13))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$13,_SimData!$N$13))'
+        - row: 35
+          key: "quantile_4"
+          label: "P60"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$14,_SimData!$M$14))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$14,_SimData!$N$14))'
+        - row: 36
+          key: "quantile_5"
+          label: "P65"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$15,_SimData!$M$15))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$15,_SimData!$N$15))'
+        - row: 37
+          key: "quantile_6"
+          label: "P70"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$16,_SimData!$M$16))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$16,_SimData!$N$16))'
+        - row: 38
+          key: "quantile_7"
+          label: "P75"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$17,_SimData!$M$17))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$17,_SimData!$N$17))'
+        - row: 39
+          key: "quantile_8"
+          label: "P80"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$18,_SimData!$M$18))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$18,_SimData!$N$18))'
+        - row: 40
+          key: "quantile_9"
+          label: "P85"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$19,_SimData!$M$19))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$19,_SimData!$N$19))'
+        - row: 41
+          key: "quantile_10"
+          label: "P90"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$20,_SimData!$M$20))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$20,_SimData!$N$20))'
+        - row: 42
+          key: "quantile_11"
+          label: "P95"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$21,_SimData!$M$21))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$21,_SimData!$N$21))'
+        - row: 43
+          key: "maximum"
+          label: "Maximum"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$22,_SimData!$M$22))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$22,_SimData!$N$22))'
+        - row: 44
+          key: "deterministic_base_a"
+          label: "Deterministic Base A"
+          nominal: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$K$23,_SimData!$M$23))'
+          pv: '=IF(_SimData!$D$30="","",IF(_SimData!$D$30="A",_SimData!$L$23,_SimData!$N$23))'
+    selected:
+      confidence_level_row: 46
+      quantile_row: 47
+      contingency_row: 48
+      labels:
+        confidence_level: "Selected Confidence Level"
+        quantile: "Selected Px"
+        contingency: "Contingency"
+      confidence_level_formula: '=IF(inpSelectedConfidenceLevel="","",inpSelectedConfidenceLevel)'
+      quantile_nominal: '=IF(OR(_SimData!$D$30="",COUNTIF(_SimData!$J$12:$J$21,inpSelectedConfidenceLevel)=0),"",IF(_SimData!$D$30="A",INDEX(_SimData!$K$11:$K$21,MATCH(inpSelectedConfidenceLevel,_SimData!$J$11:$J$21,0)),INDEX(_SimData!$M$11:$M$21,MATCH(inpSelectedConfidenceLevel,_SimData!$J$11:$J$21,0))))'
+      quantile_pv: '=IF(OR(_SimData!$D$30="",COUNTIF(_SimData!$J$12:$J$21,inpSelectedConfidenceLevel)=0),"",IF(_SimData!$D$30="A",INDEX(_SimData!$L$11:$L$21,MATCH(inpSelectedConfidenceLevel,_SimData!$J$11:$J$21,0)),INDEX(_SimData!$N$11:$N$21,MATCH(inpSelectedConfidenceLevel,_SimData!$J$11:$J$21,0))))'
+      contingency_nominal: '=IF(OR(_SimData!$D$30="",COUNTIF(_SimData!$P$9:$P$18,inpSelectedConfidenceLevel)=0),"",IF(_SimData!$D$30="A",INDEX(_SimData!$Q$8:$Q$18,MATCH(inpSelectedConfidenceLevel,_SimData!$P$8:$P$18,0)),INDEX(_SimData!$S$8:$S$18,MATCH(inpSelectedConfidenceLevel,_SimData!$P$8:$P$18,0))))'
+      contingency_pv: '=IF(OR(_SimData!$D$30="",COUNTIF(_SimData!$P$9:$P$18,inpSelectedConfidenceLevel)=0),"",IF(_SimData!$D$30="A",INDEX(_SimData!$R$8:$R$18,MATCH(inpSelectedConfidenceLevel,_SimData!$P$8:$P$18,0)),INDEX(_SimData!$T$8:$T$18,MATCH(inpSelectedConfidenceLevel,_SimData!$P$8:$P$18,0))))'
+    deferred:
+      - {row: 51, title: "Annual Cash Flow", note_row: 52,
+         note: "Deferred. Mean annual cash flow split base cost / risk / total, nominal and PV."}
+      - {row: 54, title: "Reconciliation", note_row: 55,
+         note: "Deferred. The analytical bridge from deterministic base estimate to selected Px."}
+
 sheets:
 
   - name: "Dashboard"

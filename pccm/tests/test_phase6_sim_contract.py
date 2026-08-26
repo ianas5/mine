@@ -910,9 +910,23 @@ def test_62_phase6_adds_no_user_surface_and_no_cancellation() -> None:
     surface = _raw()["command_surface"]
     assert surface["automation_endpoint"] == "PCCM_RunSimulation"
     for flag in ("user_facing_run_button_in_phase_6", "msgbox_introduced_by_phase_6",
-                 "userform_introduced_by_phase_6", "ribbon_introduced_by_phase_6",
-                 "read_accessor_names_settled"):
+                 "userform_introduced_by_phase_6", "ribbon_introduced_by_phase_6"):
         assert surface[flag] is False, flag
+    # SETTLED AT STEP 11A: an exact closed list, chosen before the module exists
+    # precisely so the implementation cannot invent a name. "Not settled" was
+    # true only while no authority had chosen them.
+    assert surface["read_accessor_names_settled"] is True
+    assert surface["read_accessors"] == [
+        "PCCM_SimulationStatus",
+        "PCCM_SimulationRequestFingerprint",
+        "PCCM_CurrentSimulationRequestFingerprint",
+        "PCCM_SimulationResultDigest",
+        "PCCM_SimulationAttemptResult",
+        "PCCM_SimulationAttemptDetail",
+    ]
+    assert surface["automation_endpoint"] not in surface["read_accessors"]
+    assert surface["run_id_public_accessor_required_in_phase_6"] is False
+    assert surface["effective_seed_public_accessor_required_in_phase_6"] is False
     assert _raw()["interruption"]["user_cancellation_supported_in_phase_6"] is False
 
 
@@ -984,11 +998,16 @@ def test_66_the_run_identity_layout_is_exact() -> None:
         for f in fields
     )
     assert actual == LOCKED_RUN_IDENTITY
-    assert len(actual) == 22
-    assert [f["row"] for f in fields] == list(range(8, 30))
+    # 23 SINCE STEP 11A: `active_bank` took the row 30 spacer. The row axis did
+    # not grow - the spacer was spent, so H, the header row and the technical
+    # ceiling are untouched.
+    assert len(actual) == 23
+    assert [f["row"] for f in fields] == list(range(8, 31))
+    assert actual[-1] == ("active_bank", 30, "control", "Active Bank", "enum", "bank", None)
     assert (identity["label_column"], identity["value_column"], identity["note_column"]) == (
-        "B", "D", "F",
+        "B", "D", "H",
     )
+    assert identity["bank_value_columns"] == {"A": "D", "B": "F"}
 
     # Cross-semantic initials and enum ownership.
     by_key = {f["key"]: f for f in fields}

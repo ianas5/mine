@@ -1483,6 +1483,216 @@ def _request_fingerprint_cases(
 
 
 # ===========================================================================
+# J - publication state
+#
+# Pure state-transition authority: which bank a candidate targets, what survives
+# a refusal, a post-allocation failure, an inactive-bank write failure and a
+# final-commit failure, and how the derived status is read off the ACTIVE bank.
+# No VBA, no simulation and no random data - these are the facts an
+# implementation must reproduce, written down before it exists.
+# ===========================================================================
+_PUBLICATION_LAYER = "J_publication"
+
+
+def _publication_state(active=None, next_nonce=0, last_run_id=0, attempt="NONE",
+                       bank_a=None, bank_b=None) -> dict[str, Any]:
+    return {
+        "active_bank": active,
+        "next_auto_nonce": next_nonce,
+        "last_run_id": last_run_id,
+        "last_attempt_result": attempt,
+        "bank_a_request_fingerprint": bank_a,
+        "bank_b_request_fingerprint": bank_b,
+    }
+
+
+def _publication_case(identifier: str, title: str, before: dict[str, Any],
+                      event: dict[str, Any], after: dict[str, Any],
+                      note: str | None = None) -> dict[str, Any]:
+    return _case(identifier, _PUBLICATION_LAYER, title, EXACT,
+                 {"before": before, "event": event},
+                 expected_exact={"after": after}, note=note)
+
+
+def _publication_cases(sim: SimContract) -> list[dict[str, Any]]:
+    banks = sim.raw["publication"]["banks"]
+    target = dict(banks["candidate_target"])
+    transaction = sim.raw["publication"]["transaction"]
+    states = sim.raw["sim_state"]
+
+    cases: list[dict[str, Any]] = [
+        _case(
+            "publication.grammar", _PUBLICATION_LAYER,
+            "The locked two-bank publication authority", EXACT,
+            {"owner": "sim_contract.yaml", "section": "publication"},
+            expected_exact={
+                "bank_labels": list(banks["labels"]),
+                "bank_count": int(banks["count"]),
+                "third_bank_permitted": bool(banks["third_bank_permitted"]),
+                "initial_active_bank": banks["initial_active_bank"],
+                "candidate_target": target,
+                "candidate_writes_to_active_bank":
+                    bool(banks["candidate_writes_to_active_bank"]),
+                "row_axis_shared_by_both_banks": bool(banks["row_axis_shared_by_both_banks"]),
+                "transaction_order": list(transaction["order"]),
+                "final_commit_range": transaction["final_commit_range"],
+                "final_commit_fields": list(transaction["final_commit_fields"]),
+                "million_row_rollback_required":
+                    bool(transaction["million_row_rollback_required"]),
+                "results_is_a_written_transaction":
+                    bool(transaction["results_is_a_written_transaction"]),
+            },
+            note="The active-bank switch is the LAST step of the last write.",
+        ),
+        _case(
+            "publication.initial", _PUBLICATION_LAYER,
+            "A workbook that has never run", EXACT,
+            {"stage": "stage_a"},
+            expected_exact={"publication_state": _publication_state()},
+            note="Blank active bank is the ABSENCE of a publication, not a bank.",
+        ),
+    ]
+
+    first = _publication_state()
+    after_first = _publication_state(active="A", last_run_id=1, attempt="SUCCESS",
+                                     bank_a="FP-1")
+    cases.append(_publication_case(
+        "publication.first_success_targets_a",
+        "The first successful run targets bank A",
+        first, {"kind": "success", "seed_mode": "FIXED", "request_fingerprint": "FP-1"},
+        after_first,
+        note=f"target({banks['initial_active_bank']!r}) = {target['']!r}",
+    ))
+
+    after_second = _publication_state(active="B", last_run_id=2, attempt="SUCCESS",
+                                      bank_a="FP-1", bank_b="FP-2")
+    cases.append(_publication_case(
+        "publication.second_success_targets_b",
+        "The next success targets the INACTIVE bank and A survives untouched",
+        after_first, {"kind": "success", "seed_mode": "FIXED", "request_fingerprint": "FP-2"},
+        after_second,
+        note="Bank A is still physically present; it is simply no longer active.",
+    ))
+
+    cases.append(_publication_case(
+        "publication.third_success_targets_a_again",
+        "And the one after that returns to A",
+        after_second, {"kind": "success", "seed_mode": "FIXED", "request_fingerprint": "FP-3"},
+        _publication_state(active="A", last_run_id=3, attempt="SUCCESS",
+                           bank_a="FP-3", bank_b="FP-2"),
+    ))
+
+    cases.append(_publication_case(
+        "publication.refusal_before_auto_allocation",
+        "A refusal before the AUTO nonce is allocated consumes nothing",
+        after_second,
+        {"kind": "refusal", "stage": "validate_pre_allocation_prerequisites",
+         "seed_mode": "AUTO"},
+        _publication_state(active="B", last_run_id=2, attempt="REFUSED",
+                           bank_a="FP-1", bank_b="FP-2"),
+        note="No sequence is burned for a run that never started.",
+    ))
+
+    cases.append(_publication_case(
+        "publication.failure_after_auto_allocation",
+        "An AUTO failure AFTER allocation keeps the consumed nonce",
+        _publication_state(active="B", next_nonce=7, last_run_id=2, attempt="SUCCESS",
+                           bank_a="FP-1", bank_b="FP-2"),
+        {"kind": "failure", "stage": "write_candidate_iterations_to_inactive_bank",
+         "seed_mode": "AUTO", "consumed_auto_nonce": 7},
+        _publication_state(active="B", next_nonce=8, last_run_id=2, attempt="FAILED",
+                           bank_a="FP-1", bank_b="FP-2"),
+        note="Deliberately not rolled back: a consumed AUTO sequence is consumed.",
+    ))
+
+    cases.append(_publication_case(
+        "publication.inactive_bank_write_failure",
+        "A corrupted candidate bank has no semantic standing",
+        after_second,
+        {"kind": "failure", "stage": "write_candidate_snapshot_to_inactive_bank",
+         "seed_mode": "FIXED"},
+        _publication_state(active="B", last_run_id=2, attempt="FAILED",
+                           bank_a="FP-1", bank_b="FP-2"),
+        note="Bank A now holds rubbish; active_bank still says B, so nobody reads it.",
+    ))
+
+    cases.append(_publication_case(
+        "publication.final_commit_failure_restores_the_block",
+        "A failed final commit restores the captured shared block",
+        after_second,
+        {"kind": "failure", "stage": "final_commit_shared_block_including_active_bank",
+         "seed_mode": "FIXED", "captured_block": transaction["final_commit_range"]},
+        _publication_state(active="B", last_run_id=2, attempt="SUCCESS",
+                           bank_a="FP-1", bank_b="FP-2"),
+        note="The prior block is written back, so the run id and the active bank both "
+             "stay exactly where they were.",
+    ))
+
+    cases.append(_publication_case(
+        "publication.run_id_exhaustion_refuses_first",
+        "Run-id exhaustion refuses BEFORE an AUTO nonce is consumed",
+        _publication_state(active="B", next_nonce=3, last_run_id=sim.raw["run_id"]["maximum"],
+                           attempt="SUCCESS", bank_a="FP-1", bank_b="FP-2"),
+        {"kind": "refusal", "stage": "validate_pre_allocation_prerequisites",
+         "seed_mode": "AUTO", "reason": "run_id_exhausted"},
+        _publication_state(active="B", next_nonce=3,
+                           last_run_id=sim.raw["run_id"]["maximum"], attempt="REFUSED",
+                           bank_a="FP-1", bank_b="FP-2"),
+        note="There is no reason to burn a sequence for a run that can never be "
+             "identified or committed.",
+    ))
+
+    for identifier, prerequisites, active, matches, expected in (
+        ("publication.status.invalid", False, "B", False, "INVALID"),
+        ("publication.status.blank_no_success", True, None, False, None),
+        ("publication.status.current", True, "B", True, "CURRENT"),
+        ("publication.status.stale", True, "B", False, "STALE"),
+    ):
+        cases.append(_case(
+            identifier, _PUBLICATION_LAYER,
+            f"Derived status: {expected or 'blank'}", EXACT,
+            {"prerequisites_resolve": prerequisites, "active_bank": active,
+             "current_fingerprint_matches_active_bank": matches,
+             "last_attempt_result": "FAILED"},
+            expected_exact={"simulation_status": expected},
+            note="The attempt result is an ORTHOGONAL axis and never participates.",
+        ))
+    assert states["attempt_result_participates_in_derivation"] is False
+
+    selector = sim.raw["selected_confidence_level"]
+    cases.append(_case(
+        "publication.selected_cl_is_reporting_only", _PUBLICATION_LAYER,
+        "Changing Selected CL moves the lookup and nothing else", EXACT,
+        {"before": {"selected_confidence_level": "P80"},
+         "event": {"kind": "selector_change", "to": "P90"}},
+        expected_exact={
+            "request_fingerprint_changed": False,
+            "simulation_status_changed": False,
+            "auto_nonce_consumed": False,
+            "rerun_required": bool(selector["change_requires_rerun"]),
+            "selected_lookup_changed": True,
+        },
+    ))
+    cases.append(_case(
+        "publication.invalid_selected_cl_blanks_the_lookup", _PUBLICATION_LAYER,
+        "An invalid selector blanks the reporting rows and staleness is untouched",
+        EXACT,
+        {"selected_confidence_level": "P42", "active_bank": "B",
+         "prerequisites_resolve": True,
+         "current_fingerprint_matches_active_bank": True},
+        expected_exact={
+            "simulation_status": "CURRENT",
+            "selected_quantile_displayed": None,
+            "selected_contingency_displayed": None,
+            "simulation_invalidated":
+                bool(selector["invalid_selector_invalidates_simulation"]),
+        },
+        note="Reporting-only means reporting-only, even when the selector is wrong.",
+    ))
+    return cases
+
+
+# ===========================================================================
 # F - statistics
 # ===========================================================================
 _HAND_SAMPLE = (2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0)
@@ -2145,6 +2355,8 @@ def build_sim_cases(
         ("G_contingency", "Contingency, a reporting lookup",
          _contingency_cases(engine, sim, inputs)),
         ("H_domain", "The numerical domain end to end", _domain_cases(engine)),
+        ("J_publication", "Two-bank publication and the derived state",
+         _publication_cases(sim)),
         ("I_request_fingerprint", "The request fingerprint and its SIM extension",
          _request_fingerprint_cases(sim, inputs, calc, reference)),
         ("R_runtime", "Behaviours that need machinery Step 5 does not build",

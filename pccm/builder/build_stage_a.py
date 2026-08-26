@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         f"max iterations {sim.max_iterations_representable}")
 
     try:
-        workbook, metadata = build_workbook(spec, contract, drivers, structure, calc)
+        workbook, metadata = build_workbook(spec, contract, drivers, structure, calc, sim)
     except RuntimeError as error:
         print(f"CROSS-SPECIFICATION ERROR: {error}", file=sys.stderr)
         return 2

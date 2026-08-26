@@ -564,16 +564,125 @@ publication:
   partial_new_distribution_published_on_refusal_or_failure: false
   prior_successful_publication_survives: true
 
+  # TWO BANKS, ONE ACTIVE.
+  #
+  # `prior_successful_publication_survives` was aspirational until this closure.
+  # Writing a new distribution over the published rows and only then stamping the
+  # Run ID cannot survive a COM failure half way through a million rows, and no
+  # rollback of a million rows is a transaction anybody should attempt.
+  #
+  # So a candidate success is written ENTIRELY into the INACTIVE bank, verified
+  # there, and published by one small final write that moves `active_bank`. A
+  # failure at any earlier point leaves the active bank physically untouched and
+  # the corrupted candidate with no semantic standing at all.
+  #
+  # THE SECOND BANK CONSUMES COLUMNS, NEVER ROWS: the row axis, the reserved-row
+  # count and the technical iteration ceiling are exactly what they were.
+  banks:
+    labels: ["A", "B"]
+    count: 2
+    third_bank_permitted: false
+    initial_active_bank: null
+    candidate_target:
+      "": "A"
+      "A": "B"
+      "B": "A"
+    candidate_writes_to_active_bank: false
+    inactive_bank_is_published: false
+    inactive_bank_is_staging_storage: true
+    temporary_worksheet_required: false
+    duplicate_workbook_required: false
+    row_axis_shared_by_both_banks: true
+
+  # The order is the authority, not a suggestion. Everything numerical is
+  # complete in memory before any candidate cell is written, and the active-bank
+  # switch is the LAST thing that happens.
+  transaction:
+    order:
+      - "prepare_phase5_inputs_and_require_current"
+      - "validate_pre_allocation_prerequisites"
+      - "allocate_auto_nonce_when_auto"
+      - "run_simulation_and_statistics_in_memory"
+      - "build_request_fingerprint_and_result_digest_in_memory"
+      - "choose_inactive_bank"
+      - "write_candidate_snapshot_to_inactive_bank"
+      - "write_candidate_summary_to_inactive_bank"
+      - "write_candidate_contingency_to_inactive_bank"
+      - "write_candidate_iterations_to_inactive_bank"
+      - "verify_inactive_bank_against_staged_package"
+      - "final_commit_shared_block_including_active_bank"
+    final_commit_range: "D22:D30"
+    final_commit_is_one_write: true
+    final_commit_fields:
+      - "last_run_id"
+      - "last_attempt_result"
+      - "last_attempt_detail"
+      - "last_attempt_seed_mode"
+      - "last_attempt_effective_seed"
+      - "last_attempt_auto_nonce"
+      - "simulation_status"
+      - "status_evaluated_at"
+      - "active_bank"
+    prior_final_commit_block_captured_before_write: true
+    final_commit_failure_restores_prior_block: true
+    million_row_rollback_required: false
+    results_is_a_written_transaction: false
+
+  # Run ID is ALLOCATED by the successful commit and by nothing else. The
+  # candidate value is `last_run_id + 1`, held locally until then, so a refused
+  # or failed attempt burns no identity.
+  run_id_allocation:
+    candidate_value: "last_run_id + 1"
+    held_locally_until_commit: true
+    allocated_by: "successful_final_commit"
+    headroom_checked_before_auto_allocation: true
+
+  # WHAT SURVIVES WHAT.
+  failure_semantics:
+    refusal_before_auto_allocation:
+      next_auto_nonce_advanced: false
+      active_bank_changed: false
+      successful_banks_changed: false
+      attempt_metadata_updated: true
+    refusal_or_failure_after_auto_allocation:
+      next_auto_nonce_advanced: true
+      active_bank_changed: false
+      successful_banks_changed: false
+      attempt_metadata_updated: true
+    inactive_bank_write_failure:
+      active_bank_changed: false
+      prior_publication_remains_authoritative: true
+      corrupted_candidate_has_semantic_standing: false
+    final_commit_failure:
+      prior_block_restored: true
+      active_bank_changed: false
+
 command_surface:
   automation_endpoint: "PCCM_RunSimulation"
   user_facing_run_button_in_phase_6: false
   msgbox_introduced_by_phase_6: false
   userform_introduced_by_phase_6: false
   ribbon_introduced_by_phase_6: false
-  # Deliberately NOT named here: no accepted authority names the reporting read
-  # accessors yet, and inventing them now would create authority this step was
-  # not given. They are settled at the reporting/public-API implementation step.
-  read_accessor_names_settled: false
+  # SETTLED at Step 11A, before the reporting module exists, so the
+  # implementation cannot invent a name. This list is EXACT: a `PCCM_` procedure
+  # Phase 6 introduces and that is not named here is an unauthorised endpoint.
+  read_accessor_names_settled: true
+  read_accessors:
+    - "PCCM_SimulationStatus"
+    - "PCCM_SimulationRequestFingerprint"
+    - "PCCM_CurrentSimulationRequestFingerprint"
+    - "PCCM_SimulationResultDigest"
+    - "PCCM_SimulationAttemptResult"
+    - "PCCM_SimulationAttemptDetail"
+  read_accessor_semantics:
+    PCCM_SimulationStatus: "the derived status; writes only simulation_status and status_evaluated_at"
+    PCCM_SimulationRequestFingerprint: "the stored request fingerprint of the ACTIVE bank, blank when no bank is active"
+    PCCM_CurrentSimulationRequestFingerprint: "the request fingerprint recomputed through the SAME preparation path the run uses, blank when the current prerequisites refuse"
+    PCCM_SimulationResultDigest: "the stored result digest of the ACTIVE bank, blank when no bank is active"
+    PCCM_SimulationAttemptResult: "the shared last attempt result"
+    PCCM_SimulationAttemptDetail: "the shared last attempt detail"
+  run_id_public_accessor_required_in_phase_6: false
+  effective_seed_public_accessor_required_in_phase_6: false
 
 interruption:
   user_cancellation_supported_in_phase_6: false
@@ -757,10 +866,8 @@ sim_data:
       purpose: "run identity section heading"
     - rows: [7, 7]
       purpose: "run identity section note"
-    - rows: [8, 29]
+    - rows: [8, 30]
       purpose: "run identity fields"
-    - rows: [30, 30]
-      purpose: "spacer"
     - rows: [31, 31]
       purpose: "iteration records section heading"
     - rows: [32, 32]
@@ -770,10 +877,19 @@ sim_data:
 
   run_identity:
     label_column: "B"
+    # The SHARED value column. The counter, attempt, derived and control fields
+    # live here and belong to no bank.
     value_column: "D"
-    note_column: "F"
+    # The BANKED value columns. A successful snapshot field is written only in
+    # the INACTIVE bank's column; the active bank's column is not touched until
+    # it stops being active through a successful final commit. The labels are
+    # NOT duplicated per bank - there is one label column for both.
+    bank_value_columns:
+      A: "D"
+      B: "F"
+    note_column: "H"
     first_row: 8
-    last_row: 29
+    last_row: 30
     fields:
       - key: "last_successful_stamp"
         row: 8
@@ -916,6 +1032,17 @@ sim_data:
         label: "Status Evaluated At"
         value_type: "timestamp"
         initial: null
+      # THE PUBLICATION SELECTOR. Blank means no successful simulation has ever
+      # committed - the absence of a publication, not a third bank. It moves
+      # exactly once per successful run, in the final commit write, and it is the
+      # last field in that block.
+      - key: "active_bank"
+        row: 30
+        group: "control"
+        label: "Active Bank"
+        value_type: "enum"
+        enum: "bank"
+        initial: null
 
   iteration_records:
     header_row: 33
@@ -936,6 +1063,98 @@ sim_data:
         column: "D"
         header: "Total PV"
         value_type: "double"
+    # THE SECOND BANK CONSUMES COLUMNS, NOT ROWS. Both banks share the row axis
+    # above, so the reserved-row count, the first iteration row and the technical
+    # ceiling are exactly what they were before a second bank existed. `columns`
+    # above IS bank A, and the loader requires these to agree.
+    banks:
+      A:
+        iteration_index: "B"
+        total_nominal: "C"
+        total_pv: "D"
+      B:
+        iteration_index: "F"
+        total_nominal: "G"
+        total_pv: "H"
+
+  # THE STEP-9 SUMMARY, PERSISTED.
+  #
+  # `Results derives from _SimData` and `modSimStats` is the one owner of these
+  # numbers. Both are true only if the summary is PERSISTED: a worksheet
+  # AVERAGE/STDEV/PERCENTILE would be a second statistics engine, and reading the
+  # iteration rows to recompute would make Results a calculator.
+  #
+  # The values come from modSimStats over the SAME retained arrays that are
+  # written to that candidate iteration bank, and are never recomputed from
+  # worksheet data.
+  summary_statistics:
+    label_column: "J"
+    bank_value_columns:
+      A: {nominal: "K", pv: "L"}
+      B: {nominal: "M", pv: "N"}
+    first_row: 8
+    last_row: 23
+    source: "modSimStats"
+    recomputed_from_worksheet_data: false
+    # THE RUNG LABELS ARE NOT SPELLED HERE. The selectable confidence-level
+    # ladder belongs to input_contract.yaml; a rung is identified by its
+    # projected key and its label is resolved through the accepted ladder
+    # authority. A rung label written out here would be a second ladder.
+    metrics:
+      - {key: "mean", row: 8, label: "Mean", source: "SimStatsMean"}
+      - {key: "sample_standard_deviation", row: 9, label: "Sample Standard Deviation", source: "SimStatsSampleStandardDeviation"}
+      - {key: "minimum", row: 10, label: "Minimum", source: "SimStatsDescribe"}
+      - {key: "quantile_1", row: 11, label: null, source: "SimStatsDescribe"}
+      - {key: "quantile_2", row: 12, label: null, source: "SimStatsDescribe"}
+      - {key: "quantile_3", row: 13, label: null, source: "SimStatsDescribe"}
+      - {key: "quantile_4", row: 14, label: null, source: "SimStatsDescribe"}
+      - {key: "quantile_5", row: 15, label: null, source: "SimStatsDescribe"}
+      - {key: "quantile_6", row: 16, label: null, source: "SimStatsDescribe"}
+      - {key: "quantile_7", row: 17, label: null, source: "SimStatsDescribe"}
+      - {key: "quantile_8", row: 18, label: null, source: "SimStatsDescribe"}
+      - {key: "quantile_9", row: 19, label: null, source: "SimStatsDescribe"}
+      - {key: "quantile_10", row: 20, label: null, source: "SimStatsDescribe"}
+      - {key: "quantile_11", row: 21, label: null, source: "SimStatsDescribe"}
+      - {key: "maximum", row: 22, label: "Maximum", source: "SimStatsDescribe"}
+      - {key: "deterministic_base_a", row: 23, label: "Deterministic Base A", source: "phase5_preparation"}
+
+  # THE WHOLE CONTINGENCY LADDER, PRECOMPUTED.
+  #
+  # Selected Confidence Level is reporting-only and may change without rerunning.
+  # A publication that stored only the currently selected rung would force either
+  # a rerun or a worksheet subtraction the moment the selector moved. Neither is
+  # acceptable, so every reported rung's contingency is computed through
+  # SimStatsContingency BEFORE the candidate bank may commit.
+  #
+  # If ANY of the twenty-two values is unrepresentable the successful publication
+  # is refused and the active bank does not move. P10 is persisted too, even
+  # though it is not selectable, so the ladder is structurally uniform.
+  contingency_ladder:
+    label_column: "P"
+    bank_value_columns:
+      A: {nominal: "Q", pv: "R"}
+      B: {nominal: "S", pv: "T"}
+    first_row: 8
+    last_row: 18
+    source: "SimStatsContingency"
+    baseline: "deterministic_base_estimate_a"
+    worksheet_subtraction_permitted: false
+    computed_for_whole_ladder_before_commit: true
+    all_values_representable_required_before_commit: true
+    fixed_rung_persisted_though_not_selectable: true
+    # Identified by projected key only, for the same reason as the summary block.
+    rungs:
+      - {key: "quantile_1", row: 8, label: null}
+      - {key: "quantile_2", row: 9, label: null}
+      - {key: "quantile_3", row: 10, label: null}
+      - {key: "quantile_4", row: 11, label: null}
+      - {key: "quantile_5", row: 12, label: null}
+      - {key: "quantile_6", row: 13, label: null}
+      - {key: "quantile_7", row: 14, label: null}
+      - {key: "quantile_8", row: 15, label: null}
+      - {key: "quantile_9", row: 16, label: null}
+      - {key: "quantile_10", row: 17, label: null}
+      - {key: "quantile_11", row: 18, label: null}
 
   # Deliberately absent, and not to be added without a new authority: they are
   # the retentions the accepted plan defers.
@@ -956,6 +1175,11 @@ label_sets:
     - "CURRENT"
     - "STALE"
     - "INVALID"
+  # The two publication banks. There is no third, and blank is not a bank - it
+  # is the absence of any successful publication.
+  bank:
+    - "A"
+    - "B"
   attempt_result:
     - "NONE"
     - "SUCCESS"
@@ -1110,6 +1334,120 @@ results_minimum:
     - "Charts"
     - "Sensitivity"
   annual_simulated_samples_contracted: false
+
+  # RESULTS IS PRESENTATION. It is not part of the per-run transaction, it is
+  # materialised once by Stage A, and it computes nothing: every cell is a
+  # lookup into the ACTIVE `_SimData` bank, or the live reporting selector.
+  #
+  # That is also why the commit is safe. If Results were a second written
+  # transaction, `_SimData` could commit and the Results write could then fail,
+  # leaving a published distribution the workbook does not show.
+  presentation:
+    written_by_the_run: false
+    materialised_by_stage_a: true
+    reads_only:
+      - "the active _SimData bank"
+      - "inpSelectedConfidenceLevel"
+    computes_statistics: false
+    computes_contingency: false
+    recomputes_quantiles: false
+    forbidden_functions:
+      - "AVERAGE"
+      - "STDEV"
+      - "STDEV.S"
+      - "STDEVP"
+      - "PERCENTILE"
+      - "PERCENTILE.INC"
+      - "PERCENTILE.EXC"
+      - "QUARTILE"
+      - "MEDIAN"
+      - "OFFSET"
+      - "INDIRECT"
+      - "RAND"
+      - "RANDBETWEEN"
+      - "NOW"
+      - "TODAY"
+    contingency_by_subtraction_on_results: false
+    reads_a_fixed_bank: false
+    # The Run Stamp fields, BY THE `_SimData` KEY THEY PRESENT. Where they sit is
+    # workbook.yaml's; WHICH fields exist is this contract's, and the loader
+    # cross-validates the two.
+    run_stamp_fields:
+      - "last_successful_stamp"
+      - "run_id"
+      - "model_version"
+      - "iterations_run"
+      - "seed_mode"
+      - "supplied_seed"
+      - "effective_seed"
+      - "consumed_auto_nonce"
+      - "applied_timeline"
+      - "rng_version"
+      - "sim_method_version"
+      - "request_fingerprint"
+      - "result_digest"
+      - "simulation_status"
+      - "status_evaluated_at"
+    summary_metrics_source: "sim_data.summary_statistics.metrics"
+    selected_rows:
+      - key: "selected_confidence_level"
+        source: "inpSelectedConfidenceLevel"
+        lookup_only: false
+      - key: "selected_quantile"
+        source: "sim_data.summary_statistics"
+        lookup_only: true
+      - key: "selected_contingency"
+        source: "sim_data.contingency_ladder"
+        lookup_only: true
+    blank_when_no_active_bank: true
+    blank_when_selector_not_selectable: true
+
+# -----------------------------------------------------------------------------
+# Selected Confidence Level is REPORTING-ONLY. Locked here so no later step can
+# quietly promote it into the request identity or the derived status.
+# -----------------------------------------------------------------------------
+selected_confidence_level:
+  source: "inpSelectedConfidenceLevel"
+  participates_in_request_fingerprint: false
+  participates_in_execution_validity: false
+  participates_in_auto_allocation: false
+  participates_in_state_derivation: false
+  change_requires_rerun: false
+  invalid_selector_invalidates_simulation: false
+  invalid_selector_blanks_selected_reporting_rows: true
+  unselected_state_introduced: false
+
+# -----------------------------------------------------------------------------
+# The ONE reusable bridge into the accepted Phase-5 preparation.
+#
+# Phase 6 must not rebuild DriverFactors, the analytical fingerprint, the
+# deterministic base or the applied timeline: modCalcReport already prepares all
+# four from one resolved model, and a second construction is a second answer.
+# The bridge is an INTERNAL cross-module API, not an automation endpoint.
+# -----------------------------------------------------------------------------
+phase5_bridge:
+  owner_module: "modCalcReport"
+  procedure: "CalcPrepareSimulationInputs"
+  is_automation_endpoint: false
+  name_prefix_pccm: false
+  reuses_private_preparation: "PrepareCurrentCalculation"
+  requires_phase5_status: "CURRENT"
+  writes_to_calc_sheet: false
+  updates_phase5_status_or_attempt_metadata: false
+  duplicates_factor_mathematics: false
+  zero_driver_model_succeeds: true
+  returns:
+    - "drivers"
+    - "driver_count"
+    - "analytical_fingerprint"
+    - "deterministic_base_nominal"
+    - "deterministic_base_pv"
+    - "applied_timeline"
+    - "decimal_separator"
+  # The prefix state the request fingerprint continues MUST be the CURRENT
+  # analytical fingerprint from this same preparation, never a stored
+  # last-successful value.
+  analytical_fingerprint_is_current_not_stored: true
 
 # -----------------------------------------------------------------------------
 # Boundaries. Every value this contract borrows is declared here as a reference

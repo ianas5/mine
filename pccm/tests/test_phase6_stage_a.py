@@ -1509,7 +1509,7 @@ def test_78_every_case_carries_a_complete_version_block() -> None:
             assert isinstance(case["versions"]["rng_version"], int)
             assert isinstance(case["versions"]["model_version"], str)
             assert "fp_version" not in case["versions"]
-    assert groups == 11
+    assert groups == 12
     assert len(_cases()) == document["case_count"]
 
 
@@ -1614,22 +1614,26 @@ def test_83_every_emitted_number_survives_the_json_round_trip_exactly() -> None:
 
 def test_84_the_comparison_policy_distribution_is_unchanged() -> None:
     """No case moved class. Step-10A added five EXACT request-fingerprint cases
-    and touched no existing case's policy: every non-EXACT count below is the
-    number it has carried since the typing correction."""
+    and Step-11A sixteen EXACT publication-state cases; neither touched an
+    existing case's policy, so every non-EXACT count below is the number it has
+    carried since the typing correction."""
     from collections import Counter
 
     counts = Counter(case["comparison"] for case in _cases().values())
     assert dict(counts) == {
-        "EXACT": 66,
+        "EXACT": 82,
         "TOLERANCE_BOUNDED": 23,
         "STATISTICAL": 1,
         "SAME_RUNTIME_ONLY": 3,
         "RUNTIME_ONLY": 3,
     }, dict(counts)
-    assert sum(counts.values()) == 96
+    assert sum(counts.values()) == 112
     request = [i for i in _cases() if i.startswith("request_fingerprint.")]
     assert len(request) == 5, request
     assert all(_cases()[i]["comparison"] == "EXACT" for i in request)
+    publication = [i for i in _cases() if i.startswith("publication.")]
+    assert len(publication) == 16, publication
+    assert all(_cases()[i]["comparison"] == "EXACT" for i in publication)
 
     cases = _cases()
     assert cases["engine.general.with_beta"]["comparison"] == "STATISTICAL"

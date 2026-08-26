@@ -136,7 +136,12 @@ def verify_workbook(
         # Phase-aware, and deliberately not relaxed to "some formulas are fine".
         # Phase 4 permits structural-state display only, and the permitted cells are
         # enumerated by the structure contract, so any other formula still fails.
-        permitted = structure.formula_cells if structure is not None else {}
+        permitted = dict(structure.formula_cells) if structure is not None else {}
+        # PHASE 6 adds presentation formulas to Results, and only there. They are
+        # enumerated from the accepted publication shell rather than waved
+        # through: a formula in any cell the shell does not name still fails.
+        for sheet, cells in _phase6_formula_cells(spec).items():
+            permitted.setdefault(sheet, set()).update(cells)
         unexpected = [
             found
             for found in _formula_cells(workbook)
@@ -197,6 +202,31 @@ def _contains(worksheet, text: str) -> bool:
             if isinstance(cell.value, str) and cell.value == text:
                 return True
     return False
+
+
+def _phase6_formula_cells(spec) -> dict[str, set[str]]:
+    """The exact cells the Phase-6 publication shell writes a formula into."""
+    shell = getattr(spec, "phase6_shell", None) or {}
+    results = shell.get("results")
+    if not results:
+        return {}
+    sheet = results["sheet"]
+    label = results["label_column"]
+    nominal = results["nominal_column"]
+    pv = results["pv_column"]
+    cells: set[str] = set()
+    for field_ in results["run_stamp"]["fields"]:
+        cells.add(f"{nominal}{field_['row']}")
+    for metric in results["summary"]["metrics"]:
+        cells.add(f"{nominal}{metric['row']}")
+        cells.add(f"{pv}{metric['row']}")
+    selected = results["selected"]
+    cells.add(f"{nominal}{selected['confidence_level_row']}")
+    for row in (selected["quantile_row"], selected["contingency_row"]):
+        cells.add(f"{nominal}{row}")
+        cells.add(f"{pv}{row}")
+    assert label not in cells
+    return {sheet: cells}
 
 
 def _formula_cells(workbook) -> list[str]:
