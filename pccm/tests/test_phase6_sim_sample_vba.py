@@ -304,6 +304,7 @@ def test_03_the_public_surface_is_exactly_the_five_samplers() -> None:
         "SimSampleChengBB", "SimSampleChengBC", "SimSampleOrientedBeta",
         "SimSampleOrderedTriple", "SimSampleScale", "SimSampleShapeInFamily",
         "SimSampleMinOf", "SimSampleMaxOf",
+        "SimSampleValidatePreparedBetaShape", "SimSampleTermsAreUnset",
     }, sorted(private)
 
 
@@ -1312,3 +1313,274 @@ def test_61_the_transcription_read_the_whole_module() -> None:
     # And the accepted generator it consumes is compiled from its own source.
     for name in ("SimRngValidateState", "SimRngNextUniform"):
         assert callable(vba[name]), name
+
+
+# ===========================================================================
+# G. THE PREPARED SHAPE IS CHECKED, NOT TRUSTED
+#
+# SimSampleBetaShape is a PUBLIC VBA UDT, so its fields are caller-writable and
+# nothing makes the value immutable the way the frozen Python reference is.
+# `Prepared = True` is therefore a CLAIM about provenance, and these tests prove
+# it is not on its own an authority.
+# ===========================================================================
+def _forged(**fields) -> dict:
+    """A prepared record built by hand, exactly as a caller could build one."""
+    shape = _blank_shape()
+    shape.update(fields)
+    return shape
+
+
+def _refuse(shape: dict, fragment: str, state: dict | None = None) -> str:
+    """Sampling must refuse, and leave the caller and every output untouched."""
+    state = state if state is not None else _seeded(12345)
+    before = _words(state)
+    sample, consumed, attempts, detail = _Ref(-1.0), _Ref(-1), _Ref(-1), _Ref("")
+    ok = _transcribe()["SimSamplePreparedBeta"](
+        state, shape, sample, consumed, attempts, detail)
+    assert ok is False, (fragment, detail.v)
+    assert fragment in detail.v, (fragment, detail.v)
+    assert _words(state) == before, fragment
+    assert (sample.v, consumed.v, attempts.v) == (-1.0, -1, -1), fragment
+    return detail.v
+
+
+def _honest(a: float, m: float, b: float) -> dict:
+    ok, shape, detail = _prepare(a, m, b)
+    assert ok, detail
+    return shape
+
+
+def test_62_a_provenance_flag_alone_is_not_validation_authority() -> None:
+    """The reported defect: a hand-built degenerate record over a live support.
+
+    `Prepared = True`, `Degenerate = True`, and a support that is not only
+    non-degenerate but MISORDERED, used to return a zero-draw success carrying
+    MinValue. It is now refused on the ordering, before the RNG state is looked
+    at and before any draw.
+    """
+    forgery = _forged(Prepared=True, Degenerate=True,
+                      MinValue=123.456, MostLikely=-999.0, MaxValue=-1000.0)
+    _refuse(forgery, "refused, not repaired")
+    # And it is refused even when the RNG state is ALSO invalid, so the refusal
+    # cannot be coming from the state check.
+    _refuse(forgery, "refused, not repaired", state=_state(*_BROKEN))
+    # The validator runs first in the source, too.
+    body = _procedure("SimSamplePreparedBeta")
+    assert body.index("SimSampleValidatePreparedBetaShape") < \
+        body.index("SimRngValidateState"), "the state is validated before the shape"
+    assert body.index("SimSampleValidatePreparedBetaShape") < \
+        body.index("If prepared.Degenerate Then")
+
+
+def test_63_a_degeneracy_flag_must_agree_with_its_support_both_ways() -> None:
+    # True over a live support: the zero-draw forgery.
+    _refuse(_forged(Prepared=True, Degenerate=True,
+                    MinValue=0.0, MostLikely=25.0, MaxValue=100.0),
+            "degeneracy flag disagrees")
+    # False over a dead support: a = m = b would reach the parameterisation.
+    _refuse(_forged(Prepared=True, Degenerate=False,
+                    MinValue=7.0, MostLikely=7.0, MaxValue=7.0),
+            "degeneracy flag disagrees")
+
+
+def test_64_a_non_finite_prepared_support_is_refused() -> None:
+    for field, value in (("MinValue", float("nan")), ("MostLikely", float("inf")),
+                         ("MaxValue", float("-inf")), ("MinValue", float("-inf"))):
+        shape = _honest(0.0, 25.0, 100.0)
+        shape[field] = value
+        _refuse(shape, "not a finite Double")
+
+
+def test_65_a_degenerate_record_may_carry_no_active_shape() -> None:
+    for field, value in (("Alpha", 2.0), ("Beta", 4.0), ("UseChengBB", True),
+                         ("FirstParameterIsOrientedA", True), ("ChengA", 2.0),
+                         ("ChengB", 4.0), ("ChengAlpha", 6.0), ("ChengBeta", 0.5),
+                         ("ChengGamma", 4.0), ("ChengDelta", 5.0),
+                         ("ChengK1", 0.1), ("ChengK2", 0.8)):
+        shape = _honest(-2.0, -2.0, -2.0)
+        assert shape["Degenerate"] is True
+        shape[field] = value
+        _refuse(shape, "Beta-PERT:")
+    # And the honest degenerate record still succeeds, at zero draws.
+    shape = _honest(-2.0, -2.0, -2.0)
+    state = _seeded(12345)
+    before = _words(state)
+    ok, value, consumed, attempts, detail = _beta(state, shape)
+    assert ok, detail
+    assert (value, consumed, attempts) == (-2.0, 0, 0)
+    assert _words(state) == before
+
+
+def _self_consistent(alpha: float, beta: float) -> dict:
+    """A record consistent in EVERY structural way except the family bound.
+
+    Built so the family check is the only thing standing between it and a
+    sample: dispatch, orientation, the oriented sum and every active Cheng term
+    are exactly what preparation would have written for this alpha and beta.
+    """
+    lower, upper = min(alpha, beta), max(alpha, beta)
+    is_bb = lower > _const("SIM_PERT_SHAPE_LOWER")
+    cheng_a, cheng_b = (lower, upper) if is_bb else (upper, lower)
+    shape = _forged(Prepared=True, Degenerate=False,
+                    MinValue=0.0, MostLikely=0.5, MaxValue=1.0,
+                    Alpha=alpha, Beta=beta, UseChengBB=is_bb,
+                    ChengA=cheng_a, ChengB=cheng_b, ChengAlpha=cheng_a + cheng_b,
+                    FirstParameterIsOrientedA=(alpha == cheng_a))
+    if is_bb:
+        lit4, lit5 = _const("SIM_CHENG_BB_LITERAL_4"), _const("SIM_CHENG_BB_LITERAL_5")
+        shape["ChengBeta"] = math.sqrt(
+            (shape["ChengAlpha"] - lit4) / (lit4 * cheng_a * cheng_b - shape["ChengAlpha"]))
+        shape["ChengGamma"] = cheng_a + lit5 / shape["ChengBeta"]
+    else:
+        shape["ChengBeta"] = 1.0 / cheng_b
+        shape["ChengDelta"] = 1.0 + cheng_a - cheng_b
+        shape["ChengK1"] = shape["ChengDelta"] * (
+            _const("SIM_CHENG_BC_LITERAL_1") + _const("SIM_CHENG_BC_LITERAL_2") * cheng_b
+        ) / (cheng_a * shape["ChengBeta"] - _const("SIM_CHENG_BC_LITERAL_3"))
+        shape["ChengK2"] = _const("SIM_CHENG_BC_LITERAL_5") + (
+            _const("SIM_CHENG_BC_LITERAL_6")
+            + _const("SIM_CHENG_BC_LITERAL_5") / shape["ChengDelta"]) * cheng_b
+    return shape
+
+
+def test_66_a_shape_parameter_outside_the_accepted_family_is_refused() -> None:
+    # Structurally consistent everywhere else, so ONLY the family bound refuses.
+    for alpha, beta in ((5.5, 5.5), (0.5, 0.5)):
+        _refuse(_self_consistent(alpha, beta), "left the accepted family")
+    # And a shape parameter that is corrupted on its own is refused too.
+    for field, value in (("Alpha", 0.5), ("Alpha", 5.5), ("Beta", 0.0),
+                         ("Beta", 6.0), ("Alpha", float("nan"))):
+        shape = _honest(0.0, 0.25, 1.0)
+        shape[field] = value
+        _refuse(shape, "Beta-PERT:")
+    # The bound is the projected one, and the endpoints of it are legal.
+    shape = _honest(0.0, 0.0, 100.0)
+    assert min(shape["Alpha"], shape["Beta"]) == _const("SIM_PERT_SHAPE_LOWER")
+    assert max(shape["Alpha"], shape["Beta"]) == _const("SIM_PERT_SHAPE_UPPER")
+    assert _beta(_seeded(12345), shape)[0]
+    # The control is not vacuous: the same construction INSIDE the family is
+    # accepted by the validator, so the family bound is what did the refusing.
+    inside = _self_consistent(2.0, 4.0)
+    detail = _Ref("")
+    assert _transcribe()["SimSampleValidatePreparedBetaShape"](inside, detail), detail.v
+
+
+def test_67_a_dispatch_that_disagrees_with_the_shape_is_refused() -> None:
+    bb = _honest(0.0, 0.25, 1.0)       # alpha 2, beta 4 -> BB
+    assert bb["UseChengBB"] is True
+    bb["UseChengBB"] = False
+    _refuse(bb, "dispatch disagrees")
+    bc = _honest(0.0, 0.0, 100.0)      # alpha 1, beta 5 -> BC, equality is BC
+    assert bc["UseChengBB"] is False
+    bc["UseChengBB"] = True
+    _refuse(bc, "dispatch disagrees")
+
+
+def test_68_a_swapped_cheng_orientation_is_refused() -> None:
+    bb = _honest(0.0, 0.25, 1.0)
+    assert (bb["ChengA"], bb["ChengB"]) == (2.0, 4.0)
+    bb["ChengA"], bb["ChengB"] = bb["ChengB"], bb["ChengA"]
+    _refuse(bb, "BB orientation is not min, max")
+    bc = _honest(0.0, 0.0, 100.0)
+    assert (bc["ChengA"], bc["ChengB"]) == (5.0, 1.0)
+    bc["ChengA"], bc["ChengB"] = bc["ChengB"], bc["ChengA"]
+    _refuse(bc, "BC orientation is not max, min")
+    # And the oriented sum has to be the sum of the oriented pair.
+    shape = _honest(0.0, 0.25, 1.0)
+    shape["ChengAlpha"] = shape["ChengAlpha"] + 1.0
+    _refuse(shape, "not the oriented sum")
+
+
+def test_69_a_recorded_orientation_that_disagrees_is_refused() -> None:
+    for a, m, b in ((0.0, 0.25, 1.0), (0.0, 0.75, 1.0), (0.0, 0.0, 100.0)):
+        shape = _honest(a, m, b)
+        shape["FirstParameterIsOrientedA"] = not shape["FirstParameterIsOrientedA"]
+        _refuse(shape, "recorded orientation disagrees")
+
+
+def test_70_a_malformed_active_cheng_term_is_refused() -> None:
+    for field, value, fragment in (
+        ("ChengBeta", float("nan"), "Cheng beta term is not a finite Double"),
+        ("ChengBeta", 0.0, "Cheng beta term is not positive"),
+        ("ChengBeta", -1.0, "Cheng beta term is not positive"),
+        ("ChengGamma", float("inf"), "Cheng gamma term is not a finite Double"),
+    ):
+        shape = _honest(0.0, 0.25, 1.0)          # BB
+        shape[field] = value
+        _refuse(shape, fragment)
+    for field, value, fragment in (
+        ("ChengBeta", float("nan"), "Cheng beta term is not a finite Double"),
+        ("ChengDelta", 0.0, "Cheng delta term is not positive"),
+        ("ChengDelta", float("nan"), "Cheng delta term is not a finite Double"),
+        ("ChengK1", float("inf"), "Cheng k1 term is not a finite Double"),
+        ("ChengK2", float("nan"), "Cheng k2 term is not a finite Double"),
+    ):
+        shape = _honest(0.0, 0.0, 100.0)         # BC
+        shape[field] = value
+        _refuse(shape, fragment)
+
+
+def test_71_a_record_may_not_carry_both_cheng_families_at_once() -> None:
+    bb = _honest(0.0, 0.25, 1.0)
+    for field in ("ChengDelta", "ChengK1", "ChengK2"):
+        forged = dict(bb)
+        forged[field] = 1.0
+        _refuse(forged, "never writes is not at its default")
+    bc = _honest(0.0, 0.0, 100.0)
+    forged = dict(bc)
+    forged["ChengGamma"] = 1.0
+    _refuse(forged, "never writes is not at its default")
+
+
+def test_72_a_valid_degenerate_shape_still_validates_the_rng_state() -> None:
+    shape = _honest(-2.0, -2.0, -2.0)
+    _refuse(shape, "all zero", state=_state(*_BROKEN))
+    # ...and with a valid state it is an exact zero-draw success.
+    state = _seeded(12345)
+    before = _words(state)
+    ok, value, consumed, attempts, detail = _beta(state, shape)
+    assert ok, detail
+    assert (value, consumed, attempts) == (-2.0, 0, 0)
+    assert _words(state) == before
+
+
+def test_73_the_hardening_moved_no_accepted_sample() -> None:
+    """Every accepted vector, re-derived through the validated path.
+
+    The validator is refusal hardening: a shape built by
+    SimSamplePrepareBetaPert passes it, and nothing about the sample it produces
+    changes - value, attempts, consumption, state, dispatch or orientation.
+    """
+    per_attempt = _const("SIM_CHENG_UNIFORMS_PER_ATTEMPT")
+    for case in _evidence("cheng_vectors")["cases"]:
+        shape, _ = _cheng_shape(case["alpha"])
+        detail = _Ref("")
+        assert _transcribe()["SimSampleValidatePreparedBetaShape"](shape, detail), detail.v
+        assert shape["UseChengBB"] is (case["dispatch"] == "BB")
+        state = _state(*case["initial_state"])
+        for spec in case["samples"]:
+            ok, value, consumed, attempts, refusal = _beta(state, shape)
+            assert ok, (case["label"], refusal)
+            assert attempts == spec["proposal_attempts_for_this_sample"]
+            assert consumed == per_attempt * attempts
+            assert _words(state) == spec["rng_state_after_sample"]
+            assert _within(value, float(spec["accepted_sample"]), _CHENG)
+        assert _words(state) == case["final_state"], case["label"]
+
+
+def test_74_the_validator_recomputes_no_preparation_and_draws_nothing() -> None:
+    body = _procedure("SimSampleValidatePreparedBetaShape")
+    for recomputation in ("Sqr(", "Log(", "Exp(", "SIM_PERT_LAMBDA",
+                          "SIM_CHENG_BB_LITERAL", "SIM_CHENG_BC_LITERAL",
+                          "SimSampleScale", "SimSamplePrepareBetaPert"):
+        assert recomputation not in body, recomputation
+    # No division at all: k1, k2 and the BB square root stay per-driver work.
+    assert "/" not in body
+    # It draws nothing and it writes nothing.
+    assert "SimRngNextUniform" not in body
+    assert not re.search(r"\bprepared\.\w+\s*=[^=]", body), "the validator writes the shape"
+    # And the sampler still never calls the constructor.
+    assert "SimSamplePrepareBetaPert" not in _procedure("SimSamplePreparedBeta")
+    # The Step-7 precomputation guarantee is untouched: the loops are unchanged.
+    for name in ("SimSampleChengBB", "SimSampleChengBC"):
+        assert "SimSampleValidatePreparedBetaShape" not in _procedure(name), name

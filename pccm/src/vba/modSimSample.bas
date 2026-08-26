@@ -359,12 +359,13 @@ Public Function SimSamplePreparedBeta(ByRef state As SimRngState, _
     Dim y As Double, attempts As Long, candidate As Double
     detail = vbNullString
 
-    If Not prepared.Prepared Then
-        detail = "Beta-PERT: the shape was never prepared"
-        Exit Function
-    End If
+    ' THE PREPARED VALUE IS VALIDATED FIRST, before the RNG state and before any
+    ' path - the degenerate one included - can return. A Public VBA UDT is
+    ' caller-writable, so `Prepared = True` is a provenance CLAIM and not
+    ' validation authority on its own.
+    If Not SimSampleValidatePreparedBetaShape(prepared, detail) Then Exit Function
 
-    ' Validated before any path can return, the degenerate one included.
+    ' Then the incoming state, before any path can return, degenerate included.
     If Not SimRngValidateState(state, detail) Then Exit Function
 
     If prepared.Degenerate Then
@@ -402,6 +403,183 @@ Public Function SimSamplePreparedBeta(ByRef state As SimRngState, _
     proposalAttempts = attempts
     state = working
     SimSamplePreparedBeta = True
+End Function
+
+' ==========================================================================
+' THE PREPARED SHAPE IS CHECKED, NOT TRUSTED
+'
+' SimSampleBetaShape is a PUBLIC VBA UDT, so every field is caller-writable and
+' nothing makes it immutable the way the frozen Python reference value is. A
+' record carrying `Prepared = True` is therefore making a CLAIM about its own
+' provenance, and a claim is not authority: a hand-built record with
+' `Degenerate = True` and a contradictory support would otherwise have returned
+' a zero-draw success without any input ever being ordered.
+'
+' WHAT THIS IS NOT. It does not re-derive the preparation. There is no r, no
+' alpha/beta from the support, no square root, no gamma, no delta, no k1 and no
+' k2 here - those stay per-driver work, and recomputing them per iteration is
+' precisely the design this module exists to avoid. What runs here is a fixed
+' number of comparisons over fields preparation itself wrote, so the structural
+' invariants are checked and the arithmetic is not repeated.
+'
+' EXACT COMPARISONS, NO TOLERANCE. Every value tested is one preparation
+' assigned, so binary64 equality is the right test and a tolerance would only
+' admit records preparation could not have produced.
+'
+' The prepared value is an INTERNAL IN-PROJECT CARRIER between
+' SimSamplePrepareBetaPert - its only authoritative constructor - and this
+' sampler. It is not an externally authoritative serialised representation, and
+' no checksum or seal is invented here to make it hostile-caller-proof.
+' ==========================================================================
+Private Function SimSampleValidatePreparedBetaShape(ByRef prepared As SimSampleBetaShape, _
+                                                    ByRef detail As String) As Boolean
+    Dim lowValue As Double, modeValue As Double, highValue As Double
+    Dim alphaValue As Double, betaValue As Double
+    Dim chengAValue As Double, chengBValue As Double
+    Dim lower As Double, upper As Double
+    Dim degenerate As Boolean, isBB As Boolean, orientedA As Boolean
+
+    ' 1. PROVENANCE. Necessary, and on its own not sufficient.
+    If Not prepared.Prepared Then
+        detail = "Beta-PERT: the shape was never prepared"
+        Exit Function
+    End If
+
+    ' 2. THE RAW SUPPORT, by the same rule preparation applied to it. Refused,
+    '    never repaired, and no endpoint is swapped.
+    lowValue = prepared.MinValue
+    modeValue = prepared.MostLikely
+    highValue = prepared.MaxValue
+    If Not SimSampleOrderedTriple(lowValue, modeValue, highValue, "Beta-PERT", detail) Then Exit Function
+
+    ' 3. THE DEGENERACY FLAG AGREES WITH THE SUPPORT, IN BOTH DIRECTIONS. A
+    '    True flag over a live support is the zero-draw forgery; a False flag
+    '    over a dead one would send a = m = b into the parameterisation.
+    degenerate = False
+    If lowValue = modeValue Then
+        If modeValue = highValue Then degenerate = True
+    End If
+    If prepared.Degenerate <> degenerate Then
+        detail = "Beta-PERT: the degeneracy flag disagrees with the support"
+        Exit Function
+    End If
+
+    If degenerate Then
+        ' 4. A DEGENERATE RECORD CARRIES NO ACTIVE SHAPE AT ALL. Preparation
+        '    leaves every one of these at its default, so anything else is a
+        '    record preparation did not build.
+        If prepared.Alpha <> 0# Or prepared.Beta <> 0# Then
+            detail = "Beta-PERT: a degenerate shape carries a parameterisation"
+            Exit Function
+        End If
+        If prepared.UseChengBB Or prepared.FirstParameterIsOrientedA Then
+            detail = "Beta-PERT: a degenerate shape carries a dispatch or an orientation"
+            Exit Function
+        End If
+        If Not SimSampleTermsAreUnset(prepared.ChengA, prepared.ChengB, _
+                                      prepared.ChengAlpha, detail) Then Exit Function
+        If Not SimSampleTermsAreUnset(prepared.ChengBeta, prepared.ChengGamma, _
+                                      prepared.ChengDelta, detail) Then Exit Function
+        If Not SimSampleTermsAreUnset(prepared.ChengK1, prepared.ChengK2, 0#, detail) Then Exit Function
+        SimSampleValidatePreparedBetaShape = True
+        Exit Function
+    End If
+
+    ' 5. THE SHAPE FAMILY. The [lower, upper] bound only - the companion
+    '    identity alpha + beta = SIM_PERT_ALPHA_PLUS_BETA is deliberately NOT a
+    '    runtime gate here either, for the reason SimSamplePrepareBetaPert
+    '    records: it is not exact in binary64 for every r.
+    alphaValue = prepared.Alpha
+    betaValue = prepared.Beta
+    If Not SimSampleShapeInFamily(alphaValue, detail) Then Exit Function
+    If Not SimSampleShapeInFamily(betaValue, detail) Then Exit Function
+    lower = SimSampleMinOf(alphaValue, betaValue)
+    upper = SimSampleMaxOf(alphaValue, betaValue)
+
+    ' 6. DISPATCH. The same boundary preparation used, so equality is still BC.
+    isBB = False
+    If lower > SIM_PERT_SHAPE_LOWER Then isBB = True
+    If prepared.UseChengBB <> isBB Then
+        detail = "Beta-PERT: the dispatch disagrees with the shape parameters"
+        Exit Function
+    End If
+
+    ' 7. ORIENTATION. min, max for BB and max, min for BC - opposite, and a
+    '    swapped pair samples the mirrored distribution in silence.
+    chengAValue = prepared.ChengA
+    chengBValue = prepared.ChengB
+    If isBB Then
+        If chengAValue <> lower Or chengBValue <> upper Then
+            detail = "Beta-PERT: the BB orientation is not min, max"
+            Exit Function
+        End If
+    Else
+        If chengAValue <> upper Or chengBValue <> lower Then
+            detail = "Beta-PERT: the BC orientation is not max, min"
+            Exit Function
+        End If
+    End If
+    If prepared.ChengAlpha <> chengAValue + chengBValue Then
+        detail = "Beta-PERT: the Cheng alpha is not the oriented sum"
+        Exit Function
+    End If
+    orientedA = False
+    If alphaValue = chengAValue Then orientedA = True
+    If prepared.FirstParameterIsOrientedA <> orientedA Then
+        detail = "Beta-PERT: the recorded orientation disagrees with the shape"
+        Exit Function
+    End If
+
+    ' 8. THE ACTIVE PRECOMPUTED TERMS. Checked for shape, not recomputed; and
+    '    the terms the SELECTED dispatch never writes must still be at their
+    '    preparation defaults, so a record cannot carry both families at once.
+    If Not IsUsableDouble(prepared.ChengBeta) Then
+        detail = "Beta-PERT: the Cheng beta term is not a finite Double"
+        Exit Function
+    End If
+    If prepared.ChengBeta <= 0# Then
+        detail = "Beta-PERT: the Cheng beta term is not positive"
+        Exit Function
+    End If
+    If isBB Then
+        If Not IsUsableDouble(prepared.ChengGamma) Then
+            detail = "Beta-PERT: the Cheng gamma term is not a finite Double"
+            Exit Function
+        End If
+        If Not SimSampleTermsAreUnset(prepared.ChengDelta, prepared.ChengK1, _
+                                      prepared.ChengK2, detail) Then Exit Function
+    Else
+        If Not IsUsableDouble(prepared.ChengDelta) Then
+            detail = "Beta-PERT: the Cheng delta term is not a finite Double"
+            Exit Function
+        End If
+        If prepared.ChengDelta <= 0# Then
+            detail = "Beta-PERT: the Cheng delta term is not positive"
+            Exit Function
+        End If
+        If Not IsUsableDouble(prepared.ChengK1) Then
+            detail = "Beta-PERT: the Cheng k1 term is not a finite Double"
+            Exit Function
+        End If
+        If Not IsUsableDouble(prepared.ChengK2) Then
+            detail = "Beta-PERT: the Cheng k2 term is not a finite Double"
+            Exit Function
+        End If
+        If Not SimSampleTermsAreUnset(prepared.ChengGamma, 0#, 0#, detail) Then Exit Function
+    End If
+
+    SimSampleValidatePreparedBetaShape = True
+End Function
+
+' A prepared term the chosen dispatch never writes must still hold the value
+' preparation left it at. Exactly zero, because that is what preparation leaves.
+Private Function SimSampleTermsAreUnset(ByVal first As Double, ByVal second As Double, _
+                                        ByVal third As Double, ByRef detail As String) As Boolean
+    If first <> 0# Or second <> 0# Or third <> 0# Then
+        detail = "Beta-PERT: a prepared term this dispatch never writes is not at its default"
+        Exit Function
+    End If
+    SimSampleTermsAreUnset = True
 End Function
 
 ' ==========================================================================

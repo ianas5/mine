@@ -7,6 +7,18 @@ src/vba/modSimSample.bas        the pure stochastic transforms
 spec/structure_contract.yaml    modSimSample enters the registry
 ```
 
+> **PREPARED-SHAPE HARDENING ROUND.** Independent review of `a73aefe` confirmed
+> the Step-7 core — 61 conformance tests, 39 mutation controls, the Step-6 47+27
+> still green, Stage A 351/0 and every accepted hash — and did **not** reopen the
+> stochastic implementation. It found one boundary defect: `SimSampleBetaShape`
+> is a **Public** VBA UDT, so its fields are caller-writable, and
+> `SimSamplePreparedBeta` trusted every field except `Prepared`. A hand-built
+> record with `Prepared = True`, `Degenerate = True` and the misordered support
+> `(123.456, -999, -1000)` returned a zero-draw success carrying `123.456`. That
+> is fixed here (§9); **no accepted sample, attempt count, consumption, RNG
+> state, dispatch or orientation moved**, and the per-driver precomputation
+> design is untouched.
+
 **Not in this step.** No simulation iteration orchestration, no D6-18 severity
 invocation, no Cost Line or Risk contribution arithmetic, no `Quantity`, `Knom`
 or `Kpv`, no retained iteration arrays, no statistic, no quantile, no
@@ -82,7 +94,7 @@ It lives under `tests/`, carries **no authority**, and nothing in `builder/`,
 
 ## 3. `modSimSample.bas`
 
-13 procedures, 5 public, 1 public `Type`.
+15 procedures, 5 public, 1 public `Type`.
 
 | Public | Does |
 |---|---|
@@ -94,6 +106,8 @@ It lives under `tests/`, carries **no authority**, and nothing in `builder/`,
 
 | Private | Does |
 |---|---|
+| `SimSampleValidatePreparedBetaShape` | the structural check on a prepared value (§9) |
+| `SimSampleTermsAreUnset` | a term this dispatch never writes is still at its default |
 | `SimSampleChengBB`, `SimSampleChengBC` | the two rejection samplers |
 | `SimSampleOrientedBeta` | the shared return rule, so the two cannot drift |
 | `SimSampleOrderedTriple` | finite and `Min ≤ Most Likely ≤ Max` |
@@ -187,8 +201,8 @@ calls another, so no convenience entry point can quietly become the hot path.
 | File | Contents |
 |---|---|
 | `tests/phase6_vba_transcribe.py` | the transcriber, extracted mechanically from the Step-6 suite — test-only, no authority |
-| `tests/test_phase6_sim_sample_vba.py` | 61 Step-7 conformance tests |
-| `tests/test_phase6_sim_sample_vba_validation.py` | 39 mutation controls (the 34 required, a baseline, and four extras) |
+| `tests/test_phase6_sim_sample_vba.py` | 74 Step-7 conformance tests — 61 in the first round, 13 added by the hardening round (§9) |
+| `tests/test_phase6_sim_sample_vba_validation.py` | 51 tests — a baseline and 50 mutation controls: 38 in the first round, 12 added by the hardening round |
 
 **Group A — the module exists and is declared** (`test_01`–`test_05`): the
 `VB_Name` attribute and `Option Explicit` with no `Option Base`; the registry
@@ -335,23 +349,24 @@ strings still read "no width", which is prose and not a declaration.
 ### 6.1 Python suite
 
 ```
-2496 passed, 0 failed          (418.44s)
-2496 collected
+2521 passed, 0 failed          (374.77s)
+2521 collected
 ```
 
 | Count | What |
 |---|---|
-| 61 | Step-7 conformance tests (`test_phase6_sim_sample_vba.py`) |
-| 39 | Step-7 mutation controls (`test_phase6_sim_sample_vba_validation.py`) |
+| 74 | Step-7 conformance tests (`test_phase6_sim_sample_vba.py`) |
+| 51 | Step-7 mutation controls (`test_phase6_sim_sample_vba_validation.py`) — 50 controls plus the baseline |
 | 47 | Step-6 RNG conformance tests — **still green, unmodified** |
 | 27 | Step-6 RNG mutation controls — **still green, unmodified** |
 | 43 | D6-11 source tests across 16 files |
 | 351 | Stage-A builder/verifier checks, 0 failed |
 
-Collection moved from **2396** (`2ec1844`) to **2496**: +100, being the 61
-conformance tests and 39 mutation controls. **No test was deleted, skipped or
-weakened**; the thirteen inventory tests the new module invalidated were pointed
-at a named Phase-6 inventory.
+Collection moved from **2396** (`2ec1844`) to **2496** at `a73aefe` — +100, the
+61 conformance tests and 39 mutation controls — and to **2521** with the
+hardening round's +13 conformance tests and +12 mutation controls. **No test was
+deleted, skipped or weakened** in either round; the thirteen inventory tests the
+new module invalidated were pointed at a named Phase-6 inventory.
 
 ### 6.2 Stage A
 
@@ -393,7 +408,7 @@ Stage A build complete.
 
 | Artefact | SHA-256 | Status |
 |---|---|---|
-| `src/vba/modSimSample.bas` | `57ed2ada91201b6e0d78648e989edac230d1f284b9f76c45c954c13a3264ef9a` | **new** |
+| `src/vba/modSimSample.bas` | `5553198289bd98a7c84025868ac03c9f8ec95da3c01b23249c0da57d77901877` | **new** (was `57ed2ada…` before the hardening round) |
 | `build/stage_b_manifest.json` | `d1571ce16ffb815da77b4e18c66579338e11a1da16de2040c8cde1f420c32909` | **changed, registry only** |
 | `src/vba/modSimRng.bas` | `a258b0d6628cd1d7bc8a40b712c8b4cc9968bfc96e7985040979dc62527024a9` | **byte-identical to the accepted Step-6 hash** |
 | `build/vba/modSimContract.bas` | `c7e7a78406345f98a3c2d0b90d63759b765a321aee99483fadd0f411f10c61be` | unchanged |
@@ -462,7 +477,16 @@ before the next real Gate-B/Windows execution.
 
 | Gate condition | Status |
 |---|---|
-| `modSimSample.bas` exists | yes, 13 procedures, 5 public |
+| `modSimSample.bas` exists | yes, 15 procedures, 5 public |
+| `Prepared = True` is no longer sufficient by itself | `test_62`, §9.1–9.2 |
+| raw prepared support finite and ordered | `test_62`, `test_64` |
+| the degeneracy flag exactly agrees with the support | `test_63` |
+| a malformed degenerate shape cannot produce zero-draw success | `test_62`, `test_63`, `test_65` |
+| dispatch and orientation corruption refused | `test_67`, `test_68`, `test_69` |
+| active Cheng terms structurally validated | `test_70`, `test_71` |
+| validation precedes RNG-state validation and any draw | `test_62` |
+| hot-loop preparation NOT recomputed | `test_52`, `test_74` |
+| all accepted sample vectors unchanged | `test_28`, `test_29`, `test_73` |
 | pure / worksheet-independent | `test_06`, `test_07`, `test_04` |
 | no direct RNG implementation | `test_08` |
 | all randomness through modSimRng | `test_08` — exactly two entry points |
@@ -489,3 +513,146 @@ before the next real Gate-B/Windows execution.
 | no Step 8 exists | no `modSimEngine`, `modSimStats`, `modSimFingerprint`, `modSimReport`, `PCCM_RunSimulation` |
 | no Windows/Excel runtime ran | none was authorised and none was run |
 | Gate-B temp-dir debt | **OPEN**, §7 |
+
+---
+
+## 9. Prepared-shape hardening round
+
+### 9.1 The defect
+
+`SimSampleBetaShape` is declared `Public Type`. Every field is therefore
+caller-writable, and nothing makes the value immutable the way the frozen Python
+`PreparedBetaPert` dataclass is. `SimSamplePreparedBeta` checked only
+`prepared.Prepared` and the incoming RNG state, and trusted the rest.
+
+Independent review built this record by hand:
+
+```
+Prepared    = True
+Degenerate  = True
+MinValue    = 123.456
+MostLikely  = -999
+MaxValue    = -1000
+```
+
+and the source transcription returned:
+
+```
+success            True
+sample             123.456
+uniforms_consumed  0
+proposal_attempts  0
+detail             ""
+```
+
+A support that is not merely non-degenerate but **misordered** produced a
+zero-draw success. `Prepared = True` is a CLAIM about provenance, and a claim is
+not validation authority.
+
+### 9.2 The fix
+
+One private helper, `SimSampleValidatePreparedBetaShape`, called from
+`SimSamplePreparedBeta` **before** `SimRngValidateState`, **before** the
+degenerate success path, and **before** any draw. It draws nothing, modifies
+neither the prepared value nor any caller output, and returns the accepted
+`Boolean` + `detail` refusal.
+
+The same record now returns:
+
+```
+success  False
+detail   "Beta-PERT: requires Min <= Most Likely <= Max; the ordering is
+          refused, not repaired"
+```
+
+with the caller's state, sample, consumption and attempt count untouched.
+
+What it checks:
+
+| § | Invariant |
+|---|---|
+| 3.1 | `Prepared = True` — necessary, and on its own not sufficient |
+| 3.2 | `MinValue`, `MostLikely`, `MaxValue` finite and `Min ≤ ML ≤ Max`, through the same `SimSampleOrderedTriple` preparation used. Refused, never repaired, no endpoint swapped |
+| 3.3 | `Degenerate` agrees with the support **in both directions** — a True flag over a live support and a False flag over a dead one are each refused |
+| 3.4 | a degenerate record carries **no** parameterisation, dispatch, orientation or Cheng term: every one is pinned to the default preparation leaves |
+| 3.5 | non-degenerate `Alpha` and `Beta` finite and inside `[SIM_PERT_SHAPE_LOWER, SIM_PERT_SHAPE_UPPER]` |
+| 3.6 | `UseChengBB = (min(Alpha, Beta) > SIM_PERT_SHAPE_LOWER)` — the same boundary, so equality is still BC |
+| 3.7 | BB orients min/max, BC orients max/min; `ChengAlpha = ChengA + ChengB`; `FirstParameterIsOrientedA = (Alpha = ChengA)` |
+| 3.8 | the active terms of the selected dispatch finite and correctly signed — BB: `ChengBeta > 0`, `ChengGamma` finite; BC: `ChengBeta > 0`, `ChengDelta > 0`, `ChengK1`/`ChengK2` finite — **and** the other family's terms still at their defaults, so a record cannot carry both at once |
+
+**Exact comparisons, no tolerance.** Every value tested is one preparation
+itself assigned, so binary64 equality is the right test; a tolerance would only
+admit records preparation could not have produced. **`alpha + beta = 6` is still
+not a gate**, here or in preparation, for the reason §4.1 records.
+
+### 9.3 The precomputation design is untouched
+
+The validator performs a fixed number of comparisons. It contains **no** `Sqr`,
+`Log`, `Exp`, division, `SIM_PERT_LAMBDA`, `SIM_CHENG_*` literal, call to
+`SimSampleScale`, or call to `SimSamplePrepareBetaPert` — `test_74` asserts each
+of those by name, including that the character `/` does not appear in its body at
+all. `r`, `alpha`/`beta` from the support, the BB square root, `gamma`, `delta`,
+`k1` and `k2` remain per-driver work.
+
+Neither Cheng loop calls the validator, so `test_52`'s hot-loop guarantee is
+unchanged, and `test_28`, `test_29` and the new `test_73` re-derive every
+accepted vector through the validated path.
+
+### 9.4 The prepared value is an internal carrier, not a serialisation format
+
+Stated here because the distinction is what bounds this fix:
+
+- `SimSamplePrepareBetaPert` is the **authoritative constructor**. It is the only
+  procedure that writes the shape, and `test_52` proves it.
+- `SimSamplePreparedBeta` performs **cheap structural validation** before use.
+- The prepared UDT is an **internal, in-project carrier** between those two.
+- It is **not** an externally authoritative serialised representation, and no
+  checksum, hash or seal was invented to make it hostile-caller-proof.
+- Full per-driver derivation is **intentionally not recomputed** per iteration.
+
+**Carried to Step 8 as a source-conformance requirement:** Step 8 must prove
+statically that the prepared shapes it stores **originate from
+`SimSamplePrepareBetaPert`** and are **not field-mutated between preparation and
+sampling**.
+
+### 9.5 Regressions and controls
+
+Thirteen conformance tests were added (`test_62`–`test_74`), covering all
+sixteen required regressions: the reported forgery refused both with a valid and
+an invalid RNG state and with the validator provably first in the source;
+degeneracy disagreement in both directions; a non-finite raw support; every
+active field pinned on a degenerate record; a shape parameter outside the family;
+dispatch disagreement; swapped BB and BC orientations; a wrong oriented sum; a
+disagreeing `FirstParameterIsOrientedA`; malformed active `ChengBeta`,
+`ChengGamma`, `ChengDelta`, `ChengK1` and `ChengK2`; a record carrying both
+families; a valid degenerate shape still validating the RNG state and still
+producing an exact zero-draw success; every refusal leaving the caller's state,
+sample, consumption and attempt count unchanged; and `test_73`, which re-derives
+**every accepted Cheng vector** through the validated path.
+
+`test_66` deserves a note: the first draft's forgeries were all caught by the
+*downstream* structural checks even with the family bound deleted, which would
+have made the control vacuous. It now builds a record that is consistent in
+every other way — dispatch, orientation, oriented sum and every active Cheng
+term exactly what preparation would have written — so the family bound is the
+only thing refusing it, and it asserts the same construction **inside** the
+family is accepted.
+
+Twelve mutation controls were added (`test_35`–`test_41c`), covering the six
+required plus six more: the validator call removed; the validator moved after
+the RNG state; raw-order validation removed; degeneracy consistency removed;
+degeneracy narrowed to one direction; dispatch validation removed; orientation
+validation removed; the recorded-orientation check removed; active Cheng
+finite/sign validation removed; the inactive-term defaults no longer pinned; the
+degenerate field pinning removed; and the family bound removed.
+
+**All 39 pre-existing Step-7 mutation controls are retained unweakened**, as are
+the Step-6 47 + 27.
+
+### 9.6 Nothing else moved
+
+`spec/`, `evidence/`, `builder/`, `bootstrap/` and `src/vba/modSimRng.bas` are
+identical to `a73aefe`, so `structure_contract.yaml`, the manifest authority,
+`modSimContract.bas` and `phase6_cases.json` are unchanged. The shared test
+transcriber required **no** change: the new private validator compiles under the
+Step-7 engine exactly as written.

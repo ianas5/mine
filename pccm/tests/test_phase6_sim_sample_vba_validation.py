@@ -548,6 +548,151 @@ def test_34_the_caller_state_is_committed_before_the_sample_succeeds() -> None:
     _control("test_59", damaged)
 
 
+# ===========================================================================
+# 35-41. The prepared-shape validator
+# ===========================================================================
+def test_35_the_validator_call_is_removed() -> None:
+    _control("test_62", _swap(
+        _ORIGINAL,
+        "    If Not SimSampleValidatePreparedBetaShape(prepared, detail) Then Exit Function\n",
+        "    If Not prepared.Prepared Then\n"
+        '        detail = "Beta-PERT: the shape was never prepared"\n'
+        "        Exit Function\n"
+        "    End If\n"))
+
+
+def test_36_the_validator_runs_after_the_rng_state_instead_of_before() -> None:
+    damaged = _swap(
+        _ORIGINAL,
+        "    If Not SimSampleValidatePreparedBetaShape(prepared, detail) Then Exit Function\n"
+        "\n    ' Then the incoming state, before any path can return, degenerate included.\n"
+        "    If Not SimRngValidateState(state, detail) Then Exit Function\n",
+        "    If Not SimRngValidateState(state, detail) Then Exit Function\n"
+        "    If Not SimSampleValidatePreparedBetaShape(prepared, detail) Then Exit Function\n")
+    _control("test_62", damaged)
+
+
+def test_37_the_prepared_raw_order_validation_is_removed() -> None:
+    _control("test_62", _swap(
+        _ORIGINAL,
+        '    If Not SimSampleOrderedTriple(lowValue, modeValue, highValue, "Beta-PERT", detail) '
+        "Then Exit Function\n",
+        ""))
+
+
+def test_38_the_degeneracy_consistency_check_is_removed() -> None:
+    _control("test_63", _swap(
+        _ORIGINAL,
+        "    If prepared.Degenerate <> degenerate Then\n"
+        '        detail = "Beta-PERT: the degeneracy flag disagrees with the support"\n'
+        "        Exit Function\n"
+        "    End If\n",
+        ""))
+
+
+def test_38a_the_degeneracy_check_is_narrowed_to_one_direction() -> None:
+    """`Degenerate = True` over a live support is the zero-draw forgery."""
+    damaged = _swap(
+        _ORIGINAL,
+        "    If prepared.Degenerate <> degenerate Then\n",
+        "    If degenerate And Not prepared.Degenerate Then\n")
+    _control("test_63", damaged)
+
+
+def test_39_the_dispatch_validation_is_removed() -> None:
+    _control("test_67", _swap(
+        _ORIGINAL,
+        "    If prepared.UseChengBB <> isBB Then\n"
+        '        detail = "Beta-PERT: the dispatch disagrees with the shape parameters"\n'
+        "        Exit Function\n"
+        "    End If\n",
+        "    isBB = prepared.UseChengBB\n"))
+
+
+def test_40_the_orientation_validation_is_removed() -> None:
+    damaged = _swap(
+        _ORIGINAL,
+        "    If isBB Then\n"
+        "        If chengAValue <> lower Or chengBValue <> upper Then\n"
+        '            detail = "Beta-PERT: the BB orientation is not min, max"\n'
+        "            Exit Function\n"
+        "        End If\n"
+        "    Else\n"
+        "        If chengAValue <> upper Or chengBValue <> lower Then\n"
+        '            detail = "Beta-PERT: the BC orientation is not max, min"\n'
+        "            Exit Function\n"
+        "        End If\n"
+        "    End If\n",
+        "")
+    _control("test_68", damaged)
+
+
+def test_40a_the_recorded_orientation_check_is_removed() -> None:
+    _control("test_69", _swap(
+        _ORIGINAL,
+        "    If prepared.FirstParameterIsOrientedA <> orientedA Then\n"
+        '        detail = "Beta-PERT: the recorded orientation disagrees with the shape"\n'
+        "        Exit Function\n"
+        "    End If\n",
+        ""))
+
+
+def test_41_the_active_cheng_term_validation_is_removed() -> None:
+    damaged = _swap(
+        _ORIGINAL,
+        "    If Not IsUsableDouble(prepared.ChengBeta) Then\n"
+        '        detail = "Beta-PERT: the Cheng beta term is not a finite Double"\n'
+        "        Exit Function\n"
+        "    End If\n"
+        "    If prepared.ChengBeta <= 0# Then\n"
+        '        detail = "Beta-PERT: the Cheng beta term is not positive"\n'
+        "        Exit Function\n"
+        "    End If\n",
+        "")
+    _control("test_70", damaged)
+
+
+def test_41a_the_inactive_term_defaults_are_no_longer_pinned() -> None:
+    damaged = _ORIGINAL.replace(
+        "        If Not SimSampleTermsAreUnset(prepared.ChengDelta, prepared.ChengK1, _\n"
+        "                                      prepared.ChengK2, detail) Then Exit Function\n", "")
+    damaged = damaged.replace(
+        "        If Not SimSampleTermsAreUnset(prepared.ChengGamma, 0#, 0#, detail) "
+        "Then Exit Function\n", "")
+    assert damaged != _ORIGINAL
+    _control("test_71", damaged)
+
+
+def test_41b_the_degenerate_record_field_pinning_is_removed() -> None:
+    damaged = _ORIGINAL.replace(
+        "        If prepared.Alpha <> 0# Or prepared.Beta <> 0# Then\n"
+        '            detail = "Beta-PERT: a degenerate shape carries a parameterisation"\n'
+        "            Exit Function\n"
+        "        End If\n"
+        "        If prepared.UseChengBB Or prepared.FirstParameterIsOrientedA Then\n"
+        '            detail = "Beta-PERT: a degenerate shape carries a dispatch or an orientation"\n'
+        "            Exit Function\n"
+        "        End If\n"
+        "        If Not SimSampleTermsAreUnset(prepared.ChengA, prepared.ChengB, _\n"
+        "                                      prepared.ChengAlpha, detail) Then Exit Function\n"
+        "        If Not SimSampleTermsAreUnset(prepared.ChengBeta, prepared.ChengGamma, _\n"
+        "                                      prepared.ChengDelta, detail) Then Exit Function\n"
+        "        If Not SimSampleTermsAreUnset(prepared.ChengK1, prepared.ChengK2, 0#, detail) "
+        "Then Exit Function\n", "")
+    assert damaged != _ORIGINAL
+    _control("test_65", damaged)
+
+
+def test_41c_the_shape_family_bound_is_removed() -> None:
+    damaged = _swap(
+        _ORIGINAL,
+        "    If Not SimSampleShapeInFamily(alphaValue, detail) Then Exit Function\n"
+        "    If Not SimSampleShapeInFamily(betaValue, detail) Then Exit Function\n",
+        "")
+    _control("test_66", damaged)
+
+
+
 if __name__ == "__main__":  # pragma: no cover
     import pytest
 
