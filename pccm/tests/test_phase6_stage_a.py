@@ -1508,7 +1508,7 @@ def test_78_every_case_carries_a_complete_version_block() -> None:
             assert isinstance(case["versions"]["rng_version"], int)
             assert isinstance(case["versions"]["model_version"], str)
             assert "fp_version" not in case["versions"]
-    assert groups == 10
+    assert groups == 11
     assert len(_cases()) == document["case_count"]
 
 
@@ -1612,18 +1612,23 @@ def test_83_every_emitted_number_survives_the_json_round_trip_exactly() -> None:
 
 
 def test_84_the_comparison_policy_distribution_is_unchanged() -> None:
-    """The typing correction is representation only. No case moved class."""
+    """No case moved class. Step-10A added five EXACT request-fingerprint cases
+    and touched no existing case's policy: every non-EXACT count below is the
+    number it has carried since the typing correction."""
     from collections import Counter
 
     counts = Counter(case["comparison"] for case in _cases().values())
     assert dict(counts) == {
-        "EXACT": 61,
+        "EXACT": 66,
         "TOLERANCE_BOUNDED": 23,
         "STATISTICAL": 1,
         "SAME_RUNTIME_ONLY": 3,
         "RUNTIME_ONLY": 3,
     }, dict(counts)
-    assert sum(counts.values()) == 91
+    assert sum(counts.values()) == 96
+    request = [i for i in _cases() if i.startswith("request_fingerprint.")]
+    assert len(request) == 5, request
+    assert all(_cases()[i]["comparison"] == "EXACT" for i in request)
 
     cases = _cases()
     assert cases["engine.general.with_beta"]["comparison"] == "STATISTICAL"
@@ -1634,6 +1639,98 @@ def test_84_the_comparison_policy_distribution_is_unchanged() -> None:
         "this fixture only"
     )
     assert cases["engine.seed.degenerate_equal_digest"]["comparison"] == "EXACT"
+
+
+# ===========================================================================
+# Step-10A - the request-fingerprint projection and corpus
+# ===========================================================================
+def test_85_the_request_fingerprint_framing_is_projected() -> None:
+    section = _sim().raw["request_fingerprint"]["sim_section"]
+    assert _string("SIM_REQUEST_SECTION") == section["name"] == "SIM"
+    assert _long("SIM_REQUEST_RECORD_COUNT") == int(section["record_count"]) == 1
+    assert _long("SIM_REQUEST_FIELD_COUNT_AUTO") == 4
+    assert _long("SIM_REQUEST_FIELD_COUNT_FIXED") == 5
+    for mode, shape in section["effective_records"].items():
+        assert _long(f"SIM_REQUEST_FIELD_COUNT_{mode}") == int(shape["field_count"])
+        for ordinal, field in enumerate(shape["fields"], start=1):
+            assert _string(f"SIM_REQUEST_{mode}_FIELD_{ordinal}") == field
+    for field in section["fields"]:
+        name = field.upper()
+        assert _string(f"SIM_REQUEST_TYPE_{name}") == section["field_types"][field]
+    assert _string("SIM_REQUEST_AUTO_SEED") == "absent"
+
+
+def test_86_the_projection_does_not_restate_the_phase5_stream_authority() -> None:
+    """The extension is a SECTION of the accepted PCCM-FP stream, so its tag,
+    its FP_VERSION and the hash mathematics stay with modCalcContract."""
+    constants = _constants()
+    for owned_elsewhere in ("SIM_FP_STREAM_TAG", "SIM_FP_VERSION", "SIM_REQUEST_STREAM_TAG",
+                            "SIM_REQUEST_FP_VERSION", "SIM_FP_BASE", "SIM_FP_MOD_1",
+                            "SIM_FP_MOD_2", "SIM_FP_INIT_1", "SIM_FP_INIT_2"):
+        assert owned_elsewhere not in constants, owned_elsewhere
+    text = _module_text()
+    assert "PCCM-FP" not in text, "the projection repeated the analytical stream tag"
+    # The digest stream tag is a DIFFERENT stream and is still projected.
+    assert _string("SIM_DIGEST_STREAM_TAG") == "PCCM-RD"
+
+
+def test_87_no_request_field_name_is_projected_as_an_encoded_token() -> None:
+    """The names are semantic position. Nothing may read them as stream bytes."""
+    section = _sim().raw["request_fingerprint"]["sim_section"]
+    assert section["encoded_field_names"] is False
+    for production in section["grammar"].values():
+        for field in section["fields"]:
+            assert f'"{field}"' not in production, field
+
+
+def test_88_the_request_fingerprint_group_is_in_the_corpus() -> None:
+    document = _cases_document()
+    groups = {group["group"]: group for group in document["groups"]}
+    assert "I_request_fingerprint" in groups
+    group = groups["I_request_fingerprint"]
+    assert group["title"] == "The request fingerprint and its SIM extension"
+    ids = [case["id"] for case in group["cases"]]
+    assert len(ids) == 5 == len(set(ids))
+    for case in group["cases"]:
+        assert case["comparison"] == "EXACT", case["id"]
+        assert case["layer"] == "I_request_fingerprint"
+        assert "expected_exact" in case
+        assert "tolerance" not in json.dumps(case)
+
+
+def test_89_the_request_vectors_carry_no_environment_or_clock_data() -> None:
+    group = next(g for g in _cases_document()["groups"]
+                 if g["group"] == "I_request_fingerprint")
+    text = json.dumps(group)
+    for banned in ("timestamp", "generated_at", "hostname", "/home/", "\\Users",
+                   "random", "elapsed", "duration_ms"):
+        assert banned not in text, banned
+
+
+def test_90_a_changed_request_fingerprint_is_detectable() -> None:
+    """The corpus must not be able to drift silently. This is the control the
+    golden literals in `test_phase6_request_fingerprint.py` exist to enforce."""
+    from pccm_builder.sim_cases import request_fingerprint
+
+    document = _mutated(
+        ("request_fingerprint.auto.1000", "expected_exact", "request_fingerprint"),
+        "DEADBEEFDEADBEEF")
+    case = _lookup(document, "request_fingerprint.auto.1000")
+    recomputed = request_fingerprint(_sim(), _calc(), 1000, "AUTO")
+    assert case["expected_exact"]["request_fingerprint"] != recomputed
+    assert recomputed == "5EAB16E15C2ECE24"
+
+
+def test_91_a_changed_request_suffix_is_detectable() -> None:
+    from pccm_builder.sim_cases import request_sim_section
+
+    document = _mutated(
+        ("request_fingerprint.fixed.seed_1", "expected_exact", "sim_suffix"),
+        "S3:SIMI1:5I1:1I4:1000S5:FIXEDI1:1I1:1I1:1")
+    case = _lookup(document, "request_fingerprint.fixed.seed_1")
+    recomputed = request_sim_section(_sim(), 1000, "FIXED", 1)
+    assert case["expected_exact"]["sim_suffix"] != recomputed
+    assert recomputed == "S3:SIMI1:1I1:5I4:1000S5:FIXEDI1:1I1:1I1:1"
 
 
 if __name__ == "__main__":

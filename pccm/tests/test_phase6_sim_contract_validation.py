@@ -2331,6 +2331,220 @@ def test_129_the_flexible_leaf_really_is_flexible() -> None:
         load_sim_contract(_write(data, tmp))
 
 
+# ===========================================================================
+# Step-10A - the request-fingerprint grammar controls
+#
+# Before this closure the contract locked the SEMANTIC SIM fields and stopped
+# there, so every mutation below produced a DIFFERENT byte stream that the
+# validator accepted. Each one must now be refused.
+# ===========================================================================
+def _request(data: dict[str, Any]) -> dict[str, Any]:
+    return data["request_fingerprint"]["sim_section"]
+
+
+def test_130_a_sim_record_count_other_than_one_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["record_count"] = 5
+    _rejected(mutate, "five SIM records")
+
+
+def test_131_iterations_as_a_double_field_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["field_types"]["iterations"] = "F_N"
+    _rejected(mutate, "iterations encoded as F_N")
+
+
+def test_132_the_seed_mode_as_an_integer_field_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["field_types"]["seed_mode"] = "F_I"
+    _rejected(mutate, "seed_mode encoded as F_I")
+
+
+def test_133_the_supplied_seed_as_a_double_field_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["field_types"]["supplied_seed"] = "F_N"
+    _rejected(mutate, "supplied_seed encoded as F_N")
+
+
+def test_134_the_rng_version_as_a_double_field_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["field_types"]["rng_version"] = "F_N"
+    _rejected(mutate, "rng_version encoded as F_N")
+
+
+def test_135_the_method_version_as_a_double_field_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["field_types"]["sim_method_version"] = "F_N"
+    _rejected(mutate, "sim_method_version encoded as F_N")
+
+
+def test_136_auto_carrying_a_supplied_seed_is_rejected() -> None:
+    def mutate(data):
+        auto = _request(data)["effective_records"]["AUTO"]
+        auto["fields"] = ["iterations", "seed_mode", "supplied_seed",
+                          "rng_version", "sim_method_version"]
+        auto["field_count"] = 5
+    _rejected(mutate, "AUTO carrying a supplied seed")
+
+
+def test_137_an_auto_sentinel_seed_is_rejected() -> None:
+    """The F_I(0) placeholder, spelled into the grammar."""
+    def mutate(data):
+        grammar = _request(data)["grammar"]
+        grammar["auto_record"] = (
+            'F_I(5) F_I(iterations) F_S("AUTO") F_I(0) F_I(rng_version) '
+            'F_I(sim_method_version)'
+        )
+    _rejected(mutate, "an AUTO record with a zero seed sentinel")
+
+
+def test_137a_declaring_the_auto_seed_as_zero_rather_than_absent_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["auto_supplied_seed_representation"] = "zero"
+    _rejected(mutate, "AUTO seed declared as zero")
+
+
+def test_138_fixed_omitting_the_supplied_seed_is_rejected() -> None:
+    def mutate(data):
+        fixed = _request(data)["effective_records"]["FIXED"]
+        fixed["fields"] = ["iterations", "seed_mode", "rng_version", "sim_method_version"]
+        fixed["field_count"] = 4
+    _rejected(mutate, "FIXED without its supplied seed")
+
+
+def test_139_moving_the_fixed_seed_after_the_versions_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["effective_records"]["FIXED"]["fields"] = [
+            "iterations", "seed_mode", "rng_version", "sim_method_version", "supplied_seed"]
+    _rejected(mutate, "the FIXED seed moved after the version fields")
+
+
+def test_140_five_one_field_records_are_rejected() -> None:
+    def mutate(data):
+        section = _request(data)
+        section["record_count"] = 5
+        section["grammar"]["section"] = 'F_S("SIM") F_I(5) sim_record*'
+        section["grammar"]["auto_record"] = 'F_I(1) F_I(iterations)'
+    _rejected(mutate, "the SIM section as five one-field records")
+
+
+def test_141_encoding_the_field_names_is_rejected() -> None:
+    def mutate(data):
+        section = _request(data)
+        section["encoded_field_names"] = True
+        section["grammar"]["auto_record"] = (
+            'F_I(8) F_S("iterations") F_I(iterations) F_S("seed_mode") F_S("AUTO") '
+            'F_S("rng_version") F_I(rng_version) F_S("sim_method_version") '
+            'F_I(sim_method_version)'
+        )
+    _rejected(mutate, "field names encoded into the record")
+
+
+def test_142_the_selected_confidence_level_entering_sim_is_rejected() -> None:
+    def mutate(data):
+        section = _request(data)
+        section["fields"] = list(section["fields"]) + ["selected_confidence_level"]
+    _rejected(mutate, "selected_confidence_level in the SIM record")
+
+
+def test_142a_the_selected_confidence_level_in_the_grammar_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["grammar"]["auto_record"] = (
+            'F_I(5) F_I(iterations) F_S("AUTO") F_S(selected_confidence_level) '
+            'F_I(rng_version) F_I(sim_method_version)'
+        )
+    _rejected(mutate, "selected_confidence_level encoded into the grammar")
+
+
+def test_143_the_effective_seed_entering_sim_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["grammar"]["auto_record"] = (
+            'F_I(5) F_I(iterations) F_S("AUTO") F_I(effective_seed) F_I(rng_version) '
+            'F_I(sim_method_version)'
+        )
+    _rejected(mutate, "effective_seed encoded into the SIM record")
+
+
+def test_144_the_auto_nonce_entering_sim_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["grammar"]["auto_record"] = (
+            'F_I(5) F_I(iterations) F_S("AUTO") F_I(auto_nonce) F_I(rng_version) '
+            'F_I(sim_method_version)'
+        )
+    _rejected(mutate, "auto_nonce encoded into the SIM record")
+
+
+def test_145_the_run_id_entering_sim_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["grammar"]["fixed_record"] = (
+            'F_I(6) F_I(iterations) F_S("FIXED") F_I(supplied_seed) F_I(run_id) '
+            'F_I(rng_version) F_I(sim_method_version)'
+        )
+    _rejected(mutate, "run_id encoded into the SIM record")
+
+
+def test_146_hashing_the_analytical_fingerprint_as_a_field_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["analytical_fingerprint_hashed_as_a_field"] = True
+    _rejected(mutate, "the analytical fingerprint hashed as a field")
+
+
+def test_147_repeating_the_stream_tag_inside_the_extension_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["grammar"]["section"] = (
+            'F_S("PCCM-FP") F_S("SIM") F_I(1) sim_record'
+        )
+    _rejected(mutate, "PCCM-FP repeated inside the SIM extension")
+
+
+def test_147a_repeating_the_stream_version_inside_the_extension_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["grammar"]["section"] = 'F_S("SIM") F_I(FP_VERSION) sim_record'
+    _rejected(mutate, "FP_VERSION repeated inside the SIM extension")
+
+
+def test_147b_declaring_the_extension_to_carry_its_own_tag_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["stream_tag_repeated_in_extension"] = True
+    _rejected(mutate, "the extension declaring its own stream tag")
+
+
+def test_148_moving_the_analytical_prefix_order_is_rejected() -> None:
+    def mutate(data):
+        data["request_fingerprint"]["section_order"] = ["COST", "HEADER", "RISK", "SIM"]
+    _rejected(mutate, "the HEADER/COST/RISK prefix reordered")
+
+
+def test_148a_putting_sim_before_the_analytical_prefix_is_rejected() -> None:
+    def mutate(data):
+        data["request_fingerprint"]["section_order"] = ["SIM", "HEADER", "COST", "RISK"]
+    _rejected(mutate, "SIM placed before the analytical prefix")
+
+
+def test_149_restating_the_seed_domain_in_this_grammar_is_rejected() -> None:
+    def mutate(data):
+        _request(data)["supplied_seed_domain_owner"] = "sim_contract.yaml"
+    _rejected(mutate, "the seed domain claimed by the simulation contract")
+
+
+def test_150_a_changed_golden_request_digest_is_detected() -> None:
+    """A corpus vector cannot drift silently: the literals are pinned in
+    `tests/test_phase6_request_fingerprint.py` and recomputed here."""
+    from pccm_builder import load_calc_contract
+    from pccm_builder.sim_cases import request_fingerprint, request_sim_section
+
+    sim = load_sim_contract(SIM_PATH)
+    calc = load_calc_contract(CALC_PATH)
+    assert request_sim_section(sim, 1000, "AUTO") == "S3:SIMI1:1I1:4I4:1000S4:AUTOI1:1I1:1"
+    assert request_fingerprint(sim, calc, 1000, "AUTO") == "5EAB16E15C2ECE24"
+    assert request_fingerprint(sim, calc, 1000, "FIXED", 1) == "599C95E7274759B9"
+    assert request_fingerprint(sim, calc, 1000, "FIXED", 2147483646) == "0010FB954CC94B53"
+    assert request_fingerprint(sim, calc, 1001, "AUTO") == "4777C8BC35F0FFEF"
+    # And a one-token grammar change moves the answer, which is the whole point.
+    assert request_fingerprint(sim, calc, 1000, "AUTO") != request_fingerprint(
+        sim, calc, 1000, "FIXED", 1)
+
+
 if __name__ == "__main__":
     import pytest
 

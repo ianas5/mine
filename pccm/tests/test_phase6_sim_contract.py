@@ -41,6 +41,10 @@ from pccm_builder import (  # noqa: E402
 from pccm_builder.sim_loader import (  # noqa: E402
     LOCKED_A1_P127,
     LOCKED_A2_P127,
+    LOCKED_REQUEST_EFFECTIVE,
+    LOCKED_REQUEST_FIELD_TYPES,
+    LOCKED_REQUEST_GRAMMAR,
+    LOCKED_REQUEST_RECORD_COUNT,
     LOCKED_RNG_CONSTANTS,
     LOCKED_SIM_STATES,
     MAX_EXCEL_ROWS,
@@ -1109,6 +1113,163 @@ def test_69_the_four_required_uniform_cases() -> None:
     for family in ("triangular", "beta_pert"):
         assert _degenerate_by_contract(family, 7.0, 7.0, 7.0)
         assert not _degenerate_by_contract(family, 0.0, 50.0, 100.0)
+
+
+# ===========================================================================
+# Step-10A - the request-fingerprint grammar closure
+#
+# Step 0 locked the SIM extension's SEMANTIC fields and their order and stopped
+# there. Several byte-distinct streams satisfied that: F_I or F_N for iterations,
+# one record or five, an AUTO seed omitted or blank or zero, versions as integers
+# or as text. `result_digest` had token-level authority from the start; these
+# tests are the request fingerprint being brought to the same standard.
+# ===========================================================================
+def _request_section() -> dict:
+    return _raw()["request_fingerprint"]["sim_section"]
+
+
+def test_70_the_sim_extension_is_exactly_one_record() -> None:
+    section = _request_section()
+    assert section["name"] == "SIM"
+    assert section["record_count"] == LOCKED_REQUEST_RECORD_COUNT == 1
+    # Five one-field records would carry the same semantics as different bytes.
+    assert section["record_count"] != len(section["fields"])
+
+
+def test_71_every_field_has_exactly_one_canonical_encoder() -> None:
+    types = _request_section()["field_types"]
+    assert types == LOCKED_REQUEST_FIELD_TYPES
+    assert types == {
+        "iterations": "F_I",
+        "seed_mode": "F_S",
+        "supplied_seed": "F_I",
+        "rng_version": "F_I",
+        "sim_method_version": "F_I",
+    }
+    # No integer identity is a Double. A count, a seed and a version are
+    # structural facts; F_N would let a version of 1 collide with a Double of 1.
+    assert "F_N" not in set(types.values())
+    assert set(types) == set(_request_section()["fields"])
+
+
+def test_72_the_field_names_are_semantic_position_and_are_never_encoded() -> None:
+    section = _request_section()
+    assert section["encoded_field_names"] is False
+    for production in section["grammar"].values():
+        for name in section["fields"]:
+            assert f'"{name}"' not in production, name
+
+
+def test_73_auto_and_fixed_have_different_record_shapes() -> None:
+    effective = _request_section()["effective_records"]
+    assert list(effective) == ["AUTO", "FIXED"]
+    assert effective["AUTO"]["field_count"] == 4
+    assert effective["FIXED"]["field_count"] == 5
+    assert effective["AUTO"]["fields"] == [
+        "iterations", "seed_mode", "rng_version", "sim_method_version"]
+    assert effective["FIXED"]["fields"] == [
+        "iterations", "seed_mode", "supplied_seed", "rng_version", "sim_method_version"]
+    for shape in effective.values():
+        assert shape["field_count"] == len(shape["fields"])
+    assert effective == {
+        mode: {"field_count": len(fields), "fields": list(fields)}
+        for mode, fields in LOCKED_REQUEST_EFFECTIVE.items()
+    }
+
+
+def test_74_an_auto_supplied_seed_is_absent_and_not_a_sentinel() -> None:
+    section = _request_section()
+    assert "supplied_seed" not in section["effective_records"]["AUTO"]["fields"]
+    assert section["auto_supplied_seed_representation"] == "absent"
+    assert section["supplied_seed_present_only_when"] == "FIXED"
+    # Not zero, not blank, not null, not the previous effective seed.
+    assert "supplied_seed" not in _request_section()["grammar"]["auto_record"]
+    assert "I1:0" not in _request_section()["grammar"]["auto_record"]
+    assert _raw()["request_fingerprint"]["auto_blank_seed_remains_recomputable"] is True
+
+
+def test_75_the_grammar_is_locked_token_by_token() -> None:
+    grammar = _request_section()["grammar"]
+    assert grammar == LOCKED_REQUEST_GRAMMAR
+    assert grammar["section"] == 'F_S("SIM") F_I(1) sim_record'
+    assert grammar["auto_record"] == (
+        'F_I(4) F_I(iterations) F_S("AUTO") F_I(rng_version) F_I(sim_method_version)')
+    assert grammar["fixed_record"] == (
+        'F_I(5) F_I(iterations) F_S("FIXED") F_I(supplied_seed) F_I(rng_version) '
+        'F_I(sim_method_version)')
+    # The same standard the result digest has always carried.
+    assert set(_raw()["result_digest"]["grammar"]) == {"stream", "section", "record"}
+
+
+def test_76_the_extension_carries_no_stream_tag_and_no_stream_version() -> None:
+    section = _request_section()
+    assert section["stream_tag_repeated_in_extension"] is False
+    assert section["stream_version_repeated_in_extension"] is False
+    assert section["stream_tag_owner"] == "calc_contract.yaml"
+    for production in section["grammar"].values():
+        for banned in ("PCCM-FP", "FP_VERSION", "SIM_FP_VERSION", "REQUEST_FP_VERSION"):
+            assert banned not in production, banned
+    # No invented stream version exists anywhere in the LOADED contract, at any
+    # depth - keys or values. The document is allowed to say in prose that it
+    # refuses to carry one; a YAML comment is not a key.
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                yield str(key)
+                yield from walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                yield from walk(item)
+        elif isinstance(node, str):
+            yield node
+
+    tokens = list(walk(_raw()))
+    for invented in ("SIM_FP_VERSION", "REQUEST_FP_VERSION", "sim_fp_version",
+                     "request_fp_version"):
+        assert not any(invented in token for token in tokens), invented
+    assert not any("PCCM-FP" in token for token in walk(_request_section()))
+    # rng_version and sim_method_version are FIELDS INSIDE the record and own the
+    # simulation-method compatibility axes.
+    assert "rng_version" in section["effective_records"]["AUTO"]["fields"]
+    assert "sim_method_version" in section["effective_records"]["AUTO"]["fields"]
+
+
+def test_77_the_seed_domain_is_not_restated_by_this_grammar() -> None:
+    section = _request_section()
+    assert section["supplied_seed_domain_owner"] == "input_contract.yaml"
+    for key in ("seed_min", "seed_max", "minimum", "maximum", "range"):
+        assert key not in section, key
+    # TYPE and PRESENCE here; admissibility there.
+    assert section["field_types"]["supplied_seed"] == "F_I"
+    inputs = load_contract(CONTRACT_PATH)
+    from pccm_builder.sim_rng import _seed_domain
+
+    assert _seed_domain(inputs) == (1, 2147483646)
+
+
+def test_78_the_excluded_fields_are_still_excluded_and_never_encoded() -> None:
+    section = _request_section()
+    excluded = ["effective_seed", "auto_nonce", "run_id", "selected_confidence_level"]
+    assert list(section["excluded_fields"]) == excluded
+    for name in excluded:
+        assert name not in section["fields"], name
+        for shape in section["effective_records"].values():
+            assert name not in shape["fields"], name
+        for production in section["grammar"].values():
+            assert name not in production, name
+    assert section["analytical_fingerprint_hashed_as_a_field"] is False
+    for absent in ("result_digest", "timestamp", "model_version", "contingency"):
+        for production in section["grammar"].values():
+            assert absent not in production, absent
+
+
+def test_79_the_analytical_sections_remain_an_untouched_prefix() -> None:
+    block = _raw()["request_fingerprint"]
+    assert block["section_order"] == ["HEADER", "COST", "RISK", "SIM"]
+    assert block["analytical_prefix"] == ["HEADER", "COST", "RISK"]
+    assert block["section_order"][:3] == block["analytical_prefix"]
+    assert block["extension_semantics"] == "prefix_plus_extension"
+    assert block["existing_sections_modified"] is False
 
 
 if __name__ == "__main__":

@@ -591,15 +591,78 @@ request_fingerprint:
   extension_semantics: "prefix_plus_extension"
   existing_sections_modified: false
 
+  # The SIM extension is ONE record. Its semantic field order was locked from
+  # Step 0; what was NOT locked - and is locked here - is the canonical record
+  # grammar: how many records, which encoder each field uses, and the two
+  # different effective shapes AUTO and FIXED produce. Without this, several
+  # byte-distinct streams satisfied the contract and a later implementation
+  # would have chosen one by accident. `result_digest` already had token-level
+  # authority; this brings the request fingerprint to the same standard.
   sim_section:
     name: "SIM"
+    record_count: 1
+
+    # SEMANTIC POSITION ONLY, exactly as the Phase-5 HEADER record works. These
+    # names are never encoded into the stream.
     fields:
       - "iterations"
       - "seed_mode"
       - "supplied_seed"
       - "rng_version"
       - "sim_method_version"
+    encoded_field_names: false
+
+    # One canonical encoder per field. F_I for every integer identity: a count,
+    # a seed and a version are structural facts, not model magnitudes, and F_N
+    # would make a version of 1 collide with a Double of 1.
+    field_types:
+      iterations: "F_I"
+      seed_mode: "F_S"
+      supplied_seed: "F_I"
+      rng_version: "F_I"
+      sim_method_version: "F_I"
+
+    # The two shapes, and the field COUNT each one hashes. AUTO is four fields
+    # because the supplied seed DOES NOT EXIST there - not zero, not blank, not
+    # null and not the previous effective seed.
+    effective_records:
+      AUTO:
+        field_count: 4
+        fields:
+          - "iterations"
+          - "seed_mode"
+          - "rng_version"
+          - "sim_method_version"
+      FIXED:
+        field_count: 5
+        fields:
+          - "iterations"
+          - "seed_mode"
+          - "supplied_seed"
+          - "rng_version"
+          - "sim_method_version"
+
+    grammar:
+      section: 'F_S("SIM") F_I(1) sim_record'
+      auto_record: 'F_I(4) F_I(iterations) F_S("AUTO") F_I(rng_version) F_I(sim_method_version)'
+      fixed_record: 'F_I(5) F_I(iterations) F_S("FIXED") F_I(supplied_seed) F_I(rng_version) F_I(sim_method_version)'
+
     supplied_seed_present_only_when: "FIXED"
+    auto_supplied_seed_representation: "absent"
+
+    # The extension carries NO stream tag and NO stream version of its own. It is
+    # a section of the accepted PCCM-FP stream, whose tag and FP_VERSION are
+    # owned by the Phase-5 fingerprint authority. RNG_VERSION and
+    # SIM_METHOD_VERSION are fields INSIDE this record and own the
+    # simulation-method compatibility axes; there is no SIM_FP_VERSION.
+    stream_tag_repeated_in_extension: false
+    stream_version_repeated_in_extension: false
+    stream_tag_owner: "calc_contract.yaml"
+
+    # The seed DOMAIN stays with input_contract.yaml. This grammar owns TYPE and
+    # PRESENCE, never admissibility.
+    supplied_seed_domain_owner: "input_contract.yaml"
+
     excluded_fields:
       - "effective_seed"
       - "auto_nonce"

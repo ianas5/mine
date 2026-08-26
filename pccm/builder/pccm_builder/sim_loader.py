@@ -203,6 +203,51 @@ LOCKED_SIM_FIELDS = (
 )
 LOCKED_SIM_EXCLUDED = ("effective_seed", "auto_nonce", "run_id", "selected_confidence_level")
 
+LOCKED_REQUEST_RECORD_COUNT = 1
+"""ONE SIM record. Five one-field records would encode the same semantics into
+different bytes, and both would have satisfied the pre-closure contract."""
+
+LOCKED_REQUEST_FIELD_TYPES = {
+    "iterations": "F_I",
+    "seed_mode": "F_S",
+    "supplied_seed": "F_I",
+    "rng_version": "F_I",
+    "sim_method_version": "F_I",
+}
+"""One canonical encoder per field. F_I for every integer identity: a count, a
+seed and a version are STRUCTURAL facts, and F_N would let a version of 1 encode
+identically to a Double of 1."""
+
+LOCKED_REQUEST_AUTO_FIELDS = ("iterations", "seed_mode", "rng_version", "sim_method_version")
+LOCKED_REQUEST_FIXED_FIELDS = (
+    "iterations", "seed_mode", "supplied_seed", "rng_version", "sim_method_version"
+)
+LOCKED_REQUEST_EFFECTIVE = {
+    "AUTO": LOCKED_REQUEST_AUTO_FIELDS,
+    "FIXED": LOCKED_REQUEST_FIXED_FIELDS,
+}
+"""AUTO is FOUR fields because the supplied seed does not exist there. Zero,
+blank, null and the previous effective seed are all different streams, and each
+would break the recomputability an AUTO request depends on."""
+
+LOCKED_REQUEST_GRAMMAR = {
+    "section": 'F_S("SIM") F_I(1) sim_record',
+    "auto_record": (
+        'F_I(4) F_I(iterations) F_S("AUTO") F_I(rng_version) F_I(sim_method_version)'
+    ),
+    "fixed_record": (
+        'F_I(5) F_I(iterations) F_S("FIXED") F_I(supplied_seed) F_I(rng_version) '
+        'F_I(sim_method_version)'
+    ),
+}
+"""The stream, token by token - the same standard `result_digest` has carried
+since Step 0. A grammar the validator does not check is a grammar the
+implementation gets to choose."""
+
+LOCKED_REQUEST_SEED_ABSENT = "absent"
+LOCKED_REQUEST_SEED_DOMAIN_OWNER = "input_contract.yaml"
+LOCKED_REQUEST_STREAM_TAG_OWNER = "calc_contract.yaml"
+
 LOCKED_SIM_STATES = ("CURRENT", "STALE", "INVALID")
 LOCKED_ATTEMPT_RESULTS = ("NONE", "SUCCESS", "REFUSED", "FAILED")
 LOCKED_SEED_MODES = ("AUTO", "FIXED")
@@ -632,8 +677,24 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'existing_sections_modified', 'extension_semantics', 'section_order', 'sim_section'
     }),
     'request_fingerprint.sim_section': frozenset({
-        'analytical_fingerprint_hashed_as_a_field', 'excluded_fields', 'fields', 'name',
-        'supplied_seed_present_only_when'
+        'analytical_fingerprint_hashed_as_a_field', 'auto_supplied_seed_representation',
+        'effective_records', 'encoded_field_names', 'excluded_fields', 'field_types', 'fields',
+        'grammar', 'name', 'record_count', 'stream_tag_owner',
+        'stream_tag_repeated_in_extension', 'stream_version_repeated_in_extension',
+        'supplied_seed_domain_owner', 'supplied_seed_present_only_when'
+    }),
+    'request_fingerprint.sim_section.effective_records': frozenset({'AUTO', 'FIXED'}),
+    'request_fingerprint.sim_section.effective_records.AUTO': frozenset({
+        'field_count', 'fields'
+    }),
+    'request_fingerprint.sim_section.effective_records.FIXED': frozenset({
+        'field_count', 'fields'
+    }),
+    'request_fingerprint.sim_section.field_types': frozenset({
+        'iterations', 'rng_version', 'seed_mode', 'sim_method_version', 'supplied_seed'
+    }),
+    'request_fingerprint.sim_section.grammar': frozenset({
+        'auto_record', 'fixed_record', 'section'
     }),
     'result_digest': frozenset({
         'equality', 'field_types', 'grammar', 'iteration_index_origin', 'order_source',
@@ -1609,7 +1670,92 @@ def _validate_request_fingerprint(raw: dict, path: Path) -> None:
             f"{where}: sim_section.fields includes excluded field(s) {sorted(overlap)}"
         )
     _require_false(sim, "analytical_fingerprint_hashed_as_a_field", f"{where}: sim_section")
+    _validate_request_sim_grammar(sim, f"{where}: sim_section")
     _require_true(block, "auto_blank_seed_remains_recomputable", where)
+
+
+def _validate_request_sim_grammar(sim: dict, where: str) -> None:
+    """The SIM extension token by token.
+
+    Before this closure the contract locked the SEMANTIC fields and their order
+    and stopped there, so several byte-distinct streams satisfied it: F_I versus
+    F_N for iterations, one record versus five, an AUTO seed omitted versus
+    blank versus zero, versions as integers versus text. A later implementation
+    would have picked one by accident and that accident would have become the
+    identity of every stored request fingerprint.
+    """
+    _require_value(sim, "record_count", LOCKED_REQUEST_RECORD_COUNT, where)
+    _require_false(sim, "encoded_field_names", where)
+
+    types = _map(sim, "field_types", where)
+    if dict(types) != LOCKED_REQUEST_FIELD_TYPES:
+        raise SimContractError(
+            f"{where}: field_types must be exactly {LOCKED_REQUEST_FIELD_TYPES}, got "
+            f"{dict(types)}. Every integer identity here is F_I: a count, a seed and a "
+            "version are structural facts, and F_N would let a version of 1 encode "
+            "identically to a Double of 1."
+        )
+    if set(types) != set(LOCKED_SIM_FIELDS):
+        raise SimContractError(
+            f"{where}: field_types must type exactly the declared fields"
+        )
+
+    effective = _map(sim, "effective_records", where)
+    if tuple(effective) != tuple(LOCKED_SEED_MODES):
+        raise SimContractError(
+            f"{where}: effective_records must describe exactly {list(LOCKED_SEED_MODES)}, "
+            f"in that order, got {list(effective)}"
+        )
+    for mode, expected in LOCKED_REQUEST_EFFECTIVE.items():
+        shape = _map(effective, mode, f"{where}: effective_records")
+        ewhere = f"{where}: effective_records.{mode}"
+        _exact_sequence(shape.get("fields"), expected, f"{ewhere}: fields")
+        _require_value(shape, "field_count", len(expected), ewhere)
+        unknown = [name for name in expected if name not in LOCKED_REQUEST_FIELD_TYPES]
+        if unknown:  # pragma: no cover - _exact_sequence already pins the list
+            raise SimContractError(f"{ewhere}: untyped field(s) {unknown}")
+    auto_fields = tuple(effective["AUTO"].get("fields") or ())
+    if "supplied_seed" in auto_fields:
+        raise SimContractError(
+            f"{where}: effective_records.AUTO carries supplied_seed. AUTO means the field "
+            "DOES NOT EXIST - not F_I(0), not F_S(\"\"), not null and not the previous "
+            "effective seed. That absence is why two AUTO runs of the same question share "
+            "one request fingerprint and stay CURRENT."
+        )
+    if "supplied_seed" not in tuple(effective["FIXED"].get("fields") or ()):
+        raise SimContractError(
+            f"{where}: effective_records.FIXED omits supplied_seed, which is the only thing "
+            "distinguishing one FIXED request from another"
+        )
+
+    grammar = _map(sim, "grammar", where)
+    if dict(grammar) != LOCKED_REQUEST_GRAMMAR:
+        raise SimContractError(
+            f"{where}: grammar must be exactly {LOCKED_REQUEST_GRAMMAR}. The request "
+            "fingerprint is now locked token by token, to the same standard result_digest "
+            "has always carried."
+        )
+    for production in grammar.values():
+        for banned in ("PCCM-FP", "FP_VERSION", "SIM_FP_VERSION", "REQUEST_FP_VERSION"):
+            if banned in str(production):
+                raise SimContractError(
+                    f"{where}: the grammar repeats {banned!r} inside the SIM extension. The "
+                    "extension is a SECTION of the accepted PCCM-FP stream; it carries no "
+                    "stream tag and no stream version of its own."
+                )
+        for excluded in LOCKED_SIM_EXCLUDED:
+            if excluded in str(production):
+                raise SimContractError(
+                    f"{where}: the grammar encodes the excluded field {excluded!r}"
+                )
+
+    _require_value(sim, "auto_supplied_seed_representation", LOCKED_REQUEST_SEED_ABSENT, where)
+    _require_false(sim, "stream_tag_repeated_in_extension", where)
+    _require_false(sim, "stream_version_repeated_in_extension", where)
+    _require_value(sim, "stream_tag_owner", LOCKED_REQUEST_STREAM_TAG_OWNER, where)
+    _require_value(
+        sim, "supplied_seed_domain_owner", LOCKED_REQUEST_SEED_DOMAIN_OWNER, where
+    )
 
 
 def _validate_result_digest(raw: dict, path: Path) -> None:

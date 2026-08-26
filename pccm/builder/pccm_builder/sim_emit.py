@@ -339,6 +339,32 @@ def render_sim_contract_module(
     module.const("SIM_RISK_PV_RULE", str(raw["contribution"]["risk"]["pv_when_occurred"]))
     module.raw()
 
+    # --- request fingerprint ------------------------------------------------
+    # The SIM extension's FRAMING only. The stream tag, FP_VERSION and the hash
+    # mathematics belong to modCalcContract and are deliberately not repeated
+    # here: the extension is a section of the accepted PCCM-FP stream, not a
+    # stream of its own.
+    request = raw["request_fingerprint"]["sim_section"]
+    module.section("Request fingerprint: the SIM extension framing")
+    module.const("SIM_REQUEST_SECTION", str(request["name"]))
+    module.const("SIM_REQUEST_RECORD_COUNT", int(request["record_count"]))
+    for mode, shape in request["effective_records"].items():
+        module.const(
+            f"SIM_REQUEST_FIELD_COUNT_{_identifier(mode)}", int(shape["field_count"])
+        )
+    for mode, shape in request["effective_records"].items():
+        for ordinal, field in enumerate(shape["fields"], start=1):
+            module.const(f"SIM_REQUEST_{_identifier(mode)}_FIELD_{ordinal}", str(field))
+    for field in request["fields"]:
+        module.const(
+            f"SIM_REQUEST_TYPE_{_identifier(field)}", str(request["field_types"][field])
+        )
+    module.const(
+        "SIM_REQUEST_AUTO_SEED", str(request["auto_supplied_seed_representation"]),
+        "AUTO has no supplied seed field at all - not zero, not blank",
+    )
+    module.raw()
+
     # --- result digest ------------------------------------------------------
     digest = raw["result_digest"]
     module.section("Result digest framing (the hash mathematics is modCalcContract's)")

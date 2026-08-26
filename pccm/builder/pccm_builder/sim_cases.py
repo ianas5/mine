@@ -43,8 +43,16 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .calc_cases import to_model, tolerances_from
-from .calc_fingerprint import canonical_number
+from .calc_cases import reference_stream, to_model, tolerances_from
+from .calc_fingerprint import (
+    canonical_number,
+    encode_section,
+    fingerprint,
+    integer_field,
+    number_field,
+    text_field,
+    utf16_length,
+)
 from .calc_loader import CalcContract
 from .calc_numeric import CalculationRefusal
 from .contract_loader import ContractError, InputContract
@@ -1294,6 +1302,187 @@ def _digest_cases(sim: SimContract) -> list[dict[str, Any]]:
 
 
 # ===========================================================================
+# I - the request fingerprint
+#
+# The analytical prefix is the ACCEPTED Phase-5 case-26 reference stream, taken
+# from `calc_cases.reference_stream` unchanged: its HEADER/COST/RISK bytes are
+# not regenerated, re-encoded or hashed as a field here. The SIM extension is
+# appended to it, and the whole thing is handed to the accepted
+# `calc_fingerprint` hash. THERE IS NO SECOND HASH IMPLEMENTATION.
+# ===========================================================================
+_REQUEST_ENCODERS = {"F_I": integer_field, "F_S": text_field, "F_N": number_field}
+"""Contract field-type name to the accepted Phase-5 encoder. Nothing here decides
+which encoder a field uses - `sim_contract.yaml` does, and this maps its answer
+onto the primitive that implements it."""
+
+
+def request_sim_section(
+    sim: SimContract, iterations: int, seed_mode: str, supplied_seed: int | None = None
+) -> str:
+    """The SIM extension, built from the contract's own locked grammar.
+
+    Every shape decision - the record count, which fields the mode carries, the
+    order they carry them in and the encoder each one uses - is READ from
+    `sim_contract.yaml`. This function chooses none of them, so a contract change
+    moves the bytes and a test pinning the literals notices.
+    """
+    block = sim.raw["request_fingerprint"]["sim_section"]
+    shape = block["effective_records"].get(seed_mode)
+    if shape is None:
+        raise SimOracleError(f"unknown seed mode {seed_mode!r}")
+
+    supply = {
+        "iterations": iterations,
+        "seed_mode": seed_mode,
+        "supplied_seed": supplied_seed,
+        "rng_version": sim.rng_version,
+        "sim_method_version": sim.sim_method_version,
+    }
+    fields = []
+    for name in shape["fields"]:
+        value = supply[name]
+        if value is None:
+            raise SimOracleError(
+                f"the {seed_mode} record needs {name}, and none was supplied"
+            )
+        fields.append(_REQUEST_ENCODERS[block["field_types"][name]](value))
+    if len(fields) != int(shape["field_count"]):  # pragma: no cover - read from one source
+        raise SimOracleError(f"the {seed_mode} record is not its declared length")
+    if supplied_seed is not None and "supplied_seed" not in shape["fields"]:
+        raise SimOracleError(
+            f"{seed_mode} carries no supplied seed; passing one would silently drop it"
+        )
+
+    records = [tuple(fields)] * int(block["record_count"])
+    return encode_section(str(block["name"]), records)
+
+
+def request_fingerprint_stream(
+    sim: SimContract, calc: CalcContract, iterations: int, seed_mode: str,
+    supplied_seed: int | None = None,
+) -> str:
+    """`accepted analytical prefix` + `SIM extension`, byte for byte."""
+    return reference_stream(calc.fingerprint_version) + request_sim_section(
+        sim, iterations, seed_mode, supplied_seed
+    )
+
+
+def request_fingerprint(
+    sim: SimContract, calc: CalcContract, iterations: int, seed_mode: str,
+    supplied_seed: int | None = None,
+) -> str:
+    """The 16-character request fingerprint. Equality exact."""
+    return fingerprint(
+        request_fingerprint_stream(sim, calc, iterations, seed_mode, supplied_seed)
+    )
+
+
+_REQUEST_ITERATIONS = 1000
+_REQUEST_ITERATIONS_ALT = 1001
+
+
+def _request_case(
+    sim: SimContract, calc: CalcContract, identifier: str, title: str,
+    iterations: int, seed_mode: str, supplied_seed: int | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    suffix = request_sim_section(sim, iterations, seed_mode, supplied_seed)
+    prefix = reference_stream(calc.fingerprint_version)
+    inputs: dict[str, Any] = {
+        "analytical_prefix_digest": fingerprint(prefix),
+        "iterations": iterations,
+        "seed_mode": seed_mode,
+    }
+    if supplied_seed is not None:
+        inputs["supplied_seed"] = supplied_seed
+    return _case(
+        identifier,
+        "I_request_fingerprint",
+        title,
+        EXACT,
+        inputs,
+        expected_exact={
+            "sim_suffix": suffix,
+            "sim_suffix_code_units": utf16_length(suffix),
+            "request_fingerprint": fingerprint(prefix + suffix),
+        },
+        note=note,
+    )
+
+
+def _request_fingerprint_cases(
+    sim: SimContract, inputs: InputContract, calc: CalcContract,
+    reference: RngReference,
+) -> list[dict[str, Any]]:
+    block = sim.raw["request_fingerprint"]
+    section = block["sim_section"]
+    cases = [_case(
+        "request_fingerprint.grammar",
+        "I_request_fingerprint",
+        "The locked SIM-extension grammar",
+        EXACT,
+        {"owner": "sim_contract.yaml", "section": "request_fingerprint.sim_section"},
+        expected_exact={
+            "section_order": list(block["section_order"]),
+            "analytical_prefix": list(block["analytical_prefix"]),
+            "section_name": section["name"],
+            "record_count": int(section["record_count"]),
+            "fields": list(section["fields"]),
+            # Parallel to `fields`, exactly as the result-digest case pairs its
+            # `record_fields` with its `field_types`.
+            "field_types": [section["field_types"][name] for name in section["fields"]],
+            "encoded_field_names": bool(section["encoded_field_names"]),
+            "auto_field_count": int(section["effective_records"]["AUTO"]["field_count"]),
+            "auto_fields": list(section["effective_records"]["AUTO"]["fields"]),
+            "fixed_field_count": int(section["effective_records"]["FIXED"]["field_count"]),
+            "fixed_fields": list(section["effective_records"]["FIXED"]["fields"]),
+            "auto_supplied_seed_representation": section["auto_supplied_seed_representation"],
+            "excluded_fields": list(section["excluded_fields"]),
+            "stream_tag_repeated_in_extension": bool(
+                section["stream_tag_repeated_in_extension"]),
+            "analytical_fingerprint_hashed_as_a_field": bool(
+                section["analytical_fingerprint_hashed_as_a_field"]),
+            "grammar": dict(section["grammar"]),
+        },
+        note=(
+            "The SIM extension carries no stream tag and no stream version of "
+            "its own: it is a section of the accepted PCCM-FP stream."
+        ),
+    )]
+    cases.append(_request_case(
+        sim, calc, "request_fingerprint.auto.1000",
+        "AUTO at the business minimum", _REQUEST_ITERATIONS, "AUTO",
+        note=("AUTO carries FOUR fields. The supplied seed does not exist here, "
+              "which is why two AUTO runs of the same question share one request "
+              "fingerprint and stay CURRENT while C21 is blank."),
+    ))
+    cases.append(_request_case(
+        sim, calc, "request_fingerprint.fixed.seed_1",
+        "FIXED at the lowest accepted seed", _REQUEST_ITERATIONS, "FIXED", 1,
+    ))
+    cases.append(_request_case(
+        sim, calc, "request_fingerprint.fixed.seed_max",
+        "FIXED at the highest accepted seed", _REQUEST_ITERATIONS, "FIXED",
+        reference.seed_max,
+        note=("The seed bound is the input contract's, read not restated; this "
+              "grammar owns type and presence, never admissibility."),
+    ))
+    cases.append(_request_case(
+        sim, calc, "request_fingerprint.auto.1001",
+        "One more iteration is a different request", _REQUEST_ITERATIONS_ALT, "AUTO",
+        note="Proves the iteration count participates in the stream.",
+    ))
+
+    distinct = {
+        case["expected_exact"]["request_fingerprint"]
+        for case in cases if "request_fingerprint" in case.get("expected_exact", {})
+    }
+    if len(distinct) != 4:  # pragma: no cover - a collision would be a defect
+        raise SimOracleError("the request-fingerprint vectors are not pairwise distinct")
+    return cases
+
+
+# ===========================================================================
 # F - statistics
 # ===========================================================================
 _HAND_SAMPLE = (2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0)
@@ -1781,7 +1970,8 @@ INTEGER_KEYS = frozenset({
     "record_field_count", "iteration_index_origin", "header_row",
     "first_iteration_row", "reserved_rows", "max_iterations_representable",
     "run_id_initial", "run_id_first_successful", "run_id_maximum",
-    "auto_nonce_initial",
+    "auto_nonce_initial", "record_count", "supplied_seed", "auto_field_count",
+    "fixed_field_count", "sim_suffix_code_units",
 })
 
 NUMBER_KEYS = frozenset({
@@ -1955,6 +2145,8 @@ def build_sim_cases(
         ("G_contingency", "Contingency, a reporting lookup",
          _contingency_cases(engine, sim, inputs)),
         ("H_domain", "The numerical domain end to end", _domain_cases(engine)),
+        ("I_request_fingerprint", "The request fingerprint and its SIM extension",
+         _request_fingerprint_cases(sim, inputs, calc, reference)),
         ("R_runtime", "Behaviours that need machinery Step 5 does not build",
          _runtime_only_cases(sim)),
     )
