@@ -848,3 +848,133 @@ enforcement authority, P5-EV module-aware.
 **GATE-B TEMP-DIR CLEANUP DEBT — OPEN.** This round fixed an inventory
 assertion. It did not touch the temp-directory lifecycle, and the debt must still
 close before Gate-B harness extension or Windows execution.
+
+---
+
+## 13. Pre-Step-8 dependency correction — the empty component model
+
+> This section was appended after Step 6 was accepted. It corrects an
+> **inherited Step-6 defect** in `SimRngBuildComponentStreams` found while the
+> Step-7 dependency boundary was being checked. No other Step-6 semantic moved:
+> state validation, FIXED seeding, the AUTO modular power, the recurrence, the
+> constructed `SimRngNorm`, the safe modular multiply, the jump, stream *k*,
+> Permanent-ID ordering, duplicate refusal, Risk interleaving and the D6-11
+> scope are all exactly as accepted, and every Step-6 vector is unchanged.
+
+### 13.1 The defect: an invented business prerequisite
+
+The module contained:
+
+```vba
+total = costCount + 2 * riskCount
+If total = 0 Then
+    detail = "components: the model declares no driver"
+    Exit Function
+End If
+```
+
+**No accepted contract requires a Cost Line or a Risk to exist.** The accepted
+Phase-5 source tests pin that an empty driver set is *not* refused once the
+model-level prerequisites resolve, and Phase 6 introduced no minimum of its own.
+The accepted Python reference agrees: `components_for((), ())` is the empty
+tuple, and `component_stream_states` validates the base state, produces nothing
+and jumps nowhere.
+
+So the refusal was a business rule the module invented, and it put the VBA at
+odds with the accepted Python reference **before Step 8 had begun**.
+
+### 13.2 The corrected semantics
+
+For `costCount = 0` and `riskCount = 0`:
+
+| | |
+|---|---|
+| negative counts | still refused, exactly as before |
+| the base RNG state | **still validated** — an empty component set is not permission to accept a state the recurrence cannot legally be in |
+| `costIds()` / `riskIds()` | **never touched**. No `LBound` is read, no ordering runs, no identity is inspected |
+| components constructed | none |
+| stream jumps | zero |
+| the caller's base state | unchanged |
+| the result | **True** |
+
+The refusal was **removed, not renumbered**: there is no `total >= 1`, no "at
+least one Cost Line", no "at least one Risk", and no minimum of any other
+spelling.
+
+### 13.3 The carrier convention, and why there is no dummy component
+
+VBA has no zero-length dynamic array. The module follows the **accepted Phase-5
+zero-count carrier convention** — the one `CalcFpSortedRecords` uses and
+`SimRngOrderIds` already used inside this very module:
+
+> the output is sized to one slot, and **the logical count** —
+> `costCount + 2 * riskCount`, which the caller supplied — decides whether any
+> element may be inspected. At zero, no element is semantically present.
+
+The slot is left at its `Type` defaults and **nothing is written into it**. It
+is not a component and cannot be mistaken for one: its `PermanentId` is the
+empty string, which is exactly what `SimRngOrderIds` refuses. No stream index is
+assigned to it — `StreamIndex` is zero because that is the `Long` default, not
+because anything set it.
+
+It is *assigned* rather than left alone so that a caller cannot retain an
+earlier, longer result and read it back as this answer. The public API is
+otherwise unchanged; no out-parameter was added for this correction.
+
+### 13.4 Tests
+
+`test_phase6_sim_rng_vba.py` grew from 47 to 51:
+
+| Test | Proves |
+|---|---|
+| `test_29` | *renamed*: blank Cost Line id, blank Risk id and a negative count are still refused |
+| `test_29a` | zero drivers succeeds — zero jumps, base state untouched, and the carrier slot holds no component |
+| `test_29b` | the same empty model with an **invalid** base state is refused, and the source validates the state before taking the empty path |
+| `test_29c` | the empty path reads no bound from either driver array and no minimum-driver spelling survives in the body |
+| `test_29d` | the VBA transcription and `sim_rng.py` agree directly: empty component tuple, no stream state, base state returned as supplied, and both refuse the same inadmissible state |
+
+`test_43` now compares the **last** commit against its guard, because the
+procedure legitimately commits the carrier on two paths — the zero-component one
+and the ladder — and asserts separately that the zero-component commit is
+governed by the state check.
+
+`test_phase6_sim_rng_vba_validation.py` grew from 27 to 32, with five controls
+**scoped to `SimRngBuildComponentStreams`** so a comparison against zero
+elsewhere in the module stays legal:
+
+| # | Mutation | Named detector |
+|---|---|---|
+| 25 | the zero-component refusal reintroduced | `test_29a` |
+| 26 | a minimum invented in four other spellings | `test_29a` |
+| 27 | the empty path skips base-state validation | `test_29b` |
+| 27a | the empty path orders the driver arrays anyway | `test_29c` |
+| 27b | the empty path advances the base state | `test_29a` |
+
+### 13.5 Verification of this correction
+
+```
+2530 passed, 0 failed          (389.17s)
+2530 collected
+Stage A: 351 passed, 0 failed
+```
+
+| Artefact | SHA-256 | |
+|---|---|---|
+| `src/vba/modSimRng.bas` | `3d7c2cb365df03ccf73722f39b0c10e8964381e7cdd243732381dac7638257e3` | changed by this correction; the hashes recorded in §10.3 and §11 remain the record of commit `2ec1844`, where they were accurate |
+| `src/vba/modSimSample.bas` | `5553198289bd98a7c84025868ac03c9f8ec95da3c01b23249c0da57d77901877` | **byte-identical** — no Step-7 semantic reopened |
+| `build/vba/modSimContract.bas` | `c7e7a78406345f98a3c2d0b90d63759b765a321aee99483fadd0f411f10c61be` | unchanged |
+| `build/phase6_cases.json` | `5551606f7a0add5f980601b0a2cdd246130bd1e78678fd439bd5276cd36ec32c` | unchanged |
+| `build/stage_b_manifest.json` | `d1571ce16ffb815da77b4e18c66579338e11a1da16de2040c8cde1f420c32909` | unchanged — neither the module registry nor the D6-11 rules moved |
+
+`spec/`, `evidence/`, `builder/` and `bootstrap/` are identical to `f2f654e`.
+The module is now 606 lines and still 15 procedures, 7 public: the correction
+changed one branch inside one procedure and added no procedure and no
+parameter.
+
+**Every prior Step-6 RNG vector is unchanged** — the 51 conformance tests
+include the FIXED seed, AUTO nonce, first-5, first-20, state-after-20, jump
+streams 0/1/7/399/401 and 400-component assignment checks, and all pass
+unmodified.
+
+**GATE-B TEMP-DIR CLEANUP DEBT — OPEN**, untouched, as are the two stale `"15"`
+display strings.

@@ -656,3 +656,32 @@ identical to `a73aefe`, so `structure_contract.yaml`, the manifest authority,
 `modSimContract.bas` and `phase6_cases.json` are unchanged. The shared test
 transcriber required **no** change: the new private validator compiles under the
 Step-7 engine exactly as written.
+
+---
+
+## 10. Formal acceptance was held for a Step-6 dependency correction
+
+Independent review of the hardened package `f2f654e` found **no new defect in
+`modSimSample`** and accepted the prepared-shape hardening technically. It then
+found an **inherited Step-6 defect** at the dependency boundary Step 8 needs:
+`SimRngBuildComponentStreams` refused a model with zero Cost Lines and zero
+Risks, which is an invented business prerequisite that no accepted contract
+carries and which the accepted Python reference does not share.
+
+Formal Step-7 acceptance was therefore held only for that correction. It is
+recorded in **`docs/phase6_step6.md` §13** and touches `src/vba/modSimRng.bas`
+and its Step-6 tests alone; `modSimRng.bas` moves from `a258b0d6…` to
+`3d7c2cb365df03ccf73722f39b0c10e8964381e7cdd243732381dac7638257e3`, and
+`modSimContract.bas`, `phase6_cases.json` and `stage_b_manifest.json` are all
+unchanged.
+
+**No Step-7 stochastic rule was reopened.** `src/vba/modSimSample.bas` is
+byte-identical at
+`5553198289bd98a7c84025868ac03c9f8ec95da3c01b23249c0da57d77901877`; the sampler
+semantics, the Cheng formulation, `SimSampleValidatePreparedBetaShape` and every
+Step-7 test semantic are unchanged.
+
+The Step-7 boundary of §9.4 stands unchanged, including the requirement carried
+to Step 8: it must prove statically that its stored prepared Beta shapes
+originate from `SimSamplePrepareBetaPert` and are not field-mutated before
+sampling.

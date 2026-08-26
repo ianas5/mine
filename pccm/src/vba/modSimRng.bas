@@ -474,11 +474,52 @@ Public Function SimRngBuildComponentStreams(ByRef costIds() As String, ByVal cos
         Exit Function
     End If
     total = costCount + 2 * riskCount
+
+    ' Validated before any path can return, the EMPTY one included. An empty
+    ' component set is not permission to accept a state the recurrence cannot
+    ' legally be in.
+    If Not SimRngValidateState(baseState, detail) Then Exit Function
+
+    ' ==================================================================
+    ' ZERO DRIVERS IS A LEGAL MODEL.
+    '
+    ' No accepted contract requires a Cost Line or a Risk to exist, the
+    ' accepted Phase-5 source tests pin that an empty driver set is NOT
+    ' refused once the model-level prerequisites resolve, and Phase 6
+    ' introduced no minimum of its own. sim_rng.py agrees: components_for
+    ' ((), ()) is the empty tuple and component_stream_states validates the
+    ' base state, produces nothing and jumps nowhere.
+    '
+    ' An earlier draft of this module refused here. That was an INVENTED
+    ' business prerequisite, and it put the VBA at odds with the accepted
+    ' Python reference. There is no minimum-driver authority, so there is no
+    ' minimum here - not `total >= 1`, not "at least one Cost Line", not
+    ' "at least one Risk".
+    '
+    ' NEITHER DRIVER ARRAY IS TOUCHED on this path. No LBound is read, no
+    ' ordering runs, no identity is inspected: with no component there is
+    ' nothing to order, and reading a bound off an array the caller may
+    ' never have sized would be work invented to service the empty case.
+    '
+    ' THE CARRIER FOLLOWS THE ACCEPTED PHASE-5 ZERO-COUNT CONVENTION, the
+    ' one CalcFpSortedRecords uses and SimRngOrderIds already uses above:
+    ' VBA has no zero-length dynamic array, so the output is sized to one
+    ' slot and THE LOGICAL COUNT - costCount + 2 * riskCount, which the
+    ' caller supplied - decides whether any element may be inspected. At
+    ' zero, no element is semantically present.
+    '
+    ' The slot is left at its Type defaults and NOTHING is written into it.
+    ' It is not a component: its PermanentId is the empty string, which is
+    ' exactly what SimRngOrderIds refuses, so it cannot be mistaken for one.
+    ' It is assigned rather than left alone so a caller cannot retain an
+    ' earlier, longer result and read it as this answer.
+    ' ==================================================================
     If total = 0 Then
-        detail = "components: the model declares no driver"
+        ReDim built(0 To 0)
+        components = built
+        SimRngBuildComponentStreams = True
         Exit Function
     End If
-    If Not SimRngValidateState(baseState, detail) Then Exit Function
 
     If Not SimRngOrderIds(costIds, costCount, "cost line", costOrder, detail) Then Exit Function
     If Not SimRngOrderIds(riskIds, riskCount, "risk", riskOrder, detail) Then Exit Function

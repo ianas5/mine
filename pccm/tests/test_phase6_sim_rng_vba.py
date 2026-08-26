@@ -580,22 +580,127 @@ def test_28_a_duplicate_identity_is_refused_not_deduplicated() -> None:
         assert components == [], "a refused model still produced components"
 
 
-def test_29_a_blank_identity_and_an_empty_model_are_refused() -> None:
+def test_29_a_blank_identity_and_a_negative_count_are_refused() -> None:
     vba = _transcribe()
     for costs, risks, message in (
         ([""], [], "blank permanent id"),
         (["CL-001"], [""], "blank permanent id"),
-        ([], [], "declares no driver"),
     ):
         components, detail = [], _Ref("")
         assert vba["SimRngBuildComponentStreams"](
             costs, _Ref(len(costs)), risks, _Ref(len(risks)),
             _seeded(12345), components, detail) is False
         assert message in detail.v
+    for costCount, riskCount in ((-1, 0), (0, -1), (-1, -1)):
+        components, detail = [], _Ref("")
+        assert vba["SimRngBuildComponentStreams"](
+            [], _Ref(costCount), [], _Ref(riskCount),
+            _seeded(12345), components, detail) is False
+        assert "negative driver count" in detail.v
+
+
+def test_29a_zero_drivers_is_a_legal_model_and_is_not_refused() -> None:
+    """No accepted contract requires a Cost Line or a Risk to exist.
+
+    Phase 5 pins that an empty driver set is not refused once the model-level
+    prerequisites resolve, and Phase 6 introduced no minimum of its own. An
+    earlier draft of this module invented one; this is the regression that keeps
+    it out.
+    """
+    vba = _transcribe()
+    state = _seeded(12345)
+    before = _words(state)
+    components, detail = ["a stale result the caller must not read back"], _Ref("")
+    assert vba["SimRngBuildComponentStreams"](
+        [], _Ref(0), [], _Ref(0), state, components, detail) is True, detail.v
+    assert detail.v == ""
+    # ZERO JUMPS: the base state is the caller's, untouched.
+    assert _words(state) == before
+    # The logical count is zero, so no element of the carrier is present. The
+    # accepted Phase-5 zero-count convention sizes it to one slot, and that slot
+    # holds no component: a blank PermanentId is what SimRngOrderIds refuses.
+    assert len(components) == 1
+    assert components[0]["PermanentId"] == ""
+    assert components[0]["DriverKind"] == "" and components[0]["Role"] == ""
+    assert _words(components[0]["InitialState"]) == [0] * 6
+
+
+def test_29b_an_empty_model_still_validates_the_base_state() -> None:
+    """Zero work is not permission to accept a state the recurrence cannot be in."""
+    vba = _transcribe()
+    broken = _mk(0, 0, 0, 1, 1, 1)
+    before = _words(broken)
     components, detail = [], _Ref("")
     assert vba["SimRngBuildComponentStreams"](
-        [], _Ref(-1), [], _Ref(0), _seeded(12345), components, detail) is False
-    assert "negative driver count" in detail.v
+        [], _Ref(0), [], _Ref(0), broken, components, detail) is False
+    assert "all zero" in detail.v
+    assert _words(broken) == before
+    assert components == [], "a refused empty model still wrote the carrier"
+    # And the source validates the state BEFORE it takes the empty path.
+    body = _procedure("SimRngBuildComponentStreams")
+    assert body.index("SimRngValidateState(baseState, detail)") < \
+        body.index("If total = 0 Then")
+
+
+def test_29c_the_empty_path_reads_no_bound_from_either_driver_array() -> None:
+    """Nothing is ordered, so nothing is indexed. The arrays are never touched."""
+    body = _procedure("SimRngBuildComponentStreams")
+    empty = body[body.index("If total = 0 Then"):body.index("If Not SimRngOrderIds")]
+    for token in ("LBound", "costIds", "riskIds", "SimRngOrderIds",
+                  "SimRngJumpNextStream", "costOrder", "riskOrder"):
+        assert token not in empty, token
+    assert "ReDim built(0 To 0)" in empty
+    assert "components = built" in empty
+    # And no minimum-driver rule of any spelling survives anywhere in the body.
+    for invented in ("no driver", "at least one", "total < 1", "total >= 1",
+                     "total < 1&", "declares no"):
+        assert invented not in body, invented
+
+
+def test_29d_the_empty_model_agrees_with_the_accepted_python_reference() -> None:
+    """VBA source transcription against sim_rng.py, on the empty model.
+
+    The correction exists to bring the two back into agreement; this is the test
+    that says so directly. No new stochastic authority is generated here - the
+    Python reference was accepted at Step 2 and is not re-derived.
+    """
+    from pccm_builder import RngReference
+    from pccm_builder.sim_rng import RngState
+
+    reference = RngReference.from_contracts(
+        load_sim_contract(SPEC / "sim_contract.yaml"),
+        load_contract(SPEC / "input_contract.yaml"),
+    )
+    # The accepted reference: no component, no stream state, and the base state
+    # is validated and returned as supplied.
+    assert reference.components_for([], []) == ()
+    base = reference.fixed_seed_to_state(12345)
+    assert reference.component_stream_states(base, ()) == ()
+    assert reference.validate_state(base) == base
+
+    # ...and the transcribed VBA: True, nothing emitted, nothing consumed.
+    vba = _transcribe()
+    state = _seeded(12345)
+    assert _words(state) == list(base.words)
+    components, detail = [], _Ref("")
+    assert vba["SimRngBuildComponentStreams"](
+        [], _Ref(0), [], _Ref(0), state, components, detail) is True, detail.v
+    assert _words(state) == list(base.words), (
+        "the VBA advanced a state the reference did not"
+    )
+
+    # Both refuse the same inadmissible base state on the same empty model.
+    words = (0, 0, 0, 1, 1, 1)
+    broken = _mk(*words)
+    try:
+        reference.component_stream_states(RngState.of(*words), ())
+    except Exception as refusal:            # noqa: BLE001 - the reference's own error
+        assert "zero" in str(refusal).lower(), str(refusal)
+    else:  # pragma: no cover - the reference must refuse an absorbing state
+        raise AssertionError("the Python reference accepted an all-zero component")
+    components, detail = [], _Ref("")
+    assert vba["SimRngBuildComponentStreams"](
+        [], _Ref(0), [], _Ref(0), broken, components, detail) is False
 
 
 def test_30_state_validation_refuses_every_inadmissible_word() -> None:
@@ -778,7 +883,14 @@ def test_43_every_output_is_committed_after_its_last_check() -> None:
     ):
         body = _procedure(procedure)
         assert guard in body and commit in body, procedure
-        assert body.index(guard) < body.index(commit), procedure
+        # rindex on both: SimRngBuildComponentStreams commits the carrier on two
+        # paths - the zero-component one and the ladder - and the LADDER commit
+        # is the one this guard governs.
+        assert body.rindex(guard) < body.rindex(commit), procedure
+    # The zero-component commit has its own guard, and it is the state check.
+    body = _procedure("SimRngBuildComponentStreams")
+    assert body.index("SimRngValidateState(baseState, detail)") < \
+        body.index("components = built")
 
 
 def test_44_caller_arrays_are_read_through_their_own_lower_bound() -> None:

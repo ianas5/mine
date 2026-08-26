@@ -397,6 +397,92 @@ def test_24_run_simulation_scoped_prematurely() -> None:
     _control("test_10", spec=_spec_copy(scope))
 
 
+# ===========================================================================
+# 25-27. The empty model
+#
+# ZERO COMPONENTS IS LEGAL. No accepted contract requires a Cost Line or a Risk,
+# and the accepted Python reference produces an empty component set for an empty
+# model rather than refusing. An earlier draft of modSimRng invented a minimum
+# and put the VBA at odds with that reference; these controls keep any spelling
+# of it out.
+#
+# The detectors are SCOPED to SimRngBuildComponentStreams. A comparison against
+# zero elsewhere in the module is perfectly valid - SimRngOrderIds has one, and
+# so does the state validator.
+# ===========================================================================
+_COMPONENTS_ENTRY = """    total = costCount + 2 * riskCount
+"""
+
+
+def test_25_the_zero_component_refusal_is_reintroduced() -> None:
+    _control("test_29a", source=_swap(
+        _ORIGINAL_BAS,
+        _COMPONENTS_ENTRY,
+        _COMPONENTS_ENTRY +
+        "    If total = 0 Then\n"
+        '        detail = "components: the model declares no driver"\n'
+        "        Exit Function\n"
+        "    End If\n"))
+
+
+def test_26_a_minimum_driver_rule_is_invented_in_another_spelling() -> None:
+    for invented in (
+        "    If costCount = 0 And riskCount = 0 Then Exit Function\n",
+        "    If total < 1 Then Exit Function\n",
+        "    If costCount < 1 Then Exit Function\n",
+        "    If riskCount < 1 Then Exit Function\n",
+    ):
+        _control("test_29a", source=_swap(
+            _ORIGINAL_BAS, _COMPONENTS_ENTRY, _COMPONENTS_ENTRY + invented))
+
+
+def test_27_the_empty_path_skips_the_base_state_validation() -> None:
+    """Zero work is not permission to accept an inadmissible state."""
+    damaged = _swap(
+        _ORIGINAL_BAS,
+        "    If Not SimRngValidateState(baseState, detail) Then Exit Function\n"
+        "\n    ' ==================================================================\n"
+        "    ' ZERO DRIVERS IS A LEGAL MODEL.",
+        "\n    ' ==================================================================\n"
+        "    ' ZERO DRIVERS IS A LEGAL MODEL.")
+    damaged = _swap(
+        damaged,
+        "    If Not SimRngOrderIds(costIds, costCount, \"cost line\", costOrder, detail) "
+        "Then Exit Function\n",
+        "    If Not SimRngValidateState(baseState, detail) Then Exit Function\n"
+        "    If Not SimRngOrderIds(costIds, costCount, \"cost line\", costOrder, detail) "
+        "Then Exit Function\n")
+    _control("test_29b", source=damaged)
+
+
+def test_27a_the_empty_path_orders_the_driver_arrays_anyway() -> None:
+    """Nothing is ordered when there is nothing to order."""
+    damaged = _swap(
+        _ORIGINAL_BAS,
+        "    If total = 0 Then\n"
+        "        ReDim built(0 To 0)\n",
+        "    If total = 0 Then\n"
+        '        If Not SimRngOrderIds(costIds, costCount, "cost line", costOrder, detail) '
+        "Then Exit Function\n"
+        "        ReDim built(0 To 0)\n")
+    _control("test_29c", source=damaged)
+
+
+def test_27b_the_empty_path_advances_the_base_state() -> None:
+    damaged = _swap(
+        _ORIGINAL_BAS,
+        "    If total = 0 Then\n"
+        "        ReDim built(0 To 0)\n"
+        "        components = built\n",
+        "    If total = 0 Then\n"
+        "        ReDim built(0 To 0)\n"
+        "        If Not SimRngJumpNextStream(baseState, stepped, detail) Then Exit Function\n"
+        "        baseState = stepped\n"
+        "        components = built\n")
+    _control("test_29a", source=damaged)
+
+
+
 if __name__ == "__main__":  # pragma: no cover
     import pytest
 
