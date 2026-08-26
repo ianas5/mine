@@ -142,20 +142,43 @@ def _sequence_shim(function):
     return bound
 
 
+# The ONE procedure of this module whose body the transcriber cannot execute:
+# it reads a bound of an unproven carrier under a scoped error handler, and the
+# engine models no `On Error`. Its SIGNATURE is read from the real source, its
+# body is source-tested by `test_48`, and its shim reproduces the allocated arm
+# (`UBound - LBound + 1`) so short and long carriers stay covered behaviourally.
+# The genuinely never-sized VBA array - the arm that RAISES - is Gate-B work.
+BORROWED_FROM_MODULE = {"SimStatsLadderExtent"}
+
+
+def _declared_procedures() -> set[str]:
+    return set(_module().procedures)
+
+
+def _ladder_extent_shim(quantile_labels, quantile_values, label_extent, value_extent):
+    """The allocated arm of `SimStatsLadderExtent`, and only that arm."""
+    label_extent.v = len(quantile_labels)
+    value_extent.v = len(quantile_values)
+    return True
+
+
 def _transcribe() -> dict:
     if "vba" not in _CACHE:
         _CACHE["vba"] = _build_transcription(
             {"modSimStats": SIM_STATS_BAS, "modCalcFactors": CALC_FACTORS_BAS},
             _constants(),
-            only={"modCalcFactors": {"IsUsableDouble"}},
+            only={"modCalcFactors": {"IsUsableDouble"},
+                  "modSimStats": _declared_procedures() - BORROWED_FROM_MODULE},
             signature_only={"modCalcFactors": {
-                "SafeSignedSum", "SafeDivide", "SafeMultiply", "SafeSubtract"}},
+                "SafeSignedSum", "SafeDivide", "SafeMultiply", "SafeSubtract"},
+                "modSimStats": set(BORROWED_FROM_MODULE)},
             extra={
                 "MAX_DOUBLE": sys.float_info.max,
                 "SafeSignedSum": _sequence_shim(safe_signed_sum),
                 "SafeDivide": _scalar_shim(safe_divide),
                 "SafeMultiply": _scalar_shim(safe_multiply),
                 "SafeSubtract": _scalar_shim(safe_subtract),
+                "SimStatsLadderExtent": _ladder_extent_shim,
             })
     return _CACHE["vba"]  # type: ignore[return-value]
 
@@ -191,10 +214,14 @@ def _describe(values):
     return ok, summary, labels, ladder, detail.v
 
 
-def _selected(labels, ladder, label):
-    result, detail = _Ref(0.0), _Ref("")
+def _selected(labels, ladder, label, count=None, result=None):
+    """`count` defaults to the label carrier's own length; pass it explicitly to
+    exercise a carrier whose physical length disagrees with the claimed one."""
+    result = _Ref(0.0) if result is None else result
+    detail = _Ref("")
     ok = _transcribe()["SimStatsSelectedQuantile"](
-        labels, ladder, _Ref(len(labels)), _Ref(label), result, detail)
+        labels, ladder, _Ref(len(labels) if count is None else count),
+        _Ref(label), result, detail)
     return ok, result.v, detail.v
 
 
@@ -262,9 +289,10 @@ def test_03_the_public_surface_is_the_six_numerical_operations() -> None:
     ]
     private = set(_module().procedures) - set(_module().public_procedures)
     assert private == {
-        "SimStatsConstantValue", "SimStatsLadderLabel", "SimStatsProbabilityOf",
-        "SimStatsQuantileSorted", "SimStatsSortAscending", "SimStatsSortedCopy",
-        "SimStatsUnitScale", "SimStatsUsableProbability", "SimStatsUsableSequence",
+        "SimStatsConstantValue", "SimStatsLadderExtent", "SimStatsLadderLabel",
+        "SimStatsProbabilityOf", "SimStatsQuantileSorted", "SimStatsSortAscending",
+        "SimStatsSortedCopy", "SimStatsUnitScale", "SimStatsUsableProbability",
+        "SimStatsUsableSequence", "SimStatsValidateLadder",
     }, sorted(private)
     raw = _module().raw
     assert re.findall(r"^(Public|Private) Type (\w+)$", raw, re.M) == [
@@ -1187,10 +1215,248 @@ def test_46c_the_corpus_scale_safety_and_contingency_cases_are_reproduced() -> N
 
 
 def test_47_the_transcription_read_the_whole_module() -> None:
+    """Every procedure is COMPILED FROM SOURCE except the one guarded-bounds
+    helper, whose body no `On Error`-free engine can execute. That one is named
+    here, its real signature is read out of the module, and `test_48` proves its
+    source shape - so nothing can hide in a body no test looks at."""
     vba = _transcribe()
+    compiled = vba["_python_source"]
+    assert BORROWED_FROM_MODULE == {"SimStatsLadderExtent"}, BORROWED_FROM_MODULE
     for name in _module().procedures:
         assert callable(vba[name]), name
+        if name in BORROWED_FROM_MODULE:
+            assert f"def {name}(" not in compiled, f"{name} claims to be borrowed"
+        else:
+            assert f"def {name}(" in compiled, f"{name} was not compiled from source"
+    # The borrowed signature is the MODULE'S OWN declaration, not one retyped here.
+    assert [(mode, pname, arr) for mode, pname, arr, _, _
+            in vba["_procs"]["SimStatsLadderExtent"]] == [
+        ("ByRef", "quantileLabels", True), ("ByRef", "quantileValues", True),
+        ("ByRef", "labelExtent", False), ("ByRef", "valueExtent", False)]
     assert "SimStatsMeasure" in vba["_types"]
     for borrowed in ("IsUsableDouble", "SafeSignedSum", "SafeDivide",
                      "SafeMultiply", "SafeSubtract"):
         assert callable(vba[borrowed]), borrowed
+
+
+# ===========================================================================
+# J. Ladder integrity at the selection boundary
+#
+# The ladder arrays are ordinary caller-writable VBA arrays. `SimStatsDescribe`
+# is their authoritative constructor; `SimStatsSelectedQuantile` proves their
+# structure before reading one. What that CANNOT prove is that a finite value
+# was not edited after Describe produced it - see `test_63`.
+# ===========================================================================
+def _genuine_ladder():
+    ok, summary, labels, ladder, detail = _describe([float(v) for v in range(1, 21)])
+    assert ok, detail
+    return list(labels), list(ladder)
+
+
+def _selectable_labels():
+    return [label for label, _ in _ladder_points()
+            if label != _const("SIM_QUANTILE_FIXED_1")]
+
+
+def _refused(labels, ladder, label, count=None):
+    """Refusal, with the caller's result Double left exactly as it was."""
+    sentinel = _Ref(-987654.5)
+    ok, _value, detail = _selected(labels, ladder, label, count=count, result=sentinel)
+    assert ok is False, f"{label} was accepted on a malformed ladder"
+    assert sentinel.v == -987654.5, "a refusal wrote to the selected output"
+    assert detail, "a refusal carried no reason"
+    return detail
+
+
+def test_48_the_guarded_bounds_helper_is_scoped_and_reads_only_the_extents() -> None:
+    # EXECUTABLE code, comments stripped: the module is allowed to say in prose
+    # which construct it refuses to contain, exactly as Step 8 settled for Cheng.
+    executable = _module().code_without_string_removal
+    assert "On Error Resume Next" not in executable, "a broad suppression was introduced"
+    # ONE scoped handler in the whole module, and it is this one.
+    assert re.findall(r"On Error GoTo (\w+)", executable) == ["Unallocated", "0", "0"]
+    body = _procedure("SimStatsLadderExtent")
+    statements = [text for _, text in logical_statements(body)]
+    assert statements == [
+        'Private Function SimStatsLadderExtent(ByRef quantileLabels() As String, '
+        'ByRef quantileValues() As Double, ByRef labelExtent As Long, '
+        'ByRef valueExtent As Long) As Boolean',
+        "On Error GoTo Unallocated",
+        "labelExtent = UBound(quantileLabels) - LBound(quantileLabels) + 1",
+        "valueExtent = UBound(quantileValues) - LBound(quantileValues) + 1",
+        "On Error GoTo 0",
+        "SimStatsLadderExtent = True",
+        "Exit Function",
+        "Unallocated:",
+        "On Error GoTo 0",
+        "SimStatsLadderExtent = False",
+        "End Function",
+    ], statements
+    # NOTE: the arm that RAISES - a genuinely never-sized VBA array - has no
+    # Linux execution proof and is deferred to Gate B. Its SHAPE is pinned above.
+
+
+def test_49_a_genuine_ladder_returns_every_selectable_level_unchanged() -> None:
+    labels, ladder = _genuine_ladder()
+    for label in _selectable_labels():
+        ok, value, detail = _selected(labels, ladder, label)
+        assert ok, f"{label}: {detail}"
+        assert value == ladder[labels.index(label)], label
+    assert len(_selectable_labels()) == _const("SIM_QUANTILE_COUNT") - 1
+
+
+def test_50_the_fixed_rung_is_still_refused_on_a_genuine_ladder() -> None:
+    labels, ladder = _genuine_ladder()
+    detail = _refused(labels, ladder, _const("SIM_QUANTILE_FIXED_1"))
+    assert "not selectable" in detail, detail
+
+
+def test_51_an_invented_rung_cannot_be_selected_by_inserting_it() -> None:
+    """THE DEFECT THIS GROUP EXISTS FOR: membership in the caller's own array is
+    not evidence that a label is an accepted confidence level."""
+    labels, ladder = _genuine_ladder()
+    forged, values = list(labels), list(ladder)
+    forged[labels.index("P50")] = "P42"
+    values[labels.index("P50")] = 4242.0
+    detail = _refused(forged, values, "P42")
+    assert "accepted projection" in detail, detail
+
+
+def test_52_a_forged_rung_refuses_the_whole_ladder_not_just_that_rung() -> None:
+    labels, ladder = _genuine_ladder()
+    forged, values = list(labels), list(ladder)
+    forged[labels.index("P85")] = "P42"
+    values[labels.index("P85")] = 4242.0
+    # P75 is untouched and would otherwise answer. The LADDER is malformed.
+    _refused(forged, values, "P75")
+
+
+def test_53_two_swapped_rungs_are_refused() -> None:
+    labels, ladder = _genuine_ladder()
+    forged, values = list(labels), list(ladder)
+    low, high = labels.index("P55"), labels.index("P60")
+    forged[low], forged[high] = forged[high], forged[low]
+    values[low], values[high] = values[high], values[low]
+    _refused(forged, values, "P55")
+    _refused(forged, values, "P90")
+
+
+def test_54_a_duplicated_rung_is_refused() -> None:
+    labels, ladder = _genuine_ladder()
+    forged, values = list(labels), list(ladder)
+    forged[labels.index("P55")] = "P50"
+    values[labels.index("P55")] = values[labels.index("P50")]
+    _refused(forged, values, "P50")
+    _refused(forged, values, "P90")
+
+
+def test_55_a_missing_fixed_rung_is_refused() -> None:
+    labels, ladder = _genuine_ladder()
+    forged, values = list(labels), list(ladder)
+    forged[labels.index("P10")] = "P05"
+    _refused(forged, values, "P50")
+
+
+def test_56_a_label_that_differs_only_in_whitespace_or_case_is_refused() -> None:
+    labels, ladder = _genuine_ladder()
+    for damaged in ("P50 ", " P50", "p50"):
+        forged = list(labels)
+        forged[labels.index("P50")] = damaged
+        _refused(forged, ladder, "P50")
+        _refused(forged, ladder, damaged)
+
+
+def test_57_a_non_finite_value_at_the_selected_rung_is_refused() -> None:
+    labels, ladder = _genuine_ladder()
+    for poison in (float("nan"), float("inf"), float("-inf")):
+        values = list(ladder)
+        values[labels.index("P90")] = poison
+        detail = _refused(labels, values, "P90")
+        assert "finite Double" in detail, detail
+
+
+def test_58_a_non_finite_value_at_another_rung_refuses_the_whole_ladder() -> None:
+    labels, ladder = _genuine_ladder()
+    values = list(ladder)
+    values[labels.index("P95")] = float("inf")
+    detail = _refused(labels, values, "P50")
+    assert "finite Double" in detail, detail
+    # NOT CLAMPED: no substitute value was invented for the poisoned rung.
+    assert "0" != detail
+
+
+def test_59_a_short_label_carrier_is_refused_without_a_subscript_error() -> None:
+    labels, ladder = _genuine_ladder()
+    detail = _refused(labels[:-1], ladder, "P50", count=_const("SIM_QUANTILE_COUNT"))
+    assert "label carrier" in detail, detail
+    # And a caller who also shortens the claimed count is refused on the length.
+    detail = _refused(labels[:-1], ladder[:-1], "P50")
+    assert "accepted length" in detail, detail
+
+
+def test_60_a_short_value_carrier_is_refused() -> None:
+    labels, ladder = _genuine_ladder()
+    detail = _refused(labels, ladder[:-1], "P50", count=_const("SIM_QUANTILE_COUNT"))
+    assert "value carrier" in detail, detail
+
+
+def test_61_either_carrier_longer_than_the_ladder_is_refused() -> None:
+    labels, ladder = _genuine_ladder()
+    _refused(labels + ["P99"], ladder, "P50", count=_const("SIM_QUANTILE_COUNT"))
+    _refused(labels, ladder + [1.0], "P50", count=_const("SIM_QUANTILE_COUNT"))
+    # An empty carrier - the nearest thing this engine can model to a VBA array
+    # that was never sized - refuses the same way rather than reading a bound.
+    _refused([], [], "P50", count=_const("SIM_QUANTILE_COUNT"))
+
+
+def test_62_the_structural_validation_sorts_nothing_and_computes_no_quantile() -> None:
+    vba = _transcribe()
+    watched = ("SimStatsSortAscending", "SimStatsSortedCopy", "SimStatsQuantileSorted",
+               "SimStatsQuantileType7", "SimStatsMean",
+               "SimStatsSampleStandardDeviation", "SimStatsDescribe")
+    calls = {name: 0 for name in watched}
+    real = {name: vba[name] for name in watched}
+
+    def counted(name):
+        def bound(*args):
+            calls[name] += 1
+            return real[name](*args)
+        return bound
+
+    labels, ladder = _genuine_ladder()
+    for name in watched:
+        vba[name] = counted(name)
+    try:
+        ok, value, detail = _selected(labels, ladder, "P80")
+        assert ok, detail
+        _refused(labels, ladder, _const("SIM_QUANTILE_FIXED_1"))
+        forged = list(labels)
+        forged[3] = "P42"
+        _refused(forged, ladder, "P50")
+    finally:
+        for name in watched:
+            vba[name] = real[name]
+    assert calls == {name: 0 for name in watched}, calls
+    # ...and the source says so: selection reaches no numerical machinery.
+    for body in (_procedure("SimStatsSelectedQuantile"),
+                 _procedure("SimStatsValidateLadder")):
+        for banned in ("SimStatsSortAscending", "SimStatsSortedCopy",
+                       "SimStatsQuantileSorted", "SimStatsQuantileType7",
+                       "SimStatsMean", "SimStatsSampleStandardDeviation",
+                       "SimStatsDescribe", "SimStatsUnitScale"):
+            assert banned not in body, banned
+
+
+def test_63_the_boundary_is_structural_and_the_module_claims_nothing_more() -> None:
+    """A finite value edited from 100 to 101 after Describe is NOT detectable
+    without a seal or a second quantile calculation. Step 9 takes neither, and
+    the module must not pretend otherwise."""
+    labels, ladder = _genuine_ladder()
+    edited = list(ladder)
+    edited[labels.index("P50")] = ladder[labels.index("P50")] + 1.0
+    ok, value, detail = _selected(labels, edited, "P50")
+    assert ok, detail
+    assert value == edited[labels.index("P50")], "the module recomputed the rung"
+    code = _code()
+    for sealed in ("Checksum", "Digest", "Hash", "Seal", "Signature"):
+        assert sealed not in code, sealed

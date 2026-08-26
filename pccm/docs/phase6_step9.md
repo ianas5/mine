@@ -1,5 +1,8 @@
 # PCCM Phase 6 — Step 9 authority record
 
+*(Second round: ladder-integrity hardening at the selection boundary. The
+numerical implementation is not reopened and did not move — §3.4.)*
+
 Step 9 adds **one module**:
 
 ```
@@ -26,7 +29,8 @@ runtime ran.**
 | Accepted Step-7 sampler authority | `f2f654eadba4f5196c795e4167b71f7002e1f727` |
 | Accepted dependency-corrected head | `78f42439e5e799d860b24475167b77a1472af43a` |
 | Accepted Step-8 engine authority | `39415f3` |
-| Step-9 modSimStats | this commit |
+| Step-9 modSimStats, first round | `f44af49` |
+| Step-9 ladder-integrity hardening | this commit |
 
 `builder/pccm_builder/sim_stats.py` remains the single definition of these
 semantics. `modSimStats.bas` is their VBA implementation and creates no
@@ -50,7 +54,7 @@ quantile".
 the policy the corpus assigns it. Nothing was promoted to a stricter policy to
 make a test pass.
 
-### 2.1 Four primitives are borrowed, not transcribed
+### 2.1 Four primitives are borrowed, and one of the module's own
 
 `SafeSignedSum`, `SafeDivide`, `SafeMultiply` and `SafeSubtract` have accepted
 Phase-5 VBA bodies whose second tier uses an exact-arithmetic UDT with dynamic
@@ -60,6 +64,17 @@ instead, and their real VBA **signatures are read out of `modCalcFactors.bas`**
 through `signature_only=`, so the ByRef/ByVal call convention stays the module's
 own rather than something retyped in a test. This is the Step-7/Step-8
 discipline unchanged. `IsUsableDouble` is still compiled from its real source.
+
+**One procedure of `modSimStats` itself is borrowed the same way.**
+`SimStatsLadderExtent` reads a bound of an unproven array carrier under a
+**scoped** `On Error`, and the transcriber models no error handling. Its
+signature is read out of `modSimStats.bas`, its shim reproduces the *allocated*
+arm (`UBound - LBound + 1`) so short, long and empty carriers stay covered
+**behaviourally**, and its source shape is pinned statement by statement by
+`test_48`. The arm that RAISES — a genuinely never-sized VBA array — has no
+Linux execution proof and is **deferred to Gate B**. `test_47` names the
+borrowed set exactly and asserts every other procedure was compiled from
+source, so nothing can hide behind the exemption.
 
 ### 2.2 The transcriber was extended, not replaced
 
@@ -74,11 +89,15 @@ Both are needed only because the ladder label is decoded digit by digit rather
 than through `Val` (§4). Everything else is the Step-8 engine unchanged, and
 every Step-6, Step-7 and Step-8 test still passes against it.
 
+**The hardening round changed the transcriber not at all.** It needed no new
+construct: the one procedure it cannot execute is bound through the existing
+`only=` / `signature_only=` / `extra=` mechanism.
+
 ---
 
 ## 3. `modSimStats.bas`
 
-15 procedures, **six** public, one `Public Type`.
+17 procedures, **six** public, one `Public Type`.
 
 | Procedure | Does |
 |---|---|
@@ -95,6 +114,8 @@ every Step-6, Step-7 and Step-8 test still passes against it.
 | `SimStatsSortedCopy` | a private copy, then the sort |
 | `SimStatsSortAscending` | bottom-up stable merge sort with one scratch buffer |
 | `SimStatsQuantileSorted` | the type-7 kernel over an already-sorted sequence |
+| `SimStatsValidateLadder` | proves a supplied ladder IS the owner-projected ladder |
+| `SimStatsLadderExtent` | both carrier extents, under a scoped error handler |
 | `SimStatsLadderLabel` | the projected label at a ladder position |
 | `SimStatsProbabilityOf` | `P<number>` decoded to a probability, no `Val`, no locale |
 
@@ -115,7 +136,52 @@ no iteration count. It receives a sequence of Doubles and a logical count, and
 that is the whole of its input. It never touches a worksheet, never opens a
 register and never publishes.
 
-### 3.3 The ladder travels in two parallel arrays
+### 3.3 The selection boundary trusts nothing it is handed
+
+The first round accepted a supplied ladder if its length was right, the selected
+label was non-blank, was not the fixed rung, and **appeared somewhere in the
+caller's own labels**. That last condition is not evidence. These are ordinary
+VBA arrays and any caller can write to them, so a caller could insert a rung the
+projection never named, select it, and be handed a value the module had no
+authority for.
+
+`SimStatsSelectedQuantile` now calls `SimStatsValidateLadder` **before** it
+searches for the selected label and **before** it reads any value. That
+validator is **structural only** — no sort, no quantile, no mean, no deviation,
+no re-`Describe`, no iteration totals, no checksum — and it requires:
+
+* `quantileCount = SIM_QUANTILE_COUNT`;
+* both carriers physically that long, read through the guarded
+  `SimStatsLadderExtent` so a malformed or never-sized array refuses **in the
+  module's own words** rather than escaping as a raw subscript error (a non-zero
+  `LBound` is fine and is used consistently);
+* at every position, `StrComp(supplied, SimStatsLadderLabel(position),
+  vbBinaryCompare) = 0`;
+* every supplied value a usable finite Double — **not clamped, not recomputed**.
+
+Because the expected labels come from the one projection-backed
+`SimStatsLadderLabel`, there is still **no second label list anywhere**. The
+positional equality alone refuses an inserted rung, a replaced rung, two swapped
+rungs, a duplicate, a missing fixed rung, a case variation and a trailing space.
+
+### 3.4 What this boundary CANNOT prove — and does not claim
+
+Exactly as with Step 7's prepared UDT: structural validation can prove owner
+labels, carrier shape and value finiteness. It **cannot** prove that a finite
+`P50` value was not edited from 100 to 101 after `SimStatsDescribe` produced it.
+Proving that needs a seal or a second quantile calculation, and **Step 9 takes
+neither** — no hash, no checksum, no signature, no recomputation. `test_63`
+states the limit as a test rather than leaving it as an assumption, and asserts
+the module invents no seal.
+
+The correct internal boundary, recorded:
+
+> `SimStatsDescribe` is the authoritative constructor of the ladder carrier.
+> `SimStatsSelectedQuantile` performs cheap structural validation before use.
+> The ladder arrays are internal in-project derived-reporting carriers, **not**
+> an externally authoritative serialised representation.
+
+### 3.5 The ladder travels in two parallel arrays
 
 `SimStatsDescribe` returns the labels and the values as two `ByRef` arrays sized
 from `SIM_QUANTILE_COUNT` at run time. No fixed bound is written anywhere in the
@@ -150,6 +216,9 @@ produced rather than recomputing a second quantile from a second sort.
 | **Contingency is a `SafeSubtract`** | Selected total minus the deterministic base estimate A, through the accepted primitive rather than a raw `-`. |
 | **A negative contingency is preserved** | Never clamped to zero. A selected total below base estimate A is a real, reportable state of the model, and hiding it would hide it from the very reader who needs it. |
 | **Transactional output** | Nothing is published on a refusal: no partial ladder, no half-filled summary, no scalar left modified. |
+| **A supplied ladder is proved before it is searched** | Membership in a caller-writable array is not evidence that a label is an accepted confidence level. The labels must be the owner projection, position by position. |
+| **A malformed carrier refuses, it does not raise** | The one place that reads a bound of an unproven carrier is `SimStatsLadderExtent`, under an `On Error GoTo` scoped to those two reads and cleared immediately — the accepted `modCalcFactors` discipline. There is **no `On Error Resume Next` in this module**. |
+| **Selection is still reporting-only** | Zero sorts, zero quantile calculations, no RNG, no simulation — proved by call counters in `test_62`, not only by reading the source. |
 
 ### 4.1 Naming discipline
 
@@ -172,8 +241,8 @@ locals (`series`, `scratch`, `runLength`, `lowEnd`, `midPoint`, `highEnd`,
 
 | File | Contents |
 |---|---|
-| `tests/test_phase6_sim_stats_vba.py` | 50 Step-9 conformance tests |
-| `tests/test_phase6_sim_stats_vba_validation.py` | 35 tests — a baseline and 34 mutation controls |
+| `tests/test_phase6_sim_stats_vba.py` | 66 Step-9 conformance tests |
+| `tests/test_phase6_sim_stats_vba_validation.py` | 44 tests — a baseline and 43 mutation controls |
 
 **Group A — declaration, surface and purity** (`test_01`–`test_09`): the
 attribute and `Option Explicit`; the registry entry with nothing beyond it and
@@ -196,8 +265,37 @@ G — contingency** (`test_38`–`test_41`), **Group H — transactional output*
 (`test_42`–`test_45`), **Group I — the corpus** (`test_46`, `46a`, `46b`, `46c`,
 `test_47`).
 
-`test_47` asserts the transcription read **every** procedure in the module, so a
-statistic cannot hide in a body no test compiles.
+**Group J — ladder integrity at the selection boundary** (`test_48`–`test_63`),
+added by the hardening round:
+
+| Test | Proves |
+|---|---|
+| `test_48` | the guarded-bounds helper is scoped statement by statement; exactly one `On Error GoTo` in the module and no `On Error Resume Next` |
+| `test_49` | a genuine ladder still answers every selectable level with the stored value, unchanged |
+| `test_50` | the fixed rung is still refused as a selector |
+| `test_51` | **the defect this group exists for**: an invented rung cannot be selected by inserting it |
+| `test_52` | a forged rung refuses the WHOLE ladder, not just that rung |
+| `test_53` | two swapped rungs are refused |
+| `test_54` | a duplicated rung is refused |
+| `test_55` | a missing fixed rung is refused |
+| `test_56` | a label differing only in case or whitespace is refused |
+| `test_57` | a non-finite value at the selected rung is refused, at NaN and both infinities |
+| `test_58` | a non-finite value at a different rung refuses the whole ladder, and nothing is clamped |
+| `test_59` | a short label carrier refuses without a subscript error |
+| `test_60` | a short value carrier refuses |
+| `test_61` | either carrier longer refuses; an empty carrier refuses too |
+| `test_62` | the whole boundary performs **zero** sorts and **zero** quantile calculations — by call counters and by source |
+| `test_63` | the limit of the claim: an edited finite value is NOT detected, and no seal was invented |
+
+Every refusal in Group J goes through `_refused`, which pre-seeds the caller's
+result Double with a sentinel and asserts it is **byte-unchanged** — so
+requirement 14, "selected output unchanged on every malformed-ladder refusal",
+is checked on every single malformed case rather than once.
+
+`test_47` asserts the transcription read every procedure in the module except
+the single named borrowed one (§2.1), and that the borrowed one is genuinely
+absent from the compiled text — so a statistic still cannot hide in a body no
+test compiles.
 
 ### 5.2 Mutation controls
 
@@ -207,10 +305,26 @@ conformance module at it, reruns the **whole** Step-9 battery under a per-test
 time budget, and requires a **named** detector among the refusers. Nothing is
 written to the repository.
 
-The 32 mutations the authorisation lists are covered by 34 controls: the extra
-two are `test_17a` (a correct quadratic insertion sort) and `test_31a` (a
+The 32 mutations the first authorisation lists are covered by 34 controls: the
+extra two are `test_17a` (a correct quadratic insertion sort) and `test_31a` (a
 `Static` local), each of which isolates a distinct failure the neighbouring
-control does not reach.
+control does not reach. **Every one of them is kept unchanged**; no numerical
+detector was deleted or weakened.
+
+The hardening round adds **nine** more, covering the five required mutations and
+four neighbours:
+
+| Control | Mutation | Named detector |
+|---|---|---|
+| `test_33` | the ladder is not validated before it is searched — the `f44af49` boundary exactly | `test_51` |
+| `test_34` | the owner-label authority is removed | `test_51` |
+| `test_35` | labels are checked for **membership** and not for **position** | `test_53` |
+| `test_36` | a case-insensitive comparison is substituted | `test_56` |
+| `test_37` | the ladder-value finiteness check is removed | `test_57` |
+| `test_38` | the physical carrier-length checks are removed | `test_59` |
+| `test_38a` | only the label carrier's length is checked | `test_60` |
+| `test_38b` | the scoped bounds handler becomes a broad suppression | `test_48` |
+| `test_38c` | validation runs but no longer **gates** | `test_51` |
 
 Two were rebuilt during this step because the first draft was **vacuous**:
 
@@ -240,6 +354,16 @@ edit. **No numeric module-count authority was introduced anywhere.**
 tests that policed its absence. `modSimFingerprint` and `modSimReport` remain
 banned in every one of them.
 
+**The hardening round touched no test outside the two Step-9 files.** Three
+expectations inside them legitimately changed and are named here so the edits
+stay visible: `test_03`'s exact private-procedure set gained the two new private
+helpers; `test_47` became the stronger compiled-from-source assertion described
+above; and `test_48`'s `On Error` scan reads **comment-stripped executable
+code** rather than raw text, because the module states in prose which construct
+it refuses to contain — the same narrowing, for the same reason, that Step 8
+settled for the `Cheng` token. A real `On Error Resume Next` is executable code
+and is still caught.
+
 ---
 
 ## 6. Verification
@@ -247,21 +371,23 @@ banned in every one of them.
 ### 6.1 Python suite
 
 ```
-2711 passed, 0 failed          (731.26s)
-2711 collected
+2736 passed, 0 failed          (769.19s)
+2736 collected
 ```
 
 | Count | What |
 |---|---|
-| 50 | Step-9 conformance tests |
-| 35 | Step-9 tests — a baseline and 34 mutation controls |
+| 66 | Step-9 conformance tests |
+| 44 | Step-9 tests — a baseline and 43 mutation controls |
 | 54 + 42 | Step-8 engine conformance and controls — **still green, unmodified** |
 | 74 + 51 | Step-7 sampler conformance and controls — **still green, unmodified** |
 | 51 + 32 | Step-6 RNG conformance and controls — **still green, unmodified** |
 | 351 | Stage-A builder/verifier checks, 0 failed |
 
-Collection moved from **2626** to **2711**: +85, the 50 conformance tests and 35
-controls. **No test was deleted, skipped or weakened.**
+Collection moved from **2626** to **2711** in the first round (+85), and from
+**2711** to **2736** in the hardening round (+25: 16 Group-J
+conformance tests and 9 controls). **No test was deleted, skipped or
+weakened** in either round.
 
 ### 6.2 Stage A
 
@@ -295,8 +421,8 @@ No count is hardcoded anywhere; P5-M and P5-D8 remain manifest-driven.
 
 | Artefact | SHA-256 | Status |
 |---|---|---|
-| `src/vba/modSimStats.bas` | `3e5ed2ca27fd0426497f5ed3b38703cabafc1ab150243b26e7ef41a81c330b42` | **new** |
-| `build/stage_b_manifest.json` | `0c413d93a0f2d002319584e4d59ce6c36dc612cb4115afcc898f7b8801720053` | **changed, registry only** |
+| `src/vba/modSimStats.bas` | `98bd21b227047d04e6847e554e027b339cf01dfb1112c1539a9e334966233be0` | **hardened** (was `3e5ed2ca…c330b42` at `f44af49`) |
+| `build/stage_b_manifest.json` | `0c413d93a0f2d002319584e4d59ce6c36dc612cb4115afcc898f7b8801720053` | **unchanged this round** (registry-only movement was the first round's) |
 | `src/vba/modSimRng.bas` | `3d7c2cb365df03ccf73722f39b0c10e8964381e7cdd243732381dac7638257e3` | **byte-identical** |
 | `src/vba/modSimSample.bas` | `5553198289bd98a7c84025868ac03c9f8ec95da3c01b23249c0da57d77901877` | **byte-identical** |
 | `src/vba/modSimEngine.bas` | `f1283fe7d5d2ffcc5345dab9a00f68d3685b787563d104f50a886c5ed409abab` | **byte-identical** |
@@ -311,12 +437,36 @@ No count is hardcoded anywhere; P5-M and P5-D8 remain manifest-driven.
 `git diff 39415f3 -- src/vba/modSimRng.bas src/vba/modSimSample.bas
 src/vba/modSimEngine.bas src/vba/modCalcFactors.bas src/vba/modCalcAnalytical.bas
 spec/sim_contract.yaml spec/input_contract.yaml spec/workbook.yaml
-spec/calc_contract.yaml spec/driver_contract.yaml evidence/ builder/ bootstrap/
-docs/` is **empty**.
+spec/calc_contract.yaml spec/driver_contract.yaml evidence/ builder/ bootstrap/`
+is **empty**, and `git diff f44af49 -- spec/ builder/ tests/phase6_vba_transcribe.py`
+is **empty** as well: the hardening round changed the module, its two test files
+and this record, and nothing else.
+
+### 6.4.1 The numerical core did not move
+
+Compared procedure by procedure against `f44af49`, these are **byte-identical**:
+
+```
+SimStatsMean                     SimStatsSortAscending
+SimStatsSampleStandardDeviation  SimStatsSortedCopy
+SimStatsQuantileType7            SimStatsContingency
+SimStatsQuantileSorted           SimStatsDescribe
+SimStatsUnitScale                SimStatsConstantValue
+SimStatsUsableSequence           SimStatsUsableProbability
+SimStatsLadderLabel              SimStatsProbabilityOf
+```
+
+`SimStatsSelectedQuantile` gained the validator call and nothing else;
+`SimStatsValidateLadder` and `SimStatsLadderExtent` are new. No mean, sample
+deviation, minimum, maximum, quantile, ladder label, contingency value or sort
+count moved, and `test_49` checks the selected value against the stored rung
+bit-for-bit.
 
 ### 6.5 The manifest movement is the registry and nothing else
 
-Rebuilt from the Step-8 contract and compared leaf by leaf:
+The hardening round moves the manifest **not at all** — no registry entry and no
+D6-11 authority changes, and the rebuilt hash is identical to `f44af49`'s. For
+the first round, rebuilt from the Step-8 contract and compared leaf by leaf:
 
 ```
 keys added      3     (.vba.modules[19].name / .generated / .responsibility)
@@ -351,13 +501,30 @@ procedure reads it back, so it needs no structural validator today. The first
 module that accepts a `SimStatsMeasure` as an INPUT inherits the Step-7
 obligation — a Boolean `Described = True` is not validation authority.
 
+**Carried explicitly to Step 11 (`modSimReport`), not implemented now:**
+
+1. **Ladder provenance and non-mutation.** Step 9 proves a supplied ladder has
+   the owner's labels, the right shape and finite values. It cannot prove a
+   finite value was not edited after `SimStatsDescribe` produced it (§3.4).
+   `modSimReport` must prove — and source-test — that the ladders it uses
+   originate from `SimStatsDescribe` and are not mutated between description and
+   selection.
+2. **Nominal and PV commit together.** The selected values and contingencies for
+   nominal and PV must be staged locally and committed as one, so a later PV
+   refusal cannot publish a nominal-only reporting result.
+
+**Deferred to Gate B, in addition to the standing debt:** the raising arm of
+`SimStatsLadderExtent` — a genuinely never-sized VBA array — has no Linux
+execution proof (§2.1). Its source shape is pinned by `test_48`; its runtime
+behaviour is Windows work.
+
 ---
 
 ## 8. Step-9 acceptance gate — self-check
 
 | Gate condition | Status |
 |---|---|
-| `modSimStats` exists | yes, 15 procedures, 6 public, 1 `Public Type` |
+| `modSimStats` exists | yes, 17 procedures, 6 public, 1 `Public Type` |
 | entirely worksheet-independent | `test_05` |
 | no module-level or `Static` state | `test_06` |
 | the caller's array is never reordered | `test_10`, `test_45` |
@@ -376,9 +543,18 @@ obligation — a Boolean `Described = True` is not validation authority.
 | the convex interpolation form, not the difference form | `test_31` |
 | the probability domain is closed and refused outside | `test_32` |
 | the ladder is the projection, in the projected order | `test_33`, `test_34` |
-| the selected level is a lookup in that same ladder | `test_35` |
-| the fixed rung is reported and not selectable | `test_36` |
+| the selected level is a lookup in that same ladder | `test_35`, `test_49` |
+| the fixed rung is reported and not selectable | `test_36`, `test_50` |
 | an unknown confidence level is refused | `test_37` |
+| a caller cannot invent a rung by inserting it into a supplied ladder | `test_51`, `test_52` |
+| the supplied labels equal the owner projection, in the accepted order | `test_53`–`test_56` |
+| every supplied ladder value is a usable finite Double, unclamped | `test_57`, `test_58` |
+| malformed carrier lengths refuse rather than raising a subscript error | `test_48`, `test_59`–`test_61` |
+| valid selectable lookups are unchanged | `test_49` |
+| Selected CL triggers no sort, recomputation, RNG or simulation | `test_62` |
+| the structural claim is not overstated, and no seal was invented | `test_63` |
+| no numerical statistic moved | §6.4.1 |
+| Step-11 provenance / no-mutation carry-forward recorded | §7 |
 | contingency is `SafeSubtract(selected, base A)` | `test_38`, `test_41` |
 | a negative contingency is preserved, never clamped | `test_39`, `test_40` |
 | transactional output, no partial publication | `test_42`–`test_45` |

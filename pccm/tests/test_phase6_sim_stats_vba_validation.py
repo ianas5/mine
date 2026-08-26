@@ -525,6 +525,115 @@ def test_32_an_empty_sequence_reads_a_bound_before_refusing() -> None:
     _control("test_27", damaged)
 
 
+# ===========================================================================
+# 33-38. The ladder-integrity boundary (Step-9 final hardening)
+# ===========================================================================
+_VALIDATE_CALL = """    If Not SimStatsValidateLadder(quantileLabels, quantileValues, quantileCount, detail) Then
+        Exit Function
+    End If
+"""
+_LABEL_CHECK = """        If StrComp(quantileLabels(LBound(quantileLabels) + index), expectedLabel, _
+                   vbBinaryCompare) <> 0 Then
+            detail = "statistics: the ladder is not the accepted projection at " & expectedLabel
+            Exit Function
+        End If
+"""
+_FINITE_CHECK = """        If Not IsUsableDouble(quantileValues(LBound(quantileValues) + index)) Then
+            detail = "statistics: the ladder carries a value at " & expectedLabel & _
+                     " that is not a finite Double"
+            Exit Function
+        End If
+"""
+_EXTENT_CHECKS = """    If Not SimStatsLadderExtent(quantileLabels, quantileValues, labelExtent, valueExtent) Then
+        detail = "statistics: the ladder carrier is not allocated"
+        Exit Function
+    End If
+    If labelExtent <> quantileCount Then
+        detail = "statistics: the ladder label carrier is not the accepted length"
+        Exit Function
+    End If
+    If valueExtent <> quantileCount Then
+        detail = "statistics: the ladder value carrier is not the accepted length"
+        Exit Function
+    End If
+"""
+
+
+def test_33_the_ladder_is_not_validated_before_it_is_searched() -> None:
+    """The f44af49 boundary exactly: membership in the caller's array decides."""
+    _control("test_51", _swap(_ORIGINAL, _VALIDATE_CALL, ""))
+
+
+def test_34_the_owner_label_authority_is_removed() -> None:
+    _control("test_51", _swap(_ORIGINAL, _LABEL_CHECK, ""))
+
+
+def test_35_the_labels_are_checked_for_membership_and_not_for_position() -> None:
+    """Every accepted rung is present, but the ORDER is no longer proved."""
+    damaged = _swap(
+        _ORIGINAL, _LABEL_CHECK,
+        "        valueExtent = 0\n"
+        "        For labelExtent = 0 To quantileCount - 1\n"
+        "            If StrComp(quantileLabels(LBound(quantileLabels) + labelExtent), "
+        "expectedLabel, _\n"
+        "                       vbBinaryCompare) = 0 Then\n"
+        "                valueExtent = 1\n"
+        "            End If\n"
+        "        Next labelExtent\n"
+        "        If valueExtent = 0 Then\n"
+        '            detail = "statistics: the ladder is not the accepted projection at " '
+        "& expectedLabel\n"
+        "            Exit Function\n"
+        "        End If\n")
+    _control("test_53", damaged)
+
+
+def test_36_a_case_insensitive_label_comparison_is_substituted() -> None:
+    damaged = _swap(
+        _ORIGINAL,
+        "        If StrComp(quantileLabels(LBound(quantileLabels) + index), expectedLabel, _\n"
+        "                   vbBinaryCompare) <> 0 Then\n",
+        "        If StrComp(quantileLabels(LBound(quantileLabels) + index), expectedLabel, _\n"
+        "                   vbTextCompare) <> 0 Then\n")
+    _control("test_56", damaged)
+
+
+def test_37_the_ladder_value_finiteness_check_is_removed() -> None:
+    _control("test_57", _swap(_ORIGINAL, _FINITE_CHECK, ""))
+
+
+def test_38_the_physical_carrier_length_checks_are_removed() -> None:
+    _control("test_59", _swap(_ORIGINAL, _EXTENT_CHECKS, ""))
+
+
+def test_38a_only_the_label_carrier_length_is_checked() -> None:
+    damaged = _swap(
+        _ORIGINAL,
+        "    If valueExtent <> quantileCount Then\n"
+        '        detail = "statistics: the ladder value carrier is not the accepted length"\n'
+        "        Exit Function\n"
+        "    End If\n",
+        "")
+    _control("test_60", damaged)
+
+
+def test_38b_the_scoped_bounds_handler_becomes_a_broad_suppression() -> None:
+    damaged = _swap(
+        _ORIGINAL, "    On Error GoTo Unallocated\n", "    On Error Resume Next\n")
+    _control("test_48", damaged)
+
+
+def test_38c_the_selected_value_is_read_before_the_ladder_is_proved() -> None:
+    """Validation that runs but no longer GATES is validation in name only."""
+    damaged = _swap(
+        _ORIGINAL,
+        "    If Not SimStatsValidateLadder(quantileLabels, quantileValues, quantileCount, "
+        "detail) Then\n        Exit Function\n    End If\n",
+        "    If Not SimStatsValidateLadder(quantileLabels, quantileValues, quantileCount, "
+        "detail) Then\n        detail = vbNullString\n    End If\n")
+    _control("test_51", damaged)
+
+
 if __name__ == "__main__":  # pragma: no cover
     import pytest
 

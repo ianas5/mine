@@ -351,8 +351,10 @@ Public Function SimStatsSelectedQuantile(ByRef quantileLabels() As String, _
     Dim index As Long, found As Long
 
     detail = vbNullString
-    If quantileCount <> SIM_QUANTILE_COUNT Then
-        detail = "statistics: the ladder is not the accepted length"
+    ' THE LADDER IS PROVED BEFORE IT IS SEARCHED. These arrays are ordinary VBA
+    ' arrays and any caller can write to them, so "the label is in there
+    ' somewhere" is not evidence that the label is an accepted confidence level.
+    If Not SimStatsValidateLadder(quantileLabels, quantileValues, quantileCount, detail) Then
         Exit Function
     End If
     If Len(selectedLabel) = 0 Then
@@ -672,6 +674,99 @@ End Function
 ' The accepted ladder, in the accepted order, read from the projection. There is
 ' no second list here: a copy would be a third authority able to drift from both
 ' sim_contract.yaml and input_contract.yaml.
+' ==========================================================================
+' The ladder carrier is STRUCTURALLY VALIDATED before it is read
+'
+' `SimStatsDescribe` is the authoritative constructor of the ladder. What
+' arrives here is a pair of ordinary VBA arrays, and VBA arrays passed between
+' modules are CALLER-WRITABLE - exactly the boundary Step 7 met with the
+' prepared Beta shape. Membership of the supplied array is therefore worthless
+' as evidence: a caller who inserts a rung the projection never named would
+' otherwise have invented a confidence level.
+'
+' So the supplied labels must be the OWNER-PROJECTED ladder, position by
+' position, and every value must be a usable finite Double. That refuses an
+' inserted rung, a replaced rung, two swapped rungs, a duplicate, a missing
+' fixed rung, a case variation and a trailing space - all through the one
+' projection-backed `SimStatsLadderLabel`, with no second label list anywhere.
+'
+' WHAT THIS CANNOT PROVE, AND DOES NOT CLAIM: that a finite P50 value was not
+' changed from 100 to 101 after `SimStatsDescribe` produced it. Proving that
+' needs either a seal or a second quantile calculation, and Step 9 takes
+' neither. These arrays are internal in-project derived-reporting carriers, not
+' an externally authoritative serialised representation.
+'
+' STRUCTURAL ONLY: no sort, no quantile, no mean, no deviation, no re-Describe,
+' no iteration totals, no checksum.
+' ==========================================================================
+Private Function SimStatsValidateLadder(ByRef quantileLabels() As String, _
+                                        ByRef quantileValues() As Double, _
+                                        ByVal quantileCount As Long, _
+                                        ByRef detail As String) As Boolean
+    Dim index As Long, labelExtent As Long, valueExtent As Long
+    Dim expectedLabel As String
+
+    If quantileCount <> SIM_QUANTILE_COUNT Then
+        detail = "statistics: the ladder is not the accepted length"
+        Exit Function
+    End If
+    ' THE CARRIER SHAPE COMES FIRST. This entry point is public, so a malformed
+    ' or never-sized array must refuse in the module's own words rather than
+    ' fall out of it as a raw subscript error.
+    If Not SimStatsLadderExtent(quantileLabels, quantileValues, labelExtent, valueExtent) Then
+        detail = "statistics: the ladder carrier is not allocated"
+        Exit Function
+    End If
+    If labelExtent <> quantileCount Then
+        detail = "statistics: the ladder label carrier is not the accepted length"
+        Exit Function
+    End If
+    If valueExtent <> quantileCount Then
+        detail = "statistics: the ladder value carrier is not the accepted length"
+        Exit Function
+    End If
+
+    For index = 0 To quantileCount - 1
+        If Not SimStatsLadderLabel(index, expectedLabel, detail) Then Exit Function
+        If StrComp(quantileLabels(LBound(quantileLabels) + index), expectedLabel, _
+                   vbBinaryCompare) <> 0 Then
+            detail = "statistics: the ladder is not the accepted projection at " & expectedLabel
+            Exit Function
+        End If
+        ' NOT CLAMPED, NOT RECOMPUTED. A forged non-finite rung refuses the whole
+        ' ladder, wherever in it that rung sits.
+        If Not IsUsableDouble(quantileValues(LBound(quantileValues) + index)) Then
+            detail = "statistics: the ladder carries a value at " & expectedLabel & _
+                     " that is not a finite Double"
+            Exit Function
+        End If
+    Next index
+
+    SimStatsValidateLadder = True
+End Function
+
+' The physical extent of both carriers, read under a SCOPED error handler.
+'
+' `LBound` on an array that was never sized raises 9, so the one place that
+' reads a bound of an unproven carrier is this two-line procedure. The handler
+' is scoped to those reads and cleared immediately, exactly as the accepted
+' `modCalcFactors` arithmetic primitives scope theirs; there is no
+' `On Error Resume Next` here and none anywhere in this module.
+Private Function SimStatsLadderExtent(ByRef quantileLabels() As String, _
+                                      ByRef quantileValues() As Double, _
+                                      ByRef labelExtent As Long, _
+                                      ByRef valueExtent As Long) As Boolean
+    On Error GoTo Unallocated
+    labelExtent = UBound(quantileLabels) - LBound(quantileLabels) + 1
+    valueExtent = UBound(quantileValues) - LBound(quantileValues) + 1
+    On Error GoTo 0
+    SimStatsLadderExtent = True
+    Exit Function
+Unallocated:
+    On Error GoTo 0
+    SimStatsLadderExtent = False
+End Function
+
 Private Function SimStatsLadderLabel(ByVal position As Long, ByRef label As String, _
                                      ByRef detail As String) As Boolean
     If position = 0 Then
