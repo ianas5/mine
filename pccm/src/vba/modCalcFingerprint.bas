@@ -920,3 +920,93 @@ Private Function CalcFpSortedRecords(ByRef ids() As String, ByRef records() As S
     Next index
     CalcFpSortedRecords = True
 End Function
+' ==========================================================================
+' STEP 10 ADDITION - THE CANONICAL DIGEST CONTINUATION
+'
+' EVERYTHING ABOVE THIS BANNER IS THE ACCEPTED PHASE-5 MODULE, BYTE FOR BYTE.
+' The accepted digest gates hash the text before this line and still require
+' the accepted literals, so "and nothing else" keeps its full meaning: not one
+' accepted line may move to make room for what follows.
+'
+' WHY THIS EXISTS. The Phase-6 request fingerprint is the analytical
+' HEADER/COST/RISK stream followed by a SIM section. `CalcFpBuildFingerprint`
+' returns the analytical DIGEST and does not expose the stream that produced
+' it, and the accepted Step-10A authority forbids hashing that digest as a
+' field. The alternatives were all worse: rebuilding the analytical grammar in
+' a second module, or writing a second polynomial hash loop.
+'
+' The digest IS the final pair of accumulator states - eight hex digits of h1
+' then eight of h2, with no finalisation transform - so continuing from those
+' states is not an approximation of appending to the stream. It IS appending to
+' the stream:
+'
+'     ContinueDigest(DigestStream(prefix), suffix) = DigestStream(prefix & suffix)
+'
+' THIS CHANGES NO FINGERPRINT AUTHORITY. It is an implementation technique that
+' lets Phase 6 reach the accepted hash instead of copying it. The base, the two
+' moduli, the reduction, the code-unit normalisation and the hex conversion are
+' the same accepted procedures above; nothing here restates one.
+' ==========================================================================
+Public Function CalcFpContinueDigest(ByVal priorDigest As String, ByVal suffix As String, _
+                                     ByRef result As String) As Boolean
+    Dim h1 As Double, h2 As Double
+    Dim index As Long, unit As Long
+
+    If CalcFpUtf16Length(priorDigest) <> FP_HEX_WIDTH + FP_HEX_WIDTH Then Exit Function
+    If Not CalcFpHexValue(Mid$(priorDigest, 1, FP_HEX_WIDTH), h1) Then Exit Function
+    If Not CalcFpHexValue(Mid$(priorDigest, FP_HEX_WIDTH + 1, FP_HEX_WIDTH), h2) Then Exit Function
+    ' A pair of accumulator states, not an opaque label: each must be a residue
+    ' of ITS OWN modulus, and h1 and h2 have different moduli. Accepting a value
+    ' at or above the modulus would continue from a state the hash can never
+    ' reach, and swapping the halves would silently produce a valid-looking
+    ' digest for the wrong stream.
+    If h1 < 0# Or h1 >= FP_MOD_1 Then Exit Function
+    If h2 < 0# Or h2 >= FP_MOD_2 Then Exit Function
+
+    ' The identical loop CalcFpDigestStream runs, from a supplied state rather
+    ' than from FP_INIT_1 / FP_INIT_2. There is no second recurrence here.
+    For index = 1 To CalcFpUtf16Length(suffix)
+        unit = CalcFpNormaliseCodeUnit(AscW(Mid$(suffix, index, 1)))
+        If unit < 0 Then Exit Function
+        h1 = CalcFpReduceDouble(h1, unit, FP_MOD_1)
+        h2 = CalcFpReduceDouble(h2, unit, FP_MOD_2)
+    Next index
+
+    result = CalcFpHex8(h1) & CalcFpHex8(h2)
+    CalcFpContinueDigest = True
+End Function
+
+Private Function CalcFpHexValue(ByVal text As String, ByRef value As Double) As Boolean
+    ' Eight uppercase hex digits to a Double. The accumulator stays a Double all
+    ' the way: eight digits reach 4294967295, which is outside signed-Long range,
+    ' and narrowing on the way would be exactly the conversion CalcFpReduceDouble
+    ' and CalcFpHex8 exist to avoid.
+    Dim index As Long, digit As Long, running As Double
+    If CalcFpUtf16Length(text) <> FP_HEX_WIDTH Then Exit Function
+    running = 0#
+    For index = 1 To FP_HEX_WIDTH
+        digit = CalcFpHexDigitValue(Mid$(text, index, 1))
+        If digit < 0 Then Exit Function
+        running = running * 16# + CDbl(digit)
+    Next index
+    value = running
+    CalcFpHexValue = True
+End Function
+
+Private Function CalcFpHexDigitValue(ByVal char As String) As Long
+    ' By POSITION in the accepted uppercase table, compared ORDINALLY.
+    '
+    ' Not CLng("&H" & text) and not any host hex parser: those are host- and
+    ' locale-sensitive, and would silently accept lowercase, surrounding
+    ' whitespace, a sign or an 0x prefix. A digest is an identity, so a
+    ' representation this module never produces must not be accepted back.
+    Dim index As Long
+    CalcFpHexDigitValue = -1
+    If Len(char) <> 1 Then Exit Function
+    For index = 1 To CalcFpUtf16Length(FP_HEX_DIGITS)
+        If StrComp(Mid$(FP_HEX_DIGITS, index, 1), char, vbBinaryCompare) = 0 Then
+            CalcFpHexDigitValue = index - 1
+            Exit Function
+        End If
+    Next index
+End Function

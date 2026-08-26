@@ -717,7 +717,15 @@ def test_21_the_encoder_changed_only_where_compile_safety_required() -> None:
                 if line.strip() and not line.strip().startswith("'")]
 
     before = executable(accepted.stdout)
-    current = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
+    # THE ACCEPTED PREFIX. Step 10 APPENDED the canonical digest continuation
+    # after every accepted line; reading the file up to that banner keeps this
+    # comparison asking its ORIGINAL question - did anything move outside the
+    # boundary constructions - instead of widening the allowed-token list.
+    banner = ("' ==========================================================================\n"
+              "' STEP 10 ADDITION - THE CANONICAL DIGEST CONTINUATION\n")
+    whole = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
+    assert whole.count(banner) == 1, "the Step-10 continuation banner is missing"
+    current = whole[: whole.index(banner)]
     # RUNTIME RUN 7 rename, REVERSED before the comparison rather than added to
     # the allowed-token list. `Name` is a VBA statement keyword, so
     # CalcFpEncodeSection's parameter became `sectionName`. Reversing it means

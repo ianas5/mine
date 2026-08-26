@@ -91,6 +91,53 @@ def _cstr(x):
     return str(int(x)) if float(x).is_integer() else repr(x)
 
 
+# ---------------------------------------------------------------------------
+# VBA strings ARE UTF-16, and the hash is defined over UTF-16 CODE UNITS. Python
+# strings are sequences of CODE POINTS, so `len`, slicing and `ord` all disagree
+# with VBA on any astral character - exactly the inputs the surrogate-pair
+# vectors exist to cover. These three model the VBA semantics directly.
+# ---------------------------------------------------------------------------
+def _units(text: str) -> bytes:
+    return text.encode("utf-16-le", "surrogatepass")
+
+
+def _decode(raw: bytes) -> str:
+    return raw.decode("utf-16-le", "surrogatepass")
+
+
+def _len(value):
+    """VBA `Len`: UTF-16 code units for a String, element count for an array."""
+    return len(_units(value)) // 2 if isinstance(value, str) else len(value)
+
+
+def _mid(text, start, length=None):
+    """VBA `Mid`: 1-BASED, in code units, and taking a LENGTH not an end."""
+    raw = _units(text)
+    lo = (int(start) - 1) * 2
+    hi = len(raw) if length is None else lo + int(length) * 2
+    return _decode(raw[lo:hi])
+
+
+def _ascw(text):
+    """VBA `AscW`: the first UTF-16 code unit, as a SIGNED 16-bit Integer.
+
+    Everything above U+7FFF comes back negative, which is the whole reason
+    `CalcFpNormaliseCodeUnit` exists.
+    """
+    unit = int.from_bytes(_units(text)[:2], "little")
+    return unit - 65536 if unit > 32767 else unit
+
+
+def _vbfor(low, high, step):
+    """VBA's counted loop with an explicit Step, including a negative one."""
+    step = int(step)
+    assert step != 0, "a VBA For loop may not Step by zero"
+    value, limit = int(low), int(high)
+    while value <= limit if step > 0 else value >= limit:
+        yield value
+        value += step
+
+
 def _strcomp(a, b, mode):
     assert mode == 0, "only vbBinaryCompare is transcribed"
     ka, kb = a.encode("utf-16-be"), b.encode("utf-16-be")
@@ -99,12 +146,12 @@ def _strcomp(a, b, mode):
 
 _BUILTIN = {
     "Fix": "_fix", "CDbl": "float", "CLng": "int", "CStr": "_cstr",
-    "Len": "len", "LBound": "_lbound", "UBound": "_ubound", "StrComp": "_strcomp",
+    "Len": "_len", "LBound": "_lbound", "UBound": "_ubound", "StrComp": "_strcomp",
     # VBA `Log` is the NATURAL logarithm, not base 10. These map to DOTLESS
     # names on purpose: the member-access rewrite below would read `math.log`
     # as a UDT field access and turn it into `math["log"]`.
     "Log": "_log", "Exp": "_exp", "Sqr": "_sqrt", "Abs": "abs",
-    "Asc": "_asc", "Mid": "_mid",
+    "Asc": "_asc", "Mid": "_mid", "AscW": "_ascw",
 }
 _SIG = re.compile(
     r"^(Public|Private)\s+(Function|Sub)\s+(\w+)\((.*)\)(?:\s+As\s+(\w+))?$"
@@ -191,6 +238,13 @@ def _mark_byref(text: str, procs: dict, env: dict) -> str:
 
 def _expr(text: str, env: dict, procs: dict, cond: bool = False) -> str:
     text, lits = _protect(text)
+    # A MODULE-QUALIFIED CALL is the same procedure: `modCalcFingerprint.CalcFpX(...)`
+    # and `CalcFpX(...)` name one thing. The transcription puts every compiled
+    # procedure in ONE namespace, so the qualifier is dropped mechanically here,
+    # before anything else reads the name - in particular before the ByRef
+    # marking, which looks the name up, and before the member-access rewrite,
+    # which would otherwise read the module as a UDT.
+    text = re.sub(r"\bmod[A-Za-z]\w*\.(?=\w+\()", "", text)
     text = _mark_byref(text, procs, env)
     text = text.replace("<>", "!=")
     if cond:
@@ -200,6 +254,9 @@ def _expr(text: str, env: dict, procs: dict, cond: bool = False) -> str:
     text = re.sub(r"\bOr\b", " or ", text)
     text = text.replace("&", "+")
     text = text.replace("vbNullString", '""').replace("vbBinaryCompare", "0")
+    # `Mid$` and friends are the same builtins with VBA's String-returning
+    # suffix. Dropping the `$` is mechanical; there is no second behaviour.
+    text = re.sub(r"\b(Mid|Left|Right|Trim|UCase|LCase|Chr|Space)\$\(", r"\1(", text)
     for vba, py in _BUILTIN.items():
         text = re.sub(rf"\b{vba}\(", f"{py}(", text)
     text = _bracket(text, [n for n, k in env.items() if k[0] == "array"])
@@ -346,6 +403,16 @@ def _emit(text: str, out: list[str], indent: int, env: dict, types: dict,
         return indent + 1
     if text == "Loop":
         return indent - 1
+    # `For i = a To b Step s`. Only the explicit-Step form goes through the
+    # generator; the plain form keeps the exact `range` it always had.
+    stepped = re.match(r"^For (\w+) = (.*?) To (.*?) Step (.*)$", text)
+    if stepped:
+        var, low, high, step = stepped.groups()
+        out.append(pad + f"for _t{indent} in _vbfor("
+                         f"{_expr(low, env, procs)}, {_expr(high, env, procs)}, "
+                         f"{_expr(step, env, procs)}):")
+        out.append(pad + f"    {var}.v = _t{indent}")
+        return indent + 1
     counted = re.match(r"^For (\w+) = (.*) To (.*)$", text)
     if counted:
         var, low, high = counted.groups()
@@ -428,10 +495,7 @@ def build(sources, constants, only=None, extra=None, signature_only=None) -> dic
         "_cstr": _cstr, "_strcomp": _strcomp,
         "_log": math.log, "_exp": math.exp, "_sqrt": math.sqrt,
         "_asc": lambda text: ord(text[0]),
-        # VBA Mid is 1-based and takes a LENGTH, not an end position.
-        "_mid": lambda text, start, length=None: (
-            text[int(start) - 1:] if length is None
-            else text[int(start) - 1: int(start) - 1 + int(length)]),
+        "_len": _len, "_mid": _mid, "_ascw": _ascw, "_vbfor": _vbfor,
         "_lbound": lambda seq: 0, "_ubound": lambda seq: len(seq) - 1,
         "_new": lambda kind: _proto(kind, types),
         "_arr": lambda low, high, kind: [

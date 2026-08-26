@@ -280,10 +280,11 @@ def test_02_the_module_is_registered_as_handwritten_source() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimSample" in modules
     assert modules["modSimSample"].generated is False
-    assert [m.name for m in structure.vba_modules][-5:] == [
-        "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats"
+    assert [m.name for m in structure.vba_modules][-6:] == [
+        "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
+        "modSimFingerprint"
     ]
-    for absent in ("modSimFingerprint", "modSimReport"):
+    for absent in ("modSimReport",):
         assert absent not in modules, absent
 
 

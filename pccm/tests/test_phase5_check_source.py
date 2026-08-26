@@ -153,7 +153,8 @@ def _assert_run7_rename_only(module: str) -> None:
     """Reversing the Run-7 renames must restore the pre-Run-7 byte digest."""
     import hashlib
 
-    text = (SRC_VBA / f"{module}.bas").read_text(encoding="utf-8")
+    text = (_accepted_fingerprint_source() if module == "modCalcFingerprint"
+            else (SRC_VBA / f"{module}.bas").read_text(encoding="utf-8"))
     for new, old in RUN7_RENAMES_BY_MODULE[module].items():
         assert new in text, f"{module}: the Run-7 rename {new} is missing"
         text = re.sub(r"\b" + new + r"\b", old, text)
@@ -713,11 +714,35 @@ FINGERPRINT_ACCEPTED_BODY_SHA256 = (
 )
 
 
+
+# ---------------------------------------------------------------------------
+# modCalcFingerprint took ONE authorised Step-10 addition: the canonical digest
+# continuation, APPENDED after every accepted line. The frozen digests below are
+# therefore taken over the ACCEPTED PREFIX - the file up to that banner - and
+# they still carry their ORIGINAL literals. That is deliberately stronger than
+# re-pinning them: the accepted bytes must be identical, and the only thing that
+# may exist beyond them is the named Step-10 block.
+# ---------------------------------------------------------------------------
+STEP10_FINGERPRINT_BANNER = (
+    "' ==========================================================================\n"
+    "' STEP 10 ADDITION - THE CANONICAL DIGEST CONTINUATION\n"
+)
+
+
+def _accepted_fingerprint_source() -> str:
+    text = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
+    assert text.count(STEP10_FINGERPRINT_BANNER) == 1, (
+        "the Step-10 continuation banner is missing or duplicated; the accepted "
+        "prefix cannot be identified"
+    )
+    return text[: text.index(STEP10_FINGERPRINT_BANNER)]
+
+
 def _fingerprint_body_digest() -> str:
     import hashlib
 
     kept: list[str] = []
-    for line in (SRC_VBA / "modCalcFingerprint.bas").read_text().splitlines():
+    for line in _accepted_fingerprint_source().splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("'"):
             continue
@@ -740,7 +765,10 @@ def test_44_the_accepted_modules_were_not_modified() -> None:
     import hashlib
 
     for name, digest in FROZEN_SHA256.items():
-        actual = hashlib.sha256((SRC_VBA / f"{name}.bas").read_bytes()).hexdigest()
+        raw = (_accepted_fingerprint_source().encode("utf-8")
+               if name == "modCalcFingerprint"
+               else (SRC_VBA / f"{name}.bas").read_bytes())
+        actual = hashlib.sha256(raw).hexdigest()
         assert actual == digest, f"{name}.bas changed; Step 6 adds a module and edits none"
     assert _fingerprint_body_digest() == FINGERPRINT_ACCEPTED_BODY_SHA256, (
         "modCalcFingerprint changed beyond the authorised visibility of CalcFpNumberField"
@@ -751,7 +779,8 @@ def test_44_the_accepted_modules_were_not_modified() -> None:
         _assert_run7_rename_only(module)
 
 
-PHASE6_HANDWRITTEN = {"modSimRng", "modSimSample", "modSimEngine", "modSimStats"}
+PHASE6_HANDWRITTEN = {"modSimRng", "modSimSample", "modSimEngine", "modSimStats",
+                      "modSimFingerprint"}
 """The Phase-6 hand-written modules. Named here so the Phase-5 inventory below
 stays an exact statement about Phase 5 rather than becoming an open set."""
 

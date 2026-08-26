@@ -252,6 +252,7 @@ PHASE6_VBA_MODULES = (
     "modSimSample",
     "modSimEngine",
     "modSimStats",
+    "modSimFingerprint",
 )
 
 PHASE4_RAW_LINE_LIMIT = 900

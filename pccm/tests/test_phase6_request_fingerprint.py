@@ -305,16 +305,25 @@ def test_17_the_corpus_group_is_exactly_these_five_cases() -> None:
 # ===========================================================================
 # E. Scope: no implementation exists yet
 # ===========================================================================
-def test_18_no_vba_fingerprint_module_exists() -> None:
+def test_18_the_implementation_arrived_in_step_10_and_nothing_beyond_it() -> None:
+    """Step 10A closed the grammar with NO implementation. Step 10 then built it.
+
+    This test moved with that authorisation rather than being deleted: it still
+    says exactly what may exist, and `modSimReport` and the endpoint still may
+    not.
+    """
     src = PCCM_ROOT / "src" / "vba"
     names = {path.name for path in src.glob("*.bas")}
-    for absent in ("modSimFingerprint.bas", "modSimReport.bas"):
-        assert absent not in names, f"{absent} exists; Step 10 is not authorised"
-    for path in sorted(src.glob("*.bas")):
-        text = path.read_text(encoding="utf-8")
-        for banned in ("SimFpBuildRequestFingerprint", "SimResultDigest",
-                       "SimFpRequest", "PCCM_RunSimulation"):
-            assert banned not in text, f"{path.name} carries {banned}"
+    assert "modSimFingerprint.bas" in names
+    assert "modSimReport.bas" not in names, "Step 11 is not authorised"
+    from pccm_builder.vba_source import load_modules
+
+    for module in load_modules([src]):
+        for banned in ("PCCM_RunSimulation", "SimReport"):
+            assert banned not in module.code, f"{module.name} carries {banned}"
+        if module.name != "modSimFingerprint":
+            for owned in ("SimFpBuildRequestFingerprint", "SimFpResultDigest"):
+                assert owned not in module.code, f"{module.name} carries {owned}"
 
 
 def test_19_the_accepted_phase5_encoder_was_not_reopened() -> None:

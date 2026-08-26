@@ -139,13 +139,19 @@ FINGERPRINT_PUBLIC = {
     "CalcFpCanonicalNumber", "CalcFpCanonicalInteger",
     "CalcFpReduceDouble", "CalcFpDigestStream", "CalcFpBuildCostRecord",
     "CalcFpBuildRiskRecord", "CalcFpBuildFingerprint",
-    # PUBLIC SINCE STEP 7, and the ONLY change made to this accepted module.
-    # modCalcReport frames the four header scalars - Base Year, Start Year,
-    # Duration and Discount Rate - and they are NUMBER fields. The orchestration
-    # layer must reach the accepted framing authority rather than assemble an N
-    # field of its own, so the framing authority stays here and becomes
-    # reachable. The body is unchanged; test_64j proves that.
+    # PUBLIC SINCE STEP 7. modCalcReport frames the four header scalars - Base
+    # Year, Start Year, Duration and Discount Rate - and they are NUMBER fields.
+    # The orchestration layer must reach the accepted framing authority rather
+    # than assemble an N field of its own, so the framing authority stays here
+    # and becomes reachable. The body is unchanged; test_64j proves that.
     "CalcFpNumberField",
+    # PUBLIC SINCE STEP 10, and the only procedure added to this module. The
+    # Phase-6 request fingerprint is the analytical stream followed by a SIM
+    # section, and the accepted Step-10A authority forbids hashing the
+    # analytical DIGEST as a field. Continuing the hash from the digest's own
+    # accumulator states is what lets modSimFingerprint reach this hash instead
+    # of implementing a second one. Its caller is modSimFingerprint.
+    "CalcFpContinueDigest",
 }
 
 # Public WITHOUT a current cross-module caller, each for a stated reason. Every
@@ -225,6 +231,30 @@ def _modules() -> dict[str, VbaModule]:
     return {m.name: m for m in load_modules([SRC_VBA])}
 
 
+
+# ---------------------------------------------------------------------------
+# modCalcFingerprint took ONE authorised Step-10 addition: the canonical digest
+# continuation, APPENDED after every accepted line. The frozen digests here are
+# therefore taken over the ACCEPTED PREFIX - the file up to that banner - and
+# they still carry their ORIGINAL literals. That is deliberately stronger than
+# re-pinning them: the accepted bytes must be identical, and the only thing that
+# may exist beyond them is the named Step-10 block.
+# ---------------------------------------------------------------------------
+STEP10_FINGERPRINT_BANNER = (
+    "' ==========================================================================\n"
+    "' STEP 10 ADDITION - THE CANONICAL DIGEST CONTINUATION\n"
+)
+
+
+def _accepted_fingerprint_source() -> str:
+    text = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
+    assert text.count(STEP10_FINGERPRINT_BANNER) == 1, (
+        "the Step-10 continuation banner is missing or duplicated; the accepted "
+        "prefix cannot be identified"
+    )
+    return text[: text.index(STEP10_FINGERPRINT_BANNER)]
+
+
 def fingerprint_body_digest(source: str | None = None) -> str:
     """modCalcFingerprint reduced to executable text, visibility normalised.
 
@@ -234,7 +264,7 @@ def fingerprint_body_digest(source: str | None = None) -> str:
     import hashlib
 
     if source is None:
-        source = (SRC_VBA / "modCalcFingerprint.bas").read_text()
+        source = _accepted_fingerprint_source()
     kept: list[str] = []
     for line in source.splitlines():
         stripped = line.strip()
@@ -327,7 +357,8 @@ def test_01_the_three_kernel_modules_exist_and_declare_themselves() -> None:
         assert lines[1] == "Option Explicit", f"{name} must declare Option Explicit"
 
 
-PHASE6_MODULES = ("modSimRng", "modSimSample", "modSimEngine", "modSimStats")
+PHASE6_MODULES = ("modSimRng", "modSimSample", "modSimEngine", "modSimStats",
+                  "modSimFingerprint")
 """Phase-6 hand-written source modules. Not Phase 5's, and named so the
 Phase-5 inventory equality below stays exact."""
 
@@ -1915,7 +1946,7 @@ def test_64j_only_the_visibility_of_calcfpnumberfield_changed() -> None:
     # the guard meaningless. Reversing `sectionName` back to `name` over the
     # SAME reduction must restore the pre-Run-7 digest exactly - which it can
     # only do if identifier spelling is the whole of the change.
-    source = (SRC_VBA / "modCalcFingerprint.bas").read_text()
+    source = _accepted_fingerprint_source()
     assert "sectionName" in source, "the Run-7 rename is not present"
     reversed_source = re.sub(r"\bsectionName\b", "name", source)
     assert fingerprint_body_digest(reversed_source) == \
@@ -2907,8 +2938,12 @@ def test_86b_every_run_7_rename_is_spelling_and_nothing_else() -> None:
 
     checked = 0
     for module, jobs in by_module.items():
+        # modCalcFingerprint is read as its ACCEPTED PREFIX: the Step-10
+        # continuation is appended AFTER every accepted line, so the reversal
+        # below still has to reproduce the base commit byte for byte.
         path = SRC_VBA / f"{module}.bas"
-        lines = path.read_text().split("\n")
+        lines = (_accepted_fingerprint_source() if module == "modCalcFingerprint"
+                 else path.read_text()).split("\n")
         for procedure, old, new in jobs:
             lo, hi = span(lines, procedure)
             # EXECUTABLE TEXT ONLY. Comments and string literals are stripped

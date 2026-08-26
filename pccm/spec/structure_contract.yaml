@@ -493,6 +493,9 @@ vba:
     - name: "modSimStats"
       generated: false
       responsibility: "The pure Phase-6 scale-safe simulation statistics: original-order moments, sorted-copy Hyndman-Fan type-7 quantiles, the full accepted quantile ladder and selected-Px contingency. No workbook access, no fingerprint, no digest and no publication."
+    - name: "modSimFingerprint"
+      generated: false
+      responsibility: "The pure Phase-6 request fingerprint and iteration-result digest framing over the accepted Phase-5 canonical encoder and hash. Framing and order only: no encoding, no hash recurrence, no workbook access, no simulation, no statistics and no publication."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.

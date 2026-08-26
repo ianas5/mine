@@ -174,11 +174,36 @@ SHA256_BEFORE_RUN7_RENAMES: dict[str, str] = {
     "modCalcFingerprint": "9081dc05bddf052fdcb172a34eed588fef1637b89212b14a515539590e265fcf",}
 
 
+
+# ---------------------------------------------------------------------------
+# modCalcFingerprint took ONE authorised Step-10 addition: the canonical digest
+# continuation, APPENDED after every accepted line. The frozen digests here are
+# therefore taken over the ACCEPTED PREFIX - the file up to that banner - and
+# they still carry their ORIGINAL literals. That is deliberately stronger than
+# re-pinning them: the accepted bytes must be identical, and the only thing that
+# may exist beyond them is the named Step-10 block.
+# ---------------------------------------------------------------------------
+STEP10_FINGERPRINT_BANNER = (
+    "' ==========================================================================\n"
+    "' STEP 10 ADDITION - THE CANONICAL DIGEST CONTINUATION\n"
+)
+
+
+def _accepted_fingerprint_source() -> str:
+    text = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
+    assert text.count(STEP10_FINGERPRINT_BANNER) == 1, (
+        "the Step-10 continuation banner is missing or duplicated; the accepted "
+        "prefix cannot be identified"
+    )
+    return text[: text.index(STEP10_FINGERPRINT_BANNER)]
+
+
 def _assert_run7_rename_only(module: str) -> None:
     """Reversing the Run-7 renames must restore the pre-Run-7 byte digest."""
     import hashlib
 
-    text = (SRC_VBA / f"{module}.bas").read_text(encoding="utf-8")
+    text = (_accepted_fingerprint_source() if module == "modCalcFingerprint"
+            else (SRC_VBA / f"{module}.bas").read_text(encoding="utf-8"))
     for new, old in RUN7_RENAMES_BY_MODULE[module].items():
         assert new in text, f"{module}: the Run-7 rename {new} is missing"
         text = re.sub(r"\b" + new + r"\b", old, text)
@@ -224,7 +249,7 @@ PHASE5_INVENTORY = {
 """The fifteen modules Phase 5 closed with. Frozen by name, not by count."""
 
 PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
-                    "modSimStats"}
+                    "modSimStats", "modSimFingerprint"}
 """Everything Phase 6 has added on top, also by name: a module cannot appear
 in the registry here unremarked."""
 
@@ -1092,7 +1117,10 @@ def test_51_the_accepted_modules_were_not_modified() -> None:
         "modStructuralCheck": "1798c56a459c9e35c581871248815841b28a3c88a62a931a68afe5d71853ed54",
     }
     for name, digest in frozen.items():
-        actual = hashlib.sha256((SRC_VBA / f"{name}.bas").read_bytes()).hexdigest()
+        raw = (_accepted_fingerprint_source().encode("utf-8")
+               if name == "modCalcFingerprint"
+               else (SRC_VBA / f"{name}.bas").read_bytes())
+        actual = hashlib.sha256(raw).hexdigest()
         assert actual == digest, f"{name}.bas changed; Step 7 adds a module and edits none"
 
     # AND THE FOUR THAT MOVED IN RUN 7 MOVED BY A RENAME AND NOTHING ELSE.
