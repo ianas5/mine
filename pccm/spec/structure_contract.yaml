@@ -490,6 +490,9 @@ vba:
     - name: "modSimEngine"
       generated: false
       responsibility: "The pure Phase-6 Monte Carlo iteration and canonical contribution accumulation over resolved in-memory DriverFactors; retains the nominal and PV iteration totals. No worksheet access, no statistics, no fingerprint and no publication."
+    - name: "modSimStats"
+      generated: false
+      responsibility: "The pure Phase-6 scale-safe simulation statistics: original-order moments, sorted-copy Hyndman-Fan type-7 quantiles, the full accepted quantile ladder and selected-Px contingency. No workbook access, no fingerprint, no digest and no publication."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.

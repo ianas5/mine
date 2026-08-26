@@ -483,11 +483,10 @@ def test_22_the_module_is_in_the_stage_b_registry_as_a_generated_module() -> Non
         "the projection must be declared generated; a hand-written copy would be "
         "a second definition of every literal it projects"
     )
-    for handwritten in ("modSimRng", "modSimSample", "modSimEngine"):
+    for handwritten in ("modSimRng", "modSimSample", "modSimEngine", "modSimStats"):
         assert handwritten in modules and modules[handwritten].generated is False
     # And nothing further was declared early.
-    for premature in ("modSimStats",
-                      "modSimFingerprint", "modSimReport"):
+    for premature in ("modSimFingerprint", "modSimReport"):
         assert premature not in modules, premature
 
 

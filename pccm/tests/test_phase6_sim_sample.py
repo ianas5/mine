@@ -604,8 +604,7 @@ def test_43_no_sampler_vba_exists() -> None:
     src = PCCM_ROOT / "src" / "vba"
     names = {p.name for p in src.glob("*.bas")}
     assert "modSimSample.bas" in names
-    for banned in ("modSimStats.bas",
-                   "modSimFingerprint.bas", "modSimReport.bas"):
+    for banned in ("modSimFingerprint.bas", "modSimReport.bas"):
         assert banned not in names, banned
     from pccm_builder.vba_source import strip_comments, strip_strings
 

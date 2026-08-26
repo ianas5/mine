@@ -104,6 +104,7 @@ _BUILTIN = {
     # names on purpose: the member-access rewrite below would read `math.log`
     # as a UDT field access and turn it into `math["log"]`.
     "Log": "_log", "Exp": "_exp", "Sqr": "_sqrt", "Abs": "abs",
+    "Asc": "_asc", "Mid": "_mid",
 }
 _SIG = re.compile(
     r"^(Public|Private)\s+(Function|Sub)\s+(\w+)\((.*)\)(?:\s+As\s+(\w+))?$"
@@ -426,6 +427,11 @@ def build(sources, constants, only=None, extra=None, signature_only=None) -> dic
         "_Ref": _Ref, "_val": _val, "_fix": _fix, "_copy": _copy, "_assign": _assign,
         "_cstr": _cstr, "_strcomp": _strcomp,
         "_log": math.log, "_exp": math.exp, "_sqrt": math.sqrt,
+        "_asc": lambda text: ord(text[0]),
+        # VBA Mid is 1-based and takes a LENGTH, not an end position.
+        "_mid": lambda text, start, length=None: (
+            text[int(start) - 1:] if length is None
+            else text[int(start) - 1: int(start) - 1 + int(length)]),
         "_lbound": lambda seq: 0, "_ubound": lambda seq: len(seq) - 1,
         "_new": lambda kind: _proto(kind, types),
         "_arr": lambda low, high, kind: [

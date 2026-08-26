@@ -284,7 +284,8 @@ def test_12_the_manifest_carries_the_structured_rules() -> None:
     # without an authority.
     assert set(by_construct) == set(manifest["vba"]["forbidden_constructs"])
     names = [m["name"] for m in manifest["vba"]["modules"]]
-    assert names[-4:] == ["modSimContract", "modSimRng", "modSimSample", "modSimEngine"]
+    assert names[-5:] == ["modSimContract", "modSimRng", "modSimSample",
+                          "modSimEngine", "modSimStats"]
 
 
 # ===========================================================================

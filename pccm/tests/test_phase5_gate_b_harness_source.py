@@ -57,12 +57,12 @@ _PHASE5_MANIFEST_MODULES = {
 name so a Phase-6 addition is visible rather than absorbed into a count."""
 
 _PHASE6_MANIFEST_MODULES = {"modSimContract", "modSimRng", "modSimSample",
-                            "modSimEngine"}
+                            "modSimEngine", "modSimStats"}
 """Every module Phase 6 has added so far, BY NAME. Named rather than counted for
 the same reason: a module addition must be a visible edit here, and the
 exact-set assertions that consume it keep their full strength."""
 
-_PHASE6_HANDWRITTEN = {"modSimRng", "modSimSample", "modSimEngine"}
+_PHASE6_HANDWRITTEN = {"modSimRng", "modSimSample", "modSimEngine", "modSimStats"}
 """...and which of them are hand-written source rather than generated."""
 
 SRC_VBA = PCCM_ROOT / "src" / "vba"

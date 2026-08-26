@@ -327,7 +327,7 @@ def test_01_the_three_kernel_modules_exist_and_declare_themselves() -> None:
         assert lines[1] == "Option Explicit", f"{name} must declare Option Explicit"
 
 
-PHASE6_MODULES = ("modSimRng", "modSimSample", "modSimEngine")
+PHASE6_MODULES = ("modSimRng", "modSimSample", "modSimEngine", "modSimStats")
 """Phase-6 hand-written source modules. Not Phase 5's, and named so the
 Phase-5 inventory equality below stays exact."""
 
