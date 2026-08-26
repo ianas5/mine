@@ -703,16 +703,18 @@ def test_49_the_loader_parses_but_never_evaluates_contract_expressions() -> None
 
 
 def test_50_only_the_authorised_phase6_vba_exists() -> None:
-    """Step 1 authorised no Phase-6 VBA. Step 6 authorised exactly one module.
+    """Step 1 authorised no Phase-6 VBA. Steps 6 and 7 authorised one module each.
 
     The rule has not loosened: a Phase-6 module still may not appear without a
-    step that authorises it, and the remaining five are still absent.
+    step that authorises it, and the remaining four are still absent.
     `modSimContract.bas` is still not in `src/vba` - it is GENERATED, and a
     hand-written copy would be a second definition of every literal it projects.
     """
     src = PCCM_ROOT / "src" / "vba"
     names = {p.name for p in src.glob("*.bas")} | {p.name for p in src.glob("*.cls")}
-    for banned in ("modSimSample.bas", "modSimEngine.bas", "modSimStats.bas",
+    for authorised in ("modSimRng.bas", "modSimSample.bas"):
+        assert authorised in names, authorised
+    for banned in ("modSimEngine.bas", "modSimStats.bas",
                    "modSimFingerprint.bas", "modSimReport.bas", "modSimContract.bas"):
         assert banned not in names, f"{banned} exists; no step authorises it there"
     assert "modSimRng.bas" in names

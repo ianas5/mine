@@ -197,7 +197,8 @@ def test_02_the_phase_5_inventory_is_complete_and_nothing_of_phase_5_moved() -> 
     """Phase 5 closed at fifteen modules and every one of them is still here.
 
     The absolute count is no longer the assertion: Phase-6 Step 6 adds
-    modSimContract and modSimRng, which is growth the registry is meant to
+    modSimContract, modSimRng and modSimSample, which is growth the registry is
+    meant to
     record. What must not change is the Phase-5 set itself, so that is what is
     stated - by name, in both directions.
     """
@@ -211,7 +212,7 @@ def test_02_the_phase_5_inventory_is_complete_and_nothing_of_phase_5_moved() -> 
                                             "modSimContract"}
     # Everything beyond the Phase-5 fifteen is Phase-6 and is named, so a
     # module cannot appear here unremarked.
-    assert set(names) - PHASE5_INVENTORY == {"modSimContract", "modSimRng"}
+    assert set(names) - PHASE5_INVENTORY == PHASE6_INVENTORY
 
 
 PHASE5_INVENTORY = {
@@ -221,6 +222,10 @@ PHASE5_INVENTORY = {
     "modCalcCheck", "modCalcReport",
 }
 """The fifteen modules Phase 5 closed with. Frozen by name, not by count."""
+
+PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample"}
+"""Everything Phase 6 has added on top, also by name: a module cannot appear
+in the registry here unremarked."""
 
 
 def test_03_no_extra_orchestration_module_was_invented() -> None:

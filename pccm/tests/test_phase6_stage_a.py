@@ -475,6 +475,7 @@ def test_22_the_module_is_in_the_stage_b_registry_as_a_generated_module() -> Non
 
     Step 6 is the first implementation step that does, so it entered the
     registry in the same commit as modSimRng - the atomic D6-11 activation.
+    Step 7 added modSimSample, which reads the same projection.
     """
     modules = {module.name: module for module in _structure().vba_modules}
     assert SIM_MODULE_NAME in modules
@@ -482,9 +483,10 @@ def test_22_the_module_is_in_the_stage_b_registry_as_a_generated_module() -> Non
         "the projection must be declared generated; a hand-written copy would be "
         "a second definition of every literal it projects"
     )
-    assert "modSimRng" in modules and modules["modSimRng"].generated is False
+    for handwritten in ("modSimRng", "modSimSample"):
+        assert handwritten in modules and modules[handwritten].generated is False
     # And nothing further was declared early.
-    for premature in ("modSimSample", "modSimEngine", "modSimStats",
+    for premature in ("modSimEngine", "modSimStats",
                       "modSimFingerprint", "modSimReport"):
         assert premature not in modules, premature
 

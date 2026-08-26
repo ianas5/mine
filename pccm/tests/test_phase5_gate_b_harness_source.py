@@ -56,6 +56,14 @@ _PHASE5_MANIFEST_MODULES = {
 """The fifteen modules the manifest declared when Phase 5 closed. Frozen by
 name so a Phase-6 addition is visible rather than absorbed into a count."""
 
+_PHASE6_MANIFEST_MODULES = {"modSimContract", "modSimRng", "modSimSample"}
+"""Every module Phase 6 has added so far, BY NAME. Named rather than counted for
+the same reason: a module addition must be a visible edit here, and the
+exact-set assertions that consume it keep their full strength."""
+
+_PHASE6_HANDWRITTEN = {"modSimRng", "modSimSample"}
+"""...and which of them are hand-written source rather than generated."""
+
 SRC_VBA = PCCM_ROOT / "src" / "vba"
 SPEC = PCCM_ROOT / "spec"
 
@@ -560,7 +568,7 @@ def test_19_the_diagnostic_module_is_not_a_production_module() -> None:
     assert _PHASE5_MANIFEST_MODULES <= set(declared), (
         sorted(_PHASE5_MANIFEST_MODULES - set(declared))
     )
-    assert set(declared) - _PHASE5_MANIFEST_MODULES == {"modSimContract", "modSimRng"}
+    assert set(declared) - _PHASE5_MANIFEST_MODULES == _PHASE6_MANIFEST_MODULES
     # Not in the structure contract either, so it can never be emitted into one.
     contract = _text(SPEC / "structure_contract.yaml")
     assert DIAGNOSTIC_MODULE_NAME not in contract
@@ -947,13 +955,13 @@ def test_37_no_calculate_button_and_no_new_production_module() -> None:
     assert entry_points == set(emitted["manifest"]["vba"]["entry_points"])
     modules = {module["name"] for module in emitted["manifest"]["vba"]["modules"]}
     assert _PHASE5_MANIFEST_MODULES <= set(modules)
-    assert set(modules) - _PHASE5_MANIFEST_MODULES == {"modSimContract", "modSimRng"}
+    assert set(modules) - _PHASE5_MANIFEST_MODULES == _PHASE6_MANIFEST_MODULES
     on_disk = {path.stem for path in SRC_VBA.glob("*.bas")}
     assert DIAGNOSTIC_MODULE_NAME not in on_disk
     # The thirteen Phase-5 hand-written modules, plus Phase 6's first source
     # module. Named rather than counted, so an addition is visible.
     assert on_disk == (_PHASE5_MANIFEST_MODULES
-                       - {"modConstants", "modCalcContract"}) | {"modSimRng"}, (
+                       - {"modConstants", "modCalcContract"}) | _PHASE6_HANDWRITTEN, (
         f"a production module was added or removed: {sorted(on_disk)}"
     )
     # The harness asserts all three of those things at runtime too.

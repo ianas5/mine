@@ -484,6 +484,9 @@ vba:
     - name: "modSimRng"
       generated: false
       responsibility: "The pure Phase-6 generator backbone: state validation, FIXED and AUTO seeding mathematics, one recurrence step, the canonical 2^127 jump and canonical component-stream assignment. No sampling, no simulation and no worksheet access."
+    - name: "modSimSample"
+      generated: false
+      responsibility: "The pure Phase-6 stochastic transforms: Uniform, Triangular, prepared Beta-PERT through the locked Cheng BB/BC formulation, and the Bernoulli occurrence primitive. All randomness arrives through the modSimRng public surface. No simulation orchestration and no worksheet access."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.
