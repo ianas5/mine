@@ -10383,14 +10383,42 @@ def test_nc_110_a_leaking_temporary_directory_helper_is_caught() -> None:
 # inventory authority, and this refuses one.
 _MANIFEST_LANGUAGE = ("manifest module set", "manifest")
 
+# Wording that pins the CURRENT inventory to a literal, in any of the forms this
+# document has used for it. These are refused inside ACTIVE description blocks
+# only: a historical Run table that records `present 30 of 15` is reporting what
+# that run actually said, and rewriting it would destroy evidence.
+_STALE_INVENTORY_WORDING = ("back to 15", "at 15", "re-asserted at 15",
+                            "inventory of 15", "15 by name")
+
+HARNESS_RECORD = PCCM_ROOT / "docs" / "phase5_gate_b_harness.md"
+
+
+def _active_block(doc: str, heading: str) -> str:
+    """One active description block: from its heading to the next `## ` one.
+
+    The `## ` boundary is what separates the current architectural description
+    from the Runtime Run sections below it, which are historical evidence.
+    """
+    start = doc.index(heading)
+    tail = doc[start + len(heading):]
+    end = tail.index("\n## ") if "\n## " in tail else len(tail)
+    return heading + tail[:end]
+
+
+def _assert_no_fixed_inventory(block: str, where: str) -> None:
+    """THE SEMANTIC DETECTOR, shared by the conformance test and the control."""
+    counts = re.findall(r"\b(\d+)\s+modules?\b", block)
+    assert counts == [], f"{where} states a fixed module count: {counts}"
+    lowered = block.lower()
+    for stale in _STALE_INVENTORY_WORDING:
+        assert stale not in lowered, f"{where} pins the inventory: {stale!r}"
+
 
 def test_226_the_active_p5m_and_p5d8_descriptions_name_no_module_count() -> None:
     banner = _text(HARNESS)
     banner = banner[banner.index("      P5-M "):banner.index("      P5-AN ")]
     assert "P5-D8" in banner, "the banner slice lost P5-D8"
-    numbers = re.findall(r"\b(\d+)\s+modules?\b", banner)
-    assert numbers == [], f"the driver banner states a fixed module count: {numbers}"
-    assert "back to 15" not in banner
+    _assert_no_fixed_inventory(banner, "the driver banner")
     for description in ("P5-M", "P5-D8"):
         line = banner[banner.index(description):]
         line = line[:line.index("\n      P5-")] if "\n      P5-" in line else line
@@ -10401,20 +10429,46 @@ def test_226_the_active_p5m_and_p5d8_descriptions_name_no_module_count() -> None
     # says what each scenario ESTABLISHES. The Run-by-Run tables further down
     # are historical evidence and keep the numbers that were true when they were
     # written - Step 12 corrects active wording, it does not rewrite history.
-    doc = (PCCM_ROOT / "docs" / "phase5_gate_b_harness.md").read_text(encoding="utf-8")
-    table = doc[doc.index("## The Windows scenarios"):]
-    table = table[:table.index("\n## ", 1)]
+    doc = HARNESS_RECORD.read_text(encoding="utf-8")
+    table = _active_block(doc, "## The Windows scenarios")
     rows = [line for line in table.splitlines()
             if line.startswith("| `P5-M` |") or line.startswith("| `P5-D8` |")]
     assert len(rows) == 2, rows
     for row in rows:
-        assert re.search(r"\b\d+\s+modules?\b", row) is None, f"stale count in: {row}"
-        assert "back to 15" not in row
+        _assert_no_fixed_inventory(row, "the Windows-scenario table")
         assert any(word in row for word in _MANIFEST_LANGUAGE), row
     # AND NO ACTIVE ROW ANYWHERE STATES A DIGIT-FORM MODULE COUNT.
     for line in doc.splitlines():
         if line.startswith("| `P5-M` |") or line.startswith("| `P5-D8` |"):
             assert re.search(r"\b\d+\s+modules?\b", line) is None, line
+    # THE THIRD ACTIVE DESCRIPTION, missed by the first pass of this detector
+    # and found by independent review: the `### Lifecycle` block is a CURRENT
+    # architectural description of the harness sequence, not a Run record, and
+    # it said "inventory re-asserted at 15".
+    lifecycle = _active_block(doc, "### Lifecycle")
+    assert "P5-D8" in lifecycle, "the Lifecycle slice lost P5-D8"
+    assert "P5-D0" in lifecycle and "P5-AN" in lifecycle, "the slice is too narrow"
+    _assert_no_fixed_inventory(lifecycle, "the active Lifecycle block")
+    d8 = lifecycle[lifecycle.index("P5-D8"):]
+    d8 = d8[:d8.index("P5-AN")]
+    assert any(word in d8 for word in _MANIFEST_LANGUAGE), (
+        f"the Lifecycle P5-D8 line is not manifest-owned: {d8!r}"
+    )
+    # THE SLICE STOPS AT THE HISTORY BOUNDARY. Everything from the next `## `
+    # heading onward is Runtime Run evidence and is not inspected. The block's
+    # own prose may CITE a run - "Runtime Run 7 passed it and then met a VBE
+    # compile error" is a cross-reference, not a Run record - so the boundary is
+    # the heading, not the words.
+    assert not re.search(r"^## ", lifecycle, re.M), (
+        "the active slice ran past a section heading"
+    )
+    assert "present 30 of 15" not in lifecycle, (
+        "the slice reached the historical Run-2 inventory row"
+    )
+    # AND THE HISTORY IT STOPS SHORT OF IS STILL THERE, untouched.
+    assert "`present 30 of 15`" in doc, (
+        "the historical Run-2 inventory evidence was rewritten"
+    )
 
 
 def test_227_the_executable_inventory_logic_is_still_manifest_driven() -> None:
@@ -10446,3 +10500,69 @@ def test_nc_111_a_fixed_module_count_in_the_active_wording_is_caught() -> None:
     assert re.search(r"\b\d+\s+modules?\b", damaged_row), (
         "the detector cannot see a fixed count in a table row"
     )
+
+
+def test_nc_112_the_stale_lifecycle_inventory_wording_is_caught() -> None:
+    """MUTATION CONTROL for the description independent review found.
+
+    The accepted Lifecycle block is taken, its P5-D8 line is mutated back to the
+    exact wording that shipped in 15706c5, and the REAL detector is run against
+    it. The second half is the point: the same detector must NOT reject the
+    historical Run-2 evidence row, so what is protected is the active/history
+    boundary rather than a global ban on the digits.
+    """
+    doc = HARNESS_RECORD.read_text(encoding="utf-8")
+    lifecycle = _active_block(doc, "### Lifecycle")
+    # The accepted block passes.
+    _assert_no_fixed_inventory(lifecycle, "the accepted Lifecycle block")
+
+    accepted_line = ("P5-D8  the diagnostic module is REMOVED; inventory re-asserted "
+                     "against the\n       manifest module set")
+    assert lifecycle.count(accepted_line) == 1, lifecycle
+    for planted in (
+        "P5-D8  the diagnostic module is REMOVED; inventory re-asserted at 15",
+        "P5-D8  the diagnostic module is REMOVED; inventory back to 15",
+        "P5-D8  the diagnostic module is REMOVED; 15 modules re-asserted",
+        "P5-D8  the diagnostic module is REMOVED; inventory of 15 restored",
+    ):
+        damaged = lifecycle.replace(accepted_line, planted)
+        assert damaged != lifecycle, planted
+        try:
+            _assert_no_fixed_inventory(damaged, "damaged")
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"the detector cannot see {planted!r}")
+
+    # AND THE HISTORY IS NOT COLLATERAL DAMAGE, on two counts.
+    #
+    # FIRST: the Run-2 row records what that run actually reported. It survives
+    # the detector on its own terms - it names no module count and pins no
+    # current inventory - so the number in it is safe even from a global scan.
+    historical = ("| R1 inventory semantics | P5-M, P5-D8 | `present 30 of 15`, "
+                  "`extra: ThisWorkbook, shDashboard, …` |")
+    assert historical in doc, "the historical Run-2 evidence row was rewritten"
+    _assert_no_fixed_inventory(historical, "the historical Run-2 row")
+
+    # SECOND, and this is what the slice is actually for: wording the detector
+    # DOES reject stays legal below the boundary. Historical sections are full
+    # of sentences describing what an old run asserted, and the active-block
+    # scope is what keeps them out of scope.
+    below_the_line = "Run 2 reported the inventory back to 15 modules by name."
+    try:
+        _assert_no_fixed_inventory(below_the_line, "planted")
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("the detector is blind to the planted history wording")
+    boundary = "## Analytical and refusal coverage"
+    assert doc.count(boundary) == 1, doc.count(boundary)
+    planted_doc = doc.replace(boundary, boundary + "\n\n" + below_the_line, 1)
+    assert below_the_line in planted_doc
+    # The slice is unchanged: the sentence landed after the boundary heading, so
+    # the active Lifecycle block never sees it.
+    assert _active_block(planted_doc, "### Lifecycle") == lifecycle, (
+        "the active slice absorbed text from below its boundary"
+    )
+    _assert_no_fixed_inventory(_active_block(planted_doc, "### Lifecycle"),
+                               "the slice under planted history")

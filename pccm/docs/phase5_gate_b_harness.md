@@ -1090,7 +1090,8 @@ P5-P4  the Phase-4 matrix is intact
 P5-CMP  the WHOLE production project compiles (VBE Compile VBAProject)
 P5-D0  the diagnostic module is imported into the DISPOSABLE workbook
 P5-D1 .. P5-D7  the locked vectors
-P5-D8  the diagnostic module is REMOVED; inventory re-asserted at 15
+P5-D8  the diagnostic module is REMOVED; inventory re-asserted against the
+       manifest module set
 P5-AN onward  the analytical acceptance work, with no test module installed
 ```
 

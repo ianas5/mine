@@ -65,17 +65,37 @@ not touched. Only the descriptions were stale:
 | `phase4_functional_test.ps1` banner | "the inventory back to 15" | "the inventory returned to the manifest module set" |
 | `phase5_gate_b_harness.md` scenario table | "15 modules **by name**" | "The manifest module set **by name**" |
 | `phase5_gate_b_harness.md` scenario table | "inventory back to 15" | "inventory returned to the manifest module set" |
+| `phase5_gate_b_harness.md` **`### Lifecycle`** | "inventory re-asserted at 15" | "inventory re-asserted against the manifest module set" |
 
-- `test_226` refuses any `\d+ modules?` in the active banner or in the active
-  scenario table, and requires both to describe themselves in manifest terms.
+**The Lifecycle line was missed by the first pass of this detector and found by
+independent review of `15706c5`.** The first pass inspected the driver banner and
+the `## The Windows scenarios` table and stopped there; `### Lifecycle` is a
+third ACTIVE description — a current architectural account of the harness
+sequence, above the Runtime Run sections — and it still pinned the inventory to a
+literal. The closure claim was therefore not literally true when it was first
+made. It is now.
+
+- `test_226` refuses any `\d+ modules?` and any current-inventory wording
+  (`back to 15`, `at 15`, `re-asserted at 15`, `inventory of 15`, `15 by name`)
+  in **all three** active blocks — the banner, the scenario table and the
+  Lifecycle block — and requires each P5-D8 description to be manifest-owned.
 - `test_227` proves the executable logic was manifest-owned already and that no
   numeric module count exists anywhere in the scenarios file.
 - `test_nc_111` plants three forms of the stale wording and requires the
   detector to see each.
+- `test_nc_112` is the boundary control. It restores the exact `15706c5`
+  Lifecycle line and three variants of it, requiring the detector to refuse each;
+  then it proves the active/history boundary in both directions — the Run-2 row
+  `present 30 of 15` survives the detector on its own terms, and a sentence the
+  detector *does* reject stays legal when planted below the next `## ` heading,
+  with the active slice provably unchanged.
 
-**Historical Run tables keep their historical numbers.** The Run-record row that
-says "fifteen modules present … under the evidence model P5-M then had" was true
-when it was written and is left exactly as it is.
+**Historical Run tables keep their historical numbers.** The Run-record row
+`present 30 of 15`, and the row that says "fifteen modules present … under the
+evidence model P5-M then had", were true when they were written and are left
+exactly as they are. The detector is scoped to active blocks by slicing from a
+heading to the next `## ` one — never by a global ban on the digits, which would
+have destroyed evidence.
 
 ### 2.3 STALE RESULTS PRESENTATION TEXT — **CLOSED**
 
@@ -162,7 +182,7 @@ All fifteen required mutations are covered and non-vacuous:
 | 11 | P5-LDG before P5-FIN | Gate-B `test_155a` (Round 4A, unchanged) |
 | 12 | exact-type setter widens | Gate-B `test_nc_98` (Round 4A, unchanged) |
 | 13 | temp-directory helper leaks | Gate-B `test_nc_110` |
-| 14 | fixed module count in active wording | Gate-B `test_nc_111` |
+| 14 | fixed module count in active wording | Gate-B `test_nc_111`, `test_nc_112` |
 | 15 | stale Results text returns | Stage-A `test_nc_96` |
 
 Plus the frozen-source controls (`test_29`–`test_35`), which move an accepted
@@ -275,7 +295,7 @@ claim any of them executed, and it implements no Step-13 scenario.
 ## 8. What changed
 
 ```
-MOD  tests/test_phase5_gate_b_harness_source.py   temp-dir lifecycle + 5 new tests
+MOD  tests/test_phase5_gate_b_harness_source.py   temp-dir lifecycle + 6 new tests
 MOD  bootstrap/windows/phase4_functional_test.ps1 stale "15" wording only
 MOD  docs/phase5_gate_b_harness.md                stale "15" wording only
 MOD  spec/workbook.yaml                           two presentation strings only
