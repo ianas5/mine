@@ -116,9 +116,10 @@
           ID emitted into phase5_cases.json maps to a Windows scenario, no
           mapping is a ghost, and every direct-vector set is complete
       P5-P4  The Phase-4 prerequisite, checked rather than assumed
-      P5-M   The persisted project: 15 modules BY NAME, exactly five buttons, no
-          shape with OnAction = PCCM_Calculate, six api_procedures consumed AS
-          api_procedures and not folded into entry_points
+      P5-M   The persisted project matches the manifest module set BY NAME,
+          exactly five buttons, no shape with OnAction = PCCM_Calculate, six
+          api_procedures consumed AS api_procedures and not folded into
+          entry_points
       P5-EV  No Worksheet_Change / Workbook_SheetChange in the real project
       P5-CMP The WHOLE production project compiled, through the VBE's own
           Compile VBAProject command. The only whole-project compile authority
@@ -131,7 +132,8 @@
           all four Double-only reductions, the UTF-16 set, the 366-unit
           reference stream and its digest, the delimiter-hostile probes, and the
           convex statistics at the overflow boundary
-      P5-D8  The diagnostic module REMOVED and the inventory back to 15
+      P5-D8  The diagnostic module REMOVED and the inventory returned to the
+          manifest module set
       P5-AN  Every analytical fixture through PCCM_Calculate, with EVERY emitted
           expected value asserted across the five tables and calc_totals
       P5-RF  Every prerequisite refusal, with no partial analytical output

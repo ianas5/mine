@@ -1746,3 +1746,184 @@ if __name__ == "__main__":
     import pytest
 
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ===========================================================================
+# PHASE-6 STEP 12: the Results presentation text is true
+# ===========================================================================
+# The Results subtitle and its top note were written in Phase 1 and said so:
+# "no statistics are implemented in Phase 1" and "Not implemented yet. No
+# percentiles, moments or cash flows are implemented yet." Step 11A gave Results
+# a real percentile ladder, real moments and real selected-confidence reporting
+# over `_SimData`, and those two strings became false. Step 12 corrects the
+# WORDING only - no layout, no formula and no row moves.
+STALE_RESULTS_PHRASES = (
+    "no statistics are implemented in Phase 1",
+    "Not implemented yet. No percentiles, moments or cash flows are implemented yet.",
+    "no statistics are implemented",
+    "No percentiles, moments or cash flows",
+)
+
+# Deferred means deferred. Nothing on Results may imply these exist.
+FORBIDDEN_RESULTS_CLAIMS = (
+    "sensitivity", "correlation", "dashboard", "spearman",
+    "reconciliation is implemented", "annual cash flow is implemented",
+)
+
+
+def _results_strings() -> list[str]:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(_built_tree() / "PCCM_stageA.xlsx")
+    try:
+        sheet = workbook["Results"]
+        found = []
+        for row in sheet.iter_rows(min_row=1, max_row=80, max_col=8):
+            for cell in row:
+                if isinstance(cell.value, str) and not cell.value.startswith("="):
+                    found.append(cell.value)
+        return found
+    finally:
+        workbook.close()
+
+
+def test_92_the_stale_phase_1_results_text_is_gone_from_the_spec() -> None:
+    spec_text = (SPEC / "workbook.yaml").read_text(encoding="utf-8")
+    for stale in STALE_RESULTS_PHRASES:
+        assert stale not in spec_text, f"the manifest still carries: {stale!r}"
+
+
+def test_93_the_built_results_sheet_says_what_is_actually_published() -> None:
+    strings = _results_strings()
+    joined = "\n".join(strings)
+    for stale in STALE_RESULTS_PHRASES:
+        assert stale not in joined, f"the built Results sheet still says: {stale!r}"
+    # AND IT SAYS THE TRUE THING. The subtitle names the sheet's actual content,
+    # and the note names what Phase 6 publishes and what is still deferred.
+    assert "Simulation results and statistical summary" in strings, strings[:6]
+    note = next((s for s in strings if s.startswith("Phase 6 publishes")), None)
+    assert note is not None, strings[:6]
+    for named in ("run identity", "summary statistics", "selected-confidence"):
+        assert named in note, (named, note)
+    for deferred in ("Annual cash flow", "reconciliation"):
+        assert deferred in note, (deferred, note)
+    assert "deferred" in note
+
+
+def test_94_results_claims_nothing_that_does_not_exist() -> None:
+    """Deferred sections stay deferred, and nothing implies a Phase-7 feature."""
+    lowered = "\n".join(_results_strings()).lower()
+    for claim in FORBIDDEN_RESULTS_CLAIMS:
+        assert claim not in lowered, f"Results implies {claim!r} exists"
+    # The two deferred sections keep their deferred notes.
+    strings = _results_strings()
+    assert "Annual Cash Flow" in strings
+    assert "Reconciliation" in strings
+    deferred_notes = [s for s in strings if s.startswith("Deferred.")]
+    assert len(deferred_notes) == 2, deferred_notes
+
+
+def test_95_only_the_wording_moved_and_the_layout_did_not() -> None:
+    """The accepted Step-11A geometry is untouched by the text correction."""
+    from openpyxl import load_workbook
+
+    import yaml
+
+    shell = yaml.safe_load((SPEC / "workbook.yaml").read_text(
+        encoding="utf-8"))["phase6_shell"]["results"]
+    workbook = load_workbook(_built_tree() / "PCCM_stageA.xlsx")
+    try:
+        sheet = workbook["Results"]
+        # EVERY ANCHORED ROW STILL HOLDS ITS ACCEPTED LABEL, read from the
+        # manifest rather than restated here.
+        label = shell["label_column"]
+        for section in shell["sections"]:
+            assert sheet[f"{label}{section['row']}"].value == section["title"], section
+            assert sheet[f"{label}{section['note_row']}"].value == section["note"], section
+        for field in shell["run_stamp"]["fields"]:
+            assert sheet[f"{label}{field['row']}"].value == field["label"], field
+        for metric in shell["summary"]["metrics"]:
+            assert sheet[f"{label}{metric['row']}"].value == metric["label"], metric
+        selected = shell["selected"]
+        for key, text in selected["labels"].items():
+            row = selected[f"{key}_row"]
+            assert sheet[f"{label}{row}"].value == text, (key, row)
+        for entry in shell["deferred"]:
+            assert sheet[f"{label}{entry['row']}"].value == entry["title"], entry
+            assert sheet[f"{label}{entry['note_row']}"].value == entry["note"], entry
+    finally:
+        workbook.close()
+    # AND THE ACCEPTED STEP-11A GEOMETRY IS EXACTLY WHERE IT WAS. A text edit
+    # that shifted a row would show up here rather than in a runtime.
+    layout = _sim().layout
+    assert layout.first_iteration_row == 34, layout.first_iteration_row
+    assert shell["label_column"] == "B"
+    assert shell["nominal_column"] == "D" and shell["pv_column"] == "F"
+    assert [s["row"] for s in shell["sections"]] == [8, 26], shell["sections"]
+    assert shell["run_stamp"]["first_row"] == 10 and shell["run_stamp"]["last_row"] == 24
+    assert shell["summary"]["header_row"] == 28
+    assert shell["summary"]["first_row"] == 29 and shell["summary"]["last_row"] == 44
+    assert selected["confidence_level_row"] == 46
+    assert selected["quantile_row"] == 47 and selected["contingency_row"] == 48
+    assert [entry["row"] for entry in shell["deferred"]] == [51, 54]
+    # The formulas are structural and were not touched by a wording change.
+    for formula_key in ("confidence_level_formula", "quantile_nominal", "quantile_pv",
+                        "contingency_nominal", "contingency_pv"):
+        assert selected[formula_key].startswith("=IF("), formula_key
+    # The confidence-level row reads the selector and nothing else; the four
+    # banked lookups read the active-bank selector and pick a bank from it.
+    assert "_SimData" not in selected["confidence_level_formula"]
+    for banked in ("quantile_nominal", "quantile_pv",
+                   "contingency_nominal", "contingency_pv"):
+        assert "_SimData!$D$30" in selected[banked], banked
+        assert "inpSelectedConfidenceLevel" in selected[banked], banked
+
+
+def test_nc_96_the_stale_results_text_returning_is_caught() -> None:
+    """MUTATION CONTROL. Plant each retired phrase and require a detector.
+
+    The detector is the same membership test test_92 and test_93 make, run here
+    against text that carries the phrase, so a control that passed because the
+    phrase was simply absent everywhere cannot be mistaken for one that works.
+    """
+    spec_text = (SPEC / "workbook.yaml").read_text(encoding="utf-8")
+    for stale in STALE_RESULTS_PHRASES:
+        assert stale not in spec_text, "the accepted manifest is already clean"
+        damaged = spec_text.replace(
+            '    subtitle: "Simulation results and statistical summary"\n',
+            f'    subtitle: "{stale}"\n', 1)
+        assert damaged != spec_text or stale in damaged, stale
+        assert stale in damaged, f"the mutation did not plant {stale!r}"
+        try:
+            for phrase in STALE_RESULTS_PHRASES:
+                assert phrase not in damaged, phrase
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"the detector cannot see {stale!r}")
+    # AND ON THE BUILT SHEET. The same comparison, over planted cell text.
+    strings = _results_strings() + [
+        "Simulation output - no statistics are implemented in Phase 1"]
+    joined = "\n".join(strings)
+    try:
+        for phrase in STALE_RESULTS_PHRASES:
+            assert phrase not in joined, phrase
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("the built-sheet detector cannot see the stale text")
+
+
+def test_nc_97_a_forbidden_results_claim_is_caught() -> None:
+    """Deferred means deferred: the claim detector must see an added claim."""
+    lowered = "\n".join(_results_strings()).lower()
+    for claim in FORBIDDEN_RESULTS_CLAIMS:
+        assert claim not in lowered, "the accepted sheet already claims it"
+        damaged = lowered + "\n" + f"driver {claim} is available on this sheet"
+        try:
+            for candidate in FORBIDDEN_RESULTS_CLAIMS:
+                assert candidate not in damaged, candidate
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"the detector cannot see {claim!r}")

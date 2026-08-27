@@ -1,0 +1,504 @@
+#!/usr/bin/env python3
+"""PCCM Phase 6 Step-12 MUTATION CONTROLS for the integration source review.
+
+A conformance test that cannot fail proves nothing. Every control damages one of
+the authorities the integration review reads - a VBA module, the structure
+contract, the emitted manifest, the Gate-B harness or the workbook manifest -
+reruns the WHOLE Step-12 integration battery against the damaged copy, and
+requires a NAMED detector among the refusers.
+
+Nothing here writes to the repository: damaged copies live in a temporary
+directory that is deleted on the way out, including on the exception path.
+
+Runs standalone or under pytest.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+import sys
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+
+PCCM_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PCCM_ROOT / "builder"))
+sys.path.insert(0, str(PCCM_ROOT / "tests"))
+
+import test_phase6_integration_source as conformance  # noqa: E402
+
+_SRC = conformance.SRC_VBA
+_SPEC = conformance.SPEC
+_BUILD = conformance.BUILD
+
+
+def _conformance_tests() -> list[str]:
+    names = sorted(n for n in dir(conformance) if n.startswith("test_"))
+    assert len(names) >= 25, names
+    return names
+
+
+def _run_battery() -> list[str]:
+    refused = []
+    for name in _conformance_tests():
+        try:
+            getattr(conformance, name)()
+        except BaseException:  # noqa: BLE001 - any refusal counts
+            refused.append(name)
+    return refused
+
+
+@contextmanager
+def _installed(vba: dict[str, str] | None = None,
+               spec: dict[str, str] | None = None,
+               build: dict[str, str] | None = None):
+    """Point the conformance module at damaged copies of whole trees.
+
+    Whole trees, not single files: the review walks `src/vba` and reads several
+    spec documents, so a damaged copy of one file has to sit beside undamaged
+    copies of its siblings or the failure would be "the file vanished".
+    """
+    saved = (conformance.SRC_VBA, conformance.SPEC, conformance.BUILD,
+             dict(conformance._CACHE))
+    with tempfile.TemporaryDirectory(prefix="pccm-step12-mutation-") as name:
+        temp = Path(name)
+        conformance._CACHE.clear()
+        try:
+            for damaged, source, attribute in ((vba, saved[0], "SRC_VBA"),
+                                               (spec, saved[1], "SPEC"),
+                                               (build, saved[2], "BUILD")):
+                if damaged is None:
+                    continue
+                target = temp / attribute.lower()
+                shutil.copytree(source, target)
+                for relative, text in damaged.items():
+                    path = target / relative
+                    assert path.is_file(), relative
+                    assert path.read_text(encoding="utf-8") != text, (
+                        f"the mutation changed nothing in {relative}"
+                    )
+                    path.write_text(text, encoding="utf-8")
+                setattr(conformance, attribute, target)
+            yield
+        finally:
+            conformance.SRC_VBA = saved[0]
+            conformance.SPEC = saved[1]
+            conformance.BUILD = saved[2]
+            conformance._CACHE.clear()
+            conformance._CACHE.update(saved[3])
+
+
+def _control(expected: str, **damage) -> None:
+    with _installed(**damage):
+        refused = _run_battery()
+    assert refused, "the mutation survived the whole integration battery"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+def _read(root: Path, relative: str) -> str:
+    return (root / relative).read_text(encoding="utf-8")
+
+
+def _swap(text: str, old: str, new: str, count: int = 1) -> str:
+    assert text.count(old) == count, (old[:80], text.count(old))
+    return text.replace(old, new)
+
+
+REPORT_BAS = "modSimReport.bas"
+CALC_BAS = "modCalcReport.bas"
+_REPORT = _read(_SRC, REPORT_BAS)
+_CALC = _read(_SRC, CALC_BAS)
+_STRUCTURE = _read(_SPEC, "structure_contract.yaml")
+
+
+def test_00_the_accepted_tree_passes_every_detector() -> None:
+    with _installed():
+        refused = _run_battery()
+    assert refused == [], refused
+
+
+# ===========================================================================
+# 1. The request prefix
+# ===========================================================================
+def test_01_the_run_uses_a_stored_fingerprint_instead_of_the_bridge_output() -> None:
+    damaged = _swap(
+        _REPORT,
+        "            package.AnalyticalFingerprint, package.Iterations, package.SeedMode, _\n"
+        "            package.HasSuppliedSeed, package.SuppliedSeed, _\n"
+        "            package.RequestFingerprint, detail) Then\n",
+        "            ActiveSnapshotText(SIM_IDENTITY_ROW_REQUEST_FINGERPRINT), _\n"
+        "            package.Iterations, package.SeedMode, _\n"
+        "            package.HasSuppliedSeed, package.SuppliedSeed, _\n"
+        "            package.RequestFingerprint, detail) Then\n")
+    _control("test_07", vba={REPORT_BAS: damaged})
+
+
+def test_02_the_request_prefix_becomes_the_effective_seed() -> None:
+    damaged = _swap(
+        _REPORT,
+        "            package.AnalyticalFingerprint, package.Iterations, package.SeedMode, _\n"
+        "            package.HasSuppliedSeed, package.SuppliedSeed, _\n"
+        "            package.RequestFingerprint, detail) Then\n",
+        "            CStr(package.EffectiveSeed), package.Iterations, package.SeedMode, _\n"
+        "            package.HasSuppliedSeed, package.SuppliedSeed, _\n"
+        "            package.RequestFingerprint, detail) Then\n")
+    _control("test_07", vba={REPORT_BAS: damaged})
+
+
+def test_03_the_analytical_fingerprint_is_reassigned_after_the_bridge() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    ' 3. Machine prerequisites, all of them, BEFORE anything is allocated.\n",
+        "    package.AnalyticalFingerprint = ActiveSnapshotText( _\n"
+        "        SIM_IDENTITY_ROW_REQUEST_FINGERPRINT)\n"
+        "    ' 3. Machine prerequisites, all of them, BEFORE anything is allocated.\n")
+    _control("test_07", vba={REPORT_BAS: damaged})
+
+
+# ===========================================================================
+# 2. Retained-array identity
+# ===========================================================================
+def test_04_the_digest_runs_over_a_rebuilt_array() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If Not modSimFingerprint.SimFpResultDigest(package.TotalNominal, package.TotalPv, _\n",
+        "    ReDim package.TotalNominal(0 To package.Iterations - 1)\n"
+        "    If Not modSimFingerprint.SimFpResultDigest(package.TotalNominal, package.TotalPv, _\n")
+    _control("test_09", vba={REPORT_BAS: damaged})
+
+
+def test_05_the_publication_writes_a_different_carrier() -> None:
+    damaged = _swap(
+        _REPORT,
+        "            block(index + 1, 2) = _\n"
+        "                package.TotalNominal(LBound(package.TotalNominal) + offset + index)\n",
+        "            block(index + 1, 2) = package.NominalLadder(0)\n")
+    _control("test_09", vba={REPORT_BAS: damaged})
+
+
+def test_06_the_arrays_are_sorted_before_they_are_used() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    ' 6-7. The statistics, over the SAME retained arrays that will be published.\n",
+        "    SortAscending package.TotalNominal, package.Iterations\n"
+        "    ' 6-7. The statistics, over the SAME retained arrays that will be published.\n")
+    _control("test_10", vba={REPORT_BAS: damaged})
+
+
+# ===========================================================================
+# 3. Quantile provenance
+# ===========================================================================
+def test_07_a_quantile_carrier_is_mutated_after_describe() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If Not SameLadder(package, detail) Then Exit Function\n",
+        "    If Not SameLadder(package, detail) Then Exit Function\n"
+        "    package.PvLadder(LBound(package.PvLadder)) = package.BasePv\n")
+    _control("test_11", vba={REPORT_BAS: damaged})
+
+
+def test_08_a_contingency_is_computed_by_subtraction_here() -> None:
+    body = conformance._procedure("modSimReport", "BuildContingencies")
+    match = re.search(r"^\s*package\.NominalContingency\([^)]*\)\s*=\s*value\s*$",
+                      body, re.M)
+    assert match, body
+    damaged = _swap(
+        _REPORT, match.group(0) + "\n",
+        match.group(0).replace(
+            "= value",
+            "= package.NominalLadder(index) - package.BaseNominal") + "\n")
+    _control("test_06", vba={REPORT_BAS: damaged})
+
+
+# ===========================================================================
+# 4. The reporting boundary
+# ===========================================================================
+def test_09_selected_confidence_level_enters_the_run() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    ' 2. The two simulation controls, strictly.\n",
+        "    If modWorkbook.IsEmptyCell(modWorkbook.NamedCell( _\n"
+        '            "inpSelectedConfidenceLevel")) Then Exit Function\n'
+        "    ' 2. The two simulation controls, strictly.\n")
+    _control("test_15", vba={REPORT_BAS: damaged})
+
+
+def test_10_results_is_written_by_vba() -> None:
+    damaged = _swap(
+        _REPORT,
+        "Private Function SimSheet() As Worksheet\n",
+        "Private Sub PublishToResults(ByVal text As String)\n"
+        '    modWorkbook.Sh("Results").Range("B3").Value2 = text\n'
+        "End Sub\n\n"
+        "Private Function SimSheet() As Worksheet\n")
+    _control("test_14", vba={REPORT_BAS: damaged})
+
+
+def test_11_the_active_bank_is_touched_during_candidate_publication() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If Not WriteIterationBank(package, detail) Then Exit Function\n",
+        "    SharedCell(SIM_IDENTITY_ROW_ACTIVE_BANK).Value2 = package.TargetBank\n"
+        "    If Not WriteIterationBank(package, detail) Then Exit Function\n")
+    _control("test_12", vba={REPORT_BAS: damaged})
+
+
+# ===========================================================================
+# 5. The Phase-5 bridge
+# ===========================================================================
+def test_12_the_bridge_calls_the_calculation_endpoint() -> None:
+    damaged = _swap(
+        _CALC,
+        "    If Not PrepareCurrentCalculation(package, detail) Then Exit Function\n",
+        "    PCCM_Calculate\n"
+        "    If Not PrepareCurrentCalculation(package, detail) Then Exit Function\n")
+    _control("test_04", vba={CALC_BAS: damaged})
+
+
+def test_13_the_bridge_drops_the_current_gate() -> None:
+    gate = ("    status = DeriveStatus(package, True)\n"
+            "    If StrComp(status, CALC_STATUS_CURRENT, vbBinaryCompare) <> 0 Then\n"
+            '        detail = "the calculation is " & status & _\n'
+            '                 "; the simulation needs a CURRENT calculation"\n'
+            "        Exit Function\n"
+            "    End If\n")
+    damaged = _swap(_CALC, gate, "")
+    _control("test_02", vba={CALC_BAS: damaged})
+
+
+def test_14_the_bridge_rebuilds_instead_of_projecting() -> None:
+    damaged = _swap(
+        _CALC,
+        "    analyticalFingerprint = package.Fingerprint\n",
+        "    analyticalFingerprint = BuildFingerprint(package)\n")
+    _control("test_03", vba={CALC_BAS: damaged})
+
+
+def test_15_the_bridge_writes_to_the_workbook() -> None:
+    damaged = _swap(
+        _CALC,
+        "    CalcPrepareSimulationInputs = True\n",
+        "    modWorkbook.NamedCell(NM_CALC_STATE).Value2 = status\n"
+        "    CalcPrepareSimulationInputs = True\n")
+    _control("test_04", vba={CALC_BAS: damaged})
+
+
+def test_16_a_second_phase6_bridge_appears() -> None:
+    damaged = _swap(
+        _CALC,
+        "Public Function CalcPrepareSimulationInputs(",
+        "Public Function CalcPrepareSimulationTotals(ByRef total As Double) As Boolean\n"
+        "    total = 0\n"
+        "    CalcPrepareSimulationTotals = True\n"
+        "End Function\n\n"
+        "Public Function CalcPrepareSimulationInputs(")
+    _control("test_25", vba={CALC_BAS: damaged})
+
+
+# ===========================================================================
+# 6. D6-11, repo-wide
+# ===========================================================================
+def test_17_run_simulation_appears_in_a_second_module() -> None:
+    engine = _read(_SRC, "modSimEngine.bas")
+    damaged = _swap(
+        engine, "Option Explicit\n",
+        "Option Explicit\n\n"
+        "Private Function RunSimulationHelper() As Boolean\n"
+        "    RunSimulationHelper = False\n"
+        "End Function\n")
+    _control("test_19", vba={"modSimEngine.bas": damaged})
+
+
+def test_18_the_endpoint_is_granted_to_a_second_owner() -> None:
+    damaged = _swap(
+        _STRUCTURE,
+        '    - construct: "RunSimulation"\n'
+        '      allowed_in:\n        - "modSimReport"\n',
+        '    - construct: "RunSimulation"\n'
+        '      allowed_in:\n        - "modSimReport"\n        - "modSimEngine"\n')
+    _control("test_19", spec={"structure_contract.yaml": damaged})
+
+
+def test_19_the_algorithm_token_appears_in_the_reporter() -> None:
+    damaged = _swap(
+        _REPORT, "Option Explicit\n",
+        "Option Explicit\n\n"
+        "Private Const SIM_NOTE As String = \"x\"\n"
+        "Private Function MRG32k3aNote() As String\n"
+        "    MRG32k3aNote = SIM_NOTE\n"
+        "End Function\n")
+    _control("test_19", vba={REPORT_BAS: damaged})
+
+
+def test_20_executable_percentile_appears() -> None:
+    stats = _read(_SRC, "modSimStats.bas")
+    damaged = _swap(
+        stats, "Option Explicit\n",
+        "Option Explicit\n\n"
+        "Private Function PercentileOf(ByVal x As Double) As Double\n"
+        "    PercentileOf = x\n"
+        "End Function\n")
+    _control("test_20", vba={"modSimStats.bas": damaged})
+
+
+def test_21_the_scoped_rule_is_flattened() -> None:
+    damaged = _swap(
+        _STRUCTURE,
+        '    - construct: "RunSimulation"\n'
+        '      allowed_in:\n        - "modSimReport"\n',
+        '    - "RunSimulation"\n')
+    _control("test_19", spec={"structure_contract.yaml": damaged})
+
+
+def test_22_a_wildcard_owner_is_granted() -> None:
+    damaged = _swap(
+        _STRUCTURE,
+        '    - construct: "MRG32k3a"\n'
+        '      allowed_in:\n        - "modSimRng"\n',
+        '    - construct: "MRG32k3a"\n'
+        '      allowed_in:\n        - "modSimRng"\n        - "*"\n')
+    _control("test_19", spec={"structure_contract.yaml": damaged})
+
+
+def test_23_percentile_is_granted_an_owner() -> None:
+    damaged = _swap(
+        _STRUCTURE, '    - "Percentile"\n',
+        '    - construct: "Percentile"\n'
+        '      allowed_in:\n        - "modSimStats"\n')
+    _control("test_20", spec={"structure_contract.yaml": damaged})
+
+
+def test_24_a_global_prohibition_is_scoped() -> None:
+    damaged = _swap(
+        _STRUCTURE, '    - "Randomize"\n',
+        '    - construct: "Randomize"\n'
+        '      allowed_in:\n        - "modSimRng"\n')
+    _control("test_21", spec={"structure_contract.yaml": damaged})
+
+
+# ===========================================================================
+# 7. The public surfaces
+# ===========================================================================
+def test_25_an_eighth_phase6_endpoint_appears() -> None:
+    damaged = _swap(
+        _REPORT,
+        "Public Function PCCM_SimulationStatus() As String\n",
+        "Public Function PCCM_SimulationRunId() As String\n"
+        "    PCCM_SimulationRunId = ActiveSnapshotText(SIM_IDENTITY_ROW_RUN_ID)\n"
+        "End Function\n\n"
+        "Public Function PCCM_SimulationStatus() As String\n")
+    _control("test_17", vba={REPORT_BAS: damaged})
+
+
+def test_26_a_phase6_endpoint_is_renamed() -> None:
+    damaged = _swap(
+        _REPORT,
+        "Public Function PCCM_SimulationResultDigest() As String\n",
+        "Public Function PCCM_SimulationDigest() As String\n")
+    damaged = damaged.replace("    PCCM_SimulationResultDigest = ",
+                              "    PCCM_SimulationDigest = ")
+    _control("test_17", vba={REPORT_BAS: damaged})
+
+
+def test_27_a_phase6_endpoint_becomes_a_button() -> None:
+    damaged = _swap(
+        _STRUCTURE, '    - "PCCM_ApplyTimeline"\n',
+        '    - "PCCM_ApplyTimeline"\n    - "PCCM_RunSimulation"\n')
+    _control("test_17", spec={"structure_contract.yaml": damaged})
+
+
+def test_28_the_bridge_becomes_an_automation_endpoint() -> None:
+    damaged = _swap(
+        _STRUCTURE, '    - "PCCM_CurrentInputFingerprint"\n',
+        '    - "PCCM_CurrentInputFingerprint"\n    - "CalcPrepareSimulationInputs"\n')
+    _control("test_04", spec={"structure_contract.yaml": damaged})
+
+
+# ===========================================================================
+# 8. The frozen source and the frozen authority
+# ===========================================================================
+def test_29_an_accepted_kernel_moves_by_one_byte() -> None:
+    engine = _read(_SRC, "modSimEngine.bas")
+    damaged = engine.replace("Option Explicit\n", "Option Explicit\n\n", 1)
+    _control("test_23", vba={"modSimEngine.bas": damaged})
+
+
+def test_30_the_reporter_moves_by_one_byte() -> None:
+    damaged = _REPORT.replace("Option Explicit\n", "Option Explicit\n\n", 1)
+    _control("test_23", vba={REPORT_BAS: damaged})
+
+
+def test_31_the_accepted_reporter_prefix_moves() -> None:
+    damaged = _swap(_CALC, "Attribute VB_Name = \"modCalcReport\"\n",
+                    "Attribute VB_Name = \"modCalcReport\"\n' moved\n")
+    _control("test_25", vba={CALC_BAS: damaged})
+
+
+def test_32_a_second_step_11_banner_appears() -> None:
+    banner = ("' ==========================================================================\n"
+              "' STEP 11 ADDITION - THE PHASE-6 PREPARATION BRIDGE\n")
+    damaged = _CALC + "\n" + banner
+    _control("test_25", vba={CALC_BAS: damaged})
+
+
+def test_33_the_generated_projection_moves() -> None:
+    module = _read(_BUILD / "vba", "modSimContract.bas")
+    _control("test_24", build={"vba/modSimContract.bas": module + "\n"})
+
+
+def test_34_the_manifest_loses_a_structured_rule() -> None:
+    import json
+
+    manifest = json.loads(_read(_BUILD, "stage_b_manifest.json"))
+    manifest["vba"]["forbidden_construct_rules"] = [
+        rule for rule in manifest["vba"]["forbidden_construct_rules"]
+        if rule["construct"] != "RunSimulation"]
+    _control("test_22", build={"stage_b_manifest.json": json.dumps(manifest, indent=2)})
+
+
+def test_35_the_manifest_and_the_contract_disagree_on_the_inventory() -> None:
+    import json
+
+    manifest = json.loads(_read(_BUILD, "stage_b_manifest.json"))
+    manifest["vba"]["modules"] = manifest["vba"]["modules"][:-1]
+    _control("test_22", build={"stage_b_manifest.json": json.dumps(manifest, indent=2)})
+
+
+# ===========================================================================
+# 9. Nothing from Step 13 has arrived
+# ===========================================================================
+def test_36_a_phase7_module_is_declared_early() -> None:
+    damaged = _swap(
+        _STRUCTURE,
+        '    - name: "modSimReport"\n',
+        '    - name: "modSimSensitivity"\n'
+        '      generated: false\n'
+        '      responsibility: "Driver ranking."\n'
+        '    - name: "modSimReport"\n')
+    _control("test_22", spec={"structure_contract.yaml": damaged})
+
+
+def test_37_a_phase7_module_appears_on_disk() -> None:
+    with tempfile.TemporaryDirectory(prefix="pccm-step12-phase7-") as name:
+        target = Path(name) / "vba"
+        shutil.copytree(_SRC, target)
+        (target / "modSimDashboard.bas").write_text(
+            'Attribute VB_Name = "modSimDashboard"\nOption Explicit\n',
+            encoding="utf-8")
+        saved = conformance.SRC_VBA
+        conformance._CACHE.clear()
+        try:
+            conformance.SRC_VBA = target
+            refused = _run_battery()
+        finally:
+            conformance.SRC_VBA = saved
+            conformance._CACHE.clear()
+    assert refused, "an undeclared Phase-7 module survived the whole battery"
+    assert any(n.startswith("test_27") for n in refused), refused
+
+
+if __name__ == "__main__":
+    import pytest
+
+    raise SystemExit(pytest.main([__file__, "-q"]))

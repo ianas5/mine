@@ -449,12 +449,12 @@ sheets:
     purpose: "Full statistical output, cash flow and the analytical reconciliation bridge."
     show_gridlines: false
     title: "Results"
-    subtitle: "Simulation output - no statistics are implemented in Phase 1"
+    subtitle: "Simulation results and statistical summary"
     freeze_panes: "A6"
     column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
     blocks:
       - type: note
-        text: "Not implemented yet. No percentiles, moments or cash flows are implemented yet."
+        text: "Phase 6 publishes run identity, summary statistics and selected-confidence reporting. Annual cash flow and reconciliation remain deferred."
       - type: section
         title: "Run Stamp"
         note: "Reserved for model version, run id, timestamp, iterations, seed and applied timeline."

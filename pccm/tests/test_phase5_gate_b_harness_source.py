@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -147,32 +148,44 @@ def _emitted() -> dict:
     Never read from `build/`. An assertion about an emitted artifact that returns
     early when the file happens to be absent proves nothing - it passes loudest
     exactly when the build is broken.
+
+    STEP 12: THE TEMPORARY TREE IS DELETED. This helper is called by more than
+    fifty tests and used to leave its `mkdtemp` directory behind on every one of
+    them; repeated runs accumulated tens of thousands of `pccm-gateb-*`
+    directories and exhausted the writable filesystem. `TemporaryDirectory`
+    removes it on the way out, on the exception path as well as the normal one.
+
+    EVERYTHING THE CALLERS NEED IS READ INTO MEMORY FIRST. The returned mapping
+    holds parsed JSON and decoded text, so nothing here outlives the directory:
+    no caller is handed a path whose validity depends on the tree still
+    existing. The former `"dir"` key, which had no consumer at all, is gone -
+    returning it would be exactly that kind of dangling handle.
     """
     from pccm_builder import (
         emit_calc_artifacts, emit_inspection, emit_stage_b, load_calc_contract,
         load_contract, load_driver_contract, load_spec, load_structure_contract,
     )
 
-    tmp = Path(tempfile.mkdtemp(prefix="pccm-gateb-"))
     spec = load_spec(SPEC / "workbook.yaml")
     contract = load_contract(SPEC / "input_contract.yaml")
     drivers = load_driver_contract(SPEC / "driver_contract.yaml")
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
     calc = load_calc_contract(SPEC / "calc_contract.yaml")
 
-    stage_b = emit_stage_b(tmp, spec, contract, drivers, structure)
-    calc_artifacts = emit_calc_artifacts(tmp, spec, calc)
-    inspection = emit_inspection(tmp, calc, contract)
-    for path in (stage_b.manifest_path, calc_artifacts.cases_path, inspection.path):
-        assert path.is_file(), f"the builder produced no {path.name}"
-    return {
-        "manifest": json.loads(_text(stage_b.manifest_path)),
-        "cases": json.loads(_text(calc_artifacts.cases_path)),
-        "inspection": json.loads(_text(inspection.path)),
-        "calc_module": _text(calc_artifacts.module_path),
-        "constants": _text(stage_b.module_path),
-        "dir": tmp,
-    }
+    with tempfile.TemporaryDirectory(prefix="pccm-gateb-") as name:
+        tmp = Path(name)
+        stage_b = emit_stage_b(tmp, spec, contract, drivers, structure)
+        calc_artifacts = emit_calc_artifacts(tmp, spec, calc)
+        inspection = emit_inspection(tmp, calc, contract)
+        for path in (stage_b.manifest_path, calc_artifacts.cases_path, inspection.path):
+            assert path.is_file(), f"the builder produced no {path.name}"
+        return {
+            "manifest": json.loads(_text(stage_b.manifest_path)),
+            "cases": json.loads(_text(calc_artifacts.cases_path)),
+            "inspection": json.loads(_text(inspection.path)),
+            "calc_module": _text(calc_artifacts.module_path),
+            "constants": _text(stage_b.module_path),
+        }
 
 
 def _ps_string_literals(source: str) -> list[str]:
@@ -10251,3 +10264,185 @@ def test_241_the_index_of_result_is_tested_as_a_found_threshold() -> None:
         assert decides(position), (
             f"`{operator} {operand}` rejects a token found at index {position}"
         )
+
+
+# ===========================================================================
+# 31. PHASE-6 STEP 12: the Gate-B temporary-directory leak, closed
+# ===========================================================================
+# `_emitted()` is called by more than fifty tests in this file and used to leave
+# its `mkdtemp` tree behind on every one of them. Repeated runs accumulated tens
+# of thousands of `pccm-gateb-*` directories and exhausted the writable
+# filesystem. The debt has been carried OPEN since Phase-6 Step 4; Step 12 is
+# where it closes, because Step 13 runs on Windows and cannot afford it.
+def _gateb_temp_dirs() -> set[str]:
+    """The `pccm-gateb-*` directories that exist RIGHT NOW, by name.
+
+    Names only, and only this prefix. Nothing here deletes anything: a
+    concurrent pytest process, or a developer's own run, may own directories
+    with the same prefix, and removing those would be a far worse defect than
+    the leak this closes.
+    """
+    root = Path(tempfile.gettempdir())
+    return {entry.name for entry in root.glob("pccm-gateb-*")}
+
+
+def test_224_the_emitted_helper_leaves_no_temporary_directory_behind() -> None:
+    """THE REGRESSION. The real helper, called repeatedly, leaks nothing.
+
+    This drives `_emitted()` itself - not a copy of it, not a model of it - and
+    compares the `pccm-gateb-*` set before and after. Any directory that appears
+    and stays is a leak.
+    """
+    before = _gateb_temp_dirs()
+    for _ in range(3):
+        emitted = _emitted()
+        # AND THE RESULT IS STILL USABLE AFTER THE TREE IS GONE, which is the
+        # half a naive cleanup gets wrong: everything was read into memory
+        # before the directory closed.
+        assert emitted["manifest"]["vba"]["modules"], "the manifest came back empty"
+        assert emitted["cases"]["plan_cases"], "the plan cases came back empty"
+        assert emitted["inspection"], "the inspection came back empty"
+        assert emitted["calc_module"].startswith("Attribute VB_Name")
+        assert emitted["constants"].startswith("Attribute VB_Name")
+    after = _gateb_temp_dirs()
+    leaked = after - before
+    assert leaked == set(), f"the helper leaked {len(leaked)} directories: {sorted(leaked)}"
+    # NO DANGLING HANDLE. A path returned out of the helper would be invalid the
+    # moment the tree closed, so the key that used to carry one is gone.
+    assert "dir" not in emitted, (
+        "the helper hands back a path into a directory it has already deleted"
+    )
+
+
+def test_225_the_helper_uses_a_self_cleaning_temporary_directory() -> None:
+    """The source shape, so a future edit cannot quietly reopen the debt."""
+    text = _text(Path(__file__))
+    body = text[text.index("def _emitted() -> dict:"):]
+    body = body[:body.index("\ndef _ps_string_literals")]
+    assert 'with tempfile.TemporaryDirectory(prefix="pccm-gateb-") as name:' in body, (
+        "the emitted tree is not created inside a self-cleaning context"
+    )
+    assert "tempfile.mkdtemp" not in body, (
+        "a bare mkdtemp is back in the helper; it never removes its directory"
+    )
+    # The reads happen INSIDE the context, so nothing is read after cleanup.
+    context_at = body.index("with tempfile.TemporaryDirectory")
+    for read in ("json.loads(_text(stage_b.manifest_path))",
+                 "json.loads(_text(calc_artifacts.cases_path))",
+                 "json.loads(_text(inspection.path))",
+                 "_text(calc_artifacts.module_path)",
+                 "_text(stage_b.module_path)"):
+        assert body.index(read) > context_at, read
+    assert '"dir": tmp' not in body, "the dangling path handle is back"
+
+
+def test_nc_110_a_leaking_temporary_directory_helper_is_caught() -> None:
+    """MUTATION CONTROL, run for real: restore the bare mkdtemp and leak.
+
+    The mutated helper is executed - it really does create a directory and
+    really does fail to remove it - and the detector this round added is run
+    against it. A control that only inspected text would not prove the check
+    can see an actual leak.
+    """
+    before = _gateb_temp_dirs()
+
+    def leaking_emitted() -> dict:
+        # THE PRE-STEP-12 SHAPE, verbatim in behaviour: mkdtemp, no cleanup.
+        tmp = Path(tempfile.mkdtemp(prefix="pccm-gateb-"))
+        return {"dir": tmp}
+
+    damaged = leaking_emitted()
+    try:
+        after = _gateb_temp_dirs()
+        leaked = after - before
+        assert leaked, "the mutation did not actually leak a directory"
+        assert damaged["dir"].name in leaked
+        # THE DETECTOR MUST SEE IT. This is the same comparison test_224 makes.
+        try:
+            assert after - before == set(), "leak"
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("the leak survived the before/after comparison")
+    finally:
+        # The control cleans up after ITSELF, and only after itself: it removes
+        # the one directory it created, by name, and touches nothing else.
+        shutil.rmtree(damaged["dir"], ignore_errors=True)
+    assert not damaged["dir"].exists()
+    assert _gateb_temp_dirs() - before == set(), "the control leaked its own mutation"
+
+
+# ===========================================================================
+# 32. PHASE-6 STEP 12: no fixed production-module count in active wording
+# ===========================================================================
+# P5-M and P5-D8 are manifest-driven in the scenarios file and always were. The
+# DESCRIPTIONS were not: the driver banner and the harness record both said
+# "15 modules" and "inventory back to 15", which was true when Phase 5 closed
+# and stopped being true the moment Phase 6 added its first module. A number
+# that has to be edited by hand every time the manifest grows is a second
+# inventory authority, and this refuses one.
+_MANIFEST_LANGUAGE = ("manifest module set", "manifest")
+
+
+def test_226_the_active_p5m_and_p5d8_descriptions_name_no_module_count() -> None:
+    banner = _text(HARNESS)
+    banner = banner[banner.index("      P5-M "):banner.index("      P5-AN ")]
+    assert "P5-D8" in banner, "the banner slice lost P5-D8"
+    numbers = re.findall(r"\b(\d+)\s+modules?\b", banner)
+    assert numbers == [], f"the driver banner states a fixed module count: {numbers}"
+    assert "back to 15" not in banner
+    for description in ("P5-M", "P5-D8"):
+        line = banner[banner.index(description):]
+        line = line[:line.index("\n      P5-")] if "\n      P5-" in line else line
+        assert any(word in line for word in _MANIFEST_LANGUAGE), (
+            f"{description} no longer describes itself in manifest terms"
+        )
+    # THE OTHER ACTIVE DESCRIPTION: the harness record's scenario table, which
+    # says what each scenario ESTABLISHES. The Run-by-Run tables further down
+    # are historical evidence and keep the numbers that were true when they were
+    # written - Step 12 corrects active wording, it does not rewrite history.
+    doc = (PCCM_ROOT / "docs" / "phase5_gate_b_harness.md").read_text(encoding="utf-8")
+    table = doc[doc.index("## The Windows scenarios"):]
+    table = table[:table.index("\n## ", 1)]
+    rows = [line for line in table.splitlines()
+            if line.startswith("| `P5-M` |") or line.startswith("| `P5-D8` |")]
+    assert len(rows) == 2, rows
+    for row in rows:
+        assert re.search(r"\b\d+\s+modules?\b", row) is None, f"stale count in: {row}"
+        assert "back to 15" not in row
+        assert any(word in row for word in _MANIFEST_LANGUAGE), row
+    # AND NO ACTIVE ROW ANYWHERE STATES A DIGIT-FORM MODULE COUNT.
+    for line in doc.splitlines():
+        if line.startswith("| `P5-M` |") or line.startswith("| `P5-D8` |"):
+            assert re.search(r"\b\d+\s+modules?\b", line) is None, line
+
+
+def test_227_the_executable_inventory_logic_is_still_manifest_driven() -> None:
+    """Only the WORDING moved. The checks were manifest-owned already."""
+    source = _executable(SCENARIOS)
+    assert "'Persisted project: manifest module set by name, 5 buttons, 6 API procedures'" \
+        in source, "the P5-M result name is no longer manifest-owned"
+    assert "'Transient diagnostic module removed; inventory back to the manifest module set'" \
+        in source, "the P5-D8 result name is no longer manifest-owned"
+    # AND NO NUMERIC MODULE COUNT ANYWHERE IN THE EXECUTABLE SCENARIOS.
+    counts = re.findall(r"\b(\d+)\s+modules?\b", source)
+    assert counts == [], f"the scenarios compare against a hardcoded count: {counts}"
+
+
+def test_nc_111_a_fixed_module_count_in_the_active_wording_is_caught() -> None:
+    """MUTATION CONTROL. Put "15 modules" back and require the detector to see it."""
+    banner = _text(HARNESS)
+    banner = banner[banner.index("      P5-M "):banner.index("      P5-AN ")]
+    assert re.findall(r"\b(\d+)\s+modules?\b", banner) == [], "the accepted text is clean"
+    for planted in ("The persisted project: 15 modules BY NAME",
+                    "the inventory back to 15 modules",
+                    "inventory returned to the 16 modules"):
+        damaged = banner + "\n      " + planted + "\n"
+        assert re.findall(r"\b(\d+)\s+modules?\b", damaged), (
+            f"the detector cannot see a fixed count in {planted!r}"
+        )
+    # The row form too.
+    damaged_row = "| `P5-M` | 15 modules **by name**, exactly 5 buttons |"
+    assert re.search(r"\b\d+\s+modules?\b", damaged_row), (
+        "the detector cannot see a fixed count in a table row"
+    )

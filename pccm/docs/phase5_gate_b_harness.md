@@ -1001,7 +1001,7 @@ all. What may not happen is a case disappearing because several share a fixture.
 | `P5-PRE` | Coverage preflight, pure PowerShell, before Excel |
 | `P5-P4` | The Phase-4 matrix reached 35/35, 0 FAIL, 0 SKIP |
 | `P5-FX` | The locked FX seed captured from the untouched Stage-B workbook |
-| `P5-M` | 15 modules **by name**, exactly 5 buttons, no `PCCM_Calculate` button, 6 `api_procedures` |
+| `P5-M` | The manifest module set **by name**, exactly 5 buttons, no `PCCM_Calculate` button, 6 `api_procedures` |
 | `P5-EV` | No `Worksheet_Change` / `Workbook_SheetChange` in the real project |
 | `P5-D0` | The transient diagnostic module imported, **after** A1 |
 | `P5-D1` | Ten canonical numeric encodings on real VBA |
@@ -1012,7 +1012,7 @@ all. What may not happen is a case disappearing because several share a fixture.
 | `P5-D6` | The eight delimiter-hostile collision probes |
 | `P5-D7` | Convex statistics at the naive-overflow boundary |
 | `P5-DC` | Predicates the workbook cannot reach, through `modCalcCheck` directly |
-| `P5-D8` | The diagnostic module **removed**, inventory back to 15 |
+| `P5-D8` | The diagnostic module **removed**, inventory returned to the manifest module set |
 | `P5-AN` | Every analytical fixture, every emitted expected value |
 | `P5-RF` | The nine refusal plan cases, each with its own detail discriminator |
 | `P5-PQ` | The plan section 18 prerequisite matrix (25 workbook-reachable predicates) |
