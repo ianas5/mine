@@ -2288,11 +2288,10 @@ behaviour in an evidence harness.
 
 A duplicate attempt is now recorded in `$script:Phase5LedgerViolations`, and
 **`P5-LDG`** reports on it: PASS when there were none, FAIL naming every
-duplicate when there were. It is emitted from the driver **after Y and Z** and
-before the summary, so cleanup and lifecycle evidence still arrive; it goes
-through `Add-Result` rather than the guard, so the ledger can never suppress its
-own report; and it carries its own emitted-once flag, so many duplicate attempts
-still produce exactly one `P5-LDG`.
+duplicate when there were. It goes through `Add-Result` rather than the guard,
+so the ledger can never suppress its own report, and it carries its own
+emitted-once flag, so many duplicate attempts still produce exactly one
+`P5-LDG`.
 
 The guard deliberately does **not** throw — that would take the shutdown ledger,
 Y, Z and P5-FIN down with it. The invariants hold together:
@@ -2304,6 +2303,44 @@ Y, Z and P5-FIN down with it. The invariants hold together:
 5. many attempts still give one integrity result;
 6. Y, Z and P5-FIN still run;
 7. nothing de-duplicates at print time.
+
+#### Round 4A: the verdict has to be LAST
+
+`a291853` emitted `P5-LDG` **before** `Add-Phase4FinalCompletenessResult`, under
+a comment claiming that after Y and Z "every Phase-5 result that will ever be
+recorded has been." That was false. `Add-Phase4FinalCompletenessResult` ends by
+emitting `P5-FIN` through `Add-Phase5Result`, so `P5-FIN` is itself a **guarded**
+Phase-5 result — and it was being attempted after the verdict.
+
+That is the same fail-open class blocker 2 was meant to close. A future
+ownership defect that recorded `P5-FIN` PASS and then attempted `P5-FIN` FAIL
+would have the duplicate correctly refused and recorded as a violation, but
+`P5-LDG` would already have reported PASS and its emitted-once flag would
+suppress any later verdict. The FAIL count could still be zero.
+
+The driver order is now:
+
+```
+shutdown
+Z          Excel closed naturally
+Y          transient COM releases
+P5-FIN     Add-Phase4FinalCompletenessResult  (the last GUARDED Phase-5 result)
+P5-LDG     Add-Phase5LedgerIntegrityResult    (the verdict, over everything above)
+summary    $failed = @(... Status -eq 'FAIL')
+```
+
+`P5-LDG` stays **outside** its own guarded ledger — it is the ledger's integrity
+report, not a scenario result, and it must not be able to suppress itself. Only
+the emission point moved; the guard, the violation record, the emitted-once flag
+and the `Add-Result` route are unchanged.
+
+`test_154` pins `P5-FIN < P5-LDG < summary` alongside the existing `Y` and `Z`
+requirements, `test_155` models the final-result boundary in both directions —
+a clean finalisation and a duplicate `P5-FIN` attempt that forces `P5-LDG` FAIL
+— and `test_155a` is the mutation control: it rebuilds `a291853`'s ordering from
+the real harness text and requires the detector to refuse it, while checking
+that the weaker `ledger < summary` assertion would still have passed on the
+damaged text.
 
 ## Runtime Run 5: R5 closed, and a fixture-establishment ordering defect
 
@@ -2500,7 +2537,7 @@ checklist so the distinction can be made from the evidence.
 
 A failure is a **FAIL**, never a SKIP, and it gates through `P5-ALL` and
 `return` exactly as `P5-FX` does. Returning from the scenario driver leaves the
-caller's shutdown, `Z`, `Y`, `P5-LDG` and `P5-FIN` untouched, so the lifecycle
+caller's shutdown, `Z`, `Y`, `P5-FIN` and `P5-LDG` untouched, so the lifecycle
 evidence is still produced.
 
 ### What did not change
@@ -2922,8 +2959,8 @@ $control = $bars.FindControl($null, 578)
   `PCCM_AutomationBegin` and `PCCM_Calculate` appear nowhere inside it.
 - **One result, and the lifecycle survives.** Exactly two `Add-Phase5Result
   'P5-CMP'` sites — the success path and the catch path — and a failure gates
-  through `P5-ALL` and **returns**, leaving shutdown, `Z`, `Y`, `P5-LDG` and
-  `P5-FIN` reachable. All three COM transients are released.
+  through `P5-ALL` and **returns**, leaving shutdown, `Z`, `Y`, `P5-FIN` and
+  `P5-LDG` reachable. All three COM transients are released.
 
 **A caveat stated rather than hidden:** whether `Execute()` on control 578 is
 reliable in every VBE build, and whether `Enabled` is a dependable

@@ -6322,6 +6322,38 @@ def test_152_p5_fx_proves_exact_type_through_the_strict_comparator() -> None:
 
 
 # --- the ledger fails closed ------------------------------------------------
+FINAL_COMPLETENESS_CALL = "Add-Phase4FinalCompletenessResult -Results $results"
+LEDGER_VERDICT_CALL = "Add-Phase5LedgerIntegrityResult"
+FAIL_COUNT_SUMMARY = "$failed = @($results | Where-Object { $_.Status -eq 'FAIL' })"
+
+
+def _assert_final_ledger_order(harness: str) -> None:
+    """REVIEW ROUND 4A. The ledger verdict is the LAST Phase-5 result.
+
+    Add-Phase4FinalCompletenessResult is not a bystander here: it ends by
+    emitting P5-FIN through Add-Phase5Result, so it is a GUARDED Phase-5 result.
+    Emitting the verdict before it was fail-open - a duplicate P5-FIN attempt
+    would be recorded as a violation after P5-LDG had already reported PASS, the
+    emitted-once flag would suppress any later verdict, and the FAIL count could
+    still be zero.
+
+    `ledger < summary` alone does not say this. The completeness call has to sit
+    BETWEEN the scenarios and the verdict, which is what is asserted here.
+    """
+    for call in (FINAL_COMPLETENESS_CALL, LEDGER_VERDICT_CALL, FAIL_COUNT_SUMMARY):
+        assert harness.count(call) == 1, (call, harness.count(call))
+    completeness = harness.index(FINAL_COMPLETENESS_CALL)
+    verdict = harness.index(LEDGER_VERDICT_CALL)
+    summary = harness.index(FAIL_COUNT_SUMMARY)
+    assert completeness < verdict, (
+        "P5-FIN is emitted AFTER the ledger verdict, so a duplicate P5-FIN "
+        "attempt cannot reach P5-LDG and the run can finish green on it"
+    )
+    assert verdict < summary, (
+        "the ledger verdict is emitted after the FAIL count is taken"
+    )
+
+
 def test_153_a_duplicate_attempt_is_recorded_as_a_violation() -> None:
     source = _executable(SCENARIOS)
     guard = _procedure(source, "Add-Phase5Result")
@@ -6360,13 +6392,15 @@ def test_154_any_duplicate_attempt_forces_the_run_to_fail() -> None:
     assert "($violations.Count -eq 0)" in integrity
     assert "'SKIP'" not in integrity, "an integrity violation must never be a skip"
 
-    # Wired after Y and Z, so cleanup evidence survives, and before the summary.
+    # Wired after Y, Z AND P5-FIN, so cleanup evidence survives and every
+    # guarded Phase-5 result has been attempted, and before the summary.
     harness = _executable(HARNESS)
     assert "Add-Phase5LedgerIntegrityResult" in harness, "P5-LDG is never emitted"
     assert harness.index("Add-Result 'Y' 'Transient COM releases' 'PASS'") < \
         harness.index("Add-Phase5LedgerIntegrityResult")
-    assert harness.index("Add-Phase5LedgerIntegrityResult") < \
-        harness.index("$failed = @($results | Where-Object { $_.Status -eq 'FAIL' })")
+    assert harness.index("Add-Result 'Z' 'Excel closed naturally after the functional run' 'PASS'") < \
+        harness.index("Add-Phase5LedgerIntegrityResult")
+    _assert_final_ledger_order(harness)
     # The run's verdict is the FAIL count, so a P5-LDG FAIL makes it red.
     assert "if ($failed.Count -eq 0) {" in harness and "exit 1" in harness
     # And nothing de-duplicates at print time.
@@ -6443,6 +6477,114 @@ def test_155_the_ledger_models_both_paths_and_the_grouped_catch() -> None:
     many.integrity()
     assert [i for i, _ in many.results].count("P5-LDG") == 1
     assert len(many.violations) == 5
+
+    # ------------------------------------------------------------------
+    # REVIEW ROUND 4A: THE FINAL-RESULT BOUNDARY.
+    #
+    # P5-FIN is the LAST guarded Phase-5 result, and it is emitted by
+    # Add-Phase4FinalCompletenessResult. The two cases below are the whole point
+    # of moving the verdict after it: the second one is unreachable while the
+    # verdict runs first, because the violation would be recorded after P5-LDG
+    # had already said PASS.
+    # ------------------------------------------------------------------
+    # A. CLEAN FINALISATION.
+    final_clean = Ledger()
+    for identifier in ("P5-FX", "P5-S2", "P5-ST"):
+        final_clean.add(identifier, "PASS")
+    final_clean.add("P5-FIN", "PASS")
+    final_clean.integrity()
+    assert [i for i, _ in final_clean.results].count("P5-FIN") == 1
+    assert ("P5-FIN", "PASS") in final_clean.results
+    assert [i for i, _ in final_clean.results].count("P5-LDG") == 1
+    assert ("P5-LDG", "PASS") in final_clean.results
+    assert final_clean.violations == []
+    assert final_clean.failed == [], final_clean.failed
+    # The verdict is genuinely last.
+    assert [i for i, _ in final_clean.results][-1] == "P5-LDG"
+
+    # B. A DUPLICATE P5-FIN ATTEMPT, BEFORE THE VERDICT.
+    final_dup = Ledger()
+    for identifier in ("P5-FX", "P5-S2", "P5-ST"):
+        final_dup.add(identifier, "PASS")
+    final_dup.add("P5-FIN", "PASS")
+    final_dup.add("P5-FIN", "FAIL")     # a future ownership defect
+    final_dup.integrity()
+    ids = [i for i, _ in final_dup.results]
+    assert ids.count("P5-FIN") == 1, "a second P5-FIN result appeared"
+    assert ("P5-FIN", "PASS") in final_dup.results, "the first P5-FIN did not stand"
+    assert ("P5-FIN", "FAIL") not in final_dup.results
+    assert len(final_dup.violations) == 1, final_dup.violations
+    assert ids.count("P5-LDG") == 1
+    assert ("P5-LDG", "FAIL") in final_dup.results
+    assert "P5-LDG" in final_dup.failed, final_dup.failed
+    assert final_dup.failed, "the run finished green on a duplicate P5-FIN attempt"
+
+    # AND THE ORDERING IS WHAT MAKES B WORK. Run the same events with the
+    # verdict taken BEFORE P5-FIN - commit a291853's shape - and the run is
+    # green despite the violation.
+    early = Ledger()
+    for identifier in ("P5-FX", "P5-S2", "P5-ST"):
+        early.add(identifier, "PASS")
+    early.integrity()                   # the verdict, too soon
+    early.add("P5-FIN", "PASS")
+    early.add("P5-FIN", "FAIL")
+    early.integrity()                   # the emitted-once flag swallows this
+    assert len(early.violations) == 1, "the violation was still recorded"
+    assert [i for i, _ in early.results].count("P5-LDG") == 1
+    assert ("P5-LDG", "PASS") in early.results, (
+        "the early verdict should have reported PASS - that is the defect"
+    )
+    assert early.failed == [], (
+        "the early-verdict ordering is only fail-open if the run finishes green"
+    )
+
+
+def test_155a_the_old_early_ledger_ordering_is_refused_by_the_detector() -> None:
+    """MUTATION CONTROL. Recreate commit a291853's driver order and require FAIL.
+
+    The mutation moves Add-Phase5LedgerIntegrityResult to immediately before
+    Add-Phase4FinalCompletenessResult, which is exactly the shape review round
+    4A rejected. It is applied to the REAL harness text, and the REAL detector
+    the conformance test uses is run against it.
+    """
+    harness = _executable(HARNESS)
+    # The accepted order passes the detector.
+    _assert_final_ledger_order(harness)
+
+    damaged = harness.replace("\n" + LEDGER_VERDICT_CALL, "", 1)
+    assert damaged != harness, "the mutation changed nothing"
+    assert damaged.count(LEDGER_VERDICT_CALL) == 0, (
+        "the verdict call was not removed cleanly"
+    )
+    damaged = damaged.replace(
+        FINAL_COMPLETENESS_CALL,
+        LEDGER_VERDICT_CALL + "\n" + FINAL_COMPLETENESS_CALL, 1)
+    assert damaged.count(LEDGER_VERDICT_CALL) == 1
+    assert damaged.index(LEDGER_VERDICT_CALL) < damaged.index(FINAL_COMPLETENESS_CALL), (
+        "the mutation did not actually recreate the early-ledger ordering"
+    )
+
+    # THE DETECTOR MUST REFUSE IT.
+    try:
+        _assert_final_ledger_order(damaged)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError(
+            "the a291853 ordering survived the final-ledger-order detector"
+        )
+
+    # AND THE CONTROL IS AIMED AT THE RIGHT INVARIANT. The weaker assertion this
+    # round replaced - ledger before the summary - still holds on the damaged
+    # text, so it could never have caught this.
+    assert damaged.index(LEDGER_VERDICT_CALL) < damaged.index(FAIL_COUNT_SUMMARY), (
+        "the mutation broke ledger-before-summary too, so the control would not "
+        "prove that the P5-FIN boundary is what is being protected"
+    )
+    assert damaged.index("Add-Result 'Y' 'Transient COM releases' 'PASS'") < \
+        damaged.index(LEDGER_VERDICT_CALL), (
+        "the mutation broke the Y ordering too, for the same reason"
+    )
 
 
 # --- negative controls -----------------------------------------------------
@@ -6897,15 +7039,16 @@ def test_169_r14_the_fixture_self_proof_gates_the_scenarios_that_depend_on_it() 
         "a broken fixture does not stop the dependent scenarios on both paths"
     )
     # AND THE LIFECYCLE EVIDENCE SURVIVES THE GATE. Returning from the scenario
-    # driver leaves the caller's shutdown, Z, Y, the ledger report and the final
-    # completeness gate untouched.
+    # driver leaves the caller's shutdown, Z, Y, the final completeness gate and
+    # the ledger verdict untouched - in that order, since P5-FIN is itself a
+    # guarded Phase-5 result and has to be attempted before the verdict.
     harness = _executable(HARNESS)
     phase5_at = harness.index("Invoke-Phase5GateBScenarios -Excel")
     z_at = harness.index("Add-Result 'Z' 'Excel closed naturally")
     y_at = harness.index("$transient = @(Get-TransientFailures)")
-    ledger_at = harness.index("Add-Phase5LedgerIntegrityResult")
     fin_at = harness.index("Add-Phase4FinalCompletenessResult -Results $results")
-    assert phase5_at < z_at < y_at < ledger_at < fin_at, (
+    ledger_at = harness.index("Add-Phase5LedgerIntegrityResult")
+    assert phase5_at < z_at < y_at < fin_at < ledger_at, (
         "the gate would take the post-session lifecycle evidence down with it"
     )
     assert "exit" not in block, "the gate exits the process instead of returning"
@@ -7514,10 +7657,10 @@ def test_182_r12_the_run_6_gate_is_unchanged() -> None:
         "Invoke-Phase5GateBScenarios -Excel",
         "Add-Result 'Z' 'Excel closed naturally",
         "$transient = @(Get-TransientFailures)",
-        "Add-Phase5LedgerIntegrityResult",
-        "Add-Phase4FinalCompletenessResult -Results $results")]
+        "Add-Phase4FinalCompletenessResult -Results $results",
+        "Add-Phase5LedgerIntegrityResult")]
     assert order == sorted(order), (
-        "the gate would take Z, Y, P5-LDG or P5-FIN down with it"
+        "the gate would take Z, Y, P5-FIN or P5-LDG down with it"
     )
 
 
@@ -7914,8 +8057,8 @@ def test_189_r20_a_compile_gate_failure_leaves_the_lifecycle_evidence_reachable(
         "Invoke-Phase5GateBScenarios -Excel",
         "Add-Result 'Z' 'Excel closed naturally",
         "$transient = @(Get-TransientFailures)",
-        "Add-Phase5LedgerIntegrityResult",
-        "Add-Phase4FinalCompletenessResult -Results $results")]
+        "Add-Phase4FinalCompletenessResult -Results $results",
+        "Add-Phase5LedgerIntegrityResult")]
     assert order == sorted(order)
 
 
@@ -8141,8 +8284,8 @@ def test_193_r12_r13_the_compile_gate_still_precedes_everything_it_gates() -> No
         "Invoke-Phase5GateBScenarios -Excel",
         "Add-Result 'Z' 'Excel closed naturally",
         "$transient = @(Get-TransientFailures)",
-        "Add-Phase5LedgerIntegrityResult",
-        "Add-Phase4FinalCompletenessResult -Results $results")]
+        "Add-Phase4FinalCompletenessResult -Results $results",
+        "Add-Phase5LedgerIntegrityResult")]
     assert positions == sorted(positions)
 
 
@@ -8512,8 +8655,8 @@ def test_203_r15_the_compile_gate_failure_still_reaches_the_lifecycle() -> None:
         "Invoke-Phase5GateBScenarios -Excel",
         "Add-Result 'Z' 'Excel closed naturally",
         "$transient = @(Get-TransientFailures)",
-        "Add-Phase5LedgerIntegrityResult",
-        "Add-Phase4FinalCompletenessResult -Results $results")]
+        "Add-Phase4FinalCompletenessResult -Results $results",
+        "Add-Phase5LedgerIntegrityResult")]
     assert order == sorted(order)
 
 
@@ -9062,8 +9205,8 @@ def test_217_r8_r9_the_accepted_gates_survive_the_settlement_correction() -> Non
         "Invoke-Phase5GateBScenarios -Excel",
         "Add-Result 'Z' 'Excel closed naturally",
         "$transient = @(Get-TransientFailures)",
-        "Add-Phase5LedgerIntegrityResult",
-        "Add-Phase4FinalCompletenessResult -Results $results")]
+        "Add-Phase4FinalCompletenessResult -Results $results",
+        "Add-Phase5LedgerIntegrityResult")]
     assert order == sorted(order)
     # And the manual evidence is recorded, so the freeze has a stated reason.
     text = _text(SCENARIOS)

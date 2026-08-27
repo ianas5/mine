@@ -3003,20 +3003,35 @@ if ($transient.Count -gt 0) {
     Add-Result 'Y' 'Transient COM releases' 'PASS' 'every transient object released cleanly'
 }
 
-# --- Phase-5 result-ledger integrity ---------------------------------------
-# After Y and Z, so every Phase-5 result that will ever be recorded has been.
-# Emitted unconditionally and exactly once: PASS when no scenario ID was
-# attempted twice, FAIL naming the duplicates when one was. A duplicate attempt
-# is a harness-integrity failure, and this is what stops the run finishing green
-# on one - the first result stands, but the run does not pass.
-Add-Phase5LedgerIntegrityResult
-
 # --- final Phase-4 completeness, now that Y and Z exist --------------------
 # HERE, and nowhere earlier. P5-P4 gates entry to Phase 5 on the cases that can
 # exist while the automation session is live; Y and Z are recorded after it is
 # torn down. This is the gate that still demands the whole 35/35 matrix, and it
 # cannot pass unless Y and Z each ran and PASSED.
+#
+# It ends by emitting P5-FIN through Add-Phase5Result, so it is itself a GUARDED
+# Phase-5 result and has to be attempted before the ledger-integrity verdict.
 Add-Phase4FinalCompletenessResult -Results $results
+
+# --- Phase-5 result-ledger integrity ---------------------------------------
+# After Y, Z and P5-FIN, so every guarded Phase-5 result has been attempted
+# before the ledger-integrity verdict is emitted.
+#
+# REVIEW ROUND 4A. This used to run BEFORE Add-Phase4FinalCompletenessResult,
+# and that was fail-open. P5-FIN is a guarded Phase-5 result, so a duplicate
+# P5-FIN attempt would be recorded as a violation AFTER P5-LDG had already
+# reported PASS; the emitted-once flag would then stop any later verdict, and
+# the run could finish with a FAIL count of zero. The verdict has to be last.
+#
+# P5-LDG is the ledger's own report, not a guarded scenario result: it is
+# emitted through Add-Result so the ledger can never suppress the result that
+# reports on the ledger, and it carries its own emitted-once flag instead.
+#
+# Emitted unconditionally and exactly once: PASS when no scenario ID was
+# attempted twice, FAIL naming the duplicates when one was. A duplicate attempt
+# is a harness-integrity failure, and this is what stops the run finishing green
+# on one - the first result stands, but the run does not pass.
+Add-Phase5LedgerIntegrityResult
 
 Write-Host ''
 Write-Host 'Shutdown ledger' -ForegroundColor Cyan
