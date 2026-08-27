@@ -315,15 +315,22 @@ def test_18_the_implementation_arrived_in_step_10_and_nothing_beyond_it() -> Non
     src = PCCM_ROOT / "src" / "vba"
     names = {path.name for path in src.glob("*.bas")}
     assert "modSimFingerprint.bas" in names
-    assert "modSimReport.bas" not in names, "Step 11 is not authorised"
+    assert "modSimReport.bas" in names, "Step 11 built the orchestration layer"
     from pccm_builder.vba_source import load_modules
 
     for module in load_modules([src]):
-        for banned in ("PCCM_RunSimulation", "SimReport"):
-            assert banned not in module.code, f"{module.name} carries {banned}"
-        if module.name != "modSimFingerprint":
+        if module.name != "modSimReport":
+            for banned in ("PCCM_RunSimulation", "SimReport"):
+                assert banned not in module.code, f"{module.name} carries {banned}"
+        # THE FRAMING IS STILL OWNED BY ONE MODULE. modSimReport CALLS the two
+        # public entry points; no third module may name either.
+        if module.name not in ("modSimFingerprint", "modSimReport"):
             for owned in ("SimFpBuildRequestFingerprint", "SimFpResultDigest"):
                 assert owned not in module.code, f"{module.name} carries {owned}"
+    report = next(m for m in load_modules([src]) if m.name == "modSimReport")
+    for private in ("SimFpRequestSuffix", "SimFpVersionedResultDigest",
+                    "SimFpDigestRecord", "SimFpRetainedExtent"):
+        assert private not in report.code, private
 
 
 def test_19_the_accepted_phase5_encoder_was_not_reopened() -> None:

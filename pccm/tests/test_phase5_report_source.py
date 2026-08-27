@@ -249,7 +249,7 @@ PHASE5_INVENTORY = {
 """The fifteen modules Phase 5 closed with. Frozen by name, not by count."""
 
 PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
-                    "modSimStats", "modSimFingerprint"}
+                    "modSimStats", "modSimFingerprint", "modSimReport"}
 """Everything Phase 6 has added on top, also by name: a module cannot appear
 in the registry here unremarked."""
 
@@ -274,8 +274,22 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
         "PCCM_AddRisk", "PCCM_DeleteRisk", "PCCM_StructuralReport",
         "PCCM_DeleteCostLineById", "PCCM_DeleteRiskById",
     }
+    # THE SEVEN PHASE-6 PROCEDURES are a separate settled surface, owned by
+    # modSimReport. Naming them here keeps this test an EXACT statement about
+    # Phase 5 rather than letting it become "contains at least".
+    phase6 = {
+        "PCCM_RunSimulation", "PCCM_SimulationStatus",
+        "PCCM_SimulationRequestFingerprint",
+        "PCCM_CurrentSimulationRequestFingerprint",
+        "PCCM_SimulationResultDigest", "PCCM_SimulationAttemptResult",
+        "PCCM_SimulationAttemptDetail",
+    }
+    assert set(modules["modSimReport"].public_procedures) == phase6, sorted(
+        modules["modSimReport"].public_procedures)
+    for name in phase6:
+        assert name not in _reporter().public_procedures, name
     found = {p for m in modules.values() for p in m.public_procedures
-             if p.startswith("PCCM_")} - phase4
+             if p.startswith("PCCM_")} - phase4 - phase6
     assert found == PCCM_ENDPOINTS, (
         f"unexpected: {sorted(found - PCCM_ENDPOINTS)}; missing: "
         f"{sorted(PCCM_ENDPOINTS - found)}"
@@ -312,7 +326,14 @@ def test_08_the_only_other_public_names_are_the_failpoint_stages() -> None:
     """Public because a later harness arms them BY NAME. Nothing else is public."""
     module = _reporter()
     extra = set(module.public_procedures) - PCCM_ENDPOINTS
-    assert extra == set(), f"unexpected Public procedure(s): {sorted(extra)}"
+    # EXACTLY ONE additional Public procedure, and it is the accepted Step-11A
+    # internal bridge. It is not an endpoint: it carries no PCCM_ prefix, no
+    # button binds to it, and it is Public only because modSimReport must reach
+    # the ONE accepted preparation rather than rebuild it.
+    assert extra == {"CalcPrepareSimulationInputs"}, (
+        f"unexpected Public procedure(s): {sorted(extra - {'CalcPrepareSimulationInputs'})}"
+    )
+    assert not any(name.startswith("PCCM_") for name in extra)
     public_constants = {
         match.group(1)
         for line in module.code_without_string_removal.splitlines()

@@ -383,18 +383,36 @@ def test_19_the_public_read_accessors_are_settled_and_exact() -> None:
     assert surface["user_facing_run_button_in_phase_6"] is False
 
 
-def test_20_no_vba_implementation_exists_yet() -> None:
+def test_20_the_implementation_arrived_in_step_11_and_only_there() -> None:
+    """Step 11A closed the authority with NO implementation; Step 11 built it.
+
+    The test moved with that authorisation rather than being deleted: it still
+    says exactly which module may carry the endpoint, the bridge and the bank
+    machinery, and no other module may.
+    """
     from pccm_builder.vba_source import load_modules
 
     src = PCCM_ROOT / "src" / "vba"
     names = {p.name for p in src.glob("*.bas")}
-    assert "modSimReport.bas" not in names
+    assert "modSimReport.bas" in names
     for module in load_modules([src]):
-        for banned in ("PCCM_RunSimulation", "CalcPrepareSimulationInputs",
-                       "SimReport", "active_bank", "SIM_BANK_"):
+        if module.name == "modSimReport":
+            continue
+        for banned in ("PCCM_RunSimulation", "SIM_BANK_", "SIM_ACTIVE_BANK_ROW",
+                       "SIM_FINAL_COMMIT_RANGE", "SIM_SUMMARY_", "SIM_CONTINGENCY_"):
             assert banned not in module.code, f"{module.name} carries {banned}"
+        if module.name != "modCalcReport":
+            assert "CalcPrepareSimulationInputs" not in module.code, module.name
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
-    assert "modSimReport" not in {m.name for m in structure.vba_modules}
+    declared = {m.name for m in structure.vba_modules}
+    assert "modSimReport" in declared
+    # AND NOTHING BEYOND IT. The Phase-6 registry is exactly the generated
+    # projection plus the six hand-written modules, so a Step-12 module cannot
+    # be declared ahead of the step that authorises it.
+    assert {n for n in declared if n.startswith("modSim")} == {
+        "modSimContract", "modSimRng", "modSimSample", "modSimEngine",
+        "modSimStats", "modSimFingerprint", "modSimReport",
+    }, sorted(n for n in declared if n.startswith("modSim"))
 
 
 # ===========================================================================

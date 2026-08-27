@@ -246,6 +246,25 @@ STEP10_FINGERPRINT_BANNER = (
 )
 
 
+STEP11_REPORTER_BANNER = (
+    "' ==========================================================================\n"
+    "' STEP 11 ADDITION - THE PHASE-6 PREPARATION BRIDGE\n"
+)
+
+
+def _accepted_reporter_source() -> str:
+    """modCalcReport up to the Step-11 bridge banner.
+
+    The bridge is APPENDED after every accepted line, so the reversal proofs
+    below still have to reproduce the base commit byte for byte.
+    """
+    text = (SRC_VBA / "modCalcReport.bas").read_text(encoding="utf-8")
+    assert text.count(STEP11_REPORTER_BANNER) == 1, (
+        "the Step-11 bridge banner is missing or duplicated"
+    )
+    return text[: text.index(STEP11_REPORTER_BANNER)]
+
+
 def _accepted_fingerprint_source() -> str:
     text = (SRC_VBA / "modCalcFingerprint.bas").read_text(encoding="utf-8")
     assert text.count(STEP10_FINGERPRINT_BANNER) == 1, (
@@ -358,7 +377,7 @@ def test_01_the_three_kernel_modules_exist_and_declare_themselves() -> None:
 
 
 PHASE6_MODULES = ("modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-                  "modSimFingerprint")
+                  "modSimFingerprint", "modSimReport")
 """Phase-6 hand-written source modules. Not Phase 5's, and named so the
 Phase-5 inventory equality below stays exact."""
 
@@ -2942,8 +2961,13 @@ def test_86b_every_run_7_rename_is_spelling_and_nothing_else() -> None:
         # continuation is appended AFTER every accepted line, so the reversal
         # below still has to reproduce the base commit byte for byte.
         path = SRC_VBA / f"{module}.bas"
-        lines = (_accepted_fingerprint_source() if module == "modCalcFingerprint"
-                 else path.read_text()).split("\n")
+        if module == "modCalcFingerprint":
+            source = _accepted_fingerprint_source()
+        elif module == "modCalcReport":
+            source = _accepted_reporter_source()
+        else:
+            source = path.read_text()
+        lines = source.split("\n")
         for procedure, old, new in jobs:
             lo, hi = span(lines, procedure)
             # EXECUTABLE TEXT ONLY. Comments and string literals are stripped

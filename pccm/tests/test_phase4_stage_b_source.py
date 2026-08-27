@@ -253,6 +253,7 @@ PHASE6_VBA_MODULES = (
     "modSimEngine",
     "modSimStats",
     "modSimFingerprint",
+    "modSimReport",
 )
 
 PHASE4_RAW_LINE_LIMIT = 900
@@ -344,9 +345,24 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
     # Three declared groups now: button entry points, Phase-4 harness helpers,
     # and the Phase-5 automation/API endpoints. The rule is unchanged - every
     # externally callable PCCM_ procedure is accounted for by the contract.
+    # THE SEVEN PHASE-6 PROCEDURES are accounted for by the Step-11 authority,
+    # which settles them by name and grants their endpoint to modSimReport
+    # alone. They are named here rather than added to `api_procedures`, so this
+    # test stays an EXACT statement instead of becoming "contains at least".
+    phase6 = {
+        "PCCM_RunSimulation", "PCCM_SimulationStatus",
+        "PCCM_SimulationRequestFingerprint",
+        "PCCM_CurrentSimulationRequestFingerprint",
+        "PCCM_SimulationResultDigest", "PCCM_SimulationAttemptResult",
+        "PCCM_SimulationAttemptDetail",
+    }
+    owners = {m.name for m in _all_modules()
+              if phase6 & set(m.public_procedures)}
+    assert owners == {"modSimReport"}, owners
     accounted = (set(data["vba"]["entry_points"])
                  | set(data["vba"]["harness_procedures"])
-                 | set(data["vba"].get("api_procedures", [])))
+                 | set(data["vba"].get("api_procedures", []))
+                 | phase6)
     found = {
         p for m in _all_modules() for p in m.public_procedures if p.startswith("PCCM_")
     }
@@ -506,28 +522,33 @@ def test_15_no_forbidden_construct_appears_where_it_is_forbidden() -> None:
     assert not problems, "\n".join(problems)
 
 
-def test_15a_the_one_scoped_grant_is_real_and_is_the_only_one() -> None:
-    """The grant is exercised, and it is not a licence for anything else."""
+def test_15a_the_scoped_grants_are_real_and_are_the_only_ones() -> None:
+    """Each grant is exercised, and it is not a licence for anything else."""
     structure = _specs()[3]
     scoped = [r for r in structure.forbidden_construct_rules if r.is_scoped]
+    # TWO GRANTS NOW. Each was landed in the SAME commit that introduced its
+    # owner: a scoped rule before its owner leaves the construct legal in a
+    # module that does not exist, and an owner before the rule leaves it illegal
+    # in the module that must contain it.
     assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
-        ("MRG32k3a", ("modSimRng",))
+        ("MRG32k3a", ("modSimRng",)),
+        ("RunSimulation", ("modSimReport",)),
     ], scoped
 
     modules = {m.name: m for m in _all_modules()}
-    assert contains_construct([modules["modSimRng"]], "MRG32k3a"), (
-        "the scoped grant is vacuous: modSimRng does not contain the construct "
-        "in executable code"
-    )
-    others = [m for name, m in modules.items() if name != "modSimRng"]
-    assert not contains_construct(others, "MRG32k3a")
-
-    # RunSimulation has no owner yet and must not have been scoped early.
-    endpoint = [r for r in structure.forbidden_construct_rules
-                if r.construct == "RunSimulation"]
-    assert len(endpoint) == 1 and not endpoint[0].is_scoped
-    for name in modules:
-        assert endpoint[0].forbidden_in(name), name
+    for construct, owner in (("MRG32k3a", "modSimRng"),
+                             ("RunSimulation", "modSimReport")):
+        assert contains_construct([modules[owner]], construct), (
+            f"the scoped grant is vacuous: {owner} does not contain "
+            f"{construct} in executable code"
+        )
+        others = [m for name, m in modules.items() if name != owner]
+        assert not contains_construct(others, construct), construct
+        rule = [r for r in structure.forbidden_construct_rules
+                if r.construct == construct]
+        assert len(rule) == 1 and rule[0].is_scoped
+        for name in modules:
+            assert rule[0].forbidden_in(name) == (name != owner), (construct, name)
 
 
 def test_16_no_input_worksheet_change_automation_exists() -> None:
@@ -554,13 +575,17 @@ def test_17_no_calculation_or_simulation_code_leaked_in() -> None:
     # left this list because it now has an owner - it is enforced per module by
     # test_15 and test_15a instead, which is a stronger statement, not a weaker
     # one: it must be in modSimRng and in nothing else.
-    for construct in ("Rnd(", "Randomize", "WorksheetFunction.Percentile",
-                      "RunSimulation"):
+    for construct in ("Rnd(", "Randomize", "WorksheetFunction.Percentile"):
         assert not contains_construct(everywhere, construct), (
             f"{construct} appears in code; no phase that exists yet simulates"
         )
-    outside_owner = [m for m in everywhere if m.name != "modSimRng"]
-    assert not contains_construct(outside_owner, "MRG32k3a")
+    # BOTH SCOPED CONSTRUCTS ARE ENFORCED PER MODULE, which is a stronger
+    # statement than a blanket ban, not a weaker one: each must appear in its
+    # owner and in nothing else. test_15 and test_15a carry that.
+    for construct, owner in (("MRG32k3a", "modSimRng"),
+                             ("RunSimulation", "modSimReport")):
+        outside_owner = [m for m in everywhere if m.name != owner]
+        assert not contains_construct(outside_owner, construct), construct
     phase4 = [m for m in everywhere
               if m.name not in PHASE5_VBA_MODULES and m.name not in PHASE6_VBA_MODULES]
     for construct in ("ExpectedValue", "DiscountFactor", "EscalationFactor"):

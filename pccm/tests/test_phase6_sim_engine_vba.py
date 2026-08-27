@@ -345,20 +345,23 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimEngine" in modules
     assert modules["modSimEngine"].generated is False
-    assert [m.name for m in structure.vba_modules][-6:] == [
+    assert [m.name for m in structure.vba_modules][-7:] == [
         "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-        "modSimFingerprint"
+        "modSimFingerprint", "modSimReport"
     ]
-    for absent in ("modSimReport",):
-        assert absent not in modules, absent
     # No new endpoint, and D6-11 is untouched.
     assert "SimEngineRun" not in set(structure.entry_points) | set(structure.api_procedures)
     scoped = [(r.construct, tuple(r.allowed_in))
               for r in structure.forbidden_construct_rules if r.is_scoped]
-    assert scoped == [("MRG32k3a", ("modSimRng",))], scoped
+    assert scoped == [("MRG32k3a", ("modSimRng",)),
+                      ("RunSimulation", ("modSimReport",))], scoped
     endpoint = next(r for r in structure.forbidden_construct_rules
                     if r.construct == "RunSimulation")
-    assert not endpoint.is_scoped
+    # SCOPED SINCE STEP 11, to its owner and to nothing else. This module is not
+    # that owner, and the token still may not appear here.
+    assert endpoint.allowed_in == ("modSimReport",)
+    assert endpoint.forbidden_in("modSimEngine") is True
+    assert "RunSimulation" not in _code()
 
 
 def test_03_there_is_exactly_one_public_entry_point() -> None:

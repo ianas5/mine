@@ -387,10 +387,13 @@ def test_23_the_allowed_in_grant_widened() -> None:
     _control("test_10", spec=_spec_copy(widen))
 
 
-def test_24_run_simulation_scoped_prematurely() -> None:
+def test_24_run_simulation_scoped_to_the_wrong_owner() -> None:
+    """It is scoped now - to modSimReport, and to nothing else. Granting it to
+    this module would license the endpoint in the generator backbone."""
     def scope(text: str) -> str:
         return _swap(text,
-                     '    - "RunSimulation"\n',
+                     '    - construct: "RunSimulation"\n'
+                     '      allowed_in:\n        - "modSimReport"\n',
                      '    - construct: "RunSimulation"\n'
                      '      allowed_in:\n        - "modSimRng"\n')
 

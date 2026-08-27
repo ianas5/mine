@@ -517,23 +517,26 @@ def test_35_no_sampler_or_simulation_exists_in_the_reference() -> None:
 
 
 def test_36_the_only_phase6_vba_is_the_generator_backbone() -> None:
-    """Step 2 authorised no VBA at all. Steps 6 and 7 authorised one module each.
+    """Step 2 authorised no VBA at all. Each later step authorised one module.
 
     The assertion is unchanged in substance - a Phase-6 module may not appear
-    without a step that authorises it - and its right-hand side names the two
-    that have. modSimEngine, modSimStats, modSimFingerprint and modSimReport are
-    still forbidden, and the algorithm token is still absent from every module
-    except the one D6-11 scopes it to - modSimSample consumes randomness through
-    the modSimRng public surface and is granted no exception of its own.
+    without a step that authorises it - and its right-hand side names the six
+    that have. The algorithm token is still absent from every module except the
+    one D6-11 scopes it to: modSimSample consumes randomness through the
+    modSimRng public surface, and modSimReport orchestrates through it, and
+    neither is granted an exception of its own.
     """
     src = PCCM_ROOT / "src" / "vba"
     names = {p.name for p in src.glob("*.bas")} | {p.name for p in src.glob("*.cls")}
     for authorised in ("modSimRng.bas", "modSimSample.bas", "modSimEngine.bas",
-                       "modSimStats.bas", "modSimFingerprint.bas"):
+                       "modSimStats.bas", "modSimFingerprint.bas",
+                       "modSimReport.bas"):
         assert authorised in names, authorised
-    for banned in ("modSimReport.bas",):
-        assert banned not in names, f"{banned} exists; no step authorises it yet"
-    assert "modSimRng.bas" in names, "the Step-6 module is missing"
+    # Nothing beyond them. A Step-12 module would have to arrive with a step.
+    unauthorised = {n for n in names if n.startswith("modSim")} - {
+        "modSimRng.bas", "modSimSample.bas", "modSimEngine.bas", "modSimStats.bas",
+        "modSimFingerprint.bas", "modSimReport.bas"}
+    assert unauthorised == set(), sorted(unauthorised)
     for path in sorted(src.glob("*.bas")):
         if path.stem == "modSimRng":
             continue

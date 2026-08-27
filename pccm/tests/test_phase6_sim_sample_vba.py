@@ -280,12 +280,10 @@ def test_02_the_module_is_registered_as_handwritten_source() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimSample" in modules
     assert modules["modSimSample"].generated is False
-    assert [m.name for m in structure.vba_modules][-6:] == [
+    assert [m.name for m in structure.vba_modules][-7:] == [
         "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-        "modSimFingerprint"
+        "modSimFingerprint", "modSimReport"
     ]
-    for absent in ("modSimReport",):
-        assert absent not in modules, absent
 
 
 def test_03_the_public_surface_is_exactly_the_five_samplers() -> None:
@@ -390,14 +388,20 @@ def test_09_the_d6_11_algorithm_token_is_absent_and_unneeded() -> None:
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
     scoped = [r for r in structure.forbidden_construct_rules if r.is_scoped]
     assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
-        ("MRG32k3a", ("modSimRng",))
+        ("MRG32k3a", ("modSimRng",)),
+        ("RunSimulation", ("modSimReport",)),
     ], scoped
+    # EVERY rule, scoped or not, still refuses THIS module - which is what this
+    # test has always been about. Step 11 scoped the endpoint to its own owner
+    # and changed nothing here.
     for rule in structure.forbidden_construct_rules:
         assert rule.forbidden_in("modSimSample") is True, rule.construct
         assert not contains_construct([_module()], rule.construct), rule.construct
     endpoint = next(r for r in structure.forbidden_construct_rules
                     if r.construct == "RunSimulation")
-    assert not endpoint.is_scoped and endpoint.forbidden_in("modSimReport") is True
+    assert endpoint.allowed_in == ("modSimReport",)
+    assert endpoint.forbidden_in("modSimReport") is False
+    assert endpoint.forbidden_in("modSimSample") is True
 
 
 def test_10_the_cheng_formulation_lives_here_and_nowhere_else() -> None:

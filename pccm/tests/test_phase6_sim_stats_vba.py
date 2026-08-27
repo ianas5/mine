@@ -261,18 +261,17 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimStats" in modules
     assert modules["modSimStats"].generated is False
-    assert [m.name for m in structure.vba_modules][-6:] == [
+    assert [m.name for m in structure.vba_modules][-7:] == [
         "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-        "modSimFingerprint"]
-    for absent in ("modSimReport",):
-        assert absent not in modules, absent
+        "modSimFingerprint", "modSimReport"]
     assert not (set(_module().public_procedures)
                 & (set(structure.entry_points) | set(structure.api_procedures)))
     # D6-11 is untouched, and Percentile is still global.
     scoped = [(r.construct, tuple(r.allowed_in))
               for r in structure.forbidden_construct_rules if r.is_scoped]
-    assert scoped == [("MRG32k3a", ("modSimRng",))], scoped
-    for construct in ("RunSimulation", "Percentile"):
+    assert scoped == [("MRG32k3a", ("modSimRng",)),
+                      ("RunSimulation", ("modSimReport",))], scoped
+    for construct in ("Percentile",):
         rule = next(r for r in structure.forbidden_construct_rules
                     if r.construct == construct)
         assert not rule.is_scoped, construct
@@ -370,11 +369,33 @@ def test_08_the_module_knows_nothing_of_the_simulation_machinery() -> None:
 
 
 def test_09_no_other_module_owns_a_statistic() -> None:
+    """The MATHEMATICS lives here and nowhere else.
+
+    The orchestration layer names the ladder and the contingency because it
+    calls them and stores what they return - `SimStatsContingency`,
+    `SIM_QUANTILE_COUNT`, a `QuantileCount` field. That is CONSUMPTION, and it
+    is exactly what the accepted architecture asked for. What it may not have is
+    a statistic of its own, so the ban on every computing token stands for it
+    too.
+    """
+    consumers = {"modSimReport"}
     for module in load_modules([SRC_VBA]):
         if module.name == "modSimStats":
             continue
-        for token in ("Quantile", "Percentile", "StandardDeviation", "Variance",
-                      "SIM_QUANTILE", "SIM_STAT_", "Contingency"):
+        tokens = ("Quantile", "Percentile", "StandardDeviation", "Variance",
+                  "SIM_QUANTILE", "SIM_STAT_", "Contingency")
+        if module.name in consumers:
+            # It may CALL them and read their projected identities; it may not
+            # implement one.
+            for owned in ("SimStatsSortAscending", "SimStatsQuantileSorted",
+                          "SimStatsUnitScale", "SimStatsConstantValue",
+                          "SimStatsProbabilityOf", "Type7", "type_7",
+                          "SafeSubtract", "n - 1"):
+                assert owned not in module.code, (module.name, owned)
+            called = set(re.findall(r"modSimStats\.(\w+)", module.code))
+            assert called <= {"SimStatsDescribe", "SimStatsContingency"}, sorted(called)
+            continue
+        for token in tokens:
             assert token not in module.code, (module.name, token)
 
 

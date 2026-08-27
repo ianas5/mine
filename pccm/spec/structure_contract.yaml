@@ -496,6 +496,9 @@ vba:
     - name: "modSimFingerprint"
       generated: false
       responsibility: "The pure Phase-6 request fingerprint and iteration-result digest framing over the accepted Phase-5 canonical encoder and hash. Framing and order only: no encoding, no hash recurrence, no workbook access, no simulation, no statistics and no publication."
+    - name: "modSimReport"
+      generated: false
+      responsibility: "Phase-6 workbook orchestration: the endpoint and the settled read accessors, the two simulation control reads, the AUTO nonce lifecycle, dual-bank publication into _SimData with verify-then-commit, and the attempt and status bookkeeping. It consumes the accepted pure simulation kernels and owns no simulation mathematics."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.
@@ -547,8 +550,12 @@ vba:
   # leave the construct legal in a module that does not exist; landing the owner
   # first would leave it illegal in the module that must contain it.
   #
-  # RunSimulation stays GLOBAL. Its owner is the later reporting module, and
-  # scoping it now would license the endpoint before the step that authorises it.
+  # RunSimulation is now SCOPED, in the same commit that introduces its owner.
+  # It was global while no module could legitimately contain it; scoping it
+  # earlier would have licensed the endpoint before the step that authorises it,
+  # and landing modSimReport first would have made the module illegal on
+  # arrival. The construct is not removed and not widened: exactly one module
+  # may spell it, and every other module still may not.
   forbidden_constructs:
     - "Worksheet_Change"
     - "Workbook_SheetChange"
@@ -561,7 +568,9 @@ vba:
         - "modSimRng"
     - "NPV"
     - "Percentile"
-    - "RunSimulation"
+    - construct: "RunSimulation"
+      allowed_in:
+        - "modSimReport"
     - "FinalReleaseComObject"
 
 # -----------------------------------------------------------------------------

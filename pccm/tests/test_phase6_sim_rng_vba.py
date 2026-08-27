@@ -242,16 +242,28 @@ def test_09_the_algorithm_token_is_in_no_other_module() -> None:
     assert "MRG32k3a" not in text
 
 
-def test_10_exactly_one_construct_is_scoped_and_to_exactly_one_owner() -> None:
+def test_10_every_scoped_construct_has_exactly_one_owner() -> None:
+    """TWO scoped constructs since Step 11, each to ONE module.
+
+    RunSimulation was global while no module could legitimately contain it, and
+    was scoped in the same commit that introduced its owner. What this test
+    protects is unchanged: a scoped construct names exactly one owner, and every
+    other module is still refused.
+    """
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
     scoped = [r for r in structure.forbidden_construct_rules if r.is_scoped]
     assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
-        ("MRG32k3a", ("modSimRng",))
+        ("MRG32k3a", ("modSimRng",)),
+        ("RunSimulation", ("modSimReport",)),
     ], scoped
+    for rule in scoped:
+        assert len(rule.allowed_in) == 1, rule.construct
+        assert "*" not in rule.allowed_in
     endpoint = next(r for r in structure.forbidden_construct_rules
                     if r.construct == "RunSimulation")
-    assert not endpoint.is_scoped, "the endpoint was scoped before its owner exists"
+    assert endpoint.allowed_in == ("modSimReport",)
     assert endpoint.forbidden_in("modSimRng") is True
+    assert endpoint.forbidden_in("modSimReport") is False
 
 
 def test_11_the_globally_forbidden_constructs_still_apply_here() -> None:
@@ -276,16 +288,23 @@ def test_12_the_manifest_carries_the_structured_rules() -> None:
     rules = manifest["vba"]["forbidden_construct_rules"]
     by_construct = {r["construct"]: r["allowed_in"] for r in rules}
     assert by_construct["MRG32k3a"] == ["modSimRng"]
-    assert by_construct["RunSimulation"] == []
+    # SCOPED SINCE STEP 11, in the commit that introduced its owner.
+    assert by_construct["RunSimulation"] == ["modSimReport"]
+    assert by_construct["Percentile"] == []
+    # EVERY OTHER construct is still global. Exactly two are scoped, and each
+    # names exactly one owner.
     for construct, owners in by_construct.items():
-        if construct != "MRG32k3a":
-            assert owners == [], (construct, owners)
+        if construct in ("MRG32k3a", "RunSimulation"):
+            assert len(owners) == 1, (construct, owners)
+            continue
+        assert owners == [], (construct, owners)
     # Every flattened entry still has a structured rule, so no consumer is left
     # without an authority.
     assert set(by_construct) == set(manifest["vba"]["forbidden_constructs"])
     names = [m["name"] for m in manifest["vba"]["modules"]]
-    assert names[-6:] == ["modSimContract", "modSimRng", "modSimSample",
-                          "modSimEngine", "modSimStats", "modSimFingerprint"]
+    assert names[-7:] == ["modSimContract", "modSimRng", "modSimSample",
+                          "modSimEngine", "modSimStats", "modSimFingerprint",
+                          "modSimReport"]
 
 
 # ===========================================================================

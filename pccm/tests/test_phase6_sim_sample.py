@@ -604,8 +604,10 @@ def test_43_no_sampler_vba_exists() -> None:
     src = PCCM_ROOT / "src" / "vba"
     names = {p.name for p in src.glob("*.bas")}
     assert "modSimSample.bas" in names
-    for banned in ("modSimReport.bas",):
-        assert banned not in names, banned
+    # The sampler is not the orchestrator. modSimReport exists as of Step 11,
+    # and the sampler names nothing of it: the boundary this test protects is
+    # that Cheng lives HERE and the D6-11 token lives in modSimRng.
+    assert "modSimReport" not in (src / "modSimSample.bas").read_text(encoding="utf-8")
     from pccm_builder.vba_source import strip_comments, strip_strings
 
     for path in sorted(src.glob("*.bas")):

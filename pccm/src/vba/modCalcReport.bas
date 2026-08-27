@@ -1118,3 +1118,69 @@ Private Sub CountCurrencyReferences(ByRef package As CalculationPackage)
         Next driver
     Next currencyIndex
 End Sub
+' ==========================================================================
+' STEP 11 ADDITION - THE PHASE-6 PREPARATION BRIDGE
+'
+' EVERYTHING ABOVE THIS BANNER IS THE ACCEPTED PHASE-5 REPORTER, BYTE FOR BYTE.
+' The accepted digest gates hash the text before this line and still require the
+' accepted literals, so "and nothing else" keeps its full meaning.
+'
+' WHY THIS EXISTS. Phase 6 needs the resolved DriverFactors, the CURRENT
+' analytical fingerprint, the deterministic base estimate A and the applied
+' timeline. All four already exist inside PrepareCurrentCalculation, and a
+' second construction of any of them is a second answer that drifts the first
+' time either side changes. So the phase reaches THIS preparation instead of
+' rebuilding it.
+'
+' IT IS AN INTERNAL CROSS-MODULE API. It is Public because modSimReport must
+' reach it; it is not an automation endpoint, its name does not begin with
+' PCCM_, and no button binds to it.
+'
+' IT WRITES NOTHING. No `_Calc` table, no calc_state cell, no attempt metadata
+' and no status. Asking Phase 5 for its current package is not a calculation,
+' and a read that silently recalculated would make a simulation depend on when
+' it was asked.
+' ==========================================================================
+Public Function CalcPrepareSimulationInputs(ByRef drivers() As DriverFactors, _
+                                            ByRef driverCount As Long, _
+                                            ByRef analyticalFingerprint As String, _
+                                            ByRef deterministicBaseNominal As Double, _
+                                            ByRef deterministicBasePv As Double, _
+                                            ByRef appliedTimeline As String, _
+                                            ByRef decimalSeparator As String, _
+                                            ByRef detail As String) As Boolean
+    Dim package As CalculationPackage
+    Dim status As String
+
+    detail = vbNullString
+    ' The SAME accepted preparation the endpoint uses. Not a copy of it.
+    If Not PrepareCurrentCalculation(package, detail) Then Exit Function
+
+    ' D6-14: Phase 6 runs on a CURRENT Phase 5 or it does not run. This does not
+    ' call PCCM_Calculate and does not repair anything - a simulation that
+    ' silently recalculated its own inputs would publish a distribution nobody
+    ' asked for.
+    status = DeriveStatus(package, True)
+    If StrComp(status, CALC_STATUS_CURRENT, vbBinaryCompare) <> 0 Then
+        detail = "the calculation is " & status & _
+                 "; the simulation needs a CURRENT calculation"
+        Exit Function
+    End If
+
+    ' PROJECTION ONLY. Every value below is read off the package that was just
+    ' prepared; not one is recomputed here, and no factor, FX rate, inflation
+    ' factor, profile weight, Knom or Kpv is constructed in this procedure.
+    '
+    ' A ZERO-DRIVER MODEL SUCCEEDS. The carrier is handed over with its logical
+    ' count, and no semantic driver is inspected - the accepted zero-count
+    ' convention, unchanged.
+    drivers = package.Drivers
+    driverCount = package.Model.DriverCount
+    analyticalFingerprint = package.Fingerprint
+    deterministicBaseNominal = package.Totals.ANom
+    deterministicBasePv = package.Totals.APv
+    appliedTimeline = AppliedTimelineText(package)
+    decimalSeparator = HostDecimalSeparator()
+
+    CalcPrepareSimulationInputs = True
+End Function

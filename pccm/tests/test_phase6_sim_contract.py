@@ -717,10 +717,10 @@ def test_50_only_the_authorised_phase6_vba_exists() -> None:
     src = PCCM_ROOT / "src" / "vba"
     names = {p.name for p in src.glob("*.bas")} | {p.name for p in src.glob("*.cls")}
     for authorised in ("modSimRng.bas", "modSimSample.bas", "modSimEngine.bas",
-                       "modSimStats.bas", "modSimFingerprint.bas"):
+                       "modSimStats.bas", "modSimFingerprint.bas", "modSimReport.bas"):
         assert authorised in names, authorised
-    for banned in ("modSimReport.bas", "modSimContract.bas"):
-        assert banned not in names, f"{banned} exists; no step authorises it there"
+    # The GENERATED projection is never hand-written source.
+    assert "modSimContract.bas" not in names
     assert "modSimRng.bas" in names
     for path in sorted(src.glob("*.bas")):
         if path.stem == "modSimRng":
@@ -1041,24 +1041,31 @@ def test_66b_the_iteration_columns_are_exact() -> None:
 
 
 def test_67_d6_11_activated_exactly_once_and_only_with_its_owner() -> None:
-    """Step 1 wrote the precondition; Step 6 is the commit that satisfied it.
+    """Step 1 wrote the precondition; Steps 6 and 11 are the commits that
+    satisfied it, once each.
 
-    The precondition is unchanged and still recorded. What changed is that its
-    owner now exists, so exactly one grant has been made - to the module that
-    owns the construct, and to nothing else.
+    The precondition is unchanged and still recorded. TWO grants have now been
+    made, each in the same commit that introduced the module that owns the
+    construct, each naming exactly one owner, and neither widening anything.
     """
     structure = load_structure_contract(STRUCTURE_PATH)
     scoped = [r for r in structure.forbidden_construct_rules if r.is_scoped]
     assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
-        ("MRG32k3a", ("modSimRng",))
+        ("MRG32k3a", ("modSimRng",)),
+        ("RunSimulation", ("modSimReport",)),
     ], scoped
     declared = {m.name for m in structure.vba_modules}
     for rule in scoped:
         for owner in rule.allowed_in:
             assert owner in declared, f"{owner} is not a declared module"
-    assert (PCCM_ROOT / "src" / "vba" / "modSimRng.bas").is_file(), (
-        "the grant landed without its owner"
-    )
+    # EACH GRANT LANDED WITH ITS OWNER, in the same commit, and never before it.
+    for owner in ("modSimRng", "modSimReport"):
+        assert (PCCM_ROOT / "src" / "vba" / f"{owner}.bas").is_file(), (
+            f"a grant landed without {owner}"
+        )
+    for rule in scoped:
+        assert len(rule.allowed_in) == 1, rule.construct
+        assert "*" not in rule.allowed_in
     record = (PCCM_ROOT / "docs" / "phase6_step1.md").read_text(encoding="utf-8")
     assert "activation precondition" in record.lower()
     assert "forbidden_in" in record

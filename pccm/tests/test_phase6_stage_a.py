@@ -459,7 +459,8 @@ def test_21_the_generated_module_needs_no_d6_11_exception() -> None:
     structure = _structure()
     scoped = [rule for rule in structure.forbidden_construct_rules if rule.is_scoped]
     assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
-        ("MRG32k3a", ("modSimRng",))
+        ("MRG32k3a", ("modSimRng",)),
+        ("RunSimulation", ("modSimReport",)),
     ], scoped
     for rule in scoped:
         assert SIM_MODULE_NAME not in rule.allowed_in, (
@@ -483,12 +484,15 @@ def test_22_the_module_is_in_the_stage_b_registry_as_a_generated_module() -> Non
         "the projection must be declared generated; a hand-written copy would be "
         "a second definition of every literal it projects"
     )
-    for handwritten in ("modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-                        "modSimFingerprint"):
-        assert handwritten in modules and modules[handwritten].generated is False
-    # And nothing further was declared early.
-    for premature in ("modSimReport",):
-        assert premature not in modules, premature
+    handwritten = {"modSimRng", "modSimSample", "modSimEngine", "modSimStats",
+                   "modSimFingerprint", "modSimReport"}
+    for name in handwritten:
+        assert name in modules and modules[name].generated is False, name
+    # AND NOTHING FURTHER WAS DECLARED EARLY. The Phase-6 registry is exactly
+    # the generated projection plus the six hand-written modules; a Step-12
+    # module cannot appear here ahead of the step that authorises it.
+    phase6 = {name for name in modules if name.startswith("modSim")}
+    assert phase6 == handwritten | {SIM_MODULE_NAME}, sorted(phase6)
 
 
 def test_23_the_module_is_deterministic_across_two_emissions() -> None:

@@ -266,17 +266,17 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimFingerprint" in modules
     assert modules["modSimFingerprint"].generated is False
-    assert [m.name for m in structure.vba_modules][-6:] == [
+    assert [m.name for m in structure.vba_modules][-7:] == [
         "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-        "modSimFingerprint"]
-    assert "modSimReport" not in modules
+        "modSimFingerprint", "modSimReport"]
     # No endpoint, and D6-11 is untouched.
     surface = set(structure.entry_points) | set(structure.api_procedures)
     assert not (set(_module().public_procedures) & surface)
     scoped = [(r.construct, tuple(r.allowed_in))
               for r in structure.forbidden_construct_rules if r.is_scoped]
-    assert scoped == [("MRG32k3a", ("modSimRng",))], scoped
-    for construct in ("RunSimulation", "Percentile"):
+    assert scoped == [("MRG32k3a", ("modSimRng",)),
+                      ("RunSimulation", ("modSimReport",))], scoped
+    for construct in ("Percentile",):
         rule = next(r for r in structure.forbidden_construct_rules
                     if r.construct == construct)
         assert not rule.is_scoped, construct
@@ -933,22 +933,51 @@ def test_52_the_accepted_field_encoders_still_produce_the_accepted_bytes() -> No
 # ===========================================================================
 # F. Scope
 # ===========================================================================
-def test_53_no_later_step_exists() -> None:
+def test_53_the_orchestration_layer_arrived_and_nothing_beyond_it() -> None:
+    """Step 11 added the reporting module; nothing past it exists."""
     names = {path.name for path in SRC_VBA.glob("*.bas")}
-    assert "modSimReport.bas" not in names
+    assert "modSimReport.bas" in names
     # EXECUTABLE code: a module is allowed to say in prose which later-step
     # concepts it refuses to contain - the discipline Step 8 settled for Cheng.
+    #
+    # The endpoint, the reporting module's own name and the machine sheet belong
+    # to modSimReport and to NOBODY ELSE. The scope of this test is unchanged;
+    # only its owner exists now.
     for module in load_modules([SRC_VBA]):
+        if module.name == "modSimReport":
+            continue
         for banned in ("PCCM_RunSimulation", "SimReport", "_SimData"):
             assert banned not in module.code, f"{module.name} carries {banned}"
+    report = next(m for m in load_modules([SRC_VBA]) if m.name == "modSimReport")
+    assert "PCCM_RunSimulation" in report.code
+    # And still nothing beyond it.
+    assert not [p for p in SRC_VBA.glob("*.bas") if p.stem.startswith("modSim")
+                and p.stem not in ("modSimContract", "modSimRng", "modSimSample",
+                                   "modSimEngine", "modSimStats", "modSimFingerprint",
+                                   "modSimReport")]
 
 
 def test_54_no_other_module_frames_a_phase6_stream() -> None:
     for module in load_modules([SRC_VBA]):
         if module.name in ("modSimFingerprint", "modCalcFingerprint"):
             continue
-        for banned in ("SIM_DIGEST_", "SIM_REQUEST_", "CalcFpContinueDigest"):
-            assert banned not in module.code, f"{module.name} carries {banned}"
+        banned = ["SIM_DIGEST_STREAM_TAG", "SIM_DIGEST_SECTION", "SIM_DIGEST_FIELD_",
+                  "SIM_REQUEST_", "CalcFpContinueDigest", "CalcFpDigestStream"]
+        if module.name != "modCalcReport":
+            # The accepted Phase-5 reporter frames its OWN header scalars through
+            # the accepted N-field authority; that is Step-7 authorised and is
+            # not a Phase-6 stream.
+            banned.extend(["CalcFpCanonicalText", "CalcFpCanonicalInteger",
+                           "CalcFpNumberField"])
+        for token in banned:
+            assert token not in module.code, f"{module.name} carries {token}"
+    # The ORCHESTRATION layer legitimately reads ONE projected identity - the
+    # digest's index origin - because Step-8 element k is iteration
+    # origin + k wherever it is written. Reading an index origin is not framing
+    # a stream, and every framing constant above is still refused to it.
+    report = next(m for m in load_modules([SRC_VBA]) if m.name == "modSimReport")
+    assert set(re.findall(r"SIM_DIGEST_\w+", report.code)) == {
+        "SIM_DIGEST_INDEX_ORIGIN"}
 
 
 def test_55_the_transcription_read_the_whole_module() -> None:
