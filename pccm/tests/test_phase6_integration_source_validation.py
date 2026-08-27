@@ -596,3 +596,68 @@ def test_46_the_restore_write_is_removed_from_the_commit() -> None:
         "    If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then\n",
         "    If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then\n")
     _control("test_29", vba={REPORT_BAS: damaged})
+
+
+def test_47_the_after_nonce_failpoint_raises_out_of_run_simulation() -> None:
+    """THE SECOND FINDING, planted back as it shipped in 4df2af3.
+
+    `FailPointCheck` raises, so this naked call left the run through the
+    invocation handler with the nonce already spent and no attempt record. The
+    previous shape of `test_28` walked only the `If Not <stage>` guards and
+    never looked at it, which is why the suite passed while the defect existed.
+    """
+    damaged = _swap(
+        _REPORT, "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n", "")
+    damaged = _swap(
+        damaged,
+        "    If Not AllocateAutoNonce(package, detail) Then\n"
+        "        RunSimulation = RecordRefusal(package, detail)\n"
+        "        Exit Function\n"
+        "    End If\n",
+        "    If Not AllocateAutoNonce(package, detail) Then\n"
+        "        RunSimulation = RecordRefusal(package, detail)\n"
+        "        Exit Function\n"
+        "    End If\n"
+        "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n")
+    _control("test_28", vba={REPORT_BAS: damaged})
+
+
+def test_48_a_failpoint_fires_with_no_handler_armed() -> None:
+    """Not only in RunSimulation: any owner must arm before it fires."""
+    damaged = _swap(
+        _REPORT,
+        "    On Error GoTo CandidateFailed\n\n"
+        "    BuildSnapshotBlock package, snapshot\n",
+        "    BuildSnapshotBlock package, snapshot\n")
+    damaged = _swap(
+        damaged,
+        "    If Not VerifyCandidateBank(package, snapshot, summary, contingency, detail) Then\n",
+        "    On Error GoTo CandidateFailed\n"
+        "    If Not VerifyCandidateBank(package, snapshot, summary, contingency, detail) Then\n")
+    _control("test_28", vba={REPORT_BAS: damaged})
+
+
+def test_49_the_nonce_allocation_loses_its_envelope() -> None:
+    damaged = _swap(_REPORT, "    On Error GoTo AllocationFailed\n", "")
+    _control("test_28", vba={REPORT_BAS: damaged})
+
+
+def test_50_the_injection_precedes_the_verified_persistence() -> None:
+    damaged = _swap(
+        _REPORT, "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n", "")
+    damaged = _swap(
+        damaged,
+        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n",
+        "        modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n"
+        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n")
+    _control("test_29", vba={REPORT_BAS: damaged})
+
+
+def test_51_the_counter_is_rolled_back_after_an_allocation_failure() -> None:
+    damaged = _swap(
+        _REPORT,
+        "AllocationFailed:\n    failure = Err.Description\n",
+        "AllocationFailed:\n"
+        "    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce - 1\n"
+        "    failure = Err.Description\n")
+    _control("test_29", vba={REPORT_BAS: damaged})

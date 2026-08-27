@@ -706,8 +706,28 @@ def test_44_the_named_failpoints_exist_and_sit_where_gate_b_needs_them() -> None
         "FAILPOINT_SIM_AFTER_NONCE", "FAILPOINT_SIM_CANDIDATE_BANK",
         "FAILPOINT_SIM_FINAL_COMMIT"], stages
     run = _procedure("RunSimulation")
-    assert "AllocateAutoNonce" in run[: run.index("FAILPOINT_SIM_AFTER_NONCE")]
-    assert "RunKernels" in run[run.index("FAILPOINT_SIM_AFTER_NONCE"):]
+    # NO FAILPOINT IS A NAKED STATEMENT IN RunSimulation. FailPointCheck RAISES,
+    # so a call outside a scoped envelope leaves through the invocation handler
+    # with no attempt record - and after the nonce is spent, that is exactly the
+    # silence the accepted contract forbids.
+    assert "FailPointCheck" not in run, (
+        "a failpoint raises straight out of RunSimulation, bypassing the "
+        "attempt axis"
+    )
+    # AFTER-NONCE: inside the allocation transaction, after the advance has
+    # persisted AND verified AND been marked consumed, and before any sampling.
+    allocate = _procedure("AllocateAutoNonce")
+    write, verify, mark, nonce = _order_of(
+        "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2",
+        "ReadMachineLong", "package.NonceConsumed = True",
+        "FailPointCheck FAILPOINT_SIM_AFTER_NONCE", body=allocate)
+    assert write < verify < mark < nonce, allocate
+    assert allocate.index("On Error GoTo AllocationFailed") < nonce, (
+        "the after-nonce injection is outside the scoped envelope"
+    )
+    assert "SimEngineRun" not in allocate
+    allocate_at, kernels_at = _order_of("AllocateAutoNonce", "RunKernels", body=run)
+    assert allocate_at < kernels_at, "sampling can begin before allocation succeeds"
 
     # A FAILPOINT IS ONLY WORTH INJECTING WHERE IT EXERCISES A RECOVERY PATH.
     # Both of the later two used to fire before the write they are named for,
@@ -752,6 +772,81 @@ def test_44_the_named_failpoints_exist_and_sit_where_gate_b_needs_them() -> None
 # and a raised final-commit assignment skipped the restoration the contract
 # requires. Nothing below claims a runtime: these are source guarantees.
 # ===========================================================================
+def test_44h_the_nonce_allocation_has_a_scoped_error_envelope() -> None:
+    """The counter write and its read-back are COM calls, so they can raise."""
+    body = _procedure("AllocateAutoNonce")
+    assert "On Error GoTo AllocationFailed" in body, (
+        "a raised counter write escapes to the invocation axis with the nonce "
+        "possibly already spent"
+    )
+    assert "On Error Resume Next" not in body
+    install = body.index("On Error GoTo AllocationFailed")
+    for covered in ("SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2",
+                    "ReadMachineLong",
+                    "package.NonceConsumed = True",
+                    "FailPointCheck FAILPOINT_SIM_AFTER_NONCE"):
+        assert install < body.index(covered), covered
+    handler = body[body.index("AllocationFailed:"):]
+    assert "Err.Description" in handler
+    assert "On Error GoTo 0" in handler
+    assert "detail = " in handler
+    assert "AllocateAutoNonce = True" not in handler, "a failed allocation reports success"
+    # AND IT SAYS WHAT IS TRUE: nothing sampled, and the counter is not undone.
+    assert "No sampling was started" in handler
+    assert "NOT rolled back" in handler
+
+
+def test_44i_the_after_nonce_injection_returns_through_the_attempt_path() -> None:
+    """The whole point: a raised injection becomes a recorded attempt."""
+    run = _procedure("RunSimulation")
+    assert "FailPointCheck" not in run, "a failpoint raises out of RunSimulation"
+    guard = "If Not AllocateAutoNonce(package, detail) Then"
+    assert guard in run
+    arm = run[run.index(guard):]
+    arm = arm[: arm.index("End If")]
+    assert "RecordRefusal(package, detail)" in arm, (
+        "an after-nonce failure does not reach the attempt record"
+    )
+    assert "Err.Raise" not in arm
+    # THE RECORD KEEPS THE SPENT EVIDENCE.
+    attempt = _procedure("WriteAttemptBlock")
+    for retained in ("package.SeedMode", "package.EffectiveSeed", "package.ConsumedNonce"):
+        assert retained in attempt, retained
+
+
+def test_44j_the_counter_is_never_rolled_back_on_any_path() -> None:
+    code = _code()
+    for _, statement in logical_statements(code):
+        if "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" in statement and ".Value2 =" in statement:
+            assert "package.ConsumedNonce + 1" in statement, (
+                f"the counter is written with something other than the advance: {statement}"
+            )
+    # No decrement anywhere, in any form.
+    for rollback in ("ConsumedNonce - 1", "ConsumedNonce-1", "stored - 1"):
+        assert rollback not in code, rollback
+    # And exactly one procedure writes the counter at all.
+    writers = [name for name in _module().procedures
+               if "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 =" in _procedure(name)]
+    assert writers == ["AllocateAutoNonce"], writers
+
+
+def test_44k_there_is_no_fourth_failpoint(  ) -> None:
+    """The three accepted names, each fired exactly once, each inside a scope."""
+    code = _code()
+    fired = re.findall(r"FailPointCheck (\w+)", code)
+    assert sorted(fired) == ["FAILPOINT_SIM_AFTER_NONCE", "FAILPOINT_SIM_CANDIDATE_BANK",
+                             "FAILPOINT_SIM_FINAL_COMMIT"], fired
+    owners = {name for name in _module().procedures
+              if "FailPointCheck" in _procedure(name)}
+    assert owners == {"AllocateAutoNonce", "PublishCandidate", "FinalCommit"}, sorted(owners)
+    # Each owner arms a handler before it fires.
+    for owner, handler in (("AllocateAutoNonce", "AllocationFailed"),
+                           ("PublishCandidate", "CandidateFailed"),
+                           ("FinalCommit", "CommitFailed")):
+        body = _procedure(owner)
+        assert body.index(f"On Error GoTo {handler}") < body.index("FailPointCheck"), owner
+
+
 def test_44a_the_candidate_transaction_has_a_scoped_error_envelope() -> None:
     body = _procedure("PublishCandidate")
     assert "On Error GoTo CandidateFailed" in body, (
@@ -891,8 +986,8 @@ def test_44g_no_blanket_error_suppression_was_introduced() -> None:
     assert "On Error Resume Next" not in code
     handlers = set(re.findall(r"On Error GoTo (\w+)", code))
     assert handlers == {"0", "InvocationFailed", "NormalCleanupFailed", "CleanupFailed",
-                        "CandidateFailed", "CommitFailed", "RestoreFailed",
-                        "CaptureFailed"}, sorted(handlers)
+                        "AllocationFailed", "CandidateFailed", "CommitFailed",
+                        "RestoreFailed", "CaptureFailed"}, sorted(handlers)
     # Every named handler has a label, and every label is reachable by name.
     labels = set(re.findall(r"^(\w+):$", code, re.M))
     assert (handlers - {"0"}) <= labels, sorted((handlers - {"0"}) - labels)

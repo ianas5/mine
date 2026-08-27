@@ -78,7 +78,7 @@ FROZEN_SOURCE = {
     "modSimEngine": "f1283fe7d5d2ffcc5345dab9a00f68d3685b787563d104f50a886c5ed409abab",
     "modSimStats": "98bd21b227047d04e6847e554e027b339cf01dfb1112c1539a9e334966233be0",
     "modSimFingerprint": "9e6ad972fe59ead9e34c7d65b807dd0f2ca1cb1b29bfa71b377a4eb8f65cdfda",
-    "modSimReport": "de6827dfa2d6d8d20d68fdd2c03a99a103c52bb2a2f1dcfddccee564bae30e1f",
+    "modSimReport": "a48bddffc5c512ed30a0ab78c2cd802fea57031bb1ebbf5b09f0fed1a394f60b",
     "modCalcFingerprint": "2efbb30c6f915c04b9c07adec07e25e11f4b5bd2b98e3efa818631dc510ce847",
     "modCalcReport": "8252b935b256b1abad9b26ca6b1d90c92c5e0d7566906308b191cd03dd6a71b3",
 }
@@ -613,11 +613,32 @@ def test_28_no_transaction_stage_escapes_to_the_invocation_axis() -> None:
         assert "Err.Raise" not in arm, (
             f"{stage} re-raises instead of recording an attempt"
         )
-    # THE TWO COM-FALLIBLE STAGES CARRY THEIR OWN ENVELOPES.
+    # EVERY COM-FALLIBLE STAGE CARRIES ITS OWN ENVELOPE.
+    assert "On Error GoTo AllocationFailed" in _procedure(REPORT, "AllocateAutoNonce")
     assert "On Error GoTo CandidateFailed" in _procedure(REPORT, "PublishCandidate")
     assert "On Error GoTo CommitFailed" in _procedure(REPORT, "FinalCommit")
     assert "On Error GoTo CaptureFailed" in _procedure(REPORT, "FinalCommit")
     assert "On Error GoTo RestoreFailed" in _procedure(REPORT, "FinalCommit")
+
+    # AND NO RAISING CALL SITS OUTSIDE ONE. `FailPointCheck` RAISES by design -
+    # `Err.Raise vbObjectError + 5001` in modAppState - so a naked call anywhere
+    # in the orchestration leaves through the invocation handler and writes no
+    # attempt record. That is the defect this guarantee exists to refuse, and
+    # walking the `If Not <stage>` guards alone never saw it.
+    check = _procedure("modAppState", "FailPointCheck")
+    assert "Err.Raise" in check, (
+        "FailPointCheck no longer raises, so this guarantee proves nothing"
+    )
+    assert "FailPointCheck" not in run, (
+        "a failpoint raises straight out of RunSimulation"
+    )
+    for name in _module(REPORT).procedures:
+        body = _procedure(REPORT, name)
+        if "FailPointCheck" not in body:
+            continue
+        armed = [m.start() for m in re.finditer(r"On Error GoTo (?!0\b)\w+", body)]
+        assert armed, f"{name} fires a failpoint with no handler armed"
+        assert min(armed) < body.index("FailPointCheck"), name
     # AND NO PHASE-6 MODULE SUPPRESSES ERRORS WHOLESALE. (The Phase-4 modules
     # carry their own documented `On Error Resume Next` whitelist, policed by
     # test_phase4_stage_b_source.py; nothing here widens or narrows it.)
@@ -632,12 +653,21 @@ def test_29_the_publication_contract_is_implemented_where_it_is_stated() -> None
     assert after["next_auto_nonce_advanced"] is True
     assert after["active_bank_changed"] is False
     assert after["attempt_metadata_updated"] is True
-    # NOTHING DECREMENTS THE COUNTER on any failure path.
+    # NOTHING DECREMENTS THE COUNTER on any failure path, and the advance is
+    # persisted AND verified AND marked before the accepted injection boundary,
+    # so `next_auto_nonce_advanced: true` holds even for an injected failure.
     code = _module(REPORT).code
     assert "NEXT_AUTO_NONCE" in code
     for _, statement in logical_statements(code):
         if "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" in statement and "- 1" in statement:
             raise AssertionError(f"the consumed nonce is rolled back: {statement}")
+    allocate = _procedure(REPORT, "AllocateAutoNonce")
+    write, verify, mark, injected = _order(
+        "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2",
+        "ReadMachineLong", "package.NonceConsumed = True",
+        "FailPointCheck FAILPOINT_SIM_AFTER_NONCE", body=allocate)
+    assert write < verify < mark < injected
+    assert "SimEngineRun" not in allocate, "sampling begins inside the allocation"
 
     inactive = semantics["inactive_bank_write_failure"]
     assert inactive["active_bank_changed"] is False

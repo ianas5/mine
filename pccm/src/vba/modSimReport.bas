@@ -233,11 +233,16 @@ Private Function RunSimulation(ByRef committed As Boolean) As OperationResult
 
     ' 4. AUTO only: derive, PERSIST and VERIFY the nonce before sampling. After
     '    this point the sequence is spent whatever happens.
+    '    The after-nonce failpoint is NOT here. FailPointCheck RAISES, so a
+    '    naked call at this point left the run through the invocation handler
+    '    with the nonce already spent and no attempt record - the same defect
+    '    the candidate and commit stages carried. It now fires inside
+    '    AllocateAutoNonce, after the advance has persisted and verified, and
+    '    comes back through this same False arm.
     If Not AllocateAutoNonce(package, detail) Then
         RunSimulation = RecordRefusal(package, detail)
         Exit Function
     End If
-    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE
 
     ' 5-11. The accepted kernels, in order, entirely in memory.
     If Not RunKernels(package, detail) Then
@@ -399,32 +404,63 @@ Private Function AllocateAutoNonce(ByRef package As SimRunPackage, _
     ' be reproduced by a later AUTO run, which is the one thing the nonce exists
     ' to prevent. After this returns True the nonce is spent, and no later
     ' refusal, failure or restoration rolls it back.
+    ' THE COUNTER WRITE AND ITS VERIFICATION READ ARE COM CALLS, and COM calls
+    ' raise. Without the envelope below a raised write left the run through the
+    ' invocation handler with the advance possibly already landed and no attempt
+    ' record - against the accepted
+    ' `refusal_or_failure_after_auto_allocation.attempt_metadata_updated: true`.
+    ' The envelope converts it into a plain False, which RunSimulation already
+    ' routes to RecordRefusal.
+    '
+    ' THE COUNTER IS NEVER ROLLED BACK, on any path. A raised write may have
+    ' landed, and reusing the sequence would let a later AUTO run reproduce this
+    ' one - which is the single thing the nonce exists to prevent.
     Dim seed As Long, stored As Long, probe As String
+    Dim failure As String
+
+    On Error GoTo AllocationFailed
 
     If package.HasSuppliedSeed Then
         package.EffectiveSeed = package.SuppliedSeed
-        AllocateAutoNonce = True
-        Exit Function
+    Else
+        If Not modSimRng.SimRngAutoSeedFromNonce(package.ConsumedNonce, seed, detail) Then
+            Exit Function
+        End If
+        package.EffectiveSeed = seed
+
+        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1
+        If Not ReadMachineLong(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE, _
+                               CDbl(SIM_NONCE_FIRST_VALID), CDbl(SIM_NONCE_EXHAUSTED) + 1#, _
+                               stored, probe) Then
+            detail = "simulation: the AUTO nonce advance could not be verified"
+            Exit Function
+        End If
+        If stored <> package.ConsumedNonce + 1 Then
+            detail = "simulation: the AUTO nonce advance did not persist"
+            Exit Function
+        End If
+        package.NonceConsumed = True
     End If
 
-    If Not modSimRng.SimRngAutoSeedFromNonce(package.ConsumedNonce, seed, detail) Then
-        Exit Function
-    End If
-    package.EffectiveSeed = seed
+    ' PHASE-6 AFTER-NONCE INJECTION BOUNDARY. Reached only once the advance has
+    ' been written AND read back AND matched, so package.NonceConsumed already
+    ' records the spent sequence; and reached before any sampling, because
+    ' RunKernels runs only if this returns True. Injecting here therefore proves
+    ' what it is named for: the nonce is spent, nothing was sampled, and the run
+    ' must still record an unsuccessful attempt.
+    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE
 
-    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1
-    If Not ReadMachineLong(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE, _
-                           CDbl(SIM_NONCE_FIRST_VALID), CDbl(SIM_NONCE_EXHAUSTED) + 1#, _
-                           stored, probe) Then
-        detail = "simulation: the AUTO nonce advance could not be verified"
-        Exit Function
-    End If
-    If stored <> package.ConsumedNonce + 1 Then
-        detail = "simulation: the AUTO nonce advance did not persist"
-        Exit Function
-    End If
-    package.NonceConsumed = True
+    On Error GoTo 0
     AllocateAutoNonce = True
+    Exit Function
+
+AllocationFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "simulation: seed allocation did not complete: " & failure & _
+             ". No sampling was started. Any AUTO nonce advance that already " & _
+             "persisted is deliberately NOT rolled back, so the sequence cannot " & _
+             "be reused by a later run."
 End Function
 
 Private Function RunKernels(ByRef package As SimRunPackage, ByRef detail As String) As Boolean

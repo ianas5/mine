@@ -929,3 +929,149 @@ def test_78_the_attempt_record_writes_the_publication_rows() -> None:
         _REPORT, anchor,
         "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block\n" + anchor)
     _control("test_33", report=damaged)
+
+
+# ===========================================================================
+# L. THE AUTO-NONCE FAILURE PATH (Step-12 settlement, second finding)
+#
+# FailPointCheck RAISES. A naked call after the nonce was spent left the run
+# through the invocation handler with no attempt record at all - the same class
+# the candidate and commit stages carried, in the one stage that had already
+# consumed something irreversible.
+# ===========================================================================
+_NONCE_FAILPOINT = "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n"
+
+
+def test_79_the_after_nonce_failpoint_returns_to_run_simulation() -> None:
+    """THE ORIGINAL DEFECT, planted back exactly as it shipped in 4df2af3."""
+    damaged = _swap(_REPORT, _NONCE_FAILPOINT, "")
+    damaged = _swap(
+        damaged,
+        "    If Not AllocateAutoNonce(package, detail) Then\n"
+        "        RunSimulation = RecordRefusal(package, detail)\n"
+        "        Exit Function\n"
+        "    End If\n",
+        "    If Not AllocateAutoNonce(package, detail) Then\n"
+        "        RunSimulation = RecordRefusal(package, detail)\n"
+        "        Exit Function\n"
+        "    End If\n"
+        "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n")
+    _control("test_44", report=damaged)
+
+
+def test_80_the_after_nonce_failpoint_fires_before_the_verification() -> None:
+    damaged = _swap(_REPORT, _NONCE_FAILPOINT, "")
+    damaged = _swap(
+        damaged,
+        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n",
+        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n"
+        "        modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n")
+    _control("test_44", report=damaged)
+
+
+def test_81_the_after_nonce_failpoint_fires_before_the_consumed_mark() -> None:
+    damaged = _swap(_REPORT, _NONCE_FAILPOINT, "")
+    damaged = _swap(
+        damaged,
+        "        package.NonceConsumed = True\n",
+        "        modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n"
+        "        package.NonceConsumed = True\n")
+    _control("test_44", report=damaged)
+
+
+def test_82_the_nonce_allocation_loses_its_error_envelope() -> None:
+    damaged = _swap(_REPORT, "    On Error GoTo AllocationFailed\n", "")
+    _control("test_44h", report=damaged)
+
+
+def test_83_the_nonce_envelope_becomes_a_blanket_suppressor() -> None:
+    damaged = _swap(_REPORT, "    On Error GoTo AllocationFailed\n",
+                    "    On Error Resume Next\n")
+    _control("test_44g", report=damaged)
+
+
+def test_84_the_counter_write_sits_outside_the_envelope() -> None:
+    """A raised write must not escape, so it must stay inside the handler."""
+    damaged = _swap(
+        _REPORT,
+        "    On Error GoTo AllocationFailed\n\n"
+        "    If package.HasSuppliedSeed Then\n",
+        "    If package.HasSuppliedSeed Then\n")
+    damaged = _swap(
+        damaged,
+        "        package.NonceConsumed = True\n"
+        "    End If\n",
+        "        package.NonceConsumed = True\n"
+        "    End If\n"
+        "    On Error GoTo AllocationFailed\n")
+    _control("test_44h", report=damaged)
+
+
+def test_85_the_nonce_handler_reports_success() -> None:
+    damaged = _swap(
+        _REPORT,
+        "AllocationFailed:\n    failure = Err.Description\n",
+        "AllocationFailed:\n    AllocateAutoNonce = True\n    failure = Err.Description\n")
+    _control("test_44h", report=damaged)
+
+
+def test_86_an_after_persist_failure_bypasses_the_attempt_recorder() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If Not AllocateAutoNonce(package, detail) Then\n"
+        "        RunSimulation = RecordRefusal(package, detail)\n"
+        "        Exit Function\n"
+        "    End If\n",
+        "    If Not AllocateAutoNonce(package, detail) Then\n"
+        "        Err.Raise vbObjectError + 3, , detail\n"
+        "    End If\n")
+    _control("test_44i", report=damaged)
+
+
+def test_87_the_counter_is_rolled_back_on_failure() -> None:
+    damaged = _swap(
+        _REPORT,
+        "AllocationFailed:\n    failure = Err.Description\n",
+        "AllocationFailed:\n"
+        "    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce - 1\n"
+        "    failure = Err.Description\n")
+    _control("test_44j", report=damaged)
+
+
+def test_88_the_handler_claims_the_sequence_can_be_reused() -> None:
+    damaged = _swap(
+        _REPORT,
+        '    detail = "simulation: seed allocation did not complete: " & failure & _\n'
+        '             ". No sampling was started. Any AUTO nonce advance that already " & _\n'
+        '             "persisted is deliberately NOT rolled back, so the sequence cannot " & _\n'
+        '             "be reused by a later run."\n',
+        '    detail = "simulation: seed allocation did not complete: " & failure\n')
+    _control("test_44h", report=damaged)
+
+
+def test_89_a_fourth_failpoint_is_introduced() -> None:
+    damaged = _swap(
+        _REPORT,
+        'Public Const FAILPOINT_SIM_FINAL_COMMIT As String = "Phase6FinalCommit"\n',
+        'Public Const FAILPOINT_SIM_FINAL_COMMIT As String = "Phase6FinalCommit"\n'
+        'Public Const FAILPOINT_SIM_EXTRA As String = "Phase6Extra"\n')
+    damaged = _swap(
+        damaged,
+        "    package.Stamp = Now\n",
+        "    modAppState.FailPointCheck FAILPOINT_SIM_EXTRA\n"
+        "    package.Stamp = Now\n")
+    _control("test_44k", report=damaged)
+
+
+def test_90_sampling_begins_before_the_allocation_succeeds() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If Not AllocateAutoNonce(package, detail) Then\n"
+        "        RunSimulation = RecordRefusal(package, detail)\n"
+        "        Exit Function\n"
+        "    End If\n\n"
+        "    ' 5-11. The accepted kernels, in order, entirely in memory.\n"
+        "    If Not RunKernels(package, detail) Then\n",
+        "    ' 5-11.\n"
+        "    If Not RunKernels(package, detail) Then\n")
+    _control("test_44i", report=damaged)

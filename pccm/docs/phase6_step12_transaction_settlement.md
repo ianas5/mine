@@ -142,7 +142,9 @@ says the publication is unchanged, and it is the one case where that is true.
 ### 2.3 Both failpoints moved, and the wrong test was reversed
 
 ```
-Phase6AfterNoncePersisted   unchanged
+Phase6AfterNoncePersisted   now INSIDE AllocateAutoNonce, after the advance has
+                            persisted, verified and been marked consumed
+                            (see §6 - corrected in a second round)
 Phase6CandidateBank         now INSIDE PublishCandidate, after the inactive-bank
                             writes, before verification completes
 Phase6FinalCommit           now AFTER the D22:D30 assignment, before verification,
@@ -237,3 +239,116 @@ something:
 - a restoration that itself fails, and the recovery-required detail it produces.
 
 None of these ran. They are Step-13 evidence.
+
+
+---
+
+## 6. Second round: the after-nonce failpoint carried the same defect
+
+The first round of this settlement corrected the candidate and commit stages and
+recorded `Phase6AfterNoncePersisted` as **unchanged**. That was wrong, and
+independent review found it while building the Step-13 matrix.
+
+### 6.1 The defect
+
+`modAppState.FailPointCheck` **raises**:
+
+```vb
+Err.Raise vbObjectError + 5001, "modAppState.FailPointCheck", _
+          "Injected structural failure after stage '" & StageName & "'."
+```
+
+and it was called as a **naked statement in `RunSimulation`**, immediately after
+`AllocateAutoNonce` returned `True`:
+
+```
+AUTO nonce persisted and verified -> AllocateAutoNonce returns True
+  -> Phase6AfterNoncePersisted RAISES
+  -> PCCM_RunSimulation.InvocationFailed
+  -> announcement only, no RecordRefusal, no attempt metadata
+```
+
+The nonce was already spent and the attempt axis stayed silent — the exact
+contract clause the first round had just enforced for the two later stages:
+
+```yaml
+refusal_or_failure_after_auto_allocation:
+  next_auto_nonce_advanced: true
+  attempt_metadata_updated: true      # <- not satisfied
+```
+
+`AllocateAutoNonce` carried the same COM-vs-`False` gap independently of the
+injection: the counter write and its read-back are COM calls, and a raised one
+escaped the same way.
+
+### 6.2 Why the first round's detector missed it
+
+`test_44` proved only that the failpoint sat between `AllocateAutoNonce` and
+`RunKernels` — an adjacency, not a recovery path. Integration `test_28` walked
+the five `If Not <stage>` guards and checked their recorders, but a bare
+`FailPointCheck` statement is not one of those guards, so the guarantee
+*"no transaction stage escapes to the invocation axis"* was **not literally
+true** when it was written. That is a detector defect, not just a source one.
+
+### 6.3 The settlement
+
+`AllocateAutoNonce` gains a scoped envelope over the seed derivation, the counter
+write, the read-back verification, the consumed mark and the injection. The AUTO
+branch became an `If/Else` so both seed modes reach one common exit:
+
+```
+On Error GoTo AllocationFailed
+  FIXED: EffectiveSeed = SuppliedSeed
+  AUTO:  derive seed -> write counter -> read back -> match -> NonceConsumed = True
+  [FAILPOINT Phase6AfterNoncePersisted]     <- persisted, verified, marked
+On Error GoTo 0
+AllocateAutoNonce = True
+
+AllocationFailed:
+  capture Err.Description, disarm, set detail, return False
+```
+
+The ordering the name promises is preserved and now provable: the injection is
+reached **only** after the advance has been written, read back and matched, so
+`package.NonceConsumed` already records the spent sequence; and **before** any
+sampling, because `RunKernels` runs only if this returns `True`.
+
+`RunSimulation`'s existing `If Not AllocateAutoNonce ... RecordRefusal` arm owns
+the result, so the attempt block records the unsuccessful attempt with the seed
+mode, the effective seed and the consumed nonce.
+
+**The counter is never rolled back**, on any path. A raised write may have
+landed, and reusing the sequence would let a later AUTO run reproduce this one —
+the single thing the nonce exists to prevent. The failure detail says so rather
+than implying the sequence is free.
+
+No failpoint was added or renamed. There are still exactly three, and each now
+fires inside the scoped envelope of the transaction it belongs to:
+
+| Failpoint | Owner | Armed handler |
+|---|---|---|
+| `Phase6AfterNoncePersisted` | `AllocateAutoNonce` | `AllocationFailed` |
+| `Phase6CandidateBank` | `PublishCandidate` | `CandidateFailed` |
+| `Phase6FinalCommit` | `FinalCommit` | `CommitFailed` |
+
+### 6.4 The detector, made literally true
+
+- `test_44` now refuses **any** `FailPointCheck` in `RunSimulation`, and pins
+  write < verify < mark < injection inside the allocation, with the envelope
+  armed first.
+- `test_44h`–`test_44k` cover the allocation envelope, the return through the
+  attempt path, the no-rollback rule and the exact three-failpoint set with each
+  owner arming a handler before firing.
+- Integration `test_28` now **reads `modAppState.FailPointCheck` and asserts it
+  still raises** — so the guarantee cannot silently become vacuous — then
+  requires that no failpoint is naked in `RunSimulation` and that every owner
+  arms a handler before firing.
+- 12 new mutation controls (`test_79`–`test_90`) and 5 integration controls
+  (`test_47`–`test_51`), including the original defect planted back verbatim.
+
+`modSimReport.bas` moved again:
+
+```
+first round   de6827dfa2d6d8d20d68fdd2c03a99a103c52bb2a2f1dcfddccee564bae30e1f
+this round    a48bddffc5c512ed30a0ab78c2cd802fea57031bb1ebbf5b09f0fed1a394f60b
+```
