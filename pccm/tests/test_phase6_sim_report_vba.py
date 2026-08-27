@@ -528,11 +528,14 @@ def test_30_the_candidate_bank_is_verified_before_the_commit() -> None:
 def test_31_the_final_commit_is_one_write_ending_at_the_active_bank() -> None:
     body = _procedure("FinalCommit")
     assert body.count("Range(SIM_FINAL_COMMIT_RANGE).Value2 = block") == 1
-    capture, check, write = _order_of(
+    capture, write, check = _order_of(
         "previous = SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2",
-        "FailPointCheck FAILPOINT_SIM_FINAL_COMMIT",
-        "Range(SIM_FINAL_COMMIT_RANGE).Value2 = block", body=body)
-    assert capture < check < write
+        "Range(SIM_FINAL_COMMIT_RANGE).Value2 = block",
+        "FailPointCheck FAILPOINT_SIM_FINAL_COMMIT", body=body)
+    assert capture < write < check, (
+        "the failpoint must fire AFTER the commit write, so injecting it "
+        "exercises restoration rather than proving nothing was written"
+    )
     block = _procedure("BuildCommitBlock")
     assert "built(9, 1) = package.TargetBank" in block, "the active bank is the last field"
     assert "built(1, 1) = package.CandidateRunId" in block
@@ -703,18 +706,198 @@ def test_44_the_named_failpoints_exist_and_sit_where_gate_b_needs_them() -> None
         "FAILPOINT_SIM_AFTER_NONCE", "FAILPOINT_SIM_CANDIDATE_BANK",
         "FAILPOINT_SIM_FINAL_COMMIT"], stages
     run = _procedure("RunSimulation")
-    nonce, candidate = _order_of("FAILPOINT_SIM_AFTER_NONCE",
-                                 "FAILPOINT_SIM_CANDIDATE_BANK", body=run)
-    assert nonce < candidate
     assert "AllocateAutoNonce" in run[: run.index("FAILPOINT_SIM_AFTER_NONCE")]
     assert "RunKernels" in run[run.index("FAILPOINT_SIM_AFTER_NONCE"):]
+
+    # A FAILPOINT IS ONLY WORTH INJECTING WHERE IT EXERCISES A RECOVERY PATH.
+    # Both of the later two used to fire before the write they are named for,
+    # which proved only that nothing had been written yet.
+    #
+    # CANDIDATE: inside the publication transaction, after the inactive bank has
+    # been written and before its verification completes.
+    assert "FAILPOINT_SIM_CANDIDATE_BANK" not in run, (
+        "the candidate failpoint fires before any candidate write"
+    )
+    publish = _procedure("PublishCandidate")
+    snapshot, iterations, candidate, verify = _order_of(
+        "Range(SnapshotRange(package.TargetBank)).Value2 = snapshot",
+        "WriteIterationBank(package, detail)",
+        "FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK",
+        "VerifyCandidateBank(package, snapshot", body=publish)
+    assert snapshot < iterations < candidate < verify, publish
+
+    # FINAL COMMIT: after the D22:D30 assignment and before its verification, so
+    # the injection lands in the ambiguous state the restore exists for.
     commit = _procedure("FinalCommit")
-    check, write = _order_of("FailPointCheck FAILPOINT_SIM_FINAL_COMMIT",
-                             "Range(SIM_FINAL_COMMIT_RANGE).Value2 = block", body=commit)
-    assert check < write
+    write, check, verify = _order_of(
+        "Range(SIM_FINAL_COMMIT_RANGE).Value2 = block",
+        "FailPointCheck FAILPOINT_SIM_FINAL_COMMIT",
+        "If SameBlock(SIM_FINAL_COMMIT_RANGE, block, 9, 1) Then", body=commit)
+    assert write < check < verify, commit
+    # And it is inside the envelope that restores.
+    assert commit.index("On Error GoTo CommitFailed") < check
     assert set(re.findall(r"FailPointCheck (\w+)", _code())) == {
         "FAILPOINT_SIM_AFTER_NONCE", "FAILPOINT_SIM_CANDIDATE_BANK",
         "FAILPOINT_SIM_FINAL_COMMIT"}
+
+
+# ===========================================================================
+# I-b. THE TRANSACTION FAILURE PATHS
+#
+# A Range assignment, a chunk write and a verification read are COM calls, and
+# COM calls RAISE. Step 11 handled only the "a helper returned False" half, so a
+# raised write left the run through the invocation handler and the attempt axis
+# stayed silent - against the accepted
+# `refusal_or_failure_after_auto_allocation.attempt_metadata_updated: true` -
+# and a raised final-commit assignment skipped the restoration the contract
+# requires. Nothing below claims a runtime: these are source guarantees.
+# ===========================================================================
+def test_44a_the_candidate_transaction_has_a_scoped_error_envelope() -> None:
+    body = _procedure("PublishCandidate")
+    assert "On Error GoTo CandidateFailed" in body, (
+        "a raised candidate write escapes to the invocation axis"
+    )
+    assert "On Error Resume Next" not in body, "the envelope is a blanket suppressor"
+    install = body.index("On Error GoTo CandidateFailed")
+    # EVERYTHING FALLIBLE IS INSIDE IT.
+    for covered in ("Range(SnapshotRange(package.TargetBank)).Value2 = snapshot",
+                    "Range(SummaryRange(package.TargetBank)).Value2 = summary",
+                    "Range(ContingencyRange(package.TargetBank)).Value2 = contingency",
+                    "WriteIterationBank(package, detail)",
+                    "FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK",
+                    "VerifyCandidateBank(package, snapshot"):
+        assert install < body.index(covered), covered
+    # THE HANDLER REPORTS AND RETURNS FALSE. It never sets the return True.
+    handler = body[body.index("CandidateFailed:"):]
+    assert "Err.Description" in handler
+    assert "On Error GoTo 0" in handler, "the handler stays armed on the way out"
+    assert "detail = " in handler
+    assert "PublishCandidate = True" not in handler, "a failed candidate reports success"
+    assert "no semantic standing" in handler
+    # AND IT ROLLS NOTHING BACK. The half-written inactive bank stays as it is.
+    assert "SIM_IDENTITY_ROW_ACTIVE_BANK" not in body
+    assert "SIM_IDENTITY_ROW_LAST_RUN_ID" not in body
+    assert "SIM_FINAL_COMMIT_RANGE" not in body
+    assert "ClearContents" not in body, "the handler erases the candidate bank"
+    assert "package.ActiveBank" not in body
+
+
+def test_44b_a_candidate_failure_reaches_the_attempt_axis() -> None:
+    """The point of the envelope: FAILED is recorded, not just announced."""
+    run = _procedure("RunSimulation")
+    assert "If Not PublishCandidate(package, detail) Then" in run
+    arm = run[run.index("If Not PublishCandidate(package, detail) Then"):]
+    arm = arm[: arm.index("End If")]
+    assert "RecordFailure(package, detail)" in arm, (
+        "a candidate failure does not reach the attempt record"
+    )
+    assert "SIM_ATTEMPT_FAILED" in _procedure("RecordFailure")
+    # The attempt block carries the consumed AUTO seed evidence.
+    block = _procedure("RecordFailure") + _procedure("WriteAttemptBlock")
+    assert "package.EffectiveSeed" in block or "EffectiveSeed" in _procedure(
+        "WriteAttemptBlock"), "the attempt record loses the consumed seed"
+
+
+def test_44c_the_final_commit_captures_before_it_writes_anything() -> None:
+    body = _procedure("FinalCommit")
+    capture, build, write = _order_of(
+        "previous = SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2",
+        "BuildCommitBlock package, block",
+        "Range(SIM_FINAL_COMMIT_RANGE).Value2 = block", body=body)
+    assert capture < build < write
+    # THE CAPTURE HAS ITS OWN HANDLER, and its failure does NOT restore: there
+    # is no captured block to write back, and nothing was written to undo.
+    assert "On Error GoTo CaptureFailed" in body
+    assert body.index("On Error GoTo CaptureFailed") < capture
+    handler = body[body.index("CaptureFailed:"):]
+    assert "Value2 = previous" not in handler, (
+        "the capture-failure path writes an unset block over a live publication"
+    )
+    assert "no final commit was attempted" in handler
+    assert "unchanged" in handler
+
+
+def test_44d_every_post_write_failure_restores_the_prior_block() -> None:
+    """Write exception, injected failpoint, verification exception, mismatch."""
+    body = _procedure("FinalCommit")
+    # ONE envelope covers the assignment, the failpoint and the verification.
+    assert "On Error GoTo CommitFailed" in body
+    armed = body.index("On Error GoTo CommitFailed")
+    verify_at = body.index("If SameBlock(SIM_FINAL_COMMIT_RANGE, block, 9, 1) Then")
+    for covered in ("Range(SIM_FINAL_COMMIT_RANGE).Value2 = block",
+                    "FailPointCheck FAILPOINT_SIM_FINAL_COMMIT"):
+        assert armed < body.index(covered) < verify_at, covered
+    # AND IT STAYS ARMED THROUGH THE VERIFICATION READ. Disarming after the
+    # assignment would let a raised SameBlock leave without restoring, which is
+    # the same defect in a different place.
+    assert "On Error GoTo 0" not in body[armed:verify_at], (
+        "the envelope is disarmed before the verification read"
+    )
+    # BOTH ROUTES LAND ON THE SAME RESTORE. The raised route falls through the
+    # handler into it; the mismatch route jumps to it.
+    assert "RestorePrevious:" in body, "there is no single restoration path"
+    assert "GoTo RestorePrevious" in body, "the mismatch route does not restore"
+    handler = body[body.index("CommitFailed:"): body.index("RestorePrevious:")]
+    assert "Err.Description" in handler, "the raised cause is discarded"
+    assert "Exit Function" not in handler, (
+        "the raised route leaves without attempting restoration"
+    )
+    # ONE write back, then verified.
+    restore = body[body.index("RestorePrevious:"):]
+    assert restore.count("Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous") == 1
+    assert "If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then" in restore
+    assert body.count(".Value2 =") == 2, "the commit procedure writes something else"
+
+
+def test_44e_a_failed_restoration_says_so_and_never_claims_the_bank_is_safe() -> None:
+    body = _procedure("FinalCommit")
+    restore = body[body.index("RestorePrevious:"):]
+    assert "remains authoritative" in restore
+    # The two failed-restoration arms: verified-false and raised.
+    assert "On Error GoTo RestoreFailed" in restore
+    assert restore.count("could not be restored") == 2, restore
+    assert restore.count("requires recovery") == 2, restore
+    raised = body[body.index("RestoreFailed:"): body.index("CaptureFailed:")]
+    assert "Err.Description" in raised
+    assert "cannot be guaranteed" in raised
+    assert "remains authoritative" not in raised, (
+        "a failed restoration claims the prior publication survived"
+    )
+    # The CAPTURE handler is the one place that may say the bank is safe,
+    # because nothing was written: no commit was attempted at all.
+    capture = body[body.index("CaptureFailed:"):]
+    assert "remains authoritative" in capture
+    assert "requires recovery" not in capture, (
+        "a failed capture is reported as a publication-integrity emergency"
+    )
+
+
+def test_44f_a_commit_failure_reaches_the_attempt_axis() -> None:
+    run = _procedure("RunSimulation")
+    arm = run[run.index("If Not FinalCommit(package, detail) Then"):]
+    arm = arm[: arm.index("End If")]
+    assert "RecordFailure(package, detail)" in arm
+    # AND THE ATTEMPT RECORD DOES NOT TOUCH THE PUBLICATION. D22 and D30 are the
+    # commit's; the attempt block owns D23:D29 only.
+    attempt = _procedure("WriteAttemptBlock")
+    assert "SIM_IDENTITY_ROW_LAST_RUN_ID" not in attempt
+    assert "SIM_IDENTITY_ROW_ACTIVE_BANK" not in attempt
+    assert "SIM_FINAL_COMMIT_RANGE" not in attempt
+
+
+def test_44g_no_blanket_error_suppression_was_introduced() -> None:
+    """Scoped handlers only. A module-wide Resume Next would hide everything."""
+    code = _module().code
+    assert "On Error Resume Next" not in code
+    handlers = set(re.findall(r"On Error GoTo (\w+)", code))
+    assert handlers == {"0", "InvocationFailed", "NormalCleanupFailed", "CleanupFailed",
+                        "CandidateFailed", "CommitFailed", "RestoreFailed",
+                        "CaptureFailed"}, sorted(handlers)
+    # Every named handler has a label, and every label is reachable by name.
+    labels = set(re.findall(r"^(\w+):$", code, re.M))
+    assert (handlers - {"0"}) <= labels, sorted((handlers - {"0"}) - labels)
+    for label in labels:
+        assert label in handlers | {"RestorePrevious"}, label
 
 
 # ===========================================================================

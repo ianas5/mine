@@ -246,9 +246,12 @@ Private Function RunSimulation(ByRef committed As Boolean) As OperationResult
     End If
 
     ' 12-18. Stage the success, choose the INACTIVE bank, write it and verify it.
+    '        The candidate failpoint is NOT here: injecting before any candidate
+    '        write only proves that nothing was written. It lives inside
+    '        PublishCandidate, after the inactive bank has been written, so
+    '        Gate B can prove a partially written candidate has no standing.
     package.Stamp = Now
     package.TargetBank = InactiveBank(package.ActiveBank)
-    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK
     If Not PublishCandidate(package, detail) Then
         RunSimulation = RecordFailure(package, detail)
         Exit Function
@@ -564,7 +567,28 @@ End Function
 ' ==========================================================================
 Private Function PublishCandidate(ByRef package As SimRunPackage, _
                                   ByRef detail As String) As Boolean
+    ' THE CANDIDATE TRANSACTION, INSIDE A SCOPED ERROR ENVELOPE.
+    '
+    ' A Range assignment, a chunk write and a verification read are COM calls,
+    ' and COM calls raise. Without a handler here a raised write left the run
+    ' through PCCM_RunSimulation's invocation handler, which reports honestly
+    ' but writes NO attempt record - so an infrastructure failure after the AUTO
+    ' nonce was consumed left the attempt axis silent, against the accepted
+    ' `refusal_or_failure_after_auto_allocation.attempt_metadata_updated: true`.
+    '
+    ' The envelope converts every such failure into a plain False, so
+    ' RunSimulation's existing `If Not PublishCandidate ... RecordFailure` path
+    ' owns it and the attempt block records FAILED with the seed mode, the
+    ' effective seed and the consumed nonce.
+    '
+    ' NOTHING IS ROLLED BACK. The active bank is not touched, the run id is not
+    ' touched, and the half-written INACTIVE bank is left exactly as it is: it
+    ' has no semantic standing precisely because the selector still names the
+    ' other bank. Scoped, not `On Error Resume Next` - one handler, one exit.
     Dim snapshot As Variant, summary As Variant, contingency As Variant
+    Dim failure As String
+
+    On Error GoTo CandidateFailed
 
     BuildSnapshotBlock package, snapshot
     BuildSummaryBlock package, summary
@@ -575,10 +599,27 @@ Private Function PublishCandidate(ByRef package As SimRunPackage, _
     SimSheet.Range(ContingencyRange(package.TargetBank)).Value2 = contingency
     If Not WriteIterationBank(package, detail) Then Exit Function
 
+    ' THE CANDIDATE BANK IS NOW WRITTEN AND NOT YET VERIFIED. This is the
+    ' runtime boundary Gate B needs: the inactive bank holds candidate data, the
+    ' active bank has not moved, and the run must still end as FAILED.
+    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK
+
     If Not VerifyCandidateBank(package, snapshot, summary, contingency, detail) Then
         Exit Function
     End If
+
+    On Error GoTo 0
     PublishCandidate = True
+    Exit Function
+
+CandidateFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "simulation: inactive-bank publication failed in bank " & _
+             package.TargetBank & ": " & failure & _
+             ". The candidate bank may be partially written and it has " & _
+             "no semantic standing; the previously published bank remains " & _
+             "authoritative."
 End Function
 
 Private Sub BuildSnapshotBlock(ByRef package As SimRunPackage, ByRef block As Variant)
@@ -731,30 +772,82 @@ Private Function FinalCommit(ByRef package As SimRunPackage, ByRef detail As Str
     ' D22:D30 IN ONE ASSIGNMENT, with the active bank as its last field. Not
     ' nine writes that could half-succeed and publish a bank with no run id, or
     ' a run id pointing at a bank that was never activated.
+    '
+    ' THREE FAILURE CLASSES, AND ONLY ONE OF THEM SKIPS THE RESTORE:
+    '
+    '   A. the capture itself fails - nothing has been written, so there is
+    '      nothing to put back and no captured block to put back WITH.
+    '   B. anything after the assignment was attempted - a raised COM write, an
+    '      injected failpoint, a raised verification read, or a plain
+    '      verification mismatch. All four restore.
+    '   C. the restore itself fails - said plainly, never glossed.
+    '
+    ' B IS THE ONE THAT MATTERS. The source must not assume "an exception means
+    ' Excel wrote nothing": a raised assignment leaves the range in an unknown
+    ' state, which is exactly why the prior block was captured first.
     Dim previous As Variant, block As Variant
+    Dim cause As String, failure As String
 
+    ' A. CAPTURE FIRST, under its own handler, before anything is written.
+    On Error GoTo CaptureFailed
     previous = SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2
+    On Error GoTo 0
+
     BuildCommitBlock package, block
 
-    modAppState.FailPointCheck FAILPOINT_SIM_FINAL_COMMIT
+    ' B. THE COMMIT. From the assignment onward every exit restores.
+    On Error GoTo CommitFailed
     SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block
+    modAppState.FailPointCheck FAILPOINT_SIM_FINAL_COMMIT
     If SameBlock(SIM_FINAL_COMMIT_RANGE, block, 9, 1) Then
+        On Error GoTo 0
         FinalCommit = True
         Exit Function
     End If
+    On Error GoTo 0
+    cause = "the committed block did not verify"
+    GoTo RestorePrevious
 
-    ' THE COMMIT DID NOT LAND. Put the captured block back, so the run id and
-    ' the published bank are exactly what they were, and the half-written
+CommitFailed:
+    cause = Err.Description
+    On Error GoTo 0
+
+RestorePrevious:
+    ' ONE WRITE BACK, THEN VERIFY IT. Put the captured block back, so the run id
+    ' and the published bank are exactly what they were, and the half-written
     ' candidate bank stays unpublished with no semantic standing.
+    On Error GoTo RestoreFailed
     SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous
     If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then
-        detail = "simulation: the final commit did not verify; the previous published " & _
-                 "bank has been restored and remains authoritative"
+        On Error GoTo 0
+        detail = "simulation: the final commit did not complete (" & cause & _
+                 "); the previous published bank has been restored and " & _
+                 "remains authoritative"
         Exit Function
     End If
-    detail = "simulation: the final commit did not verify AND the previous shared " & _
-             "block could not be restored. The publication selector cannot be " & _
-             "guaranteed and requires recovery."
+    On Error GoTo 0
+    detail = "simulation: the final commit did not complete (" & cause & _
+             ") AND the previous shared block could not be restored. The " & _
+             "publication selector cannot be guaranteed and requires recovery."
+    Exit Function
+
+RestoreFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "simulation: the final commit did not complete (" & cause & _
+             ") AND the previous shared block could not be restored: " & failure & _
+             ". The publication selector cannot be guaranteed and requires recovery."
+    Exit Function
+
+CaptureFailed:
+    ' NO CANDIDATE WRITE WAS ATTEMPTED, and there is no captured block, so the
+    ' restore path is NOT entered - entering it would write an unset Variant
+    ' over a publication this run never touched.
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "simulation: the previous shared commit block could not be read, so " & _
+             "no final commit was attempted: " & failure & _
+             ". The published bank is unchanged and remains authoritative."
 End Function
 
 Private Sub BuildCommitBlock(ByRef package As SimRunPackage, ByRef block As Variant)

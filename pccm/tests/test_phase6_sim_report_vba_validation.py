@@ -143,11 +143,9 @@ def test_03_a_third_bank_is_introduced() -> None:
 def test_04_the_bank_is_switched_before_the_candidate_is_verified() -> None:
     damaged = _swap(
         _REPORT,
-        "    If Not WriteIterationBank(package, detail) Then Exit Function\n\n"
         "    If Not VerifyCandidateBank(package, snapshot, summary, contingency, detail) Then\n"
         "        Exit Function\n"
-        "    End If\n",
-        "    If Not WriteIterationBank(package, detail) Then Exit Function\n")
+        "    End If\n", "")
     damaged = _swap(
         damaged,
         "    ' 19. The one final write. The active bank moves last, inside it.\n",
@@ -166,11 +164,9 @@ def test_05_the_active_bank_is_written_separately_before_the_commit() -> None:
 def test_06_the_final_commit_becomes_nine_writes() -> None:
     damaged = _swap(
         _REPORT,
-        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block\n"
-        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, block, 9, 1) Then\n",
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block\n",
         "    SharedCell(SIM_IDENTITY_ROW_LAST_RUN_ID).Value2 = package.CandidateRunId\n"
-        "    SharedCell(SIM_IDENTITY_ROW_ACTIVE_BANK).Value2 = package.TargetBank\n"
-        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, block, 9, 1) Then\n")
+        "    SharedCell(SIM_IDENTITY_ROW_ACTIVE_BANK).Value2 = package.TargetBank\n")
     _control("test_31", report=damaged)
 
 
@@ -250,10 +246,11 @@ def test_13_the_final_commit_verification_is_omitted() -> None:
     damaged = _swap(
         _REPORT,
         "    If SameBlock(SIM_FINAL_COMMIT_RANGE, block, 9, 1) Then\n"
+        "        On Error GoTo 0\n"
         "        FinalCommit = True\n"
         "        Exit Function\n"
         "    End If\n",
-        "    FinalCommit = True\n    Exit Function\n")
+        "    On Error GoTo 0\n    FinalCommit = True\n    Exit Function\n")
     _control("test_32", report=damaged)
 
 
@@ -274,11 +271,11 @@ def test_15_the_restore_path_is_removed() -> None:
 def test_16_a_failed_restoration_is_reported_as_safe() -> None:
     damaged = _swap(
         _REPORT,
-        '    detail = "simulation: the final commit did not verify AND the previous shared " & _\n'
-        '             "block could not be restored. The publication selector cannot be " & _\n'
-        '             "guaranteed and requires recovery."\n',
+        '    detail = "simulation: the final commit did not complete (" & cause & _\n'
+        '             ") AND the previous shared block could not be restored. The " & _\n'
+        '             "publication selector cannot be guaranteed and requires recovery."\n',
         '    detail = "simulation: the final commit did not verify; the previous bank stands."\n')
-    _control("test_32", report=damaged)
+    _control("test_44e", report=damaged)
 
 
 def test_17_results_is_written_by_the_run() -> None:
@@ -687,3 +684,248 @@ if __name__ == "__main__":  # pragma: no cover
     import pytest
 
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ===========================================================================
+# K. THE TRANSACTION FAILURE PATHS (Step-12 settlement)
+#
+# Every control here damages a recovery path, not an adjacency. The question
+# each asks is "can a COM failure still reach the attempt axis, and can the
+# prior published block still come back" - never "is this token near that one".
+# ===========================================================================
+def test_56_the_candidate_transaction_loses_its_error_envelope() -> None:
+    damaged = _swap(_REPORT, "    On Error GoTo CandidateFailed\n", "")
+    _control("test_44a", report=damaged)
+
+
+def test_57_the_candidate_envelope_becomes_a_blanket_suppressor() -> None:
+    damaged = _swap(_REPORT, "    On Error GoTo CandidateFailed\n",
+                    "    On Error Resume Next\n")
+    _control("test_44g", report=damaged)
+
+
+def test_58_the_candidate_handler_reports_success() -> None:
+    damaged = _swap(
+        _REPORT,
+        "CandidateFailed:\n    failure = Err.Description\n",
+        "CandidateFailed:\n    PublishCandidate = True\n    failure = Err.Description\n")
+    _control("test_44a", report=damaged)
+
+
+def test_59_the_candidate_handler_erases_the_partial_bank() -> None:
+    damaged = _swap(
+        _REPORT,
+        "CandidateFailed:\n    failure = Err.Description\n",
+        "CandidateFailed:\n"
+        "    SimSheet.Range(SnapshotRange(package.TargetBank)).ClearContents\n"
+        "    failure = Err.Description\n")
+    _control("test_44a", report=damaged)
+
+
+def test_60_the_candidate_failpoint_moves_back_before_publication() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    ' THE CANDIDATE BANK IS NOW WRITTEN AND NOT YET VERIFIED. This is the\n"
+        "    ' runtime boundary Gate B needs: the inactive bank holds candidate data, the\n"
+        "    ' active bank has not moved, and the run must still end as FAILED.\n"
+        "    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK\n\n", "")
+    damaged = _swap(
+        damaged,
+        "    package.TargetBank = InactiveBank(package.ActiveBank)\n",
+        "    package.TargetBank = InactiveBank(package.ActiveBank)\n"
+        "    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK\n")
+    _control("test_44", report=damaged)
+
+
+def test_61_the_candidate_failpoint_moves_before_the_candidate_writes() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK\n\n"
+        "    If Not VerifyCandidateBank(", "\n    If Not VerifyCandidateBank(")
+    damaged = _swap(
+        damaged,
+        "    SimSheet.Range(SnapshotRange(package.TargetBank)).Value2 = snapshot\n",
+        "    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK\n"
+        "    SimSheet.Range(SnapshotRange(package.TargetBank)).Value2 = snapshot\n")
+    _control("test_44", report=damaged)
+
+
+def test_62_the_candidate_failpoint_moves_after_verification() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK\n\n"
+        "    If Not VerifyCandidateBank(package, snapshot, summary, contingency, detail) Then\n"
+        "        Exit Function\n"
+        "    End If\n",
+        "    If Not VerifyCandidateBank(package, snapshot, summary, contingency, detail) Then\n"
+        "        Exit Function\n"
+        "    End If\n"
+        "    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK\n")
+    _control("test_44", report=damaged)
+
+
+def test_63_the_final_commit_loses_its_error_envelope() -> None:
+    damaged = _swap(_REPORT, "    On Error GoTo CommitFailed\n", "")
+    _control("test_44d", report=damaged)
+
+
+def test_64_the_final_failpoint_moves_back_before_the_write() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block\n"
+        "    modAppState.FailPointCheck FAILPOINT_SIM_FINAL_COMMIT\n",
+        "    modAppState.FailPointCheck FAILPOINT_SIM_FINAL_COMMIT\n"
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block\n")
+    _control("test_31", report=damaged)
+
+
+def test_65_the_final_failpoint_moves_after_verification() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    modAppState.FailPointCheck FAILPOINT_SIM_FINAL_COMMIT\n"
+        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, block, 9, 1) Then\n",
+        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, block, 9, 1) Then\n"
+        "        modAppState.FailPointCheck FAILPOINT_SIM_FINAL_COMMIT\n")
+    _control("test_44", report=damaged)
+
+
+def test_66_a_raised_commit_write_exits_without_restoring() -> None:
+    """The Step-11 defect itself, planted back: the handler just reports."""
+    damaged = _swap(
+        _REPORT,
+        "CommitFailed:\n    cause = Err.Description\n    On Error GoTo 0\n",
+        "CommitFailed:\n    cause = Err.Description\n    On Error GoTo 0\n"
+        "    detail = \"simulation: the final commit raised: \" & cause\n"
+        "    Exit Function\n")
+    _control("test_44d", report=damaged)
+
+
+def test_67_a_verification_mismatch_exits_without_restoring() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    cause = \"the committed block did not verify\"\n"
+        "    GoTo RestorePrevious\n",
+        "    cause = \"the committed block did not verify\"\n"
+        "    detail = cause\n"
+        "    Exit Function\n")
+    _control("test_44d", report=damaged)
+
+
+def test_68_the_verification_read_sits_outside_the_envelope() -> None:
+    """A raised SameBlock must restore too, so it must be inside the handler."""
+    damaged = _swap(
+        _REPORT,
+        "    On Error GoTo CommitFailed\n"
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block\n"
+        "    modAppState.FailPointCheck FAILPOINT_SIM_FINAL_COMMIT\n"
+        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, block, 9, 1) Then\n",
+        "    On Error GoTo CommitFailed\n"
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block\n"
+        "    On Error GoTo 0\n"
+        "    modAppState.FailPointCheck FAILPOINT_SIM_FINAL_COMMIT\n"
+        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, block, 9, 1) Then\n")
+    _control("test_44d", report=damaged)
+
+
+def test_69_the_prior_block_is_never_captured() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    On Error GoTo CaptureFailed\n"
+        "    previous = SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2\n"
+        "    On Error GoTo 0\n", "")
+    _control("test_44c", report=damaged)
+
+
+def test_70_the_capture_has_no_handler_of_its_own() -> None:
+    damaged = _swap(_REPORT, "    On Error GoTo CaptureFailed\n", "")
+    _control("test_44c", report=damaged)
+
+
+def test_71_a_failed_capture_writes_an_unset_block_over_the_publication() -> None:
+    damaged = _swap(
+        _REPORT,
+        "CaptureFailed:\n"
+        "    ' NO CANDIDATE WRITE WAS ATTEMPTED, and there is no captured block, so the\n"
+        "    ' restore path is NOT entered - entering it would write an unset Variant\n"
+        "    ' over a publication this run never touched.\n"
+        "    failure = Err.Description\n",
+        "CaptureFailed:\n"
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous\n"
+        "    failure = Err.Description\n")
+    _control("test_44c", report=damaged)
+
+
+def test_72_the_restore_write_is_removed() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous\n"
+        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then\n",
+        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then\n")
+    _control("test_32", report=damaged)
+
+
+def test_73_the_restore_is_never_verified() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then\n",
+        "    If True Then\n")
+    _control("test_44d", report=damaged)
+
+
+def test_74_a_failed_restoration_claims_the_publication_is_safe() -> None:
+    damaged = _swap(
+        _REPORT,
+        "RestoreFailed:\n"
+        "    failure = Err.Description\n"
+        "    On Error GoTo 0\n"
+        "    detail = \"simulation: the final commit did not complete (\" & cause & _\n"
+        "             \") AND the previous shared block could not be restored: \" & failure & _\n"
+        "             \". The publication selector cannot be guaranteed and requires recovery.\"\n",
+        "RestoreFailed:\n"
+        "    failure = Err.Description\n"
+        "    On Error GoTo 0\n"
+        "    detail = \"simulation: the final commit did not complete; the previous \" & _\n"
+        "             \"published bank remains authoritative\"\n")
+    _control("test_44e", report=damaged)
+
+
+def test_75_the_restore_itself_has_no_handler() -> None:
+    damaged = _swap(_REPORT, "    On Error GoTo RestoreFailed\n", "")
+    _control("test_44e", report=damaged)
+
+
+def test_76_a_candidate_failure_bypasses_the_attempt_record() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If Not PublishCandidate(package, detail) Then\n"
+        "        RunSimulation = RecordFailure(package, detail)\n"
+        "        Exit Function\n"
+        "    End If\n",
+        "    If Not PublishCandidate(package, detail) Then\n"
+        "        Err.Raise vbObjectError + 1, , detail\n"
+        "    End If\n")
+    _control("test_44b", report=damaged)
+
+
+def test_77_a_commit_failure_bypasses_the_attempt_record() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If Not FinalCommit(package, detail) Then\n"
+        "        RunSimulation = RecordFailure(package, detail)\n"
+        "        Exit Function\n"
+        "    End If\n",
+        "    If Not FinalCommit(package, detail) Then\n"
+        "        Err.Raise vbObjectError + 2, , detail\n"
+        "    End If\n")
+    _control("test_44f", report=damaged)
+
+
+def test_78_the_attempt_record_writes_the_publication_rows() -> None:
+    """A FAILED attempt must not reach D22 or D30 - those belong to the commit."""
+    body = conformance._procedure("WriteAttemptBlock")
+    anchor = body[body.index("    SimSheet.Range(AttemptRange())"):]
+    anchor = anchor[: anchor.index("\n") + 1]
+    damaged = _swap(
+        _REPORT, anchor,
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block\n" + anchor)
+    _control("test_33", report=damaged)

@@ -78,7 +78,7 @@ FROZEN_SOURCE = {
     "modSimEngine": "f1283fe7d5d2ffcc5345dab9a00f68d3685b787563d104f50a886c5ed409abab",
     "modSimStats": "98bd21b227047d04e6847e554e027b339cf01dfb1112c1539a9e334966233be0",
     "modSimFingerprint": "9e6ad972fe59ead9e34c7d65b807dd0f2ca1cb1b29bfa71b377a4eb8f65cdfda",
-    "modSimReport": "a0b9a738b8f7346efd7f5964c311861d975075786072e2ec7b7c7773afd0c363",
+    "modSimReport": "de6827dfa2d6d8d20d68fdd2c03a99a103c52bb2a2f1dcfddccee564bae30e1f",
     "modCalcFingerprint": "2efbb30c6f915c04b9c07adec07e25e11f4b5bd2b98e3efa818631dc510ce847",
     "modCalcReport": "8252b935b256b1abad9b26ca6b1d90c92c5e0d7566906308b191cd03dd6a71b3",
 }
@@ -584,6 +584,83 @@ def test_25_the_accepted_reporter_prefix_is_still_byte_identical() -> None:
     after = re.findall(r"^(?:Public|Private) (?:Function|Sub) (\w+)",
                        text[text.index(banner):], re.M)
     assert after == [BRIDGE], after
+
+
+# ===========================================================================
+# The cross-module failure-path guarantee
+# ===========================================================================
+def test_28_no_transaction_stage_escapes_to_the_invocation_axis() -> None:
+    """After the AUTO nonce is spent, every failure owes an attempt record.
+
+    The contract's `refusal_or_failure_after_auto_allocation` requires
+    `attempt_metadata_updated: true`, and that is a statement about REAL COM
+    failures, not only about a helper returning False. Each stage that touches
+    the worksheet therefore carries its own scoped handler, and RunSimulation
+    routes its False through RecordRefusal or RecordFailure.
+    """
+    run = _procedure(REPORT, "RunSimulation")
+    # Every staged call is tested, and every arm records something.
+    for stage, recorder in (("PrepareRun", "RecordRefusal"),
+                            ("AllocateAutoNonce", "RecordRefusal"),
+                            ("RunKernels", "RecordRefusal"),
+                            ("PublishCandidate", "RecordFailure"),
+                            ("FinalCommit", "RecordFailure")):
+        guard = f"If Not {stage}(package, detail) Then"
+        assert guard in run, guard
+        arm = run[run.index(guard):]
+        arm = arm[: arm.index("End If")]
+        assert recorder in arm, (stage, recorder)
+        assert "Err.Raise" not in arm, (
+            f"{stage} re-raises instead of recording an attempt"
+        )
+    # THE TWO COM-FALLIBLE STAGES CARRY THEIR OWN ENVELOPES.
+    assert "On Error GoTo CandidateFailed" in _procedure(REPORT, "PublishCandidate")
+    assert "On Error GoTo CommitFailed" in _procedure(REPORT, "FinalCommit")
+    assert "On Error GoTo CaptureFailed" in _procedure(REPORT, "FinalCommit")
+    assert "On Error GoTo RestoreFailed" in _procedure(REPORT, "FinalCommit")
+    # AND NO PHASE-6 MODULE SUPPRESSES ERRORS WHOLESALE. (The Phase-4 modules
+    # carry their own documented `On Error Resume Next` whitelist, policed by
+    # test_phase4_stage_b_source.py; nothing here widens or narrows it.)
+    for name in tuple(FROZEN_SOURCE) + (REPORT,):
+        assert "On Error Resume Next" not in _module(name).code, name
+
+
+def test_29_the_publication_contract_is_implemented_where_it_is_stated() -> None:
+    """Each accepted failure-semantics clause maps to a source guarantee."""
+    semantics = _sim().raw["publication"]["failure_semantics"]
+    after = semantics["refusal_or_failure_after_auto_allocation"]
+    assert after["next_auto_nonce_advanced"] is True
+    assert after["active_bank_changed"] is False
+    assert after["attempt_metadata_updated"] is True
+    # NOTHING DECREMENTS THE COUNTER on any failure path.
+    code = _module(REPORT).code
+    assert "NEXT_AUTO_NONCE" in code
+    for _, statement in logical_statements(code):
+        if "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" in statement and "- 1" in statement:
+            raise AssertionError(f"the consumed nonce is rolled back: {statement}")
+
+    inactive = semantics["inactive_bank_write_failure"]
+    assert inactive["active_bank_changed"] is False
+    assert inactive["prior_publication_remains_authoritative"] is True
+    assert inactive["corrupted_candidate_has_semantic_standing"] is False
+    publish = _procedure(REPORT, "PublishCandidate")
+    assert "no semantic standing" in publish
+    assert "ClearContents" not in publish, "the failed candidate is erased"
+
+    commit = semantics["final_commit_failure"]
+    assert commit["prior_block_restored"] is True
+    assert commit["active_bank_changed"] is False
+    final = _procedure(REPORT, "FinalCommit")
+    assert final.count("Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous") == 1
+    assert "If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then" in final
+    # The capture happens before the write, as the contract states.
+    layout = _sim().raw["publication"]["transaction"]
+    assert layout["prior_final_commit_block_captured_before_write"] is True
+    assert layout["final_commit_failure_restores_prior_block"] is True
+    assert layout["final_commit_is_one_write"] is True
+    capture, write = _order("previous = SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2",
+                            "Range(SIM_FINAL_COMMIT_RANGE).Value2 = block", body=final)
+    assert capture < write
 
 
 # ===========================================================================

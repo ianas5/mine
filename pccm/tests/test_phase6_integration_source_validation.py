@@ -502,3 +502,97 @@ if __name__ == "__main__":
     import pytest
 
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ===========================================================================
+# 10. The cross-module failure-path guarantee (Step-12 settlement)
+# ===========================================================================
+def test_38_a_candidate_failure_is_re_raised_instead_of_recorded() -> None:
+    """The Step-11 shape: an infrastructure failure skips the attempt axis."""
+    damaged = _swap(
+        _REPORT,
+        "    If Not PublishCandidate(package, detail) Then\n"
+        "        RunSimulation = RecordFailure(package, detail)\n"
+        "        Exit Function\n"
+        "    End If\n",
+        "    If Not PublishCandidate(package, detail) Then\n"
+        "        Err.Raise vbObjectError + 1, , detail\n"
+        "    End If\n")
+    _control("test_28", vba={REPORT_BAS: damaged})
+
+
+def test_39_a_commit_failure_is_re_raised_instead_of_recorded() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If Not FinalCommit(package, detail) Then\n"
+        "        RunSimulation = RecordFailure(package, detail)\n"
+        "        Exit Function\n"
+        "    End If\n",
+        "    If Not FinalCommit(package, detail) Then\n"
+        "        Err.Raise vbObjectError + 2, , detail\n"
+        "    End If\n")
+    _control("test_28", vba={REPORT_BAS: damaged})
+
+
+def test_40_the_candidate_envelope_is_removed() -> None:
+    damaged = _swap(_REPORT, "    On Error GoTo CandidateFailed\n", "")
+    _control("test_28", vba={REPORT_BAS: damaged})
+
+
+def test_41_the_commit_envelope_is_removed() -> None:
+    damaged = _swap(_REPORT, "    On Error GoTo CommitFailed\n", "")
+    _control("test_28", vba={REPORT_BAS: damaged})
+
+
+def test_42_a_phase6_module_suppresses_errors_wholesale() -> None:
+    damaged = _swap(
+        _REPORT, "    On Error GoTo CandidateFailed\n",
+        "    On Error Resume Next\n")
+    _control("test_28", vba={REPORT_BAS: damaged})
+
+
+def test_43_the_consumed_nonce_is_rolled_back_on_failure() -> None:
+    damaged = _swap(
+        _REPORT,
+        "CandidateFailed:\n    failure = Err.Description\n",
+        "CandidateFailed:\n"
+        "    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = _\n"
+        "        package.ConsumedNonce - 1\n"
+        "    failure = Err.Description\n")
+    _control("test_29", vba={REPORT_BAS: damaged})
+
+
+def test_44_the_failed_candidate_bank_is_erased() -> None:
+    damaged = _swap(
+        _REPORT,
+        "CandidateFailed:\n    failure = Err.Description\n",
+        "CandidateFailed:\n"
+        "    SimSheet.Range(SnapshotRange(package.TargetBank)).ClearContents\n"
+        "    failure = Err.Description\n")
+    _control("test_29", vba={REPORT_BAS: damaged})
+
+
+def test_45_the_prior_block_is_captured_after_the_write() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    On Error GoTo CaptureFailed\n"
+        "    previous = SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2\n"
+        "    On Error GoTo 0\n\n"
+        "    BuildCommitBlock package, block\n\n"
+        "    ' B. THE COMMIT. From the assignment onward every exit restores.\n"
+        "    On Error GoTo CommitFailed\n"
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block\n",
+        "    BuildCommitBlock package, block\n\n"
+        "    On Error GoTo CommitFailed\n"
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = block\n"
+        "    previous = SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2\n")
+    _control("test_29", vba={REPORT_BAS: damaged})
+
+
+def test_46_the_restore_write_is_removed_from_the_commit() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous\n"
+        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then\n",
+        "    If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then\n")
+    _control("test_29", vba={REPORT_BAS: damaged})

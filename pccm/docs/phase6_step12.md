@@ -292,6 +292,25 @@ claim any of them executed, and it implements no Step-13 scenario.
 
 ---
 
+## 7a. Independent review finding — the transaction failure paths
+
+Independent review of `7c37b72`, while building the Step-13 runtime matrix,
+found a **source-cleanable transaction defect inherited from Step 11**: raised
+COM errors in the candidate publication skipped the attempt axis, a raised final
+commit skipped the restoration the contract requires, and both later failpoints
+fired *before* the write they are named for — with a Step-11 test pinning the
+wrong order in place.
+
+That finding is correct and was not visible to any detector this step had
+written. It is settled in full, with its own record:
+
+    docs/phase6_step12_transaction_settlement.md
+
+`modSimReport.bas` moved as a result — `a0b9a738…afd0c363` → `de6827df…bae30e1f`.
+Everything else in §2, §3 and §6 above stands unchanged.
+
+---
+
 ## 8. What changed
 
 ```
