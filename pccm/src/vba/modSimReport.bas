@@ -81,6 +81,7 @@ Private Type SimRunPackage
     AutoIdentityKnown As Boolean
     NonceConsumed As Boolean
     NonceState As String
+    NonceRecoveryRequired As Boolean
 
     CandidateRunId As Long
     ActiveBank As String
@@ -384,16 +385,24 @@ Private Function AllocateAutoNonce(ByRef package As SimRunPackage, _
     ' and its recovery protocol belong to modSimNonce; the run package stays
     ' Private to this module and no shared mutable context crosses the boundary.
     '
-    ' WHAT COMES BACK. `AutoIdentityKnown` says an AUTO identity was selected
-    ' and may appear in the attempt row for audit - it is NOT a claim that the
-    ' nonce was consumed. `NonceConsumed` is the strong fact, and it alone
-    ' gates sampling and publication.
-    Dim identityKnown As Boolean, state As String
+    ' TWO AXES COME BACK, AND THEY ARE NOT THE SAME QUESTION. `allocationState`
+    ' is what is PHYSICALLY known about this attempt's counter transition;
+    ' `recoveryRequired` is whether the workbook needs reconciling before any
+    ' further AUTO allocation. A cleanup failure raises the second and must
+    ' never revise the first - which is exactly what folding them into one
+    ' string did, turning a proven CONSUMED into a reported non-consumption.
+    '
+    ' `AutoIdentityKnown` says an AUTO identity was selected and may appear in
+    ' the attempt row for audit - it is NOT a claim that the nonce was consumed.
+    Dim identityKnown As Boolean, allocationState As String
+    Dim recoveryRequired As Boolean
     Dim seed As Long, nonce As Long
     Dim allocated As Boolean
 
-    allocated = modSimNonce.SimNonceAllocate(package.HasSuppliedSeed, package.SuppliedSeed, _
-                                             seed, nonce, identityKnown, state, detail)
+    allocated = modSimNonce.SimNonceAllocate(package.HasSuppliedSeed, _
+                                             package.SuppliedSeed, seed, nonce, _
+                                             identityKnown, allocationState, _
+                                             recoveryRequired, detail)
 
     ' COPIED ON BOTH ARMS, UNCONDITIONALLY. SimNonceAllocate sets every
     ' out-parameter before any exit it can take, so a refused attempt that got
@@ -403,13 +412,17 @@ Private Function AllocateAutoNonce(ByRef package As SimRunPackage, _
     package.EffectiveSeed = seed
     package.AutoIdentityKnown = identityKnown
     package.ConsumedNonce = nonce
-    package.NonceState = state
+    package.NonceState = allocationState
+    package.NonceRecoveryRequired = recoveryRequired
 
-    ' THE STRONG FACT, DERIVED FROM THE STATE ON BOTH ARMS. Not from
-    ' `identityKnown`, which only says an identity was selected, and not from
+    ' THE STRONG PHYSICAL FACT, DERIVED FROM THE ALLOCATION AXIS ALONE. Not
+    ' from `identityKnown`, which only says an identity was selected; not from
     ' `allocated`, which is False for every non-CONSUMED outcome but True for a
-    ' FIXED run that consumed nothing.
-    package.NonceConsumed = (StrComp(state, modSimNonce.SIM_NONCE_STATE_CONSUMED, _
+    ' FIXED run that consumed nothing; and never from `recoveryRequired`, which
+    ' answers a different question entirely. Once the counter has been observed
+    ' at m+1 this stays True however the rest of the run ends.
+    package.NonceConsumed = (StrComp(allocationState, _
+                                     modSimNonce.SIM_NONCE_STATE_CONSUMED, _
                                      vbBinaryCompare) = 0)
 
     AllocateAutoNonce = allocated
@@ -857,21 +870,20 @@ Private Function RecordRefusal(ByRef package As SimRunPackage, _
 End Function
 
 Private Function RefusalResult(ByRef package As SimRunPackage) As String
-    ' AUDIT ONLY. This token records that THIS attempt met an AUTO nonce
-    ' persistence outcome it could not classify. It is not the recovery lock:
-    ' the durable authority is the Pending AUTO Nonce sidecar, which survives
-    ' every later attempt including a FIXED one that legitimately rewrites this
-    ' row. Both unclassified outcomes earn it - PERSISTENCE_INDETERMINATE, where
-    ' the advance can be neither confirmed nor refuted, and RECOVERY_REQUIRED,
-    ' where the counter is unreadable or reads a value that is neither the
-    ' attempted nonce nor its advance. Recording either as a plain REFUSED would
-    ' say the run declined to spend the nonce, which is precisely the claim this
-    ' source cannot make.
+    ' AUDIT ONLY, AND TIED TO ONE AXIS. The token means exactly: THIS attempt's
+    ' counter transition could not be classified. That is the
+    ' PERSISTENCE_INDETERMINATE allocation state and nothing else.
+    '
+    ' IT IS NOT THE RECOVERY LOCK. The durable authority is the Pending AUTO
+    ' Nonce sidecar, which survives every later attempt including a FIXED one
+    ' that legitimately rewrites this row. So `NonceRecoveryRequired` does NOT
+    ' appear here: a run that refuses while reconciling a PRIOR marker never
+    ' began a transition of its own, and a cleanup failure after a definite
+    ' CONSUMED or PRE_ALLOCATION observation did not make that observation
+    ' unknown. Both are ordinary unsuccessful attempts, and F21 - not this
+    ' string - is what stops the next AUTO run.
     If StrComp(package.NonceState, modSimNonce.SIM_NONCE_STATE_INDETERMINATE, _
                vbBinaryCompare) = 0 Then
-        RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE
-    ElseIf StrComp(package.NonceState, modSimNonce.SIM_NONCE_STATE_RECOVERY, _
-                   vbBinaryCompare) = 0 Then
         RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE
     Else
         RefusalResult = SIM_ATTEMPT_REFUSED

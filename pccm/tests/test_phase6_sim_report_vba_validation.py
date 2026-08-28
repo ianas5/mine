@@ -202,8 +202,10 @@ def test_08_run_id_exhaustion_is_checked_before_the_nonce_is_touched() -> None:
 def test_09_sampling_begins_before_the_nonce_is_persisted() -> None:
     damaged = _swap(
         _NONCE,
-        "    If Not RunAllocationTransaction(autoNonce, state, detail) "
-        "Then Exit Function\n", "")
+        "    If Not RunAllocationTransaction(autoNonce, allocationState, _\n"
+        "                                    recoveryRequired, detail) Then\n"
+        "        Exit Function\n"
+        "    End If\n", "")
     _control("test_44h2", nonce=damaged)
 
 
@@ -960,11 +962,9 @@ def test_80_the_injection_fires_before_the_advance_is_established() -> None:
     damaged = _swap(_NONCE, _INJECT, "")
     damaged = _swap(
         damaged,
-        "    If Not RunAllocationTransaction(autoNonce, state, detail) "
-        "Then Exit Function\n",
+        "    If Not RunAllocationTransaction(autoNonce, allocationState, _\n",
         _INJECT +
-        "    If Not RunAllocationTransaction(autoNonce, state, detail) "
-        "Then Exit Function\n")
+        "    If Not RunAllocationTransaction(autoNonce, allocationState, _\n")
     _control("test_44", nonce=damaged)
 
 
@@ -972,9 +972,11 @@ def test_81_the_injection_fires_before_the_seed_is_derived() -> None:
     damaged = _swap(_NONCE, _INJECT, "")
     damaged = _swap(
         damaged,
-        "    If Not ResolveNextNonce(autoNonce, state, detail) Then Exit Function\n",
+        "    If Not ResolveNextNonce(autoNonce, recoveryRequired, detail) "
+        "Then Exit Function\n",
         _INJECT +
-        "    If Not ResolveNextNonce(autoNonce, state, detail) Then Exit Function\n")
+        "    If Not ResolveNextNonce(autoNonce, recoveryRequired, detail) "
+        "Then Exit Function\n")
     _control("test_44h2", nonce=damaged)
 
 
@@ -1079,8 +1081,9 @@ def test_91_the_rejected_pre_write_allocation_flag_returns() -> None:
 def test_92_the_consumed_state_is_set_without_an_observed_match() -> None:
     damaged = _swap(
         _NONCE,
-        "    If stored = nonce + 1 Then\n        state = SIM_NONCE_STATE_CONSUMED\n",
-        "    If True Then\n        state = SIM_NONCE_STATE_CONSUMED\n")
+        "    If stored = nonce + 1 Then\n"
+        "        allocationState = SIM_NONCE_STATE_CONSUMED\n",
+        "    If True Then\n        allocationState = SIM_NONCE_STATE_CONSUMED\n")
     _control("test_44h4", nonce=damaged)
 
 
@@ -1091,9 +1094,9 @@ def test_93_the_m_observation_is_classified_as_consumed() -> None:
         "        ' The advance did not land. Nothing was consumed, so the next run may\n"
         "        ' legitimately take this nonce again - and saying otherwise would be a\n"
         "        ' promise the source cannot keep.\n"
-        "        state = SIM_NONCE_STATE_PRE_ALLOCATION\n",
+        "        allocationState = SIM_NONCE_STATE_PRE_ALLOCATION\n",
         "    If stored = nonce Then\n"
-        "        state = SIM_NONCE_STATE_CONSUMED\n")
+        "        allocationState = SIM_NONCE_STATE_CONSUMED\n")
     _control("test_44h4", nonce=damaged)
 
 
@@ -1109,10 +1112,11 @@ def test_94_the_pre_allocation_arm_promises_non_reuse() -> None:
 
 def test_95_an_impossible_counter_reading_is_normalised() -> None:
     body = conformance._procedure("Classify", conformance.NONCE_BAS)
-    tail = body[body.index("    state = SIM_NONCE_STATE_RECOVERY"):]
+    tail = body[body.index("    allocationState = SIM_NONCE_STATE_INDETERMINATE\n"
+                           "    recoveryRequired = True"):]
     damaged = _swap(
         _NONCE, tail,
-        "    state = SIM_NONCE_STATE_CONSUMED\n"
+        "    allocationState = SIM_NONCE_STATE_CONSUMED\n"
         "    detail = \"simulation: the counter was normalised\"\n")
     _control("test_44h4", nonce=damaged)
 
@@ -1120,8 +1124,10 @@ def test_95_an_impossible_counter_reading_is_normalised() -> None:
 def test_96_the_indeterminate_case_claims_to_be_unconsumed() -> None:
     damaged = _swap(
         _NONCE,
-        '    state = SIM_NONCE_STATE_INDETERMINATE\n',
-        '    state = SIM_NONCE_STATE_PRE_ALLOCATION\n')
+        '    allocationState = SIM_NONCE_STATE_INDETERMINATE\n'
+        '    detail = "simulation: " & cause & " and " & why & ". Whether nonce " & _\n',
+        '    allocationState = SIM_NONCE_STATE_PRE_ALLOCATION\n'
+        '    detail = "simulation: " & cause & " and " & why & ". Whether nonce " & _\n')
     _control("test_44h4", nonce=damaged)
 
 
@@ -1130,7 +1136,7 @@ def test_97_the_durable_token_is_never_written() -> None:
     damaged = _swap(
         _REPORT,
         "        RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE\n",
-        "        RefusalResult = SIM_ATTEMPT_REFUSED\n", count=2)
+        "        RefusalResult = SIM_ATTEMPT_REFUSED\n")
     _control("test_44s", report=damaged)
 
 
@@ -1215,7 +1221,8 @@ def test_104_a_helper_false_verification_skips_the_reconciliation() -> None:
     damaged = _swap(
         _NONCE,
         "        PersistAdvance = Reconcile(nonce, \"the advance could not be verified (\" & _\n"
-        "                                   probe & \")\", state, detail)\n",
+        "                                   probe & \")\", allocationState, recoveryRequired, _\n"
+        "                                   detail)\n",
         "        detail = \"simulation: the advance could not be verified\"\n")
     _control("test_44h", nonce=damaged)
 
@@ -1277,19 +1284,23 @@ def test_109_the_failpoint_moves_below_the_fixed_branch() -> None:
     _control("test_44m", nonce=damaged)
 
 
-def test_110_the_recovery_state_is_recorded_as_a_generic_refusal() -> None:
-    """BLOCKER 4's consequence, restored.
+def test_110_an_indeterminate_transition_is_recorded_as_a_generic_refusal() -> None:
+    """The one outcome that MUST earn the token, collapsed to REFUSED.
 
-    `RECOVERY_REQUIRED` collapses to `REFUSED`, which says the run DECLINED to
-    spend the nonce - the one claim this source cannot make when the counter
-    reads a value that is neither the attempted nonce nor its advance.
+    Static review inverted this control's original subject: mapping
+    RECOVERY_REQUIRED to the token was the defect, not the fix, and that shape
+    is now restored by test_132. What survives is the narrower property -
+    a transition this attempt genuinely could not classify has to say so.
     """
     damaged = _swap(
         _REPORT,
-        "    ElseIf StrComp(package.NonceState, modSimNonce.SIM_NONCE_STATE_RECOVERY, _\n"
-        "                   vbBinaryCompare) = 0 Then\n"
-        "        RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE\n",
-        "")
+        "    If StrComp(package.NonceState, modSimNonce.SIM_NONCE_STATE_INDETERMINATE, _\n"
+        "               vbBinaryCompare) = 0 Then\n"
+        "        RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE\n"
+        "    Else\n"
+        "        RefusalResult = SIM_ATTEMPT_REFUSED\n"
+        "    End If\n",
+        "    RefusalResult = SIM_ATTEMPT_REFUSED\n")
     _control("test_44s", report=damaged)
 
 
@@ -1301,13 +1312,17 @@ def test_111_the_counter_is_written_before_the_marker_is_laid() -> None:
     damaged = _swap(
         _NONCE,
         "    If Not EstablishPending(nonce, detail) Then\n",
-        "    If Not PersistAdvance(nonce, state, detail) Then Exit Function\n"
+        "    If Not PersistAdvance(nonce, allocationState, recoveryRequired, detail) Then\n"
+        "        Exit Function\n"
+        "    End If\n"
         "    If Not EstablishPending(nonce, detail) Then\n")
     damaged = _swap(
         damaged,
-        "    If Not PersistAdvance(nonce, state, detail) Then Exit Function\n\n"
-        "    ' A definite resolution clears the marker.",
-        "\n    ' A definite resolution clears the marker.")
+        "    If Not PersistAdvance(nonce, allocationState, recoveryRequired, detail) Then\n"
+        "        Exit Function\n"
+        "    End If\n\n"
+        "    ' CLEANUP IS THE OTHER AXIS.",
+        "\n    ' CLEANUP IS THE OTHER AXIS.")
     _control("test_44n", nonce=damaged)
 
 
@@ -1315,10 +1330,9 @@ def test_112_a_failed_marker_write_falls_through_to_the_counter() -> None:
     """`counter_persist_forbidden_until_established`, ignored."""
     damaged = _swap(
         _NONCE,
-        "        state = SIM_NONCE_STATE_PRE_ALLOCATION\n        Exit Function\n    End If\n"
-        "    If Not PersistAdvance(nonce, state, detail) Then Exit Function\n",
-        "        state = SIM_NONCE_STATE_PRE_ALLOCATION\n    End If\n"
-        "    If Not PersistAdvance(nonce, state, detail) Then Exit Function\n")
+        "        allocationState = SIM_NONCE_STATE_PRE_ALLOCATION\n"
+        "        Exit Function\n    End If\n",
+        "        allocationState = SIM_NONCE_STATE_PRE_ALLOCATION\n    End If\n")
     _control("test_44n", nonce=damaged)
 
 
@@ -1347,10 +1361,11 @@ def test_114_an_impossible_counter_reading_clears_the_marker() -> None:
     """`retained_on: counter_is_neither`, ignored - so the block lifts itself."""
     damaged = _swap(
         _NONCE,
-        "    ' THE MARKER IS RETAINED. Future AUTO runs stay blocked until reconciled.\n"
-        "    state = SIM_NONCE_STATE_RECOVERY\n",
-        "    If Not ClearPending(detail) Then Exit Function\n"
-        "    state = SIM_NONCE_STATE_RECOVERY\n")
+        "    allocationState = SIM_NONCE_STATE_INDETERMINATE\n"
+        "    recoveryRequired = True\n",
+        "    If Not ClearPending(detail) Then detail = detail\n"
+        "    allocationState = SIM_NONCE_STATE_INDETERMINATE\n"
+        "    recoveryRequired = True\n")
     _control("test_44p", nonce=damaged)
 
 
@@ -1358,10 +1373,10 @@ def test_115_an_unreadable_counter_clears_the_marker() -> None:
     """`retained_on: counter_unreadable`, ignored."""
     damaged = _swap(
         _NONCE,
-        "        state = SIM_NONCE_STATE_RECOVERY\n        Exit Function\n    End If\n\n"
+        "        recoveryRequired = True\n        Exit Function\n    End If\n\n"
         "    If hasPending Then\n",
         "        If Not ClearPending(probe) Then probe = probe\n"
-        "        state = SIM_NONCE_STATE_RECOVERY\n        Exit Function\n    End If\n\n"
+        "        recoveryRequired = True\n        Exit Function\n    End If\n\n"
         "    If hasPending Then\n")
     _control("test_44p", nonce=damaged)
 
@@ -1370,9 +1385,11 @@ def test_116_the_indeterminate_case_clears_the_marker() -> None:
     """The state whose entire purpose is to leave the marker standing."""
     damaged = _swap(
         _NONCE,
-        "    state = SIM_NONCE_STATE_INDETERMINATE\n",
+        "    allocationState = SIM_NONCE_STATE_INDETERMINATE\n"
+        "    detail = \"simulation: \" & cause & \" and \" & why & \". Whether nonce \" & _\n",
         "    If Not ClearPending(detail) Then detail = detail\n"
-        "    state = SIM_NONCE_STATE_INDETERMINATE\n")
+        "    allocationState = SIM_NONCE_STATE_INDETERMINATE\n"
+        "    detail = \"simulation: \" & cause & \" and \" & why & \". Whether nonce \" & _\n")
     _control("test_44p", nonce=damaged)
 
 
@@ -1380,9 +1397,12 @@ def test_117_a_definite_resolution_leaves_the_marker_standing() -> None:
     """The opposite error: a resolved transaction blocks every later run."""
     damaged = _swap(
         _NONCE,
-        "        state = SIM_NONCE_STATE_PRE_ALLOCATION\n"
-        "        If Not ClearPending(detail) Then Exit Function\n",
-        "        state = SIM_NONCE_STATE_PRE_ALLOCATION\n")
+        "        allocationState = SIM_NONCE_STATE_PRE_ALLOCATION\n"
+        "        If Not ClearPending(detail) Then\n"
+        "            recoveryRequired = True\n"
+        "            Exit Function\n"
+        "        End If\n",
+        "        allocationState = SIM_NONCE_STATE_PRE_ALLOCATION\n")
     _control("test_44p", nonce=damaged)
 
 
@@ -1401,11 +1421,11 @@ def test_119_an_unresolved_cleanup_lets_the_run_sample() -> None:
     damaged = _swap(
         _NONCE,
         "    If Not ClearPending(detail) Then\n"
-        "        state = SIM_NONCE_STATE_RECOVERY\n"
+        "        recoveryRequired = True\n"
         "        Exit Function\n"
         "    End If\n"
         "    RunAllocationTransaction = True\n",
-        "    If Not ClearPending(detail) Then state = SIM_NONCE_STATE_RECOVERY\n"
+        "    If Not ClearPending(detail) Then recoveryRequired = True\n"
         "    RunAllocationTransaction = True\n")
     _control("test_44q", nonce=damaged)
 
@@ -1434,9 +1454,11 @@ def test_122_the_nonce_module_writes_the_attempt_row_itself() -> None:
     """Then the residual would be real again: safety back on audit storage."""
     damaged = _swap(
         _NONCE,
-        "    state = SIM_NONCE_STATE_INDETERMINATE\n",
+        "    allocationState = SIM_NONCE_STATE_INDETERMINATE\n"
+        "    detail = \"simulation: \" & cause & \" and \" & why & \". Whether nonce \" & _\n",
         "    modSimReport.WriteAttemptBlock\n"
-        "    state = SIM_NONCE_STATE_INDETERMINATE\n")
+        "    allocationState = SIM_NONCE_STATE_INDETERMINATE\n"
+        "    detail = \"simulation: \" & cause & \" and \" & why & \". Whether nonce \" & _\n")
     _control("test_44r", nonce=damaged)
 
 
@@ -1488,4 +1510,145 @@ def test_126_a_raised_sidecar_read_escapes_into_the_entry_handler() -> None:
         "    raw = PendingCell.Value2\n"
         "    blank = modWorkbook.IsEmptyCell(PendingCell)\n")
     _control("test_44g", nonce=damaged)
+
+
+# ===========================================================================
+# THE ALLOCATION / RECOVERY CONFLATION, RESTORED
+#
+# The shapes below are the source as it stood when static review found that a
+# cleanup failure could erase a proven counter observation. Each is required to
+# fail: a control that cannot refuse the defect it was written for is not a
+# control, and the previous suite actively PINNED this one.
+# ===========================================================================
+def test_127_a_clear_failure_overwrites_a_known_consumption() -> None:
+    """THE defect: CONSUMED becomes RECOVERY_REQUIRED because a cell would not clear.
+
+    The counter observation has not changed and nothing has made the
+    consumption fact unknown, but the reporter derives `NonceConsumed` by
+    comparing that one string and so reports the nonce as unconsumed.
+    """
+    damaged = _swap(
+        _NONCE,
+        "    If Not ClearPending(detail) Then\n"
+        "        recoveryRequired = True\n"
+        "        Exit Function\n"
+        "    End If\n"
+        "    RunAllocationTransaction = True\n",
+        "    If Not ClearPending(detail) Then\n"
+        "        allocationState = SIM_NONCE_STATE_INDETERMINATE\n"
+        "        recoveryRequired = True\n"
+        "        Exit Function\n"
+        "    End If\n"
+        "    RunAllocationTransaction = True\n")
+    _control("test_44q", nonce=damaged)
+
+
+def test_128_the_definite_arms_revise_their_own_observation_on_cleanup_failure() -> None:
+    """The same erasure one level down, inside Classify."""
+    damaged = _swap(
+        _NONCE,
+        "        If Not ClearPending(detail) Then\n"
+        "            recoveryRequired = True\n"
+        "            Exit Function\n"
+        "        End If\n"
+        "        detail = \"simulation: \" & cause & \", but the advance is confirmed \" & _\n",
+        "        If Not ClearPending(detail) Then\n"
+        "            allocationState = SIM_NONCE_STATE_INDETERMINATE\n"
+        "            recoveryRequired = True\n"
+        "            Exit Function\n"
+        "        End If\n"
+        "        detail = \"simulation: \" & cause & \", but the advance is confirmed \" & _\n")
+    _control("test_44q", nonce=damaged)
+
+
+def test_129_the_recovery_action_returns_to_the_allocation_axis() -> None:
+    """A fourth value on a three-value axis, which the contract forbids."""
+    damaged = _swap(
+        _NONCE,
+        'Public Const SIM_NONCE_STATE_INDETERMINATE As String = "PERSISTENCE_INDETERMINATE"\n',
+        'Public Const SIM_NONCE_STATE_INDETERMINATE As String = "PERSISTENCE_INDETERMINATE"\n'
+        'Public Const SIM_NONCE_STATE_RECOVERY As String = "RECOVERY_REQUIRED"\n')
+    _control("test_44q2", nonce=damaged)
+
+
+def test_130_the_two_axes_are_merged_back_into_one_scalar() -> None:
+    """One string carrying both questions is how the erasure became possible."""
+    damaged = _swap(
+        _NONCE,
+        "                                 ByRef allocationState As String, _\n"
+        "                                 ByRef recoveryRequired As Boolean, _\n",
+        "                                 ByRef state As String, _\n"
+        "                                 ByRef recoveryRequired As Boolean, _\n")
+    _control("test_44q2", nonce=damaged)
+
+
+def test_131_the_reporter_derives_consumption_from_the_recovery_flag() -> None:
+    """A physical fact must never be read off an action."""
+    damaged = _swap(
+        _REPORT,
+        "    package.NonceConsumed = (StrComp(allocationState, _\n"
+        "                                     modSimNonce.SIM_NONCE_STATE_CONSUMED, _\n"
+        "                                     vbBinaryCompare) = 0)\n",
+        "    package.NonceConsumed = (Not recoveryRequired) And _\n"
+        "                            (StrComp(allocationState, _\n"
+        "                                     modSimNonce.SIM_NONCE_STATE_CONSUMED, _\n"
+        "                                     vbBinaryCompare) = 0)\n")
+    _control("test_44q2", report=damaged)
+
+
+def test_132_the_recovery_action_earns_the_audit_token() -> None:
+    """The second rejected shape, verbatim: RECOVERY_REQUIRED maps to the token."""
+    damaged = _swap(
+        _REPORT,
+        "    If StrComp(package.NonceState, modSimNonce.SIM_NONCE_STATE_INDETERMINATE, _\n"
+        "               vbBinaryCompare) = 0 Then\n"
+        "        RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE\n",
+        "    If StrComp(package.NonceState, modSimNonce.SIM_NONCE_STATE_INDETERMINATE, _\n"
+        "               vbBinaryCompare) = 0 Then\n"
+        "        RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE\n"
+        "    ElseIf package.NonceRecoveryRequired Then\n"
+        "        RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE\n")
+    _control("test_44s", report=damaged)
+
+
+def test_133_a_prior_marker_refusal_manufactures_an_allocation_state() -> None:
+    """This run never began a transition, so it has nothing to be indeterminate about."""
+    damaged = _swap(
+        _NONCE,
+        "        recoveryRequired = True\n"
+        "        Exit Function\n"
+        "    End If\n\n"
+        "    If Not ReadPersistedNonce(counter, probe) Then\n",
+        "        recoveryRequired = True\n"
+        "        allocationState = SIM_NONCE_STATE_INDETERMINATE\n"
+        "        Exit Function\n"
+        "    End If\n\n"
+        "    If Not ReadPersistedNonce(counter, probe) Then\n")
+    _control("test_44s", nonce=damaged)
+
+
+def test_134_the_consumed_arm_sets_its_state_after_the_cleanup() -> None:
+    """Ordering it after the clear makes the fact contingent on cleanup succeeding."""
+    damaged = _swap(
+        _NONCE,
+        "    If stored = nonce + 1 Then\n"
+        "        allocationState = SIM_NONCE_STATE_CONSUMED\n",
+        "    If stored = nonce + 1 Then\n")
+    damaged = _swap(
+        damaged,
+        "        detail = \"simulation: \" & cause & \", but the advance is confirmed \" & _\n",
+        "        allocationState = SIM_NONCE_STATE_CONSUMED\n"
+        "        detail = \"simulation: \" & cause & \", but the advance is confirmed \" & _\n")
+    _control("test_44q3", nonce=damaged)
+
+
+def test_135_the_module_header_still_claims_the_attempt_row_authority() -> None:
+    """Prose that contradicts the executable authority teaches the rejected design."""
+    damaged = _swap(
+        _NONCE,
+        "' OR READS the Last Attempt block - modSimReport owns attempt-row persistence,\n",
+        "' the Last Attempt block - modSimReport owns attempt-row persistence. This\n"
+        "' module only READS the attempt rows it needs to reconcile a prior run.\n"
+        "' Unused tail:\n")
+    _control("test_44u", nonce=damaged)
 

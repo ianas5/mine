@@ -222,8 +222,12 @@ def test_07_the_module_owns_no_mathematics() -> None:
     )
     assert set(re.findall(r"modSimNonce\.(\w+)", code)) == {
         "SimNonceAllocate", "SIM_NONCE_STATE_CONSUMED", "SIM_NONCE_STATE_INDETERMINATE",
-        "SIM_NONCE_STATE_RECOVERY",
     }, sorted(set(re.findall(r"modSimNonce\.(\w+)", code)))
+    # THE RECOVERY TOKEN IS NOT REACHABLE FROM HERE AT ALL. It is an action, and
+    # no reporter expression may derive a physical fact from it.
+    assert "SIM_NONCE_STATE_RECOVERY" not in code, (
+        "the reporter reads the recovery action as if it were an allocation state"
+    )
     # NAME-BLINDNESS IS NOT ENOUGH: a statistic can be written without naming a
     # single banned identifier. Row and index arithmetic needs + and - only, so
     # a reporter that multiplies, divides or raises to a power is computing a
@@ -406,8 +410,9 @@ def test_19_the_auto_nonce_transaction_is_delegated_and_gates_sampling() -> None
     # SAMPLING IS GATED ON THE STRONG FACT, never on the diagnostic identity and
     # never on the call's own Boolean - which is True for a FIXED run that
     # consumed nothing at all.
-    assert "package.NonceConsumed = (StrComp(state, modSimNonce.SIM_NONCE_STATE_CONSUMED" \
-        in body
+    assert ("package.NonceConsumed = (StrComp(allocationState, _\n"
+            "                                     modSimNonce.SIM_NONCE_STATE_CONSUMED, _\n"
+            "                                     vbBinaryCompare) = 0)") in body
     assert "package.NonceConsumed = identityKnown" not in body, (
         "consumption is inferred from the diagnostic identity again"
     )
@@ -940,7 +945,7 @@ def test_44h2_allocation_and_consumption_are_different_facts() -> None:
     assert "If stored = nonce + 1 Then" in classify
     consumed = classify[classify.index("If stored = nonce + 1 Then"):]
     consumed = consumed[: consumed.index("If stored = nonce Then")]
-    assert "state = SIM_NONCE_STATE_CONSUMED" in consumed
+    assert "allocationState = SIM_NONCE_STATE_CONSUMED" in consumed
 
 
 def test_44h3_the_attempt_record_preserves_the_identity_by_state() -> None:
@@ -990,17 +995,17 @@ def test_44h4_the_three_observations_get_three_answers() -> None:
     assert plus < same
     assert "SIM_NONCE_STATE_CONSUMED" in classify
     assert "SIM_NONCE_STATE_PRE_ALLOCATION" in classify
-    assert "SIM_NONCE_STATE_RECOVERY" in classify
+    assert "SIM_NONCE_STATE_INDETERMINATE" in classify
     # THE PRE-ALLOCATION ARM PROMISES NOTHING IT CANNOT KEEP.
     pre = classify[classify.index("If stored = nonce Then"):]
-    pre = pre[: pre.index("state = SIM_NONCE_STATE_RECOVERY")]
+    pre = pre[: pre.index("allocationState = SIM_NONCE_STATE_INDETERMINATE")]
     assert "NOT consumed" in pre
     assert "may take it again" in pre
     assert "will not be reused" not in pre, (
         "the source promises non-reuse for a nonce it will legitimately reissue"
     )
     # NOTHING NORMALISES AN IMPOSSIBLE READING.
-    recovery = classify[classify.index("state = SIM_NONCE_STATE_RECOVERY"):]
+    recovery = classify[classify.index("allocationState = SIM_NONCE_STATE_INDETERMINATE"):]
     assert "recovery is" in recovery and "normalised" in recovery
     reconcile = _nonce("Reconcile")
     assert reconcile.count("ReadPersistedNonce(") == 1, "a retry loop"
@@ -1011,7 +1016,7 @@ def test_44h4_the_three_observations_get_three_answers() -> None:
     # THE IRREDUCIBLE CASE says both halves of what it cannot claim, and it
     # really does classify as indeterminate rather than as either known state.
     unknown = _nonce("Indeterminate")
-    assert "state = SIM_NONCE_STATE_INDETERMINATE" in unknown, (
+    assert "allocationState = SIM_NONCE_STATE_INDETERMINATE" in unknown, (
         "the irreducible case is classified as a state it cannot prove"
     )
     for known in ("SIM_NONCE_STATE_CONSUMED", "SIM_NONCE_STATE_PRE_ALLOCATION"):
@@ -1050,10 +1055,54 @@ def test_44h5_the_next_run_reconciles_on_the_sidecar_never_the_attempt_row() -> 
     # THE THREE RESOLUTIONS, AND RECOVERY FOR THE FOURTH.
     assert "If counter = pending + 1 Then" in body
     assert "ElseIf counter = pending Then" in body
-    assert "SIM_NONCE_STATE_RECOVERY" in body
+    # PRIOR-MARKER REFUSALS RAISE THE ACTION AND NOTHING ELSE. No allocation
+    # classification is produced here: this run has not selected an identity or
+    # touched the counter, so it has no transition to classify.
+    assert body.count("recoveryRequired = True") == 5, body
+    for physical in ("SIM_NONCE_STATE_CONSUMED", "SIM_NONCE_STATE_PRE_ALLOCATION",
+                     "SIM_NONCE_STATE_INDETERMINATE"):
+        assert physical not in body, physical
     # It is reached only in AUTO: the FIXED branch never calls it.
     fixed = _branch(_nonce("SimNonceAllocate"), "If hasSuppliedSeed Then")
     assert not any("ResolveNextNonce" in t for t in fixed)
+
+
+def test_44u_the_prose_names_the_authority_the_code_actually_uses() -> None:
+    """Documentation drift is a real defect, not a cosmetic one.
+
+    A module whose executable source reconciles against F21 while its header
+    still says it reads attempt rows teaches the rejected design to the next
+    reader, and the next reader is the one who has to decide whether a change
+    is safe. This checks the two against each other rather than checking that
+    a comment exists.
+    """
+    raw = _module(NONCE_BAS).raw
+    code = _nonce_code()
+    prose = raw.replace(code, "")
+    assert raw.count("'") > 100, "the raw text lost its comments"
+
+    # THE EXECUTABLE FACT: F21 is read, the attempt axis is not.
+    assert "SIM_PENDING_AUTO_NONCE_CELL" in code
+    for attempt_axis in ("SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT",
+                         "SIM_IDENTITY_ROW_LAST_ATTEMPT_AUTO_NONCE",
+                         "SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE"):
+        assert attempt_axis not in code, attempt_axis
+
+    # AND THE PROSE MUST NOT CONTRADICT IT. These are the exact claims the
+    # rejected Option-3R carrier made; none may stand once F21 is the authority.
+    for withdrawn in ("only READS the attempt rows",
+                      "READS the attempt rows",
+                      "carries the durable AUTO_NONCE_INDETERMINATE marker",
+                      "durable AUTO_NONCE_INDETERMINATE"):
+        assert withdrawn not in prose, withdrawn
+    # THE POSITIVE CLAIM IS PRESENT AND SPECIFIC.
+    assert "_SimData!F21" in prose
+    assert "not the attempt row" in prose.lower()
+    # THE SAME CHECK ON THE REPORTER, whose header describes the same protocol.
+    reporter = _module(REPORT_BAS).raw
+    reporter_prose = reporter.replace(_code(), "")
+    for withdrawn in ("ALLOCATED, not CONSUMED", "allocation certain"):
+        assert withdrawn not in reporter_prose, withdrawn
 
 
 def test_44t_the_sidecar_coordinate_has_exactly_one_authority() -> None:
@@ -1109,7 +1158,8 @@ def test_44l_the_effective_seed_survives_every_post_derivation_failure() -> None
     entry = _nonce("SimNonceAllocate")
     preamble = _until_first(entry, "On Error GoTo AllocationFailed")
     for out in ("effectiveSeed = 0", "autoNonce = 0", "identityKnown = False",
-                "state = SIM_NONCE_STATE_NOT_APPLICABLE"):
+                "allocationState = SIM_NONCE_STATE_NOT_APPLICABLE",
+                "recoveryRequired = False"):
         assert out in preamble, out
     # THE SEED IS NOT SUBSTITUTED, ZEROED, OR MADE CONDITIONAL ON CONSUMPTION.
     assert "package.EffectiveSeed = 0" not in body
@@ -1152,7 +1202,8 @@ def test_44m_the_after_nonce_failpoint_is_unreachable_in_fixed_mode() -> None:
     guard = _statements(entry)
     call = next(i for i, t in enumerate(guard) if "RunAllocationTransaction(" in t)
     assert guard[call].startswith("If Not RunAllocationTransaction("), guard[call]
-    assert "Exit Function" in guard[call], (
+    arm = _branch(entry, "If Not RunAllocationTransaction(")
+    assert any(t == "Exit Function" for t in arm), (
         "an unsuccessful transaction falls through to the failpoint and sampling"
     )
 
@@ -1240,13 +1291,12 @@ def test_44p_the_marker_is_cleared_only_on_a_definite_resolution() -> None:
     assert list(cell["retained_on"]) == [
         "counter_is_neither", "counter_unreadable", "observation_unavailable"]
 
-    # THE TWO DEFINITE ARMS CLEAR. Both in the immediate classification and in
-    # the next-run reconciliation.
+    # THE TWO DEFINITE ARMS CLEAR.
     classify = _nonce("Classify")
     consumed = classify[classify.index("If stored = nonce + 1 Then"):
                         classify.index("If stored = nonce Then")]
     pre = classify[classify.index("If stored = nonce Then"):
-                   classify.index("state = SIM_NONCE_STATE_RECOVERY")]
+                   classify.index("allocationState = SIM_NONCE_STATE_INDETERMINATE")]
     assert "ClearPending(" in consumed, consumed
     assert "ClearPending(" in pre, pre
     # THE IMPOSSIBLE ARM DOES NOT, AND SAYS SO.
@@ -1254,7 +1304,6 @@ def test_44p_the_marker_is_cleared_only_on_a_definite_resolution() -> None:
     tail = classify[definite:]
     closed = tail.index("\n    End If\n") + len("\n    End If\n")
     impossible = tail[closed:]
-    assert "state = SIM_NONCE_STATE_RECOVERY" in impossible, impossible
     assert "ClearPending" not in impossible, (
         "an impossible counter reading clears the marker that blocks reuse"
     )
@@ -1266,7 +1315,7 @@ def test_44p_the_marker_is_cleared_only_on_a_definite_resolution() -> None:
     resolve = _nonce("ResolveNextNonce")
     unreadable = _branch(resolve, "If Not ReadPersistedNonce(")
     assert not any("ClearPending" in t for t in unreadable), unreadable
-    assert any("SIM_NONCE_STATE_RECOVERY" in t for t in unreadable), unreadable
+    assert any(t == "recoveryRequired = True" for t in unreadable), unreadable
     assert any("is retained" in t for t in unreadable), unreadable
     assert any(t == "Exit Function" for t in unreadable), unreadable
     # THE NEXT-RUN ARMS AGREE WITH THE CONTRACT, ARM BY ARM.
@@ -1279,19 +1328,25 @@ def test_44p_the_marker_is_cleared_only_on_a_definite_resolution() -> None:
         assert any("ClearPending(" in t for t in arm), arm
 
 
-def test_44q_an_unresolved_cleanup_never_permits_sampling() -> None:
-    """Clearing is a real COM write, and a raised clear proves nothing.
+def test_44q_a_cleanup_failure_stops_the_run_without_revising_the_observation() -> None:
+    """The two axes, and the rule that keeps them apart.
 
-    Both physical outcomes are safe for the NEXT run - a surviving marker costs
-    one more reconciliation - but THIS run must not sample while its own
-    transaction cleanup is unresolved, and it must not tidy up by moving the
-    counter backwards.
+    Clearing is a real COM write and a raised clear proves nothing, so THIS run
+    must not sample while its own cleanup is unresolved. But by the time the
+    clear is attempted the counter has already been OBSERVED, and a failure to
+    clear a different cell cannot un-prove what that observation established.
+    A cleanup failure therefore raises the recovery ACTION and leaves the
+    physical classification exactly as it was found.
     """
     clear = _sim().raw["seeding"]["nonce_lifecycle"]["pending_clear"]
     assert clear["is_a_real_com_write"] is True
     assert clear["raised_clear_proves_marker_remains"] is False
     assert clear["unresolved_cleanup_permits_sampling"] is False
     assert clear["counter_rollback_on_clear_failure"] is False
+    action = _sim().raw["seeding"]["nonce_lifecycle"]["recovery_action"]
+    assert action["may_revise_allocation_state"] is False
+    assert action["allocation_state_when_raised_by_cleanup"] == "unchanged"
+    assert action["permits_sampling"] is False
 
     body = _statements(_nonce("ClearPending"))
     wrote = next(i for i, t in enumerate(body) if "PendingCell.ClearContents" in t)
@@ -1299,21 +1354,126 @@ def test_44q_an_unresolved_cleanup_never_permits_sampling() -> None:
     assert wrote < verified, body
     assert any(t.startswith("On Error GoTo ") and not t.endswith(" 0")
                for t in body[:wrote]), body
-    # NO ARM OF IT RETURNS TRUE WITHOUT A VERIFIED-EMPTY READ-BACK.
+    # NO ARM RETURNS TRUE WITHOUT A VERIFIED-EMPTY READ-BACK.
     trues = [i for i, t in enumerate(body) if t == "ClearPending = True"]
     assert len(trues) == 1 and trues[0] > verified, body
-    # AND A FAILED CLEAR STOPS THE RUN: the transaction guard leaves.
+
+    # THE RUN STOPS: the transaction guard leaves and never returns True.
     txn = _statements(_nonce("RunAllocationTransaction"))
     guard = next(t for t in txn if t.startswith("If Not ClearPending("))
     arm = _branch("\n".join(txn), guard)
     assert any(t == "Exit Function" for t in arm), arm
-    assert any("SIM_NONCE_STATE_RECOVERY" in t for t in arm), arm
     assert txn[-2] == "RunAllocationTransaction = True", txn[-3:]
+
+    # AND THE OBSERVATION SURVIVES. This is the whole control: every place a
+    # clear failure is handled raises the ACTION and assigns NO allocation
+    # state, so a proven CONSUMED stays CONSUMED and a proven PRE_ALLOCATION
+    # stays PRE_ALLOCATION.
+    assert arm == ["recoveryRequired = True", "Exit Function"], arm
+    for owner in ("RunAllocationTransaction", "Classify"):
+        for statement in _statements(_nonce(owner)):
+            assert not statement.startswith("allocationState = SIM_NONCE_STATE_") or \
+                "ClearPending" not in statement, statement
+    classify = _nonce("Classify")
+    for opener in ("If stored = nonce + 1 Then", "If stored = nonce Then"):
+        block = _branch(classify, opener)
+        assigned = [t for t in block if t.startswith("allocationState = ")]
+        assert len(assigned) == 1, (opener, assigned)
+        cleanup = _branch("\n".join(block), "If Not ClearPending(")
+        assert cleanup == ["recoveryRequired = True", "Exit Function"], (opener, cleanup)
     # NOTHING ROLLS THE COUNTER BACK TO TIDY UP.
     assert "ClearContents" not in _nonce("PersistAdvance")
     for statement in _statements(_nonce_code()):
         if "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" in statement and ".Value2 =" in statement:
             assert "nonce + 1" in statement, statement
+
+
+def test_44q2_the_recovery_action_is_not_an_allocation_state() -> None:
+    """Two axes, and no expression that mixes them.
+
+    `RECOVERY_REQUIRED` says the workbook must be reconciled before the next
+    AUTO allocation. It says nothing about what physically happened to this
+    attempt's counter, so it is not a member of `allocation_states` and no
+    physical fact may be derived from it. Carrying it in the same scalar as the
+    three classifications is what let a cleanup failure report a consumed nonce
+    as unconsumed.
+    """
+    lifecycle = _sim().raw["seeding"]["nonce_lifecycle"]
+    states = list(lifecycle["allocation_states"])
+    action = lifecycle["recovery_action"]
+    assert states == ["PRE_ALLOCATION", "CONSUMED", "PERSISTENCE_INDETERMINATE"]
+    assert action["token"] == "RECOVERY_REQUIRED"
+    assert action["token"] not in states, states
+    assert action["is_an_allocation_state"] is False
+    assert action["derives_physical_consumption"] is False
+    assert action["carried_separately_from_allocation_state"] is True
+
+    # THE INTERFACE CARRIES TWO SCALARS, and the recovery one is a Boolean, so
+    # it cannot be compared against an allocation state even by accident.
+    entry = _nonce("SimNonceAllocate")
+    assert "ByRef allocationState As String" in entry, entry
+    assert "ByRef recoveryRequired As Boolean" in entry, entry
+    assert "ByRef state As String" not in _nonce_code(), (
+        "the merged state parameter is back"
+    )
+    # NO CONSTANT NAMES THE ACTION ON THE ALLOCATION AXIS.
+    declared = set(re.findall(r"Public Const (SIM_NONCE_STATE_\w+)",
+                              _module(NONCE_BAS).raw))
+    assert declared == {"SIM_NONCE_STATE_NOT_APPLICABLE", "SIM_NONCE_STATE_PRE_ALLOCATION",
+                        "SIM_NONCE_STATE_CONSUMED", "SIM_NONCE_STATE_INDETERMINATE"}, \
+        sorted(declared)
+    assert "SIM_NONCE_STATE_RECOVERY" not in _module(NONCE_BAS).raw, (
+        "the recovery action is declared as an allocation state again"
+    )
+
+    # AND THE REPORTER DERIVES CONSUMPTION FROM THE ALLOCATION AXIS ALONE.
+    body = _procedure("AllocateAutoNonce")
+    consumed = next(t for t in _statements(body)
+                    if t.startswith("package.NonceConsumed ="))
+    assert "SIM_NONCE_STATE_CONSUMED" in consumed, consumed
+    assert "allocationState" in consumed, consumed
+    for forbidden in ("recoveryRequired", "identityKnown", "allocated",
+                      "SIM_NONCE_STATE_RECOVERY", "Or ", "And "):
+        assert forbidden not in consumed, (forbidden, consumed)
+    # THE TWO FACTS ARE STORED SEPARATELY, so neither can shadow the other.
+    assert "package.NonceRecoveryRequired = recoveryRequired" in body
+    assert "package.NonceState = allocationState" in body
+
+
+def test_44q3_a_known_consumption_survives_every_later_failure() -> None:
+    """The rule in one place: cleanup never erases an established fact.
+
+    Once the counter has been observed at m+1 the nonce IS consumed. The run
+    may still fail - and does - but `NonceConsumed` stays True through the
+    clear, through the attempt write, and through anything else that follows.
+    """
+    classify = _nonce("Classify")
+    consumed = _branch(classify, "If stored = nonce + 1 Then")
+    # THE STATE IS SET FIRST, BEFORE ANY CLEANUP CAN FAIL.
+    assigned = next(i for i, t in enumerate(consumed)
+                    if t == "allocationState = SIM_NONCE_STATE_CONSUMED")
+    cleanup = next(i for i, t in enumerate(consumed) if "ClearPending(" in t)
+    assert assigned < cleanup, consumed
+    # AND NOTHING AFTER IT REASSIGNS THE AXIS.
+    assert not any(t.startswith("allocationState = ") for t in consumed[assigned + 1:]), \
+        consumed
+    # THE SAME FOR THE OTHER DEFINITE OBSERVATION.
+    pre = _branch(classify, "If stored = nonce Then")
+    assigned = next(i for i, t in enumerate(pre)
+                    if t == "allocationState = SIM_NONCE_STATE_PRE_ALLOCATION")
+    cleanup = next(i for i, t in enumerate(pre) if "ClearPending(" in t)
+    assert assigned < cleanup, pre
+    assert not any(t.startswith("allocationState = ") for t in pre[assigned + 1:]), pre
+    # THE PUBLISHED RECORDS STILL REQUIRE THE STRONG STATE, so a consumed nonce
+    # on an unsuccessful run is recorded for audit and published by nobody.
+    for published in ("BuildSnapshotBlock", "BuildCommitBlock"):
+        assert "package.NonceConsumed" in _procedure(published), published
+    run = _procedure("RunSimulation")
+    allocate = run.index("If Not AllocateAutoNonce(package, detail) Then")
+    assert run.index("RunKernels") > allocate
+    arm = _branch(run, "If Not AllocateAutoNonce(package, detail) Then")
+    assert any("RecordRefusal" in t for t in arm), arm
+    assert any(t == "Exit Function" for t in arm), arm
 
 
 def test_44r_an_attempt_writer_failure_does_not_remove_the_recovery_authority() -> None:
@@ -1347,35 +1507,56 @@ def test_44r_an_attempt_writer_failure_does_not_remove_the_recovery_authority() 
         assert withdrawn not in _module(NONCE_BAS).code_without_string_removal, withdrawn
 
 
-def test_44s_the_fifth_token_is_audit_only_and_phase_5_stays_four_valued() -> None:
-    """It records what an attempt met; it does not lock anything.
+def test_44s_the_fifth_token_follows_the_allocation_axis_alone() -> None:
+    """It records one thing: THIS attempt's transition could not be classified.
 
-    Both unclassified outcomes earn it. Recording either as a plain `REFUSED`
-    would say the run declined to spend the nonce - the one claim this source
-    cannot make - and a later FIXED attempt may overwrite it freely, because
-    the durable authority is elsewhere.
+    Not "something needs reconciling". A recovery action layered on top of a
+    known CONSUMED or PRE_ALLOCATION observation must not turn that known
+    physical state into the indeterminate token, and a refusal taken while
+    reconciling a PRIOR marker never began a transition to be indeterminate
+    about. Both are ordinary unsuccessful attempts; F21 is what stops the next
+    AUTO run, not this string.
     """
     token = _sim().raw["seeding"]["nonce_lifecycle"]["attempt_result_token"]
     assert token["token"] == "AUTO_NONCE_INDETERMINATE"
     assert token["audit_only"] is True
     assert token["is_the_durable_recovery_authority"] is False
     assert token["may_be_overwritten_by_a_later_attempt"] is True
-    assert list(token["recorded_for"]) == [
-        "PERSISTENCE_INDETERMINATE", "RECOVERY_REQUIRED"]
+    assert list(token["recorded_for"]) == ["PERSISTENCE_INDETERMINATE"]
+    assert token["recorded_for_recovery_action"] is False
     assert token["other_unsuccessful_outcomes_record"] == "REFUSED"
 
     body = _procedure("RefusalResult")
-    # BOTH UNCLASSIFIED STATES EARN IT.
-    for state in ("SIM_NONCE_STATE_INDETERMINATE", "SIM_NONCE_STATE_RECOVERY"):
-        assert state in body, state
-        arm = _branch(body, next(t for t in _statements(body)
-                                 if state in t and t.endswith("Then")))
-        assert any("SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE" in t for t in arm), state
-    # AND ONLY THE REMAINDER FALLS THROUGH TO THE GENERIC RESULT.
     statements = _statements(body)
+    # EXACTLY ONE TEST, AGAINST EXACTLY ONE ALLOCATION STATE.
+    tests = [t for t in statements if "StrComp(" in t]
+    assert len(tests) == 1, tests
+    assert "SIM_NONCE_STATE_INDETERMINATE" in tests[0], tests[0]
+    assert body.count("SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE") == 1, body
+    # THE RECOVERY AXIS IS NOT CONSULTED HERE AT ALL.
+    for forbidden in ("NonceRecoveryRequired", "SIM_NONCE_STATE_RECOVERY",
+                      "RECOVERY_REQUIRED"):
+        assert forbidden not in body, forbidden
+    # AND EVERYTHING ELSE FALLS THROUGH TO THE GENERIC RESULT.
     assert statements[-4:] == ["Else", "RefusalResult = SIM_ATTEMPT_REFUSED",
                                "End If", "End Function"], statements[-5:]
-    assert body.count("SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE") == 2, body
+
+    # A PRIOR-MARKER REFUSAL LEAVES THE AXIS AT NOT_APPLICABLE, so it reaches
+    # `RefusalResult` as an ordinary REFUSED - proved structurally, not by
+    # reading the comment that says so.
+    resolve = _nonce("ResolveNextNonce")
+    assert not any(t.startswith("allocationState = ") for t in _statements(resolve)), (
+        "reconciling a prior marker manufactures an allocation classification"
+    )
+    entry = _statements(_nonce("SimNonceAllocate"))
+    default = next(i for i, t in enumerate(entry)
+                   if t == "allocationState = SIM_NONCE_STATE_NOT_APPLICABLE")
+    resolved = next(i for i, t in enumerate(entry) if "ResolveNextNonce(" in t)
+    selected = next(i for i, t in enumerate(entry)
+                    if t == "allocationState = SIM_NONCE_STATE_PRE_ALLOCATION")
+    assert default < resolved < selected, entry
+    assert entry[resolved].startswith("If Not ResolveNextNonce("), entry[resolved]
+    assert "Exit Function" in entry[resolved], entry[resolved]
 
     # PHASE 5 IS UNTOUCHED. Its attempt axis stays four-valued; the fifth token
     # is a Phase-6 addition and appears in neither the Phase-5 contract nor its
@@ -1389,7 +1570,7 @@ def test_44s_the_fifth_token_is_audit_only_and_phase_5_stays_four_valued() -> No
         "NONE", "SUCCESS", "REFUSED", "FAILED", "AUTO_NONCE_INDETERMINATE"]
     assert _sim().raw["sim_state"]["attempt_result_participates_in_derivation"] is False
     assert _sim().raw["sim_state"]["attempt_axis_is_orthogonal"] is True
-
+    assert token["phase5_axis_unchanged"] is True
 
 def test_44i_the_after_nonce_injection_returns_through_the_attempt_path() -> None:
     """The whole point: a raised injection becomes a recorded attempt."""

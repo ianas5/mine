@@ -939,8 +939,8 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'indeterminate_marker_storage_failure', 'initial', 'last_valid_allocation', 'meaning',
         'next_run_reconciliation', 'on_exhaustion', 'order', 'pending_clear',
         'prior_successful_publication_untouched', 'reuse_permitted', 'wrap_permitted',
-        'write_ahead_order', 'write_ahead_order_refinement_drops_prefix',
-        'write_ahead_order_refines'
+        'recovery_action', 'write_ahead_order',
+        'write_ahead_order_refinement_drops_prefix', 'write_ahead_order_refines'
     }),
     'seeding.nonce_lifecycle.fixed_mode': frozenset({
         'clears_pending_auto_nonce', 'executes_after_nonce_failpoint',
@@ -951,7 +951,14 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
     'seeding.nonce_lifecycle.attempt_result_token': frozenset({
         'audit_only', 'is_the_durable_recovery_authority',
         'may_be_overwritten_by_a_later_attempt', 'other_unsuccessful_outcomes_record',
-        'phase5_axis_unchanged', 'recorded_for', 'token'
+        'phase5_axis_unchanged', 'recorded_for', 'recorded_for_recovery_action', 'token'
+    }),
+    'seeding.nonce_lifecycle.recovery_action': frozenset({
+        'allocation_state_when_raised_before_identity_selection',
+        'allocation_state_when_raised_by_cleanup',
+        'carried_separately_from_allocation_state', 'derives_physical_consumption',
+        'is_an_allocation_state', 'may_revise_allocation_state', 'permits_sampling',
+        'raised_by', 'token'
     }),
     'seeding.nonce_lifecycle.pending_clear': frozenset({
         'counter_rollback_on_clear_failure', 'is_a_real_com_write',
@@ -1590,11 +1597,42 @@ def _validate_allocation_states(life: dict, where: str) -> None:
     _require_true(token, "audit_only", twhere)
     _require_false(token, "is_the_durable_recovery_authority", twhere)
     _require_true(token, "may_be_overwritten_by_a_later_attempt", twhere)
-    _exact_sequence(token.get("recorded_for"),
-                    ("PERSISTENCE_INDETERMINATE", "RECOVERY_REQUIRED"),
+    # ONE AXIS, ONE MEANING. The token names an unclassifiable transition of THIS
+    # attempt; a recovery action is a different question and earns no token.
+    _exact_sequence(token.get("recorded_for"), ("PERSISTENCE_INDETERMINATE",),
                     f"{twhere}: recorded_for")
+    _require_false(token, "recorded_for_recovery_action", twhere)
     _require_value(token, "other_unsuccessful_outcomes_record", "REFUSED", twhere)
     _require_true(token, "phase5_axis_unchanged", twhere)
+
+    # THE RECOVERY AXIS. An ACTION, never a physical classification - and never
+    # a member of allocation_states, which the check below enforces rather than
+    # asserts, so a future edit that adds it there is refused.
+    action = _map(life, "recovery_action", where)
+    awhere = f"{where}: recovery_action"
+    _require_value(action, "token", "RECOVERY_REQUIRED", awhere)
+    _require_false(action, "is_an_allocation_state", awhere)
+    _require_false(action, "derives_physical_consumption", awhere)
+    _require_false(action, "may_revise_allocation_state", awhere)
+    _require_true(action, "carried_separately_from_allocation_state", awhere)
+    _require_false(action, "permits_sampling", awhere)
+    if action.get("token") in tuple(life.get("allocation_states") or ()):
+        raise SimContractError(
+            f"{awhere}: {action.get('token')!r} appears in allocation_states. It is "
+            "an action, not a physical classification of a counter transition; "
+            "listing it there is what let a cleanup failure erase a proven "
+            "CONSUMED observation"
+        )
+    _exact_sequence(action.get("raised_by"),
+                    ("prior_pending_marker_unreadable", "prior_counter_unreadable",
+                     "prior_counter_is_neither_m_nor_m_plus_1",
+                     "prior_marker_clear_failed", "current_marker_clear_failed",
+                     "current_counter_is_neither_m_nor_m_plus_1"),
+                    f"{awhere}: raised_by")
+    _require_value(action, "allocation_state_when_raised_before_identity_selection",
+                   "NOT_APPLICABLE", awhere)
+    _require_value(action, "allocation_state_when_raised_by_cleanup", "unchanged",
+                   awhere)
 
     # A raised clear is not proof the marker survived, and no clear failure ever
     # rolls the counter back.

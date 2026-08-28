@@ -1186,10 +1186,23 @@ request invalid.
 > enumerated the axis as `NONE`, `SUCCESS`, `REFUSED`, `FAILED`. **The
 > orthogonality rule above is unchanged and remains correct; the membership is
 > not.** The Phase-6 axis additionally contains
-> **`AUTO_NONCE_INDETERMINATE`**, solely to carry a durable AUTO-nonce
-> persistence/recovery condition across invocations — see
-> `seeding.nonce_lifecycle.allocation_states` in `spec/sim_contract.yaml` and
-> `docs/phase6_step12_transaction_settlement.md`.
+> **`AUTO_NONCE_INDETERMINATE`**.
+>
+> **What that token means, corrected.** It is an **audit** result and nothing
+> more: *this attempt's AUTO counter transition could not be classified*, which
+> is exactly the `PERSISTENCE_INDETERMINATE` allocation state. It is **not** the
+> durable recovery authority, and it does **not** carry a condition across
+> invocations — an earlier draft of this paragraph said it did, and that was
+> superseded when the Option-3R carrier was rejected in static review. The
+> durable authority is the **`_SimData!F21` Pending AUTO Nonce** sidecar, which
+> survives every later attempt; this token may be overwritten by any subsequent
+> attempt, **including a FIXED one**, without weakening anything. Nor does a
+> recovery *action* earn the token: a run that refuses while reconciling a prior
+> marker, or one whose cleanup fails after a definite observation, records an
+> ordinary `REFUSED`. See `seeding.nonce_lifecycle.attempt_result_token`,
+> `seeding.nonce_lifecycle.recovery_action` and
+> `sim_data.pending_auto_nonce` in `spec/sim_contract.yaml`, and
+> `docs/phase6_step12_transaction_settlement.md` §9.
 >
 > The Phase-6 attempt-result axis is therefore a **strict superset** of the
 > Phase-5 calculation attempt-result axis, which remains exactly `NONE`,
@@ -1217,10 +1230,13 @@ against*.
 | success `A` → FAILED on `B`, rolled back; viewing `B` | **STALE** | `FAILED` |
 | success `A` → FAILED on `B`, rolled back; restored to `A` | **CURRENT** | `FAILED` |
 | current prerequisites invalid | **INVALID** | any |
-| no successful simulation, current request valid | **BLANK** | `NONE`/`REFUSED`/`FAILED` |
+| no successful simulation, current request valid | **BLANK** | `NONE`/`REFUSED`/`FAILED`/`AUTO_NONCE_INDETERMINATE` |
 | no successful simulation, current request invalid | **INVALID** | any |
 
-**There is still no fourth state.**
+**There is still no fourth state.** The fifth *attempt result* added in Step 12
+changes none of the rows above: it is one more unsuccessful attempt label on the
+orthogonal audit axis, and like `REFUSED` and `FAILED` it takes no part in the
+derivation. Only the last-column membership moved.
 
 ### 10.4 The Phase-5 analytical prerequisite — D6-14
 

@@ -291,9 +291,47 @@ seeding:
       audit_only: true
       is_the_durable_recovery_authority: false
       may_be_overwritten_by_a_later_attempt: true
-      recorded_for: ["PERSISTENCE_INDETERMINATE", "RECOVERY_REQUIRED"]
+      # TIED TO ONE AXIS. The token means exactly "this attempt's counter
+      # transition could not be classified", which is the
+      # PERSISTENCE_INDETERMINATE allocation state and nothing else. A recovery
+      # ACTION layered on top of a known CONSUMED or PRE_ALLOCATION observation
+      # must not turn that known physical state into the indeterminate token,
+      # and a refusal taken while reconciling a PRIOR marker - before this run
+      # selects an identity - never began a transition to be indeterminate about.
+      recorded_for: ["PERSISTENCE_INDETERMINATE"]
+      recorded_for_recovery_action: false
       other_unsuccessful_outcomes_record: "REFUSED"
       phase5_axis_unchanged: true
+
+    # ------------------------------------------------------------------
+    # THE RECOVERY AXIS, SEPARATE FROM THE ALLOCATION AXIS.
+    #
+    # RECOVERY_REQUIRED is an ACTION: the workbook must be reconciled before
+    # any further AUTO allocation. It is NOT a physical classification of a
+    # counter transition, so it is not a member of allocation_states and no
+    # physical fact may be derived from it.
+    #
+    # The rule that makes this load-bearing: a recovery or cleanup problem must
+    # never erase an allocation fact that was already established. If the
+    # counter was observed at m+1 the nonce IS consumed, and a later failure to
+    # clear the sidecar cannot un-prove that.
+    # ------------------------------------------------------------------
+    recovery_action:
+      token: "RECOVERY_REQUIRED"
+      is_an_allocation_state: false
+      derives_physical_consumption: false
+      may_revise_allocation_state: false
+      carried_separately_from_allocation_state: true
+      raised_by:
+        - "prior_pending_marker_unreadable"
+        - "prior_counter_unreadable"
+        - "prior_counter_is_neither_m_nor_m_plus_1"
+        - "prior_marker_clear_failed"
+        - "current_marker_clear_failed"
+        - "current_counter_is_neither_m_nor_m_plus_1"
+      allocation_state_when_raised_before_identity_selection: "NOT_APPLICABLE"
+      allocation_state_when_raised_by_cleanup: "unchanged"
+      permits_sampling: false
 
     # Clearing is a COM write like any other, so a raised clear is NOT proof the
     # marker survived. Both physical outcomes are safe for the NEXT run - a

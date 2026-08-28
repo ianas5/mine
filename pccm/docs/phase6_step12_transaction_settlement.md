@@ -550,8 +550,8 @@ did exactly what a module-size control is for: it exposed that one coherent
 responsibility should be separated. **Neither ceiling was raised.**
 
 ```
-modSimNonce   raw  455   code  288
-modSimReport  raw 1167   code  816
+modSimNonce   raw  552   code  321
+modSimReport  raw 1179   code  819
 ceilings      raw 1200   code  900
 ```
 
@@ -772,21 +772,74 @@ it before concluding anything from their absence.
 
 | Artefact | Before | After | Why |
 |---|---|---|---|
-| `spec/sim_contract.yaml` | `a1b6f35a45f5…` | `9d31ad7af70a…` | sidecar authority; `fixed_mode`, `attempt_result_token`, `pending_clear`, `write_ahead_order`; residual rewritten |
+| `spec/sim_contract.yaml` | `a1b6f35a45f5…` | `8997ec163722…` | sidecar authority; `fixed_mode`, `attempt_result_token`, `pending_clear`, `write_ahead_order`, `recovery_action`; residual rewritten |
 | `spec/structure_contract.yaml` | `68f135d35af4…` | `a5ef5d3e8cad…` | `modSimNonce`'s registered responsibility no longer names the rejected carrier |
-| `builder/pccm_builder/sim_loader.py` | *(§8)* | `82eb8c0eb06f…` | `_validate_pending_auto_nonce`; the new blocks **enforced**, not merely tolerated |
+| `builder/pccm_builder/sim_loader.py` | *(§8)* | `ef8cb9dbf070…` | `_validate_pending_auto_nonce`; the new blocks **enforced**, not merely tolerated |
 | `builder/pccm_builder/sim_emit.py` | *(§8)* | `11ee506b0bc3…` | emits `SIM_PENDING_AUTO_NONCE_CELL` |
 | `build/vba/modSimContract.bas` | `96e22c842c11…` | `daa4d27889c3…` | **one line added**, the sidecar constant |
 | `build/stage_b_manifest.json` | `58e0f1170d5a…` | `87d0d7bed10a…` | projects the corrected responsibility text |
-| `src/vba/modSimNonce.bas` | `a6806b05d24b…` | `8e0b7c732626…` | write-ahead transaction; attempt-row dependency removed |
-| `src/vba/modSimReport.bas` | `f57b6d06abbd…` | `f7c8d068a19a…` | unconditional out-parameter copy; `RefusalResult` covers both unclassified states; obsolete comment replaced |
+| `src/vba/modSimNonce.bas` | `a6806b05d24b…` | `6e0ed05c90c0…` | write-ahead transaction; attempt-row dependency removed; allocation and recovery axes split |
+| `src/vba/modSimReport.bas` | `f57b6d06abbd…` | `cfc8ed0a1299…` | unconditional out-parameter copy; `RefusalResult` covers both unclassified states; obsolete comment replaced |
 
 **Unchanged, and checked:** `build/phase6_cases.json` (`8019683a0490…`), every
 Phase-5 authority including `calc_contract.yaml` and `calc_loader.py`, and every
 other handwritten module. The generated module's movement was verified by
 rebuilding from `HEAD` and diffing: exactly one added line.
 
-### 9.8 One observation, not a change
+### 9.8 The allocation axis and the recovery axis are separate
+
+Static review found one more defect in §9 as first implemented, and it was mine
+by explicit choice: I carried `RECOVERY_REQUIRED` in the same scalar as the
+three allocation states, and documented the decision in a comment defending it.
+The comment was wrong. **A cleanup problem is not a persistence problem.**
+
+The failing path was concrete. `PersistAdvance` observes the counter at `m+1`
+and sets `CONSUMED` — the nonce *is* spent, and that is now a proven fact. The
+transaction then tries to clear F21 and cannot. The old code wrote
+`state = RECOVERY_REQUIRED`, and the reporter, deriving consumption by comparing
+that one string against `CONSUMED`, reported `NonceConsumed = False` for a nonce
+it had just proved consumed — and recorded `AUTO_NONCE_INDETERMINATE` for a
+transition it had already classified. Nothing about the counter had changed.
+
+There are now **two scalars**, and the boundary carries both:
+
+```
+allocationState  As String   PRE_ALLOCATION | CONSUMED | PERSISTENCE_INDETERMINATE
+                             (NOT_APPLICABLE in FIXED)
+recoveryRequired As Boolean  the ACTION: reconcile before the next AUTO allocation
+```
+
+The rule, stated once and controlled: **a recovery or cleanup problem must never
+erase an allocation fact that was already established.** By path:
+
+| Path | `allocationState` | `recoveryRequired` | Attempt result |
+|---|---|---|---|
+| counter observed `m+1`, clean | `CONSUMED` | false | `SUCCESS` |
+| counter observed `m+1`, clear fails | **`CONSUMED`** | true | `REFUSED` |
+| counter observed `m`, clear fails | **`PRE_ALLOCATION`** | true | `REFUSED` |
+| observation unavailable after the write | `PERSISTENCE_INDETERMINATE` | false | `AUTO_NONCE_INDETERMINATE` |
+| counter neither `m` nor `m+1` | `PERSISTENCE_INDETERMINATE` | true | `AUTO_NONCE_INDETERMINATE` |
+| prior marker unreconcilable, before identity selection | `NOT_APPLICABLE` | true | `REFUSED` |
+
+The last row is the other half of the correction. A run that refuses while
+reconciling a **prior** marker never began a transition of its own, so it has
+nothing to be indeterminate *about*; manufacturing the token there would
+broaden it past its accepted meaning. F21 — not the attempt string — is what
+blocks the next AUTO allocation in every one of these rows.
+
+`RECOVERY_REQUIRED` is therefore **not** a fourth allocation state, and the
+loader refuses a contract that lists it as one. `NonceConsumed` is derived from
+`allocationState` alone: not from `identityKnown`, not from the call's Boolean,
+and never from `recoveryRequired`.
+
+The suite had actively **pinned** the conflation — `test_44q` required a clear
+failure to produce `RECOVERY_REQUIRED`, and `test_44s` required
+`RECOVERY_REQUIRED` to earn the token. Both were rewritten rather than
+re-anchored; `test_44q2` and `test_44q3` were added for the axis separation and
+the survival rule, and `test_127`–`test_135` restore the rejected shapes and are
+required to fail.
+
+### 9.9 One observation, not a change
 
 `F21` sits on the row whose label at `B21` reads *"Next AUTO Nonce"*, and the
 note column `H21` is empty. On the sheet a pending marker will therefore appear

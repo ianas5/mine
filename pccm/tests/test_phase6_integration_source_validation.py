@@ -635,9 +635,9 @@ def test_50_the_injection_precedes_the_verified_persistence() -> None:
                     "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n", "")
     damaged = _swap(
         damaged,
-        "    If Not RunAllocationTransaction(autoNonce, state, detail) Then Exit Function\n",
+        "    If Not RunAllocationTransaction(autoNonce, allocationState, _\n",
         "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n"
-        "    If Not RunAllocationTransaction(autoNonce, state, detail) Then Exit Function\n")
+        "    If Not RunAllocationTransaction(autoNonce, allocationState, _\n")
     _control("test_29", vba={NONCE_BAS: damaged})
 
 
@@ -653,8 +653,14 @@ def test_51_the_seed_is_derived_after_the_advance_is_persisted() -> None:
         "")
     damaged = _swap(
         damaged,
-        "    If Not RunAllocationTransaction(autoNonce, state, detail) Then Exit Function\n",
-        "    If Not RunAllocationTransaction(autoNonce, state, detail) Then Exit Function\n"
+        "    If Not RunAllocationTransaction(autoNonce, allocationState, _\n"
+        "                                    recoveryRequired, detail) Then\n"
+        "        Exit Function\n"
+        "    End If\n",
+        "    If Not RunAllocationTransaction(autoNonce, allocationState, _\n"
+        "                                    recoveryRequired, detail) Then\n"
+        "        Exit Function\n"
+        "    End If\n"
         "    If Not modSimRng.SimRngAutoSeedFromNonce(autoNonce, seed, detail) Then\n"
         "        Exit Function\n"
         "    End If\n"
