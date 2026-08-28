@@ -635,9 +635,9 @@ def test_50_the_injection_precedes_the_verified_persistence() -> None:
                     "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n", "")
     damaged = _swap(
         damaged,
-        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n",
+        "    If Not RunAllocationTransaction(autoNonce, state, detail) Then Exit Function\n",
         "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n"
-        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n")
+        "    If Not RunAllocationTransaction(autoNonce, state, detail) Then Exit Function\n")
     _control("test_29", vba={NONCE_BAS: damaged})
 
 
@@ -645,18 +645,21 @@ def test_51_the_seed_is_derived_after_the_advance_is_persisted() -> None:
     """The contract's order is read < derive < persist, and it is load-bearing."""
     damaged = _swap(
         _NONCE,
-        "        If Not modSimRng.SimRngAutoSeedFromNonce(autoNonce, seed, detail) Then\n"
-        "            Exit Function\n"
-        "        End If\n"
-        "        effectiveSeed = seed\n"
-        "        identityKnown = True\n"
-        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n",
-        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n"
-        "        If Not modSimRng.SimRngAutoSeedFromNonce(autoNonce, seed, detail) Then\n"
-        "            Exit Function\n"
-        "        End If\n"
-        "        effectiveSeed = seed\n"
-        "        identityKnown = True\n")
+        "    If Not modSimRng.SimRngAutoSeedFromNonce(autoNonce, seed, detail) Then\n"
+        "        Exit Function\n"
+        "    End If\n"
+        "    effectiveSeed = seed\n"
+        "    identityKnown = True\n",
+        "")
+    damaged = _swap(
+        damaged,
+        "    If Not RunAllocationTransaction(autoNonce, state, detail) Then Exit Function\n",
+        "    If Not RunAllocationTransaction(autoNonce, state, detail) Then Exit Function\n"
+        "    If Not modSimRng.SimRngAutoSeedFromNonce(autoNonce, seed, detail) Then\n"
+        "        Exit Function\n"
+        "    End If\n"
+        "    effectiveSeed = seed\n"
+        "    identityKnown = True\n")
     _control("test_29", vba={NONCE_BAS: damaged})
 
 
@@ -672,11 +675,11 @@ def test_53_the_nonce_module_writes_the_attempt_row() -> None:
     """Attempt-row persistence has exactly one owner, and it is the reporter."""
     damaged = _swap(
         _NONCE,
-        "Private Function SharedText(ByVal row As Long) As String\n",
+        "Private Function SharedCell(ByVal row As Long) As Range\n",
         "Private Sub WriteAttemptBlock(ByVal result As String)\n"
         "    SharedCell(SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT).Value2 = result\n"
         "End Sub\n\n"
-        "Private Function SharedText(ByVal row As Long) As String\n")
+        "Private Function SharedCell(ByVal row As Long) As Range\n")
     _control("test_30", vba={NONCE_BAS: damaged})
 
 
