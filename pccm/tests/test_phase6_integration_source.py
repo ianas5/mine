@@ -78,7 +78,7 @@ FROZEN_SOURCE = {
     "modSimEngine": "f1283fe7d5d2ffcc5345dab9a00f68d3685b787563d104f50a886c5ed409abab",
     "modSimStats": "98bd21b227047d04e6847e554e027b339cf01dfb1112c1539a9e334966233be0",
     "modSimFingerprint": "9e6ad972fe59ead9e34c7d65b807dd0f2ca1cb1b29bfa71b377a4eb8f65cdfda",
-    "modSimReport": "a48bddffc5c512ed30a0ab78c2cd802fea57031bb1ebbf5b09f0fed1a394f60b",
+    "modSimReport": "0797e307a4a69c6847cb07415d01abf7bc584539a831ce6f124bb8e74d3af1f4",
     "modCalcFingerprint": "2efbb30c6f915c04b9c07adec07e25e11f4b5bd2b98e3efa818631dc510ce847",
     "modCalcReport": "8252b935b256b1abad9b26ca6b1d90c92c5e0d7566906308b191cd03dd6a71b3",
 }
@@ -589,14 +589,24 @@ def test_25_the_accepted_reporter_prefix_is_still_byte_identical() -> None:
 # ===========================================================================
 # The cross-module failure-path guarantee
 # ===========================================================================
-def test_28_no_transaction_stage_escapes_to_the_invocation_axis() -> None:
-    """After the AUTO nonce is spent, every failure owes an attempt record.
+def test_28_every_transaction_failure_is_routed_to_the_attempt_recorder() -> None:
+    """Every transaction-stage failure REACHES the attempt-recording path.
 
     The contract's `refusal_or_failure_after_auto_allocation` requires
     `attempt_metadata_updated: true`, and that is a statement about REAL COM
     failures, not only about a helper returning False. Each stage that touches
     the worksheet therefore carries its own scoped handler, and RunSimulation
     routes its False through RecordRefusal or RecordFailure.
+
+    WHAT THIS DOES **NOT** CLAIM. It says a failure is ROUTED to the attempt
+    writer. It does not say the attempt record can never fail to be STORED:
+    `WriteAttemptBlock` ends in a single unguarded COM write, and if that write
+    raises, the run leaves through the invocation axis with no attempt row. That
+    is a distinct storage failure of the audit writer, it is deliberately not
+    settled here - the contract requires no recovery state for it, and inventing
+    one would be scope creep - and it is enumerated for Gate B instead. The
+    distinction is the point: routing is what source can guarantee, storage is
+    not.
     """
     run = _procedure(REPORT, "RunSimulation")
     # Every staged call is tested, and every arm records something.
@@ -639,6 +649,16 @@ def test_28_no_transaction_stage_escapes_to_the_invocation_axis() -> None:
         armed = [m.start() for m in re.finditer(r"On Error GoTo (?!0\b)\w+", body)]
         assert armed, f"{name} fires a failpoint with no handler armed"
         assert min(armed) < body.index("FailPointCheck"), name
+
+    # THE LIMIT OF THE GUARANTEE, ASSERTED SO IT CANNOT DRIFT INTO A STRONGER
+    # CLAIM. The audit writer's own COM write is unguarded, by design.
+    attempt = _procedure(REPORT, "WriteAttemptBlock")
+    assert "SimSheet.Range(AttemptRange()).Value2 = block" in attempt
+    assert "On Error" not in attempt, (
+        "WriteAttemptBlock grew an error handler; either the storage-failure "
+        "case is now settled - in which case this guarantee must say so and be "
+        "tested - or a blanket suppressor was introduced"
+    )
     # AND NO PHASE-6 MODULE SUPPRESSES ERRORS WHOLESALE. (The Phase-4 modules
     # carry their own documented `On Error Resume Next` whitelist, policed by
     # test_phase4_stage_b_source.py; nothing here widens or narrows it.)
@@ -662,12 +682,23 @@ def test_29_the_publication_contract_is_implemented_where_it_is_stated() -> None
         if "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" in statement and "- 1" in statement:
             raise AssertionError(f"the consumed nonce is rolled back: {statement}")
     allocate = _procedure(REPORT, "AllocateAutoNonce")
-    write, verify, mark, injected = _order(
+    claimed, write, verify, mark, injected = _order(
+        "package.NonceAllocated = True",
         "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2",
         "ReadMachineLong", "package.NonceConsumed = True",
         "FailPointCheck FAILPOINT_SIM_AFTER_NONCE", body=allocate)
-    assert write < verify < mark < injected
+    assert claimed < write < verify < mark < injected
     assert "SimEngineRun" not in allocate, "sampling begins inside the allocation"
+    # `attempt_metadata_preserves` is about the ALLOCATED identity, so the
+    # attempt record is gated on the claim, never on verified consumption.
+    preserved = list(lifecycle["attempt_metadata_preserves"]) if (
+        lifecycle := _sim().raw["seeding"]["nonce_lifecycle"]) else []
+    assert preserved == ["consumed_auto_nonce", "effective_seed"], preserved
+    attempt = _procedure(REPORT, "WriteAttemptBlock")
+    assert "package.NonceAllocated" in attempt
+    assert "package.NonceConsumed" not in attempt, (
+        "a post-write verification failure blanks the preserved identity"
+    )
 
     inactive = semantics["inactive_bank_write_failure"]
     assert inactive["active_bank_changed"] is False

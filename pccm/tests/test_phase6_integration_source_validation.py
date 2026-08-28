@@ -661,3 +661,44 @@ def test_51_the_counter_is_rolled_back_after_an_allocation_failure() -> None:
         "    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce - 1\n"
         "    failure = Err.Description\n")
     _control("test_29", vba={REPORT_BAS: damaged})
+
+
+def test_52_the_attempt_record_loses_the_allocated_identity() -> None:
+    """THE THIRD FINDING, planted back as it shipped in e574fdb.
+
+    One Boolean, set only after verification, gating the attempt record - so a
+    post-write verification failure blanked the effective seed and the AUTO
+    nonce and an advanced counter looked like a skipped one.
+    """
+    damaged = _swap(_REPORT, "        package.NonceAllocated = True\n", "")
+    damaged = _swap(
+        damaged,
+        "        If package.HasSuppliedSeed Or package.NonceAllocated Then\n",
+        "        If package.HasSuppliedSeed Or package.NonceConsumed Then\n")
+    damaged = _swap(
+        damaged,
+        "    If package.NonceAllocated Then\n"
+        "        block(5, 1) = package.ConsumedNonce\n",
+        "    If package.NonceConsumed Then\n"
+        "        block(5, 1) = package.ConsumedNonce\n")
+    _control("test_29", vba={REPORT_BAS: damaged})
+
+
+def test_53_allocation_is_claimed_after_the_counter_write() -> None:
+    damaged = _swap(
+        _REPORT,
+        "        package.NonceAllocated = True\n"
+        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n",
+        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n"
+        "        package.NonceAllocated = True\n")
+    _control("test_29", vba={REPORT_BAS: damaged})
+
+
+def test_54_the_audit_writer_gains_a_blanket_suppressor() -> None:
+    """The routing guarantee must not be turned into a storage guarantee."""
+    damaged = _swap(
+        _REPORT,
+        "    SimSheet.Range(AttemptRange()).Value2 = block\n",
+        "    On Error Resume Next\n"
+        "    SimSheet.Range(AttemptRange()).Value2 = block\n")
+    _control("test_28", vba={REPORT_BAS: damaged})

@@ -223,7 +223,7 @@ def test_10_the_nonce_is_rolled_back_after_a_later_failure() -> None:
 def test_11_the_failed_attempt_audit_loses_the_consumed_nonce() -> None:
     damaged = _swap(
         _REPORT,
-        "    If package.NonceConsumed Then\n"
+        "    If package.NonceAllocated Then\n"
         "        block(5, 1) = package.ConsumedNonce\n"
         "    Else\n"
         "        block(5, 1) = vbNullString\n"
@@ -724,11 +724,7 @@ def test_59_the_candidate_handler_erases_the_partial_bank() -> None:
 
 def test_60_the_candidate_failpoint_moves_back_before_publication() -> None:
     damaged = _swap(
-        _REPORT,
-        "    ' THE CANDIDATE BANK IS NOW WRITTEN AND NOT YET VERIFIED. This is the\n"
-        "    ' runtime boundary Gate B needs: the inactive bank holds candidate data, the\n"
-        "    ' active bank has not moved, and the run must still end as FAILED.\n"
-        "    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK\n\n", "")
+        _REPORT, "    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK\n", "")
     damaged = _swap(
         damaged,
         "    package.TargetBank = InactiveBank(package.ActiveBank)\n",
@@ -842,16 +838,18 @@ def test_70_the_capture_has_no_handler_of_its_own() -> None:
 
 
 def test_71_a_failed_capture_writes_an_unset_block_over_the_publication() -> None:
-    damaged = _swap(
-        _REPORT,
-        "CaptureFailed:\n"
-        "    ' NO CANDIDATE WRITE WAS ATTEMPTED, and there is no captured block, so the\n"
-        "    ' restore path is NOT entered - entering it would write an unset Variant\n"
-        "    ' over a publication this run never touched.\n"
-        "    failure = Err.Description\n",
-        "CaptureFailed:\n"
-        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous\n"
-        "    failure = Err.Description\n")
+    # Anchored on the handler LABEL, so only the capture path is damaged: the
+    # same statement opens several handlers and a blanket replace would mutate
+    # all of them and prove less.
+    at = _REPORT.index("CaptureFailed:")
+    line = "    failure = Err.Description\n"
+    cut = _REPORT.index(line, at)
+    damaged = (_REPORT[:cut]
+               + "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous\n"
+               + _REPORT[cut:])
+    assert damaged != _REPORT
+    assert damaged.count("Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous") == \
+        _REPORT.count("Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous") + 1
     _control("test_44c", report=damaged)
 
 
@@ -1039,12 +1037,13 @@ def test_87_the_counter_is_rolled_back_on_failure() -> None:
 
 
 def test_88_the_handler_claims_the_sequence_can_be_reused() -> None:
+    """The raised-allocation detail collapses to one branch that says nothing."""
+    body = conformance._procedure("AllocateAutoNonce")
+    handler = body[body.index("AllocationFailed:"):]
+    branch = handler[handler.index("    If package.NonceAllocated Then"):]
+    branch = branch[: branch.index("    End If\n") + len("    End If\n")]
     damaged = _swap(
-        _REPORT,
-        '    detail = "simulation: seed allocation did not complete: " & failure & _\n'
-        '             ". No sampling was started. Any AUTO nonce advance that already " & _\n'
-        '             "persisted is deliberately NOT rolled back, so the sequence cannot " & _\n'
-        '             "be reused by a later run."\n',
+        _REPORT, branch,
         '    detail = "simulation: seed allocation did not complete: " & failure\n')
     _control("test_44h", report=damaged)
 
@@ -1075,3 +1074,148 @@ def test_90_sampling_begins_before_the_allocation_succeeds() -> None:
         "    ' 5-11.\n"
         "    If Not RunKernels(package, detail) Then\n")
     _control("test_44i", report=damaged)
+
+
+# ===========================================================================
+# M. THE AUTO-ALLOCATION AUDIT IDENTITY (Step-12 settlement, third finding)
+#
+# `NonceConsumed` alone conflated "the counter advance is verified" with "this
+# run has claimed a nonce". Every verification failure AFTER the counter write
+# therefore blanked the effective seed and the AUTO nonce on the attempt record,
+# leaving an advanced counter with no trace - the audit hole the retained
+# authority forbids.
+# ===========================================================================
+_ALLOCATED = "        package.NonceAllocated = True\n"
+
+
+def test_91_the_original_single_boolean_shape_is_rejected() -> None:
+    """THE DEFECT AS IT SHIPPED IN e574fdb, restored verbatim in behaviour.
+
+    One flag, set only after verification, and the attempt record gated on it.
+    """
+    damaged = _swap(_REPORT, _ALLOCATED, "")
+    damaged = _swap(
+        damaged,
+        "        If package.HasSuppliedSeed Or package.NonceAllocated Then\n",
+        "        If package.HasSuppliedSeed Or package.NonceConsumed Then\n")
+    damaged = _swap(
+        damaged,
+        "    If package.NonceAllocated Then\n"
+        "        block(5, 1) = package.ConsumedNonce\n",
+        "    If package.NonceConsumed Then\n"
+        "        block(5, 1) = package.ConsumedNonce\n")
+    _control("test_44h3", report=damaged)
+
+
+def test_92_the_allocation_is_claimed_only_after_the_write() -> None:
+    """A raised assignment then loses the identity it may already have spent."""
+    damaged = _swap(
+        _REPORT,
+        _ALLOCATED +
+        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n",
+        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n"
+        + _ALLOCATED)
+    _control("test_44h2", report=damaged)
+
+
+def test_93_the_allocation_is_claimed_only_on_the_success_path() -> None:
+    damaged = _swap(_REPORT, _ALLOCATED, "")
+    damaged = _swap(
+        damaged,
+        "        package.NonceConsumed = True\n",
+        "        package.NonceAllocated = True\n"
+        "        package.NonceConsumed = True\n")
+    _control("test_44h2", report=damaged)
+
+
+def test_94_the_effective_seed_is_blanked_on_a_post_write_failure() -> None:
+    damaged = _swap(
+        _REPORT,
+        "        If package.HasSuppliedSeed Or package.NonceAllocated Then\n",
+        "        If package.HasSuppliedSeed Or package.NonceConsumed Then\n")
+    _control("test_44h3", report=damaged)
+
+
+def test_95_the_auto_nonce_is_blanked_on_a_post_write_failure() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If package.NonceAllocated Then\n"
+        "        block(5, 1) = package.ConsumedNonce\n",
+        "    If package.NonceConsumed Then\n"
+        "        block(5, 1) = package.ConsumedNonce\n")
+    _control("test_44h3", report=damaged)
+
+
+def test_96_a_post_write_read_failure_claims_nothing_was_written() -> None:
+    body = conformance._procedure("AllocateAutoNonce")
+    start = body.index('            detail = "simulation: the AUTO nonce advance was written')
+    end = body.index("            Exit Function", start)
+    damaged = _swap(
+        _REPORT, body[start:end],
+        '            detail = "simulation: the AUTO nonce advance did not persist"\n')
+    _control("test_44h4", report=damaged)
+
+
+def test_97_a_mismatch_claims_nothing_was_written() -> None:
+    body = conformance._procedure("AllocateAutoNonce")
+    start = body.index('            detail = "simulation: the AUTO nonce advance did not read back')
+    end = body.index("            Exit Function", start)
+    damaged = _swap(
+        _REPORT, body[start:end],
+        '            detail = "simulation: the AUTO nonce advance did not persist"\n')
+    _control("test_44h4", report=damaged)
+
+
+def test_98_the_published_snapshot_claims_an_unverified_nonce() -> None:
+    """The opposite error: a PUBLISHED record may claim only proven consumption."""
+    damaged = _swap(
+        _REPORT,
+        "    If package.NonceConsumed Then\n"
+        "        built(8, 1) = package.ConsumedNonce\n",
+        "    If package.NonceAllocated Then\n"
+        "        built(8, 1) = package.ConsumedNonce\n")
+    _control("test_44h3", report=damaged)
+
+
+def test_99_the_commit_block_claims_an_unverified_nonce() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If package.NonceConsumed Then\n"
+        "        built(6, 1) = package.ConsumedNonce\n",
+        "    If package.NonceAllocated Then\n"
+        "        built(6, 1) = package.ConsumedNonce\n")
+    _control("test_44h3", report=damaged)
+
+
+def test_100_fixed_mode_writes_the_auto_counter() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If package.HasSuppliedSeed Then\n"
+        "        package.EffectiveSeed = package.SuppliedSeed\n",
+        "    If package.HasSuppliedSeed Then\n"
+        "        package.EffectiveSeed = package.SuppliedSeed\n"
+        "        package.NonceAllocated = True\n"
+        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = _\n"
+        "            package.ConsumedNonce + 1\n")
+    _control("test_44h2", report=damaged)
+
+
+def test_101_sampling_begins_despite_a_failed_verification() -> None:
+    damaged = _swap(
+        _REPORT,
+        "            Exit Function\n"
+        "        End If\n"
+        "        If stored <> package.ConsumedNonce + 1 Then\n",
+        "        End If\n"
+        "        If False Then\n")
+    _control("test_44h4", report=damaged)
+
+
+def test_102_the_audit_writer_grows_a_handler_without_settling_storage() -> None:
+    """If storage IS settled, the guarantee must say so - not quietly change."""
+    damaged = _swap(
+        _REPORT,
+        "    SimSheet.Range(AttemptRange()).Value2 = block\n",
+        "    On Error Resume Next\n"
+        "    SimSheet.Range(AttemptRange()).Value2 = block\n")
+    _control("test_44g", report=damaged)

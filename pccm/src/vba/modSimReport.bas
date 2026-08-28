@@ -79,6 +79,7 @@ Private Type SimRunPackage
     SuppliedSeed As Long
     EffectiveSeed As Long
     ConsumedNonce As Long
+    NonceAllocated As Boolean
     NonceConsumed As Boolean
 
     CandidateRunId As Long
@@ -233,12 +234,9 @@ Private Function RunSimulation(ByRef committed As Boolean) As OperationResult
 
     ' 4. AUTO only: derive, PERSIST and VERIFY the nonce before sampling. After
     '    this point the sequence is spent whatever happens.
-    '    The after-nonce failpoint is NOT here. FailPointCheck RAISES, so a
-    '    naked call at this point left the run through the invocation handler
-    '    with the nonce already spent and no attempt record - the same defect
-    '    the candidate and commit stages carried. It now fires inside
-    '    AllocateAutoNonce, after the advance has persisted and verified, and
-    '    comes back through this same False arm.
+    '    No failpoint is a naked statement here: FailPointCheck RAISES, and a
+    '    raise at this point would bypass the attempt axis. Each one fires
+    '    inside the scoped envelope of the stage it belongs to.
     If Not AllocateAutoNonce(package, detail) Then
         RunSimulation = RecordRefusal(package, detail)
         Exit Function
@@ -251,10 +249,6 @@ Private Function RunSimulation(ByRef committed As Boolean) As OperationResult
     End If
 
     ' 12-18. Stage the success, choose the INACTIVE bank, write it and verify it.
-    '        The candidate failpoint is NOT here: injecting before any candidate
-    '        write only proves that nothing was written. It lives inside
-    '        PublishCandidate, after the inactive bank has been written, so
-    '        Gate B can prove a partially written candidate has no standing.
     package.Stamp = Now
     package.TargetBank = InactiveBank(package.ActiveBank)
     If Not PublishCandidate(package, detail) Then
@@ -397,24 +391,14 @@ End Function
 
 Private Function AllocateAutoNonce(ByRef package As SimRunPackage, _
                                    ByRef detail As String) As Boolean
-    ' PERSIST BEFORE SAMPLING, AND VERIFY THE PERSISTENCE.
+    ' PERSIST BEFORE SAMPLING, AND VERIFY THE PERSISTENCE. A run that drew from
+    ' a sequence the workbook does not know it spent could be reproduced by a
+    ' later AUTO run, which is the one thing the nonce exists to prevent.
     '
-    ' If the advance cannot be written and read back, sampling must not begin:
-    ' a run that drew from a sequence the workbook does not know it spent could
-    ' be reproduced by a later AUTO run, which is the one thing the nonce exists
-    ' to prevent. After this returns True the nonce is spent, and no later
-    ' refusal, failure or restoration rolls it back.
-    ' THE COUNTER WRITE AND ITS VERIFICATION READ ARE COM CALLS, and COM calls
-    ' raise. Without the envelope below a raised write left the run through the
-    ' invocation handler with the advance possibly already landed and no attempt
-    ' record - against the accepted
-    ' `refusal_or_failure_after_auto_allocation.attempt_metadata_updated: true`.
-    ' The envelope converts it into a plain False, which RunSimulation already
-    ' routes to RecordRefusal.
-    '
-    ' THE COUNTER IS NEVER ROLLED BACK, on any path. A raised write may have
-    ' landed, and reusing the sequence would let a later AUTO run reproduce this
-    ' one - which is the single thing the nonce exists to prevent.
+    ' The counter write and its read-back are COM calls, and COM calls raise.
+    ' The envelope turns a raise into a plain False, which RunSimulation routes
+    ' to RecordRefusal, so the attempt axis is never bypassed. The counter is
+    ' NEVER rolled back, on any path: a raised write may have landed.
     Dim seed As Long, stored As Long, probe As String
     Dim failure As String
 
@@ -428,15 +412,30 @@ Private Function AllocateAutoNonce(ByRef package As SimRunPackage, _
         End If
         package.EffectiveSeed = seed
 
+        ' ALLOCATED, AND SAID SO BEFORE THE WRITE IS ATTEMPTED. From here the
+        ' nonce belongs to this run whatever happens next: a raised assignment,
+        ' a failed read-back and a mismatch all leave persistence unknown, and
+        ' the attempt must still carry the identity - otherwise an advanced
+        ' counter looks like an unexplained skipped nonce.
+        package.NonceAllocated = True
         SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1
+
+        ' CONSUMPTION IS THE STRONGER CLAIM, earned only by a verified
+        ' read-back. Sampling is gated on this, never on allocation.
         If Not ReadMachineLong(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE, _
                                CDbl(SIM_NONCE_FIRST_VALID), CDbl(SIM_NONCE_EXHAUSTED) + 1#, _
                                stored, probe) Then
-            detail = "simulation: the AUTO nonce advance could not be verified"
+            detail = "simulation: the AUTO nonce advance was written but could not be " & _
+                     "read back, so the persisted counter may or may not have advanced. " & _
+                     "Nonce " & CStr(package.ConsumedNonce) & " is recorded as allocated " & _
+                     "to this attempt; it is " & _
+                     "not rolled back and will not be reused."
             Exit Function
         End If
         If stored <> package.ConsumedNonce + 1 Then
-            detail = "simulation: the AUTO nonce advance did not persist"
+            detail = "simulation: the AUTO nonce advance did not read back as written. " & _
+                     "Nonce " & CStr(package.ConsumedNonce) & " is recorded as allocated " & _
+                     "to this attempt, is not rolled back and will not be reused."
             Exit Function
         End If
         package.NonceConsumed = True
@@ -457,10 +456,17 @@ Private Function AllocateAutoNonce(ByRef package As SimRunPackage, _
 AllocationFailed:
     failure = Err.Description
     On Error GoTo 0
-    detail = "simulation: seed allocation did not complete: " & failure & _
-             ". No sampling was started. Any AUTO nonce advance that already " & _
-             "persisted is deliberately NOT rolled back, so the sequence cannot " & _
-             "be reused by a later run."
+    If package.NonceAllocated Then
+        detail = "simulation: seed allocation did not complete: " & failure & _
+                 ". No sampling was started. Nonce " & CStr(package.ConsumedNonce) & _
+                 " was allocated to this attempt and is recorded on it. Whether the " & _
+                 "counter advance persisted is INDETERMINATE: a raised write is not " & _
+                 "proof that nothing was written. It is deliberately " & _
+                 "NOT rolled back and will not be reused."
+    Else
+        detail = "simulation: seed allocation did not complete: " & failure & _
+                 ". No sampling was started and no AUTO nonce was allocated."
+    End If
 End Function
 
 Private Function RunKernels(ByRef package As SimRunPackage, ByRef detail As String) As Boolean
@@ -605,22 +611,14 @@ Private Function PublishCandidate(ByRef package As SimRunPackage, _
                                   ByRef detail As String) As Boolean
     ' THE CANDIDATE TRANSACTION, INSIDE A SCOPED ERROR ENVELOPE.
     '
-    ' A Range assignment, a chunk write and a verification read are COM calls,
-    ' and COM calls raise. Without a handler here a raised write left the run
-    ' through PCCM_RunSimulation's invocation handler, which reports honestly
-    ' but writes NO attempt record - so an infrastructure failure after the AUTO
-    ' nonce was consumed left the attempt axis silent, against the accepted
-    ' `refusal_or_failure_after_auto_allocation.attempt_metadata_updated: true`.
+    ' Range assignments, chunk writes and verification reads are COM calls, and
+    ' COM calls raise. The envelope turns every such failure into a plain False,
+    ' so RunSimulation's `If Not PublishCandidate ... RecordFailure` path owns it
+    ' and the attempt block records FAILED with the seed evidence.
     '
-    ' The envelope converts every such failure into a plain False, so
-    ' RunSimulation's existing `If Not PublishCandidate ... RecordFailure` path
-    ' owns it and the attempt block records FAILED with the seed mode, the
-    ' effective seed and the consumed nonce.
-    '
-    ' NOTHING IS ROLLED BACK. The active bank is not touched, the run id is not
-    ' touched, and the half-written INACTIVE bank is left exactly as it is: it
-    ' has no semantic standing precisely because the selector still names the
-    ' other bank. Scoped, not `On Error Resume Next` - one handler, one exit.
+    ' NOTHING IS ROLLED BACK. The active bank and the run id are untouched, and
+    ' the half-written INACTIVE bank is left as it is: it has no semantic
+    ' standing precisely because the selector still names the other bank.
     Dim snapshot As Variant, summary As Variant, contingency As Variant
     Dim failure As String
 
@@ -635,9 +633,9 @@ Private Function PublishCandidate(ByRef package As SimRunPackage, _
     SimSheet.Range(ContingencyRange(package.TargetBank)).Value2 = contingency
     If Not WriteIterationBank(package, detail) Then Exit Function
 
-    ' THE CANDIDATE BANK IS NOW WRITTEN AND NOT YET VERIFIED. This is the
-    ' runtime boundary Gate B needs: the inactive bank holds candidate data, the
-    ' active bank has not moved, and the run must still end as FAILED.
+    ' WRITTEN, NOT YET VERIFIED - the boundary Gate B needs: the inactive bank
+    ' holds candidate data, the active bank has not moved, and the run must
+    ' still end as FAILED.
     modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK
 
     If Not VerifyCandidateBank(package, snapshot, summary, contingency, detail) Then
@@ -809,18 +807,12 @@ Private Function FinalCommit(ByRef package As SimRunPackage, ByRef detail As Str
     ' nine writes that could half-succeed and publish a bank with no run id, or
     ' a run id pointing at a bank that was never activated.
     '
-    ' THREE FAILURE CLASSES, AND ONLY ONE OF THEM SKIPS THE RESTORE:
-    '
-    '   A. the capture itself fails - nothing has been written, so there is
-    '      nothing to put back and no captured block to put back WITH.
-    '   B. anything after the assignment was attempted - a raised COM write, an
-    '      injected failpoint, a raised verification read, or a plain
-    '      verification mismatch. All four restore.
+    ' THREE FAILURE CLASSES, AND ONLY ONE SKIPS THE RESTORE:
+    '   A. the capture fails - nothing written, and no captured block to restore.
+    '   B. anything after the assignment was attempted - raised write, injected
+    '      failpoint, raised verification read, or mismatch. All four restore,
+    '      because an exception is not proof that Excel wrote nothing.
     '   C. the restore itself fails - said plainly, never glossed.
-    '
-    ' B IS THE ONE THAT MATTERS. The source must not assume "an exception means
-    ' Excel wrote nothing": a raised assignment leaves the range in an unknown
-    ' state, which is exactly why the prior block was captured first.
     Dim previous As Variant, block As Variant
     Dim cause As String, failure As String
 
@@ -849,9 +841,8 @@ CommitFailed:
     On Error GoTo 0
 
 RestorePrevious:
-    ' ONE WRITE BACK, THEN VERIFY IT. Put the captured block back, so the run id
-    ' and the published bank are exactly what they were, and the half-written
-    ' candidate bank stays unpublished with no semantic standing.
+    ' ONE WRITE BACK, THEN VERIFY IT: the run id and the published bank return
+    ' to exactly what they were, and the candidate stays unpublished.
     On Error GoTo RestoreFailed
     SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous
     If SameBlock(SIM_FINAL_COMMIT_RANGE, previous, 9, 1) Then
@@ -876,9 +867,9 @@ RestoreFailed:
     Exit Function
 
 CaptureFailed:
-    ' NO CANDIDATE WRITE WAS ATTEMPTED, and there is no captured block, so the
-    ' restore path is NOT entered - entering it would write an unset Variant
-    ' over a publication this run never touched.
+    ' NO CANDIDATE WRITE WAS ATTEMPTED and there is no captured block, so the
+    ' restore is NOT entered: it would write an unset Variant over a live
+    ' publication.
     failure = Err.Description
     On Error GoTo 0
     detail = "simulation: the previous shared commit block could not be read, so " & _
@@ -933,7 +924,12 @@ Private Sub WriteAttemptBlock(ByRef package As SimRunPackage, ByVal result As St
     block(2, 1) = detail
     If Len(package.SeedMode) > 0 Then
         block(3, 1) = package.SeedMode
-        If package.HasSuppliedSeed Or package.NonceConsumed Then
+        ' ALLOCATED, not CONSUMED. A verification failure after the counter
+        ' write leaves consumption unproven but allocation certain, and
+        ' seeding.nonce_lifecycle.attempt_metadata_preserves requires the seed
+        ' and the nonce on exactly that attempt. A refusal BEFORE allocation
+        ' still blanks both - failure_before_allocation_consumes_nonce: false.
+        If package.HasSuppliedSeed Or package.NonceAllocated Then
             block(4, 1) = package.EffectiveSeed
         Else
             block(4, 1) = vbNullString
@@ -942,7 +938,7 @@ Private Sub WriteAttemptBlock(ByRef package As SimRunPackage, ByVal result As St
         block(3, 1) = vbNullString
         block(4, 1) = vbNullString
     End If
-    If package.NonceConsumed Then
+    If package.NonceAllocated Then
         block(5, 1) = package.ConsumedNonce
     Else
         block(5, 1) = vbNullString

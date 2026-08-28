@@ -791,9 +791,139 @@ def test_44h_the_nonce_allocation_has_a_scoped_error_envelope() -> None:
     assert "On Error GoTo 0" in handler
     assert "detail = " in handler
     assert "AllocateAutoNonce = True" not in handler, "a failed allocation reports success"
-    # AND IT SAYS WHAT IS TRUE: nothing sampled, and the counter is not undone.
+    # AND IT SAYS WHAT IS TRUE, IN TWO BRANCHES, because the two cases differ.
+    assert "If package.NonceAllocated Then" in handler, (
+        "the raised-allocation detail does not distinguish an allocated nonce "
+        "from one that was never claimed"
+    )
     assert "No sampling was started" in handler
-    assert "NOT rolled back" in handler
+    # An allocated nonce: identity named, persistence honestly indeterminate.
+    allocated = handler[handler.index("If package.NonceAllocated Then"):]
+    allocated = allocated[: allocated.index("    Else")]
+    assert "CStr(package.ConsumedNonce)" in allocated, "the nonce is not named"
+    assert "INDETERMINATE" in allocated, (
+        "a raised write is reported as though Excel provably wrote nothing"
+    )
+    assert "NOT rolled back" in allocated
+    assert "will not be reused" in allocated
+    # No allocation: nothing was claimed, and it says exactly that.
+    unallocated = handler[handler.index("    Else"):]
+    assert "no AUTO nonce was allocated" in unallocated
+    assert "INDETERMINATE" not in unallocated, (
+        "a refusal before allocation is reported as indeterminate"
+    )
+
+
+def test_44h2_allocation_and_consumption_are_different_facts() -> None:
+    """`NonceAllocated` is claimed before the write; `NonceConsumed` is earned.
+
+    The single Boolean the first round shipped conflated them, so every
+    verification failure after a completed counter write blanked the effective
+    seed and the AUTO nonce on the attempt record - an advanced counter with no
+    trace, which is the audit hole the retained authority forbids.
+    """
+    types = _module().raw[_module().raw.index("Private Type SimRunPackage"):]
+    types = types[: types.index("End Type")]
+    assert "NonceAllocated As Boolean" in types
+    assert "NonceConsumed As Boolean" in types
+
+    body = _procedure("AllocateAutoNonce")
+    allocated, write, verify, match, consumed = _order_of(
+        "package.NonceAllocated = True",
+        "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2",
+        "ReadMachineLong",
+        "If stored <> package.ConsumedNonce + 1 Then",
+        "package.NonceConsumed = True", body=body)
+    # ALLOCATION IS CLAIMED BEFORE THE WRITE IS ATTEMPTED. A raised assignment
+    # must not be able to leave the run with the nonce unrecorded.
+    assert allocated < write, (
+        "the nonce is claimed only after the write, so a raised assignment "
+        "loses the identity it may already have spent"
+    )
+    # CONSUMPTION IS EARNED, after the read-back verified AND matched.
+    assert write < verify < match < consumed
+    # FIXED MODE NEVER TOUCHES THE COUNTER OR CLAIMS A NONCE.
+    fixed = body[body.index("If package.HasSuppliedSeed Then"):]
+    fixed = fixed[: fixed.index("    Else")]
+    assert "NonceAllocated" not in fixed and "NonceConsumed" not in fixed, fixed
+    assert "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" not in fixed, fixed
+
+
+def test_44h3_the_attempt_record_preserves_the_allocated_identity() -> None:
+    """Mapped to `seeding.nonce_lifecycle.attempt_metadata_preserves`."""
+    lifecycle = _sim().raw["seeding"]["nonce_lifecycle"]
+    assert lifecycle["failure_before_allocation_consumes_nonce"] is False
+    assert lifecycle["failure_after_allocation_consumes_nonce"] is True
+    assert lifecycle["reuse_permitted"] is False
+    preserved = list(lifecycle["attempt_metadata_preserves"])
+    assert preserved == ["consumed_auto_nonce", "effective_seed"], preserved
+
+    body = _procedure("WriteAttemptBlock")
+    # THE CLAUSE, FIELD BY FIELD. Each preserved field is gated on ALLOCATION.
+    assert "If package.HasSuppliedSeed Or package.NonceAllocated Then" in body, (
+        "the effective seed is gated on verified consumption, so a "
+        "post-write verification failure blanks it"
+    )
+    assert ("If package.NonceAllocated Then\n"
+            "        block(5, 1) = package.ConsumedNonce") in body, (
+        "the AUTO nonce is gated on verified consumption, so a "
+        "post-write verification failure blanks it"
+    )
+    assert "package.NonceConsumed" not in body, (
+        "the attempt record still reads the verified-consumption flag"
+    )
+    # AND A REFUSAL BEFORE ALLOCATION STILL BLANKS BOTH.
+    assert body.count("vbNullString") >= 3, body
+
+    # THE PUBLISHED RECORDS ARE THE OPPOSITE WAY ROUND: a snapshot or a commit
+    # may claim a nonce only once consumption is PROVEN.
+    for published in ("BuildSnapshotBlock", "BuildCommitBlock"):
+        text = _procedure(published)
+        assert "package.NonceConsumed" in text, published
+        assert "NonceAllocated" not in text, (
+            f"{published} publishes a nonce whose persistence was never verified"
+        )
+
+
+def test_44h4_every_post_write_failure_keeps_the_identity() -> None:
+    """The three paths the review named, each modelled from the real branches."""
+    body = _procedure("AllocateAutoNonce")
+    allocated_at = body.index("package.NonceAllocated = True")
+    consumed_at = body.index("package.NonceConsumed = True")
+    # Each early exit between the two lives in the window where allocation is
+    # true and consumption is not - which is exactly the audit case.
+    window = body[allocated_at:consumed_at]
+    exits = [line.strip() for line in window.splitlines() if "Exit Function" in line]
+    assert len(exits) == 2, (
+        f"expected the read-failure and mismatch exits between allocation and "
+        f"consumption, found {exits}"
+    )
+    # Neither of them may claim the advance definitely did not happen.
+    for banned in ("did not persist", "was not written", "no nonce was consumed"):
+        assert banned not in window, (
+            f"a post-write failure claims more than it can prove: {banned!r}"
+        )
+    # Both name the nonce and refuse reuse.
+    assert window.count("CStr(package.ConsumedNonce)") == 2, window
+    assert window.count("will not be reused") == 2, window
+    assert window.count("not rolled back") + window.count("not be rolled back") == 2, window
+
+    # MODELLED: the attempt fields on each path, from the real gating text.
+    attempt = _procedure("WriteAttemptBlock")
+    seed_gate = "If package.HasSuppliedSeed Or package.NonceAllocated Then" in attempt
+    nonce_gate = "If package.NonceAllocated Then" in attempt
+
+    def fields(has_supplied: bool, allocated: bool) -> tuple[bool, bool]:
+        seed = (has_supplied or allocated) if seed_gate else False
+        nonce = allocated if nonce_gate else False
+        return seed, nonce
+
+    # AUTO, write completed, verification failed by raise / False / mismatch.
+    assert fields(False, True) == (True, True), "the failed allocation is invisible"
+    # AUTO, refused before allocation.
+    assert fields(False, False) == (False, False), "a nonce is claimed that was never taken"
+    # FIXED: the supplied seed is recorded, no nonce.
+    assert fields(True, False) == (True, False)
 
 
 def test_44i_the_after_nonce_injection_returns_through_the_attempt_path() -> None:

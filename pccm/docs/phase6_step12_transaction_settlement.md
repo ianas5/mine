@@ -352,3 +352,134 @@ fires inside the scoped envelope of the transaction it belongs to:
 first round   de6827dfa2d6d8d20d68fdd2c03a99a103c52bb2a2f1dcfddccee564bae30e1f
 this round    a48bddffc5c512ed30a0ab78c2cd802fea57031bb1ebbf5b09f0fed1a394f60b
 ```
+
+
+---
+
+## 7. Third round: a post-write verification failure lost the allocated identity
+
+Independent review of `e574fdb` found that the after-nonce **injection** was
+settled but the ordinary AUTO **verification-failure** paths were not.
+
+### 7.1 The defect
+
+One Boolean, `NonceConsumed`, was doing two jobs: gating sampling *and* gating
+the audit identity on the attempt record. It was set only after a verified
+read-back, so all three post-write failure paths —
+
+| Path | What happened |
+|---|---|
+| A | counter assignment returned, verification read **raised** |
+| B | counter assignment returned, `ReadMachineLong` returned **False** |
+| C | read-back succeeded but **mismatched** |
+
+— exited with `NonceConsumed` still `False`. `WriteAttemptBlock` then wrote
+**blank** for both `Last Attempt Effective Seed` and `Last Attempt AUTO Nonce`,
+while the persisted counter may already have advanced. That is the audit hole
+the retained authority names in as many words: *"otherwise a consumed nonce
+would leave no trace and the sequence would appear to skip."*
+
+It contradicts `seeding.nonce_lifecycle`:
+
+```yaml
+failure_after_allocation_consumes_nonce: true
+attempt_metadata_preserves: ["consumed_auto_nonce", "effective_seed"]
+```
+
+### 7.2 Why the detector pinned it
+
+`test_44` required `write < verify < mark < injection`, which is correct for the
+*injected* case — but it made "every verification failure happens before the
+mark" a proved property, and nothing then said what the attempt record contained
+on those paths. `test_44i` only proved `WriteAttemptBlock` **mentions**
+`EffectiveSeed` and `ConsumedNonce`, never that the Boolean gates populate them.
+Integration `test_29` checked the publication clause and the absence of
+rollback, but never mapped `attempt_metadata_preserves` to the post-write path.
+Presence, not path semantics — a literal detector gap, and mine.
+
+### 7.3 The settlement: two facts, two fields
+
+`ALLOCATION` and `CONSUMPTION` are different claims and now have different
+fields:
+
+| Field | Meaning | Set |
+|---|---|---|
+| `NonceAllocated` | this run has **claimed** the nonce | immediately **before** the counter write is attempted |
+| `NonceConsumed` | the advance **verifiably persisted** | only after the read-back succeeded **and** matched |
+
+- **Sampling** is gated on `NonceConsumed` — unchanged. Nothing samples on an
+  unverified advance.
+- **The attempt record** is gated on `NonceAllocated`, which is what
+  `attempt_metadata_preserves` is about. A refusal *before* allocation still
+  blanks both, satisfying `failure_before_allocation_consumes_nonce: false`.
+- **Published records** (`BuildSnapshotBlock`, `BuildCommitBlock`) keep
+  `NonceConsumed`: a published bank may claim only a **proven** consumed nonce.
+  A control refuses each of them being switched to the weaker flag.
+
+### 7.4 The ambiguous raised write, stated honestly
+
+The handler no longer says one thing while implying another. It branches:
+
+```
+allocated    -> names the nonce, says persistence is INDETERMINATE
+                ("a raised write is not proof that nothing was written"),
+                NOT rolled back, will not be reused
+not allocated-> "no AUTO nonce was allocated"
+```
+
+And the two verification-failure details no longer say the advance *"did not
+persist"* — they say it was written and could not be read back, or did not read
+back as written, and that the nonce is recorded as allocated. Controls
+(`test_96`, `test_97`) refuse a regression to the stronger claim.
+
+**No contract contradiction was found.** `NonceAllocated` is a run-local field,
+not a new persistent recovery state: the contract's
+`failure_after_allocation_consumes_nonce: true` plus `reuse_permitted: false`
+already require exactly the conservative treatment implemented here, and
+`attempt_metadata_preserves` already requires the identity on the attempt. No
+spec change was needed or made.
+
+### 7.5 The routing guarantee, made precise
+
+Integration `test_28` is renamed
+`test_28_every_transaction_failure_is_routed_to_the_attempt_recorder` and now
+states its own limit: it proves failures **reach** the attempt writer, and
+explicitly **does not** claim the attempt row can never fail to be **stored**.
+`WriteAttemptBlock` ends in a single unguarded COM write; if that raises, the run
+leaves through the invocation axis with no attempt row. That is a distinct
+storage failure of the audit writer, the contract requires no recovery state for
+it, and settling it would be scope creep — so it is enumerated for Gate B
+instead, and an assertion refuses a handler appearing there silently.
+
+### 7.6 New coverage
+
+`test_44h2` (two facts, two fields, FIXED touches neither), `test_44h3` (the
+contract clause mapped field by field, in both directions), `test_44h4` (the two
+post-write exits live in the allocated-but-unconsumed window, name the nonce,
+refuse reuse, and claim nothing stronger), plus 12 controls `test_91`–`test_102`
+and 3 integration controls `test_52`–`test_54`. `test_91` and `test_52` restore
+the `e574fdb` single-Boolean shape verbatim and require refusal.
+
+```
+second round  a48bddffc5c512ed30a0ab78c2cd802fea57031bb1ebbf5b09f0fed1a394f60b
+this round    0797e307a4a69c6847cb07415d01abf7bc584539a831ce6f124bb8e74d3af1f4
+```
+
+### 7.7 A size limit met rather than raised
+
+Three rounds of settlement commentary pushed `modSimReport.bas` to 1232 raw
+lines, over the 1200-line raw ceiling in
+`test_phase4_stage_b_source.py::test_05`. Its **code** count was 854 against a
+900 limit — the overage was documentation, not sprawl.
+
+The limit was **not** raised. That file is outside this round's authorised
+boundary, and raising a ceiling to fit one's own code is how a control stops
+being one. Instead the prose was compressed where three rounds had said the same
+thing three times — the historical narration each block carried is what this
+document is for — with every operative rule, every string literal and every
+asserted phrase preserved. Result: **1190 raw, 854 code**, 10 lines of headroom.
+
+Worth flagging for the record: that raw ceiling was calibrated to the
+then-largest module rather than derived from a principle, and three modules now
+sit within 15 lines of it. Whether it should be re-derived is a decision for
+review, not something to settle inside a failure-path correction.
