@@ -2245,10 +2245,22 @@ exact-type contract.
 
 **Supported captured types are now exactly:** an empty cell (`$null`),
 `System.String`, `System.Double`, `System.Boolean`. `Double` is matched by exact
-type name — `-is [double]` would be true for a boxed `Int32` under PowerShell's
-numeric conversions. Everything else reaches the throw, **before any
-assignment**, naming the real CLR type. The harness does not get to decide that
-some other numeric type "is really" a Double.
+type name. Everything else reaches the throw, **before any assignment**, naming
+the real CLR type. The harness does not get to decide that some other numeric
+type "is really" a Double.
+
+> **Correction (review round 4A).** This paragraph previously said `-is [double]`
+> "would be true for a boxed `Int32` under PowerShell's numeric conversions".
+> **That is false and is withdrawn.** PowerShell's `-is` is a .NET instance
+> test — it asks whether the object *is* of that type and performs no numeric
+> conversion — so `1 -is [double]` is `$false`.
+>
+> The old setter normalised `Int32` for a different reason: it carried explicit
+> `-is [int]`, `-is [single]`, `-is [long]`, `-is [decimal]`, `-is [int16]` and
+> `-is [byte]` branches, and wrote **all** of them through `[double]$Value`. The
+> widening lived in that branch set and that cast. Exact-type matching remains
+> the right implementation — it removes a set of over-permissive branches, not a
+> misbehaving operator.
 
 **The comparator establishes exact CLR type identity first:**
 

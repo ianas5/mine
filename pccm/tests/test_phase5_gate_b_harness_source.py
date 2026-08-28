@@ -6211,8 +6211,20 @@ def test_148_the_setter_supports_only_the_approved_captured_types() -> None:
     assert setter.count("$cell.Value2") == 3, (
         "there is not exactly one COM assignment per supported type"
     )
-    # Double is matched by EXACT type name, not by `-is [double]`, which would
-    # be true for a boxed Int32 under PowerShell's numeric conversions.
+    # Double is matched by EXACT type name.
+    #
+    # REVIEW ROUND 4A CORRECTION. An earlier version of this comment claimed
+    # `-is [double]` "would be true for a boxed Int32 under PowerShell's numeric
+    # conversions". That is FALSE and the rationale is withdrawn. `-is` is a
+    # .NET instance test: it asks whether the object IS of that type and does no
+    # numeric conversion, so `1 -is [double]` is $false.
+    #
+    # The real defect in the old setter was different: it carried explicit
+    # `-is [int]`, `-is [single]`, `-is [long]` (and more) branches and wrote
+    # every one of them through `[double]$Value`. The NORMALISATION was in those
+    # branches and that cast, not in the `-is [double]` test. Exact-type
+    # matching is still the right implementation - it just fixes a widened
+    # branch set, not a lying operator.
     assert "$Value.GetType().FullName -ceq 'System.Double'" in setter, (
         "the numeric branch matches by convertibility rather than by exact type"
     )
@@ -6602,11 +6614,26 @@ def test_155a_the_old_early_ledger_ordering_is_refused_by_the_detector() -> None
 
 # --- negative controls -----------------------------------------------------
 def test_nc_98_a_normalising_numeric_branch_is_caught() -> None:
+    """The old widened design, restored exactly.
+
+    WHY THIS MUTATION NORMALISES. Not because `Int32 -is [double]` is true - it
+    is not; `-is` is a .NET instance test that performs no numeric conversion.
+    It normalises because the branch explicitly ALSO accepts `-is [int]`, and
+    then writes whatever it accepted through `[double]$Value`. The widening is
+    in the accepted set and the cast, which is precisely what the exact-type
+    gate removes.
+    """
     planted = _synthetic(
         "        } elseif (($Value -is [double]) -or ($Value -is [int])) {\n"
         "            $cell.Value2 = [double]$Value\n"
     )
-    assert "-is [int]" in planted, "the widened branch must be visible"
+    assert "-is [int]" in planted, (
+        "the widened branch must be visible: it is the `-is [int]` arm, not the "
+        "`-is [double]` arm, that lets an Int32 through"
+    )
+    assert "$cell.Value2 = [double]$Value" in planted, (
+        "the cast that performs the normalisation must be visible too"
+    )
     assert "GetType().FullName -ceq 'System.Double'" not in planted
     # And the old comparator could not see the result.
     assert float(1) == float(1.0), (
@@ -10566,3 +10593,116 @@ def test_nc_112_the_stale_lifecycle_inventory_wording_is_caught() -> None:
     )
     _assert_no_fixed_inventory(_active_block(planted_doc, "### Lifecycle"),
                                "the slice under planted history")
+
+
+# ===========================================================================
+# REVIEW ROUND 4A - THE WITHDRAWN `-is [double]` RATIONALE
+# ===========================================================================
+def test_the_is_double_rationale_is_withdrawn_not_merely_edited_away() -> None:
+    """A false rationale is a defect even when the implementation is right.
+
+    The exact-type setter is correct and stays. What was wrong was the reason
+    given for it: that `-is [double]` "would be true for a boxed Int32 under
+    PowerShell's numeric conversions". That claim is FALSE and is withdrawn.
+    `-is` is a .NET instance test - it asks
+    whether the object IS of that type and performs no numeric conversion - so
+    `1 -is [double]` is $false. The old setter normalised Int32 through its
+    explicit `-is [int]` branch and the `[double]$Value` cast, not through the
+    `-is [double]` test.
+
+    This control requires the claim to appear ONLY inside an explicit
+    withdrawal, never as a live rationale, in both the test file and the
+    active record.
+    """
+    # ASSEMBLED FROM PARTS so this control's own source does not contain the
+    # literal it hunts for - otherwise it would only ever be finding itself.
+    false_claim = "would be true " + "for a boxed"
+    for path in (Path(__file__), HARNESS_RECORD):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        hits = [i for i, line in enumerate(lines) if false_claim in line]
+        assert hits, (
+            f"{path.name} no longer mentions the withdrawn rationale at all; "
+            "this control can no longer prove it was retracted rather than "
+            "quietly deleted"
+        )
+        for index in hits:
+            # Every surviving occurrence must sit inside a retraction: the
+            # withdrawal words appear within a few lines either side.
+            window = "\n".join(lines[max(0, index - 8): index + 9]).lower()
+            assert "withdrawn" in window and "false" in window, (
+                f"{path.name}:{index + 1} states the `-is [double]` rationale "
+                "without withdrawing it"
+            )
+
+    # THE ACCURATE ACCOUNT IS PRESENT, and names the real cause.
+    #
+    # WHITESPACE IS NORMALISED FIRST. Markdown wraps prose and prefixes block
+    # quotes with `> `, so a phrase that reads as one sentence is not one
+    # contiguous string in the file. Searching the raw text for it would fail
+    # on formatting and pass on nothing.
+    record = HARNESS_RECORD.read_text(encoding="utf-8")
+    flat = " ".join(record.replace("\n> ", " ").replace("\n", " ").split())
+    assert "performs no numeric conversion" in flat
+    assert "`1 -is [double]` is `$false`" in flat
+    for real_cause in ("-is [int]", "[double]$Value"):
+        assert real_cause in flat, real_cause
+    # And the correction really is attached to the setter paragraph, not filed
+    # somewhere unrelated.
+    assert "Correction (review round 4A)" in flat
+
+    # AND THE IMPLEMENTATION IS UNTOUCHED BY THE CORRECTION: exactly the four
+    # approved captured types, matched by exact CLR type name.
+    setter = _typed_setter()
+    assert "$Value.GetType().FullName -ceq 'System.Double'" in setter
+    assert "if ($null -eq $Value) {" in setter
+    assert "$cell.Value2 = [string]$Value" in setter
+    assert "$cell.Value2 = [bool]$Value" in setter
+    assert "$cell.Value2 = [double]$Value" in setter
+    assert setter.count("$cell.Value2") == 3
+    for retired in ("$Value -is [single]", "$Value -is [int]", "$Value -is [long]",
+                    "$Value -is [decimal]", "$Value -is [int16]", "$Value -is [byte]",
+                    "$Value -is [datetime]"):
+        assert retired not in setter, f"{retired} is back"
+
+
+def test_the_ledger_verdict_has_exactly_one_owner_and_one_invocation() -> None:
+    """REVIEW ROUND 4A §6. P5-LDG bypasses the guarded reporter by design.
+
+    Because it is emitted through `Add-Result` rather than `Add-Phase5Result`,
+    the ledger cannot suppress the result that reports ON the ledger. The price
+    of that exemption is that nothing else guards it, so the exclusivity has to
+    be structural: one owning procedure, one driver call, and no second emitter
+    anywhere in the scenario source.
+    """
+    source = _executable(SCENARIOS)
+    harness = _executable(HARNESS)
+
+    # ONE OWNING PROCEDURE.
+    assert source.count("function Add-Phase5LedgerIntegrityResult") == 1
+    integrity = _procedure(source, "Add-Phase5LedgerIntegrityResult")
+
+    # AND NO EMITTER OUTSIDE IT. The two occurrences inside are the PASS and
+    # FAIL arms of the one verdict, which is why this counts rather than
+    # asserting presence.
+    inside = integrity.count("Add-Result 'P5-LDG'")
+    assert inside == 2, (inside, "the verdict no longer has exactly a PASS and a FAIL arm")
+    assert source.count("Add-Result 'P5-LDG'") == inside, (
+        "P5-LDG is emitted from somewhere other than its owning procedure"
+    )
+    assert "Add-Result 'P5-LDG'" not in harness, (
+        "the driver emits the verdict directly, bypassing the emitted-once flag"
+    )
+
+    # ONE DRIVER INVOCATION.
+    assert harness.count("Add-Phase5LedgerIntegrityResult") == 1
+
+    # DELIBERATELY OUTSIDE THE GUARDED REPORTER, and still emitted once.
+    assert "Add-Phase5Result 'P5-LDG'" not in source, (
+        "the verdict was routed through the ledger it reports on"
+    )
+    assert "if ($script:Phase5LedgerReported) { return }" in integrity
+    assert integrity.index("if ($script:Phase5LedgerReported) { return }") < \
+        integrity.index("Add-Result 'P5-LDG'"), (
+        "the emitted-once flag is checked after the verdict is already emitted"
+    )
+
