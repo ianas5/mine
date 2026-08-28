@@ -588,6 +588,16 @@ no retry loop, ever:
 The `PRE_ALLOCATION` arm deliberately does **not** say *"will not be reused"* —
 a control refuses that phrase there, because `m` will legitimately be reissued.
 
+> **Superseded in part by §9.8.** The *Classification* column above reads as one
+> axis, and that is no longer how the source models it. `RECOVERY_REQUIRED` is
+> an **action**, not an allocation classification, so the `neither` row is two
+> facts: `allocationState = PERSISTENCE_INDETERMINATE` **and**
+> `recoveryRequired = True`. The `unobtainable` row's *"durable marker written"*
+> is also loose — the F21 marker was established **before** the counter write
+> and is **retained** here, not written now. The observation table itself
+> (`m+1` / `m` / neither / unobtainable) stands unchanged; only the single-axis
+> presentation is withdrawn. **§9.8 is the authority.**
+
 ### 8.6 Next-run reconciliation
 
 **Superseded by §9.** The carrier described here — `Last Attempt Result =
@@ -734,12 +744,29 @@ unresolved, and nothing rolls the counter back to tidy up.
 ### 9.4 What the fifth token now means
 
 `AUTO_NONCE_INDETERMINATE` remains, as an **audit** result only: *this attempt
-met an AUTO nonce persistence outcome it could not classify.* Both unclassified
-states earn it — `PERSISTENCE_INDETERMINATE` and `RECOVERY_REQUIRED` — because
-recording either as a plain `REFUSED` would say the run *declined* to spend the
-nonce, which is exactly the claim this source cannot make. A later attempt,
+met an AUTO nonce persistence outcome it could not classify.* A later attempt,
 FIXED included, may overwrite it freely. Phase 5's attempt axis stays four-valued
 and neither `calc_contract.yaml` nor `calc_loader.py` names the token.
+
+**THE RULE, SETTLED.** The token is emitted **only** when THIS attempt's
+`allocationState` is `PERSISTENCE_INDETERMINATE`.
+
+* `RECOVERY_REQUIRED` is a separate **action** and does not by itself earn it.
+* A known `CONSUMED` or `PRE_ALLOCATION` observation plus `recoveryRequired`
+  records **`REFUSED`** — the observation stands, and one result string cannot
+  hold both physical classifications anyway.
+* A prior-marker recovery refusal, taken before this run selects an identity,
+  records **`REFUSED`**.
+* **F21, not the attempt token, is the durable cross-invocation recovery
+  authority.**
+
+> **Superseded (this section, first draft).** This paragraph originally said
+> *"Both unclassified states earn it — `PERSISTENCE_INDETERMINATE` and
+> `RECOVERY_REQUIRED`"*. **That is the rejected conflated design and is
+> withdrawn.** It treated a recovery action as though it were an allocation
+> classification, which is precisely what let a cleanup failure overwrite a
+> proven `CONSUMED` observation. §9.8 states the two-axis rule that governs, and
+> the table there is the authority.
 
 ### 9.5 The three source defects fixed alongside
 
@@ -849,3 +876,66 @@ addressed by a generated constant, never by its label — but a reader inspectin
 change the emitted layout, which this authorisation did not ask for, so it is
 reported rather than done.
 
+
+## 10. Fifth round: the active wording, closed
+
+The two-axis model of §9.8 was accepted as **functionally** settled. Three
+comment blocks in `modSimReport.bas` and one paragraph of §9.4 still taught the
+design it replaced, and nothing in the suite could refuse them. Prose that
+contradicts the executable authority is a live defect: the next reader deciding
+whether a change is safe reads the comment, not the transaction.
+
+**No executable statement moved in this round.** `modSimReport.bas` holds 728
+logical statements before and after, in the same order, hashing identically
+(`4a28c1d6af3368e9b0f0`); only comment lines changed.
+
+### 10.1 The three source statements
+
+| Where | Said | Now says |
+|---|---|---|
+| module header | the module owns *"the AUTO nonce lifecycle"* | it explicitly **does not** — the transaction, the write-ahead marker and the durable recovery protocol belong to `modSimNonce`, driven through a narrow scalar interface |
+| `RecordRefusal` | *"an unresolved AUTO advance is its own durable result"*, and the token is what *"the NEXT run reads"* | the result is an **audit classification for this attempt only**; the next run does not read it; F21 with the counter is the durable recovery authority |
+| `WriteAttemptBlock` | whether the nonce was consumed *"is carried by the attempt result"* | consumption is the `allocationState` fact projected as `NonceConsumed`; the fifth token identifies `PERSISTENCE_INDETERMINATE` and nothing else |
+
+### 10.2 The document
+
+§9.4's rule is restated as the single-axis rule the source implements, and the
+withdrawn sentence is **quoted and withdrawn** rather than deleted — the history
+of a defect is part of the record, but it may not stand as though it were still
+the rule. §8.5's classification table gains the same note: its observation rows
+stand, its single-axis presentation does not, and §9.8 governs.
+
+### 10.3 Detectors
+
+`test_44u` was extended past the nonce module onto the reporter. It extracts
+comment prose as the difference between the raw text and the comment-blanked
+code, flattens it — VBA wraps a sentence across `' ` lines, so a phrase check on
+raw text would miss half of them — and holds it to six **affirmative** rejected
+phrasings and two proximity pairs. Affirmative is deliberate: the accepted prose
+*denies* each claim, so *"it is not the recovery lock"* cannot match *"is the
+recovery lock"*, and a paraphrase that still teaches the rejected design is
+caught where a full-sentence literal would not be.
+
+`test_44v` is new, and it is the first detector to read this document at all.
+That is the gap that let §9.4 contradict §9.8 indefinitely. It judges active
+prose and blockquoted record by different standards: a claim outside a `>` block
+is one the document still makes, a claim inside one has been withdrawn. It
+requires the exclusivity rule keyed on `allocationState`, refuses the conflated
+phrasings, requires every surviving active mention of `RECOVERY_REQUIRED` to
+disclaim itself as an allocation classification, and requires the withdrawal to
+be on the record rather than silently deleted.
+
+Four mutation controls restore the withdrawn wording — three in the reporter,
+one in this document. Each is refused by **exactly one** detector, the named one:
+three by `test_44u`, the document by `test_44v`. All four are byte-faithful
+restorations of the text the battery passed over at `d36d5d4`.
+
+### 10.4 Hashes
+
+| File | Was | Now | Cause |
+|---|---|---|---|
+| `src/vba/modSimReport.bas` | `cfc8ed0a…dfc60e` | `49b7602a…4d2b06` | comment blocks only; 1179 → 1197 lines, 728 logical statements unchanged |
+
+The `modSimReport` pin in `tests/test_phase6_integration_source.py` moves with
+it. That is the whole of the change outside the four files this round names, and
+it is mechanical: a comment-only edit moves a byte hash.

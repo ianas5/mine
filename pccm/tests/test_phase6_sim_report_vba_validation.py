@@ -30,6 +30,7 @@ _REPORT = conformance.REPORT_BAS.read_text(encoding="utf-8")
 _NONCE = conformance.NONCE_BAS.read_text(encoding="utf-8")
 _CALC = conformance.CALC_REPORT_BAS.read_text(encoding="utf-8")
 _STRUCTURE = (conformance.SPEC / "structure_contract.yaml").read_text(encoding="utf-8")
+_DOC = conformance.SETTLEMENT_MD.read_text(encoding="utf-8")
 
 
 def _conformance_tests() -> list[str]:
@@ -49,11 +50,21 @@ def _run_battery() -> list[str]:
 
 
 def _install(report: str | None = None, calc: str | None = None,
-             structure: str | None = None, nonce: str | None = None):
+             structure: str | None = None, nonce: str | None = None,
+             doc: str | None = None):
     saved = (conformance.REPORT_BAS, conformance.CALC_REPORT_BAS, conformance.SPEC,
-             dict(conformance._CACHE), conformance.NONCE_BAS)
+             dict(conformance._CACHE), conformance.NONCE_BAS,
+             conformance.SETTLEMENT_MD)
     conformance._CACHE.clear()
     temp = Path(tempfile.mkdtemp(prefix="pccm-step11-mutation-"))
+    if doc is not None:
+        # The settlement document is an authority like any other here: a stale
+        # normative sentence in it teaches the rejected design, so a control has
+        # to be able to damage it and require a named refusal.
+        assert doc != _DOC, "the mutation changed nothing"
+        target = temp / conformance.SETTLEMENT_MD.name
+        target.write_text(doc, encoding="utf-8")
+        conformance.SETTLEMENT_MD = target
     if nonce is not None:
         assert nonce != _NONCE, "the mutation changed nothing"
         target = temp / "modSimNonce.bas"
@@ -81,6 +92,7 @@ def _install(report: str | None = None, calc: str | None = None,
         conformance.CALC_REPORT_BAS = saved[1]
         conformance.SPEC = saved[2]
         conformance.NONCE_BAS = saved[4]
+        conformance.SETTLEMENT_MD = saved[5]
         conformance._CACHE.clear()
         conformance._CACHE.update(saved[3])
 
@@ -88,8 +100,9 @@ def _install(report: str | None = None, calc: str | None = None,
 
 
 def _control(expected: str, report: str | None = None, calc: str | None = None,
-             structure: str | None = None, nonce: str | None = None) -> None:
-    restore = _install(report, calc, structure, nonce)
+             structure: str | None = None, nonce: str | None = None,
+             doc: str | None = None) -> None:
+    restore = _install(report, calc, structure, nonce, doc)
     try:
         refused = _run_battery()
     finally:
@@ -1652,3 +1665,116 @@ def test_135_the_module_header_still_claims_the_attempt_row_authority() -> None:
         "' Unused tail:\n")
     _control("test_44u", nonce=damaged)
 
+
+# ===========================================================================
+# N. The active wording of the settled two-axis model
+#
+# Every mutation below restores prose this round withdrew. None of them touch a
+# single executable statement, and that is the point: the reporter reconciles
+# against F21 and the allocation axis whatever its comments say, so only a
+# wording detector can refuse them. Until this round three of the four survived
+# the whole battery.
+# ===========================================================================
+def test_136_the_reporter_header_reclaims_the_nonce_lifecycle() -> None:
+    """The transaction, the marker and the recovery protocol belong to modSimNonce."""
+    damaged = _swap(
+        _REPORT,
+        "' control reads, the order in which the accepted pure kernels are called,\n"
+        "' dual-bank publication into `_SimData`, and the attempt and status bookkeeping.\n"
+        "'\n"
+        "' IT DOES NOT OWN THE AUTO NONCE LIFECYCLE. That belongs to modSimNonce - the\n"
+        "' transaction, the write-ahead marker and the durable recovery protocol - and\n"
+        "' this module drives it through a narrow scalar interface, never reaching into\n"
+        "' the counter or the Pending AUTO Nonce sidecar itself.\n",
+        "' control reads, the AUTO nonce lifecycle, the order in which the accepted pure\n"
+        "' kernels are called, dual-bank publication into `_SimData`, and the attempt and\n"
+        "' status bookkeeping.\n")
+    _control("test_44u", report=damaged)
+
+
+def test_137_the_refusal_comment_makes_the_token_durable_again() -> None:
+    """The attempt result is an audit classification; F21 is the recovery authority."""
+    damaged = _swap(
+        _REPORT,
+        "    ' AN AUDIT CLASSIFICATION FOR THIS ATTEMPT ONLY. `RefusalResult` records\n"
+        "    ' what this invocation met; it is not durable recovery authority and the\n"
+        "    ' next run does not read it.\n"
+        "    '\n"
+        "    '   PERSISTENCE_INDETERMINATE  earns AUTO_NONCE_INDETERMINATE\n"
+        "    '   every other unsuccessful allocation or recovery outcome  earns REFUSED\n"
+        "    '\n"
+        "    ' F21 - the Pending AUTO Nonce sidecar - is the durable recovery authority,\n"
+        "    ' and it, with the counter, is what makes the next AUTO run reconcile.\n",
+        "    ' AN UNRESOLVED AUTO ADVANCE IS ITS OWN DURABLE RESULT. Whether the nonce\n"
+        "    ' was consumed is unknown, so recording a plain REFUSED would say the run\n"
+        "    ' declined to spend it - a claim this source cannot make. The token is what\n"
+        "    ' the NEXT run reads to know it must reconcile before allocating, and it is\n"
+        "    ' machine state, never prose in the detail cell.\n")
+    _control("test_44u", report=damaged)
+
+
+def test_138_the_attempt_writer_claims_to_carry_consumption() -> None:
+    """One result string cannot hold CONSUMED and PRE_ALLOCATION apart."""
+    damaged = _swap(
+        _REPORT,
+        "        ' says only that this attempt SELECTED that identity; it is never\n"
+        "        ' inferred from the presence of a seed, and the attempt result does not\n"
+        "        ' carry it either. A cleanup failure records REFUSED whether the\n"
+        "        ' observation was CONSUMED or PRE_ALLOCATION, so one result string\n"
+        "        ' cannot hold that distinction.\n"
+        "        '\n"
+        "        ' WHERE EACH FACT ACTUALLY LIVES. Physical consumption for THIS\n"
+        "        ' invocation is the allocationState fact, projected as NonceConsumed and\n"
+        "        ' required by the published records. The fifth attempt-result token\n"
+        "        ' identifies PERSISTENCE_INDETERMINATE and nothing else. Durable\n"
+        "        ' cross-invocation recovery is governed by F21 and the counter, never by\n"
+        "        ' the Last Attempt Result.\n"
+        "        '\n",
+        "        ' says only that this attempt SELECTED that identity; whether the nonce\n"
+        "        ' was consumed is carried by the attempt result and by the pending\n"
+        "        ' sidecar, never inferred from the presence of a seed.\n")
+    _control("test_44u", report=damaged)
+
+
+def test_139_the_settlement_document_restores_the_conflated_rule() -> None:
+    """The document is an authority, and this is the sentence 9.8 rejected.
+
+    A FAITHFUL restoration, not an insertion: the settled rule and its
+    withdrawal note are removed and the wording that stood at the parent commit
+    is put back, so this is exactly the text the battery passed over before this
+    round. Deliberately routed at the ACTIVE-DOCUMENT detector rather than at
+    test_44u, because the source controls cannot reach a markdown file and
+    without one the document could drift back indefinitely.
+    """
+    damaged = _swap(
+        _DOC,
+        "met an AUTO nonce persistence outcome it could not classify.* A later attempt,\n"
+        "FIXED included, may overwrite it freely. Phase 5's attempt axis stays four-valued\n"
+        "and neither `calc_contract.yaml` nor `calc_loader.py` names the token.\n"
+        "\n"
+        "**THE RULE, SETTLED.** The token is emitted **only** when THIS attempt's\n"
+        "`allocationState` is `PERSISTENCE_INDETERMINATE`.\n"
+        "\n"
+        "* `RECOVERY_REQUIRED` is a separate **action** and does not by itself earn it.\n"
+        "* A known `CONSUMED` or `PRE_ALLOCATION` observation plus `recoveryRequired`\n"
+        "  records **`REFUSED`** \u2014 the observation stands, and one result string cannot\n"
+        "  hold both physical classifications anyway.\n"
+        "* A prior-marker recovery refusal, taken before this run selects an identity,\n"
+        "  records **`REFUSED`**.\n"
+        "* **F21, not the attempt token, is the durable cross-invocation recovery\n"
+        "  authority.**\n"
+        "\n"
+        "> **Superseded (this section, first draft).** This paragraph originally said\n"
+        "> *\"Both unclassified states earn it \u2014 `PERSISTENCE_INDETERMINATE` and\n"
+        "> `RECOVERY_REQUIRED`\"*. **That is the rejected conflated design and is\n"
+        "> withdrawn.** It treated a recovery action as though it were an allocation\n"
+        "> classification, which is precisely what let a cleanup failure overwrite a\n"
+        "> proven `CONSUMED` observation. \u00a79.8 states the two-axis rule that governs, and\n"
+        "> the table there is the authority.\n",
+        "met an AUTO nonce persistence outcome it could not classify.* Both unclassified\n"
+        "states earn it \u2014 `PERSISTENCE_INDETERMINATE` and `RECOVERY_REQUIRED` \u2014 because\n"
+        "recording either as a plain `REFUSED` would say the run *declined* to spend the\n"
+        "nonce, which is exactly the claim this source cannot make. A later attempt,\n"
+        "FIXED included, may overwrite it freely. Phase 5's attempt axis stays four-valued\n"
+        "and neither `calc_contract.yaml` nor `calc_loader.py` names the token.\n")
+    _control("test_44v", doc=damaged)

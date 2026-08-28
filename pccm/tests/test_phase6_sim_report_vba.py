@@ -47,6 +47,9 @@ CALC_REPORT_BAS = SRC_VBA / "modCalcReport.bas"
 NONCE_BAS = SRC_VBA / "modSimNonce.bas"
 SPEC = PCCM_ROOT / "spec"
 CASES_JSON = PCCM_ROOT / "build" / "phase6_cases.json"
+SETTLEMENT_MD = (
+    PCCM_ROOT / "docs" / "phase6_step12_transaction_settlement.md"
+)
 
 STEP11_REPORTER_BANNER = (
     "' ==========================================================================\n"
@@ -1067,6 +1070,71 @@ def test_44h5_the_next_run_reconciles_on_the_sidecar_never_the_attempt_row() -> 
     assert not any("ResolveNextNonce" in t for t in fixed)
 
 
+def _prose(path: Path) -> str:
+    """Only the comment text of a module: raw minus the comment-stripped code.
+
+    `VbaModule.code` blanks comment lines rather than deleting them, so the two
+    align line for line and the difference is exactly the prose.
+    """
+    module = _module(path, path.stem)
+    raw = module.raw.splitlines()
+    stripped = module.code.splitlines()
+    assert len(raw) == len(stripped), (len(raw), len(stripped))
+    return "\n".join(r for r, c in zip(raw, stripped) if r.strip() and not c.strip())
+
+
+def _flatten(text: str) -> str:
+    """Comment prose as one line: VBA wraps sentences across `\' ` lines."""
+    return " ".join(text.replace("'", " ").split())
+
+
+def _within(flat: str, left: str, right: str, distance: int) -> str | None:
+    """The first window where `left` and `right` sit within `distance` chars.
+
+    Whole-file co-occurrence proves nothing - a module that truthfully mentions
+    both words in unrelated paragraphs would fail it. Proximity is what
+    distinguishes a claim from a coincidence.
+    """
+    start = 0
+    while True:
+        i = flat.find(left, start)
+        if i < 0:
+            return None
+        window = flat[i: i + distance]
+        if right in window:
+            return window
+        start = i + 1
+
+
+def _doc_section(text: str, heading: str) -> str:
+    """One markdown section: its heading line up to the next heading."""
+    start = text.index(heading)
+    end = text.index("\n#", start + len(heading))
+    return text[start:end]
+
+
+def _normative(section: str) -> str:
+    """The section's ACTIVE prose, flattened: blockquote lines removed.
+
+    A withdrawn claim is kept in this document on purpose - the history of a
+    defect is part of the record - but it is quoted inside a `>` block that
+    withdraws it. Only what stands OUTSIDE such a block is a claim the document
+    still makes, and that is the only thing a wording detector may hold to
+    account. Flattening is required too: markdown wraps a sentence across lines,
+    so a phrase check against the raw text would miss half of them.
+    """
+    kept = [line for line in section.splitlines()
+            if not line.lstrip().startswith(">")]
+    return " ".join(" ".join(kept).split())
+
+
+def _quoted(section: str) -> str:
+    """The section's blockquoted record, flattened and stripped of `> `."""
+    kept = [line for line in section.splitlines()
+            if line.lstrip().startswith(">")]
+    return " ".join(" ".join(kept).replace(">", " ").split())
+
+
 def test_44u_the_prose_names_the_authority_the_code_actually_uses() -> None:
     """Documentation drift is a real defect, not a cosmetic one.
 
@@ -1098,11 +1166,156 @@ def test_44u_the_prose_names_the_authority_the_code_actually_uses() -> None:
     # THE POSITIVE CLAIM IS PRESENT AND SPECIFIC.
     assert "_SimData!F21" in prose
     assert "not the attempt row" in prose.lower()
-    # THE SAME CHECK ON THE REPORTER, whose header describes the same protocol.
-    reporter = _module(REPORT_BAS).raw
-    reporter_prose = reporter.replace(_code(), "")
+    # THE SAME CHECK ON THE REPORTER, whose comments describe the same protocol.
+    #
+    # SEMANTIC, NOT ONE BRITTLE SENTENCE. A single full-sentence literal is
+    # trivially evaded by rewording, which is how the stale RecordRefusal
+    # paragraph survived an earlier pass of this control. Each rejected
+    # authority below is expressed as a CO-OCCURRENCE within one comment block,
+    # so a paraphrase that still teaches the rejected design is caught.
+    reporter_prose = _prose(REPORT_BAS)
+    assert reporter_prose.count("'") > 200, "the reporter prose was not extracted"
+    flat = _flatten(reporter_prose)
+
     for withdrawn in ("ALLOCATED, not CONSUMED", "allocation certain"):
-        assert withdrawn not in reporter_prose, withdrawn
+        assert withdrawn not in flat, withdrawn
+
+    # THE FIVE REJECTED AUTHORITIES. Each is an AFFIRMATIVE phrase or a
+    # proximity pair, chosen so the accepted prose - which denies every one of
+    # them - cannot match. "it is not the recovery lock" does not contain "is
+    # the recovery lock"; "it does not own the auto nonce lifecycle" does not
+    # put "module owns" near "auto nonce lifecycle".
+    for label, phrase in (
+        ("the attempt result is its own durable result",
+         "is its own durable result"),
+        ("the token is durable recovery state", "the token is durable"),
+        ("the next run reads the attempt result", "next run reads"),
+        ("the next run reads it to reconcile", "reads to know it must reconcile"),
+        ("Last Attempt Result is the recovery lock", "is the recovery lock"),
+        ("the attempt result carries physical consumption",
+         "carried by the attempt result"),
+    ):
+        assert phrase not in flat.lower(), (
+            f"active reporter prose still teaches: {label}"
+        )
+
+    # PROXIMITY PAIRS, for claims a single phrase cannot pin.
+    for label, left, right in (
+        ("the reporter owns the AUTO nonce lifecycle",
+         "module owns", "auto nonce lifecycle"),
+        ("the attempt result is the durable recovery authority",
+         "attempt result", "is the durable recovery"),
+    ):
+        near = _within(flat.lower(), left, right, 160)
+        assert near is None, (
+            f"active reporter prose still teaches: {label}\n...{near}..."
+        )
+
+    # POSITIVE ANCHORS. The prose must say, in substance, what is true.
+    for required in ("modSimNonce",
+                     "Pending AUTO Nonce",
+                     "F21"):
+        assert required in flat, required
+    assert "durable recovery authority" in flat, (
+        "the reporter prose never names where durable recovery authority lives"
+    )
+    assert "AUDIT" in flat or "audit" in flat
+    assert "next run does not read it" in flat, (
+        "the prose does not state that the next run ignores the attempt result"
+    )
+    assert "narrow scalar interface" in flat, (
+        "the prose does not say the AUTO transaction is delegated"
+    )
+
+
+def test_44v_the_settlement_document_states_one_allocation_axis() -> None:
+    """The settlement document is an ACTIVE authority, not an archive.
+
+    Nothing read it before this round, so a sentence in it could contradict the
+    source indefinitely - and one did: 9.4 still taught that a recovery action
+    earns the fifth token, which is the conflated design 9.8 rejected. A reader
+    deciding whether a change is safe reads this file, so a stale normative
+    sentence here is a live defect.
+
+    The distinction this control draws is STRUCTURAL, not editorial. History is
+    supposed to survive: the document narrates the defect it fixed. What may not
+    survive is a withdrawn claim standing as though it were still the rule, so
+    active prose and blockquoted record are judged by different standards.
+    """
+    text = SETTLEMENT_MD.read_text(encoding="utf-8")
+
+    section = _doc_section(text, "### 9.4 ")
+    active = _normative(section)
+    assert len(active) > 400, "9.4 lost its active prose"
+    lower = active.lower()
+
+    # 1. THE EXCLUSIVITY IS STATED, keyed on the FIELD the rule turns on. Plain
+    #    "only" near "PERSISTENCE_INDETERMINATE" is not enough: the withdrawn
+    #    paragraph happened to put those two within a sentence of each other for
+    #    an unrelated reason, so the window must also name `allocationState`.
+    exclusive = None
+    start = 0
+    while True:
+        i = lower.find("only", start)
+        if i < 0:
+            break
+        window = lower[i: i + 160]
+        if "allocationstate" in window and "persistence_indeterminate" in window:
+            exclusive = window
+            break
+        start = i + 1
+    assert exclusive is not None, (
+        "9.4 never says the fifth token is emitted only when this attempt's "
+        "allocationState is PERSISTENCE_INDETERMINATE"
+    )
+
+    # 2. THE CONFLATION IS NOT STATED. Phrased affirmatively, so the settled
+    #    wording - which denies it - cannot match.
+    for withdrawn in ("unclassified states earn",
+                      "both unclassified states",
+                      "states earn it"):
+        assert withdrawn not in lower, f"9.4 still teaches: {withdrawn}"
+
+    # 3. EVERY SURVIVING ACTIVE MENTION OF THE RECOVERY ACTION DISCLAIMS IT.
+    #    A paraphrase of the conflation still names RECOVERY_REQUIRED, so the
+    #    check is not "is this exact sentence gone" but "does each mention say
+    #    it is not an allocation classification".
+    mentions = 0
+    start = 0
+    while True:
+        i = lower.find("recovery_required", start)
+        if i < 0:
+            break
+        mentions += 1
+        window = lower[i: i + 140]
+        assert any(marker in window for marker in
+                   ("separate", "does not", "never", "not by itself")), (
+            "9.4 mentions the recovery action without disclaiming it as an "
+            f"allocation classification: ...{window}..."
+        )
+        start = i + 1
+    assert mentions >= 1, "9.4 no longer distinguishes the two axes at all"
+
+    # 4. AND THE WITHDRAWAL IS ON THE RECORD, not silently deleted. A reader who
+    #    remembers the old rule has to be able to see that it was withdrawn.
+    record = _quoted(section)
+    assert "RECOVERY_REQUIRED" in record, (
+        "9.4 drops the old rule instead of withdrawing it"
+    )
+    assert "withdrawn" in record.lower(), record[:200]
+
+    # 5. THE ACTIVE PROSE NAMES THE DURABLE AUTHORITY.
+    assert "F21" in active, "9.4 never names the durable recovery authority"
+
+    # 6. THE SINGLE-AXIS TABLE IN 8.5 CARRIES ITS SUPERSESSION. It is accurate
+    #    as history and wrong as a rule, so it may stand only under a note that
+    #    points at the section which governs.
+    table = _doc_section(text, "### 8.5 ")
+    note = _quoted(table)
+    assert "Superseded" in note, "the single-axis 8.5 table stands unqualified"
+    assert "9.8" in note, note[:200]
+    for required in ("RECOVERY_REQUIRED", "action"):
+        assert required in note, required
 
 
 def test_44t_the_sidecar_coordinate_has_exactly_one_authority() -> None:

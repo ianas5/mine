@@ -5,9 +5,13 @@ Option Explicit
 ' modSimReport - the Phase-6 workbook orchestration layer, and nothing else.
 '
 ' This module owns the ENDPOINT, the settled read accessors, the two simulation
-' control reads, the AUTO nonce lifecycle, the order in which the accepted pure
-' kernels are called, dual-bank publication into `_SimData`, and the attempt and
-' status bookkeeping.
+' control reads, the order in which the accepted pure kernels are called,
+' dual-bank publication into `_SimData`, and the attempt and status bookkeeping.
+'
+' IT DOES NOT OWN THE AUTO NONCE LIFECYCLE. That belongs to modSimNonce - the
+' transaction, the write-ahead marker and the durable recovery protocol - and
+' this module drives it through a narrow scalar interface, never reaching into
+' the counter or the Pending AUTO Nonce sidecar itself.
 '
 ' IT OWNS NO MATHEMATICS. Not one distribution, not one uniform, not one mean,
 ' not one quantile, not one contingency subtraction, not one canonical field and
@@ -860,11 +864,15 @@ End Sub
 ' ==========================================================================
 Private Function RecordRefusal(ByRef package As SimRunPackage, _
                                ByVal detail As String) As OperationResult
-    ' AN UNRESOLVED AUTO ADVANCE IS ITS OWN DURABLE RESULT. Whether the nonce
-    ' was consumed is unknown, so recording a plain REFUSED would say the run
-    ' declined to spend it - a claim this source cannot make. The token is what
-    ' the NEXT run reads to know it must reconcile before allocating, and it is
-    ' machine state, never prose in the detail cell.
+    ' AN AUDIT CLASSIFICATION FOR THIS ATTEMPT ONLY. `RefusalResult` records
+    ' what this invocation met; it is not durable recovery authority and the
+    ' next run does not read it.
+    '
+    '   PERSISTENCE_INDETERMINATE  earns AUTO_NONCE_INDETERMINATE
+    '   every other unsuccessful allocation or recovery outcome  earns REFUSED
+    '
+    ' F21 - the Pending AUTO Nonce sidecar - is the durable recovery authority,
+    ' and it, with the counter, is what makes the next AUTO run reconcile.
     WriteAttemptBlock package, RefusalResult(package), detail
     RecordRefusal = modAppState.Failed("Run Simulation", detail)
 End Function
@@ -910,9 +918,19 @@ Private Sub WriteAttemptBlock(ByRef package As SimRunPackage, ByVal result As St
     If Len(package.SeedMode) > 0 Then
         block(3, 1) = package.SeedMode
         ' DIAGNOSTIC IDENTITY, not a consumption claim. Writing the seed here
-        ' says only that this attempt SELECTED that identity; whether the nonce
-        ' was consumed is carried by the attempt result and by the pending
-        ' sidecar, never inferred from the presence of a seed.
+        ' says only that this attempt SELECTED that identity; it is never
+        ' inferred from the presence of a seed, and the attempt result does not
+        ' carry it either. A cleanup failure records REFUSED whether the
+        ' observation was CONSUMED or PRE_ALLOCATION, so one result string
+        ' cannot hold that distinction.
+        '
+        ' WHERE EACH FACT ACTUALLY LIVES. Physical consumption for THIS
+        ' invocation is the allocationState fact, projected as NonceConsumed and
+        ' required by the published records. The fifth attempt-result token
+        ' identifies PERSISTENCE_INDETERMINATE and nothing else. Durable
+        ' cross-invocation recovery is governed by F21 and the counter, never by
+        ' the Last Attempt Result.
+        '
         ' seeding.nonce_lifecycle.attempt_metadata_preserves requires the seed
         ' and the attempted nonce on all three classifications - known_consumed,
         ' pre_allocation and persistence_indeterminate alike - which is why the
