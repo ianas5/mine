@@ -780,7 +780,7 @@ def test_44_the_accepted_modules_were_not_modified() -> None:
 
 
 PHASE6_HANDWRITTEN = {"modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-                      "modSimFingerprint", "modSimReport"}
+                      "modSimFingerprint", "modSimNonce", "modSimReport"}
 """The Phase-6 hand-written modules. Named here so the Phase-5 inventory below
 stays an exact statement about Phase 5 rather than becoming an open set."""
 

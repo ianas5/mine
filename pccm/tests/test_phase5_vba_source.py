@@ -377,7 +377,7 @@ def test_01_the_three_kernel_modules_exist_and_declare_themselves() -> None:
 
 
 PHASE6_MODULES = ("modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-                  "modSimFingerprint", "modSimReport")
+                  "modSimFingerprint", "modSimNonce", "modSimReport")
 """Phase-6 hand-written source modules. Not Phase 5's, and named so the
 Phase-5 inventory equality below stays exact."""
 

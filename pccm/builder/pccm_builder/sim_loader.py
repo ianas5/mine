@@ -249,7 +249,14 @@ LOCKED_REQUEST_SEED_DOMAIN_OWNER = "input_contract.yaml"
 LOCKED_REQUEST_STREAM_TAG_OWNER = "calc_contract.yaml"
 
 LOCKED_SIM_STATES = ("CURRENT", "STALE", "INVALID")
-LOCKED_ATTEMPT_RESULTS = ("NONE", "SUCCESS", "REFUSED", "FAILED")
+# PHASE-6 ONLY, AND A STRICT SUPERSET OF THE PHASE-5 AXIS. Phase 5 keeps
+# exactly ("NONE", "SUCCESS", "REFUSED", "FAILED") and is locked separately in
+# calc_loader.py; the fifth token names a persistence/recovery condition that
+# has no Phase-5 analogue. Still an EXACT sequence: order and membership are
+# both load-bearing, and this is an authority correction, not a relaxation.
+LOCKED_ATTEMPT_RESULTS = (
+    "NONE", "SUCCESS", "REFUSED", "FAILED", "AUTO_NONCE_INDETERMINATE",
+)
 LOCKED_SEED_MODES = ("AUTO", "FIXED")
 
 LOCKED_PERCENTILE_METHOD = "hyndman_fan_type_7"
@@ -925,11 +932,44 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'timestamp_derived_uniqueness_permitted'
     }),
     'seeding.nonce_lifecycle': frozenset({
+        'allocation_state_semantics', 'allocation_states',
         'attempt_metadata_preserves', 'exhausted_value',
         'failure_after_allocation_consumes_nonce', 'failure_before_allocation_consumes_nonce',
-        'first_valid_allocation', 'initial', 'last_valid_allocation', 'meaning',
-        'on_exhaustion', 'order', 'prior_successful_publication_untouched', 'reuse_permitted',
-        'wrap_permitted'
+        'first_valid_allocation', 'immediate_reconciliation',
+        'indeterminate_marker_storage_failure', 'initial', 'last_valid_allocation', 'meaning',
+        'next_run_reconciliation', 'on_exhaustion', 'order',
+        'prior_successful_publication_untouched', 'reuse_permitted', 'wrap_permitted'
+    }),
+    'seeding.nonce_lifecycle.allocation_state_semantics': frozenset({
+        'CONSUMED', 'PERSISTENCE_INDETERMINATE', 'PRE_ALLOCATION'
+    }),
+    'seeding.nonce_lifecycle.allocation_state_semantics.CONSUMED': frozenset({
+        'advance_persisted', 'nonce_consumed', 'retry_may_reuse_the_same_nonce',
+        'sampling_may_begin'
+    }),
+    'seeding.nonce_lifecycle.allocation_state_semantics.PRE_ALLOCATION': frozenset({
+        'advance_persisted', 'nonce_consumed', 'retry_may_reuse_the_same_nonce',
+        'sampling_began'
+    }),
+    'seeding.nonce_lifecycle.allocation_state_semantics.PERSISTENCE_INDETERMINATE': frozenset({
+        'advance_persisted', 'durable_attempt_result', 'must_not_be_called_allocated',
+        'must_not_be_called_unconsumed', 'next_run_must_reconcile_before_allocating',
+        'nonce_consumed', 'sampling_began'
+    }),
+    'seeding.nonce_lifecycle.immediate_reconciliation': frozenset({
+        'after', 'attempts', 'observation_unavailable', 'observed_m',
+        'observed_m_plus_1', 'observed_other'
+    }),
+    'seeding.nonce_lifecycle.next_run_reconciliation': frozenset({
+        'activated_by_attempt_result', 'activated_by_generic_unsuccessful_result',
+        'applies_to_fixed_mode', 'counter_equals_m', 'counter_equals_m_plus_1',
+        'counter_is_neither', 'counter_unreadable'
+    }),
+    'seeding.nonce_lifecycle.attempt_metadata_preserves': frozenset({
+        'known_consumed', 'persistence_indeterminate', 'pre_allocation'
+    }),
+    'seeding.nonce_lifecycle.indeterminate_marker_storage_failure': frozenset({
+        'automatic_retry_authorised', 'recovery_required', 'second_write_ahead_log_required'
     }),
     'seeding.scalar_to_state': frozenset({
         'alternate_expansion_permitted', 'expansion', 'mixer', 'rule'
@@ -1380,12 +1420,103 @@ def _validate_seeding(raw: dict, path: Path) -> None:
     _exact_sequence(life.get("order"), LOCKED_NONCE_LIFECYCLE, f"{lwhere}: order")
     _require_false(life, "failure_before_allocation_consumes_nonce", lwhere)
     _require_true(life, "failure_after_allocation_consumes_nonce", lwhere)
-    _exact_sequence(
-        life.get("attempt_metadata_preserves"),
-        ("consumed_auto_nonce", "effective_seed"),
-        f"{lwhere}: attempt_metadata_preserves",
-    )
     _require_true(life, "prior_successful_publication_untouched", lwhere)
+    _validate_allocation_states(life, lwhere)
+
+
+LOCKED_ALLOCATION_STATES = ("PRE_ALLOCATION", "CONSUMED", "PERSISTENCE_INDETERMINATE")
+LOCKED_INDETERMINATE_RESULT = "AUTO_NONCE_INDETERMINATE"
+
+
+def _validate_allocation_states(life: dict, where: str) -> None:
+    """The three-state AUTO allocation authority.
+
+    A `Range.Value2` that RAISES is not proof that Excel wrote nothing, so
+    "did the advance persist?" has a third answer. Each state is pinned to the
+    exact facts an implementation may claim in it - so that a source which
+    calls an unpersisted advance "allocated", or an indeterminate one
+    "unconsumed", fails the contract rather than the reviewer.
+    """
+    _exact_sequence(life.get("allocation_states"), LOCKED_ALLOCATION_STATES,
+                    f"{where}: allocation_states")
+
+    semantics = _map(life, "allocation_state_semantics", where)
+    swhere = f"{where}: allocation_state_semantics"
+    if sorted(semantics) != sorted(LOCKED_ALLOCATION_STATES):
+        raise SimContractError(
+            f"{swhere}: must describe exactly {sorted(LOCKED_ALLOCATION_STATES)}"
+        )
+
+    pre = _map(semantics, "PRE_ALLOCATION", swhere)
+    _require_false(pre, "advance_persisted", f"{swhere}: PRE_ALLOCATION")
+    _require_false(pre, "nonce_consumed", f"{swhere}: PRE_ALLOCATION")
+    _require_false(pre, "sampling_began", f"{swhere}: PRE_ALLOCATION")
+    # THE POINT OF THE STATE: a nonce that was never allocated is not "reused".
+    _require_true(pre, "retry_may_reuse_the_same_nonce", f"{swhere}: PRE_ALLOCATION")
+
+    used = _map(semantics, "CONSUMED", swhere)
+    _require_true(used, "advance_persisted", f"{swhere}: CONSUMED")
+    _require_true(used, "nonce_consumed", f"{swhere}: CONSUMED")
+    _require_true(used, "sampling_may_begin", f"{swhere}: CONSUMED")
+    _require_false(used, "retry_may_reuse_the_same_nonce", f"{swhere}: CONSUMED")
+
+    unknown = _map(semantics, "PERSISTENCE_INDETERMINATE", swhere)
+    uwhere = f"{swhere}: PERSISTENCE_INDETERMINATE"
+    _require_value(unknown, "advance_persisted", "unknown", uwhere)
+    _require_value(unknown, "nonce_consumed", "unknown", uwhere)
+    _require_false(unknown, "sampling_began", uwhere)
+    _require_true(unknown, "must_not_be_called_allocated", uwhere)
+    _require_true(unknown, "must_not_be_called_unconsumed", uwhere)
+    _require_value(unknown, "durable_attempt_result", LOCKED_INDETERMINATE_RESULT, uwhere)
+    _require_true(unknown, "next_run_must_reconcile_before_allocating", uwhere)
+
+    # ONE observation, never a retry loop: a loop would turn an ambiguous COM
+    # failure into an unbounded one and still not decide it.
+    immediate = _map(life, "immediate_reconciliation", where)
+    iwhere = f"{where}: immediate_reconciliation"
+    _require_value(immediate, "attempts", 1, iwhere)
+    _exact_sequence(immediate.get("after"),
+                    ("counter_write_raised", "verification_read_failed"),
+                    f"{iwhere}: after")
+    _require_value(immediate, "observed_m_plus_1", "CONSUMED", iwhere)
+    _require_value(immediate, "observed_m", "PRE_ALLOCATION", iwhere)
+    _require_value(immediate, "observed_other", "RECOVERY_REQUIRED", iwhere)
+    _require_value(immediate, "observation_unavailable", "PERSISTENCE_INDETERMINATE", iwhere)
+
+    # Activated by the durable token ALONE. An ordinary unsuccessful attempt may
+    # follow a conclusively persisted advance; conflating them loses exactly the
+    # distinction the token exists to keep.
+    later = _map(life, "next_run_reconciliation", where)
+    nwhere = f"{where}: next_run_reconciliation"
+    _require_value(later, "activated_by_attempt_result", LOCKED_INDETERMINATE_RESULT, nwhere)
+    _require_false(later, "activated_by_generic_unsuccessful_result", nwhere)
+    _require_false(later, "applies_to_fixed_mode", nwhere)
+    _require_value(later, "counter_equals_m_plus_1", "CONSUMED", nwhere)
+    _require_value(later, "counter_equals_m", "PRE_ALLOCATION", nwhere)
+    _require_value(later, "counter_is_neither", "RECOVERY_REQUIRED", nwhere)
+    _require_value(later, "counter_unreadable", "RECOVERY_REQUIRED", nwhere)
+
+    # The attempt row keeps different facts in different states, and row 27 must
+    # never assert physical consumption merely because it holds the number.
+    preserves = _map(life, "attempt_metadata_preserves", where)
+    pwhere = f"{where}: attempt_metadata_preserves"
+    _exact_sequence(preserves.get("known_consumed"),
+                    ("consumed_auto_nonce", "effective_seed"),
+                    f"{pwhere}: known_consumed")
+    _exact_sequence(preserves.get("pre_allocation"),
+                    ("attempted_auto_nonce", "effective_seed"),
+                    f"{pwhere}: pre_allocation")
+    _exact_sequence(preserves.get("persistence_indeterminate"),
+                    ("attempted_auto_nonce", "effective_seed",
+                     "durable_indeterminate_result"),
+                    f"{pwhere}: persistence_indeterminate")
+
+    # THE DECLARED RESIDUAL, stated rather than papered over.
+    residual = _map(life, "indeterminate_marker_storage_failure", where)
+    rwhere = f"{where}: indeterminate_marker_storage_failure"
+    _require_false(residual, "automatic_retry_authorised", rwhere)
+    _require_true(residual, "recovery_required", rwhere)
+    _require_false(residual, "second_write_ahead_log_required", rwhere)
 
 
 def _validate_components(raw: dict, path: Path) -> None:

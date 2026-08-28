@@ -27,6 +27,7 @@ sys.path.insert(0, str(PCCM_ROOT / "tests"))
 import test_phase6_sim_report_vba as conformance  # noqa: E402
 
 _REPORT = conformance.REPORT_BAS.read_text(encoding="utf-8")
+_NONCE = conformance.NONCE_BAS.read_text(encoding="utf-8")
 _CALC = conformance.CALC_REPORT_BAS.read_text(encoding="utf-8")
 _STRUCTURE = (conformance.SPEC / "structure_contract.yaml").read_text(encoding="utf-8")
 
@@ -48,11 +49,16 @@ def _run_battery() -> list[str]:
 
 
 def _install(report: str | None = None, calc: str | None = None,
-             structure: str | None = None):
+             structure: str | None = None, nonce: str | None = None):
     saved = (conformance.REPORT_BAS, conformance.CALC_REPORT_BAS, conformance.SPEC,
-             dict(conformance._CACHE))
+             dict(conformance._CACHE), conformance.NONCE_BAS)
     conformance._CACHE.clear()
     temp = Path(tempfile.mkdtemp(prefix="pccm-step11-mutation-"))
+    if nonce is not None:
+        assert nonce != _NONCE, "the mutation changed nothing"
+        target = temp / "modSimNonce.bas"
+        target.write_text(nonce, encoding="utf-8")
+        conformance.NONCE_BAS = target
     if report is not None:
         assert report != _REPORT, "the mutation changed nothing"
         target = temp / "modSimReport.bas"
@@ -74,6 +80,7 @@ def _install(report: str | None = None, calc: str | None = None,
         conformance.REPORT_BAS = saved[0]
         conformance.CALC_REPORT_BAS = saved[1]
         conformance.SPEC = saved[2]
+        conformance.NONCE_BAS = saved[4]
         conformance._CACHE.clear()
         conformance._CACHE.update(saved[3])
 
@@ -81,8 +88,8 @@ def _install(report: str | None = None, calc: str | None = None,
 
 
 def _control(expected: str, report: str | None = None, calc: str | None = None,
-             structure: str | None = None) -> None:
-    restore = _install(report, calc, structure)
+             structure: str | None = None, nonce: str | None = None) -> None:
+    restore = _install(report, calc, structure, nonce)
     try:
         refused = _run_battery()
     finally:
@@ -178,9 +185,9 @@ def test_07_the_run_id_is_allocated_before_the_commit() -> None:
     _control("test_17", report=damaged)
 
 
-def test_08_run_id_exhaustion_consumes_the_nonce() -> None:
-    """The headroom check moves AFTER the allocation, so an unrunnable run burns
-    a sequence."""
+def test_08_run_id_exhaustion_is_checked_before_the_nonce_is_touched() -> None:
+    """Moving the headroom check after allocation would burn a sequence on a run
+    that could never have been committed."""
     damaged = _swap(
         _REPORT,
         "    If lastRunId >= SIM_RUN_ID_MAXIMUM Then\n"
@@ -190,21 +197,13 @@ def test_08_run_id_exhaustion_consumes_the_nonce() -> None:
         "    End If\n"
         "    package.CandidateRunId = lastRunId + 1\n",
         "    package.CandidateRunId = lastRunId + 1\n")
-    damaged = _after(
-        damaged, "    package.NonceConsumed = True\n",
-        "    If package.CandidateRunId > SIM_RUN_ID_MAXIMUM Then\n"
-        '        detail = "simulation: the run identity counter is exhausted"\n'
-        "        Exit Function\n"
-        "    End If\n")
     _control("test_18", report=damaged)
-
 
 def test_09_sampling_begins_before_the_nonce_is_persisted() -> None:
     damaged = _swap(
-        _REPORT,
-        "    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n",
-        "")
-    _control("test_19", report=damaged)
+        _NONCE,
+        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n", "")
+    _control("test_44h2", nonce=damaged)
 
 
 def test_10_the_nonce_is_rolled_back_after_a_later_failure() -> None:
@@ -223,13 +222,13 @@ def test_10_the_nonce_is_rolled_back_after_a_later_failure() -> None:
 def test_11_the_failed_attempt_audit_loses_the_consumed_nonce() -> None:
     damaged = _swap(
         _REPORT,
-        "    If package.NonceAllocated Then\n"
+        "    If package.AutoIdentityKnown Then\n"
         "        block(5, 1) = package.ConsumedNonce\n"
         "    Else\n"
         "        block(5, 1) = vbNullString\n"
         "    End If\n",
         "    block(5, 1) = vbNullString\n")
-    _control("test_20", report=damaged)
+    _control("test_44h3", report=damaged)
 
 
 def test_12_a_mismatched_candidate_bank_still_commits() -> None:
@@ -592,8 +591,13 @@ def test_45_a_committed_run_is_rewritten_as_failed_by_a_cleanup_problem() -> Non
 
 def test_46_a_named_failpoint_is_removed() -> None:
     damaged = _swap(
-        _REPORT, "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n", "")
+        _REPORT, "    modAppState.FailPointCheck FAILPOINT_SIM_CANDIDATE_BANK\n", "")
     _control("test_44", report=damaged)
+
+
+def test_46b_the_owned_failpoint_is_removed_from_the_nonce_module() -> None:
+    damaged = _swap(_NONCE, _INJECT, "")
+    _control("test_44k", nonce=damaged)
 
 
 # ===========================================================================
@@ -930,90 +934,72 @@ def test_78_the_attempt_record_writes_the_publication_rows() -> None:
 
 
 # ===========================================================================
-# L. THE AUTO-NONCE FAILURE PATH (Step-12 settlement, second finding)
+# L. THE AUTO-NONCE TRANSACTION, AT ITS OWNER (Step-12 settlement)
 #
-# FailPointCheck RAISES. A naked call after the nonce was spent left the run
-# through the invocation handler with no attempt record at all - the same class
-# the candidate and commit stages carried, in the one stage that had already
-# consumed something irreversible.
+# The transaction moved to modSimNonce, and with it every control below. The
+# previous round's controls encoded a REJECTED definition - allocation claimed
+# before the write - and are replaced rather than re-anchored: a control that
+# pins the wrong authority is worse than no control.
 # ===========================================================================
-_NONCE_FAILPOINT = "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n"
+_INJECT = "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n"
 
 
-def test_79_the_after_nonce_failpoint_returns_to_run_simulation() -> None:
-    """THE ORIGINAL DEFECT, planted back exactly as it shipped in 4df2af3."""
-    damaged = _swap(_REPORT, _NONCE_FAILPOINT, "")
+def test_79_the_after_nonce_failpoint_returns_to_the_orchestrator() -> None:
+    """A naked raising call in RunSimulation bypasses the attempt axis."""
+    damaged = _swap(_NONCE, _INJECT, "")
+    report = _swap(
+        _REPORT,
+        "    If Not AllocateAutoNonce(package, detail) Then\n",
+        "    modAppState.FailPointCheck modSimNonce.FAILPOINT_SIM_AFTER_NONCE\n"
+        "    If Not AllocateAutoNonce(package, detail) Then\n")
+    _control("test_44", report=report, nonce=damaged)
+
+
+def test_80_the_injection_fires_before_the_advance_is_established() -> None:
+    damaged = _swap(_NONCE, _INJECT, "")
     damaged = _swap(
         damaged,
-        "    If Not AllocateAutoNonce(package, detail) Then\n"
-        "        RunSimulation = RecordRefusal(package, detail)\n"
-        "        Exit Function\n"
-        "    End If\n",
-        "    If Not AllocateAutoNonce(package, detail) Then\n"
-        "        RunSimulation = RecordRefusal(package, detail)\n"
-        "        Exit Function\n"
-        "    End If\n"
-        "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n")
-    _control("test_44", report=damaged)
+        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n",
+        _INJECT +
+        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n")
+    _control("test_44", nonce=damaged)
 
 
-def test_80_the_after_nonce_failpoint_fires_before_the_verification() -> None:
-    damaged = _swap(_REPORT, _NONCE_FAILPOINT, "")
+def test_81_the_injection_fires_before_the_seed_is_derived() -> None:
+    damaged = _swap(_NONCE, _INJECT, "")
     damaged = _swap(
         damaged,
-        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n",
-        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n"
-        "        modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n")
-    _control("test_44", report=damaged)
+        "        If Not ResolveNextNonce(autoNonce, state, detail) Then Exit Function\n",
+        _INJECT +
+        "        If Not ResolveNextNonce(autoNonce, state, detail) Then Exit Function\n")
+    _control("test_44h2", nonce=damaged)
 
 
-def test_81_the_after_nonce_failpoint_fires_before_the_consumed_mark() -> None:
-    damaged = _swap(_REPORT, _NONCE_FAILPOINT, "")
-    damaged = _swap(
-        damaged,
-        "        package.NonceConsumed = True\n",
-        "        modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n"
-        "        package.NonceConsumed = True\n")
-    _control("test_44", report=damaged)
-
-
-def test_82_the_nonce_allocation_loses_its_error_envelope() -> None:
-    damaged = _swap(_REPORT, "    On Error GoTo AllocationFailed\n", "")
-    _control("test_44h", report=damaged)
+def test_82_the_nonce_entry_loses_its_error_envelope() -> None:
+    damaged = _swap(_NONCE, "    On Error GoTo AllocationFailed\n", "")
+    _control("test_44h", nonce=damaged)
 
 
 def test_83_the_nonce_envelope_becomes_a_blanket_suppressor() -> None:
-    damaged = _swap(_REPORT, "    On Error GoTo AllocationFailed\n",
+    damaged = _swap(_NONCE, "    On Error GoTo AllocationFailed\n",
                     "    On Error Resume Next\n")
-    _control("test_44g", report=damaged)
+    _control("test_44g", nonce=damaged)
 
 
-def test_84_the_counter_write_sits_outside_the_envelope() -> None:
-    """A raised write must not escape, so it must stay inside the handler."""
-    damaged = _swap(
-        _REPORT,
-        "    On Error GoTo AllocationFailed\n\n"
-        "    If package.HasSuppliedSeed Then\n",
-        "    If package.HasSuppliedSeed Then\n")
-    damaged = _swap(
-        damaged,
-        "        package.NonceConsumed = True\n"
-        "    End If\n",
-        "        package.NonceConsumed = True\n"
-        "    End If\n"
-        "    On Error GoTo AllocationFailed\n")
-    _control("test_44h", report=damaged)
+def test_84_the_counter_write_sits_outside_its_envelope() -> None:
+    damaged = _swap(_NONCE, "    On Error GoTo WriteRaised\n", "")
+    _control("test_44h", nonce=damaged)
 
 
 def test_85_the_nonce_handler_reports_success() -> None:
     damaged = _swap(
-        _REPORT,
+        _NONCE,
         "AllocationFailed:\n    failure = Err.Description\n",
-        "AllocationFailed:\n    AllocateAutoNonce = True\n    failure = Err.Description\n")
-    _control("test_44h", report=damaged)
+        "AllocationFailed:\n    SimNonceAllocate = True\n    failure = Err.Description\n")
+    _control("test_44h", nonce=damaged)
 
 
-def test_86_an_after_persist_failure_bypasses_the_attempt_recorder() -> None:
+def test_86_an_allocation_failure_bypasses_the_attempt_recorder() -> None:
     damaged = _swap(
         _REPORT,
         "    If Not AllocateAutoNonce(package, detail) Then\n"
@@ -1028,38 +1014,37 @@ def test_86_an_after_persist_failure_bypasses_the_attempt_recorder() -> None:
 
 def test_87_the_counter_is_rolled_back_on_failure() -> None:
     damaged = _swap(
-        _REPORT,
+        _NONCE,
         "AllocationFailed:\n    failure = Err.Description\n",
         "AllocationFailed:\n"
-        "    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce - 1\n"
+        "    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = autoNonce - 1\n"
         "    failure = Err.Description\n")
-    _control("test_44j", report=damaged)
+    _control("test_44j", nonce=damaged)
 
 
-def test_88_the_handler_claims_the_sequence_can_be_reused() -> None:
-    """The raised-allocation detail collapses to one branch that says nothing."""
-    body = conformance._procedure("AllocateAutoNonce")
-    handler = body[body.index("AllocationFailed:"):]
-    branch = handler[handler.index("    If package.NonceAllocated Then"):]
-    branch = branch[: branch.index("    End If\n") + len("    End If\n")]
+def test_88_the_reconciliation_becomes_a_retry_loop() -> None:
+    """One observation is the authority; a loop still would not decide it."""
     damaged = _swap(
-        _REPORT, branch,
-        '    detail = "simulation: seed allocation did not complete: " & failure\n')
-    _control("test_44h", report=damaged)
+        _NONCE,
+        "    On Error GoTo ObservationRaised\n"
+        "    If Not ReadPersistedNonce(stored, probe) Then\n",
+        "    On Error GoTo ObservationRaised\n"
+        "    Do While Not ReadPersistedNonce(stored, probe)\n"
+        "    Loop\n"
+        "    If Not ReadPersistedNonce(stored, probe) Then\n")
+    _control("test_44h4", nonce=damaged)
 
 
 def test_89_a_fourth_failpoint_is_introduced() -> None:
     damaged = _swap(
-        _REPORT,
-        'Public Const FAILPOINT_SIM_FINAL_COMMIT As String = "Phase6FinalCommit"\n',
-        'Public Const FAILPOINT_SIM_FINAL_COMMIT As String = "Phase6FinalCommit"\n'
+        _NONCE,
+        'Public Const FAILPOINT_SIM_AFTER_NONCE As String = "Phase6AfterNoncePersisted"\n',
+        'Public Const FAILPOINT_SIM_AFTER_NONCE As String = "Phase6AfterNoncePersisted"\n'
         'Public Const FAILPOINT_SIM_EXTRA As String = "Phase6Extra"\n')
     damaged = _swap(
-        damaged,
-        "    package.Stamp = Now\n",
-        "    modAppState.FailPointCheck FAILPOINT_SIM_EXTRA\n"
-        "    package.Stamp = Now\n")
-    _control("test_44k", report=damaged)
+        damaged, "    effectiveSeed = 0\n",
+        "    modAppState.FailPointCheck FAILPOINT_SIM_EXTRA\n    effectiveSeed = 0\n")
+    _control("test_44k", nonce=damaged)
 
 
 def test_90_sampling_begins_before_the_allocation_succeeds() -> None:
@@ -1077,142 +1062,115 @@ def test_90_sampling_begins_before_the_allocation_succeeds() -> None:
 
 
 # ===========================================================================
-# M. THE AUTO-ALLOCATION AUDIT IDENTITY (Step-12 settlement, third finding)
-#
-# `NonceConsumed` alone conflated "the counter advance is verified" with "this
-# run has claimed a nonce". Every verification failure AFTER the counter write
-# therefore blanked the effective seed and the AUTO nonce on the attempt record,
-# leaving an advanced counter with no trace - the audit hole the retained
-# authority forbids.
+# M. THE THREE OBSERVATIONS AND THE AUDIT IDENTITY BY STATE
 # ===========================================================================
-_ALLOCATED = "        package.NonceAllocated = True\n"
-
-
-def test_91_the_original_single_boolean_shape_is_rejected() -> None:
-    """THE DEFECT AS IT SHIPPED IN e574fdb, restored verbatim in behaviour.
-
-    One flag, set only after verification, and the attempt record gated on it.
-    """
-    damaged = _swap(_REPORT, _ALLOCATED, "")
+def test_91_the_rejected_pre_write_allocation_flag_returns() -> None:
+    """The e574fdb/db85748 shape: allocation claimed before the write."""
     damaged = _swap(
-        damaged,
-        "        If package.HasSuppliedSeed Or package.NonceAllocated Then\n",
+        _NONCE, "        identityKnown = True\n",
+        "        identityKnown = True\n        Dim NonceAllocated As Boolean\n"
+        "        NonceAllocated = True\n")
+    _control("test_44h2", nonce=damaged)
+
+
+def test_92_the_consumed_state_is_set_without_an_observed_match() -> None:
+    damaged = _swap(
+        _NONCE,
+        "    If stored = nonce + 1 Then\n        state = SIM_NONCE_STATE_CONSUMED\n",
+        "    If True Then\n        state = SIM_NONCE_STATE_CONSUMED\n")
+    _control("test_44h4", nonce=damaged)
+
+
+def test_93_the_m_observation_is_classified_as_consumed() -> None:
+    damaged = _swap(
+        _NONCE,
+        "    If stored = nonce Then\n"
+        "        ' The advance did not land. Nothing was consumed, so the next run may\n"
+        "        ' legitimately take this nonce again - and saying otherwise would be a\n"
+        "        ' promise the source cannot keep.\n"
+        "        state = SIM_NONCE_STATE_PRE_ALLOCATION\n",
+        "    If stored = nonce Then\n"
+        "        state = SIM_NONCE_STATE_CONSUMED\n")
+    _control("test_44h4", nonce=damaged)
+
+
+def test_94_the_pre_allocation_arm_promises_non_reuse() -> None:
+    """The statement the source cannot make: m WILL be reissued."""
+    damaged = _swap(
+        _NONCE,
+        '        detail = detail & ". Nonce " & CStr(nonce) & " was NOT consumed and no " & _\n'
+        '                 "sampling was started; a retry may take it again."\n',
+        '        detail = detail & ". Nonce " & CStr(nonce) & " will not be reused."\n')
+    _control("test_44h4", nonce=damaged)
+
+
+def test_95_an_impossible_counter_reading_is_normalised() -> None:
+    body = conformance._procedure("Classify", conformance.NONCE_BAS)
+    tail = body[body.index("    state = SIM_NONCE_STATE_RECOVERY"):]
+    damaged = _swap(
+        _NONCE, tail,
+        "    state = SIM_NONCE_STATE_CONSUMED\n"
+        "    detail = \"simulation: the counter was normalised\"\n")
+    _control("test_44h4", nonce=damaged)
+
+
+def test_96_the_indeterminate_case_claims_to_be_unconsumed() -> None:
+    damaged = _swap(
+        _NONCE,
+        '    state = SIM_NONCE_STATE_INDETERMINATE\n',
+        '    state = SIM_NONCE_STATE_PRE_ALLOCATION\n')
+    _control("test_44h4", nonce=damaged)
+
+
+def test_97_the_durable_token_is_never_written() -> None:
+    damaged = _swap(
+        _REPORT,
+        "        RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE\n",
+        "        RefusalResult = SIM_ATTEMPT_REFUSED\n")
+    _control("test_44h3", report=damaged)
+
+
+def test_98_the_attempt_row_is_gated_on_verified_consumption() -> None:
+    damaged = _swap(
+        _REPORT,
+        "        If package.HasSuppliedSeed Or package.AutoIdentityKnown Then\n",
         "        If package.HasSuppliedSeed Or package.NonceConsumed Then\n")
-    damaged = _swap(
-        damaged,
-        "    If package.NonceAllocated Then\n"
-        "        block(5, 1) = package.ConsumedNonce\n",
-        "    If package.NonceConsumed Then\n"
-        "        block(5, 1) = package.ConsumedNonce\n")
     _control("test_44h3", report=damaged)
 
 
-def test_92_the_allocation_is_claimed_only_after_the_write() -> None:
-    """A raised assignment then loses the identity it may already have spent."""
+def test_99_the_published_block_claims_an_unverified_nonce() -> None:
     damaged = _swap(
         _REPORT,
-        _ALLOCATED +
-        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n",
-        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n"
-        + _ALLOCATED)
-    _control("test_44h2", report=damaged)
-
-
-def test_93_the_allocation_is_claimed_only_on_the_success_path() -> None:
-    damaged = _swap(_REPORT, _ALLOCATED, "")
-    damaged = _swap(
-        damaged,
-        "        package.NonceConsumed = True\n",
-        "        package.NonceAllocated = True\n"
-        "        package.NonceConsumed = True\n")
-    _control("test_44h2", report=damaged)
-
-
-def test_94_the_effective_seed_is_blanked_on_a_post_write_failure() -> None:
-    damaged = _swap(
-        _REPORT,
-        "        If package.HasSuppliedSeed Or package.NonceAllocated Then\n",
-        "        If package.HasSuppliedSeed Or package.NonceConsumed Then\n")
+        "    If package.NonceConsumed Then\n        built(6, 1) = package.ConsumedNonce\n",
+        "    If package.AutoIdentityKnown Then\n        built(6, 1) = package.ConsumedNonce\n")
     _control("test_44h3", report=damaged)
 
 
-def test_95_the_auto_nonce_is_blanked_on_a_post_write_failure() -> None:
+def test_100_fixed_mode_enters_the_auto_transaction() -> None:
     damaged = _swap(
-        _REPORT,
-        "    If package.NonceAllocated Then\n"
-        "        block(5, 1) = package.ConsumedNonce\n",
-        "    If package.NonceConsumed Then\n"
-        "        block(5, 1) = package.ConsumedNonce\n")
-    _control("test_44h3", report=damaged)
+        _NONCE,
+        "    If hasSuppliedSeed Then\n"
+        "        ' FIXED: no counter is read, no counter is written, and the AUTO\n"
+        "        ' reconciliation protocol is never entered.\n"
+        "        effectiveSeed = suppliedSeed\n",
+        "    If hasSuppliedSeed Then\n"
+        "        effectiveSeed = suppliedSeed\n"
+        "        If Not ResolveNextNonce(autoNonce, state, detail) Then Exit Function\n")
+    _control("test_44h2", nonce=damaged)
 
 
-def test_96_a_post_write_read_failure_claims_nothing_was_written() -> None:
-    body = conformance._procedure("AllocateAutoNonce")
-    start = body.index('            detail = "simulation: the AUTO nonce advance was written')
-    end = body.index("            Exit Function", start)
+def test_101_reconciliation_activates_on_a_generic_unsuccessful_result() -> None:
+    """The rejected broad rule: it cannot tell a consumed nonce from an unknown one."""
     damaged = _swap(
-        _REPORT, body[start:end],
-        '            detail = "simulation: the AUTO nonce advance did not persist"\n')
-    _control("test_44h4", report=damaged)
+        _NONCE,
+        "    If StrComp(SharedText(SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT), _\n"
+        "               SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE, vbBinaryCompare) = 0 Then\n",
+        "    If StrComp(SharedText(SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT), _\n"
+        "               SIM_ATTEMPT_SUCCESS, vbBinaryCompare) <> 0 Then\n")
+    _control("test_44h5", nonce=damaged)
 
 
-def test_97_a_mismatch_claims_nothing_was_written() -> None:
-    body = conformance._procedure("AllocateAutoNonce")
-    start = body.index('            detail = "simulation: the AUTO nonce advance did not read back')
-    end = body.index("            Exit Function", start)
-    damaged = _swap(
-        _REPORT, body[start:end],
-        '            detail = "simulation: the AUTO nonce advance did not persist"\n')
-    _control("test_44h4", report=damaged)
-
-
-def test_98_the_published_snapshot_claims_an_unverified_nonce() -> None:
-    """The opposite error: a PUBLISHED record may claim only proven consumption."""
-    damaged = _swap(
-        _REPORT,
-        "    If package.NonceConsumed Then\n"
-        "        built(8, 1) = package.ConsumedNonce\n",
-        "    If package.NonceAllocated Then\n"
-        "        built(8, 1) = package.ConsumedNonce\n")
-    _control("test_44h3", report=damaged)
-
-
-def test_99_the_commit_block_claims_an_unverified_nonce() -> None:
-    damaged = _swap(
-        _REPORT,
-        "    If package.NonceConsumed Then\n"
-        "        built(6, 1) = package.ConsumedNonce\n",
-        "    If package.NonceAllocated Then\n"
-        "        built(6, 1) = package.ConsumedNonce\n")
-    _control("test_44h3", report=damaged)
-
-
-def test_100_fixed_mode_writes_the_auto_counter() -> None:
-    damaged = _swap(
-        _REPORT,
-        "    If package.HasSuppliedSeed Then\n"
-        "        package.EffectiveSeed = package.SuppliedSeed\n",
-        "    If package.HasSuppliedSeed Then\n"
-        "        package.EffectiveSeed = package.SuppliedSeed\n"
-        "        package.NonceAllocated = True\n"
-        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = _\n"
-        "            package.ConsumedNonce + 1\n")
-    _control("test_44h2", report=damaged)
-
-
-def test_101_sampling_begins_despite_a_failed_verification() -> None:
-    damaged = _swap(
-        _REPORT,
-        "            Exit Function\n"
-        "        End If\n"
-        "        If stored <> package.ConsumedNonce + 1 Then\n",
-        "        End If\n"
-        "        If False Then\n")
-    _control("test_44h4", report=damaged)
-
-
-def test_102_the_audit_writer_grows_a_handler_without_settling_storage() -> None:
-    """If storage IS settled, the guarantee must say so - not quietly change."""
+def test_102_the_audit_writer_grows_a_blanket_suppressor() -> None:
     damaged = _swap(
         _REPORT,
         "    SimSheet.Range(AttemptRange()).Value2 = block\n",

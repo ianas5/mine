@@ -483,3 +483,170 @@ Worth flagging for the record: that raw ceiling was calibrated to the
 then-largest module rather than derived from a principle, and three modules now
 sit within 15 lines of it. Whether it should be re-derived is a decision for
 review, not something to settle inside a failure-path correction.
+
+
+---
+
+## 8. Fourth round: the allocation authority itself was wrong
+
+Round three settled the *visibility* of a failed allocation by inventing a
+pre-write `NonceAllocated` flag. Independent review established that this
+**contradicted the locked authority** — Step 0 defines allocation as
+*read → derive → **persist***, so "allocated" cannot be claimed before the
+write — and that my own new detectors had pinned the wrong definition in place.
+That analysis was accepted, the gap was classified as a contract-model gap, and
+this round implements the approved settlement (**Option 3R**, carrier
+**Option A**, line-cap route **new module**).
+
+### 8.1 The Phase-6 attempt-result axis gains a fifth token
+
+```
+NONE  SUCCESS  REFUSED  FAILED  AUTO_NONCE_INDETERMINATE
+```
+
+**Phase 5 is unchanged and remains exactly four values.** `calc_contract.yaml`,
+`calc_loader.py` and the Phase-5 attempt-result tests have **no diff**. The
+Phase-6 axis is now a **strict superset**: `_Calc!Last Attempt Result` and
+`_SimData!Last Attempt Result` carry analogous labels and are no longer required
+to share an enumeration, because the fifth token names a persistence/recovery
+condition Phase 5 has no analogue for. Like `REFUSED` and `FAILED` it takes no
+part in deriving the simulation status.
+
+`docs/phase6_plan.md` carried the old membership in normative prose. It now
+carries a **post-acceptance authority correction** stating the new membership and
+reaffirming the orthogonality rule, which was always correct.
+
+### 8.2 The builder lock
+
+`builder/pccm_builder/sim_loader.py` was the hard blocker: `LOCKED_ATTEMPT_RESULTS`
+rejected the fifth token outright and Stage A would not build. It is now the
+five-value sequence — **still an exact-sequence lock**, order and membership both
+load-bearing. This is an authority correction, not a relaxation.
+
+A **second, unavoidable** `sim_loader.py` change was required and is reported
+rather than buried: the contract is **closed-world**, so the new
+`nonce_lifecycle` keys were rejected until the validator learned them — and the
+validator's own error text says a key it merely tolerates governs nothing. So
+they are not merely permitted, they are **enforced**: `_validate_allocation_states`
+pins each of the three states to the exact facts an implementation may claim in
+it, pins the one-observation reconciliation table, requires the next-run
+reconciliation to activate on the durable token alone, pins
+`attempt_metadata_preserves` by state, and requires the declared residual.
+
+### 8.3 The three states, in the contract
+
+| State | `advance_persisted` | `nonce_consumed` | Retry may take the same nonce |
+|---|---|---|---|
+| `PRE_ALLOCATION` | false | false | **true** — nothing was ever allocated, so this is not reuse |
+| `CONSUMED` | true | true | false |
+| `PERSISTENCE_INDETERMINATE` | `unknown` | `unknown` | — must not be called allocated **or** unconsumed |
+
+`reuse_permitted: false` is now explicitly scoped to a **known-consumed** nonce.
+
+### 8.4 The new module
+
+`modSimNonce` owns the AUTO nonce transaction and nothing else. The size control
+did exactly what a module-size control is for: it exposed that one coherent
+responsibility should be separated. **Neither ceiling was raised.**
+
+```
+modSimNonce   raw ?  code ?
+modSimReport  raw ?  code ?
+```
+
+One public entry point, `SimNonceAllocate`, taking **scalars only**:
+`hasSuppliedSeed`, `suppliedSeed` in; `effectiveSeed`, `autoNonce`,
+`identityKnown`, `state`, `detail` out. `SimRunPackage` **stays Private** — the
+split was not paid for by exporting it — and no shared mutable context object
+exists in either direction. The dependency is one-way: `modSimReport` drives
+`modSimNonce`, and `modSimNonce` names the reporter nowhere, not even to borrow
+a failpoint constant. The constant moved with its owner.
+
+Executable failpoint ownership is now exactly:
+
+```
+modSimNonce   Phase6AfterNoncePersisted
+modSimReport  Phase6CandidateBank, Phase6FinalCommit
+```
+
+Still three, none added or renamed.
+
+### 8.5 Immediate reconciliation
+
+After a raised counter write **or** a failed first verification, the original
+error is captured, the handler disarmed, and **exactly one** observation taken —
+no retry loop, ever:
+
+| Observed | Classification | What the attempt says |
+|---|---|---|
+| `m+1` | `CONSUMED` | nonce `m` consumed, will not be reused; run still unsuccessful; no sampling |
+| `m` | `PRE_ALLOCATION` | advance did not persist; `m` **not** consumed; *"a retry may take it again"* |
+| neither | `RECOVERY_REQUIRED` | inconsistent counter; nothing normalised, decremented or skipped |
+| unobtainable | `PERSISTENCE_INDETERMINATE` | *"neither allocated nor unconsumed"*; durable marker written |
+
+The `PRE_ALLOCATION` arm deliberately does **not** say *"will not be reused"* —
+a control refuses that phrase there, because `m` will legitimately be reissued.
+
+### 8.6 Next-run reconciliation
+
+Activated by `Last Attempt Result = AUTO_NONCE_INDETERMINATE` **alone**, never by
+a generic unsuccessful result — an ordinary `REFUSED`/`FAILED` may follow a
+conclusively persisted advance, and conflating them destroys the distinction the
+token exists to keep. With prior attempted nonce `m` and counter `c`:
+`c = m+1` → resolved consumed, allocate from `c`; `c = m` → resolved not
+persisted, `m` may be allocated; anything else, or an unreadable counter →
+recovery. FIXED mode never enters it.
+
+### 8.7 Attempt metadata by state
+
+The attempt row is gated on `AutoIdentityKnown` (the diagnostic fact), so a
+post-write failure can never blank the identity and make an advanced counter look
+like a skipped nonce. **Published** records — snapshot and commit block — stay
+gated on `NonceConsumed`: a published bank may claim only *proven* consumption.
+Controls refuse each direction being swapped.
+
+### 8.8 The compound residual stands
+
+If persistence becomes indeterminate **and** the attempt recorder then cannot
+durably write the marker, the workbook has lost the reconciliation authority.
+Automatic retry is not authorised and recovery is required. No second journal was
+built. Integration `test_28` states its own limit: it proves failures are
+**routed** to the attempt recorder, and explicitly does not claim the row can
+never fail to be **stored**.
+
+### 8.9 Detectors that pinned the wrong authority
+
+`test_44h2`, `test_44h3`, `test_44h4`, `test_91`, `test_92`, integration
+`test_29`, `test_52`, `test_53` and every `claimed < write` assertion were
+**rewritten, not re-anchored** — a control that pins a rejected definition is
+worse than no control. They now assert the contract's order,
+`read < derive < persist < established < sampling`, and a control
+(`test_91`/`test_94`) restores the rejected pre-write flag and the false
+non-reuse promise and requires refusal.
+
+### 8.10 Hashes, with the cause of each movement
+
+| Artefact | Before | After | Why |
+|---|---|---|---|
+| `spec/sim_contract.yaml` | `715f0025…d55076` | `a1b6f35a45f5…` | fifth token + three-state nonce authority |
+| `spec/structure_contract.yaml` | `cb0d03af…439b61` | `68f135d35af4…` | `modSimNonce` registered; reporter responsibility narrowed |
+| `build/vba/modSimContract.bas` | `1d949be6…293a753` | `96e22c842c11…` | projects the fifth token |
+| `build/phase6_cases.json` | `98f83537…78b6d1` | `8019683a0490…` | projects the attempt-result axis |
+| `build/stage_b_manifest.json` | `51335e33…272049` | `58e0f1170d5a…` | module registry gained `modSimNonce` |
+| `src/vba/modSimReport.bas` | `0797e307…3af1f4` | `f57b6d06abbd…` | nonce lifecycle extracted; audit gate renamed |
+| `src/vba/modSimNonce.bas` | — | `a6806b05d24b…` | new |
+
+**Unchanged, and checked:** `modSimRng`, `modSimSample`, `modSimEngine`,
+`modSimStats`, `modSimFingerprint`, `modCalcFingerprint`, `modCalcReport`, and
+every Phase-5 authority including `calc_contract.yaml` and `calc_loader.py`.
+D6-11 did not move: `MRG32k3a → [modSimRng]`, `RunSimulation → [modSimReport]`,
+`Percentile → []`.
+
+### 8.11 One further control found by the suite
+
+`test_128` sweeps every settled contract leaf and mutates it to a
+type-compatible wrong value. My first draft wrote the four next-run resolutions
+as free-form prose validated only for non-emptiness, so a wrong value passed.
+They are now settled tokens — `CONSUMED`, `PRE_ALLOCATION`, `RECOVERY_REQUIRED`,
+`RECOVERY_REQUIRED` — validated by exact value, with the explanation in the
+comment where it belongs. The control was right and the contract was weak.

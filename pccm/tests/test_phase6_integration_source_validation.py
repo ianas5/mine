@@ -110,6 +110,8 @@ CALC_BAS = "modCalcReport.bas"
 _REPORT = _read(_SRC, REPORT_BAS)
 _CALC = _read(_SRC, CALC_BAS)
 _STRUCTURE = _read(_SPEC, "structure_contract.yaml")
+NONCE_BAS = "modSimNonce.bas"
+_NONCE = _read(_SRC, NONCE_BAS)
 
 
 def test_00_the_accepted_tree_passes_every_detector() -> None:
@@ -553,13 +555,12 @@ def test_42_a_phase6_module_suppresses_errors_wholesale() -> None:
 
 def test_43_the_consumed_nonce_is_rolled_back_on_failure() -> None:
     damaged = _swap(
-        _REPORT,
-        "CandidateFailed:\n    failure = Err.Description\n",
-        "CandidateFailed:\n"
-        "    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = _\n"
-        "        package.ConsumedNonce - 1\n"
+        _NONCE,
+        "AllocationFailed:\n    failure = Err.Description\n",
+        "AllocationFailed:\n"
+        "    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = autoNonce - 1\n"
         "    failure = Err.Description\n")
-    _control("test_29", vba={REPORT_BAS: damaged})
+    _control("test_29", vba={NONCE_BAS: damaged})
 
 
 def test_44_the_failed_candidate_bank_is_erased() -> None:
@@ -599,31 +600,18 @@ def test_46_the_restore_write_is_removed_from_the_commit() -> None:
 
 
 def test_47_the_after_nonce_failpoint_raises_out_of_run_simulation() -> None:
-    """THE SECOND FINDING, planted back as it shipped in 4df2af3.
-
-    `FailPointCheck` raises, so this naked call left the run through the
-    invocation handler with the nonce already spent and no attempt record. The
-    previous shape of `test_28` walked only the `If Not <stage>` guards and
-    never looked at it, which is why the suite passed while the defect existed.
-    """
-    damaged = _swap(
-        _REPORT, "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n", "")
-    damaged = _swap(
-        damaged,
-        "    If Not AllocateAutoNonce(package, detail) Then\n"
-        "        RunSimulation = RecordRefusal(package, detail)\n"
-        "        Exit Function\n"
-        "    End If\n",
-        "    If Not AllocateAutoNonce(package, detail) Then\n"
-        "        RunSimulation = RecordRefusal(package, detail)\n"
-        "        Exit Function\n"
-        "    End If\n"
-        "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n")
-    _control("test_28", vba={REPORT_BAS: damaged})
+    """A naked raising call in the orchestrator bypasses the attempt axis."""
+    nonce = _swap(_NONCE,
+                  "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n", "")
+    report = _swap(
+        _REPORT,
+        "    If Not AllocateAutoNonce(package, detail) Then\n",
+        "    modAppState.FailPointCheck modSimNonce.FAILPOINT_SIM_AFTER_NONCE\n"
+        "    If Not AllocateAutoNonce(package, detail) Then\n")
+    _control("test_28", vba={REPORT_BAS: report, NONCE_BAS: nonce})
 
 
 def test_48_a_failpoint_fires_with_no_handler_armed() -> None:
-    """Not only in RunSimulation: any owner must arm before it fires."""
     damaged = _swap(
         _REPORT,
         "    On Error GoTo CandidateFailed\n\n"
@@ -637,68 +625,89 @@ def test_48_a_failpoint_fires_with_no_handler_armed() -> None:
     _control("test_28", vba={REPORT_BAS: damaged})
 
 
-def test_49_the_nonce_allocation_loses_its_envelope() -> None:
-    damaged = _swap(_REPORT, "    On Error GoTo AllocationFailed\n", "")
-    _control("test_28", vba={REPORT_BAS: damaged})
+def test_49_the_nonce_transaction_loses_its_envelope() -> None:
+    damaged = _swap(_NONCE, "    On Error GoTo AllocationFailed\n", "")
+    _control("test_28", vba={NONCE_BAS: damaged})
 
 
 def test_50_the_injection_precedes_the_verified_persistence() -> None:
-    damaged = _swap(
-        _REPORT, "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n", "")
+    damaged = _swap(_NONCE,
+                    "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n", "")
     damaged = _swap(
         damaged,
-        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n",
-        "        modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n"
-        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n")
-    _control("test_29", vba={REPORT_BAS: damaged})
+        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n",
+        "    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE\n"
+        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n")
+    _control("test_29", vba={NONCE_BAS: damaged})
 
 
-def test_51_the_counter_is_rolled_back_after_an_allocation_failure() -> None:
+def test_51_the_seed_is_derived_after_the_advance_is_persisted() -> None:
+    """The contract's order is read < derive < persist, and it is load-bearing."""
     damaged = _swap(
-        _REPORT,
-        "AllocationFailed:\n    failure = Err.Description\n",
-        "AllocationFailed:\n"
-        "    SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce - 1\n"
-        "    failure = Err.Description\n")
-    _control("test_29", vba={REPORT_BAS: damaged})
+        _NONCE,
+        "        If Not modSimRng.SimRngAutoSeedFromNonce(autoNonce, seed, detail) Then\n"
+        "            Exit Function\n"
+        "        End If\n"
+        "        effectiveSeed = seed\n"
+        "        identityKnown = True\n"
+        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n",
+        "        If Not PersistAdvance(autoNonce, state, detail) Then Exit Function\n"
+        "        If Not modSimRng.SimRngAutoSeedFromNonce(autoNonce, seed, detail) Then\n"
+        "            Exit Function\n"
+        "        End If\n"
+        "        effectiveSeed = seed\n"
+        "        identityKnown = True\n")
+    _control("test_29", vba={NONCE_BAS: damaged})
 
 
 def test_52_the_attempt_record_loses_the_allocated_identity() -> None:
-    """THE THIRD FINDING, planted back as it shipped in e574fdb.
-
-    One Boolean, set only after verification, gating the attempt record - so a
-    post-write verification failure blanked the effective seed and the AUTO
-    nonce and an advanced counter looked like a skipped one.
-    """
-    damaged = _swap(_REPORT, "        package.NonceAllocated = True\n", "")
-    damaged = _swap(
-        damaged,
-        "        If package.HasSuppliedSeed Or package.NonceAllocated Then\n",
-        "        If package.HasSuppliedSeed Or package.NonceConsumed Then\n")
-    damaged = _swap(
-        damaged,
-        "    If package.NonceAllocated Then\n"
-        "        block(5, 1) = package.ConsumedNonce\n",
-        "    If package.NonceConsumed Then\n"
-        "        block(5, 1) = package.ConsumedNonce\n")
-    _control("test_29", vba={REPORT_BAS: damaged})
-
-
-def test_53_allocation_is_claimed_after_the_counter_write() -> None:
     damaged = _swap(
         _REPORT,
-        "        package.NonceAllocated = True\n"
-        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n",
-        "        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1\n"
-        "        package.NonceAllocated = True\n")
+        "        If package.HasSuppliedSeed Or package.AutoIdentityKnown Then\n",
+        "        If package.HasSuppliedSeed Or package.NonceConsumed Then\n")
     _control("test_29", vba={REPORT_BAS: damaged})
+
+
+def test_53_the_nonce_module_writes_the_attempt_row() -> None:
+    """Attempt-row persistence has exactly one owner, and it is the reporter."""
+    damaged = _swap(
+        _NONCE,
+        "Private Function SharedText(ByVal row As Long) As String\n",
+        "Private Sub WriteAttemptBlock(ByVal result As String)\n"
+        "    SharedCell(SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT).Value2 = result\n"
+        "End Sub\n\n"
+        "Private Function SharedText(ByVal row As Long) As String\n")
+    _control("test_30", vba={NONCE_BAS: damaged})
 
 
 def test_54_the_audit_writer_gains_a_blanket_suppressor() -> None:
-    """The routing guarantee must not be turned into a storage guarantee."""
     damaged = _swap(
         _REPORT,
         "    SimSheet.Range(AttemptRange()).Value2 = block\n",
         "    On Error Resume Next\n"
         "    SimSheet.Range(AttemptRange()).Value2 = block\n")
     _control("test_28", vba={REPORT_BAS: damaged})
+
+
+def test_55_the_nonce_module_gains_an_endpoint() -> None:
+    damaged = _swap(
+        _NONCE, "Public Function SimNonceAllocate(",
+        "Public Function PCCM_SimulationNonce() As String\n"
+        "    PCCM_SimulationNonce = vbNullString\n"
+        "End Function\n\n"
+        "Public Function SimNonceAllocate(")
+    _control("test_30", vba={NONCE_BAS: damaged})
+
+
+def test_56_the_nonce_module_depends_back_on_the_reporter() -> None:
+    damaged = _swap(
+        _NONCE,
+        'Public Const FAILPOINT_SIM_AFTER_NONCE As String = "Phase6AfterNoncePersisted"\n',
+        "Public Const FAILPOINT_SIM_AFTER_NONCE As String = _\n"
+        "    modSimReport.FAILPOINT_SIM_CANDIDATE_BANK\n")
+    _control("test_30", vba={NONCE_BAS: damaged})
+
+
+def test_57_the_run_package_becomes_public() -> None:
+    damaged = _swap(_REPORT, "Private Type SimRunPackage\n", "Public Type SimRunPackage\n")
+    _control("test_30", vba={REPORT_BAS: damaged})

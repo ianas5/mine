@@ -1176,11 +1176,30 @@ positions and bytes, so the Phase-5 subset stays comparable across phases.
 The rules are ordered, so they are **mutually exclusive** by construction, and
 they are **total**: rule 1 or rule 2 catches everything rules 3 and 4 do not.
 
-**The attempt result — `NONE`, `SUCCESS`, `REFUSED`, `FAILED` — MUST NOT
-participate in the derivation.** It is an orthogonal audit axis, exactly as
-`last_attempt_result` is in the accepted Phase-5 calculation state. A refusal
-that the user has since corrected does not make a matching request stale, and a
-failure does not make a valid changed request invalid.
+**The attempt result MUST NOT participate in the derivation.** It is an
+orthogonal audit axis, exactly as `last_attempt_result` is in the accepted
+Phase-5 calculation state. A refusal that the user has since corrected does not
+make a matching request stale, and a failure does not make a valid changed
+request invalid.
+
+> **POST-ACCEPTANCE AUTHORITY CORRECTION (Step 12).** This paragraph originally
+> enumerated the axis as `NONE`, `SUCCESS`, `REFUSED`, `FAILED`. **The
+> orthogonality rule above is unchanged and remains correct; the membership is
+> not.** The Phase-6 axis additionally contains
+> **`AUTO_NONCE_INDETERMINATE`**, solely to carry a durable AUTO-nonce
+> persistence/recovery condition across invocations — see
+> `seeding.nonce_lifecycle.allocation_states` in `spec/sim_contract.yaml` and
+> `docs/phase6_step12_transaction_settlement.md`.
+>
+> The Phase-6 attempt-result axis is therefore a **strict superset** of the
+> Phase-5 calculation attempt-result axis, which remains exactly `NONE`,
+> `SUCCESS`, `REFUSED`, `FAILED`. `_Calc!Last Attempt Result` and
+> `_SimData!Last Attempt Result` carry analogous labels and are no longer
+> required to share an enumeration: the fifth token names a condition Phase 5
+> has no analogue for.
+>
+> Like `REFUSED` and `FAILED`, the new token takes **no part** in deriving the
+> simulation status.
 
 **BLANK is the absence of a successful-comparison state, not a fourth label.** A
 status can only be CURRENT or STALE *relative to a stored success*, so with no

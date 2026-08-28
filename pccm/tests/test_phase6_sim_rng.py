@@ -535,7 +535,7 @@ def test_36_the_only_phase6_vba_is_the_generator_backbone() -> None:
     # Nothing beyond them. A Step-12 module would have to arrive with a step.
     unauthorised = {n for n in names if n.startswith("modSim")} - {
         "modSimRng.bas", "modSimSample.bas", "modSimEngine.bas", "modSimStats.bas",
-        "modSimFingerprint.bas", "modSimReport.bas"}
+        "modSimFingerprint.bas", "modSimNonce.bas", "modSimReport.bas"}
     assert unauthorised == set(), sorted(unauthorised)
     for path in sorted(src.glob("*.bas")):
         if path.stem == "modSimRng":

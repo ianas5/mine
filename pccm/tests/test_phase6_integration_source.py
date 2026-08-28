@@ -33,6 +33,7 @@ from pathlib import Path
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
+sys.path.insert(0, str(PCCM_ROOT / "tests"))
 
 from pccm_builder import load_sim_contract, load_structure_contract  # noqa: E402
 from pccm_builder.vba_source import (  # noqa: E402
@@ -47,6 +48,7 @@ SPEC = PCCM_ROOT / "spec"
 BUILD = PCCM_ROOT / "build"
 
 REPORT = "modSimReport"
+NONCE = "modSimNonce"
 BRIDGE = "CalcPrepareSimulationInputs"
 
 # The accepted Phase-6 public surface, settled by Step 11 and frozen here.
@@ -78,7 +80,8 @@ FROZEN_SOURCE = {
     "modSimEngine": "f1283fe7d5d2ffcc5345dab9a00f68d3685b787563d104f50a886c5ed409abab",
     "modSimStats": "98bd21b227047d04e6847e554e027b339cf01dfb1112c1539a9e334966233be0",
     "modSimFingerprint": "9e6ad972fe59ead9e34c7d65b807dd0f2ca1cb1b29bfa71b377a4eb8f65cdfda",
-    "modSimReport": "0797e307a4a69c6847cb07415d01abf7bc584539a831ce6f124bb8e74d3af1f4",
+    "modSimNonce": "a6806b05d24b307b277e900236b08da03ec87f7f93478b9c122f05231f3ce889",
+    "modSimReport": "f57b6d06abbd984da62fb619e4ee33d696f263003988cfec4f3677fbd54a94a3",
     "modCalcFingerprint": "2efbb30c6f915c04b9c07adec07e25e11f4b5bd2b98e3efa818631dc510ce847",
     "modCalcReport": "8252b935b256b1abad9b26ca6b1d90c92c5e0d7566906308b191cd03dd6a71b3",
 }
@@ -199,9 +202,10 @@ def test_05_the_reporter_owns_no_kernel_mathematics() -> None:
         r"mod(?:SimEngine|SimStats|SimFingerprint|SimRng|CalcReport)\.(\w+)", code))
     assert called == {
         "SimEngineRun", "SimStatsDescribe", "SimStatsContingency",
-        "SimFpBuildRequestFingerprint", "SimFpResultDigest",
-        "SimRngAutoSeedFromNonce", BRIDGE,
+        "SimFpBuildRequestFingerprint", "SimFpResultDigest", BRIDGE,
     }, sorted(called)
+    # The AUTO seed is derived inside the nonce transaction, by its owner.
+    assert "SimRngAutoSeedFromNonce" in _module(NONCE).code
     # ENGINE. No contribution or distribution arithmetic.
     for engine_owned in ("SimSample", "BuildDriverFactors", "BuildInflationFactors",
                          "BuildDiscountFactors", "BuildKnom", "BuildKpv",
@@ -564,9 +568,9 @@ def test_23_every_accepted_module_is_byte_identical() -> None:
 def test_24_the_generated_authority_is_byte_identical() -> None:
     for path, expected in (
         (BUILD / "vba" / "modSimContract.bas",
-         "1d949be659d0afc3e18501a34b7d372bab3df575fc1a981cfd60dcf1f293a753"),
+         "96e22c842c110669e303d9e797f3d020356b17bb3f3e655e53fb896e956d1828"),
         (BUILD / "phase6_cases.json",
-         "98f835375f5b8f548172c21ae6102b50fef7e6a001e196ece0741c987d78b6d1"),
+         "8019683a0490fcf0740cf07244524973d9b7470c933f1003059025b6b019a0be"),
     ):
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         assert actual == expected, f"{path.name} moved: {actual}"
@@ -609,6 +613,12 @@ def test_28_every_transaction_failure_is_routed_to_the_attempt_recorder() -> Non
     not.
     """
     run = _procedure(REPORT, "RunSimulation")
+    # THE NONCE MODULE OWNS NO ENDPOINT AND WRITES NO ATTEMPT ROW.
+    assert not [n for n in _module(NONCE).public_procedures if n.startswith("PCCM_")]
+    assert "AttemptRange" not in _module(NONCE).code
+    for banned in ("SIM_IDENTITY_ROW_LAST_ATTEMPT_DETAIL", "WriteAttemptBlock",
+                   "SimEngineRun", "SimStatsDescribe", "SimFp", "SnapshotRange"):
+        assert banned not in _module(NONCE).code, banned
     # Every staged call is tested, and every arm records something.
     for stage, recorder in (("PrepareRun", "RecordRefusal"),
                             ("AllocateAutoNonce", "RecordRefusal"),
@@ -623,8 +633,10 @@ def test_28_every_transaction_failure_is_routed_to_the_attempt_recorder() -> Non
         assert "Err.Raise" not in arm, (
             f"{stage} re-raises instead of recording an attempt"
         )
-    # EVERY COM-FALLIBLE STAGE CARRIES ITS OWN ENVELOPE.
-    assert "On Error GoTo AllocationFailed" in _procedure(REPORT, "AllocateAutoNonce")
+    # EVERY COM-FALLIBLE STAGE CARRIES ITS OWN ENVELOPE, in its owning module.
+    assert "On Error GoTo AllocationFailed" in _procedure(NONCE, "SimNonceAllocate")
+    assert "On Error GoTo WriteRaised" in _procedure(NONCE, "PersistAdvance")
+    assert "On Error GoTo ObservationRaised" in _procedure(NONCE, "Reconcile")
     assert "On Error GoTo CandidateFailed" in _procedure(REPORT, "PublishCandidate")
     assert "On Error GoTo CommitFailed" in _procedure(REPORT, "FinalCommit")
     assert "On Error GoTo CaptureFailed" in _procedure(REPORT, "FinalCommit")
@@ -642,13 +654,14 @@ def test_28_every_transaction_failure_is_routed_to_the_attempt_recorder() -> Non
     assert "FailPointCheck" not in run, (
         "a failpoint raises straight out of RunSimulation"
     )
-    for name in _module(REPORT).procedures:
-        body = _procedure(REPORT, name)
-        if "FailPointCheck" not in body:
-            continue
-        armed = [m.start() for m in re.finditer(r"On Error GoTo (?!0\b)\w+", body)]
-        assert armed, f"{name} fires a failpoint with no handler armed"
-        assert min(armed) < body.index("FailPointCheck"), name
+    for owner in (REPORT, NONCE):
+        for name in _module(owner).procedures:
+            body = _procedure(owner, name)
+            if "FailPointCheck" not in body:
+                continue
+            armed = [m.start() for m in re.finditer(r"On Error GoTo (?!0\b)\w+", body)]
+            assert armed, f"{owner}.{name} fires a failpoint with no handler armed"
+            assert min(armed) < body.index("FailPointCheck"), f"{owner}.{name}"
 
     # THE LIMIT OF THE GUARANTEE, ASSERTED SO IT CANNOT DRIFT INTO A STRONGER
     # CLAIM. The audit writer's own COM write is unguarded, by design.
@@ -662,7 +675,7 @@ def test_28_every_transaction_failure_is_routed_to_the_attempt_recorder() -> Non
     # AND NO PHASE-6 MODULE SUPPRESSES ERRORS WHOLESALE. (The Phase-4 modules
     # carry their own documented `On Error Resume Next` whitelist, policed by
     # test_phase4_stage_b_source.py; nothing here widens or narrows it.)
-    for name in tuple(FROZEN_SOURCE) + (REPORT,):
+    for name in tuple(FROZEN_SOURCE) + (REPORT, NONCE):
         assert "On Error Resume Next" not in _module(name).code, name
 
 
@@ -676,26 +689,25 @@ def test_29_the_publication_contract_is_implemented_where_it_is_stated() -> None
     # NOTHING DECREMENTS THE COUNTER on any failure path, and the advance is
     # persisted AND verified AND marked before the accepted injection boundary,
     # so `next_auto_nonce_advanced: true` holds even for an injected failure.
-    code = _module(REPORT).code
+    code = _module(NONCE).code
     assert "NEXT_AUTO_NONCE" in code
     for _, statement in logical_statements(code):
         if "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" in statement and "- 1" in statement:
             raise AssertionError(f"the consumed nonce is rolled back: {statement}")
-    allocate = _procedure(REPORT, "AllocateAutoNonce")
-    claimed, write, verify, mark, injected = _order(
-        "package.NonceAllocated = True",
-        "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2",
-        "ReadMachineLong", "package.NonceConsumed = True",
-        "FailPointCheck FAILPOINT_SIM_AFTER_NONCE", body=allocate)
-    assert claimed < write < verify < mark < injected
-    assert "SimEngineRun" not in allocate, "sampling begins inside the allocation"
-    # `attempt_metadata_preserves` is about the ALLOCATED identity, so the
-    # attempt record is gated on the claim, never on verified consumption.
-    preserved = list(lifecycle["attempt_metadata_preserves"]) if (
-        lifecycle := _sim().raw["seeding"]["nonce_lifecycle"]) else []
-    assert preserved == ["consumed_auto_nonce", "effective_seed"], preserved
+    # THE CONTRACT'S ORDER, at its owner: read < derive < persist < established.
+    entry = _procedure(NONCE, "SimNonceAllocate")
+    read, derive, persist, injected = _order(
+        "ResolveNextNonce(", "SimRngAutoSeedFromNonce", "PersistAdvance(",
+        "FailPointCheck FAILPOINT_SIM_AFTER_NONCE", body=entry)
+    assert read < derive < persist < injected
+    assert "SimEngineRun" not in code, "sampling begins inside the allocation"
+    # The attempt record keeps the identity by STATE, and consumption is the
+    # stronger claim that only an observed match earns.
+    lifecycle = _sim().raw["seeding"]["nonce_lifecycle"]
+    assert list(lifecycle["attempt_metadata_preserves"]["persistence_indeterminate"]) == [
+        "attempted_auto_nonce", "effective_seed", "durable_indeterminate_result"]
     attempt = _procedure(REPORT, "WriteAttemptBlock")
-    assert "package.NonceAllocated" in attempt
+    assert "package.AutoIdentityKnown" in attempt
     assert "package.NonceConsumed" not in attempt, (
         "a post-write verification failure blanks the preserved identity"
     )
@@ -722,6 +734,81 @@ def test_29_the_publication_contract_is_implemented_where_it_is_stated() -> None
     capture, write = _order("previous = SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2",
                             "Range(SIM_FINAL_COMMIT_RANGE).Value2 = block", body=final)
     assert capture < write
+
+
+# ===========================================================================
+# The modSimNonce responsibility split
+# ===========================================================================
+def test_30_the_nonce_responsibility_is_split_and_stays_split() -> None:
+    """One coherent responsibility, one module, and a one-way dependency."""
+    structure = _structure()
+    modules = {m.name: m for m in structure.vba_modules}
+    assert NONCE in modules and modules[NONCE].generated is False
+    assert "AUTO nonce" in modules[NONCE].responsibility
+    # The reporter no longer claims the lifecycle it delegated.
+    assert "AUTO nonce lifecycle belongs to modSimNonce" in modules[REPORT].responsibility
+
+    nonce = _module(NONCE)
+    # ONE PUBLIC ENTRY POINT plus its projected state vocabulary. No endpoint.
+    assert "SimNonceAllocate" in nonce.public_procedures
+    assert not [n for n in nonce.public_procedures if n.startswith("PCCM_")]
+    for endpoint in PHASE6_PUBLIC:
+        assert endpoint not in nonce.code, endpoint
+
+    # IT OWNS NO SIMULATION WORK, and writes no attempt row.
+    for banned in ("SimEngineRun", "SimStatsDescribe", "SimStatsContingency",
+                   "SimFpBuildRequestFingerprint", "SimFpResultDigest",
+                   "SnapshotRange", "SummaryRange", "ContingencyRange",
+                   "IterationRange", "AttemptRange", "StatusRange",
+                   "WriteAttemptBlock", "DeriveSimStatus", "CandidateRunId",
+                   "SIM_FINAL_COMMIT_RANGE", "SIM_IDENTITY_ROW_ACTIVE_BANK"):
+        assert banned not in nonce.code, banned
+    # The only kernel it reaches is the seed derivation its responsibility names.
+    assert set(re.findall(r"mod(?:SimRng|SimEngine|SimStats|SimFingerprint)\.(\w+)",
+                          nonce.code)) == {"SimRngAutoSeedFromNonce"}
+
+    # THE DEPENDENCY IS ONE-WAY. modSimReport drives modSimNonce and never the
+    # reverse - not even to borrow a failpoint constant.
+    assert "modSimNonce." in _module(REPORT).code
+    assert "modSimReport" not in nonce.code, (
+        "the nonce module depends back on the orchestrator"
+    )
+
+    # THE REPORTER NO LONGER IMPLEMENTS THE TRANSACTION.
+    report = _module(REPORT).code
+    for moved in ("SIM_IDENTITY_ROW_NEXT_AUTO_NONCE", "SimRngAutoSeedFromNonce",
+                  "FAILPOINT_SIM_AFTER_NONCE", "SIM_NONCE_EXHAUSTED"):
+        assert moved not in report, moved
+
+    # THE RUN PACKAGE STAYS PRIVATE. The split is not paid for by exporting it.
+    types = re.findall(r"^(Public|Private) Type (\w+)$", _module(REPORT).raw, re.M)
+    assert types == [("Private", "SimRunPackage")], types
+    assert "SimRunPackage" not in nonce.code, (
+        "the run package crossed the module boundary"
+    )
+    # The interface is scalars, and every out-parameter is a primitive.
+    signature = _procedure(NONCE, "SimNonceAllocate")
+    signature = signature[: signature.index(") As Boolean")]
+    for kind in ("As Boolean", "As Long", "As String"):
+        assert kind in signature, kind
+    for composite in ("As Variant", "As Object", "As Range", "()"):
+        assert composite not in signature, composite
+
+
+def test_31_both_phase6_orchestration_modules_stay_within_their_limits() -> None:
+    """The split was made to satisfy the size control, not to dodge it."""
+    import test_phase4_stage_b_source as sizes
+
+    by_name = {m.name: m for m in sizes._handwritten_modules()}
+    for name in (REPORT, NONCE):
+        assert name in by_name, name
+        raw, _, _, code = sizes._line_metrics(by_name[name])
+        assert raw < sizes.PHASE5_RAW_LINE_LIMIT, (name, raw)
+        assert code < sizes.PHASE5_CODE_LINE_LIMIT, (name, code)
+    # And the ceilings themselves were not moved to make room.
+    assert sizes.PHASE5_RAW_LINE_LIMIT == 1200
+    assert sizes.PHASE5_CODE_LINE_LIMIT == 900
+    assert sizes.PHASE4_RAW_LINE_LIMIT == 900
 
 
 # ===========================================================================

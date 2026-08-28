@@ -345,9 +345,9 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimEngine" in modules
     assert modules["modSimEngine"].generated is False
-    assert [m.name for m in structure.vba_modules][-7:] == [
+    assert [m.name for m in structure.vba_modules][-8:] == [
         "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-        "modSimFingerprint", "modSimReport"
+        "modSimFingerprint", "modSimNonce", "modSimReport"
     ]
     # No new endpoint, and D6-11 is untouched.
     assert "SimEngineRun" not in set(structure.entry_points) | set(structure.api_procedures)

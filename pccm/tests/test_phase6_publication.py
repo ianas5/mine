@@ -411,7 +411,7 @@ def test_20_the_implementation_arrived_in_step_11_and_only_there() -> None:
     # be declared ahead of the step that authorises it.
     assert {n for n in declared if n.startswith("modSim")} == {
         "modSimContract", "modSimRng", "modSimSample", "modSimEngine",
-        "modSimStats", "modSimFingerprint", "modSimReport",
+        "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport",
     }, sorted(n for n in declared if n.startswith("modSim"))
 
 

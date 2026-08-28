@@ -249,7 +249,8 @@ PHASE5_INVENTORY = {
 """The fifteen modules Phase 5 closed with. Frozen by name, not by count."""
 
 PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
-                    "modSimStats", "modSimFingerprint", "modSimReport"}
+                    "modSimStats", "modSimFingerprint", "modSimNonce",
+                    "modSimReport"}
 """Everything Phase 6 has added on top, also by name: a module cannot appear
 in the registry here unremarked."""
 

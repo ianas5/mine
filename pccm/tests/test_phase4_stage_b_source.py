@@ -253,6 +253,7 @@ PHASE6_VBA_MODULES = (
     "modSimEngine",
     "modSimStats",
     "modSimFingerprint",
+    "modSimNonce",
     "modSimReport",
 )
 

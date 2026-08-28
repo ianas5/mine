@@ -44,6 +44,7 @@ from pccm_builder.vba_source import (  # noqa: E402
 SRC_VBA = PCCM_ROOT / "src" / "vba"
 REPORT_BAS = SRC_VBA / "modSimReport.bas"
 CALC_REPORT_BAS = SRC_VBA / "modCalcReport.bas"
+NONCE_BAS = SRC_VBA / "modSimNonce.bas"
 SPEC = PCCM_ROOT / "spec"
 CASES_JSON = PCCM_ROOT / "build" / "phase6_cases.json"
 
@@ -132,9 +133,9 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimReport" in modules
     assert modules["modSimReport"].generated is False
-    assert [m.name for m in structure.vba_modules][-7:] == [
+    assert [m.name for m in structure.vba_modules][-8:] == [
         "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-        "modSimFingerprint", "modSimReport"]
+        "modSimFingerprint", "modSimNonce", "modSimReport"]
 
 
 def test_03_the_endpoint_construct_is_scoped_to_this_module_and_no_other() -> None:
@@ -212,8 +213,16 @@ def test_07_the_module_owns_no_mathematics() -> None:
     assert called == {
         "SimEngineRun", "SimStatsDescribe", "SimStatsContingency",
         "SimFpBuildRequestFingerprint", "SimFpResultDigest",
-        "SimRngAutoSeedFromNonce", "CalcPrepareSimulationInputs",
+        "CalcPrepareSimulationInputs",
     }, sorted(called)
+    # THE AUTO SEED IS NO LONGER DERIVED HERE. The nonce transaction moved to
+    # modSimNonce, so the reporter names modSimRng not at all.
+    assert "SimRngAutoSeedFromNonce" not in code, (
+        "the reporter still derives the AUTO seed itself"
+    )
+    assert set(re.findall(r"modSimNonce\.(\w+)", code)) == {
+        "SimNonceAllocate", "SIM_NONCE_STATE_CONSUMED", "SIM_NONCE_STATE_INDETERMINATE",
+    }, sorted(set(re.findall(r"modSimNonce\.(\w+)", code)))
     # NAME-BLINDNESS IS NOT ENOUGH: a statistic can be written without naming a
     # single banned identifier. Row and index arithmetic needs + and - only, so
     # a reporter that multiplies, divides or raises to a power is computing a
@@ -363,11 +372,15 @@ def test_17_every_prerequisite_is_checked_before_the_nonce_is_allocated() -> Non
     prerequisites, allocate = _order_of("PrepareRun", "AllocateAutoNonce", body=run)
     assert prerequisites < allocate
     body = _procedure("ValidatePreAllocation")
-    for checked in ("ReadActiveBank", "SIM_RUN_ID_MAXIMUM", "InactiveBank",
-                    "SIM_NONCE_EXHAUSTED"):
+    for checked in ("ReadActiveBank", "SIM_RUN_ID_MAXIMUM", "InactiveBank"):
         assert checked in body, checked
     assert "SimEngineRun" not in body
     assert ".Value2 =" not in body, "a prerequisite check must write nothing"
+    # THE AUTO NONCE IS NOT SELECTED HERE. Selecting it means reconciling any
+    # prior indeterminate attempt, and that transaction belongs to modSimNonce.
+    for moved in ("SIM_NONCE_EXHAUSTED", "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE",
+                  "SimRngAutoSeedFromNonce"):
+        assert moved not in body, moved
 
 
 def test_18_run_id_headroom_is_proved_before_a_candidate_is_computed() -> None:
@@ -380,21 +393,34 @@ def test_18_run_id_headroom_is_proved_before_a_candidate_is_computed() -> None:
     assert "package.CandidateRunId" in _procedure("BuildCommitBlock")
 
 
-def test_19_the_auto_nonce_persists_and_verifies_before_sampling() -> None:
+def test_19_the_auto_nonce_transaction_is_delegated_and_gates_sampling() -> None:
+    """The reporter drives it through a narrow scalar interface and no more."""
     body = _procedure("AllocateAutoNonce")
-    derive, write, verify, mark = _order_of(
-        "SimRngAutoSeedFromNonce", "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2",
-        "ReadMachineLong", "package.NonceConsumed = True", body=body)
-    assert derive < write < verify < mark
-    assert "SimEngineRun" not in body
+    assert "modSimNonce.SimNonceAllocate(" in body, (
+        "the reporter still implements the nonce transaction"
+    )
+    for moved in ("SIM_IDENTITY_ROW_NEXT_AUTO_NONCE", "SimRngAutoSeedFromNonce",
+                  "On Error", "FailPointCheck"):
+        assert moved not in body, moved
+    # SAMPLING IS GATED ON THE STRONG FACT, never on the diagnostic identity.
+    assert "package.NonceConsumed = identityKnown" in body
+    assert "package.AutoIdentityKnown = identityKnown" in body
     run = _procedure("RunSimulation")
     allocate, kernels = _order_of("AllocateAutoNonce", "RunKernels", body=run)
     assert allocate < kernels
+    assert "If Not AllocateAutoNonce(package, detail) Then" in run
     # FIXED touches the counter at all.
-    assert "If package.HasSuppliedSeed Then" in body
+    assert "If hasSuppliedSeed Then" in _procedure("SimNonceAllocate", NONCE_BAS)
 
 
 def test_20_the_consumed_nonce_is_never_rolled_back() -> None:
+    assert "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" not in _code(), (
+        "the reporter still touches the AUTO counter directly"
+    )
+    return  # the counter now belongs to modSimNonce; proved by test_44j
+
+
+def _retired_test_20_body() -> None:
     code = _code()
     assert code.count("SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 =") == 1
     for restoring in ("ConsumedNonce - 1", "nonce - 1", "NonceConsumed = False"):
@@ -591,7 +617,8 @@ def test_34_the_attempt_block_is_the_shared_rows_and_the_status_is_derived() -> 
 
 
 def test_35_a_refusal_and_a_failure_are_different_records() -> None:
-    assert "SIM_ATTEMPT_REFUSED" in _procedure("RecordRefusal")
+    assert "SIM_ATTEMPT_REFUSED" in _procedure("RefusalResult")
+    assert "RefusalResult(package)" in _procedure("RecordRefusal")
     assert "SIM_ATTEMPT_FAILED" in _procedure("RecordFailure")
     run = _procedure("RunSimulation")
     # Everything before publication refuses; publication and commit fail.
@@ -703,8 +730,11 @@ def test_44_the_named_failpoints_exist_and_sit_where_gate_b_needs_them() -> None
     stages = re.findall(r"^Public Const (FAILPOINT_SIM_\w+) As String = \"(\w+)\"$",
                         raw, re.M)
     assert [s[0] for s in stages] == [
-        "FAILPOINT_SIM_AFTER_NONCE", "FAILPOINT_SIM_CANDIDATE_BANK",
-        "FAILPOINT_SIM_FINAL_COMMIT"], stages
+        "FAILPOINT_SIM_CANDIDATE_BANK", "FAILPOINT_SIM_FINAL_COMMIT"], stages
+    nonce_stages = re.findall(r"^Public Const (FAILPOINT_SIM_\w+) As String = \"(\w+)\"$",
+                              _module(NONCE_BAS).raw, re.M)
+    assert nonce_stages == [("FAILPOINT_SIM_AFTER_NONCE",
+                             "Phase6AfterNoncePersisted")], nonce_stages
     run = _procedure("RunSimulation")
     # NO FAILPOINT IS A NAKED STATEMENT IN RunSimulation. FailPointCheck RAISES,
     # so a call outside a scoped envelope leaves through the invocation handler
@@ -716,13 +746,12 @@ def test_44_the_named_failpoints_exist_and_sit_where_gate_b_needs_them() -> None
     )
     # AFTER-NONCE: inside the allocation transaction, after the advance has
     # persisted AND verified AND been marked consumed, and before any sampling.
-    allocate = _procedure("AllocateAutoNonce")
-    write, verify, mark, nonce = _order_of(
-        "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2",
-        "ReadMachineLong", "package.NonceConsumed = True",
-        "FailPointCheck FAILPOINT_SIM_AFTER_NONCE", body=allocate)
-    assert write < verify < mark < nonce, allocate
-    assert allocate.index("On Error GoTo AllocationFailed") < nonce, (
+    allocate = _procedure("SimNonceAllocate", NONCE_BAS)
+    persist, injected = _order_of("PersistAdvance(",
+                                  "FailPointCheck FAILPOINT_SIM_AFTER_NONCE",
+                                  body=allocate)
+    assert persist < injected, allocate
+    assert allocate.index("On Error GoTo AllocationFailed") < injected, (
         "the after-nonce injection is outside the scoped envelope"
     )
     assert "SimEngineRun" not in allocate
@@ -757,8 +786,7 @@ def test_44_the_named_failpoints_exist_and_sit_where_gate_b_needs_them() -> None
     # And it is inside the envelope that restores.
     assert commit.index("On Error GoTo CommitFailed") < check
     assert set(re.findall(r"FailPointCheck (\w+)", _code())) == {
-        "FAILPOINT_SIM_AFTER_NONCE", "FAILPOINT_SIM_CANDIDATE_BANK",
-        "FAILPOINT_SIM_FINAL_COMMIT"}
+        "FAILPOINT_SIM_CANDIDATE_BANK", "FAILPOINT_SIM_FINAL_COMMIT"}
 
 
 # ===========================================================================
@@ -772,158 +800,168 @@ def test_44_the_named_failpoints_exist_and_sit_where_gate_b_needs_them() -> None
 # and a raised final-commit assignment skipped the restoration the contract
 # requires. Nothing below claims a runtime: these are source guarantees.
 # ===========================================================================
-def test_44h_the_nonce_allocation_has_a_scoped_error_envelope() -> None:
+def _nonce(name: str) -> str:
+    return _procedure(name, NONCE_BAS)
+
+
+def _nonce_code() -> str:
+    return _module(NONCE_BAS).code
+
+
+def test_44h_the_nonce_transaction_has_a_scoped_error_envelope() -> None:
     """The counter write and its read-back are COM calls, so they can raise."""
-    body = _procedure("AllocateAutoNonce")
-    assert "On Error GoTo AllocationFailed" in body, (
-        "a raised counter write escapes to the invocation axis with the nonce "
-        "possibly already spent"
-    )
-    assert "On Error Resume Next" not in body
-    install = body.index("On Error GoTo AllocationFailed")
-    for covered in ("SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2",
-                    "ReadMachineLong",
-                    "package.NonceConsumed = True",
-                    "FailPointCheck FAILPOINT_SIM_AFTER_NONCE"):
-        assert install < body.index(covered), covered
-    handler = body[body.index("AllocationFailed:"):]
-    assert "Err.Description" in handler
-    assert "On Error GoTo 0" in handler
-    assert "detail = " in handler
-    assert "AllocateAutoNonce = True" not in handler, "a failed allocation reports success"
-    # AND IT SAYS WHAT IS TRUE, IN TWO BRANCHES, because the two cases differ.
-    assert "If package.NonceAllocated Then" in handler, (
-        "the raised-allocation detail does not distinguish an allocated nonce "
-        "from one that was never claimed"
-    )
-    assert "No sampling was started" in handler
-    # An allocated nonce: identity named, persistence honestly indeterminate.
-    allocated = handler[handler.index("If package.NonceAllocated Then"):]
-    allocated = allocated[: allocated.index("    Else")]
-    assert "CStr(package.ConsumedNonce)" in allocated, "the nonce is not named"
-    assert "INDETERMINATE" in allocated, (
-        "a raised write is reported as though Excel provably wrote nothing"
-    )
-    assert "NOT rolled back" in allocated
-    assert "will not be reused" in allocated
-    # No allocation: nothing was claimed, and it says exactly that.
-    unallocated = handler[handler.index("    Else"):]
-    assert "no AUTO nonce was allocated" in unallocated
-    assert "INDETERMINATE" not in unallocated, (
-        "a refusal before allocation is reported as indeterminate"
-    )
+    entry = _nonce("SimNonceAllocate")
+    assert "On Error GoTo AllocationFailed" in entry
+    assert "On Error Resume Next" not in _nonce_code()
+    persist = _nonce("PersistAdvance")
+    assert "On Error GoTo WriteRaised" in persist
+    assert persist.index("On Error GoTo WriteRaised") < persist.index(
+        "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2")
+    reconcile = _nonce("Reconcile")
+    assert "On Error GoTo ObservationRaised" in reconcile
+    # Every handler reports and returns False; none claims success.
+    for owner, label in (("SimNonceAllocate", "AllocationFailed"),
+                         ("PersistAdvance", "WriteRaised"),
+                         ("Reconcile", "ObservationRaised")):
+        body = _nonce(owner)
+        handler = body[body.index(label + ":"):]
+        assert "Err.Description" in handler, owner
+        assert f"{owner} = True" not in handler, owner
 
 
 def test_44h2_allocation_and_consumption_are_different_facts() -> None:
-    """`NonceAllocated` is claimed before the write; `NonceConsumed` is earned.
+    """The contract's order: read < derive < persist < established < sampling.
 
-    The single Boolean the first round shipped conflated them, so every
-    verification failure after a completed counter write blanked the effective
-    seed and the AUTO nonce on the attempt record - an advanced counter with no
-    trace, which is the audit hole the retained authority forbids.
+    A pre-write "identity is known" fact may exist for audit, but it is NOT
+    contract allocation and nothing gates on it. Consumption is earned only by
+    an observed, matching read-back.
     """
-    types = _module().raw[_module().raw.index("Private Type SimRunPackage"):]
-    types = types[: types.index("End Type")]
-    assert "NonceAllocated As Boolean" in types
-    assert "NonceConsumed As Boolean" in types
-
-    body = _procedure("AllocateAutoNonce")
-    allocated, write, verify, match, consumed = _order_of(
-        "package.NonceAllocated = True",
-        "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2",
-        "ReadMachineLong",
-        "If stored <> package.ConsumedNonce + 1 Then",
-        "package.NonceConsumed = True", body=body)
-    # ALLOCATION IS CLAIMED BEFORE THE WRITE IS ATTEMPTED. A raised assignment
-    # must not be able to leave the run with the nonce unrecorded.
-    assert allocated < write, (
-        "the nonce is claimed only after the write, so a raised assignment "
-        "loses the identity it may already have spent"
-    )
-    # CONSUMPTION IS EARNED, after the read-back verified AND matched.
-    assert write < verify < match < consumed
-    # FIXED MODE NEVER TOUCHES THE COUNTER OR CLAIMS A NONCE.
-    fixed = body[body.index("If package.HasSuppliedSeed Then"):]
-    fixed = fixed[: fixed.index("    Else")]
-    assert "NonceAllocated" not in fixed and "NonceConsumed" not in fixed, fixed
-    assert "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" not in fixed, fixed
-
-
-def test_44h3_the_attempt_record_preserves_the_allocated_identity() -> None:
-    """Mapped to `seeding.nonce_lifecycle.attempt_metadata_preserves`."""
     lifecycle = _sim().raw["seeding"]["nonce_lifecycle"]
-    assert lifecycle["failure_before_allocation_consumes_nonce"] is False
-    assert lifecycle["failure_after_allocation_consumes_nonce"] is True
-    assert lifecycle["reuse_permitted"] is False
-    preserved = list(lifecycle["attempt_metadata_preserves"])
-    assert preserved == ["consumed_auto_nonce", "effective_seed"], preserved
+    assert list(lifecycle["order"]) == [
+        "validate_pre_allocation_prerequisites", "read_current_auto_nonce",
+        "derive_effective_seed", "persist_auto_nonce_plus_one", "begin_sampling"]
+    assert list(lifecycle["allocation_states"]) == [
+        "PRE_ALLOCATION", "CONSUMED", "PERSISTENCE_INDETERMINATE"]
+
+    entry = _nonce("SimNonceAllocate")
+    read, derive, persist, injected = _order_of(
+        "ResolveNextNonce(", "SimRngAutoSeedFromNonce", "PersistAdvance(",
+        "FailPointCheck FAILPOINT_SIM_AFTER_NONCE", body=entry)
+    assert read < derive < persist < injected, entry
+    # THE DIAGNOSTIC FACT IS NOT NAMED AS ALLOCATION, and gates nothing.
+    assert "identityKnown = True" in entry
+    assert "NonceAllocated" not in _nonce_code(), (
+        "the rejected pre-write allocation flag is back"
+    )
+    assert entry.index("identityKnown = True") < entry.index("PersistAdvance(")
+    # CONSUMPTION IS ESTABLISHED ONLY BY AN OBSERVED MATCH.
+    classify = _nonce("Classify")
+    assert "If stored = nonce + 1 Then" in classify
+    consumed = classify[classify.index("If stored = nonce + 1 Then"):]
+    consumed = consumed[: consumed.index("If stored = nonce Then")]
+    assert "state = SIM_NONCE_STATE_CONSUMED" in consumed
+    # FIXED MODE NEVER READS OR WRITES THE COUNTER.
+    fixed = entry[entry.index("If hasSuppliedSeed Then"):]
+    fixed = fixed[: fixed.index("    Else")]
+    assert "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" not in fixed
+    assert "ResolveNextNonce" not in fixed and "PersistAdvance" not in fixed
+
+
+def test_44h3_the_attempt_record_preserves_the_identity_by_state() -> None:
+    """Mapped field by field to `attempt_metadata_preserves`."""
+    preserves = _sim().raw["seeding"]["nonce_lifecycle"]["attempt_metadata_preserves"]
+    assert list(preserves["known_consumed"]) == ["consumed_auto_nonce", "effective_seed"]
+    assert list(preserves["pre_allocation"]) == ["attempted_auto_nonce", "effective_seed"]
+    assert list(preserves["persistence_indeterminate"]) == [
+        "attempted_auto_nonce", "effective_seed", "durable_indeterminate_result"]
 
     body = _procedure("WriteAttemptBlock")
-    # THE CLAUSE, FIELD BY FIELD. Each preserved field is gated on ALLOCATION.
-    assert "If package.HasSuppliedSeed Or package.NonceAllocated Then" in body, (
-        "the effective seed is gated on verified consumption, so a "
-        "post-write verification failure blanks it"
-    )
-    assert ("If package.NonceAllocated Then\n"
-            "        block(5, 1) = package.ConsumedNonce") in body, (
-        "the AUTO nonce is gated on verified consumption, so a "
-        "post-write verification failure blanks it"
-    )
+    # The AUDIT identity follows the diagnostic fact, so a post-write failure
+    # cannot blank it and make an advanced counter look like a skipped nonce.
+    assert "If package.HasSuppliedSeed Or package.AutoIdentityKnown Then" in body
+    assert ("If package.AutoIdentityKnown Then\n"
+            "        block(5, 1) = package.ConsumedNonce") in body
     assert "package.NonceConsumed" not in body, (
-        "the attempt record still reads the verified-consumption flag"
+        "the attempt row is gated on verified consumption again"
     )
-    # AND A REFUSAL BEFORE ALLOCATION STILL BLANKS BOTH.
-    assert body.count("vbNullString") >= 3, body
-
-    # THE PUBLISHED RECORDS ARE THE OPPOSITE WAY ROUND: a snapshot or a commit
-    # may claim a nonce only once consumption is PROVEN.
+    # THE PUBLISHED RECORDS ARE THE OPPOSITE WAY ROUND: only proven consumption.
     for published in ("BuildSnapshotBlock", "BuildCommitBlock"):
         text = _procedure(published)
         assert "package.NonceConsumed" in text, published
-        assert "NonceAllocated" not in text, (
-            f"{published} publishes a nonce whose persistence was never verified"
-        )
+        assert "AutoIdentityKnown" not in text, published
+    # AND THE DURABLE MARKER IS MACHINE STATE, not prose.
+    assert "SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE" in _procedure("RefusalResult")
+    assert "SIM_NONCE_STATE_INDETERMINATE" in _procedure("RefusalResult")
 
 
-def test_44h4_every_post_write_failure_keeps_the_identity() -> None:
-    """The three paths the review named, each modelled from the real branches."""
-    body = _procedure("AllocateAutoNonce")
-    allocated_at = body.index("package.NonceAllocated = True")
-    consumed_at = body.index("package.NonceConsumed = True")
-    # Each early exit between the two lives in the window where allocation is
-    # true and consumption is not - which is exactly the audit case.
-    window = body[allocated_at:consumed_at]
-    exits = [line.strip() for line in window.splitlines() if "Exit Function" in line]
-    assert len(exits) == 2, (
-        f"expected the read-failure and mismatch exits between allocation and "
-        f"consumption, found {exits}"
+def test_44h4_the_three_observations_get_three_answers() -> None:
+    """m+1 / m / neither, plus the irreducible case. No fourth answer."""
+    immediate = _sim().raw["seeding"]["nonce_lifecycle"]["immediate_reconciliation"]
+    assert immediate["attempts"] == 1, "a retry loop was introduced"
+    assert immediate["observed_m_plus_1"] == "CONSUMED"
+    assert immediate["observed_m"] == "PRE_ALLOCATION"
+    assert immediate["observed_other"] == "RECOVERY_REQUIRED"
+    assert immediate["observation_unavailable"] == "PERSISTENCE_INDETERMINATE"
+
+    classify = _nonce("Classify")
+    plus, same = _order_of("If stored = nonce + 1 Then", "If stored = nonce Then",
+                           body=classify)
+    assert plus < same
+    assert "SIM_NONCE_STATE_CONSUMED" in classify
+    assert "SIM_NONCE_STATE_PRE_ALLOCATION" in classify
+    assert "SIM_NONCE_STATE_RECOVERY" in classify
+    # THE PRE-ALLOCATION ARM PROMISES NOTHING IT CANNOT KEEP.
+    pre = classify[classify.index("If stored = nonce Then"):]
+    pre = pre[: pre.index("state = SIM_NONCE_STATE_RECOVERY")]
+    assert "NOT consumed" in pre
+    assert "may take it again" in pre
+    assert "will not be reused" not in pre, (
+        "the source promises non-reuse for a nonce it will legitimately reissue"
     )
-    # Neither of them may claim the advance definitely did not happen.
-    for banned in ("did not persist", "was not written", "no nonce was consumed"):
-        assert banned not in window, (
-            f"a post-write failure claims more than it can prove: {banned!r}"
-        )
-    # Both name the nonce and refuse reuse.
-    assert window.count("CStr(package.ConsumedNonce)") == 2, window
-    assert window.count("will not be reused") == 2, window
-    assert window.count("not rolled back") + window.count("not be rolled back") == 2, window
+    # NOTHING NORMALISES AN IMPOSSIBLE READING.
+    recovery = classify[classify.index("state = SIM_NONCE_STATE_RECOVERY"):]
+    assert "recovery is" in recovery and "normalised" in recovery
+    # ONE observation, and it is reached only from the two authorised causes.
+    reconcile = _nonce("Reconcile")
+    assert reconcile.count("ReadPersistedNonce(") == 1, "a retry loop"
+    assert "Do While" not in reconcile and "For " not in reconcile
+    persist = _nonce("PersistAdvance")
+    assert persist.count("Reconcile(") == 2, "the two authorised causes"
+    # THE IRREDUCIBLE CASE says both halves of what it cannot claim, and it
+    # really does classify as indeterminate rather than as either known state.
+    unknown = _nonce("Indeterminate")
+    assert "state = SIM_NONCE_STATE_INDETERMINATE" in unknown, (
+        "the irreducible case is classified as a state it cannot prove"
+    )
+    for known in ("SIM_NONCE_STATE_CONSUMED", "SIM_NONCE_STATE_PRE_ALLOCATION"):
+        assert known not in unknown, known
+    assert "INDETERMINATE" in unknown
+    assert "neither" in unknown and "nor unconsumed" in unknown
+    assert "not rolled back" in unknown
+    assert "must reconcile" in unknown
 
-    # MODELLED: the attempt fields on each path, from the real gating text.
-    attempt = _procedure("WriteAttemptBlock")
-    seed_gate = "If package.HasSuppliedSeed Or package.NonceAllocated Then" in attempt
-    nonce_gate = "If package.NonceAllocated Then" in attempt
 
-    def fields(has_supplied: bool, allocated: bool) -> tuple[bool, bool]:
-        seed = (has_supplied or allocated) if seed_gate else False
-        nonce = allocated if nonce_gate else False
-        return seed, nonce
+def test_44h5_the_next_run_reconciles_only_on_the_durable_token() -> None:
+    later = _sim().raw["seeding"]["nonce_lifecycle"]["next_run_reconciliation"]
+    assert later["activated_by_attempt_result"] == "AUTO_NONCE_INDETERMINATE"
+    assert later["activated_by_generic_unsuccessful_result"] is False
+    assert later["applies_to_fixed_mode"] is False
 
-    # AUTO, write completed, verification failed by raise / False / mismatch.
-    assert fields(False, True) == (True, True), "the failed allocation is invisible"
-    # AUTO, refused before allocation.
-    assert fields(False, False) == (False, False), "a nonce is claimed that was never taken"
-    # FIXED: the supplied seed is recorded, no nonce.
-    assert fields(True, False) == (True, False)
+    body = _nonce("ResolveNextNonce")
+    gate = ('If StrComp(SharedText(SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT), _\n'
+            '               SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE, vbBinaryCompare) = 0 Then')
+    assert gate in body, "reconciliation is not gated on the durable token alone"
+    # A generic unsuccessful result must NOT activate it.
+    for generic in ("SIM_ATTEMPT_REFUSED", "SIM_ATTEMPT_FAILED", "SIM_ATTEMPT_SUCCESS"):
+        assert generic not in body, generic
+    # The three resolutions, and recovery for the third.
+    assert "counter = prior + 1" in body
+    assert "ElseIf counter = prior Then" in body
+    assert body.count("SIM_NONCE_STATE_RECOVERY") == 3, body
+    # It is reached only in AUTO: the FIXED branch never calls it.
+    entry = _nonce("SimNonceAllocate")
+    fixed = entry[entry.index("If hasSuppliedSeed Then"): entry.index("    Else")]
+    assert "ResolveNextNonce" not in fixed
 
 
 def test_44i_the_after_nonce_injection_returns_through_the_attempt_path() -> None:
@@ -945,35 +983,52 @@ def test_44i_the_after_nonce_injection_returns_through_the_attempt_path() -> Non
 
 
 def test_44j_the_counter_is_never_rolled_back_on_any_path() -> None:
-    code = _code()
-    for _, statement in logical_statements(code):
+    """One module writes the counter, once, forward only."""
+    nonce_code = _nonce_code()
+    for _, statement in logical_statements(nonce_code):
         if "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" in statement and ".Value2 =" in statement:
-            assert "package.ConsumedNonce + 1" in statement, (
+            assert "nonce + 1" in statement, (
                 f"the counter is written with something other than the advance: {statement}"
             )
-    # No decrement anywhere, in any form.
-    for rollback in ("ConsumedNonce - 1", "ConsumedNonce-1", "stored - 1"):
-        assert rollback not in code, rollback
-    # And exactly one procedure writes the counter at all.
-    writers = [name for name in _module().procedures
-               if "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 =" in _procedure(name)]
-    assert writers == ["AllocateAutoNonce"], writers
+    for rollback in ("nonce - 1", "nonce-1", "stored - 1", "counter - 1",
+                     "ConsumedNonce - 1"):
+        assert rollback not in nonce_code, rollback
+    writers = [name for name in _module(NONCE_BAS).procedures
+               if "SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 =" in _nonce(name)]
+    assert writers == ["PersistAdvance"], writers
+    # AND THE REPORTER CANNOT TOUCH IT AT ALL.
+    assert "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" not in _code(), (
+        "the reporter reaches into the counter the nonce module owns"
+    )
 
 
-def test_44k_there_is_no_fourth_failpoint(  ) -> None:
-    """The three accepted names, each fired exactly once, each inside a scope."""
-    code = _code()
-    fired = re.findall(r"FailPointCheck (\w+)", code)
-    assert sorted(fired) == ["FAILPOINT_SIM_AFTER_NONCE", "FAILPOINT_SIM_CANDIDATE_BANK",
-                             "FAILPOINT_SIM_FINAL_COMMIT"], fired
-    owners = {name for name in _module().procedures
-              if "FailPointCheck" in _procedure(name)}
-    assert owners == {"AllocateAutoNonce", "PublishCandidate", "FinalCommit"}, sorted(owners)
+def test_44k_there_is_no_fourth_failpoint() -> None:
+    """Three names, split across exactly two owning modules, each inside a scope."""
+    from pccm_builder.vba_source import load_modules
+
+    fired: dict[str, list[str]] = {}
+    for module in load_modules([SRC_VBA]):
+        names = sorted(n for n in re.findall(r"FailPointCheck (\w+)", module.code)
+                       if n.startswith("FAILPOINT_SIM_"))
+        if names:
+            fired[module.name] = names
+    assert fired == {
+        "modSimNonce": ["FAILPOINT_SIM_AFTER_NONCE"],
+        "modSimReport": ["FAILPOINT_SIM_CANDIDATE_BANK", "FAILPOINT_SIM_FINAL_COMMIT"],
+    }, fired
+    # THE CONSTANT MOVED WITH ITS OWNER, and no reverse dependency was created.
+    assert 'FAILPOINT_SIM_AFTER_NONCE As String = "Phase6AfterNoncePersisted"' in \
+        _module(NONCE_BAS).raw
+    assert "FAILPOINT_SIM_AFTER_NONCE" not in _code()
+    assert "modSimReport" not in _nonce_code(), (
+        "the nonce module depends back on the reporter"
+    )
     # Each owner arms a handler before it fires.
-    for owner, handler in (("AllocateAutoNonce", "AllocationFailed"),
-                           ("PublishCandidate", "CandidateFailed"),
-                           ("FinalCommit", "CommitFailed")):
-        body = _procedure(owner)
+    for owner, handler, reader in (
+            ("SimNonceAllocate", "AllocationFailed", _nonce),
+            ("PublishCandidate", "CandidateFailed", _procedure),
+            ("FinalCommit", "CommitFailed", _procedure)):
+        body = reader(owner)
         assert body.index(f"On Error GoTo {handler}") < body.index("FailPointCheck"), owner
 
 
@@ -1116,8 +1171,13 @@ def test_44g_no_blanket_error_suppression_was_introduced() -> None:
     assert "On Error Resume Next" not in code
     handlers = set(re.findall(r"On Error GoTo (\w+)", code))
     assert handlers == {"0", "InvocationFailed", "NormalCleanupFailed", "CleanupFailed",
-                        "AllocationFailed", "CandidateFailed", "CommitFailed",
+                        "CandidateFailed", "CommitFailed",
                         "RestoreFailed", "CaptureFailed"}, sorted(handlers)
+    # The nonce module carries its own, and no blanket suppressor either.
+    nonce_handlers = set(re.findall(r"On Error GoTo (\w+)", _nonce_code()))
+    assert nonce_handlers == {"0", "AllocationFailed", "WriteRaised",
+                              "ObservationRaised"}, sorted(nonce_handlers)
+    assert "On Error Resume Next" not in _nonce_code()
     # Every named handler has a label, and every label is reachable by name.
     labels = set(re.findall(r"^(\w+):$", code, re.M))
     assert (handlers - {"0"}) <= labels, sorted((handlers - {"0"}) - labels)
@@ -1165,7 +1225,7 @@ def test_45_every_publication_case_has_a_structural_counterpart() -> None:
     after = cases["publication.failure_after_auto_allocation"]
     assert after["expected_exact"]["after"]["next_auto_nonce"] == (
         after["inputs"]["before"]["next_auto_nonce"] + 1)
-    assert "package.ConsumedNonce + 1" in _procedure("AllocateAutoNonce")
+    assert "nonce + 1" in _procedure("PersistAdvance", NONCE_BAS)
 
     commit = cases["publication.final_commit_failure_restores_the_block"]
     assert commit["expected_exact"]["after"]["active_bank"] == "B"
@@ -1178,15 +1238,24 @@ def test_45_every_publication_case_has_a_structural_counterpart() -> None:
         assert cases[identifier]["expected_exact"]["simulation_status"] == expected
 
 
-def test_46_the_corpus_was_not_touched_by_this_step() -> None:
+def test_46_the_corpus_moved_only_for_the_authorised_axis_change() -> None:
+    """The Step-11A corpus is authority, not source-generated evidence.
+
+    It moved in Step 12 for exactly one reason: the Phase-6 attempt-result axis
+    gained AUTO_NONCE_INDETERMINATE, and the corpus projects that axis. Nothing
+    else about it changed, and the new hash is pinned here so a second silent
+    movement is still caught.
+    """
     import hashlib
+    import json
 
     digest = hashlib.sha256(CASES_JSON.read_bytes()).hexdigest()
-    assert digest == (
-        "98f835375f5b8f548172c21ae6102b50fef7e6a001e196ece0741c987d78b6d1"), (
-        "the accepted Step-11A corpus moved; the state vectors are authority, "
-        "not source-generated evidence")
-
+    assert digest == "8019683a0490fcf0740cf07244524973d9b7470c933f1003059025b6b019a0be", digest
+    text = CASES_JSON.read_text(encoding="utf-8")
+    assert "AUTO_NONCE_INDETERMINATE" in text, (
+        "the corpus moved for something other than the authorised axis change"
+    )
+    json.loads(text)
 
 def test_47_no_step_12_exists() -> None:
     names = {p.stem for p in SRC_VBA.glob("*.bas")}

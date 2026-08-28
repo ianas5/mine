@@ -52,7 +52,6 @@ Option Explicit
 ' ==========================================================================
 
 ' The Gate-B failpoints. Public because a later harness arms them BY NAME.
-Public Const FAILPOINT_SIM_AFTER_NONCE As String = "Phase6AfterNoncePersisted"
 Public Const FAILPOINT_SIM_CANDIDATE_BANK As String = "Phase6CandidateBank"
 Public Const FAILPOINT_SIM_FINAL_COMMIT As String = "Phase6FinalCommit"
 
@@ -79,8 +78,9 @@ Private Type SimRunPackage
     SuppliedSeed As Long
     EffectiveSeed As Long
     ConsumedNonce As Long
-    NonceAllocated As Boolean
+    AutoIdentityKnown As Boolean
     NonceConsumed As Boolean
+    NonceState As String
 
     CandidateRunId As Long
     ActiveBank As String
@@ -352,7 +352,7 @@ Private Function ValidatePreAllocation(ByRef package As SimRunPackage, _
     ' EVERYTHING THAT CAN REFUSE, REFUSES HERE - before a random sequence is
     ' spent. A run that could never be identified or committed must not consume
     ' one.
-    Dim lastRunId As Long, nonce As Long
+    Dim lastRunId As Long
 
     If Not ReadActiveBank(package.ActiveBank, detail) Then Exit Function
     If Not ReadMachineLong(SIM_IDENTITY_ROW_LAST_RUN_ID, CDbl(SIM_RUN_ID_INITIAL), _
@@ -372,101 +372,41 @@ Private Function ValidatePreAllocation(ByRef package As SimRunPackage, _
         Exit Function
     End If
 
-    If Not package.HasSuppliedSeed Then
-        If Not ReadMachineLong(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE, _
-                               CDbl(SIM_NONCE_FIRST_VALID), CDbl(SIM_NONCE_EXHAUSTED), _
-                               nonce, detail) Then
-            detail = "simulation: the AUTO nonce counter is not readable - " & detail
-            Exit Function
-        End If
-        If nonce >= SIM_NONCE_EXHAUSTED Then
-            detail = "simulation: the AUTO nonce sequence is exhausted"
-            Exit Function
-        End If
-        package.ConsumedNonce = nonce
-    End If
-
+    ' THE AUTO NONCE IS NOT READ HERE. Selecting it means reconciling any prior
+    ' indeterminate attempt, and that whole transaction belongs to modSimNonce.
+    ' What stays is what this module owns: the bank, the run id, the target.
     ValidatePreAllocation = True
 End Function
 
 Private Function AllocateAutoNonce(ByRef package As SimRunPackage, _
                                    ByRef detail As String) As Boolean
-    ' PERSIST BEFORE SAMPLING, AND VERIFY THE PERSISTENCE. A run that drew from
-    ' a sequence the workbook does not know it spent could be reproduced by a
-    ' later AUTO run, which is the one thing the nonce exists to prevent.
+    ' DELEGATED, THROUGH A NARROW SCALAR INTERFACE. The AUTO nonce transaction
+    ' and its recovery protocol belong to modSimNonce; the run package stays
+    ' Private to this module and no shared mutable context crosses the boundary.
     '
-    ' The counter write and its read-back are COM calls, and COM calls raise.
-    ' The envelope turns a raise into a plain False, which RunSimulation routes
-    ' to RecordRefusal, so the attempt axis is never bypassed. The counter is
-    ' NEVER rolled back, on any path: a raised write may have landed.
-    Dim seed As Long, stored As Long, probe As String
-    Dim failure As String
+    ' WHAT COMES BACK. `AutoIdentityKnown` says an AUTO identity was selected
+    ' and may appear in the attempt row for audit - it is NOT a claim that the
+    ' nonce was consumed. `NonceConsumed` is the strong fact, and it alone
+    ' gates sampling and publication.
+    Dim identityKnown As Boolean, state As String
+    Dim seed As Long, nonce As Long
 
-    On Error GoTo AllocationFailed
-
-    If package.HasSuppliedSeed Then
-        package.EffectiveSeed = package.SuppliedSeed
-    Else
-        If Not modSimRng.SimRngAutoSeedFromNonce(package.ConsumedNonce, seed, detail) Then
-            Exit Function
-        End If
-        package.EffectiveSeed = seed
-
-        ' ALLOCATED, AND SAID SO BEFORE THE WRITE IS ATTEMPTED. From here the
-        ' nonce belongs to this run whatever happens next: a raised assignment,
-        ' a failed read-back and a mismatch all leave persistence unknown, and
-        ' the attempt must still carry the identity - otherwise an advanced
-        ' counter looks like an unexplained skipped nonce.
-        package.NonceAllocated = True
-        SharedCell(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE).Value2 = package.ConsumedNonce + 1
-
-        ' CONSUMPTION IS THE STRONGER CLAIM, earned only by a verified
-        ' read-back. Sampling is gated on this, never on allocation.
-        If Not ReadMachineLong(SIM_IDENTITY_ROW_NEXT_AUTO_NONCE, _
-                               CDbl(SIM_NONCE_FIRST_VALID), CDbl(SIM_NONCE_EXHAUSTED) + 1#, _
-                               stored, probe) Then
-            detail = "simulation: the AUTO nonce advance was written but could not be " & _
-                     "read back, so the persisted counter may or may not have advanced. " & _
-                     "Nonce " & CStr(package.ConsumedNonce) & " is recorded as allocated " & _
-                     "to this attempt; it is " & _
-                     "not rolled back and will not be reused."
-            Exit Function
-        End If
-        If stored <> package.ConsumedNonce + 1 Then
-            detail = "simulation: the AUTO nonce advance did not read back as written. " & _
-                     "Nonce " & CStr(package.ConsumedNonce) & " is recorded as allocated " & _
-                     "to this attempt, is not rolled back and will not be reused."
-            Exit Function
-        End If
-        package.NonceConsumed = True
+    If Not modSimNonce.SimNonceAllocate(package.HasSuppliedSeed, package.SuppliedSeed, _
+                                        seed, nonce, identityKnown, state, detail) Then
+        package.AutoIdentityKnown = identityKnown
+        package.ConsumedNonce = nonce
+        package.NonceState = state
+        package.NonceConsumed = (StrComp(state, modSimNonce.SIM_NONCE_STATE_CONSUMED, _
+                                         vbBinaryCompare) = 0)
+        Exit Function
     End If
 
-    ' PHASE-6 AFTER-NONCE INJECTION BOUNDARY. Reached only once the advance has
-    ' been written AND read back AND matched, so package.NonceConsumed already
-    ' records the spent sequence; and reached before any sampling, because
-    ' RunKernels runs only if this returns True. Injecting here therefore proves
-    ' what it is named for: the nonce is spent, nothing was sampled, and the run
-    ' must still record an unsuccessful attempt.
-    modAppState.FailPointCheck FAILPOINT_SIM_AFTER_NONCE
-
-    On Error GoTo 0
+    package.EffectiveSeed = seed
+    package.AutoIdentityKnown = identityKnown
+    package.ConsumedNonce = nonce
+    package.NonceState = state
+    package.NonceConsumed = identityKnown
     AllocateAutoNonce = True
-    Exit Function
-
-AllocationFailed:
-    failure = Err.Description
-    On Error GoTo 0
-    If package.NonceAllocated Then
-        detail = "simulation: seed allocation did not complete: " & failure & _
-                 ". No sampling was started. Nonce " & CStr(package.ConsumedNonce) & _
-                 " was allocated to this attempt and is recorded on it. Whether the " & _
-                 "counter advance persisted is INDETERMINATE: a raised write is not " & _
-                 "proof that nothing was written. It is deliberately " & _
-                 "NOT rolled back and will not be reused."
-    Else
-        detail = "simulation: seed allocation did not complete: " & failure & _
-                 ". No sampling was started and no AUTO nonce was allocated."
-    End If
 End Function
 
 Private Function RunKernels(ByRef package As SimRunPackage, ByRef detail As String) As Boolean
@@ -901,8 +841,22 @@ End Sub
 ' ==========================================================================
 Private Function RecordRefusal(ByRef package As SimRunPackage, _
                                ByVal detail As String) As OperationResult
-    WriteAttemptBlock package, SIM_ATTEMPT_REFUSED, detail
+    ' AN UNRESOLVED AUTO ADVANCE IS ITS OWN DURABLE RESULT. Whether the nonce
+    ' was consumed is unknown, so recording a plain REFUSED would say the run
+    ' declined to spend it - a claim this source cannot make. The token is what
+    ' the NEXT run reads to know it must reconcile before allocating, and it is
+    ' machine state, never prose in the detail cell.
+    WriteAttemptBlock package, RefusalResult(package), detail
     RecordRefusal = modAppState.Failed("Run Simulation", detail)
+End Function
+
+Private Function RefusalResult(ByRef package As SimRunPackage) As String
+    If StrComp(package.NonceState, modSimNonce.SIM_NONCE_STATE_INDETERMINATE, _
+               vbBinaryCompare) = 0 Then
+        RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE
+    Else
+        RefusalResult = SIM_ATTEMPT_REFUSED
+    End If
 End Function
 
 Private Function RecordFailure(ByRef package As SimRunPackage, _
@@ -929,7 +883,7 @@ Private Sub WriteAttemptBlock(ByRef package As SimRunPackage, ByVal result As St
         ' seeding.nonce_lifecycle.attempt_metadata_preserves requires the seed
         ' and the nonce on exactly that attempt. A refusal BEFORE allocation
         ' still blanks both - failure_before_allocation_consumes_nonce: false.
-        If package.HasSuppliedSeed Or package.NonceAllocated Then
+        If package.HasSuppliedSeed Or package.AutoIdentityKnown Then
             block(4, 1) = package.EffectiveSeed
         Else
             block(4, 1) = vbNullString
@@ -938,7 +892,7 @@ Private Sub WriteAttemptBlock(ByRef package As SimRunPackage, ByVal result As St
         block(3, 1) = vbNullString
         block(4, 1) = vbNullString
     End If
-    If package.NonceAllocated Then
+    If package.AutoIdentityKnown Then
         block(5, 1) = package.ConsumedNonce
     Else
         block(5, 1) = vbNullString

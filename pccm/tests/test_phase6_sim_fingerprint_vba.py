@@ -266,9 +266,9 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimFingerprint" in modules
     assert modules["modSimFingerprint"].generated is False
-    assert [m.name for m in structure.vba_modules][-7:] == [
+    assert [m.name for m in structure.vba_modules][-8:] == [
         "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-        "modSimFingerprint", "modSimReport"]
+        "modSimFingerprint", "modSimNonce", "modSimReport"]
     # No endpoint, and D6-11 is untouched.
     surface = set(structure.entry_points) | set(structure.api_procedures)
     assert not (set(_module().public_procedures) & surface)
@@ -954,7 +954,7 @@ def test_53_the_orchestration_layer_arrived_and_nothing_beyond_it() -> None:
     assert not [p for p in SRC_VBA.glob("*.bas") if p.stem.startswith("modSim")
                 and p.stem not in ("modSimContract", "modSimRng", "modSimSample",
                                    "modSimEngine", "modSimStats", "modSimFingerprint",
-                                   "modSimReport")]
+                                   "modSimNonce", "modSimReport")]
 
 
 def test_54_no_other_module_frames_a_phase6_stream() -> None:

@@ -173,8 +173,90 @@ seeding:
       - "begin_sampling"
     failure_before_allocation_consumes_nonce: false
     failure_after_allocation_consumes_nonce: true
-    attempt_metadata_preserves: ["consumed_auto_nonce", "effective_seed"]
     prior_successful_publication_untouched: true
+
+    # ------------------------------------------------------------------
+    # THE THREE ALLOCATION STATES.
+    #
+    # Step 0 modelled allocation as binary - before / after - which is true of
+    # the intent but not of a fallible COM substrate. A `Range.Value2` that
+    # RAISES is not proof that Excel wrote nothing, so "did the advance
+    # persist?" has a third answer: unknown. The binary model forced that third
+    # answer to be mislabelled as one of the other two, and a run-local flag
+    # cannot carry it across invocations.
+    #
+    # `reuse_permitted: false` above continues to refer to a nonce that is
+    # KNOWN CONSUMED. A nonce whose advance is known NOT to have persisted was
+    # never allocated, no sampling drew from it, and attempting it again is not
+    # reuse.
+    # ------------------------------------------------------------------
+    allocation_states: ["PRE_ALLOCATION", "CONSUMED", "PERSISTENCE_INDETERMINATE"]
+
+    allocation_state_semantics:
+      PRE_ALLOCATION:
+        advance_persisted: false
+        nonce_consumed: false
+        sampling_began: false
+        retry_may_reuse_the_same_nonce: true
+      CONSUMED:
+        advance_persisted: true
+        nonce_consumed: true
+        sampling_may_begin: true
+        retry_may_reuse_the_same_nonce: false
+      PERSISTENCE_INDETERMINATE:
+        advance_persisted: "unknown"
+        nonce_consumed: "unknown"
+        sampling_began: false
+        must_not_be_called_allocated: true
+        must_not_be_called_unconsumed: true
+        durable_attempt_result: "AUTO_NONCE_INDETERMINATE"
+        next_run_must_reconcile_before_allocating: true
+
+    # ONE bounded observation after an infrastructure failure. No retry loop,
+    # no decrement, and no forward skip taken merely to make uncertainty go
+    # away. `m` is the candidate nonce; the advance writes `m + 1`.
+    immediate_reconciliation:
+      attempts: 1
+      after: ["counter_write_raised", "verification_read_failed"]
+      observed_m_plus_1: "CONSUMED"
+      observed_m: "PRE_ALLOCATION"
+      observed_other: "RECOVERY_REQUIRED"
+      observation_unavailable: "PERSISTENCE_INDETERMINATE"
+
+    # Activated ONLY by the durable machine token, never by a generic
+    # unsuccessful result: an ordinary REFUSED or FAILED attempt may follow a
+    # conclusively persisted advance, and treating the two alike would lose
+    # exactly the distinction the token exists to keep.
+    next_run_reconciliation:
+      activated_by_attempt_result: "AUTO_NONCE_INDETERMINATE"
+      activated_by_generic_unsuccessful_result: false
+      # Settled tokens, not prose: `m+1` resolves the prior advance as having
+      # persisted, so allocation continues from the counter; `m` resolves it as
+      # never persisted, so `m` itself may be allocated - it was never consumed.
+      counter_equals_m_plus_1: "CONSUMED"
+      counter_equals_m: "PRE_ALLOCATION"
+      counter_is_neither: "RECOVERY_REQUIRED"
+      counter_unreadable: "RECOVERY_REQUIRED"
+      applies_to_fixed_mode: false
+
+    # The attempt row keeps different facts in different states. Row 27 must
+    # never assert physical consumption merely because it holds the number.
+    attempt_metadata_preserves:
+      known_consumed: ["consumed_auto_nonce", "effective_seed"]
+      pre_allocation: ["attempted_auto_nonce", "effective_seed"]
+      persistence_indeterminate:
+        - "attempted_auto_nonce"
+        - "effective_seed"
+        - "durable_indeterminate_result"
+
+    # THE DECLARED RESIDUAL. If persistence becomes indeterminate AND the
+    # attempt recorder then cannot durably write the marker, the workbook has
+    # lost the reconciliation authority. Automatic retry is not authorised;
+    # recovery is required. Step 6 builds no second journal for this.
+    indeterminate_marker_storage_failure:
+      automatic_retry_authorised: false
+      recovery_required: true
+      second_write_ahead_log_required: false
 
 # -----------------------------------------------------------------------------
 # Component streams - D6-16.
@@ -1180,11 +1262,19 @@ label_sets:
   bank:
     - "A"
     - "B"
+  # PHASE-6 ONLY, and a strict SUPERSET of the Phase-5 calculation axis, which
+  # remains exactly NONE / SUCCESS / REFUSED / FAILED in calc_contract.yaml.
+  # `_Calc!Last Attempt Result` and `_SimData!Last Attempt Result` carry
+  # analogous labels and are no longer required to share an enumeration.
+  #
+  # AUTO_NONCE_INDETERMINATE is an ATTEMPT/AUDIT result only. Like REFUSED and
+  # FAILED it takes no part in deriving the simulation status.
   attempt_result:
     - "NONE"
     - "SUCCESS"
     - "REFUSED"
     - "FAILED"
+    - "AUTO_NONCE_INDETERMINATE"
   seed_mode:
     - "AUTO"
     - "FIXED"

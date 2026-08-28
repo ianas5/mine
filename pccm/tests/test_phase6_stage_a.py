@@ -404,7 +404,11 @@ def test_17_the_state_attempt_and_seed_mode_labels_are_exact() -> None:
     for label in labels["seed_mode"]:
         assert _string(f"SIM_SEED_MODE_{label}") == label
     assert list(labels["sim_state"]) == ["CURRENT", "STALE", "INVALID"]
-    assert list(labels["attempt_result"]) == ["NONE", "SUCCESS", "REFUSED", "FAILED"]
+    # PHASE-6 ONLY, and still EXACT. Phase 5 keeps its own four-value axis in
+    # calc_contract.yaml; the fifth token carries a persistence/recovery
+    # condition Phase 5 has no analogue for.
+    assert list(labels["attempt_result"]) == [
+        "NONE", "SUCCESS", "REFUSED", "FAILED", "AUTO_NONCE_INDETERMINATE"]
 
 
 def test_18_the_quantile_ladder_is_projected_from_its_owners() -> None:
@@ -485,7 +489,7 @@ def test_22_the_module_is_in_the_stage_b_registry_as_a_generated_module() -> Non
         "a second definition of every literal it projects"
     )
     handwritten = {"modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-                   "modSimFingerprint", "modSimReport"}
+                   "modSimFingerprint", "modSimNonce", "modSimReport"}
     for name in handwritten:
         assert name in modules and modules[name].generated is False, name
     # AND NOTHING FURTHER WAS DECLARED EARLY. The Phase-6 registry is exactly
