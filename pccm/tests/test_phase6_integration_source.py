@@ -80,8 +80,8 @@ FROZEN_SOURCE = {
     "modSimEngine": "f1283fe7d5d2ffcc5345dab9a00f68d3685b787563d104f50a886c5ed409abab",
     "modSimStats": "98bd21b227047d04e6847e554e027b339cf01dfb1112c1539a9e334966233be0",
     "modSimFingerprint": "9e6ad972fe59ead9e34c7d65b807dd0f2ca1cb1b29bfa71b377a4eb8f65cdfda",
-    "modSimNonce": "a6806b05d24b307b277e900236b08da03ec87f7f93478b9c122f05231f3ce889",
-    "modSimReport": "f57b6d06abbd984da62fb619e4ee33d696f263003988cfec4f3677fbd54a94a3",
+    "modSimNonce": "8e0b7c732626a177548a4b5d7def0b8335b40266cafd659c034b43803e410957",
+    "modSimReport": "f7c8d068a19ac132e4cd88df6cc5972ff9374d95de5509ef90387f6480e728a4",
     "modCalcFingerprint": "2efbb30c6f915c04b9c07adec07e25e11f4b5bd2b98e3efa818631dc510ce847",
     "modCalcReport": "8252b935b256b1abad9b26ca6b1d90c92c5e0d7566906308b191cd03dd6a71b3",
 }
@@ -568,7 +568,7 @@ def test_23_every_accepted_module_is_byte_identical() -> None:
 def test_24_the_generated_authority_is_byte_identical() -> None:
     for path, expected in (
         (BUILD / "vba" / "modSimContract.bas",
-         "96e22c842c110669e303d9e797f3d020356b17bb3f3e655e53fb896e956d1828"),
+         "daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f1e8e1c215ac"),
         (BUILD / "phase6_cases.json",
          "8019683a0490fcf0740cf07244524973d9b7470c933f1003059025b6b019a0be"),
     ):
@@ -635,8 +635,11 @@ def test_28_every_transaction_failure_is_routed_to_the_attempt_recorder() -> Non
         )
     # EVERY COM-FALLIBLE STAGE CARRIES ITS OWN ENVELOPE, in its owning module.
     assert "On Error GoTo AllocationFailed" in _procedure(NONCE, "SimNonceAllocate")
-    assert "On Error GoTo WriteRaised" in _procedure(NONCE, "PersistAdvance")
+    assert "On Error GoTo MarkerFailed" in _procedure(NONCE, "EstablishPending")
+    assert "On Error GoTo StepRaised" in _procedure(NONCE, "PersistAdvance")
     assert "On Error GoTo ObservationRaised" in _procedure(NONCE, "Reconcile")
+    assert "On Error GoTo ClearRaised" in _procedure(NONCE, "ClearPending")
+    assert "On Error GoTo ReadRaised" in _procedure(NONCE, "ReadPending")
     assert "On Error GoTo CandidateFailed" in _procedure(REPORT, "PublishCandidate")
     assert "On Error GoTo CommitFailed" in _procedure(REPORT, "FinalCommit")
     assert "On Error GoTo CaptureFailed" in _procedure(REPORT, "FinalCommit")
@@ -694,12 +697,19 @@ def test_29_the_publication_contract_is_implemented_where_it_is_stated() -> None
     for _, statement in logical_statements(code):
         if "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" in statement and "- 1" in statement:
             raise AssertionError(f"the consumed nonce is rolled back: {statement}")
-    # THE CONTRACT'S ORDER, at its owner: read < derive < persist < established.
+    # THE CONTRACT'S ORDER, at its owner: read < derive < mark < persist <
+    # clear < sample. The marker goes down BEFORE the counter is touched, so
+    # `next_auto_nonce_advanced: true` is never claimed for a counter that was
+    # written without a recoverable record of which nonce it was written for.
     entry = _procedure(NONCE, "SimNonceAllocate")
-    read, derive, persist, injected = _order(
-        "ResolveNextNonce(", "SimRngAutoSeedFromNonce", "PersistAdvance(",
+    read, derive, transaction, injected = _order(
+        "ResolveNextNonce(", "SimRngAutoSeedFromNonce", "RunAllocationTransaction(",
         "FailPointCheck FAILPOINT_SIM_AFTER_NONCE", body=entry)
-    assert read < derive < persist < injected
+    assert read < derive < transaction < injected
+    txn = _procedure(NONCE, "RunAllocationTransaction")
+    marked, advanced, cleared = _order("EstablishPending(", "PersistAdvance(",
+                                       "ClearPending(", body=txn)
+    assert marked < advanced < cleared, txn
     assert "SimEngineRun" not in code, "sampling begins inside the allocation"
     # The attempt record keeps the identity by STATE, and consumption is the
     # stronger claim that only an observed match earns.
@@ -747,6 +757,14 @@ def test_30_the_nonce_responsibility_is_split_and_stays_split() -> None:
     assert "AUTO nonce" in modules[NONCE].responsibility
     # The reporter no longer claims the lifecycle it delegated.
     assert "AUTO nonce lifecycle belongs to modSimNonce" in modules[REPORT].responsibility
+    # AND THE REGISTERED RESPONSIBILITY NAMES THE AUTHORITY THE SOURCE ACTUALLY
+    # USES. It used to say this module interprets a prior AUTO_NONCE_INDETERMINATE
+    # attempt - the rejected carrier. A registry that still describes a withdrawn
+    # design teaches it to the next reader.
+    duty = modules[NONCE].responsibility
+    assert "pending-AUTO-nonce marker" in duty, duty
+    assert "never the mutable last-attempt audit axis" in duty, duty
+    assert "AUTO_NONCE_INDETERMINATE" not in duty, duty
 
     nonce = _module(NONCE)
     # ONE PUBLIC ENTRY POINT plus its projected state vocabulary. No endpoint.
@@ -809,6 +827,103 @@ def test_31_both_phase6_orchestration_modules_stay_within_their_limits() -> None
     assert sizes.PHASE5_RAW_LINE_LIMIT == 1200
     assert sizes.PHASE5_CODE_LINE_LIMIT == 900
     assert sizes.PHASE4_RAW_LINE_LIMIT == 900
+
+
+def test_32_the_pending_sidecar_is_a_genuinely_free_coordinate() -> None:
+    """F21 collides with nothing the layout already owns.
+
+    Comment text is not proof here; the coordinate is checked against the
+    layout the builder actually emits. Column F is the bank-B value column and
+    its snapshot ends at the last banked row; row 21 is a SHARED counter row,
+    so it has no bank-B twin and nothing is displaced.
+    """
+    data = _sim().raw["sim_data"]
+    cell = data["pending_auto_nonce"]
+    identity = data["run_identity"]
+    assert cell["cell"] == "F21"
+    assert cell["column"] == identity["bank_value_columns"]["B"] == "F"
+    row = int(cell["row"])
+
+    fields = identity["fields"]
+    snapshot = [f for f in fields if f.get("group") == "snapshot"]
+    assert snapshot, "the snapshot group vanished, so this proves nothing"
+    # 1. BELOW THE BANK-B SNAPSHOT, which is the only thing column F carries.
+    assert row > max(int(f["row"]) for f in snapshot)
+    # 2. NOT ANY BANKED CELL, in either bank.
+    assert row not in {int(f["row"]) for f in snapshot}
+    # 3. THE SHARED ROWS AT AND BELOW IT ARE COLUMN D ONLY, so the shared final
+    #    commit cannot reach column F at all.
+    shared = [f for f in fields if f.get("group") != "snapshot"]
+    assert row in {int(f["row"]) for f in shared} or row > max(
+        int(f["row"]) for f in snapshot)
+    assert identity["value_column"] == "D" != cell["column"]
+    # 4. ABOVE NOTHING: it is inside the identity block's own row span, so it
+    #    steals no row from anything below.
+    assert int(identity["first_row"]) <= row <= int(identity["last_row"])
+    # 5. CLEAR OF THE ITERATION TABLE.
+    records = data["iteration_records"]
+    assert row < int(records["header_row"])
+    # 6. THE ONLY OTHER COLUMN-F CONSUMER IS THE BANK-B ITERATION INDEX, and it
+    #    starts below the header row this cell sits above.
+    assert records["banks"]["B"]["iteration_index"] == "F"
+    assert row < int(records["first_iteration_row"])
+    # 7. THE OTHER BANKED BLOCKS ARE IN OTHER COLUMNS ENTIRELY, so the sidecar
+    #    cannot be one of their cells whatever their rows are.
+    for block in ("summary_statistics", "contingency_ladder"):
+        columns = data[block]["bank_value_columns"]
+        used = {c for bank in columns.values() for c in bank.values()}
+        assert cell["column"] not in used, (block, sorted(used))
+
+    # AND THE BUILT WORKBOOK AGREES: nothing was written there.
+    from openpyxl import load_workbook
+
+    book = load_workbook(BUILD / "PCCM_stageA.xlsx")
+    sheet = book[data["sheet"]]
+    assert sheet["F21"].value is None, sheet["F21"].value
+    occupied = sorted(c.row for c in sheet["F"] if c.value is not None)
+    assert 21 not in occupied, occupied
+
+
+def test_33_the_sidecar_added_no_row_and_moved_no_ceiling() -> None:
+    """A free cell was used precisely so nothing had to shift."""
+    data = _sim().raw["sim_data"]
+    records = data["iteration_records"]
+    assert int(records["header_row"]) == 33
+    assert int(records["first_iteration_row"]) == 34
+    # THE TECHNICAL CEILING IS THE SAME NUMBER IT WAS, and it is still derived
+    # from the layout rather than restated as a free literal.
+    ceiling = _sim().raw["iterations"]["technical_ceiling"]
+    assert int(ceiling["reserved_rows_h"]) == 33
+    assert int(ceiling["max_iterations_representable"]) == 1048543
+    assert int(ceiling["max_iterations_representable"]) == (
+        int(ceiling["max_excel_rows"]) - int(ceiling["reserved_rows_h"]))
+    # AND THE SIDECAR REALLY IS ABOVE ALL OF IT.
+    assert int(data["pending_auto_nonce"]["row"]) < int(records["header_row"])
+
+
+def test_34_the_sidecar_coordinate_is_written_down_exactly_once() -> None:
+    """One authority, one generated constant, no second literal.
+
+    A coordinate spelled independently in two production procedures is two
+    authorities that agree only by luck.
+    """
+    generated = (BUILD / "vba" / "modSimContract.bas").read_text(encoding="utf-8")
+    assert 'Public Const SIM_PENDING_AUTO_NONCE_CELL As String = "F21"' in generated
+    assert generated.count("SIM_PENDING_AUTO_NONCE_CELL") == 1
+
+    users = [name for name in _module(NONCE).procedures
+             if "SIM_PENDING_AUTO_NONCE_CELL" in _procedure(NONCE, name)]
+    assert users == ["PendingCell"], users
+    # NO HANDWRITTEN MODULE SPELLS THE COORDINATE OUT.
+    for name in tuple(FROZEN_SOURCE) + (REPORT, NONCE):
+        code = _module(name).code_without_string_removal
+        assert '"F21"' not in code, name
+    # AND EVERY SIDECAR TOUCH GOES THROUGH THE ONE ACCESSOR.
+    for name in _module(NONCE).procedures:
+        if name == "PendingCell":
+            continue
+        body = _procedure(NONCE, name)
+        assert "SIM_DATA_SHEET).Range(SIM_PENDING" not in body, name
 
 
 # ===========================================================================

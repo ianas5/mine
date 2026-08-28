@@ -390,23 +390,29 @@ Private Function AllocateAutoNonce(ByRef package As SimRunPackage, _
     ' gates sampling and publication.
     Dim identityKnown As Boolean, state As String
     Dim seed As Long, nonce As Long
+    Dim allocated As Boolean
 
-    If Not modSimNonce.SimNonceAllocate(package.HasSuppliedSeed, package.SuppliedSeed, _
-                                        seed, nonce, identityKnown, state, detail) Then
-        package.AutoIdentityKnown = identityKnown
-        package.ConsumedNonce = nonce
-        package.NonceState = state
-        package.NonceConsumed = (StrComp(state, modSimNonce.SIM_NONCE_STATE_CONSUMED, _
-                                         vbBinaryCompare) = 0)
-        Exit Function
-    End If
+    allocated = modSimNonce.SimNonceAllocate(package.HasSuppliedSeed, package.SuppliedSeed, _
+                                             seed, nonce, identityKnown, state, detail)
 
+    ' COPIED ON BOTH ARMS, UNCONDITIONALLY. SimNonceAllocate sets every
+    ' out-parameter before any exit it can take, so a refused attempt that got
+    ' as far as deriving the seed for nonce m still records that seed. Copying
+    ' the nonce while dropping the seed would leave an attempt row naming an
+    ' identity nobody could reconstruct.
     package.EffectiveSeed = seed
     package.AutoIdentityKnown = identityKnown
     package.ConsumedNonce = nonce
     package.NonceState = state
-    package.NonceConsumed = identityKnown
-    AllocateAutoNonce = True
+
+    ' THE STRONG FACT, DERIVED FROM THE STATE ON BOTH ARMS. Not from
+    ' `identityKnown`, which only says an identity was selected, and not from
+    ' `allocated`, which is False for every non-CONSUMED outcome but True for a
+    ' FIXED run that consumed nothing.
+    package.NonceConsumed = (StrComp(state, modSimNonce.SIM_NONCE_STATE_CONSUMED, _
+                                     vbBinaryCompare) = 0)
+
+    AllocateAutoNonce = allocated
 End Function
 
 Private Function RunKernels(ByRef package As SimRunPackage, ByRef detail As String) As Boolean
@@ -851,8 +857,21 @@ Private Function RecordRefusal(ByRef package As SimRunPackage, _
 End Function
 
 Private Function RefusalResult(ByRef package As SimRunPackage) As String
+    ' AUDIT ONLY. This token records that THIS attempt met an AUTO nonce
+    ' persistence outcome it could not classify. It is not the recovery lock:
+    ' the durable authority is the Pending AUTO Nonce sidecar, which survives
+    ' every later attempt including a FIXED one that legitimately rewrites this
+    ' row. Both unclassified outcomes earn it - PERSISTENCE_INDETERMINATE, where
+    ' the advance can be neither confirmed nor refuted, and RECOVERY_REQUIRED,
+    ' where the counter is unreadable or reads a value that is neither the
+    ' attempted nonce nor its advance. Recording either as a plain REFUSED would
+    ' say the run declined to spend the nonce, which is precisely the claim this
+    ' source cannot make.
     If StrComp(package.NonceState, modSimNonce.SIM_NONCE_STATE_INDETERMINATE, _
                vbBinaryCompare) = 0 Then
+        RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE
+    ElseIf StrComp(package.NonceState, modSimNonce.SIM_NONCE_STATE_RECOVERY, _
+                   vbBinaryCompare) = 0 Then
         RefusalResult = SIM_ATTEMPT_AUTO_NONCE_INDETERMINATE
     Else
         RefusalResult = SIM_ATTEMPT_REFUSED
@@ -878,11 +897,15 @@ Private Sub WriteAttemptBlock(ByRef package As SimRunPackage, ByVal result As St
     block(2, 1) = detail
     If Len(package.SeedMode) > 0 Then
         block(3, 1) = package.SeedMode
-        ' ALLOCATED, not CONSUMED. A verification failure after the counter
-        ' write leaves consumption unproven but allocation certain, and
+        ' DIAGNOSTIC IDENTITY, not a consumption claim. Writing the seed here
+        ' says only that this attempt SELECTED that identity; whether the nonce
+        ' was consumed is carried by the attempt result and by the pending
+        ' sidecar, never inferred from the presence of a seed.
         ' seeding.nonce_lifecycle.attempt_metadata_preserves requires the seed
-        ' and the nonce on exactly that attempt. A refusal BEFORE allocation
-        ' still blanks both - failure_before_allocation_consumes_nonce: false.
+        ' and the attempted nonce on all three classifications - known_consumed,
+        ' pre_allocation and persistence_indeterminate alike - which is why the
+        ' gate is `identity known`, not `consumed`. A refusal BEFORE any
+        ' identity was selected still blanks both.
         If package.HasSuppliedSeed Or package.AutoIdentityKnown Then
             block(4, 1) = package.EffectiveSeed
         Else

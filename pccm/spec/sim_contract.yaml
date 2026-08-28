@@ -209,26 +209,55 @@ seeding:
         sampling_began: false
         must_not_be_called_allocated: true
         must_not_be_called_unconsumed: true
-        durable_attempt_result: "AUTO_NONCE_INDETERMINATE"
+        audit_attempt_result: "AUTO_NONCE_INDETERMINATE"
+        audit_result_is_the_recovery_authority: false
+        durable_recovery_authority: "pending_auto_nonce"
         next_run_must_reconcile_before_allocating: true
+
+    # WRITE-AHEAD. The counter write must not begin until the pending marker is
+    # durably established, so no outcome of the marker write can lose a nonce:
+    # if it did not land the next run sees blank and counter m; if it did land
+    # the next run sees pending m and counter m, and resolves PRE_ALLOCATION.
+    #
+    # `order` above remains the Step-0 coarse intent. This is the settled
+    # executable sequence that REFINES it: every nonce step of `order` survives,
+    # in the same relative order, with the marker and its cleanup interleaved.
+    # Stating that relationship as a CHECKABLE property - the loader proves the
+    # subsequence - is what stops the coarse sequence from quietly becoming a
+    # stale second authority.
+    write_ahead_order_refines: "order"
+    write_ahead_order_refinement_drops_prefix: "validate_pre_allocation_prerequisites"
+    write_ahead_order:
+      - "read_current_auto_nonce"
+      - "derive_effective_seed"
+      - "establish_and_verify_pending_auto_nonce"
+      - "persist_auto_nonce_plus_one"
+      - "reconcile_and_clear_pending"
+      - "begin_sampling"
 
     # ONE bounded observation after an infrastructure failure. No retry loop,
     # no decrement, and no forward skip taken merely to make uncertainty go
     # away. `m` is the candidate nonce; the advance writes `m + 1`.
+    #
+    # A raised verification READ is a verification-read failure: `Range.Value2`
+    # is a COM call on the way in as well as on the way out, so it takes the
+    # same single bounded observation as a raised write.
     immediate_reconciliation:
       attempts: 1
-      after: ["counter_write_raised", "verification_read_failed"]
+      after: ["counter_write_raised", "verification_read_failed",
+              "verification_read_raised"]
       observed_m_plus_1: "CONSUMED"
       observed_m: "PRE_ALLOCATION"
       observed_other: "RECOVERY_REQUIRED"
       observation_unavailable: "PERSISTENCE_INDETERMINATE"
 
-    # Activated ONLY by the durable machine token, never by a generic
-    # unsuccessful result: an ordinary REFUSED or FAILED attempt may follow a
-    # conclusively persisted advance, and treating the two alike would lose
-    # exactly the distinction the token exists to keep.
+    # Activated by the DURABLE SIDECAR, never by the attempt row. The attempt
+    # row records the last attempt and is rewritten by any later attempt -
+    # including a FIXED one unrelated to the pending AUTO transaction - so it
+    # cannot carry a lock that must outlive it.
     next_run_reconciliation:
-      activated_by_attempt_result: "AUTO_NONCE_INDETERMINATE"
+      activated_by_pending_auto_nonce_cell: true
+      activated_by_attempt_result: false
       activated_by_generic_unsuccessful_result: false
       # Settled tokens, not prose: `m+1` resolves the prior advance as having
       # persisted, so allocation continues from the counter; `m` resolves it as
@@ -238,6 +267,44 @@ seeding:
       counter_is_neither: "RECOVERY_REQUIRED"
       counter_unreadable: "RECOVERY_REQUIRED"
       applies_to_fixed_mode: false
+
+    # A FIXED run touches NOTHING in the AUTO transaction. It may proceed while
+    # a pending marker stands, and its own attempt metadata may legitimately
+    # replace a prior AUTO attempt's - which is safe only because the recovery
+    # authority is the sidecar and not that row. This is the decisive reason
+    # the sidecar exists.
+    fixed_mode:
+      reads_pending_auto_nonce: false
+      writes_pending_auto_nonce: false
+      clears_pending_auto_nonce: false
+      reads_next_auto_nonce: false
+      writes_next_auto_nonce: false
+      executes_after_nonce_failpoint: false
+      may_proceed_while_pending_marker_exists: true
+      may_overwrite_prior_auto_attempt_metadata: true
+
+    # The fifth Phase-6 attempt-result token, scoped. It records that THIS
+    # attempt met an AUTO nonce persistence outcome it could not classify, and
+    # nothing more. A later attempt may overwrite it; the sidecar survives.
+    attempt_result_token:
+      token: "AUTO_NONCE_INDETERMINATE"
+      audit_only: true
+      is_the_durable_recovery_authority: false
+      may_be_overwritten_by_a_later_attempt: true
+      recorded_for: ["PERSISTENCE_INDETERMINATE", "RECOVERY_REQUIRED"]
+      other_unsuccessful_outcomes_record: "REFUSED"
+      phase5_axis_unchanged: true
+
+    # Clearing is a COM write like any other, so a raised clear is NOT proof the
+    # marker survived. Both physical outcomes are safe for the NEXT run - a
+    # surviving marker only costs one more reconciliation - but THIS run must
+    # not sample while its own transaction cleanup is unresolved, and it must
+    # not roll the counter back to tidy up.
+    pending_clear:
+      is_a_real_com_write: true
+      raised_clear_proves_marker_remains: false
+      unresolved_cleanup_permits_sampling: false
+      counter_rollback_on_clear_failure: false
 
     # The attempt row keeps different facts in different states. Row 27 must
     # never assert physical consumption merely because it holds the number.
@@ -249,13 +316,16 @@ seeding:
         - "effective_seed"
         - "durable_indeterminate_result"
 
-    # THE DECLARED RESIDUAL. If persistence becomes indeterminate AND the
-    # attempt recorder then cannot durably write the marker, the workbook has
-    # lost the reconciliation authority. Automatic retry is not authorised;
-    # recovery is required. Step 6 builds no second journal for this.
+    # THE RESIDUAL, REWRITTEN. It used to say that indeterminate persistence
+    # plus a failed attempt-row write lost the reconciliation authority. That
+    # was true only while the attempt row WAS the authority. The pending sidecar
+    # is established BEFORE the counter write and is independent of the attempt
+    # block, so reuse prevention no longer depends on the attempt row storing
+    # anything: a failed attempt write loses the audit line, not safety.
     indeterminate_marker_storage_failure:
-      automatic_retry_authorised: false
-      recovery_required: true
+      reuse_prevention_depends_on_attempt_row: false
+      reuse_prevention_depends_on_pending_cell: true
+      attempt_row_failure_loses_audit_line_only: true
       second_write_ahead_log_required: false
 
 # -----------------------------------------------------------------------------
@@ -1244,6 +1314,41 @@ sim_data:
     - "per_driver_samples"
     - "annual_stochastic_samples"
     - "sensitivity_data"
+
+  # ---------------------------------------------------------------------------
+  # THE PENDING AUTO NONCE SIDECAR - a write-ahead recovery marker.
+  #
+  # WHY IT IS NOT THE ATTEMPT ROW. `last_attempt_result` is contractually the
+  # result of the chronologically LAST simulation attempt, and a durable AUTO
+  # recovery lock must survive attempts that have nothing to do with it. A FIXED
+  # run necessarily rewrites the attempt block: preserving an AUTO token across
+  # it would make "Last Attempt Result" lie, and overwriting it would erase the
+  # recovery authority. One cell cannot be both.
+  #
+  # WHY F21. Column F carries the bank-B SNAPSHOT, which ends at row 20; row 21
+  # is `next_auto_nonce`, a SHARED counter that lives in column D only. F21 is
+  # therefore unused, and using it shifts no row: the iteration header stays at
+  # 33, the first iteration row at 34, and the technical ceiling is unchanged.
+  # ---------------------------------------------------------------------------
+  pending_auto_nonce:
+    cell: "F21"
+    column: "F"
+    row: 21
+    label: "Pending AUTO Nonce"
+    value_type: "integer_or_blank"
+    blank_means: "no AUTO allocation transaction requires recovery"
+    integer_means: "AUTO nonce m is pending; reconcile the counter before allocating"
+    is_a_consumed_nonce_claim: false
+    is_an_enum_sentinel: false
+    written_before_counter_persist: true
+    counter_persist_forbidden_until_established: true
+    cleared_on: ["counter_equals_m", "counter_equals_m_plus_1"]
+    retained_on: ["counter_is_neither", "counter_unreadable", "observation_unavailable"]
+    sampling_forbidden_while_unresolved: true
+    survives_unrelated_attempts: true
+    # FIXED-mode behaviour is stated ONCE, under
+    # seeding.nonce_lifecycle.fixed_mode. Restating it here would create two
+    # authorities for one fact and no rule about which governs.
 
 # -----------------------------------------------------------------------------
 # Enumerated label sets.

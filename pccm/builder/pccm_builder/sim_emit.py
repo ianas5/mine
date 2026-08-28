@@ -358,6 +358,10 @@ def render_sim_contract_module(
                 f"SIM_ITER_{_identifier(label)}_{_identifier(key)}_COLUMN", str(column))
     transaction = raw["publication"]["transaction"]
     module.const("SIM_FINAL_COMMIT_RANGE", str(transaction["final_commit_range"]))
+    # The durable write-ahead recovery marker. Projected as ONE constant so no
+    # production procedure spells the coordinate for itself.
+    pending = raw["sim_data"]["pending_auto_nonce"]
+    module.const("SIM_PENDING_AUTO_NONCE_CELL", str(pending["cell"]))
     module.raw()
 
     # --- persisted summary and contingency ----------------------------------

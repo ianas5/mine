@@ -550,8 +550,9 @@ did exactly what a module-size control is for: it exposed that one coherent
 responsibility should be separated. **Neither ceiling was raised.**
 
 ```
-modSimNonce   raw ?  code ?
-modSimReport  raw ?  code ?
+modSimNonce   raw  455   code  288
+modSimReport  raw 1167   code  816
+ceilings      raw 1200   code  900
 ```
 
 One public entry point, `SimNonceAllocate`, taking **scalars only**:
@@ -589,13 +590,13 @@ a control refuses that phrase there, because `m` will legitimately be reissued.
 
 ### 8.6 Next-run reconciliation
 
-Activated by `Last Attempt Result = AUTO_NONCE_INDETERMINATE` **alone**, never by
-a generic unsuccessful result — an ordinary `REFUSED`/`FAILED` may follow a
-conclusively persisted advance, and conflating them destroys the distinction the
-token exists to keep. With prior attempted nonce `m` and counter `c`:
+**Superseded by §9.** The carrier described here — `Last Attempt Result =
+AUTO_NONCE_INDETERMINATE` — was rejected in static review and is no longer the
+recovery authority. The *resolution table* below survived unchanged and now
+reads the sidecar instead: with pending nonce `m` and counter `c`,
 `c = m+1` → resolved consumed, allocate from `c`; `c = m` → resolved not
 persisted, `m` may be allocated; anything else, or an unreadable counter →
-recovery. FIXED mode never enters it.
+recovery, marker retained. FIXED mode never enters it.
 
 ### 8.7 Attempt metadata by state
 
@@ -605,14 +606,23 @@ like a skipped nonce. **Published** records — snapshot and commit block — st
 gated on `NonceConsumed`: a published bank may claim only *proven* consumption.
 Controls refuse each direction being swapped.
 
-### 8.8 The compound residual stands
+### 8.8 The compound residual — withdrawn by §9
 
-If persistence becomes indeterminate **and** the attempt recorder then cannot
-durably write the marker, the workbook has lost the reconciliation authority.
-Automatic retry is not authorised and recovery is required. No second journal was
-built. Integration `test_28` states its own limit: it proves failures are
-**routed** to the attempt recorder, and explicitly does not claim the row can
-never fail to be **stored**.
+This section used to say that indeterminate persistence **plus** a failed
+attempt-row write lost the reconciliation authority. That was true only while
+the attempt row **was** the authority. It no longer is, so the residual as
+stated is withdrawn rather than kept because it was once accepted.
+
+What replaces it is narrower and is now the honest statement: an attempt-row
+write failure loses the **audit line**, not the safety property. The pending
+marker is established before the counter is touched and lives in a cell no
+attempt writer addresses, so nonce-reuse prevention does not depend on that row
+storing anything. `indeterminate_marker_storage_failure` in the contract states
+exactly this, and `test_44r` holds the source to it.
+
+Integration `test_28` still states its own limit: it proves failures are
+**routed** to the attempt recorder, and does not claim the row can never fail to
+be **stored**. That limit is now about audit completeness only.
 
 ### 8.9 Detectors that pinned the wrong authority
 
@@ -650,3 +660,139 @@ as free-form prose validated only for non-emptiness, so a wrong value passed.
 They are now settled tokens — `CONSUMED`, `PRE_ALLOCATION`, `RECOVERY_REQUIRED`,
 `RECOVERY_REQUIRED` — validated by exact value, with the explanation in the
 comment where it belongs. The control was right and the contract was weak.
+
+---
+
+## 9. The durable pending-AUTO-nonce sidecar
+
+Static review rejected §8's carrier. `Last Attempt Result` is contractually the
+result of the **chronologically last** attempt, and a durable AUTO lock has to
+survive attempts that have nothing to do with it. A FIXED run is the decisive
+case: the contract correctly excuses it from AUTO reconciliation
+(`applies_to_fixed_mode: false`), but a FIXED attempt still rewrites the whole
+Last Attempt block. Preserving the token across it would make *"Last Attempt
+Result"* lie; overwriting it makes the recovery authority disappear. One cell
+cannot be both. That is a structural contradiction, not another flag bug.
+
+### 9.1 The coordinate, and why it is free
+
+`_SimData!F21`, emitted as `SIM_PENDING_AUTO_NONCE_CELL`. Verified free three
+independent ways, none of them by reading a comment:
+
+* **Contract structure.** Column F is the bank-B value column. The bank-B
+  snapshot occupies the *snapshot* field group, which ends at row 20; row 21 is
+  a **shared** counter row (`Next AUTO Nonce` at D21) and therefore has no
+  bank-B twin. The shared final commit is `D22:D30` — column D. The bank-B
+  iteration index also uses column F, but from the header row 33 downward.
+* **The built workbook.** `openpyxl` on `build/PCCM_stageA.xlsx` reports `F21`
+  empty, and the whole of column F carries nothing at row 21.
+* **A builder validator.** `_validate_pending_auto_nonce` recomputes the
+  overlap from the layout and refuses a cell that collides with the bank-B
+  snapshot, any banked row, the identity block's bounds or the iteration table.
+  Moving the declared cell to `F20` is refused.
+
+`test_32` holds all three; `test_33` proves nothing shifted — header row 33,
+first iteration row 34, `reserved_rows_h` 33, and
+`max_iterations_representable` still 1 048 543, still recomputed rather than
+restated. **No row was added, so nothing moved.**
+
+### 9.2 Write-ahead
+
+```
+read NEXT_AUTO_NONCE = m
+derive effective seed(m)
+establish + VERIFY  Pending AUTO Nonce = m     <- counter untouched until here
+attempt NEXT_AUTO_NONCE = m+1
+reconcile
+clear Pending AUTO Nonce
+Phase6AfterNoncePersisted
+sampling
+```
+
+The counter is not touched until the marker is durably established, so **either
+physical outcome of the marker write is safe**: if it did not land the next AUTO
+run sees a blank sidecar and counter `m`; if it did, it sees pending `m` and
+counter `m` and resolves `PRE_ALLOCATION`. No nonce can vanish or replay because
+of uncertainty in *that* write. A failed establishment is a **definite**
+outcome — `PRE_ALLOCATION`, counter never touched — not an indeterminate one.
+
+The contract states the relationship to the Step-0 coarse sequence as a
+*checkable* property rather than a claim: `write_ahead_order_refines: "order"`,
+and the loader proves the coarse steps survive as an ordered subsequence. A
+future edit that drops or reorders one is refused, so `order` cannot quietly
+become a stale second authority.
+
+### 9.3 Clearing
+
+`m` and `m+1` are definite resolutions and clear the marker; `neither`,
+`unreadable` and `unobtainable` retain it. Clearing is treated as a **real COM
+write** — a raised clear is not proof the marker survived. Both physical
+outcomes are safe for the *next* run, since a surviving marker costs one extra
+reconciliation, but **this** run must not sample while its own cleanup is
+unresolved, and nothing rolls the counter back to tidy up.
+
+### 9.4 What the fifth token now means
+
+`AUTO_NONCE_INDETERMINATE` remains, as an **audit** result only: *this attempt
+met an AUTO nonce persistence outcome it could not classify.* Both unclassified
+states earn it — `PERSISTENCE_INDETERMINATE` and `RECOVERY_REQUIRED` — because
+recording either as a plain `REFUSED` would say the run *declined* to spend the
+nonce, which is exactly the claim this source cannot make. A later attempt,
+FIXED included, may overwrite it freely. Phase 5's attempt axis stays four-valued
+and neither `calc_contract.yaml` nor `calc_loader.py` names the token.
+
+### 9.5 The three source defects fixed alongside
+
+| Defect | Was | Now |
+|---|---|---|
+| raised first verification read | handler disarmed before the read, so a raise skipped reconciliation | the write **and** its verification read sit in one envelope; `verification_read_raised` is a named contract cause |
+| effective seed lost on failure | copied on the success arm only, so refusals wrote nonce `m` beside seed `0` | out-parameters copied **unconditionally** after the call — no branch or early exit stands between |
+| failpoint fired in FIXED | call sat below an `End If` the FIXED branch fell through | the FIXED branch `Exit Function`s before it; a nesting-aware block check proves containment, not text order |
+
+### 9.6 Detectors, and the gap that made this round necessary
+
+The thirteen focused controls all **passed** while every one of these defects
+was present. That is a detector failure as much as a source failure, and the
+pattern in each case was the same: they proved a construct was *present* rather
+than that a *path* had a property. The replacements are structural — they walk
+logical statements, extract blocks by nesting, and assert what stands between
+two points rather than merely that both exist.
+
+Nineteen properties are now controlled, each with a non-vacuous mutation, and
+the four rejected shapes are restored verbatim as `test_103`, `test_105`,
+`test_109` and `test_110` and required to fail.
+
+One of my own new controls was string-blind in the opposite direction:
+`test_44h3` scanned `code_without_string_removal`, which strips **comments**, so
+it could never have seen the obsolete `ALLOCATED, not CONSUMED` language come
+back. It now reads the raw text, and asserts the raw text still has comments in
+it before concluding anything from their absence.
+
+### 9.7 Hashes for this correction
+
+| Artefact | Before | After | Why |
+|---|---|---|---|
+| `spec/sim_contract.yaml` | `a1b6f35a45f5…` | `9d31ad7af70a…` | sidecar authority; `fixed_mode`, `attempt_result_token`, `pending_clear`, `write_ahead_order`; residual rewritten |
+| `spec/structure_contract.yaml` | `68f135d35af4…` | `a5ef5d3e8cad…` | `modSimNonce`'s registered responsibility no longer names the rejected carrier |
+| `builder/pccm_builder/sim_loader.py` | *(§8)* | `82eb8c0eb06f…` | `_validate_pending_auto_nonce`; the new blocks **enforced**, not merely tolerated |
+| `builder/pccm_builder/sim_emit.py` | *(§8)* | `11ee506b0bc3…` | emits `SIM_PENDING_AUTO_NONCE_CELL` |
+| `build/vba/modSimContract.bas` | `96e22c842c11…` | `daa4d27889c3…` | **one line added**, the sidecar constant |
+| `build/stage_b_manifest.json` | `58e0f1170d5a…` | `87d0d7bed10a…` | projects the corrected responsibility text |
+| `src/vba/modSimNonce.bas` | `a6806b05d24b…` | `8e0b7c732626…` | write-ahead transaction; attempt-row dependency removed |
+| `src/vba/modSimReport.bas` | `f57b6d06abbd…` | `f7c8d068a19a…` | unconditional out-parameter copy; `RefusalResult` covers both unclassified states; obsolete comment replaced |
+
+**Unchanged, and checked:** `build/phase6_cases.json` (`8019683a0490…`), every
+Phase-5 authority including `calc_contract.yaml` and `calc_loader.py`, and every
+other handwritten module. The generated module's movement was verified by
+rebuilding from `HEAD` and diffing: exactly one added line.
+
+### 9.8 One observation, not a change
+
+`F21` sits on the row whose label at `B21` reads *"Next AUTO Nonce"*, and the
+note column `H21` is empty. On the sheet a pending marker will therefore appear
+beside a label naming a different field. Nothing depends on this — the cell is
+addressed by a generated constant, never by its label — but a reader inspecting
+`_SimData` by eye has no on-sheet name for it. Adding a label or a note would
+change the emitted layout, which this authorisation did not ask for, so it is
+reported rather than done.
+

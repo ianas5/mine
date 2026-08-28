@@ -711,3 +711,56 @@ def test_56_the_nonce_module_depends_back_on_the_reporter() -> None:
 def test_57_the_run_package_becomes_public() -> None:
     damaged = _swap(_REPORT, "Private Type SimRunPackage\n", "Public Type SimRunPackage\n")
     _control("test_30", vba={REPORT_BAS: damaged})
+
+
+def test_58_the_sidecar_is_declared_on_top_of_the_bank_b_snapshot() -> None:
+    """A coordinate is free or it is not; a comment saying so proves nothing."""
+    contract = _read(conformance.SPEC, "sim_contract.yaml")
+    damaged = _swap(contract, '    cell: "F21"\n    column: "F"\n    row: 21\n',
+                    '    cell: "F20"\n    column: "F"\n    row: 20\n')
+    _control("test_32", spec={"sim_contract.yaml": damaged})
+
+
+def test_59_the_sidecar_is_declared_inside_the_iteration_table() -> None:
+    contract = _read(conformance.SPEC, "sim_contract.yaml")
+    damaged = _swap(contract, '    cell: "F21"\n    column: "F"\n    row: 21\n',
+                    '    cell: "F40"\n    column: "F"\n    row: 40\n')
+    _control("test_32", spec={"sim_contract.yaml": damaged})
+
+
+def test_60_the_sidecar_is_moved_into_the_shared_commit_column() -> None:
+    """Column D is where the final commit writes; a sidecar there is not durable."""
+    contract = _read(conformance.SPEC, "sim_contract.yaml")
+    damaged = _swap(contract, '    cell: "F21"\n    column: "F"\n    row: 21\n',
+                    '    cell: "D21"\n    column: "D"\n    row: 21\n')
+    _control("test_32", spec={"sim_contract.yaml": damaged})
+
+
+def test_61_the_generated_coordinate_is_emitted_twice() -> None:
+    """Two generated constants for one cell is two authorities."""
+    generated = _read(conformance.BUILD, "vba/modSimContract.bas")
+    damaged = _swap(
+        generated,
+        'Public Const SIM_PENDING_AUTO_NONCE_CELL As String = "F21"\n',
+        'Public Const SIM_PENDING_AUTO_NONCE_CELL As String = "F21"\n'
+        'Public Const SIM_PENDING_AUTO_NONCE_CELL_2 As String = "F21"\n')
+    _control("test_34", build={"vba/modSimContract.bas": damaged})
+
+
+def test_62_the_iteration_table_is_shifted_to_make_room() -> None:
+    """The sidecar was chosen precisely so no row had to move."""
+    contract = _read(conformance.SPEC, "sim_contract.yaml")
+    damaged = _swap(contract, "    header_row: 33\n", "    header_row: 34\n")
+    _control("test_33", spec={"sim_contract.yaml": damaged})
+
+
+def test_63_the_registry_still_describes_the_rejected_carrier() -> None:
+    """A registry entry that names a withdrawn authority teaches it."""
+    structure = _read(conformance.SPEC, "structure_contract.yaml")
+    damaged = _swap(
+        structure,
+        "Its durable recovery inputs are the pending marker and the nonce "
+        "counter, never the mutable last-attempt audit axis.",
+        "It interprets a prior AUTO_NONCE_INDETERMINATE attempt.")
+    _control("test_30", spec={"structure_contract.yaml": damaged})
+

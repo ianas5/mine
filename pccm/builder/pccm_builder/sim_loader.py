@@ -932,13 +932,30 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'timestamp_derived_uniqueness_permitted'
     }),
     'seeding.nonce_lifecycle': frozenset({
-        'allocation_state_semantics', 'allocation_states',
-        'attempt_metadata_preserves', 'exhausted_value',
+        'allocation_state_semantics', 'allocation_states', 'attempt_result_token',
+        'attempt_metadata_preserves', 'exhausted_value', 'fixed_mode',
         'failure_after_allocation_consumes_nonce', 'failure_before_allocation_consumes_nonce',
         'first_valid_allocation', 'immediate_reconciliation',
         'indeterminate_marker_storage_failure', 'initial', 'last_valid_allocation', 'meaning',
-        'next_run_reconciliation', 'on_exhaustion', 'order',
-        'prior_successful_publication_untouched', 'reuse_permitted', 'wrap_permitted'
+        'next_run_reconciliation', 'on_exhaustion', 'order', 'pending_clear',
+        'prior_successful_publication_untouched', 'reuse_permitted', 'wrap_permitted',
+        'write_ahead_order', 'write_ahead_order_refinement_drops_prefix',
+        'write_ahead_order_refines'
+    }),
+    'seeding.nonce_lifecycle.fixed_mode': frozenset({
+        'clears_pending_auto_nonce', 'executes_after_nonce_failpoint',
+        'may_overwrite_prior_auto_attempt_metadata',
+        'may_proceed_while_pending_marker_exists', 'reads_next_auto_nonce',
+        'reads_pending_auto_nonce', 'writes_next_auto_nonce', 'writes_pending_auto_nonce'
+    }),
+    'seeding.nonce_lifecycle.attempt_result_token': frozenset({
+        'audit_only', 'is_the_durable_recovery_authority',
+        'may_be_overwritten_by_a_later_attempt', 'other_unsuccessful_outcomes_record',
+        'phase5_axis_unchanged', 'recorded_for', 'token'
+    }),
+    'seeding.nonce_lifecycle.pending_clear': frozenset({
+        'counter_rollback_on_clear_failure', 'is_a_real_com_write',
+        'raised_clear_proves_marker_remains', 'unresolved_cleanup_permits_sampling'
     }),
     'seeding.nonce_lifecycle.allocation_state_semantics': frozenset({
         'CONSUMED', 'PERSISTENCE_INDETERMINATE', 'PRE_ALLOCATION'
@@ -952,16 +969,26 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'sampling_began'
     }),
     'seeding.nonce_lifecycle.allocation_state_semantics.PERSISTENCE_INDETERMINATE': frozenset({
-        'advance_persisted', 'durable_attempt_result', 'must_not_be_called_allocated',
-        'must_not_be_called_unconsumed', 'next_run_must_reconcile_before_allocating',
-        'nonce_consumed', 'sampling_began'
+        'advance_persisted', 'audit_attempt_result',
+        'audit_result_is_the_recovery_authority', 'durable_recovery_authority',
+        'must_not_be_called_allocated', 'must_not_be_called_unconsumed',
+        'next_run_must_reconcile_before_allocating', 'nonce_consumed', 'sampling_began'
     }),
     'seeding.nonce_lifecycle.immediate_reconciliation': frozenset({
         'after', 'attempts', 'observation_unavailable', 'observed_m',
         'observed_m_plus_1', 'observed_other'
     }),
+    'sim_data.pending_auto_nonce': frozenset({
+        'blank_means', 'cell', 'cleared_on', 'column',
+        'counter_persist_forbidden_until_established',
+        'integer_means', 'is_a_consumed_nonce_claim',
+        'is_an_enum_sentinel', 'label', 'retained_on', 'row',
+        'sampling_forbidden_while_unresolved', 'survives_unrelated_attempts',
+        'value_type', 'written_before_counter_persist'
+    }),
     'seeding.nonce_lifecycle.next_run_reconciliation': frozenset({
         'activated_by_attempt_result', 'activated_by_generic_unsuccessful_result',
+        'activated_by_pending_auto_nonce_cell',
         'applies_to_fixed_mode', 'counter_equals_m', 'counter_equals_m_plus_1',
         'counter_is_neither', 'counter_unreadable'
     }),
@@ -969,14 +996,17 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'known_consumed', 'persistence_indeterminate', 'pre_allocation'
     }),
     'seeding.nonce_lifecycle.indeterminate_marker_storage_failure': frozenset({
-        'automatic_retry_authorised', 'recovery_required', 'second_write_ahead_log_required'
+        'attempt_row_failure_loses_audit_line_only',
+        'reuse_prevention_depends_on_attempt_row',
+        'reuse_prevention_depends_on_pending_cell', 'second_write_ahead_log_required'
     }),
     'seeding.scalar_to_state': frozenset({
         'alternate_expansion_permitted', 'expansion', 'mixer', 'rule'
     }),
     'sim_data': frozenset({
-        'contingency_ladder', 'excluded', 'iteration_records', 'required_visibility',
-        'reserved_rows', 'run_identity', 'sheet', 'summary_statistics'
+        'contingency_ladder', 'excluded', 'iteration_records', 'pending_auto_nonce',
+        'required_visibility', 'reserved_rows', 'run_identity', 'sheet',
+        'summary_statistics'
     }),
     'sim_data.contingency_ladder': frozenset({
         'all_values_representable_required_before_commit', 'bank_value_columns',
@@ -1217,6 +1247,7 @@ def load_sim_contract(path: Path) -> SimContract:
     _validate_versions(raw, path)
     _validate_rng(raw, path)
     _validate_seeding(raw, path)
+    _validate_pending_auto_nonce(raw, path)
     _validate_components(raw, path)
     _validate_stream_assignment(raw, path)
     _validate_jump(raw, path)
@@ -1425,7 +1456,19 @@ def _validate_seeding(raw: dict, path: Path) -> None:
 
 
 LOCKED_ALLOCATION_STATES = ("PRE_ALLOCATION", "CONSUMED", "PERSISTENCE_INDETERMINATE")
+LOCKED_WRITE_AHEAD_ORDER = (
+    "read_current_auto_nonce", "derive_effective_seed",
+    "establish_and_verify_pending_auto_nonce", "persist_auto_nonce_plus_one",
+    "reconcile_and_clear_pending", "begin_sampling",
+)
+LOCKED_PENDING_AUTO_NONCE_CELL = "F21"
 LOCKED_INDETERMINATE_RESULT = "AUTO_NONCE_INDETERMINATE"
+
+
+def _is_subsequence(needle: list, haystack: list) -> bool:
+    """Every element of `needle`, in order, somewhere in `haystack`."""
+    it = iter(haystack)
+    return all(item in it for item in needle)
 
 
 def _validate_allocation_states(life: dict, where: str) -> None:
@@ -1467,7 +1510,12 @@ def _validate_allocation_states(life: dict, where: str) -> None:
     _require_false(unknown, "sampling_began", uwhere)
     _require_true(unknown, "must_not_be_called_allocated", uwhere)
     _require_true(unknown, "must_not_be_called_unconsumed", uwhere)
-    _require_value(unknown, "durable_attempt_result", LOCKED_INDETERMINATE_RESULT, uwhere)
+    # THE TOKEN IS AUDIT ONLY. The durable recovery authority is the sidecar,
+    # because the attempt row is rewritten by any later attempt - including a
+    # FIXED one that has nothing to do with the pending AUTO transaction.
+    _require_value(unknown, "audit_attempt_result", LOCKED_INDETERMINATE_RESULT, uwhere)
+    _require_false(unknown, "audit_result_is_the_recovery_authority", uwhere)
+    _require_value(unknown, "durable_recovery_authority", "pending_auto_nonce", uwhere)
     _require_true(unknown, "next_run_must_reconcile_before_allocating", uwhere)
 
     # ONE observation, never a retry loop: a loop would turn an ambiguous COM
@@ -1476,8 +1524,12 @@ def _validate_allocation_states(life: dict, where: str) -> None:
     iwhere = f"{where}: immediate_reconciliation"
     _require_value(immediate, "attempts", 1, iwhere)
     _exact_sequence(immediate.get("after"),
-                    ("counter_write_raised", "verification_read_failed"),
+                    ("counter_write_raised", "verification_read_failed",
+                     "verification_read_raised"),
                     f"{iwhere}: after")
+    # WRITE-AHEAD: the marker is established before the counter is touched.
+    _exact_sequence(life.get("write_ahead_order"), LOCKED_WRITE_AHEAD_ORDER,
+                    f"{where}: write_ahead_order")
     _require_value(immediate, "observed_m_plus_1", "CONSUMED", iwhere)
     _require_value(immediate, "observed_m", "PRE_ALLOCATION", iwhere)
     _require_value(immediate, "observed_other", "RECOVERY_REQUIRED", iwhere)
@@ -1488,13 +1540,70 @@ def _validate_allocation_states(life: dict, where: str) -> None:
     # distinction the token exists to keep.
     later = _map(life, "next_run_reconciliation", where)
     nwhere = f"{where}: next_run_reconciliation"
-    _require_value(later, "activated_by_attempt_result", LOCKED_INDETERMINATE_RESULT, nwhere)
+    _require_true(later, "activated_by_pending_auto_nonce_cell", nwhere)
+    _require_false(later, "activated_by_attempt_result", nwhere)
     _require_false(later, "activated_by_generic_unsuccessful_result", nwhere)
     _require_false(later, "applies_to_fixed_mode", nwhere)
     _require_value(later, "counter_equals_m_plus_1", "CONSUMED", nwhere)
     _require_value(later, "counter_equals_m", "PRE_ALLOCATION", nwhere)
     _require_value(later, "counter_is_neither", "RECOVERY_REQUIRED", nwhere)
     _require_value(later, "counter_unreadable", "RECOVERY_REQUIRED", nwhere)
+
+    # THE REFINEMENT IS CHECKED, not asserted. `write_ahead_order` must contain
+    # every nonce step of the Step-0 `order`, in the same relative order - so
+    # the coarse sequence cannot silently become a stale second authority.
+    _require_value(life, "write_ahead_order_refines", "order", where)
+    dropped = life.get("write_ahead_order_refinement_drops_prefix")
+    coarse = list(life.get("order") or ())
+    if not coarse or coarse[0] != dropped:
+        raise SimContractError(
+            f"{where}: write_ahead_order_refinement_drops_prefix must name the "
+            f"first step of `order`, which is {coarse[0] if coarse else None!r}"
+        )
+    if not _is_subsequence(coarse[1:], list(life.get("write_ahead_order") or ())):
+        raise SimContractError(
+            f"{where}: write_ahead_order {list(life.get('write_ahead_order') or ())} "
+            f"does not preserve the remaining steps of `order` {coarse[1:]} in order; "
+            "a refinement that drops or reorders a step is a different sequence, "
+            "not a refinement"
+        )
+
+    # FIXED touches NOTHING in the AUTO transaction. That is what makes a FIXED
+    # attempt safe to overwrite the attempt row while a marker stands.
+    fixed = _map(life, "fixed_mode", where)
+    fwhere = f"{where}: fixed_mode"
+    for key in (
+        "reads_pending_auto_nonce", "writes_pending_auto_nonce",
+        "clears_pending_auto_nonce", "reads_next_auto_nonce",
+        "writes_next_auto_nonce", "executes_after_nonce_failpoint",
+    ):
+        _require_false(fixed, key, fwhere)
+    _require_true(fixed, "may_proceed_while_pending_marker_exists", fwhere)
+    _require_true(fixed, "may_overwrite_prior_auto_attempt_metadata", fwhere)
+
+    # The fifth token is an AUDIT result. Both unclassified outcomes earn it;
+    # recording either as a plain REFUSED would claim the run declined to spend
+    # the nonce, which is the one claim the source cannot make.
+    token = _map(life, "attempt_result_token", where)
+    twhere = f"{where}: attempt_result_token"
+    _require_value(token, "token", LOCKED_INDETERMINATE_RESULT, twhere)
+    _require_true(token, "audit_only", twhere)
+    _require_false(token, "is_the_durable_recovery_authority", twhere)
+    _require_true(token, "may_be_overwritten_by_a_later_attempt", twhere)
+    _exact_sequence(token.get("recorded_for"),
+                    ("PERSISTENCE_INDETERMINATE", "RECOVERY_REQUIRED"),
+                    f"{twhere}: recorded_for")
+    _require_value(token, "other_unsuccessful_outcomes_record", "REFUSED", twhere)
+    _require_true(token, "phase5_axis_unchanged", twhere)
+
+    # A raised clear is not proof the marker survived, and no clear failure ever
+    # rolls the counter back.
+    clear = _map(life, "pending_clear", where)
+    cwhere = f"{where}: pending_clear"
+    _require_true(clear, "is_a_real_com_write", cwhere)
+    _require_false(clear, "raised_clear_proves_marker_remains", cwhere)
+    _require_false(clear, "unresolved_cleanup_permits_sampling", cwhere)
+    _require_false(clear, "counter_rollback_on_clear_failure", cwhere)
 
     # The attempt row keeps different facts in different states, and row 27 must
     # never assert physical consumption merely because it holds the number.
@@ -1514,9 +1623,87 @@ def _validate_allocation_states(life: dict, where: str) -> None:
     # THE DECLARED RESIDUAL, stated rather than papered over.
     residual = _map(life, "indeterminate_marker_storage_failure", where)
     rwhere = f"{where}: indeterminate_marker_storage_failure"
-    _require_false(residual, "automatic_retry_authorised", rwhere)
-    _require_true(residual, "recovery_required", rwhere)
+    _require_false(residual, "reuse_prevention_depends_on_attempt_row", rwhere)
+    _require_true(residual, "reuse_prevention_depends_on_pending_cell", rwhere)
+    _require_true(residual, "attempt_row_failure_loses_audit_line_only", rwhere)
     _require_false(residual, "second_write_ahead_log_required", rwhere)
+
+
+def _validate_pending_auto_nonce(raw: dict, path: Path) -> None:
+    """The durable write-ahead recovery marker, and its independence.
+
+    It must not sit anywhere the publication already owns. Column F carries the
+    bank-B snapshot, which ends at the last snapshot row; the pending cell is
+    the row below it, which is a SHARED counter row and therefore has no bank-B
+    twin. That is why the cell is free and why nothing shifts.
+    """
+    data = _map(raw, "sim_data", path)
+    block = _map(data, "pending_auto_nonce", f"{path}: sim_data")
+    where = f"{path}: sim_data: pending_auto_nonce"
+    _require_value(block, "cell", LOCKED_PENDING_AUTO_NONCE_CELL, where)
+    identity = data["run_identity"]
+    column = str(block["column"])
+    row = int(block["row"])
+    if f"{column}{row}" != str(block["cell"]):
+        raise SimContractError(f"{where}: cell must equal column & row")
+    if column != identity["bank_value_columns"]["B"]:
+        raise SimContractError(f"{where}: the sidecar must live in the bank-B column")
+
+    snapshot_rows = [f["row"] for f in identity["fields"] if f.get("group") == "snapshot"]
+    if not snapshot_rows:
+        # WITHOUT THE SNAPSHOT GROUP THERE IS NOTHING TO PROVE THE SIDECAR CLEAR
+        # OF. Falling through would make this validator silently vacuous, which
+        # is worse than refusing.
+        raise SimContractError(
+            f"{where}: no run-identity field is in the 'snapshot' group, so the "
+            "bank-B extent cannot be established and the sidecar cannot be "
+            "proved free"
+        )
+    if row <= max(snapshot_rows):
+        raise SimContractError(
+            f"{where}: {block['cell']} overlaps the bank-B snapshot, which ends at "
+            f"row {max(snapshot_rows)}"
+        )
+    banked = {f["row"] for f in identity["fields"] if f.get("group") == "snapshot"}
+    if row in banked:
+        raise SimContractError(f"{where}: {block['cell']} is a banked snapshot cell")
+    if not identity["fields"]:
+        raise SimContractError(f"{where}: the run-identity block declares no fields")
+    if row < min(f["row"] for f in identity["fields"]):
+        raise SimContractError(f"{where}: the sidecar sits above the identity block")
+    records = data["iteration_records"]
+    if row >= int(records["header_row"]):
+        raise SimContractError(f"{where}: the sidecar collides with the iteration table")
+
+    # THE TWO MEANINGS ARE SETTLED TEXT, not free-form prose. A leaf the
+    # validator merely tolerates governs nothing: it would accept a contract
+    # saying blank means the opposite of what the source implements, and the
+    # closed-world check would still pass because the KEY is known.
+    _require_value(block, "label", "Pending AUTO Nonce", where)
+    _require_value(
+        block, "blank_means",
+        "no AUTO allocation transaction requires recovery", where,
+    )
+    _require_value(
+        block, "integer_means",
+        "AUTO nonce m is pending; reconcile the counter before allocating", where,
+    )
+    # It is a machine field, not a claim and not a sentinel.
+    _require_value(block, "value_type", "integer_or_blank", where)
+    _require_false(block, "is_a_consumed_nonce_claim", where)
+    _require_false(block, "is_an_enum_sentinel", where)
+    # WRITE-AHEAD, and untouched by FIXED.
+    _require_true(block, "written_before_counter_persist", where)
+    _require_true(block, "counter_persist_forbidden_until_established", where)
+    _require_true(block, "sampling_forbidden_while_unresolved", where)
+    _require_true(block, "survives_unrelated_attempts", where)
+    _exact_sequence(block.get("cleared_on"),
+                    ("counter_equals_m", "counter_equals_m_plus_1"),
+                    f"{where}: cleared_on")
+    _exact_sequence(block.get("retained_on"),
+                    ("counter_is_neither", "counter_unreadable",
+                     "observation_unavailable"),
+                    f"{where}: retained_on")
 
 
 def _validate_components(raw: dict, path: Path) -> None:

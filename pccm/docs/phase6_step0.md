@@ -1434,4 +1434,53 @@ also withdrawn; no such multiplier appears in any retained number.
 
 ---
 
+## Addendum — Step 12 post-acceptance qualification of the nonce lifecycle
+
+*Appended after Step 0 was accepted. Nothing above is rewritten; this scopes
+one table rather than replacing it.*
+
+The lifecycle table in §4 models allocation as **binary** — a failure is either
+*before* allocation, consuming no nonce, or *after* allocation, consuming it.
+That is true of the **intent**, and it remains the authority on what the system
+is trying to guarantee. It is not, however, sufficient as a model of a
+**fallible COM substrate**.
+
+A `Range.Value2` assignment that RAISES is not proof that Excel wrote nothing.
+So the question the table's two rows depend on — *did the advance persist?* —
+has a third possible answer: **unknown**. Forced into a binary model, that
+third answer has to be mislabelled as one of the other two, and either
+mislabelling is a real failure: calling it consumed skips a nonce that was
+never spent; calling it unconsumed reissues one that may have been.
+
+Step 12 therefore settled three allocation states, which **refine** the two
+rows above rather than contradict them:
+
+| State | Advance persisted | Nonce consumed | Retry may take the same nonce |
+|---|---|---|---|
+| `PRE_ALLOCATION` | known **false** | no | **yes** — nothing was ever allocated, so this is not reuse |
+| `CONSUMED` | known **true** | yes | no |
+| `PERSISTENCE_INDETERMINATE` | *unknown* | *unknown* | must not be called allocated **or** unconsumed |
+
+Read against §4: *"failure before allocation consumes no nonce"* is
+`PRE_ALLOCATION`; *"failure after allocation consumes the nonce"* is
+`CONSUMED`. Both stand exactly as written. The third state is the case §4 did
+not distinguish, and `reuse_permitted: false` is now explicitly scoped to a
+**known-consumed** nonce.
+
+`RECOVERY_REQUIRED` is an action/refusal state, not a fourth allocation state:
+it says the workbook must be reconciled before allocating, not that a nonce is
+in some fourth physical condition.
+
+A run-local flag cannot carry an unknown across invocations, so the doubt is
+held in a durable cell — `_SimData!F21`, *Pending AUTO Nonce* — established
+**before** the counter is touched and independent of the attempt row. The full
+settlement is in `docs/phase6_step12_transaction_settlement.md` §9.
+
+Everything else in §4 is unchanged: the meaning of `auto_nonce`, the
+`O(log nonce)` requirement, the exhaustion refusal at `2147483646`, and the
+requirement that a failed AUTO attempt record both the effective seed and the
+nonce it attempted.
+
+---
+
 **STEP 0 — ACCEPTANCE REQUESTED (PROVENANCE CORRECTED)**
