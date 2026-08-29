@@ -608,15 +608,44 @@ function Get-Phase6ActiveBank {
 function Get-Phase6CandidateTarget {
     param($Inspection, [string]$ActiveBank)
     # THE SELECTOR MAP IS THE CONTRACT'S, projected. The harness does not know
-    # that '' targets A and A targets B; it asks.
-    $map = $Inspection.publication.candidate_target
-    $key = $ActiveBank
-    if ([string]::IsNullOrEmpty($key)) { $key = '' }
-    if ($null -eq $map.PSObject.Properties[$key]) {
-        throw ("the publication candidate_target map has no entry for active bank '" +
-               $key + "'")
+    # that a blank selector targets A, or that A targets B; it asks.
+    #
+    # ENTRIES, NOT PROPERTIES, and that is not a style choice. The contract keys
+    # this map by the ACTIVE BANK, and the key for "nothing has ever been
+    # published" is the empty string. Projected as a JSON object it became a
+    # property whose NAME was empty, and Windows PowerShell 5.1's
+    # ConvertFrom-Json cannot materialise such an object at all - it threw
+    # PSArgumentException on the whole artefact, and Step-13 Run 1 died in the
+    # preflight before Excel was started. The projection now carries the absence
+    # as a null VALUE, which is the same fact in a shape 5.1 can read.
+    #
+    # THE BLANK IS NORMALISED ONLY FOR COMPARISON. Nothing here renames it, and
+    # no A/B mapping is restated: the answer is whatever the matching entry
+    # says.
+    $entries = @($Inspection.publication.candidate_target)
+    if ($entries.Count -eq 0) {
+        throw 'the publication candidate_target projection carries no entries'
     }
-    return [string]$map.$key
+    $matched = @($entries | Where-Object {
+        if ($null -eq $_.active_bank) {
+            [string]::IsNullOrEmpty($ActiveBank)
+        } else {
+            ([string]$_.active_bank) -ceq $ActiveBank
+        }
+    })
+    # EXACTLY ONE, FAIL-CLOSED BOTH WAYS. Zero means the projection cannot
+    # answer for this state; two means it answers twice and the harness would be
+    # choosing which answer to believe.
+    if ($matched.Count -eq 0) {
+        throw ('the publication candidate_target projection has no entry for active bank ' +
+               [char]39 + $ActiveBank + [char]39)
+    }
+    if ($matched.Count -gt 1) {
+        throw ('the publication candidate_target projection has ' + $matched.Count +
+               ' entries for active bank ' + [char]39 + $ActiveBank + [char]39 +
+               '; exactly one is required')
+    }
+    return [string]$matched[0].candidate_bank
 }
 
 # ONE INVOCATION OF THE PRODUCTION ENDPOINT, and its announcement.

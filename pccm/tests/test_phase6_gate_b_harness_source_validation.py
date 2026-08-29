@@ -1147,3 +1147,113 @@ def test_97_the_driver_passes_the_pccm_subtree_as_the_repository_root() -> None:
         "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot\n",
         "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $pccmRoot\n")
     _control("test_56", harness=damaged)
+
+
+# ===========================================================================
+# F. The Windows PowerShell 5.1 parse defect that ended Step-13 Run 1
+# ===========================================================================
+# The projection carried a JSON object whose property NAME was the empty string
+# - the contract's legitimate "no bank has ever been published" selector key -
+# and Windows PowerShell 5.1's ConvertFrom-Json threw PSArgumentException on the
+# whole artefact. The preflight aborted before Excel was started.
+#
+# The four controls below restore each way back into that failure.
+def test_98_the_selector_map_returns_to_an_object_with_a_blank_key() -> None:
+    """The submitted shape, exactly: a JSON property whose name is ''."""
+    def edit(document):
+        document["publication"]["candidate_target"] = {
+            ("" if entry["active_bank"] is None else entry["active_bank"]):
+                entry["candidate_bank"]
+            for entry in document["publication"]["candidate_target"]
+        }
+    _control("test_59", inspection=_json_mutation(_INSPECTION, edit))
+
+
+def test_99_any_other_empty_object_key_is_refused() -> None:
+    """`candidate_target` is where it happened, not the only place it could."""
+    def edit(document):
+        document["sim_data"]["run_identity"]["labels"][""] = "unnamed"
+    _control("test_59", inspection=_json_mutation(_INSPECTION, edit))
+
+
+def test_100_the_blank_selector_entry_is_dropped() -> None:
+    """A workbook that has never published would then have no candidate target,
+    and the very first run of a clean workbook is exactly that state."""
+    def edit(document):
+        document["publication"]["candidate_target"] = [
+            entry for entry in document["publication"]["candidate_target"]
+            if entry["active_bank"] is not None
+        ]
+    _control("test_61", inspection=_json_mutation(_INSPECTION, edit))
+
+
+def test_101_the_blank_selector_entry_is_duplicated() -> None:
+    """Two answers is not an answer; the selector must fail closed on it."""
+    def edit(document):
+        entries = document["publication"]["candidate_target"]
+        blank = [entry for entry in entries if entry["active_bank"] is None][0]
+        entries.append(dict(blank))
+    _control("test_61", inspection=_json_mutation(_INSPECTION, edit))
+
+
+def test_102_a_sentinel_replaces_the_blank_key() -> None:
+    """A magic "BLANK" token would be a second semantic authority."""
+    def edit(document):
+        for entry in document["publication"]["candidate_target"]:
+            if entry["active_bank"] is None:
+                entry["active_bank"] = "BLANK"
+    _control("test_61", inspection=_json_mutation(_INSPECTION, edit))
+
+
+def test_103_a_selector_mapping_is_lost_in_the_reshape() -> None:
+    def edit(document):
+        document["publication"]["candidate_target"] = (
+            document["publication"]["candidate_target"][:2])
+    _control("test_61", inspection=_json_mutation(_INSPECTION, edit))
+
+
+def test_104_a_selector_entry_gains_an_unapproved_key() -> None:
+    def edit(document):
+        document["publication"]["candidate_target"][0]["note"] = "first run"
+    _control("test_61", inspection=_json_mutation(_INSPECTION, edit))
+
+
+def test_105_the_harness_hard_codes_the_blank_selector_answer() -> None:
+    """Bypassing the projection puts the A/B rule back in PowerShell."""
+    damaged = _swap(
+        _PHASE6,
+        "    $entries = @($Inspection.publication.candidate_target)\n",
+        "    if ([string]::IsNullOrEmpty($ActiveBank)) { return 'A' }\n"
+        "    $entries = @($Inspection.publication.candidate_target)\n")
+    _control("test_62", phase6=damaged)
+
+
+def test_106_the_selector_returns_to_an_empty_property_lookup() -> None:
+    """The regression the Windows host cannot survive."""
+    damaged = _swap(
+        _PHASE6,
+        "    $matched = @($entries | Where-Object {\n",
+        "    $map = $Inspection.publication.candidate_target\n"
+        "    $key = $ActiveBank\n"
+        "    if ($null -ne $map.PSObject.Properties[$key]) { return [string]$map.$key }\n"
+        "    $matched = @($entries | Where-Object {\n")
+    _control("test_62", phase6=damaged)
+
+
+def test_107_the_selector_stops_failing_closed_on_a_duplicate() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "    if ($matched.Count -gt 1) {\n",
+        "    if ($false) {\n")
+    _control("test_62", phase6=damaged)
+
+
+def test_108_the_selector_stops_failing_closed_on_no_match() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "    if ($matched.Count -eq 0) {\n"
+        "        throw ('the publication candidate_target projection has no entry for active bank ' +\n"
+        "               [char]39 + $ActiveBank + [char]39)\n"
+        "    }\n",
+        "")
+    _control("test_62", phase6=damaged)

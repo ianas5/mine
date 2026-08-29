@@ -1,9 +1,12 @@
 # PCCM Phase 6 — Step 13: the Windows/Excel Gate-B runtime harness
 
-**Status: HARNESS SOURCE, submitted for review. NOTHING HAS BEEN RUN.**
+**Status: HARNESS SOURCE, submitted for review. NO EXCEL RUN HAS SUCCEEDED.**
 
-No Excel COM session has been started, no `.xlsm` has been driven, and not one
-Phase-6 procedure has executed. Everything below is a statement about SOURCE and
+Windows Step-13 Run 1 was attempted and **aborted in the preflight, before
+Excel was started**, on a defect in this harness — see
+[§8](#8-windows-step-13-run-1--aborted-before-excel). No Excel COM session
+has been started, no `.xlsm` has been driven, and not one Phase-6 procedure
+has executed. Everything below is a statement about SOURCE and
 about the artefacts the Stage-A builder emits.
 
 ```
@@ -137,9 +140,55 @@ and identities only:
 | `sim_data.pending_auto_nonce` | the F21 cell, column, row, label |
 | `sim_data.iteration_records` | header row, first iteration row, footer rows, column keys, both banks' columns |
 | `sim_data.summary_statistics` / `contingency_ladder` | label column, per-bank nominal/PV columns, first/last row, every row by key |
-| `publication` | bank labels, the candidate-target selector map, the final-commit range and its nine fields |
+| `publication` | bank labels, the candidate-target selector map **as a list of `{active_bank, candidate_bank}` entries**, the final-commit range and its nine fields |
 | `controls` | `monte_carlo_iterations` and `random_seed`: defined name, sheet, cell, type |
 | `command_surface` | the automation endpoint and the six read accessors |
+
+#### Why the selector map is a list and not an object
+
+Step-13 Run 1 never reached Excel. It failed in the preflight with
+
+```
+System.Management.Automation.PSArgumentException:
+Cannot process argument because the value of argument "name" is not valid.
+```
+
+The contract keys `candidate_target` by the **active bank**, and the key for
+*"no bank has ever been published"* is the empty string — semantically correct,
+and correct to keep. Projected as a JSON object it became a property whose
+**name** was `""`, and Windows PowerShell 5.1's `ConvertFrom-Json` cannot
+materialise such an object as a `PSCustomObject` at all. `-AsHashtable` is a
+PowerShell 6.0 switch; the accepted runtime target is 5.1, so it is not a way
+out.
+
+The projection now emits the same mapping as entries:
+
+```json
+"candidate_target": [
+  { "active_bank": null, "candidate_bank": "A" },
+  { "active_bank": "A",  "candidate_bank": "B" },
+  { "active_bank": "B",  "candidate_bank": "A" }
+]
+```
+
+The absence moves from a JSON **property name** to a JSON **null value** — the
+same fact in a shape 5.1 can read. Nothing is renamed to a sentinel like
+`"BLANK"`: inventing a replacement token would put a second semantic authority
+in the projection. `_candidate_target_projection` knows nothing about A, B or
+which follows which; it walks whatever mapping the contract declares, in the
+contract's order. `sim_contract.yaml` is unchanged.
+
+`Get-Phase6CandidateTarget` consumes the entries, normalises a blank runtime
+selector **only for comparison** with the null entry, requires **exactly one**
+match, and fails closed on zero and on duplicates. `test_62` proves it
+structurally: the function has exactly one `return`, it reads the matched entry,
+and no bank label appears as a literal anywhere in it — so no shortcut can
+answer for a state without consulting the projection.
+
+`emit_sim_inspection` now **refuses at build time** to write any object key that
+is the empty string, and `test_59` scans **both** generated Step-13 artefacts
+recursively: `candidate_target` is where it happened, not the only place it could
+happen. `phase6_gate_b_cases.json` was and remains clean.
 
 **What it deliberately does NOT carry.** No bound, no tolerance, no label set.
 `SIM_MIN_ITERATIONS`, the seed domain and the run-ID maximum are VALUES a
@@ -419,13 +468,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **61** controls, in six groups:
+`tests/test_phase6_gate_b_harness_source.py` — **65** controls, in seven groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **106** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **117** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -466,6 +515,12 @@ whole-tree freeze returned to the `pccm` working directory — wholesale, narrow
 on the one command, with its pathspec-coverage check removed, or by the driver
 passing the wrong root.
 
+Run 1's pre-Excel failure added a seventh: the selector map restored as an object
+with the blank key, an empty key planted elsewhere in the projection, the blank
+entry dropped or duplicated, a `"BLANK"` sentinel, a lost mapping, an unapproved
+entry key, and — on the PowerShell side — the blank answer hard-coded, the empty
+property lookup restored, and either fail-closed arm removed.
+
 ---
 
 ## 7. Running it
@@ -488,3 +543,36 @@ instance.
 model*. The scripts report it and stop if it is missing. They do not enable it,
 do not lower macro security, do not edit the registry and do not add a Trusted
 Location — the same refusal that has held since the first readiness run.
+
+---
+
+## 8. Windows Step-13 Run 1 — aborted before Excel
+
+**Not runtime evidence.** No Excel process was started, no VBA executed, and no
+simulation behaviour was exercised. What Run 1 produced is a defect report about
+this harness.
+
+```
+PRE0    PASS
+PRE     PASS
+P5-PRE  PASS
+PRE6    FAIL   System.Management.Automation.PSArgumentException:
+               Cannot process argument because the value of argument "name"
+               is not valid.
+        → the harness aborted before Excel, as designed
+```
+
+The cause is §3.1's empty-string object key, and the correction is described
+there. The classification is worth stating plainly because the failure mode
+matters more than the fix:
+
+* a real Step-13 **evidence-infrastructure** defect;
+* purely pre-Excel, a PowerShell-compatibility defect;
+* **no production VBA defect is supported by it**, and none was changed;
+* production baseline `bc7949b` stayed frozen throughout.
+
+**What let it through.** 106 mutation controls and 61 source controls, all
+green, none of which asked whether the only consumer of these artefacts could
+parse them. Every control was about *what the projection says*; none was about
+*what the reader can read*. The build now refuses the shape outright, and both
+artefacts are scanned recursively rather than at the one key that failed.

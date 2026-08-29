@@ -53,6 +53,7 @@ from pccm_builder.sim_cases import (  # noqa: E402
 )
 from pccm_builder.sim_inspection import (  # noqa: E402
     ALLOWED_BLOCK_KEYS,
+    ALLOWED_CANDIDATE_TARGET_KEYS,
     ALLOWED_CONTROL_KEYS,
     ALLOWED_IDENTITY_KEYS,
     ALLOWED_ITERATION_KEYS,
@@ -1079,7 +1080,7 @@ def test_48_the_two_new_generated_artefacts_are_byte_identical() -> None:
     import hashlib
     for path, expected in (
         (INSPECTION_PATH,
-         "51d9092c13d910d88b74b986111b885f481ec7a65f57064eb89a2e263203f239"),
+         "83eff35ffe1523547313a9c57a58d2b8adeb4e2e6ceeacb85dd846ed30111573"),
         (GATE_B_CASES_PATH,
          "8c17df7cd0eaa685151bca683219a536d01ebdb0edcd8bbf80993532b20b8726"),
     ):
@@ -1424,3 +1425,147 @@ def test_58_a_drift_in_a_non_modsim_production_file_fails_the_freeze() -> None:
             "rationale for this correction"
         )
         shutil.rmtree(clone, ignore_errors=True)
+
+
+# ===========================================================================
+# 7. WINDOWS POWERSHELL 5.1 CAN PARSE WHAT THE BUILD EMITS
+# ===========================================================================
+# Step-13 Run 1 died in the preflight, before Excel was started, on
+#
+#     PSArgumentException: Cannot process argument because the value of
+#     argument "name" is not valid.
+#
+# `phase6_gate_b_inspection.json` carried a JSON object whose property NAME was
+# the empty string - the contract's legitimate "no bank has ever been published"
+# selector key - and Windows PowerShell 5.1's ConvertFrom-Json cannot
+# materialise such an object as a PSCustomObject. `-AsHashtable` is a
+# PowerShell 6.0 switch, and the accepted runtime target is 5.1.
+#
+# Nothing about the contract was wrong. What was wrong was a projection shape
+# chosen without asking what its only consumer can read, and no control asked
+# that question. These do.
+def _empty_key_paths(node: object, where: str) -> list[str]:
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "":
+                found.append(where)
+            found.extend(_empty_key_paths(value, f"{where}.{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_empty_key_paths(value, f"{where}[{index}]"))
+    return found
+
+
+def test_59_neither_generated_artefact_carries_an_empty_object_key() -> None:
+    """Recursive, and over BOTH artefacts.
+
+    `candidate_target` is where it happened; assuming it is the only place it
+    could happen is how the next one gets shipped.
+    """
+    for path in (INSPECTION_PATH, GATE_B_CASES_PATH):
+        found = _empty_key_paths(json.loads(_text(path)), path.name)
+        assert found == [], (
+            f"{path.name} carries an object key that Windows PowerShell 5.1 "
+            f"cannot parse, at: {found}"
+        )
+
+
+def test_60_the_emitter_refuses_an_empty_object_key() -> None:
+    """A build-time refusal, not a convention.
+
+    The emitter is the last place that can stop an artefact the Windows host
+    cannot read, and the failure it prevents happens on a machine this build
+    never sees.
+    """
+    from pccm_builder.sim_inspection import _reject_empty_keys
+    _reject_empty_keys(json.loads(_text(INSPECTION_PATH)), "control")
+    for shape in ({"": "A"},
+                  {"publication": {"candidate_target": {"": "A"}}},
+                  {"entries": [{"ok": 1}, {"": 2}]}):
+        try:
+            _reject_empty_keys(shape, "control")
+        except ValueError as error:
+            assert "empty string" in str(error)
+            assert "PowerShell 5.1" in str(error)
+        else:  # pragma: no cover - the refusal is the point
+            raise AssertionError(f"the emitter accepted {shape!r}")
+
+
+def test_61_the_candidate_target_projection_preserves_the_contract_mapping() -> None:
+    """One for one, in the contract's own order, with the blank as a null VALUE.
+
+    A reshape that loses, gains, reorders or renames a mapping would answer the
+    selector question differently from the contract while looking correct.
+    """
+    sim = load_sim_contract(SPEC / "sim_contract.yaml")
+    source = sim.raw["publication"]["banks"]["candidate_target"]
+    projected = _inspection()["publication"]["candidate_target"]
+
+    assert isinstance(projected, list), "the selector map is still a JSON object"
+    assert len(projected) == len(source), (len(projected), len(source))
+    assert [tuple(entry) for entry in projected] == [
+        ALLOWED_CANDIDATE_TARGET_KEYS for _ in projected
+    ], "an entry carries a key outside the allowlist"
+
+    # EXACTLY ONE representation of the blank source key, as null.
+    blanks = [entry for entry in projected if entry["active_bank"] is None]
+    assert len(blanks) == 1, blanks
+    assert blanks[0]["candidate_bank"] == source[""]
+
+    # EVERY source key survives, and no nonblank key was renamed.
+    rebuilt = {
+        ("" if entry["active_bank"] is None else entry["active_bank"]):
+            entry["candidate_bank"]
+        for entry in projected
+    }
+    assert rebuilt == dict(source), (rebuilt, dict(source))
+    assert list(rebuilt) == list(source), "the contract's order was not preserved"
+
+    # AND NO SENTINEL WAS INVENTED for the absence.
+    for entry in projected:
+        assert entry["active_bank"] is None or entry["active_bank"] in source
+    flat = json.dumps(projected)
+    for sentinel in ("BLANK", "NONE", "EMPTY", "NULL_BANK", "__none__"):
+        assert sentinel not in flat, sentinel
+
+
+def test_62_the_selector_consumes_entries_and_fails_closed() -> None:
+    """The harness must not go back to indexing an empty property name, and must
+    not answer from a projection that answers zero times or twice."""
+    code = _executable(PHASE6)
+    selector = code.split("function Get-Phase6CandidateTarget")[1].split("\nfunction ")[0]
+
+    # ENTRY-BASED, and the regression shape is named and refused.
+    assert "$Inspection.publication.candidate_target" in selector
+    assert "$matched[0].candidate_bank" in selector
+    for regression in ("$map.PSObject.Properties[", "$map.$key", "PSObject.Properties[$key]"):
+        assert regression not in selector, (
+            f"the selector indexes the projection as an object: {regression}"
+        )
+    assert "$matches" not in selector, (
+        "$matches is a PowerShell automatic variable and must not be reused here"
+    )
+
+    # THE BLANK IS NORMALISED ONLY FOR COMPARISON.
+    assert "$null -eq $_.active_bank" in selector
+    assert "[string]::IsNullOrEmpty($ActiveBank)" in selector
+
+    # EXACTLY ONE, FAIL-CLOSED BOTH WAYS.
+    assert "$matched.Count -eq 0" in selector
+    assert "$matched.Count -gt 1" in selector
+    assert selector.count("throw") >= 3
+
+    # AND THE ANSWER CAN ONLY COME FROM A PROJECTED ENTRY. Named shapes are not
+    # enough - the first version of this check listed three ways to spell the
+    # A/B rule and missed a fourth. What is required instead is structural:
+    # exactly one return, and it reads the matched entry.
+    returns = [line.strip() for line in selector.splitlines()
+               if line.strip().startswith("return")]
+    assert returns == ["return [string]$matched[0].candidate_bank"], returns
+    # No bank label may appear as a literal in the selector at all, so no
+    # shortcut can answer for one without consulting the projection.
+    for label in _inspection()["publication"]["bank_labels"]:
+        assert f"'{label}'" not in selector, (
+            f"the selector spells the bank label {label}"
+        )

@@ -95,6 +95,7 @@ ALLOWED_BLOCK_KEYS = ("label_column", "bank_value_columns", "first_row",
                       "last_row", "rows")
 ALLOWED_PUBLICATION_KEYS = ("bank_labels", "candidate_target",
                             "final_commit_range", "final_commit_fields")
+ALLOWED_CANDIDATE_TARGET_KEYS = ("active_bank", "candidate_bank")
 ALLOWED_CONTROL_KEYS = ("defined_name", "sheet", "cell", "type")
 ALLOWED_SURFACE_KEYS = ("automation_endpoint", "read_accessors")
 
@@ -199,12 +200,67 @@ def _publication_projection(sim: SimContract) -> dict[str, Any]:
     transaction = publication["transaction"]
     return {
         "bank_labels": list(banks["labels"]),
-        # THE SELECTOR MAP, not a rule the harness restates. `""` is the blank
-        # active-bank cell of a workbook that has never published.
-        "candidate_target": dict(banks["candidate_target"]),
+        "candidate_target": _candidate_target_projection(banks["candidate_target"]),
         "final_commit_range": transaction["final_commit_range"],
         "final_commit_fields": list(transaction["final_commit_fields"]),
     }
+
+
+def _candidate_target_projection(mapping: dict[str, Any]) -> list[dict[str, Any]]:
+    """The selector map as a LIST OF ENTRIES, not a JSON object.
+
+    THE SHAPE IS FORCED BY THE CONSUMER, and the reason is worth stating because
+    it cost a Windows run. The contract's map is keyed by the ACTIVE BANK, and
+    the key for "no bank has ever been published" is the empty string. Emitted
+    as a JSON object that becomes a property whose name is `""`, and Windows
+    PowerShell 5.1's `ConvertFrom-Json` cannot materialise such an object as a
+    PSCustomObject at all:
+
+        PSArgumentException: Cannot process argument because the value of
+        argument "name" is not valid.
+
+    The Step-13 preflight failed there, before Excel was started. `-AsHashtable`
+    is a PowerShell 6.0 switch and the accepted runtime target is 5.1, so it is
+    not a way out.
+
+    WHAT DID NOT CHANGE IS THE SEMANTICS. The blank key moves from a JSON
+    PROPERTY NAME to a JSON `null` VALUE, which is the same fact in a shape a
+    5.1 host can read. Nothing is renamed to a sentinel like "BLANK": inventing
+    a replacement token would put a second semantic authority in the projection.
+
+    DERIVED, NEVER RESTATED. This function knows nothing about A, B or which
+    follows which; it walks whatever mapping the contract declares, in the
+    contract's own order.
+    """
+    entries: list[dict[str, Any]] = []
+    for active, candidate in mapping.items():
+        entries.append({
+            "active_bank": None if active == "" else active,
+            "candidate_bank": candidate,
+        })
+    return entries
+
+
+def _reject_empty_keys(node: Any, where: str) -> None:
+    """No object key anywhere may be the empty string.
+
+    A build-time refusal rather than a convention: the emitter is the last place
+    that can stop an artefact Windows PowerShell 5.1 cannot parse, and the
+    failure it prevents happens on a machine this build never sees.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "":
+                raise ValueError(
+                    f"{where}: an object key is the empty string. Windows "
+                    "PowerShell 5.1's ConvertFrom-Json cannot materialise such "
+                    "an object, and the Gate-B preflight would fail before Excel "
+                    "is started. Represent the value, not the absence, as null."
+                )
+            _reject_empty_keys(value, f"{where}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            _reject_empty_keys(value, f"{where}[{index}]")
 
 
 def _control_projection(contract: InputContract) -> dict[str, Any]:
@@ -235,9 +291,10 @@ def emit_sim_inspection(
     build_dir = Path(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
     path = build_dir / INSPECTION_FILENAME
+    document = build_sim_inspection(sim, contract)
+    _reject_empty_keys(document, INSPECTION_FILENAME)
     path.write_text(
-        json.dumps(build_sim_inspection(sim, contract), indent=2, sort_keys=False)
-        + "\n",
+        json.dumps(document, indent=2, sort_keys=False) + "\n",
         encoding="utf-8",
     )
     return SimInspectionArtifact(path=path)
