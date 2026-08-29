@@ -832,7 +832,7 @@ function Invoke-Phase6GateBScenarios {
         $Excel, $Workbook, $Manifest, $Inspection, $Cases,
         $SimInspection, $GateBCases,
         [string]$ScriptDir, [string]$TempRoot, $Results,
-        [string]$HarnessCommit, [string]$PccmRoot
+        [string]$HarnessCommit, [string]$RepoRoot
     )
 
     Reset-Phase6ResultLedger
@@ -981,6 +981,26 @@ function Invoke-Phase6GateBScenarios {
                 ($seen -notcontains $id)
         }
 
+        # THE PENDING LEDGER STATE, READ DIRECTLY. This is the check that
+        # "P5-LDG has not run yet" makes necessary rather than sufficient.
+        #
+        # The accepted Phase-5 guard deliberately leaves an INTERMEDIATE state
+        # visible to nobody but the ledger: a duplicate result attempt does not
+        # overwrite the first result and does not create a FAIL. It is recorded
+        # as a violation and converted into a FAIL later, by P5-LDG - which is
+        # deferred until after Phase 6. So a scan of recorded results can show
+        # every Phase-5 scenario PASS while Phase 5 is ALREADY KNOWN to have a
+        # harness-integrity violation.
+        #
+        # Phase 6 must not produce behavioural evidence on top of that. The
+        # authority is Phase 5's own, consumed here and not reimplemented, and
+        # P5-LDG still emits its verdict at the accepted point in the lifecycle.
+        $phase5LedgerViolations = @(Get-Phase5LedgerViolations)
+        $null = Add-Check $list `
+            'the Phase-5 result ledger holds no pending duplicate attempts' `
+            ($phase5LedgerViolations.Count -eq 0) `
+            ('pending Phase-5 duplicate attempts: ' + ($phase5LedgerViolations -join '; '))
+
         $prerequisiteOk = Test-ChecklistOk $list
         Add-Phase6Result 'P6-PRE' `
             ('Phase-4 (' + $phase4Prerequisite.Count + '/' + $phase4Prerequisite.Count +
@@ -1052,12 +1072,30 @@ function Invoke-Phase6GateBScenarios {
             ('baseline ' + $baseline + ', HEAD ' + [string]$HarnessCommit)
 
         if ($gitOk) {
-            # THE WHOLE-TREE STATEMENT, from git itself.
-            $null = & git -C $PccmRoot diff --quiet $baseline -- 'pccm/src' 'pccm/spec' 2>$null
+            # THE WHOLE-TREE STATEMENT, from git itself, AND FROM THE REPOSITORY
+            # ROOT.
+            #
+            # `git -C <path>` runs as though git had been started in <path>, and
+            # a `git diff` pathspec is resolved relative to that directory. The
+            # first version ran with -C <repo>/pccm and pathspecs `pccm/src` and
+            # `pccm/spec`, which resolve to <repo>/pccm/pccm/src - a path that
+            # matches nothing. A pathspec matching nothing produces no diff, so
+            # `--quiet` exited 0 and the check passed whatever the tree held.
+            # That is fail-open, and on the one statement the whole freeze claim
+            # rests on. The pathspecs are repository-root relative, so the
+            # working directory must be the repository root.
+            $null = & git -C $RepoRoot diff --quiet $baseline -- 'pccm/src' 'pccm/spec' 2>$null
             $treeClean = ($LASTEXITCODE -eq 0)
             $null = Add-Check $list `
-                ('pccm/src and pccm/spec are unchanged from ' + $baseline) `
+                ('the complete pccm/src and pccm/spec trees are unchanged from ' + $baseline) `
                 $treeClean ('git diff --quiet exit code ' + [string]$LASTEXITCODE)
+            # AND THE PATHSPEC REALLY MATCHED SOMETHING. A freeze proved by a
+            # pathspec that names nothing is not a freeze; this asks git how many
+            # files the pathspec covers at the baseline.
+            $tracked = @(& git -C $RepoRoot ls-tree -r --name-only $baseline -- 'pccm/src' 'pccm/spec' 2>$null)
+            $null = Add-Check $list `
+                'the freeze pathspec matches the production trees it names' `
+                ($tracked.Count -gt 0) ('files under the pathspec at the baseline: ' + $tracked.Count)
 
             # AND THE PER-MODULE STATEMENT, blob for blob.
             foreach ($module in (Get-Phase6ProductionModules)) {
@@ -1065,8 +1103,8 @@ function Invoke-Phase6GateBScenarios {
                 $accepted = ''
                 $current = ''
                 try {
-                    $accepted = [string](& git -C $PccmRoot rev-parse ($baseline + ':' + $relative) 2>$null)
-                    $current = [string](& git -C $PccmRoot rev-parse ('HEAD:' + $relative) 2>$null)
+                    $accepted = [string](& git -C $RepoRoot rev-parse ($baseline + ':' + $relative) 2>$null)
+                    $current = [string](& git -C $RepoRoot rev-parse ('HEAD:' + $relative) 2>$null)
                 } catch {
                     $accepted = ''
                     $current = ''
@@ -2148,8 +2186,26 @@ function Invoke-Phase6GateBScenarios {
             # THE FLAG IS SET BY Set-Phase6CellFixture ITSELF, before the
             # verification, so a write that took but failed its read-back is
             # still unwound.
-            $null = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
+            $fixtureOk = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
                 -Fixture $fixture -Value $FixtureValue -List $list -Label $Id
+
+            # THE ESTABLISHMENT VERDICT IS LOAD-BEARING. A COM write can return
+            # normally and still leave a cell holding something other than what
+            # was asked for - a coerced type, a rejected value, a protected
+            # sheet. Recording the failed check and then running the endpoint
+            # anyway would produce behavioural observations against a fixture
+            # the harness had ITSELF just proved was not established, which is
+            # exactly the sequence this scenario exists to respect:
+            #
+            #   write -> VERIFY -> only then invoke production
+            #
+            # The throw goes to the catch, the finally still runs, and the
+            # fixture is still marked written, so restoration is still attempted
+            # and still verified.
+            if (-not $fixtureOk) {
+                throw ('the direct machine-state fixture at ' + $Address +
+                       ' could not be established exactly; production was not invoked')
+            }
 
             $before = Get-Phase6State -Workbook $Workbook -Inspection $SimInspection
             $announced = Invoke-Phase6Simulation -Excel $Excel
@@ -2371,9 +2427,16 @@ function Invoke-Phase6GateBScenarios {
             $null = Add-Check $list `
                 'the original Last Run ID was captured before anything was written' `
                 ($null -ne $fixture) (Format-SimValue $fixture.Original)
-            $null = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
+            $fixtureOk = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
                 -Fixture $fixture -Value ([double]$bounds.run_id_maximum) -List $list `
                 -Label 'P6-RIDMAX'
+            # LOAD-BEARING, exactly as in the recovery scenarios: a fixture that
+            # did not take is not a fixture, and production is not invoked
+            # against one.
+            if (-not $fixtureOk) {
+                throw ('the direct machine-state fixture at ' + $runIdCell +
+                       ' could not be established exactly; production was not invoked')
+            }
 
             $before = Get-Phase6State -Workbook $Workbook -Inspection $SimInspection
             $announced = Invoke-Phase6Simulation -Excel $Excel

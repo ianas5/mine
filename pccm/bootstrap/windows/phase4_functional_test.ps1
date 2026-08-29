@@ -189,6 +189,13 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptDir 'phase6_gate_b_scenarios.ps1')
 
 $pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
+# THE REPOSITORY ROOT, one level above the pccm subtree. Git pathspecs in
+# this project are repository-root relative (`pccm/src`, `pccm/spec`), and a
+# `git -C` that starts git inside `pccm` resolves them against the wrong
+# directory - where they match nothing, and a pathspec matching nothing
+# makes `--quiet` exit 0 whatever the tree holds. The Phase-6 artefact
+# identity scenario is given this, not $pccmRoot.
+$repoRoot = Split-Path -Parent $pccmRoot
 if ([string]::IsNullOrWhiteSpace($BuildDir)) { $BuildDir = Join-Path $pccmRoot 'build' }
 
 $results  = New-Object System.Collections.ArrayList
@@ -3016,7 +3023,7 @@ if ($buildOk) {
         Invoke-Phase6GateBScenarios -Excel $excel -Workbook $wb -Manifest $manifest `
             -Inspection $inspection -Cases $cases -SimInspection $simInspection `
             -GateBCases $simCases -ScriptDir $scriptDir -TempRoot $tempRoot `
-            -Results $results -HarnessCommit $harnessCommit -PccmRoot $pccmRoot
+            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot
     } catch {
         Add-Phase6Result 'P6-XX' 'Driving the Phase-6 Step-13 scenarios' 'FAIL' (Format-Err $_)
     }

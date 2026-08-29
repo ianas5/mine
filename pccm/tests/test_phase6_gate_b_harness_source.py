@@ -1250,3 +1250,177 @@ def test_53_the_pinned_baseline_really_is_unchanged_production() -> None:
         assert name in frozen, name
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         assert actual == frozen[name], f"{name}.bas moved: {actual}"
+
+
+def test_54_the_prerequisite_consumes_the_pending_phase5_ledger() -> None:
+    """"P5-LDG has not run yet" is necessary, and on its own it is not enough.
+
+    The accepted Phase-5 guard leaves an intermediate state that a scan of
+    recorded results cannot see: a duplicate attempt neither overwrites the
+    first result nor creates a FAIL. It is recorded as a violation and converted
+    into a FAIL by P5-LDG — which is deliberately deferred until after Phase 6.
+    So every Phase-5 scenario can read PASS while Phase 5 is already known to
+    have a harness-integrity violation, and Phase 6 would build behavioural
+    evidence on top of it.
+    """
+    code = _executable(PHASE6)
+    block = code.split("$prerequisiteOk = $false")[1].split("if (-not $prerequisiteOk)")[0]
+    assert "Get-Phase5LedgerViolations" in block, (
+        "P6-PRE does not read the pending Phase-5 ledger state"
+    )
+    assert "$phase5LedgerViolations.Count -eq 0" in block, (
+        "the pending-violation count is read but not required to be zero"
+    )
+    assert "pending Phase-5 duplicate attempts" in block
+    # THE AUTHORITY IS PHASE 5'S OWN, consumed rather than reimplemented.
+    assert "Phase5LedgerViolations" not in code.replace(
+        "Get-Phase5LedgerViolations", ""
+    ), "the Phase-6 block reaches into Phase 5's ledger state directly"
+    assert "function Get-Phase5LedgerViolations" in _text(PHASE5)
+    # AND P5-LDG IS STILL NOT EMITTED EARLY.
+    assert "Add-Phase5LedgerIntegrityResult" not in code
+    driver = _text(HARNESS)
+    assert (driver.index("Invoke-Phase6GateBScenarios")
+            < driver.index("Add-Phase5LedgerIntegrityResult"))
+
+
+def test_55_a_fixture_that_fails_verification_never_reaches_production() -> None:
+    """Write, VERIFY, and only then invoke production.
+
+    A COM write can return normally and still leave a cell holding something
+    other than what was asked for. Recording the failed check and running the
+    endpoint anyway produces behavioural observations against a fixture the
+    harness had itself just proved was not established.
+    """
+    code = _executable(PHASE6)
+    for block in (
+        code.split("function Invoke-Phase6RecoveryScenario")[1].split("$pendingCell =")[0],
+        code.split("-Address $runIdCell")[1].split("Add-Phase6Result 'P6-RIDMAX'")[0],
+    ):
+        # THE RETURN VALUE IS CAPTURED, not discarded.
+        assert "$fixtureOk = Set-Phase6CellFixture" in block, (
+            "the establishment verdict is discarded"
+        )
+        assert "$null = Set-Phase6CellFixture" not in block
+        # AND IT GATES THE INVOCATION, before any state capture or run.
+        assert "if (-not $fixtureOk)" in block
+        assert "production was not invoked" in block
+        gate_at = block.index("if (-not $fixtureOk)")
+        for later in ("Get-Phase6State", "Invoke-Phase6Simulation"):
+            assert gate_at < block.index(later), (
+                f"{later} is reached before the fixture establishment gate"
+            )
+        # THE GATE THROWS, so the finally still restores and the failure is kept.
+        gate = block[gate_at:gate_at + 400]
+        assert "throw" in gate, "the gate does not stop the scenario"
+    # AND THE FIXTURE IS STILL MARKED WRITTEN, so restoration is still attempted.
+    setter = code.split("function Set-Phase6CellFixture")[1].split("\nfunction ")[0]
+    assert setter.index("$Fixture.Written = $true") < setter.index("Set-SimRawCell")
+
+
+def test_56_the_whole_tree_freeze_runs_from_the_repository_root() -> None:
+    """`git -C <path>` resolves a diff pathspec relative to <path>.
+
+    The first version started git inside `pccm` and passed `pccm/src`, which
+    resolves to `pccm/pccm/src` and matches nothing. A pathspec matching nothing
+    produces no diff, so `--quiet` exited 0 and the freeze check passed whatever
+    the tree held — fail-open, on the one statement the whole claim rests on.
+    """
+    code = _executable(PHASE6)
+    assert "$RepoRoot" in code
+    assert "$PccmRoot" not in code, "the Phase-6 block still carries the pccm root"
+    for line in re.findall(r"[^\n]*& git -C [^\n]*", code):
+        assert "$RepoRoot" in line, f"a git invocation does not use the repo root: {line.strip()}"
+    # The INVOCATION, not every line that mentions the flag: the result line
+    # quotes it back in its diagnostic.
+    freeze = [line for line in code.splitlines() if "& git" in line and "diff --quiet" in line]
+    assert len(freeze) == 1, freeze
+    assert "-C $RepoRoot" in freeze[0]
+    assert "'pccm/src' 'pccm/spec'" in freeze[0]
+    # AND THE PATHSPEC IS PROVED TO MATCH SOMETHING.
+    assert "ls-tree -r --name-only" in code
+    assert "the freeze pathspec matches the production trees it names" in code
+
+    driver = _text(HARNESS)
+    assert "$repoRoot = Split-Path -Parent $pccmRoot" in driver
+    assert "-RepoRoot $repoRoot" in driver
+    assert "-PccmRoot" not in driver
+
+
+def test_57_the_pathspec_defect_is_demonstrated_against_real_git() -> None:
+    """Not an argument about git's behaviour — a measurement of it.
+
+    Run both command shapes against a path that genuinely differs from the
+    baseline. The corrected form detects the drift; the submitted form reports
+    a clean tree.
+    """
+    correct = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "diff", "--quiet", PRODUCTION_BASELINE,
+         "--", "pccm/bootstrap"],
+        capture_output=True,
+    ).returncode
+    submitted = subprocess.run(
+        ["git", "-C", str(PCCM_ROOT), "diff", "--quiet", PRODUCTION_BASELINE,
+         "--", "pccm/bootstrap"],
+        capture_output=True,
+    ).returncode
+    assert correct != 0, (
+        "the control is vacuous: pccm/bootstrap does not differ from the baseline"
+    )
+    assert submitted == 0, (
+        "git no longer resolves the pathspec relative to -C; the rationale for "
+        "this correction needs re-deriving rather than assuming"
+    )
+
+
+def test_58_a_drift_in_a_non_modsim_production_file_fails_the_freeze() -> None:
+    """The whole-tree claim must not rest on the eight module blob checks.
+
+    A throwaway local clone, a real edit to a production file no `modSim*` check
+    covers, and the corrected command shape run against it.
+    """
+    import shutil
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="pccm-freeze-control-") as name:
+        clone = Path(name) / "repo"
+        result = subprocess.run(
+            ["git", "clone", "--quiet", "--local", "--no-hardlinks",
+             str(REPO_ROOT), str(clone)],
+            capture_output=True,
+        )
+        if result.returncode != 0:  # pragma: no cover - environment without clone
+            raise AssertionError(
+                "the freeze control could not clone the repository: "
+                + result.stderr.decode("utf-8", "replace")[:200]
+            )
+        victim = clone / "pccm" / "src" / "vba" / "modWorkbook.bas"
+        assert victim.is_file(), victim
+        assert "modWorkbook" not in _text(PHASE6), (
+            "the control is vacuous: this file IS covered by a module blob check"
+        )
+        clean = subprocess.run(
+            ["git", "-C", str(clone), "diff", "--quiet", PRODUCTION_BASELINE,
+             "--", "pccm/src", "pccm/spec"],
+            capture_output=True,
+        ).returncode
+        assert clean == 0, "the clone does not start frozen against the baseline"
+        victim.write_text(_text(victim) + "\n' drift\n", encoding="utf-8")
+        drifted = subprocess.run(
+            ["git", "-C", str(clone), "diff", "--quiet", PRODUCTION_BASELINE,
+             "--", "pccm/src", "pccm/spec"],
+            capture_output=True,
+        ).returncode
+        assert drifted != 0, (
+            "a real edit to a non-modSim production file did not fail the freeze"
+        )
+        # AND THE SUBMITTED SHAPE WOULD HAVE MISSED IT.
+        missed = subprocess.run(
+            ["git", "-C", str(clone / "pccm"), "diff", "--quiet",
+             PRODUCTION_BASELINE, "--", "pccm/src", "pccm/spec"],
+            capture_output=True,
+        ).returncode
+        assert missed == 0, (
+            "the submitted pathspec shape no longer fails open; re-derive the "
+            "rationale for this correction"
+        )
+        shutil.rmtree(clone, ignore_errors=True)

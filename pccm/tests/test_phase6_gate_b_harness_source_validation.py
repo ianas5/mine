@@ -919,7 +919,7 @@ def test_77_the_source_binding_falls_back_to_module_names() -> None:
     """That a project CONTAINS a modSimReport is not whose modSimReport it is."""
     damaged = _swap(
         _PHASE6,
-        "                    $accepted = [string](& git -C $PccmRoot rev-parse ($baseline + ':' + $relative) 2>$null)\n",
+        "                    $accepted = [string](& git -C $RepoRoot rev-parse ($baseline + ':' + $relative) 2>$null)\n",
         "                    $accepted = ''\n")
     _control("test_52", phase6=damaged)
 
@@ -1004,3 +1004,146 @@ def test_85_the_driver_substitutes_a_placeholder_for_a_missing_commit() -> None:
         "    $harnessCommit = ''\n",
         "    $harnessCommit = 'unknown (git was not available on this machine)'\n")
     _control("test_52", harness=damaged)
+
+
+# ===========================================================================
+# E. The final pre-execution corrections
+# ===========================================================================
+# THE STATE EACH OF THE FIRST THREE MODELS. Not a hypothetical: it is the exact
+# intermediate the accepted Phase-5 guard produces.
+#
+#   P5-X recorded once, PASS, visible in $Results
+#   a second P5-X attempt refused and recorded in Phase5LedgerViolations
+#   no P5 result anywhere reads FAIL
+#   P5-LDG deferred until after Phase 6, so no verdict exists yet
+#
+# A P6-PRE that scans recorded results alone sees a clean Phase 5 and runs the
+# whole Step-13 matrix on top of a known harness-integrity violation.
+def test_86_the_prerequisite_stops_reading_the_pending_phase5_ledger() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "        $phase5LedgerViolations = @(Get-Phase5LedgerViolations)\n",
+        "        $phase5LedgerViolations = @()\n")
+    _control("test_54", phase6=damaged)
+
+
+def test_87_the_pending_violation_count_stops_being_required_to_be_zero() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "            ($phase5LedgerViolations.Count -eq 0) `\n",
+        "            ($phase5LedgerViolations.Count -ge 0) `\n")
+    _control("test_54", phase6=damaged)
+
+
+def test_88_the_ledger_check_is_dropped_entirely() -> None:
+    start = _PHASE6.index(
+        "        # THE PENDING LEDGER STATE, READ DIRECTLY.")
+    end = _PHASE6.index("        $prerequisiteOk = Test-ChecklistOk $list")
+    damaged = _PHASE6.replace(_PHASE6[start:end], "", 1)
+    assert damaged != _PHASE6
+    _control("test_54", phase6=damaged)
+
+
+def test_89_the_phase6_block_emits_the_phase5_ledger_verdict_early() -> None:
+    """Converting the violation into a FAIL early would answer the question, but
+    it moves an accepted Phase-5 result out of its settled lifecycle position."""
+    damaged = _swap(
+        _PHASE6,
+        "        $phase5LedgerViolations = @(Get-Phase5LedgerViolations)\n",
+        "        Add-Phase5LedgerIntegrityResult\n"
+        "        $phase5LedgerViolations = @(Get-Phase5LedgerViolations)\n")
+    _control("test_54", phase6=damaged)
+
+
+def test_90_the_recovery_fixture_verdict_is_discarded() -> None:
+    """A failed establishment check followed by a real simulation is behavioural
+    evidence against a fixture the harness proved was not established."""
+    damaged = _swap(
+        _PHASE6,
+        "            $fixtureOk = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `\n"
+        "                -Fixture $fixture -Value $FixtureValue -List $list -Label $Id\n",
+        "            $null = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `\n"
+        "                -Fixture $fixture -Value $FixtureValue -List $list -Label $Id\n")
+    _control("test_55", phase6=damaged)
+
+
+def test_91_the_recovery_fixture_gate_stops_stopping_anything() -> None:
+    """The verdict is captured and then ignored - the subtler form of the same
+    defect, and the one a "does the check exist" detector would miss."""
+    damaged = _swap(
+        _PHASE6,
+        "            if (-not $fixtureOk) {\n"
+        "                throw ('the direct machine-state fixture at ' + $Address +\n"
+        "                       ' could not be established exactly; production was not invoked')\n"
+        "            }\n",
+        "            if (-not $fixtureOk) {\n"
+        "                Add-Note ('the fixture at ' + $Address + ' did not verify')\n"
+        "            }\n")
+    _control("test_55", phase6=damaged)
+
+
+def test_92_the_run_id_fixture_verdict_is_discarded() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "            $fixtureOk = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `\n"
+        "                -Fixture $fixture -Value ([double]$bounds.run_id_maximum) -List $list `\n"
+        "                -Label 'P6-RIDMAX'\n",
+        "            $null = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `\n"
+        "                -Fixture $fixture -Value ([double]$bounds.run_id_maximum) -List $list `\n"
+        "                -Label 'P6-RIDMAX'\n")
+    _control("test_55", phase6=damaged)
+
+
+def test_93_the_fixture_gate_moves_after_the_simulation() -> None:
+    """A gate downstream of the invocation gates nothing."""
+    gate = (
+        "            if (-not $fixtureOk) {\n"
+        "                throw ('the direct machine-state fixture at ' + $Address +\n"
+        "                       ' could not be established exactly; production was not invoked')\n"
+        "            }\n")
+    assert _PHASE6.count(gate) == 1
+    after = "            $after = Get-Phase6State -Workbook $Workbook -Inspection $SimInspection\n"
+    damaged = _PHASE6.replace(gate, "", 1).replace(after, after + gate, 1)
+    assert damaged != _PHASE6
+    _control("test_55", phase6=damaged)
+
+
+def test_94_the_whole_tree_freeze_returns_to_the_pccm_working_directory() -> None:
+    """The submitted shape: `-C <repo>/pccm` with repository-root pathspecs,
+    which match nothing and make `--quiet` exit 0 whatever the tree holds."""
+    damaged = _swap(
+        _PHASE6,
+        "        [string]$HarnessCommit, [string]$RepoRoot\n",
+        "        [string]$HarnessCommit, [string]$PccmRoot\n")
+    damaged = damaged.replace("$RepoRoot", "$PccmRoot")
+    _control("test_56", phase6=damaged)
+
+
+def test_95_only_the_freeze_command_reverts_to_the_wrong_root() -> None:
+    """The narrow form: the blob checks stay correct and only the whole-tree
+    statement is aimed at the wrong directory."""
+    damaged = _swap(
+        _PHASE6,
+        "            $null = & git -C $RepoRoot diff --quiet $baseline -- 'pccm/src' 'pccm/spec' 2>$null\n",
+        "            $null = & git -C ($RepoRoot + '/pccm') diff --quiet $baseline -- 'pccm/src' 'pccm/spec' 2>$null\n")
+    _control("test_56", phase6=damaged)
+
+
+def test_96_the_freeze_pathspec_coverage_check_is_dropped() -> None:
+    """A freeze proved by a pathspec that names nothing is not a freeze."""
+    damaged = _swap(
+        _PHASE6,
+        "            $tracked = @(& git -C $RepoRoot ls-tree -r --name-only $baseline -- 'pccm/src' 'pccm/spec' 2>$null)\n"
+        "            $null = Add-Check $list `\n"
+        "                'the freeze pathspec matches the production trees it names' `\n"
+        "                ($tracked.Count -gt 0) ('files under the pathspec at the baseline: ' + $tracked.Count)\n",
+        "")
+    _control("test_56", phase6=damaged)
+
+
+def test_97_the_driver_passes_the_pccm_subtree_as_the_repository_root() -> None:
+    damaged = _swap(
+        _HARNESS,
+        "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot\n",
+        "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $pccmRoot\n")
+    _control("test_56", harness=damaged)

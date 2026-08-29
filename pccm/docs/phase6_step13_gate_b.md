@@ -80,6 +80,27 @@ already-accepted `Add-Phase4FinalCompletenessResult` / `P5-FIN`, after Y and Z
 exist. Nothing in Step 13 replaces it, and `test_50` proves the Phase-6 block
 does not claim to.
 
+### 2.2 "P5-LDG has not run yet" is necessary, and not sufficient
+
+The accepted Phase-5 guard leaves an intermediate state that a scan of recorded
+results cannot see:
+
+```
+P5-X recorded once, PASS, visible in $Results
+a second P5-X attempt refused and recorded in Phase5LedgerViolations
+no P5 result anywhere reads FAIL
+P5-LDG deferred until after Phase 6, so no verdict exists yet
+```
+
+Every Phase-5 scenario reads PASS while Phase 5 is **already known** to have a
+harness-integrity violation. A prerequisite that only counted results would run
+the whole Step-13 matrix on top of it.
+
+`P6-PRE` therefore reads `Get-Phase5LedgerViolations()` directly and requires it
+empty. The authority is Phase 5's own, consumed rather than reimplemented, and
+`P5-LDG` still emits its verdict at the accepted point in the lifecycle — the
+Phase-6 block does not emit it early, and `test_54` refuses a version that does.
+
 ### 2.2 The one change to the accepted driver
 
 `phase4_functional_test.ps1` gains a dot-source, a preflight call, two artefact
@@ -301,6 +322,14 @@ Three further details carry weight:
 
 * the fixture is marked written **before** the assignment, because a COM write
   that raises may still have changed the cell;
+* the establishment verdict is **load-bearing**. A COM write can return normally
+  and still leave a cell holding something other than what was asked for — a
+  coerced type, a rejected value, a protected sheet. The first version recorded
+  the failed check and then ran `PCCM_RunSimulation` anyway, producing
+  behavioural observations against a fixture the harness had itself just proved
+  was not established. The gate now throws before any state capture or
+  invocation, so the sequence is *write → verify → only then production*, while
+  the `finally` still restores and still verifies;
 * `Restore-Phase6CellFixture` never throws — a raising write or read-back becomes
   a **failed check**, so cleanup cannot replace the original scenario failure
   with its own story, and the original is re-added to the checklist afterwards;
@@ -340,10 +369,29 @@ The source binding is **by blob identity, not by module name**. That a compiled
 project contains a module called `modSimReport` says nothing about whose
 `modSimReport` it is, so each accepted Phase-6 production module's blob id in the
 runtime checkout is compared against the same path at the baseline
-(`git rev-parse <baseline>:pccm/src/vba/<module>.bas`), alongside
-`git diff --quiet <baseline> -- pccm/src pccm/spec`. git computes both sides under
-identical attribute rules, so no line-ending or encoding difference can
+(`git rev-parse <baseline>:pccm/src/vba/<module>.bas`). git computes both sides
+under identical attribute rules, so no line-ending or encoding difference can
 masquerade as a match.
+
+**The whole-tree statement runs from the repository root**, and that correction
+matters more than it looks. `git -C <path>` runs git as though it had been
+started in `<path>`, and a `git diff` pathspec resolves relative to that
+directory. The first version ran with `-C <repo>/pccm` and the repository-root
+pathspecs `pccm/src` and `pccm/spec`, which resolve to `<repo>/pccm/pccm/src` and
+match nothing — and a pathspec matching nothing produces no diff, so `--quiet`
+exited 0 and the freeze check passed whatever the tree held. Fail-open, on the
+one statement the whole claim rests on. The driver now derives `$repoRoot` and
+passes it; every git invocation in the block uses it; the freeze additionally
+asks `git ls-tree` how many files the pathspec covers, because a freeze proved by
+a pathspec that names nothing is not a freeze.
+
+Two of the controls measure git rather than argue about it. `test_57` runs both
+command shapes against a path that genuinely differs from the baseline and
+requires the corrected form to detect it and the submitted form not to.
+`test_58` clones the repository into a throwaway directory, edits
+`modWorkbook.bas` — a production file no `modSim*` blob check covers — and
+requires the corrected form to fail on it and the submitted form to miss it, so
+the whole-tree claim does not rest on the eight module checks.
 
 **No git means no pass.** If git is unavailable the harness commit stays empty
 and `P6-ART` FAILS. A runtime result with no attributable revision is weaker
@@ -371,13 +419,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **56** controls, in six groups:
+`tests/test_phase6_gate_b_harness_source.py` — **61** controls, in six groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **92** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **106** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -408,6 +456,15 @@ identity passing without git, the source binding falling back to module names, a
 placeholder commit; the non-golden identity reduced to a note, made conditional
 on the golden case, or its currency check defanged; and the final log omitting
 the Phase-6 summary.
+
+The final pre-execution review added a third group: the pending Phase-5 ledger
+read as an empty list, its count no longer required to be zero, the check dropped
+entirely, and `P5-LDG` emitted early to answer the question the wrong way; the
+fixture establishment verdict discarded in either scenario, captured and then
+reduced to a note, or gated after the simulation instead of before it; and the
+whole-tree freeze returned to the `pccm` working directory — wholesale, narrowly
+on the one command, with its pathspec-coverage check removed, or by the driver
+passing the wrong root.
 
 ---
 
