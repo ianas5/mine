@@ -36,6 +36,7 @@ import test_phase6_gate_b_harness_source as conformance  # noqa: E402
 _INSPECTION = conformance.INSPECTION_PATH.read_text(encoding="utf-8")
 _CASES = conformance.GATE_B_CASES_PATH.read_text(encoding="utf-8")
 _PHASE6 = conformance.PHASE6.read_text(encoding="utf-8")
+_HARNESS = conformance.HARNESS.read_text(encoding="utf-8")
 
 
 def _conformance_tests() -> list[str]:
@@ -56,9 +57,9 @@ def _run_battery() -> list[str]:
 
 @contextmanager
 def _installed(inspection: str | None = None, cases: str | None = None,
-               phase6: str | None = None):
+               phase6: str | None = None, harness: str | None = None):
     saved = (conformance.INSPECTION_PATH, conformance.GATE_B_CASES_PATH,
-             conformance.PHASE6, dict(conformance._CACHE))
+             conformance.PHASE6, dict(conformance._CACHE), conformance.HARNESS)
     with tempfile.TemporaryDirectory(prefix="pccm-step13-mutation-") as name:
         temp = Path(name)
         conformance._CACHE.clear()
@@ -67,6 +68,7 @@ def _installed(inspection: str | None = None, cases: str | None = None,
                 (inspection, _INSPECTION, "INSPECTION_PATH"),
                 (cases, _CASES, "GATE_B_CASES_PATH"),
                 (phase6, _PHASE6, "PHASE6"),
+                (harness, _HARNESS, "HARNESS"),
             ):
                 if damaged is None:
                     continue
@@ -79,6 +81,7 @@ def _installed(inspection: str | None = None, cases: str | None = None,
             conformance.INSPECTION_PATH = saved[0]
             conformance.GATE_B_CASES_PATH = saved[1]
             conformance.PHASE6 = saved[2]
+            conformance.HARNESS = saved[4]
             conformance._CACHE.clear()
             conformance._CACHE.update(saved[3])
 
@@ -409,10 +412,89 @@ def test_36_the_ledger_violation_stops_being_a_failure() -> None:
 def test_37_the_recovery_scenarios_stop_restoring() -> None:
     damaged = _swap(
         _PHASE6,
-        "            $null = Restore-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `\n"
-        "                -Fixture $fixture -List $list -Label $Id\n",
+        "            if ($null -ne $fixture) {\n"
+        "                $null = Complete-Phase6Fixture -Workbook $Workbook -Inspection $SimInspection `\n"
+        "                    -Fixture $fixture -List $list -Label $Id\n"
+        "            }\n",
         "")
     _control("test_38", phase6=damaged)
+
+
+def test_37b_the_unwind_moves_out_of_the_finally_onto_the_success_path() -> None:
+    """The submitted defect exactly: a restore that only runs when nothing threw.
+
+    An exception between the fixture write and the restore then leaves the
+    modified cell in the workbook, and every later scenario runs against it.
+    """
+    unwind = (
+        "        } finally {\n"
+        "            # RESTORATION IS REACHED ON EVERY PATH. An exception between the\n"
+        "            # fixture write and the restore is exactly the case that would\n"
+        "            # otherwise leave a modified F21 or counter in the workbook and let\n"
+        "            # every later scenario run against it.\n"
+        "            if ($null -ne $fixture) {\n"
+        "                $null = Complete-Phase6Fixture -Workbook $Workbook -Inspection $SimInspection `\n"
+        "                    -Fixture $fixture -List $list -Label $Id\n"
+        "            }\n"
+        "        }\n")
+    assert _PHASE6.count(unwind) == 1
+    success_path = (
+        "            & $Assert $list $before $after $announced $afterSecond $secondAnnounced\n")
+    assert _PHASE6.count(success_path) == 1
+    damaged = _PHASE6.replace(unwind, "        }\n", 1).replace(
+        success_path,
+        success_path +
+        "            $null = Complete-Phase6Fixture -Workbook $Workbook "
+        "-Inspection $SimInspection `\n"
+        "                -Fixture $fixture -List $list -Label $Id\n", 1)
+    assert damaged != _PHASE6
+    _control("test_38", phase6=damaged)
+
+
+def test_37c_the_fixture_is_only_marked_written_after_a_successful_write() -> None:
+    """A raising assignment can still have changed the cell."""
+    damaged = _swap(
+        _PHASE6,
+        "    $Fixture.Written = $true\n"
+        "    Set-SimRawCell -Workbook $Workbook -Inspection $Inspection `\n"
+        "        -Address $Fixture.Address -Value $Value\n",
+        "    Set-SimRawCell -Workbook $Workbook -Inspection $Inspection `\n"
+        "        -Address $Fixture.Address -Value $Value\n"
+        "    $Fixture.Written = $true\n")
+    _control("test_38", phase6=damaged)
+
+
+def test_37d_a_failed_restoration_stops_latching_contamination() -> None:
+    """Continuing produces behavioural evidence from a state the harness made."""
+    damaged = _swap(
+        _PHASE6,
+        "    if (-not $restored) {\n"
+        "        Set-Phase6Contaminated -Reason ($Label + ' could not restore ' + $Fixture.Address +\n"
+        "            ' (original ' + (Format-SimValue $Fixture.Original) + ')')\n"
+        "    }\n",
+        "")
+    _control("test_38", phase6=damaged)
+
+
+def test_37e_a_stateful_scenario_runs_on_after_a_failed_restoration() -> None:
+    """The guard is what stops the next scenario trusting the workbook."""
+    damaged = _swap(
+        _PHASE6,
+        "        if (-not (Test-Phase6FixtureIntegrity)) {\n"
+        "            Add-Phase6Result $Id $Name 'FAIL' `\n",
+        "        if ($false) {\n"
+        "            Add-Phase6Result $Id $Name 'FAIL' `\n")
+    _control("test_38c", phase6=damaged)
+
+
+def test_37f_the_contamination_flag_stops_latching() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "    if ($script:Phase6FixtureIntegrity) {\n"
+        "        $script:Phase6FixtureIntegrity = $false\n",
+        "    if ($true) {\n"
+        "        $script:Phase6FixtureIntegrity = $true\n")
+    _control("test_38c", phase6=damaged)
 
 
 def test_38_the_restoration_check_stops_reaching_the_checklist() -> None:
@@ -428,18 +510,61 @@ def test_38_the_restoration_check_stops_reaching_the_checklist() -> None:
     _control("test_38", phase6=damaged)
 
 
+def test_38b_a_raising_restore_escapes_instead_of_being_recorded() -> None:
+    """A cleanup that throws would replace the original scenario failure."""
+    damaged = _swap(
+        _PHASE6,
+        "    } catch {\n"
+        "        $failure = Format-Phase6Err $_\n"
+        "    }\n"
+        "    if (-not [string]::IsNullOrEmpty($failure)) {\n",
+        "    }\n"
+        "    if ($false) {\n")
+    _control("test_38", phase6=damaged)
+
+
+def test_38c_the_original_scenario_failure_is_discarded_by_the_cleanup() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "        } catch {\n"
+        "            # THE ORIGINAL FAILURE IS PRESERVED. Cleanup runs next and must not\n"
+        "            # replace this with its own story.\n"
+        "            $scenarioFailure = Format-Phase6Err $_\n",
+        "        } catch {\n"
+        "            $scenarioFailure = ''\n")
+    _control("test_38b", phase6=damaged)
+
+
 def test_39_the_recovery_evidence_is_captured_after_cleanup() -> None:
     """Post-state captured after the restore would describe the harness's own
     tidy-up, not what production left behind."""
-    evidence = (
-        "            $evidence = (Format-Phase6State -State $before -Label 'before')")
-    restore = (
-        "            $null = Restore-Phase6CellFixture -Workbook $Workbook "
-        "-Inspection $SimInspection `\n"
-        "                -Fixture $fixture -List $list -Label $Id\n")
-    assert _PHASE6.count(restore) == 1
-    block = _PHASE6[_PHASE6.index(evidence):_PHASE6.index(restore)]
-    damaged = _PHASE6.replace(block + restore, restore + block, 1)
+    # THE RECOVERY BLOCK'S capture, not RIDMAX's - both carry the marker, so
+    # the anchor is the statement that follows only this one.
+    evidence_start = "            # POST EVIDENCE IS CAPTURED BEFORE CLEANUP, ALWAYS.\n"
+    assert _PHASE6.count(evidence_start) == 2
+    end = _PHASE6.index("            & $Assert $list $before $after")
+    start = _PHASE6.rindex(evidence_start, 0, end)
+    block = _PHASE6[start:end]
+    damaged = _PHASE6.replace(block, "", 1).replace(
+        "        if (-not [string]::IsNullOrEmpty($scenarioFailure)) {",
+        block + "        if (-not [string]::IsNullOrEmpty($scenarioFailure)) {", 1)
+    assert damaged != _PHASE6
+    _control("test_39", phase6=damaged)
+
+
+def test_39b_the_run_id_evidence_is_captured_after_cleanup() -> None:
+    """The same rule, in the other fixture-writing scenario."""
+    start = _PHASE6.index("            # POST EVIDENCE IS CAPTURED BEFORE CLEANUP, ALWAYS.\n"
+                          "            $evidence = (Format-Phase6State -State $before -Label 'before') + \"`r`n\" +\n"
+                          "                        '    fixture: ' + $runIdCell")
+    end = _PHASE6.index("            $null = Add-Check $list 'the endpoint refused' `")
+    block = _PHASE6[start:end]
+    damaged = _PHASE6.replace(block, "", 1).replace(
+        "        if (-not [string]::IsNullOrEmpty($scenarioFailure)) {\n"
+        "            $null = Add-Check $list 'P6-RIDMAX: the scenario ran to completion'",
+        block +
+        "        if (-not [string]::IsNullOrEmpty($scenarioFailure)) {\n"
+        "            $null = Add-Check $list 'P6-RIDMAX: the scenario ran to completion'", 1)
     assert damaged != _PHASE6
     _control("test_39", phase6=damaged)
 
@@ -652,11 +777,9 @@ def test_64_the_parity_scenario_stops_checking_the_analytical_identity() -> None
 def test_65_the_parity_comparison_runs_before_the_identity_is_established() -> None:
     """Order matters: an identity proved after the comparison proves nothing
     about the comparison that already happened."""
-    identity = (
-        "            if ([bool]$case.analytical_identity."
-        "fingerprint_independently_derivable) {\n")
-    assert _PHASE6.count(identity) == 1
-    start = _PHASE6.index(identity)
+    marker = "            # THE CURRENT ANALYTICAL IDENTITY FIRST, FOR EVERY CASE.\n"
+    assert _PHASE6.count(marker) == 1
+    start = _PHASE6.index(marker)
     end = _PHASE6.index("            $activeBefore = Get-Phase6ActiveBank `")
     block = _PHASE6[start:end]
     parity = (
@@ -684,3 +807,200 @@ def test_67_the_digest_comparison_is_dropped_from_the_comparator() -> None:
         "        @{ Field = 'result_digest';  Expected = [string]$expected.result_digest },\n",
         "")
     _control("test_47", phase6=damaged)
+
+
+# ===========================================================================
+# D. The corrections of the harness review
+# ===========================================================================
+def test_68_the_live_prerequisite_demands_the_full_yz_inclusive_phase4_set() -> None:
+    """The submitted defect, restored: unsatisfiable by construction.
+
+    Y and Z are post-session lifecycle cases recorded after Excel is torn down,
+    and Phase 6 runs inside the live automation session. Demanding them here
+    fails P6-PRE before the first simulation, and every stateful scenario with
+    it.
+    """
+    damaged = _swap(
+        _PHASE6,
+        "        $phase4Prerequisite = @(Get-Phase4PrerequisiteScenarioIds)\n",
+        "        $phase4Prerequisite = @(Get-Phase4RequiredScenarioIds)\n")
+    _control("test_49", phase6=damaged)
+
+
+def test_69_the_prerequisite_stops_proving_the_deferral_is_real() -> None:
+    """A deferred case that had already run was never a post-session case."""
+    damaged = _swap(
+        _PHASE6,
+        "        $earlyDeferred = @($phase4Deferred | Where-Object { $seen -contains $_ })\n",
+        "        $earlyDeferred = @()\n")
+    _control("test_49", phase6=damaged)
+
+
+def test_70_the_prerequisite_demands_the_post_session_phase5_results() -> None:
+    """P5-FIN and P5-LDG are recorded after shutdown, like Y and Z."""
+    damaged = _swap(
+        _PHASE6,
+        "        foreach ($id in @('P5-FIN', 'P5-LDG')) {\n"
+        "            $null = Add-Check $list `\n"
+        "                ('the post-session Phase-5 result ' + $id + ' has not run yet') `\n"
+        "                ($seen -notcontains $id)\n"
+        "        }\n",
+        "        foreach ($id in @('P5-FIN', 'P5-LDG')) {\n"
+        "            $null = Add-Check $list `\n"
+        "                ('the Phase-5 result ' + $id + ' has run') `\n"
+        "                ($seen -contains $id)\n"
+        "        }\n")
+    _control("test_49", phase6=damaged)
+
+
+def test_71_the_completeness_verdict_bypasses_the_result_guard() -> None:
+    """P6-FIN through Add-Result cannot be seen as a duplicate by the ledger."""
+    damaged = _swap(
+        _PHASE6,
+        "        Add-Phase6Result 'P6-FIN' 'Phase-6 completeness' `\n"
+        "            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)\n",
+        "        Add-Result 'P6-FIN' 'Phase-6 completeness' `\n"
+        "            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)\n")
+    _control("test_51", phase6=damaged)
+
+
+def test_72_the_ledger_verdict_becomes_a_precondition_of_completeness() -> None:
+    """Requiring P6-LDG inside the set P6-FIN verifies is the circular ordering."""
+    damaged = _swap(
+        _PHASE6,
+        "        'P6-RIDMAX', 'P6-AXIS'\n    )\n}\n\n# The scenarios that WRITE machine state",
+        "        'P6-RIDMAX', 'P6-AXIS', 'P6-LDG'\n    )\n}\n\n# The scenarios that WRITE machine state")
+    _control("test_51", phase6=damaged)
+
+
+def test_73_the_ledger_verdict_is_emitted_before_the_guarded_completeness() -> None:
+    """Round 4A: a verdict emitted before the last guarded result is fail-open."""
+    damaged = _swap(
+        _PHASE6,
+        "    try {\n        $list = New-Checklist\n"
+        "        $recorded = @($Results | Where-Object { $_.Id -like 'P6-*' })\n",
+        "    Add-Phase6LedgerIntegrityResult\n"
+        "    try {\n        $list = New-Checklist\n"
+        "        $recorded = @($Results | Where-Object { $_.Id -like 'P6-*' })\n")
+    _control("test_51", phase6=damaged)
+
+
+def test_74_the_harness_head_is_reported_as_the_production_baseline() -> None:
+    """The two identities the Step-13 authorisation requires to stay distinct."""
+    damaged = _swap(
+        _PHASE6,
+        "function Get-Phase6ProductionBaseline { return 'bc7949b' }",
+        "function Get-Phase6ProductionBaseline {\n"
+        "    return [string](& git rev-parse HEAD 2>$null)\n}")
+    _control("test_52", phase6=damaged)
+
+
+def test_75_the_baseline_pin_drifts_from_the_reviewed_baseline() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "function Get-Phase6ProductionBaseline { return 'bc7949b' }",
+        "function Get-Phase6ProductionBaseline { return 'd36d5d4' }")
+    _control("test_52", phase6=damaged)
+
+
+def test_76_artefact_identity_passes_without_git() -> None:
+    """A runtime result with no attributable revision is weaker evidence, and
+    recording "unknown" while passing would pass that weakness off as strength."""
+    damaged = _swap(
+        _PHASE6,
+        "            $null = Add-Check $list `\n"
+        "                'the accepted production source can be bound to the baseline' $false `\n",
+        "            $null = Add-Check $list `\n"
+        "                'the accepted production source can be bound to the baseline' $true `\n")
+    _control("test_52", phase6=damaged)
+
+
+def test_77_the_source_binding_falls_back_to_module_names() -> None:
+    """That a project CONTAINS a modSimReport is not whose modSimReport it is."""
+    damaged = _swap(
+        _PHASE6,
+        "                    $accepted = [string](& git -C $PccmRoot rev-parse ($baseline + ':' + $relative) 2>$null)\n",
+        "                    $accepted = ''\n")
+    _control("test_52", phase6=damaged)
+
+
+def test_78_the_non_golden_identity_reduces_to_a_note() -> None:
+    """A note about earlier evidence is not a check on the current fixture."""
+    damaged = _swap(
+        _PHASE6,
+        "            Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook `\n"
+        "                -Inspection $Inspection -Case $planCase -Tolerances $Cases.tolerances `\n"
+        "                -Label ($label + ' analytical')\n"
+        "            Add-Phase5SuccessStateChecks -List $list -Excel $Excel -Workbook $Workbook `\n"
+        "                -Inspection $Inspection -Case $planCase -Cases $Cases `\n"
+        "                -Label ($label + ' calc_state')\n",
+        "            Add-Note ($label + ': P5-AN already drove this plan case.')\n")
+    _control("test_46", phase6=damaged)
+
+
+def test_79_the_current_fixture_identity_becomes_conditional() -> None:
+    """Running the comparators only for the golden case is the same gap."""
+    damaged = _swap(
+        _PHASE6,
+        "            Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook `\n",
+        "            if ([bool]$case.analytical_identity.fingerprint_independently_derivable) {\n"
+        "            Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook `\n")
+    damaged = _swap(
+        damaged,
+        "                -Label ($label + ' calc_state')\n",
+        "                -Label ($label + ' calc_state')\n            }\n")
+    _control("test_46", phase6=damaged)
+
+
+def test_80_the_stored_fingerprint_stops_being_proved_current() -> None:
+    """A stale analytical digest names a model that has since moved."""
+    damaged = _swap(
+        _PHASE6,
+        "                ((-not [string]::IsNullOrEmpty($calcCurrent)) -and ($calcStored -ceq $calcCurrent)) `\n",
+        "                ($true) `\n")
+    _control("test_46", phase6=damaged)
+
+
+def test_81_the_final_log_omits_the_phase6_summary_identity() -> None:
+    """A Step-13 run that finished by claiming only a Phase-4/Phase-5 test had
+    run would understate what the log is evidence of."""
+    damaged = _swap(
+        _HARNESS,
+        "    Write-Host 'PHASE-4 / PHASE-5 / PHASE-6 FUNCTIONAL TEST: ALL CHECKS PASSED' "
+        "-ForegroundColor Green\n",
+        "    Write-Host 'PHASE-4 / PHASE-5 FUNCTIONAL TEST: ALL CHECKS PASSED' "
+        "-ForegroundColor Green\n")
+    _control("test_02", harness=damaged)
+
+
+def test_82_the_final_log_drops_the_phase6_scenario_count() -> None:
+    start = _HARNESS.index('# NAMED, NOT INFERRED.')
+    end = _HARNESS.index("Write-Host ''\nif ($failed.Count -eq 0) {")
+    block = _HARNESS[start:end]
+    damaged = _HARNESS.replace(block, "", 1)
+    assert damaged != _HARNESS
+    _control("test_02", harness=damaged)
+
+
+def test_83_the_driver_stops_emitting_the_phase6_ledger_verdict() -> None:
+    """Without it, a duplicate P6-FIN attempt is a Note and the run finishes green."""
+    damaged = _swap(_HARNESS, "Add-Phase6LedgerIntegrityResult\n", "")
+    _control("test_51", harness=damaged)
+
+
+def test_84_the_driver_emits_the_phase6_ledger_before_the_scenarios() -> None:
+    damaged = _swap(
+        _HARNESS,
+        "        Invoke-Phase6GateBScenarios -Excel $excel -Workbook $wb -Manifest $manifest `\n",
+        "        Add-Phase6LedgerIntegrityResult\n"
+        "        Invoke-Phase6GateBScenarios -Excel $excel -Workbook $wb -Manifest $manifest `\n")
+    _control("test_51", harness=damaged)
+
+
+def test_85_the_driver_substitutes_a_placeholder_for_a_missing_commit() -> None:
+    """"unknown" and a PASS is a weakness passed off as strength."""
+    damaged = _swap(
+        _HARNESS,
+        "    $harnessCommit = ''\n",
+        "    $harnessCommit = 'unknown (git was not available on this machine)'\n")
+    _control("test_52", harness=damaged)

@@ -180,17 +180,36 @@ def test_02_the_only_change_to_the_phase4_driver_is_the_phase6_wiring() -> None:
     # than tolerated by a count: the required-artefact list gained the two
     # Phase-6 paths. Any OTHER removal is a rewrite of accepted Phase-4/5
     # behaviour and fails.
-    extended = (
+    added = "\n".join(line for line in after if line not in before)
+    modifiable = {
+        # the required-artefact list gained the two Phase-6 paths
         "    foreach ($required in @($manifestPath, $scenarioPath, $casesPath, "
-        "$inspectPath)) {"
+        "$inspectPath)) {",
+        # and the final summary now names Phase 6 as well as Phase 4 and 5
+        'Write-Host ("  Phase-5 Gate-B scenarios : {0} reported" -f `',
+        "    (@($results | Where-Object { $_.Id -like 'P5-*' })).Count)",
+        "    Write-Host 'PHASE-4 / PHASE-5 FUNCTIONAL TEST: ALL CHECKS PASSED' "
+        "-ForegroundColor Green",
+        'Write-Host ("PHASE-4 / PHASE-5 FUNCTIONAL TEST FAILED: " + '
+        "(($failed | ForEach-Object { $_.Id }) -join ', ')) -ForegroundColor Red",
+    }
+    removed = set(line for line in before if line not in after)
+    assert removed <= modifiable, (
+        f"the Phase-4 driver lost accepted lines: {sorted(removed - modifiable)}"
     )
-    removed = [line for line in before if line not in after]
-    assert removed == [extended], f"the Phase-4 driver lost lines: {removed[:5]}"
     assert any(
         ("$simInspectPath" in line and "$simCasesPath" in line) for line in after
     ), "the required-artefact list does not name the two Phase-6 artefacts"
+    assert "Add-Phase6LedgerIntegrityResult" in added
+    assert "$harnessCommit" in added
+    # THE SUMMARY NAMES PHASE 6. A Step-13 log that finished by claiming only a
+    # Phase-4/Phase-5 test ran would understate what it is evidence of.
+    assert any("Phase-6 Gate-B scenarios" in line for line in after)
+    assert any(
+        "PHASE-4 / PHASE-5 / PHASE-6 FUNCTIONAL TEST: ALL CHECKS PASSED" in line
+        for line in after
+    )
 
-    added = "\n".join(line for line in after if line not in before)
     assert "phase6_gate_b_scenarios.ps1" in added
     assert "Invoke-Phase6CoveragePreflight" in added
     assert "Invoke-Phase6GateBScenarios" in added
@@ -298,9 +317,25 @@ def test_10_there_is_no_recomputation_and_no_fallback() -> None:
     """A harness that could compute the expectation could disagree with the oracle."""
     code = _executable(PHASE6)
     for forbidden in ("[math]::", "Measure-Object -Average", "Get-Random",
-                      "tolerance", "Tolerance", "-lt 1e-", "AbsoluteDifference"):
+                      "-lt 1e-", "AbsoluteDifference"):
         assert forbidden not in code, f"the harness must not contain {forbidden}"
     assert "Test-SimExactDouble" in code and "Test-SimExactText" in code
+
+    # THE TOLERANCE BAN IS SCOPED, and the scope is the point. The SIMULATION
+    # comparison is exact and may not name a tolerance at all. The ANALYTICAL
+    # identity check hands the accepted Phase-5 comparator its own emitted
+    # `$Cases.tolerances`, which is that comparator's authority, not a slack the
+    # harness invented - so a blanket ban would forbid reusing the accepted
+    # machinery and push the harness towards reimplementing it.
+    comparator = code.split("function Add-Phase6ParityChecks")[1].split("\nfunction ")[0]
+    for forbidden in ("tolerance", "Tolerance"):
+        assert forbidden not in comparator, (
+            f"the simulation comparator names {forbidden}"
+        )
+    for site in re.findall(r"[^\n]*[Tt]olerance[^\n]*", code):
+        assert "$Cases.tolerances" in site, (
+            f"a tolerance appears outside the accepted Phase-5 pass-through: {site.strip()}"
+        )
 
 
 # ===========================================================================
@@ -339,16 +374,28 @@ def test_12_the_public_surface_the_harness_spells_is_the_contract_s() -> None:
     spelled = set(re.findall(r"'(PCCM_\w+)'", code))
     accepted = set(surface["read_accessors"]) | {surface["automation_endpoint"]}
     # The Phase-4/5 automation helpers the block legitimately reuses.
-    accepted |= {"PCCM_AutomationBegin", "PCCM_AutomationResult", "PCCM_Calculate",
-                 "PCCM_CalculationFingerprint"}
+    accepted |= {"PCCM_AutomationBegin", "PCCM_AutomationResult", "PCCM_Calculate"}
+    # The Phase-5 read accessors the CURRENT-fixture identity check calls before
+    # every parity comparison. Not a Phase-6 surface: pinned as Phase-5's own
+    # api_procedures by test_13.
+    accepted |= set(PHASE5_ACCESSORS_USED)
     assert spelled <= accepted, sorted(spelled - accepted)
 
 
-def test_13_the_calculation_fingerprint_accessor_is_a_phase5_endpoint() -> None:
-    """The golden analytical binding calls Phase 5's own accessor, not a copy."""
+PHASE5_ACCESSORS_USED = (
+    "PCCM_CalculationFingerprint",
+    "PCCM_CurrentInputFingerprint",
+    "PCCM_CalculationStatus",
+    "PCCM_CalculationAttemptResult",
+)
+
+
+def test_13_the_phase5_accessors_it_calls_are_phase5_endpoints() -> None:
+    """The current-fixture identity check calls Phase 5's own accessors, not copies."""
     import yaml
     structure = yaml.safe_load(_text(SPEC / "structure_contract.yaml"))
-    assert "PCCM_CalculationFingerprint" in structure["vba"]["api_procedures"]
+    for name in PHASE5_ACCESSORS_USED:
+        assert name in structure["vba"]["api_procedures"], name
 
 
 # ===========================================================================
@@ -663,14 +710,21 @@ def test_33_the_generated_constants_agree_with_the_corpus_bounds() -> None:
 # ===========================================================================
 # 6. THE SCENARIO MATRIX IS COMPLETE AND FAIL-CLOSED
 # ===========================================================================
+# THE FUNCTIONAL SET. P6-FIN is the verdict OVER it and P6-LDG the verdict over
+# every guarded result including P6-FIN, so neither may be a member: making the
+# ledger's verdict a precondition of the completeness verdict that precedes it
+# is exactly the circular ordering Round 4A removed from Phase 5.
 REQUIRED_SCENARIOS = (
     "P6-PRE", "P6-ART", "P6-CMP", "P6-M", "P6-API", "P6-BTN", "P6-INIT",
     "P6-FX1", "P6-DET", "P6-ORA", "P6-FIXED-INERT",
     "P6-AU1", "P6-AU2", "P6-BANK", "P6-ACC",
     "P6-RF1", "P6-PRESERVE", "P6-FP1", "P6-FP2", "P6-FP3",
     "P6-REC1", "P6-REC2", "P6-REC3", "P6-REC4", "P6-REC5",
-    "P6-RIDMAX", "P6-AXIS", "P6-LDG",
+    "P6-RIDMAX", "P6-AXIS",
 )
+
+FIXTURE_SCENARIOS = ("P6-REC1", "P6-REC2", "P6-REC3", "P6-REC4", "P6-REC5",
+                     "P6-RIDMAX")
 
 
 def test_34_every_required_scenario_is_declared_and_recorded() -> None:
@@ -751,33 +805,114 @@ def test_37_the_ledger_refuses_a_second_result_and_reports_it() -> None:
     assert "'FAIL'" in integrity
 
 
-def test_38_every_fixture_writing_scenario_captures_restores_and_verifies() -> None:
-    """A scenario whose restoration fails is a FAIL, never a note."""
+def test_38_every_fixture_writing_scenario_restores_on_every_path() -> None:
+    """Restoration in a `finally`, or it is not restoration.
+
+    The submitted version put the restore on the success path only. Any
+    exception after the fixture write - a COM raise from Application.Run, a
+    state capture, an assertion helper, evidence formatting - jumped straight to
+    `catch` and left the modified F21 or counter in the workbook, and every
+    later scenario then ran against it. Proving a restore CALL exists is not the
+    same as proving it is reached.
+    """
     code = _executable(PHASE6)
     assert "function New-Phase6CellFixture" in code
     assert "function Set-Phase6CellFixture" in code
     assert "function Restore-Phase6CellFixture" in code
-    # The restore's verification result goes into the same checklist the
-    # scenario's PASS/FAIL is computed from.
-    restore = code.split("function Restore-Phase6CellFixture")[1].split("function ")[0]
-    assert "Add-Check $List" in restore
-    assert "is restored exactly" in restore
-    # And every direct machine-state write goes through the fixture helper.
-    writes = re.findall(r"Set-SimRawCell -Workbook \$Workbook", code)
-    assert len(writes) >= 3, writes
-    for scenario in ("P6-REC1", "P6-REC2", "P6-REC3", "P6-REC4", "P6-REC5", "P6-RIDMAX"):
+    assert "function Complete-Phase6Fixture" in code
+
+    # THE UNWIND IS REACHED FROM A `finally`, once per fixture-writing scenario.
+    unwinds = re.findall(
+        r"\} finally \{[^}]*?Complete-Phase6Fixture", code, re.S
+    )
+    assert len(unwinds) >= 2, (
+        f"only {len(unwinds)} fixture unwind(s) sit in a finally block"
+    )
+    assert "Complete-Phase6Fixture" in code
+    # AND NOWHERE ELSE. A restore on the success path only is the defect.
+    assert code.count("Complete-Phase6Fixture -Workbook") == len(unwinds), (
+        "a fixture is completed outside a finally block"
+    )
+
+    # THE WRITE IS FLAGGED BEFORE IT HAPPENS, so a raising assignment that still
+    # changed the cell is unwound.
+    setter = code.split("function Set-Phase6CellFixture")[1].split("\nfunction ")[0]
+    assert setter.index("$Fixture.Written = $true") < setter.index("Set-SimRawCell"), (
+        "the fixture is only marked written after a successful write"
+    )
+
+    # THE RESTORE NEVER THROWS, so a cleanup failure cannot replace the original
+    # scenario failure.
+    restore = code.split("function Restore-Phase6CellFixture")[1].split("\nfunction ")[0]
+    assert "} catch {" in restore and "restoration raised" in restore
+    # THE VERDICT IS THE COMPARISON, not merely that a check was emitted. A
+    # restore that reported its read-back as a Note and returned $true would
+    # satisfy "an Add-Check exists" through its raise arm alone.
+    assert "Test-SimSameValue -A $readBack -B $Fixture.Original" in restore, (
+        "the restoration does not compare the read-back against the original"
+    )
+    assert restore.count("Add-Check $List") >= 2
+    assert "Add-Note" not in restore, (
+        "a restoration outcome reported as a Note cannot fail the scenario"
+    )
+
+    # AND AN UNVERIFIED RESTORATION LATCHES CONTAMINATION.
+    complete = code.split("function Complete-Phase6Fixture")[1].split("\nfunction ")[0]
+    assert "Set-Phase6Contaminated" in complete
+    assert "if (-not $restored)" in complete
+
+    for scenario in FIXTURE_SCENARIOS:
         assert scenario in code, scenario
-    assert code.count("Restore-Phase6CellFixture -Workbook") >= 2
+
+
+def test_38b_the_original_failure_survives_the_cleanup() -> None:
+    """Cleanup must not become the story. The scenario's own exception is kept."""
+    code = _executable(PHASE6)
+    recovery = code.split("function Invoke-Phase6RecoveryScenario")[1].split(
+        "$pendingCell =")[0]
+    assert "$scenarioFailure = Format-Phase6Err $_" in recovery
+    assert "the scenario ran to completion" in recovery
+    assert recovery.index("} catch {") < recovery.index("} finally {"), (
+        "the fixture unwind does not follow the catch"
+    )
+
+
+def test_38c_a_contaminated_workbook_stops_stateful_evidence() -> None:
+    """Behavioural evidence from a state the harness put there is worse than none."""
+    code = _executable(PHASE6)
+    assert "function Set-Phase6Contaminated" in code
+    assert "function Test-Phase6FixtureIntegrity" in code
+    latch = code.split("function Set-Phase6Contaminated")[1].split("\nfunction ")[0]
+    assert "if ($script:Phase6FixtureIntegrity)" in latch, "the flag does not latch"
+
+    # EVERY FIXTURE-WRITING SCENARIO CHECKS IT BEFORE RUNNING ANYTHING.
+    guards = code.count("if (-not (Test-Phase6FixtureIntegrity))")
+    assert guards >= 2, f"only {guards} scenario guard(s) on the contamination flag"
+    for fragment in ("not attempted: the harness could not restore an earlier fixture",
+                     "Get-Phase6ContaminationReason"):
+        assert fragment in code, fragment
+    # AND THE RUN CANNOT FINISH GREEN AFTER ONE.
+    fin = code.split("# P6-FIN.")[1] if "# P6-FIN." in code else code
+    assert "Test-Phase6FixtureIntegrity" in code.split("Add-Phase6Result 'P6-FIN'")[0]
 
 
 def test_39_post_evidence_is_captured_before_cleanup() -> None:
-    recovery = _executable(PHASE6).split(
-        "function Invoke-Phase6RecoveryScenario")[1].split("$pendingCell =")[0]
-    evidence_at = recovery.index("$evidence =")
-    restore_at = recovery.index("Restore-Phase6CellFixture")
-    assert evidence_at < restore_at, (
-        "the recovery scenarios restore before they capture their evidence"
-    )
+    """Post-state captured after the restore would describe the harness's own
+    tidy-up, not what production left behind."""
+    code = _executable(PHASE6)
+    # THE CAPTURE, NOT THE DECLARATION. Both blocks initialise `$evidence = \'\'`
+    # at the top of the try, so searching for the bare assignment would find the
+    # initialiser and pass however far down the real capture had been moved.
+    capture = "$evidence = (Format-Phase6State"
+    recovery = code.split("function Invoke-Phase6RecoveryScenario")[1].split(
+        "$pendingCell =")[0]
+    assert capture in recovery
+    assert recovery.index(capture) < recovery.index("Complete-Phase6Fixture")
+    # SCOPED BY CODE, NOT BY A COMMENT MARKER: `_executable` strips comment
+    # lines, so a split on `# P6-RIDMAX` would take the rest of the file.
+    ridmax = code.split("-Address $runIdCell")[1].split("Add-Phase6Result 'P6-RIDMAX'")[0]
+    assert capture in ridmax
+    assert ridmax.index(capture) < ridmax.index("Complete-Phase6Fixture")
 
 
 def test_40_no_mid_call_observation_is_claimed() -> None:
@@ -868,28 +1003,52 @@ def test_45_the_step13_file_claims_no_execution() -> None:
         assert overclaim not in text, overclaim
 
 
-def test_46_the_parity_scenario_proves_the_analytical_identity_first() -> None:
-    """Comparing a simulation before proving WHICH model produced it compares
-    two different questions.
+def test_46_the_parity_scenario_proves_the_current_analytical_identity_first() -> None:
+    """Comparing a simulation before proving WHICH model produced it, right now,
+    compares two different questions.
 
-    The golden case's analytical digest is independently derivable and must be
-    asserted outright; for the other three the accepted `phase5_cases.json`
-    expectations are the identity, and the harness must say so rather than
-    silently skipping the question.
+    A NOTE ABOUT EARLIER EVIDENCE IS NOT A CHECK. The submitted version proved
+    only that the duration control matched the model and, for the three
+    non-golden cases, emitted a note saying P5-AN had already driven the accepted
+    expectations. That is a statement about a different scenario at a different
+    time; it says nothing about the workbook as it stands immediately before
+    THIS simulation. Every case now establishes current Phase-5 authority
+    through the ACCEPTED comparators before the run.
     """
     code = _executable(PHASE6)
-    block = code.split("foreach ($case in $parityCases)")[1].split("Add-Phase6Result 'P6-ORA'")[0]
-    identity_at = block.index("PCCM_CalculationFingerprint")
+    block = code.split("foreach ($case in $parityCases)")[1].split(
+        "Add-Phase6Result 'P6-ORA'")[0]
+
+    # 1. EVERY CASE, NOT JUST THE GOLDEN ONE. The accepted Phase-5 comparators
+    #    are called unconditionally, outside any `if`.
+    for required in ("Add-Phase5AnalyticalChecks", "Add-Phase5SuccessStateChecks"):
+        assert required in block, required
+        # Not inside the derivable-fingerprint branch.
+        conditional = block.split(
+            "if ([bool]$case.analytical_identity.fingerprint_independently_derivable)")[1]
+        assert required not in conditional, (
+            f"{required} runs only for the golden case"
+        )
+
+    # 2. THE CURRENT SNAPSHOT IS CURRENT, and the stored digest IS the current
+    #    one - a stale fingerprint would name a model that has since moved.
+    for required in ("PCCM_CalculationAttemptResult", "PCCM_CalculationStatus",
+                     "PCCM_CalculationFingerprint", "PCCM_CurrentInputFingerprint",
+                     "$calcStored -ceq $calcCurrent"):
+        assert required in block, required
+
+    # 3. AND ALL OF IT HAPPENS BEFORE THE SIMULATION AND BEFORE THE COMPARISON.
+    identity_at = max(block.index("Add-Phase5AnalyticalChecks"),
+                      block.index("Add-Phase5SuccessStateChecks"))
+    run_at = block.index("Invoke-Phase6Simulation")
     parity_at = block.index("Add-Phase6ParityChecks")
-    assert identity_at < parity_at, (
-        "P6-ORA compares simulation output before establishing the analytical identity"
+    assert identity_at < run_at, (
+        "P6-ORA runs the simulation before establishing the current analytical identity"
     )
-    # A REAL PREDICATE, not a disabled branch.
-    assert "if ([bool]$case.analytical_identity.fingerprint_independently_derivable)" in block
-    assert "$storedFingerprint -ceq [string]$case.expected_exact.calculation_fingerprint" in block
-    # AND THE NON-DERIVABLE CASES SAY WHERE THEIR IDENTITY COMES FROM.
-    assert "phase5_cases.json" in block
-    assert "second" in block and "implementation" in block
+    assert run_at < parity_at
+
+    # 4. THE GOLDEN CASE KEEPS ITS INDEPENDENT REFERENCE CHECK, in addition.
+    assert "$calcStored -ceq [string]$case.expected_exact.calculation_fingerprint" in block
 
 
 def test_47_the_parity_comparison_is_mandatory_and_covers_the_whole_ladder() -> None:
@@ -926,3 +1085,168 @@ def test_48_the_two_new_generated_artefacts_are_byte_identical() -> None:
     ):
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         assert actual == expected, f"{path.name} moved: {actual}"
+
+
+def test_49_the_live_prerequisite_uses_the_accepted_lifecycle_partition() -> None:
+    """P6-PRE runs INSIDE the automation session, so Y and Z cannot exist yet.
+
+    The submitted version demanded the full Phase-4 required set, which includes
+    the two post-session finalisation cases, and was therefore unsatisfiable by
+    construction: every stateful Phase-6 scenario would have failed before the
+    first simulation ran. That is the Run-1 sequencing defect under a Phase-6
+    name, and the accepted Phase-5 source had already derived the partition for
+    exactly this reason.
+    """
+    code = _executable(PHASE6)
+    block = code.split("$prerequisiteOk = $false")[1].split("if (-not $prerequisiteOk)")[0]
+
+    # THE DERIVED PARTITION, not the full Y/Z-inclusive set.
+    assert "Get-Phase4PrerequisiteScenarioIds" in block, (
+        "P6-PRE does not use the accepted live-session Phase-4 partition"
+    )
+    assert "Get-Phase4FinalizationScenarioIds" in block
+    # The full set may be read ONLY to prove the partition covers it.
+    for line in block.splitlines():
+        if "Get-Phase4RequiredScenarioIds" not in line:
+            continue
+        assert "$phase4Required" in line, line
+
+    # THE MEMBERSHIP TEST IS AGAINST THE PREREQUISITE SET.
+    assert "$phase4Prerequisite -contains $_.Id" in block
+    assert "$phase4Required -contains $_.Id" not in block, (
+        "P6-PRE gates on the full Y/Z-inclusive Phase-4 set"
+    )
+
+    # THE PARTITION AND THE DEFERRAL ARE BOTH PROVED, not asserted in prose.
+    assert "partition the whole matrix" in block
+    assert "have not run yet" in block
+    # THE PREDICATE, not the variable name. `$earlyDeferred = @()` would satisfy
+    # a check that only looked for the identifier.
+    assert "$earlyDeferred = @($phase4Deferred | Where-Object { $seen -contains $_ })" in block, (
+        "the deferral check does not actually look for an early deferred result"
+    )
+    assert "($earlyDeferred.Count -eq 0)" in block
+
+    # AND THE PHASE-5 SIDE IS DERIVED TOO, with its own post-session results
+    # excluded rather than demanded.
+    assert "Get-Phase5ScenarioIds" in block
+    for deferred in ("'P5-FIN'", "'P5-LDG'"):
+        assert deferred in block, deferred
+    assert "has not run yet" in block
+
+
+def test_50_the_full_35_case_demand_is_not_weakened() -> None:
+    """It moved, it did not go away: P5-FIN still gates final acceptance."""
+    driver = _text(HARNESS)
+    assert "Add-Phase4FinalCompletenessResult -Results $results" in driver
+    phase5 = _text(PHASE5)
+    assert "function Add-Phase4FinalCompletenessResult" in phase5
+    # And the Phase-6 block does not claim to make that demand itself.
+    code = _executable(PHASE6)
+    assert "Add-Phase4FinalCompletenessResult" not in code
+
+
+def test_51_the_completeness_and_ledger_verdicts_are_ordered_and_acyclic() -> None:
+    """Round 4A, reused rather than reinvented.
+
+    P6-FIN is a guarded result, so a duplicate attempt at it is only visible to
+    a verdict emitted AFTER it. And P6-LDG may not be a member of the set P6-FIN
+    requires, or the ledger's verdict becomes a precondition of the completeness
+    verdict that precedes it.
+    """
+    code = _executable(PHASE6)
+    # P6-FIN through the guarded reporter, and never through Add-Result.
+    assert "Add-Phase6Result 'P6-FIN'" in code
+    assert "Add-Result 'P6-FIN'" not in code, (
+        "P6-FIN bypasses the Phase-6 result guard"
+    )
+    # P6-LDG through the unguarded one, exactly once, so the ledger cannot
+    # suppress its own verdict.
+    assert code.count("Add-Result 'P6-LDG'") == 1
+    assert "Add-Phase6Result 'P6-LDG'" not in code
+    # AND IT IS NOT IN THE REQUIRED SET.
+    required_block = code.split("function Get-Phase6RequiredScenarioIds")[1].split(
+        "\nfunction ")[0]
+    for excluded in ("P6-LDG", "P6-FIN"):
+        assert f"'{excluded}'" not in required_block, (
+            f"{excluded} is a precondition of the verdict that reports on it"
+        )
+    # THE DRIVER EMITS IT LAST, once, after the Phase-6 call and its catch.
+    driver = _text(HARNESS)
+    assert driver.count("Add-Phase6LedgerIntegrityResult") == 1
+    assert (driver.index("Invoke-Phase6GateBScenarios")
+            < driver.index("Add-Phase6LedgerIntegrityResult"))
+    assert (driver.index("Add-Phase5LedgerIntegrityResult")
+            < driver.index("Add-Phase6LedgerIntegrityResult"))
+    # And the scenario function does not emit it itself.
+    assert "Add-Phase6LedgerIntegrityResult" not in code.split(
+        "function Invoke-Phase6GateBScenarios")[1]
+
+
+def test_52_the_artefact_identity_separates_the_two_commits() -> None:
+    """The production baseline is a pinned authority; HEAD is the harness commit."""
+    code = _executable(PHASE6)
+    assert "function Get-Phase6ProductionBaseline" in code
+    baseline_block = code.split("function Get-Phase6ProductionBaseline")[1].split(
+        "\nfunction ")[0]
+    assert f"'{PRODUCTION_BASELINE}'" in baseline_block, (
+        "the harness's pinned production baseline is not this review's baseline"
+    )
+    assert "rev-parse HEAD" not in baseline_block
+
+    block = code.split("$baseline = Get-Phase6ProductionBaseline")[1].split(
+        "Add-Phase6Result 'P6-ART'")[0]
+    assert "production baseline commit" in block
+    assert "runtime harness commit" in block
+    # THE TWO ARE COMPARED, so one cannot be reported as the other.
+    assert "$HarnessCommit -notlike ($baseline + '*')" in block
+
+    # NO GIT MEANS NO PASS, and the arm that says so must actually FAIL. A
+    # check that reports the right message with a $true condition passes while
+    # claiming the opposite.
+    assert "$gitOk" in block
+    assert "git is not available on this machine" in block
+    assert "'the accepted production source can be bound to the baseline' $false" in block, (
+        "the no-git arm of P6-ART does not fail"
+    )
+    assert "'the accepted production source can be bound to the baseline' $true" not in block
+    driver = _text(HARNESS)
+    assert "$harnessCommit = ''" in driver, (
+        "the driver still substitutes a placeholder for a missing commit"
+    )
+    assert "unknown (git was not available" not in driver
+
+    # THE BINDING IS BY BLOB IDENTITY, not by module name.
+    assert "Get-Phase6ProductionModules" in block
+    assert "rev-parse ($baseline + ':' + $relative)" in block
+    assert "the accepted baseline source" in block
+    assert "diff --quiet" in block
+    modules = code.split("function Get-Phase6ProductionModules")[1].split(
+        "\nfunction ")[0]
+    for name in ("modSimContract", "modSimRng", "modSimSample", "modSimEngine",
+                 "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport"):
+        assert f"'{name}'" in modules, name
+
+
+def test_53_the_pinned_baseline_really_is_unchanged_production() -> None:
+    """The pin is only worth what the tree behind it is."""
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", PRODUCTION_BASELINE, "--",
+         "pccm/src/vba", "pccm/spec"],
+        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
+    ).stdout.decode("utf-8").strip()
+    assert changed == "", f"production authority moved: {changed}"
+    frozen = json.loads(
+        re.search(r"FROZEN_SOURCE = (\{.*?\})",
+                  _text(PCCM_ROOT / "tests" / "test_phase6_integration_source.py"),
+                  re.S).group(1).replace("'", '"').replace(",\n}", "\n}")
+    )
+    import hashlib
+    for name in ("modSimContract", "modSimRng", "modSimSample", "modSimEngine",
+                 "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport"):
+        path = SRC_VBA / f"{name}.bas"
+        if name == "modSimContract":
+            continue  # generated, pinned by test_48's siblings
+        assert name in frozen, name
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert actual == frozen[name], f"{name}.bas moved: {actual}"

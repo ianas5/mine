@@ -448,14 +448,20 @@ try {
     # THE SOURCE COMMIT, CAPTURED NOT ASSUMED. Every runtime result has to be
     # attributable to a named baseline. If git is unavailable on the target the
     # fact is recorded as unknown rather than guessed.
-    $sourceCommit = 'unknown (git was not available on this machine)'
+    # THE RUNTIME HARNESS COMMIT, and it is only that. The accepted PRODUCTION
+    # BASELINE is a separate, pinned identity that P6-ART reports beside it;
+    # HEAD on a runtime tree is always the harness commit, never the baseline.
+    # If git is unavailable the value stays empty and P6-ART FAILS on it: a
+    # runtime result with no attributable revision is weaker evidence, and
+    # recording "unknown" while passing would pass that weakness off as strength.
+    $harnessCommit = ''
     try {
         $described = & git -C $pccmRoot rev-parse HEAD 2>$null
         if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($described)) {
-            $sourceCommit = [string]$described
+            $harnessCommit = [string]$described
         }
     } catch {
-        Add-Note ('The source commit could not be read: ' + (Format-Err $_))
+        Add-Note ('The runtime harness commit could not be read: ' + (Format-Err $_))
     }
 
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("pccm-phase4-" + (Get-Date).ToString('yyyyMMdd-HHmmss'))
@@ -3010,7 +3016,7 @@ if ($buildOk) {
         Invoke-Phase6GateBScenarios -Excel $excel -Workbook $wb -Manifest $manifest `
             -Inspection $inspection -Cases $cases -SimInspection $simInspection `
             -GateBCases $simCases -ScriptDir $scriptDir -TempRoot $tempRoot `
-            -Results $results -SourceCommit $sourceCommit
+            -Results $results -HarnessCommit $harnessCommit -PccmRoot $pccmRoot
     } catch {
         Add-Phase6Result 'P6-XX' 'Driving the Phase-6 Step-13 scenarios' 'FAIL' (Format-Err $_)
     }
@@ -3100,6 +3106,13 @@ Add-Phase4FinalCompletenessResult -Results $results
 # on one - the first result stands, but the run does not pass.
 Add-Phase5LedgerIntegrityResult
 
+# --- Phase-6 result-ledger integrity ---------------------------------------
+# LAST, and for the same reason P5-LDG is last. P6-FIN is a guarded Phase-6
+# result, so a duplicate attempt at it is only visible to a verdict emitted
+# after it. Emitted once, through the unguarded Add-Result, so the ledger can
+# never suppress the result that reports on the ledger.
+Add-Phase6LedgerIntegrityResult
+
 Write-Host ''
 Write-Host 'Shutdown ledger' -ForegroundColor Cyan
 Write-Host '---------------'
@@ -3128,14 +3141,22 @@ Write-Host ''
 $phase4Ids = Get-Phase4RequiredScenarioIds
 $phase4Passed = @($results | Where-Object { $phase4Ids -contains $_.Id -and $_.Status -eq 'PASS' })
 Write-Host ("  Phase-4 structural matrix: {0} of {1}" -f $phase4Passed.Count, $phase4Ids.Count)
-Write-Host ("  Phase-5 Gate-B scenarios : {0} reported" -f `
-    (@($results | Where-Object { $_.Id -like 'P5-*' })).Count)
+$phase5Results = @($results | Where-Object { $_.Id -like 'P5-*' })
+$phase6Results = @($results | Where-Object { $_.Id -like 'P6-*' })
+Write-Host ("  Phase-5 Gate-B scenarios : {0} reported, {1} passed" -f `
+    $phase5Results.Count,
+    (@($phase5Results | Where-Object { $_.Status -eq 'PASS' })).Count)
+# NAMED, NOT INFERRED. A Step-13 run that finished by claiming only a
+# Phase-4 / Phase-5 test had run would understate what the log is evidence of.
+Write-Host ("  Phase-6 Gate-B scenarios : {0} reported, {1} passed" -f `
+    $phase6Results.Count,
+    (@($phase6Results | Where-Object { $_.Status -eq 'PASS' })).Count)
 Write-Host ''
 if ($failed.Count -eq 0) {
-    Write-Host 'PHASE-4 / PHASE-5 FUNCTIONAL TEST: ALL CHECKS PASSED' -ForegroundColor Green
+    Write-Host 'PHASE-4 / PHASE-5 / PHASE-6 FUNCTIONAL TEST: ALL CHECKS PASSED' -ForegroundColor Green
     Write-Host ''
     exit 0
 }
-Write-Host ("PHASE-4 / PHASE-5 FUNCTIONAL TEST FAILED: " + (($failed | ForEach-Object { $_.Id }) -join ', ')) -ForegroundColor Red
+Write-Host ("PHASE-4 / PHASE-5 / PHASE-6 FUNCTIONAL TEST FAILED: " + (($failed | ForEach-Object { $_.Id }) -join ', ')) -ForegroundColor Red
 Write-Host ''
 exit 1

@@ -40,7 +40,11 @@ through without a PowerShell edit.
     powershell -ExecutionPolicy Bypass -File .\phase4_functional_test.ps1
 
 The second command runs the Phase-4 matrix, then the Phase-5 Gate-B block, then
-the Phase-6 Step-13 block, in that order, inside one COM lifecycle. The Phase-6
+the Phase-6 Step-13 block, in that order, inside one COM lifecycle, and finishes
+with the post-session cases `Z`, `Y`, `P5-FIN`, `P5-LDG` and `P6-LDG`. Phase 6
+runs BEFORE that finalisation, so its own prerequisite gate demands only the
+cases that can exist at that point; the full 35/35 Phase-4 demand still belongs
+to `P5-FIN`, after Y and Z. The Phase-6
 block additionally reads `build/phase6_gate_b_inspection.json` (addresses) and
 `build/phase6_gate_b_cases.json` (the accepted oracle's expectations); a
 pure-PowerShell preflight refuses the run before Excel is started if either is

@@ -47,14 +47,48 @@ The Phase-4 matrix and the Phase-5 Gate-B block are **prerequisites**. `P6-PRE`
 reads the results they actually produced and requires every one to be a PASS
 before a single stateful Phase-6 scenario runs.
 
-### The one change to the accepted driver
+The Phase-4 matrix and the Phase-5 Gate-B block are **prerequisites**, and the
+lifecycle topology is the whole difficulty of saying so.
+
+### 2.1 Where Phase 6 sits in the lifecycle, and what can exist there
+
+```
+Invoke-Phase5GateBScenarios -> Invoke-Phase6GateBScenarios ->
+PCCM_AutomationEnd -> workbook close -> Excel quit -> COM release ->
+Z -> Y -> Add-Phase4FinalCompletenessResult (P5-FIN) -> P5-LDG -> P6-LDG
+```
+
+`Y` and `Z` are **post-session** lifecycle assertions, recorded after Excel is
+torn down. `P5-FIN` and `P5-LDG` are post-session for the same reason. So a
+prerequisite gate running inside the live session cannot demand them: the first
+submission demanded the full `Get-Phase4RequiredScenarioIds` set, which includes
+Y and Z, and would therefore have failed `P6-PRE` — and every stateful scenario
+with it — before the first simulation ran. That is the Gate-B Run-1 sequencing
+defect under a Phase-6 name.
+
+`P6-PRE` now uses the **accepted derived partition** the Phase-5 block already
+established for exactly this case: `Get-Phase4PrerequisiteScenarioIds`, which is
+the required set minus the deferred finalisation cases. It proves the partition
+is real (disjoint, covering, no stray), proves the deferral is real (no deferred
+case has already run), and applies the same treatment to Phase 5 — every
+in-session `Get-Phase5ScenarioIds` scenario recorded once and passed, `P5-P4`,
+`P5-CMP` and `P5-M` passed by name, the `P5-ALL`/`P5-XX` failure channels unused,
+and `P5-FIN`/`P5-LDG` **not yet recorded**.
+
+**The 35/35 demand is not weakened.** It is still made, later and by the
+already-accepted `Add-Phase4FinalCompletenessResult` / `P5-FIN`, after Y and Z
+exist. Nothing in Step 13 replaces it, and `test_50` proves the Phase-6 block
+does not claim to.
+
+### 2.2 The one change to the accepted driver
 
 `phase4_functional_test.ps1` gains a dot-source, a preflight call, two artefact
-loads, one commit capture and one scenario call. `test_02` proves no accepted
-line was removed except the required-artefact list, which was extended with the
-two Phase-6 paths, and `test_01` proves `phase5_gate_b_scenarios.ps1`,
-`phase5_gate_b_diagnostics.bas`, `com_lifecycle.ps1` and `build_stage_b.ps1` are
-line-for-line what the production baseline holds.
+loads, one harness-commit capture, one scenario call, one ledger-verdict call and
+a summary that names Phase 6. `test_02` names every accepted line the correction
+may rewrite and refuses any other removal; `test_01` proves
+`phase5_gate_b_scenarios.ps1`, `phase5_gate_b_diagnostics.bas`,
+`com_lifecycle.ps1` and `build_stage_b.ps1` are line-for-line what the production
+baseline holds.
 
 ---
 
@@ -139,11 +173,32 @@ accepted composition. `test_27` proves the emitted value equals
 
 For any other model the analytical canonical stream would have to be rebuilt
 field by field in Python, which would be **a second implementation of the
-fingerprint field layout**. It is not done. Those three cases emit no
-fingerprint, and their analytical identity is established at runtime from the
-accepted `phase5_cases.json` expectations that `P5-AN` already drives. `test_46`
-proves the identity is established **before** any simulation value is compared,
-and `test_27` proves exactly one case claims the derivable binding.
+fingerprint field layout**. It is not done, and those three cases emit no
+fingerprint.
+
+**What they do instead is a check, not a note.** The first submission proved only
+that the duration control matched the model and then emitted a note saying
+`P5-AN` had already driven the accepted expectations — a statement about a
+different scenario at a different time, which says nothing about the workbook as
+it stands immediately before *this* simulation. Every parity case now
+establishes **current** Phase-5 authority before the run, through the accepted
+comparators rather than a reimplementation:
+
+```
+PCCM_CalculationAttemptResult = SUCCESS
+PCCM_CalculationStatus        = CURRENT
+PCCM_CalculationFingerprint   = PCCM_CurrentInputFingerprint
+Add-Phase5AnalyticalChecks    against that plan case's emitted expectations
+Add-Phase5SuccessStateChecks  against the committed calc_state record
+```
+
+Using the accepted Phase-5 expected outputs is not a second fingerprint
+implementation; it is exactly the current-fixture identity check `P5-AN` is
+already trusted for. The golden case keeps its independent reference-digest
+check **in addition**. `test_46` proves all of it runs before
+`PCCM_RunSimulation` and before the comparison, and that the comparators are not
+inside the golden-case branch; `test_27` proves exactly one case claims the
+derivable binding.
 
 #### Iterations, seed and exactness
 
@@ -168,7 +223,7 @@ in the harness.
 | `P6-BTN` | no shape invokes any Phase-6 procedure | shape `OnAction` |
 | `P6-INIT` | a workbook that has never simulated | `_SimData` cells |
 | `P6-FX1` | the first real `PCCM_RunSimulation`: bank A published, run id 1, FIXED seed recorded | cells |
-| `P6-ORA` | **Excel equals the oracle** — digest, seeds, versions and the full ladder, both measures, all four cases | cells vs corpus |
+| `P6-ORA` | **Excel equals the oracle** — digest, seeds, versions and the full ladder, both measures, all four cases, each preceded by a current-fixture analytical identity check | cells vs corpus |
 | `P6-DET` | the same inputs and seed twice produce the same digest, and it is the oracle's | cells |
 | `P6-FIXED-INERT` | FIXED with `Phase6AfterNoncePersisted` armed still succeeds; counter and F21 untouched | cells |
 | `P6-AU1` | AUTO consumes *m*, persists *m+1*, clears F21 | cells |
@@ -187,7 +242,8 @@ in the harness.
 | `P6-REC5` | corrupted counter → REFUSED before any allocation | cells |
 | `P6-RIDMAX` | run-ID exhaustion refuses before allocation, and the captured id is restored exactly | cells |
 | `P6-AXIS` | one attempt-result string does not encode the allocation classification | the persisted facts above |
-| `P6-LDG` / `P6-FIN` | one result per ID; nothing skipped | ledger |
+| `P6-FIN` | one result per functional ID, all PASS, nothing skipped, fixtures all restored | ledger, guarded |
+| `P6-LDG` | no scenario ID was recorded twice | ledger, emitted last by the driver |
 
 ### 4.1 `P6-BANK` claims nothing that PowerShell cannot see
 
@@ -228,14 +284,71 @@ the existing counter already reads *m+1*; `REC2` chooses *m* = counter; `REC3`
 chooses an *m* the existing counter already disagrees with. No second cell is
 corrupted to manufacture a state.
 
-### 4.4 Restoration is part of the scenario
+### 4.4 Restoration is reached on every path, and a failure is fail-closed
 
-Every fixture-writing scenario follows one policy: **capture the typed original
-→ write → verify the write took → run → capture POST evidence BEFORE cleanup →
-restore → verify the restoration is exact.** The restoration check goes into the
-same checklist the scenario's PASS/FAIL is computed from, so a scenario whose
-restoration cannot be verified **FAILS**. It is never a note. `test_38` and
-`test_39` pin both halves, and mutations 37, 38 and 39 require refusal.
+Every fixture-writing scenario follows one policy: **capture the typed original →
+mark it written → write → verify the write took → run → capture POST evidence
+BEFORE cleanup → restore → verify the restoration is exact.**
+
+**The restore lives in a `finally`, and that is the correction.** The first
+submission put it on the success path only, so any exception after the fixture
+write — a COM raise from `Application.Run`, a state capture, an assertion helper,
+evidence formatting — jumped straight to `catch` and left the modified `F21` or
+Last Run ID in the workbook, with every later scenario running against it.
+Proving a restore *call exists* is not proving it is *reached*.
+
+Three further details carry weight:
+
+* the fixture is marked written **before** the assignment, because a COM write
+  that raises may still have changed the cell;
+* `Restore-Phase6CellFixture` never throws — a raising write or read-back becomes
+  a **failed check**, so cleanup cannot replace the original scenario failure
+  with its own story, and the original is re-added to the checklist afterwards;
+* if the restoration cannot be **verified**, `Set-Phase6Contaminated` latches a
+  harness-integrity flag. Every remaining stateful scenario then records
+  `FAIL / not attempted` instead of running, and `P6-FIN` fails on the flag.
+  Lifecycle and finalisation still run: the point is to stop making claims about
+  behaviour, not to stop reporting. Behavioural evidence from a state the harness
+  put there is worse than none, because it looks like evidence.
+
+`test_38`, `test_38b`, `test_38c` and `test_39` pin the design; mutations 37,
+37b–37f, 38, 38b, 38c and 39 require refusal of every weakening, including the
+submitted success-path-only shape.
+
+### 4.5 Completeness and the ledger, in that order
+
+`P6-FIN` is emitted through the **guarded** `Add-Phase6Result`, so a duplicate
+attempt at it is a recorded violation. `P6-LDG` is emitted by the **driver**,
+last of all, through the unguarded `Add-Result`, so the ledger can see that
+duplicate and can never suppress the result that reports on the ledger.
+
+Neither is a member of the functional set `P6-FIN` verifies: making the ledger's
+verdict a precondition of the completeness verdict that precedes it is the
+circular ordering Round 4A removed from Phase 5, and reproducing it here would be
+fail-open in the same way.
+
+### 4.6 Two commits, and they are not the same commit
+
+`P6-ART` reports the **production baseline** — a pinned review authority,
+`bc7949b`, checked against the Python `PRODUCTION_BASELINE` by `test_52` — and
+the **runtime harness commit**, `git rev-parse HEAD`, separately and by name. The
+first submission passed HEAD in as `SourceCommit` and printed it as the
+production baseline, which conflated the two identities the authorisation
+requires to stay distinct.
+
+The source binding is **by blob identity, not by module name**. That a compiled
+project contains a module called `modSimReport` says nothing about whose
+`modSimReport` it is, so each accepted Phase-6 production module's blob id in the
+runtime checkout is compared against the same path at the baseline
+(`git rev-parse <baseline>:pccm/src/vba/<module>.bas`), alongside
+`git diff --quiet <baseline> -- pccm/src pccm/spec`. git computes both sides under
+identical attribute rules, so no line-ending or encoding difference can
+masquerade as a match.
+
+**No git means no pass.** If git is unavailable the harness commit stays empty
+and `P6-ART` FAILS. A runtime result with no attributable revision is weaker
+evidence, and recording "unknown" while passing would hand that weakness on as
+though it were strength.
 
 ---
 
@@ -258,13 +371,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **48** controls, in six groups:
+`tests/test_phase6_gate_b_harness_source.py` — **56** controls, in six groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **67** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **92** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -280,6 +393,21 @@ digests, a drifting iteration count, a broken plan-case binding, a lost ladder,
 an admitted tolerance, a second golden claim, drifting bounds, a disturbed
 vocabulary, a degenerate fixture, a hand edit, an emptied corpus, corrupted JSON
 in either artefact, and a parity comparison that runs before its identity check.
+
+The harness review added a further group, one per blocker: the live prerequisite
+restored to the full Y/Z-inclusive Phase-4 set, a deferral check neutered to an
+empty list, the post-session Phase-5 results demanded early; the fixture unwind
+moved out of its `finally` onto the success path, the written flag set only after
+a successful write, a failed restoration that stops latching contamination, a
+latch that does not latch, a guard that lets a stateful scenario run on
+contaminated state, a raising restore that escapes, a cleanup that discards the
+original failure; `P6-FIN` bypassing the guard, `P6-LDG` made a precondition of
+it, the ledger verdict emitted first, the driver dropping it or emitting it early;
+HEAD reported as the production baseline, a drifting baseline pin, artefact
+identity passing without git, the source binding falling back to module names, a
+placeholder commit; the non-golden identity reduced to a note, made conditional
+on the golden case, or its currency check defanged; and the final log omitting
+the Phase-6 summary.
 
 ---
 

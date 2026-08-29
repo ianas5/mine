@@ -58,9 +58,19 @@ function Get-Phase6ScenarioIds {
     )
 }
 
-# The IDs a complete Step-13 run must produce a result for. P6-SU, P6-XX and
-# P6-ORA-per-case are not here: P6-SU/P6-XX are failure channels that a clean
-# run never reaches, and P6-ORA is one ID covering every parity case.
+# The FUNCTIONAL scenarios a complete Step-13 run must produce a result for.
+#
+# THREE THINGS ARE DELIBERATELY ABSENT, and the absences are what keep the
+# finalisation acyclic:
+#
+#   P6-FIN  is the completeness verdict OVER this set. Requiring itself would
+#           make the verdict its own precondition.
+#   P6-LDG  is the ledger's verdict over every guarded result INCLUDING P6-FIN,
+#           so it is emitted last, through the UNGUARDED reporter, and must not
+#           be something P6-FIN needs in order to exist. That circularity is the
+#           Round-4A defect the Phase-5 block already removed: a ledger verdict
+#           emitted before the last guarded result cannot see a duplicate of it.
+#   P6-SU / P6-XX  are failure channels a clean run never reaches.
 function Get-Phase6RequiredScenarioIds {
     return @(
         'P6-PRE', 'P6-ART', 'P6-CMP', 'P6-M', 'P6-API', 'P6-BTN', 'P6-INIT',
@@ -70,9 +80,33 @@ function Get-Phase6RequiredScenarioIds {
         'P6-RF1', 'P6-PRESERVE',
         'P6-FP1', 'P6-FP2', 'P6-FP3',
         'P6-REC1', 'P6-REC2', 'P6-REC3', 'P6-REC4', 'P6-REC5',
-        'P6-RIDMAX', 'P6-AXIS',
-        'P6-LDG'
+        'P6-RIDMAX', 'P6-AXIS'
     )
+}
+
+# The scenarios that WRITE machine state directly, and therefore the ones whose
+# restoration failure can contaminate everything after them.
+function Get-Phase6FixtureScenarioIds {
+    return @('P6-REC1', 'P6-REC2', 'P6-REC3', 'P6-REC4', 'P6-REC5', 'P6-RIDMAX')
+}
+
+# The accepted production baseline this harness is evidence infrastructure FOR.
+#
+# A CHECKED COPY, not a second authority: `tests/test_phase6_gate_b_harness_source.py`
+# pins this string against its own `PRODUCTION_BASELINE`, and that test proves
+# `git diff <baseline> -- pccm/src pccm/spec` is empty for the tree being
+# reviewed. It is NOT `git rev-parse HEAD`: HEAD on the runtime tree is the
+# RUNTIME-HARNESS commit, and reporting it as the production baseline would
+# conflate the two identities the Step-13 authorisation requires to be distinct.
+function Get-Phase6ProductionBaseline { return 'bc7949b' }
+
+# The accepted Phase-6 production modules whose bytes must be the baseline's.
+# Named, never counted, and never inferred from the compiled project: that a
+# project CONTAINS a module named modSimReport is a different fact from the
+# modSimReport source being exercised being the accepted one.
+function Get-Phase6ProductionModules {
+    return @('modSimContract', 'modSimRng', 'modSimSample', 'modSimEngine',
+             'modSimStats', 'modSimFingerprint', 'modSimNonce', 'modSimReport')
 }
 
 # The three accepted Phase-6 failpoint stage names.
@@ -106,6 +140,46 @@ function Reset-Phase6ResultLedger {
     $script:Phase6RecordedIds = New-Object System.Collections.ArrayList
     $script:Phase6LedgerViolations = New-Object System.Collections.ArrayList
     $script:Phase6LedgerReported = $false
+}
+
+# ===========================================================================
+# FIXTURE INTEGRITY - the fail-closed flag
+# ===========================================================================
+# Several scenarios write `_SimData` machine cells directly, and every one of
+# them shares ONE workbook with everything that follows. If a fixture cannot be
+# restored - because the write itself raised, because the read-back disagrees,
+# or because an exception carried the scenario past its restore - then the
+# workbook is no longer the workbook the later scenarios assume.
+#
+# CONTINUING WOULD PRODUCE BEHAVIOURAL EVIDENCE FROM A STATE THE HARNESS PUT
+# THERE. That is worse than no evidence, because it looks like evidence. So the
+# flag latches false, and every remaining STATEFUL scenario records
+# FAIL / not attempted instead of running. Lifecycle and finalisation still run:
+# the point is to stop making claims about behaviour, not to stop reporting.
+$script:Phase6FixtureIntegrity = $true
+$script:Phase6ContaminationReason = ''
+
+function Reset-Phase6FixtureIntegrity {
+    $script:Phase6FixtureIntegrity = $true
+    $script:Phase6ContaminationReason = ''
+}
+
+function Test-Phase6FixtureIntegrity { return $script:Phase6FixtureIntegrity }
+
+function Get-Phase6ContaminationReason { return $script:Phase6ContaminationReason }
+
+function Set-Phase6Contaminated {
+    param([string]$Reason)
+    # LATCHING. The first contamination is the one that matters; a later
+    # scenario cannot clear it by succeeding at something else.
+    if ($script:Phase6FixtureIntegrity) {
+        $script:Phase6FixtureIntegrity = $false
+        $script:Phase6ContaminationReason = $Reason
+        Add-Note ('P6 HARNESS STATE CONTAMINATED: ' + $Reason +
+                  '. Every remaining stateful Step-13 scenario will record ' +
+                  'FAIL / not attempted rather than produce behavioural evidence ' +
+                  'from a workbook this harness could not restore.')
+    }
 }
 
 function Test-Phase6ResultRecorded {
@@ -604,9 +678,12 @@ function New-Phase6CellFixture {
 
 function Set-Phase6CellFixture {
     param($Workbook, $Inspection, $Fixture, $Value, $List, [string]$Label)
+    # MARKED BEFORE THE WRITE, not after. A COM assignment that raises may still
+    # have changed the cell, and a flag set only on success would let exactly
+    # that case escape restoration.
+    $Fixture.Written = $true
     Set-SimRawCell -Workbook $Workbook -Inspection $Inspection `
         -Address $Fixture.Address -Value $Value
-    $Fixture.Written = $true
     $readBack = Get-SimRawCell -Workbook $Workbook -Inspection $Inspection `
         -Address $Fixture.Address
     return (Add-Check $List ($Label + ': the fixture at ' + $Fixture.Address + ' took') `
@@ -616,15 +693,59 @@ function Set-Phase6CellFixture {
 
 function Restore-Phase6CellFixture {
     param($Workbook, $Inspection, $Fixture, $List, [string]$Label)
+    # BEST EFFORT, AND IT NEVER THROWS. This runs from a `finally`, on the
+    # exception path as well as the success path, so a raise here would replace
+    # the original scenario failure with a cleanup failure and lose the thing
+    # that actually went wrong. A write or read-back that raises becomes a FAILED
+    # CHECK, which is what the caller needs in order to latch contamination.
     if (-not $Fixture.Written) { return $true }
-    Set-SimRawCell -Workbook $Workbook -Inspection $Inspection `
-        -Address $Fixture.Address -Value $Fixture.Original
-    $readBack = Get-SimRawCell -Workbook $Workbook -Inspection $Inspection `
-        -Address $Fixture.Address
+    $readBack = $null
+    $failure = ''
+    try {
+        Set-SimRawCell -Workbook $Workbook -Inspection $Inspection `
+            -Address $Fixture.Address -Value $Fixture.Original
+        $readBack = Get-SimRawCell -Workbook $Workbook -Inspection $Inspection `
+            -Address $Fixture.Address
+    } catch {
+        $failure = Format-Phase6Err $_
+    }
+    if (-not [string]::IsNullOrEmpty($failure)) {
+        return (Add-Check $List ($Label + ': ' + $Fixture.Address + ' is restored exactly') `
+            $false ('restoration raised: ' + $failure))
+    }
     return (Add-Check $List ($Label + ': ' + $Fixture.Address + ' is restored exactly') `
         (Test-SimSameValue -A $readBack -B $Fixture.Original) `
         ('original ' + (Format-SimValue $Fixture.Original) + ', restored ' +
          (Format-SimValue $readBack)))
+}
+
+# THE ONE PLACE A FIXTURE IS UNWOUND, and it is always reached.
+#
+# Every direct machine-state write goes through this on the way out - success
+# path, assertion-failure path and exception path alike - because a fixture that
+# is not restored is not a failed scenario, it is a corrupted workbook for
+# everything after it. If the restoration cannot be VERIFIED, the harness latches
+# contaminated and the remaining stateful scenarios stop producing behavioural
+# evidence rather than producing untrustworthy evidence.
+function Complete-Phase6Fixture {
+    param($Workbook, $Inspection, $Fixture, $List, [string]$Label)
+    if (-not $Fixture.Written) { return $true }
+    $restored = $false
+    try {
+        $restored = Restore-Phase6CellFixture -Workbook $Workbook -Inspection $Inspection `
+            -Fixture $Fixture -List $List -Label $Label
+    } catch {
+        # Restore-Phase6CellFixture is written not to throw; this is the belt
+        # for the braces, and it still records rather than swallowing.
+        $null = Add-Check $List ($Label + ': ' + $Fixture.Address + ' is restored exactly') `
+            $false ('restoration raised outside the helper: ' + (Format-Phase6Err $_))
+        $restored = $false
+    }
+    if (-not $restored) {
+        Set-Phase6Contaminated -Reason ($Label + ' could not restore ' + $Fixture.Address +
+            ' (original ' + (Format-SimValue $Fixture.Original) + ')')
+    }
+    return $restored
 }
 
 # ===========================================================================
@@ -710,10 +831,12 @@ function Invoke-Phase6GateBScenarios {
     param(
         $Excel, $Workbook, $Manifest, $Inspection, $Cases,
         $SimInspection, $GateBCases,
-        [string]$ScriptDir, [string]$TempRoot, $Results, [string]$SourceCommit
+        [string]$ScriptDir, [string]$TempRoot, $Results,
+        [string]$HarnessCommit, [string]$PccmRoot
     )
 
     Reset-Phase6ResultLedger
+    Reset-Phase6FixtureIntegrity
     $failpoints = Get-Phase6FailpointNames
     $banks = @($SimInspection.publication.bank_labels)
     $controls = $SimInspection.controls
@@ -756,34 +879,113 @@ function Invoke-Phase6GateBScenarios {
     # P6-PRE. The prerequisite evidence, and the fail-closed path.
     # -------------------------------------------------------------------
     # A Phase-6 result on a workbook whose Phase-4 structural matrix or Phase-5
-    # calculation evidence is not intact would be evidence of nothing. If either
-    # is broken, the stateful scenarios are NOT executed - but they are not
-    # silently skipped either: every required ID is recorded exactly once as a
-    # FAIL naming the unavailable prerequisite, and P6-FIN fails with them.
+    # calculation evidence is not intact would be evidence of nothing.
+    #
+    # THE LIFECYCLE TOPOLOGY IS THE WHOLE DIFFICULTY, and getting it wrong once
+    # already cost Gate-B Run 1. This block executes INSIDE the live automation
+    # session:
+    #
+    #   Invoke-Phase5GateBScenarios -> Invoke-Phase6GateBScenarios ->
+    #   PCCM_AutomationEnd -> workbook close -> Excel quit -> COM release ->
+    #   Z -> Y -> Add-Phase4FinalCompletenessResult (P5-FIN) -> P5-LDG -> P6-LDG
+    #
+    # So Y and Z CANNOT have been recorded yet. Demanding the full 35-case
+    # Phase-4 set here would be unsatisfiable by construction, and the accepted
+    # Phase-5 source already derived the partition for exactly this reason:
+    # `Get-Phase4PrerequisiteScenarioIds` is the required set MINUS the deferred
+    # finalisation cases. This block uses that same derived partition, proves the
+    # partition is real, and proves the deferral is real.
+    #
+    # THE 35/35 DEMAND IS NOT WEAKENED. It is still made, later and by the
+    # already-accepted `Add-Phase4FinalCompletenessResult` / P5-FIN, after Y and
+    # Z exist. Nothing here replaces it.
     $prerequisiteOk = $false
     try {
         $list = New-Checklist
         $seen = @($Results | ForEach-Object { $_.Id })
-        $phase4Required = @(Get-Phase4RequiredScenarioIds)
-        $phase4Failed = @($Results | Where-Object {
-            ($phase4Required -contains $_.Id) -and ($_.Status -ne 'PASS') })
-        $null = Add-Check $list 'the Phase-4 structural matrix recorded every required scenario' `
-            (@($phase4Required | Where-Object { $seen -notcontains $_ }).Count -eq 0) `
-            ('missing: ' + (@($phase4Required | Where-Object { $seen -notcontains $_ }) -join ', '))
-        $null = Add-Check $list 'no required Phase-4 scenario failed or was skipped' `
-            ($phase4Failed.Count -eq 0) `
-            ('not PASS: ' + (@($phase4Failed | ForEach-Object { $_.Id + '=' + $_.Status }) -join ', '))
 
+        $phase4Required = @(Get-Phase4RequiredScenarioIds)
+        $phase4Deferred = @(Get-Phase4FinalizationScenarioIds)
+        $phase4Prerequisite = @(Get-Phase4PrerequisiteScenarioIds)
+
+        # THE PARTITION IS PROVED, NOT ASSERTED IN PROSE. Nothing may leave the
+        # matrix by being called a lifecycle case.
+        $overlap = @($phase4Prerequisite | Where-Object { $phase4Deferred -contains $_ })
+        $stray = @($phase4Deferred | Where-Object { $phase4Required -notcontains $_ })
+        $null = Add-Check $list `
+            'the prerequisite and deferred Phase-4 sets partition the whole matrix' `
+            ((($phase4Prerequisite.Count + $phase4Deferred.Count) -eq $phase4Required.Count) -and
+             ($overlap.Count -eq 0) -and ($stray.Count -eq 0)) `
+            ('prerequisite ' + $phase4Prerequisite.Count + ' + deferred ' +
+             $phase4Deferred.Count + ' vs matrix ' + $phase4Required.Count +
+             '; overlap: ' + ($overlap -join ', ') + '; not in matrix: ' + ($stray -join ', '))
+
+        # AND THE DEFERRAL IS REAL. If a deferred case had already run it was
+        # never a post-session case, and excluding it here would be a hole.
+        $earlyDeferred = @($phase4Deferred | Where-Object { $seen -contains $_ })
+        $null = Add-Check $list `
+            ('the post-session Phase-4 cases have not run yet, so Phase 6 runs before them: ' +
+             ($phase4Deferred -join ', ')) `
+            ($earlyDeferred.Count -eq 0) ('already recorded: ' + ($earlyDeferred -join ', '))
+
+        $missing = @($phase4Prerequisite | Where-Object { $seen -notcontains $_ })
+        $null = Add-Check $list `
+            ('all ' + $phase4Prerequisite.Count + ' pre-Phase-6 Phase-4 scenarios reported a result') `
+            ($missing.Count -eq 0) ('missing: ' + ($missing -join ', '))
+        $phase4 = @($Results | Where-Object { $phase4Prerequisite -contains $_.Id })
+        $phase4Failed = @($phase4 | Where-Object { $_.Status -eq 'FAIL' })
+        $phase4Skipped = @($phase4 | Where-Object { $_.Status -eq 'SKIP' })
+        $phase4Passed = @($phase4 | Where-Object { $_.Status -eq 'PASS' })
+        $null = Add-Check $list 'the Phase-4 prerequisite matrix has 0 FAIL' `
+            ($phase4Failed.Count -eq 0) `
+            ((@($phase4Failed | ForEach-Object { $_.Id })) -join ', ')
+        $null = Add-Check $list 'the Phase-4 prerequisite matrix has 0 SKIP' `
+            ($phase4Skipped.Count -eq 0) `
+            ((@($phase4Skipped | ForEach-Object { $_.Id })) -join ', ')
+        $null = Add-Check $list `
+            ('the Phase-4 prerequisite matrix is ' + $phase4Prerequisite.Count + '/' +
+             $phase4Prerequisite.Count + ' PASS') `
+            ($phase4Passed.Count -eq $phase4Prerequisite.Count) `
+            ('passed ' + $phase4Passed.Count + ' of ' + $phase4Prerequisite.Count)
+
+        # --- and the Phase-5 block, on exactly the same terms ---------------
+        # `Get-Phase5ScenarioIds` is the DERIVED in-session Phase-5 set: it does
+        # not contain P5-FIN or P5-LDG, which are themselves post-session, so
+        # demanding it here is satisfiable at this point in the lifecycle.
+        $phase5Required = @(Get-Phase5ScenarioIds)
+        $phase5Missing = @($phase5Required | Where-Object { $seen -notcontains $_ })
+        $null = Add-Check $list `
+            ('all ' + $phase5Required.Count + ' in-session Phase-5 scenarios reported a result') `
+            ($phase5Missing.Count -eq 0) ('missing: ' + ($phase5Missing -join ', '))
         $phase5 = @($Results | Where-Object { $_.Id -like 'P5-*' })
-        $phase5Failed = @($phase5 | Where-Object { $_.Status -ne 'PASS' })
-        $null = Add-Check $list 'the Phase-5 Gate-B block recorded results' `
-            ($phase5.Count -gt 0) ('Phase-5 results: ' + $phase5.Count)
-        $null = Add-Check $list 'no Phase-5 Gate-B scenario failed or was skipped' `
-            ($phase5Failed.Count -eq 0) `
-            ('not PASS: ' + (@($phase5Failed | ForEach-Object { $_.Id + '=' + $_.Status }) -join ', '))
+        $phase5NotPassed = @($phase5 | Where-Object { $_.Status -ne 'PASS' })
+        $null = Add-Check $list 'no recorded Phase-5 result failed or was skipped' `
+            ($phase5NotPassed.Count -eq 0) `
+            ('not PASS: ' + (@($phase5NotPassed | ForEach-Object { $_.Id + '=' + $_.Status }) -join ', '))
+        foreach ($id in @('P5-P4', 'P5-CMP', 'P5-M')) {
+            $found = @($Results | Where-Object { $_.Id -eq $id })
+            $null = Add-Check $list ('the Phase-5 scenario ' + $id + ' ran exactly once and passed') `
+                (($found.Count -eq 1) -and ($found[0].Status -eq 'PASS')) `
+                ('results: ' + $found.Count)
+        }
+        # P5-ALL exists ONLY when Phase 5 refused to run, and P5-XX only when
+        # driving it threw. Either is a Phase-5 failure by another name.
+        foreach ($id in @('P5-ALL', 'P5-XX')) {
+            $null = Add-Check $list ('the Phase-5 failure channel ' + $id + ' was not used') `
+                ($seen -notcontains $id)
+        }
+        # AND THE PHASE-5 DEFERRAL IS REAL TOO, for the same reason as Y and Z.
+        foreach ($id in @('P5-FIN', 'P5-LDG')) {
+            $null = Add-Check $list `
+                ('the post-session Phase-5 result ' + $id + ' has not run yet') `
+                ($seen -notcontains $id)
+        }
 
         $prerequisiteOk = Test-ChecklistOk $list
-        Add-Phase6Result 'P6-PRE' 'Phase-4 and Phase-5 evidence is intact' `
+        Add-Phase6Result 'P6-PRE' `
+            ('Phase-4 (' + $phase4Prerequisite.Count + '/' + $phase4Prerequisite.Count +
+             ', ' + ($phase4Deferred -join ', ') + ' deferred to P5-FIN) and Phase-5 ' +
+             'evidence is intact') `
             $(if ($prerequisiteOk) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
         $prerequisiteOk = $false
@@ -794,14 +996,14 @@ function Invoke-Phase6GateBScenarios {
     if (-not $prerequisiteOk) {
         foreach ($id in (Get-Phase6RequiredScenarioIds)) {
             if (Test-Phase6ResultRecorded -Id $id) { continue }
-            if ($id -eq 'P6-LDG') { continue }
             Add-Phase6Result $id 'not attempted' 'FAIL' `
                 ('the Phase-4/Phase-5 prerequisite evidence is not intact, so this ' +
                  'scenario was not executed. A Phase-6 result on this workbook would ' +
                  'be evidence of nothing, and "not attempted" must be as loud as "failed".')
         }
-        Add-Phase6LedgerIntegrityResult
-        Add-Result 'P6-FIN' 'Phase-6 completeness' 'FAIL' `
+        # P6-FIN through the GUARDED reporter, like every other Phase-6 result.
+        # P6-LDG is emitted by the driver, last of all.
+        Add-Phase6Result 'P6-FIN' 'Phase-6 completeness' 'FAIL' `
             'the Step-13 matrix was not executed: its prerequisite evidence is not intact'
         return
     }
@@ -809,16 +1011,79 @@ function Invoke-Phase6GateBScenarios {
     # -------------------------------------------------------------------
     # P6-ART. Runtime artefact identity.
     # -------------------------------------------------------------------
-    # Every result below is attributable to a named baseline or it is worth
-    # nothing. The executed .xlsm hash is CAPTURED, never asserted: Excel's own
-    # save is not claimed to be byte-reproducible, and no control in this project
-    # proves that it is. The binding to production authority rests on the
-    # stronger facts - the Stage-A input, the manifest, and the persisted
-    # VBProject inventory that P5-M already proved.
+    # TWO COMMITS, AND THEY ARE NOT THE SAME COMMIT.
+    #
+    #   production baseline    the accepted source this harness is evidence
+    #                          infrastructure FOR. A pinned review authority.
+    #   runtime harness commit whatever HEAD is on the machine that ran this.
+    #
+    # Reporting HEAD as the production baseline would conflate them, and HEAD on
+    # an authorised runtime tree is always the harness commit, never the
+    # baseline. Both are printed, separately and by name.
+    #
+    # THE BINDING IS BY BLOB IDENTITY, NOT BY MODULE NAME. That the compiled
+    # project contains a module called modSimReport says nothing about whose
+    # modSimReport it is. Each accepted Phase-6 production module's blob id in
+    # the runtime checkout is compared against the SAME PATH at the baseline, so
+    # a source that moved is caught even if the name did not. git computes both
+    # sides under identical attribute rules, so no line-ending or encoding
+    # difference can masquerade as a match or a mismatch.
+    #
+    # NO GIT MEANS NO PASS. A runtime result with no attributable source
+    # revision is weaker evidence, and recording "unknown" while passing would
+    # hand that weakness on as though it were strength.
+    #
+    # The executed .xlsm hash is CAPTURED, never asserted: Excel's own save is
+    # not claimed to be byte-reproducible and no control in this project proves
+    # that it is.
     try {
         $list = New-Checklist
         $lines = @()
-        $lines += ('production baseline commit  : ' + $SourceCommit)
+        $baseline = Get-Phase6ProductionBaseline
+        $lines += ('production baseline commit    : ' + $baseline)
+        $lines += ('runtime harness commit (HEAD) : ' + $HarnessCommit)
+
+        $gitOk = (-not [string]::IsNullOrWhiteSpace($HarnessCommit)) -and
+                 ($HarnessCommit -match '^[0-9a-f]{7,40}$')
+        $null = Add-Check $list 'the runtime harness commit was read from git, not guessed' `
+            $gitOk ([string]$HarnessCommit)
+        $null = Add-Check $list 'the harness commit is not being reported as the production baseline' `
+            ($HarnessCommit -notlike ($baseline + '*')) `
+            ('baseline ' + $baseline + ', HEAD ' + [string]$HarnessCommit)
+
+        if ($gitOk) {
+            # THE WHOLE-TREE STATEMENT, from git itself.
+            $null = & git -C $PccmRoot diff --quiet $baseline -- 'pccm/src' 'pccm/spec' 2>$null
+            $treeClean = ($LASTEXITCODE -eq 0)
+            $null = Add-Check $list `
+                ('pccm/src and pccm/spec are unchanged from ' + $baseline) `
+                $treeClean ('git diff --quiet exit code ' + [string]$LASTEXITCODE)
+
+            # AND THE PER-MODULE STATEMENT, blob for blob.
+            foreach ($module in (Get-Phase6ProductionModules)) {
+                $relative = 'pccm/src/vba/' + $module + '.bas'
+                $accepted = ''
+                $current = ''
+                try {
+                    $accepted = [string](& git -C $PccmRoot rev-parse ($baseline + ':' + $relative) 2>$null)
+                    $current = [string](& git -C $PccmRoot rev-parse ('HEAD:' + $relative) 2>$null)
+                } catch {
+                    $accepted = ''
+                    $current = ''
+                }
+                $null = Add-Check $list `
+                    ('the ' + $module + ' source being exercised is the accepted baseline source') `
+                    ((-not [string]::IsNullOrWhiteSpace($accepted)) -and ($current -ceq $accepted)) `
+                    ('baseline blob ' + $accepted + ', runtime blob ' + $current)
+                $lines += ('  ' + $module.PadRight(32) + ' blob ' + $current)
+            }
+        } else {
+            $null = Add-Check $list `
+                'the accepted production source can be bound to the baseline' $false `
+                ('git is not available on this machine, so no runtime result here is ' +
+                 'attributable to a source revision')
+        }
+
         # EVERY ARTEFACT IS HASHED WHERE IT WAS ACTUALLY CONSUMED - the
         # disposable copy the Phase-4 harness made and the bootstrap read - not
         # in build/, so the hashes describe this run rather than the directory
@@ -846,8 +1111,6 @@ function Invoke-Phase6GateBScenarios {
                 $lines += ($item.Label + ': NOT FOUND')
             }
         }
-        $null = Add-Check $list 'the production baseline commit is recorded' `
-            (-not [string]::IsNullOrWhiteSpace($SourceCommit)) $SourceCommit
         $null = Add-Check $list 'the inspection projection states its provenance' `
             (-not [string]::IsNullOrWhiteSpace([string]$SimInspection.provenance.sim_contract_version)) `
             ('sim_contract ' + [string]$SimInspection.provenance.sim_contract_version)
@@ -1131,30 +1394,51 @@ function Invoke-Phase6GateBScenarios {
                 -SuppliedSeed ([double]$GateBCases.supplied_seed) `
                 -Iterations ([int]$GateBCases.iterations)
 
-            # THE ANALYTICAL IDENTITY FIRST. Comparing a simulation before
-            # proving the workbook holds the model the oracle evaluated would
-            # compare two different questions. For the golden case the analytical
-            # digest is independently derivable and is compared outright; for the
-            # others the accepted Phase-5 expectations are the identity.
+            # THE CURRENT ANALYTICAL IDENTITY FIRST, FOR EVERY CASE.
+            #
+            # Comparing a simulation before proving WHICH model produced it
+            # compares two different questions. An earlier scenario having driven
+            # the same plan case is not that proof: what has to be established is
+            # that the workbook, as it stands right now and immediately before
+            # this simulation, holds the model whose oracle result is about to be
+            # compared.
+            #
+            # THE ACCEPTED PHASE-5 MACHINERY DOES THIS ALREADY, so it is reused
+            # rather than reimplemented. `Add-Phase5AnalyticalChecks` compares the
+            # CURRENT `_Calc` snapshot against that plan case's own emitted
+            # expectations, and `Add-Phase5SuccessStateChecks` compares the
+            # committed calc_state record. Using them is not a second fingerprint
+            # implementation - it is exactly the current-fixture identity check
+            # P5-AN is already trusted for.
             $planCase = Get-PlanCase -Id ([int]$case.plan_case_id)
-            $null = Add-Check $list ($label + ': the applied timeline is the model''s') `
-                ([string](Get-NamedValue -Workbook $Workbook `
-                    -DefinedName ([string]$Inspection.inputs.duration_years.defined_name)) -eq
-                 [string]$planCase.model.timeline.duration) `
-                ('model duration ' + [string]$planCase.model.timeline.duration)
+            $calcAttempt = [string]$Excel.Run('PCCM_CalculationAttemptResult')
+            $calcStatus = [string]$Excel.Run('PCCM_CalculationStatus')
+            $calcStored = [string]$Excel.Run('PCCM_CalculationFingerprint')
+            $calcCurrent = [string]$Excel.Run('PCCM_CurrentInputFingerprint')
+            $null = Add-Check $list ($label + ': the fixture calculation succeeded') `
+                ($calcAttempt -ceq 'SUCCESS') ([char]39 + $calcAttempt + [char]39)
+            $null = Add-Check $list ($label + ': the calculation status is CURRENT') `
+                ($calcStatus -ceq 'CURRENT') ([char]39 + $calcStatus + [char]39)
+            $null = Add-Check $list `
+                ($label + ': the stored analytical fingerprint IS the current one') `
+                ((-not [string]::IsNullOrEmpty($calcCurrent)) -and ($calcStored -ceq $calcCurrent)) `
+                ('stored ' + [char]39 + $calcStored + [char]39 + ', current ' +
+                 [char]39 + $calcCurrent + [char]39)
+            Add-Phase5AnalyticalChecks -List $list -Workbook $Workbook `
+                -Inspection $Inspection -Case $planCase -Tolerances $Cases.tolerances `
+                -Label ($label + ' analytical')
+            Add-Phase5SuccessStateChecks -List $list -Excel $Excel -Workbook $Workbook `
+                -Inspection $Inspection -Case $planCase -Cases $Cases `
+                -Label ($label + ' calc_state')
             if ([bool]$case.analytical_identity.fingerprint_independently_derivable) {
-                $storedFingerprint = [string]$Excel.Run('PCCM_CalculationFingerprint')
+                # AND, FOR THE ONE CASE WHERE IT IS DERIVABLE, the independent
+                # reference digest as well. This is additional to the checks
+                # above, never a substitute for them.
                 $null = Add-Check $list `
                     ($label + ': the calculation fingerprint equals the accepted reference') `
-                    ($storedFingerprint -ceq [string]$case.expected_exact.calculation_fingerprint) `
+                    ($calcStored -ceq [string]$case.expected_exact.calculation_fingerprint) `
                     ('oracle ' + [string]$case.expected_exact.calculation_fingerprint +
-                     ', workbook ' + [char]39 + $storedFingerprint + [char]39)
-            } else {
-                Add-Note ($label + ': no independently derivable analytical fingerprint. ' +
-                          'Rebuilding this model''s canonical stream here would be a second ' +
-                          'implementation of the fingerprint field layout, so the analytical ' +
-                          'identity for this case is the accepted phase5_cases.json ' +
-                          'expectations that P5-AN already drives.')
+                     ', workbook ' + [char]39 + $calcStored + [char]39)
             }
 
             $activeBefore = Get-Phase6ActiveBank `
@@ -1839,13 +2123,31 @@ function Invoke-Phase6GateBScenarios {
     function Invoke-Phase6RecoveryScenario {
         param([string]$Id, [string]$Name, [string]$Address, $FixtureValue,
               [scriptblock]$Assert, [switch]$SecondAttempt)
+
+        # FAIL-CLOSED ON A CONTAMINATED WORKBOOK. If an earlier fixture could not
+        # be restored, this scenario would be describing a state the harness put
+        # there, so it is not run and says so.
+        if (-not (Test-Phase6FixtureIntegrity)) {
+            Add-Phase6Result $Id $Name 'FAIL' `
+                ('not attempted: the harness could not restore an earlier fixture, so ' +
+                 'this workbook is no longer trustworthy for behavioural evidence. ' +
+                 (Get-Phase6ContaminationReason))
+            return
+        }
+
+        $list = New-Checklist
+        $fixture = $null
+        $evidence = ''
+        $scenarioFailure = ''
         try {
-            $list = New-Checklist
             $null = Set-Phase6Fixture -PlanCaseId ([int]$goldenCase.plan_case_id) `
                 -SuppliedSeed $null -Iterations ([int]$GateBCases.iterations)
 
             $fixture = New-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
                 -Address $Address
+            # THE FLAG IS SET BY Set-Phase6CellFixture ITSELF, before the
+            # verification, so a write that took but failed its read-back is
+            # still unwound.
             $null = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
                 -Fixture $fixture -Value $FixtureValue -List $list -Label $Id
 
@@ -1872,19 +2174,28 @@ function Invoke-Phase6GateBScenarios {
             }
 
             & $Assert $list $before $after $announced $afterSecond $secondAnnounced
-
-            # RESTORATION IS PART OF THE SCENARIO, NOT AN AFTERTHOUGHT. A
-            # scenario whose restoration cannot be verified FAILS: everything
-            # after it would otherwise be running on contaminated state.
-            $null = Restore-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
-                -Fixture $fixture -List $list -Label $Id
-
-            Add-Phase6Result $Id $Name `
-                $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) `
-                ((Format-Checklist $list) + "`r`n" + $evidence)
         } catch {
-            Add-Phase6Result $Id $Name 'FAIL' (Format-Phase6Err $_)
+            # THE ORIGINAL FAILURE IS PRESERVED. Cleanup runs next and must not
+            # replace this with its own story.
+            $scenarioFailure = Format-Phase6Err $_
+        } finally {
+            # RESTORATION IS REACHED ON EVERY PATH. An exception between the
+            # fixture write and the restore is exactly the case that would
+            # otherwise leave a modified F21 or counter in the workbook and let
+            # every later scenario run against it.
+            if ($null -ne $fixture) {
+                $null = Complete-Phase6Fixture -Workbook $Workbook -Inspection $SimInspection `
+                    -Fixture $fixture -List $list -Label $Id
+            }
         }
+
+        if (-not [string]::IsNullOrEmpty($scenarioFailure)) {
+            $null = Add-Check $list ($Id + ': the scenario ran to completion') $false `
+                $scenarioFailure
+        }
+        Add-Phase6Result $Id $Name `
+            $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) `
+            ((Format-Checklist $list) + $(if ($evidence) { "`r`n" + $evidence } else { '' }))
     }
 
     $pendingCell = Get-SimPendingCell -Inspection $SimInspection
@@ -2037,74 +2348,97 @@ function Invoke-Phase6GateBScenarios {
     # WRITING A LARGE NUMBER IS NOT THE PROOF. The proof is the production
     # endpoint's REFUSAL and the untouched allocation and publication state that
     # comes with it.
-    try {
+    #
+    # It writes a machine cell, so it carries the same fail-closed contract as
+    # the recovery scenarios: restoration on every path, and contamination
+    # latched if the restoration cannot be verified.
+    if (-not (Test-Phase6FixtureIntegrity)) {
+        Add-Phase6Result 'P6-RIDMAX' 'Run-ID exhaustion refuses before allocation' 'FAIL' `
+            ('not attempted: the harness could not restore an earlier fixture, so this ' +
+             'workbook is no longer trustworthy for behavioural evidence. ' +
+             (Get-Phase6ContaminationReason))
+    } else {
         $list = New-Checklist
-        $null = Set-Phase6Fixture -PlanCaseId ([int]$goldenCase.plan_case_id) `
-            -SuppliedSeed $null -Iterations ([int]$GateBCases.iterations)
+        $fixture = $null
+        $evidence = ''
+        $scenarioFailure = ''
+        try {
+            $null = Set-Phase6Fixture -PlanCaseId ([int]$goldenCase.plan_case_id) `
+                -SuppliedSeed $null -Iterations ([int]$GateBCases.iterations)
 
-        $fixture = New-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
-            -Address $runIdCell
-        $null = Add-Check $list 'the original Last Run ID was captured before anything was written' `
-            ($null -ne $fixture) (Format-SimValue $fixture.Original)
-        $null = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
-            -Fixture $fixture -Value ([double]$bounds.run_id_maximum) -List $list -Label 'P6-RIDMAX'
+            $fixture = New-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
+                -Address $runIdCell
+            $null = Add-Check $list `
+                'the original Last Run ID was captured before anything was written' `
+                ($null -ne $fixture) (Format-SimValue $fixture.Original)
+            $null = Set-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
+                -Fixture $fixture -Value ([double]$bounds.run_id_maximum) -List $list `
+                -Label 'P6-RIDMAX'
 
-        $before = Get-Phase6State -Workbook $Workbook -Inspection $SimInspection
-        $announced = Invoke-Phase6Simulation -Excel $Excel
-        $after = Get-Phase6State -Workbook $Workbook -Inspection $SimInspection
+            $before = Get-Phase6State -Workbook $Workbook -Inspection $SimInspection
+            $announced = Invoke-Phase6Simulation -Excel $Excel
+            $after = Get-Phase6State -Workbook $Workbook -Inspection $SimInspection
 
-        $null = Add-Check $list 'the endpoint refused' `
-            (Test-Phase6Announced -Result $announced -Kind 'FAIL') $announced
-        $null = Add-Check $list 'the attempt result is REFUSED' `
-            (Test-SimExactText -Actual $after['shared']['last_attempt_result'] -Expected 'REFUSED') `
-            (Format-SimValue $after['shared']['last_attempt_result'])
-        $null = Add-Check $list 'the refusal happened BEFORE AUTO allocation: the counter did not move' `
-            (Test-SimSameValue -A $before['shared']['next_auto_nonce'] `
-                -B $after['shared']['next_auto_nonce']) `
-            ('was ' + (Format-SimValue $before['shared']['next_auto_nonce']) + ', now ' +
-             (Format-SimValue $after['shared']['next_auto_nonce']))
-        $null = Add-Check $list 'no AUTO nonce identity was selected' `
-            (Test-SimBlank -Value $after['shared']['last_attempt_auto_nonce']) `
-            (Format-SimValue $after['shared']['last_attempt_auto_nonce'])
-        $null = Add-Check $list 'the sidecar was not written' `
-            (Test-SimSameValue -A $before['pending_auto_nonce'] -B $after['pending_auto_nonce']) `
-            (Format-SimValue $after['pending_auto_nonce'])
-        $null = Add-Check $list 'the active bank did not move' `
-            (Test-SimSameValue -A $before['shared']['active_bank'] -B $after['shared']['active_bank']) `
-            (Format-SimValue $after['shared']['active_bank'])
-        foreach ($bank in $banks) {
-            Add-SimUnchangedChecks -List $list -Before $before[('bank_' + $bank)] `
-                -After $after[('bank_' + $bank)] `
-                -Label ('run-ID exhaustion left bank ' + $bank)
+            # POST EVIDENCE IS CAPTURED BEFORE CLEANUP, ALWAYS.
+            $evidence = (Format-Phase6State -State $before -Label 'before') + "`r`n" +
+                        '    fixture: ' + $runIdCell + ' = ' + [string]$bounds.run_id_maximum + "`r`n" +
+                        '    announcement: ' + $announced + "`r`n" +
+                        (Format-Phase6State -State $after -Label 'after')
+
+            $null = Add-Check $list 'the endpoint refused' `
+                (Test-Phase6Announced -Result $announced -Kind 'FAIL') $announced
+            $null = Add-Check $list 'the attempt result is REFUSED' `
+                (Test-SimExactText -Actual $after['shared']['last_attempt_result'] -Expected 'REFUSED') `
+                (Format-SimValue $after['shared']['last_attempt_result'])
+            $null = Add-Check $list `
+                'the refusal happened BEFORE AUTO allocation: the counter did not move' `
+                (Test-SimSameValue -A $before['shared']['next_auto_nonce'] `
+                    -B $after['shared']['next_auto_nonce']) `
+                ('was ' + (Format-SimValue $before['shared']['next_auto_nonce']) + ', now ' +
+                 (Format-SimValue $after['shared']['next_auto_nonce']))
+            $null = Add-Check $list 'no AUTO nonce identity was selected' `
+                (Test-SimBlank -Value $after['shared']['last_attempt_auto_nonce']) `
+                (Format-SimValue $after['shared']['last_attempt_auto_nonce'])
+            $null = Add-Check $list 'the sidecar was not written' `
+                (Test-SimSameValue -A $before['pending_auto_nonce'] -B $after['pending_auto_nonce']) `
+                (Format-SimValue $after['pending_auto_nonce'])
+            $null = Add-Check $list 'the active bank did not move' `
+                (Test-SimSameValue -A $before['shared']['active_bank'] -B $after['shared']['active_bank']) `
+                (Format-SimValue $after['shared']['active_bank'])
+            foreach ($bank in $banks) {
+                Add-SimUnchangedChecks -List $list -Before $before[('bank_' + $bank)] `
+                    -After $after[('bank_' + $bank)] `
+                    -Label ('run-ID exhaustion left bank ' + $bank)
+            }
+            $null = Add-Check $list 'the run id was not incremented past its maximum' `
+                (Test-SimExactDouble -Actual $after['shared']['last_run_id'] `
+                    -Expected ([double]$bounds.run_id_maximum)) `
+                (Format-SimValue $after['shared']['last_run_id'])
+
+            $null = $axisObservations.Add([pscustomobject]@{
+                Scenario      = 'P6-RIDMAX'
+                What          = 'run-ID exhaustion, refused before allocation'
+                AttemptResult = $after['shared']['last_attempt_result']
+                CounterMoved  = (-not (Test-SimSameValue -A $before['shared']['next_auto_nonce'] `
+                    -B $after['shared']['next_auto_nonce']))
+                AttemptNonce  = $after['shared']['last_attempt_auto_nonce']
+            })
+        } catch {
+            $scenarioFailure = Format-Phase6Err $_
+        } finally {
+            if ($null -ne $fixture) {
+                $null = Complete-Phase6Fixture -Workbook $Workbook -Inspection $SimInspection `
+                    -Fixture $fixture -List $list -Label 'P6-RIDMAX'
+            }
         }
-        $null = Add-Check $list 'the run id was not incremented past its maximum' `
-            (Test-SimExactDouble -Actual $after['shared']['last_run_id'] `
-                -Expected ([double]$bounds.run_id_maximum)) `
-            (Format-SimValue $after['shared']['last_run_id'])
 
-        $evidence = (Format-Phase6State -State $before -Label 'before') + "`r`n" +
-                    '    fixture: ' + $runIdCell + ' = ' + [string]$bounds.run_id_maximum + "`r`n" +
-                    '    announcement: ' + $announced + "`r`n" +
-                    (Format-Phase6State -State $after -Label 'after')
-
-        $null = Restore-Phase6CellFixture -Workbook $Workbook -Inspection $SimInspection `
-            -Fixture $fixture -List $list -Label 'P6-RIDMAX'
-
-        $null = $axisObservations.Add([pscustomobject]@{
-            Scenario      = 'P6-RIDMAX'
-            What          = 'run-ID exhaustion, refused before allocation'
-            AttemptResult = $after['shared']['last_attempt_result']
-            CounterMoved  = (-not (Test-SimSameValue -A $before['shared']['next_auto_nonce'] `
-                -B $after['shared']['next_auto_nonce']))
-            AttemptNonce  = $after['shared']['last_attempt_auto_nonce']
-        })
-
+        if (-not [string]::IsNullOrEmpty($scenarioFailure)) {
+            $null = Add-Check $list 'P6-RIDMAX: the scenario ran to completion' $false `
+                $scenarioFailure
+        }
         Add-Phase6Result 'P6-RIDMAX' 'Run-ID exhaustion refuses before allocation' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) `
-            ((Format-Checklist $list) + "`r`n" + $evidence)
-    } catch {
-        Add-Phase6Result 'P6-RIDMAX' 'Run-ID exhaustion refuses before allocation' 'FAIL' `
-            (Format-Phase6Err $_)
+            ((Format-Checklist $list) + $(if ($evidence) { "`r`n" + $evidence } else { '' }))
     }
 
     # -------------------------------------------------------------------
@@ -2167,10 +2501,20 @@ function Invoke-Phase6GateBScenarios {
     }
 
     # -------------------------------------------------------------------
-    # P6-LDG and P6-FIN. Completeness, fail-closed.
+    # P6-FIN. Completeness, through the GUARDED reporter.
     # -------------------------------------------------------------------
-    Add-Phase6LedgerIntegrityResult
-
+    # THE ORDER IS THE ROUND-4A CORRECTION, reused rather than reinvented.
+    #
+    #   every functional P6 scenario
+    #     -> P6-FIN, through Add-Phase6Result, so it is itself a guarded result
+    #        and a duplicate attempt at it is a recorded violation
+    #     -> P6-LDG, emitted by the DRIVER through the unguarded Add-Result,
+    #        last of all, so the ledger can see a duplicate P6-FIN and can never
+    #        suppress the result that reports on the ledger.
+    #
+    # P6-LDG is deliberately NOT in the set P6-FIN requires: making the ledger's
+    # verdict a precondition of the completeness verdict that precedes it is the
+    # circular ordering this correction removes.
     try {
         $list = New-Checklist
         $recorded = @($Results | Where-Object { $_.Id -like 'P6-*' })
@@ -2178,16 +2522,21 @@ function Invoke-Phase6GateBScenarios {
             $matching = @($recorded | Where-Object { $_.Id -eq $id })
             $null = Add-Check $list ('the required scenario ' + $id + ' has exactly one result') `
                 ($matching.Count -eq 1) ('results for ' + $id + ': ' + $matching.Count)
+            $null = Add-Check $list ('the required scenario ' + $id + ' passed') `
+                (($matching.Count -eq 1) -and ($matching[0].Status -eq 'PASS')) `
+                $(if ($matching.Count -eq 1) { 'status ' + $matching[0].Status } else { 'no result' })
         }
-        $notPassed = @($recorded | Where-Object { $_.Status -ne 'PASS' })
-        $null = Add-Check $list 'every recorded Phase-6 scenario passed' `
-            ($notPassed.Count -eq 0) `
-            ('not PASS: ' + (@($notPassed | ForEach-Object { $_.Id + '=' + $_.Status }) -join ', '))
-        $null = Add-Check $list 'no Phase-6 scenario was skipped' `
-            (@($recorded | Where-Object { $_.Status -eq 'SKIP' }).Count -eq 0)
-        Add-Result 'P6-FIN' 'Phase-6 completeness' `
+        $skipped = @($recorded | Where-Object { $_.Status -eq 'SKIP' })
+        $null = Add-Check $list 'no Phase-6 scenario was skipped' ($skipped.Count -eq 0) `
+            ((@($skipped | ForEach-Object { $_.Id })) -join ', ')
+        # AND THE WORKBOOK WAS STILL TRUSTWORTHY AT THE END. A run that
+        # contaminated its own fixture state does not finish green even if every
+        # scenario before the contamination passed.
+        $null = Add-Check $list 'the harness restored every fixture it wrote' `
+            (Test-Phase6FixtureIntegrity) (Get-Phase6ContaminationReason)
+        Add-Phase6Result 'P6-FIN' 'Phase-6 completeness' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {
-        Add-Result 'P6-FIN' 'Phase-6 completeness' 'FAIL' (Format-Phase6Err $_)
+        Add-Phase6Result 'P6-FIN' 'Phase-6 completeness' 'FAIL' (Format-Phase6Err $_)
     }
 }
