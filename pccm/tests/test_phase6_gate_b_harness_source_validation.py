@@ -1257,3 +1257,32 @@ def test_108_the_selector_stops_failing_closed_on_no_match() -> None:
         "    }\n",
         "")
     _control("test_62", phase6=damaged)
+
+
+def test_109_the_documented_command_would_overwrite_run_1s_log() -> None:
+    """An aborted attempt is evidence. Run 1 is what found the ConvertFrom-Json
+    defect, and a command that redirects over its log destroys the record."""
+    doc_path = conformance.PCCM_ROOT / "docs" / "phase6_step13_gate_b.md"
+    original = doc_path.read_text(encoding="utf-8")
+    damaged = original.replace(
+        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run2.log",
+        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run1.log", 1)
+    assert damaged != original
+    saved = conformance.PCCM_ROOT
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="pccm-step13-doc-") as name:
+        root = Path(name)
+        (root / "docs").mkdir()
+        (root / "docs" / "phase6_step13_gate_b.md").write_text(
+            damaged, encoding="utf-8")
+        conformance.PCCM_ROOT = root
+        try:
+            refused = False
+            try:
+                conformance.test_63_the_documented_log_name_does_not_overwrite_a_recorded_run()
+            except AssertionError as error:
+                refused = True
+                assert "overwritten" in str(error), error
+        finally:
+            conformance.PCCM_ROOT = saved
+    assert refused, "the mutation survived: the run ledger control is vacuous"

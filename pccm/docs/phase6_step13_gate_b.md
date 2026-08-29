@@ -531,13 +531,19 @@ One command set, one working directory — the repository root:
 python pccm\builder\build_stage_a.py
 powershell -ExecutionPolicy Bypass -File .\pccm\bootstrap\windows\build_stage_b.ps1
 powershell -ExecutionPolicy Bypass -File .\pccm\bootstrap\windows\phase4_functional_test.ps1 `
-  *> .\pccm\bootstrap\windows\phase6_gate_b_run1.log
+  *> .\pccm\bootstrap\windows\phase6_gate_b_run2.log
 ```
 
 The third command runs everything: the Phase-6 block is dot-sourced into the
 Phase-4 harness and runs inside its single COM lifecycle, against the disposable
 `%TEMP%` copy. There is no separate Phase-6 script to invoke and no second Excel
 instance.
+
+**The log name carries the run number**, and it is `run2` because Run 1 already
+happened — see the ledger in §8. Writing to `phase6_gate_b_run1.log` would
+overwrite the evidence of an attempt that was made, and an aborted attempt is
+evidence: it is what identified the defect this document's §3.1 records. Each
+authorised run gets its own log, and no earlier one is renamed or overwritten.
 
 **Prerequisite.** Importing VBA requires *Trust access to the VBA project object
 model*. The scripts report it and stop if it is missing. They do not enable it,
@@ -546,7 +552,18 @@ Location — the same refusal that has held since the first readiness run.
 
 ---
 
-## 8. Windows Step-13 Run 1 — aborted before Excel
+## 8. Windows run ledger
+
+| Run | Source | Outcome |
+|---|---|---|
+| **Run 1** | `6365aeb` | **ABORTED PRE-EXCEL at `P6-PRE`.** Excel was never started. |
+| **Run 2** | `849d6bf` | authorised; not yet made |
+
+An aborted attempt is not nothing, and it is not renamed away when a later run
+succeeds: Run 1 is what found the defect §3.1 records, and it stays in this
+ledger under its own number. Run 2 is the next attempt, not a replacement.
+
+### 8.1 Run 1 — aborted before Excel
 
 **Not runtime evidence.** No Excel process was started, no VBA executed, and no
 simulation behaviour was exercised. What Run 1 produced is a defect report about

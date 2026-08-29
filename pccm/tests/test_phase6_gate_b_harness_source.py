@@ -1569,3 +1569,33 @@ def test_62_the_selector_consumes_entries_and_fails_closed() -> None:
         assert f"'{label}'" not in selector, (
             f"the selector spells the bank label {label}"
         )
+
+
+def test_63_the_documented_log_name_does_not_overwrite_a_recorded_run() -> None:
+    """An aborted attempt is evidence, and a command that clobbers it is a bug.
+
+    Run 1 was attempted and aborted before Excel; it is what found the
+    `ConvertFrom-Json` defect. The documented command redirects into a log named
+    for the run, so the number in that name has to be the next one the ledger
+    does not already record.
+    """
+    doc = _text(PCCM_ROOT / "docs" / "phase6_step13_gate_b.md")
+    recorded = set(re.findall(r"\|\s*\*\*Run (\d+)\*\*\s*\|", doc))
+    assert recorded, "the run ledger records no runs"
+    # THE COMMAND, not the prose. The paragraph beside it names run1 on purpose,
+    # to say what must not be written; scoping to the redirect is what keeps the
+    # explanation and the instruction from being confused for each other.
+    commands = [line for line in doc.splitlines() if "*>" in line]
+    logs = set()
+    for line in commands:
+        logs.update(re.findall(r"phase6_gate_b_run(\d+)\.log", line))
+    assert len(logs) == 1, f"the documented command names {len(logs)} run logs: {logs}"
+    documented = int(logs.pop())
+    assert documented == max(int(number) for number in recorded), (
+        f"the command writes run{documented}.log while the ledger records runs "
+        f"{sorted(int(n) for n in recorded)}; an earlier run's evidence would be "
+        "overwritten"
+    )
+    # AND THE LEDGER SAYS WHICH RUN IS STILL TO BE MADE.
+    assert "not yet made" in doc
+    assert "ABORTED PRE-EXCEL" in doc
