@@ -80,8 +80,8 @@ FROZEN_SOURCE = {
     "modSimEngine": "f1283fe7d5d2ffcc5345dab9a00f68d3685b787563d104f50a886c5ed409abab",
     "modSimStats": "98bd21b227047d04e6847e554e027b339cf01dfb1112c1539a9e334966233be0",
     "modSimFingerprint": "9e6ad972fe59ead9e34c7d65b807dd0f2ca1cb1b29bfa71b377a4eb8f65cdfda",
-    "modSimNonce": "6e0ed05c90c09144fb1f7ecbab2eca03828ddb9b40c7711222db9084b1c83ef3",
-    "modSimReport": "49b7602a51a4d5995f77182cb8c26aa53eceec4be5152477665ff9f4644d2b06",
+    "modSimNonce": "b4e2d71ec2c73311f5f15c37d6ddffc35b06eae0b3335c4f99d937f08b28da00",
+    "modSimReport": "e26693f00a956a379bae8e6f39bdd7fae90ffffc1c7b50326056d52808830671",
     "modCalcFingerprint": "2efbb30c6f915c04b9c07adec07e25e11f4b5bd2b98e3efa818631dc510ce847",
     "modCalcReport": "8252b935b256b1abad9b26ca6b1d90c92c5e0d7566906308b191cd03dd6a71b3",
 }
@@ -954,3 +954,165 @@ if __name__ == "__main__":
     import pytest
 
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ===========================================================================
+# 17. EVERY CROSS-MODULE CALL IS WELL-FORMED
+# ===========================================================================
+# WHY THIS EXISTS, AND WHY IT IS GENERAL.
+#
+# Windows Runtime Run 2 reached Excel, and `Debug > Compile VBAProject` on the
+# retained workbook produced a real compiler diagnostic:
+#
+#     Compile error: Argument not optional
+#
+# on `modWorkbook.IsWholeInRange(raw, CDbl(...), CDbl(...))` inside
+# `modSimNonce.ReadPending`. The declaration takes FOUR arguments, the last a
+# `ByRef Result As Double`, and five Phase-6 call sites passed three. VBA
+# compiles on demand, so nothing before that point had ever required those
+# procedure bodies to compile - and the whole Phase-5 and Phase-6 behavioural
+# matrix was blocked behind it.
+#
+# THE CONTROLS THAT EXISTED PROVED THE CALL WAS PRESENT, never that it was
+# well-formed - `assert "IsWholeInRange" in body`. Pinning the two corrected
+# lines as text would close those two and leave the class open, so this walks
+# EVERY qualified cross-module call in the hand-written production source and
+# checks its argument count against the callee's own declaration.
+_CALL_DECLARATION = re.compile(
+    r"^\s*(?:Public|Private)\s+(?:Sub|Function)\s+(\w+)\s*\((.*?)\)\s*(?:As\s+\w+)?\s*$"
+)
+
+
+def _joined(module: VbaModule) -> str:
+    """Comment- and string-stripped code with VBA line continuations joined.
+
+    A call wrapped across `_` lines is one call, and counting its arguments per
+    physical line would count some of them twice and some not at all.
+    """
+    return re.sub(r"\s+_\r?\n\s*", " ", module.code)
+
+
+def _split_top_level(text: str) -> list[str]:
+    if not text.strip():
+        return []
+    parts, depth, buf = [], 0, ""
+    for char in text:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append(buf)
+            buf = ""
+        else:
+            buf += char
+    parts.append(buf)
+    return [part for part in parts if part.strip()]
+
+
+def _declared_arity() -> dict[tuple[str, str], tuple[int, int | None]]:
+    """(module, procedure) -> (required, maximum). `None` maximum means ParamArray."""
+    found: dict[tuple[str, str], tuple[int, int | None]] = {}
+    for name, module in _modules().items():
+        for line in _joined(module).splitlines():
+            match = _CALL_DECLARATION.match(line)
+            if not match:
+                continue
+            params = _split_top_level(match.group(2))
+            required = sum(
+                1 for param in params
+                if not re.match(r"\s*(Optional|ParamArray)\b", param, re.IGNORECASE)
+            )
+            variadic = any(
+                re.match(r"\s*ParamArray\b", param, re.IGNORECASE) for param in params
+            )
+            found[(name, match.group(1))] = (required, None if variadic else len(params))
+    return found
+
+
+def _qualified_calls() -> list[tuple[str, str, str, int, str]]:
+    """Every `modX.Proc(...)` call site: (caller, module, procedure, given, line)."""
+    calls = []
+    for caller, module in sorted(_modules().items()):
+        for line in _joined(module).splitlines():
+            if _CALL_DECLARATION.match(line):
+                continue
+            for target, procedure in re.findall(r"\b(mod\w+)\.(\w+)\s*\(", line):
+                opened = re.search(rf"\b{target}\.{procedure}\s*\((.*)", line)
+                depth, buf, args = 1, "", []
+                for char in opened.group(1):
+                    if char == "(":
+                        depth += 1
+                    elif char == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    if depth == 1 and char == ",":
+                        args.append(buf)
+                        buf = ""
+                    else:
+                        buf += char
+                if buf.strip():
+                    args.append(buf)
+                calls.append((caller, target, procedure,
+                              len([a for a in args if a.strip()]), line.strip()))
+    return calls
+
+
+def test_35_every_qualified_cross_module_call_supplies_its_arguments() -> None:
+    """`Argument not optional` is a COMPILE error, and VBA compiles on demand.
+
+    A procedure body nothing has reached yet can hold a fatal call for as long
+    as nothing reaches it, which is exactly how five malformed calls survived
+    every static control up to Runtime Run 2.
+    """
+    declared = _declared_arity()
+    assert len(declared) > 200, len(declared)
+    calls = _qualified_calls()
+    assert len(calls) > 300, len(calls)
+
+    problems = []
+    checked = 0
+    for caller, target, procedure, given, line in calls:
+        arity = declared.get((target, procedure))
+        if arity is None:
+            continue  # a generated module or a VBA/Excel member, not ours to type
+        required, maximum = arity
+        checked += 1
+        if given < required or (maximum is not None and given > maximum):
+            problems.append(
+                f"{caller}: {target}.{procedure} declares {required}"
+                + (f"..{maximum}" if maximum != required else "")
+                + f" argument(s), {given} given -- {line[:70]}"
+            )
+    assert checked > 300, checked
+    assert not problems, "malformed cross-module calls:\n  " + "\n  ".join(problems)
+
+
+def test_36_the_range_check_helper_keeps_its_out_parameter() -> None:
+    """The signature the five defective calls were written against.
+
+    Pinned in full, and by SHAPE: the fourth parameter is what makes the helper
+    a parse as well as a test, and widening it to Optional would silently make
+    the defective calls legal again while changing what they mean.
+    """
+    declaration = re.search(
+        r"Public Function IsWholeInRange\((.*?)\)\s*As Boolean",
+        re.sub(r"\s+_\r?\n\s*", " ", _module("modWorkbook").code),
+    )
+    assert declaration, "modWorkbook no longer declares IsWholeInRange"
+    params = [param.strip() for param in _split_top_level(declaration.group(1))]
+    assert params == [
+        "ByVal Value As Variant",
+        "ByVal MinValue As Double",
+        "ByVal MaxValue As Double",
+        "ByRef Result As Double",
+    ], params
+
+    # AND EVERY PHASE-6 CALL SUPPLIES ALL FOUR, named here so the report is
+    # about the Phase-6 surface rather than the whole repository.
+    phase6 = [call for call in _qualified_calls()
+              if call[0].startswith("modSim") and call[2] == "IsWholeInRange"]
+    assert len(phase6) == 5, [call[0] for call in phase6]
+    for caller, _target, _procedure, given, line in phase6:
+        assert given == 4, f"{caller}: {given} argument(s) -- {line[:70]}"

@@ -306,7 +306,7 @@ Private Function ResolveIterations(ByRef iterations As Long, ByRef detail As Str
     End If
     raw = modWorkbook.ReadValue(NM_INPUT_MONTE_CARLO_ITERATIONS)
     If Not modWorkbook.IsWholeInRange(raw, CDbl(SIM_MIN_ITERATIONS), _
-                                      CDbl(SIM_MAX_ITERATIONS)) Then
+                                      CDbl(SIM_MAX_ITERATIONS), value) Then
         detail = "simulation: Monte Carlo Iterations must be a whole number between " & _
                  CStr(SIM_MIN_ITERATIONS) & " and " & CStr(SIM_MAX_ITERATIONS)
         Exit Function
@@ -337,7 +337,8 @@ Private Function ResolveSeed(ByRef package As SimRunPackage, ByRef detail As Str
     End If
 
     raw = modWorkbook.ReadValue(NM_INPUT_RANDOM_SEED)
-    If Not modWorkbook.IsWholeInRange(raw, CDbl(SIM_SEED_MIN), CDbl(SIM_SEED_MAX)) Then
+    If Not modWorkbook.IsWholeInRange(raw, CDbl(SIM_SEED_MIN), CDbl(SIM_SEED_MAX), _
+                                      value) Then
         detail = "simulation: Random Seed must be blank for AUTO, or a whole number " & _
                  "between " & CStr(SIM_SEED_MIN) & " and " & CStr(SIM_SEED_MAX)
         Exit Function
@@ -1071,7 +1072,7 @@ Private Function ReadMachineLong(ByVal row As Long, ByVal minValue As Double, _
                                  ByRef detail As String) As Boolean
     Dim raw As Variant, number As Double
     raw = SharedCell(row).Value2
-    If Not modWorkbook.IsWholeInRange(raw, minValue, maxValue) Then
+    If Not modWorkbook.IsWholeInRange(raw, minValue, maxValue, number) Then
         detail = "the stored value is not a whole number in its accepted range"
         Exit Function
     End If

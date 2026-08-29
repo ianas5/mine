@@ -494,7 +494,7 @@ Private Function ReadPending(ByRef value As Long, ByRef present As Boolean, _
         Exit Function
     End If
     If Not modWorkbook.IsWholeInRange(raw, CDbl(SIM_NONCE_FIRST_VALID), _
-                                      CDbl(SIM_NONCE_LAST_VALID)) Then
+                                      CDbl(SIM_NONCE_LAST_VALID), number) Then
         detail = "the pending marker is not a whole nonce in its accepted range"
         Exit Function
     End If
@@ -527,7 +527,7 @@ Private Function ReadShared(ByVal row As Long, ByVal minValue As Double, _
     raw = SharedCell(row).Value2
     On Error GoTo 0
 
-    If Not modWorkbook.IsWholeInRange(raw, minValue, maxValue) Then
+    If Not modWorkbook.IsWholeInRange(raw, minValue, maxValue, number) Then
         detail = "the stored value is not a whole number in its accepted range"
         Exit Function
     End If

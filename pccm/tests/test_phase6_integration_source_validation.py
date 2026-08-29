@@ -773,3 +773,94 @@ def test_63_the_registry_still_describes_the_rejected_carrier() -> None:
         "It interprets a prior AUTO_NONCE_INDETERMINATE attempt.")
     _control("test_30", spec={"structure_contract.yaml": damaged})
 
+
+
+# ===========================================================================
+# THE RUN-2 COMPILE DEFECT
+# ===========================================================================
+# `Argument not optional`, raised by the real VBE on the retained Run-2
+# workbook. Five Phase-6 call sites passed three arguments to a four-argument
+# helper, and VBA's compile-on-demand meant nothing had ever required those
+# bodies to compile. The controls that existed proved the call was PRESENT.
+def test_64_read_pending_drops_the_mandatory_result_argument() -> None:
+    """The exact call the compiler stopped on."""
+    damaged = _swap(
+        _NONCE,
+        "    If Not modWorkbook.IsWholeInRange(raw, CDbl(SIM_NONCE_FIRST_VALID), _\n"
+        "                                      CDbl(SIM_NONCE_LAST_VALID), number) Then\n",
+        "    If Not modWorkbook.IsWholeInRange(raw, CDbl(SIM_NONCE_FIRST_VALID), _\n"
+        "                                      CDbl(SIM_NONCE_LAST_VALID)) Then\n")
+    _control("test_35", vba={NONCE_BAS: damaged})
+
+
+def test_65_read_shared_drops_the_mandatory_result_argument() -> None:
+    """The second malformed call in the same module."""
+    damaged = _swap(
+        _NONCE,
+        "    If Not modWorkbook.IsWholeInRange(raw, minValue, maxValue, number) Then\n",
+        "    If Not modWorkbook.IsWholeInRange(raw, minValue, maxValue) Then\n")
+    _control("test_35", vba={NONCE_BAS: damaged})
+
+
+def test_66_the_iteration_control_drops_the_result_argument() -> None:
+    """One of the three the Windows report did not know about."""
+    damaged = _swap(
+        _REPORT,
+        "    If Not modWorkbook.IsWholeInRange(raw, CDbl(SIM_MIN_ITERATIONS), _\n"
+        "                                      CDbl(SIM_MAX_ITERATIONS), value) Then\n",
+        "    If Not modWorkbook.IsWholeInRange(raw, CDbl(SIM_MIN_ITERATIONS), _\n"
+        "                                      CDbl(SIM_MAX_ITERATIONS)) Then\n")
+    _control("test_35", vba={REPORT_BAS: damaged})
+
+
+def test_67_the_seed_control_drops_the_result_argument() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If Not modWorkbook.IsWholeInRange(raw, CDbl(SIM_SEED_MIN), CDbl(SIM_SEED_MAX), _\n"
+        "                                      value) Then\n",
+        "    If Not modWorkbook.IsWholeInRange(raw, CDbl(SIM_SEED_MIN), CDbl(SIM_SEED_MAX)) Then\n")
+    _control("test_35", vba={REPORT_BAS: damaged})
+
+
+def test_68_the_machine_long_reader_drops_the_result_argument() -> None:
+    damaged = _swap(
+        _REPORT,
+        "    If Not modWorkbook.IsWholeInRange(raw, minValue, maxValue, number) Then\n",
+        "    If Not modWorkbook.IsWholeInRange(raw, minValue, maxValue) Then\n")
+    _control("test_35", vba={REPORT_BAS: damaged})
+
+
+def test_69_the_detector_is_general_not_helper_specific() -> None:
+    """A different helper, a different module, the same class of defect.
+
+    If this only refused IsWholeInRange it would have closed five call sites and
+    left the class open one compiler stop away.
+    """
+    damaged = _swap(
+        _REPORT,
+        "    If Not modWorkbook.TryReadDouble(raw, value) Then\n"
+        "        detail = \"simulation: Monte Carlo Iterations is not a usable number\"\n",
+        "    If Not modWorkbook.TryReadDouble(raw) Then\n"
+        "        detail = \"simulation: Monte Carlo Iterations is not a usable number\"\n")
+    _control("test_35", vba={REPORT_BAS: damaged})
+
+
+def test_70_an_extra_argument_is_refused_too() -> None:
+    """Too many is the same compile error class as too few."""
+    damaged = _swap(
+        _NONCE,
+        "    If Not modWorkbook.IsWholeInRange(raw, minValue, maxValue, number) Then\n",
+        "    If Not modWorkbook.IsWholeInRange(raw, minValue, maxValue, number, 0) Then\n")
+    _control("test_35", vba={NONCE_BAS: damaged})
+
+
+def test_71_the_helper_signature_is_widened_to_hide_the_defect() -> None:
+    """Making the out-parameter Optional would make the defective calls legal
+    again while changing what the helper means."""
+    damaged = _swap(
+        _read(_SRC, "modWorkbook.bas"),
+        "Public Function IsWholeInRange(ByVal Value As Variant, ByVal MinValue As Double, _\n"
+        "                               ByVal MaxValue As Double, ByRef Result As Double) As Boolean\n",
+        "Public Function IsWholeInRange(ByVal Value As Variant, ByVal MinValue As Double, _\n"
+        "                               ByVal MaxValue As Double, Optional ByRef Result As Double) As Boolean\n")
+    _control("test_36", vba={"modWorkbook.bas": damaged})
