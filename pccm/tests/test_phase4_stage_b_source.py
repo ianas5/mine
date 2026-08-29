@@ -68,6 +68,11 @@ HARNESS_PS1 = BOOTSTRAP / "phase4_functional_test.ps1"
 # lifecycle and its reporting, so a helper it defines is defined for the harness
 # and a helper it calls must exist somewhere in this set.
 SCENARIOS_PS1 = BOOTSTRAP / "phase5_gate_b_scenarios.ps1"
+# The Phase-6 Step-13 Gate-B scenarios, dot-sourced on exactly the same terms
+# and into the same scope. Adding it here is not a relaxation: it puts the new
+# file's own call sites UNDER this rule as well, so a helper it invokes and
+# nobody defines fails the Linux build rather than a Windows run.
+PHASE6_SCENARIOS_PS1 = BOOTSTRAP / "phase6_gate_b_scenarios.ps1"
 
 _EMITTED: dict[str, Path] = {}
 
@@ -2006,7 +2011,8 @@ def test_45_every_qualified_vba_call_resolves_to_a_real_procedure() -> None:
 def test_46_every_powershell_helper_invoked_is_defined_somewhere() -> None:
     """A helper removed from com_lifecycle.ps1 must not leave live call sites."""
     defined: set[str] = set()
-    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1, SCENARIOS_PS1):
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1, SCENARIOS_PS1,
+                 PHASE6_SCENARIOS_PS1):
         defined |= set(re.findall(r"^\s*function\s+([\w-]+)", _ps(path), re.MULTILINE))
 
     # Cmdlets and functions provided by PowerShell itself, used deliberately.
@@ -2017,9 +2023,13 @@ def test_46_every_powershell_helper_invoked_is_defined_somewhere() -> None:
         "Select-Object", "Where-Object", "ForEach-Object", "ConvertFrom-Json",
         "Set-StrictMode", "Get-CimInstance", "Out-Null", "Write-Verbose",
         "Sort-Object", "Measure-Object", "Select-String", "Write-Output",
+        # Step 13: the runtime artefact identity scenario hashes the Stage-A
+        # workbook, the executed .xlsm and both Gate-B artefacts.
+        "Get-FileHash",
     }
     problems = []
-    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1, SCENARIOS_PS1):
+    for path in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1, SCENARIOS_PS1,
+                 PHASE6_SCENARIOS_PS1):
         code = _ps_calls(path)
         for name in set(re.findall(r"\b([A-Z][a-z]+-[A-Z][\w]*)\b", code)):
             if name not in defined and name not in builtin:

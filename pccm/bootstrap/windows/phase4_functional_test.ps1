@@ -182,6 +182,11 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # bootstrap it runs, and they report through the same Add-Result. The Phase-4
 # matrix above them is unchanged and stays mandatory.
 . (Join-Path $scriptDir 'phase5_gate_b_scenarios.ps1')
+# THE PHASE-6 STEP-13 SCENARIOS, on the same terms: dot-sourced, one COM
+# lifecycle, one Excel instance, one workbook, reported through the same
+# Add-Result. They run AFTER the Phase-5 block and require both the Phase-4
+# matrix and that block to be intact before they touch anything.
+. (Join-Path $scriptDir 'phase6_gate_b_scenarios.ps1')
 
 $pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
 if ([string]::IsNullOrWhiteSpace($BuildDir)) { $BuildDir = Join-Path $pccmRoot 'build' }
@@ -387,6 +392,28 @@ try {
 }
 
 # ===========================================================================
+# PRE6. Phase-6 artefact preflight, still BEFORE Excel is started
+# ===========================================================================
+# The inspection projection and the parity corpus are the only two authorities
+# the Step-13 scenarios read. An artefact that never arrived, or that lost the
+# keys a comparison consumes, stops the run here - not forty minutes later
+# inside a COM session, and never by quietly comparing nothing.
+try {
+    if (-not (Invoke-Phase6CoveragePreflight -BuildDir $BuildDir)) {
+        Write-Host ''
+        Write-Host 'PHASE-4/5/6 FUNCTIONAL TEST ABORTED before Excel was started:' -ForegroundColor Red
+        Write-Host 'the Phase-6 Gate-B artefacts are missing or incomplete, so the' -ForegroundColor Red
+        Write-Host 'Step-13 scenarios would report coverage they do not have.' -ForegroundColor Red
+        exit 1
+    }
+} catch {
+    Add-Phase6Result 'P6-PRE' 'Phase-6 artefact preflight' 'FAIL' (Format-Err $_)
+    Write-Host ''
+    Write-Host 'PHASE-4/5/6 FUNCTIONAL TEST ABORTED before Excel was started.' -ForegroundColor Red
+    exit 1
+}
+
+# ===========================================================================
 # Prepare a disposable copy of the build
 # ===========================================================================
 $tempRoot   = $null
@@ -401,7 +428,12 @@ try {
     # source for Gate B; phase5_gate_b_inspection.json is the only address one.
     $casesPath = Join-Path $BuildDir 'phase5_cases.json'
     $inspectPath = Join-Path $BuildDir 'phase5_gate_b_inspection.json'
-    foreach ($required in @($manifestPath, $scenarioPath, $casesPath, $inspectPath)) {
+    # The Phase-6 authorities, on exactly the same terms: one address source and
+    # one expected-value source, and nothing in the harness may restate either.
+    $simInspectPath = Join-Path $BuildDir 'phase6_gate_b_inspection.json'
+    $simCasesPath = Join-Path $BuildDir 'phase6_gate_b_cases.json'
+    foreach ($required in @($manifestPath, $scenarioPath, $casesPath, $inspectPath,
+                            $simInspectPath, $simCasesPath)) {
         if (-not (Test-Path -LiteralPath $required)) {
             throw "$required not found. Run the Stage-A build first: python3 pccm/builder/build_stage_a.py"
         }
@@ -410,6 +442,21 @@ try {
     $scenarios = Get-Content -LiteralPath $scenarioPath -Raw | ConvertFrom-Json
     $cases      = Get-Content -LiteralPath $casesPath   -Raw | ConvertFrom-Json
     $inspection = Get-Content -LiteralPath $inspectPath -Raw | ConvertFrom-Json
+    $simInspection = Get-Content -LiteralPath $simInspectPath -Raw | ConvertFrom-Json
+    $simCases      = Get-Content -LiteralPath $simCasesPath   -Raw | ConvertFrom-Json
+
+    # THE SOURCE COMMIT, CAPTURED NOT ASSUMED. Every runtime result has to be
+    # attributable to a named baseline. If git is unavailable on the target the
+    # fact is recorded as unknown rather than guessed.
+    $sourceCommit = 'unknown (git was not available on this machine)'
+    try {
+        $described = & git -C $pccmRoot rev-parse HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($described)) {
+            $sourceCommit = [string]$described
+        }
+    } catch {
+        Add-Note ('The source commit could not be read: ' + (Format-Err $_))
+    }
 
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("pccm-phase4-" + (Get-Date).ToString('yyyyMMdd-HHmmss'))
     $null = New-Item -ItemType Directory -Path $tempRoot -Force
@@ -418,6 +465,8 @@ try {
     Copy-Item -LiteralPath $scenarioPath -Destination $tempRoot
     Copy-Item -LiteralPath $casesPath -Destination $tempRoot
     Copy-Item -LiteralPath $inspectPath -Destination $tempRoot
+    Copy-Item -LiteralPath $simInspectPath -Destination $tempRoot
+    Copy-Item -LiteralPath $simCasesPath -Destination $tempRoot
     Copy-Item -LiteralPath (Join-Path $BuildDir 'vba') -Destination $tempRoot -Recurse
 
     $stageBPath = Join-Path $tempRoot $manifest.stage_b_filename
@@ -2948,6 +2997,22 @@ if ($buildOk) {
         # Through the Phase-5 guard, so a scenario that already recorded a
         # result is not recorded again by this catch-all.
         Add-Phase5Result 'P5-XX' 'Driving the Phase-5 Gate-B scenarios' 'FAIL' (Format-Err $_)
+    }
+
+    # -------------------------------------------------------------------
+    # PHASE 6 - STEP 13
+    # -------------------------------------------------------------------
+    # Same instance, same workbook, same automation session, immediately after
+    # the Phase-5 block and before the Y/Z finalisation scenarios. Its own first
+    # scenario refuses to run anything stateful unless the Phase-4 matrix and the
+    # Phase-5 block are both intact.
+    try {
+        Invoke-Phase6GateBScenarios -Excel $excel -Workbook $wb -Manifest $manifest `
+            -Inspection $inspection -Cases $cases -SimInspection $simInspection `
+            -GateBCases $simCases -ScriptDir $scriptDir -TempRoot $tempRoot `
+            -Results $results -SourceCommit $sourceCommit
+    } catch {
+        Add-Phase6Result 'P6-XX' 'Driving the Phase-6 Step-13 scenarios' 'FAIL' (Format-Err $_)
     }
 
     $excel.Run('PCCM_AutomationEnd') | Out-Null

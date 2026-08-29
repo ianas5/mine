@@ -58,7 +58,12 @@ from pathlib import Path
 from typing import Any
 
 from .contract_loader import InputContract
-from .sim_cases import build_sim_cases
+from .sim_cases import (
+    GATE_B_CASES_FILENAME,
+    build_sim_cases,
+    render_gate_b_cases_json,
+)
+from .sim_inspection import emit_sim_inspection
 from .sim_loader import SimContract
 from .sim_oracle import ITERATIONS_INPUT_KEY, business_minimum_iterations
 from .spec_loader import WorkbookSpec
@@ -104,6 +109,42 @@ def emit_sim_artifacts(
     cases_path = build_dir / "phase6_cases.json"
     cases_path.write_text(render_sim_cases_json(spec, sim, inputs, calc), encoding="utf-8")
     return SimArtifacts(module_path=module_path, cases_path=cases_path)
+
+
+@dataclass(frozen=True)
+class SimGateBArtifacts:
+    """The two Phase-6 Gate-B evidence artefacts, emitted together.
+
+    Deliberately separate from `SimArtifacts`: those two are consumed by the
+    Linux conformance suite, these two exist only so a Windows harness can find
+    cells and compare against the oracle. Neither carries workbook content.
+    """
+
+    inspection_path: Path
+    cases_path: Path
+
+
+def emit_sim_gate_b_artifacts(
+    build_dir: Path,
+    spec: WorkbookSpec,
+    sim: SimContract,
+    inputs: InputContract,
+    calc: Any,
+) -> SimGateBArtifacts:
+    """Write phase6_gate_b_inspection.json and phase6_gate_b_cases.json."""
+    build_dir = Path(build_dir)
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    inspection = emit_sim_inspection(build_dir, sim, inputs)
+
+    cases_path = build_dir / GATE_B_CASES_FILENAME
+    cases_path.write_text(
+        render_gate_b_cases_json(sim, inputs, calc, spec.model["model_version"]),
+        encoding="utf-8",
+    )
+    return SimGateBArtifacts(
+        inspection_path=inspection.path, cases_path=cases_path
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,8 @@ once here, in `com_lifecycle.ps1`.
 | `com_lifecycle.ps1` | The COM ownership policy, dot-sourced by both scripts below. One implementation, so they cannot drift apart. |
 | `build_stage_b.ps1` | `.xlsx` → `.xlsm`: CodeNames, VBA import, buttons, save, reopen in a fresh instance, verify. |
 | `phase4_functional_test.ps1` | Phase-4 functional test matrix A–W, run against a disposable copy. |
+| `phase5_gate_b_scenarios.ps1` | Phase-5 Gate-B scenarios, dot-sourced into the functional test. |
+| `phase6_gate_b_scenarios.ps1` | Phase-6 Step-13 Gate-B scenarios, dot-sourced after the Phase-5 block, inside the same COM lifecycle. **Not yet run.** |
 
 ## Inputs
 
@@ -36,6 +38,13 @@ through without a PowerShell edit.
 
     powershell -ExecutionPolicy Bypass -File .\build_stage_b.ps1
     powershell -ExecutionPolicy Bypass -File .\phase4_functional_test.ps1
+
+The second command runs the Phase-4 matrix, then the Phase-5 Gate-B block, then
+the Phase-6 Step-13 block, in that order, inside one COM lifecycle. The Phase-6
+block additionally reads `build/phase6_gate_b_inspection.json` (addresses) and
+`build/phase6_gate_b_cases.json` (the accepted oracle's expectations); a
+pure-PowerShell preflight refuses the run before Excel is started if either is
+missing or incomplete. **No Phase-6 scenario has been executed.**
 
 The functional test runs the bootstrap itself, against a temporary copy under
 `%TEMP%`, so it never touches `build/`.

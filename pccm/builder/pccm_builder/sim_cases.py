@@ -59,6 +59,7 @@ from .contract_loader import ContractError, InputContract
 from .sim_loader import SimContract
 from .sim_oracle import (
     SimOracleError,
+    business_minimum_iterations,
     contingency_at,
     deterministic_base_of,
     prepare_simulation,
@@ -2420,3 +2421,238 @@ def build_sim_cases(
     }
     validate_corpus(document)
     return document
+
+
+# ===========================================================================
+# THE GATE-B PARITY CORPUS: `build/phase6_gate_b_cases.json`
+# ===========================================================================
+# A SEPARATE ARTEFACT, and deliberately so. `phase6_cases.json` proves the pure
+# kernels against the oracle on Linux. This file exists for one question the
+# Linux suite cannot ask: does the WORKBOOK, driven end to end through
+# PCCM_RunSimulation in real Excel, produce the number the accepted oracle
+# produces for the same model?
+#
+# WHAT BINDS EXCEL TO THE ORACLE. Not "a similar fixture". Each case names an
+# EXISTING Phase-5 plan case by id, and the Windows harness drives that same
+# plan case through the same accepted fixture machinery it already uses for
+# P5-AN. The model is therefore not described twice: `calc_cases.CASES` is the
+# one definition, `phase5_cases.json` carries its accepted analytical
+# expectations, and this file adds only what a simulation adds.
+#
+# THE GOLDEN CASE IS STRONGER THAN THE OTHER THREE, and the difference is
+# stated rather than smoothed over. Plan case 1's model IS the accepted
+# fingerprint reference vector, so its analytical digest is derivable here
+# through `reference_stream` - an authority that is already emitted and already
+# pinned - and its request fingerprint follows from the accepted composition.
+# For any OTHER model the analytical canonical stream would have to be rebuilt
+# field by field, which would be a second implementation of the fingerprint
+# field layout, so no fingerprint is emitted for the other three. Their
+# analytical identity is established from `phase5_cases.json`'s own accepted
+# expectations before any simulation value is compared.
+#
+# WHY FOUR CASES AND NOT ONE. No single existing Gate-B fixture exercises all
+# four sampling mechanisms. Case 1 is Triangular, 6 is Beta-PERT, 7 is Uniform
+# and 8 is a Risk, which is the only fixture family that reaches the Bernoulli
+# occurrence primitive. Rather than invent a fifth fixture, the four existing
+# ones are used as they stand.
+GATE_B_SCHEMA_VERSION = 1
+
+GATE_B_CASES_FILENAME = "phase6_gate_b_cases.json"
+
+GATE_B_ITERATIONS = 1000
+"""The contract's own business minimum, and deliberately the floor.
+
+Every additional iteration is real time in a COM-driven Excel session for no
+extra proof: parity either holds on the first thousand draws or it does not.
+The minimum is asserted against `input_contract.yaml` when the corpus is built,
+never restated as a literal expectation."""
+
+GATE_B_SUPPLIED_SEED = 12345
+"""One of the accepted seed vectors, so the FIXED path starts from a value the
+RNG layer is already proven on."""
+
+# (plan case id, sampling mechanism, is the golden fingerprint reference)
+GATE_B_PARITY_PLAN_CASES: tuple[tuple[int, str, bool], ...] = (
+    (1, "Triangular", True),
+    (6, "Beta-PERT", False),
+    (7, "Uniform", False),
+    (8, "Bernoulli occurrence with Triangular severity", False),
+)
+
+
+def _gate_b_measure(stats) -> dict[str, Any]:
+    """One measure's published ladder, in the rows `_SimData` actually holds."""
+    return {
+        "mean": _n(stats.mean),
+        "sample_standard_deviation": _n(stats.sample_standard_deviation),
+        "minimum": _n(stats.minimum),
+        "maximum": _n(stats.maximum),
+        "quantiles": {label: _n(value) for label, value in stats.percentiles.items()},
+    }
+
+
+def _gate_b_parity_case(
+    sim: SimContract,
+    inputs: InputContract,
+    calc: CalcContract,
+    reference: RngReference,
+    plan_case: dict[str, Any],
+    mechanism: str,
+    golden: bool,
+) -> dict[str, Any]:
+    prepared, calculation = prepare_simulation(
+        reference, sim, inputs, to_model(plan_case["model"]), tolerances_from(calc),
+        effective_seed=GATE_B_SUPPLIED_SEED, iterations=GATE_B_ITERATIONS,
+    )
+    run = run_simulation(reference, prepared)
+    base = deterministic_base_of(calculation)
+
+    expected: dict[str, Any] = {
+        # FIXED mode: the effective seed IS the supplied seed. Emitted rather
+        # than assumed so the harness compares a value it was given.
+        "effective_seed": run.effective_seed,
+        "iterations_run": run.iterations,
+        "rng_version": run.rng_version,
+        "sim_method_version": run.sim_method_version,
+        "result_digest": run.result_digest,
+        "summary": {
+            "nominal": _gate_b_measure(run.summary.nominal),
+            "pv": _gate_b_measure(run.summary.pv),
+        },
+        "deterministic_base": {"nominal": _n(base.nominal), "pv": _n(base.pv)},
+    }
+    if golden:
+        # THE ONE CASE WHOSE ANALYTICAL IDENTITY IS INDEPENDENTLY DERIVABLE.
+        # `reference_stream` builds plan case 1's canonical stream through the
+        # accepted fingerprint authority, and the request fingerprint is the
+        # accepted composition over it. Nothing is rebuilt here.
+        expected["calculation_fingerprint"] = fingerprint(
+            reference_stream(calc.fingerprint_version)
+        )
+        expected["request_fingerprint"] = request_fingerprint(
+            sim, calc, GATE_B_ITERATIONS, "FIXED", GATE_B_SUPPLIED_SEED
+        )
+
+    return {
+        "id": f"gate_b.parity.plan_case_{plan_case['id']}",
+        "plan_case_id": plan_case["id"],
+        "plan_case_title": plan_case["title"],
+        "sampling_mechanism": mechanism,
+        "comparison": EXACT,
+        "analytical_identity": {
+            # A POINTER, NOT A COPY. The accepted analytical expectations for
+            # this model already live in phase5_cases.json and the harness
+            # already reads them; restating them here would create a second
+            # copy that could drift from the first.
+            "authority": "phase5_cases.json",
+            "plan_cases_key": "plan_cases",
+            "plan_case_id": plan_case["id"],
+            "fingerprint_independently_derivable": golden,
+        },
+        "inputs": {
+            "iterations": GATE_B_ITERATIONS,
+            "seed_mode": "FIXED",
+            "supplied_seed": GATE_B_SUPPLIED_SEED,
+        },
+        "expected_exact": _with_canonical(expected),
+    }
+
+
+def build_gate_b_cases(
+    sim: SimContract, inputs: InputContract, calc: CalcContract, model_version: str
+) -> dict[str, Any]:
+    """The Gate-B parity corpus, as plain deterministic data."""
+    from .calc_cases import CASES as PLAN_CASES
+
+    reference = RngReference.from_contracts(sim, inputs)
+    by_id = {case["id"]: case for case in PLAN_CASES}
+
+    minimum = business_minimum_iterations(inputs)
+    if GATE_B_ITERATIONS != minimum:
+        raise SimOracleError(
+            f"the Gate-B iteration count {GATE_B_ITERATIONS} is not the contract's "
+            f"business minimum {minimum}; one of the two moved and the corpus "
+            "must not silently choose"
+        )
+
+    cases = []
+    for identifier, mechanism, golden in GATE_B_PARITY_PLAN_CASES:
+        plan_case = by_id.get(identifier)
+        if plan_case is None or "model" not in plan_case:
+            raise SimOracleError(
+                f"plan case {identifier} carries no model, so it cannot bind a "
+                "runtime fixture"
+            )
+        cases.append(_gate_b_parity_case(
+            sim, inputs, calc, reference, plan_case, mechanism, golden
+        ))
+
+    ladder = resolve_percentile_ladder(sim, inputs)
+    lifecycle = sim.raw["seeding"]["nonce_lifecycle"]
+    seed_rule = inputs.inputs["random_seed"].validation
+    if seed_rule.get("operator") != "between":
+        raise SimOracleError(
+            "random_seed no longer declares a `between` domain, so the seed "
+            "bounds have moved somewhere this projection cannot see"
+        )
+    return {
+        "schema_version": GATE_B_SCHEMA_VERSION,
+        "model_version": model_version,
+        "sim_contract_version": sim.version,
+        "rng_version": sim.rng_version,
+        "sim_method_version": sim.sim_method_version,
+        "purpose": (
+            "Cross-implementation parity expectations for the Phase-6 Gate-B "
+            "Windows harness: what the accepted Python oracle produces for four "
+            "EXISTING Phase-5 plan-case fixtures, so real Excel can be compared "
+            "against it rather than only against itself. Addresses live in "
+            "phase6_gate_b_inspection.json."
+        ),
+        "comparison_policy": (
+            "EXACT. The canonical numeric encoder normalises the host decimal "
+            "separator before hashing, so digest equality is exact on any "
+            "locale and no tolerance is admissible here."
+        ),
+        "iterations": GATE_B_ITERATIONS,
+        "supplied_seed": GATE_B_SUPPLIED_SEED,
+        # THE BOUNDS A SCENARIO COMPARES AGAINST. Values, which is why they are
+        # here and not in the inspection projection.
+        "bounds": {
+            "business_minimum_iterations": minimum,
+            "max_iterations_representable": sim.max_iterations_representable,
+            # The seed domain is owned by input_contract.yaml, so it is read
+            # from the input's own validation rather than from the simulation
+            # contract, which only says the domain exists.
+            "seed_minimum": int(seed_rule["formula1"]),
+            "seed_maximum": int(seed_rule["formula2"]),
+            "run_id_initial": int(sim.raw["run_id"]["initial"]),
+            "run_id_first_successful_value": int(
+                sim.raw["run_id"]["first_successful_value"]
+            ),
+            "run_id_maximum": int(sim.raw["run_id"]["maximum"]),
+            "nonce_initial": int(lifecycle["initial"]),
+            "nonce_first_valid_allocation": int(lifecycle["first_valid_allocation"]),
+            "nonce_last_valid_allocation": int(lifecycle["last_valid_allocation"]),
+            "nonce_exhausted_value": int(lifecycle["exhausted_value"]),
+        },
+        # THE VOCABULARY A SCENARIO COMPARES AGAINST, read from the label sets
+        # the contract owns. Semantics, not addresses.
+        "vocabulary": {
+            "seed_modes": list(sim.raw["label_sets"]["seed_mode"]),
+            "attempt_results": list(sim.raw["label_sets"]["attempt_result"]),
+            "sim_states": list(sim.raw["label_sets"]["sim_state"]),
+            "quantile_labels": [label for label, _ in ladder.points],
+        },
+        "case_count": len(cases),
+        "parity_cases": cases,
+    }
+
+
+def render_gate_b_cases_json(
+    sim: SimContract, inputs: InputContract, calc: CalcContract, model_version: str
+) -> str:
+    import json as _json
+
+    return _json.dumps(
+        build_gate_b_cases(sim, inputs, calc, model_version), indent=2, sort_keys=False
+    ) + "\n"
