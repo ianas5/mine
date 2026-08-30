@@ -1537,11 +1537,16 @@ def test_121_the_source_only_claim_is_swept_back_across_step_13() -> None:
 
 
 def test_122_the_executed_matrix_is_reported_without_its_open_item() -> None:
-    """A matrix that ran is not a matrix that passed. Dropping the open
-    disagreement turns an honest status line into a claim of success."""
-    damaged = _damage_preamble(
-        lambda head: head.split("**Open, and not claimed.**")[0]
-        + head.split("```\n", 1)[1].join(["```\n", ""]))
+    """A matrix that ran is not a matrix that passed, and a reclassified failure
+    is not a fixed one. Dropping what is still open turns an honest status into
+    a claim of success."""
+    def rewrite(head):
+        # Every sentence that admits something is unsettled, removed together:
+        # a control that only noticed one of them would be satisfied by prose.
+        for phrase in ("open", "Open", "OPEN"):
+            head = head.replace(phrase, "settled")
+        return head
+    damaged = _damage_preamble(rewrite)
     message = _preamble_control_refuses(damaged)
     assert "without naming what is still open" in message, message
 
@@ -1559,9 +1564,10 @@ def test_123_the_runtime_proven_claims_lose_their_bound() -> None:
 def test_123b_the_open_disagreement_is_reported_as_attributed() -> None:
     """P6-ORA's owner is unresolved, and a preamble that quietly drops that is
     assigning blame the evidence does not support."""
-    damaged = _damage_preamble(
-        lambda head: head.replace("and **no ownership is assigned**:", ":", 1)
-                          .replace("**Open, and not claimed.**", "**Open.**", 1))
+    def rewrite(head):
+        head = head.replace("**Still open, and not claimed.**", "**Still open.**", 1)
+        return head.replace("no ownership is assigned", "the owner is identified")
+    damaged = _damage_preamble(rewrite)
     message = _preamble_control_refuses(damaged)
     assert "unattributed" in message, message
 
