@@ -402,10 +402,8 @@ def test_35_the_prerequisite_gate_is_removed() -> None:
 def test_36_the_ledger_violation_stops_being_a_failure() -> None:
     damaged = _swap(
         _PHASE6,
-        "    Add-Result 'P6-LDG' 'Phase-6 result ledger integrity' `\n"
-        "        $(if ($violations.Count -eq 0) { 'PASS' } else { 'FAIL' }) `\n",
-        "    Add-Result 'P6-LDG' 'Phase-6 result ledger integrity' `\n"
-        "        'PASS' `\n")
+        "    Add-Result 'P6-LDG' 'Phase-6 result ledger: one result per scenario ID' 'FAIL' `\n",
+        "    Add-Result 'P6-LDG' 'Phase-6 result ledger: one result per scenario ID' 'PASS' `\n")
     _control("test_37", phase6=damaged)
 
 
@@ -889,7 +887,7 @@ def test_74_the_harness_head_is_reported_as_the_production_baseline() -> None:
     """The two identities the Step-13 authorisation requires to stay distinct."""
     damaged = _swap(
         _PHASE6,
-        "function Get-Phase6ProductionBaseline { return 'bc7949b' }",
+        "function Get-Phase6ProductionBaseline { return '5a5b183' }",
         "function Get-Phase6ProductionBaseline {\n"
         "    return [string](& git rev-parse HEAD 2>$null)\n}")
     _control("test_52", phase6=damaged)
@@ -898,7 +896,7 @@ def test_74_the_harness_head_is_reported_as_the_production_baseline() -> None:
 def test_75_the_baseline_pin_drifts_from_the_reviewed_baseline() -> None:
     damaged = _swap(
         _PHASE6,
-        "function Get-Phase6ProductionBaseline { return 'bc7949b' }",
+        "function Get-Phase6ProductionBaseline { return '5a5b183' }",
         "function Get-Phase6ProductionBaseline { return 'd36d5d4' }")
     _control("test_52", phase6=damaged)
 
@@ -1265,8 +1263,8 @@ def test_109_the_documented_command_would_overwrite_run_1s_log() -> None:
     doc_path = conformance.PCCM_ROOT / "docs" / "phase6_step13_gate_b.md"
     original = doc_path.read_text(encoding="utf-8")
     damaged = original.replace(
-        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run2.log",
-        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run1.log", 1)
+        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run3.log",
+        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run2.log", 1)
     assert damaged != original
     saved = conformance.PCCM_ROOT
     import tempfile
@@ -1286,3 +1284,76 @@ def test_109_the_documented_command_would_overwrite_run_1s_log() -> None:
         finally:
             conformance.PCCM_ROOT = saved
     assert refused, "the mutation survived: the run ledger control is vacuous"
+
+
+# ===========================================================================
+# G. The Run-2 harness finalisation defect
+# ===========================================================================
+def test_110_the_ledger_verdict_reads_an_unwrapped_collection() -> None:
+    """The submitted shape, and it threw on every clean run.
+
+    Zero violations is the NORMAL case; a function returning an empty collection
+    emits zero pipeline objects, so the assignment lands $null and StrictMode
+    turns `.Count` into a hard error.
+    """
+    damaged = _swap(
+        _PHASE6,
+        "    $violations = @(Get-Phase6LedgerViolations)\n",
+        "    $violations = Get-Phase6LedgerViolations\n")
+    _control("test_64", phase6=damaged)
+
+
+def test_111_another_collection_helper_loses_its_caller_side_wrapper() -> None:
+    """The rule is the class, not the one call site that failed."""
+    damaged = _swap(
+        _PHASE6,
+        "    $declared = @(Get-Phase6ScenarioIds)\n",
+        "    $declared = Get-Phase6ScenarioIds\n")
+    _control("test_64", phase6=damaged)
+
+
+def test_112_the_fail_arm_reports_only_the_first_violation() -> None:
+    """A run that attempted three duplicate results has three facts to answer for."""
+    damaged = _swap(
+        _PHASE6,
+        "         ($violations -join ' | '))\n",
+        "         $violations[0])\n")
+    _control("test_64", phase6=damaged)
+
+
+def test_113_the_zero_violation_branch_can_reach_a_failure() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "        Add-Result 'P6-LDG' 'Phase-6 result ledger: one result per scenario ID' 'PASS' `\n",
+        "        Add-Result 'P6-LDG' 'Phase-6 result ledger: one result per scenario ID' 'FAIL' `\n")
+    _control("test_64", phase6=damaged)
+
+
+def test_114_the_ledger_verdict_loses_its_emitted_once_flag() -> None:
+    """Many duplicate attempts must still produce exactly one P6-LDG."""
+    damaged = _swap(
+        _PHASE6,
+        "    if ($script:Phase6LedgerReported) { return }\n"
+        "    $script:Phase6LedgerReported = $true\n"
+        "    $violations = @(Get-Phase6LedgerViolations)\n",
+        "    $violations = @(Get-Phase6LedgerViolations)\n")
+    _control("test_51", phase6=damaged)
+
+
+def test_115_a_phase6_result_is_recorded_after_the_ledger_verdict() -> None:
+    """A result the verdict could not see is a result the ledger did not check."""
+    damaged = _swap(
+        _HARNESS,
+        "Add-Phase6LedgerIntegrityResult\n",
+        "Add-Phase6LedgerIntegrityResult\nAdd-Phase6Result 'P6-XX' 'late' 'PASS'\n")
+    _control("test_65", harness=damaged)
+
+
+def test_116_the_production_baseline_pin_lags_the_repaired_source() -> None:
+    """After a production repair the pin must move with it, or every runtime
+    result is attributed to source that no longer exists."""
+    damaged = _swap(
+        _PHASE6,
+        "function Get-Phase6ProductionBaseline { return '5a5b183' }",
+        "function Get-Phase6ProductionBaseline { return 'bc7949b' }")
+    _control("test_52", phase6=damaged)

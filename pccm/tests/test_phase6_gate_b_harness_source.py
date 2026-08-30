@@ -83,7 +83,7 @@ GATE_B_CASES_PATH = BUILD / "phase6_gate_b_cases.json"
 # The production baseline this harness is evidence infrastructure FOR. Named,
 # never inferred: a runtime result is attributable to a commit or it is worth
 # nothing.
-PRODUCTION_BASELINE = "bc7949b"
+PRODUCTION_BASELINE = "5a5b183"
 
 _CACHE: dict[str, object] = {}
 
@@ -172,53 +172,47 @@ def test_01_the_phase4_and_phase5_harness_files_are_byte_identical() -> None:
         )
 
 
-def test_02_the_only_change_to_the_phase4_driver_is_the_phase6_wiring() -> None:
-    """One dot-source, one preflight, two artefact loads, one call. Nothing else."""
-    before = _accepted_lines(HARNESS)
-    after = _current_lines(HARNESS)
+def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> None:
+    """Two statements, and they are different statements.
 
-    # EXACTLY ONE ACCEPTED LINE MAY BE MODIFIED, and it is named here rather
-    # than tolerated by a count: the required-artefact list gained the two
-    # Phase-6 paths. Any OTHER removal is a rewrite of accepted Phase-4/5
-    # behaviour and fails.
-    added = "\n".join(line for line in after if line not in before)
-    modifiable = {
-        # the required-artefact list gained the two Phase-6 paths
-        "    foreach ($required in @($manifestPath, $scenarioPath, $casesPath, "
-        "$inspectPath)) {",
-        # and the final summary now names Phase 6 as well as Phase 4 and 5
-        'Write-Host ("  Phase-5 Gate-B scenarios : {0} reported" -f `',
-        "    (@($results | Where-Object { $_.Id -like 'P5-*' })).Count)",
-        "    Write-Host 'PHASE-4 / PHASE-5 FUNCTIONAL TEST: ALL CHECKS PASSED' "
-        "-ForegroundColor Green",
-        'Write-Host ("PHASE-4 / PHASE-5 FUNCTIONAL TEST FAILED: " + '
-        "(($failed | ForEach-Object { $_.Id }) -join ', ')) -ForegroundColor Red",
-    }
-    removed = set(line for line in before if line not in after)
-    assert removed <= modifiable, (
-        f"the Phase-4 driver lost accepted lines: {sorted(removed - modifiable)}"
+    THE DRIVER IS FROZEN AGAINST THE PRODUCTION BASELINE. Once the baseline
+    moved to the commit that carries the compile repair, the harness wiring is
+    already inside it, so a diff against the baseline is the right way to say
+    "this harness commit did not touch the Phase-4 driver" — and the wiring
+    itself has to be asserted directly rather than as the residue of a diff,
+    because that residue is now empty by construction.
+    """
+    assert _current_lines(HARNESS) == _accepted_lines(HARNESS), (
+        f"{HARNESS.name} moved from {PRODUCTION_BASELINE}"
     )
+
+    driver = _text(HARNESS)
+    # THE WIRING, NAMED. One dot-source, one preflight, two artefact loads, one
+    # harness-commit capture, one scenario call, one ledger verdict, and a
+    # summary that names Phase 6.
+    for required in ("phase6_gate_b_scenarios.ps1",
+                     "Invoke-Phase6CoveragePreflight",
+                     "Invoke-Phase6GateBScenarios",
+                     "phase6_gate_b_inspection.json",
+                     "phase6_gate_b_cases.json",
+                     "$harnessCommit",
+                     "$repoRoot = Split-Path -Parent $pccmRoot",
+                     "-RepoRoot $repoRoot",
+                     "Add-Phase6LedgerIntegrityResult",
+                     "Phase-6 Gate-B scenarios",
+                     "PHASE-4 / PHASE-5 / PHASE-6 FUNCTIONAL TEST: ALL CHECKS PASSED"):
+        assert required in driver, required
     assert any(
-        ("$simInspectPath" in line and "$simCasesPath" in line) for line in after
+        ("$simInspectPath" in line and "$simCasesPath" in line)
+        for line in driver.splitlines()
     ), "the required-artefact list does not name the two Phase-6 artefacts"
-    assert "Add-Phase6LedgerIntegrityResult" in added
-    assert "$harnessCommit" in added
-    # THE SUMMARY NAMES PHASE 6. A Step-13 log that finished by claiming only a
-    # Phase-4/Phase-5 test ran would understate what it is evidence of.
-    assert any("Phase-6 Gate-B scenarios" in line for line in after)
-    assert any(
-        "PHASE-4 / PHASE-5 / PHASE-6 FUNCTIONAL TEST: ALL CHECKS PASSED" in line
-        for line in after
-    )
 
-    assert "phase6_gate_b_scenarios.ps1" in added
-    assert "Invoke-Phase6CoveragePreflight" in added
-    assert "Invoke-Phase6GateBScenarios" in added
-    assert "phase6_gate_b_inspection.json" in added
-    assert "phase6_gate_b_cases.json" in added
-    # AND NOTHING PHASE-5 OR PHASE-4 WAS REWRITTEN IN THE PROCESS.
-    for forbidden in ("Invoke-Phase5GateBScenarios -", "Get-Phase4RequiredScenarioIds ="):
-        assert forbidden not in added, forbidden
+    # AND NOTHING PHASE-4 OR PHASE-5 WAS REWRITTEN TO MAKE ROOM.
+    for accepted in ("Invoke-Phase5GateBScenarios",
+                     "Add-Phase4FinalCompletenessResult -Results $results",
+                     "Add-Phase5LedgerIntegrityResult",
+                     "Invoke-Phase5CoveragePreflight"):
+        assert accepted in driver, accepted
 
 
 def test_03_the_phase6_block_starts_nothing_of_its_own() -> None:
@@ -1161,10 +1155,19 @@ def test_51_the_completeness_and_ledger_verdicts_are_ordered_and_acyclic() -> No
     assert "Add-Result 'P6-FIN'" not in code, (
         "P6-FIN bypasses the Phase-6 result guard"
     )
-    # P6-LDG through the unguarded one, exactly once, so the ledger cannot
-    # suppress its own verdict.
-    assert code.count("Add-Result 'P6-LDG'") == 1
+    # P6-LDG through the unguarded one, from ONE emitter, so the ledger cannot
+    # suppress its own verdict. The emitter has a PASS arm and a FAIL arm; what
+    # must be single is the emission POINT and the emitted-once flag guarding
+    # it, not the number of Add-Result lines.
     assert "Add-Phase6Result 'P6-LDG'" not in code
+    emitter = code.split("function Add-Phase6LedgerIntegrityResult")[1].split(
+        "\nfunction ")[0]
+    assert code.count("Add-Result 'P6-LDG'") == emitter.count("Add-Result 'P6-LDG'"), (
+        "P6-LDG is emitted from outside its one emitter"
+    )
+    assert emitter.count("Add-Result 'P6-LDG'") == 2, "the PASS and FAIL arms"
+    assert "if ($script:Phase6LedgerReported) { return }" in emitter
+    assert "$script:Phase6LedgerReported = $true" in emitter
     # AND IT IS NOT IN THE REQUIRED SET.
     required_block = code.split("function Get-Phase6RequiredScenarioIds")[1].split(
         "\nfunction ")[0]
@@ -1596,6 +1599,75 @@ def test_63_the_documented_log_name_does_not_overwrite_a_recorded_run() -> None:
         f"{sorted(int(n) for n in recorded)}; an earlier run's evidence would be "
         "overwritten"
     )
-    # AND THE LEDGER SAYS WHICH RUN IS STILL TO BE MADE.
-    assert "not yet made" in doc
+    # AND THE LEDGER SAYS WHICH RUN IS STILL TO BE MADE, and what the earlier
+    # ones established. A ledger that recorded only successes would be a way of
+    # losing the two attempts that found the defects.
+    assert "not yet executed" in doc
     assert "ABORTED PRE-EXCEL" in doc
+    assert "VALID runtime attempt" in doc
+
+
+def test_64_the_ledger_verdict_survives_the_zero_violation_case() -> None:
+    """The case Runtime Run 2 died on, and it is the NORMAL one.
+
+        PropertyNotFoundException:
+        The property 'Count' cannot be found on this object.
+
+    A PowerShell function returning an empty collection emits ZERO pipeline
+    objects, so `$violations = Get-Phase6LedgerViolations` lands `$null` and
+    StrictMode turns `$violations.Count` into a hard error. Zero violations is
+    what a clean run has, so this failed every clean run — after Z, Y, P5-FIN
+    and P5-LDG had all passed, with only P6-LDG left to emit.
+
+    The rule is the accepted Phase-4 one: collections are materialised AT THE
+    CALLER.
+    """
+    code = _executable(PHASE6)
+    emitter = code.split("function Add-Phase6LedgerIntegrityResult")[1].split(
+        "\nfunction ")[0]
+    assert "$violations = @(Get-Phase6LedgerViolations)" in emitter, (
+        "the ledger verdict reads an unwrapped collection and will throw on a "
+        "clean run"
+    )
+    assert "$violations = Get-Phase6LedgerViolations" not in emitter.replace(
+        "$violations = @(Get-Phase6LedgerViolations)", ""
+    )
+
+    # ZERO -> exactly one PASS, and it returns rather than falling through into
+    # the FAIL arm. Split at the zero-violation branch itself: partitioning on
+    # the first `return` would find the emitted-once guard instead.
+    guard = "if ($violations.Count -eq 0) {"
+    assert guard in emitter
+    pass_arm, _, fail_arm = emitter.partition(guard)
+    pass_arm, _, fail_arm = fail_arm.partition("\n        return\n    }")
+    assert "'PASS'" in pass_arm, pass_arm
+    assert "'FAIL'" not in pass_arm, "the zero-violation branch can reach a FAIL"
+    # ONE OR MORE -> exactly one FAIL, with EVERY violation represented.
+    assert "'FAIL'" in fail_arm
+    assert "$violations -join" in fail_arm, (
+        "the FAIL arm reports only some of the violations"
+    )
+    assert "$violations[0]" not in emitter
+
+    # AND EVERY OTHER COLLECTION-RETURNING HELPER IS MATERIALISED AT ITS CALLER.
+    collections = ("Get-Phase6LedgerViolations", "Get-Phase6ScenarioIds",
+                   "Get-Phase6RequiredScenarioIds", "Get-Phase6FixtureScenarioIds")
+    for helper in collections:
+        for line in code.splitlines():
+            if re.search(rf"=\s*{helper}\b", line):
+                assert f"@({helper}" in line, (
+                    f"an unwrapped assignment from {helper}: {line.strip()}"
+                )
+
+
+def test_65_the_ledger_verdict_is_the_final_phase6_result() -> None:
+    """It has to see every guarded result, P6-FIN included."""
+    driver = _text(HARNESS)
+    ledger_at = driver.index("Add-Phase6LedgerIntegrityResult")
+    for earlier in ("Invoke-Phase6GateBScenarios", "Add-Phase5LedgerIntegrityResult",
+                    "Add-Phase4FinalCompletenessResult -Results $results"):
+        assert driver.index(earlier) < ledger_at, earlier
+    # Nothing records a Phase-6 result after it.
+    tail = driver[ledger_at + len("Add-Phase6LedgerIntegrityResult"):]
+    assert "Add-Phase6Result" not in tail
+    assert "Invoke-Phase6GateBScenarios" not in tail

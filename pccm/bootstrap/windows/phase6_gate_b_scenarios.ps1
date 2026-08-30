@@ -98,7 +98,7 @@ function Get-Phase6FixtureScenarioIds {
 # reviewed. It is NOT `git rev-parse HEAD`: HEAD on the runtime tree is the
 # RUNTIME-HARNESS commit, and reporting it as the production baseline would
 # conflate the two identities the Step-13 authorisation requires to be distinct.
-function Get-Phase6ProductionBaseline { return 'bc7949b' }
+function Get-Phase6ProductionBaseline { return '5a5b183' }
 
 # The accepted Phase-6 production modules whose bytes must be the baseline's.
 # Named, never counted, and never inferred from the compiled project: that a
@@ -204,13 +204,39 @@ function Add-Phase6Result {
 }
 
 function Add-Phase6LedgerIntegrityResult {
+    # ONE result, always, whatever happened above. Emitted through Add-Result
+    # rather than Add-Phase6Result so the ledger's own report can never be
+    # suppressed by the ledger, and it carries its own emitted-once flag so that
+    # many duplicate attempts still produce exactly one P6-LDG.
+    #
+    # MATERIALISED AT THE CALLER. Runtime Run 2 died here, after Z, Y, P5-FIN
+    # and P5-LDG had all passed:
+    #
+    #     PropertyNotFoundException:
+    #     The property 'Count' cannot be found on this object.
+    #
+    # `Get-Phase6LedgerViolations` returns `@($script:Phase6LedgerViolations)`,
+    # but a function RETURNING an empty collection emits ZERO pipeline objects,
+    # so `$violations = Get-Phase6LedgerViolations` lands $null and StrictMode
+    # turns `$violations.Count` into a hard error. Empty is the NORMAL case, so
+    # this failed on every clean run. It is the accepted Phase-4 rule - every
+    # caller writes `@(...)` - and this call site did not.
     if ($script:Phase6LedgerReported) { return }
     $script:Phase6LedgerReported = $true
-    $violations = Get-Phase6LedgerViolations
-    Add-Result 'P6-LDG' 'Phase-6 result ledger integrity' `
-        $(if ($violations.Count -eq 0) { 'PASS' } else { 'FAIL' }) `
-        $(if ($violations.Count -eq 0) { 'one result per scenario ID' }
-          else { 'duplicate result attempts: ' + ($violations -join '; ') })
+    $violations = @(Get-Phase6LedgerViolations)
+    if ($violations.Count -eq 0) {
+        Add-Result 'P6-LDG' 'Phase-6 result ledger: one result per scenario ID' 'PASS' `
+            ('scenario results recorded: ' + @($script:Phase6RecordedIds).Count +
+             '; duplicate attempts: 0')
+        return
+    }
+    # EVERY violation is reported, not the first: a run that attempted three
+    # duplicate results has three facts to answer for.
+    Add-Result 'P6-LDG' 'Phase-6 result ledger: one result per scenario ID' 'FAIL' `
+        ('a scenario result was attempted more than once. The first result for ' +
+         'each ID stands, but a duplicate attempt means a scenario boundary owns ' +
+         'a failure that is not its own, so the run cannot be trusted: ' +
+         ($violations -join ' | '))
 }
 
 function Format-Phase6Err {
@@ -313,7 +339,7 @@ function Invoke-Phase6CoveragePreflight {
 
     # THE COVERAGE MAP. Every parity case maps to P6-ORA, and no scenario ID
     # outside the declared set may be referenced.
-    $declared = Get-Phase6ScenarioIds
+    $declared = @(Get-Phase6ScenarioIds)
     foreach ($id in (Get-Phase6RequiredScenarioIds)) {
         $null = Add-Check $list ('the required scenario ' + $id + ' is declared') `
             ($declared -contains $id)

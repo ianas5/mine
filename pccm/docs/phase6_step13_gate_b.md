@@ -1,13 +1,15 @@
 # PCCM Phase 6 — Step 13: the Windows/Excel Gate-B runtime harness
 
-**Status: HARNESS SOURCE, submitted for review. NO EXCEL RUN HAS SUCCEEDED.**
+**Status: HARNESS SOURCE, submitted for review. NO STEP-13 SCENARIO HAS EXECUTED.**
 
-Windows Step-13 Run 1 was attempted and **aborted in the preflight, before
-Excel was started**, on a defect in this harness — see
-[§8](#8-windows-step-13-run-1--aborted-before-excel). No Excel COM session
-has been started, no `.xlsm` has been driven, and not one Phase-6 procedure
-has executed. Everything below is a statement about SOURCE and
-about the artefacts the Stage-A builder emits.
+Two Windows runs have been attempted. Run 1 aborted in the preflight before
+Excel started; Run 2 reached Excel, completed the Phase-4 matrix 35/35, and was
+stopped at the compile prerequisite by a genuine production compile defect. See
+the run ledger in [§8](#8-windows-run-ledger).
+
+**Not one Phase-6 procedure has executed**, no simulation has been performed and
+no parity comparison has been made. Every claim in this document about Step-13
+behaviour remains a statement about source.
 
 ```
 static / source evidence   !=   Windows / Excel runtime evidence
@@ -45,10 +47,6 @@ against the one Excel instance it owns, the one workbook it opened and the one
 Stage-B bootstrap it ran, and reports through the same `Add-Result`. It creates
 no Excel process, no release ledger, no bootstrap invocation and no shutdown of
 its own; `test_03` refuses each by name.
-
-The Phase-4 matrix and the Phase-5 Gate-B block are **prerequisites**. `P6-PRE`
-reads the results they actually produced and requires every one to be a PASS
-before a single stateful Phase-6 scenario runs.
 
 The Phase-4 matrix and the Phase-5 Gate-B block are **prerequisites**, and the
 lifecycle topology is the whole difficulty of saying so.
@@ -104,7 +102,7 @@ empty. The authority is Phase 5's own, consumed rather than reimplemented, and
 `P5-LDG` still emits its verdict at the accepted point in the lifecycle — the
 Phase-6 block does not emit it early, and `test_54` refuses a version that does.
 
-### 2.2 The one change to the accepted driver
+### 2.3 The one change to the accepted driver
 
 `phase4_functional_test.ps1` gains a dot-source, a preflight call, two artefact
 loads, one harness-commit capture, one scenario call, one ledger-verdict call and
@@ -468,13 +466,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **65** controls, in seven groups:
+`tests/test_phase6_gate_b_harness_source.py` — **68** controls, in seven groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **117** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **125** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -531,7 +529,7 @@ One command set, one working directory — the repository root:
 python pccm\builder\build_stage_a.py
 powershell -ExecutionPolicy Bypass -File .\pccm\bootstrap\windows\build_stage_b.ps1
 powershell -ExecutionPolicy Bypass -File .\pccm\bootstrap\windows\phase4_functional_test.ps1 `
-  *> .\pccm\bootstrap\windows\phase6_gate_b_run2.log
+  *> .\pccm\bootstrap\windows\phase6_gate_b_run3.log
 ```
 
 The third command runs everything: the Phase-6 block is dot-sourced into the
@@ -539,11 +537,12 @@ Phase-4 harness and runs inside its single COM lifecycle, against the disposable
 `%TEMP%` copy. There is no separate Phase-6 script to invoke and no second Excel
 instance.
 
-**The log name carries the run number**, and it is `run2` because Run 1 already
-happened — see the ledger in §8. Writing to `phase6_gate_b_run1.log` would
-overwrite the evidence of an attempt that was made, and an aborted attempt is
-evidence: it is what identified the defect this document's §3.1 records. Each
-authorised run gets its own log, and no earlier one is renamed or overwritten.
+**The log name carries the run number**, and it is `run3` because Runs 1 and 2
+already happened — see the ledger in §8. Writing to an earlier run's log would
+overwrite evidence of an attempt that was made, and an aborted or blocked
+attempt is still evidence: Run 1 identified the defect in §3.1 and Run 2
+identified the two in §8.2. Each authorised run gets its own log, and no earlier
+one is renamed or overwritten.
 
 **Prerequisite.** Importing VBA requires *Trust access to the VBA project object
 model*. The scripts report it and stop if it is missing. They do not enable it,
@@ -557,11 +556,16 @@ Location — the same refusal that has held since the first readiness run.
 | Run | Source | Outcome |
 |---|---|---|
 | **Run 1** | `6365aeb` | **ABORTED PRE-EXCEL at `P6-PRE`.** Excel was never started. |
-| **Run 2** | `849d6bf` | authorised; not yet made |
+| **Run 2** | `849d6bf` | **VALID runtime attempt.** Reached Excel; Phase-4 35/35; a production compile defect stopped `P5-CMP`; the Phase-5 and Phase-6 behavioural matrices were NOT executed. |
+| **Run 3** | `<Commit B>` | authorised in principle; **not yet executed** |
 
 An aborted attempt is not nothing, and it is not renamed away when a later run
 succeeds: Run 1 is what found the defect §3.1 records, and it stays in this
-ledger under its own number. Run 2 is the next attempt, not a replacement.
+ledger under its own number.
+
+**`d047eea` is not Run 2's source.** It was created after Run 2 had already
+happened, and it is documentation and control work only. Run 2 ran `849d6bf`,
+and the ledger says so.
 
 ### 8.1 Run 1 — aborted before Excel
 
@@ -593,3 +597,108 @@ green, none of which asked whether the only consumer of these artefacts could
 parse them. Every control was about *what the projection says*; none was about
 *what the reader can read*. The build now refuses the shape outright, and both
 artefacts are scanned recursively rather than at the one key that failed.
+
+### 8.2 Run 2 — reached Excel; stopped at the compile prerequisite
+
+**A valid runtime attempt, and the first one.** Excel started, the Stage-B build
+ran, and the Phase-4 structural matrix executed in full.
+
+```
+PRE0, PRE, P5-PRE, PRE6            PASS
+Stage-B runtime build              PASS
+Phase-4 prerequisite matrix        33/33 PASS
+deferred lifecycle Y, Z            PASS
+final Phase-4 matrix               35/35 PASS
+natural Excel shutdown             PASS
+transient COM release ledger       PASS
+```
+
+`P5-CMP` reached the correct PCCM VBProject and the correct active project
+identity, found VBE command id 578 as an `msoControlButton` of Type 1, and
+called `Execute()` exactly once. The control then stayed Enabled for its
+five-second observation window.
+
+**That was not a timing artefact.** The retained Run-2 workbook was opened
+manually, without editing, and `Debug > Compile VBAProject` was invoked once.
+The VBE produced a genuine compiler diagnostic:
+
+```
+Compile error: Argument not optional
+```
+
+selecting the call inside `modSimNonce.ReadPending`.
+
+#### 8.2.1 Defect one — a production compile defect
+
+`modWorkbook.IsWholeInRange` declares four arguments, the last a
+`ByRef Result As Double`. Five Phase-6 call sites passed three:
+
+| Module | Procedure | Passed |
+|---|---|---|
+| `modSimNonce` | `ReadPending` | 3 of 4 |
+| `modSimNonce` | `ReadShared` | 3 of 4 |
+| `modSimReport` | `ResolveIterations` | 3 of 4 |
+| `modSimReport` | `ResolveSeed` | 3 of 4 |
+| `modSimReport` | `ReadMachineLong` | 3 of 4 |
+
+The Windows report named the first two. The full arity audit found the other
+three, all the same class. The remaining fifteen call sites in
+`modCalcResolve`, `modDrivers`, `modInflation`, `modStructuralCheck` and
+`modWorkbook` were already correct, and a bounded audit of every Phase-6 call
+into public `modWorkbook` procedures found no other malformed arity.
+
+**VBA compiles on demand.** A procedure body nothing has reached yet can hold a
+fatal call for as long as nothing reaches it, which is how five of them survived
+every static control up to Run 2 — and why `P5-CMP` exists to make the compile
+claim separately, once, before anything relies on it.
+
+**What let it through.** The controls that existed proved the call was
+*present*: `assert "IsWholeInRange" in body`. None proved it was *well-formed*.
+The replacement walks every qualified cross-module call in the hand-written
+production source — 446 of them — and checks the argument count against the
+callee's own declaration, honouring `Optional` and `ParamArray`. Pinning the
+five corrected lines as text would have closed five call sites and left the
+class open one compiler stop away.
+
+The repair is the minimum: each site already declared a local `Double` for the
+parsed value and read it back through `TryReadDouble` on the next statement, and
+that local is now passed as the fourth argument. No bound, no nonce semantic, no
+recovery classification, no transaction semantic, no contract and no
+`modWorkbook` signature changed. The now-redundant `TryReadDouble` is left in
+place: removing it is a behaviour-preserving tidy-up, and a compile repair is
+not the place for one.
+
+#### 8.2.2 Defect two — a harness finalisation defect
+
+After the compile prerequisite correctly prevented the behavioural matrices from
+running, lifecycle finalisation reached `Z`, `Y`, `P5-FIN` and `P5-LDG`, all
+PASS. Then the driver itself failed under StrictMode, before `P6-LDG` could be
+emitted:
+
+```
+PropertyNotFoundException:
+The property 'Count' cannot be found on this object.
+```
+
+`Get-Phase6LedgerViolations` returns `@($script:Phase6LedgerViolations)`, but a
+function *returning* an empty collection emits **zero pipeline objects**, so
+`$violations = Get-Phase6LedgerViolations` landed `$null` and `.Count` threw.
+Zero violations is the **normal** case, so this failed on every clean run.
+
+It is the accepted Phase-4 rule — collections are materialised at the caller —
+and this call site did not follow it. `Add-Phase6LedgerIntegrityResult` now
+writes `@(Get-Phase6LedgerViolations)`, and the audit that found it also wrapped
+one other unwrapped assignment in the preflight. `test_64` pins the whole class
+rather than the one line, and requires the PASS arm to return, the FAIL arm to
+report **every** violation, and the emitted-once flag to stay.
+
+#### 8.2.3 What Run 2 did and did not establish
+
+**Established:** the workbook builds and opens in desktop Excel; the Phase-4
+structural runtime is intact at 35/35; the compile control reaches the right
+project and executes the right command; Excel shuts down naturally and the COM
+release ledger is clean.
+
+**Not established, and not claimed:** anything about Phase-5 or Phase-6
+behaviour. Neither behavioural matrix executed. No Phase-6 procedure ran, no
+simulation was performed, and no parity comparison was made.
