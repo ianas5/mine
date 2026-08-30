@@ -155,21 +155,58 @@ def _current_lines(path: Path) -> list[str]:
 
 
 def test_01_the_phase4_and_phase5_harness_files_are_byte_identical() -> None:
-    """Step 13 is an extension. Four accepted files may not move at all.
-
-    `git show` against the production baseline, not a hash written down here: a
-    pinned digest would have to be updated by hand and the update is exactly the
-    thing that would go unnoticed.
+    """Step 13 is an extension. Three accepted files may not move at all.
 
     Compared as LINES, not raw bytes: `.gitattributes` declares `*.ps1` as
     `eol=crlf`, so git stores LF and a checkout holds CRLF. That difference is
     packaging, and `splitlines` is blind to it while remaining exact about
     every character that is not a line terminator.
+
+    `phase5_gate_b_scenarios.ps1` is handled separately by `test_01b`: Runtime
+    Run 3 found one stale assertion in it, and a blanket freeze would have made
+    correcting that impossible to state.
     """
-    for path in (PHASE5, LIFECYCLE, DIAGNOSTIC, BUILD_STAGE_B):
+    for path in (LIFECYCLE, DIAGNOSTIC, BUILD_STAGE_B):
         assert _current_lines(path) == _accepted_lines(path), (
             f"{path.name} moved from {PRODUCTION_BASELINE}"
         )
+
+
+def test_01b_the_only_change_to_the_phase5_scenarios_is_the_scoped_grant() -> None:
+    """One assertion, named, and nothing else.
+
+    Runtime Run 3 failed P5-EV on `RunSimulation is still forbidden in every
+    module` — true when written, false since Step 11 granted the endpoint to
+    modSimReport — and P6-PRE then correctly failed closed on it, so the whole
+    Phase-6 behavioural matrix went unexecuted. Correcting it is authorised;
+    rewriting anything else in the accepted Phase-5 block is not.
+    """
+    before = _accepted_lines(PHASE5)
+    after = _current_lines(PHASE5)
+
+    removed = [line for line in before if line not in after]
+    assert removed == [
+        "            # THE SCOPED GRANT IS CHECKED AS A GRANT, not merely tolerated. One",
+        "            # construct, one owner, and the endpoint still forbidden everywhere.",
+        "            $null = Add-Check $list 'RunSimulation is still forbidden in every module' `",
+        "                (Test-ConstructForbiddenGlobally -Manifest $Manifest -Construct 'RunSimulation')",
+    ], f"the Phase-5 block lost lines beyond the stale assertion: {removed}"
+
+    added = [line for line in after if line not in before]
+    for required in ("RunSimulation is permitted in modSimReport and nowhere else",
+                     "-Construct 'RunSimulation' -ModuleName 'modSimReport'"):
+        assert any(required in line for line in added), required
+
+    # AND NO SCENARIO SEMANTIC MOVED WITH IT.
+    source = _text(PHASE5)
+    for accepted in ("Get-Phase4PrerequisiteScenarioIds",
+                     "Add-Phase4FinalCompletenessResult",
+                     "Add-Phase5LedgerIntegrityResult",
+                     "Get-Phase5LedgerViolations",
+                     "Test-ConstructForbiddenIn",
+                     "no forbidden construct exists in the EXECUTABLE code of the "
+                     "real Stage-B project"):
+        assert accepted in source, accepted
 
 
 def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> None:

@@ -37,6 +37,7 @@ import re
 import shutil
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
@@ -10706,3 +10707,210 @@ def test_the_ledger_verdict_has_exactly_one_owner_and_one_invocation() -> None:
         "the emitted-once flag is checked after the verdict is already emitted"
     )
 
+
+
+# ===========================================================================
+# THE STALE SCOPED-GRANT ASSERTION THAT BLOCKED PHASE 6 IN RUNTIME RUN 3
+# ===========================================================================
+# P5-EV asserted `RunSimulation is still forbidden in every module`. That was
+# true when it was written and stopped being true the moment Step 11 granted the
+# endpoint to modSimReport. In Run 3 it was the ONLY failed check in the only
+# failed Phase-5 scenario, P6-PRE then correctly failed closed on it, and the
+# entire Phase-6 behavioural matrix went unexecuted - because the harness
+# disagreed with the accepted contract about a grant the contract had made.
+#
+# The generic module-aware executable scan passed on the real persisted project
+# in the same run. The defect was a SECOND, hand-written assertion that had not
+# moved with the contract, and these controls exist so that class cannot recur.
+def _scoped_grants() -> dict[str, list[str]]:
+    """Every scoped forbidden-construct rule, from the accepted contract."""
+    import yaml
+    contract = yaml.safe_load(_text(SPEC / "structure_contract.yaml"))
+    return {
+        rule["construct"]: list(rule["allowed_in"])
+        for rule in contract["vba"]["forbidden_constructs"]
+        if isinstance(rule, dict)
+    }
+
+
+def test_ev_01_the_contract_grants_run_simulation_to_exactly_one_owner() -> None:
+    """One construct, one owner, named. Not "at least" and not "including"."""
+    grants = _scoped_grants()
+    assert grants.get("RunSimulation") == ["modSimReport"], grants.get("RunSimulation")
+    assert grants.get("MRG32k3a") == ["modSimRng"], grants.get("MRG32k3a")
+    # AND THE EMITTED MANIFEST AGREES, since that is what the harness reads.
+    emitted = {
+        rule["construct"]: list(rule["allowed_in"])
+        for rule in _emitted()["manifest"]["vba"]["forbidden_construct_rules"]
+    }
+    for construct, owners in grants.items():
+        assert emitted.get(construct) == owners, (construct, emitted.get(construct))
+
+
+def test_ev_02_every_scoped_grant_is_checked_as_a_grant() -> None:
+    """A granted construct asserted as globally forbidden is a contradiction.
+
+    The predicate is chosen from the CONTRACT, not from memory: a construct with
+    owners must be checked with `Test-ConstructScopedTo` naming that owner, and
+    a construct with none with `Test-ConstructForbiddenGlobally`.
+    """
+    source = _executable(SCENARIOS)
+    for construct, owners in _scoped_grants().items():
+        if not owners:
+            continue
+        assert len(owners) == 1, (construct, owners)
+        scoped = (
+            f"(Test-ConstructScopedTo -Manifest $Manifest -Construct '{construct}' "
+            f"-ModuleName '{owners[0]}')"
+        )
+        assert scoped in source, (
+            f"P5-EV does not check the scoped grant for {construct} against "
+            f"{owners[0]}"
+        )
+        stale = (
+            f"(Test-ConstructForbiddenGlobally -Manifest $Manifest "
+            f"-Construct '{construct}')"
+        )
+        assert stale not in source, (
+            f"P5-EV still asserts that {construct} is forbidden globally, which "
+            f"the contract contradicts: it is granted to {owners[0]}"
+        )
+        # And the check's WORDING must not claim the opposite of what it tests.
+        for line in source.splitlines():
+            if f"'{construct} " in line and "Add-Check" in line:
+                assert "forbidden in every module" not in line, line
+
+
+def test_ev_03_a_globally_forbidden_construct_is_still_checked_globally() -> None:
+    """The correction must not turn every rule into a grant."""
+    source = _executable(SCENARIOS)
+    grants = _scoped_grants()
+    for handler in ("Worksheet_Change", "Workbook_SheetChange"):
+        assert grants.get(handler, []) == [], (handler, grants.get(handler))
+    assert "foreach ($handler in 'Worksheet_Change', 'Workbook_SheetChange')" in source
+    assert "Test-ConstructForbiddenGlobally -Manifest $Manifest -Construct $handler" in source
+
+
+def test_ev_04_the_generic_module_aware_scan_stays_load_bearing() -> None:
+    """The two explicit scoped checks are additional, never a replacement.
+
+    The generic scan is what reads the REAL persisted project; the scoped checks
+    read the manifest. Losing the first would trade evidence about what Excel
+    holds for evidence about what the build said.
+    """
+    source = _executable(SCENARIOS)
+    for required in ("Get-ForbiddenConstructRules",
+                     "Test-ConstructForbiddenIn",
+                     "no forbidden construct exists in the EXECUTABLE code of the "
+                     "real Stage-B project"):
+        assert required in source, required
+    # It walks components and their code, not the manifest alone.
+    scan = source.split("Get-Phase5VbComponentInventory")[0]
+    assert "$offenders" in source
+    assert "Release-Transient $module 'CodeModule'" in source
+
+
+@contextmanager
+def _aimed(scenarios: str | None = None, spec_contract: str | None = None):
+    """Point the P5-EV controls at damaged copies for one mutation.
+
+    Module globals, restored on the exception path too. Nothing is written to
+    the repository: the copies live in a temporary directory that is removed on
+    the way out.
+    """
+    global SCENARIOS, SPEC
+    saved = (SCENARIOS, SPEC)
+    with tempfile.TemporaryDirectory(prefix="pccm-p5ev-mutation-") as name:
+        temp = Path(name)
+        try:
+            if scenarios is not None:
+                assert scenarios != _text(saved[0]), "the mutation changed nothing"
+                target = temp / saved[0].name
+                target.write_text(scenarios, encoding="utf-8")
+                SCENARIOS = target
+            if spec_contract is not None:
+                spec_dir = temp / "spec"
+                shutil.copytree(saved[1], spec_dir)
+                path = spec_dir / "structure_contract.yaml"
+                assert spec_contract != path.read_text(encoding="utf-8"), (
+                    "the mutation changed nothing"
+                )
+                path.write_text(spec_contract, encoding="utf-8")
+                SPEC = spec_dir
+            yield
+        finally:
+            SCENARIOS, SPEC = saved
+
+
+def _refuses(control, **damage) -> str:
+    with _aimed(**damage):
+        try:
+            control()
+        except AssertionError as error:
+            return str(error)
+    raise AssertionError(f"the mutation survived {control.__name__}")
+
+
+def test_ev_05_the_stale_global_assertion_is_refused() -> None:
+    """The exact line Runtime Run 3 failed on."""
+    damaged = _text(SCENARIOS).replace(
+        "$null = Add-Check $list 'RunSimulation is permitted in modSimReport and nowhere else' `\n"
+        "                (Test-ConstructScopedTo -Manifest $Manifest -Construct 'RunSimulation' "
+        "-ModuleName 'modSimReport')",
+        "$null = Add-Check $list 'RunSimulation is still forbidden in every module' `\n"
+        "                (Test-ConstructForbiddenGlobally -Manifest $Manifest "
+        "-Construct 'RunSimulation')", 1)
+    message = _refuses(test_ev_02_every_scoped_grant_is_checked_as_a_grant,
+                       scenarios=damaged)
+    # Either arm is a correct refusal: the scoped grant is no longer checked,
+    # and/or the contradicting global assertion is back.
+    assert ("scoped grant" in message) or ("forbidden globally" in message), message
+
+
+def test_ev_06_a_wrong_owner_in_the_scoped_check_is_refused() -> None:
+    """Naming the wrong module would grant the endpoint somewhere it is banned."""
+    damaged = _text(SCENARIOS).replace(
+        "-Construct 'RunSimulation' -ModuleName 'modSimReport')",
+        "-Construct 'RunSimulation' -ModuleName 'modSimNonce')", 1)
+    message = _refuses(test_ev_02_every_scoped_grant_is_checked_as_a_grant,
+                       scenarios=damaged)
+    assert "scoped grant" in message, message
+
+
+def test_ev_07_a_check_whose_wording_contradicts_its_predicate_is_refused() -> None:
+    """The predicate was corrected once and the sentence beside it was not; a
+    reader trusts the sentence."""
+    damaged = _text(SCENARIOS).replace(
+        "'RunSimulation is permitted in modSimReport and nowhere else'",
+        "'RunSimulation is still forbidden in every module'", 1)
+    _refuses(test_ev_02_every_scoped_grant_is_checked_as_a_grant, scenarios=damaged)
+
+
+def test_ev_08_widening_the_accepted_owner_set_is_refused() -> None:
+    """One construct, one owner. A second owner is a contract change."""
+    contract = _text(SPEC / "structure_contract.yaml")
+    anchor = ('    - construct: "RunSimulation"\n'
+              '      allowed_in:\n'
+              '        - "modSimReport"\n')
+    assert contract.count(anchor) == 1, "the contract's grant shape moved"
+    damaged = contract.replace(anchor, anchor + '        - "modSimNonce"\n', 1)
+    _refuses(test_ev_01_the_contract_grants_run_simulation_to_exactly_one_owner,
+             spec_contract=damaged)
+
+
+def test_ev_09_dropping_the_generic_scan_for_the_scoped_checks_is_refused() -> None:
+    """The scoped checks read the manifest; the generic scan reads the project."""
+    damaged = _text(SCENARIOS).replace(
+        "'no forbidden construct exists in the EXECUTABLE code of the real Stage-B project'",
+        "'the manifest declares its forbidden constructs'", 1)
+    _refuses(test_ev_04_the_generic_module_aware_scan_stays_load_bearing,
+             scenarios=damaged)
+
+
+def test_ev_10_a_globally_forbidden_handler_becomes_a_grant() -> None:
+    """The correction must not turn every rule into a scoped grant."""
+    damaged = _text(SCENARIOS).replace(
+        "(Test-ConstructForbiddenGlobally -Manifest $Manifest -Construct $handler)",
+        "($true)", 1)
+    _refuses(test_ev_03_a_globally_forbidden_construct_is_still_checked_globally,
+             scenarios=damaged)

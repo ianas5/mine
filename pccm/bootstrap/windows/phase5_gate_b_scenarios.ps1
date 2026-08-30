@@ -4007,12 +4007,26 @@ function Invoke-Phase5GateBScenarios {
                 $null = Add-Check $list ('the manifest forbids ' + $handler + ' globally') `
                     (Test-ConstructForbiddenGlobally -Manifest $Manifest -Construct $handler)
             }
-            # THE SCOPED GRANT IS CHECKED AS A GRANT, not merely tolerated. One
-            # construct, one owner, and the endpoint still forbidden everywhere.
+            # EVERY SCOPED GRANT IS CHECKED AS A GRANT, not merely tolerated:
+            # one construct, exactly one owner, and that owner by name.
+            #
+            # RUNTIME RUN 3. The RunSimulation line below used to assert
+            # `Test-ConstructForbiddenGlobally`, which was true when it was
+            # written and stopped being true the moment Step 11 granted the
+            # endpoint to modSimReport. It was the ONLY failed check in the only
+            # failed Phase-5 scenario of Run 3, and P6-PRE then correctly failed
+            # closed on it, so the entire Phase-6 behavioural matrix went
+            # unexecuted because the harness disagreed with the accepted
+            # contract about a grant the contract had already made.
+            #
+            # The generic module-aware executable scan above is unchanged and
+            # stays load-bearing; it passed on the real persisted project in
+            # Run 3. What is fixed here is a second, hand-written assertion that
+            # had not moved with the contract.
             $null = Add-Check $list 'MRG32k3a is permitted in modSimRng and nowhere else' `
                 (Test-ConstructScopedTo -Manifest $Manifest -Construct 'MRG32k3a' -ModuleName 'modSimRng')
-            $null = Add-Check $list 'RunSimulation is still forbidden in every module' `
-                (Test-ConstructForbiddenGlobally -Manifest $Manifest -Construct 'RunSimulation')
+            $null = Add-Check $list 'RunSimulation is permitted in modSimReport and nowhere else' `
+                (Test-ConstructScopedTo -Manifest $Manifest -Construct 'RunSimulation' -ModuleName 'modSimReport')
         } finally {
             if ($null -ne $components) { Release-Transient $components 'VBComponents'; $components = $null }
             if ($null -ne $project) { Release-Transient $project 'VBProject'; $project = $null }

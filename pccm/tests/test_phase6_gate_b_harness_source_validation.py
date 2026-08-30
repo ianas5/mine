@@ -1263,8 +1263,8 @@ def test_109_the_documented_command_would_overwrite_run_1s_log() -> None:
     doc_path = conformance.PCCM_ROOT / "docs" / "phase6_step13_gate_b.md"
     original = doc_path.read_text(encoding="utf-8")
     damaged = original.replace(
-        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run3.log",
-        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run2.log", 1)
+        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run4.log",
+        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run3.log", 1)
     assert damaged != original
     saved = conformance.PCCM_ROOT
     import tempfile
@@ -1357,3 +1357,48 @@ def test_116_the_production_baseline_pin_lags_the_repaired_source() -> None:
         "function Get-Phase6ProductionBaseline { return '5a5b183' }",
         "function Get-Phase6ProductionBaseline { return 'bc7949b' }")
     _control("test_52", phase6=damaged)
+
+
+def _phase5_freeze_refuses(damaged: str) -> str:
+    """Run the Phase-5 freeze control against damaged CURRENT content.
+
+    Only the current side is swapped. The accepted side is read from git by
+    path, so pointing the module at a temporary file would break that lookup
+    rather than test the control.
+    """
+    saved = conformance._current_lines
+
+    def current(path):
+        if path == conformance.PHASE5:
+            return damaged.splitlines()
+        return saved(path)
+
+    conformance._current_lines = current
+    try:
+        conformance.test_01b_the_only_change_to_the_phase5_scenarios_is_the_scoped_grant()
+    except AssertionError as error:
+        return str(error)
+    finally:
+        conformance._current_lines = saved
+    raise AssertionError("the mutation survived the Phase-5 freeze control")
+
+
+def test_117_the_phase5_block_loses_something_beyond_the_stale_assertion() -> None:
+    """The Phase-5 correction is one assertion. Anything else is a rewrite."""
+    original = conformance.PHASE5.read_text(encoding="utf-8")
+    damaged = original.replace(
+        "    $null = Add-Check $list 'the Phase-4 matrix has 0 FAIL' ($failed.Count -eq 0) `\n",
+        "", 1)
+    assert damaged != original
+    message = _phase5_freeze_refuses(damaged)
+    assert "beyond the stale assertion" in message, message
+
+
+def test_118_the_scoped_grant_correction_is_reverted() -> None:
+    """The stale assertion restored, in the file the Step-13 freeze watches."""
+    original = conformance.PHASE5.read_text(encoding="utf-8")
+    damaged = original.replace(
+        "$null = Add-Check $list 'RunSimulation is permitted in modSimReport and nowhere else' `",
+        "$null = Add-Check $list 'RunSimulation is still forbidden in every module' `", 1)
+    assert damaged != original
+    _phase5_freeze_refuses(damaged)

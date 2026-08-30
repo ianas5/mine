@@ -2,10 +2,12 @@
 
 **Status: HARNESS SOURCE, submitted for review. NO STEP-13 SCENARIO HAS EXECUTED.**
 
-Two Windows runs have been attempted. Run 1 aborted in the preflight before
-Excel started; Run 2 reached Excel, completed the Phase-4 matrix 35/35, and was
-stopped at the compile prerequisite by a genuine production compile defect. See
-the run ledger in [§8](#8-windows-run-ledger).
+Three Windows runs have been attempted. Run 1 aborted in the preflight before
+Excel started. Run 2 reached Excel and was stopped at the compile prerequisite
+by a genuine production compile defect. Run 3 **proved that repair on the real
+VBA compiler** and completed the Phase-4 matrix 35/35, but one stale Phase-5
+harness assertion failed, and the Phase-6 matrix correctly failed closed behind
+it. See the run ledger in [§8](#8-windows-run-ledger).
 
 **Not one Phase-6 procedure has executed**, no simulation has been performed and
 no parity comparison has been made. Every claim in this document about Step-13
@@ -466,13 +468,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **68** controls, in seven groups:
+`tests/test_phase6_gate_b_harness_source.py` — **69** controls, in seven groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **125** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **127** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -504,6 +506,16 @@ placeholder commit; the non-golden identity reduced to a note, made conditional
 on the golden case, or its currency check defanged; and the final log omitting
 the Phase-6 summary.
 
+Runtime Run 3 added ten controls to the Phase-5 harness suite
+(`test_ev_01`..`test_ev_10`): the contract grants `RunSimulation` to exactly one
+owner and the emitted manifest agrees; every scoped grant is checked **as a
+grant**, with the predicate chosen from the contract rather than from memory; a
+globally forbidden construct is still checked globally; the generic
+module-aware scan stays load-bearing; and six mutations — the stale global
+assertion restored, a wrong owner named, a check whose wording contradicts its
+predicate, the contract's owner set widened, the generic scan traded for the
+scoped ones, and a global rule turned into a grant.
+
 The final pre-execution review added a third group: the pending Phase-5 ledger
 read as an empty list, its count no longer required to be zero, the check dropped
 entirely, and `P5-LDG` emitted early to answer the question the wrong way; the
@@ -529,7 +541,7 @@ One command set, one working directory — the repository root:
 python pccm\builder\build_stage_a.py
 powershell -ExecutionPolicy Bypass -File .\pccm\bootstrap\windows\build_stage_b.ps1
 powershell -ExecutionPolicy Bypass -File .\pccm\bootstrap\windows\phase4_functional_test.ps1 `
-  *> .\pccm\bootstrap\windows\phase6_gate_b_run3.log
+  *> .\pccm\bootstrap\windows\phase6_gate_b_run4.log
 ```
 
 The third command runs everything: the Phase-6 block is dot-sourced into the
@@ -537,12 +549,12 @@ Phase-4 harness and runs inside its single COM lifecycle, against the disposable
 `%TEMP%` copy. There is no separate Phase-6 script to invoke and no second Excel
 instance.
 
-**The log name carries the run number**, and it is `run3` because Runs 1 and 2
-already happened — see the ledger in §8. Writing to an earlier run's log would
+**The log name carries the run number**, and it is `run4` because Runs 1, 2 and
+3 already happened — see the ledger in §8. Writing to an earlier run's log would
 overwrite evidence of an attempt that was made, and an aborted or blocked
-attempt is still evidence: Run 1 identified the defect in §3.1 and Run 2
-identified the two in §8.2. Each authorised run gets its own log, and no earlier
-one is renamed or overwritten.
+attempt is still evidence: Run 1 identified the defect in §3.1, Run 2 the two in
+§8.2, and Run 3 the one in §8.3. Each authorised run gets its own log, and no
+earlier one is renamed or overwritten.
 
 **Prerequisite.** Importing VBA requires *Trust access to the VBA project object
 model*. The scripts report it and stop if it is missing. They do not enable it,
@@ -557,7 +569,8 @@ Location — the same refusal that has held since the first readiness run.
 |---|---|---|
 | **Run 1** | `6365aeb` | **ABORTED PRE-EXCEL at `P6-PRE`.** Excel was never started. |
 | **Run 2** | `849d6bf` | **VALID runtime attempt.** Reached Excel; Phase-4 35/35; a production compile defect stopped `P5-CMP`; the Phase-5 and Phase-6 behavioural matrices were NOT executed. |
-| **Run 3** | `<Commit B>` | authorised in principle; **not yet executed** |
+| **Run 3** | `58a89f3` | **VALID runtime attempt.** `P5-CMP` PASS — the compile repair is runtime-proven; Phase-5 38/39; a stale `P5-EV` assertion blocked Phase 6; `P6-LDG` PASS. |
+| **Run 4** | `<this commit>` | authorised in principle; **not yet executed** |
 
 An aborted attempt is not nothing, and it is not renamed away when a later run
 succeeds: Run 1 is what found the defect §3.1 records, and it stays in this
@@ -702,3 +715,90 @@ release ledger is clean.
 **Not established, and not claimed:** anything about Phase-5 or Phase-6
 behaviour. Neither behavioural matrix executed. No Phase-6 procedure ran, no
 simulation was performed, and no parity comparison was made.
+
+### 8.3 Run 3 — compile repair proved; one stale assertion blocked Phase 6
+
+**The second valid runtime attempt, and it settled two open questions.**
+
+```
+Phase-4 final matrix               35/35 PASS, 0 FAIL, 0 SKIP
+Y, Z                               PASS
+natural Excel shutdown             PASS
+transient COM release ledger       PASS
+P5-CMP                             PASS
+Phase-5 Gate-B scenarios           39 reported, 38 passed
+P6-LDG                             PASS  (28 results recorded, 0 duplicates)
+```
+
+#### 8.3.1 Closed: the production compile repair
+
+`P5-CMP` established the correct PCCM VBProject identity, found and executed VBE
+command id 578, and the compiled state settled — enabled before `True`, one
+observation over 113 ms, last Enabled `False`.
+
+**The five-site `IsWholeInRange` repair in baseline `5a5b183` is runtime-proven
+on the real VBA compiler.** That is the first Step-13 claim to move from source
+evidence to runtime evidence.
+
+#### 8.3.2 Closed: the P6-LDG finalisation defect
+
+Run 3 reached finalisation and emitted `P6-LDG — PASS`, `scenario results
+recorded: 28`, `duplicate attempts: 0`. The Run-2 `$null.Count` failure is
+closed, and the PASS arm has now executed.
+
+#### 8.3.3 Open, and corrected here: a stale scoped-grant assertion
+
+Exactly one Phase-5 scenario failed, on exactly one check:
+
+```
+P5-EV   RunSimulation is still forbidden in every module
+```
+
+Everything else in `P5-EV` passed — including the generic module-aware scan of
+the **real persisted project**, which found no forbidden construct in executable
+code, and the `MRG32k3a` scoped grant.
+
+The accepted contract already reads:
+
+```yaml
+- construct: "RunSimulation"
+  allowed_in:
+    - "modSimReport"
+```
+
+so the assertion contradicted a grant the contract had made at Step 11. It was
+true when it was written and nothing moved it. `P6-PRE` then correctly failed
+closed on `P5-EV=FAIL`, and **the entire Phase-6 behavioural matrix went
+unexecuted** — the fail-closed design working exactly as intended, on a premise
+that was wrong.
+
+The correction is one assertion:
+
+```powershell
+'RunSimulation is permitted in modSimReport and nowhere else'
+Test-ConstructScopedTo -Manifest $Manifest -Construct 'RunSimulation' `
+                       -ModuleName 'modSimReport'
+```
+
+No contract changed, no production VBA changed, `RunSimulation` stays in
+`forbidden_constructs`, its `allowed_in` is not widened, and the generic
+module-aware scan is untouched and still load-bearing.
+
+**What let it through.** The harness held two statements about the same rule:
+one derived from the manifest at run time, one written by hand. The derived one
+moved with the contract; the hand-written one did not, and no control compared
+them. `test_ev_02` now chooses the predicate **from the contract** — a construct
+with owners must be checked with `Test-ConstructScopedTo` naming that owner, a
+construct with none with `Test-ConstructForbiddenGlobally` — so a future grant
+cannot leave a contradicting assertion behind.
+
+#### 8.3.4 What Run 3 did and did not establish
+
+**Established:** the compile repair, on the real compiler; Phase-4 35/35 again;
+38 of 39 Phase-5 scenarios; the `P6-LDG` correction; natural shutdown and a clean
+release ledger.
+
+**Not established, and not claimed:** every Phase-6 scenario from `P6-ART` to
+`P6-AXIS` is unexecuted. No Phase-6 procedure ran, no simulation was performed,
+no parity comparison was made, and `P6-ART`'s runtime source binding remains
+unproved. `P6-FIN` correctly failed because the matrix did not execute.
