@@ -41,6 +41,7 @@ from pccm_builder.vba_source import (  # noqa: E402
     contains_construct,
     load_modules,
     logical_statements,
+    strip_comments,
 )
 
 SRC_VBA = PCCM_ROOT / "src" / "vba"
@@ -73,7 +74,11 @@ PHASE5_ENDPOINTS = (
 )
 
 # Every hand-written module the accepted numerical/orchestration chain owns,
-# with the hash Step 11 and Round 4A left it at. Named, never counted.
+# with the hash the accepted work left it at. Named, never counted. Two entries
+# have moved since Step 11 / Round 4A, both for a defect a Windows run found and
+# both repointed in the same commit as the repair: modSimNonce and modSimReport
+# for the Run-2 `IsWholeInRange` arity defect, and modSimReport again for the
+# Run-4 `SameCell` blank-restore false negative.
 FROZEN_SOURCE = {
     "modSimRng": "3d7c2cb365df03ccf73722f39b0c10e8964381e7cdd243732381dac7638257e3",
     "modSimSample": "5553198289bd98a7c84025868ac03c9f8ec95da3c01b23249c0da57d77901877",
@@ -81,7 +86,7 @@ FROZEN_SOURCE = {
     "modSimStats": "98bd21b227047d04e6847e554e027b339cf01dfb1112c1539a9e334966233be0",
     "modSimFingerprint": "9e6ad972fe59ead9e34c7d65b807dd0f2ca1cb1b29bfa71b377a4eb8f65cdfda",
     "modSimNonce": "b4e2d71ec2c73311f5f15c37d6ddffc35b06eae0b3335c4f99d937f08b28da00",
-    "modSimReport": "e26693f00a956a379bae8e6f39bdd7fae90ffffc1c7b50326056d52808830671",
+    "modSimReport": "55e383ee883e8470cb1ebfc7932c35c452dbc4860804e844051d7074aafc11d6",
     "modCalcFingerprint": "2efbb30c6f915c04b9c07adec07e25e11f4b5bd2b98e3efa818631dc510ce847",
     "modCalcReport": "8252b935b256b1abad9b26ca6b1d90c92c5e0d7566906308b191cd03dd6a71b3",
 }
@@ -1116,3 +1121,212 @@ def test_36_the_range_check_helper_keeps_its_out_parameter() -> None:
     assert len(phase6) == 5, [call[0] for call in phase6]
     for caller, _target, _procedure, given, line in phase6:
         assert given == 4, f"{caller}: {given} argument(s) -- {line[:70]}"
+
+
+# ===========================================================================
+# The publication verify predicate, EVALUATED as written
+# ===========================================================================
+# Run 4 announced "the previous shared block could not be restored" while the
+# sheet showed a perfectly restored block. `SameCell` was the cause, and no
+# control could see it because every control here reads STRUCTURE. So this one
+# reads the predicate out of the module and RUNS it over the value pairs the
+# publication transaction actually produces.
+#
+# It is not a VBA interpreter. It evaluates the small vocabulary this one
+# function uses, over a model of the Variants Value2 returns, and it REFUSES
+# rather than guesses if the function grows a construct outside that vocabulary.
+class _VbaEmpty:
+    """VBA `Empty` - what `Range.Value2` returns for a blank cell."""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "Empty"
+
+
+EMPTY = _VbaEmpty()
+VB_EMPTY, VB_DOUBLE, VB_STRING = 0, 5, 8
+
+
+def _vb_vartype(value: object) -> int:
+    if value is EMPTY:
+        return VB_EMPTY
+    return VB_STRING if isinstance(value, str) else VB_DOUBLE
+
+
+def _vb_cstr(value: object) -> str:
+    if value is EMPTY:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _vb_len(value: object) -> int:
+    return len(_vb_cstr(value))
+
+
+def _vb_strcomp(left: str, right: str, _mode: int = 0) -> int:
+    return 0 if left == right else (-1 if left < right else 1)
+
+
+def _vb_is_numeric(value: object) -> bool:
+    # DELIBERATELY UNDECIDED FOR Empty. Whether VBA calls a blank numeric is a
+    # coercion only Windows can settle, and the predicate must not depend on it:
+    # it has to decide blank BEFORE it reaches a numeric test. Raising here is
+    # how this control refuses to guess.
+    if value is EMPTY:
+        raise AssertionError(
+            "SameCell reached IsNumeric with a blank; the blank cases must be "
+            "decided before any numeric coercion"
+        )
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _vb_cdbl(value: object) -> float:
+    if value is EMPTY:
+        return 0.0
+    return float(value)
+
+
+_VBA_NAMES = {
+    "IsEmpty": "_vb_is_empty", "VarType": "_vb_vartype", "Len": "_vb_len",
+    "CStr": "_vb_cstr", "StrComp": "_vb_strcomp", "IsNumeric": "_vb_is_numeric",
+    "CDbl": "_vb_cdbl", "vbString": str(VB_STRING), "vbBinaryCompare": "0",
+    "Not": "not", "And": "and", "Or": "or",
+}
+_VBA_EVAL_NAMESPACE = {
+    "_vb_is_empty": lambda value: value is EMPTY,
+    "_vb_vartype": _vb_vartype, "_vb_len": _vb_len, "_vb_cstr": _vb_cstr,
+    "_vb_strcomp": _vb_strcomp, "_vb_is_numeric": _vb_is_numeric,
+    "_vb_cdbl": _vb_cdbl,
+}
+
+
+def _vb_expression(text: str) -> str:
+    """Translate one VBA expression, and REFUSE anything outside the vocabulary."""
+    assert "<" not in text and ">" not in text, f"unsupported comparison: {text}"
+    translated = re.sub(r"\b[A-Za-z_]\w*\b",
+                        lambda m: _VBA_NAMES.get(m.group(0), m.group(0)), text)
+    translated = re.sub(r"(?<![=!<>])=(?!=)", "==", translated)
+    unknown = {name for name in re.findall(r"\b[A-Za-z_]\w*\b", translated)
+               if name not in set(_VBA_EVAL_NAMESPACE) | {"written", "wanted",
+                                                          "not", "and", "or"}}
+    assert not unknown, f"SameCell uses a construct this control cannot evaluate: {unknown}"
+    return translated
+
+
+def _same_cell_program() -> list[tuple[str, str]]:
+    """SameCell's statements, from the file, as (kind, payload) pairs."""
+    source = strip_comments(_procedure(REPORT, "SameCell"))
+    statements = [text for _, text in logical_statements(source)]
+    assert re.match(r"\s*Private Function SameCell\b", statements[0]), statements[0]
+    assert re.fullmatch(r"\s*End Function\s*", statements[-1]), statements[-1]
+    program: list[tuple[str, str]] = []
+    for statement in statements[1:-1]:
+        text = statement.strip()
+        guard = re.fullmatch(r"If\s+(.*?)\s+Then\s+Exit Function", text, re.I)
+        block = re.fullmatch(r"If\s+(.*?)\s+Then", text, re.I)
+        assign = re.fullmatch(r"SameCell\s*=\s*(.*)", text, re.I)
+        if guard:
+            program.append(("guard", guard.group(1)))
+        elif block:
+            program.append(("if", block.group(1)))
+        elif assign:
+            program.append(("set", assign.group(1)))
+        elif re.fullmatch(r"Exit Function", text, re.I):
+            program.append(("exit", ""))
+        elif re.fullmatch(r"End If", text, re.I):
+            program.append(("endif", ""))
+        else:
+            raise AssertionError(f"SameCell grew a statement this control cannot run: {text}")
+    return program
+
+
+def _same_cell(written: object, wanted: object) -> bool:
+    """Run the predicate AS WRITTEN over one pair of Variants."""
+    program = _same_cell_program()
+    scope = dict(_VBA_EVAL_NAMESPACE, written=written, wanted=wanted)
+    result, index, skipping = False, 0, False
+    while index < len(program):
+        kind, payload = program[index]
+        index += 1
+        if kind == "endif":
+            skipping = False
+            continue
+        if skipping:
+            continue
+        if kind == "if":
+            skipping = not eval(_vb_expression(payload), {"__builtins__": {}}, scope)
+        elif kind == "guard":
+            if eval(_vb_expression(payload), {"__builtins__": {}}, scope):
+                return result
+        elif kind == "set":
+            result = bool(eval(_vb_expression(payload), {"__builtins__": {}}, scope))
+        elif kind == "exit":
+            return result
+    return result
+
+
+def test_37_the_publication_verify_accepts_a_restored_blank() -> None:
+    """The Run-4 defect, as a truth table over the Variants Value2 returns.
+
+    `BuildCommitBlock` writes `vbNullString` into the blank fields of a CANDIDATE
+    block; `FinalCommit` captures the previous block with `Range.Value2`, which
+    returns `Empty` for those same fields. Both blocks are verified with the same
+    predicate, so it has to accept both spellings of blank - and reject a value
+    that is not blank at all, including the zero `CDbl(Empty)` would produce.
+    """
+    # THE RESTORE PATH: a captured blank, written back, read back as Empty.
+    assert _same_cell(EMPTY, EMPTY), (
+        "a blank restored over a blank does not verify; FinalCommit would "
+        "announce that the previous shared block could not be restored"
+    )
+    # THE CANDIDATE PATH, unchanged: a built vbNullString lands as a blank cell.
+    assert _same_cell(EMPTY, ""), "the candidate blank-write semantics were lost"
+    assert _same_cell("", EMPTY)
+    assert _same_cell("", "")
+
+    # AND BLANK IS STILL NOT ANYTHING ELSE. `_vb_is_numeric` refuses a blank, so
+    # these also prove the predicate settles every blank case before it coerces.
+    assert not _same_cell(0.0, EMPTY), (
+        "a fabricated zero verifies against a captured blank: CDbl(Empty) is 0"
+    )
+    assert not _same_cell(EMPTY, 0.0)
+    assert not _same_cell("text", EMPTY)
+    assert not _same_cell(EMPTY, "text")
+    assert not _same_cell(0.0, "")
+    assert not _same_cell("", 0.0)
+
+    # THE NON-BLANK COMPARISONS THE TRANSACTION ALSO DEPENDS ON.
+    assert _same_cell("BankA", "BankA")
+    assert not _same_cell("BankA", "BankB")
+    assert _same_cell(1234.0, 1234.0)
+    assert not _same_cell(1234.0, 1235.0)
+
+
+def test_38_the_whole_captured_commit_block_verifies_after_a_restore() -> None:
+    """Not one cell - the nine-field block FinalCommit actually restores.
+
+    Rows 3 and 6 are the blank ones: `BuildCommitBlock` leaves the detail blank
+    on success and the consumed nonce blank when no nonce was consumed, so a
+    previously published block captured off the sheet carries Empty there.
+    """
+    captured = [46264.9, "SUCCESS", EMPTY, "AUTO", 8891.0, EMPTY, "CURRENT",
+                46264.9, "BankA"]
+    assert all(_same_cell(value, value) for value in captured), (
+        "a captured block does not verify against itself, so SameBlock would "
+        "report a restore failure for a restore that physically succeeded"
+    )
+    # AND A BLOCK THAT CAME BACK WRONG IS STILL REFUSED.
+    damaged = list(captured)
+    damaged[8] = "BankB"
+    assert not all(_same_cell(new, old) for new, old in zip(damaged, captured))

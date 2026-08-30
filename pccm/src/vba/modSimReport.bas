@@ -24,14 +24,11 @@ Option Explicit
 '     modSimStats        the moments, the ladder and every contingency
 '     modSimFingerprint  the request fingerprint and the result digest
 '
-' --------------------------------------------------------------------------
-' WHY THE PUBLICATION HAS TWO BANKS
-' --------------------------------------------------------------------------
-' A candidate success is written ENTIRELY into the bank that is not published,
-' verified there, and published by one small final write that moves the active
-' bank. A failure at any earlier point leaves the published bank physically
-' untouched and the half-written candidate with no semantic standing at all,
-' because `active_bank` still names the other one.
+' WHY THE PUBLICATION HAS TWO BANKS. A candidate success is written ENTIRELY
+' into the bank that is not published, verified there, and published by one
+' small final write that moves the active bank. A failure at any earlier point
+' leaves the published bank physically untouched and the half-written candidate
+' with no semantic standing at all, because `active_bank` still names the other.
 '
 ' That is the only design under which "the prior successful publication
 ' survives" is structurally true. Writing over the published rows and stamping
@@ -39,20 +36,15 @@ Option Explicit
 ' rows, and no rollback of a million rows is a transaction anybody should
 ' attempt.
 '
-' --------------------------------------------------------------------------
-' WHAT THIS MODULE NEVER TOUCHES
-' --------------------------------------------------------------------------
-' Results. Not one cell. The Stage-A presentation formulas already read the
-' active bank, so publication is `_SimData` and only `_SimData`; a second
-' written transaction is exactly the failure mode where the distribution
-' commits and the sheet that shows it does not.
+' WHAT THIS MODULE NEVER TOUCHES. Results: not one cell. The Stage-A
+' presentation formulas already read the active bank, so publication is
+' `_SimData` and only `_SimData`; a second written transaction is exactly the
+' failure mode where the distribution commits and the sheet that shows it does
+' not. Selected Confidence Level: a reporting selector, not read here, not part
+' of the request identity, allocating nothing and deciding no status.
 '
-' Selected Confidence Level. It is a reporting selector: it is not read here, it
-' is not part of the request identity, it allocates nothing and it decides no
-' status.
-'
-' NOTHING IN THIS MODULE HAS BEEN EXECUTED. It is source, submitted for review.
-' Behaviour on real Excel is proven at Gate B.
+' RUN 4 EXECUTED THIS MODULE ON REAL EXCEL. The oracle/VBA result-digest
+' disagreement it exposed is OPEN and is not settled here.
 ' ==========================================================================
 
 ' The Gate-B failpoints. Public because a later harness arms them BY NAME.
@@ -1110,10 +1102,18 @@ Private Function WrittenCell(ByRef written As Variant, ByVal row As Long, _
 End Function
 
 Private Function SameCell(ByVal written As Variant, ByVal wanted As Variant) As Boolean
-    If IsEmpty(written) Then
-        SameCell = (VarType(wanted) = vbString And Len(CStr(wanted)) = 0)
+    ' BLANK MATCHES ONLY BLANK - the rule modCalcReport already carries. Value2
+    ' reads a blank cell as Empty, so a block CAPTURED off the sheet holds Empty
+    ' exactly where a block BUILT for a candidate holds vbNullString; testing
+    ' only the built form called a successful blank-to-blank RESTORE a restore
+    ' failure. Testing the written side too keeps CDbl(Empty) = 0 from letting a
+    ' fabricated zero verify against a captured blank.
+    If IsEmpty(wanted) Or (VarType(wanted) = vbString And Len(CStr(wanted)) = 0) Then
+        SameCell = IsEmpty(written) Or _
+                   (VarType(written) = vbString And Len(CStr(written)) = 0)
         Exit Function
     End If
+    If IsEmpty(written) Then Exit Function
     If VarType(wanted) = vbString Then
         SameCell = (StrComp(CStr(written), CStr(wanted), vbBinaryCompare) = 0)
         Exit Function

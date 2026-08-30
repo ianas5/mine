@@ -864,3 +864,66 @@ def test_71_the_helper_signature_is_widened_to_hide_the_defect() -> None:
         "Public Function IsWholeInRange(ByVal Value As Variant, ByVal MinValue As Double, _\n"
         "                               ByVal MaxValue As Double, Optional ByRef Result As Double) As Boolean\n")
     _control("test_36", vba={"modWorkbook.bas": damaged})
+
+
+# ===========================================================================
+# The Run-4 publication verify defect
+# ===========================================================================
+_BLANK_RULE = """    If IsEmpty(wanted) Or (VarType(wanted) = vbString And Len(CStr(wanted)) = 0) Then
+        SameCell = IsEmpty(written) Or _
+                   (VarType(written) = vbString And Len(CStr(written)) = 0)
+        Exit Function
+    End If
+    If IsEmpty(written) Then Exit Function
+"""
+
+
+def test_72_the_one_sided_blank_rule_is_restored() -> None:
+    """The submitted shape, and Run 4 announced a restore failure over it.
+
+    A captured block carries Empty where a built block carries vbNullString, so
+    testing only `wanted` for the built spelling made Empty = Empty false.
+    """
+    damaged = _swap(_REPORT, _BLANK_RULE,
+                    """    If IsEmpty(written) Then
+        SameCell = (VarType(wanted) = vbString And Len(CStr(wanted)) = 0)
+        Exit Function
+    End If
+""")
+    _control("test_37", vba={REPORT_BAS: damaged})
+
+
+def test_73_the_blank_written_guard_is_dropped() -> None:
+    """Without it the predicate falls through to `IsNumeric(Empty)` - a coercion
+    the project has decided not to rely on, and one Linux cannot settle."""
+    damaged = _swap(_REPORT, "    If IsEmpty(written) Then Exit Function\n", "")
+    _control("test_37", vba={REPORT_BAS: damaged})
+
+
+def test_74_the_blank_branch_accepts_anything() -> None:
+    """A verify that says yes is not a verify."""
+    damaged = _swap(_REPORT,
+                    """        SameCell = IsEmpty(written) Or _
+                   (VarType(written) = vbString And Len(CStr(written)) = 0)
+""",
+                    "        SameCell = True\n")
+    _control("test_37", vba={REPORT_BAS: damaged})
+
+
+def test_75_the_candidate_blank_write_semantics_are_dropped() -> None:
+    """A built block writes vbNullString and the cell reads back Empty; a rule
+    that recognises only Empty would fail the CANDIDATE verify instead."""
+    damaged = _swap(_REPORT,
+                    """        SameCell = IsEmpty(written) Or _
+                   (VarType(written) = vbString And Len(CStr(written)) = 0)
+""",
+                    "        SameCell = IsEmpty(written)\n")
+    _control("test_37", vba={REPORT_BAS: damaged})
+
+
+def test_76_the_predicate_stops_separating_the_two_banks() -> None:
+    """The block-level control: a restore that came back naming the other bank."""
+    damaged = _swap(_REPORT,
+                    "        SameCell = (StrComp(CStr(written), CStr(wanted), vbBinaryCompare) = 0)\n",
+                    "        SameCell = True\n")
+    _control("test_38", vba={REPORT_BAS: damaged})
