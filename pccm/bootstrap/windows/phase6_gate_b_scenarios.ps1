@@ -98,7 +98,7 @@ function Get-Phase6FixtureScenarioIds {
 # reviewed. It is NOT `git rev-parse HEAD`: HEAD on the runtime tree is the
 # RUNTIME-HARNESS commit, and reporting it as the production baseline would
 # conflate the two identities the Step-13 authorisation requires to be distinct.
-function Get-Phase6ProductionBaseline { return '5a5b183' }
+function Get-Phase6ProductionBaseline { return '79e4600' }
 
 # The accepted Phase-6 production modules whose bytes must be the baseline's.
 # Named, never counted, and never inferred from the compiled project: that a
@@ -880,6 +880,55 @@ function Add-Phase6ParityChecks {
 }
 
 # ===========================================================================
+# THE PRE-OPEN ARTEFACT CAPTURE
+# ===========================================================================
+# CALLED BY THE DRIVER, BEFORE THE FUNCTIONAL EXCEL INSTANCE OPENS ANYTHING.
+#
+# Run 4 failed P6-ART on
+#
+#   The file '...\PCCM_stageB.xlsm' cannot be read: The process cannot access
+#   the file because it is being used by another process.
+#
+# because the scenario hashed the executed .xlsm while Excel held it open. That
+# is a defect in the evidence harness and says nothing about the source binding.
+#
+# HASHING build\PCCM_stageB.xlsm INSTEAD WOULD NOT BE A FIX. The artefact
+# P6-ART has to identify is the disposable copy this session actually consumed,
+# not the directory it was seeded from; the two are expected to be equal and the
+# whole point of the check is to not assume it. So the hash is taken of the
+# SAME path, at the only moment it is both built and unlocked: after the Stage-B
+# bootstrap has finished and closed its own Excel, and before the functional
+# instance opens it.
+#
+# The capture NEVER throws. A file that is missing or unreadable is recorded as
+# such and P6-ART fails closed on it; an evidence step that could abort the run
+# would be a worse defect than the one it replaces.
+function Get-Phase6RuntimeArtefactIdentity {
+    param([string]$TempRoot, $Manifest)
+
+    $captured = @()
+    foreach ($item in @(
+        @{ Label = 'Stage-A workbook (build input)'; Name = [string]$Manifest.stage_a_filename },
+        @{ Label = 'executed .xlsm (this session)';  Name = [string]$Manifest.stage_b_filename })) {
+        $path = Join-Path $TempRoot $item.Name
+        $hash = ''
+        $problem = ''
+        try {
+            if (Test-Path -LiteralPath $path) {
+                $hash = [string](Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            } else {
+                $problem = 'not found'
+            }
+        } catch {
+            $problem = [string]$_.Exception.Message
+        }
+        $captured += @{ Label = $item.Label; Name = $item.Name; Path = $path;
+                        Hash = $hash; Problem = $problem }
+    }
+    return ,$captured
+}
+
+# ===========================================================================
 # THE DRIVER
 # ===========================================================================
 function Invoke-Phase6GateBScenarios {
@@ -887,7 +936,7 @@ function Invoke-Phase6GateBScenarios {
         $Excel, $Workbook, $Manifest, $Inspection, $Cases,
         $SimInspection, $GateBCases,
         [string]$ScriptDir, [string]$TempRoot, $Results,
-        [string]$HarnessCommit, [string]$RepoRoot
+        [string]$HarnessCommit, [string]$RepoRoot, $ArtefactIdentity
     )
 
     Reset-Phase6ResultLedger
@@ -1181,18 +1230,37 @@ function Invoke-Phase6GateBScenarios {
         # disposable copy the Phase-4 harness made and the bootstrap read - not
         # in build/, so the hashes describe this run rather than the directory
         # it was seeded from.
-        foreach ($item in @(
-            @{ Label = 'Stage-A workbook (build input)';
-               Path = (Join-Path $TempRoot ([string]$Manifest.stage_a_filename)) },
-            @{ Label = 'executed .xlsm (this session)';
-               Path = (Join-Path $TempRoot ([string]$Manifest.stage_b_filename)) })) {
-            if (Test-Path -LiteralPath $item.Path) {
-                $hash = (Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash
-                $lines += ($item.Label + ' : ' + $hash)
-            } else {
-                $lines += ($item.Label + ' : NOT FOUND at ' + $item.Path)
-            }
+        #
+        # AND THE TWO WORKBOOKS ARE NOT HASHED HERE. Excel holds the executed
+        # .xlsm open for the whole of this scenario, and Run 4 died on exactly
+        # that: Get-FileHash cannot read a file another process has locked. The
+        # driver captures both workbook hashes after the Stage-B bootstrap has
+        # closed its own Excel and BEFORE the functional instance opens
+        # anything, and passes the captured record in. This scenario consumes
+        # it, binds it to the workbook actually open, and fails closed if it is
+        # absent or incomplete - it never re-reads those two files.
+        $captured = @($ArtefactIdentity)
+        $null = Add-Check $list 'the workbook identities were captured before Excel opened them' `
+            ($captured.Count -eq 2) ('captured records: ' + $captured.Count)
+        $openPath = ''
+        try { $openPath = [string]$Workbook.FullName } catch { $openPath = '' }
+        foreach ($item in $captured) {
+            $ok = ($item.Hash -match '^[0-9A-Fa-f]{64}$')
+            $null = Add-Check $list `
+                ('the ' + [string]$item.Label + ' was hashed before the run') `
+                $ok ([string]$item.Path + ' ' + [string]$item.Problem)
+            $lines += ([string]$item.Label + ' : ' +
+                       $(if ($ok) { [string]$item.Hash } else { 'NOT CAPTURED ' + [string]$item.Problem }))
         }
+        # THE BINDING. A hash taken before the open is evidence about THIS
+        # session only if the file Excel opened is the file that was hashed.
+        $executed = @($captured | Where-Object { [string]$_.Name -ceq [string]$Manifest.stage_b_filename })
+        $null = Add-Check $list 'the captured .xlsm is the workbook this session opened' `
+            (($executed.Count -eq 1) -and
+             (-not [string]::IsNullOrWhiteSpace($openPath)) -and
+             ([string]$executed[0].Path -ceq $openPath)) `
+            ('captured ' + $(if ($executed.Count -eq 1) { [string]$executed[0].Path } else { '<none>' }) +
+             ', open ' + $openPath)
         foreach ($item in @(
             @{ Label = 'stage_b_manifest.json         '; Name = 'stage_b_manifest.json' },
             @{ Label = 'phase6_gate_b_inspection.json '; Name = 'phase6_gate_b_inspection.json' },
@@ -2165,15 +2233,64 @@ function Invoke-Phase6GateBScenarios {
             [char]39 + $activeBefore + [char]39) `
             ((Get-Phase6ActiveBank -State $after) -ceq $activeBefore) `
             (Format-SimValue $after['shared']['active_bank'])
-        # THE PRIOR SHARED BLOCK IS BACK, field by field, except the two attempt
-        # rows the failure path legitimately rewrites afterwards.
-        foreach ($key in $before['shared'].Keys) {
-            if (($key -eq 'last_attempt_result') -or ($key -eq 'last_attempt_detail')) { continue }
+        # WHAT MUST COME BACK, AND WHAT MUST NOT.
+        #
+        # Production does not restore and return. `FinalCommit` restores the
+        # shared commit block, and `RecordFailure` then calls `WriteAttemptBlock`,
+        # which rewrites the whole attempt and status range in one assignment -
+        # every `attempt` row and both `derived` rows, the second of which is a
+        # fresh `Now`. Run 4 failed this scenario on that timestamp moving, which
+        # is correct bookkeeping being reported as a restore failure.
+        #
+        # THE PARTITION COMES FROM THE PROJECTION, not from a list written here.
+        # The durable rows are the shared rows production's attempt range does
+        # not contain - the run identity counter and the publication selector -
+        # and a row that changed group in the contract would move between these
+        # two demands on its own instead of leaving a stale list behind.
+        $groups = $SimInspection.sim_data.run_identity.groups
+        $rewritten = @('attempt', 'derived')
+        $durable = @($before['shared'].Keys | Where-Object {
+            $rewritten -notcontains [string]$groups.$_ })
+        $null = Add-Check $list 'the projection names the shared rows a failed attempt must preserve' `
+            ($durable.Count -gt 0) ('durable shared rows: ' + ($durable -join ', '))
+        foreach ($key in $durable) {
             $null = Add-Check $list ('the restored shared block preserves ' + $key) `
                 (Test-SimSameValue -A $before['shared'][$key] -B $after['shared'][$key]) `
                 ('was ' + (Format-SimValue $before['shared'][$key]) + ', now ' +
                  (Format-SimValue $after['shared'][$key]))
         }
+
+        # THE DERIVED STATUS IS NOT AN ATTEMPT REPORT. Nothing was published, so
+        # the published bank and the request that matches it are exactly what
+        # they were, and the derived state must be too. Only its stamp may move.
+        $null = Add-Check $list 'the derived simulation status is unchanged by the failed attempt' `
+            (Test-SimSameValue -A $before['shared']['simulation_status'] `
+                               -B $after['shared']['simulation_status']) `
+            ('was ' + (Format-SimValue $before['shared']['simulation_status']) + ', now ' +
+             (Format-SimValue $after['shared']['simulation_status']))
+        $null = Add-Check $list 'the status stamp is still populated after the failure' `
+            (-not (Test-SimBlank -Value $after['shared']['status_evaluated_at'])) `
+            (Format-SimValue $after['shared']['status_evaluated_at'])
+
+        # AND THE FAILURE IS RECORDED, which is a different demand from
+        # preservation: the attempt rows must SAY what happened.
+        $detail = [string]$after['shared']['last_attempt_detail']
+        $null = Add-Check $list 'the attempt detail names the injected failure stage' `
+            ($detail -like ('*' + [string]$failpoints.FinalCommit + '*')) $detail
+        # THE PRODUCTION REPAIR, MADE LOAD-BEARING. Run 4 returned "the previous
+        # shared block could not be restored" over a block this scenario could
+        # see was perfectly restored, because the publication verify would not
+        # accept a captured blank against the blank it was written back over. The
+        # durable rows above prove the restore happened; this proves production
+        # says so, and a recovery decision is made on what production says.
+        $null = Add-Check $list 'the attempt detail does not claim the restore failed' `
+            ($detail -notlike '*could not be restored*') $detail
+        # AND THE CANDIDATE WAS NEVER PUBLISHED. The candidate bank itself is
+        # expected to hold a fully written, verified candidate: the failpoint
+        # fires after that. What must not have happened is the selector moving.
+        $null = Add-Check $list ('the candidate bank ' + $candidate + ' is not the published bank') `
+            ((Get-Phase6ActiveBank -State $after) -cne $candidate) `
+            (Format-SimValue $after['shared']['active_bank'])
         if (-not [string]::IsNullOrEmpty($activeBefore)) {
             Add-SimUnchangedChecks -List $list -Before $before[('bank_' + $activeBefore)] `
                 -After $after[('bank_' + $activeBefore)] `

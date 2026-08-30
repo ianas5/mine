@@ -49,11 +49,13 @@ sys.path.insert(0, str(PCCM_ROOT / "tests"))
 from pccm_builder import (  # noqa: E402
     RngReference,
     load_calc_contract,
+    result_digest,
     load_contract,
     load_sim_contract,
     load_structure_contract,
 )
-from pccm_builder.calc_cases import tolerances_from  # noqa: E402
+from pccm_builder.calc_cases import to_model, tolerances_from  # noqa: E402
+from pccm_builder.sim_cases import GATE_B_PARITY_PLAN_CASES  # noqa: E402
 from pccm_builder.calc_numeric import (  # noqa: E402
     CalculationRefusal,
     safe_product,
@@ -1384,3 +1386,51 @@ def test_54_nominal_and_pv_diverge_when_their_factors_do() -> None:
     for a, b in zip(nominal, pv):
         assert b <= a, (a, b)
     assert any(b < a for a, b in zip(nominal, pv))
+
+
+def test_55_the_written_algorithm_reproduces_the_oracle_on_every_parity_case() -> None:
+    """Run 4's P6-ORA disagreement is NOT a disagreement between the algorithms.
+
+    Every Gate-B parity case is run twice here at the corpus's own seed and
+    iteration count: once through the accepted Python oracle, and once through
+    the statements `modSimRng`, `modSimSample` and `modSimEngine` actually write
+    down. The comparison is bit-for-bit over all 1000 retained iterations of
+    BOTH measures, and then over the result digest, which is exact by contract.
+
+    That matters for the open P6-ORA investigation. Real Excel produced a
+    different digest for all four cases, and this control says the difference
+    cannot be attributed to what either implementation writes down: it has to
+    come from how the VBA RUNTIME executes those statements - evaluation
+    precision, the intrinsics, coercion - which is the one thing a Linux
+    transcription cannot settle and which this file has always disclaimed.
+
+    It is pinned here so that a later numerical change cannot quietly move one
+    side while the runtime question is still open.
+    """
+    from pccm_builder.calc_cases import CASES as PLAN_CASES
+    from pccm_builder.sim_cases import GATE_B_ITERATIONS, GATE_B_SUPPLIED_SEED
+
+    by_id = {case["id"]: case for case in PLAN_CASES}
+    # (plan case id, sampling mechanism, is the golden case) - the corpus's
+    # own list, so a corpus that adds a case adds it here too.
+    parity = [by_id[entry[0]] for entry in GATE_B_PARITY_PLAN_CASES]
+    assert len(parity) == len(GATE_B_PARITY_PLAN_CASES) >= 4, parity
+
+    for plan in parity:
+        model = to_model(plan["model"])
+        expected = _oracle(model, seed=GATE_B_SUPPLIED_SEED,
+                           iterations=GATE_B_ITERATIONS)
+        ok, nominal, pv, detail = _run(_factor_records(model),
+                                       seed=GATE_B_SUPPLIED_SEED,
+                                       iterations=GATE_B_ITERATIONS)
+        assert ok, (plan["id"], detail)
+        assert len(nominal) == len(pv) == GATE_B_ITERATIONS
+        divergent = [index for index in range(GATE_B_ITERATIONS)
+                     if nominal[index] != expected.total_nominal[index]
+                     or pv[index] != expected.total_pv[index]]
+        assert not divergent, (
+            f"plan case {plan['id']}: the written algorithm and the oracle "
+            f"first disagree at retained iteration {divergent[0]}"
+        )
+        assert result_digest(expected.sim_method_version, nominal, pv) == \
+            expected.result_digest, plan["id"]

@@ -1,36 +1,41 @@
 # PCCM Phase 6 — Step 13: the Windows/Excel Gate-B runtime harness
 
-**Status: HARNESS SOURCE UNDER RUNTIME VALIDATION. Runs 1–3 have executed; the
-Phase-6 behavioural matrix `P6-ART` through `P6-AXIS` has not yet executed.**
+**Status: THE PHASE-6 BEHAVIOURAL MATRIX HAS EXECUTED. Runs 1–4 have run;
+Run 4 executed `P6-ART` through `P6-AXIS` and reported 24 of 29 passing, with
+five FAILs that are three defects.**
 
-Step-13 runtime has **partially** executed, through Runs 1–3. Run 1 aborted in
-the preflight before Excel started. Run 2 reached Excel and was stopped at the
-compile prerequisite by a genuine production compile defect. Run 3 **proved that
-repair on the real VBA compiler**, completed the Phase-4 matrix 35/35, and
-reached finalisation with `P6-LDG` PASS; one stale Phase-5 harness assertion
-failed, and the Phase-6 matrix correctly failed closed behind it. See the run
-ledger in [§8](#8-windows-run-ledger).
+Step-13 runtime has executed through Runs 1–4. Run 1 aborted in the preflight
+before Excel started. Run 2 reached Excel and was stopped at the compile
+prerequisite by a genuine production compile defect. Run 3 **proved that repair
+on the real VBA compiler** and reached finalisation, but a stale Phase-5
+assertion failed and the Phase-6 matrix correctly failed closed behind it.
+**Run 4 is the first valid execution of the Phase-6 behavioural matrix**: a real
+production simulation ran in real Excel, published, repeated and recovered. See
+the run ledger in [§8](#8-windows-run-ledger).
 
-**Runtime-proven, and no further.** Windows evidence now carries exactly these
-claims: the accepted workbook builds, opens and **compiles** on the real VBA
-compiler; the Phase-4 lifecycle matrix runs 35/35 with a natural shutdown and a
-clean COM release ledger; 38 of the 39 Phase-5 Gate-B scenarios pass; and the
-Phase-6 result ledger finalises. Those claims, and only those, have moved from
-source evidence to runtime evidence.
+**Runtime-proven, and no further.** Windows evidence now carries: the compile on
+the real VBA compiler; the Phase-4 lifecycle matrix 35/35 with a natural
+shutdown and a clean COM release ledger; all 39 Phase-5 Gate-B scenarios; and 24
+of the 29 Phase-6 scenarios — the public surface, the button, a FIXED run that
+publishes, bank alternation, the AUTO lifecycle and its no-replay invariant, all
+five recovery classes, the durable `F21` protocol, run-ID exhaustion, the
+attempt-result axis correction of Step 12, and the result ledger. **FIXED
+repeatability is runtime-proven**: two runs of the same request published the
+same workbook digest.
 
-**Still source-only.** The Phase-6 behavioural matrix, `P6-ART` through
-`P6-AXIS`, remains **unexecuted**. No production Phase-6 simulation procedure has
-executed, no simulation has been performed, and no oracle parity result has been
-established. Every claim in this document about Phase-6 *behaviour* remains a
-statement about source.
+**Open, and not claimed.** Real Excel and the accepted Python oracle disagree on
+the result digest for all four parity cases, and **no ownership is assigned**:
+[§9](#9-p6-ora-the-open-parity-disagreement) records what has been localised and
+what has not. `P6-DET` and `P6-FIN` are derivative of that one disagreement and
+of the scenarios above them. Nothing here admits a tolerance, and the
+result-digest contract is unchanged.
 
 ```
 static / source evidence   !=   Windows / Excel runtime evidence
 ```
 
 That line is the whole point of Step 13, and this document keeps it in front of
-the reader rather than at the end — with the boundary drawn where Runs 1–3
-actually left it, and not where it stood before the first run.
+the reader rather than at the end — with the boundary drawn where Run 4 left it.
 
 ---
 
@@ -480,13 +485,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **70** controls, in eight groups:
+`tests/test_phase6_gate_b_harness_source.py` — **72** controls, in nine groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **132** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **146** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -550,11 +555,40 @@ that anything has executed is refused; the preamble must name every attempted
 run, say the execution is **partial**, bound the runtime-proven claims to what
 those runs established, name `P6-ART` through `P6-AXIS` as still unexecuted, and
 scope its source-only claim to Phase-6 *behaviour* rather than to Step 13 whole.
-Its five mutations restore the stale preamble, drop the `P6-ART`..`P6-AXIS`
-distinction, sweep the source-only claim back across Step 13, stop calling the
-execution partial, and take the bound off the runtime-proven list. Section 8 is
-left byte-identical in all five: **history is not edited when the present tense
+Run 4 then falsified that control's own premises, which is the lesson it now
+carries: its demands are **conditioned on the ledger** rather than written down.
+A run that reports a Phase-6 tally is a run in which the matrix executed, and
+from that moment the preamble must say so and must stop saying the opposite —
+but must also name what is still open and say the open item is unattributed,
+because the danger has flipped from under-claiming to over-claiming. Its seven
+mutations restore the stale preamble, restore the wording accepted for Runs 1-3,
+put back the unexecuted claim on its own, sweep the source-only claim across
+Step 13, report the executed matrix without its open item, take the bound off
+the runtime-proven list, and report the disagreement as attributed. Section 8 is
+left byte-identical in all seven: **history is not edited when the present tense
 changes**, and "Neither behavioural matrix executed" stays true of Run 2 forever.
+
+Run 4 added a ninth, one control per defect it found. `test_67` requires the two
+workbook hashes to be captured before Excel opens them, from the consumed copy
+rather than `build/`, under a handler that cannot abort the run, and bound to the
+workbook actually opened; `test_68` requires the `P6-FP3` preservation set to be
+derived from the projection's row groups rather than named by hand, the derived
+status to be unchanged, and the attempt detail to name the injected stage and not
+to claim the restore failed. Twelve mutations: the open workbook hashed again,
+the capture aimed at `build/`, the capture allowed to throw, a missing or
+malformed capture accepted, the open-workbook binding defanged; and the
+hand-written skip list restored, the projection partition traded for a literal,
+an empty durable set accepted, the restore claim dropped, the derived status
+allowed to drift, and the candidate claim demoted back to a note.
+
+The Run-4 production repair is controlled in the integration battery instead,
+where the module lives: `test_37` and `test_38` in
+`tests/test_phase6_integration_source.py` **run** the publication verify
+predicate over the Variants `Value2` returns, and five mutations
+(`test_72`..`test_76`) restore the one-sided blank rule, drop the blank-written
+guard, make the blank branch unconditional, drop the candidate blank-write
+semantics and defang the string comparison. `test_55` in
+`tests/test_phase6_sim_engine_vba.py` pins the P6-ORA localisation.
 
 ---
 
@@ -566,7 +600,7 @@ One command set, one working directory — the repository root:
 python pccm\builder\build_stage_a.py
 powershell -ExecutionPolicy Bypass -File .\pccm\bootstrap\windows\build_stage_b.ps1
 powershell -ExecutionPolicy Bypass -File .\pccm\bootstrap\windows\phase4_functional_test.ps1 `
-  *> .\pccm\bootstrap\windows\phase6_gate_b_run4.log
+  *> .\pccm\bootstrap\windows\phase6_gate_b_run5.log
 ```
 
 The third command runs everything: the Phase-6 block is dot-sourced into the
@@ -574,11 +608,11 @@ Phase-4 harness and runs inside its single COM lifecycle, against the disposable
 `%TEMP%` copy. There is no separate Phase-6 script to invoke and no second Excel
 instance.
 
-**The log name carries the run number**, and it is `run4` because Runs 1, 2 and
-3 already happened — see the ledger in §8. Writing to an earlier run's log would
+**The log name carries the run number**, and it is `run5` because Runs 1, 2, 3
+and 4 already happened — see the ledger in §8. Writing to an earlier run's log would
 overwrite evidence of an attempt that was made, and an aborted or blocked
 attempt is still evidence: Run 1 identified the defect in §3.1, Run 2 the two in
-§8.2, and Run 3 the one in §8.3. Each authorised run gets its own log, and no
+§8.2, Run 3 the one in §8.3 and Run 4 the three in §8.4. Each authorised run gets its own log, and no
 earlier one is renamed or overwritten.
 
 **Prerequisite.** Importing VBA requires *Trust access to the VBA project object
@@ -595,7 +629,8 @@ Location — the same refusal that has held since the first readiness run.
 | **Run 1** | `6365aeb` | **ABORTED PRE-EXCEL at `P6-PRE`.** Excel was never started. |
 | **Run 2** | `849d6bf` | **VALID runtime attempt.** Reached Excel; Phase-4 35/35; a production compile defect stopped `P5-CMP`; the Phase-5 and Phase-6 behavioural matrices were NOT executed. |
 | **Run 3** | `58a89f3` | **VALID runtime attempt.** `P5-CMP` PASS — the compile repair is runtime-proven; Phase-5 38/39; a stale `P5-EV` assertion blocked Phase 6; `P6-LDG` PASS. |
-| **Run 4** | `<this commit>` | authorised in principle; **not yet executed** |
+| **Run 4** | `6cb7f06` | **VALID runtime attempt, and the first behavioural one.** 98 passed, 5 failed; Phase-4 35/35; Phase-5 39/39; Phase-6 24/29; `P6-LDG` PASS. |
+| **Run 5** | `<this commit>` | authorised in principle; **not yet executed** |
 
 An aborted attempt is not nothing, and it is not renamed away when a later run
 succeeds: Run 1 is what found the defect §3.1 records, and it stays in this
@@ -827,3 +862,246 @@ release ledger.
 `P6-AXIS` is unexecuted. No Phase-6 procedure ran, no simulation was performed,
 no parity comparison was made, and `P6-ART`'s runtime source binding remains
 unproved. `P6-FIN` correctly failed because the matrix did not execute.
+
+### 8.4 Run 4 — the Phase-6 behavioural matrix executed
+
+**The first valid execution of the Phase-6 matrix, and the boundary Step 13 was
+built to reach.** A real production simulation ran in real Excel.
+
+```
+Phase-4 structural matrix          35 of 35
+Phase-5 Gate-B scenarios           39 reported, 39 passed
+Phase-6 Gate-B scenarios           29 reported, 24 passed
+P5-LDG                             PASS  (36 results, 0 duplicates)
+P6-LDG                             PASS  (28 results, 0 duplicates)
+natural PID exit                   True
+emergency shutdown required        False
+transient COM release ledger       clean
+                                   98 passed, 5 failed, 0 skipped
+```
+
+Retained working copy: `C:\Users\pcd\AppData\Local\Temp\pccm-phase4-20260830-220102`.
+
+**Five FAIL labels, three defects.** Two of the five are derivative and are not
+counted twice.
+
+| Scenario | Classification |
+|---|---|
+| `P6-ART` | **harness defect** — a Windows file lock, corrected here |
+| `P6-ORA` | **open** — a real cross-implementation disagreement, owner unresolved |
+| `P6-DET` | **derivative of `P6-ORA`** — no determinism defect exists |
+| `P6-FP3` | **two defects** — one production, one harness, both corrected here |
+| `P6-FIN` | **derivative** — completeness correctly refused an incomplete matrix |
+
+#### 8.4.1 `P6-ART` — a harness defect, and not a source-binding one
+
+```
+The file '...\PCCM_stageB.xlsm' cannot be read:
+The process cannot access the file because it is being used by another process.
+```
+
+The scenario hashed the executed `.xlsm` while the functional Excel instance
+held it open. Nothing about the production source binding is implicated, and no
+production change is justified by it.
+
+**The fix is not to hash something else.** The artefact `P6-ART` must identify is
+the disposable copy this session actually consumed; hashing `build\` instead
+would identify the directory the run was seeded from and would quietly assume the
+equality the check exists to test. So the same path is hashed at the only moment
+it is both built and unlocked — after the Stage-B bootstrap has closed its own
+Excel and **before** the functional instance opens anything — and the captured
+record is passed into the scenario. `P6-ART` now requires two well-formed
+captures, binds the captured `.xlsm` to `$Workbook.FullName`, and fails closed
+without them. It no longer reads either workbook. The blob-by-blob binding to the
+production baseline and the separate harness-HEAD identity are untouched.
+
+That capture is the **one authorised change to the accepted Phase-4 driver** in
+this round, and `test_02` names it line by line, including the demand that it sit
+above the point where the driver starts driving the workbook.
+
+#### 8.4.2 `P6-FP3` — a production defect and a harness defect
+
+**The production defect.** The endpoint announced
+
+```
+the final commit did not complete (Phase6FinalCommit) AND the previous shared
+block could not be restored. The publication selector cannot be guaranteed and
+requires recovery.
+```
+
+while the sheet showed the restore had physically succeeded: the active bank was
+still the prior bank, `last_run_id` was unchanged, the prior publication was
+intact and the candidate was unpublished.
+
+`BuildCommitBlock` writes `vbNullString` into the blank fields of a **candidate**
+block. `FinalCommit` captures the previous block with `Range.Value2`, which
+returns `Empty` for those same fields. Both are verified with one predicate, and
+that predicate recognised only the built spelling of blank:
+
+```vba
+If IsEmpty(written) Then
+    SameCell = (VarType(wanted) = vbString And Len(CStr(wanted)) = 0)
+```
+
+so `Empty` against `Empty` — a blank correctly restored over a blank — was false.
+The correction adopts the rule `modCalcReport` has carried since Phase 5: blank is
+a **set**, tested on both sides. No tolerance, no weakened verification, the
+candidate `vbNullString` semantics retained, and the bank and run-id comparisons
+still exact. Every caller was audited; `modCalcReport`'s own `SameCell` already
+held the correct rule and was not changed.
+
+`test_37` reads the predicate out of the module and **runs it** over the Variants
+`Value2` returns. Its model of `IsNumeric` deliberately *raises* on `Empty`, so
+the predicate has to settle every blank case before reaching a coercion Linux
+cannot adjudicate.
+
+**The harness defect.** The preservation set was too broad. After `FinalCommit`
+returns `False`, production runs `RecordFailure` → `WriteAttemptBlock`, which
+rewrites the whole attempt and status range in one assignment — every `attempt`
+row and both `derived` rows, the second of which is a fresh `Now`. Run 4 failed on
+
+```
+status_evaluated_at   before 46264.92150462963
+                      after  46264.921527777777
+```
+
+which is correct bookkeeping, not a restore failure. The scenario now derives the
+durable set **from the projection's row groups** — the shared rows production's
+attempt range does not contain, which is the run identity counter and the
+publication selector — so a row that changed group in the contract moves between
+the two demands on its own instead of leaving a stale list behind.
+
+It also now demands what the failure must positively record: the derived status
+is unchanged (nothing was published, so the state over the same inputs and the
+same published bank must not move), the stamp is still populated, the detail
+names the injected stage, the candidate is not the published bank, and **the
+detail does not claim the restore failed**. That last one is what makes the
+production repair load-bearing at runtime: without it the repair could regress
+and `P6-FP3` would still be green.
+
+#### 8.4.3 `P6-DET` and `P6-FIN` — derivative, and not defects
+
+`P6-DET` proved what it exists to prove: both runs announced success and **both
+published the same result digest**. Its only failed assertion was that the
+repeated digest equals the **oracle's**, which is `P6-ORA` restated. FIXED
+repeatability is runtime-proven and no determinism or RNG change is justified.
+`P6-FIN` failed because required scenarios above it were red, which is
+completeness working. Neither is touched.
+
+#### 8.4.4 What Run 4 did and did not establish
+
+**Established:** a real production Phase-6 simulation executed; the public
+surface, the button, publication and bank alternation, the AUTO lifecycle and its
+no-replay invariant, all five recovery classes, the durable `F21` protocol,
+run-ID exhaustion, the Step-12 attempt-result axis correction and the result
+ledger; FIXED repeatability; Phase-5 39/39; a natural shutdown with a clean
+release ledger.
+
+**Not established, and not claimed:** cross-implementation numerical parity. The
+`P6-ART` source binding is still unproved at runtime — Run 4 never reached the
+check that would have proved it. The impossible-to-induce COM clauses remain
+static-only and are not upgraded.
+
+---
+
+## 9. `P6-ORA`: the open parity disagreement
+
+**No owner is assigned here.** Run 4 established a real disagreement, and this
+section records only what has been localised on Linux and what has not.
+
+### 9.1 What Run 4 reported
+
+All four authorised parity cases produced a different result digest, and cases 1,
+6 and 7 also showed one-or-few-ULP differences in individual statistics:
+
+```
+oracle 143.4549368738345      oracle 1081.4363960870785
+VBA    143.45493687383447     VBA    1081.4363960870783
+```
+
+The request fingerprint, effective seed, iteration count and the method and RNG
+versions all matched. **Case 8 matters most**: every summary statistic and
+quantile the harness asserts matched, and the digest still differed.
+
+### 9.2 The written algorithms do not disagree
+
+Every parity case has been run twice on Linux at the corpus's own seed and
+iteration count: once through the accepted Python oracle, and once through the
+statements `modSimRng`, `modSimSample` and `modSimEngine` actually write down,
+compiled by the accepted test-only transcriber.
+
+```
+case 1  first divergent retained iteration: none   digests equal
+case 6  first divergent retained iteration: none   digests equal
+case 7  first divergent retained iteration: none   digests equal
+case 8  first divergent retained iteration: none   digests equal
+```
+
+Bit-for-bit over all 1000 retained iterations of **both** measures, and then over
+the result digest. `test_55` in `tests/test_phase6_sim_engine_vba.py` pins this so
+a later numerical change cannot quietly move one side while the question is open.
+
+**What that removes from the search.** The disagreement is not attributable to
+what either implementation writes down. It has to arise in how the VBA *runtime*
+executes those statements — evaluation precision and intermediate width, the
+`Log`/`Exp`/`Sqr`/`^` intrinsics, `Fix`, coercion, the numeric-literal parser —
+which is exactly what a Linux transcription has always disclaimed and what only
+Windows can settle. It also means a Linux-side numerical change to either
+implementation would be a change to a component that is not currently in
+disagreement with the other.
+
+### 9.3 Case 8 needs no second mechanism
+
+The digest covers `total_nominal` and `total_pv` for **every** retained iteration
+in original order, exactly. A summary statistic does not. Perturbing one retained
+value by a single ULP, for each of the 1000 iterations of each case in turn:
+
+| case | perturbations that change the digest | of which the summary layer cannot see |
+|---|---|---|
+| 1 | 1000 / 1000 | 996 (99.6%) |
+| 6 | 1000 / 1000 | 986 (98.6%) |
+| 7 | 1000 / 1000 | 984 (98.4%) |
+| 8 | 1000 / 1000 | 994 (99.4%) |
+
+"Cannot see" means the mean, the population standard deviation and the whole
+eleven-point quantile ladder are all bit-identical afterwards. So **case 8's
+pattern is what a handful of ULP-level differences looks like**, and no separate
+framing or canonicalisation defect need be posited to explain it. The digest is
+simply the only observer with the resolution to notice.
+
+### 9.4 One unreconciled number
+
+The classification records case 6's **oracle** digest as `37ED4B3D7A271A52`. The
+accepted corpus `build/phase6_gate_b_cases.json` carries `7CBBB70842889648` for
+that case, the accepted Python oracle recomputes `7CBBB70842889648`, and the
+transcribed VBA reproduces it as well. The other three oracle digests in the
+classification match the corpus exactly.
+
+The harness cannot invent an oracle digest — it reads `expected_exact.result_digest`
+— so this is either a transcription slip in the classification or a corpus on the
+Windows machine that differed from the accepted one. **It is not treated as a
+defect and nothing has been changed for it**; it needs confirming against the
+retained `phase6_gate_b_run4.log` before anything is reasoned from case 6.
+
+### 9.5 The bounded diagnostic Run 5 should carry
+
+No new production authority, no diagnostic module, and nothing that changes what
+production computes. Everything below observes state the workbook already holds:
+
+* **the first divergent iteration.** Read the retained per-iteration
+  `total_nominal` and `total_pv` from the published bank and report the lowest
+  index at which either differs from the corpus's oracle sequence, with both
+  binary64 payloads as canonical 17-significant-digit text rather than formatted
+  decimals. One index localises the question; four digests do not.
+* **the RNG state at that index.** Report the uniforms consumed by that iteration
+  and the sampler outputs derived from them, so the first divergent *operation* is
+  identified rather than the first divergent *total*.
+* **an ordering probe.** Report one compound expression evaluated stepwise with
+  each intermediate stored to a `Double` before the next operation, beside the
+  same expression evaluated as written. Equal results rule extended-precision
+  intermediates out; unequal results settle it in one observation.
+
+That requires the corpus to carry the oracle's retained sequences, which it does
+not today. Adding them is a build change, and it is **not** made here: it is a
+proposal for the Run-5 authorisation, not a decision taken under it.
+

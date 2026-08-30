@@ -38,6 +38,12 @@ _CASES = conformance.GATE_B_CASES_PATH.read_text(encoding="utf-8")
 _PHASE6 = conformance.PHASE6.read_text(encoding="utf-8")
 _HARNESS = conformance.HARNESS.read_text(encoding="utf-8")
 
+# The pinned production baseline, read from the conformance module rather
+# than spelled again here: a repair that moves the baseline must not leave
+# three stale mutation anchors behind, silently matching nothing.
+_BASELINE_PIN = ("function Get-Phase6ProductionBaseline { return '"
+                 + conformance.PRODUCTION_BASELINE + "' }")
+
 
 def _conformance_tests() -> list[str]:
     names = sorted(n for n in dir(conformance) if n.startswith("test_"))
@@ -887,7 +893,7 @@ def test_74_the_harness_head_is_reported_as_the_production_baseline() -> None:
     """The two identities the Step-13 authorisation requires to stay distinct."""
     damaged = _swap(
         _PHASE6,
-        "function Get-Phase6ProductionBaseline { return '5a5b183' }",
+        _BASELINE_PIN,
         "function Get-Phase6ProductionBaseline {\n"
         "    return [string](& git rev-parse HEAD 2>$null)\n}")
     _control("test_52", phase6=damaged)
@@ -896,7 +902,7 @@ def test_74_the_harness_head_is_reported_as_the_production_baseline() -> None:
 def test_75_the_baseline_pin_drifts_from_the_reviewed_baseline() -> None:
     damaged = _swap(
         _PHASE6,
-        "function Get-Phase6ProductionBaseline { return '5a5b183' }",
+        _BASELINE_PIN,
         "function Get-Phase6ProductionBaseline { return 'd36d5d4' }")
     _control("test_52", phase6=damaged)
 
@@ -1111,8 +1117,8 @@ def test_94_the_whole_tree_freeze_returns_to_the_pccm_working_directory() -> Non
     which match nothing and make `--quiet` exit 0 whatever the tree holds."""
     damaged = _swap(
         _PHASE6,
-        "        [string]$HarnessCommit, [string]$RepoRoot\n",
-        "        [string]$HarnessCommit, [string]$PccmRoot\n")
+        "        [string]$HarnessCommit, [string]$RepoRoot, $ArtefactIdentity\n",
+        "        [string]$HarnessCommit, [string]$PccmRoot, $ArtefactIdentity\n")
     damaged = damaged.replace("$RepoRoot", "$PccmRoot")
     _control("test_56", phase6=damaged)
 
@@ -1142,8 +1148,8 @@ def test_96_the_freeze_pathspec_coverage_check_is_dropped() -> None:
 def test_97_the_driver_passes_the_pccm_subtree_as_the_repository_root() -> None:
     damaged = _swap(
         _HARNESS,
-        "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot\n",
-        "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $pccmRoot\n")
+        "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot `\n",
+        "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $pccmRoot `\n")
     _control("test_56", harness=damaged)
 
 
@@ -1262,9 +1268,14 @@ def test_109_the_documented_command_would_overwrite_run_1s_log() -> None:
     defect, and a command that redirects over its log destroys the record."""
     doc_path = conformance.PCCM_ROOT / "docs" / "phase6_step13_gate_b.md"
     original = doc_path.read_text(encoding="utf-8")
+    # The log the NEXT authorised run writes, redirected onto the last one that
+    # already happened. The numbers come from the ledger, not from this file.
+    import re as _re
+    recorded = sorted(int(n) for n in _re.findall(r"\|\s*\*\*Run (\d+)\*\*\s*\|", original))
+    nxt, prev = max(recorded), max(recorded) - 1
     damaged = original.replace(
-        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run4.log",
-        "  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run3.log", 1)
+        f"  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run{nxt}.log",
+        f"  *> .\\pccm\\bootstrap\\windows\\phase6_gate_b_run{prev}.log", 1)
     assert damaged != original
     saved = conformance.PCCM_ROOT
     import tempfile
@@ -1354,7 +1365,7 @@ def test_116_the_production_baseline_pin_lags_the_repaired_source() -> None:
     result is attributed to source that no longer exists."""
     damaged = _swap(
         _PHASE6,
-        "function Get-Phase6ProductionBaseline { return '5a5b183' }",
+        _BASELINE_PIN,
         "function Get-Phase6ProductionBaseline { return 'bc7949b' }")
     _control("test_52", phase6=damaged)
 
@@ -1391,7 +1402,7 @@ def test_117_the_phase5_block_loses_something_beyond_the_stale_assertion() -> No
         "", 1)
     assert damaged != original
     message = _phase5_freeze_refuses(damaged)
-    assert "beyond the stale assertion" in message, message
+    assert "moved from" in message, message
 
 
 def test_118_the_scoped_grant_correction_is_reverted() -> None:
@@ -1479,33 +1490,53 @@ def test_119_the_stale_preamble_is_restored() -> None:
     assert "Neither behavioural matrix executed." in damaged
 
 
-def test_120_the_preamble_stops_naming_the_unexecuted_matrix() -> None:
-    """A preamble that reports the runtime evidence and then goes quiet about
-    P6-ART..P6-AXIS reads as a full pass."""
-    damaged = _damage_preamble(
-        lambda head: head.replace("P6-ART", "the first scenario")
-                         .replace("P6-AXIS", "the last scenario"))
+# The preamble as it stood at 6cb7f06 - accurate for Runs 1-3, and falsified by
+# Run 4 executing the behavioural matrix.
+_RUNS_1_TO_3_PREAMBLE = '# PCCM Phase 6 — Step 13: the Windows/Excel Gate-B runtime harness\n\n**Status: HARNESS SOURCE UNDER RUNTIME VALIDATION. Runs 1–3 have executed; the\nPhase-6 behavioural matrix `P6-ART` through `P6-AXIS` has not yet executed.**\n\nStep-13 runtime has **partially** executed, through Runs 1–3. Run 1 aborted in\nthe preflight before Excel started. Run 2 reached Excel and was stopped at the\ncompile prerequisite by a genuine production compile defect. Run 3 **proved that\nrepair on the real VBA compiler**, completed the Phase-4 matrix 35/35, and\nreached finalisation with `P6-LDG` PASS; one stale Phase-5 harness assertion\nfailed, and the Phase-6 matrix correctly failed closed behind it. See the run\nledger in [§8](#8-windows-run-ledger).\n\n**Runtime-proven, and no further.** Windows evidence now carries exactly these\nclaims: the accepted workbook builds, opens and **compiles** on the real VBA\ncompiler; the Phase-4 lifecycle matrix runs 35/35 with a natural shutdown and a\nclean COM release ledger; 38 of the 39 Phase-5 Gate-B scenarios pass; and the\nPhase-6 result ledger finalises. Those claims, and only those, have moved from\nsource evidence to runtime evidence.\n\n**Still source-only.** The Phase-6 behavioural matrix, `P6-ART` through\n`P6-AXIS`, remains **unexecuted**. No production Phase-6 simulation procedure has\nexecuted, no simulation has been performed, and no oracle parity result has been\nestablished. Every claim in this document about Phase-6 *behaviour* remains a\nstatement about source.\n\n```\nstatic / source evidence   !=   Windows / Excel runtime evidence\n```\n\nThat line is the whole point of Step 13, and this document keeps it in front of\nthe reader rather than at the end — with the boundary drawn where Runs 1–3\nactually left it, and not where it stood before the first run.\n\n---\n'
+
+
+def test_120_the_preamble_describes_the_run_before_last() -> None:
+    """The wording ACCEPTED for Runs 1-3, restored after Run 4 executed the
+    matrix. It was true when written; the ledger below it is what makes it
+    false, which is exactly what this control has to notice."""
+    damaged = _damage_preamble(lambda _: _RUNS_1_TO_3_PREAMBLE)
     message = _preamble_control_refuses(damaged)
-    assert "P6-ART..P6-AXIS" in message, message
+    assert "the ledger records Run 4" in message, message
+    assert "Neither behavioural matrix executed." in damaged
+
+
+def test_120b_the_unexecuted_claim_survives_the_run_that_executed_it() -> None:
+    """The surgical form: everything else in the preamble is current, and only
+    the claim Run 4 falsified is put back."""
+    damaged = _damage_preamble(
+        lambda head: head.replace(
+            "```\nstatic / source evidence",
+            "The Phase-6 behavioural matrix, `P6-ART` through `P6-AXIS`, remains\n"
+            "unexecuted.\n\n```\nstatic / source evidence", 1))
+    message = _preamble_control_refuses(damaged)
+    assert "still says the Phase-6 matrix is unexecuted" in message, message
 
 
 def test_121_the_source_only_claim_is_swept_back_across_step_13() -> None:
-    """`Every claim ... about Step-13 behaviour` denies the compile, lifecycle
-    and ledger closures Runs 2 and 3 actually established."""
+    """`Every claim ... about Step-13 behaviour` denies the compile, lifecycle,
+    ledger and behavioural closures the runs actually established."""
     damaged = _damage_preamble(
         lambda head: head.replace(
-            "about Phase-6 *behaviour* remains a\nstatement about source.",
-            "about Step-13 behaviour remains a\nstatement about source.", 1))
+            "```\nstatic / source evidence",
+            "Every claim in this document about Step-13 behaviour remains a\n"
+            "statement about source.\n\n```\nstatic / source evidence", 1))
     message = _preamble_control_refuses(damaged)
     assert "every Step-13 claim" in message, message
 
 
-def test_122_the_preamble_stops_calling_the_execution_partial() -> None:
-    """`Runs 1-3 have executed` without `partially` reads as a completed run."""
+def test_122_the_executed_matrix_is_reported_without_its_open_item() -> None:
+    """A matrix that ran is not a matrix that passed. Dropping the open
+    disagreement turns an honest status line into a claim of success."""
     damaged = _damage_preamble(
-        lambda head: head.replace("has **partially** executed", "has executed", 1))
+        lambda head: head.split("**Open, and not claimed.**")[0]
+        + head.split("```\n", 1)[1].join(["```\n", ""]))
     message = _preamble_control_refuses(damaged)
-    assert "PARTIALLY executed" in message, message
+    assert "without naming what is still open" in message, message
 
 
 def test_123_the_runtime_proven_claims_lose_their_bound() -> None:
@@ -1513,8 +1544,138 @@ def test_123_the_runtime_proven_claims_lose_their_bound() -> None:
     reader to assume the rest followed."""
     damaged = _damage_preamble(
         lambda head: head.replace("**Runtime-proven, and no further.**",
-                                  "**Runtime-proven.**", 1)
-                         .replace("Those claims, and only those, have moved",
-                                  "Those claims have moved", 1))
+                                  "**Runtime-proven.**", 1))
     message = _preamble_control_refuses(damaged)
     assert "does not bound the runtime-proven claims" in message, message
+
+
+def test_123b_the_open_disagreement_is_reported_as_attributed() -> None:
+    """P6-ORA's owner is unresolved, and a preamble that quietly drops that is
+    assigning blame the evidence does not support."""
+    damaged = _damage_preamble(
+        lambda head: head.replace("and **no ownership is assigned**:", ":", 1)
+                          .replace("**Open, and not claimed.**", "**Open.**", 1))
+    message = _preamble_control_refuses(damaged)
+    assert "unattributed" in message, message
+
+
+# ===========================================================================
+# I. The Run-4 P6-ART file-lock defect
+# ===========================================================================
+def test_133_the_scenario_hashes_the_open_workbook_again() -> None:
+    """The submitted shape, and Run 4 died on it: Get-FileHash cannot read a
+    file the functional Excel instance is holding open."""
+    damaged = _swap(_PHASE6,
+                    "        $captured = @($ArtefactIdentity)\n",
+                    "        $captured = @($ArtefactIdentity)\n"
+                    "        $null = (Get-FileHash -LiteralPath "
+                    "(Join-Path $TempRoot ([string]$Manifest.stage_b_filename)) "
+                    "-Algorithm SHA256).Hash\n")
+    _control("test_67", phase6=damaged)
+
+
+def test_134_the_capture_is_weakened_to_the_build_directory() -> None:
+    """Hashing build\\PCCM_stageB.xlsm would identify the directory the run was
+    seeded from, not the disposable copy it consumed."""
+    damaged = _swap(_PHASE6,
+                    "        $path = Join-Path $TempRoot $item.Name\n        $hash = ''\n",
+                    "        $path = Join-Path $BuildDir $item.Name\n        $hash = ''\n")
+    _control("test_67", phase6=damaged)
+
+
+def test_135_the_capture_can_throw() -> None:
+    """It runs before Excel has started; an evidence step that aborts the run is
+    a worse defect than the one it replaces."""
+    damaged = _swap(_PHASE6, """        try {
+            if (Test-Path -LiteralPath $path) {
+                $hash = [string](Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            } else {
+                $problem = 'not found'
+            }
+        } catch {
+            $problem = [string]$_.Exception.Message
+        }
+""",
+                    """        $hash = [string](Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+""")
+    _control("test_67", phase6=damaged)
+
+
+def test_136_a_missing_capture_stops_failing_the_scenario() -> None:
+    """No captured identity is not the same as an identity."""
+    damaged = _swap(_PHASE6, "            ($captured.Count -eq 2) ('captured records: '",
+                    "            ($captured.Count -ge 0) ('captured records: '")
+    _control("test_67", phase6=damaged)
+
+
+def test_137_a_blank_hash_is_reported_as_an_identity() -> None:
+    """A record that carries no hash is a record of a failure, not evidence."""
+    damaged = _swap(_PHASE6, "            $ok = ($item.Hash -match '^[0-9A-Fa-f]{64}$')",
+                    "            $ok = $true")
+    _control("test_67", phase6=damaged)
+
+
+def test_138_the_capture_is_not_bound_to_the_workbook_that_was_opened() -> None:
+    """A hash taken before the open is evidence about THIS run only if the file
+    Excel opened is the file that was hashed."""
+    damaged = _swap(_PHASE6,
+                    "             ([string]$executed[0].Path -ceq $openPath)) `",
+                    "             ($true)) `")
+    _control("test_67", phase6=damaged)
+
+
+# ===========================================================================
+# J. The Run-4 P6-FP3 preservation-set defect
+# ===========================================================================
+def test_139_the_hand_written_skip_list_comes_back() -> None:
+    """The submitted shape. It named two of the seven rows WriteAttemptBlock
+    rewrites, so Run 4 failed on status_evaluated_at being re-stamped."""
+    damaged = _swap(_PHASE6, """        $durable = @($before['shared'].Keys | Where-Object {
+            $rewritten -notcontains [string]$groups.$_ })
+""",
+                    """        $durable = @($before['shared'].Keys | Where-Object {
+            ($_ -ne 'last_attempt_result') -and ($_ -ne 'last_attempt_detail') })
+""")
+    _control("test_68", phase6=damaged)
+
+
+def test_140_the_projection_partition_is_traded_for_a_literal_list() -> None:
+    """A list written here keeps asserting yesterday's contract."""
+    damaged = _swap(_PHASE6, "        $groups = $SimInspection.sim_data.run_identity.groups\n",
+                    "        $groups = @{}\n")
+    _control("test_68", phase6=damaged)
+
+
+def test_141_an_empty_durable_set_passes() -> None:
+    """Preserving nothing is not preserving the durable rows."""
+    damaged = _swap(_PHASE6,
+                    "            ($durable.Count -gt 0) ('durable shared rows: '",
+                    "            ($durable.Count -ge 0) ('durable shared rows: '")
+    _control("test_68", phase6=damaged)
+
+
+def test_142_the_restore_claim_is_no_longer_checked() -> None:
+    """Without it the SameCell repair could regress and P6-FP3 stay green."""
+    damaged = _swap(_PHASE6,
+                    "            ($detail -notlike '*could not be restored*') $detail",
+                    "            ($true) $detail")
+    _control("test_68", phase6=damaged)
+
+
+def test_143_the_derived_status_is_allowed_to_drift() -> None:
+    """Nothing was published, so the derived state must not move."""
+    damaged = _swap(_PHASE6, """        $null = Add-Check $list 'the derived simulation status is unchanged by the failed attempt' `
+            (Test-SimSameValue -A $before['shared']['simulation_status'] `
+                               -B $after['shared']['simulation_status']) `
+            ('was ' + (Format-SimValue $before['shared']['simulation_status']) + ', now ' +
+             (Format-SimValue $after['shared']['simulation_status']))
+""", "")
+    _control("test_68", phase6=damaged)
+
+
+def test_144_the_candidate_claim_goes_back_to_being_a_note() -> None:
+    """A note is not a check, and Run 4 recorded exactly that."""
+    damaged = _swap(_PHASE6,
+                    "            ((Get-Phase6ActiveBank -State $after) -cne $candidate) `",
+                    "            ($true) `")
+    _control("test_68", phase6=damaged)

@@ -83,7 +83,7 @@ GATE_B_CASES_PATH = BUILD / "phase6_gate_b_cases.json"
 # The production baseline this harness is evidence infrastructure FOR. Named,
 # never inferred: a runtime result is attributable to a commit or it is worth
 # nothing.
-PRODUCTION_BASELINE = "5a5b183"
+PRODUCTION_BASELINE = "79e4600"
 
 _CACHE: dict[str, object] = {}
 
@@ -178,24 +178,27 @@ def test_01b_the_only_change_to_the_phase5_scenarios_is_the_scoped_grant() -> No
     Runtime Run 3 failed P5-EV on `RunSimulation is still forbidden in every
     module` — true when written, false since Step 11 granted the endpoint to
     modSimReport — and P6-PRE then correctly failed closed on it, so the whole
-    Phase-6 behavioural matrix went unexecuted. Correcting it is authorised;
-    rewriting anything else in the accepted Phase-5 block is not.
+    Phase-6 behavioural matrix went unexecuted. That correction is now INSIDE
+    the baseline, so the diff against it is empty by construction and cannot
+    carry the statement any more. The freeze and the correction are therefore
+    asserted separately: this harness commit did not touch the Phase-5 block,
+    and the block holds the corrected assertion rather than the stale one.
     """
-    before = _accepted_lines(PHASE5)
-    after = _current_lines(PHASE5)
-
-    removed = [line for line in before if line not in after]
-    assert removed == [
-        "            # THE SCOPED GRANT IS CHECKED AS A GRANT, not merely tolerated. One",
-        "            # construct, one owner, and the endpoint still forbidden everywhere.",
-        "            $null = Add-Check $list 'RunSimulation is still forbidden in every module' `",
-        "                (Test-ConstructForbiddenGlobally -Manifest $Manifest -Construct 'RunSimulation')",
-    ], f"the Phase-5 block lost lines beyond the stale assertion: {removed}"
-
-    added = [line for line in after if line not in before]
+    # THE CORRECTION FIRST, so a block that lost the corrected assertion says so
+    # rather than reporting the generic freeze message a dropped line would.
+    source = _text(PHASE5)
     for required in ("RunSimulation is permitted in modSimReport and nowhere else",
                      "-Construct 'RunSimulation' -ModuleName 'modSimReport'"):
-        assert any(required in line for line in added), required
+        assert required in source, required
+    for withdrawn in ("RunSimulation is still forbidden in every module",
+                      "Test-ConstructForbiddenGlobally -Manifest $Manifest "
+                      "-Construct 'RunSimulation'"):
+        assert withdrawn not in source, f"the stale P5-EV assertion is back: {withdrawn}"
+
+    # AND THEN THE FREEZE: nothing else in the accepted Phase-5 block moved.
+    assert _current_lines(PHASE5) == _accepted_lines(PHASE5), (
+        f"{PHASE5.name} moved from {PRODUCTION_BASELINE}"
+    )
 
     # AND NO SCENARIO SEMANTIC MOVED WITH IT.
     source = _text(PHASE5)
@@ -212,15 +215,33 @@ def test_01b_the_only_change_to_the_phase5_scenarios_is_the_scoped_grant() -> No
 def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> None:
     """Two statements, and they are different statements.
 
-    THE DRIVER IS FROZEN AGAINST THE PRODUCTION BASELINE. Once the baseline
-    moved to the commit that carries the compile repair, the harness wiring is
-    already inside it, so a diff against the baseline is the right way to say
-    "this harness commit did not touch the Phase-4 driver" — and the wiring
-    itself has to be asserted directly rather than as the residue of a diff,
-    because that residue is now empty by construction.
+    THE DRIVER IS FROZEN AGAINST THE PRODUCTION BASELINE except for ONE
+    authorised change, named line by line below. Run 4 failed P6-ART because the
+    scenario hashed the executed `.xlsm` while Excel held it open, and the only
+    moment that file is both built and unlocked is in the driver, between the
+    Stage-B bootstrap and the functional instance opening it. So the capture had
+    to go there, and nothing else in the driver may move with it.
     """
-    assert _current_lines(HARNESS) == _accepted_lines(HARNESS), (
-        f"{HARNESS.name} moved from {PRODUCTION_BASELINE}"
+    before = _accepted_lines(HARNESS)
+    after = _current_lines(HARNESS)
+
+    removed = [line for line in before if line not in after]
+    assert removed == [
+        "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot",
+    ], f"the Phase-4 driver lost lines beyond the artefact capture: {removed}"
+
+    added = [line for line in after if line not in before]
+    for required in ("Get-Phase6RuntimeArtefactIdentity -TempRoot $tempRoot",
+                     "-ArtefactIdentity $phase6Artefacts",
+                     "Phase-6 pre-open artefact capture"):
+        assert any(required in line for line in added), required
+    # AND THE CAPTURE IS BEFORE THE OPEN, which is the whole point of moving it.
+    capture = after.index("$phase6Artefacts = Get-Phase6RuntimeArtefactIdentity "
+                          "-TempRoot $tempRoot -Manifest $manifest")
+    opened = after.index("# Drive the workbook")
+    assert capture < opened, (
+        "the artefact capture runs after the driver starts driving the workbook, "
+        "which is where Run 4 found the file already locked"
     )
 
     driver = _text(HARNESS)
@@ -1726,13 +1747,15 @@ def _step13_preamble(doc: str) -> str:
 
 
 def test_66_the_active_preamble_states_what_has_run_and_what_has_not() -> None:
-    """The preamble went stale the moment Run 2 reached Excel.
+    """The preamble goes stale on the day a run changes what is true.
 
-    It kept saying NO STEP-13 SCENARIO HAS EXECUTED while §8 below it recorded
-    three attempts, two of them valid, and two closures already runtime-proven.
-    Both halves of that are wrong to state loosely: the runtime evidence is real
-    and must not be denied, and it is narrow and must not be inflated. So the
-    preamble is checked against the ledger, in both directions.
+    It said NO STEP-13 SCENARIO HAS EXECUTED while §8 recorded three attempts;
+    the first version of this control then encoded the state Runs 1-3 left, and
+    Run 4 falsified that too by executing the behavioural matrix. So the demands
+    below are CONDITIONED ON THE LEDGER rather than written down: what the
+    preamble must say changes when the ledger changes, and a preamble describing
+    the previous run is refused in either direction - under-claiming what has
+    executed, or over-claiming it.
     """
     doc = _text(PCCM_ROOT / "docs" / "phase6_step13_gate_b.md")
     preamble = _step13_preamble(doc)
@@ -1752,13 +1775,16 @@ def test_66_the_active_preamble_states_what_has_run_and_what_has_not() -> None:
     assert rows, "the run ledger records no runs"
     attempted = [n for n, outcome in rows if "not yet executed" not in outcome]
     valid = [n for n, outcome in rows if "VALID runtime attempt" in outcome]
+    # A TALLY, NOT A PHRASE. A run that reports a Phase-6 scenario count is a run
+    # in which the behavioural matrix executed.
+    behavioural = [n for n, outcome in rows if re.search(r"Phase-6\s+\d+/\d+", outcome)]
     assert attempted, f"no run in the ledger has been attempted: {rows}"
     assert valid, f"no run in the ledger is a valid runtime attempt: {rows}"
 
-    # 1. THE STALE CLAIM. Once the ledger records a completed attempt, a blanket
-    #    denial that anything has executed is false whatever else is said. Only
-    #    UNSCOPED denials are refused; "no Phase-6 procedure has executed" is
-    #    true, is required below, and must stay sayable.
+    # 1. THE STALE DENIAL. Once the ledger records a completed attempt, a blanket
+    #    claim that nothing has executed is false whatever else is said. Only
+    #    UNSCOPED denials are refused here; a scoped one is handled in 4 below,
+    #    where the ledger decides whether it is currently true.
     for stale in (r"no\s+step-13\s+scenario\s+has\s+executed",
                   r"no\s+scenario\s+has\s+executed",
                   r"nothing\s+(here\s+)?has\s+been\s+executed",
@@ -1769,10 +1795,7 @@ def test_66_the_active_preamble_states_what_has_run_and_what_has_not() -> None:
             f"records attempted runs {attempted} and valid runs {valid}"
         )
 
-    # 2. PARTIAL EXECUTION, SAID AS SUCH, and every attempted run named.
-    assert re.search(r"partial", flat, re.I), (
-        "the preamble does not say the Step-13 runtime has PARTIALLY executed"
-    )
+    # 2. EVERY ATTEMPTED RUN IS NAMED.
     for number in attempted:
         assert f"Run {number}" in flat, (
             f"the ledger records Run {number} but the preamble does not name it"
@@ -1785,37 +1808,183 @@ def test_66_the_active_preamble_states_what_has_run_and_what_has_not() -> None:
     )
     assert re.search(r"and no further|only those|limited to", flat, re.I), (
         "the preamble does not bound the runtime-proven claims to the evidence "
-        "Runs 1-3 actually established"
+        "the recorded runs actually established"
     )
 
-    # 4. THE UNEXECUTED MATRIX, named by its endpoints, in one place with the
-    #    word that says it has not run. This is the distinction the whole
-    #    correction turns on, and a preamble without it reads as a full pass.
-    blocks = [block for block in re.split(r"\n\s*\n", preamble)
-              if "P6-ART" in block and "P6-AXIS" in block]
-    assert blocks, (
-        "the preamble never names the P6-ART..P6-AXIS matrix, so it does not "
-        "distinguish the partial runtime evidence from what is still unexecuted"
-    )
-    assert any(re.search(r"unexecuted|not\s+(yet\s+)?executed|has\s+not\s+run",
-                         block, re.I) for block in blocks), (
-        "the preamble names P6-ART..P6-AXIS but never says it is unexecuted"
-    )
-
-    # 5. AND NOTHING WAS SIMULATED OR COMPARED.
-    for required in (r"no\s+production\s+Phase-6\s+simulation\s+procedure\s+has\s+executed",
-                     r"no\s+simulation\s+has\s+been\s+performed",
-                     r"no\s+(oracle\s+)?parity[^.]*?(been\s+)?(made|established)"):
-        assert re.search(required, flat, re.I), (
-            f"the preamble does not state /{required}/"
+    # 4. THE BEHAVIOURAL MATRIX, IN WHICHEVER DIRECTION THE LEDGER POINTS.
+    unexecuted = (r"P6-ART[^.]*?P6-AXIS[^.]*?(unexecuted|not\s+(yet\s+)?executed)"
+                  r"|no\s+production\s+Phase-6\s+simulation\s+procedure\s+has\s+executed"
+                  r"|no\s+simulation\s+has\s+been\s+performed")
+    if behavioural:
+        assert not re.search(unexecuted, flat, re.I), (
+            f"the preamble still says the Phase-6 matrix is unexecuted while the "
+            f"ledger records it running in {behavioural}"
         )
+        assert re.search(r"matrix\s+has\s+executed|has\s+executed[^.]*matrix"
+                         r"|first\s+valid\s+execution", flat, re.I), (
+            "the preamble does not say the Phase-6 behavioural matrix executed"
+        )
+        # AND THE OVER-CLAIM IS REFUSED TOO: a matrix that ran is not a matrix
+        # that passed, and the open item has to be visible in the preamble.
+        assert re.search(r"open", flat, re.I), (
+            "the preamble reports the matrix as executed without naming what is "
+            "still open, which reads as a pass"
+        )
+        assert re.search(r"no\s+ownership|not\s+claimed|owner\s+unresolved", flat, re.I), (
+            "the preamble does not say the open disagreement is unattributed"
+        )
+    else:
+        blocks = [block for block in re.split(r"\n\s*\n", preamble)
+                  if "P6-ART" in block and "P6-AXIS" in block]
+        assert blocks, (
+            "the preamble never names the P6-ART..P6-AXIS matrix, so it does not "
+            "distinguish the partial runtime evidence from what is still unexecuted"
+        )
+        assert any(re.search(r"unexecuted|not\s+(yet\s+)?executed|has\s+not\s+run",
+                             block, re.I) for block in blocks), (
+            "the preamble names P6-ART..P6-AXIS but never says it is unexecuted"
+        )
+        for required in (r"no\s+production\s+Phase-6\s+simulation\s+procedure\s+has\s+executed",
+                         r"no\s+simulation\s+has\s+been\s+performed"):
+            assert re.search(required, flat, re.I), (
+                f"the preamble does not state /{required}/"
+            )
 
-    # 6. THE SOURCE-ONLY CLAIM IS SCOPED TO PHASE-6 BEHAVIOUR. Sweeping it
-    #    across Step 13 denies the compile, lifecycle and ledger closures that
-    #    Runs 2 and 3 established.
+    # 5. THE SOURCE-ONLY CLAIM IS NEVER SWEPT ACROSS THE WHOLE STEP.
     for sentence in re.split(r"(?<=\.)\s+", flat):
         if "every claim in this document" in sentence.lower():
             assert "phase-6" in sentence.lower(), (
                 "the preamble still calls every Step-13 claim a statement about "
-                f"source: {' '.join(sentence.split())}"
+                f"source: {sentence}"
             )
+
+
+# ===========================================================================
+# I. The two Run-4 harness defects
+# ===========================================================================
+def test_67_the_executed_workbook_is_hashed_before_excel_locks_it() -> None:
+    """Run 4's P6-ART failure, and it was the harness's, not production's.
+
+        The file '...\\PCCM_stageB.xlsm' cannot be read: The process cannot
+        access the file because it is being used by another process.
+
+    The scenario hashed the executed `.xlsm` while the functional Excel instance
+    held it open. The fix is not to hash something else - the artefact P6-ART
+    has to identify is the disposable copy this session consumed - but to hash
+    the SAME path at the only moment it is both built and unlocked.
+    """
+    code = _executable(PHASE6)
+    assert "function Get-Phase6RuntimeArtefactIdentity" in code
+    capture = code.split("function Get-Phase6RuntimeArtefactIdentity")[1].split(
+        "\nfunction ")[0]
+
+    # IT HASHES THE CONSUMED COPY, NOT build/. Both names come from the manifest
+    # and both paths are built under the disposable root.
+    for required in ("$Manifest.stage_a_filename", "$Manifest.stage_b_filename",
+                     "Join-Path $TempRoot"):
+        assert required in capture, required
+    assert "$BuildDir" not in capture, (
+        "the capture reaches into the build directory instead of the copy this "
+        "session actually ran"
+    )
+    # AND IT NEVER THROWS. An evidence step that can abort the run is a worse
+    # defect than the one it replaces, so the hash is attempted under a handler
+    # and a failure is recorded for the scenario to fail closed on.
+    assert "try {" in capture and "} catch {" in capture, (
+        "the capture can throw, and it runs before Excel has even started"
+    )
+    assert "$problem" in capture
+
+    # THE SCENARIO NO LONGER READS EITHER WORKBOOK. This is the defect itself:
+    # anything that opens those two paths inside the session hits the lock.
+    scenario = code.split("$baseline = Get-Phase6ProductionBaseline")[1].split(
+        "Add-Phase6Result 'P6-ART'")[0]
+    for locked in ("$Manifest.stage_a_filename", "$Manifest.stage_b_filename"):
+        assert f"Get-FileHash -LiteralPath (Join-Path $TempRoot ([string]{locked}))" \
+            not in scenario
+    # Every remaining hash in the scenario reads a path built from the JSON
+    # artefact list, which Excel never opens.
+    hashed = [line for line in scenario.splitlines() if "Get-FileHash" in line]
+    assert hashed, "P6-ART stopped hashing the JSON artefacts as well"
+    json_paths = scenario.split("$path = Join-Path $TempRoot $item.Name")
+    assert len(json_paths) == 2, (
+        "P6-ART builds a hashed path somewhere other than the JSON artefact loop"
+    )
+    for line in hashed:
+        assert "$path" in line, (
+            f"P6-ART hashes something other than the unlocked JSON artefacts: {line}"
+        )
+
+    # IT CONSUMES THE CAPTURE, AND FAILS CLOSED WITHOUT IT.
+    assert "$captured = @($ArtefactIdentity)" in scenario, (
+        "the scenario does not materialise the captured record at the caller"
+    )
+    assert "($captured.Count -eq 2)" in scenario, (
+        "a missing or partial capture would not fail the scenario"
+    )
+    assert "'^[0-9A-Fa-f]{64}$'" in scenario, (
+        "a blank or malformed hash would be reported as an identity"
+    )
+    # AND IT BINDS THE CAPTURE TO THE WORKBOOK THIS SESSION OPENED. A hash taken
+    # before the open is evidence about this run only if it is the same file.
+    assert "$Workbook.FullName" in scenario
+    assert "the captured .xlsm is the workbook this session opened" in scenario
+    assert "([string]$executed[0].Path -ceq $openPath)" in scenario, (
+        "the captured path is named but never compared against the open workbook"
+    )
+
+    # THE TWO IDENTITIES SURVIVE THE REWRITE.
+    assert "$HarnessCommit -notlike ($baseline + '*')" in scenario
+    assert "the " + "' + $module + '" in scenario or "$module" in scenario
+
+
+def test_68_a_failed_commit_preserves_what_production_does_not_rewrite() -> None:
+    """Run 4 failed P6-FP3 on `status_evaluated_at` moving by two seconds.
+
+    That is not a restore failure. After `FinalCommit` returns False production
+    runs `RecordFailure` -> `WriteAttemptBlock`, which rewrites the whole attempt
+    and status range in one assignment - every `attempt` row and both `derived`
+    rows, the second of which is a fresh `Now`. The scenario demanded bit-for-bit
+    preservation of fields production is contractually required to rewrite.
+    """
+    # `_executable` strips the comment lines, so the scenario is bounded by the
+    # two results either side of it rather than by its own banner.
+    code = _executable(PHASE6)
+    block = code.split("Add-Phase6Result 'P6-FP3'")[0].rsplit(
+        "Add-Phase6Result 'P6-FP2'", 1)[1]
+
+    # THE PARTITION IS DERIVED FROM THE PROJECTION, not remembered here. A
+    # hand-written skip list is exactly what went stale.
+    assert "$SimInspection.sim_data.run_identity.groups" in block, (
+        "the preserved set is not derived from the projection's row groups"
+    )
+    assert "$rewritten = @('attempt', 'derived')" in block
+    assert "$rewritten -notcontains" in block
+    assert "($key -eq 'last_attempt_result')" not in block, (
+        "the scenario still skips fields by name; that list is what went stale"
+    )
+    assert "($durable.Count -gt 0)" in block, (
+        "a projection that named no durable row would preserve nothing and pass"
+    )
+
+    # THE DURABLE ROWS ARE STILL DEMANDED, field by field.
+    assert "the restored shared block preserves ' + $key" in block
+    assert "Test-SimSameValue -A $before['shared'][$key] -B $after['shared'][$key]" in block
+
+    # THE DERIVED STATUS IS NOT AN ATTEMPT REPORT. Nothing was published, so the
+    # state over the same inputs and the same published bank must not move; only
+    # its stamp may.
+    assert "the derived simulation status is unchanged by the failed attempt" in block
+    assert "-A $before['shared']['simulation_status']" in block
+    assert "the status stamp is still populated after the failure" in block
+
+    # AND THE PRODUCTION REPAIR IS LOAD-BEARING AT RUNTIME. Without this the
+    # SameCell correction could regress and P6-FP3 would still be green.
+    assert "'the attempt detail does not claim the restore failed'" in block
+    assert "$detail -notlike '*could not be restored*'" in block
+    assert "$detail -like ('*' + [string]$failpoints.FinalCommit + '*')" in block, (
+        "the attempt detail is not required to name the injected stage"
+    )
+    # THE CANDIDATE CLAIM IS A CHECK, NOT A NOTE.
+    assert "is not the published bank') `" in block
+    assert "(Get-Phase6ActiveBank -State $after) -cne $candidate" in block

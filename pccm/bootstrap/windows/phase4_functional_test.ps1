@@ -510,6 +510,15 @@ try {
 }
 
 # ===========================================================================
+# Phase-6 pre-open artefact capture
+# ===========================================================================
+# THE LAST MOMENT THE EXECUTED .xlsm IS BOTH BUILT AND UNLOCKED. The Stage-B
+# bootstrap has finished and closed its own Excel; the functional instance has
+# not started. Run 4 hashed it later, inside P6-ART, and Get-FileHash could not
+# read a file Excel was holding open.
+$phase6Artefacts = Get-Phase6RuntimeArtefactIdentity -TempRoot $tempRoot -Manifest $manifest
+
+# ===========================================================================
 # Drive the workbook
 # ===========================================================================
 $excel = $null; $workbooks = $null; $wb = $null; $worksheets = $null
@@ -3023,7 +3032,8 @@ if ($buildOk) {
         Invoke-Phase6GateBScenarios -Excel $excel -Workbook $wb -Manifest $manifest `
             -Inspection $inspection -Cases $cases -SimInspection $simInspection `
             -GateBCases $simCases -ScriptDir $scriptDir -TempRoot $tempRoot `
-            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot
+            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot `
+            -ArtefactIdentity $phase6Artefacts
     } catch {
         Add-Phase6Result 'P6-XX' 'Driving the Phase-6 Step-13 scenarios' 'FAIL' (Format-Err $_)
     }
