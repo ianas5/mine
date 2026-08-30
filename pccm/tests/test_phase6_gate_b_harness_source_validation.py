@@ -1402,3 +1402,119 @@ def test_118_the_scoped_grant_correction_is_reverted() -> None:
         "$null = Add-Check $list 'RunSimulation is still forbidden in every module' `", 1)
     assert damaged != original
     _phase5_freeze_refuses(damaged)
+
+
+# ===========================================================================
+# H. The active preamble
+# ===========================================================================
+_STEP13_DOC = conformance.PCCM_ROOT / "docs" / "phase6_step13_gate_b.md"
+
+# The preamble as it stood at 7aa1ef3, after three Windows runs had happened.
+_STALE_PREAMBLE = """# PCCM Phase 6 — Step 13: the Windows/Excel Gate-B runtime harness
+
+**Status: HARNESS SOURCE, submitted for review. NO STEP-13 SCENARIO HAS EXECUTED.**
+
+Three Windows runs have been attempted. Run 1 aborted in the preflight before
+Excel started. Run 2 reached Excel and was stopped at the compile prerequisite
+by a genuine production compile defect. Run 3 **proved that repair on the real
+VBA compiler** and completed the Phase-4 matrix 35/35, but one stale Phase-5
+harness assertion failed, and the Phase-6 matrix correctly failed closed behind
+it. See the run ledger in [§8](#8-windows-run-ledger).
+
+**Not one Phase-6 procedure has executed**, no simulation has been performed and
+no parity comparison has been made. Every claim in this document about Step-13
+behaviour remains a statement about source.
+
+```
+static / source evidence   !=   Windows / Excel runtime evidence
+```
+
+That line is the whole point of Step 13, and this document keeps it in front of
+the reader rather than at the end.
+
+---
+"""
+
+
+def _damage_preamble(rewrite) -> str:
+    """Return the real document with ONLY its preamble rewritten.
+
+    Section 8 is left byte-identical on purpose: these mutations must prove the
+    control reads the CURRENT claim, not that it can find the word `executed`
+    somewhere in the run history.
+    """
+    original = _STEP13_DOC.read_text(encoding="utf-8")
+    cut = original.index("\n## ")
+    damaged = rewrite(original[:cut]) + original[cut:]
+    assert damaged != original, "the mutation changed nothing"
+    return damaged
+
+
+def _preamble_control_refuses(damaged: str) -> str:
+    """Run the active-preamble control over a damaged copy of the document."""
+    saved = conformance.PCCM_ROOT
+    with tempfile.TemporaryDirectory(prefix="pccm-step13-preamble-") as name:
+        root = Path(name)
+        (root / "docs").mkdir()
+        (root / "docs" / "phase6_step13_gate_b.md").write_text(
+            damaged, encoding="utf-8")
+        conformance.PCCM_ROOT = root
+        try:
+            conformance.test_66_the_active_preamble_states_what_has_run_and_what_has_not()
+        except AssertionError as error:
+            return str(error)
+        finally:
+            conformance.PCCM_ROOT = saved
+    raise AssertionError("the mutation survived the active-preamble control")
+
+
+def test_119_the_stale_preamble_is_restored() -> None:
+    """The submitted wording: NO STEP-13 SCENARIO HAS EXECUTED, sitting above a
+    ledger recording three attempts and two runtime-proven closures."""
+    damaged = _damage_preamble(lambda _: _STALE_PREAMBLE)
+    message = _preamble_control_refuses(damaged)
+    assert "stale claim" in message, message
+    # AND THE HISTORY IT SITS ABOVE IS UNTOUCHED: the control refused the
+    # present tense, not the record of what Run 2 established.
+    assert "Neither behavioural matrix executed." in damaged
+
+
+def test_120_the_preamble_stops_naming_the_unexecuted_matrix() -> None:
+    """A preamble that reports the runtime evidence and then goes quiet about
+    P6-ART..P6-AXIS reads as a full pass."""
+    damaged = _damage_preamble(
+        lambda head: head.replace("P6-ART", "the first scenario")
+                         .replace("P6-AXIS", "the last scenario"))
+    message = _preamble_control_refuses(damaged)
+    assert "P6-ART..P6-AXIS" in message, message
+
+
+def test_121_the_source_only_claim_is_swept_back_across_step_13() -> None:
+    """`Every claim ... about Step-13 behaviour` denies the compile, lifecycle
+    and ledger closures Runs 2 and 3 actually established."""
+    damaged = _damage_preamble(
+        lambda head: head.replace(
+            "about Phase-6 *behaviour* remains a\nstatement about source.",
+            "about Step-13 behaviour remains a\nstatement about source.", 1))
+    message = _preamble_control_refuses(damaged)
+    assert "every Step-13 claim" in message, message
+
+
+def test_122_the_preamble_stops_calling_the_execution_partial() -> None:
+    """`Runs 1-3 have executed` without `partially` reads as a completed run."""
+    damaged = _damage_preamble(
+        lambda head: head.replace("has **partially** executed", "has executed", 1))
+    message = _preamble_control_refuses(damaged)
+    assert "PARTIALLY executed" in message, message
+
+
+def test_123_the_runtime_proven_claims_lose_their_bound() -> None:
+    """Naming what Windows proved is half of it. An unbounded list invites the
+    reader to assume the rest followed."""
+    damaged = _damage_preamble(
+        lambda head: head.replace("**Runtime-proven, and no further.**",
+                                  "**Runtime-proven.**", 1)
+                         .replace("Those claims, and only those, have moved",
+                                  "Those claims have moved", 1))
+    message = _preamble_control_refuses(damaged)
+    assert "does not bound the runtime-proven claims" in message, message

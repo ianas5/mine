@@ -1708,3 +1708,114 @@ def test_65_the_ledger_verdict_is_the_final_phase6_result() -> None:
     tail = driver[ledger_at + len("Add-Phase6LedgerIntegrityResult"):]
     assert "Add-Phase6Result" not in tail
     assert "Invoke-Phase6GateBScenarios" not in tail
+
+
+# ===========================================================================
+# H. The ACTIVE preamble, checked against the ledger it sits above
+# ===========================================================================
+def _step13_preamble(doc: str) -> str:
+    """Everything above the first numbered section.
+
+    This is the document's CURRENT claim, and it is the only part of the file
+    this control is allowed to read. Section 8 is HISTORY: "Neither behavioural
+    matrix executed" was true of Run 2 and stays written that way forever. A
+    control that searched the whole file could not tell the two apart, and the
+    only way it could pass would be by deleting evidence.
+    """
+    return doc[:doc.index("\n## ")]
+
+
+def test_66_the_active_preamble_states_what_has_run_and_what_has_not() -> None:
+    """The preamble went stale the moment Run 2 reached Excel.
+
+    It kept saying NO STEP-13 SCENARIO HAS EXECUTED while §8 below it recorded
+    three attempts, two of them valid, and two closures already runtime-proven.
+    Both halves of that are wrong to state loosely: the runtime evidence is real
+    and must not be denied, and it is narrow and must not be inflated. So the
+    preamble is checked against the ledger, in both directions.
+    """
+    doc = _text(PCCM_ROOT / "docs" / "phase6_step13_gate_b.md")
+    preamble = _step13_preamble(doc)
+    # Prose wraps; the claims are read off a single line so a reflow cannot
+    # silently drop a phrase past this control.
+    flat = " ".join(preamble.split())
+
+    # SCOPE FIRST, and proved rather than asserted: the historical sentence
+    # exists in the document and is NOT what this control is reading.
+    history = "Neither behavioural matrix executed."
+    assert history in doc, "the Run-2 history has been edited away"
+    assert history not in preamble, "the preamble is not scoped above §8"
+    assert "Windows run ledger" not in preamble
+
+    # WHAT HAS RUN COMES FROM THE LEDGER, not from this file's memory.
+    rows = re.findall(r"\|\s*\*\*Run (\d+)\*\*\s*\|[^|]*\|\s*([^|]*?)\s*\|", doc)
+    assert rows, "the run ledger records no runs"
+    attempted = [n for n, outcome in rows if "not yet executed" not in outcome]
+    valid = [n for n, outcome in rows if "VALID runtime attempt" in outcome]
+    assert attempted, f"no run in the ledger has been attempted: {rows}"
+    assert valid, f"no run in the ledger is a valid runtime attempt: {rows}"
+
+    # 1. THE STALE CLAIM. Once the ledger records a completed attempt, a blanket
+    #    denial that anything has executed is false whatever else is said. Only
+    #    UNSCOPED denials are refused; "no Phase-6 procedure has executed" is
+    #    true, is required below, and must stay sayable.
+    for stale in (r"no\s+step-13\s+scenario\s+has\s+executed",
+                  r"no\s+scenario\s+has\s+executed",
+                  r"nothing\s+(here\s+)?has\s+been\s+executed",
+                  r"no\s+windows\s+run\s+has\s+been\s+(made|attempted|executed)",
+                  r"no\s+runtime\s+evidence\s+(exists|has\s+been)"):
+        assert not re.search(stale, flat, re.I), (
+            f"the preamble carries the stale claim /{stale}/ while the ledger "
+            f"records attempted runs {attempted} and valid runs {valid}"
+        )
+
+    # 2. PARTIAL EXECUTION, SAID AS SUCH, and every attempted run named.
+    assert re.search(r"partial", flat, re.I), (
+        "the preamble does not say the Step-13 runtime has PARTIALLY executed"
+    )
+    for number in attempted:
+        assert f"Run {number}" in flat, (
+            f"the ledger records Run {number} but the preamble does not name it"
+        )
+
+    # 3. AND THE RUNTIME CLAIMS ARE BOUNDED. Naming what Windows proved is only
+    #    half of it; the preamble has to say that the list is closed.
+    assert re.search(r"runtime[-\s]proven", flat, re.I), (
+        "the preamble does not say which claims are runtime-proven"
+    )
+    assert re.search(r"and no further|only those|limited to", flat, re.I), (
+        "the preamble does not bound the runtime-proven claims to the evidence "
+        "Runs 1-3 actually established"
+    )
+
+    # 4. THE UNEXECUTED MATRIX, named by its endpoints, in one place with the
+    #    word that says it has not run. This is the distinction the whole
+    #    correction turns on, and a preamble without it reads as a full pass.
+    blocks = [block for block in re.split(r"\n\s*\n", preamble)
+              if "P6-ART" in block and "P6-AXIS" in block]
+    assert blocks, (
+        "the preamble never names the P6-ART..P6-AXIS matrix, so it does not "
+        "distinguish the partial runtime evidence from what is still unexecuted"
+    )
+    assert any(re.search(r"unexecuted|not\s+(yet\s+)?executed|has\s+not\s+run",
+                         block, re.I) for block in blocks), (
+        "the preamble names P6-ART..P6-AXIS but never says it is unexecuted"
+    )
+
+    # 5. AND NOTHING WAS SIMULATED OR COMPARED.
+    for required in (r"no\s+production\s+Phase-6\s+simulation\s+procedure\s+has\s+executed",
+                     r"no\s+simulation\s+has\s+been\s+performed",
+                     r"no\s+(oracle\s+)?parity[^.]*?(been\s+)?(made|established)"):
+        assert re.search(required, flat, re.I), (
+            f"the preamble does not state /{required}/"
+        )
+
+    # 6. THE SOURCE-ONLY CLAIM IS SCOPED TO PHASE-6 BEHAVIOUR. Sweeping it
+    #    across Step 13 denies the compile, lifecycle and ledger closures that
+    #    Runs 2 and 3 established.
+    for sentence in re.split(r"(?<=\.)\s+", flat):
+        if "every claim in this document" in sentence.lower():
+            assert "phase-6" in sentence.lower(), (
+                "the preamble still calls every Step-13 claim a statement about "
+                f"source: {' '.join(sentence.split())}"
+            )

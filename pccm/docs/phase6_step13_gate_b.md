@@ -1,24 +1,36 @@
 # PCCM Phase 6 — Step 13: the Windows/Excel Gate-B runtime harness
 
-**Status: HARNESS SOURCE, submitted for review. NO STEP-13 SCENARIO HAS EXECUTED.**
+**Status: HARNESS SOURCE UNDER RUNTIME VALIDATION. Runs 1–3 have executed; the
+Phase-6 behavioural matrix `P6-ART` through `P6-AXIS` has not yet executed.**
 
-Three Windows runs have been attempted. Run 1 aborted in the preflight before
-Excel started. Run 2 reached Excel and was stopped at the compile prerequisite
-by a genuine production compile defect. Run 3 **proved that repair on the real
-VBA compiler** and completed the Phase-4 matrix 35/35, but one stale Phase-5
-harness assertion failed, and the Phase-6 matrix correctly failed closed behind
-it. See the run ledger in [§8](#8-windows-run-ledger).
+Step-13 runtime has **partially** executed, through Runs 1–3. Run 1 aborted in
+the preflight before Excel started. Run 2 reached Excel and was stopped at the
+compile prerequisite by a genuine production compile defect. Run 3 **proved that
+repair on the real VBA compiler**, completed the Phase-4 matrix 35/35, and
+reached finalisation with `P6-LDG` PASS; one stale Phase-5 harness assertion
+failed, and the Phase-6 matrix correctly failed closed behind it. See the run
+ledger in [§8](#8-windows-run-ledger).
 
-**Not one Phase-6 procedure has executed**, no simulation has been performed and
-no parity comparison has been made. Every claim in this document about Step-13
-behaviour remains a statement about source.
+**Runtime-proven, and no further.** Windows evidence now carries exactly these
+claims: the accepted workbook builds, opens and **compiles** on the real VBA
+compiler; the Phase-4 lifecycle matrix runs 35/35 with a natural shutdown and a
+clean COM release ledger; 38 of the 39 Phase-5 Gate-B scenarios pass; and the
+Phase-6 result ledger finalises. Those claims, and only those, have moved from
+source evidence to runtime evidence.
+
+**Still source-only.** The Phase-6 behavioural matrix, `P6-ART` through
+`P6-AXIS`, remains **unexecuted**. No production Phase-6 simulation procedure has
+executed, no simulation has been performed, and no oracle parity result has been
+established. Every claim in this document about Phase-6 *behaviour* remains a
+statement about source.
 
 ```
 static / source evidence   !=   Windows / Excel runtime evidence
 ```
 
 That line is the whole point of Step 13, and this document keeps it in front of
-the reader rather than at the end.
+the reader rather than at the end — with the boundary drawn where Runs 1–3
+actually left it, and not where it stood before the first run.
 
 ---
 
@@ -468,13 +480,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **69** controls, in seven groups:
+`tests/test_phase6_gate_b_harness_source.py` — **70** controls, in eight groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **127** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **132** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -530,6 +542,19 @@ with the blank key, an empty key planted elsewhere in the projection, the blank
 entry dropped or duplicated, a `"BLANK"` sentinel, a lost mapping, an unapproved
 entry key, and — on the PowerShell side — the blank answer hard-coded, the empty
 property lookup restored, and either fail-closed arm removed.
+
+Run 3 added an eighth, and it watches this document rather than the harness.
+`test_66` reads the preamble **above §1 only** and checks it against the run
+ledger below it: once the ledger records a completed attempt, an unscoped denial
+that anything has executed is refused; the preamble must name every attempted
+run, say the execution is **partial**, bound the runtime-proven claims to what
+those runs established, name `P6-ART` through `P6-AXIS` as still unexecuted, and
+scope its source-only claim to Phase-6 *behaviour* rather than to Step 13 whole.
+Its five mutations restore the stale preamble, drop the `P6-ART`..`P6-AXIS`
+distinction, sweep the source-only claim back across Step 13, stop calling the
+execution partial, and take the bound off the runtime-proven list. Section 8 is
+left byte-identical in all five: **history is not edited when the present tense
+changes**, and "Neither behavioural matrix executed" stays true of Run 2 forever.
 
 ---
 
