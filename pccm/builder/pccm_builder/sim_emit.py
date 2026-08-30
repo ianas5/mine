@@ -52,7 +52,9 @@ globally forbidden quantile token never appears either.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -60,6 +62,9 @@ from typing import Any
 from .contract_loader import InputContract
 from .sim_cases import (
     GATE_B_CASES_FILENAME,
+    GATE_B_ORACLE_FILENAME,
+    build_gate_b_oracle_measurements,
+    build_gate_b_pair,
     build_sim_cases,
     render_gate_b_cases_json,
 )
@@ -122,6 +127,7 @@ class SimGateBArtifacts:
 
     inspection_path: Path
     cases_path: Path
+    oracle_path: Path
 
 
 def emit_sim_gate_b_artifacts(
@@ -131,20 +137,67 @@ def emit_sim_gate_b_artifacts(
     inputs: InputContract,
     calc: Any,
 ) -> SimGateBArtifacts:
-    """Write phase6_gate_b_inspection.json and phase6_gate_b_cases.json."""
+    """Write the inspection projection and the two Gate-B parity artefacts.
+
+    THE TWO ARE NOT THE SAME KIND OF THING, and D2 proved it. The case authority
+    is cross-platform invariant and is frozen by hash. The oracle evidence is the
+    floating output of THIS host's libm and is deliberately not: it carries its
+    own provenance and is bound to the authority it was generated against.
+
+    The authority is written first so the evidence can name its SHA-256, which is
+    what lets the pre-Excel preflight refuse a pair that did not come from one
+    build.
+    """
     build_dir = Path(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
 
     inspection = emit_sim_inspection(build_dir, sim, inputs)
 
+    portable, measurements = build_gate_b_pair(
+        sim, inputs, calc, spec.model["model_version"]
+    )
     cases_path = build_dir / GATE_B_CASES_FILENAME
-    cases_path.write_text(
-        render_gate_b_cases_json(sim, inputs, calc, spec.model["model_version"]),
+    cases_text = json.dumps(portable, indent=2, sort_keys=False) + "\n"
+    cases_path.write_text(cases_text, encoding="utf-8")
+
+    oracle_path = build_dir / GATE_B_ORACLE_FILENAME
+    oracle_path.write_text(
+        json.dumps(
+            build_gate_b_oracle_measurements(
+                portable,
+                measurements,
+                hashlib.sha256(cases_text.encode("utf-8")).hexdigest(),
+                _source_revision(),
+            ),
+            indent=2,
+            sort_keys=False,
+        ) + "\n",
         encoding="utf-8",
     )
     return SimGateBArtifacts(
-        inspection_path=inspection.path, cases_path=cases_path
+        inspection_path=inspection.path,
+        cases_path=cases_path,
+        oracle_path=oracle_path,
     )
+
+
+def _source_revision() -> str:
+    """The revision this evidence was generated from, or a plain refusal.
+
+    Recorded, never guessed: evidence with no attributable source revision is
+    weaker evidence, and writing "unknown" while pretending otherwise would hand
+    that weakness on as though it were strength.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(Path(__file__).resolve().parent.parent.parent),
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    revision = result.stdout.strip()
+    return revision if result.returncode == 0 and revision else "unavailable"
 
 
 # ---------------------------------------------------------------------------

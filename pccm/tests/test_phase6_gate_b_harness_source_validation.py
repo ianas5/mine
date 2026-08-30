@@ -37,6 +37,7 @@ _INSPECTION = conformance.INSPECTION_PATH.read_text(encoding="utf-8")
 _CASES = conformance.GATE_B_CASES_PATH.read_text(encoding="utf-8")
 _PHASE6 = conformance.PHASE6.read_text(encoding="utf-8")
 _HARNESS = conformance.HARNESS.read_text(encoding="utf-8")
+_ORACLE = conformance.GATE_B_ORACLE_PATH.read_text(encoding="utf-8")
 
 # The pinned production baseline, read from the conformance module rather
 # than spelled again here: a repair that moves the baseline must not leave
@@ -63,9 +64,11 @@ def _run_battery() -> list[str]:
 
 @contextmanager
 def _installed(inspection: str | None = None, cases: str | None = None,
-               phase6: str | None = None, harness: str | None = None):
+               phase6: str | None = None, harness: str | None = None,
+               oracle: str | None = None):
     saved = (conformance.INSPECTION_PATH, conformance.GATE_B_CASES_PATH,
-             conformance.PHASE6, dict(conformance._CACHE), conformance.HARNESS)
+             conformance.PHASE6, dict(conformance._CACHE), conformance.HARNESS,
+             conformance.GATE_B_ORACLE_PATH)
     with tempfile.TemporaryDirectory(prefix="pccm-step13-mutation-") as name:
         temp = Path(name)
         conformance._CACHE.clear()
@@ -75,6 +78,7 @@ def _installed(inspection: str | None = None, cases: str | None = None,
                 (cases, _CASES, "GATE_B_CASES_PATH"),
                 (phase6, _PHASE6, "PHASE6"),
                 (harness, _HARNESS, "HARNESS"),
+                (oracle, _ORACLE, "GATE_B_ORACLE_PATH"),
             ):
                 if damaged is None:
                     continue
@@ -88,6 +92,7 @@ def _installed(inspection: str | None = None, cases: str | None = None,
             conformance.GATE_B_CASES_PATH = saved[1]
             conformance.PHASE6 = saved[2]
             conformance.HARNESS = saved[4]
+            conformance.GATE_B_ORACLE_PATH = saved[5]
             conformance._CACHE.clear()
             conformance._CACHE.update(saved[3])
 
@@ -623,14 +628,13 @@ def test_44_the_phase6_block_starts_its_own_excel() -> None:
 def test_45_the_preflight_stops_checking_the_expectation_corpus() -> None:
     damaged = _swap(
         _PHASE6,
-        "            $null = Add-Check $list ($case.id + ' carries ' + $key) `\n"
-        "                ($null -ne $case.expected_exact.PSObject.Properties[$key])\n",
-        "            $null = Add-Check $list ($case.id + ' carries ' + $key) $true\n")
+        "        foreach ($key in @('effective_seed', 'iterations_run',\n"
+        "                           'rng_version', 'sim_method_version')) {\n",
+        "        foreach ($key in @()) {\n")
     damaged = _swap(
         damaged,
-        "        foreach ($key in @('result_digest', 'effective_seed', 'iterations_run',\n"
-        "                           'summary', 'deterministic_base')) {\n",
-        "        foreach ($key in @()) {\n")
+        "        foreach ($withdrawn in @('result_digest', 'summary', 'deterministic_base')) {\n",
+        "        foreach ($withdrawn in @()) {\n")
     _control("test_44", phase6=damaged)
 
 
@@ -687,15 +691,14 @@ def test_52_a_case_loses_its_summary_ladder() -> None:
     """A digest match with an unchecked ladder would mean the retained totals
     were right and the statistics layer was never compared."""
     def edit(document):
-        del document["parity_cases"][0]["expected_exact"]["summary"]["pv"]
-    _control("test_30", cases=_json_mutation(_CASES, edit))
+        del document["measurements"][0]["summary"]["pv"]
+    _control("test_30", oracle=_json_mutation(_ORACLE, edit))
 
 
 def test_53_a_ladder_loses_a_quantile() -> None:
     def edit(document):
-        ladder = document["parity_cases"][0]["expected_exact"]["summary"]["nominal"]
-        ladder["quantiles"].pop("P95")
-    _control("test_30", cases=_json_mutation(_CASES, edit))
+        document["measurements"][0]["summary"]["nominal"]["quantiles"].pop("P95")
+    _control("test_30", oracle=_json_mutation(_ORACLE, edit))
 
 
 def test_54_the_corpus_admits_a_tolerance() -> None:
@@ -788,7 +791,8 @@ def test_65_the_parity_comparison_runs_before_the_identity_is_established() -> N
     block = _PHASE6[start:end]
     parity = (
         "            Add-Phase6ParityChecks -Workbook $Workbook -Inspection $SimInspection `\n"
-        "                -Cases $GateBCases -Case $case -List $list -Bank $target -Label $label\n")
+        "                -Cases $GateBCases -Case $case -List $list -Bank $target -Label $label `\n"
+        "                -Measured $measured[0]\n")
     assert _PHASE6.count(parity) == 1
     damaged = _PHASE6.replace(block, "", 1).replace(parity, parity + block, 1)
     assert damaged != _PHASE6
@@ -799,17 +803,20 @@ def test_66_the_ladder_comparison_is_dropped_from_the_comparator() -> None:
     damaged = _swap(
         _PHASE6,
         "    foreach ($measure in @('nominal', 'pv')) {\n"
-        "        $ladder = $expected.summary.$measure\n",
+        "        $ladder = $Measured.summary.$measure\n",
         "    foreach ($measure in @()) {\n"
-        "        $ladder = $expected.summary.$measure\n")
+        "        $ladder = $Measured.summary.$measure\n")
     _control("test_47", phase6=damaged)
 
 
-def test_67_the_digest_comparison_is_dropped_from_the_comparator() -> None:
+def test_67_the_request_fingerprint_comparison_is_dropped_from_the_comparator() -> None:
+    """The digest is no longer compared here - Step 0 §10.4 never promised it
+    across languages - but the request fingerprint is an EXACT identity field and
+    dropping it would let a run of the wrong request compare as parity."""
     damaged = _swap(
         _PHASE6,
-        "        @{ Field = 'result_digest';  Expected = [string]$expected.result_digest },\n",
-        "")
+        "        @{ Field = 'request_fingerprint'; Expected = $(\n",
+        "        @{ Field = 'withdrawn_fingerprint'; Expected = $(\n")
     _control("test_47", phase6=damaged)
 
 
@@ -1117,8 +1124,8 @@ def test_94_the_whole_tree_freeze_returns_to_the_pccm_working_directory() -> Non
     which match nothing and make `--quiet` exit 0 whatever the tree holds."""
     damaged = _swap(
         _PHASE6,
-        "        [string]$HarnessCommit, [string]$RepoRoot, $ArtefactIdentity\n",
-        "        [string]$HarnessCommit, [string]$PccmRoot, $ArtefactIdentity\n")
+        "        [string]$HarnessCommit, [string]$RepoRoot, $ArtefactIdentity,\n",
+        "        [string]$HarnessCommit, [string]$PccmRoot, $ArtefactIdentity,\n")
     damaged = damaged.replace("$RepoRoot", "$PccmRoot")
     _control("test_56", phase6=damaged)
 
@@ -1612,7 +1619,7 @@ def test_137_a_blank_hash_is_reported_as_an_identity() -> None:
     """A record that carries no hash is a record of a failure, not evidence."""
     damaged = _swap(_PHASE6, "            $ok = ($item.Hash -match '^[0-9A-Fa-f]{64}$')",
                     "            $ok = $true")
-    _control("test_67", phase6=damaged)
+    _control("test_67", phase6=damaged)  # noqa: E501 - the capture control, not the corpus one
 
 
 def test_138_the_capture_is_not_bound_to_the_workbook_that_was_opened() -> None:
@@ -1679,3 +1686,126 @@ def test_144_the_candidate_claim_goes_back_to_being_a_note() -> None:
                     "            ((Get-Phase6ActiveBank -State $after) -cne $candidate) `",
                     "            ($true) `")
     _control("test_68", phase6=damaged)
+
+
+# ===========================================================================
+# K. The Step-0 evidence policy Step 13 overrode, and the D2 portability defect
+# ===========================================================================
+def test_145_exact_cross_language_digest_equality_is_restored() -> None:
+    """The submitted rule, and the one Run 4 failed on. Step 0 §10.4 keeps the
+    digest exact for SAME-RUNTIME replay; it never promised it across two
+    languages, and it resolves one ULP in one iteration out of a thousand."""
+    damaged = _swap(
+        _PHASE6,
+        "    Add-Note ($Label + ': result_digest oracle ' +\n",
+        "    $null = Add-Check $List ($Label + ': published result_digest equals the oracle') `\n"
+        "        (Test-SimExactText -Actual $publishedDigest "
+        "-Expected ([string]$Measured.result_digest)) ''\n"
+        "    Add-Note ($Label + ': result_digest oracle ' +\n")
+    _control("test_69", phase6=damaged)
+
+
+def test_146_a_floating_summary_row_returns_to_exact_equality() -> None:
+    """§10.3 settled summary statistics at a relative bound with a scale-aware
+    floor. Exact equality is a stronger rule than the accepted policy."""
+    damaged = _swap(
+        _PHASE6,
+        "                (Test-Phase6WithinPolicy -Actual ([double]$actual) `\n"
+        "                    -Expected ([double]$ladder.$rowKey) -Rule $rule -Scale $scale) `\n",
+        "                (Test-SimExactDouble -Actual $actual "
+        "-Expected ([double]$ladder.$rowKey)) `\n")
+    _control("test_69", phase6=damaged)
+
+
+def test_147_the_harness_spells_its_own_tolerance() -> None:
+    """§10.1 gave the tolerance a single owner and it is not the harness. A
+    literal here is a second authority, and it would drift from the first."""
+    damaged = _swap(
+        _PHASE6,
+        "    if (($magnitude -gt 0) -and ($gap -le ([double]$Rule.relative * $magnitude))) { return $true }\n",
+        "    if (($magnitude -gt 0) -and ($gap -le (1e-9 * $magnitude))) { return $true }\n")
+    _control("test_10", phase6=damaged)
+
+
+def test_148_the_scale_aware_floor_is_dropped() -> None:
+    """Cancellation can drive a total near zero while every contribution that
+    made it was large; a purely relative test is then unusable."""
+    damaged = _swap(
+        _PHASE6,
+        "    if ([double]$Rule.absolute_floor -le 0) { return $false }\n"
+        "    return ($gap -le ([double]$Rule.absolute_floor * [Math]::Abs($Scale)))\n",
+        "    return $false\n")
+    _control("test_10", phase6=damaged)
+
+
+def test_149_the_same_runtime_digest_equality_is_weakened() -> None:
+    """The one place §10.4 DOES promise digest equality, and it is not for
+    weakening: two runs of one request inside one runtime."""
+    damaged = _swap(
+        _PHASE6,
+        "        $null = Add-Check $list 'both runs published the same result digest' `\n"
+        "            (Test-SimSameValue -A $digests[0] -B $digests[1]) `\n",
+        "        $null = Add-Check $list 'both runs published the same result digest' `\n"
+        "            ($true) `\n")
+    _control("test_70", phase6=damaged)
+
+
+def test_150_the_oracle_digest_dependency_returns_to_repeatability() -> None:
+    """Run 4 proved P6-DET's own property and was marked red for this clause."""
+    damaged = _swap(
+        _PHASE6,
+        "        # AND NOTHING CROSS-LANGUAGE.",
+        "        $null = Add-Check $list 'and it is the digest the oracle predicted' `\n"
+        "            (Test-SimExactText -Actual $digests[1] "
+        "-Expected ([string]$OracleEvidence.measurements[0].result_digest)) ''\n"
+        "        # AND NOTHING CROSS-LANGUAGE.")
+    _control("test_70", phase6=damaged)
+
+
+def test_151_the_host_sensitive_numbers_return_to_the_portable_authority() -> None:
+    """D2: the same source produced 8C0D021F on Windows and 8C17DF7C on Linux,
+    because the file carried Beta-PERT output and Cheng reaches libm."""
+    def edit(document):
+        document["parity_cases"][0]["expected_exact"]["result_digest"] = "0000000000000000"
+    _control("test_48", cases=_json_mutation(_CASES, edit))
+
+
+def test_152_the_authority_claims_a_portability_it_does_not_have() -> None:
+    """Claiming invariance is not having it; the claim has to match the split."""
+    def edit(document):
+        document["portability"]["cross_platform_invariant"] = True
+        document["measurements"][0]["summary"]["nominal"]["mean"] = 1.0
+    _control("test_71", oracle=_json_mutation(_ORACLE, edit))
+
+
+def test_153_the_evidence_is_generated_for_a_different_authority() -> None:
+    """A pair assembled from two builds is not a pair, and the preflight has to
+    refuse it before Excel rather than compare across it."""
+    def edit(document):
+        document["generated_for"]["sha256"] = "0" * 64
+    _control("test_48", oracle=_json_mutation(_ORACLE, edit))
+
+
+def test_154_the_preflight_stops_binding_the_two_artefacts() -> None:
+    """Without the hash comparison the pair could come from two builds."""
+    damaged = _swap(
+        _PHASE6,
+        "        (($authoritySha.Length -eq 64) -and\n"
+        "         ($actualSha -ne '') -and ($actualSha -ieq $authoritySha)) `\n",
+        "        ($true) `\n")
+    _control("test_71", phase6=damaged)
+
+
+def test_155_the_emitted_policy_drifts_from_the_step_0_record() -> None:
+    """The constants in code are a COPY of §10.3, and a copy that stopped
+    matching would be a second authority with a friendlier number."""
+    def edit(document):
+        document["comparison_policy"]["tolerances"]["summary_statistic"]["relative"] = 1e-6
+    _control("test_31", cases=_json_mutation(_CASES, edit))
+
+
+def test_156_the_policy_promises_a_cross_language_digest_again() -> None:
+    """The qualifier Step 13 read past, restored as data this time."""
+    def edit(document):
+        document["comparison_policy"]["cross_language_digest_is_exact"] = True
+    _control("test_31", cases=_json_mutation(_CASES, edit))

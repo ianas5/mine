@@ -79,6 +79,9 @@ BUILD = PCCM_ROOT / "build"
 
 INSPECTION_PATH = BUILD / "phase6_gate_b_inspection.json"
 GATE_B_CASES_PATH = BUILD / "phase6_gate_b_cases.json"
+# The host-local companion. D2 proved the oracle's floating output is not the
+# same on two hosts, so it is a separate artefact and is NOT hash-frozen.
+GATE_B_ORACLE_PATH = BUILD / "phase6_gate_b_oracle_local.json"
 
 # The production baseline this harness is evidence infrastructure FOR. Named,
 # never inferred: a runtime result is attributable to a commit or it is worth
@@ -105,6 +108,12 @@ def _cases() -> dict:
     if "cases" not in _CACHE:
         _CACHE["cases"] = json.loads(_text(GATE_B_CASES_PATH))
     return _CACHE["cases"]  # type: ignore[return-value]
+
+
+def _oracle_evidence() -> dict:
+    if "oracle" not in _CACHE:
+        _CACHE["oracle"] = json.loads(_text(GATE_B_ORACLE_PATH))
+    return _CACHE["oracle"]  # type: ignore[return-value]
 
 
 def _sim_constants() -> dict[str, str]:
@@ -227,14 +236,22 @@ def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> No
 
     removed = [line for line in before if line not in after]
     assert removed == [
+        "                            $simInspectPath, $simCasesPath)) {",
         "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot",
-    ], f"the Phase-4 driver lost lines beyond the artefact capture: {removed}"
+    ], f"the Phase-4 driver lost lines beyond the two authorised changes: {removed}"
 
     added = [line for line in after if line not in before]
     for required in ("Get-Phase6RuntimeArtefactIdentity -TempRoot $tempRoot",
                      "-ArtefactIdentity $phase6Artefacts",
-                     "Phase-6 pre-open artefact capture"):
+                     "Phase-6 pre-open artefact capture",
+                     "$simOraclePath = Join-Path $BuildDir 'phase6_gate_b_oracle_local.json'",
+                     "Copy-Item -LiteralPath $simOraclePath -Destination $tempRoot",
+                     "-OracleEvidence $simOracle"):
         assert any(required in line for line in added), required
+    # THE HOST-LOCAL EVIDENCE IS REQUIRED BEFORE EXCEL, like the other two.
+    assert any("$simOraclePath" in line and "$simCasesPath" in line for line in added), (
+        "the required-artefact list does not name the host-local oracle evidence"
+    )
     # AND THE CAPTURE IS BEFORE THE OPEN, which is the whole point of moving it.
     capture = after.index("$phase6Artefacts = Get-Phase6RuntimeArtefactIdentity "
                           "-TempRoot $tempRoot -Manifest $manifest")
@@ -350,9 +367,10 @@ def test_08_no_bank_column_letter_is_restated() -> None:
 def test_09_no_expected_simulation_value_is_restated() -> None:
     """Every digest, seed and ladder value comes from the corpus."""
     code = _executable(PHASE6)
+    for measured in _oracle_evidence()["measurements"]:
+        assert measured["result_digest"] not in code, measured["result_digest"]
     for case in _cases()["parity_cases"]:
         expected = case["expected_exact"]
-        assert expected["result_digest"] not in code, expected["result_digest"]
         if "calculation_fingerprint" in expected:
             assert expected["calculation_fingerprint"] not in code
             assert expected["request_fingerprint"] not in code
@@ -369,26 +387,43 @@ def test_09_no_expected_simulation_value_is_restated() -> None:
 def test_10_there_is_no_recomputation_and_no_fallback() -> None:
     """A harness that could compute the expectation could disagree with the oracle."""
     code = _executable(PHASE6)
-    for forbidden in ("[math]::", "Measure-Object -Average", "Get-Random",
-                      "-lt 1e-", "AbsoluteDifference"):
+    for forbidden in ("Measure-Object -Average", "Get-Random", "AbsoluteDifference"):
         assert forbidden not in code, f"the harness must not contain {forbidden}"
-    assert "Test-SimExactDouble" in code and "Test-SimExactText" in code
+    assert "Test-SimExactText" in code
 
-    # THE TOLERANCE BAN IS SCOPED, and the scope is the point. The SIMULATION
-    # comparison is exact and may not name a tolerance at all. The ANALYTICAL
-    # identity check hands the accepted Phase-5 comparator its own emitted
-    # `$Cases.tolerances`, which is that comparator's authority, not a slack the
-    # harness invented - so a blanket ban would forbid reusing the accepted
-    # machinery and push the harness towards reimplementing it.
+    # THE ARITHMETIC BAN IS SCOPED TO ONE FUNCTION, and the scope is the point.
+    # A comparator that works to a tolerance has to subtract and take a
+    # magnitude; everything else in the harness still may not compute.
+    policy = code.split("function Test-Phase6WithinPolicy")[1].split("\nfunction ")[0]
+    elsewhere = code.replace(policy, "")
+    assert "[math]::" not in elsewhere.lower(), (
+        "the harness computes outside the one comparator that is allowed to"
+    )
+    for allowed in ("[Math]::Abs", "[Math]::Max"):
+        assert allowed in policy, allowed
+
+    # AND IT SPELLS NO BOUND OF ITS OWN. Step 0 §10.1 gave the tolerance a single
+    # owner and it is not this file: the relative bound and the floor factor come
+    # from the authority's emitted policy, and the scale from the case. A literal
+    # here would be the second owner §10.1 forbade.
     comparator = code.split("function Add-Phase6ParityChecks")[1].split("\nfunction ")[0]
-    for forbidden in ("tolerance", "Tolerance"):
-        assert forbidden not in comparator, (
-            f"the simulation comparator names {forbidden}"
-        )
-    for site in re.findall(r"[^\n]*[Tt]olerance[^\n]*", code):
-        assert "$Cases.tolerances" in site, (
-            f"a tolerance appears outside the accepted Phase-5 pass-through: {site.strip()}"
-        )
+    for block, where in ((policy, "Test-Phase6WithinPolicy"),
+                         (comparator, "Add-Phase6ParityChecks")):
+        literals = re.findall(r"(?<![\w.$])\d+(?:\.\d+)?[eE]-\d+", block)
+        assert not literals, f"{where} spells its own tolerance: {literals}"
+    assert "$Rule.relative" in policy and "$Rule.absolute_floor" in policy
+    assert "$Cases.comparison_policy.tolerances.summary_statistic" in comparator, (
+        "the comparator does not read the accepted policy from the authority"
+    )
+    assert "$Case.accumulation_scale" in comparator, (
+        "the comparator does not key the floor to the accepted accumulation scale"
+    )
+
+    # THE PHASE-5 PASS-THROUGH IS UNCHANGED: the analytical identity check hands
+    # the accepted Phase-5 comparator its own emitted `$Cases.tolerances`, which
+    # is that comparator's authority and not a slack this harness invented.
+    for site in re.findall(r"[^\n]*\$Cases\.tolerances[^\n]*", code):
+        assert "Add-Phase5AnalyticalChecks" in site or "-Tolerances" in site, site.strip()
 
 
 # ===========================================================================
@@ -688,37 +723,104 @@ def test_29_the_fixed_seed_and_effective_seed_come_from_the_case() -> None:
         assert case["expected_exact"]["effective_seed"] == GATE_B_SUPPLIED_SEED
 
 
-def test_30_every_case_carries_a_distinct_exact_digest_and_a_full_ladder() -> None:
-    digests = []
+def test_30_every_case_is_measured_once_with_a_distinct_digest_and_a_full_ladder() -> None:
+    """The measurements are host-local, and the corpus split has to hold.
+
+    The floating outputs live in the oracle evidence, one record per case, and
+    the portable authority carries none of them. That is the D2 correction: the
+    Beta-PERT case reaches libm through Cheng, libm differs between hosts, and an
+    artefact that mixed those numbers in could never be cross-platform frozen.
+    """
     labels = _cases()["vocabulary"]["quantile_labels"]
+    evidence = _oracle_evidence()
+    measured = {record["id"]: record for record in evidence["measurements"]}
+    assert len(measured) == len(evidence["measurements"]) == evidence["case_count"]
+
+    digests = []
     for case in _cases()["parity_cases"]:
+        # THE PORTABLE HALF: exact expectations and the accepted scale, and
+        # nothing a transcendental produced.
         expected = case["expected_exact"]
-        assert case["comparison"] == "EXACT", case["id"]
-        assert re.fullmatch(r"[0-9A-F]{16}", expected["result_digest"]), case["id"]
-        digests.append(expected["result_digest"])
+        for withdrawn in ("result_digest", "summary", "deterministic_base"):
+            assert withdrawn not in expected, (case["id"], withdrawn)
+        for exact in ("effective_seed", "iterations_run", "rng_version",
+                      "sim_method_version"):
+            assert exact in expected, (case["id"], exact)
+        assert case["accumulation_scale"] > 0, case["id"]
+        assert case["comparison_classes"]["diagnostic_only"] == ["result_digest"]
+        assert sorted(case["comparison_classes"]["exact"]) == sorted(expected)
+
+        # THE HOST-LOCAL HALF: one record, the full ladder, both measures.
+        record = measured[case["id"]]
+        assert record["plan_case_id"] == case["plan_case_id"]
+        assert re.fullmatch(r"[0-9A-F]{16}", record["result_digest"]), case["id"]
+        digests.append(record["result_digest"])
         for measure in ("nominal", "pv"):
-            ladder = expected["summary"][measure]
+            ladder = record["summary"][measure]
             for key in ("mean", "sample_standard_deviation", "minimum", "maximum"):
                 assert isinstance(ladder[key], (int, float)), (case["id"], key)
             assert list(ladder["quantiles"]) == labels, case["id"]
-        assert set(expected["deterministic_base"]) == {"nominal", "pv"}
+        assert set(record["deterministic_base"]) == {"nominal", "pv"}
     assert len(set(digests)) == len(digests), "two cases share a digest"
 
 
-def test_31_the_corpus_admits_no_tolerance() -> None:
-    """`sim_contract.yaml` forbids a comparison tolerance, and so does this."""
-    # AFFIRMATIVE PHRASES. The comparison policy DENIES that a tolerance is
-    # admissible, so a bare ban on the word "tolerance" would refuse the very
-    # sentence that forbids one. What may not appear is a tolerance being
-    # GRANTED, or any numeric slack field.
-    flat = json.dumps(_cases()).lower()
-    for granted in ("tolerance_", "relative_tolerance", "absolute_tolerance",
-                    "epsilon", "approximately", "\"tolerance\":"):
-        assert granted not in flat, granted
+def test_31_the_comparison_policy_is_the_accepted_step_0_policy() -> None:
+    """Step 13 wrote a stronger rule than Step 0 had accepted, and Run 4 failed
+    on the difference.
+
+    The harness said `EXACT, and there is no other mode` and compared a
+    Python-oracle `result_digest` against a VBA one. Step 0 §10.3 had already
+    settled cross-language summary statistics at `rel <= 3e-10` with a
+    scale-aware floor, and §10.4 keeps the digest exact for SAME-RUNTIME replay
+    only. This control binds the emitted policy to that record so the two cannot
+    drift apart again.
+    """
+    from pccm_builder.sim_policy import (  # noqa: PLC0415
+        EXACT_SUBJECTS,
+        POLICY,
+        SUMMARY_STATISTIC,
+        validate_evidence_policy_record,
+    )
+
+    # THE MODULE IS STILL A FAITHFUL COPY OF THE RECORD.
+    validate_evidence_policy_record(PCCM_ROOT / "docs" / "phase6_step0.md")
+
     policy = _cases()["comparison_policy"]
-    assert policy.startswith("EXACT")
-    assert "no tolerance is admissible" in policy
-    assert "decimal separator" in policy
+    assert "phase6_step0" in policy["authority"], policy["authority"]
+    for subject, rule in POLICY.items():
+        emitted = policy["tolerances"][subject]
+        assert emitted["relative"] == rule.relative, subject
+        assert emitted["absolute_floor"] == rule.absolute_floor, subject
+        assert emitted["scale_kind"] == rule.scale_kind, subject
+    assert policy["exact_subjects"] == list(EXACT_SUBJECTS)
+
+    # THE QUALIFIER THAT WAS READ PAST, stated as data this time.
+    assert policy["same_runtime_digest_is_exact"] is True
+    assert policy["cross_language_digest_is_exact"] is False
+
+    # AND THE SUMMARY RULE IS SCALE-AWARE, not purely relative: cancellation can
+    # drive a total near zero while every contribution that made it was large.
+    summary = policy["tolerances"][SUMMARY_STATISTIC]
+    assert summary["absolute_floor"] is not None and summary["scale_kind"] == "accumulation"
+
+    # NO SECOND OWNER. sim_contract.yaml still stores no tolerance at all - as a
+    # KEY, which is the thing that would make it an authority. Its prose says it
+    # stores none, and a bare ban on the word would refuse that sentence.
+    def keys(node, path=""):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                yield f"{path}.{key}", key
+                yield from keys(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                yield from keys(value, f"{path}[{index}]")
+
+    granted = [where for where, key in keys(load_sim_contract(SPEC / "sim_contract.yaml").raw)
+               if "tolerance" in str(key).lower() or "epsilon" in str(key).lower()]
+    assert not granted, (
+        f"sim_contract.yaml carries a tolerance key at {granted}; Step 0 §10.1 "
+        "gave the tolerance one owner so the rule cannot come to live in two files"
+    )
 
 
 def test_32_the_bounds_and_vocabulary_come_from_the_owning_authorities() -> None:
@@ -1038,12 +1140,24 @@ def test_44_the_preflight_runs_before_excel_and_aborts_the_run() -> None:
     preflight = code.split("function Invoke-Phase6CoveragePreflight")[1]
     preflight = preflight.split("\nfunction ")[0]
     for required in ("phase6_gate_b_inspection.json", "phase6_gate_b_cases.json",
+                     "phase6_gate_b_oracle_local.json",
                      "result_digest", "effective_seed", "summary",
                      "deterministic_base", "comparison_policy"):
         assert required in preflight, required
-    # AND THE PER-CASE CHECKS ARE REAL PREDICATES, not a constant.
+    # AND THE PER-CASE CHECKS ARE REAL PREDICATES OVER A NON-EMPTY LIST. Both
+    # halves matter: an empty key list checks nothing while every predicate in
+    # it still looks correct.
     assert "$null -ne $case.expected_exact.PSObject.Properties[$key]" in preflight
     assert "Add-Check $list ($case.id + ' carries ' + $key) $true" not in preflight
+    for demanded, why in (
+        ("foreach ($key in @('effective_seed', 'iterations_run',",
+         "the preflight no longer names the exact expectations it requires"),
+        ("foreach ($withdrawn in @('result_digest', 'summary', 'deterministic_base'))",
+         "nothing stops the host-sensitive fields returning to the authority"),
+        ("$measured.ContainsKey([string]$case.id)",
+         "a case with no host-local measurements would compare against nothing"),
+    ):
+        assert demanded in preflight, why
 
 
 def test_45_the_step13_file_claims_no_execution() -> None:
@@ -1112,32 +1226,93 @@ def test_47_the_parity_comparison_is_mandatory_and_covers_the_whole_ladder() -> 
     if not comparator.strip():
         comparator = code.split("function Add-Phase6ParityChecks")[1]
     for required in ("result_digest", "effective_seed", "iterations_run",
-                     "rng_version", "sim_method_version",
+                     "rng_version", "sim_method_version", "request_fingerprint",
                      "'nominal', 'pv'", "quantile_labels", "deterministic_base_a"):
         assert required in comparator, required
     assert "Test-SimExactText" in comparator and "Test-SimExactDouble" in comparator
+    # THE EXACT IDENTITY FIELD IS COMPARED, not merely mentioned. A field name
+    # that survives only in a variable name proves nothing about the comparison.
+    assert "@{ Field = 'request_fingerprint'; Expected = $(" in comparator, (
+        "the request fingerprint is no longer an exact comparison subject"
+    )
     for forbidden in ("if ($false)", "continue  #", "-or $true"):
         assert forbidden not in comparator, forbidden
 
 
-def test_48_the_two_new_generated_artefacts_are_byte_identical() -> None:
-    """A DERIVED PIN, and it catches what the round-trip checks cannot.
+def test_48_the_cross_platform_artefacts_are_pinned_and_the_host_local_one_is_not() -> None:
+    """A DERIVED PIN, and D2 showed what it may and may not be applied to.
 
     `test_14` and `test_23` prove each artefact equals what the builder emits
-    RIGHT NOW. A change to the builder itself moves both sides of that
-    comparison and passes. These two hashes are the fixed point: if the emitted
-    bytes move, the Windows harness is reading a different authority than the
-    one this review saw, and that has to be a deliberate, reported act.
+    RIGHT NOW. A change to the builder itself moves both sides of that comparison
+    and passes. A hash is the fixed point: if the emitted bytes move, the Windows
+    harness is reading a different authority than the one this review saw.
+
+    BUT A HASH IS ONLY MEANINGFUL FOR AN ARTEFACT THAT CAN BE THE SAME ON TWO
+    HOSTS. The Windows Run-4 tree generated `phase6_gate_b_cases.json` as
+    `8C0D021F...` where Linux generated `8C17DF7C...`, because the file carried
+    Beta-PERT output and Cheng reaches libm. Pinning that hash asserted a
+    portability the artefact did not have. The projection and the case authority
+    are pinned; the host-local oracle evidence is deliberately not, and this
+    control requires it to stay unpinned.
     """
     import hashlib
     for path, expected in (
         (INSPECTION_PATH,
          "83eff35ffe1523547313a9c57a58d2b8adeb4e2e6ceeacb85dd846ed30111573"),
         (GATE_B_CASES_PATH,
-         "8c17df7cd0eaa685151bca683219a536d01ebdb0edcd8bbf80993532b20b8726"),
+         "6a9d86784ff1f29195b23c85ee4445e133a4cb283da0c3834afe4048c495af5c"),
     ):
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         assert actual == expected, f"{path.name} moved: {actual}"
+
+    # AND THE PINNED ONE REALLY IS PORTABLE: it says so, and it carries no value
+    # a transcendental produced.
+    assert _cases()["portability"]["cross_platform_invariant"] is True
+
+    # AS KEYS, NOT AS WORDS. The policy block legitimately NAMES result_digest -
+    # to say it is diagnostic - and a bare text ban would refuse the sentence
+    # that states the correction.
+    def carried(node, path=""):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                yield f"{path}.{key}", key, value
+                yield from carried(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                yield from carried(value, f"{path}[{index}]")
+
+    for where, key, value in carried(_cases()["parity_cases"], "parity_cases"):
+        assert key not in ("summary", "deterministic_base"), where
+        if key == "result_digest":
+            assert where.endswith("comparison_classes.diagnostic_only"), where
+    allowed = {"effective_seed", "iterations_run", "rng_version", "sim_method_version",
+               "calculation_fingerprint", "request_fingerprint"}
+    for case in _cases()["parity_cases"]:
+        surplus = {key for key in case["expected_exact"]
+                   if not key.endswith("_canonical")} - allowed
+        assert not surplus, (case["id"], surplus)
+
+    # THE HOST-LOCAL ONE SAYS SO, AND NOTHING PINS IT.
+    evidence = _oracle_evidence()
+    assert evidence["portability"]["cross_platform_invariant"] is False
+    assert evidence["result_digest_is_diagnostic"] is True
+    digest = hashlib.sha256(GATE_B_ORACLE_PATH.read_bytes()).hexdigest()
+    for source in (_text(Path(__file__)), _text(BOOTSTRAP / "phase6_gate_b_scenarios.ps1"),
+                   _text(BOOTSTRAP / "phase4_functional_test.ps1")):
+        assert digest not in source, (
+            "the host-local oracle evidence has been pinned by hash, which is "
+            "the D2 defect in a new place"
+        )
+    # ITS PROVENANCE IS COMPLETE, because provenance is what replaces the pin.
+    for field in ("generated_for", "host", "source_revision", "generated_at_utc",
+                  "model_version", "sim_contract_version", "rng_version",
+                  "sim_method_version", "evidence_policy_authority"):
+        assert field in evidence, field
+    assert re.fullmatch(r"[0-9a-f]{64}", evidence["generated_for"]["sha256"])
+    assert evidence["generated_for"]["sha256"] == hashlib.sha256(
+        GATE_B_CASES_PATH.read_bytes()).hexdigest(), (
+        "the oracle evidence was not generated for the authority beside it"
+    )
 
 
 def test_49_the_live_prerequisite_uses_the_accepted_lifecycle_partition() -> None:
@@ -1922,8 +2097,8 @@ def test_67_the_executed_workbook_is_hashed_before_excel_locks_it() -> None:
     assert "($captured.Count -eq 2)" in scenario, (
         "a missing or partial capture would not fail the scenario"
     )
-    assert "'^[0-9A-Fa-f]{64}$'" in scenario, (
-        "a blank or malformed hash would be reported as an identity"
+    assert "$ok = ($item.Hash -match '^[0-9A-Fa-f]{64}$')" in scenario, (
+        "a blank or malformed capture hash would be reported as an identity"
     )
     # AND IT BINDS THE CAPTURE TO THE WORKBOOK THIS SESSION OPENED. A hash taken
     # before the open is evidence about this run only if it is the same file.
@@ -1988,3 +2163,141 @@ def test_68_a_failed_commit_preserves_what_production_does_not_rewrite() -> None
     # THE CANDIDATE CLAIM IS A CHECK, NOT A NOTE.
     assert "is not the published bank') `" in block
     assert "(Get-Phase6ActiveBank -State $after) -cne $candidate" in block
+
+
+# ===========================================================================
+# J. The D2 portability defect, and the evidence policy Step 13 overrode
+# ===========================================================================
+def test_69_the_parity_comparison_uses_the_accepted_classes() -> None:
+    """Run 4's `P6-ORA` failure was the harness disagreeing with its own policy.
+
+    Step 0 §10 settled cross-implementation comparison before Step 13 existed:
+    §10.3 gives summary statistics `rel <= 3e-10` with a scale-aware floor, and
+    §10.4 keeps the `result_digest` exact for SAME-RUNTIME replay - a qualifier
+    Step 13 read past when it compared a Python digest against a VBA one.
+
+    The classes are checked as classes: what must still be exact, what is
+    compared under the policy, and what is recorded and never compared.
+    """
+    code = _executable(PHASE6)
+    comparator = code.split("function Add-Phase6ParityChecks")[1].split("\nfunction ")[0]
+
+    # EXACT, §10.4. The identity and discrete fields, still by exact equality.
+    assert "Test-SimExactText -Actual $actual -Expected $pair.Expected" in comparator
+    assert "request_fingerprint" in comparator
+    for field in ("effective_seed", "iterations_run", "rng_version",
+                  "sim_method_version"):
+        assert field in comparator, field
+    exact = comparator.split("---- EXACT")[0] if "---- EXACT" in comparator else comparator
+    assert "Test-SimExactDouble" in comparator, (
+        "the discrete identity fields are no longer compared exactly"
+    )
+
+    # UNDER THE POLICY, §10.3. Every published floating row, both measures.
+    for row in ("mean", "sample_standard_deviation", "minimum", "maximum",
+                "deterministic_base_a", "quantile_"):
+        assert row in comparator, row
+    assert comparator.count("Test-Phase6WithinPolicy") >= 3, (
+        "not every floating comparison goes through the accepted policy"
+    )
+    assert "Test-SimExactDouble -Actual $actual -Expected ([double]$ladder" not in comparator, (
+        "a floating summary row is still compared by exact equality"
+    )
+
+    # DIAGNOSTIC, AND NOT A CRITERION. The digest is recorded, never checked.
+    digest_lines = [line for line in comparator.splitlines() if "result_digest" in line]
+    assert digest_lines, "the digest is no longer recorded at all"
+    for line in digest_lines:
+        assert "Add-Check" not in line, (
+            f"the digest is still a pass criterion: {line.strip()}"
+        )
+    assert "DIAGNOSTIC" in comparator
+
+    # AND THE WHOLE HARNESS AGREES: nothing anywhere compares a published digest
+    # against the oracle's.
+    for line in code.splitlines():
+        if "Add-Check" in line and "result_digest" in line:
+            raise AssertionError(f"a digest equality check survives: {line.strip()}")
+
+
+def test_70_repeatability_is_same_runtime_and_carries_no_oracle_clause() -> None:
+    """`P6-DET` proves a replay property, and Run 4 proved it: two runs, one
+    digest. It went red for a cross-language clause that was never its own."""
+    code = _executable(PHASE6)
+    block = code.split("Add-Phase6Result 'P6-DET'")[0].rsplit(
+        "Add-Phase6Result 'P6-ORA'", 1)[1]
+
+    # SAME-RUNTIME EQUALITY, EXACT, AND NOT WEAKENED.
+    assert "Test-SimSameValue -A $digests[0] -B $digests[1]" in block, (
+        "the same-runtime digest equality has been weakened or removed"
+    )
+    assert "Test-Phase6WithinPolicy" not in block, (
+        "a tolerance has been admitted into the same-runtime digest comparison"
+    )
+    # AND A BLANK PAIR CANNOT PASS AS EQUAL.
+    assert "Test-SimBlank -Value $digests[0]" in block
+
+    # NO ORACLE DIGEST. That question belongs to P6-ORA, where it is diagnostic.
+    for forbidden in ("expected_exact.result_digest", "OracleEvidence",
+                      "the digest the oracle predicted"):
+        assert forbidden not in block, (
+            f"the repeatability scenario reaches for {forbidden}"
+        )
+
+
+def test_71_the_two_gate_b_artefacts_are_classified_by_portability() -> None:
+    """D2: the same builder produced different Beta-PERT bytes on two hosts.
+
+    Windows generated `phase6_gate_b_cases.json` as `8C0D021F...`, Linux as
+    `8C17DF7C...`, from one source. Cheng BB/BC calls `log` and `exp`, CPython
+    delegates both to the platform libm, and libm differs in the last ULP - so an
+    artefact carrying Monte Carlo floating output is host-local by construction
+    and can never be honestly frozen by a cross-platform hash.
+    """
+    from pccm_builder.sim_cases import (  # noqa: PLC0415
+        GATE_B_CASES_FILENAME,
+        GATE_B_ORACLE_FILENAME,
+    )
+
+    # THE AUTHORITY SAYS WHICH IT IS, AND NAMES ITS COMPANION.
+    portability = _cases()["portability"]
+    assert portability["cross_platform_invariant"] is True
+    assert portability["host_local_companion"] == GATE_B_ORACLE_FILENAME
+    assert "libm" in portability["why"]
+
+    evidence = _oracle_evidence()
+    assert evidence["portability"]["cross_platform_invariant"] is False
+    assert evidence["generated_for"]["authority"] == GATE_B_CASES_FILENAME
+
+    # THE PREFLIGHT REFUSES A PAIR FROM TWO BUILDS, BEFORE EXCEL.
+    code = _executable(PHASE6)
+    preflight = code.split("function Invoke-Phase6CoveragePreflight")[1].split(
+        "\nfunction ")[0]
+    assert "phase6_gate_b_oracle_local.json" in preflight
+    assert "Get-FileHash -LiteralPath $casesPath" in preflight, (
+        "the preflight does not hash the authority the evidence claims to be for"
+    )
+    assert "$actualSha -ieq $authoritySha" in preflight, (
+        "the preflight does not compare the evidence's authority hash"
+    )
+    for demanded in ("the oracle evidence does NOT claim cross-platform invariance",
+                     "the authority claims cross-platform invariance",
+                     "the oracle evidence carries its host and source provenance",
+                     "the policy does not promise a cross-language digest",
+                     "the policy keeps the same-runtime digest exact"):
+        assert demanded in preflight, demanded
+
+    # AND THE AUTHORITY IS KEPT CLEAN: the withdrawn fields must stay withdrawn.
+    for withdrawn in ("result_digest", "summary", "deterministic_base"):
+        assert (f"$case.id + ' keeps the host-sensitive ' + $withdrawn") in preflight or \
+            withdrawn in preflight, withdrawn
+    assert "keeps the host-sensitive" in preflight, (
+        "nothing stops the host-sensitive fields returning to the portable authority"
+    )
+
+    # THE RUNTIME SCENARIO ATTRIBUTES THE EVIDENCE IT USED.
+    artefact = code.split("$baseline = Get-Phase6ProductionBaseline")[1].split(
+        "Add-Phase6Result 'P6-ART'")[0]
+    for recorded in ("oracle evidence host", "oracle evidence source revision",
+                     "oracle evidence generated for"):
+        assert recorded in artefact, recorded

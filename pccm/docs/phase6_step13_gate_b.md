@@ -1,14 +1,12 @@
 # PCCM Phase 6 — Step 13: the Windows/Excel Gate-B runtime harness
 
-**Status: THE PHASE-6 BEHAVIOURAL MATRIX HAS EXECUTED. Runs 1–4 have run;
-Run 4 executed `P6-ART` through `P6-AXIS` and reported 24 of 29 passing, with
-five FAILs that are three defects.**
+**Status: THE PHASE-6 BEHAVIOURAL MATRIX HAS EXECUTED. Runs 1–4 have run.
+Run 4's parity failure is reclassified as a HARNESS EVIDENCE-POLICY defect, and
+the D2 cross-platform portability defect it exposed is settled here.**
 
 Step-13 runtime has executed through Runs 1–4. Run 1 aborted in the preflight
-before Excel started. Run 2 reached Excel and was stopped at the compile
-prerequisite by a genuine production compile defect. Run 3 **proved that repair
-on the real VBA compiler** and reached finalisation, but a stale Phase-5
-assertion failed and the Phase-6 matrix correctly failed closed behind it.
+before Excel started. Run 2 was stopped at the compile prerequisite by a genuine
+production compile defect. Run 3 **proved that repair on the real VBA compiler**.
 **Run 4 is the first valid execution of the Phase-6 behavioural matrix**: a real
 production simulation ran in real Excel, published, repeated and recovered. See
 the run ledger in [§8](#8-windows-run-ledger).
@@ -23,19 +21,35 @@ attempt-result axis correction of Step 12, and the result ledger. **FIXED
 repeatability is runtime-proven**: two runs of the same request published the
 same workbook digest.
 
-**Open, and not claimed.** Real Excel and the accepted Python oracle disagree on
-the result digest for all four parity cases, and **no ownership is assigned**:
-[§9](#9-p6-ora-the-open-parity-disagreement) records what has been localised and
-what has not. `P6-DET` and `P6-FIN` are derivative of that one disagreement and
-of the scenarios above them. Nothing here admits a tolerance, and the
-result-digest contract is unchanged.
+**What Run 4's `P6-ORA` failure actually was.** Not a production defect and not
+an oracle defect. Step 13 had written a comparison rule **stronger than the one
+Step 0 §10 accepted** — `EXACT, and there is no other mode` — and compared a
+Python-oracle `result_digest` against a VBA one. §10.4 keeps the digest exact for
+**same-runtime replay** and never promised it across languages; §10.3 settled
+cross-language summary statistics at `rel ≤ 3e-10` with a scale-aware floor. Run
+4 failed on differences the accepted evidence model had already anticipated and
+admitted. [§9](#9-p6-ora-reclassified-a-harness-evidence-policy-defect) records
+the reclassification and the correction.
+
+**D2 is a confirmed portability defect, and it is settled.** The same builder
+generated a different `phase6_gate_b_cases.json` on Windows and on Linux, because
+that one artefact carried Monte Carlo floating output and Cheng BB/BC reaches
+libm. A single cross-platform hash was never a true statement about it. The
+artefact is now split: a **portable case authority** that is genuinely invariant,
+and **host-local oracle evidence** that says so and carries its own provenance.
+[§10](#10-d2-the-portability-settlement) states which artefacts must be
+cross-platform invariant and which are deliberately host-local.
+
+**Still open, and not claimed.** No Windows run has yet exercised the corrected
+comparison. `P6-ORA`, `P6-DET`, `P6-ART` and `P6-FIN` are corrected in source and
+**unproven at runtime**; nothing here says they now pass.
 
 ```
 static / source evidence   !=   Windows / Excel runtime evidence
 ```
 
 That line is the whole point of Step 13, and this document keeps it in front of
-the reader rather than at the end — with the boundary drawn where Run 4 left it.
+the reader rather than at the end.
 
 ---
 
@@ -485,13 +499,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **72** controls, in nine groups:
+`tests/test_phase6_gate_b_harness_source.py` — **75** controls, in ten groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **146** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **158** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -590,6 +604,28 @@ guard, make the blank branch unconditional, drop the candidate blank-write
 semantics and defang the string comparison. `test_55` in
 `tests/test_phase6_sim_engine_vba.py` pins the P6-ORA localisation.
 
+The D2 settlement added a tenth. `test_69` requires the parity comparison to use
+the accepted classes — exact for the identity and discrete fields, the policy for
+every floating row, and the digest recorded and never checked anywhere in the
+file; `test_70` requires repeatability to be same-runtime and exact and to carry
+no oracle clause; `test_71` requires the two artefacts to declare their
+portability, the preflight to hash the authority the evidence names, and the
+runtime scenario to record the evidence's host and source revision. `test_31` is
+no longer "the corpus admits no tolerance" — it binds the emitted policy to the
+Step-0 §10.3 table and §10.4 exact list through
+`builder/pccm_builder/sim_evidence.py`, and checks `sim_contract.yaml` still
+carries no tolerance KEY. `test_48` pins the two invariant artefacts and refuses
+a pin on the host-local one.
+
+Twelve mutations: exact cross-language digest equality restored, a floating
+summary row returned to exact equality, a `1e-9` spelled in the harness, the
+scale-aware floor dropped, the same-runtime digest equality weakened, the oracle
+digest dependency returned to `P6-DET`, host-sensitive numbers put back into the
+portable authority, the authority claiming a portability it does not have, the
+evidence generated for a different authority, the preflight's artefact binding
+removed, the emitted policy drifted from the record, and the policy promising a
+cross-language digest again.
+
 ---
 
 ## 7. Running it
@@ -630,7 +666,7 @@ Location — the same refusal that has held since the first readiness run.
 | **Run 2** | `849d6bf` | **VALID runtime attempt.** Reached Excel; Phase-4 35/35; a production compile defect stopped `P5-CMP`; the Phase-5 and Phase-6 behavioural matrices were NOT executed. |
 | **Run 3** | `58a89f3` | **VALID runtime attempt.** `P5-CMP` PASS — the compile repair is runtime-proven; Phase-5 38/39; a stale `P5-EV` assertion blocked Phase 6; `P6-LDG` PASS. |
 | **Run 4** | `6cb7f06` | **VALID runtime attempt, and the first behavioural one.** 98 passed, 5 failed; Phase-4 35/35; Phase-5 39/39; Phase-6 24/29; `P6-LDG` PASS. |
-| **Run 5** | `<this commit>` | authorised in principle; **not yet executed** |
+| **Run 5** | `<this commit>` | **NOT AUTHORISED**, and **not yet executed**. The corrected parity comparison, the `P6-DET` decoupling and the D2 split are unproven at runtime. |
 
 An aborted attempt is not nothing, and it is not renamed away when a later run
 succeeds: Run 1 is what found the defect §3.1 records, and it stays in this
@@ -1004,57 +1040,59 @@ static-only and are not upgraded.
 
 ---
 
-## 9. `P6-ORA`: the open parity disagreement
+## 9. `P6-ORA` reclassified: a harness evidence-policy defect
 
-**No owner is assigned here.** Run 4 established a real disagreement, and this
-section records only what has been localised on Linux and what has not.
+**Not a production defect, and not an oracle defect.** Run 4's failure was Step
+13 comparing under a rule stronger than the one the project had already accepted.
 
-### 9.1 What Run 4 reported
+### 9.1 The governing clauses, quoted
 
-All four authorised parity cases produced a different result digest, and cases 1,
-6 and 7 also showed one-or-few-ULP differences in individual statistics:
+`docs/phase6_step0.md` §10, *Numeric comparison tolerance — settled as an
+evidence policy*:
+
+> **§10.1 Ownership.** The tolerance is not a simulation-runtime contract and
+> does not belong in `sim_contract.yaml`. The engine never compares two Doubles
+> for approximate equality at runtime: replay comparison is by `result_digest`,
+> which is **exact** … A tolerance exists only when two **implementations** are
+> compared — which is oracle, Gate-A and Gate-B evidence. **Single owner: the
+> Phase-6 oracle and evidence policy.** `sim_contract.yaml` stores **no tolerance
+> at all**, so the rule cannot come to live in two files.
+
+**§10.3, the policy:**
+
+| Subject | Rule |
+|---|---|
+| individual Uniform / Triangular / PERT-rescale transformed samples | `rel ≤ 1e-12`, or `abs ≤ 1e-12 · s`, `s = max(\|a\|,\|m\|,\|b\|)` |
+| deterministic Cheng vector outputs | `rel ≤ 1e-11` |
+| F1 per-iteration no-Beta end-to-end totals | `rel ≤ 3e-10`, or `abs ≤ 3e-10 · S` |
+| **summary statistics compared cross-language** | **`rel ≤ 3e-10`, or `abs ≤ 3e-10 · S`**, same accumulation-scale floor |
+
+**§10.4, what stays exact** — MRG32k3a state and uniform values; jump state;
+Bernoulli occurrence decisions; proposal and draw counts where the arithmetic
+path is fixed; and **same-runtime G2/G3 `result_digest`**.
+
+That last qualifier is the defect. Step 13 read `result_digest` and not
+`same-runtime`. Gate B is the *cross-implementation* comparison §10.1 says the
+tolerance exists for, and Step 13 gave it the one rule §10 had reserved for a
+replay inside a single runtime.
+
+### 9.2 Run 4's numbers, against the accepted envelope
+
+The two differences the classification quoted:
 
 ```
 oracle 143.4549368738345      oracle 1081.4363960870785
 VBA    143.45493687383447     VBA    1081.4363960870783
 ```
 
-The request fingerprint, effective seed, iteration count and the method and RNG
-versions all matched. **Case 8 matters most**: every summary statistic and
-quantile the harness asserts matched, and the digest still differed.
+Both are **inside** `rel ≤ 3e-10` by roughly six orders of magnitude — they are
+one- and two-ULP differences, and §10.3's basis line says the measured worst
+expression-order gap is 1 ULP with about 4,500× headroom. The accepted evidence
+model anticipated exactly this class and admitted it.
 
-### 9.2 The written algorithms do not disagree
-
-Every parity case has been run twice on Linux at the corpus's own seed and
-iteration count: once through the accepted Python oracle, and once through the
-statements `modSimRng`, `modSimSample` and `modSimEngine` actually write down,
-compiled by the accepted test-only transcriber.
-
-```
-case 1  first divergent retained iteration: none   digests equal
-case 6  first divergent retained iteration: none   digests equal
-case 7  first divergent retained iteration: none   digests equal
-case 8  first divergent retained iteration: none   digests equal
-```
-
-Bit-for-bit over all 1000 retained iterations of **both** measures, and then over
-the result digest. `test_55` in `tests/test_phase6_sim_engine_vba.py` pins this so
-a later numerical change cannot quietly move one side while the question is open.
-
-**What that removes from the search.** The disagreement is not attributable to
-what either implementation writes down. It has to arise in how the VBA *runtime*
-executes those statements — evaluation precision and intermediate width, the
-`Log`/`Exp`/`Sqr`/`^` intrinsics, `Fix`, coercion, the numeric-literal parser —
-which is exactly what a Linux transcription has always disclaimed and what only
-Windows can settle. It also means a Linux-side numerical change to either
-implementation would be a change to a component that is not currently in
-disagreement with the other.
-
-### 9.3 Case 8 needs no second mechanism
-
-The digest covers `total_nominal` and `total_pv` for **every** retained iteration
-in original order, exactly. A summary statistic does not. Perturbing one retained
-value by a single ULP, for each of the 1000 iterations of each case in turn:
+Case 8 needs no second mechanism either. The digest covers **every** retained
+iteration exactly; a summary statistic does not. Perturbing one retained value by
+one ULP, for each of the 1000 iterations of each case:
 
 | case | perturbations that change the digest | of which the summary layer cannot see |
 |---|---|---|
@@ -1063,45 +1101,182 @@ value by a single ULP, for each of the 1000 iterations of each case in turn:
 | 7 | 1000 / 1000 | 984 (98.4%) |
 | 8 | 1000 / 1000 | 994 (99.4%) |
 
-"Cannot see" means the mean, the population standard deviation and the whole
-eleven-point quantile ladder are all bit-identical afterwards. So **case 8's
-pattern is what a handful of ULP-level differences looks like**, and no separate
-framing or canonicalisation defect need be posited to explain it. The digest is
-simply the only observer with the resolution to notice.
+### 9.3 The corrected comparison
 
-### 9.4 One unreconciled number
+**Exact, §10.4:** the request fingerprint, the effective seed, the iteration
+count, and the RNG and method versions. Unchanged, and still by exact equality.
 
-The classification records case 6's **oracle** digest as `37ED4B3D7A271A52`. The
-accepted corpus `build/phase6_gate_b_cases.json` carries `7CBBB70842889648` for
-that case, the accepted Python oracle recomputes `7CBBB70842889648`, and the
-transcribed VBA reproduces it as well. The other three oracle digests in the
-classification match the corpus exactly.
+**Under the policy, §10.3:** every published floating row — mean, sample standard
+deviation, minimum, maximum, all eleven quantiles and the deterministic base, on
+both measures. Still mandatory and still every row: what changed is the rule, not
+the coverage. A ladder that agreed to nine significant figures and then diverged
+in the tenth is not a failure; a wrong ladder still is.
 
-The harness cannot invent an oracle digest — it reads `expected_exact.result_digest`
-— so this is either a transcription slip in the classification or a corpus on the
-Windows machine that differed from the accepted one. **It is not treated as a
-defect and nothing has been changed for it**; it needs confirming against the
-retained `phase6_gate_b_run4.log` before anything is reasoned from case 6.
+**Diagnostic, and never a criterion:** the `result_digest`. It is recorded in the
+evidence with both values so a disagreement can be described.
 
-### 9.5 The bounded diagnostic Run 5 should carry
+**The numbers are not spelled in the harness.** §10.1 gave the tolerance one
+owner, so `builder/pccm_builder/sim_evidence.py` is that owner in code, the
+emitted authority carries the policy, and the harness reads it. A `1e-N` literal
+in PowerShell would be the second owner §10.1 forbade — `test_10` refuses one.
 
-No new production authority, no diagnostic module, and nothing that changes what
-production computes. Everything below observes state the workbook already holds:
+**The floor is scale-aware.** `S` is `max |contribution|` over the drivers
+summed, computed from the prepared model by arithmetic over contract values, and
+emitted per case as `accumulation_scale`. It is keyed to the scale that produced
+the number, not to the number's own magnitude.
 
-* **the first divergent iteration.** Read the retained per-iteration
-  `total_nominal` and `total_pv` from the published bank and report the lowest
-  index at which either differs from the corpus's oracle sequence, with both
-  binary64 payloads as canonical 17-significant-digit text rather than formatted
-  decimals. One index localises the question; four digests do not.
-* **the RNG state at that index.** Report the uniforms consumed by that iteration
-  and the sampler outputs derived from them, so the first divergent *operation* is
-  identified rather than the first divergent *total*.
-* **an ordering probe.** Report one compound expression evaluated stepwise with
-  each intermediate stored to a `Double` before the next operation, beside the
-  same expression evaluated as written. Equal results rule extended-precision
-  intermediates out; unequal results settle it in one observation.
+### 9.4 `P6-DET` decoupled
 
-That requires the corpus to carry the oracle's retained sequences, which it does
-not today. Adding them is a build change, and it is **not** made here: it is a
-proposal for the Run-5 authorisation, not a decision taken under it.
+Run 4 proved this scenario's own property: both runs announced success and
+**both published the same result digest**. That is the same-runtime replay
+property §10.4 does keep exact, and it is not weakened by a hair — it is still
+exact equality, and a blank pair can no longer pass as equal. The clause that
+asked whether the repeated digest equalled the *Python* oracle's has been
+withdrawn: it is a cross-language question, it belongs to `P6-ORA`, and it is
+diagnostic there.
+
+**Run-4 `P6-DET` evidence therefore establishes FIXED repeatability**, and the
+red label was the stale clause, not the property.
+
+### 9.5 What is still not known
+
+The corrected comparison has **not run**. Whether real Excel lands inside the
+accepted envelope on every row of every case is a Windows question and Run 4 did
+not ask it — the old rule failed before the new one would have been reached.
+
+Also unresolved, and deliberately not instrumented: whether the discrete subjects
+§10.4 keeps exact — the MRG32k3a stream, jump state, Bernoulli decisions, draw
+counts — are in fact identical. Run 4 gives indirect evidence that they are: case
+8's summary statistics agreed bit-for-bit, which a diverged uniform stream could
+not produce. A diagnostic to establish it directly is described in §10.5, and it
+is **not** the "first ULP difference" hunt proposed before this reclassification:
+that hunt assumed cross-language bit equality was required, which §10 disproves.
+
+---
+
+## 10. D2: the portability settlement
+
+### 10.1 The classification
+
+**A confirmed portability defect in the evidence artefact, not in production.**
+The Windows Run-4 tree and a Linux tree at the same source generated different
+bytes for `phase6_gate_b_cases.json`:
+
+```
+Windows  8C0D021FE42E10727E918D7BF099C39C46EFAE5690DD56426A5587A05E6A67E7
+Linux    8C17DF7CD0EAA685151BCA683219A536D01EBDB0EDCD8BBF80993532B20B8726
+```
+
+The mechanism is not in doubt. Beta-PERT is sampled by Cheng BB/BC, which calls
+`log` and `exp`; CPython delegates both to the platform libm; Windows UCRT and
+glibc disagree in the last ULP. Of the four parity cases, **Beta-PERT is the only
+one that reaches a transcendental** — Triangular uses `sqrt`, which IEEE-754
+requires to be correctly rounded, and Uniform and Bernoulli use neither — and
+Beta-PERT is exactly the case that differed.
+
+**One number in the earlier package is corrected by this.** The previous round
+recorded case 6's oracle digest as "unreconciled", suggesting a transcription
+slip. It was not: `37ED4B3D7A271A52` is what the Windows tree genuinely
+generated, and `7CBBB70842889648` is what Linux generates. Both are correct on
+their own host. That is the defect.
+
+**Nothing produced by the workbook is affected.** The engine performs no
+approximate comparison at runtime and no published number comes from a tolerance
+test. This is about how the evidence was represented.
+
+### 10.2 The architecture
+
+The one artefact is split by **provenance**, not by convenience.
+
+**`build/phase6_gate_b_cases.json` — the portable case authority. REQUIRED to be
+cross-platform invariant.** It identifies which parity cases are driven, their
+existing Phase-5 plan-case fixtures, the seed and iteration count, the bounds and
+vocabulary, the accepted comparison policy, and per case: the sampling mechanism,
+the analytical-identity pointer, the accumulation scale, the comparison classes,
+and the **exact discrete and identity expectations** — effective seed, iteration
+count, RNG and method versions, and for the golden case the calculation and
+request fingerprints. Every value is an integer, a canonical hash over exact
+inputs, or arithmetic over contract decimals. It declares
+`portability.cross_platform_invariant: true` and names its companion. It is
+pinned by hash, and that pin is now a true statement.
+
+**`build/phase6_gate_b_oracle_local.json` — host-local oracle evidence.
+DELIBERATELY NOT cross-platform invariant, and it says so.** It carries, per
+case, the oracle's floating measurements — the full summary ladder on both
+measures, the deterministic base, and the `result_digest` marked diagnostic.
+
+Provenance fields, all required by the preflight:
+
+| Field | What it fixes |
+|---|---|
+| `generated_for.authority` / `.sha256` | which case authority these numbers were produced against |
+| `model_version`, `sim_contract_version`, `rng_version`, `sim_method_version`, `iterations`, `supplied_seed` | the run identity the numbers describe |
+| `source_revision` | the tree that produced them, from git, or a plain `unavailable` |
+| `host.system` / `.release` / `.machine` / `.python_implementation` / `.python_version` / `.float_repr_style` | which host's libm these numbers belong to |
+| `generated_at_utc` | when |
+| `evidence_policy_authority` | the policy they are to be compared under |
+| `portability.cross_platform_invariant: false` | that they must never be hash-frozen |
+
+**Lifecycle.** Stage-A writes the authority first, hashes it, then writes the
+evidence naming that hash — so the pair provably comes from one build. On the
+Gate-B host that happens **before Excel starts**, and the numbers are independent
+of anything VBA produces. The driver requires the file with the other artefacts
+and copies it into the disposable run root, so it survives in the retained
+working copy beside the log.
+
+**Binding.** `P6-PRE` refuses, pre-Excel, if the file is missing, if the SHA-256
+it names does not match the authority beside it, if any version disagrees, if the
+authority does not claim invariance or the evidence does, if the provenance is
+incomplete, or if any case has no measurements. `P6-ART` records the evidence's
+host, source revision and target authority into the run log, and re-checks the
+two portability claims.
+
+**Why not the rejected shortcuts.** Rounding or truncating to force the two hosts
+to hash alike would discard real information to protect a number. Hardcoding one
+host's Beta-PERT values would make that host silently authoritative. Deleting
+Beta-PERT would remove the only case that exercises Cheng. Weakening the
+algorithm is not on the table. None of these was chosen, and the old SHA was not
+restored: the authority now hashes to
+`6a9d86784ff1f29195b23c85ee4445e133a4cb283da0c3834afe4048c495af5c`, and it is a
+different file because it is a different, smaller, honest claim.
+
+### 10.3 Which artefacts must be invariant
+
+| Artefact | Cross-platform invariant | Pinned by hash |
+|---|---|---|
+| `build/phase6_gate_b_inspection.json` | **required** — addresses and names only | yes |
+| `build/phase6_gate_b_cases.json` | **required** — no transcendental-derived value | yes |
+| `build/phase6_gate_b_oracle_local.json` | **no, by design** | **never** — a control refuses a pin |
+
+### 10.4 What the transcription still shows, and what it does not
+
+Every parity case runs twice on Linux — through the accepted Python oracle, and
+through the statements `modSimRng`, `modSimSample` and `modSimEngine` write down
+— and agrees bit-for-bit over all 1000 retained iterations of both measures and
+over the digest (`test_55`). That says the two *algorithms* are the same
+algorithm. It says nothing about whether either host's floating execution matches
+the other's, and D2 shows that even the Python oracle does not match itself
+across hosts. Both facts sit inside the accepted envelope.
+
+### 10.5 The diagnostic Run 5 would need, and its honest classification
+
+Only three questions are worth instrumenting, and none of them is "find the first
+ULP difference":
+
+* **the discrete subjects §10.4 keeps exact** — that the MRG32k3a stream, the
+  jump state, the Bernoulli decisions and the draw counts are identical, because
+  those admit no tolerance at all;
+* **that Cheng has not branched** where the accepted policy expects the
+  arithmetic path to stay fixed;
+* **that no cross-language difference exceeds the accepted envelope**, which the
+  corrected `P6-ORA` already answers for every published row.
+
+**A correction to the previous proposal.** It claimed such a diagnostic merely
+"observes existing state". That was wrong. The persisted publication holds
+iteration **totals**; the uniforms, sampler intermediates and draw counts are not
+in the workbook. Obtaining them requires **bounded transient diagnostic
+instrumentation**, and it must be classified as such: a temporary observation
+surface, removed before any accepted build, adding **no production authority** and
+changing nothing production computes. It is not proposed here and is not
+implemented here.
 

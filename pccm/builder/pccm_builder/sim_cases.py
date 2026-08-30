@@ -44,6 +44,7 @@ import math
 from typing import Any
 
 from .calc_cases import reference_stream, to_model, tolerances_from
+from .sim_policy import SUMMARY_STATISTIC, accumulation_scale, policy_payload
 from .calc_fingerprint import (
     canonical_number,
     encode_section,
@@ -2458,6 +2459,11 @@ def build_sim_cases(
 GATE_B_SCHEMA_VERSION = 1
 
 GATE_B_CASES_FILENAME = "phase6_gate_b_cases.json"
+# The host-local companion. Named `_local` rather than `_<host>` so the
+# harness reads one filename and the provenance inside it says which host;
+# a filename that varied by host would be one more thing to get wrong on the
+# machine that can least afford it.
+GATE_B_ORACLE_FILENAME = "phase6_gate_b_oracle_local.json"
 
 GATE_B_ITERATIONS = 1000
 """The contract's own business minimum, and deliberately the floor.
@@ -2499,7 +2505,21 @@ def _gate_b_parity_case(
     plan_case: dict[str, Any],
     mechanism: str,
     golden: bool,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One case, split by PORTABILITY rather than by convenience.
+
+    The first half is platform-invariant: which case, its fixture, its seed and
+    iteration count, its discrete and identity expectations, and the scale the
+    accepted floor is keyed to. Every number in it is an integer, a canonical
+    hash over exact inputs, or arithmetic over contract values.
+
+    The second half is the host-local oracle's floating output. Cheng BB/BC
+    calls `log` and `exp`, CPython delegates both to the platform libm, and
+    Windows and glibc disagree in the last ULP - so the Beta-PERT case does not
+    produce identical bits on two hosts, and D2 proved it. Representing that as
+    a byte-identical cross-platform artefact was the defect; separating it is the
+    correction.
+    """
     prepared, calculation = prepare_simulation(
         reference, sim, inputs, to_model(plan_case["model"]), tolerances_from(calc),
         effective_seed=GATE_B_SUPPLIED_SEED, iterations=GATE_B_ITERATIONS,
@@ -2514,6 +2534,13 @@ def _gate_b_parity_case(
         "iterations_run": run.iterations,
         "rng_version": run.rng_version,
         "sim_method_version": run.sim_method_version,
+    }
+    # THE HOST-LOCAL HALF. Every floating output the Monte Carlo run produced.
+    # `result_digest` is here and is DIAGNOSTIC: Step 0 §10.4 keeps the digest
+    # exact for same-runtime replay and never promised it across languages.
+    measured: dict[str, Any] = {
+        "id": f"gate_b.parity.plan_case_{plan_case['id']}",
+        "plan_case_id": plan_case["id"],
         "result_digest": run.result_digest,
         "summary": {
             "nominal": _gate_b_measure(run.summary.nominal),
@@ -2533,12 +2560,24 @@ def _gate_b_parity_case(
             sim, calc, GATE_B_ITERATIONS, "FIXED", GATE_B_SUPPLIED_SEED
         )
 
-    return {
+    portable = {
         "id": f"gate_b.parity.plan_case_{plan_case['id']}",
         "plan_case_id": plan_case["id"],
         "plan_case_title": plan_case["title"],
         "sampling_mechanism": mechanism,
-        "comparison": EXACT,
+        # THE ACCEPTED FLOOR IS KEYED TO THE SCALE THAT PRODUCED THE NUMBER.
+        # Step 0 §10.3 says `S = max |contribution|` over the drivers summed;
+        # this is that bound, computed from the prepared model by arithmetic
+        # only, so it belongs to the portable half and not to host evidence.
+        "accumulation_scale": _n(accumulation_scale(prepared)),
+        # WHICH FIELDS ARE COMPARED HOW, as data rather than as a habit. Step 13
+        # wrote "EXACT, and there is no other mode" over the top of a policy that
+        # had already separated these classes, and Run 4 failed on the difference.
+        "comparison_classes": {
+            "exact": sorted(expected),
+            "tolerance": SUMMARY_STATISTIC,
+            "diagnostic_only": ["result_digest"],
+        },
         "analytical_identity": {
             # A POINTER, NOT A COPY. The accepted analytical expectations for
             # this model already live in phase5_cases.json and the harness
@@ -2556,12 +2595,18 @@ def _gate_b_parity_case(
         },
         "expected_exact": _with_canonical(expected),
     }
+    return portable, _with_canonical(measured)
 
 
-def build_gate_b_cases(
+def build_gate_b_pair(
     sim: SimContract, inputs: InputContract, calc: CalcContract, model_version: str
-) -> dict[str, Any]:
-    """The Gate-B parity corpus, as plain deterministic data."""
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The portable case authority, and the host-local oracle measurements.
+
+    One traversal: the Monte Carlo runs are expensive and running them twice to
+    fill two files would also risk the two disagreeing about which run they
+    describe.
+    """
     from .calc_cases import CASES as PLAN_CASES
 
     reference = RngReference.from_contracts(sim, inputs)
@@ -2575,7 +2620,8 @@ def build_gate_b_cases(
             "must not silently choose"
         )
 
-    cases = []
+    cases: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
     for identifier, mechanism, golden in GATE_B_PARITY_PLAN_CASES:
         plan_case = by_id.get(identifier)
         if plan_case is None or "model" not in plan_case:
@@ -2583,9 +2629,11 @@ def build_gate_b_cases(
                 f"plan case {identifier} carries no model, so it cannot bind a "
                 "runtime fixture"
             )
-        cases.append(_gate_b_parity_case(
+        portable, measured = _gate_b_parity_case(
             sim, inputs, calc, reference, plan_case, mechanism, golden
-        ))
+        )
+        cases.append(portable)
+        evidence.append(measured)
 
     ladder = resolve_percentile_ladder(sim, inputs)
     lifecycle = sim.raw["seeding"]["nonce_lifecycle"]
@@ -2602,17 +2650,29 @@ def build_gate_b_cases(
         "rng_version": sim.rng_version,
         "sim_method_version": sim.sim_method_version,
         "purpose": (
-            "Cross-implementation parity expectations for the Phase-6 Gate-B "
-            "Windows harness: what the accepted Python oracle produces for four "
-            "EXISTING Phase-5 plan-case fixtures, so real Excel can be compared "
-            "against it rather than only against itself. Addresses live in "
+            "The PORTABLE case authority for the Phase-6 Gate-B Windows harness: "
+            "which parity cases are driven, their existing Phase-5 plan-case "
+            "fixtures, the seed and iteration count, the discrete and identity "
+            "expectations that are exact, the scale the accepted absolute floor "
+            "is keyed to, and the accepted comparison policy. Every value here "
+            "is an integer, a canonical hash over exact inputs, or arithmetic "
+            "over contract values, so it is the same on every host. The oracle's "
+            "own floating measurements are NOT here: they are host-local "
+            "evidence in phase6_gate_b_oracle_local.json. Addresses live in "
             "phase6_gate_b_inspection.json."
         ),
-        "comparison_policy": (
-            "EXACT. The canonical numeric encoder normalises the host decimal "
-            "separator before hashing, so digest equality is exact on any "
-            "locale and no tolerance is admissible here."
-        ),
+        "portability": {
+            "cross_platform_invariant": True,
+            "why": (
+                "No value in this document is produced by a transcendental. The "
+                "Beta-PERT sampler reaches libm through Cheng BB/BC's log and "
+                "exp, and libm differs between hosts in the last ULP, so any "
+                "artefact carrying Monte Carlo floating output is host-local by "
+                "construction and is emitted separately."
+            ),
+            "host_local_companion": GATE_B_ORACLE_FILENAME,
+        },
+        "comparison_policy": policy_payload(),
         "iterations": GATE_B_ITERATIONS,
         "supplied_seed": GATE_B_SUPPLIED_SEED,
         # THE BOUNDS A SCENARIO COMPARES AGAINST. Values, which is why they are
@@ -2645,6 +2705,86 @@ def build_gate_b_cases(
         },
         "case_count": len(cases),
         "parity_cases": cases,
+    }, evidence
+
+
+def build_gate_b_cases(
+    sim: SimContract, inputs: InputContract, calc: CalcContract, model_version: str
+) -> dict[str, Any]:
+    """The portable case authority alone."""
+    return build_gate_b_pair(sim, inputs, calc, model_version)[0]
+
+
+def build_gate_b_oracle_measurements(
+    portable: dict[str, Any],
+    measurements: list[dict[str, Any]],
+    portable_sha256: str,
+    source_revision: str,
+) -> dict[str, Any]:
+    """The host-local oracle measurements, with the provenance that makes them usable.
+
+    NOT named `..._evidence`: `test_48` in `tests/test_phase6_sim_contract.py`
+    refuses a production import whose name contains "evidence", because
+    production must never read the retained evidence package. That detector is
+    right and is not weakened for a naming preference.
+
+    DELIBERATELY NOT CROSS-PLATFORM INVARIANT, and it says so. It is generated by
+    Stage-A on the host that will run Gate B, BEFORE Excel starts, and it is
+    independent of anything VBA produces. What binds it to a run is
+    `generated_for`: the portable authority's filename and SHA-256, checked by
+    the pre-Excel preflight and recorded again by the runtime artefact scenario.
+    """
+    import datetime as _dt
+    import platform as _platform
+    import sys as _sys
+
+    return {
+        "schema_version": GATE_B_SCHEMA_VERSION,
+        "purpose": (
+            "Host-local oracle measurements for the Phase-6 Gate-B parity "
+            "comparison: what the accepted Python oracle produced for each "
+            "authorised case ON THIS HOST. Compared against real Excel under the "
+            "accepted Step-0 evidence policy, never by exact equality."
+        ),
+        "portability": {
+            "cross_platform_invariant": False,
+            "why": (
+                "Cheng BB/BC calls log and exp, CPython delegates both to the "
+                "platform libm, and Windows and glibc disagree in the last ULP. "
+                "These numbers are evidence about this host and must not be "
+                "frozen by a cross-platform hash."
+            ),
+        },
+        "generated_for": {
+            "authority": GATE_B_CASES_FILENAME,
+            "sha256": portable_sha256,
+        },
+        "model_version": portable["model_version"],
+        "sim_contract_version": portable["sim_contract_version"],
+        "rng_version": portable["rng_version"],
+        "sim_method_version": portable["sim_method_version"],
+        "iterations": portable["iterations"],
+        "supplied_seed": portable["supplied_seed"],
+        "source_revision": source_revision,
+        "host": {
+            "system": _platform.system(),
+            "release": _platform.release(),
+            "machine": _platform.machine(),
+            "python_implementation": _platform.python_implementation(),
+            "python_version": _platform.python_version(),
+            "float_repr_style": getattr(_sys, "float_repr_style", "unknown"),
+        },
+        "generated_at_utc": _dt.datetime.now(_dt.timezone.utc)
+                               .replace(microsecond=0).isoformat(),
+        "evidence_policy_authority": portable["comparison_policy"]["authority"],
+        "result_digest_is_diagnostic": True,
+        "result_digest_note": (
+            "Recorded so a disagreement can be described, never compared for "
+            "equality: Step 0 §10.4 keeps the digest exact for same-runtime "
+            "replay only."
+        ),
+        "case_count": len(measurements),
+        "measurements": measurements,
     }
 
 

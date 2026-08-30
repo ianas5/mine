@@ -256,9 +256,11 @@ function Invoke-Phase6CoveragePreflight {
     $ok = $true
     $inspectionPath = Join-Path $BuildDir 'phase6_gate_b_inspection.json'
     $casesPath = Join-Path $BuildDir 'phase6_gate_b_cases.json'
+    $oraclePath = Join-Path $BuildDir 'phase6_gate_b_oracle_local.json'
 
     foreach ($pair in @(@{ Path = $inspectionPath; What = 'inspection projection' },
-                        @{ Path = $casesPath;      What = 'parity expectation corpus' })) {
+                        @{ Path = $casesPath;      What = 'portable case authority' },
+                        @{ Path = $oraclePath;     What = 'host-local oracle evidence' })) {
         if (-not (Test-Path -LiteralPath $pair.Path)) {
             Write-Host ("  [FAIL] Phase-6 preflight: the " + $pair.What + ' is missing: ' +
                         $pair.Path) -ForegroundColor Red
@@ -268,7 +270,9 @@ function Invoke-Phase6CoveragePreflight {
     if (-not $ok) { return $false }
 
     $inspection = Get-Content -LiteralPath $inspectionPath -Raw | ConvertFrom-Json
-    $cases = Get-Content -LiteralPath $casesPath -Raw | ConvertFrom-Json
+    $casesText = Get-Content -LiteralPath $casesPath -Raw
+    $cases = $casesText | ConvertFrom-Json
+    $oracle = Get-Content -LiteralPath $oraclePath -Raw | ConvertFrom-Json
 
     $list = New-Checklist
 
@@ -310,22 +314,95 @@ function Invoke-Phase6CoveragePreflight {
     $null = Add-Check $list 'the parity corpus states its case count truthfully' `
         ([int]$cases.case_count -eq $parity.Count) `
         ('stated ' + [string]$cases.case_count + ', present ' + $parity.Count)
+    # THE AUTHORITY CARRIES THE EXACT EXPECTATIONS AND THE SCALE THE ACCEPTED
+    # FLOOR IS KEYED TO. It does NOT carry the oracle's floating measurements:
+    # those are host-local and live in the companion, because Cheng reaches libm
+    # and libm is not the same on two hosts. D2 proved that, so a corpus that
+    # had put them back here would be re-introducing the defect.
+    $measured = @{}
+    foreach ($item in @($oracle.measurements)) { $measured[[string]$item.id] = $item }
     foreach ($case in $parity) {
-        foreach ($key in @('result_digest', 'effective_seed', 'iterations_run',
-                           'summary', 'deterministic_base')) {
-            $null = Add-Check $list ($case.id + ' carries ' + $key) `
+        foreach ($key in @('effective_seed', 'iterations_run',
+                           'rng_version', 'sim_method_version')) {
+            $null = Add-Check $list ($case.id + ' carries the exact expectation ' + $key) `
                 ($null -ne $case.expected_exact.PSObject.Properties[$key])
         }
-        foreach ($measure in @('nominal', 'pv')) {
-            $null = Add-Check $list ($case.id + ' carries the ' + $measure + ' ladder') `
-                ($null -ne $case.expected_exact.summary.PSObject.Properties[$measure])
+        $null = Add-Check $list ($case.id + ' carries the accepted accumulation scale') `
+            (($null -ne $case.PSObject.Properties['accumulation_scale']) -and
+             ([double]$case.accumulation_scale -gt 0)) `
+            ('scale ' + [string]$case.accumulation_scale)
+        foreach ($withdrawn in @('result_digest', 'summary', 'deterministic_base')) {
+            $null = Add-Check $list `
+                ($case.id + ' keeps the host-sensitive ' + $withdrawn +
+                 ' out of the portable authority') `
+                ($null -eq $case.expected_exact.PSObject.Properties[$withdrawn])
+        }
+        $null = Add-Check $list ($case.id + ' has host-local oracle measurements') `
+            ($measured.ContainsKey([string]$case.id))
+        if ($measured.ContainsKey([string]$case.id)) {
+            $item = $measured[[string]$case.id]
+            foreach ($measure in @('nominal', 'pv')) {
+                $null = Add-Check $list ($case.id + ' measures the ' + $measure + ' ladder') `
+                    ($null -ne $item.summary.PSObject.Properties[$measure])
+            }
+            $null = Add-Check $list ($case.id + ' measures the deterministic base') `
+                ($null -ne $item.PSObject.Properties['deterministic_base'])
         }
         $null = Add-Check $list ($case.id + ' names an existing plan case') `
             ([int]$case.plan_case_id -gt 0)
     }
-    $null = Add-Check $list 'the corpus states an exact comparison policy' `
-        ([string]$cases.comparison_policy -like 'EXACT*') `
-        ([string]$cases.comparison_policy)
+
+    # THE POLICY IS READ, NOT REMEMBERED. Step 0 §10.1 gave the tolerance one
+    # owner and it is not this file; the harness spells no 1e-N of its own.
+    $policy = $cases.comparison_policy
+    $null = Add-Check $list 'the authority carries the accepted evidence policy' `
+        (($null -ne $policy) -and
+         ([string]$policy.authority -like '*phase6_step0*')) `
+        ([string]$policy.authority)
+    $summaryRule = $policy.tolerances.summary_statistic
+    $null = Add-Check $list 'the policy states a relative bound and a scale-aware floor' `
+        (($null -ne $summaryRule) -and ([double]$summaryRule.relative -gt 0) -and
+         ([double]$summaryRule.absolute_floor -gt 0) -and
+         ([string]$summaryRule.scale_kind -ceq 'accumulation')) `
+        ('rel ' + [string]$summaryRule.relative + ', floor ' +
+         [string]$summaryRule.absolute_floor + ' x ' + [string]$summaryRule.scale_kind)
+    # AND IT STILL SAYS WHAT §10.4 SAYS: the digest is exact for a same-runtime
+    # replay, and is not a cross-language equality subject.
+    $null = Add-Check $list 'the policy keeps the same-runtime digest exact' `
+        ([bool]$policy.same_runtime_digest_is_exact)
+    $null = Add-Check $list 'the policy does not promise a cross-language digest' `
+        (-not [bool]$policy.cross_language_digest_is_exact)
+
+    # THE TWO ARTEFACTS CAME FROM ONE BUILD. The evidence names the authority's
+    # SHA-256; a pair assembled from two builds is refused before Excel starts.
+    $authoritySha = [string]$oracle.generated_for.sha256
+    $actualSha = ''
+    try {
+        $actualSha = (Get-FileHash -LiteralPath $casesPath -Algorithm SHA256).Hash
+    } catch { $actualSha = '' }
+    $null = Add-Check $list 'the oracle evidence was generated for THIS case authority' `
+        (($authoritySha.Length -eq 64) -and
+         ($actualSha -ne '') -and ($actualSha -ieq $authoritySha)) `
+        ('evidence names ' + $authoritySha + ', authority hashes to ' + $actualSha)
+    $null = Add-Check $list 'the oracle evidence agrees with the authority on every version' `
+        (([string]$oracle.model_version -ceq [string]$cases.model_version) -and
+         ([string]$oracle.sim_contract_version -ceq [string]$cases.sim_contract_version) -and
+         ([int]$oracle.rng_version -eq [int]$cases.rng_version) -and
+         ([int]$oracle.sim_method_version -eq [int]$cases.sim_method_version) -and
+         ([int]$oracle.iterations -eq [int]$cases.iterations))
+    # AND EACH SAYS WHICH KIND OF ARTEFACT IT IS. The authority claims
+    # cross-platform invariance; the evidence explicitly does not.
+    $null = Add-Check $list 'the authority claims cross-platform invariance' `
+        ([bool]$cases.portability.cross_platform_invariant)
+    $null = Add-Check $list 'the oracle evidence does NOT claim cross-platform invariance' `
+        (-not [bool]$oracle.portability.cross_platform_invariant)
+    $null = Add-Check $list 'the oracle evidence carries its host and source provenance' `
+        ((-not [string]::IsNullOrWhiteSpace([string]$oracle.host.system)) -and
+         (-not [string]::IsNullOrWhiteSpace([string]$oracle.host.python_version)) -and
+         (-not [string]::IsNullOrWhiteSpace([string]$oracle.source_revision)) -and
+         (-not [string]::IsNullOrWhiteSpace([string]$oracle.generated_at_utc))) `
+        ([string]$oracle.host.system + ' / ' + [string]$oracle.host.python_version +
+         ' / ' + [string]$oracle.source_revision + ' / ' + [string]$oracle.generated_at_utc)
     foreach ($key in @('business_minimum_iterations', 'max_iterations_representable',
                        'seed_minimum', 'seed_maximum', 'run_id_maximum',
                        'nonce_initial')) {
@@ -806,17 +883,65 @@ function Complete-Phase6Fixture {
 # ===========================================================================
 # THE PARITY COMPARISON
 # ===========================================================================
-# EXACT, and there is no other mode. If Excel and the oracle disagree, the
-# scenario FAILS and the disagreement is reported as runtime evidence. Nothing
-# here recomputes the expectation, falls back to comparing Excel against itself,
-# or admits a tolerance.
+# TWO CLASSES, AND THE ACCEPTED POLICY DECIDES WHICH IS WHICH.
+#
+# The first version of this said "EXACT, and there is no other mode" and compared
+# a Python-oracle `result_digest` against a VBA one. Step 0 §10 had already
+# settled the question the other way, and settled it before Step 13 existed:
+#
+#   §10.1  a tolerance exists only when two IMPLEMENTATIONS are compared -
+#          which is oracle, Gate-A and Gate-B evidence
+#   §10.3  summary statistics compared cross-language: rel <= 3e-10, or
+#          abs <= 3e-10 * S, S the accumulation scale
+#   §10.4  what stays exact ... SAME-RUNTIME G2/G3 result_digest
+#
+# That last qualifier is the whole defect. The digest was promised exact for a
+# REPLAY INSIDE ONE RUNTIME, never across two languages - and it resolves one ULP
+# in one retained iteration out of a thousand, which §10.3 explicitly admits.
+# Run 4 then failed this scenario on differences the accepted evidence model had
+# anticipated and allowed.
+#
+# THE NUMBERS ARE NOT SPELLED HERE. §10.1 gave the tolerance a single owner and
+# it is not the harness; the bound and the floor factor are read from the
+# authority's own policy block, and the scale from the case. A `1e-N` literal in
+# this file would be a second owner, which is exactly what §10.1 forbade.
+#
+# The digest is still recorded. It is DIAGNOSTIC evidence about a disagreement,
+# never a pass criterion here.
+function Test-Phase6WithinPolicy {
+    param([double]$Actual, [double]$Expected, $Rule, [double]$Scale)
+    if ($Actual -eq $Expected) { return $true }
+    $gap = [Math]::Abs($Actual - $Expected)
+    $magnitude = [Math]::Max([Math]::Abs($Actual), [Math]::Abs($Expected))
+    if (($magnitude -gt 0) -and ($gap -le ([double]$Rule.relative * $magnitude))) { return $true }
+    # THE FLOOR IS KEYED TO THE SCALE THAT PRODUCED THE NUMBER, not to the
+    # number itself: cancellation can drive a total near zero while every
+    # contribution that made it was large.
+    if ([double]$Rule.absolute_floor -le 0) { return $false }
+    return ($gap -le ([double]$Rule.absolute_floor * [Math]::Abs($Scale)))
+}
+
 function Add-Phase6ParityChecks {
-    param($Workbook, $Inspection, $Cases, $Case, $List, [string]$Bank, [string]$Label)
+    param($Workbook, $Inspection, $Cases, $Case, $List, [string]$Bank, [string]$Label,
+          $Measured)
 
     $expected = $Case.expected_exact
+    $rule = $Cases.comparison_policy.tolerances.summary_statistic
+    $scale = [double]$Case.accumulation_scale
+    $classes = $Case.comparison_classes
 
+    # THE POLICY TRAVELS WITH THE COMPARISON. A case whose classes or scale went
+    # missing must fail here rather than fall back to a rule this file invented.
+    $null = Add-Check $List ($Label + ': the accepted evidence policy is available') `
+        (($null -ne $rule) -and ([double]$rule.relative -gt 0) -and
+         ([double]$rule.absolute_floor -gt 0) -and ($scale -gt 0) -and
+         ($null -ne $classes) -and
+         (@($classes.diagnostic_only) -contains 'result_digest')) `
+        ('rel ' + [string]$rule.relative + ', floor ' + [string]$rule.absolute_floor +
+         ' x scale ' + [string]$scale)
+
+    # ---- EXACT: identity and discrete fields, §10.4 ----
     foreach ($pair in @(
-        @{ Field = 'result_digest';  Expected = [string]$expected.result_digest },
         @{ Field = 'request_fingerprint'; Expected = $(
             if ($null -ne $expected.PSObject.Properties['request_fingerprint'])
             { [string]$expected.request_fingerprint } else { $null }) })) {
@@ -828,6 +953,15 @@ function Add-Phase6ParityChecks {
             ('oracle ' + [char]39 + $pair.Expected + [char]39 + ', workbook ' +
              (Format-SimValue $actual))
     }
+
+    # ---- DIAGNOSTIC: the digest, recorded and never compared ----
+    $publishedDigest = Get-SimField -Workbook $Workbook -Inspection $Inspection `
+        -FieldKey 'result_digest' -Bank $Bank
+    Add-Note ($Label + ': result_digest oracle ' +
+              [string]$Measured.result_digest + ', workbook ' +
+              (Format-SimValue $publishedDigest) +
+              ' - DIAGNOSTIC. Step 0 §10.4 keeps the digest exact for ' +
+              'same-runtime replay, not across implementations.')
 
     foreach ($pair in @(
         @{ Field = 'effective_seed'; Expected = [double]$expected.effective_seed },
@@ -844,14 +978,20 @@ function Add-Phase6ParityChecks {
     # THE SUMMARY LADDER, BOTH MEASURES, EVERY PUBLISHED ROW. Mandatory: a
     # digest match with a wrong ladder would mean the retained totals were right
     # and the statistics layer was not.
+    # ---- TOLERANCE: every cross-language floating comparison, §10.3 ----
+    # Still MANDATORY and still every published row, both measures. What changed
+    # is the rule, not the coverage: a wrong ladder is still a failure, and a
+    # ladder that agreed to nine significant figures and then diverged in the
+    # tenth is not.
     foreach ($measure in @('nominal', 'pv')) {
-        $ladder = $expected.summary.$measure
+        $ladder = $Measured.summary.$measure
         foreach ($rowKey in @('mean', 'sample_standard_deviation', 'minimum', 'maximum')) {
             $actual = Get-SimSummaryValue -Workbook $Workbook -Inspection $Inspection `
                 -Bank $Bank -Measure $measure -RowKey $rowKey
             $null = Add-Check $List `
-                ($Label + ': ' + $measure + ' ' + $rowKey + ' equals the oracle') `
-                (Test-SimExactDouble -Actual $actual -Expected ([double]$ladder.$rowKey)) `
+                ($Label + ': ' + $measure + ' ' + $rowKey + ' agrees with the oracle') `
+                (Test-Phase6WithinPolicy -Actual ([double]$actual) `
+                    -Expected ([double]$ladder.$rowKey) -Rule $rule -Scale $scale) `
                 ('oracle ' + (Format-SimValue ([double]$ladder.$rowKey)) +
                  ', workbook ' + (Format-SimValue $actual))
         }
@@ -862,19 +1002,20 @@ function Add-Phase6ParityChecks {
             $actual = Get-SimSummaryValue -Workbook $Workbook -Inspection $Inspection `
                 -Bank $Bank -Measure $measure -RowKey $rowKey
             $null = Add-Check $List `
-                ($Label + ': ' + $measure + ' ' + $rowKey + ' (' + $label + ') equals the oracle') `
-                (Test-SimExactDouble -Actual $actual `
-                    -Expected ([double]$ladder.quantiles.$label)) `
+                ($Label + ': ' + $measure + ' ' + $rowKey + ' (' + $label + ') agrees with the oracle') `
+                (Test-Phase6WithinPolicy -Actual ([double]$actual) `
+                    -Expected ([double]$ladder.quantiles.$label) -Rule $rule -Scale $scale) `
                 ('oracle ' + (Format-SimValue ([double]$ladder.quantiles.$label)) +
                  ', workbook ' + (Format-SimValue $actual))
         }
         $actual = Get-SimSummaryValue -Workbook $Workbook -Inspection $Inspection `
             -Bank $Bank -Measure $measure -RowKey 'deterministic_base_a'
         $null = Add-Check $List `
-            ($Label + ': ' + $measure + ' deterministic base A equals the oracle') `
-            (Test-SimExactDouble -Actual $actual `
-                -Expected ([double]$expected.deterministic_base.$measure)) `
-            ('oracle ' + (Format-SimValue ([double]$expected.deterministic_base.$measure)) +
+            ($Label + ': ' + $measure + ' deterministic base A agrees with the oracle') `
+            (Test-Phase6WithinPolicy -Actual ([double]$actual) `
+                -Expected ([double]$Measured.deterministic_base.$measure) `
+                -Rule $rule -Scale $scale) `
+            ('oracle ' + (Format-SimValue ([double]$Measured.deterministic_base.$measure)) +
              ', workbook ' + (Format-SimValue $actual))
     }
 }
@@ -936,7 +1077,8 @@ function Invoke-Phase6GateBScenarios {
         $Excel, $Workbook, $Manifest, $Inspection, $Cases,
         $SimInspection, $GateBCases,
         [string]$ScriptDir, [string]$TempRoot, $Results,
-        [string]$HarnessCommit, [string]$RepoRoot, $ArtefactIdentity
+        [string]$HarnessCommit, [string]$RepoRoot, $ArtefactIdentity,
+        $OracleEvidence
     )
 
     Reset-Phase6ResultLedger
@@ -1264,7 +1406,8 @@ function Invoke-Phase6GateBScenarios {
         foreach ($item in @(
             @{ Label = 'stage_b_manifest.json         '; Name = 'stage_b_manifest.json' },
             @{ Label = 'phase6_gate_b_inspection.json '; Name = 'phase6_gate_b_inspection.json' },
-            @{ Label = 'phase6_gate_b_cases.json      '; Name = 'phase6_gate_b_cases.json' })) {
+            @{ Label = 'phase6_gate_b_cases.json      '; Name = 'phase6_gate_b_cases.json' },
+            @{ Label = 'phase6_gate_b_oracle_local.json'; Name = 'phase6_gate_b_oracle_local.json' })) {
             $path = Join-Path $TempRoot $item.Name
             if (Test-Path -LiteralPath $path) {
                 $lines += ($item.Label + ': ' + (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)
@@ -1272,6 +1415,28 @@ function Invoke-Phase6GateBScenarios {
                 $lines += ($item.Label + ': NOT FOUND')
             }
         }
+        # THE HOST-LOCAL ORACLE EVIDENCE, IDENTIFIED AND ATTRIBUTED. It is
+        # deliberately not a cross-platform frozen artefact, so what makes it
+        # auditable is provenance recorded beside the run that consumed it: which
+        # authority it was generated for, on which host, by which Python, from
+        # which source revision, and when.
+        $lines += ('oracle evidence host            : ' + [string]$OracleEvidence.host.system +
+                   ' ' + [string]$OracleEvidence.host.release +
+                   ' / ' + [string]$OracleEvidence.host.machine +
+                   ' / ' + [string]$OracleEvidence.host.python_implementation +
+                   ' ' + [string]$OracleEvidence.host.python_version)
+        $lines += ('oracle evidence source revision : ' + [string]$OracleEvidence.source_revision +
+                   ' at ' + [string]$OracleEvidence.generated_at_utc)
+        $lines += ('oracle evidence generated for   : ' +
+                   [string]$OracleEvidence.generated_for.authority + ' sha256 ' +
+                   [string]$OracleEvidence.generated_for.sha256)
+        $null = Add-Check $list 'the oracle evidence names the authority it was generated for' `
+            ([string]$OracleEvidence.generated_for.sha256 -match '^[0-9A-Fa-f]{64}$') `
+            ([string]$OracleEvidence.generated_for.sha256)
+        $null = Add-Check $list 'the oracle evidence is declared host-local, not cross-platform' `
+            (-not [bool]$OracleEvidence.portability.cross_platform_invariant)
+        $null = Add-Check $list 'the case authority is declared cross-platform invariant' `
+            ([bool]$GateBCases.portability.cross_platform_invariant)
         $null = Add-Check $list 'the inspection projection states its provenance' `
             (-not [string]::IsNullOrWhiteSpace([string]$SimInspection.provenance.sim_contract_version)) `
             ('sim_contract ' + [string]$SimInspection.provenance.sim_contract_version)
@@ -1609,10 +1774,19 @@ function Invoke-Phase6GateBScenarios {
             $null = Add-Check $list ($label + ': the endpoint announced success') `
                 (Test-Phase6Announced -Result $announced -Kind 'OK') $announced
 
+            # THE HOST-LOCAL MEASUREMENTS FOR THIS CASE, matched by id and
+            # required: a case with no measurements is not compared against
+            # nothing, it fails.
+            $measured = @($OracleEvidence.measurements |
+                Where-Object { [string]$_.id -ceq [string]$case.id })
+            $null = Add-Check $list ($label + ': this host measured the oracle for this case') `
+                ($measured.Count -eq 1) ('measurement records: ' + $measured.Count)
+            if ($measured.Count -ne 1) { continue }
             Add-Phase6ParityChecks -Workbook $Workbook -Inspection $SimInspection `
-                -Cases $GateBCases -Case $case -List $list -Bank $target -Label $label
+                -Cases $GateBCases -Case $case -List $list -Bank $target -Label $label `
+                -Measured $measured[0]
             $evidence += ('    ' + $label + ' -> bank ' + $target + ', oracle digest ' +
-                          [string]$case.expected_exact.result_digest + ', workbook digest ' +
+                          [string]$measured[0].result_digest + ' (diagnostic), workbook digest ' +
                           (Format-SimValue (Get-SimField -Workbook $Workbook `
                               -Inspection $SimInspection -FieldKey 'result_digest' -Bank $target)))
         }
@@ -1646,13 +1820,21 @@ function Invoke-Phase6GateBScenarios {
             $null = Add-Check $list 'the repeated run announced success' `
                 (Test-Phase6Announced -Result $announced -Kind 'OK') $announced
         }
+        # SAME-RUNTIME REPLAY, AND EXACT - the one place Step 0 §10.4 does
+        # promise digest equality, and it is not weakened by a hair.
         $null = Add-Check $list 'both runs published the same result digest' `
             (Test-SimSameValue -A $digests[0] -B $digests[1]) `
             ((Format-SimValue $digests[0]) + ' vs ' + (Format-SimValue $digests[1]))
-        $null = Add-Check $list 'and it is the digest the oracle predicted' `
-            (Test-SimExactText -Actual $digests[1] `
-                -Expected ([string]$goldenCase.expected_exact.result_digest)) `
-            ('oracle ' + [string]$goldenCase.expected_exact.result_digest)
+        $null = Add-Check $list 'and neither digest is blank' `
+            ((-not (Test-SimBlank -Value $digests[0])) -and
+             (-not (Test-SimBlank -Value $digests[1]))) `
+            ((Format-SimValue $digests[0]) + ' / ' + (Format-SimValue $digests[1]))
+        # AND NOTHING CROSS-LANGUAGE. The withdrawn clause asked whether the
+        # repeated digest equalled the PYTHON oracle's, which is a different
+        # question from repeatability and one §10.4 never promised: the digest is
+        # exact for a replay inside one runtime. Run 4 proved this scenario's own
+        # property - two runs, one digest - and was marked red for the clause
+        # that did not belong to it.
         Add-Phase6Result 'P6-DET' 'Repeatability: same inputs, same FIXED seed, same digest' `
             $(if (Test-ChecklistOk $list) { 'PASS' } else { 'FAIL' }) (Format-Checklist $list)
     } catch {

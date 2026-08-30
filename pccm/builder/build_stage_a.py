@@ -206,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  emitted  : {inspection.path}")
     say(f"  emitted  : {sim_gate_b.inspection_path}")
     say(f"  emitted  : {sim_gate_b.cases_path}")
+    say(f"  emitted  : {sim_gate_b.oracle_path}  (host-local oracle evidence)")
     say(f"  stamped  : builder {metadata.builder_version}, {metadata.build_timestamp}")
     say("")
     say("Structural verification:")
