@@ -787,6 +787,23 @@ run had not been made. Both described the world before Run 4 and before the D2
 split. Two more mutations restore each. A detector that reads only the regions it
 was first pointed at goes stale exactly where nothing is looking.
 
+Run 5 added a fifteenth. `test_77` proves the generated `modSimContract`
+projection has a BASELINE-BOUND identity: it archives `79e4600` into an isolated
+tree, runs that commit's Stage-A build with that commit's contracts, and requires
+the canonical projection to equal the value the harness carries as a checked
+copy. Eleven mutations: the projection returned to the tracked blob loop, its
+identity check defanged, a manifest entry that is not `generated`, zero or
+duplicate entries, the module resolved from the source tree, the expected
+identity derived from HEAD, the raw Windows SHA pinned as the identity, a
+hand-written blob check weakened, and the canonicaliser accepting a BOM, a
+missing final newline, or normalising more than line endings.
+
+Two of those eleven found controls reading an `Add-Check`'s LABEL while its
+predicate had been replaced by `$true` — the tracked-module blob comparison and
+the manifest entry count. Both now read the joined statement. It is the third
+time this shape has appeared, and it is always the same lesson: a label survives
+the change that matters.
+
 ---
 
 ## 7. Running it
