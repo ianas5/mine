@@ -646,11 +646,15 @@ def test_46_a_required_scenario_is_dropped_from_the_matrix() -> None:
     _control("test_34b", phase6=damaged)
 
 
-def test_47_the_execution_disclaimer_is_removed() -> None:
+def test_47_the_execution_boundary_is_removed_from_the_banner() -> None:
+    """The banner says which runs have executed AND which corrections they did
+    not exercise. Dropping the second half turns a record into a claim."""
     damaged = _swap(
         _PHASE6,
-        "    NOTHING HERE HAS BEEN EXECUTED. As submitted, no Windows run has been made.\n",
-        "    This harness has been proven on Windows.\n")
+        "    parity comparison, the P6-DET decoupling, the pre-open artefact capture and\n"
+        "    the P6-FP3 preservation set are NOT among them - they are source, and no\n"
+        "    Windows run has yet exercised them.\n",
+        "    parity comparison and the P6-DET decoupling have been proven on Windows.\n")
     _control("test_45", phase6=damaged)
 
 
@@ -1012,8 +1016,8 @@ def test_85_the_driver_substitutes_a_placeholder_for_a_missing_commit() -> None:
     """"unknown" and a PASS is a weakness passed off as strength."""
     damaged = _swap(
         _HARNESS,
-        "    $harnessCommit = ''\n",
-        "    $harnessCommit = 'unknown (git was not available on this machine)'\n")
+        "$harnessCommit = ''\n",
+        "$harnessCommit = 'unknown (git was not available on this machine)'\n")
     _control("test_52", harness=damaged)
 
 
@@ -1815,3 +1819,187 @@ def test_156_the_policy_promises_a_cross_language_digest_again() -> None:
     def edit(document):
         document["comparison_policy"]["cross_language_digest_is_exact"] = True
     _control("test_31", cases=_json_mutation(_CASES, edit))
+
+
+# ===========================================================================
+# L. The superseded wording, and the host-local oracle's run binding
+# ===========================================================================
+_DOC = conformance.PCCM_ROOT / "docs" / "phase6_step13_gate_b.md"
+
+
+def _wording_refuses(doc: str | None = None, phase6: str | None = None) -> str:
+    """Run the current-wording detector over a damaged document or banner."""
+    saved = (conformance.PCCM_ROOT, conformance.PHASE6)
+    with tempfile.TemporaryDirectory(prefix="pccm-step13-wording-") as name:
+        root = Path(name)
+        (root / "docs").mkdir()
+        (root / "docs" / "phase6_step13_gate_b.md").write_text(
+            doc if doc is not None else _DOC.read_text(encoding="utf-8"),
+            encoding="utf-8")
+        conformance.PCCM_ROOT = root
+        if phase6 is not None:
+            target = root / conformance.PHASE6.name
+            target.write_text(phase6, encoding="utf-8")
+            conformance.PHASE6 = target
+        try:
+            conformance.test_45_the_current_wording_states_the_accepted_comparison_and_the_split()
+        except AssertionError as error:
+            return str(error)
+        finally:
+            conformance.PCCM_ROOT, conformance.PHASE6 = saved
+    raise AssertionError("the mutation survived the current-wording control")
+
+
+def _doc_swap(old: str, new: str) -> str:
+    text = _DOC.read_text(encoding="utf-8")
+    assert text.count(old) == 1, old[:80]
+    return text.replace(old, new)
+
+
+def test_157_the_exact_only_policy_returns_to_the_architecture() -> None:
+    """The rule Step 13 wrote over the top of Step 0 §10."""
+    damaged = _doc_swap(
+        "#### Iterations, seed and the two comparison classes",
+        "#### Iterations, seed and exactness\n\nThe comparison policy is **EXACT** "
+        "and admits no tolerance.\n")
+    message = _wording_refuses(doc=damaged)
+    assert "admits" in message or "EXACT" in message, message
+
+
+def test_158_the_matrix_claims_excel_equals_the_oracle_again() -> None:
+    """Digest equality across two languages, back in the scenario definition."""
+    line = [l for l in _DOC.read_text(encoding="utf-8").splitlines()
+            if l.startswith("| `P6-ORA` |")][0]
+    damaged = _doc_swap(
+        line,
+        "| `P6-ORA` | **Excel equals the oracle** — digest, seeds, versions and "
+        "the full ladder | cells vs corpus |")
+    message = _wording_refuses(doc=damaged)
+    assert "equals the oracle" in message, message
+
+
+def test_159_the_matrix_restores_the_oracle_digest_to_repeatability() -> None:
+    """P6-DET proves a same-runtime replay property and nothing else."""
+    line = [l for l in _DOC.read_text(encoding="utf-8").splitlines()
+            if l.startswith("| `P6-DET` |")][0]
+    damaged = _doc_swap(
+        line,
+        "| `P6-DET` | the same inputs and seed twice produce the same digest, "
+        "and it is the oracle's | cells |")
+    message = _wording_refuses(doc=damaged)
+    assert "oracle" in message, message
+
+
+def test_160_the_source_banner_denies_every_execution_again() -> None:
+    """Runs 1-4 have run, and Run 4 executed the behavioural matrix."""
+    damaged = _swap(
+        _PHASE6,
+        "    WHAT HAS EXECUTED. Runs 1-4 have run",
+        "    NOTHING HERE HAS BEEN EXECUTED. As submitted, no Windows run has been\n"
+        "    made. Runs 1-4 have run")
+    message = _wording_refuses(phase6=damaged)
+    assert "NOTHING HERE HAS BEEN EXECUTED" in message, message
+
+
+def test_161_the_banner_sends_every_expected_value_to_one_artefact() -> None:
+    """True before D2, false after it: the floating ladder and the diagnostic
+    digest come from the host-local companion."""
+    damaged = _swap(
+        _PHASE6,
+        "    * it restates no expected simulation number, and there are TWO artefacts it\n",
+        "    * it restates no expected simulation number. Every digest, seed, ladder\n"
+        "      value and bound comes from build/phase6_gate_b_cases.json.\n"
+        "    * and there are TWO artefacts it\n")
+    damaged = damaged.replace("phase6_gate_b_oracle_local.json,\n"
+                              "      the HOST-LOCAL oracle measurements", "the same file")
+    message = _wording_refuses(phase6=damaged)
+    assert "one artefact" in message or "host-local companion" in message, message
+
+
+def test_162_the_pre_excel_gate_is_misnamed_as_p6_pre() -> None:
+    """P6-PRE executes later, inside the live session; the artefact gate is
+    PRE6, and confusing them misdescribes where a refusal happens."""
+    damaged = _doc_swap(
+        "**Binding.** `PRE6` — `Invoke-Phase6CoveragePreflight`, the pure artefact gate\n"
+        "that runs before Excel is started, and NOT `P6-PRE`, which executes later inside\n"
+        "the live session — refuses if the file is missing",
+        "**Binding.** `P6-PRE` refuses, pre-Excel, if the file is missing")
+    message = _wording_refuses(doc=damaged)
+    assert "P6-PRE" in message, message
+
+
+# ---- the run binding -------------------------------------------------------
+def test_163_the_oracle_carries_no_real_commit_identity() -> None:
+    """`unavailable` is what the builder writes when git cannot be read. It is
+    honest, and it is not a Gate-B evidence package."""
+    def edit(document):
+        document["source_revision"] = "unavailable"
+    _control("test_72", oracle=_json_mutation(_ORACLE, edit))
+
+
+def test_164_the_oracle_names_a_commit_this_repository_does_not_have() -> None:
+    """A well-formed SHA that nothing can be attributed to."""
+    def edit(document):
+        document["source_revision"] = "0" * 40
+    _control("test_72", oracle=_json_mutation(_ORACLE, edit))
+
+
+def test_165_the_run_binding_is_weakened_to_a_prefix() -> None:
+    """Two representations of one commit make the binding a string-formatting
+    question. This is the shape a stale short-SHA oracle would slip through."""
+    damaged = _swap(
+        _PHASE6,
+        "         ($oracleRevision -ceq $HarnessCommit)) `\n",
+        "         ($oracleRevision -like ($HarnessCommit.Substring(0, 7) + '*'))) `\n")
+    _control("test_72", phase6=damaged)
+
+
+def test_166_the_pre_excel_gate_stops_comparing_the_revision() -> None:
+    """Without it a stale oracle_local from an earlier harness commit passes:
+    a harness-only commit does not move the portable authority, so its SHA-256
+    still matches and every other check is satisfied."""
+    damaged = _swap(
+        _PHASE6,
+        "    $null = Add-Check $list 'the oracle evidence was generated at THIS run''s harness commit' `\n"
+        "        (($oracleRevision -match '^[0-9a-f]{40}$') -and\n"
+        "         ($HarnessCommit -match '^[0-9a-f]{40}$') -and\n"
+        "         ($oracleRevision -ceq $HarnessCommit)) `\n",
+        "    $null = Add-Check $list 'the oracle evidence was generated at THIS run''s harness commit' `\n"
+        "        ($true) `\n")
+    _control("test_72", phase6=damaged)
+
+
+def test_167_the_runtime_scenario_only_prints_the_revision() -> None:
+    """P6-ART recording a revision is attribution; re-asserting it is a binding."""
+    damaged = _swap(
+        _PHASE6,
+        "            (([string]$OracleEvidence.source_revision -match '^[0-9a-f]{40}$') -and\n"
+        "             ([string]$OracleEvidence.source_revision -ceq [string]$HarnessCommit)) `\n",
+        "            ($true) `\n")
+    _control("test_72", phase6=damaged)
+
+
+def test_168_the_pair_disagrees_on_the_supplied_seed() -> None:
+    def edit(document):
+        document["supplied_seed"] = 99999
+    _control("test_72", oracle=_json_mutation(_ORACLE, edit))
+
+
+def test_169_the_pair_disagrees_on_the_schema_version() -> None:
+    def edit(document):
+        document["schema_version"] = 99
+    _control("test_72", oracle=_json_mutation(_ORACLE, edit))
+
+
+def test_170_the_oracle_names_a_different_case_authority() -> None:
+    def edit(document):
+        document["generated_for"]["authority"] = "phase5_cases.json"
+    _control("test_72", oracle=_json_mutation(_ORACLE, edit))
+
+
+def test_171_the_oracle_names_a_different_policy_authority() -> None:
+    """The measurements and the rule they are compared under must come from one
+    settled policy, not two."""
+    def edit(document):
+        document["evidence_policy_authority"] = "docs/phase6_plan.md §15.1"
+    _control("test_72", oracle=_json_mutation(_ORACLE, edit))

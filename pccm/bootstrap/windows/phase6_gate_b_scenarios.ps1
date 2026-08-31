@@ -9,19 +9,30 @@
 
     THE LINE THIS FILE MUST NOT CROSS
     ---------------------------------
-    Static/source evidence is not runtime evidence. Everything here is a
-    STATEMENT ABOUT SOURCE until it has actually executed in Excel on Windows.
-    No claim in this file's comments is a claim that anything has run.
+    Static/source evidence is not runtime evidence. A statement in this file's
+    comments is a statement about SOURCE, and stays one until the scenario it
+    describes has actually executed in Excel on Windows.
 
-    NOTHING HERE HAS BEEN EXECUTED. As submitted, no Windows run has been made.
+    WHAT HAS EXECUTED. Runs 1-4 have run, and Run 4 executed the Phase-6
+    behavioural matrix for the first time: 24 of 29 scenarios passed, a real
+    production simulation published, repeated and recovered. The corrected
+    parity comparison, the P6-DET decoupling, the pre-open artefact capture and
+    the P6-FP3 preservation set are NOT among them - they are source, and no
+    Windows run has yet exercised them.
 
     WHAT THIS FILE MAY NOT DO
     -------------------------
     * it restates no `_SimData` address. Every sheet, column, row, range, cell
       and defined name comes from build/phase6_gate_b_inspection.json;
-    * it restates no expected simulation number. Every digest, seed, ladder
-      value and bound comes from build/phase6_gate_b_cases.json, which the
-      accepted Python oracle generates;
+    * it restates no expected simulation number, and there are TWO artefacts it
+      may take one from. The exact discrete and identity expectations, the
+      bounds, the vocabulary, the accumulation scale and the accepted comparison
+      policy come from build/phase6_gate_b_cases.json, the PORTABLE case
+      authority. The floating summary ladder, the deterministic base and the
+      diagnostic result_digest come from build/phase6_gate_b_oracle_local.json,
+      the HOST-LOCAL oracle measurements - separate because Cheng reaches libm
+      and libm is not the same on two hosts. The accepted Python oracle
+      generates both;
     * it recomputes no simulation, no digest and no statistic of its own. There
       is deliberately no fallback path: if the expectation artefact is missing
       or malformed the run FAILS, it does not fall back to self-consistency;
@@ -251,7 +262,7 @@ function Format-Phase6Err {
 # so an artefact that never arrived stops the run at a point where the diagnosis
 # is one line rather than a cascade of COM failures forty minutes later.
 function Invoke-Phase6CoveragePreflight {
-    param([string]$BuildDir)
+    param([string]$BuildDir, [string]$HarnessCommit)
 
     $ok = $true
     $inspectionPath = Join-Path $BuildDir 'phase6_gate_b_inspection.json'
@@ -384,12 +395,55 @@ function Invoke-Phase6CoveragePreflight {
         (($authoritySha.Length -eq 64) -and
          ($actualSha -ne '') -and ($actualSha -ieq $authoritySha)) `
         ('evidence names ' + $authoritySha + ', authority hashes to ' + $actualSha)
-    $null = Add-Check $list 'the oracle evidence agrees with the authority on every version' `
-        (([string]$oracle.model_version -ceq [string]$cases.model_version) -and
-         ([string]$oracle.sim_contract_version -ceq [string]$cases.sim_contract_version) -and
-         ([int]$oracle.rng_version -eq [int]$cases.rng_version) -and
-         ([int]$oracle.sim_method_version -eq [int]$cases.sim_method_version) -and
-         ([int]$oracle.iterations -eq [int]$cases.iterations))
+    $null = Add-Check $list 'the oracle evidence names the case authority by filename' `
+        ([string]$oracle.generated_for.authority -ceq 'phase6_gate_b_cases.json') `
+        ([string]$oracle.generated_for.authority)
+
+    # AND THE IDENTITY PAIR IS COMPLETE. Named field by field: a count would pass
+    # while the one field that mattered was the one that disagreed.
+    foreach ($pair in @(
+        @{ Field = 'schema_version';       A = [string]$oracle.schema_version;       B = [string]$cases.schema_version },
+        @{ Field = 'model_version';        A = [string]$oracle.model_version;        B = [string]$cases.model_version },
+        @{ Field = 'sim_contract_version'; A = [string]$oracle.sim_contract_version; B = [string]$cases.sim_contract_version },
+        @{ Field = 'rng_version';          A = [string]$oracle.rng_version;          B = [string]$cases.rng_version },
+        @{ Field = 'sim_method_version';   A = [string]$oracle.sim_method_version;   B = [string]$cases.sim_method_version },
+        @{ Field = 'iterations';           A = [string]$oracle.iterations;           B = [string]$cases.iterations },
+        @{ Field = 'supplied_seed';        A = [string]$oracle.supplied_seed;        B = [string]$cases.supplied_seed })) {
+        $null = Add-Check $list `
+            ('the oracle evidence and the authority agree on ' + $pair.Field) `
+            ($pair.A -ceq $pair.B) `
+            ('evidence ' + $pair.A + ', authority ' + $pair.B)
+    }
+    $null = Add-Check $list 'the oracle evidence names the policy authority the case authority names' `
+        ([string]$oracle.evidence_policy_authority -ceq
+         [string]$cases.comparison_policy.authority) `
+        ('evidence ' + [string]$oracle.evidence_policy_authority)
+
+    # THE SOURCE-TO-RUN BINDING, AND IT IS A BINDING, NOT AN ATTRIBUTION.
+    #
+    # These measurements are not frozen by a cross-platform hash - D2 showed
+    # they cannot honestly be - so their provenance is what makes them evidence
+    # about a run. Provenance that is merely PRINTED is attribution: a stale
+    # oracle_local built at an earlier harness commit passes an authority-hash
+    # check unchanged, because a harness-only commit does not move the portable
+    # authority. So the revision the evidence names must BE the revision this
+    # run is executing, compared here, before Excel starts.
+    #
+    # `unavailable` is what the builder writes when git could not be read. It is
+    # honest and it is not sufficient: a Gate-B evidence package with no
+    # attributable source revision is not a Gate-B evidence package.
+    $oracleRevision = [string]$oracle.source_revision
+    $null = Add-Check $list 'the oracle evidence carries a real commit identity' `
+        ($oracleRevision -match '^[0-9a-f]{40}$') `
+        ('source_revision ' + $oracleRevision)
+    $null = Add-Check $list 'the runtime harness commit was read from git, not guessed' `
+        ($HarnessCommit -match '^[0-9a-f]{40}$') `
+        ('HEAD ' + $HarnessCommit)
+    $null = Add-Check $list 'the oracle evidence was generated at THIS run''s harness commit' `
+        (($oracleRevision -match '^[0-9a-f]{40}$') -and
+         ($HarnessCommit -match '^[0-9a-f]{40}$') -and
+         ($oracleRevision -ceq $HarnessCommit)) `
+        ('evidence ' + $oracleRevision + ', HEAD ' + $HarnessCommit)
     # AND EACH SAYS WHICH KIND OF ARTEFACT IT IS. The authority claims
     # cross-platform invariance; the evidence explicitly does not.
     $null = Add-Check $list 'the authority claims cross-platform invariance' `
@@ -1433,6 +1487,15 @@ function Invoke-Phase6GateBScenarios {
         $null = Add-Check $list 'the oracle evidence names the authority it was generated for' `
             ([string]$OracleEvidence.generated_for.sha256 -match '^[0-9A-Fa-f]{64}$') `
             ([string]$OracleEvidence.generated_for.sha256)
+        # THE SAME BINDING, RE-ASSERTED INSIDE THE SESSION. PRE6 refused a stale
+        # oracle before Excel; this says the artefact the scenarios actually
+        # consumed is still the one attributable to this run's HEAD, and it is a
+        # CHECK rather than a printed line for the same reason PRE6's is.
+        $null = Add-Check $list 'the oracle evidence is bound to this run''s harness commit' `
+            (([string]$OracleEvidence.source_revision -match '^[0-9a-f]{40}$') -and
+             ([string]$OracleEvidence.source_revision -ceq [string]$HarnessCommit)) `
+            ('evidence ' + [string]$OracleEvidence.source_revision +
+             ', HEAD ' + [string]$HarnessCommit)
         $null = Add-Check $list 'the oracle evidence is declared host-local, not cross-platform' `
             (-not [bool]$OracleEvidence.portability.cross_platform_invariant)
         $null = Add-Check $list 'the case authority is declared cross-platform invariant' `

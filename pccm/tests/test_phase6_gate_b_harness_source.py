@@ -235,10 +235,34 @@ def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> No
     after = _current_lines(HARNESS)
 
     removed = [line for line in before if line not in after]
+    # THREE AUTHORISED CHANGES, and the third moved a block rather than adding
+    # one: the harness-commit capture had to happen BEFORE the pre-Excel artefact
+    # gate so that gate can refuse a stale host-local oracle, and moving it out
+    # of the artefact-load `try` reindented every line of it. Enumerated in full
+    # so a fourth change cannot hide among them.
     assert removed == [
+        # 1. the pre-Excel gate is given the harness commit
+        "    if (-not (Invoke-Phase6CoveragePreflight -BuildDir $BuildDir)) {",
+        # 2. the host-local oracle joins the required-artefact list
         "                            $simInspectPath, $simCasesPath)) {",
+        # 3. the capture block, moved earlier and reindented
+        "    # THE SOURCE COMMIT, CAPTURED NOT ASSUMED. Every runtime result has to be",
+        "    # attributable to a named baseline. If git is unavailable on the target the",
+        "    # fact is recorded as unknown rather than guessed.",
+        "    # THE RUNTIME HARNESS COMMIT, and it is only that. The accepted PRODUCTION",
+        "    # BASELINE is a separate, pinned identity that P6-ART reports beside it;",
+        "    # HEAD on a runtime tree is always the harness commit, never the baseline.",
+        "    # If git is unavailable the value stays empty and P6-ART FAILS on it: a",
+        "    # runtime result with no attributable revision is weaker evidence, and",
+        '    # recording "unknown" while passing would pass that weakness off as strength.',
+        "    $harnessCommit = ''",
+        "        $described = & git -C $pccmRoot rev-parse HEAD 2>$null",
+        "        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($described)) {",
+        "            $harnessCommit = [string]$described",
+        "        Add-Note ('The runtime harness commit could not be read: ' + (Format-Err $_))",
+        # and the scenario call gains the two new arguments
         "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot",
-    ], f"the Phase-4 driver lost lines beyond the two authorised changes: {removed}"
+    ], f"the Phase-4 driver lost lines beyond the three authorised changes: {removed}"
 
     added = [line for line in after if line not in before]
     for required in ("Get-Phase6RuntimeArtefactIdentity -TempRoot $tempRoot",
@@ -246,7 +270,8 @@ def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> No
                      "Phase-6 pre-open artefact capture",
                      "$simOraclePath = Join-Path $BuildDir 'phase6_gate_b_oracle_local.json'",
                      "Copy-Item -LiteralPath $simOraclePath -Destination $tempRoot",
-                     "-OracleEvidence $simOracle"):
+                     "-OracleEvidence $simOracle",
+                     "-HarnessCommit $harnessCommit)) {"):
         assert any(required in line for line in added), required
     # THE HOST-LOCAL EVIDENCE IS REQUIRED BEFORE EXCEL, like the other two.
     assert any("$simOraclePath" in line and "$simCasesPath" in line for line in added), (
@@ -1160,14 +1185,119 @@ def test_44_the_preflight_runs_before_excel_and_aborts_the_run() -> None:
         assert demanded in preflight, why
 
 
-def test_45_the_step13_file_claims_no_execution() -> None:
-    """The distinction the whole step turns on, stated in the file itself."""
-    text = _text(PHASE6)
-    assert "NOTHING HERE HAS BEEN EXECUTED" in text
-    assert "no Windows run has been made" in text
+def _current_architecture(doc: str) -> str:
+    """The document's CURRENT architectural and scenario-definition text.
+
+    Section 8 is the run ledger and is HISTORY: it describes what each run's
+    harness did at the time, in the words that were true then, and it is never
+    rewritten when the present tense moves. Everything else - the architecture,
+    the artefact descriptions, the scenario matrix, the controls, the
+    reclassification and the settlement - describes the harness AS IT STANDS,
+    and is what this control reads.
+    """
+    start = doc.index("\n## 1.")
+    ledger = doc.index("\n## 8. Windows run ledger")
+    after = doc.index("\n## 9. ")
+    return doc[start:ledger] + doc[after:]
+
+
+def test_45_the_current_wording_states_the_accepted_comparison_and_the_split() -> None:
+    """The settled rule, everywhere the document and the harness state it now.
+
+    The reclassification changed two things at once: what `P6-ORA` compares, and
+    how many artefacts the expectations live in. The preamble and §§9-10 were
+    rewritten for both, and the older architectural text was not - so the same
+    document simultaneously carried the accepted policy and the superseded rule
+    it replaced. This control reads the CURRENT sections and the LIVE source
+    banner, and refuses the superseded wording in either.
+
+    It does not touch §8. "Neither behavioural matrix executed" was true of Run
+    2 and stays written that way; a control that could not tell history from the
+    present tense would only be satisfiable by deleting evidence.
+    """
+    doc = _text(PCCM_ROOT / "docs" / "phase6_step13_gate_b.md")
+    current = _current_architecture(doc)
+    banner = _text(PHASE6).split("#>")[0]
+
+    # SCOPE, PROVED RATHER THAN ASSERTED.
+    history = "Neither behavioural matrix executed."
+    assert history in doc and history not in current
+
+    # 1. NO AFFIRMATIVE EXACT-ONLY POLICY. §9 quotes the withdrawn rule in order
+    #    to say it was withdrawn, so the ban is on the ASSERTION, not the words.
+    for stale in (r"comparison\s+policy\s+is\s+\*{0,2}EXACT",
+                  r"admits\s+no\s+tolerance",
+                  r"EXACT,?\s+and\s+there\s+is\s+no\s+other\s+mode\b(?![^.]*withdraw)"):
+        for text, where in ((current, "the current sections"), (banner, "the source banner")):
+            found = re.search(stale, text, re.I)
+            if found and where == "the current sections":
+                # Allowed only inside a quotation of the superseded rule.
+                line = text[max(0, found.start() - 200):found.end() + 200]
+                assert "superseded" in line or "withdrawn" in line or "earlier" in line, (
+                    f"{where} still assert /{stale}/: {' '.join(line.split())[:200]}"
+                )
+            else:
+                assert not found, f"{where} still assert /{stale}/"
+
+    # 2. AND 3. THE SCENARIO MATRIX ROWS SAY WHAT THE SCENARIOS NOW DO.
+    rows = {name: line for name in ("P6-ORA", "P6-DET")
+            for line in current.splitlines() if line.startswith(f"| `{name}` |")}
+    assert set(rows) == {"P6-ORA", "P6-DET"}, rows
+    ora = rows["P6-ORA"]
+    assert "equals the oracle" not in ora, (
+        "the matrix still claims Excel EQUALS the oracle; the accepted policy "
+        f"compares under a tolerance for every floating row: {ora.strip()}"
+    )
+    assert re.search(r"Step-0|§10|policy", ora), (
+        f"the matrix does not name the policy P6-ORA compares under: {ora.strip()}"
+    )
+    assert re.search(r"recorded,?\s+not\s+compared|diagnostic", ora, re.I), (
+        f"the matrix does not say the digest is no longer a criterion: {ora.strip()}"
+    )
+    det = rows["P6-DET"]
+    assert "oracle" not in det.lower(), (
+        f"the repeatability row still reaches for the oracle's digest: {det.strip()}"
+    )
+    assert "same-runtime" in det.lower(), (
+        f"the repeatability row does not say which replay property it proves: {det.strip()}"
+    )
+
+    # 4. THE BANNER NO LONGER DENIES EVERY EXECUTION. Runs 1-4 have run.
+    for stale in ("NOTHING HERE HAS BEEN EXECUTED", "no Windows run has been made"):
+        assert stale not in banner, f"the source banner still says {stale!r}"
+    assert re.search(r"Runs?\s+1-4|Run 4", banner), (
+        "the banner does not say which runs have executed"
+    )
+    # AND IT STILL SEPARATES WHAT HAS RUN FROM WHAT HAS NOT.
+    assert re.search(r"(are|is)\s+NOT\s+among\s+them|source,?\s+and\s+no\s+Windows\s+run",
+                     banner), "the banner does not say what remains unexercised"
     for overclaim in ("Excel produced", "the run passed", "proven on Windows",
                       "confirmed in Excel"):
-        assert overclaim not in text, overclaim
+        assert overclaim not in _text(PHASE6), overclaim
+
+    # 5. BOTH ARTEFACTS, WHEREVER THE EXPECTATIONS ARE DESCRIBED. A statement
+    #    that every expected value comes from the case authority alone was true
+    #    before D2 and is false after it.
+    for text, where in ((current, "the current sections"), (banner, "the source banner")):
+        assert "phase6_gate_b_oracle_local.json" in text, (
+            f"{where} describe the expectations without the host-local companion"
+        )
+        for line in text.splitlines():
+            if "phase6_gate_b_cases.json" in line and re.search(
+                    r"\bevery\b|\ball\b", line, re.I):
+                assert "portable" in line.lower() or "exact" in line.lower(), (
+                    f"{where} still send every expected value to one artefact: "
+                    f"{line.strip()}"
+                )
+
+    # 6. THE PRE-EXCEL GATE IS PRE6, NOT P6-PRE. P6-PRE executes later, inside
+    #    the live session; a sentence that names both must distinguish them.
+    for sentence in re.split(r"(?<=\.)\s+", " ".join(current.split())):
+        if "P6-PRE" in sentence and re.search(r"pre-Excel|before Excel", sentence):
+            assert "PRE6" in sentence, (
+                "P6-PRE is described as the pre-Excel artefact gate; that gate "
+                f"is PRE6 / Invoke-Phase6CoveragePreflight: {sentence[:200]}"
+            )
 
 
 def test_46_the_parity_scenario_proves_the_current_analytical_identity_first() -> None:
@@ -2301,3 +2431,94 @@ def test_71_the_two_gate_b_artefacts_are_classified_by_portability() -> None:
     for recorded in ("oracle evidence host", "oracle evidence source revision",
                      "oracle evidence generated for"):
         assert recorded in artefact, recorded
+
+
+def test_72_the_host_local_oracle_is_bound_to_the_run_that_consumes_it() -> None:
+    """Provenance replaces a cross-platform hash, so provenance is load-bearing.
+
+    The host-local measurements cannot honestly be frozen by a hash - D2 settled
+    that - which makes what they SAY about their origin the only thing standing
+    between a stale artefact and a passing evidence package. Recording a
+    revision is attribution. Comparing it against the revision actually running
+    is a binding, and only the second one refuses an oracle built at an earlier
+    harness commit: a harness-only commit does not move the portable authority,
+    so its SHA-256 still matches and every other check is satisfied.
+
+    Linux proves the shape and the identity pair. The run binding itself is a
+    Windows comparison, and what is proved here is that the harness performs it,
+    as a check, in both places, over one representation.
+    """
+    evidence = _oracle_evidence()
+    cases = _cases()
+
+    # ---- the shape, and a refusal the builder is allowed to write ----
+    revision = evidence["source_revision"]
+    assert re.fullmatch(r"[0-9a-f]{40}", revision), (
+        f"the oracle evidence carries no real commit identity: {revision!r}; "
+        "`unavailable` is honest and is not sufficient for a Gate-B package"
+    )
+    exists = subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+        cwd=REPO_ROOT, capture_output=True, check=False)
+    assert exists.returncode == 0, (
+        f"the oracle evidence names {revision}, which this repository does not "
+        "contain, so nothing can be attributed to it"
+    )
+
+    # ---- the identity pair, named field by field ----
+    for field in ("schema_version", "model_version", "sim_contract_version",
+                  "rng_version", "sim_method_version", "iterations",
+                  "supplied_seed"):
+        assert evidence[field] == cases[field], (
+            f"the pair disagrees on {field}: evidence {evidence[field]!r}, "
+            f"authority {cases[field]!r}"
+        )
+    assert evidence["generated_for"]["authority"] == "phase6_gate_b_cases.json"
+    assert evidence["evidence_policy_authority"] == cases["comparison_policy"]["authority"]
+
+    # ---- the harness performs the binding, in both gates, as a CHECK ----
+    code = _executable(PHASE6)
+    preflight = code.split("function Invoke-Phase6CoveragePreflight")[1].split(
+        "\nfunction ")[0]
+    assert "[string]$HarnessCommit" in preflight or "$HarnessCommit" in preflight, (
+        "the pre-Excel gate cannot compare a revision it was never given"
+    )
+    artefact = code.split("$baseline = Get-Phase6ProductionBaseline")[1].split(
+        "Add-Phase6Result 'P6-ART'")[0]
+    for block, where in ((preflight, "PRE6"), (artefact, "P6-ART")):
+        # THE PREDICATE, NOT THE FIELD NAME. The compared operand may be a
+        # local alias, so the alias is followed back to the field it was
+        # assigned from rather than assumed to spell it.
+        aliases = {"$OracleEvidence.source_revision", "$oracle.source_revision"}
+        for line in block.splitlines():
+            match = re.match(r"\s*(\$\w+)\s*=\s*\[string\](\$[\w.]*source_revision)",
+                             line)
+            if match:
+                aliases.add(match.group(1))
+        binding = [line for line in block.splitlines()
+                   if "-ceq" in line and "HarnessCommit" in line
+                   and any(alias in line for alias in aliases)]
+        assert binding, (
+            f"{where} records the oracle's source revision without comparing it "
+            "to the harness commit; that is attribution, not a binding"
+        )
+        # ONE REPRESENTATION. A prefix or short-SHA comparison would make the
+        # binding a string-formatting question instead of an identity one.
+        for line in binding:
+            assert "-like" not in line and "Substring" not in line, (
+                f"{where} compares the revision by prefix: {line.strip()}"
+            )
+        assert "'^[0-9a-f]{40}$'" in block, (
+            f"{where} does not require a full 40-character commit"
+        )
+    # AND THE GATE THAT MUST REFUSE FIRST IS THE PRE-EXCEL ONE.
+    driver = _text(HARNESS)
+    capture_at = driver.index("$harnessCommit = ''")
+    gate_at = driver.index("Invoke-Phase6CoveragePreflight -BuildDir $BuildDir")
+    excel_at = driver.index("Prepare a disposable copy of the build")
+    assert capture_at < gate_at < excel_at, (
+        "the harness commit is not captured before the pre-Excel artefact gate"
+    )
+    assert "-HarnessCommit $harnessCommit" in driver[gate_at:gate_at + 200], (
+        "the pre-Excel gate is not given the harness commit"
+    )

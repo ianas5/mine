@@ -399,6 +399,34 @@ try {
 }
 
 # ===========================================================================
+# The runtime harness commit, BEFORE the Phase-6 artefact gate
+# ===========================================================================
+# CAPTURED NOT ASSUMED, and captured HERE because PRE6 has to compare against
+# it. The host-local oracle measurements are not frozen by a cross-platform
+# hash - their provenance is what makes them evidence about a run - so the
+# revision they name must be the revision this run is executing, and a stale
+# oracle from an earlier harness commit has to be refused before Excel starts.
+#
+# THE FULL 40 CHARACTERS. One representation, so the comparison is an identity
+# question and not a string-formatting one.
+#
+# IT IS ONLY THE HARNESS COMMIT. The accepted PRODUCTION BASELINE is a separate,
+# pinned identity that P6-ART reports beside it; HEAD on a runtime tree is
+# always the harness commit, never the baseline. If git is unavailable the value
+# stays empty, PRE6 refuses and P6-ART FAILS on it: a runtime result with no
+# attributable revision is weaker evidence, and recording "unknown" while
+# passing would pass that weakness off as strength.
+$harnessCommit = ''
+try {
+    $described = & git -C $pccmRoot rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($described)) {
+        $harnessCommit = [string]$described
+    }
+} catch {
+    Add-Note ('The runtime harness commit could not be read: ' + (Format-Err $_))
+}
+
+# ===========================================================================
 # PRE6. Phase-6 artefact preflight, still BEFORE Excel is started
 # ===========================================================================
 # The inspection projection and the parity corpus are the only two authorities
@@ -406,7 +434,7 @@ try {
 # keys a comparison consumes, stops the run here - not forty minutes later
 # inside a COM session, and never by quietly comparing nothing.
 try {
-    if (-not (Invoke-Phase6CoveragePreflight -BuildDir $BuildDir)) {
+    if (-not (Invoke-Phase6CoveragePreflight -BuildDir $BuildDir -HarnessCommit $harnessCommit)) {
         Write-Host ''
         Write-Host 'PHASE-4/5/6 FUNCTIONAL TEST ABORTED before Excel was started:' -ForegroundColor Red
         Write-Host 'the Phase-6 Gate-B artefacts are missing or incomplete, so the' -ForegroundColor Red
@@ -456,25 +484,6 @@ try {
     $simInspection = Get-Content -LiteralPath $simInspectPath -Raw | ConvertFrom-Json
     $simCases      = Get-Content -LiteralPath $simCasesPath   -Raw | ConvertFrom-Json
     $simOracle     = Get-Content -LiteralPath $simOraclePath  -Raw | ConvertFrom-Json
-
-    # THE SOURCE COMMIT, CAPTURED NOT ASSUMED. Every runtime result has to be
-    # attributable to a named baseline. If git is unavailable on the target the
-    # fact is recorded as unknown rather than guessed.
-    # THE RUNTIME HARNESS COMMIT, and it is only that. The accepted PRODUCTION
-    # BASELINE is a separate, pinned identity that P6-ART reports beside it;
-    # HEAD on a runtime tree is always the harness commit, never the baseline.
-    # If git is unavailable the value stays empty and P6-ART FAILS on it: a
-    # runtime result with no attributable revision is weaker evidence, and
-    # recording "unknown" while passing would pass that weakness off as strength.
-    $harnessCommit = ''
-    try {
-        $described = & git -C $pccmRoot rev-parse HEAD 2>$null
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($described)) {
-            $harnessCommit = [string]$described
-        }
-    } catch {
-        Add-Note ('The runtime harness commit could not be read: ' + (Format-Err $_))
-    }
 
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("pccm-phase4-" + (Get-Date).ToString('yyyyMMdd-HHmmss'))
     $null = New-Item -ItemType Directory -Path $tempRoot -Force

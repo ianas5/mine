@@ -186,11 +186,18 @@ def _source_revision() -> str:
 
     Recorded, never guessed: evidence with no attributable source revision is
     weaker evidence, and writing "unknown" while pretending otherwise would hand
-    that weakness on as though it were strength.
+    that weakness on as though it were strength. `unavailable` is written when
+    git cannot be read, and the Gate-B preflight REFUSES it - a host-local
+    artefact whose provenance replaces a cross-platform hash has to carry a real
+    commit identity or it is not evidence about a run.
+
+    THE FULL 40 CHARACTERS, not an abbreviation. This value is compared against
+    the runtime harness HEAD, and two representations of one commit would make
+    that comparison a string-formatting question instead of an identity one.
     """
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
+            ["git", "rev-parse", "HEAD"],
             cwd=str(Path(__file__).resolve().parent.parent.parent),
             capture_output=True, text=True, timeout=15, check=False,
         )
