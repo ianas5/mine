@@ -1734,8 +1734,15 @@ def test_56_the_whole_tree_freeze_runs_from_the_repository_root() -> None:
 
     driver = _text(HARNESS)
     assert "$repoRoot = Split-Path -Parent $pccmRoot" in driver
-    assert "-RepoRoot $repoRoot" in driver
     assert "-PccmRoot" not in driver
+    # EVERY SITE, not merely one correct one. There are two `-RepoRoot`
+    # arguments now - the pre-Excel gate and the scenario call - and a control
+    # that only proved one of them was right would pass with the other wrong.
+    passed = re.findall(r"-RepoRoot\s+(\$\w+)", driver)
+    assert passed, "the driver passes no repository root"
+    assert set(passed) == {"$repoRoot"}, (
+        f"a -RepoRoot argument is not the repository root: {sorted(set(passed))}"
+    )
 
 
 def test_57_the_pathspec_defect_is_demonstrated_against_real_git() -> None:
@@ -2548,6 +2555,26 @@ def test_72_the_host_local_oracle_is_bound_to_the_run_that_consumes_it() -> None
     )
 
 
+def _powershell_statement(block: str, label: str) -> str:
+    """The whole logical statement containing `label`, continuations joined.
+
+    PowerShell continues a line with a trailing backtick, and an `Add-Check`
+    always puts its label and its predicate on different physical lines. A
+    per-line search finds one or the other and never both, which is how a
+    predicate replaced by `$true` can sit under an unchanged label.
+    """
+    lines = block.splitlines()
+    for index, line in enumerate(lines):
+        if label not in line:
+            continue
+        statement = [line]
+        while statement[-1].rstrip().endswith("`") and index + 1 < len(lines):
+            index += 1
+            statement.append(lines[index])
+        return "\n".join(statement)
+    return ""
+
+
 def test_73_the_evidence_is_bound_to_head_bytes_and_not_only_to_a_commit_id() -> None:
     """A commit id identifies a commit. It does not identify bytes.
 
@@ -2626,9 +2653,20 @@ def test_73_the_evidence_is_bound_to_head_bytes_and_not_only_to_a_commit_id() ->
         )
         assert "-C $RepoRoot" in runtime[0], runtime[0]
         # AND THE VERDICT IS NOT A CONSTANT.
-        assert f"$true" not in " ".join(
-            line for line in block.splitlines()
-            if "the tracked pccm tree" in line and "Add-Check" in line), where
+        #
+        # AS A LOGICAL STATEMENT. PowerShell continues a line with a trailing
+        # backtick, and the label and the predicate of an `Add-Check` are always
+        # on different physical lines - so a per-line search for the label never
+        # sees the predicate, and would pass over `$true`.
+        statement = _powershell_statement(block, "the tracked pccm tree")
+        assert statement, (
+            f"{where} no longer records a verdict on the tracked tree that ran"
+        )
+        assert not re.search(r"Add-Check\s+\$list\s+'[^']*'\s*`?\s*\$true\b",
+                             statement), (
+            f"{where} reports the running tree as clean without asking: "
+            f"{' '.join(statement.split())[:160]}"
+        )
 
     # THE PRE-EXCEL GATE IS GIVEN WHAT IT NEEDS TO ASK.
     driver = _text(HARNESS)
