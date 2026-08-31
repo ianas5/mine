@@ -65,6 +65,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+
+from .artifact_io import write_lf_artifact
 from typing import Any
 
 from .contract_loader import InputContract
@@ -293,8 +295,7 @@ def emit_sim_inspection(
     path = build_dir / INSPECTION_FILENAME
     document = build_sim_inspection(sim, contract)
     _reject_empty_keys(document, INSPECTION_FILENAME)
-    path.write_text(
-        json.dumps(document, indent=2, sort_keys=False) + "\n",
-        encoding="utf-8",
-    )
+    # BYTES, NOT TEXT. `write_text` translates newlines to `os.linesep`, so on
+    # Windows this file came out CRLF and its pinned SHA-256 did not reproduce.
+    write_lf_artifact(path, json.dumps(document, indent=2, sort_keys=False) + "\n")
     return SimInspectionArtifact(path=path)

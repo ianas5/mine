@@ -40,6 +40,15 @@ and **host-local oracle evidence** that says so and carries its own provenance.
 [§10](#10-d2-the-portability-settlement) states which artefacts must be
 cross-platform invariant and which are deliberately host-local.
 
+**Run 5 was authorised and stopped before Excel.** Stage A ran 351/351 on a
+clean Windows checkout at the accepted HEAD and the generation provenance was
+correct, but the raw hashes of both invariant artefacts disagreed with the
+accepted ones: `Path.write_text` had been translating newlines, so the files
+Windows wrote were CRLF and the pinned hashes described bytes that host had never
+produced. Stage B was not run and Excel was not started, so **no Phase-6 scenario
+failed** — it is a Stage-A serialisation defect, found before runtime and settled
+in [§10.3a](#103a-the-serialisation-contract-and-why-content-invariance-was-not-enough).
+
 **Still open, and not claimed.** No Windows run has yet exercised the corrected
 comparison. `P6-ORA`, `P6-DET`, `P6-ART` and `P6-FIN` are corrected in source and
 **unproven at runtime**; nothing here says they now pass.
@@ -544,13 +553,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **79** controls, in thirteen groups:
+`tests/test_phase6_gate_b_harness_source.py` — **80** controls, in fourteen groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **189** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **197** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -778,7 +787,8 @@ Location — the same refusal that has held since the first readiness run.
 | **Run 2** | `849d6bf` | **VALID runtime attempt.** Reached Excel; Phase-4 35/35; a production compile defect stopped `P5-CMP`; the Phase-5 and Phase-6 behavioural matrices were NOT executed. |
 | **Run 3** | `58a89f3` | **VALID runtime attempt.** `P5-CMP` PASS — the compile repair is runtime-proven; Phase-5 38/39; a stale `P5-EV` assertion blocked Phase 6; `P6-LDG` PASS. |
 | **Run 4** | `6cb7f06` | **VALID runtime attempt, and the first behavioural one.** 98 passed, 5 failed; Phase-4 35/35; Phase-5 39/39; Phase-6 24/29; `P6-LDG` PASS. |
-| **Run 5** | `<this commit>` | **NOT AUTHORISED**, and **not yet executed**. The corrected parity comparison, the `P6-DET` decoupling and the D2 split are unproven at runtime. |
+| **Run 5** | `5c63503` | **AUTHORISED; STOPPED PRE-EXCEL.** Stage A 351/351 on a clean Windows checkout and the generation provenance was correct — but the raw `Get-FileHash` of both invariant artefacts disagreed with the accepted hashes. Stage B was NOT run and Excel was NOT started, so no Phase-6 scenario failed: a Stage-A serialisation defect, found before runtime. |
+| **Run 5 (retry)** | `<this commit>` | **NOT AUTHORISED**, and **not yet executed**. The corrected parity comparison, the `P6-DET` decoupling and the D2 split are unproven at runtime. |
 
 An aborted attempt is not nothing, and it is not renamed away when a later run
 succeeds: Run 1 is what found the defect §3.1 records, and it stays in this
@@ -1361,6 +1371,40 @@ different file because it is a different, smaller, honest claim.
 | `build/phase6_gate_b_inspection.json` | **required** — addresses and names only | yes |
 | `build/phase6_gate_b_cases.json` | **required** — no transcendental-derived value | yes |
 | `build/phase6_gate_b_oracle_local.json` | **no, by design** | **never** — a control refuses a pin |
+
+### 10.3a The serialisation contract, and why content invariance was not enough
+
+Run 5's pre-Excel check found that the pinned hashes did not reproduce on a clean
+Windows build at the accepted HEAD:
+
+```
+phase6_gate_b_inspection.json   raw eac55e72...  LF-normalised 83eff35f...
+phase6_gate_b_cases.json        raw dee31593...  LF-normalised 6a9d8678...
+```
+
+246 and 247 line endings, and no other difference. **The content was invariant;
+the bytes were not.** `Path.write_text` opens in text mode with `newline=None`,
+so Python translates every newline into `os.linesep` on the way out — a no-op on
+Linux, and CRLF on Windows. The emitter had never written the bytes it hashed.
+
+The invariant artefacts are now written through `write_lf_artifact`: **UTF-8, no
+BOM, LF, a retained final LF, written as bytes.** The contract is enforced at the
+point of writing rather than assumed, and the function returns what it reads back
+from disk, so `generated_for.sha256` describes the physical file rather than the
+string the emitter happened to hold. `phase6_cases.json` carries a pinned SHA too
+and had the same latent defect; it is corrected with them. The host-local
+measurements use the same writer for hygiene — that is not a claim of invariance,
+and they are still never pinned.
+
+**The generated `.bas` modules deliberately keep text mode.** `AddFromString`
+consumes them on Windows, where CRLF is the separator VBA expects; emitting them
+as LF bytes would be a portability "fix" that broke the import it was meant to
+protect.
+
+No pinned hash moved: the LF bytes were always what Linux wrote, so the accepted
+values are exactly what the corrected emitter produces. A Linux "generate then
+hash" control could never have caught this, which is why `test_76` also checks
+the source shape and makes the text-mode path fail if it is used at all.
 
 ### 10.4 What the transcription still shows, and what it does not
 

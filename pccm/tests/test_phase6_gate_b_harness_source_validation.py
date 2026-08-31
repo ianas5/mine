@@ -2234,3 +2234,98 @@ def test_189_the_source_control_docstring_denies_run_4() -> None:
         finally:
             conformance.__file__ = saved
     assert refused, "the module docstring may deny Run 4's behavioural evidence"
+
+
+# ===========================================================================
+# O. Invariant artefacts are BYTES, not platform-translated text
+# ===========================================================================
+def _builder_refuses(relative: str, damaged: str, fragment: str) -> None:
+    """Re-run the serialisation control over a damaged builder module."""
+    saved = conformance.PCCM_ROOT
+    with tempfile.TemporaryDirectory(prefix="pccm-serialisation-") as name:
+        root = Path(name)
+        (root / "builder" / "pccm_builder").mkdir(parents=True)
+        for module in ("sim_emit.py", "sim_inspection.py"):
+            source = (saved / "builder" / "pccm_builder" / module)
+            (root / "builder" / "pccm_builder" / module).write_text(
+                damaged if module == relative else source.read_text(encoding="utf-8"),
+                encoding="utf-8")
+        conformance.PCCM_ROOT = root
+        try:
+            refused = False
+            try:
+                conformance.test_76_the_invariant_artefacts_are_written_as_bytes_not_translated_text()
+            except AssertionError as error:
+                refused = True
+                assert fragment in str(error), error
+        finally:
+            conformance.PCCM_ROOT = saved
+    assert refused, f"the mutation survived: {relative} may translate newlines"
+
+
+def _module(name: str) -> str:
+    return (conformance.PCCM_ROOT / "builder" / "pccm_builder" / name).read_text(
+        encoding="utf-8")
+
+
+def test_190_the_inspection_projection_returns_to_text_mode() -> None:
+    """The submitted shape, and Windows produced CRLF from it."""
+    original = _module("sim_inspection.py")
+    damaged = original.replace(
+        '    write_lf_artifact(path, json.dumps(document, indent=2, sort_keys=False) + "\\n")',
+        '    path.write_text(json.dumps(document, indent=2, sort_keys=False) + "\\n",\n'
+        '                    encoding="utf-8")', 1)
+    assert damaged != original
+    _builder_refuses("sim_inspection.py", damaged, "text mode")
+
+
+def test_191_the_portable_authority_returns_to_text_mode() -> None:
+    original = _module("sim_emit.py")
+    damaged = original.replace(
+        "    cases_bytes = write_lf_artifact(\n"
+        '        cases_path, json.dumps(portable, indent=2, sort_keys=False) + "\\n")',
+        '    cases_text = json.dumps(portable, indent=2, sort_keys=False) + "\\n"\n'
+        '    cases_path.write_text(cases_text, encoding="utf-8")\n'
+        "    cases_bytes = cases_text.encode(\"utf-8\")", 1)
+    assert damaged != original
+    _builder_refuses("sim_emit.py", damaged, "text mode")
+
+
+def test_192_the_phase6_cases_corpus_returns_to_text_mode() -> None:
+    """It carries a pinned SHA-256 too, so its bytes are a claim as well."""
+    original = _module("sim_emit.py")
+    damaged = original.replace(
+        "    write_lf_artifact(cases_path, render_sim_cases_json(spec, sim, inputs, calc))",
+        '    cases_path.write_text(render_sim_cases_json(spec, sim, inputs, calc),\n'
+        '                          encoding="utf-8")', 1)
+    assert damaged != original
+    _builder_refuses("sim_emit.py", damaged, "text mode")
+
+
+def test_193_the_authority_hash_stops_describing_the_emitted_bytes() -> None:
+    """Hashing the string the emitter HAD is what made `generated_for.sha256`
+    name a file that never existed on Windows."""
+    def edit(document):
+        document["generated_for"]["sha256"] = "f" * 64
+    _control("test_76", oracle=_json_mutation(_ORACLE, edit))
+
+
+def test_194_a_carriage_return_reaches_the_inspection_projection() -> None:
+    damaged = _INSPECTION.replace("\n", "\r\n", 1)
+    assert damaged != _INSPECTION
+    _control("test_76", inspection=damaged)
+
+
+def test_195_a_carriage_return_reaches_the_portable_authority() -> None:
+    damaged = _CASES.replace("\n", "\r\n", 1)
+    assert damaged != _CASES
+    _control("test_76", cases=damaged)
+
+
+def test_196_a_bom_is_emitted() -> None:
+    """A BOM is three bytes that move every pinned hash and nothing else."""
+    _control("test_76", cases="\ufeff" + _CASES)
+
+
+def test_197_the_final_newline_is_dropped() -> None:
+    _control("test_76", cases=_CASES.rstrip("\n"))

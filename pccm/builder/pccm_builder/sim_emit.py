@@ -59,6 +59,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .artifact_io import write_lf_artifact
 from .contract_loader import InputContract
 from .sim_cases import (
     GATE_B_CASES_FILENAME,
@@ -112,7 +113,8 @@ def emit_sim_artifacts(
     )
 
     cases_path = build_dir / "phase6_cases.json"
-    cases_path.write_text(render_sim_cases_json(spec, sim, inputs, calc), encoding="utf-8")
+    # PINNED BY SHA-256 in the Step-11A battery, so its bytes are a claim too.
+    write_lf_artifact(cases_path, render_sim_cases_json(spec, sim, inputs, calc))
     return SimArtifacts(module_path=module_path, cases_path=cases_path)
 
 
@@ -156,23 +158,31 @@ def emit_sim_gate_b_artifacts(
     portable, measurements = build_gate_b_pair(
         sim, inputs, calc, spec.model["model_version"]
     )
+    # THE AUTHORITY, AS BYTES, AND HASHED FROM WHAT IS ON DISK.
+    #
+    # The previous version hashed `cases_text` - the string it was about to
+    # write - and wrote it through `write_text`. On Windows those are different
+    # byte sequences, so `generated_for.sha256` described a file that had never
+    # existed and the runtime hash comparison could not match. Hashing the bytes
+    # read back binds the provenance to the physical file rather than to an
+    # assumption about what writing it produced.
     cases_path = build_dir / GATE_B_CASES_FILENAME
-    cases_text = json.dumps(portable, indent=2, sort_keys=False) + "\n"
-    cases_path.write_text(cases_text, encoding="utf-8")
+    cases_bytes = write_lf_artifact(
+        cases_path, json.dumps(portable, indent=2, sort_keys=False) + "\n")
 
     oracle_path = build_dir / GATE_B_ORACLE_FILENAME
-    oracle_path.write_text(
+    write_lf_artifact(
+        oracle_path,
         json.dumps(
             build_gate_b_oracle_measurements(
                 portable,
                 measurements,
-                hashlib.sha256(cases_text.encode("utf-8")).hexdigest(),
+                hashlib.sha256(cases_bytes).hexdigest(),
                 *_generation_provenance(),
             ),
             indent=2,
             sort_keys=False,
         ) + "\n",
-        encoding="utf-8",
     )
     return SimGateBArtifacts(
         inspection_path=inspection.path,

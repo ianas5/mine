@@ -2853,3 +2853,113 @@ def test_75_the_driver_banner_states_the_accepted_phase5_lifecycle() -> None:
          "the banner does not separate Phase 5's closure from Step 13's open state"),
     ):
         assert re.search(required, flat), why
+
+
+def test_76_the_invariant_artefacts_are_written_as_bytes_not_translated_text() -> None:
+    """Content invariance is not byte invariance, and only one of them was true.
+
+    `Path.write_text` opens in TEXT mode with `newline=None`, so Python
+    translates every `\\n` into `os.linesep` on the way out. On Linux that is a
+    no-op and nothing can be seen; on Windows the file on disk is not the string
+    that was written. Run 5's pre-Excel check measured it on a clean Windows
+    build at the accepted HEAD:
+
+        phase6_gate_b_inspection.json  raw eac55e72...  LF-normalised 83eff35f...
+        phase6_gate_b_cases.json       raw dee31593...  LF-normalised 6a9d8678...
+
+    246 and 247 line endings, and no other difference. The pinned hashes claim
+    these files are the same on every host; that claim is only true if the bytes
+    are written rather than translated.
+
+    THE TEST HOST CANNOT PROVE THIS BY ITSELF. A "generate then hash" check on
+    Linux passes either way - it is exactly what let the defect through. So the
+    contract is checked three ways: the emitted bytes, the source shape of the
+    emitters, and a text-mode path that is made to fail if it is used at all.
+    """
+    import codecs
+    import hashlib
+
+    # 1. THE EMITTED BYTES SATISFY THE CONTRACT.
+    for path in (INSPECTION_PATH, GATE_B_CASES_PATH,
+                 BUILD / "phase6_cases.json", GATE_B_ORACLE_PATH):
+        data = path.read_bytes()
+        assert b"\r" not in data, f"{path.name} carries a carriage return"
+        assert not data.startswith(codecs.BOM_UTF8), f"{path.name} carries a BOM"
+        assert data.endswith(b"\n"), f"{path.name} lost its final newline"
+
+    # 2. THE PROVENANCE NAMES THE PHYSICAL FILE, not the string the emitter had.
+    #    Hashing the offered text is what made `generated_for.sha256` describe a
+    #    file that never existed on Windows.
+    assert _oracle_evidence()["generated_for"]["sha256"] == hashlib.sha256(
+        GATE_B_CASES_PATH.read_bytes()).hexdigest(), (
+        "the recorded authority hash is not the hash of the authority on disk"
+    )
+
+    # 3. THE SOURCE SHAPE. Every pinned artefact goes through the byte writer.
+    emit = _text(PCCM_ROOT / "builder" / "pccm_builder" / "sim_emit.py")
+    inspection = _text(PCCM_ROOT / "builder" / "pccm_builder" / "sim_inspection.py")
+    from pccm_builder.sim_cases import (  # noqa: PLC0415
+        GATE_B_CASES_FILENAME,
+        GATE_B_ORACLE_FILENAME,
+    )
+    for artefact, source, name in (
+        ("phase6_cases.json", emit, "sim_emit.py"),
+        ("GATE_B_CASES_FILENAME", emit, "sim_emit.py"),
+        ("GATE_B_ORACLE_FILENAME", emit, "sim_emit.py"),
+        ("INSPECTION_FILENAME", inspection, "sim_inspection.py"),
+    ):
+        for line in source.splitlines():
+            if artefact in line and "write_text" in line:
+                raise AssertionError(
+                    f"{name} writes {artefact} through text mode: {line.strip()}"
+                )
+    assert "cases_path.write_text" not in emit, "sim_emit.py writes an artefact through text mode"
+    assert "path.write_text" not in inspection, (
+        "sim_inspection.py writes its artefact through text mode"
+    )
+    # AND THE BYTE WRITER IS ACTUALLY REACHED, not merely imported.
+    for source, name, expected in ((emit, "sim_emit.py", 3),
+                                   (inspection, "sim_inspection.py", 1)):
+        assert source.count("write_lf_artifact(") >= expected, (
+            f"{name} no longer writes its artefacts as bytes"
+        )
+    assert GATE_B_CASES_FILENAME == "phase6_gate_b_cases.json"
+    assert GATE_B_ORACLE_FILENAME == "phase6_gate_b_oracle_local.json"
+
+    # 4. AND THE TEXT-MODE PATH IS PROVED UNUSED, not merely absent from a grep.
+    #    `write_text` is made to fail; a real emitter is then run. If the byte
+    #    contract went through text mode anywhere, this would raise.
+    from pccm_builder.artifact_io import (  # noqa: PLC0415
+        ArtifactSerialisationError,
+        write_lf_artifact,
+    )
+    from pccm_builder.sim_inspection import emit_sim_inspection  # noqa: PLC0415
+
+    original = Path.write_text
+
+    def refuse(self, *arguments, **keywords):  # noqa: ANN001, ANN002, ANN003
+        raise AssertionError(
+            f"an invariant artefact was written through text mode: {self.name}"
+        )
+
+    import tempfile  # noqa: PLC0415
+    Path.write_text = refuse  # type: ignore[method-assign]
+    try:
+        with tempfile.TemporaryDirectory(prefix="pccm-invariant-") as name:
+            root = Path(name)
+            emitted = emit_sim_inspection(root, load_sim_contract(SPEC / "sim_contract.yaml"),
+                                          load_contract(SPEC / "input_contract.yaml"))
+            assert emitted.path.read_bytes() == INSPECTION_PATH.read_bytes(), (
+                "the inspection projection is not reproduced byte for byte"
+            )
+            # AND THE MECHANISM REFUSES WHAT COULD NOT BE INVARIANT.
+            for payload, why in (("a\r\nb\n", "a carriage return"),
+                                 ("﻿a\n", "a BOM"),
+                                 ("a", "no final newline")):
+                try:
+                    write_lf_artifact(root / "probe.json", payload)
+                except ArtifactSerialisationError:
+                    continue
+                raise AssertionError(f"the byte writer accepted {why}")
+    finally:
+        Path.write_text = original  # type: ignore[method-assign]
