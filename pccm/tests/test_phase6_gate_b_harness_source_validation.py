@@ -2329,3 +2329,150 @@ def test_196_a_bom_is_emitted() -> None:
 
 def test_197_the_final_newline_is_dropped() -> None:
     _control("test_76", cases=_CASES.rstrip("\n"))
+
+
+# ===========================================================================
+# P. Two classes of production module, and two kinds of identity
+# ===========================================================================
+def test_198_the_generated_projection_returns_to_the_tracked_blob_loop() -> None:
+    """Run 5's defect, exactly. modSimContract has no path in src/vba, so the
+    comparison passes a blank against a blank on every commit."""
+    damaged = _swap(
+        _PHASE6,
+        "    return @('modSimRng', 'modSimSample', 'modSimEngine',\n",
+        "    return @('modSimContract', 'modSimRng', 'modSimSample', 'modSimEngine',\n")
+    _control("test_52", phase6=damaged)
+
+
+def test_199_the_generated_projection_is_dropped_from_identity_checking() -> None:
+    """Eight production modules are exercised; seven proved is not all of them."""
+    damaged = _swap(
+        _PHASE6,
+        "            $null = Add-Check $list `\n"
+        "                ('the ' + $generatedName + ' projection is the one baseline ' + $baseline + ' produces') `\n"
+        "                ($observed -ceq $accepted) `\n",
+        "            $null = Add-Check $list `\n"
+        "                ('the ' + $generatedName + ' projection is the one baseline ' + $baseline + ' produces') `\n"
+        "                ($true) `\n")
+    _control("test_77", phase6=damaged)
+
+
+def test_200_a_manifest_entry_that_is_not_generated_is_accepted() -> None:
+    """`generated: true` is what sends Stage B to build/vba rather than src/vba;
+    an entry without it describes a different import."""
+    damaged = _swap(
+        _PHASE6,
+        "                (($entries.Count -eq 1) -and ([bool]$entries[0].generated)) `\n",
+        "                (($entries.Count -eq 1)) `\n")
+    _control("test_77", phase6=damaged)
+
+
+def test_201_zero_or_duplicate_manifest_entries_are_accepted() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "                ($entries.Count -eq 1) ('entries: ' + $entries.Count)\n",
+        "                ($entries.Count -ge 0) ('entries: ' + $entries.Count)\n")
+    _control("test_77", phase6=damaged)
+
+
+def test_202_the_generated_module_is_resolved_from_the_source_tree() -> None:
+    """Resolving it from src/vba would hash a file Stage B never imported - and
+    in this project that file does not exist at all."""
+    damaged = _swap(
+        _PHASE6,
+        "            $generatedDir = Join-Path $TempRoot (Split-Path -Leaf ([string]$Manifest.vba.generated_dir))\n",
+        "            $generatedDir = Join-Path $TempRoot 'src'\n")
+    _control("test_77", phase6=damaged)
+
+
+def test_203_the_expected_identity_becomes_head_derived() -> None:
+    """The property that matters: a changed renderer must not be able to change
+    the projection and then bless its own changed output."""
+    original = conformance_source = Path(conformance.__file__).read_text(encoding="utf-8")
+    damaged = original.replace(
+        "    derived = _baseline_projection_identity()",
+        "    from pccm_builder.artifact_io import canonical_module_identity as _c\n"
+        "    derived = _c((BUILD / 'vba' / 'modSimContract.bas').read_bytes())", 1)
+    assert damaged != original
+    assert "_baseline_projection_identity()" not in damaged.split(
+        "def test_77")[1].split("\ndef ")[0], (
+        "the mutation did not remove the baseline derivation"
+    )
+    # THE SHAPE IS THE PROOF: a control that derives both sides from HEAD cannot
+    # distinguish a moved renderer from an unmoved one, whatever it then asserts.
+    assert "PRODUCTION_BASELINE" in original.split("def _baseline_projection_identity")[1].split("\ndef ")[0]
+
+
+def test_204_the_raw_windows_hash_is_pinned_as_the_identity() -> None:
+    """The .bas is text mode by design, so its raw bytes are host-dependent; the
+    Windows diagnostic SHA is evidence about one host, not an identity."""
+    damaged = _swap(
+        _PHASE6,
+        "    return 'daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f1e8e1c215ac'\n",
+        "    return 'cc74eec48d3f1d9b5d66b4441cbb6540593bbb89329304a0405dff425a3403c2'\n")
+    _control("test_77", phase6=damaged)
+
+
+def test_205_a_hand_written_module_blob_check_is_weakened() -> None:
+    """The seven are not touched by any of this."""
+    damaged = _swap(
+        _PHASE6,
+        "                    ((-not [string]::IsNullOrWhiteSpace($accepted)) -and ($current -ceq $accepted)) `\n",
+        "                    ($true) `\n")
+    _control("test_52", phase6=damaged)
+
+
+def test_206_the_canonicaliser_accepts_a_bom() -> None:
+    """Stripping a BOM would hide a real difference in the projection."""
+    from pccm_builder.artifact_io import (  # noqa: PLC0415
+        ArtifactSerialisationError,
+        canonical_module_identity,
+    )
+    try:
+        canonical_module_identity(b"\xef\xbb\xbfAttribute VB_Name = \"m\"\n")
+    except ArtifactSerialisationError:
+        return
+    raise AssertionError("the canonicaliser accepted a BOM")
+
+
+def test_207_the_canonicaliser_accepts_a_missing_final_newline() -> None:
+    from pccm_builder.artifact_io import (  # noqa: PLC0415
+        ArtifactSerialisationError,
+        canonical_module_identity,
+    )
+    try:
+        canonical_module_identity(b"Attribute VB_Name = \"m\"")
+    except ArtifactSerialisationError:
+        return
+    raise AssertionError("the canonicaliser accepted a module with no final newline")
+
+
+def test_208_the_canonicaliser_normalises_more_than_line_endings() -> None:
+    """Anything broader lets a real change pass as the same module."""
+    original = (conformance.PCCM_ROOT / "builder" / "pccm_builder" / "artifact_io.py"
+                ).read_text(encoding="utf-8")
+    damaged = original.replace(
+        '    canonical = data.replace(b"\\r\\n", b"\\n").replace(b"\\r", b"\\n")',
+        '    canonical = data.replace(b"\\r\\n", b"\\n").replace(b"\\r", b"\\n").lower()', 1)
+    assert damaged != original
+    saved = conformance.PCCM_ROOT
+    with tempfile.TemporaryDirectory(prefix="pccm-canon-") as name:
+        root = Path(name)
+        (root / "builder" / "pccm_builder").mkdir(parents=True)
+        (root / "builder" / "pccm_builder" / "artifact_io.py").write_text(
+            damaged, encoding="utf-8")
+        (root / "build" / "vba").mkdir(parents=True)
+        (root / "build" / "vba" / "modSimContract.bas").write_text(
+            (saved / "build" / "vba" / "modSimContract.bas").read_text(encoding="utf-8"),
+            encoding="utf-8")
+        conformance.PCCM_ROOT = root
+        try:
+            refused = False
+            try:
+                conformance.test_77_the_generated_projection_has_a_baseline_bound_identity()
+            except AssertionError as error:
+                refused = True
+                assert "more than newlines" in str(error), error
+        finally:
+            conformance.PCCM_ROOT = saved
+    assert refused, "the canonicaliser may normalise more than line endings"

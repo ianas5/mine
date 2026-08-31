@@ -89,3 +89,34 @@ def write_lf_artifact(path: Path, text: str) -> bytes:
             f"{path.name} does not hold the bytes it was given"
         )
     return written
+
+
+def canonical_module_identity(data: bytes) -> str:
+    """SHA-256 of a generated `.bas` module, with line endings normalised.
+
+    THIS IS AN IDENTITY LAYER, NOT AN INVARIANCE CLAIM. The generated modules
+    are written in text mode on purpose - `CodeModule.AddFromString` consumes
+    them on Windows, where CRLF is the separator VBA expects - so their physical
+    bytes are host-dependent by design and cannot be pinned. What IS the same on
+    every host is the projection the accepted renderer produces from the
+    accepted authorities, and that is what this identifies.
+
+    NORMALISATION IS LINE ENDINGS AND NOTHING ELSE. Not whitespace, not case,
+    not encoding: anything broader would let a real change to the projection
+    pass as the same module. A BOM is refused rather than stripped, for the same
+    reason, and the final newline is part of the identity.
+    """
+    if data.startswith(_BOM):
+        raise ArtifactSerialisationError(
+            "a generated module carries a UTF-8 BOM; the accepted projection "
+            "does not, and stripping one here would hide the difference"
+        )
+    canonical = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    if not canonical.endswith(b"\n"):
+        raise ArtifactSerialisationError(
+            "a generated module does not end with a newline; the accepted "
+            "projection does, and the final newline is part of its identity"
+        )
+    import hashlib
+
+    return hashlib.sha256(canonical).hexdigest()

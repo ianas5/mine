@@ -115,9 +115,68 @@ function Get-Phase6ProductionBaseline { return '79e4600' }
 # Named, never counted, and never inferred from the compiled project: that a
 # project CONTAINS a module named modSimReport is a different fact from the
 # modSimReport source being exercised being the accepted one.
-function Get-Phase6ProductionModules {
-    return @('modSimContract', 'modSimRng', 'modSimSample', 'modSimEngine',
+# TWO CLASSES OF PRODUCTION MODULE, AND THEY ARE NOT PROVED THE SAME WAY.
+#
+# Run 5 failed P6-ART on `baseline blob <blank>, runtime blob <blank>` for
+# modSimContract, because the scenario asked git for
+# `pccm/src/vba/modSimContract.bas` and no such file exists at any commit. It is
+# not tracked source: it is a Stage-A PROJECTION of the accepted contracts,
+# emitted to `build/vba` and declared `generated: true` in the manifest. The
+# right correction is not to create the file the check was looking for - that
+# would move a generated artefact into hand-written ownership - but to prove the
+# thing that is actually true of it.
+function Get-Phase6TrackedModules {
+    # HAND-WRITTEN, TRACKED, AND PROVED BY GIT BLOB IDENTITY. Unchanged.
+    return @('modSimRng', 'modSimSample', 'modSimEngine',
              'modSimStats', 'modSimFingerprint', 'modSimNonce', 'modSimReport')
+}
+
+function Get-Phase6GeneratedModuleName { return 'modSimContract' }
+
+# THE ACCEPTED PROJECTION IDENTITY - A CHECKED COPY, NOT A LITERAL.
+#
+# SHA-256 of the generated module with line endings normalised to LF. The
+# physical .bas is text-mode by design, so its raw bytes differ between hosts
+# and cannot be pinned; what is the same everywhere is the projection the
+# accepted renderer produces from the accepted authorities.
+#
+# WHERE THIS NUMBER COMES FROM. `test_77` archives production baseline 79e4600
+# into an isolated tree, runs THAT commit's Stage-A build with THAT commit's
+# contracts, and canonicalises the module it emits. The value is therefore
+# derived from the baseline, not from whatever renderer HEAD happens to carry -
+# which matters precisely because the builder has legitimately changed since
+# 79e4600 while the production projection has not.
+function Get-Phase6GeneratedModuleIdentity {
+    return 'daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f1e8e1c215ac'
+}
+
+# Line endings, and nothing else. Anything broader would let a real change to
+# the projection pass as the same module.
+function Get-Phase6CanonicalModuleHash {
+    param([string]$Path)
+    $raw = [System.IO.File]::ReadAllBytes($Path)
+    if ($raw.Length -ge 3 -and $raw[0] -eq 0xEF -and $raw[1] -eq 0xBB -and $raw[2] -eq 0xBF) {
+        throw 'the generated module carries a UTF-8 BOM; the accepted projection does not'
+    }
+    $canonical = New-Object System.Collections.Generic.List[byte]
+    for ($index = 0; $index -lt $raw.Length; $index++) {
+        if ($raw[$index] -eq 0x0D) {
+            if ((($index + 1) -lt $raw.Length) -and ($raw[$index + 1] -eq 0x0A)) { continue }
+            $null = $canonical.Add([byte]0x0A)
+        } else {
+            $null = $canonical.Add($raw[$index])
+        }
+    }
+    if (($canonical.Count -eq 0) -or ($canonical[$canonical.Count - 1] -ne 0x0A)) {
+        throw 'the generated module does not end with a newline'
+    }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha.ComputeHash($canonical.ToArray())) `
+            -replace '-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
 }
 
 # The three accepted Phase-6 failpoint stage names.
@@ -1398,13 +1457,24 @@ function Invoke-Phase6GateBScenarios {
     # an authorised runtime tree is always the harness commit, never the
     # baseline. Both are printed, separately and by name.
     #
-    # THE BINDING IS BY BLOB IDENTITY, NOT BY MODULE NAME. That the compiled
-    # project contains a module called modSimReport says nothing about whose
-    # modSimReport it is. Each accepted Phase-6 production module's blob id in
-    # the runtime checkout is compared against the SAME PATH at the baseline, so
-    # a source that moved is caught even if the name did not. git computes both
-    # sides under identical attribute rules, so no line-ending or encoding
-    # difference can masquerade as a match or a mismatch.
+    # THE BINDING IS BY IDENTITY, NOT BY MODULE NAME. That the compiled project
+    # contains a module called modSimReport says nothing about whose
+    # modSimReport it is. But the eight production modules do not have the same
+    # KIND of identity, and Run 5 failed because this scenario assumed they did.
+    #
+    #   SEVEN HAND-WRITTEN MODULES are tracked source. Each one's blob id in the
+    #   runtime checkout is compared against the SAME PATH at the baseline, so a
+    #   source that moved is caught even if the name did not. git computes both
+    #   sides under identical attribute rules, so no line-ending or encoding
+    #   difference can masquerade as a match or a mismatch.
+    #
+    #   modSimContract IS A GENERATED PROJECTION of the accepted contracts. It
+    #   has no path in src/vba and no blob at any commit; asking git for one
+    #   returned blank on both sides and the comparison passed a blank against a
+    #   blank. Its identity is the CANONICAL PROJECTION the baseline's renderer
+    #   produces from the baseline's authorities - line endings normalised,
+    #   because the physical .bas is text mode for AddFromString and its raw
+    #   bytes are host-dependent by design.
     #
     # NO GIT MEANS NO PASS. A runtime result with no attributable source
     # revision is weaker evidence, and recording "unknown" while passing would
@@ -1455,7 +1525,7 @@ function Invoke-Phase6GateBScenarios {
                 ($tracked.Count -gt 0) ('files under the pathspec at the baseline: ' + $tracked.Count)
 
             # AND THE PER-MODULE STATEMENT, blob for blob.
-            foreach ($module in (Get-Phase6ProductionModules)) {
+            foreach ($module in (Get-Phase6TrackedModules)) {
                 $relative = 'pccm/src/vba/' + $module + '.bas'
                 $accepted = ''
                 $current = ''
@@ -1472,6 +1542,58 @@ function Invoke-Phase6GateBScenarios {
                     ('baseline blob ' + $accepted + ', runtime blob ' + $current)
                 $lines += ('  ' + $module.PadRight(32) + ' blob ' + $current)
             }
+
+            # AND THE GENERATED PROJECTION, WHICH IS A DIFFERENT CLAIM.
+            #
+            # modSimContract is not tracked source and has no blob at any
+            # commit. What can be proved about it is the join the Stage-B import
+            # actually walks:
+            #
+            #   accepted projection identity (baseline-derived)
+            #     -> the manifest's generated entry
+            #     -> the generated-source directory Stage B resolves from it
+            #     -> the file this session consumed
+            #
+            # P5-M and P5-CMP already prove the compiled workbook contains and
+            # compiles the module; nothing is re-imported or re-compiled here.
+            $generatedName = Get-Phase6GeneratedModuleName
+            $entries = @($Manifest.vba.modules |
+                Where-Object { [string]$_.name -ceq $generatedName })
+            $null = Add-Check $list `
+                ('the manifest declares exactly one ' + $generatedName + ' module') `
+                ($entries.Count -eq 1) ('entries: ' + $entries.Count)
+            $null = Add-Check $list `
+                ($generatedName + ' is declared a GENERATED projection, not tracked source') `
+                (($entries.Count -eq 1) -and ([bool]$entries[0].generated)) `
+                ('generated: ' + $(if ($entries.Count -eq 1) { [string]$entries[0].generated } else { '<none>' }))
+
+            # THE PATH STAGE B RESOLVES, derived the way build_stage_b.ps1
+            # derives it: a generated module comes from the BUILD directory's
+            # own generated subdirectory, never from the tracked source tree.
+            $generatedDir = Join-Path $TempRoot (Split-Path -Leaf ([string]$Manifest.vba.generated_dir))
+            $generatedPath = Join-Path $generatedDir ($generatedName + '.bas')
+            $null = Add-Check $list `
+                ('the ' + $generatedName + ' Stage-B source is the generated artefact this run consumed') `
+                (Test-Path -LiteralPath $generatedPath) $generatedPath
+
+            $accepted = Get-Phase6GeneratedModuleIdentity
+            $observed = ''
+            $rawObserved = ''
+            try {
+                if (Test-Path -LiteralPath $generatedPath) {
+                    $observed = Get-Phase6CanonicalModuleHash -Path $generatedPath
+                    $rawObserved = (Get-FileHash -LiteralPath $generatedPath -Algorithm SHA256).Hash
+                }
+            } catch {
+                $observed = 'REFUSED: ' + [string]$_.Exception.Message
+            }
+            $null = Add-Check $list `
+                ('the ' + $generatedName + ' projection is the one baseline ' + $baseline + ' produces') `
+                ($observed -ceq $accepted) `
+                ('accepted ' + $accepted + ', observed ' + $observed)
+            $lines += ('  ' + $generatedName.PadRight(32) + ' projection ' + $observed)
+            $lines += ('  ' + ''.PadRight(32) + ' raw ' + $rawObserved +
+                       '  (host-dependent: the .bas is text mode for AddFromString)')
         } else {
             $null = Add-Check $list `
                 'the accepted production source can be bound to the baseline' $false `

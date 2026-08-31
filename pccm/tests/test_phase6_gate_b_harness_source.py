@@ -52,6 +52,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
@@ -1659,16 +1660,37 @@ def test_52_the_artefact_identity_separates_the_two_commits() -> None:
     )
     assert "unknown (git was not available" not in driver
 
-    # THE BINDING IS BY BLOB IDENTITY, not by module name.
-    assert "Get-Phase6ProductionModules" in block
+    # THE BINDING IS BY BLOB IDENTITY, not by module name — for the TRACKED
+    # modules. The generated projection is a different claim and is proved by
+    # `test_77`; what this control holds is that the seven are not weakened and
+    # that the generated one has not been folded back in among them.
+    assert "Get-Phase6TrackedModules" in block
     assert "rev-parse ($baseline + ':' + $relative)" in block
-    assert "the accepted baseline source" in block
     assert "diff --quiet" in block
-    modules = code.split("function Get-Phase6ProductionModules")[1].split(
+    # THE PREDICATE, NOT THE LABEL. An Add-Check keeps its label when its
+    # condition is replaced by $true, and a control reading only the label
+    # cannot tell the difference.
+    tracked = _powershell_statement(block, "the accepted baseline source")
+    assert tracked, "the tracked-module blob check is gone"
+    assert "$current -ceq $accepted" in tracked, (
+        f"the tracked-module blob comparison is weakened: {' '.join(tracked.split())}"
+    )
+    assert "IsNullOrWhiteSpace($accepted)" in tracked, (
+        "a missing baseline blob would compare equal to a missing runtime one"
+    )
+    modules = code.split("function Get-Phase6TrackedModules")[1].split(
         "\nfunction ")[0]
-    for name in ("modSimContract", "modSimRng", "modSimSample", "modSimEngine",
-                 "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport"):
+    for name in ("modSimRng", "modSimSample", "modSimEngine", "modSimStats",
+                 "modSimFingerprint", "modSimNonce", "modSimReport"):
         assert f"'{name}'" in modules, name
+    assert "modSimContract" not in modules, (
+        "the generated projection is back in the tracked-source blob loop; it "
+        "has no path in src/vba and the comparison would pass blank against blank"
+    )
+    # AND THE TRACKED SET IS EXACTLY THE HAND-WRITTEN FILES THAT EXIST.
+    handwritten = {path.stem for path in SRC_VBA.glob("modSim*.bas")}
+    declared = set(re.findall(r"'(modSim\w+)'", modules))
+    assert declared == handwritten, (declared, handwritten)
 
 
 def test_53_the_pinned_baseline_really_is_unchanged_production() -> None:
@@ -2320,7 +2342,11 @@ def test_67_the_executed_workbook_is_hashed_before_excel_locks_it() -> None:
         "P6-ART builds a hashed path somewhere other than the JSON artefact loop"
     )
     for line in hashed:
-        assert "$path" in line, (
+        # The generated .bas is a source file on disk that the Stage-B bootstrap
+        # finished reading before Excel started; it is not a workbook and Excel
+        # never opens it. Its RAW hash is recorded as host-dependent diagnostic
+        # evidence beside the canonical identity that is actually compared.
+        assert "$path" in line or "$generatedPath" in line, (
             f"P6-ART hashes something other than the unlocked JSON artefacts: {line}"
         )
 
@@ -2963,3 +2989,128 @@ def test_76_the_invariant_artefacts_are_written_as_bytes_not_translated_text() -
                 raise AssertionError(f"the byte writer accepted {why}")
     finally:
         Path.write_text = original  # type: ignore[method-assign]
+
+
+# ===========================================================================
+# P. Two classes of production module, and two kinds of identity
+# ===========================================================================
+BASELINE_PROJECTION_IDENTITY = (
+    "daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f1e8e1c215ac"
+)
+
+
+def _baseline_projection_identity() -> str:
+    """The canonical modSimContract projection, derived FROM THE BASELINE.
+
+    Not from HEAD's renderer. The builder has legitimately changed since
+    `79e4600` while the production projection has not, and a check that let the
+    current renderer supply both sides would bless whatever it happened to emit.
+    So the baseline is archived into an isolated tree, ITS Stage-A build is run
+    against ITS contracts, and the module that falls out is canonicalised.
+    """
+    from pccm_builder.artifact_io import canonical_module_identity  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory(prefix="pccm-baseline-projection-") as name:
+        root = Path(name)
+        archive = subprocess.run(
+            ["git", "archive", PRODUCTION_BASELINE, "pccm"],
+            cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
+        ).stdout
+        subprocess.run(["tar", "-x", "-C", str(root)], input=archive, check=True)
+        built = subprocess.run(
+            [sys.executable, "builder/build_stage_a.py", "--quiet"],
+            cwd=str(root / "pccm"), capture_output=True, text=True, check=False,
+        )
+        assert built.returncode == 0, built.stderr[-2000:]
+        emitted = root / "pccm" / "build" / "vba" / "modSimContract.bas"
+        assert emitted.is_file(), "the baseline build emitted no modSimContract"
+        return canonical_module_identity(emitted.read_bytes())
+
+
+def test_77_the_generated_projection_has_a_baseline_bound_identity() -> None:
+    """Run 5's one failure, and it was a claim about the wrong kind of file.
+
+        FAIL the modSimContract source being exercised is the accepted baseline
+             source — baseline blob <blank>, runtime blob <blank>
+
+    `modSimContract` is not tracked source. It is a Stage-A PROJECTION of the
+    accepted contracts, emitted to `build/vba` and declared `generated: true` in
+    the manifest, so `git rev-parse <commit>:pccm/src/vba/modSimContract.bas`
+    returned nothing on BOTH sides and the check compared a blank against a
+    blank. The seven hand-written modules passed because for them the question
+    was the right one.
+
+    The correction is not to create the file the check was looking for — that
+    would move a generated artefact into hand-written ownership. It is to prove
+    what is true of a projection: that it is the one the ACCEPTED BASELINE's
+    renderer produces from the ACCEPTED BASELINE's authorities.
+    """
+    from pccm_builder.artifact_io import canonical_module_identity  # noqa: PLC0415
+
+    generated = BUILD / "vba" / "modSimContract.bas"
+    assert generated.is_file()
+    assert not (SRC_VBA / "modSimContract.bas").exists(), (
+        "a hand-written modSimContract has appeared in src/vba; the accepted "
+        "ownership design makes it a generated projection"
+    )
+
+    # 1. THE IDENTITY IS DERIVED FROM THE BASELINE, NOT FROM HEAD. This is the
+    #    property that stops a changed renderer blessing its own output.
+    derived = _baseline_projection_identity()
+    assert derived == BASELINE_PROJECTION_IDENTITY, (
+        f"the baseline projection identity is {derived}, not the pinned value"
+    )
+    # AND HEAD STILL PRODUCES IT, which is the actual claim about this tree.
+    assert canonical_module_identity(generated.read_bytes()) == derived, (
+        "HEAD's renderer no longer produces the accepted baseline projection"
+    )
+
+    # 2. THE HARNESS CARRIES IT AS A CHECKED COPY.
+    code = _executable(PHASE6)
+    assert BASELINE_PROJECTION_IDENTITY in code, (
+        "the harness does not carry the accepted projection identity"
+    )
+    assert code.count(BASELINE_PROJECTION_IDENTITY) == 1
+
+    # 3. THE JOIN THE STAGE-B IMPORT ACTUALLY WALKS. Not "a correct file exists
+    #    somewhere": the manifest entry, the directory Stage B derives from it,
+    #    and the file that was hashed.
+    block = code.split("$baseline = Get-Phase6ProductionBaseline")[1].split(
+        "Add-Phase6Result 'P6-ART'")[0]
+    entry_count = _powershell_statement(block, "the manifest declares exactly one")
+    assert entry_count and "$entries.Count -eq 1" in entry_count, (
+        f"P6-ART does not refuse zero or duplicate manifest entries: {entry_count}"
+    )
+    for demanded, why in (
+        ("[bool]$entries[0].generated", "a manifest entry that is not generated"),
+        ("Split-Path -Leaf ([string]$Manifest.vba.generated_dir)",
+         "the generated directory is not derived from the manifest"),
+        ("Join-Path $TempRoot", "the module is not taken from the consumed build"),
+        ("Get-Phase6CanonicalModuleHash -Path $generatedPath",
+         "the consumed file is not the file that is hashed"),
+    ):
+        assert demanded in block, f"P6-ART does not refuse {why}"
+    assert "src" not in block.split("$generatedDir =")[1].split("\n")[0], (
+        "the generated module is resolved from the tracked source tree"
+    )
+    # THE NAME ALONE IS NOT THE PROOF.
+    assert "$observed -ceq $accepted" in block, (
+        "P6-ART checks the module name without checking its source identity"
+    )
+
+    # 4. STAGE-B RESOLVES A GENERATED MODULE THE SAME WAY, structurally.
+    bootstrap = _text(BUILD_STAGE_B)
+    assert "$genDir  = Join-Path $BuildDir (Split-Path -Leaf $manifest.vba.generated_dir)" in bootstrap
+    assert "if ($m.generated) { $dir = $genDir }" in bootstrap
+
+    # 5. THE CANONICALISER NORMALISES LINE ENDINGS AND NOTHING ELSE.
+    body = _text(PCCM_ROOT / "builder" / "pccm_builder" / "artifact_io.py")
+    body = body.split("def canonical_module_identity")[1]
+    assert 'replace(b"\\r\\n", b"\\n")' in body and 'replace(b"\\r", b"\\n")' in body
+    for broader in (".lower()", ".strip()", ".split()"):
+        assert broader not in body, f"the canonicaliser does more than newlines: {broader}"
+    sample = b"Attribute VB_Name = \"m\"\r\nConst A = 1\r\n"
+    assert canonical_module_identity(sample) == canonical_module_identity(
+        sample.replace(b"\r\n", b"\n")), "CRLF and LF do not canonicalise alike"
+    assert canonical_module_identity(sample) != canonical_module_identity(
+        b"Attribute VB_Name = \"m\"\nConst A = 2\n"), "a real change canonicalises away"

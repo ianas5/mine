@@ -40,17 +40,30 @@ and **host-local oracle evidence** that says so and carries its own provenance.
 [§10](#10-d2-the-portability-settlement) states which artefacts must be
 cross-platform invariant and which are deliberately host-local.
 
-**Run 5 was authorised and stopped before Excel.** Stage A ran 351/351 on a
-clean Windows checkout at the accepted HEAD and the generation provenance was
-correct, but the raw hashes of both invariant artefacts disagreed with the
-accepted ones: `Path.write_text` had been translating newlines, so the files
-Windows wrote were CRLF and the pinned hashes described bytes that host had never
-produced. Stage B was not run and Excel was not started, so **no Phase-6 scenario
-failed** — it is a Stage-A serialisation defect, found before runtime and settled
-in [§10.3a](#103a-the-serialisation-contract-and-why-content-invariance-was-not-enough).
+**Run 5's first attempt was stopped before Excel** by a Stage-A serialisation
+defect: `Path.write_text` had been translating newlines, so the files Windows
+wrote were CRLF and the pinned hashes described bytes that host had never
+produced. Stage B was not run and Excel was not started, so no Phase-6 scenario
+failed. Settled in
+[§10.3a](#103a-the-serialisation-contract-and-why-content-invariance-was-not-enough).
 
-**Still open, and not claimed.** No Windows run has yet exercised the corrected
-comparison. `P6-ORA`, `P6-DET`, `P6-ART` and `P6-FIN` are corrected in source and
+**Run 5 then executed, and it settled almost everything Run 4 left open.** 101
+PASS / 2 FAIL / 0 SKIP; Phase-4 35/35, Phase-5 39/39, Phase-6 27/29; Excel closed
+naturally with a clean COM release ledger. **`P6-ORA` passed on the corrected
+Step-0 policy, `P6-DET` on the decoupled same-runtime rule, and `P6-FP3` on the
+corrected restore semantics** — the three corrections that had been source-only
+since Run 4 are now runtime-proven, along with every remaining behavioural, AUTO,
+publication, recovery, exhaustion and attempt-axis scenario.
+
+**One failure, and it was a claim about the wrong kind of file.** `P6-ART` asked
+git for `pccm/src/vba/modSimContract.bas`, which does not exist at any commit:
+`modSimContract` is a generated Stage-A projection, not tracked source, so the
+check compared a blank against a blank. `P6-FIN` is derivative. No production
+defect is indicated; [§4.6](#46-two-commits-and-they-are-not-the-same-commit)
+records the corrected two-class identity model.
+
+**Still open, and not claimed.** No Windows run has yet exercised that
+correction. `P6-ORA`, `P6-DET`, `P6-ART` and `P6-FIN` are corrected in source and
 **unproven at runtime**; nothing here says they now pass.
 
 ```
@@ -499,8 +512,35 @@ first submission passed HEAD in as `SourceCommit` and printed it as the
 production baseline, which conflated the two identities the authorisation
 requires to stay distinct.
 
-The source binding is **by blob identity, not by module name**. That a compiled
-project contains a module called `modSimReport` says nothing about whose
+**The eight production modules do not have the same KIND of identity**, and Run 5
+failed because `P6-ART` assumed they did. Seven are hand-written, tracked source
+in `pccm/src/vba`, and are proved by git blob identity against the baseline.
+`modSimContract` is a **generated Stage-A projection** of the accepted contracts:
+it is emitted to `build/vba`, declared `generated: true` in the manifest, and has
+no path in `src/vba` at any commit — so asking git for its blob returned blank on
+both sides and the comparison passed a blank against a blank.
+
+Its identity is the **canonical projection the baseline produces**: SHA-256 with
+line endings normalised to LF, because the physical `.bas` is text mode for
+`AddFromString` and its raw bytes are host-dependent by design.
+
+```
+accepted projection identity (derived from 79e4600)
+  -> the manifest's `generated: true` entry
+  -> the generated-source directory Stage B resolves from it
+  -> the file this session consumed
+```
+
+`test_77` archives baseline `79e4600` into an isolated tree, runs **that**
+commit's Stage-A build with **that** commit's contracts, and canonicalises the
+module it emits: `daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f1e8e1c215ac`.
+The harness carries that value as a checked copy. Deriving it from HEAD's
+renderer would let a changed renderer bless its own changed output, which is
+exactly the case that matters — the builder has legitimately moved since
+`79e4600` while the production projection has not.
+
+The source binding is **by blob identity, not by module name**, for the seven.
+That a compiled project contains a module called `modSimReport` says nothing about whose
 `modSimReport` it is, so each accepted Phase-6 production module's blob id in the
 runtime checkout is compared against the same path at the baseline
 (`git rev-parse <baseline>:pccm/src/vba/<module>.bas`). git computes both sides
@@ -553,13 +593,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **80** controls, in fourteen groups:
+`tests/test_phase6_gate_b_harness_source.py` — **81** controls, in fifteen groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **197** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **208** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -757,7 +797,7 @@ One command set, one working directory — the repository root:
 python pccm\builder\build_stage_a.py
 powershell -ExecutionPolicy Bypass -File .\pccm\bootstrap\windows\build_stage_b.ps1
 powershell -ExecutionPolicy Bypass -File .\pccm\bootstrap\windows\phase4_functional_test.ps1 `
-  *> .\pccm\bootstrap\windows\phase6_gate_b_run5.log
+  *> .\pccm\bootstrap\windows\phase6_gate_b_run6.log
 ```
 
 The third command runs everything: the Phase-6 block is dot-sourced into the
@@ -765,8 +805,8 @@ Phase-4 harness and runs inside its single COM lifecycle, against the disposable
 `%TEMP%` copy. There is no separate Phase-6 script to invoke and no second Excel
 instance.
 
-**The log name carries the run number**, and it is `run5` because Runs 1, 2, 3
-and 4 already happened — see the ledger in §8. Writing to an earlier run's log would
+**The log name carries the run number**, and it is `run6` because Runs 1 to 5
+already happened — see the ledger in §8. Writing to an earlier run's log would
 overwrite evidence of an attempt that was made, and an aborted or blocked
 attempt is still evidence: Run 1 identified the defect in §3.1, Run 2 the two in
 §8.2, Run 3 the one in §8.3 and Run 4 the three in §8.4. Each authorised run gets its own log, and no
@@ -787,8 +827,9 @@ Location — the same refusal that has held since the first readiness run.
 | **Run 2** | `849d6bf` | **VALID runtime attempt.** Reached Excel; Phase-4 35/35; a production compile defect stopped `P5-CMP`; the Phase-5 and Phase-6 behavioural matrices were NOT executed. |
 | **Run 3** | `58a89f3` | **VALID runtime attempt.** `P5-CMP` PASS — the compile repair is runtime-proven; Phase-5 38/39; a stale `P5-EV` assertion blocked Phase 6; `P6-LDG` PASS. |
 | **Run 4** | `6cb7f06` | **VALID runtime attempt, and the first behavioural one.** 98 passed, 5 failed; Phase-4 35/35; Phase-5 39/39; Phase-6 24/29; `P6-LDG` PASS. |
-| **Run 5** | `5c63503` | **AUTHORISED; STOPPED PRE-EXCEL.** Stage A 351/351 on a clean Windows checkout and the generation provenance was correct — but the raw `Get-FileHash` of both invariant artefacts disagreed with the accepted hashes. Stage B was NOT run and Excel was NOT started, so no Phase-6 scenario failed: a Stage-A serialisation defect, found before runtime. |
-| **Run 5 (retry)** | `<this commit>` | **NOT AUTHORISED**, and **not yet executed**. The corrected parity comparison, the `P6-DET` decoupling and the D2 split are unproven at runtime. |
+| **Run 5 (aborted)** | `5c63503` | **AUTHORISED; STOPPED PRE-EXCEL.** Stage A 351/351 on a clean Windows checkout and the generation provenance was correct — but the raw `Get-FileHash` of both invariant artefacts disagreed with the accepted hashes. Stage B was NOT run and Excel was NOT started, so no Phase-6 scenario failed: a Stage-A serialisation defect, found before runtime. |
+| **Run 5** | `253b022` | **VALID runtime attempt.** Stage A 351/351, raw D1 and D2 as accepted, Stage B PASS, Excel started. 101 PASS / 2 FAIL / 0 SKIP — Phase-4 35/35, Phase-5 39/39, Phase-6 27/29. `P6-ORA`, `P6-DET` and `P6-FP3` all PASS on the corrected rules. `P6-ART` FAIL on the generated `modSimContract` treated as tracked source; `P6-FIN` derivative. |
+| **Run 6** | `<this commit>` | **NOT AUTHORISED**, and **not yet executed**. |
 
 An aborted attempt is not nothing, and it is not renamed away when a later run
 succeeds: Run 1 is what found the defect §3.1 records, and it stays in this
