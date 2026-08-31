@@ -550,7 +550,7 @@ expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **187** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **189** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -729,6 +729,14 @@ Phase-5 Gate-B run has been made.
 Six mutations: the `P6-PRE` result restored to the exception arm, any other
 Phase-6 result recorded there, the abort dropped, `PRE6` promoted to a scenario
 ID, and each of the two banner claims restored.
+
+`test_45` was then extended to two active regions an all-green matrix had walked
+past: the `PRE6` explanatory block, which still described the inspection
+projection and the parity corpus as the only two authorities the scenarios read,
+and the Step-13 source battery's own module docstring, which still said the Gate-B
+run had not been made. Both described the world before Run 4 and before the D2
+split. Two more mutations restore each. A detector that reads only the regions it
+was first pointed at goes stale exactly where nothing is looking.
 
 ---
 

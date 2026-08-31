@@ -2194,3 +2194,43 @@ def test_185_the_banner_denies_every_phase5_gate_b_run() -> None:
         "    independent review; no Excel COM session has been started for it.\n"
         "    PHASE 5 GATE B IS CLOSED.")
     _control("test_75", harness=damaged)
+
+
+def test_188_the_pre6_comment_describes_two_authorities_again() -> None:
+    """The pre-D2 world: one address projection and one corpus. The gate reads
+    three artefacts now, and the third is host-local by construction."""
+    damaged = _swap(
+        _HARNESS,
+        "# THREE ARTEFACTS, AND THEY ARE NOT INTERCHANGEABLE. The Step-13 scenarios read\n",
+        "# The inspection projection and the parity corpus are the only two authorities\n"
+        "# the Step-13 scenarios read. Also,\n")
+    _control("test_45", harness=damaged)
+
+
+def test_189_the_source_control_docstring_denies_run_4() -> None:
+    """Run 4 executed the Phase-6 behavioural matrix. What is unexercised is
+    everything settled after it, which is a different statement."""
+    conformance_path = Path(conformance.__file__)
+    original = conformance_path.read_text(encoding="utf-8")
+    damaged = original.replace(
+        "WHAT A STATIC CONTROL CAN AND CANNOT SETTLE, which is a property and not a date.",
+        "What it does NOT establish is anything about behaviour. Whether Excel agrees is\n"
+        "Gate B's, on Windows, and that run has not been made.\n", 1)
+    assert damaged != original
+    # THE DOCSTRING IS READ FROM THE FILE, so the mutation is installed as a
+    # damaged copy of this module's own source and the control re-run over it.
+    with tempfile.TemporaryDirectory(prefix="pccm-step13-docstring-") as name:
+        target = Path(name) / conformance_path.name
+        target.write_text(damaged, encoding="utf-8")
+        saved = conformance.__file__
+        conformance.__file__ = str(target)
+        try:
+            refused = False
+            try:
+                conformance.test_45_the_current_wording_states_the_accepted_comparison_and_the_split()
+            except AssertionError as error:
+                refused = True
+                assert "denies the run" in str(error), error
+        finally:
+            conformance.__file__ = saved
+    assert refused, "the module docstring may deny Run 4's behavioural evidence"

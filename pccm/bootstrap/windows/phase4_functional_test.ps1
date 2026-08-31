@@ -437,10 +437,24 @@ try {
 # ===========================================================================
 # PRE6. Phase-6 artefact preflight, still BEFORE Excel is started
 # ===========================================================================
-# The inspection projection and the parity corpus are the only two authorities
-# the Step-13 scenarios read. An artefact that never arrived, or that lost the
-# keys a comparison consumes, stops the run here - not forty minutes later
-# inside a COM session, and never by quietly comparing nothing.
+# THREE ARTEFACTS, AND THEY ARE NOT INTERCHANGEABLE. The Step-13 scenarios read
+# all three, and this gate refuses the run if any is missing, incomplete, or not
+# attributable to the source about to execute:
+#
+#   phase6_gate_b_inspection.json   the ADDRESS projection. Every sheet, column,
+#       row, range and defined name the harness touches. No values.
+#   phase6_gate_b_cases.json        the PORTABLE case authority. Which cases are
+#       driven, their fixtures, the exact discrete and identity expectations, the
+#       accumulation scale and the accepted comparison policy. Required to be
+#       cross-platform invariant, and it carries no Monte Carlo output at all.
+#   phase6_gate_b_oracle_local.json the HOST-LOCAL numerical measurements. The
+#       oracle's floating ladder, the deterministic base and the diagnostic
+#       digest, generated on THIS machine. Deliberately NOT cross-platform
+#       invariant, which is why it carries provenance instead of a frozen hash.
+#
+# An artefact that never arrived, or that lost the keys a comparison consumes,
+# stops the run here - not forty minutes later inside a COM session, and never
+# by quietly comparing nothing.
 try {
     if (-not (Invoke-Phase6CoveragePreflight -BuildDir $BuildDir -HarnessCommit $harnessCommit -RepoRoot $repoRoot)) {
         Write-Host ''
