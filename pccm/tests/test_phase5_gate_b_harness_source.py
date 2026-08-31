@@ -1547,11 +1547,35 @@ def test_45_the_harness_never_parses_vba_to_find_an_address() -> None:
 # ===========================================================================
 # 11. this suite makes no runtime claim
 # ===========================================================================
-def test_46_the_harness_source_states_that_no_run_has_happened() -> None:
+def test_46_the_harness_source_states_what_has_and_has_not_been_run() -> None:
+    """The distinction this control exists for is source evidence versus runtime
+    evidence. What changed is which side of it Phase 5 sits on.
+
+    It used to require the driver banner to say `NO PHASE-5 GATE-B RUN HAS BEEN
+    MADE`, which was true when Phase 5 was submitted and false once its
+    scenarios had executed on real Excel and Phase 5 had been accepted on that
+    evidence. A control that demands a statement the project has outgrown does
+    not protect the distinction — it forces the source to misdescribe itself.
+
+    So the demand moves rather than disappearing: the banner must record that
+    Phase 5 Gate B is closed, and must still separate what has executed from
+    what has not, because Step 13 is the part that is now unproven.
+    """
     for path in (SCENARIOS, DIAGNOSTIC):
         assert "NOT" in _text(path) or "not been" in _text(path)
-    assert "NO PHASE-5 GATE-B RUN HAS BEEN MADE" in _text(HARNESS), (
-        "the harness does not state that its Phase-5 extension is unrun"
+
+    banner = _text(HARNESS).split("#>")[0]
+    assert "NO PHASE-5 GATE-B RUN HAS BEEN MADE" not in banner, (
+        "the driver banner denies a Phase-5 Gate-B run that has happened"
+    )
+    assert "PHASE 5 GATE B IS CLOSED" in banner, (
+        "the driver banner does not record that Phase 5 Gate B has executed"
+    )
+    # AND THE LINE IS STILL DRAWN. A banner that only reported closure would be
+    # the same over-claim in the other direction.
+    flat = " ".join(banner.split())
+    assert re.search(r"still under runtime validation|not yet been exercised", flat), (
+        "the banner records what has run without saying what has not"
     )
 
 
