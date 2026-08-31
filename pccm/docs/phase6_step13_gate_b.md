@@ -544,13 +544,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **77** controls, in twelve groups:
+`tests/test_phase6_gate_b_harness_source.py` — **79** controls, in thirteen groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **181** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **187** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -711,6 +711,24 @@ generated from a clean tree. Eight mutations: the clean fact dropped from the
 artefact, a dirty generation, the builder hardcoding `True`, the builder falling
 back to `rev-parse` alone, each gate's runtime check defanged, the generation
 demand defanged, and the running-tree pathspec narrowed to `pccm/src`.
+
+A thirteenth separates two gates that share a prefix and nothing else. `PRE6` is
+the pure PowerShell artefact and provenance gate and runs before Excel exists;
+`P6-PRE` is a live-session scenario reading results only the session produces.
+The driver's `PRE6` exception arm recorded a `P6-PRE` FAIL and exited, putting a
+verdict in the ledger for a scenario that had not been reached — on the one path
+where nothing else could contradict it, and `P6-FIN` proves each required ID has
+exactly one result. It now reports the way the normal refusal does, to the
+console and out. `test_74` refuses ANY Phase-6 result recorded before Excel
+exists, refuses `PRE6` being promoted into the scenario vocabulary, and requires
+the live `P6-PRE` to remain where it belongs; `test_75` reads the driver's active
+banner and refuses two claims the accepted lifecycle had made false — that
+`P5-P4` checks the final 35/35 when `Y` and `Z` are deferred past it, and that no
+Phase-5 Gate-B run has been made.
+
+Six mutations: the `P6-PRE` result restored to the exception arm, any other
+Phase-6 result recorded there, the abort dropped, `PRE6` promoted to a scenario
+ID, and each of the two banner claims restored.
 
 ---
 

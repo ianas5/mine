@@ -109,13 +109,18 @@
     phase5_gate_b_scenarios.ps1. It runs inside THIS script's one COM lifecycle,
     against the same Excel instance, the same workbook and the same Stage-B
     bootstrap, and reports through the same Add-Result. The 35-scenario Phase-4
-    matrix above is unchanged and remains mandatory: P5-P4 checks it reached
-    35/35 with 0 FAIL and 0 SKIP and reports a FAIL, never a SKIP, if it did not.
+    matrix above is unchanged and remains mandatory, but it is not complete when
+    Phase 5 begins: Y and Z are POST-SESSION and are deferred until after it. So
+    P5-P4 checks the DERIVED prerequisite partition - the Phase-4 scenarios that
+    can have run by then - with 0 FAIL and 0 SKIP among them, and reports a FAIL,
+    never a SKIP, if it did not. The final 35/35 is established later, by P5-FIN,
+    once Y and Z have run.
 
       P5-PRE Coverage preflight, pure PowerShell, BEFORE Excel: every plan-case
           ID emitted into phase5_cases.json maps to a Windows scenario, no
           mapping is a ghost, and every direct-vector set is complete
-      P5-P4  The Phase-4 prerequisite, checked rather than assumed
+      P5-P4  The DERIVED Phase-4 prerequisite partition, checked rather than
+          assumed. Not the final 35/35: Y and Z are deferred past Phase 5
       P5-M   The persisted project matches the manifest module set BY NAME,
           exactly five buttons, no shape with OnAction = PCCM_Calculate, six
           api_procedures consumed AS api_procedures and not folded into
@@ -150,8 +155,11 @@
       P5-AX  The invocation axis and the calculation-attempt axis, read
           separately and never conflated
 
-    NO PHASE-5 GATE-B RUN HAS BEEN MADE. This harness extension is source under
-    independent review; no Excel COM session has been started for it.
+    PHASE 5 GATE B IS CLOSED. Its scenarios have executed on real Excel over
+    several Windows runs and Phase 5 was accepted on that evidence. The Phase-6
+    Step-13 block dot-sourced below is the part still under runtime validation:
+    Runs 1-4 have executed, Run 4 ran the Phase-6 behavioural matrix, and the
+    corrections made after it have not yet been exercised on Windows.
 
     Safety, unchanged from the readiness gate: no security setting is altered, no
     registry key is touched, no Trusted Location is added, and no Excel process
@@ -442,9 +450,23 @@ try {
         exit 1
     }
 } catch {
-    Add-Phase6Result 'P6-PRE' 'Phase-6 artefact preflight' 'FAIL' (Format-Err $_)
+    # PRE6 IS NOT P6-PRE, AND AN EXCEPTION HERE MAY NOT MANUFACTURE ONE.
+    #
+    # PRE6 is the pure PowerShell artefact and provenance gate, and it runs
+    # before Excel exists. P6-PRE is a Phase-6 LIVE-SESSION scenario: it reads
+    # the derived Phase-4 prerequisite partition and the intact Phase-5 block
+    # from results that only exist once the session has run. Recording a P6-PRE
+    # result from here put a scenario verdict in the ledger for a scenario that
+    # had not been reached, and it did so on the one path where nothing else
+    # could contradict it.
+    #
+    # So this reports the way the normal refusal above reports - to the console,
+    # then out - and adds nothing to the Phase-6 ledger. Nor does it invent a
+    # second scenario ID called PRE6: PRE6 is a preflight label, not a scenario,
+    # and the scenario set is what P6-FIN proves complete.
     Write-Host ''
-    Write-Host 'PHASE-4/5/6 FUNCTIONAL TEST ABORTED before Excel was started.' -ForegroundColor Red
+    Write-Host 'PHASE-4/5/6 FUNCTIONAL TEST ABORTED before Excel was started:' -ForegroundColor Red
+    Write-Host ('PRE6 (the Phase-6 artefact preflight) raised: ' + (Format-Err $_)) -ForegroundColor Red
     exit 1
 }
 

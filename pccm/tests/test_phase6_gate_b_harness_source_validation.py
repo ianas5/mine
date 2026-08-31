@@ -2123,3 +2123,74 @@ def test_179_the_running_tree_check_narrows_to_a_subpath() -> None:
                               "diff --quiet HEAD -- 'pccm/src' 2>$null")
     assert damaged != _PHASE6
     _control("test_73", phase6=damaged)
+
+
+# ===========================================================================
+# N. PRE6 is not P6-PRE, and the driver banner is current documentation
+# ===========================================================================
+def test_180_the_preflight_exception_manufactures_a_p6_pre_result() -> None:
+    """The submitted shape. An exception before Excel recorded a verdict for a
+    live-session scenario that had not been reached, on the one path where
+    nothing else could contradict it."""
+    damaged = _swap(
+        _HARNESS,
+        "    Write-Host ('PRE6 (the Phase-6 artefact preflight) raised: ' + (Format-Err $_)) -ForegroundColor Red\n",
+        "    Add-Phase6Result 'P6-PRE' 'Phase-6 artefact preflight' 'FAIL' (Format-Err $_)\n")
+    _control("test_74", harness=damaged)
+
+
+def test_181_any_phase6_result_is_recorded_before_excel_exists() -> None:
+    """Not only P6-PRE: no Phase-6 scenario verdict can be honest before the
+    session that produces the evidence has started."""
+    damaged = _swap(
+        _HARNESS,
+        "    Write-Host ('PRE6 (the Phase-6 artefact preflight) raised: ' + (Format-Err $_)) -ForegroundColor Red\n",
+        "    Add-Phase6Result 'P6-ART' 'Phase-6 artefact preflight' 'FAIL' (Format-Err $_)\n")
+    _control("test_74", harness=damaged)
+
+
+def test_182_the_preflight_exception_stops_aborting() -> None:
+    """A preflight that raises and continues would start Excel on artefacts it
+    could not read."""
+    damaged = _swap(
+        _HARNESS,
+        "    Write-Host ('PRE6 (the Phase-6 artefact preflight) raised: ' + (Format-Err $_)) -ForegroundColor Red\n"
+        "    exit 1\n"
+        "}\n",
+        "    Write-Host ('PRE6 (the Phase-6 artefact preflight) raised: ' + (Format-Err $_)) -ForegroundColor Red\n"
+        "}\n")
+    _control("test_74", harness=damaged)
+
+
+def test_183_pre6_is_promoted_to_a_phase6_scenario_id() -> None:
+    """PRE6 is a preflight label. Adding it to the scenario vocabulary would put
+    a pre-Excel gate inside the set P6-FIN proves complete."""
+    damaged = _swap(
+        _PHASE6,
+        "        'P6-SU', 'P6-XX', 'P6-LDG', 'P6-FIN'\n",
+        "        'P6-SU', 'P6-XX', 'P6-LDG', 'P6-FIN', 'PRE6'\n")
+    _control("test_74", phase6=damaged)
+
+
+def test_184_the_banner_claims_p5_p4_checks_the_final_matrix() -> None:
+    """Y and Z are POST-SESSION, so what P5-P4 can check is the derived
+    prerequisite partition; the final 35/35 is P5-FIN's."""
+    damaged = _swap(
+        _HARNESS,
+        "    matrix above is unchanged and remains mandatory, but it is not complete when\n",
+        "    matrix above is unchanged and remains mandatory: P5-P4 checks it reached\n"
+        "    35/35 with 0 FAIL and 0 SKIP.\n"
+        "    It is not complete when\n")
+    _control("test_75", harness=damaged)
+
+
+def test_185_the_banner_denies_every_phase5_gate_b_run() -> None:
+    """Phase 5 Gate B has executed on real Excel over several Windows runs, and
+    Phase 5 was accepted on that evidence."""
+    damaged = _swap(
+        _HARNESS,
+        "    PHASE 5 GATE B IS CLOSED.",
+        "    NO PHASE-5 GATE-B RUN HAS BEEN MADE. This harness extension is source under\n"
+        "    independent review; no Excel COM session has been started for it.\n"
+        "    PHASE 5 GATE B IS CLOSED.")
+    _control("test_75", harness=damaged)

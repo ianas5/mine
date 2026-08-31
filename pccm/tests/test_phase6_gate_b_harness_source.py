@@ -235,14 +235,24 @@ def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> No
     after = _current_lines(HARNESS)
 
     removed = [line for line in before if line not in after]
-    # THREE AUTHORISED CHANGES, and the third moved a block rather than adding
+    # FOUR AUTHORISED CHANGES, and one of them moved a block rather than adding
     # one: the harness-commit capture had to happen BEFORE the pre-Excel artefact
     # gate so that gate can refuse a stale host-local oracle, and moving it out
     # of the artefact-load `try` reindented every line of it. Enumerated in full
-    # so a fourth change cannot hide among them.
+    # so a fifth change cannot hide among them.
     assert removed == [
+        # 0. the active banner's two stale Phase-5 claims: P5-P4 cannot check the
+        #    final 35/35 while Y and Z are deferred, and Phase 5 Gate B has run
+        "    matrix above is unchanged and remains mandatory: P5-P4 checks it reached",
+        "    35/35 with 0 FAIL and 0 SKIP and reports a FAIL, never a SKIP, if it did not.",
+        "      P5-P4  The Phase-4 prerequisite, checked rather than assumed",
+        "    NO PHASE-5 GATE-B RUN HAS BEEN MADE. This harness extension is source under",
+        "    independent review; no Excel COM session has been started for it.",
         # 1. the pre-Excel gate is given the harness commit and the repo root
         "    if (-not (Invoke-Phase6CoveragePreflight -BuildDir $BuildDir)) {",
+        # 1b. and its exception arm stops manufacturing a P6-PRE scenario result
+        "    Add-Phase6Result 'P6-PRE' 'Phase-6 artefact preflight' 'FAIL' (Format-Err $_)",
+        "    Write-Host 'PHASE-4/5/6 FUNCTIONAL TEST ABORTED before Excel was started.' -ForegroundColor Red",
         # 2. the host-local oracle joins the required-artefact list, and the
         #    comment above it stops describing one expected-value source
         "    # one expected-value source, and nothing in the harness may restate either.",
@@ -264,7 +274,7 @@ def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> No
         "        Add-Note ('The runtime harness commit could not be read: ' + (Format-Err $_))",
         # and the scenario call gains the two new arguments
         "            -Results $results -HarnessCommit $harnessCommit -RepoRoot $repoRoot",
-    ], f"the Phase-4 driver lost lines beyond the three authorised changes: {removed}"
+    ], f"the Phase-4 driver lost lines beyond the four authorised changes: {removed}"
 
     added = [line for line in after if line not in before]
     for required in ("Get-Phase6RuntimeArtefactIdentity -TempRoot $tempRoot",
@@ -274,7 +284,9 @@ def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> No
                      "Copy-Item -LiteralPath $simOraclePath -Destination $tempRoot",
                      "-OracleEvidence $simOracle",
                      "-HarnessCommit $harnessCommit -RepoRoot $repoRoot)) {",
-                     "PORTABLE case authority, and one host-local numerical measurement set"):
+                     "PORTABLE case authority, and one host-local numerical measurement set",
+                     "PRE6 (the Phase-6 artefact preflight) raised",
+                     "PHASE 5 GATE B IS CLOSED"):
         assert any(required in line for line in added), required
     # THE HOST-LOCAL EVIDENCE IS REQUIRED BEFORE EXCEL, like the other two.
     assert any("$simOraclePath" in line and "$simCasesPath" in line for line in added), (
@@ -2683,3 +2695,100 @@ def test_73_the_evidence_is_bound_to_head_bytes_and_not_only_to_a_commit_id() ->
     assert subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "pccm"],
                           cwd=REPO_ROOT, capture_output=True,
                           check=False).returncode in (0, 1)
+
+
+def test_74_pre6_is_a_preflight_and_p6_pre_is_a_live_session_scenario() -> None:
+    """Two gates, two names, and only one of them owns a scenario ID.
+
+    `PRE6` is the pure PowerShell artefact and provenance gate: it runs before
+    Excel exists, and its refusal is a console message and an exit. `P6-PRE` is
+    a Phase-6 scenario that reads the derived Phase-4 prerequisite partition and
+    the intact Phase-5 block out of results that only exist once the session has
+    run.
+
+    The driver's PRE6 exception arm recorded a `P6-PRE` FAIL and then exited
+    before Excel, putting a scenario verdict in the ledger for a scenario that
+    had not been reached — on the one path where nothing else could contradict
+    it. `P6-FIN` proves each required ID has exactly one result, so a phantom
+    entry is exactly the shape that matters.
+    """
+    driver = _text(HARNESS)
+
+    # THE DRIVER RECORDS NO PHASE-6 SCENARIO RESULT BEFORE EXCEL. Bounded to the
+    # pre-Excel region so the real scenario calls later in the file are not
+    # confused with a preflight manufacturing one.
+    excel_at = driver.index("Prepare a disposable copy of the build")
+    before = driver[:excel_at]
+    offenders = [line.strip() for line in before.splitlines()
+                 if "Add-Phase6Result" in line]
+    assert not offenders, (
+        "the driver records a Phase-6 scenario result before Excel exists: "
+        f"{offenders}"
+    )
+    assert "'P6-PRE'" not in before, (
+        "P6-PRE is named in the pre-Excel region; that ID belongs to the "
+        "live-session scenario alone"
+    )
+
+    # AND THE PREFLIGHT STILL REFUSES, the way the normal refusal refuses.
+    gate = driver[driver.index("PRE6. Phase-6 artefact preflight"):excel_at]
+    assert gate.count("exit 1") >= 2, (
+        "the preflight no longer aborts on both its refusal paths"
+    )
+    assert "PRE6 (the Phase-6 artefact preflight) raised" in gate, (
+        "an exception inside the preflight is no longer reported as a PRE6 failure"
+    )
+    # NOR IS A SECOND SCENARIO ID INVENTED. PRE6 is a preflight label; the
+    # scenario set is what P6-FIN proves complete.
+    #
+    # `_executable` and not `strip_comments`: the latter is the VBA stripper and
+    # treats an apostrophe as a comment marker, so it deletes every
+    # single-quoted PowerShell string - including every scenario ID this is
+    # looking for. A control that stripped its own subject would pass over any
+    # addition to the set.
+    assert "'PRE6'" not in _executable(PHASE6), (
+        "PRE6 has been added to the Phase-6 scenario vocabulary"
+    )
+
+    # THE LIVE-SESSION SCENARIO IS EXACTLY WHERE IT BELONGS, and still says what
+    # it can actually possess.
+    code = _executable(PHASE6)
+    live = [line for line in code.splitlines() if "Add-Phase6Result 'P6-PRE'" in line]
+    assert len(live) == 2, f"the live P6-PRE scenario reports {len(live)} results"
+    block = code.split("Get-Phase4PrerequisiteScenarioIds")[1]
+    assert "deferred to P5-FIN" in code, (
+        "P6-PRE no longer states that Y and Z are deferred, so it reads as a "
+        "claim on the final 35/35 it cannot have"
+    )
+    assert "$phase5LedgerViolations" in code
+
+
+def test_75_the_driver_banner_states_the_accepted_phase5_lifecycle() -> None:
+    """Active source documentation, and both claims in it had gone stale.
+
+    The banner said `P5-P4` checks the Phase-4 matrix reached 35/35, which is
+    the pre-deferral architecture: `Y` and `Z` are POST-SESSION, so what `P5-P4`
+    can check is the derived prerequisite partition and the final 35/35 is
+    `P5-FIN`'s. It also said no Phase-5 Gate-B run had been made, which several
+    Windows runs and the closure of Phase 5 had made false.
+    """
+    banner = _text(HARNESS).split("#>")[0]
+
+    for stale in (r"P5-P4\s+checks\s+it\s+reached\s*\n?\s*35/35",
+                  r"NO\s+PHASE-5\s+GATE-B\s+RUN\s+HAS\s+BEEN\s+MADE"):
+        assert not re.search(stale, banner, re.I), (
+            f"the active driver banner still asserts /{stale}/"
+        )
+    # AND IT STATES WHAT IS TRUE INSTEAD.
+    flat = " ".join(banner.split())
+    for required, why in (
+        (r"DERIVED prerequisite partition|DERIVED Phase-4 prerequisite partition",
+         "the banner does not say which partition P5-P4 can check"),
+        (r"final 35/35 is established later, by P5-FIN|deferred past Phase 5",
+         "the banner does not say where the final 35/35 comes from"),
+        (r"PHASE 5 GATE B IS CLOSED",
+         "the banner does not record that Phase 5 Gate B has executed"),
+        (r"Runs 1-4 have executed",
+         "the banner does not separate Phase 5's closure from Step 13's open state"),
+    ):
+        assert re.search(required, flat), why
