@@ -2720,6 +2720,7 @@ def build_gate_b_oracle_measurements(
     measurements: list[dict[str, Any]],
     portable_sha256: str,
     source_revision: str,
+    source_tree_clean: bool,
 ) -> dict[str, Any]:
     """The host-local oracle measurements, with the provenance that makes them usable.
 
@@ -2766,6 +2767,12 @@ def build_gate_b_oracle_measurements(
         "iterations": portable["iterations"],
         "supplied_seed": portable["supplied_seed"],
         "source_revision": source_revision,
+        # ESTABLISHED AT GENERATION, AND IT DOES NOT WASH OUT. A commit id says
+        # which commit is checked out; this says whether the tracked source that
+        # produced these numbers IS that commit. Reverting a local change after
+        # the build cannot retract it, which is the point: the artefact carries
+        # what was true when it was made.
+        "source_tree_clean": bool(source_tree_clean),
         "host": {
             "system": _platform.system(),
             "release": _platform.release(),

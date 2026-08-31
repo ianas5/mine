@@ -241,9 +241,11 @@ def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> No
     # of the artefact-load `try` reindented every line of it. Enumerated in full
     # so a fourth change cannot hide among them.
     assert removed == [
-        # 1. the pre-Excel gate is given the harness commit
+        # 1. the pre-Excel gate is given the harness commit and the repo root
         "    if (-not (Invoke-Phase6CoveragePreflight -BuildDir $BuildDir)) {",
-        # 2. the host-local oracle joins the required-artefact list
+        # 2. the host-local oracle joins the required-artefact list, and the
+        #    comment above it stops describing one expected-value source
+        "    # one expected-value source, and nothing in the harness may restate either.",
         "                            $simInspectPath, $simCasesPath)) {",
         # 3. the capture block, moved earlier and reindented
         "    # THE SOURCE COMMIT, CAPTURED NOT ASSUMED. Every runtime result has to be",
@@ -271,7 +273,8 @@ def test_02_the_phase4_driver_carries_the_wiring_and_nothing_was_removed() -> No
                      "$simOraclePath = Join-Path $BuildDir 'phase6_gate_b_oracle_local.json'",
                      "Copy-Item -LiteralPath $simOraclePath -Destination $tempRoot",
                      "-OracleEvidence $simOracle",
-                     "-HarnessCommit $harnessCommit)) {"):
+                     "-HarnessCommit $harnessCommit -RepoRoot $repoRoot)) {",
+                     "PORTABLE case authority, and one host-local numerical measurement set"):
         assert any(required in line for line in added), required
     # THE HOST-LOCAL EVIDENCE IS REQUIRED BEFORE EXCEL, like the other two.
     assert any("$simOraclePath" in line and "$simCasesPath" in line for line in added), (
@@ -1698,14 +1701,35 @@ def test_56_the_whole_tree_freeze_runs_from_the_repository_root() -> None:
     assert "$PccmRoot" not in code, "the Phase-6 block still carries the pccm root"
     for line in re.findall(r"[^\n]*& git -C [^\n]*", code):
         assert "$RepoRoot" in line, f"a git invocation does not use the repo root: {line.strip()}"
-    # The INVOCATION, not every line that mentions the flag: the result line
-    # quotes it back in its diagnostic.
+    # EVERY `diff --quiet` INVOCATION, BY ITS PATHSPEC. There are three now -
+    # the production freeze against the pinned baseline, and the two clean-tree
+    # checks against HEAD - and each is a place the Run-2 fail-open could
+    # reappear, so each is checked rather than counted.
+    #
+    # The INVOCATION, not every line that mentions the flag: the result lines
+    # quote it back in their diagnostics.
     freeze = [line for line in code.splitlines() if "& git" in line and "diff --quiet" in line]
-    assert len(freeze) == 1, freeze
-    assert "-C $RepoRoot" in freeze[0]
-    assert "'pccm/src' 'pccm/spec'" in freeze[0]
-    # AND THE PATHSPEC IS PROVED TO MATCH SOMETHING.
-    assert "ls-tree -r --name-only" in code
+    assert len(freeze) >= 1, freeze
+    for line in freeze:
+        assert "-C $RepoRoot" in line, line.strip()
+    baseline = [line for line in freeze if "'pccm/src' 'pccm/spec'" in line]
+    assert len(baseline) == 1, baseline
+    assert "$baseline" in baseline[0], baseline[0]
+    # THE CLEAN-TREE CHECKS COMPARE AGAINST HEAD, over the whole tracked subtree:
+    # a narrower pathspec would leave a source capable of changing the run
+    # outside the statement.
+    clean = [line for line in freeze if line not in baseline]
+    assert len(clean) == 2, clean
+    for line in clean:
+        assert "HEAD -- 'pccm'" in line, line.strip()
+
+    # AND EVERY PATHSPEC IS PROVED TO MATCH SOMETHING. A pathspec that names
+    # nothing yields no diff, so `--quiet` exits 0 and the tree reads clean.
+    listings = [line for line in code.splitlines()
+                if "& git" in line and "ls-tree -r --name-only" in line]
+    assert len(listings) == 3, listings
+    assert any("'pccm/src' 'pccm/spec'" in line for line in listings)
+    assert len([line for line in listings if "HEAD -- 'pccm'" in line]) == 2, listings
     assert "the freeze pathspec matches the production trees it names" in code
 
     driver = _text(HARNESS)
@@ -2522,3 +2546,102 @@ def test_72_the_host_local_oracle_is_bound_to_the_run_that_consumes_it() -> None
     assert "-HarnessCommit $harnessCommit" in driver[gate_at:gate_at + 200], (
         "the pre-Excel gate is not given the harness commit"
     )
+
+
+def test_73_the_evidence_is_bound_to_head_bytes_and_not_only_to_a_commit_id() -> None:
+    """A commit id identifies a commit. It does not identify bytes.
+
+    `git rev-parse HEAD` answers "which commit is checked out" and says nothing
+    about whether the tracked files that produced a measurement — or the tracked
+    files about to execute — are the files that commit holds. Two paths follow
+    from that, and a revision comparison alone sees neither:
+
+      GENERATION  modify a tracked builder source, run Stage A, revert. The
+                  revision recorded is the clean HEAD, and the numbers came from
+                  source that commit never held.
+      RUNTIME     generate from a clean tree, then modify a tracked harness file
+                  and run. HEAD is unchanged and the bytes executing are not it.
+
+    So the clean fact is established twice and in two different places: once at
+    GENERATION, written into the artefact where reverting cannot retract it, and
+    once BEFORE EXCEL, over the tree about to run.
+    """
+    evidence = _oracle_evidence()
+    assert "source_tree_clean" in evidence, (
+        "the host-local measurements record a commit id with no statement about "
+        "whether the tracked source that produced them was that commit"
+    )
+    assert isinstance(evidence["source_tree_clean"], bool)
+    # AND THE EMITTED ARTEFACT IS ELIGIBLE. This is the rule the Windows gate
+    # applies, applied here to the package under review: measurements generated
+    # from a modified tracked tree are not Gate-B evidence, and reverting the
+    # modification afterwards does not make them so.
+    assert evidence["source_tree_clean"] is True, (
+        "the host-local measurements were generated from a tracked tree that "
+        "differed from HEAD, so they are not Gate-B eligible; rebuild Stage A "
+        "from a clean checkout"
+    )
+
+    # ---- GENERATION: the builder establishes it, and does not assume it ----
+    emit = _text(PCCM_ROOT / "builder" / "pccm_builder" / "sim_emit.py")
+    assert "def _generation_provenance()" in emit
+    assert '"diff", "--quiet", "HEAD"' in emit, (
+        "the builder does not compare the tracked tree against HEAD"
+    )
+    assert '"ls-tree"' in emit, (
+        "the builder does not prove its pathspec matches anything, so a pathspec "
+        "that named nothing would report a dirty tree as clean"
+    )
+    # FAIL CLOSED, EVERY WAY OUT. No path may return a clean verdict it did not
+    # establish: the only `True` is the one the diff produced.
+    body = emit.split("def _generation_provenance()")[1].split("\ndef ")[0]
+    assert "return revision, True" not in body, (
+        "the builder can report a clean tree without having established one"
+    )
+    for refusal in ('return "unavailable", False', "return revision, False"):
+        assert refusal in body, refusal
+    assert body.count("return revision, diff.returncode == 0") == 1, (
+        "the clean verdict no longer comes from the diff that established it"
+    )
+
+    # ---- BOTH GATES REQUIRE IT ----
+    code = _executable(PHASE6)
+    preflight = code.split("function Invoke-Phase6CoveragePreflight")[1].split(
+        "\nfunction ")[0]
+    artefact = code.split("$baseline = Get-Phase6ProductionBaseline")[1].split(
+        "Add-Phase6Result 'P6-ART'")[0]
+    for block, where in ((preflight, "PRE6"), (artefact, "P6-ART")):
+        generation = [line for line in block.splitlines()
+                      if "source_tree_clean" in line and "Add-Check" not in line
+                      and "[bool]" in line]
+        assert generation, (
+            f"{where} does not require the measurements to have been generated "
+            "from a clean tracked tree"
+        )
+        runtime = [line for line in block.splitlines()
+                   if "diff --quiet HEAD" in line and "'pccm'" in line]
+        assert runtime, (
+            f"{where} does not establish that the tracked tree being executed "
+            "matches the harness commit"
+        )
+        assert "-C $RepoRoot" in runtime[0], runtime[0]
+        # AND THE VERDICT IS NOT A CONSTANT.
+        assert f"$true" not in " ".join(
+            line for line in block.splitlines()
+            if "the tracked pccm tree" in line and "Add-Check" in line), where
+
+    # THE PRE-EXCEL GATE IS GIVEN WHAT IT NEEDS TO ASK.
+    driver = _text(HARNESS)
+    gate_at = driver.index("Invoke-Phase6CoveragePreflight -BuildDir $BuildDir")
+    assert "-RepoRoot $repoRoot" in driver[gate_at:gate_at + 220], (
+        "the pre-Excel gate cannot compare a tree it was never given the root of"
+    )
+    excel_at = driver.index("Prepare a disposable copy of the build")
+    assert gate_at < excel_at
+
+    # UNTRACKED OUTPUT IS NOT SOURCE DRIFT. `git diff` does not report untracked
+    # files at all, which is why an ignored build/ or a retained run log leaves
+    # the tree clean — and why this measured claim belongs beside the check.
+    assert subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "pccm"],
+                          cwd=REPO_ROOT, capture_output=True,
+                          check=False).returncode in (0, 1)

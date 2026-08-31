@@ -262,7 +262,7 @@ function Format-Phase6Err {
 # so an artefact that never arrived stops the run at a point where the diagnosis
 # is one line rather than a cascade of COM failures forty minutes later.
 function Invoke-Phase6CoveragePreflight {
-    param([string]$BuildDir, [string]$HarnessCommit)
+    param([string]$BuildDir, [string]$HarnessCommit, [string]$RepoRoot)
 
     $ok = $true
     $inspectionPath = Join-Path $BuildDir 'phase6_gate_b_inspection.json'
@@ -316,9 +316,11 @@ function Invoke-Phase6CoveragePreflight {
             ($null -ne $inspection.controls.PSObject.Properties[$key])
     }
 
-    # THE EXPECTATION CORPUS IS PRESENT AND NON-EMPTY, and every parity case
-    # carries the fields a comparison consumes. A corpus that lost its digests
-    # must stop the run here, not silently compare nothing on Windows.
+    # THE PARITY PAIR IS PRESENT AND NON-EMPTY, and every case carries the fields
+    # its own half is responsible for: the exact expectations and the accepted
+    # scale in the portable authority, the floating ladder in the host-local
+    # measurements. A pair that lost either half must stop the run here, not
+    # silently compare nothing on Windows.
     $parity = @($cases.parity_cases)
     $null = Add-Check $list 'the parity corpus carries at least one case' `
         ($parity.Count -ge 1) ('cases: ' + $parity.Count)
@@ -444,6 +446,61 @@ function Invoke-Phase6CoveragePreflight {
          ($HarnessCommit -match '^[0-9a-f]{40}$') -and
          ($oracleRevision -ceq $HarnessCommit)) `
         ('evidence ' + $oracleRevision + ', HEAD ' + $HarnessCommit)
+
+    # AND THE COMMIT IT NAMES IS THE SOURCE IT CAME FROM.
+    #
+    # A commit id identifies a commit, not bytes. Stage-A establishes at
+    # GENERATION whether the tracked source that produced these measurements was
+    # the source that commit holds, and records the answer here. Reverting a
+    # local change after the build cannot retract it, so the one path a revision
+    # comparison alone cannot see - generate dirty, restore, then run - is
+    # refused by a fact that was already written down.
+    $null = Add-Check $list 'the oracle evidence was generated from a clean tracked tree' `
+        ([bool]$oracle.source_tree_clean) `
+        ('source_tree_clean ' + [string]$oracle.source_tree_clean)
+
+    # THE SAME QUESTION, ASKED OF THE TREE ABOUT TO RUN.
+    #
+    # Stage-A's answer is about generation. This one is about execution: the
+    # PowerShell being dot-sourced, the driver running it and the production
+    # source it exercises must all be the bytes the named harness commit holds,
+    # or the run is not attributable to it. `git diff --quiet HEAD` compares the
+    # working tree AND the index, so a staged change is caught as surely as an
+    # unstaged one, while untracked files - an ignored build/, a retained run
+    # log - are not reported by `git diff` at all and correctly do not make the
+    # source dirty.
+    #
+    # THE PATHSPEC IS REPOSITORY-ROOT RELATIVE and is proved to match something.
+    # A pathspec that names nothing yields no diff, so `--quiet` exits 0 and a
+    # dirty tree reads as clean: the fail-open shape the Run-2 review found in
+    # P6-ART, and it is not repeated here.
+    $treeClean = $false
+    $treeDetail = 'git was not available'
+    if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
+        try {
+            $tracked = @(& git -C $RepoRoot ls-tree -r --name-only HEAD -- 'pccm' 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $tracked.Count -gt 0) {
+                $null = & git -C $RepoRoot diff --quiet HEAD -- 'pccm' 2>$null
+                $code = $LASTEXITCODE
+                if ($code -eq 0) {
+                    $treeClean = $true
+                    $treeDetail = 'no tracked change against HEAD over ' +
+                                  [string]$tracked.Count + ' files'
+                } elseif ($code -eq 1) {
+                    $treeDetail = 'tracked files differ from HEAD'
+                } else {
+                    $treeDetail = 'git diff exit code ' + [string]$code
+                }
+            } else {
+                $treeDetail = 'the pccm pathspec matched nothing at HEAD'
+            }
+        } catch {
+            $treeClean = $false
+            $treeDetail = [string]$_.Exception.Message
+        }
+    }
+    $null = Add-Check $list 'the tracked pccm tree being executed matches the harness commit' `
+        $treeClean $treeDetail
     # AND EACH SAYS WHICH KIND OF ARTEFACT IT IS. The authority claims
     # cross-platform invariance; the evidence explicitly does not.
     $null = Add-Check $list 'the authority claims cross-platform invariance' `
@@ -1496,6 +1553,33 @@ function Invoke-Phase6GateBScenarios {
              ([string]$OracleEvidence.source_revision -ceq [string]$HarnessCommit)) `
             ('evidence ' + [string]$OracleEvidence.source_revision +
              ', HEAD ' + [string]$HarnessCommit)
+        $null = Add-Check $list 'the oracle evidence was generated from a clean tracked tree' `
+            ([bool]$OracleEvidence.source_tree_clean) `
+            ('source_tree_clean ' + [string]$OracleEvidence.source_tree_clean)
+        # AND THE TREE THAT RAN IS STILL THE NAMED COMMIT. PRE6 established this
+        # before Excel; re-asserting it inside the session is what keeps the
+        # runtime evidence attributable to the commit P6-ART reports, and it is
+        # a CHECK for the same reason PRE6's is.
+        $runtimeClean = $false
+        $runtimeDetail = 'git was not available'
+        try {
+            $trackedNow = @(& git -C $RepoRoot ls-tree -r --name-only HEAD -- 'pccm' 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $trackedNow.Count -gt 0) {
+                $null = & git -C $RepoRoot diff --quiet HEAD -- 'pccm' 2>$null
+                $runtimeClean = ($LASTEXITCODE -eq 0)
+                $runtimeDetail = 'git diff --quiet HEAD -- pccm exit code ' +
+                                 [string]$LASTEXITCODE + ' over ' +
+                                 [string]$trackedNow.Count + ' tracked files'
+            } else {
+                $runtimeDetail = 'the pccm pathspec matched nothing at HEAD'
+            }
+        } catch {
+            $runtimeClean = $false
+            $runtimeDetail = [string]$_.Exception.Message
+        }
+        $null = Add-Check $list 'the tracked pccm tree that ran matches the harness commit' `
+            $runtimeClean $runtimeDetail
+        $lines += ('runtime tracked tree            : ' + $runtimeDetail)
         $null = Add-Check $list 'the oracle evidence is declared host-local, not cross-platform' `
             (-not [bool]$OracleEvidence.portability.cross_platform_invariant)
         $null = Add-Check $list 'the case authority is declared cross-platform invariant' `

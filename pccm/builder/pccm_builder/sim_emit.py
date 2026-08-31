@@ -167,7 +167,7 @@ def emit_sim_gate_b_artifacts(
                 portable,
                 measurements,
                 hashlib.sha256(cases_text.encode("utf-8")).hexdigest(),
-                _source_revision(),
+                *_generation_provenance(),
             ),
             indent=2,
             sort_keys=False,
@@ -181,30 +181,64 @@ def emit_sim_gate_b_artifacts(
     )
 
 
-def _source_revision() -> str:
-    """The revision this evidence was generated from, or a plain refusal.
+def _generation_provenance() -> tuple[str, bool]:
+    """(revision, tracked tree clean) for the tree these measurements came from.
 
-    Recorded, never guessed: evidence with no attributable source revision is
-    weaker evidence, and writing "unknown" while pretending otherwise would hand
-    that weakness on as though it were strength. `unavailable` is written when
-    git cannot be read, and the Gate-B preflight REFUSES it - a host-local
-    artefact whose provenance replaces a cross-platform hash has to carry a real
-    commit identity or it is not evidence about a run.
+    A COMMIT ID IDENTIFIES A COMMIT, NOT BYTES. `git rev-parse HEAD` answers
+    "which commit is checked out", and says nothing about whether the tracked
+    files that just produced these numbers are the files that commit holds. So a
+    measurement generated from a locally modified builder would be labelled with
+    a clean commit, the modification could be reverted before the run, and the
+    provenance that replaced the cross-platform hash would be describing source
+    that never produced it.
+
+    The clean fact is therefore established HERE, at generation, and travels
+    with the artefact. Reverting the change afterwards cannot retract it.
+
+    `git diff --quiet HEAD -- pccm` compares the working tree AND the index
+    against HEAD over the whole tracked subtree, so a staged change is caught as
+    surely as an unstaged one. Untracked files are not reported by `git diff`,
+    so an ignored `build/` directory or a retained run log does not make the
+    source dirty - which is the distinction that keeps this check honest rather
+    than merely strict. The `.gitattributes` eol rules apply to both sides, so a
+    CRLF checkout is not a difference.
+
+    Recorded, never guessed. `unavailable` and `False` are what a machine
+    without git gets, and the Gate-B preflight refuses both: a host-local
+    artefact with no attributable, clean source is not evidence about a run.
 
     THE FULL 40 CHARACTERS, not an abbreviation. This value is compared against
     the runtime harness HEAD, and two representations of one commit would make
     that comparison a string-formatting question instead of an identity one.
     """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(Path(__file__).resolve().parent.parent.parent),
-            capture_output=True, text=True, timeout=15, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "unavailable"
-    revision = result.stdout.strip()
-    return revision if result.returncode == 0 and revision else "unavailable"
+    repo_root = Path(__file__).resolve().parent.parent.parent.parent
+    subtree = Path(__file__).resolve().parent.parent.parent.name
+
+    def git(*arguments: str) -> subprocess.CompletedProcess[str] | None:
+        try:
+            return subprocess.run(
+                ["git", *arguments], cwd=str(repo_root),
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    head = git("rev-parse", "HEAD")
+    if head is None or head.returncode != 0 or not head.stdout.strip():
+        return "unavailable", False
+    revision = head.stdout.strip()
+
+    # AND THE PATHSPEC MUST MATCH SOMETHING. A pathspec that names nothing
+    # produces no diff, so `--quiet` exits 0 and the tree looks clean whatever
+    # it holds - the same fail-open shape the Run-2 review found in P6-ART.
+    listed = git("ls-tree", "-r", "--name-only", revision, "--", subtree)
+    if listed is None or listed.returncode != 0 or not listed.stdout.strip():
+        return revision, False
+
+    diff = git("diff", "--quiet", "HEAD", "--", subtree)
+    if diff is None or diff.returncode not in (0, 1):
+        return revision, False
+    return revision, diff.returncode == 0
 
 
 # ---------------------------------------------------------------------------

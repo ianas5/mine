@@ -62,7 +62,9 @@ start Excel. Step 13 asks the questions only a real COM session can answer:
 * does the accepted workbook build, open and **compile**;
 * is the Phase-6 public surface callable;
 * does a FIXED run publish a result, and does a repeat publish the same digest;
-* **does real Excel produce the number the accepted Python oracle produces**;
+* **does real Excel agree with the accepted Python oracle under the Step-0
+  cross-implementation evidence policy** — exact on the identity and discrete
+  subjects, within §10.3 on every floating row;
 * does an AUTO run consume, persist and clear correctly, and never replay;
 * do the three accepted failpoints leave the workbook in the states the
   transaction says they should;
@@ -135,12 +137,21 @@ empty. The authority is Phase 5's own, consumed rather than reimplemented, and
 `P5-LDG` still emits its verdict at the accepted point in the lifecycle — the
 Phase-6 block does not emit it early, and `test_54` refuses a version that does.
 
-### 2.3 The one change to the accepted driver
+### 2.3 The authorised changes to the accepted driver
 
-`phase4_functional_test.ps1` gains a dot-source, a preflight call, two artefact
-loads, one harness-commit capture, one scenario call, one ledger-verdict call and
-a summary that names Phase 6. `test_02` names every accepted line the correction
-may rewrite and refuses any other removal; `test_01` proves
+Step 13 opened with one, and the Windows runs added two more. As it stands,
+`phase4_functional_test.ps1` gains a dot-source, a preflight call, three artefact
+loads, one harness-commit capture, one pre-open artefact capture, one scenario
+call, one ledger-verdict call and a summary that names Phase 6.
+
+| change | why | round |
+|---|---|---|
+| the Phase-6 wiring — dot-source, preflight, artefact loads, scenario call, ledger verdict, summary | Step 13 itself | original |
+| the pre-open artefact capture, and the two arguments that carry it | Run 4: `Get-FileHash` cannot read a workbook Excel holds open | Run-4 correction |
+| the harness-commit capture moved above the pre-Excel gate, and the host-local oracle joining the required-artefact list | the gate has to refuse a stale or dirty host-local oracle before Excel starts | settlement |
+
+`test_02` enumerates every accepted line the corrections may rewrite and refuses
+any other removal; `test_01` proves
 `phase5_gate_b_scenarios.ps1`, `phase5_gate_b_diagnostics.bas`,
 `com_lifecycle.ps1` and `build_stage_b.ps1` are line-for-line what the production
 baseline holds.
@@ -347,7 +358,7 @@ KEY in `sim_contract.yaml`; `test_10` refuses a bound spelled in the harness.
 
 | ID | Proves | Evidence source |
 |---|---|---|
-| `P6-PRE` | Phase-4 35/35 and the Phase-5 block are intact | recorded results |
+| `P6-PRE` | the **derived** Phase-4 prerequisite partition is complete and the Phase-5 block is intact — `Y`, `Z` and the final 35/35 are POST-SESSION and are proved later by `P5-FIN` | recorded results + the pending Phase-5 ledger |
 | `P6-ART` | source commit, Stage-A hash, executed `.xlsm` hash, manifest and all three artefact hashes, and the host-local oracle bound to this run's HEAD | pre-open capture + `Get-FileHash` on the driven copy |
 | `P6-CMP` | the project that compiled contains the eight `modSim*` modules — **derived from `P5-CMP`** | no second compile |
 | `P6-M` | the proved inventory is the manifest's 23-module set — **derived from `P5-M`** | no second inventory |
@@ -470,8 +481,11 @@ fail-open in the same way.
 ### 4.6 Two commits, and they are not the same commit
 
 `P6-ART` reports the **production baseline** — a pinned review authority,
-`bc7949b`, checked against the Python `PRODUCTION_BASELINE` by `test_52` — and
-the **runtime harness commit**, `git rev-parse HEAD`, separately and by name. The
+`79e4600` since the `SameCell` repair, checked against the Python
+`PRODUCTION_BASELINE` by `test_52` — and the **runtime harness commit**,
+`git rev-parse HEAD`, separately and by name. Run 1's evidence in §8.1 names
+`bc7949b`, which was the baseline at that time; that is history and stays as it
+was written. The
 first submission passed HEAD in as `SourceCommit` and printed it as the
 production baseline, which conflated the two identities the authorisation
 requires to stay distinct.
@@ -530,13 +544,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **76** controls, in eleven groups:
+`tests/test_phase6_gate_b_harness_source.py` — **77** controls, in twelve groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **173** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **181** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -675,6 +689,28 @@ Fifteen mutations: each of the six superseded statements restored, and
 binding weakened to a prefix, the pre-Excel comparison removed, the runtime
 scenario reduced to printing, and the pair disagreeing on the supplied seed, the
 schema version, the case authority and the policy authority.
+
+A twelfth closes the gap between a commit id and a set of bytes. `git rev-parse
+HEAD` says which commit is checked out and nothing about whether the tracked
+files that produced a measurement — or the tracked files about to execute — are
+the files that commit holds, so two paths pass a revision comparison unseen:
+generate from a modified builder and revert before the run, or generate cleanly
+and then modify a tracked harness file. The clean fact is now established twice.
+**At generation**, `_generation_provenance` compares the tracked `pccm` subtree
+against HEAD and writes `source_tree_clean` into the artefact, where reverting
+the change afterwards cannot retract it; it fails closed on every path, and the
+only `True` it can return is the one the diff produced. **Before Excel**, `PRE6`
+requires that fact AND runs `git diff --quiet HEAD -- pccm` over the tree about
+to execute, with the pathspec proved to match something so the Run-2 fail-open
+cannot reappear; `P6-ART` re-asserts both inside the session. Untracked output —
+an ignored `build/`, a retained run log — is not reported by `git diff` and
+correctly does not make the source dirty.
+
+`test_73` proves the mechanism and refuses a package whose measurements were not
+generated from a clean tree. Eight mutations: the clean fact dropped from the
+artefact, a dirty generation, the builder hardcoding `True`, the builder falling
+back to `rev-parse` alone, each gate's runtime check defanged, the generation
+demand defanged, and the running-tree pathspec narrowed to `pccm/src`.
 
 ---
 

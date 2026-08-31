@@ -2003,3 +2003,123 @@ def test_171_the_oracle_names_a_different_policy_authority() -> None:
     def edit(document):
         document["evidence_policy_authority"] = "docs/phase6_plan.md §15.1"
     _control("test_72", oracle=_json_mutation(_ORACLE, edit))
+
+
+# ===========================================================================
+# M. A commit id is not a set of bytes
+# ===========================================================================
+def test_172_the_generation_records_no_clean_tree_fact_at_all() -> None:
+    """A revision alone cannot see the generate-dirty-then-revert path."""
+    def edit(document):
+        del document["source_tree_clean"]
+    _control("test_73", oracle=_json_mutation(_ORACLE, edit))
+
+
+def test_173_the_oracle_was_generated_from_a_dirty_tracked_tree() -> None:
+    """The whole point of recording it at generation: a tracked builder source
+    was modified, the measurements were produced from it, and reverting the file
+    afterwards cannot retract what the artefact already says."""
+    def edit(document):
+        document["source_tree_clean"] = False
+    _control("test_73", oracle=_json_mutation(_ORACLE, edit))
+
+
+def test_174_the_generation_hardcodes_a_clean_tree() -> None:
+    """A verdict that was never established is not a verdict."""
+    emit = conformance.PCCM_ROOT / "builder" / "pccm_builder" / "sim_emit.py"
+    original = emit.read_text(encoding="utf-8")
+    damaged = original.replace("    return revision, diff.returncode == 0",
+                               "    return revision, True", 1)
+    assert damaged != original
+    saved = conformance.PCCM_ROOT
+    with tempfile.TemporaryDirectory(prefix="pccm-step13-emit-") as name:
+        root = Path(name)
+        (root / "builder" / "pccm_builder").mkdir(parents=True)
+        (root / "builder" / "pccm_builder" / "sim_emit.py").write_text(
+            damaged, encoding="utf-8")
+        for relative in ("build/phase6_gate_b_oracle_local.json",):
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            (root / relative).write_text(_ORACLE, encoding="utf-8")
+        conformance.PCCM_ROOT = root
+        try:
+            refused = False
+            try:
+                conformance.test_73_the_evidence_is_bound_to_head_bytes_and_not_only_to_a_commit_id()
+            except AssertionError as error:
+                refused = True
+                assert "without having established" in str(error), error
+        finally:
+            conformance.PCCM_ROOT = saved
+    assert refused, "the builder may report a clean tree it never established"
+
+
+def test_175_the_generation_stops_comparing_against_head() -> None:
+    """`rev-parse HEAD` alone is the defect this settles."""
+    emit = conformance.PCCM_ROOT / "builder" / "pccm_builder" / "sim_emit.py"
+    original = emit.read_text(encoding="utf-8")
+    damaged = original.replace('"diff", "--quiet", "HEAD"', '"rev-parse", "HEAD"', 1)
+    assert damaged != original
+    saved = conformance.PCCM_ROOT
+    with tempfile.TemporaryDirectory(prefix="pccm-step13-emit2-") as name:
+        root = Path(name)
+        (root / "builder" / "pccm_builder").mkdir(parents=True)
+        (root / "builder" / "pccm_builder" / "sim_emit.py").write_text(
+            damaged, encoding="utf-8")
+        (root / "build").mkdir()
+        (root / "build" / "phase6_gate_b_oracle_local.json").write_text(
+            _ORACLE, encoding="utf-8")
+        conformance.PCCM_ROOT = root
+        try:
+            refused = False
+            try:
+                conformance.test_73_the_evidence_is_bound_to_head_bytes_and_not_only_to_a_commit_id()
+            except AssertionError as error:
+                refused = True
+                assert "against HEAD" in str(error), error
+        finally:
+            conformance.PCCM_ROOT = saved
+    assert refused, "the builder no longer compares the tracked tree against HEAD"
+
+
+def test_176_the_pre_excel_gate_stops_checking_the_running_tree() -> None:
+    """A tracked harness file modified after Stage A leaves HEAD unchanged, so
+    every revision comparison still passes while other bytes execute."""
+    damaged = _swap(
+        _PHASE6,
+        "    $null = Add-Check $list 'the tracked pccm tree being executed matches the harness commit' `\n"
+        "        $treeClean $treeDetail\n",
+        "    $null = Add-Check $list 'the tracked pccm tree being executed matches the harness commit' `\n"
+        "        $true $treeDetail\n")
+    _control("test_73", phase6=damaged)
+
+
+def test_177_the_runtime_scenario_stops_re_asserting_the_running_tree() -> None:
+    """P6-ART reports the harness commit; the evidence has to stay attributable
+    to it inside the session, not only at the gate."""
+    damaged = _swap(
+        _PHASE6,
+        "        $null = Add-Check $list 'the tracked pccm tree that ran matches the harness commit' `\n"
+        "            $runtimeClean $runtimeDetail\n",
+        "        $lines += ('runtime tracked tree clean: ' + [string]$runtimeClean)\n")
+    _control("test_73", phase6=damaged)
+
+
+def test_178_the_pre_excel_gate_stops_requiring_a_clean_generation() -> None:
+    """Generation-time and runtime are different questions, and dropping the
+    first restores the generate-dirty-then-revert path in full."""
+    damaged = _swap(
+        _PHASE6,
+        "    $null = Add-Check $list 'the oracle evidence was generated from a clean tracked tree' `\n"
+        "        ([bool]$oracle.source_tree_clean) `\n",
+        "    $null = Add-Check $list 'the oracle evidence was generated from a clean tracked tree' `\n"
+        "        ($true) `\n")
+    _control("test_73", phase6=damaged)
+
+
+def test_179_the_running_tree_check_narrows_to_a_subpath() -> None:
+    """`pccm/src` would leave the builder, the policy and the whole Step-13
+    PowerShell outside the statement - every source capable of changing the run."""
+    damaged = _PHASE6.replace("diff --quiet HEAD -- 'pccm' 2>$null",
+                              "diff --quiet HEAD -- 'pccm/src' 2>$null")
+    assert damaged != _PHASE6
+    _control("test_73", phase6=damaged)
