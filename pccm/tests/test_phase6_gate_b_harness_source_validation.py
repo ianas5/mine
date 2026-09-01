@@ -2533,3 +2533,134 @@ def test_211_the_harness_canonicaliser_converts_a_lone_cr() -> None:
         "                   'bare CR is not a third one')\n",
         "            $null = $canonical.Add([byte]0x0A)\n")
     _control("test_77", phase6=damaged)
+
+
+# ===========================================================================
+# Q. Closure is a claim, and a claim needs a control
+# ===========================================================================
+def _closure_refuses(rewrite, fragment: str) -> None:
+    """Run the closure and preamble controls over a damaged document."""
+    original = _DOC.read_text(encoding="utf-8")
+    damaged = rewrite(original)
+    assert damaged != original, "the mutation changed nothing"
+    saved = conformance.PCCM_ROOT
+    with tempfile.TemporaryDirectory(prefix="pccm-closure-") as name:
+        root = Path(name)
+        (root / "docs").mkdir()
+        (root / "docs" / "phase6_step13_gate_b.md").write_text(damaged, encoding="utf-8")
+        conformance.PCCM_ROOT = root
+        try:
+            refused = []
+            for control in (
+                conformance.test_78_the_closure_states_what_run_6_established_and_no_more,
+                conformance.test_66_the_active_preamble_states_what_has_run_and_what_has_not,
+            ):
+                try:
+                    control()
+                except AssertionError as error:
+                    refused.append(str(error))
+        finally:
+            conformance.PCCM_ROOT = saved
+    assert refused, "the mutation survived both closure controls"
+    assert any(fragment in message for message in refused), (fragment, refused)
+
+
+def test_212_the_closing_run_is_recorded_without_having_executed() -> None:
+    """`<this commit>` is the placeholder for a run that has not happened."""
+    _closure_refuses(lambda doc: doc.replace("| **Run 6** | `a3924e0` |",
+                                             "| **Run 6** | `<this commit>` |", 1),
+                     "recorded as all green against")
+
+
+def test_213_the_closing_row_records_a_failure() -> None:
+    _closure_refuses(lambda doc: doc.replace("103 passed, 0 failed, 0 skipped. Phase-4",
+                                             "103 passed, 1 failed, 0 skipped. Phase-4", 1),
+                     # The tally demand refuses first; both messages name the
+                     # same finding, and this is the one that fires.
+                     "103 passed")
+
+
+def test_214_the_closing_row_records_a_skip() -> None:
+    _closure_refuses(lambda doc: doc.replace("103 passed, 0 failed, 0 skipped. Phase-4",
+                                             "103 passed, 0 failed, 2 skipped. Phase-4", 1),
+                     "103 passed")
+
+
+def test_215_the_phase6_tally_is_less_than_the_matrix() -> None:
+    _closure_refuses(lambda doc: doc.replace("Phase-6 29/29. `P6-ART` PASS",
+                                             "Phase-6 27/29. `P6-ART` PASS", 1),
+                     "does not state Phase-6 29/29")
+
+
+def test_216_a_settled_scenario_is_still_reported_open() -> None:
+    """P6-ART, P6-ORA, P6-DET and P6-FP3 were each open at some point; a closure
+    that still says so is describing a state the ledger says it left."""
+    _closure_refuses(
+        lambda doc: doc.replace(
+            "`P6-ORA` on the\naccepted tolerance rule",
+            "`P6-ORA` remains OPEN and unresolved; the\naccepted tolerance rule", 1),
+        "as open")
+
+
+def test_217_a_settled_scenario_loses_its_pass_record() -> None:
+    _closure_refuses(
+        lambda doc: doc.replace(
+            "P6-LDG                             PASS  (28 scenario results, 0 duplicates)\n",
+            "", 1),
+        "is not recorded as passing")
+
+
+def test_218_the_status_line_stops_stating_closure() -> None:
+    _closure_refuses(lambda doc: doc.replace("**Status: CLOSED.", "**Status: OPEN.", 1),
+                     "does not state closure")
+
+
+def test_219_the_closure_does_not_name_the_baseline_it_closed_against() -> None:
+    _closure_refuses(
+        lambda doc: doc.replace(
+            "The production baseline remains `79e4600`.**",
+            "The production baseline is unchanged.**", 1),
+        "does not name the production baseline")
+
+
+def test_220_a_static_only_subject_is_dropped_by_the_all_green_run() -> None:
+    """An all-green run proves the scenarios that ran, not the arms that cannot
+    be reached. Every subject removed here was never induced."""
+    # THE ROW INSIDE THE BOUNDARY, not the first row anywhere. `FinalCommit`
+    # also names a row in the scenario matrix, and removing that one leaves the
+    # boundary intact - a mutation that damaged the wrong table would look like
+    # a surviving mutation and send the next reader after the wrong control.
+    document = _DOC.read_text(encoding="utf-8")
+    boundary = document.split("## 5.")[1].split("\n## ")[0]
+    for subject in conformance.STATIC_ONLY_SUBJECTS:
+        rows = [line for line in boundary.splitlines()
+                if line.startswith("|") and subject in line]
+        assert len(rows) == 1, (subject, len(rows))
+        _closure_refuses(lambda doc, row=rows[0]: doc.replace(row + "\n", "", 1),
+                         "has been dropped from the static-only list")
+
+
+def test_221_the_closure_claims_the_unreachable_arms_were_induced() -> None:
+    _closure_refuses(
+        lambda doc: doc.replace(
+            "**None of those was induced**",
+            "Every failure mode was induced and nothing remains static-only", 1),
+        "which no run established")
+
+
+def test_222_run_id_exhaustion_returns_to_static_only() -> None:
+    """`P6-RIDMAX` proved it on Windows; putting it back would understate the
+    evidence as surely as over-claiming would overstate it."""
+    _closure_refuses(
+        lambda doc: doc.replace(
+            "**No longer static-only:** cross-implementation parity (`P6-ORA`, D2b) and\nrun-ID exhaustion (`P6-RIDMAX`).",
+            "| run-ID exhaustion (`P6-RIDMAX`) | not runnable. |", 1),
+        "is back on the static-only list")
+
+
+def test_223_cross_implementation_parity_returns_to_static_only() -> None:
+    _closure_refuses(
+        lambda doc: doc.replace(
+            "**No longer static-only:** cross-implementation parity (`P6-ORA`, D2b) and\nrun-ID exhaustion (`P6-RIDMAX`).",
+            "| cross-implementation parity (`P6-ORA`) | not runnable. |", 1),
+        "is back on the static-only list")

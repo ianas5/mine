@@ -2088,12 +2088,18 @@ def test_63_the_documented_log_name_does_not_overwrite_a_recorded_run() -> None:
         f"{sorted(int(n) for n in recorded)}; an earlier run's evidence would be "
         "overwritten"
     )
-    # AND THE LEDGER SAYS WHICH RUN IS STILL TO BE MADE, and what the earlier
-    # ones established. A ledger that recorded only successes would be a way of
-    # losing the two attempts that found the defects.
-    assert "not yet executed" in doc
+    # AND THE LEDGER KEEPS WHAT THE EARLIER RUNS ESTABLISHED. A ledger that
+    # recorded only successes would be a way of losing the attempts that found
+    # the defects, which is the whole reason this control exists.
     assert "ABORTED PRE-EXCEL" in doc
     assert "VALID runtime attempt" in doc
+    # THE PENDING-RUN PHRASE IS REQUIRED ONLY WHILE A RUN IS PENDING. Once the
+    # ledger records an all-green closing run there is none, and demanding the
+    # phrase would force the document to invent one.
+    if "ALL GREEN" not in doc:
+        assert "not yet executed" in doc, (
+            "no run is recorded as all green and none is recorded as pending"
+        )
 
 
 def test_64_the_ledger_verdict_survives_the_zero_violation_case() -> None:
@@ -2209,6 +2215,11 @@ def test_66_the_active_preamble_states_what_has_run_and_what_has_not() -> None:
     # A TALLY, NOT A PHRASE. A run that reports a Phase-6 scenario count is a run
     # in which the behavioural matrix executed.
     behavioural = [n for n, outcome in rows if re.search(r"Phase-6\s+\d+/\d+", outcome)]
+    # AND A THIRD STATE. A run recorded as ALL GREEN closes the step, and what
+    # the preamble must say changes again: the open items it was required to
+    # name no longer exist, and demanding them would force the document to
+    # describe a state the ledger says it left.
+    closing = [n for n, outcome in rows if "ALL GREEN" in outcome]
     assert attempted, f"no run in the ledger has been attempted: {rows}"
     assert valid, f"no run in the ledger is a valid runtime attempt: {rows}"
 
@@ -2237,7 +2248,8 @@ def test_66_the_active_preamble_states_what_has_run_and_what_has_not() -> None:
     assert re.search(r"runtime[-\s]proven", flat, re.I), (
         "the preamble does not say which claims are runtime-proven"
     )
-    assert re.search(r"and no further|only those|limited to", flat, re.I), (
+    assert re.search(r"and no further|only those|limited to|this is now the whole list",
+                     flat, re.I), (
         "the preamble does not bound the runtime-proven claims to the evidence "
         "the recorded runs actually established"
     )
@@ -2246,7 +2258,36 @@ def test_66_the_active_preamble_states_what_has_run_and_what_has_not() -> None:
     unexecuted = (r"P6-ART[^.]*?P6-AXIS[^.]*?(unexecuted|not\s+(yet\s+)?executed)"
                   r"|no\s+production\s+Phase-6\s+simulation\s+procedure\s+has\s+executed"
                   r"|no\s+simulation\s+has\s+been\s+performed")
-    if behavioural:
+    if closing:
+        # CLOSED. The matrix ran and passed, so neither the unexecuted claim nor
+        # the open-item demand belongs here any more - but the boundary does.
+        assert not re.search(unexecuted, flat, re.I), (
+            "the preamble says the Phase-6 matrix is unexecuted while the ledger "
+            f"records it all green in {closing}"
+        )
+        assert re.search(r"\bclosed\b", flat, re.I), (
+            "the ledger records an all-green run but the preamble does not say "
+            "Step 13 is closed"
+        )
+        for number in closing:
+            assert re.search(rf"Run {number}[^.]*(all green|103/0/0|29/29)", flat, re.I), (
+                f"the preamble does not state what Run {number} actually reported"
+            )
+        # AND THE BOUNDARY SURVIVES THE PASS. An all-green run does not convert
+        # the arms that cannot be reached into runtime evidence, and a closure
+        # that stopped saying so would be the over-claim this step exists to
+        # refuse.
+        assert re.search(r"source-only|static-only", flat, re.I), (
+            "the closure does not keep the static-only boundary visible"
+        )
+        for induced in (r"every\s+failure\s+mode\s+was\s+induced",
+                        r"all\s+COM\s+failure[^.]*induced",
+                        r"nothing\s+remains\s+source-only",
+                        r"nothing\s+remains\s+static-only"):
+            assert not re.search(induced, flat, re.I), (
+                f"the closure claims /{induced}/, which no run established"
+            )
+    elif behavioural:
         assert not re.search(unexecuted, flat, re.I), (
             f"the preamble still says the Phase-6 matrix is unexecuted while the "
             f"ledger records it running in {behavioural}"
@@ -3147,3 +3188,118 @@ def test_77_the_generated_projection_has_a_baseline_bound_identity() -> None:
         "the harness canonicaliser converts a bare CR to LF instead of refusing it"
     )
     assert "throw" in canonicaliser
+
+
+# ===========================================================================
+# Q. Closure is a claim, and a claim needs a control
+# ===========================================================================
+STATIC_ONLY_SUBJECTS = (
+    "PERSISTENCE_INDETERMINATE",
+    "SharedReadRaised",
+    "ClearPending",
+    "1 048 543",
+    "NonceConsumed",
+    "FinalCommit",
+)
+
+
+def test_78_the_closure_states_what_run_6_established_and_no_more() -> None:
+    """A closing run is the one moment a document is most likely to over-claim.
+
+    Everything passed, so every hedge looks removable — and the two that must
+    NOT be removed are the ones that were never about failure: the arms this
+    harness cannot reach, and the derivation of `P6-CMP`/`P6-M` from a single
+    compile and a single inventory. This control reads the closure against the
+    ledger, in both directions: it refuses a document that under-states what Run
+    6 did, and one that states more than it did.
+    """
+    doc = _text(PCCM_ROOT / "docs" / "phase6_step13_gate_b.md")
+    preamble = _step13_preamble(doc)
+    current = _current_architecture(doc)
+    flat = " ".join(preamble.split())
+
+    rows = re.findall(r"\|\s*\*\*Run (\d+)\*\*\s*\|\s*`([^`]+)`\s*\|\s*([^|]*?)\s*\|", doc)
+    closing = [(n, source, outcome) for n, source, outcome in rows if "ALL GREEN" in outcome]
+    assert len(closing) == 1, f"the ledger records {len(closing)} closing runs"
+    number, source, outcome = closing[0]
+
+    # 1. THE RUN EXECUTED, AND ITS SOURCE IS NAMED. `<this commit>` is the
+    #    placeholder for a run that has not happened.
+    assert re.fullmatch(r"[0-9a-f]{7,40}", source), (
+        f"Run {number} is recorded as all green against {source!r}"
+    )
+    # 2-3. THE TALLIES ARE THE ONES THE RUN REPORTED.
+    for tally in (r"103 passed, 0 failed, 0 skipped", r"Phase-4 35/35",
+                  r"Phase-5 39/39", r"Phase-6 29/29"):
+        assert re.search(tally, outcome), f"the ledger row does not state {tally}"
+    assert not re.search(r"\b[1-9]\d* (failed|skipped)", outcome), (
+        f"the closing row records a failure or a skip: {outcome}"
+    )
+    # 4-7. THE SCENARIOS THAT WERE OPEN ARE RECORDED AS CLOSED, each named.
+    #
+    # The run's own §8 record is where a PASS is written down - that section is
+    # the closing run's evidence, not superseded prose - and the CURRENT claim
+    # that follows from it belongs in the preamble. Both are required, because
+    # either alone can drift from the other.
+    record = doc.split(f"### 8.{number} ")[1].split("\n## ")[0] if f"### 8.{number} " in doc \
+        else doc.split("## 8. Windows run ledger")[1].split("\n## ")[0]
+    for scenario in ("P6-ART", "P6-ORA", "P6-DET", "P6-FP3", "P6-FIN", "P6-LDG"):
+        assert re.search(rf"`?{scenario}`?[^.\n|]*PASS", record), (
+            f"{scenario} is not recorded as passing in Run {number}'s evidence"
+        )
+    for correction in ("P6-ORA", "P6-DET", "P6-FP3", "P6-ART"):
+        assert correction in flat, (
+            f"the preamble does not say {correction} is runtime-proven"
+        )
+    assert re.search(r"runtime[-\s]proven", flat, re.I)
+    for open_claim in (r"`?P6-ART`?[^.\n]*\b(FAIL|still open|remains open)",
+                       r"`?P6-ORA`?[^.\n]*\b(remains |still )?(OPEN|unresolved)",
+                       r"`?P6-DET`?[^.\n]*\b(remains |still )?OPEN",
+                       r"`?P6-FP3`?[^.\n]*\b(remains |still )?OPEN"):
+        assert not re.search(open_claim, preamble, re.I), (
+            f"the closure still reports /{open_claim}/ as open"
+        )
+    # 8. STEP 13 IS CLOSED, and says so.
+    assert re.search(r"Status:\s*CLOSED", preamble), (
+        "the status line does not state closure"
+    )
+    assert not re.search(r"STEP 13\s+(REMAINS\s+)?OPEN|Step 13 is open", preamble, re.I)
+
+    # 9. THE PRODUCTION BASELINE DID NOT MOVE TO MARK CLOSURE.
+    assert PRODUCTION_BASELINE in flat, (
+        "the closure does not name the production baseline it closed against"
+    )
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", PRODUCTION_BASELINE, "--", "pccm/src", "pccm/spec"],
+        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout.decode().strip()
+    assert not changed, f"production moved for the closure: {changed}"
+
+    # 10. THE STATIC-ONLY BOUNDARY SURVIVES THE PASS, subject by subject.
+    boundary = current.split("## 5.")[1].split("\n## ")[0]
+    for subject in STATIC_ONLY_SUBJECTS:
+        assert subject in boundary, (
+            f"{subject} has been dropped from the static-only list by an "
+            "all-green run that never induced it"
+        )
+    for induced in (r"every\s+failure\s+mode\s+was\s+induced",
+                    r"nothing\s+remains\s+(static|source)-only",
+                    r"the\s+COM\s+(read\s+)?raises?\s+(were|was)\s+induced"):
+        assert not re.search(induced, current, re.I), (
+            f"the closure claims /{induced}/, which no run established"
+        )
+    # AND THE DERIVED SCENARIOS ARE STILL DERIVED. One compile, one inventory.
+    assert re.search(r"P6-CMP[^.]*deriv|deriv[^.]*P6-CMP", current, re.I)
+    assert not re.search(r"second\s+(compile|inventory)\s+(was\s+)?(run|performed)",
+                         current, re.I)
+
+    # 11-12. AND THE TWO SUBJECTS THAT LEFT THE LIST DO NOT RETURN TO IT.
+    for proved, scenario in (("run-ID exhaustion", "P6-RIDMAX"),
+                             ("cross-implementation parity", "P6-ORA")):
+        for line in boundary.splitlines():
+            if not line.startswith("|") or "No longer" in line:
+                continue
+            assert scenario not in line or "No longer" in line, (
+                f"{proved} is back on the static-only list; {scenario} proved it"
+            )
+    assert "No longer static-only" in boundary
+    assert "P6-RIDMAX" in boundary and "P6-ORA" in boundary

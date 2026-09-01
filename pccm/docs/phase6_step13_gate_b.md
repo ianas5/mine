@@ -1,77 +1,50 @@
 # PCCM Phase 6 — Step 13: the Windows/Excel Gate-B runtime harness
 
-**Status: THE PHASE-6 BEHAVIOURAL MATRIX HAS EXECUTED. Runs 1–4 have run.
-Run 4's parity failure is reclassified as a HARNESS EVIDENCE-POLICY defect, and
-the D2 cross-platform portability defect it exposed is settled here.**
+**Status: CLOSED. Run 6 executed on `a3924e0` and passed 103/0/0 — Phase-4
+35/35, Phase-5 39/39, Phase-6 29/29, `P6-FIN` PASS, `P6-LDG` PASS. Windows/Excel
+Gate B is accepted. The production baseline remains `79e4600`.**
 
-Step-13 runtime has executed through Runs 1–4. Run 1 aborted in the preflight
-before Excel started. Run 2 was stopped at the compile prerequisite by a genuine
-production compile defect. Run 3 **proved that repair on the real VBA compiler**.
-**Run 4 is the first valid execution of the Phase-6 behavioural matrix**: a real
-production simulation ran in real Excel, published, repeated and recovered. See
-the run ledger in [§8](#8-windows-run-ledger).
+Six Windows runs, and the ledger in [§8](#8-windows-run-ledger) keeps every one
+of them as it happened. Run 1 aborted in the preflight. Run 2 was stopped by a
+production compile defect. Run 3 proved that repair on the real VBA compiler.
+Run 4 was the first execution of the Phase-6 behavioural matrix and left five
+failures. Run 5's first attempt stopped before Excel on a Stage-A serialisation
+defect, then executed and left one. **Run 6 is all green.** None of those red
+runs is rewritten here; they are what the corrections were made against.
 
-**Runtime-proven, and no further.** Windows evidence now carries: the compile on
-the real VBA compiler; the Phase-4 lifecycle matrix 35/35 with a natural
-shutdown and a clean COM release ledger; all 39 Phase-5 Gate-B scenarios; and 24
-of the 29 Phase-6 scenarios — the public surface, the button, a FIXED run that
-publishes, bank alternation, the AUTO lifecycle and its no-replay invariant, all
-five recovery classes, the durable `F21` protocol, run-ID exhaustion, the
-attempt-result axis correction of Step 12, and the result ledger. **FIXED
-repeatability is runtime-proven**: two runs of the same request published the
-same workbook digest.
+**Runtime-proven, and this is now the whole list.** The workbook builds, opens
+and compiles on the real VBA compiler; the Phase-4 lifecycle matrix runs 35/35
+with a natural shutdown and a clean COM release ledger; all 39 Phase-5 Gate-B
+scenarios pass; and all 29 Phase-6 scenarios pass — the public surface, the
+button, FIXED and AUTO runs, bank alternation, the no-replay invariant, the
+three failpoints, all five recovery classes, the durable `F21` protocol, run-ID
+exhaustion, the Step-12 attempt-result axis correction, cross-implementation
+parity under the accepted Step-0 evidence policy, and the result ledger.
 
-**What Run 4's `P6-ORA` failure actually was.** Not a production defect and not
-an oracle defect. Step 13 had written a comparison rule **stronger than the one
-Step 0 §10 accepted** — `EXACT, and there is no other mode` — and compared a
-Python-oracle `result_digest` against a VBA one. §10.4 keeps the digest exact for
-**same-runtime replay** and never promised it across languages; §10.3 settled
-cross-language summary statistics at `rel ≤ 3e-10` with a scale-aware floor. Run
-4 failed on differences the accepted evidence model had already anticipated and
-admitted. [§9](#9-p6-ora-reclassified-a-harness-evidence-policy-defect) records
-the reclassification and the correction.
+Every correction made after Run 4 is runtime-proven with it: `P6-ORA` on the
+accepted tolerance rule with the cross-language digest diagnostic rather than a
+criterion; `P6-DET` on the decoupled same-runtime replay; `P6-FP3` on the
+corrected restore semantics and the repaired `SameCell`; `P6-ART` on both the
+pre-open workbook capture and the two-class module identity; the LF byte
+serialisation, proved by the raw Windows hashes matching the accepted ones; and
+the HEAD-byte provenance binding.
 
-**D2 is a confirmed portability defect, and it is settled.** The same builder
-generated a different `phase6_gate_b_cases.json` on Windows and on Linux, because
-that one artefact carried Monte Carlo floating output and Cheng BB/BC reaches
-libm. A single cross-platform hash was never a true statement about it. The
-artefact is now split: a **portable case authority** that is genuinely invariant,
-and **host-local oracle evidence** that says so and carries its own provenance.
-[§10](#10-d2-the-portability-settlement) states which artefacts must be
-cross-platform invariant and which are deliberately host-local.
-
-**Run 5's first attempt was stopped before Excel** by a Stage-A serialisation
-defect: `Path.write_text` had been translating newlines, so the files Windows
-wrote were CRLF and the pinned hashes described bytes that host had never
-produced. Stage B was not run and Excel was not started, so no Phase-6 scenario
-failed. Settled in
-[§10.3a](#103a-the-serialisation-contract-and-why-content-invariance-was-not-enough).
-
-**Run 5 then executed, and it settled almost everything Run 4 left open.** 101
-PASS / 2 FAIL / 0 SKIP; Phase-4 35/35, Phase-5 39/39, Phase-6 27/29; Excel closed
-naturally with a clean COM release ledger. **`P6-ORA` passed on the corrected
-Step-0 policy, `P6-DET` on the decoupled same-runtime rule, and `P6-FP3` on the
-corrected restore semantics** — the three corrections that had been source-only
-since Run 4 are now runtime-proven, along with every remaining behavioural, AUTO,
-publication, recovery, exhaustion and attempt-axis scenario.
-
-**One failure, and it was a claim about the wrong kind of file.** `P6-ART` asked
-git for `pccm/src/vba/modSimContract.bas`, which does not exist at any commit:
-`modSimContract` is a generated Stage-A projection, not tracked source, so the
-check compared a blank against a blank. `P6-FIN` is derivative. No production
-defect is indicated; [§4.6](#46-two-commits-and-they-are-not-the-same-commit)
-records the corrected two-class identity model.
-
-**Still open, and not claimed.** No Windows run has yet exercised that
-correction. `P6-ORA`, `P6-DET`, `P6-ART` and `P6-FIN` are corrected in source and
-**unproven at runtime**; nothing here says they now pass.
+**What is still source-only, and stays that way.**
+[§5](#5-what-remains-static-only-after-step-13) is the bounded list, and an
+all-green run does not shorten it: the genuine `PERSISTENCE_INDETERMINATE` path,
+the genuine COM read raises, a `ClearPending` failure after a known `CONSUMED`,
+the iteration ceiling, the private `NonceConsumed` projection, the selector-write
+ordering inside `FinalCommit`, and the wording and source mutation controls.
+**None of those was induced**, and Run 6 does not claim otherwise. Run-ID
+exhaustion and cross-implementation parity are NOT on that list — `P6-RIDMAX`
+and `P6-ORA` proved them.
 
 ```
 static / source evidence   !=   Windows / Excel runtime evidence
 ```
 
-That line is the whole point of Step 13, and this document keeps it in front of
-the reader rather than at the end.
+That line is the whole point of Step 13. It is what kept the six runs honest,
+and it is why the boundary above is still drawn now that they are done.
 
 ---
 
@@ -593,13 +566,13 @@ run-ID exhaustion (`P6-RIDMAX`).
 
 ## 6. The static controls
 
-`tests/test_phase6_gate_b_harness_source.py` — **81** controls, in fifteen groups:
+`tests/test_phase6_gate_b_harness_source.py` — **82** controls, in sixteen groups:
 the accepted harness is not rewritten; the harness restates no address, name or
 expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **211** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **223** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -811,6 +784,30 @@ bare CR, a CR inside a line, a BOM and a missing final newline must each be
 refused; a real change must alter the identity; and case, whitespace and
 encoding differences must not.
 
+Run 6 added a sixteenth, and it guards the one thing an all-green run makes
+tempting. `test_78` reads the closure against the ledger in BOTH directions: the
+closing run must name a real commit and the tallies it actually reported, every
+scenario that was once open must be recorded PASS in that run's evidence and
+named runtime-proven in the preamble, the status must state closure, the
+production baseline must be named and must not have moved — and the static-only
+boundary must survive the pass, subject by subject, with `P6-CMP` and `P6-M`
+still derived from one compile and one inventory. `test_66` gains a third
+ledger-driven state alongside "unexecuted" and "executed with open items":
+CLOSED, where the open-item demands would otherwise force the document to
+describe a state it has left.
+
+Twelve mutations: the closing run recorded without a commit, a failure or a skip
+in its row, a short Phase-6 tally, a settled scenario still reported open, a lost
+PASS record, a status line that stops stating closure, a closure that does not
+name its baseline, each of the six static-only subjects dropped, a claim that the
+unreachable arms were induced, and run-ID exhaustion or cross-implementation
+parity put back on the static-only list.
+
+**An all-green run is where over-claiming costs most.** Every hedge looks
+removable when nothing failed, and the two that must not be removed were never
+about failure: the arms this harness cannot reach, and the single compile and
+single inventory the derived scenarios rest on.
+
 Two of those eleven found controls reading an `Add-Check`'s LABEL while its
 predicate had been replaced by `$true` — the tracked-module blob comparison and
 the manifest entry count. Both now read the joined statement. It is the third
@@ -834,6 +831,10 @@ The third command runs everything: the Phase-6 block is dot-sourced into the
 Phase-4 harness and runs inside its single COM lifecycle, against the disposable
 `%TEMP%` copy. There is no separate Phase-6 script to invoke and no second Excel
 instance.
+
+**Step 13 is closed and this command is the record of what was run, not an
+invitation to run it again.** A re-execution would be a new run under a new
+number, with its own log; nothing here may be overwritten.
 
 **The log name carries the run number**, and it is `run6` because Runs 1 to 5
 already happened — see the ledger in §8. Writing to an earlier run's log would
@@ -859,7 +860,7 @@ Location — the same refusal that has held since the first readiness run.
 | **Run 4** | `6cb7f06` | **VALID runtime attempt, and the first behavioural one.** 98 passed, 5 failed; Phase-4 35/35; Phase-5 39/39; Phase-6 24/29; `P6-LDG` PASS. |
 | **Run 5 (aborted)** | `5c63503` | **AUTHORISED; STOPPED PRE-EXCEL.** Stage A 351/351 on a clean Windows checkout and the generation provenance was correct — but the raw `Get-FileHash` of both invariant artefacts disagreed with the accepted hashes. Stage B was NOT run and Excel was NOT started, so no Phase-6 scenario failed: a Stage-A serialisation defect, found before runtime. |
 | **Run 5** | `253b022` | **VALID runtime attempt.** Stage A 351/351, raw D1 and D2 as accepted, Stage B PASS, Excel started. 101 PASS / 2 FAIL / 0 SKIP — Phase-4 35/35, Phase-5 39/39, Phase-6 27/29. `P6-ORA`, `P6-DET` and `P6-FP3` all PASS on the corrected rules. `P6-ART` FAIL on the generated `modSimContract` treated as tracked source; `P6-FIN` derivative. |
-| **Run 6** | `<this commit>` | **NOT AUTHORISED**, and **not yet executed**. |
+| **Run 6** | `a3924e0` | **ALL GREEN.** 103 passed, 0 failed, 0 skipped. Phase-4 35/35, Phase-5 39/39, Phase-6 29/29. `P6-ART` PASS, `P6-FIN` PASS, `P6-LDG` PASS. Natural Excel shutdown, 4/4 transient COM releases, no emergency shutdown. **Windows/Excel Gate B accepted; Step 13 closed.** |
 
 An aborted attempt is not nothing, and it is not renamed away when a later run
 succeeds: Run 1 is what found the defect §3.1 records, and it stays in this
@@ -1230,6 +1231,69 @@ release ledger.
 `P6-ART` source binding is still unproved at runtime — Run 4 never reached the
 check that would have proved it. The impossible-to-induce COM clauses remain
 static-only and are not upgraded.
+
+---
+
+### 8.6 Run 6 — all green, and Gate B accepted
+
+**The closing run.** Executed on harness `a3924e0`, production baseline
+`79e4600`, from a clean checkout.
+
+```
+Stage A                            351 passed, 0 failed
+raw phase6_gate_b_inspection.json  83eff35f...30111573   as accepted
+raw phase6_gate_b_cases.json       6a9d8678...c495af5c   as accepted
+modSimContract canonical           daa4d278...e1c215ac   as accepted
+source_revision                    a3924e0e691b9db215245f764a36d51be14af6e2
+source_tree_clean                  true
+Stage B                            23 modules, 14 CodeNames, 5 buttons
+Phase-4 structural matrix          35 of 35
+Phase-5 Gate-B scenarios           39 reported, 39 passed
+Phase-6 Gate-B scenarios           29 reported, 29 passed
+P6-FIN                             PASS  (every required ID once, none skipped)
+P6-LDG                             PASS  (28 scenario results, 0 duplicates)
+                                   103 passed, 0 failed, 0 skipped
+```
+
+Fixture restoration completed on every scenario that established one.
+
+The retained working copy is
+`C:\Users\pcd\AppData\Local\Temp\pccm-phase4-20260901-233556`.
+
+#### 8.6.1 What Run 6 closed
+
+Every correction made after Run 4, proved on real Excel:
+
+| Correction | Scenario | Found by |
+|---|---|---|
+| the accepted Step-0 evidence policy, digest diagnostic not criterion | `P6-ORA` PASS | Run 4 |
+| same-runtime replay decoupled from the Python oracle | `P6-DET` PASS | Run 4 |
+| the `SameCell` blank-restore repair and the derived preservation set | `P6-FP3` PASS | Run 4 |
+| the pre-open workbook identity capture | `P6-ART` PASS | Run 4 |
+| the two-class production module identity | `P6-ART` PASS | Run 5 |
+| LF byte serialisation of the invariant artefacts | raw Windows hashes as accepted | Run 5 (pre-Excel) |
+| the HEAD-byte generation and runtime tree binding | `P6-ART` PASS | settlement |
+
+`P6-ART` also passed the whole `pccm/src` + `pccm/spec` freeze against `79e4600`,
+the executed `.xlsm` identity, the oracle source-revision binding, the host-local
+declaration, portable D2 invariance and D1 provenance. The generated
+`modSimContract` passed as a projection: one manifest entry, `generated: true`,
+the Stage-B source actually consumed, and the canonical identity the baseline
+produces. Its raw Windows SHA `CC74EEC4...` is recorded and remains
+host/text-mode diagnostic.
+
+`P6-CMP` and `P6-M` stay **derived** from `P5-CMP` and `P5-M` — one compile,
+command id 578, one observation, and one inventory. Run 6 adds no second compile
+and no second inventory.
+
+#### 8.6.2 What Run 6 did NOT establish
+
+The [§5](#5-what-remains-static-only-after-step-13) list is unchanged. An
+all-green run proves the scenarios that ran, not the arms that cannot be reached:
+no genuine `PERSISTENCE_INDETERMINATE`, no genuine COM read raise, and no
+`ClearPending` failure after a known `CONSUMED` was induced, and none is claimed.
+Reading a pass as though it covered them would be the exact over-claim this
+document has refused for six runs.
 
 ---
 
