@@ -2447,32 +2447,89 @@ def test_207_the_canonicaliser_accepts_a_missing_final_newline() -> None:
     raise AssertionError("the canonicaliser accepted a module with no final newline")
 
 
+def _canonicaliser_refuses(damaged: str, why: str) -> None:
+    """Re-run the projection control against a damaged canonicaliser.
+
+    The control calls the FUNCTION, not its source text - which is the whole
+    point of the rewrite - so the damage is installed by compiling the modified
+    module and swapping the function into place. Its refusal class is rebound to
+    the real one so a refusal it does raise is still caught as a refusal, and a
+    mutation cannot pass by raising something the control was not watching for.
+    """
+    from pccm_builder import artifact_io  # noqa: PLC0415
+
+    namespace: dict[str, object] = {"__name__": "pccm_builder.artifact_io_damaged"}
+    exec(compile(damaged, "artifact_io_damaged", "exec"), namespace)  # noqa: S102
+    namespace["ArtifactSerialisationError"] = artifact_io.ArtifactSerialisationError
+    saved = artifact_io.canonical_module_identity
+    artifact_io.canonical_module_identity = namespace["canonical_module_identity"]
+    try:
+        refused = False
+        try:
+            conformance.test_77_the_generated_projection_has_a_baseline_bound_identity()
+        except AssertionError as error:
+            refused = True
+            assert why in str(error), error
+    finally:
+        artifact_io.canonical_module_identity = saved
+    assert refused, f"the canonicaliser accepts {why}"
+
+
 def test_208_the_canonicaliser_normalises_more_than_line_endings() -> None:
     """Anything broader lets a real change pass as the same module."""
     original = (conformance.PCCM_ROOT / "builder" / "pccm_builder" / "artifact_io.py"
                 ).read_text(encoding="utf-8")
     damaged = original.replace(
-        '    canonical = data.replace(b"\\r\\n", b"\\n").replace(b"\\r", b"\\n")',
-        '    canonical = data.replace(b"\\r\\n", b"\\n").replace(b"\\r", b"\\n").lower()', 1)
+        '    canonical = data.replace(b"\\r\\n", b"\\n")\n',
+        '    canonical = data.replace(b"\\r\\n", b"\\n").lower()\n', 1)
     assert damaged != original
-    saved = conformance.PCCM_ROOT
-    with tempfile.TemporaryDirectory(prefix="pccm-canon-") as name:
-        root = Path(name)
-        (root / "builder" / "pccm_builder").mkdir(parents=True)
-        (root / "builder" / "pccm_builder" / "artifact_io.py").write_text(
-            damaged, encoding="utf-8")
-        (root / "build" / "vba").mkdir(parents=True)
-        (root / "build" / "vba" / "modSimContract.bas").write_text(
-            (saved / "build" / "vba" / "modSimContract.bas").read_text(encoding="utf-8"),
-            encoding="utf-8")
-        conformance.PCCM_ROOT = root
-        try:
-            refused = False
-            try:
-                conformance.test_77_the_generated_projection_has_a_baseline_bound_identity()
-            except AssertionError as error:
-                refused = True
-                assert "more than newlines" in str(error), error
-        finally:
-            conformance.PCCM_ROOT = saved
-    assert refused, "the canonicaliser may normalise more than line endings"
+    # A broader normalisation changes the identity of EVERY module, so the
+    # baseline comparison is what refuses first. Either refusal is the same
+    # finding; the fragment names the one that actually fires.
+    _canonicaliser_refuses(damaged, "projection identity")
+
+
+
+def test_209_a_bare_cr_is_canonicalised_to_lf_again() -> None:
+    """The submitted defect. `.replace(b"\\r", b"\\n")` admitted a third line-ending
+    representation, so a module whose every LF had become a lone CR hashed
+    identically to the accepted projection."""
+    original = (conformance.PCCM_ROOT / "builder" / "pccm_builder" / "artifact_io.py"
+                ).read_text(encoding="utf-8")
+    damaged = original.replace(
+        '    stray = data.replace(b"\\r\\n", b"")\n'
+        '    if b"\\r" in stray:\n',
+        '    stray = data.replace(b"\\r\\n", b"")\n'
+        '    if False:\n', 1).replace(
+        '    canonical = data.replace(b"\\r\\n", b"\\n")\n',
+        '    canonical = data.replace(b"\\r\\n", b"\\n").replace(b"\\r", b"\\n")\n', 1)
+    assert damaged != original
+    assert 'replace(b"\\r", b"\\n")' in damaged
+    _canonicaliser_refuses(damaged, "a bare CR as a line ending")
+
+
+def test_210_the_bare_cr_refusal_is_removed_outright() -> None:
+    """Without the refusal the replace is not even needed: a lone CR simply
+    survives into the hash, and a corrupted module gets its own identity rather
+    than being refused."""
+    original = (conformance.PCCM_ROOT / "builder" / "pccm_builder" / "artifact_io.py"
+                ).read_text(encoding="utf-8")
+    damaged = original.replace(
+        '    stray = data.replace(b"\\r\\n", b"")\n'
+        '    if b"\\r" in stray:\n',
+        '    stray = data.replace(b"\\r\\n", b"")\n'
+        '    if False:\n', 1)
+    assert damaged != original
+    _canonicaliser_refuses(damaged, "a bare CR inside a line")
+
+
+def test_211_the_harness_canonicaliser_converts_a_lone_cr() -> None:
+    """The PowerShell side has to hold the same rule; a harness that mapped a
+    lone CR onto LF would accept on Windows what Python refuses here."""
+    damaged = _swap(
+        _PHASE6,
+        "            throw ('the generated module carries a carriage return that is not part ' +\n"
+        "                   'of a CRLF; LF and CRLF are the accepted representations and a ' +\n"
+        "                   'bare CR is not a third one')\n",
+        "            $null = $canonical.Add([byte]0x0A)\n")
+    _control("test_77", phase6=damaged)

@@ -105,13 +105,28 @@ def canonical_module_identity(data: bytes) -> str:
     not encoding: anything broader would let a real change to the projection
     pass as the same module. A BOM is refused rather than stripped, for the same
     reason, and the final newline is part of the identity.
+
+    AND "LINE ENDINGS" MEANS LF AND CRLF, NOT A BARE CR. The first version wrote
+    `.replace(b"\r\n", b"\n").replace(b"\r", b"\n")`, which quietly admitted a
+    third representation: a module whose every LF had been replaced by a lone CR
+    hashed identically to the accepted one. That is not a line-ending difference
+    the accepted renderers can produce - it is a corrupted or foreign file, and
+    an identity layer that maps it onto the accepted hash is answering a
+    different question from the one it was asked. A bare CR is REFUSED.
     """
     if data.startswith(_BOM):
         raise ArtifactSerialisationError(
             "a generated module carries a UTF-8 BOM; the accepted projection "
             "does not, and stripping one here would hide the difference"
         )
-    canonical = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    stray = data.replace(b"\r\n", b"")
+    if b"\r" in stray:
+        raise ArtifactSerialisationError(
+            "a generated module carries a carriage return that is not part of a "
+            "CRLF; LF and CRLF are the accepted representations and a bare CR is "
+            "not a third one"
+        )
+    canonical = data.replace(b"\r\n", b"\n")
     if not canonical.endswith(b"\n"):
         raise ArtifactSerialisationError(
             "a generated module does not end with a newline; the accepted "

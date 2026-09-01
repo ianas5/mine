@@ -150,8 +150,14 @@ function Get-Phase6GeneratedModuleIdentity {
     return 'daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f1e8e1c215ac'
 }
 
-# Line endings, and nothing else. Anything broader would let a real change to
-# the projection pass as the same module.
+# LINE ENDINGS, AND NOTHING ELSE - and line endings means LF and CRLF.
+#
+# The first version converted a lone CR to LF, which admitted a third
+# representation: a module whose every LF had been replaced by a bare CR hashed
+# identically to the accepted one. That is not a difference the accepted
+# renderers can produce; it is a corrupted or foreign file, and mapping it onto
+# the accepted identity answers a different question from the one asked. A CR
+# that is not part of a CRLF now refuses the artefact.
 function Get-Phase6CanonicalModuleHash {
     param([string]$Path)
     $raw = [System.IO.File]::ReadAllBytes($Path)
@@ -162,7 +168,9 @@ function Get-Phase6CanonicalModuleHash {
     for ($index = 0; $index -lt $raw.Length; $index++) {
         if ($raw[$index] -eq 0x0D) {
             if ((($index + 1) -lt $raw.Length) -and ($raw[$index + 1] -eq 0x0A)) { continue }
-            $null = $canonical.Add([byte]0x0A)
+            throw ('the generated module carries a carriage return that is not part ' +
+                   'of a CRLF; LF and CRLF are the accepted representations and a ' +
+                   'bare CR is not a third one')
         } else {
             $null = $canonical.Add($raw[$index])
         }

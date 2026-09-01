@@ -3103,14 +3103,47 @@ def test_77_the_generated_projection_has_a_baseline_bound_identity() -> None:
     assert "$genDir  = Join-Path $BuildDir (Split-Path -Leaf $manifest.vba.generated_dir)" in bootstrap
     assert "if ($m.generated) { $dir = $genDir }" in bootstrap
 
-    # 5. THE CANONICALISER NORMALISES LINE ENDINGS AND NOTHING ELSE.
-    body = _text(PCCM_ROOT / "builder" / "pccm_builder" / "artifact_io.py")
-    body = body.split("def canonical_module_identity")[1]
-    assert 'replace(b"\\r\\n", b"\\n")' in body and 'replace(b"\\r", b"\\n")' in body
-    for broader in (".lower()", ".strip()", ".split()"):
-        assert broader not in body, f"the canonicaliser does more than newlines: {broader}"
-    sample = b"Attribute VB_Name = \"m\"\r\nConst A = 1\r\n"
-    assert canonical_module_identity(sample) == canonical_module_identity(
-        sample.replace(b"\r\n", b"\n")), "CRLF and LF do not canonicalise alike"
-    assert canonical_module_identity(sample) != canonical_module_identity(
-        b"Attribute VB_Name = \"m\"\nConst A = 2\n"), "a real change canonicalises away"
+    # 5. THE CANONICALISER, AS A PROPERTY RATHER THAN A SHAPE.
+    #
+    # The first version of this control required the source to contain
+    # `.replace(b"\r", b"\n")` — which PINNED a defect rather than catching it.
+    # That replace admitted a bare CR as a third line-ending representation, so
+    # a module whose every LF had become a lone CR hashed identically to the
+    # accepted one. A control that reads the implementation it is meant to judge
+    # will agree with it — and this one would have gone on agreeing, because the
+    # docstring explaining the defect contains the very string it searched for.
+    # These are the behaviours instead.
+    from pccm_builder.artifact_io import ArtifactSerialisationError  # noqa: PLC0415
+
+    lf = b'Attribute VB_Name = "m"\nConst A = 1\n'
+    assert canonical_module_identity(lf.replace(b"\n", b"\r\n")) == \
+        canonical_module_identity(lf), "CRLF and LF do not canonicalise alike"
+    for refused, why in ((lf.replace(b"\n", b"\r"), "a bare CR as a line ending"),
+                         (b"a\rb\n", "a bare CR inside a line"),
+                         (b"\xef\xbb\xbf" + lf, "a BOM"),
+                         (lf.rstrip(b"\n"), "a missing final newline")):
+        try:
+            canonical_module_identity(refused)
+        except ArtifactSerialisationError:
+            continue
+        raise AssertionError(f"the canonicaliser accepts {why}")
+    assert canonical_module_identity(lf) != canonical_module_identity(
+        lf.replace(b"1", b"2")), "a real change canonicalises away"
+    # AND NOTHING BEYOND LINE ENDINGS IS NORMALISED, proved on values rather
+    # than by reading the source.
+    for spelling in (lf.replace(b"Const", b"CONST"), lf.replace(b" = ", b"="),
+                     lf.replace(b'"m"', b'"M"')):
+        assert canonical_module_identity(spelling) != canonical_module_identity(lf), (
+            "the canonicaliser normalises case, whitespace or encoding"
+        )
+
+    # THE POWERSHELL SIDE HOLDS THE SAME RULE.
+    canonicaliser = code.split("function Get-Phase6CanonicalModuleHash")[1].split(
+        "\nfunction ")[0]
+    assert "$raw[$index + 1] -eq 0x0A" in canonicaliser, (
+        "the harness canonicaliser does not test what follows a carriage return"
+    )
+    assert "$canonical.Add([byte]0x0A)" not in canonicaliser, (
+        "the harness canonicaliser converts a bare CR to LF instead of refusing it"
+    )
+    assert "throw" in canonicaliser

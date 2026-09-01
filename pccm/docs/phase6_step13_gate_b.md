@@ -599,7 +599,7 @@ expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **208** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **211** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -795,8 +795,21 @@ copy. Eleven mutations: the projection returned to the tracked blob loop, its
 identity check defanged, a manifest entry that is not `generated`, zero or
 duplicate entries, the module resolved from the source tree, the expected
 identity derived from HEAD, the raw Windows SHA pinned as the identity, a
-hand-written blob check weakened, and the canonicaliser accepting a BOM, a
-missing final newline, or normalising more than line endings.
+hand-written blob check weakened, and the canonicaliser accepting a BOM, a bare
+CR, a missing final newline, or normalising more than line endings.
+
+**"Line endings" means LF and CRLF, and not a bare CR.** The first canonicaliser
+wrote `.replace(b"\r\n", b"\n").replace(b"\r", b"\n")`, which quietly admitted a
+third representation: a module whose every LF had become a lone CR hashed
+identically to the accepted projection. A CR that is not part of a CRLF now
+refuses the artefact, on both sides. `test_77` no longer reads the
+implementation's source shape for this — the version that did REQUIRED the
+offending replace, so it pinned the defect rather than catching it, and would
+have gone on passing because the docstring explaining the defect contains the
+string it searched for. It calls the function instead: CRLF and LF must agree; a
+bare CR, a CR inside a line, a BOM and a missing final newline must each be
+refused; a real change must alter the identity; and case, whitespace and
+encoding differences must not.
 
 Two of those eleven found controls reading an `Add-Check`'s LABEL while its
 predicate had been replaced by `$true` — the tracked-module blob comparison and
