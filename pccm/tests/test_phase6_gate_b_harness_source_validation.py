@@ -1525,7 +1525,7 @@ def test_120b_the_unexecuted_claim_survives_the_run_that_executed_it() -> None:
             "The Phase-6 behavioural matrix, `P6-ART` through `P6-AXIS`, remains\n"
             "unexecuted.\n\n```\nstatic / source evidence", 1))
     message = _preamble_control_refuses(damaged)
-    assert "still says the Phase-6 matrix is unexecuted" in message, message
+    assert "says the Phase-6 matrix is unexecuted" in message, message
 
 
 def test_121_the_source_only_claim_is_swept_back_across_step_13() -> None:
@@ -1540,40 +1540,47 @@ def test_121_the_source_only_claim_is_swept_back_across_step_13() -> None:
     assert "every Step-13 claim" in message, message
 
 
-def test_122_the_executed_matrix_is_reported_without_its_open_item() -> None:
-    """A matrix that ran is not a matrix that passed, and a reclassified failure
-    is not a fixed one. Dropping what is still open turns an honest status into
-    a claim of success."""
+def test_122_the_closing_run_is_reported_without_what_it_reported() -> None:
+    """A matrix that ran is not a matrix that passed, and while anything was open
+    the preamble had to name it. Once the ledger records an all-green run the
+    demand changes rather than disappearing: the preamble must say what that run
+    ACTUALLY reported, because "closed" without a tally is the same unsupported
+    claim in the other direction."""
     def rewrite(head):
-        # Every sentence that admits something is unsettled, removed together:
-        # a control that only noticed one of them would be satisfied by prose.
-        for phrase in ("open", "Open", "OPEN"):
-            head = head.replace(phrase, "settled")
+        for phrase in ("103/0/0", "29/29", "all green"):
+            head = head.replace(phrase, "as expected")
         return head
     damaged = _damage_preamble(rewrite)
     message = _preamble_control_refuses(damaged)
-    assert "without naming what is still open" in message, message
+    assert "does not state what Run" in message, message
 
 
 def test_123_the_runtime_proven_claims_lose_their_bound() -> None:
     """Naming what Windows proved is half of it. An unbounded list invites the
     reader to assume the rest followed."""
-    damaged = _damage_preamble(
-        lambda head: head.replace("**Runtime-proven, and no further.**",
-                                  "**Runtime-proven.**", 1))
+    def rewrite(head):
+        # Every phrasing of the bound at once. A control that noticed only one of
+        # them would be satisfied by rewording rather than by the claim being
+        # made, and the wording has legitimately changed twice already.
+        for phrase in ("and this is now the whole list", "and no further",
+                       "only those", "limited to"):
+            head = head.replace(phrase, "")
+        return head
+    damaged = _damage_preamble(rewrite)
     message = _preamble_control_refuses(damaged)
     assert "does not bound the runtime-proven claims" in message, message
 
 
-def test_123b_the_open_disagreement_is_reported_as_attributed() -> None:
-    """P6-ORA's owner is unresolved, and a preamble that quietly drops that is
-    assigning blame the evidence does not support."""
+def test_123b_the_closure_drops_the_boundary_it_did_not_cross() -> None:
+    """While P6-ORA was open the preamble had to say its owner was unresolved.
+    Closed, the equivalent honesty is the boundary: an all-green run proves the
+    scenarios that ran, not the arms that cannot be reached, and a closure that
+    stopped saying so would be over-claiming exactly where it costs most."""
     def rewrite(head):
-        head = head.replace("**Still open, and not claimed.**", "**Still open.**", 1)
-        return head.replace("no ownership is assigned", "the owner is identified")
+        return head.replace("source-only", "settled").replace("static-only", "settled")
     damaged = _damage_preamble(rewrite)
     message = _preamble_control_refuses(damaged)
-    assert "unattributed" in message, message
+    assert "static-only boundary visible" in message, message
 
 
 # ===========================================================================
