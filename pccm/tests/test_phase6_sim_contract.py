@@ -442,8 +442,16 @@ def test_33_sim_data_stores_exactly_the_three_iteration_fields() -> None:
     ]
     assert records["sorted"] is False
     assert records["order"] == "canonical_iteration_order"
-    for excluded in ("per_driver_samples", "annual_stochastic_samples", "sensitivity_data"):
+    # PHASE 7 CONTRACTED TWO OF THE THREE DEFERRED RETENTIONS AND KEPT THE
+    # MEMORY ARCHITECTURE. `sensitivity_data` and the annual ladder are now
+    # owned by `sensitivity` and `annual_stochastic`; what stays refused is the
+    # MATRIX behind either of them, on both axes. Sensitivity replays one driver
+    # at a time and annual output replays one year block at a time, exactly so
+    # that neither matrix is created.
+    for excluded in ("per_driver_samples", "annual_iteration_matrix"):
         assert excluded in _raw()["sim_data"]["excluded"]
+    assert _raw()["sensitivity"]["replay"]["retains_driver_matrix"] is False
+    assert _raw()["annual_stochastic"]["retention"]["retained_in_memory_matrix"] is False
 
 
 def test_34_run_identity_carries_every_required_field() -> None:
@@ -513,7 +521,11 @@ def test_41_results_scope_is_minimal_and_the_rest_is_deferred() -> None:
     for deferred in ("Annual Cash Flow", "Reconciliation presentation", "Dashboard",
                      "Charts", "Sensitivity"):
         assert deferred in block["deferred"]
-    assert block["annual_simulated_samples_contracted"] is False
+    # PHASE 7. Annual simulated samples are contracted by `annual_stochastic`,
+    # NOT by Results: the deferred list above is unchanged, so Results still
+    # presents nothing new and Annual Cash Flow is still Phase 8.
+    assert block["annual_simulated_samples_contracted"] is True
+    assert _raw()["annual_stochastic"]["phase_8_handoff"]["presentation_in_phase_7"] is False
 
 
 # ===========================================================================
@@ -1302,3 +1314,249 @@ if __name__ == "__main__":
     import pytest
 
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ===========================================================================
+# P7. THE PHASE-7 CONTRACT - sensitivity and annual stochastic output
+# ===========================================================================
+# Read the decisions, not the shape. The closed-key sweep already proves no
+# unknown key survives and the leaf sweep proves no settled value can be moved;
+# what these add is a statement of WHAT was settled, in a form a reader can
+# check against the authority without reverse-engineering the loader.
+def test_p7_01_sensitivity_is_post_processing_over_the_accepted_run() -> None:
+    block = _raw()["sensitivity"]
+    assert block["phase"] == 7
+    assert block["kind"] == "observational_post_processing"
+    assert block["independent_monte_carlo_permitted"] is False
+    safety = block["state_safety"]
+    # It is not a run. Every one of these would make it one.
+    for key in ("consumes_run_id", "advances_auto_nonce",
+                "touches_pending_auto_nonce_marker", "writes_attempt_row",
+                "mutates_successful_snapshot", "rewrites_iteration_records",
+                "changes_result_digest"):
+        assert safety[key] is False, key
+
+
+def test_p7_02_a_risk_is_one_driver_and_severity_is_never_correlated_alone() -> None:
+    drivers = _raw()["sensitivity"]["drivers"]
+    assert drivers["one_per_cost_line"] is True
+    assert drivers["one_per_risk"] is True
+    assert drivers["category_aggregation"] is False
+    assert drivers["identity"] == "permanent_id"
+    contribution = _raw()["sensitivity"]["contribution"]
+    assert contribution["risk_occurrence_and_severity_are_one_driver"] is True
+    assert contribution["correlation_against_raw_severity_permitted"] is False
+    # The occurrence draw decides whether the severity is spent at all, so a
+    # correlation against severity alone measures money the model never spends.
+    assert contribution["risk"].startswith("occurred ?")
+
+
+def test_p7_03_the_contribution_expression_has_exactly_one_owner() -> None:
+    raw = _raw()
+    contribution = raw["sensitivity"]["contribution"]
+    assert contribution["expression_owner"] == "contribution"
+    assert contribution["reimplementation_permitted"] is False
+    # And it is the SAME expression, not a copy that happens to agree today.
+    assert contribution["cost_line"] == raw["contribution"]["cost_line"]["nominal"]
+    assert raw["contribution"]["risk"]["nominal_when_occurred"] in contribution["risk"]
+
+
+def test_p7_04_replay_is_per_driver_and_seeks_nothing() -> None:
+    replay = _raw()["sensitivity"]["replay"]
+    assert replay["granularity"] == "driver"
+    assert replay["resets_from"] == "component_initial_state"
+    # The withdrawn seek claim stays withdrawn: a rejection sampler consumes a
+    # variable number of uniforms, so iteration j is reached by advancing to it.
+    assert replay["random_access_seek"] is False
+    assert replay["sequential_advance_required"] is True
+    assert (replay["cost_line_streams"], replay["risk_streams"]) == (1, 2)
+    assert replay["risk_streams_paired_by_iteration"] is True
+    assert replay["unrelated_drivers_advanced"] is False
+    # The 240 MB matrix is never built: one column is held at a time.
+    assert replay["retains_driver_matrix"] is False
+    assert replay["concurrent_driver_columns_retained"] == 1
+
+
+def test_p7_05_spearman_uses_mid_ranks_and_the_shortcut_is_refused() -> None:
+    statistic = _raw()["sensitivity"]["statistic"]
+    assert statistic["name"] == "spearman_rank_correlation"
+    assert statistic["tie_rule"] == "average_ranks"
+    # Not an optimisation question. A Risk at p = 0.2 puts roughly 80% of its
+    # column on one tied value, where the shortcut is simply the wrong number.
+    assert statistic["no_ties_shortcut_permitted"] is False
+    assert statistic["total_ranks_computed_once"] is True
+    assert statistic["total_ranks_reused_across_drivers"] is True
+    assert statistic["sorting"] == "on_copies_only"
+    assert statistic["source_arrays_mutated"] is False
+    assert statistic["iteration_correspondence_preserved"] is True
+
+
+def test_p7_06_zero_variance_is_undefined_and_not_zero() -> None:
+    zero = _raw()["sensitivity"]["zero_variance"]
+    assert zero["status_label"] == "n/a - no variance"
+    assert zero["rho_reported"] is False
+    # "no association was measured" and "no measurement was possible" are
+    # different facts, and rho = 0 asserts the first.
+    assert zero["reported_as_zero_rho"] is False
+    assert zero["excluded_from_ranking"] is True
+    assert zero["excluded_from_tornado_input"] is True
+    assert zero["retained_diagnostically"] is True
+
+
+def test_p7_07_the_full_population_is_ranked_and_nothing_is_truncated() -> None:
+    ranking = _raw()["sensitivity"]["ranking"]
+    assert ranking["order_by"] == "absolute_rho"
+    assert ranking["direction"] == "descending"
+    assert ranking["signed_rho_retained"] is True
+    assert ranking["direction_labels"] == ["+", "-"]
+    # Top-N is a chart decision and charts are Phase 8; truncating here would
+    # discard data the later phase is entitled to choose from.
+    assert ranking["top_n_truncation"] is False
+
+
+def test_p7_08_sensitivity_runs_on_every_iteration_and_nothing_is_capped() -> None:
+    sampling = _raw()["sensitivity"]["sampling"]
+    assert sampling["uses_all_iterations"] is True
+    assert sampling["subsampling_contracted"] is False
+    assert sampling["iteration_cap"] is None
+    assert sampling["sensitivity_sample_size"] is None
+    assert sampling["unmeasured_performance_safeguard_permitted"] is False
+    # The rule that WOULD apply, recorded so a future implementation cannot
+    # invent a looser one: one index set, same indices, same order.
+    rule = sampling["index_set_rule_if_ever_adopted"]
+    assert rule["shared_index_set"] is True
+    assert rule["same_indices"] is True
+    assert rule["same_order"] is True
+    assert rule["independently_selected_samples_permitted"] is False
+    assert rule["full_run_statistics_recomputed_from_subset"] is False
+
+
+def test_p7_09_spearman_is_association_and_never_a_share_of_variance() -> None:
+    interpretation = _raw()["sensitivity"]["interpretation"]
+    assert interpretation["measures"] == "monotone_association"
+    assert interpretation["measures_variance_contribution"] is False
+    assert interpretation["rho_squared_as_variance_share_permitted"] is False
+    assert interpretation["percentage_contribution_permitted"] is False
+    # Inter-driver correlation stays where it always was: out of scope.
+    assert interpretation["inter_driver_correlation_owner"] == "dependence"
+
+
+def test_p7_10_sensitivity_display_defers_to_the_existing_state_machine() -> None:
+    display = _raw()["sensitivity"]["display"]
+    assert display["state_owner"] == "sim_state"
+    assert display["presented_as_current_when_stale"] is False
+    assert display["presented_as_current_when_invalid"] is False
+    assert display["stale_must_be_labelled"] is True
+    # Inherited from sim_state.on_failure - a REFUSED attempt destroys nothing
+    # that belonged to the last accepted success.
+    assert display["refused_attempt_destroys_prior_sensitivity"] is False
+    assert display["prior_sensitivity_preserved_on_failure"] is True
+    assert _raw()["sim_state"]["on_failure"]["prior_sim_data_preserved"] is True
+
+
+def test_p7_11_the_per_year_factor_decomposes_an_accepted_number() -> None:
+    factor = _raw()["annual_stochastic"]["per_year_factor"]
+    # Knom is ALREADY sum_y (FX * w_y * infl_y). The per-year factor is that
+    # sum's terms, so it introduces no new input and no second owner.
+    assert factor["is_a_new_input"] is False
+    assert factor["reconciles"] == "sum_y Knom_y = Knom"
+    assert factor["decomposition_of"] == ["Knom", "Kpv"]
+    assert factor["factor_owner"] == "calc_contract.yaml"
+
+
+def test_p7_12_no_annual_matrix_is_retained_on_either_axis() -> None:
+    retention = _raw()["annual_stochastic"]["retention"]
+    assert retention["persisted_iteration_by_year_matrix"] is False
+    assert retention["retained_in_memory_matrix"] is False
+    assert retention["strategy"] == "block_replay"
+    assert retention["block_axis"] == "project_year"
+    assert retention["retained"] == ["annual_percentile_ladder",
+                                     "selected_px_annual_profile"]
+    assert _raw()["sim_data"]["annual_records"][
+        "iteration_level_annual_values_persisted"] is False
+
+
+def test_p7_13_annual_distributions_are_not_a_selected_px_profile() -> None:
+    distributions = _raw()["annual_stochastic"]["annual_distributions"]
+    # sum_y of a per-year Px does not equal the reported total Px. Presenting
+    # one as the other would be a reconciliation error, so both are named.
+    assert distributions["sums_to_total_percentile"] is False
+    assert distributions["is_a_selected_px_profile"] is False
+    assert distributions["per_year"] is True
+    assert distributions["sorting"] == "on_copies_only"
+
+
+def test_p7_14_the_selected_px_profile_is_the_convex_type_7_blend() -> None:
+    profile = _raw()["annual_stochastic"]["selected_px_profile"]
+    assert profile["definition"] == "convex_type_7_blend"
+    assert profile["formula"] == (
+        "Profile_Px(y) = (1 - f) * AnnualVector_lo(y) + f * AnnualVector_hi(y)")
+    # The SAME lo / hi / f the reported total used, which is what makes the
+    # reconciliation hold by linearity.
+    assert profile["position_owner"] == "statistics.percentile"
+    assert profile["lo_hi_f_source"] == (
+        "the same type-7 position used for the reported total Px")
+    assert profile["reconciliation_identity"] == "sum_y Profile_Px(y) = reported Px"
+    assert profile["degenerates_to_single_iteration_when_f_is_zero"] is True
+    # The three rejected definitions, named so they cannot drift back.
+    assert profile["nearest_rank_permitted"] is False
+    assert profile["per_year_percentile_as_profile_permitted"] is False
+    assert profile["other_definitions_permitted"] is False
+
+
+def test_p7_15_phase_7_computes_and_phase_8_presents() -> None:
+    handoff = _raw()["annual_stochastic"]["phase_8_handoff"]
+    assert handoff["presentation_in_phase_7"] is False
+    assert handoff["provides"] == ["annual_percentile_ladder",
+                                   "selected_px_annual_profile"]
+    for key in ("annual_cash_flow_presentation_owner", "dashboard_owner",
+                "chart_owner"):
+        assert handoff[key] == "phase 8", key
+
+
+def test_p7_16_the_phase_7_blocks_take_columns_and_never_rows() -> None:
+    """The accepted iteration geometry is exactly what it was.
+
+    This is the control that matters most in P7-1. `reserved_rows` is the audit
+    trail from which H, the first iteration row and the technical ceiling are
+    derived, so a Phase-7 block that reserved a row would silently reduce the
+    iteration capacity WITHOUT touching the ceiling literal.
+    """
+    raw = _raw()
+    records = raw["sim_data"]["iteration_records"]
+    assert records["header_row"] == 33
+    assert records["first_iteration_row"] == 34
+    assert raw["iterations"]["technical_ceiling"]["reserved_rows_h"] == 33
+    assert raw["iterations"]["technical_ceiling"]["max_iterations_representable"] == 1048543
+    for name in ("sensitivity_records", "annual_records"):
+        block = raw["sim_data"][name]
+        assert block["header_row"] == 33, name
+        assert block["first_record_row"] == 34, name
+        assert block["footer_rows"] == 0, name
+        assert block["shares_row_axis_with_iteration_records"] is True, name
+        assert block["consumes_reserved_rows"] is False, name
+
+
+def test_p7_17_no_phase_7_column_lands_on_an_iteration_bank() -> None:
+    raw = _raw()
+    banks = raw["sim_data"]["iteration_records"]["banks"]
+    owned = {letter for entry in banks.values() for letter in entry.values()}
+    assert owned == {"B", "C", "D", "F", "G", "H"}
+    used = {c["column"] for c in raw["sim_data"]["sensitivity_records"]["columns"]}
+    for group in ("index_columns", "quantile_first_column",
+                  "selected_px_profile_columns"):
+        for entry in raw["sim_data"]["annual_records"][group].values():
+            used.update(entry.values())
+    assert not (used & owned), sorted(used & owned)
+
+
+def test_p7_18_the_sensitivity_table_carries_the_eighth_field() -> None:
+    columns = _raw()["sim_data"]["sensitivity_records"]["columns"]
+    assert [c["key"] for c in columns] == [
+        "driver_id", "driver_type", "driver_name", "rho", "abs_rho", "rank",
+        "direction", "status",
+    ]
+    # Without `status` a zero-variance driver has nowhere to be reported except
+    # as a rho it does not have.
+    assert columns[-1]["header"] == "Status"
+    assert _raw()["sensitivity"]["zero_variance"]["status_label"] == "n/a - no variance"

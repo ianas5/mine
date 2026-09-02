@@ -923,6 +923,12 @@ def test_63_a_sorted_or_extended_sim_data_table_is_rejected() -> None:
         lambda d: d["sim_data"]["excluded"].remove("per_driver_samples"),
         "the per-driver-sample exclusion dropped",
     )
+    # The other axis of the same trap. Phase 7 contracts annual OUTPUT; the
+    # iteration x year matrix behind it stays refused.
+    _rejected(
+        lambda d: d["sim_data"]["excluded"].remove("annual_iteration_matrix"),
+        "the annual-matrix exclusion dropped",
+    )
 
 
 def test_64_a_run_identity_field_dropped_is_rejected() -> None:
@@ -1122,11 +1128,14 @@ def test_74_making_selected_cl_execution_relevant_is_rejected() -> None:
 
 
 def test_75_contracting_deferred_results_scope_is_rejected() -> None:
+    # PHASE 7 FLIPPED THE ANNUAL FLAG, so the mutation is now the reverse one:
+    # un-contracting annual simulated samples while `annual_stochastic` owns
+    # them would leave the contract asserting both.
     _rejected(
         lambda d: d["results_minimum"].__setitem__(
-            "annual_simulated_samples_contracted", True
+            "annual_simulated_samples_contracted", False
         ),
-        "annual simulated samples contracted in Step 1",
+        "annual simulated samples un-contracted while annual_stochastic owns them",
     )
     _rejected(
         lambda d: d["results_minimum"]["deferred"].remove("Sensitivity"),
@@ -2549,3 +2558,231 @@ if __name__ == "__main__":
     import pytest
 
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ===========================================================================
+# P7. THE PHASE-7 DECISIONS, EACH WITH A DETECTOR
+# ===========================================================================
+# The leaf sweep already proves every settled value is refused when moved. What
+# these add is the reverse direction the sweep cannot reach: DELETIONS, and the
+# specific wrong answers the Phase-7 authority named and rejected by name. A
+# decision that was argued and settled deserves a control that says so.
+def test_p7_101_reopening_the_rejected_profile_definitions_is_rejected() -> None:
+    for key in ("nearest_rank_permitted",
+                "per_year_percentile_as_profile_permitted",
+                "other_definitions_permitted"):
+        _rejected(
+            lambda d, k=key: d["annual_stochastic"]["selected_px_profile"].__setitem__(
+                k, True),
+            f"the selected-Px profile reopened via {key}",
+        )
+
+
+def test_p7_102_the_no_ties_shortcut_cannot_be_permitted() -> None:
+    _rejected(
+        lambda d: d["sensitivity"]["statistic"].__setitem__(
+            "no_ties_shortcut_permitted", True),
+        "the no-ties Spearman shortcut permitted on tied data",
+    )
+    _rejected(
+        lambda d: d["sensitivity"]["statistic"].__setitem__("tie_rule", "ordinal_ranks"),
+        "mid-ranks replaced by ordinal ranks",
+    )
+
+
+def test_p7_103_zero_variance_cannot_be_reported_as_zero_rho() -> None:
+    _rejected(
+        lambda d: d["sensitivity"]["zero_variance"].__setitem__(
+            "reported_as_zero_rho", True),
+        "an undefined correlation reported as rho = 0",
+    )
+    _rejected(
+        lambda d: d["sensitivity"]["zero_variance"].__setitem__(
+            "excluded_from_ranking", False),
+        "a zero-variance driver ranked",
+    )
+
+
+def test_p7_104_rho_squared_cannot_become_a_variance_share() -> None:
+    for key in ("measures_variance_contribution",
+                "rho_squared_as_variance_share_permitted",
+                "percentage_contribution_permitted"):
+        _rejected(
+            lambda d, k=key: d["sensitivity"]["interpretation"].__setitem__(k, True),
+            f"Spearman presented as variance contribution via {key}",
+        )
+
+
+def test_p7_105_subsampling_and_caps_cannot_appear_unmeasured() -> None:
+    _rejected(
+        lambda d: d["sensitivity"]["sampling"].__setitem__("subsampling_contracted", True),
+        "sensitivity subsampling contracted without measured evidence",
+    )
+    _rejected(
+        lambda d: d["sensitivity"]["sampling"].__setitem__("uses_all_iterations", False),
+        "sensitivity moved off the full iteration count",
+    )
+    for key in ("iteration_cap", "sensitivity_sample_size"):
+        _rejected(
+            lambda d, k=key: d["sensitivity"]["sampling"].__setitem__(k, 10000),
+            f"an arbitrary {key} introduced",
+        )
+    _rejected(
+        lambda d: d["sensitivity"]["sampling"]["index_set_rule_if_ever_adopted"].__setitem__(
+            "independently_selected_samples_permitted", True),
+        "independently selected sensitivity samples permitted",
+    )
+
+
+def test_p7_106_top_n_truncation_cannot_move_into_phase_7() -> None:
+    _rejected(
+        lambda d: d["sensitivity"]["ranking"].__setitem__("top_n_truncation", True),
+        "Top-N truncation moved into Phase 7",
+    )
+
+
+def test_p7_107_sensitivity_cannot_become_a_run() -> None:
+    for key in ("consumes_run_id", "advances_auto_nonce",
+                "touches_pending_auto_nonce_marker", "writes_attempt_row",
+                "mutates_successful_snapshot", "rewrites_iteration_records",
+                "changes_result_digest"):
+        _rejected(
+            lambda d, k=key: d["sensitivity"]["state_safety"].__setitem__(k, True),
+            f"sensitivity allowed to {key}",
+        )
+    _rejected(
+        lambda d: d["sensitivity"].__setitem__("independent_monte_carlo_permitted", True),
+        "an independent Monte Carlo presented as this run's sensitivity",
+    )
+
+
+def test_p7_108_stale_sensitivity_cannot_be_shown_as_current() -> None:
+    for key in ("presented_as_current_when_stale", "presented_as_current_when_invalid"):
+        _rejected(
+            lambda d, k=key: d["sensitivity"]["display"].__setitem__(k, True),
+            f"stale sensitivity presented as current via {key}",
+        )
+    _rejected(
+        lambda d: d["sensitivity"]["display"].__setitem__(
+            "refused_attempt_destroys_prior_sensitivity", True),
+        "a refused attempt destroying the last accepted run's sensitivity",
+    )
+
+
+def test_p7_109_the_contribution_expression_cannot_be_forked() -> None:
+    _rejected(
+        lambda d: d["sensitivity"]["contribution"].__setitem__(
+            "reimplementation_permitted", True),
+        "a second implementation of the contribution expression permitted",
+    )
+    # A copy that silently stops agreeing with its owner is the drift the
+    # single-owner rule exists to prevent.
+    _rejected(
+        lambda d: d["contribution"]["cost_line"].__setitem__(
+            "nominal", "unit_cost * Knom"),
+        "the owner expression changed while the sensitivity copy did not",
+    )
+    _rejected(
+        lambda d: d["sensitivity"]["contribution"].__setitem__(
+            "correlation_against_raw_severity_permitted", True),
+        "correlation taken against raw severity alone",
+    )
+
+
+def test_p7_110_replay_cannot_claim_a_seek_or_retain_the_matrix() -> None:
+    _rejected(
+        lambda d: d["sensitivity"]["replay"].__setitem__("random_access_seek", True),
+        "the withdrawn direct-seek claim reinstated",
+    )
+    _rejected(
+        lambda d: d["sensitivity"]["replay"].__setitem__("retains_driver_matrix", True),
+        "the 240 MB driver x iteration matrix retained",
+    )
+    _rejected(
+        lambda d: d["sensitivity"]["replay"].__setitem__("risk_streams", 1),
+        "a Risk replayed from one stream",
+    )
+
+
+def test_p7_111_the_annual_matrix_cannot_be_retained_on_either_axis() -> None:
+    for key in ("persisted_iteration_by_year_matrix", "retained_in_memory_matrix"):
+        _rejected(
+            lambda d, k=key: d["annual_stochastic"]["retention"].__setitem__(k, True),
+            f"the annual matrix retained via {key}",
+        )
+    _rejected(
+        lambda d: d["sim_data"]["annual_records"].__setitem__(
+            "iteration_level_annual_values_persisted", True),
+        "per-iteration annual values persisted to _SimData",
+    )
+
+
+def test_p7_112_a_phase_7_block_cannot_take_a_row_or_a_bank_column() -> None:
+    """The capacity control. A Phase-7 block that reserved a row would reduce
+    the iteration ceiling without touching the ceiling literal, and one written
+    on a bank column would overwrite published distribution data."""
+    for name in ("sensitivity_records", "annual_records"):
+        _rejected(
+            lambda d, n=name: d["sim_data"][n].__setitem__("header_row", 34),
+            f"{name} given a header row of its own",
+        )
+        _rejected(
+            lambda d, n=name: d["sim_data"][n].__setitem__("first_record_row", 35),
+            f"{name} moved off the shared row axis",
+        )
+        _rejected(
+            lambda d, n=name: d["sim_data"][n].__setitem__("consumes_reserved_rows", True),
+            f"{name} consuming a reserved row",
+        )
+        _rejected(
+            lambda d, n=name: d["sim_data"][n].__setitem__("footer_rows", 1),
+            f"{name} given a footer",
+        )
+    _rejected(
+        lambda d: d["sim_data"]["sensitivity_records"]["columns"][0].__setitem__(
+            "column", "C"),
+        "a sensitivity column written over iteration bank A",
+    )
+    _rejected(
+        lambda d: d["sim_data"]["annual_records"]["index_columns"]["A"].__setitem__(
+            "project_index", "G"),
+        "an annual column written over iteration bank B",
+    )
+
+
+def test_p7_113_the_eighth_field_cannot_be_dropped() -> None:
+    _rejected(
+        lambda d: d["sim_data"]["sensitivity_records"]["columns"].pop(),
+        "the Status field dropped from the sensitivity table",
+    )
+    _rejected(
+        lambda d: d["sim_data"]["sensitivity_records"]["columns"].insert(
+            0, {"key": "variance_share", "column": "I", "header": "Variance %",
+                "value_type": "double"}),
+        "a variance-share column added to the sensitivity table",
+    )
+
+
+def test_p7_114_deleting_a_phase_7_section_is_rejected() -> None:
+    for section in ("sensitivity", "annual_stochastic"):
+        _rejected(lambda d, s=section: d.pop(s), f"the {section} section deleted")
+    for block in ("sensitivity_records", "annual_records"):
+        _rejected(lambda d, b=block: d["sim_data"].pop(b),
+                  f"the {block} persistence block deleted")
+
+
+def test_p7_115_the_annual_ladder_cannot_be_narrowed_or_overlapped() -> None:
+    _rejected(
+        lambda d: d["sim_data"]["annual_records"].__setitem__("quantile_count", 3),
+        "the annual ladder narrowed below the accepted eleven",
+    )
+    _rejected(
+        lambda d: d["annual_stochastic"]["annual_distributions"].__setitem__(
+            "sums_to_total_percentile", True),
+        "per-year percentiles claimed to sum to the reported total percentile",
+    )
+    _rejected(
+        lambda d: d["annual_stochastic"]["annual_distributions"].__setitem__(
+            "is_a_selected_px_profile", True),
+        "the annual distribution presented as the selected-Px profile",
+    )

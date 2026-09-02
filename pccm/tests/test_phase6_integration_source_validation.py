@@ -759,7 +759,13 @@ def test_61_the_generated_coordinate_is_emitted_twice() -> None:
 def test_62_the_iteration_table_is_shifted_to_make_room() -> None:
     """The sidecar was chosen precisely so no row had to move."""
     contract = _read(conformance.SPEC, "sim_contract.yaml")
-    damaged = _swap(contract, "    header_row: 33\n", "    header_row: 34\n")
+    # ANCHORED ON THE ITERATION BLOCK. Phase 7 added two more record blocks that
+    # deliberately share row 33 as their header, so "header_row: 33" alone no
+    # longer names one place - and a mutation that cannot say which row it moved
+    # proves nothing about the row that matters.
+    damaged = _swap(contract,
+                    "  iteration_records:\n    header_row: 33\n",
+                    "  iteration_records:\n    header_row: 34\n")
     _control("test_33", spec={"sim_contract.yaml": damaged})
 
 

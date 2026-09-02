@@ -475,15 +475,29 @@ sheets:
     purpose: "Driver ranking by Spearman rank correlation against total project cost."
     show_gridlines: false
     title: "Sensitivity"
-    subtitle: "Ranked drivers - no correlation analysis is implemented in Phase 1"
+    subtitle: "Drivers ranked by Spearman rank correlation against Total Nominal Project Cost"
     freeze_panes: "A6"
     column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
     blocks:
+      # PHASE 7. The placeholder note is gone because the contract behind this
+      # sheet now exists: `sim_contract.yaml: sensitivity` owns the statistic,
+      # the ranking and the state rules, and `sim_data.sensitivity_records`
+      # owns where the numbers are persisted. The tornado CHART is Phase 8, and
+      # so is any Top-N selection over this table.
       - type: note
-        text: "Not implemented yet. No driver data, correlations or tornado chart exist yet."
+        text: "Spearman measures monotone association with the total, not a share of its variance. Correlated uncertainty between drivers is out of scope."
       - type: section
         title: "Ranked Drivers"
-        note: "Reserved for driver id, type, name, Spearman rho, absolute rho, rank and direction."
+        # THE FIELD LIST HAS ONE OWNER, AND IT IS NOT THIS FILE.
+        # `sim_contract.yaml: sim_data.sensitivity_records.columns` declares the
+        # eight columns and the loader locks them; restating them here as
+        # structured keys would be a second source of truth, and this file's
+        # block schema does not read such keys anyway - they would look
+        # authoritative and govern nothing. The prose below names them, exactly
+        # as it named the seven before, and STATUS is the eighth: without it a
+        # zero-variance driver has nowhere to be reported except as a rho it
+        # does not have.
+        note: "Driver ID, type, name, Spearman rho, absolute rho, rank, direction and status. Ranked by absolute rho, descending. A driver whose contribution has no variance is reported as n/a - no variance and is not ranked."
 
   - name: "Methodology"
     codename: "shMethodology"

@@ -519,6 +519,34 @@ LOCKED_SIM_METHOD_VERSION = 1
 something a validator should wave through because 2 is also a positive integer."""
 
 LOCKED_SIM_DATA_SHEET = "_SimData"
+LOCKED_ANNUAL_QUANTILE_COUNT = 11
+
+# The Phase-7 column allocation, locked. Letters are the persistence layout, so
+# a silent change to one of them moves published data.
+LOCKED_SENSITIVITY_COLUMN_LAYOUT = (
+    ("driver_id", "J", "Driver ID", "text"),
+    ("driver_type", "K", "Type", "text"),
+    ("driver_name", "L", "Name", "text"),
+    ("rho", "M", "Rho", "double"),
+    ("abs_rho", "N", "|Rho|", "double"),
+    ("rank", "O", "Rank", "integer"),
+    ("direction", "P", "Direction", "text"),
+    ("status", "Q", "Status", "text"),
+)
+LOCKED_SENSITIVITY_ROW_RULE = "one row per eligible driver, in ranked order"
+LOCKED_ANNUAL_ROW_RULE = "one row per applied project year"
+LOCKED_ANNUAL_INDEX_COLUMNS = {
+    "A": {"project_index": "AB", "calendar_year": "AC"},
+    "B": {"project_index": "BC", "calendar_year": "BD"},
+}
+LOCKED_ANNUAL_QUANTILE_FIRST_COLUMN = {
+    "A": {"nominal": "AD", "pv": "AO"},
+    "B": {"nominal": "BE", "pv": "BP"},
+}
+LOCKED_ANNUAL_PROFILE_COLUMNS = {
+    "A": {"nominal": "AZ", "pv": "BA"},
+    "B": {"nominal": "CA", "pv": "CB"},
+}
 LOCKED_ITERATION_COLUMNS = ("iteration_index", "total_nominal", "total_pv")
 LOCKED_SIM_STATE_RULES = (
     (1, "current_prerequisites_do_not_resolve", "INVALID"),
@@ -530,9 +558,19 @@ LOCKED_SIM_STATE_RULES = (
 
 LOCKED_SIM_DATA_EXCLUDED = (
     "per_driver_samples",
-    "annual_stochastic_samples",
-    "sensitivity_data",
+    "annual_iteration_matrix",
 )
+"""The retentions that stay refused.
+
+PHASE 7 CHANGED THIS LIST, AND THE CHANGE IS NARROWER THAN IT LOOKS.
+`sensitivity_data` and `annual_stochastic_samples` left the list because Phase 7
+CONTRACTS those outputs. What did not change is the memory architecture: the
+driver x iteration matrix is still refused, and the iteration x year matrix is
+refused under the name `annual_iteration_matrix`. Sensitivity reaches per-driver
+values by reset-and-replay and annual output by block replay, precisely so that
+neither matrix is ever created. Contracting an OUTPUT is not retaining the
+MATRIX behind it.
+"""
 
 REQUIRED_SECTIONS = (
     "sim_contract_version",
@@ -557,6 +595,8 @@ REQUIRED_SECTIONS = (
     "result_digest",
     "iterations",
     "sim_data",
+    "sensitivity",
+    "annual_stochastic",
     "label_sets",
     "sim_state",
     "prerequisite",
@@ -659,13 +699,109 @@ WILDCARD_TOKENS = ("*", "all", "any", "all_modules", "*.bas", "**")
 # ---------------------------------------------------------------------------
 CLOSED_KEYS: dict[str, frozenset[str]] = {
     '': frozenset({
-        'accumulation', 'authority_references', 'cheng', 'command_surface', 'components',
+        'accumulation', 'annual_stochastic', 'authority_references', 'cheng',
+        'command_surface', 'components',
         'contingency', 'contribution', 'dependence', 'distributions', 'interruption',
         'iterations', 'jump', 'kernel', 'label_sets', 'numerical_domain', 'prerequisite',
         'phase5_bridge', 'publication', 'request_fingerprint', 'result_digest',
-        'results_minimum', 'risk', 'rng', 'run_id', 'seeding',
-        'selected_confidence_level', 'sim_contract_version', 'sim_data', 'sim_state',
+        'results_minimum', 'risk', 'rng', 'run_id', 'seeding', 'selected_confidence_level',
+        'sensitivity', 'sim_contract_version', 'sim_data', 'sim_state',
         'statistics', 'stream_assignment', 'versions'
+    }),
+    # ---------------------------------------------------------------------
+    # PHASE 7. Sensitivity and annual stochastic output.
+    # ---------------------------------------------------------------------
+    'sensitivity': frozenset({
+        'basis_run', 'contribution', 'display', 'drivers', 'identity_binding',
+        'independent_monte_carlo_permitted', 'interpretation', 'kind', 'phase',
+        'ranking', 'replay', 'sampling', 'state_safety', 'statistic', 'zero_variance'
+    }),
+    'sensitivity.drivers': frozenset({
+        'category_aggregation', 'identity', 'identity_is_worksheet_row',
+        'one_per_cost_line', 'one_per_risk'
+    }),
+    'sensitivity.contribution': frozenset({
+        'correlation_against_raw_severity_permitted', 'cost_line', 'expression_owner',
+        'measure', 'reimplementation_permitted', 'risk',
+        'risk_occurrence_and_severity_are_one_driver'
+    }),
+    'sensitivity.replay': frozenset({
+        'concurrent_driver_columns_retained', 'cost_line_streams', 'granularity',
+        'random_access_seek', 'resets_from', 'retains_driver_matrix', 'risk_streams',
+        'risk_streams_paired_by_iteration', 'sequential_advance_required',
+        'unrelated_drivers_advanced'
+    }),
+    'sensitivity.statistic': frozenset({
+        'definition', 'iteration_correspondence_preserved', 'name',
+        'no_ties_shortcut_permitted', 'sorting', 'source_arrays_mutated', 'tie_rule',
+        'total_ranks_computed_once', 'total_ranks_reused_across_drivers'
+    }),
+    'sensitivity.zero_variance': frozenset({
+        'excluded_from_ranking', 'excluded_from_tornado_input', 'reported_as_zero_rho',
+        'retained_diagnostically', 'rho_reported', 'status_label'
+    }),
+    'sensitivity.ranking': frozenset({
+        'direction', 'direction_labels', 'order_by', 'population', 'signed_rho_retained',
+        'top_n_truncation'
+    }),
+    'sensitivity.sampling': frozenset({
+        'index_set_rule_if_ever_adopted', 'iteration_cap', 'sensitivity_sample_size',
+        'subsampling_contracted', 'unmeasured_performance_safeguard_permitted',
+        'uses_all_iterations'
+    }),
+    'sensitivity.sampling.index_set_rule_if_ever_adopted': frozenset({
+        'full_run_statistics_recomputed_from_subset',
+        'independently_selected_samples_permitted', 'same_indices', 'same_order',
+        'shared_index_set'
+    }),
+    'sensitivity.interpretation': frozenset({
+        'inter_driver_correlation_owner', 'measures', 'measures_variance_contribution',
+        'percentage_contribution_permitted', 'rho_squared_as_variance_share_permitted'
+    }),
+    'sensitivity.identity_binding': frozenset({
+        'stamped_with', 'stored_in', 'valid_only_for_the_stamped_run'
+    }),
+    'sensitivity.state_safety': frozenset({
+        'advances_auto_nonce', 'changes_result_digest', 'consumes_run_id',
+        'mutates_successful_snapshot', 'rewrites_iteration_records',
+        'touches_pending_auto_nonce_marker', 'writes_attempt_row'
+    }),
+    'sensitivity.display': frozenset({
+        'presented_as_current_when', 'presented_as_current_when_invalid',
+        'presented_as_current_when_stale', 'prior_sensitivity_preserved_on_failure',
+        'refused_attempt_destroys_prior_sensitivity', 'stale_must_be_labelled',
+        'state_owner'
+    }),
+    'annual_stochastic': frozenset({
+        'annual_distributions', 'contracted', 'iteration_annual_vector',
+        'per_year_factor', 'phase', 'phase_8_handoff', 'retention',
+        'selected_px_profile'
+    }),
+    'annual_stochastic.per_year_factor': frozenset({
+        'decomposition_of', 'factor_owner', 'is_a_new_input', 'nominal', 'pv',
+        'reconciles'
+    }),
+    'annual_stochastic.iteration_annual_vector': frozenset({
+        'identity', 'identity_owner', 'nominal', 'pv'
+    }),
+    'annual_stochastic.retention': frozenset({
+        'block_axis', 'block_width_configurable', 'passes',
+        'persisted_iteration_by_year_matrix', 'retained', 'retained_in_memory_matrix',
+        'strategy'
+    }),
+    'annual_stochastic.annual_distributions': frozenset({
+        'is_a_selected_px_profile', 'ladder_owner', 'measures', 'method', 'per_year',
+        'quantile_method_owner', 'sorting', 'sums_to_total_percentile'
+    }),
+    'annual_stochastic.selected_px_profile': frozenset({
+        'definition', 'degenerates_to_single_iteration_when_f_is_zero', 'formula',
+        'lo_hi_f_source', 'measures', 'nearest_rank_permitted',
+        'other_definitions_permitted', 'per_year_percentile_as_profile_permitted',
+        'position_owner', 'reconciliation_identity', 'reconciliation_rule_owner'
+    }),
+    'annual_stochastic.phase_8_handoff': frozenset({
+        'annual_cash_flow_presentation_owner', 'chart_owner', 'dashboard_owner',
+        'presentation_in_phase_7', 'provides'
     }),
     'accumulation': frozenset({
         'accumulators', 'accumulators_share_driver_order', 'driver_kind_order',
@@ -1010,8 +1146,34 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
     'seeding.scalar_to_state': frozenset({
         'alternate_expansion_permitted', 'expansion', 'mixer', 'rule'
     }),
+    'sim_data.sensitivity_records': frozenset({
+        'banks', 'columns', 'consumes_reserved_rows', 'first_record_row', 'footer_rows',
+        'header_row', 'row_rule', 'shares_row_axis_with_iteration_records'
+    }),
+    'sim_data.sensitivity_records.columns[]': frozenset({
+        'column', 'header', 'key', 'value_type'
+    }),
+    'sim_data.sensitivity_records.banks': frozenset({'A', 'B'}),
+    'sim_data.sensitivity_records.banks.A': frozenset({'first_column', 'last_column'}),
+    'sim_data.sensitivity_records.banks.B': frozenset({'first_column', 'last_column'}),
+    'sim_data.annual_records': frozenset({
+        'consumes_reserved_rows', 'first_record_row', 'footer_rows', 'header_row',
+        'index_columns', 'iteration_level_annual_values_persisted', 'max_rows_owner',
+        'quantile_count', 'quantile_first_column', 'quantile_keys_owner', 'row_rule',
+        'selected_px_profile_columns', 'shares_row_axis_with_iteration_records'
+    }),
+    'sim_data.annual_records.index_columns': frozenset({'A', 'B'}),
+    'sim_data.annual_records.index_columns.A': frozenset({'calendar_year', 'project_index'}),
+    'sim_data.annual_records.index_columns.B': frozenset({'calendar_year', 'project_index'}),
+    'sim_data.annual_records.quantile_first_column': frozenset({'A', 'B'}),
+    'sim_data.annual_records.quantile_first_column.A': frozenset({'nominal', 'pv'}),
+    'sim_data.annual_records.quantile_first_column.B': frozenset({'nominal', 'pv'}),
+    'sim_data.annual_records.selected_px_profile_columns': frozenset({'A', 'B'}),
+    'sim_data.annual_records.selected_px_profile_columns.A': frozenset({'nominal', 'pv'}),
+    'sim_data.annual_records.selected_px_profile_columns.B': frozenset({'nominal', 'pv'}),
     'sim_data': frozenset({
-        'contingency_ladder', 'excluded', 'iteration_records', 'pending_auto_nonce',
+        'annual_records', 'contingency_ladder', 'excluded', 'iteration_records',
+        'pending_auto_nonce', 'sensitivity_records',
         'required_visibility', 'reserved_rows', 'run_identity', 'sheet',
         'summary_statistics'
     }),
@@ -1277,6 +1439,8 @@ def load_sim_contract(path: Path) -> SimContract:
     _validate_statistics(raw, path)
     _validate_contingency(raw, path)
     _validate_results_minimum(raw, path)
+    _validate_sensitivity(raw, path)
+    _validate_annual_stochastic(raw, path)
     _validate_selected_confidence_level(raw, path)
     _validate_phase5_bridge(raw, path)
 
@@ -2833,6 +2997,257 @@ def _validate_phase5_bridge(raw: dict, path: Path) -> None:
     _require_true(block, "analytical_fingerprint_is_current_not_stored", where)
 
 
+# ---------------------------------------------------------------------------
+# PHASE 7 - SENSITIVITY.
+#
+# Every decision the Phase-7 authority settled is asserted here. A section whose
+# keys are merely spelled correctly governs nothing, and this file's own rule is
+# that a field which looks authoritative while enforcing nothing is worse than
+# no field at all.
+# ---------------------------------------------------------------------------
+def _validate_sensitivity(raw: dict, path: Path) -> None:
+    where = f"{path}: sensitivity"
+    block = _map(raw, "sensitivity", where)
+    _require_value(block, "phase", 7, where)
+    _require_value(block, "kind", "observational_post_processing", where)
+    _require_false(block, "independent_monte_carlo_permitted", where)
+    _require_value(block, "basis_run",
+                   "the accepted successful snapshot in the active bank", where)
+
+    dwhere = f"{where}: drivers"
+    drivers = _map(block, "drivers", dwhere)
+    _require_true(drivers, "one_per_cost_line", dwhere)
+    _require_true(drivers, "one_per_risk", dwhere)
+    _require_false(drivers, "category_aggregation", dwhere)
+    _require_value(drivers, "identity", "permanent_id", dwhere)
+    _require_false(drivers, "identity_is_worksheet_row", dwhere)
+
+    cwhere = f"{where}: contribution"
+    contribution = _map(block, "contribution", cwhere)
+    _require_value(contribution, "measure", "nominal", cwhere)
+    # THE EXPRESSIONS ARE CHECKED AGAINST THEIR OWNER, not against a literal
+    # repeated here. If `contribution` ever changes, this must move with it or
+    # fail - which is the whole point of naming one owner.
+    owner = _map(raw, "contribution", f"{path}: contribution")
+    cost_owner = _map(owner, "cost_line", f"{path}: contribution.cost_line")
+    risk_owner = _map(owner, "risk", f"{path}: contribution.risk")
+    _require_value(contribution, "cost_line", cost_owner.get("nominal"), cwhere)
+    expected_risk = (f"occurred ? {risk_owner.get('nominal_when_occurred')} : "
+                     f"{risk_owner.get('nominal_when_not_occurred')}")
+    _require_value(contribution, "risk", expected_risk, cwhere)
+    # THE ONE OWNER. The engine's `contribution` section already states this
+    # arithmetic; a second copy is the duplicate source of truth the whole
+    # results architecture forbids.
+    _require_value(contribution, "expression_owner", "contribution", cwhere)
+    _require_false(contribution, "reimplementation_permitted", cwhere)
+    _require_true(contribution, "risk_occurrence_and_severity_are_one_driver", cwhere)
+    _require_false(contribution, "correlation_against_raw_severity_permitted", cwhere)
+
+    rwhere = f"{where}: replay"
+    replay = _map(block, "replay", rwhere)
+    _require_value(replay, "granularity", "driver", rwhere)
+    _require_value(replay, "resets_from", "component_initial_state", rwhere)
+    # The withdrawn seek claim, kept withdrawn: a rejection sampler consumes a
+    # variable number of uniforms, so iteration j is reached by advancing to it.
+    _require_false(replay, "random_access_seek", rwhere)
+    _require_true(replay, "sequential_advance_required", rwhere)
+    _require_value(replay, "cost_line_streams", 1, rwhere)
+    _require_value(replay, "risk_streams", 2, rwhere)
+    _require_true(replay, "risk_streams_paired_by_iteration", rwhere)
+    _require_false(replay, "unrelated_drivers_advanced", rwhere)
+    _require_false(replay, "retains_driver_matrix", rwhere)
+    _require_value(replay, "concurrent_driver_columns_retained", 1, rwhere)
+
+    swhere = f"{where}: statistic"
+    statistic = _map(block, "statistic", swhere)
+    _require_value(statistic, "name", "spearman_rank_correlation", swhere)
+    _require_value(statistic, "definition",
+                   "pearson(midrank(driver_contribution), midrank(total_nominal))", swhere)
+    _require_value(statistic, "tie_rule", "average_ranks", swhere)
+    # THE SHORTCUT IS WRONG, NOT MERELY SLOWER. A Risk at p = 0.2 puts roughly
+    # 80% of its column on one tied value.
+    _require_false(statistic, "no_ties_shortcut_permitted", swhere)
+    _require_true(statistic, "total_ranks_computed_once", swhere)
+    _require_true(statistic, "total_ranks_reused_across_drivers", swhere)
+    _require_value(statistic, "sorting", "on_copies_only", swhere)
+    _require_false(statistic, "source_arrays_mutated", swhere)
+    _require_true(statistic, "iteration_correspondence_preserved", swhere)
+
+    zwhere = f"{where}: zero_variance"
+    zero = _map(block, "zero_variance", zwhere)
+    _require_value(zero, "status_label", "n/a - no variance", zwhere)
+    _require_false(zero, "rho_reported", zwhere)
+    # "No association was measured" and "no measurement was possible" are
+    # different facts, and rho = 0 asserts the first one.
+    _require_false(zero, "reported_as_zero_rho", zwhere)
+    _require_true(zero, "excluded_from_ranking", zwhere)
+    _require_true(zero, "excluded_from_tornado_input", zwhere)
+    _require_true(zero, "retained_diagnostically", zwhere)
+
+    kwhere = f"{where}: ranking"
+    ranking = _map(block, "ranking", kwhere)
+    _require_value(ranking, "order_by", "absolute_rho", kwhere)
+    _require_value(ranking, "direction", "descending", kwhere)
+    _require_true(ranking, "signed_rho_retained", kwhere)
+    _exact_sequence(ranking.get("direction_labels"), ("+", "-"), f"{kwhere}: direction_labels")
+    # Top-N is a CHART decision, and charts are Phase 8. Truncating here would
+    # discard data the later phase is entitled to choose from.
+    _require_false(ranking, "top_n_truncation", kwhere)
+    _require_value(ranking, "population", "every eligible non_zero_variance driver", kwhere)
+
+    pwhere = f"{where}: sampling"
+    sampling = _map(block, "sampling", pwhere)
+    _require_true(sampling, "uses_all_iterations", pwhere)
+    _require_false(sampling, "subsampling_contracted", pwhere)
+    for key in ("iteration_cap", "sensitivity_sample_size"):
+        if sampling.get(key) is not None:
+            raise SimContractError(
+                f"{pwhere}: {key} is set. No iteration cap or sample size is authorised, "
+                "and under replay the dominant cost is stream advancement, which a "
+                "subsample does not avoid. Measured evidence changes this contract first."
+            )
+    _require_false(sampling, "unmeasured_performance_safeguard_permitted", pwhere)
+    iwhere = f"{pwhere}: index_set_rule_if_ever_adopted"
+    index_rule = _map(sampling, "index_set_rule_if_ever_adopted", iwhere)
+    _require_true(index_rule, "shared_index_set", iwhere)
+    _require_true(index_rule, "same_indices", iwhere)
+    _require_true(index_rule, "same_order", iwhere)
+    _require_false(index_rule, "independently_selected_samples_permitted", iwhere)
+    _require_false(index_rule, "full_run_statistics_recomputed_from_subset", iwhere)
+
+    nwhere = f"{where}: interpretation"
+    interpretation = _map(block, "interpretation", nwhere)
+    _require_value(interpretation, "measures", "monotone_association", nwhere)
+    _require_false(interpretation, "measures_variance_contribution", nwhere)
+    # rho^2 is not a share of variance. Presenting it as a percentage would be a
+    # quantitative claim Spearman does not support.
+    _require_false(interpretation, "rho_squared_as_variance_share_permitted", nwhere)
+    _require_false(interpretation, "percentage_contribution_permitted", nwhere)
+    _require_value(interpretation, "inter_driver_correlation_owner", "dependence", nwhere)
+
+    bwhere = f"{where}: identity_binding"
+    binding = _map(block, "identity_binding", bwhere)
+    for field in ("run_id", "effective_seed", "request_fingerprint", "result_digest"):
+        if field not in (binding.get("stamped_with") or ()):
+            raise SimContractError(
+                f"{bwhere}: stamped_with omits {field!r}. Sensitivity that cannot be tied "
+                "to the run it describes can be shown against a different one."
+            )
+    _require_value(binding, "stored_in", "the same bank as the run it describes", bwhere)
+    _require_true(binding, "valid_only_for_the_stamped_run", bwhere)
+
+    twhere = f"{where}: state_safety"
+    safety = _map(block, "state_safety", twhere)
+    for key in ("consumes_run_id", "advances_auto_nonce",
+                "touches_pending_auto_nonce_marker", "writes_attempt_row",
+                "mutates_successful_snapshot", "rewrites_iteration_records",
+                "changes_result_digest"):
+        _require_false(safety, key, twhere)
+
+    vwhere = f"{where}: display"
+    display = _map(block, "display", vwhere)
+    _require_value(display, "state_owner", "sim_state", vwhere)
+    _require_value(
+        display, "presented_as_current_when",
+        "sim_state is CURRENT and the stored sensitivity stamp equals the active bank "
+        "successful stamp", vwhere)
+    _require_false(display, "presented_as_current_when_stale", vwhere)
+    _require_false(display, "presented_as_current_when_invalid", vwhere)
+    _require_true(display, "stale_must_be_labelled", vwhere)
+    # Inherited from sim_state.on_failure.prior_sim_data_preserved.
+    _require_false(display, "refused_attempt_destroys_prior_sensitivity", vwhere)
+    _require_true(display, "prior_sensitivity_preserved_on_failure", vwhere)
+
+
+# ---------------------------------------------------------------------------
+# PHASE 7 - ANNUAL STOCHASTIC OUTPUT.
+# ---------------------------------------------------------------------------
+def _validate_annual_stochastic(raw: dict, path: Path) -> None:
+    where = f"{path}: annual_stochastic"
+    block = _map(raw, "annual_stochastic", where)
+    _require_value(block, "phase", 7, where)
+    _require_true(block, "contracted", where)
+
+    fwhere = f"{where}: per_year_factor"
+    factor = _map(block, "per_year_factor", fwhere)
+    # The per-year factor is a DECOMPOSITION of an accepted published number and
+    # sums back to it. Calling it a new input would put a second owner on Knom.
+    _require_false(factor, "is_a_new_input", fwhere)
+    _require_value(factor, "nominal", "Knom_y = FX * w_y * infl_y", fwhere)
+    _require_value(factor, "pv", "Kpv_y = FX * w_y * infl_y * disc_y", fwhere)
+    _require_value(factor, "factor_owner", "calc_contract.yaml", fwhere)
+    _require_value(factor, "reconciles", "sum_y Knom_y = Knom", fwhere)
+    _exact_sequence(factor.get("decomposition_of"), ("Knom", "Kpv"),
+                    f"{fwhere}: decomposition_of")
+
+    vwhere = f"{where}: iteration_annual_vector"
+    vector = _map(block, "iteration_annual_vector", vwhere)
+    _require_value(vector, "nominal",
+                   "A_j(y) = sum_d sample_d_j * Quantity_d * Knom_d_y", vwhere)
+    _require_value(vector, "pv",
+                   "A_j(y) = sum_d sample_d_j * Quantity_d * Kpv_d_y", vwhere)
+    _require_value(vector, "identity", "sum_y A_j(y) = iteration total for j", vwhere)
+    _require_value(vector, "identity_owner", "docs/phase5_plan.md I3c", vwhere)
+
+    rwhere = f"{where}: retention"
+    retention = _map(block, "retention", rwhere)
+    # The same trap `per_driver_samples` refuses, on the other axis.
+    _require_false(retention, "persisted_iteration_by_year_matrix", rwhere)
+    _require_false(retention, "retained_in_memory_matrix", rwhere)
+    _require_value(retention, "strategy", "block_replay", rwhere)
+    _require_value(retention, "block_axis", "project_year", rwhere)
+    _require_true(retention, "block_width_configurable", rwhere)
+    _require_value(retention, "passes", "ceil(applied_duration / block_width)", rwhere)
+    _exact_sequence(retention.get("retained"),
+                    ("annual_percentile_ladder", "selected_px_annual_profile"),
+                    f"{rwhere}: retained")
+
+    dwhere = f"{where}: annual_distributions"
+    distributions = _map(block, "annual_distributions", dwhere)
+    _require_value(distributions, "quantile_method_owner", "statistics.percentile", dwhere)
+    _require_value(distributions, "method", LOCKED_PERCENTILE_METHOD, dwhere)
+    _require_value(distributions, "sorting", "on_copies_only", dwhere)
+    _require_true(distributions, "per_year", dwhere)
+    # (a) IS NOT (b). Per-year percentiles do not sum to the reported total
+    # percentile, so presenting them as a profile would be a reconciliation
+    # error. The two are named separately so that cannot happen quietly.
+    _require_false(distributions, "sums_to_total_percentile", dwhere)
+    _require_false(distributions, "is_a_selected_px_profile", dwhere)
+    _require_value(distributions, "ladder_owner", "statistics", dwhere)
+    _exact_sequence(distributions.get("measures"), ("nominal", "pv"),
+                    f"{dwhere}: measures")
+
+    pwhere = f"{where}: selected_px_profile"
+    profile = _map(block, "selected_px_profile", pwhere)
+    _require_value(profile, "definition", "convex_type_7_blend", pwhere)
+    _require_value(
+        profile, "formula",
+        "Profile_Px(y) = (1 - f) * AnnualVector_lo(y) + f * AnnualVector_hi(y)", pwhere)
+    _require_value(profile, "position_owner", "statistics.percentile", pwhere)
+    _require_true(profile, "degenerates_to_single_iteration_when_f_is_zero", pwhere)
+    _require_value(profile, "reconciliation_identity",
+                   "sum_y Profile_Px(y) = reported Px", pwhere)
+    _require_false(profile, "nearest_rank_permitted", pwhere)
+    _require_false(profile, "per_year_percentile_as_profile_permitted", pwhere)
+    _require_false(profile, "other_definitions_permitted", pwhere)
+    _require_value(profile, "lo_hi_f_source",
+                   "the same type-7 position used for the reported total Px", pwhere)
+    _require_value(profile, "reconciliation_rule_owner",
+                   "docs/phase5_plan.md section 15", pwhere)
+    _exact_sequence(profile.get("measures"), ("nominal", "pv"), f"{pwhere}: measures")
+
+    hwhere = f"{where}: phase_8_handoff"
+    handoff = _map(block, "phase_8_handoff", hwhere)
+    _require_false(handoff, "presentation_in_phase_7", hwhere)
+    _exact_sequence(handoff.get("provides"),
+                    ("annual_percentile_ladder", "selected_px_annual_profile"),
+                    f"{hwhere}: provides")
+    # Every one of these is Phase 8, and saying so here is what keeps Phase 7
+    # from drifting into presentation.
+    for key in ("annual_cash_flow_presentation_owner", "dashboard_owner", "chart_owner"):
+        _require_value(handoff, key, "phase 8", hwhere)
+
+
 def _validate_results_minimum(raw: dict, path: Path) -> None:
     block = _map(raw, "results_minimum", path)
     where = f"{path}: results_minimum"
@@ -2844,7 +3259,10 @@ def _validate_results_minimum(raw: dict, path: Path) -> None:
                      "Charts", "Sensitivity"):
         if required not in deferred:
             raise SimContractError(f"{where}: deferred omits {required!r}")
-    _require_false(block, "annual_simulated_samples_contracted", where)
+    # PHASE 7. Annual simulated samples are now contracted - by
+    # `annual_stochastic`, not by Results. The `deferred` list above is what
+    # keeps Results itself presentation-free, and it is unchanged.
+    _require_true(block, "annual_simulated_samples_contracted", where)
 
     # RESULTS IS PRESENTATION, and this is where that stops being a wish.
     presentation = _map(block, "presentation", where)
@@ -3160,6 +3578,8 @@ def _parse_sim_data(raw: dict, path: Path) -> SimDataLayout:
                 "retention; leaving it undeclared invites it back by accident."
             )
 
+    _validate_phase7_records(block, where, header_row, first_row)
+
     return SimDataLayout(
         sheet=sheet,
         required_visibility=visibility,
@@ -3169,6 +3589,148 @@ def _parse_sim_data(raw: dict, path: Path) -> SimDataLayout:
         footer_rows=0,
         reserved_row_count=h,
     )
+
+
+LOCKED_SENSITIVITY_COLUMNS = (
+    "driver_id", "driver_type", "driver_name", "rho", "abs_rho", "rank",
+    "direction", "status",
+)
+"""The Sensitivity table, including the eighth field.
+
+`status` is not decoration: it is where a zero-variance driver is reported as
+"n/a - no variance" instead of being given a rho it does not have.
+"""
+
+# The columns the accepted iteration banks already own. A Phase-7 block that
+# landed on any of them would overwrite published distribution data.
+LOCKED_ITERATION_BANK_COLUMNS = frozenset({"B", "C", "D", "F", "G", "H"})
+
+
+def _column_number(letter: str, where: str) -> int:
+    text = str(letter).strip().upper()
+    if not text or not text.isalpha():
+        raise SimContractError(f"{where}: {letter!r} is not a column letter")
+    value = 0
+    for char in text:
+        value = value * 26 + (ord(char) - ord("A") + 1)
+    return value
+
+
+def _phase7_block_shape(block: dict, name: str, where: str, header_row: int,
+                        first_row: int) -> None:
+    """Shared shape rules for both Phase-7 record blocks.
+
+    THE POINT OF EVERY LINE HERE IS THAT PHASE 7 CONSUMES COLUMNS, NEVER ROWS.
+    `reserved_rows` is the audit trail from which H, the first iteration row and
+    the technical ceiling are derived, so a Phase-7 block that reserved a row
+    would silently reduce the number of iterations the workbook can hold - and
+    it would do so without touching the ceiling literal, which is exactly the
+    kind of quiet capacity loss this contract is built to refuse.
+    """
+    bwhere = f"{where}: {name}"
+    if _req_int(block, "header_row", bwhere) != header_row:
+        raise SimContractError(
+            f"{bwhere}: header_row must be the accepted iteration header row "
+            f"{header_row}. A separate header row would be a reserved row, and "
+            "reserved rows are what the technical ceiling is computed from."
+        )
+    if _req_int(block, "first_record_row", bwhere) != first_row:
+        raise SimContractError(
+            f"{bwhere}: first_record_row must be {first_row}, the accepted first "
+            "iteration row, because this block shares that row axis."
+        )
+    if _req(block, "footer_rows", bwhere) != 0:
+        raise SimContractError(f"{bwhere}: footer_rows must be 0")
+    _require_true(block, "shares_row_axis_with_iteration_records", bwhere)
+    _require_false(block, "consumes_reserved_rows", bwhere)
+
+
+def _phase7_columns_clear_of_the_banks(letters, where: str) -> None:
+    for letter in letters:
+        if str(letter).strip().upper() in LOCKED_ITERATION_BANK_COLUMNS:
+            raise SimContractError(
+                f"{where}: column {letter!r} is owned by an iteration bank. A Phase-7 "
+                "block written there would overwrite published distribution data."
+            )
+
+
+def _validate_phase7_records(block: dict, where: str, header_row: int,
+                             first_row: int) -> None:
+    swhere = f"{where}: sensitivity_records"
+    sensitivity = _map(block, "sensitivity_records", swhere)
+    _phase7_block_shape(sensitivity, "sensitivity_records", where, header_row, first_row)
+    _require_value(sensitivity, "row_rule", LOCKED_SENSITIVITY_ROW_RULE, swhere)
+    columns = _seq(sensitivity, "columns", swhere)
+    actual = tuple(
+        (_req_str(c, "key", swhere), _req_str(c, "column", swhere),
+         _req_str(c, "header", swhere), _req_str(c, "value_type", swhere))
+        for c in columns
+    )
+    _exact_sequence(actual, LOCKED_SENSITIVITY_COLUMN_LAYOUT, f"{swhere}: columns")
+    _exact_sequence(tuple(row[0] for row in actual), LOCKED_SENSITIVITY_COLUMNS,
+                    f"{swhere}: column keys")
+    _phase7_columns_clear_of_the_banks([row[1] for row in actual], swhere)
+    banks = _map(sensitivity, "banks", swhere)
+    for bank in ("A", "B"):
+        entry = _map(banks, bank, f"{swhere}: banks.{bank}")
+        first = _req_str(entry, "first_column", f"{swhere}: banks.{bank}")
+        last = _req_str(entry, "last_column", f"{swhere}: banks.{bank}")
+        _phase7_columns_clear_of_the_banks((first, last), f"{swhere}: banks.{bank}")
+        width = _column_number(last, swhere) - _column_number(first, swhere) + 1
+        if width != len(LOCKED_SENSITIVITY_COLUMNS):
+            raise SimContractError(
+                f"{swhere}: banks.{bank} spans {width} columns but the table has "
+                f"{len(LOCKED_SENSITIVITY_COLUMNS)} fields"
+            )
+    a_last = _column_number(_map(banks, "A", swhere)["last_column"], swhere)
+    b_first = _column_number(_map(banks, "B", swhere)["first_column"], swhere)
+    if b_first <= a_last:
+        raise SimContractError(f"{swhere}: the sensitivity banks overlap")
+
+    awhere = f"{where}: annual_records"
+    annual = _map(block, "annual_records", awhere)
+    _phase7_block_shape(annual, "annual_records", where, header_row, first_row)
+    if _req_int(annual, "quantile_count", awhere) != LOCKED_ANNUAL_QUANTILE_COUNT:
+        raise SimContractError(
+            f"{awhere}: quantile_count must be {LOCKED_ANNUAL_QUANTILE_COUNT}, the "
+            "accepted ladder width"
+        )
+    # THE LADDER, NEVER THE MATRIX.
+    _require_false(annual, "iteration_level_annual_values_persisted", awhere)
+    _require_value(annual, "row_rule", LOCKED_ANNUAL_ROW_RULE, awhere)
+    _require_value(annual, "max_rows_owner",
+                   "structure_contract.yaml: year_columns.max_generated_year_columns", awhere)
+    _require_value(annual, "quantile_keys_owner",
+                   "sim_data.summary_statistics.metrics", awhere)
+    for group, locked in (("index_columns", LOCKED_ANNUAL_INDEX_COLUMNS),
+                          ("quantile_first_column", LOCKED_ANNUAL_QUANTILE_FIRST_COLUMN),
+                          ("selected_px_profile_columns", LOCKED_ANNUAL_PROFILE_COLUMNS)):
+        mapping = _map(annual, group, f"{awhere}: {group}")
+        for bank in ("A", "B"):
+            gwhere = f"{awhere}: {group}.{bank}"
+            entry = _map(mapping, bank, gwhere)
+            for key, expected in locked[bank].items():
+                _require_value(entry, key, expected, gwhere)
+            _phase7_columns_clear_of_the_banks(entry.values(), gwhere)
+
+    # THE LADDER MUST FIT BETWEEN ITS OWN START AND WHATEVER FOLLOWS IT. Eleven
+    # quantiles occupy eleven columns; an allocation that overlaps the next
+    # group would publish one number on top of another.
+    for bank in ("A", "B"):
+        starts = LOCKED_ANNUAL_QUANTILE_FIRST_COLUMN[bank]
+        nominal = _column_number(starts["nominal"], awhere)
+        pv = _column_number(starts["pv"], awhere)
+        if pv - nominal < LOCKED_ANNUAL_QUANTILE_COUNT:
+            raise SimContractError(
+                f"{awhere}: bank {bank} allots {pv - nominal} columns to the nominal "
+                f"ladder but it needs {LOCKED_ANNUAL_QUANTILE_COUNT}"
+            )
+        profile = _column_number(LOCKED_ANNUAL_PROFILE_COLUMNS[bank]["nominal"], awhere)
+        if profile - pv < LOCKED_ANNUAL_QUANTILE_COUNT:
+            raise SimContractError(
+                f"{awhere}: bank {bank} allots {profile - pv} columns to the PV ladder "
+                f"but it needs {LOCKED_ANNUAL_QUANTILE_COUNT}"
+            )
 
 
 def _validate_iterations(raw: dict, path: Path, layout: SimDataLayout) -> None:

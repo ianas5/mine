@@ -1267,6 +1267,64 @@ sim_data:
         total_nominal: "G"
         total_pv: "H"
 
+  # ---------------------------------------------------------------------------
+  # PHASE-7 RECORDS - COLUMNS, NEVER ROWS.
+  #
+  # Both blocks below share the row axis with the iteration records, exactly as
+  # bank B already does. That is not a convenience: `reserved_rows` is the
+  # audit trail from which H, `first_iteration_row` and the technical ceiling
+  # are derived, so a Phase-7 block that consumed rows would silently reduce
+  # the number of iterations the workbook can hold. reserved_rows is unchanged,
+  # H is still 33, the first iteration row is still 34, and
+  # `max_iterations_representable` is still 1048543.
+  # ---------------------------------------------------------------------------
+  sensitivity_records:
+    header_row: 33
+    first_record_row: 34
+    footer_rows: 0
+    row_rule: "one row per eligible driver, in ranked order"
+    shares_row_axis_with_iteration_records: true
+    consumes_reserved_rows: false
+    # The eighth field, `status`, carries "n/a - no variance" for a driver that
+    # has no variance to correlate. It is the reason a zero-variance driver can
+    # be reported without being ranked.
+    columns:
+      - {key: "driver_id",   column: "J", header: "Driver ID", value_type: "text"}
+      - {key: "driver_type", column: "K", header: "Type",      value_type: "text"}
+      - {key: "driver_name", column: "L", header: "Name",      value_type: "text"}
+      - {key: "rho",         column: "M", header: "Rho",       value_type: "double"}
+      - {key: "abs_rho",     column: "N", header: "|Rho|",     value_type: "double"}
+      - {key: "rank",        column: "O", header: "Rank",      value_type: "integer"}
+      - {key: "direction",   column: "P", header: "Direction", value_type: "text"}
+      - {key: "status",      column: "Q", header: "Status",    value_type: "text"}
+    banks:
+      A: {first_column: "J", last_column: "Q"}
+      B: {first_column: "S", last_column: "Z"}
+
+  annual_records:
+    header_row: 33
+    first_record_row: 34
+    footer_rows: 0
+    row_rule: "one row per applied project year"
+    shares_row_axis_with_iteration_records: true
+    consumes_reserved_rows: false
+    max_rows_owner: "structure_contract.yaml: year_columns.max_generated_year_columns"
+    # THE LADDER, NOT THE MATRIX. Eleven quantiles per measure per year, plus
+    # the selected-Px profile value for that year. No iteration-level annual
+    # value is persisted anywhere.
+    index_columns:
+      A: {project_index: "AB", calendar_year: "AC"}
+      B: {project_index: "BC", calendar_year: "BD"}
+    quantile_first_column:
+      A: {nominal: "AD", pv: "AO"}
+      B: {nominal: "BE", pv: "BP"}
+    quantile_count: 11
+    quantile_keys_owner: "sim_data.summary_statistics.metrics"
+    selected_px_profile_columns:
+      A: {nominal: "AZ", pv: "BA"}
+      B: {nominal: "CA", pv: "CB"}
+    iteration_level_annual_values_persisted: false
+
   # THE STEP-9 SUMMARY, PERSISTED.
   #
   # `Results derives from _SimData` and `modSimStats` is the one owner of these
@@ -1346,12 +1404,19 @@ sim_data:
       - {key: "quantile_10", row: 17, label: null}
       - {key: "quantile_11", row: 18, label: null}
 
-  # Deliberately absent, and not to be added without a new authority: they are
-  # the retentions the accepted plan defers.
+  # Deliberately absent, and not to be added without a new authority.
+  #
+  # PHASE 7 REMOVED TWO OF THESE AND DELIBERATELY KEPT THE THIRD.
+  # `sensitivity_data` and the annual LADDER are now contracted below, because
+  # Phase 7 owns them. `per_driver_samples` STAYS EXCLUDED, and so does the
+  # iteration x year matrix: sensitivity reaches per-driver values by RESET AND
+  # REPLAY, and annual output by BLOCK REPLAY, precisely so that neither
+  # retention is ever created. Contracting an output is not the same as
+  # retaining the matrix behind it, and the distinction is the memory
+  # architecture.
   excluded:
     - "per_driver_samples"
-    - "annual_stochastic_samples"
-    - "sensitivity_data"
+    - "annual_iteration_matrix"
 
   # ---------------------------------------------------------------------------
   # THE PENDING AUTO NONCE SIDECAR - a write-ahead recovery marker.
@@ -1555,6 +1620,276 @@ contingency:
     - "a_plus_emv"
   workbook_recommends_a_confidence_level: false
 
+# =============================================================================
+# SENSITIVITY - Phase 7.
+#
+# WHAT THIS IS, AND WHAT IT IS NOT. Sensitivity is OBSERVATIONAL POST-PROCESSING
+# over an already-accepted successful run. It is not a simulation. It allocates
+# no run identity, consumes no AUTO nonce, writes no attempt row and changes no
+# published number. If it ever produced a different stochastic result and
+# presented it as "the sensitivity of this run", the workbook would hold two
+# sources of truth for one run, which is the failure this whole architecture is
+# built to prevent.
+#
+# HOW IT GETS PER-DRIVER VALUES WITHOUT RETAINING THEM. `per_driver_samples`
+# stays on the `sim_data.excluded` list: the driver x iteration matrix is
+# 300 x 100,000 x 8 B = 240 MB and is never retained. Instead each driver is
+# RESET AND REPLAYED at driver granularity from its own component initial
+# state(s), one driver at a time, its column ranked and then discarded. Under
+# D6-18b every component stream is deterministic per iteration, so one driver
+# replays without touching any other. There is no random-access seek: a
+# rejection sampler consumes a variable number of uniforms, so iteration j is
+# reached by sequential advance.
+# =============================================================================
+sensitivity:
+  phase: 7
+  kind: "observational_post_processing"
+  basis_run: "the accepted successful snapshot in the active bank"
+  independent_monte_carlo_permitted: false
+
+  # ---------------------------------------------------------------------------
+  # Drivers. One per Cost Line, one per Risk. No category aggregation.
+  # ---------------------------------------------------------------------------
+  drivers:
+    one_per_cost_line: true
+    one_per_risk: true
+    category_aggregation: false
+    identity: "permanent_id"
+    identity_is_worksheet_row: false
+
+  # ---------------------------------------------------------------------------
+  # The contribution a driver is correlated on. NOMINAL only, and it is the
+  # SAME expression the engine already computes - `contribution` above owns it.
+  # A second copy of this arithmetic anywhere is a duplicate source of truth.
+  # ---------------------------------------------------------------------------
+  contribution:
+    measure: "nominal"
+    expression_owner: "contribution"
+    reimplementation_permitted: false
+    cost_line: "unit_cost * Quantity * Knom"
+    risk: "occurred ? severity * Knom : 0"
+    # A Risk is ONE driver. Occurrence and severity are two streams of one
+    # driver, paired by iteration; correlating against raw severity alone would
+    # measure a quantity the model never spends.
+    risk_occurrence_and_severity_are_one_driver: true
+    correlation_against_raw_severity_permitted: false
+
+  replay:
+    granularity: "driver"
+    resets_from: "component_initial_state"
+    random_access_seek: false
+    sequential_advance_required: true
+    cost_line_streams: 1
+    risk_streams: 2
+    risk_streams_paired_by_iteration: true
+    unrelated_drivers_advanced: false
+    retains_driver_matrix: false
+    concurrent_driver_columns_retained: 1
+
+  # ---------------------------------------------------------------------------
+  # Spearman, by MID-RANKS. The no-ties shortcut is not an optimisation here:
+  # a Risk at p = 0.2 puts roughly 80% of its column on one tied value, and the
+  # shortcut is simply the wrong number on tied data.
+  # ---------------------------------------------------------------------------
+  statistic:
+    name: "spearman_rank_correlation"
+    definition: "pearson(midrank(driver_contribution), midrank(total_nominal))"
+    tie_rule: "average_ranks"
+    no_ties_shortcut_permitted: false
+    total_ranks_computed_once: true
+    total_ranks_reused_across_drivers: true
+    sorting: "on_copies_only"
+    source_arrays_mutated: false
+    iteration_correspondence_preserved: true
+
+  # ---------------------------------------------------------------------------
+  # Zero variance is UNDEFINED, not zero. Reporting rho = 0 for a constant
+  # column asserts "no monotone association was found", which is a measurement.
+  # No measurement was possible.
+  # ---------------------------------------------------------------------------
+  zero_variance:
+    status_label: "n/a - no variance"
+    rho_reported: false
+    reported_as_zero_rho: false
+    excluded_from_ranking: true
+    excluded_from_tornado_input: true
+    retained_diagnostically: true
+
+  ranking:
+    order_by: "absolute_rho"
+    direction: "descending"
+    signed_rho_retained: true
+    direction_labels: ["+", "-"]
+    # PHASE 7 PRODUCES THE WHOLE RANKED POPULATION. Top-N is a chart decision
+    # and charts are Phase 8; truncating here would discard data the later
+    # phase is entitled to choose from.
+    top_n_truncation: false
+    population: "every eligible non_zero_variance driver"
+
+  # ---------------------------------------------------------------------------
+  # Full N. No subsampling is contracted, and none may be added from a desk
+  # estimate: under replay the dominant cost is stream ADVANCEMENT, and a
+  # skipped iteration must still be advanced through, so subsampling would
+  # reduce only the ranking half. If measured runtime evidence later shows
+  # full-N ranking is unacceptable, that evidence changes this contract first.
+  # ---------------------------------------------------------------------------
+  sampling:
+    uses_all_iterations: true
+    subsampling_contracted: false
+    iteration_cap: null
+    sensitivity_sample_size: null
+    unmeasured_performance_safeguard_permitted: false
+    # The rule that WOULD apply if subsampling were ever contracted. It is
+    # recorded so a future implementation cannot invent a looser one.
+    index_set_rule_if_ever_adopted:
+      shared_index_set: true
+      same_indices: true
+      same_order: true
+      independently_selected_samples_permitted: false
+      full_run_statistics_recomputed_from_subset: false
+
+  # ---------------------------------------------------------------------------
+  # Interpretation. Spearman is MONOTONE ASSOCIATION. rho^2 is not a share of
+  # variance, and presenting it as a percentage contribution would be a
+  # quantitative claim this method does not support.
+  # ---------------------------------------------------------------------------
+  interpretation:
+    measures: "monotone_association"
+    measures_variance_contribution: false
+    rho_squared_as_variance_share_permitted: false
+    percentage_contribution_permitted: false
+    inter_driver_correlation_owner: "dependence"
+
+  identity_binding:
+    stamped_with: ["run_id", "effective_seed", "request_fingerprint", "result_digest"]
+    stored_in: "the same bank as the run it describes"
+    valid_only_for_the_stamped_run: true
+
+  state_safety:
+    consumes_run_id: false
+    advances_auto_nonce: false
+    touches_pending_auto_nonce_marker: false
+    writes_attempt_row: false
+    mutates_successful_snapshot: false
+    rewrites_iteration_records: false
+    changes_result_digest: false
+
+  # ---------------------------------------------------------------------------
+  # Display. The state machine in `sim_state` is the authority; sensitivity adds
+  # no fourth state and invents no rule of its own.
+  # ---------------------------------------------------------------------------
+  display:
+    state_owner: "sim_state"
+    presented_as_current_when: "sim_state is CURRENT and the stored sensitivity stamp equals the active bank successful stamp"
+    presented_as_current_when_stale: false
+    presented_as_current_when_invalid: false
+    stale_must_be_labelled: true
+    # Inherited from `sim_state.on_failure.prior_sim_data_preserved`. A REFUSED
+    # attempt is an attempt; it destroys nothing that belonged to the last
+    # accepted success.
+    refused_attempt_destroys_prior_sensitivity: false
+    prior_sensitivity_preserved_on_failure: true
+
+# =============================================================================
+# ANNUAL STOCHASTIC OUTPUT - Phase 7.
+#
+# TWO DIFFERENT THINGS, AND THEY MUST NOT BE CONFLATED:
+#
+#   (a) ANNUAL SIMULATED DISTRIBUTIONS - the percentile ladder of each project
+#       year taken across iterations. Sum_y of a per-year Px does NOT equal the
+#       reported total Px, and it is not a profile of anything.
+#
+#   (b) THE SELECTED-Px ANNUAL PROFILE - the annual vector belonging to the
+#       reported total-cost percentile. It DOES reconcile: Sum_y = reported Px.
+#
+# Presenting (a) as (b) would be a reconciliation error, so both are contracted
+# and named separately here.
+#
+# WHAT MAKES THIS POSSIBLE WITHOUT A NEW INPUT. Knom is already
+# Sum_y (FX * w_y * infl_y); the per-year factor is a DECOMPOSITION of an
+# accepted published number, not a new quantity, and it sums back to it.
+# =============================================================================
+annual_stochastic:
+  phase: 7
+  contracted: true
+
+  per_year_factor:
+    nominal: "Knom_y = FX * w_y * infl_y"
+    pv: "Kpv_y = FX * w_y * infl_y * disc_y"
+    decomposition_of: ["Knom", "Kpv"]
+    reconciles: "sum_y Knom_y = Knom"
+    factor_owner: "calc_contract.yaml"
+    is_a_new_input: false
+
+  iteration_annual_vector:
+    nominal: "A_j(y) = sum_d sample_d_j * Quantity_d * Knom_d_y"
+    pv: "A_j(y) = sum_d sample_d_j * Quantity_d * Kpv_d_y"
+    # The per-iteration analogue of the accepted annual identity I3c. It is the
+    # correctness anchor for everything below.
+    identity: "sum_y A_j(y) = iteration total for j"
+    identity_owner: "docs/phase5_plan.md I3c"
+
+  # ---------------------------------------------------------------------------
+  # RETENTION. The iteration x year matrix is 200 x 100,000 x 8 B = 160 MB at
+  # the structural maximum and is NEVER retained or persisted - the same trap
+  # `per_driver_samples` refuses. Years are processed in BLOCKS: hold a block,
+  # compute its ladders, discard, advance. What is retained is the ladder.
+  # ---------------------------------------------------------------------------
+  retention:
+    persisted_iteration_by_year_matrix: false
+    retained_in_memory_matrix: false
+    strategy: "block_replay"
+    block_axis: "project_year"
+    block_width_configurable: true
+    passes: "ceil(applied_duration / block_width)"
+    retained: ["annual_percentile_ladder", "selected_px_annual_profile"]
+
+  # ---------------------------------------------------------------------------
+  # (a) ANNUAL SIMULATED DISTRIBUTIONS.
+  # ---------------------------------------------------------------------------
+  annual_distributions:
+    quantile_method_owner: "statistics.percentile"
+    method: "hyndman_fan_type_7"
+    sorting: "on_copies_only"
+    measures: ["nominal", "pv"]
+    ladder_owner: "statistics"
+    per_year: true
+    sums_to_total_percentile: false
+    is_a_selected_px_profile: false
+
+  # ---------------------------------------------------------------------------
+  # (b) THE SELECTED-Px ANNUAL PROFILE - the approved convex Type-7 blend.
+  #
+  # The reported total Px is generally a blend of TWO order statistics, so "the
+  # annual vector of the Px iteration" does not name one iteration. The profile
+  # applies the SAME lo / hi / f the reported total used, to the annual vectors
+  # of those exact two iterations. Sum_y then equals the reported Px exactly, by
+  # linearity, and at f = 0 it degenerates to the single iteration's vector.
+  # ---------------------------------------------------------------------------
+  selected_px_profile:
+    definition: "convex_type_7_blend"
+    formula: "Profile_Px(y) = (1 - f) * AnnualVector_lo(y) + f * AnnualVector_hi(y)"
+    lo_hi_f_source: "the same type-7 position used for the reported total Px"
+    position_owner: "statistics.percentile"
+    degenerates_to_single_iteration_when_f_is_zero: true
+    # THE IDENTITY, AND NOT ITS ALLOWANCE. This contract stores no comparison
+    # tolerance - Step 0 settled that as an oracle/evidence policy owned
+    # elsewhere - so the numeric allowance for this reconciliation is the
+    # project's accepted identity rule, referenced and never copied here.
+    reconciliation_identity: "sum_y Profile_Px(y) = reported Px"
+    reconciliation_rule_owner: "docs/phase5_plan.md section 15"
+    nearest_rank_permitted: false
+    per_year_percentile_as_profile_permitted: false
+    other_definitions_permitted: false
+    measures: ["nominal", "pv"]
+
+  phase_8_handoff:
+    provides: ["annual_percentile_ladder", "selected_px_annual_profile"]
+    presentation_in_phase_7: false
+    annual_cash_flow_presentation_owner: "phase 8"
+    dashboard_owner: "phase 8"
+    chart_owner: "phase 8"
+
 # -----------------------------------------------------------------------------
 # Results - MINIMUM scope only. Everything else is explicitly deferred.
 # -----------------------------------------------------------------------------
@@ -1566,7 +1901,11 @@ results_minimum:
     - "Dashboard"
     - "Charts"
     - "Sensitivity"
-  annual_simulated_samples_contracted: false
+  # PHASE 7. Annual simulated samples are now CONTRACTED - by
+  # `annual_stochastic` above, not by Results. Results still presents nothing
+  # new: `deferred` is unchanged, Annual Cash Flow remains Phase 8, and
+  # `presentation.written_by_the_run` is still false.
+  annual_simulated_samples_contracted: true
 
   # RESULTS IS PRESENTATION. It is not part of the per-run transaction, it is
   # materialised once by Stage A, and it computes nothing: every cell is a
