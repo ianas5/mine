@@ -263,6 +263,13 @@ PHASE6_VBA_MODULES = (
 )
 
 PHASE4_RAW_LINE_LIMIT = 900
+# PHASE 7. The pure sensitivity kernel is measured on the same pair of limits as
+# the Phase-5 and Phase-6 kernels: a code ceiling for sprawl and a raw ceiling
+# so documentation is neither charged as sprawl nor unbounded.
+PHASE7_VBA_MODULES = (
+    "modSimSensitivity",
+)
+
 PHASE5_CODE_LINE_LIMIT = 900
 PHASE5_RAW_LINE_LIMIT = 1200
 
@@ -306,6 +313,7 @@ def test_05_no_module_is_a_dumping_ground() -> None:
     by_name = {m.name: m for m in _handwritten_modules()}
     assert set(by_name) == (
         set(PHASE4_VBA_MODULES) | set(PHASE5_VBA_MODULES) | set(PHASE6_VBA_MODULES)
+        | set(PHASE7_VBA_MODULES)
     ), (
         "the hand-written module inventory changed; the size limits below are "
         "assigned per module and must be assigned for the new one too"
@@ -315,7 +323,7 @@ def test_05_no_module_is_a_dumping_ground() -> None:
         assert raw < PHASE4_RAW_LINE_LIMIT, (
             f"{name} is {raw} raw lines; split its responsibilities"
         )
-    for name in PHASE5_VBA_MODULES + PHASE6_VBA_MODULES:
+    for name in PHASE5_VBA_MODULES + PHASE6_VBA_MODULES + PHASE7_VBA_MODULES:
         raw, _, _, code = _line_metrics(by_name[name])
         assert code < PHASE5_CODE_LINE_LIMIT, (
             f"{name} is {code} code lines; split its responsibilities"

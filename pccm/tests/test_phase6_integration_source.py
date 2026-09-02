@@ -946,10 +946,18 @@ def test_26_no_step_13_scenario_exists_yet() -> None:
 
 
 def test_27_no_phase7_module_exists() -> None:
+    """P7-2 LANDED THE FIRST ONE, AND ONLY THE FIRST ONE.
+
+    `modSimSensitivity` is no longer premature: the pure sensitivity kernel is
+    the accepted P7-2 package and the module registry declares it. Everything
+    else on this list still is - annual output is P7-5, replay is P7-3, and the
+    dashboard, charts and reconciliation are Phase 8. `modSimCorrelation` stays
+    on it permanently: inter-driver correlation is out of scope, not deferred.
+    """
     names = {path.stem for path in SRC_VBA.glob("*.bas")}
-    for premature in ("modSimSensitivity", "modSimDashboard", "modSimAnnual",
-                      "modSimReconcile", "modSimCorrelation", "modSimReplay",
-                      "modSimCharts"):
+    assert "modSimSensitivity" in names, "the accepted P7-2 kernel is missing"
+    for premature in ("modSimDashboard", "modSimAnnual", "modSimReconcile",
+                      "modSimCorrelation", "modSimReplay", "modSimCharts"):
         assert premature not in names, premature
     declared = {module.name for module in _structure().vba_modules}
     assert declared >= names, sorted(names - declared)

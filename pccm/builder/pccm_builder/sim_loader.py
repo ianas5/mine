@@ -742,6 +742,8 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
     }),
     'sensitivity.ranking': frozenset({
         'direction', 'direction_labels', 'order_by', 'population', 'signed_rho_retained',
+        'tie_break', 'tie_break_comparison', 'tie_break_direction',
+        'tie_break_uses_supply_order', 'tie_break_uses_worksheet_row',
         'top_n_truncation'
     }),
     'sensitivity.sampling': frozenset({
@@ -3094,6 +3096,13 @@ def _validate_sensitivity(raw: dict, path: Path) -> None:
     # discard data the later phase is entitled to choose from.
     _require_false(ranking, "top_n_truncation", kwhere)
     _require_value(ranking, "population", "every eligible non_zero_variance driver", kwhere)
+    # P7-2 DELTA. Without a fixed tie-break, equal |rho| leaves the order to the
+    # sort, and the same model yields two different tables.
+    _require_value(ranking, "tie_break", "permanent_id", kwhere)
+    _require_value(ranking, "tie_break_direction", "ascending", kwhere)
+    _require_value(ranking, "tie_break_comparison", LOCKED_ID_COMPARISON, kwhere)
+    _require_false(ranking, "tie_break_uses_worksheet_row", kwhere)
+    _require_false(ranking, "tie_break_uses_supply_order", kwhere)
 
     pwhere = f"{where}: sampling"
     sampling = _map(block, "sampling", pwhere)

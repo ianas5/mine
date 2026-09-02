@@ -2786,3 +2786,21 @@ def test_p7_115_the_annual_ladder_cannot_be_narrowed_or_overlapped() -> None:
             "is_a_selected_px_profile", True),
         "the annual distribution presented as the selected-Px profile",
     )
+
+
+def test_p7_116_the_equal_magnitude_tie_break_cannot_be_loosened() -> None:
+    _rejected(
+        lambda d: d["sensitivity"]["ranking"].__setitem__(
+            "tie_break_uses_worksheet_row", True),
+        "the ranked order tied to a worksheet row",
+    )
+    _rejected(
+        lambda d: d["sensitivity"]["ranking"].__setitem__(
+            "tie_break_uses_supply_order", True),
+        "the ranked order left to the order drivers were supplied in",
+    )
+    _rejected(
+        lambda d: d["sensitivity"]["ranking"].__setitem__(
+            "tie_break_comparison", "text_locale"),
+        "the tie-break comparison made locale-dependent",
+    )

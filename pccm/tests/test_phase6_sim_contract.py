@@ -1560,3 +1560,22 @@ def test_p7_18_the_sensitivity_table_carries_the_eighth_field() -> None:
     # as a rho it does not have.
     assert columns[-1]["header"] == "Status"
     assert _raw()["sensitivity"]["zero_variance"]["status_label"] == "n/a - no variance"
+
+
+def test_p7_19_the_equal_magnitude_tie_break_is_fixed_by_contract() -> None:
+    """The P7-2 delta. Two drivers can share |rho| exactly, and with nothing
+    said the order falls to the sort - so the same model yields two different
+    tables. The rule is the identity the project already orders by, under the
+    comparison `components` and `accumulation` already name."""
+    raw = _raw()
+    ranking = raw["sensitivity"]["ranking"]
+    assert ranking["tie_break"] == "permanent_id"
+    assert ranking["tie_break_direction"] == "ascending"
+    assert ranking["tie_break_comparison"] == "ordinal_utf16_code_units"
+    # THE SAME COMPARISON, not a matching string: both owners are read.
+    assert ranking["tie_break_comparison"] == raw["stream_assignment"]["permanent_id_comparison"]
+    assert ranking["tie_break_comparison"] == raw["accumulation"]["permanent_id_comparison"]
+    # A row moves when an unrelated driver is added, and identity that moves is
+    # not identity. Supply order is not identity either.
+    assert ranking["tie_break_uses_worksheet_row"] is False
+    assert ranking["tie_break_uses_supply_order"] is False

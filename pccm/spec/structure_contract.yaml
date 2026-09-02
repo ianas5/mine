@@ -499,6 +499,9 @@ vba:
     - name: "modSimNonce"
       generated: false
       responsibility: "The Phase-6 AUTO nonce transaction and its recovery protocol: establish and verify the durable pending-AUTO-nonce marker before the counter is touched, read and reconcile the persisted next nonce against it, derive the AUTO effective seed through modSimRng, persist and verify the advance, make the one bounded immediate reconciliation, clear the marker only on a definite resolution, and own the Phase6AfterNoncePersisted failure envelope. Its durable recovery inputs are the pending marker and the nonce counter, never the mutable last-attempt audit axis. No simulation mathematics, sampling, statistics, fingerprinting, publication, run-ID allocation, status derivation or attempt-row writing."
+    - name: "modSimSensitivity"
+      generated: false
+      responsibility: "The pure Phase-7 sensitivity mathematics: mid-ranks with average ranks for ties, Spearman as Pearson over two already-ranked series, the undefined zero-variance status, and the ordering of finished driver results by absolute rho with a permanent-id tie-break. No driver replay, no RNG or component stream, no workbook access, no _SimData, no run identity, no state and no presentation."
     - name: "modSimReport"
       generated: false
       responsibility: "Phase-6 workbook orchestration: the endpoint and the settled read accessors, the two simulation control reads, dual-bank publication into _SimData with verify-then-commit, and the attempt and status bookkeeping. The AUTO nonce lifecycle belongs to modSimNonce, which this module drives through a narrow scalar interface. It consumes the accepted pure simulation kernels and owns no simulation mathematics."

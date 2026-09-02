@@ -1725,6 +1725,20 @@ sensitivity:
     # phase is entitled to choose from.
     top_n_truncation: false
     population: "every eligible non_zero_variance driver"
+    # P7-2 DELTA. Two drivers can share |rho| exactly - a small model, or a pair
+    # of drivers that move with the total identically - and P7-1 left what
+    # happens then unsaid. Unsaid means the report depends on the order the
+    # drivers reached the sort, so the same model could produce two different
+    # tables. The narrowest deterministic rule is the identity the project
+    # already orders by everywhere reproducibility matters, and the comparison
+    # is the one `components` and `accumulation` already name. Worksheet row
+    # position cannot serve: a driver's row moves when an unrelated driver is
+    # added, and identity that moves is not identity.
+    tie_break: "permanent_id"
+    tie_break_direction: "ascending"
+    tie_break_comparison: "ordinal_utf16_code_units"
+    tie_break_uses_worksheet_row: false
+    tie_break_uses_supply_order: false
 
   # ---------------------------------------------------------------------------
   # Full N. No subsampling is contracted, and none may be added from a desk
