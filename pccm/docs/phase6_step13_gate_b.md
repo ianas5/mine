@@ -572,7 +572,7 @@ expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **235** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **241** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -849,6 +849,34 @@ predicate had been replaced by `$true` — the tracked-module blob comparison an
 the manifest entry count. Both now read the joined statement. It is the third
 time this shape has appeared, and it is always the same lesson: a label survives
 the change that matters.
+
+Clause scope was not enough either. *"were NOT induced and were runtime-proven"*
+borrows the negator across a plain `and`, and the answer is NOT one more
+conjunction in the parser: the negator would then be borrowed by whatever
+connective was tried next. A scanner over unbounded prose can always be
+out-spelled, so it is no longer the primary control.
+
+**The boundary statement is an approved text.** Each of the three regions — the
+Phase-6 banner, the Phase-4 driver banner and the source battery's own docstring
+— carries exactly one paragraph opening `AND THE BOUNDARY SURVIVES THE PASS`, and
+`APPROVED_BOUNDARY` in `tests/test_phase6_gate_b_harness_source.py` holds that
+paragraph verbatim. `_assert_approved_boundary` isolates the marked paragraph in
+the region, normalises only what is intentionally irrelevant to meaning — comment
+markers and line wrapping — and requires equality with the approved text. Two
+paragraphs carrying the marker, or none, is itself a refusal: there must be one
+statement to compare. Nothing else may be substituted inside it, whatever
+vocabulary a replacement reaches for, so changing the architectural closure
+wording now requires changing its control — which is the point.
+
+The clause scanner is retained as a **secondary** check, run over the approved
+paragraph after it has matched and asserted directly against the contradiction
+shapes. It restarts at commas, at contrastive conjunctions and at `and`/`or`, so
+a negator binds to its own claim: *"not induced and runtime-proven"* and
+*"nothing was induced and runtime-proven"* are both refused. Six mutations cover
+the boundary statement: the borrowed-negator contradiction planted in each of the
+three regions, a plain `and` splice, an added affirmative sentence that keeps
+every approved hedge word beside it, and an innocuous rewording — each named
+detector refusing its own.
 
 ---
 

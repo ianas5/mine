@@ -2873,7 +2873,109 @@ def test_234_the_source_battery_docstring_claims_the_bounded_list_was_proved() -
                 conformance.test_45_the_current_wording_states_the_accepted_comparison_and_the_split()
             except AssertionError as error:
                 refused = True
-                assert "unnegated runtime claim" in str(error), error
+                # The mutation is now refused on the stronger basis: the bounded
+                # paragraph is no longer the approved statement. The secondary
+                # scanner is asserted directly below, so the original ground of
+                # this mutation - a negator borrowed across a contrastive clause
+                # - stays proven rather than being taken on trust.
+                assert "this battery's own docstring:" in str(error), error
+                assert "not the approved statement" in str(error), error
         finally:
             conformance.__file__ = saved
     assert refused, "the docstring may claim the bounded list was runtime-proven"
+    assert conformance._unnegated_evidence_claims(
+        "nothing on it was induced, but every item was runtime-proven by Run 6."), (
+        "the secondary scanner reads the contrastive clause as still negated")
+
+
+# ===========================================================================
+# T. A negator for one claim does not negate the next one
+# ===========================================================================
+# Each of these keeps every hedge word the previous controls searched for AND
+# keeps a genuine negated claim beside the contradiction. That is what defeated
+# the backwards-looking scanner twice: "were NOT induced and were runtime-proven"
+# reads as negated to anything that only asks whether a negator appears earlier.
+# The approved-statement control refuses them on a different basis entirely - the
+# paragraph is not the approved paragraph - and does so whatever vocabulary a
+# replacement claim reaches for.
+def _docstring_refuses(damaged: str, fragment: str) -> None:
+    """Run the wording control over a damaged copy of the battery's docstring."""
+    conformance_path = Path(conformance.__file__)
+    with tempfile.TemporaryDirectory(prefix="pccm-docstring-") as name:
+        target = Path(name) / conformance_path.name
+        target.write_text(damaged, encoding="utf-8")
+        saved = conformance.__file__
+        conformance.__file__ = str(target)
+        try:
+            refused = False
+            try:
+                conformance.test_45_the_current_wording_states_the_accepted_comparison_and_the_split()
+            except AssertionError as error:
+                refused = True
+                assert fragment in str(error), error
+        finally:
+            conformance.__file__ = saved
+    assert refused, "the docstring mutation survived the wording control"
+
+
+def test_235_the_banner_negator_is_borrowed_by_a_runtime_claim() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "    were NOT induced and are not claimed - they remain static-only, and §5 of\n",
+        "    were NOT induced and were runtime-proven - they remain static-only, and §5 of\n")
+    _control("test_41", phase6=damaged)
+
+
+def test_236_the_borrowed_negator_is_refused_by_the_wording_control_too() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "    were NOT induced and are not claimed - they remain static-only, and §5 of\n",
+        "    were NOT induced and were runtime-proven - they remain static-only, and §5 of\n")
+    _control("test_45", phase6=damaged)
+
+
+def test_237_the_driver_negator_is_borrowed_by_a_runtime_claim() -> None:
+    damaged = _swap(
+        _HARNESS,
+        "    were not induced by any run and are not claimed by this one.\n",
+        "    were not induced by any run and were runtime-proven by Run 6.\n")
+    _control("test_75", harness=damaged)
+
+
+def test_238_the_docstring_negator_is_borrowed_by_a_runtime_claim() -> None:
+    conformance_path = Path(conformance.__file__)
+    original = conformance_path.read_text(encoding="utf-8")
+    damaged = original.replace(
+        "is the bounded static-only list, nothing on it was induced, and nothing here\n"
+        "claims it was.",
+        "is the bounded static-only list, nothing on it was induced and every item was\n"
+        "runtime-proven by Run 6.", 1)
+    assert damaged != original, "the mutation changed nothing"
+    _docstring_refuses(damaged, "not the approved statement")
+
+
+def test_239_a_separate_runtime_claim_joins_the_bounded_paragraph() -> None:
+    """EVERY approved hedge word survives, and a new sentence asserts the
+    opposite beside them. No evidence-vocabulary scanner can be relied on to
+    catch an arbitrary spelling of this; the approved statement can, because the
+    paragraph is no longer the approved paragraph."""
+    damaged = _swap(
+        _PHASE6,
+        "they remain static-only, and §5 of\n"
+        "    docs/phase6_step13_gate_b.md is the bounded list.\n",
+        "they remain static-only, and §5 of\n"
+        "    docs/phase6_step13_gate_b.md is the bounded list.\n"
+        "    Run 6 proved the private NonceConsumed projection.\n")
+    _control("test_41", phase6=damaged)
+
+
+def test_240_the_approved_boundary_is_reworded_without_contradiction() -> None:
+    """Even an innocuous rewording is refused. Changing an architectural closure
+    statement should require changing the control that approves it - that is the
+    cost the template model deliberately imposes, and it is what makes the
+    control independent of anyone's ability to parse English negation."""
+    damaged = _swap(
+        _HARNESS,
+        "    were not induced by any run and are not claimed by this one.\n",
+        "    were not induced by any run and are not asserted by this one.\n")
+    _control("test_75", harness=damaged)

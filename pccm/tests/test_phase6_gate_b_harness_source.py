@@ -1180,6 +1180,80 @@ NEGATORS = ("not ", "n't ", "never ", "no ", "nothing ", "cannot ", "neither ",
             "without ")
 
 
+# THE APPROVED BOUNDARY STATEMENTS, one per active region.
+#
+# The claim scanner below is defence-in-depth. It is NOT the authority, and two
+# rounds of trying to make it one showed why: a finite evidence vocabulary plus
+# free-form English negation is not a fail-closed rule. "not induced and
+# runtime-proven" reads as negated to any scanner that looks backwards for a
+# negator, and closing that case by splitting on `and` only moves the problem to
+# the next phrasing - "Run 6 proved the private projection", "verified at
+# runtime", "established dynamically".
+#
+# So the boundary statement is APPROVED TEXT. The bounded paragraph of each
+# active region must be exactly this, once comment markers and line wrapping are
+# normalised away. Changing the architectural closure wording then requires
+# changing its control, which is the right cost for a statement this load-bearing
+# - and no replacement prose, added sentence or reworded claim can survive inside
+# the paragraph, whatever vocabulary it reaches for.
+APPROVED_BOUNDARY: dict[str, str] = {
+    "the source banner": (
+        "AND THE BOUNDARY SURVIVES THE PASS. An all-green run proves the "
+        "scenarios that ran, not the arms this harness cannot reach. The genuine "
+        "PERSISTENCE_INDETERMINATE path, the genuine COM read raises, a "
+        "ClearPending failure after a known CONSUMED, the iteration ceiling, the "
+        "private NonceConsumed projection and the selector-write ordering inside "
+        "FinalCommit were NOT induced and are not claimed - they remain "
+        "static-only, and §5 of docs/phase6_step13_gate_b.md is the bounded list."
+    ),
+    "the driver banner": (
+        "AND THE BOUNDARY SURVIVES THE PASS. The genuinely static-only clauses - "
+        "the PERSISTENCE_INDETERMINATE path, the genuine COM read raises, a "
+        "ClearPending failure after a known CONSUMED, the iteration ceiling, the "
+        "private NonceConsumed projection and the selector-write ordering inside "
+        "FinalCommit - were not induced by any run and are not claimed by this "
+        "one."
+    ),
+    "this battery's own docstring": (
+        "AND THE BOUNDARY SURVIVES THE PASS. An all-green run proves the "
+        "scenarios that ran, not the arms the harness cannot reach: §5 of "
+        "`docs/phase6_step13_gate_b.md` is the bounded static-only list, nothing "
+        "on it was induced, and nothing here claims it was."
+    ),
+}
+
+BOUNDARY_MARKER = "AND THE BOUNDARY SURVIVES THE PASS"
+
+
+def _normalised(block: str) -> str:
+    """Presentation removed, and nothing else: comment markers and wrapping."""
+    return " ".join(" ".join(
+        line.lstrip().lstrip("#").strip() for line in block.splitlines()).split())
+
+
+def _assert_approved_boundary(region: str, where: str) -> str:
+    """The bounded paragraph of `region` IS the approved statement."""
+    approved = APPROVED_BOUNDARY[where]
+    stripped = "\n".join(line.lstrip().lstrip("#").rstrip()
+                         for line in region.splitlines())
+    blocks = [block for block in re.split(r"\n\s*\n", stripped)
+              if BOUNDARY_MARKER in block]
+    assert len(blocks) == 1, (
+        f"{where}: {len(blocks)} paragraphs carry the boundary marker, so there "
+        "is no single approved statement to compare"
+    )
+    actual = _normalised(blocks[0])
+    assert actual == approved, (
+        f"{where}: the boundary paragraph is not the approved statement.\n"
+        f"  approved: {approved}\n  actual:   {actual}"
+    )
+    # DEFENCE IN DEPTH, and it cannot fire while the text is approved. It is
+    # exercised directly below so it is not carried untested.
+    overclaims = _unnegated_evidence_claims(actual)
+    assert not overclaims, (f"{where}: {overclaims}")
+    return actual
+
+
 def _clauses(text: str) -> list[str]:
     """The text in sub-clauses, so one claim cannot borrow another's negator.
 
@@ -1191,7 +1265,7 @@ def _clauses(text: str) -> list[str]:
     """
     flat = " ".join(text.split())
     parts = re.split(r"(?<=[.;,])\s+|\s+(?=but |although |though |however |"
-                     r"nevertheless |yet |whereas )", flat, flags=re.I)
+                     r"nevertheless |yet |whereas |and |or )", flat, flags=re.I)
     return [part for part in parts if part and part.strip()]
 
 
@@ -1211,39 +1285,12 @@ def _unnegated_evidence_claims(text: str) -> list[str]:
     return found
 
 
-def _bounded_paragraph(text: str, subject: str) -> str:
-    """The blank-line block naming `subject`, with comment markers stripped."""
-    stripped = "\n".join(line.lstrip("#").rstrip() for line in text.splitlines())
-    blocks = [block for block in re.split(r"\n\s*\n", stripped) if subject in block]
-    assert len(blocks) == 1, (
-        f"{subject} is named in {len(blocks)} paragraphs of this region, so "
-        "there is no single boundary paragraph to read"
-    )
-    return blocks[0]
-
-
-def _assert_boundary_paragraph(text: str, subject: str, where: str) -> str:
-    """The paragraph naming `subject` states both halves of the boundary."""
-    paragraph = _bounded_paragraph(text, subject)
-    assert "static-only" in paragraph or "static only" in paragraph, (
-        f"{where}: the paragraph naming {subject} does not say it remains static-only"
-    )
-    negated = [clause for clause in _clauses(paragraph)
-               if "induced" in clause.lower()
-               and any(negator in clause.lower().split("induced")[0]
-                       for negator in NEGATORS)]
-    # The same sub-clause scope: a negated "induced" somewhere else in the
-    # paragraph does not qualify a claim made in its own clause.
-    assert negated, (
-        f"{where}: the paragraph naming {subject} does not say the bounded "
-        "subjects were NOT induced"
-    )
-    overclaims = _unnegated_evidence_claims(paragraph)
-    assert not overclaims, (
-        f"{where}: the paragraph naming {subject} makes an unnegated runtime "
-        f"claim about a static-only subject: {overclaims}"
-    )
-    return paragraph
+# The paragraph-scoped scanner that USED to be the authority here is removed
+# rather than left standing unused. A helper named for a boundary check,
+# reachable and passing but wired to nothing, is exactly the dead label this
+# battery keeps finding in the harness. The approved statement above is the
+# control; `_unnegated_evidence_claims` is what survives of the scan, and
+# test_45 asserts it directly rather than carrying it on trust.
 
 
 def test_41_no_runtime_claim_is_made_about_the_private_consumption_flag() -> None:
@@ -1270,7 +1317,7 @@ def test_41_no_runtime_claim_is_made_about_the_private_consumption_flag() -> Non
         assert at < len(banner), (
             f"a NonceConsumed mention outside the banner carries no exclusion: {line}"
         )
-        _assert_boundary_paragraph(banner, "NonceConsumed", "the Phase-6 banner")
+        _assert_approved_boundary(banner, "the source banner")
 
 
 def test_42_the_no_replay_invariant_is_not_stated_as_digest_inequality() -> None:
@@ -1456,8 +1503,7 @@ def test_45_the_current_wording_states_the_accepted_comparison_and_the_split() -
             # The banner LISTS the bounded subjects; the docstring points at §5
             # instead, and is checked on that reference below. Each is read the
             # way it actually states the boundary.
-            if "NonceConsumed" in text:
-                _assert_boundary_paragraph(text, "NonceConsumed", where)
+            _assert_approved_boundary(text, where)
     else:
         assert re.search(r"Runs?\s+1-\d|Run \d", banner), (
             "the banner does not say which runs have executed"
@@ -1521,14 +1567,21 @@ def test_45_the_current_wording_states_the_accepted_comparison_and_the_split() -
     # that makes the reference: nothing on that list was induced, and nothing
     # here claims it was.
     if closing:
-        boundary = _bounded_paragraph(docstring, "bounded static-only list")
-        overclaims = _unnegated_evidence_claims(boundary)
-        assert not overclaims, (
-            "this battery's docstring makes an unnegated runtime claim about "
-            f"the bounded static-only list: {overclaims}"
-        )
-        assert re.search(r"nothing[^.]*induced", boundary, re.I), (
-            "the docstring does not say that nothing on the bounded list was induced"
+        # AND THE SCANNER IS NOT CARRIED UNTESTED. It is defence-in-depth behind
+        # the approved statement, so it can never fire while the text is
+        # approved; these prove the binding rule it exists for, on the exact
+        # shapes that defeated the two previous versions.
+        for contradiction in ("were NOT induced and were runtime-proven",
+                              "not induced and runtime-proven",
+                              "nothing was induced and runtime-proven",
+                              "nothing on it was induced but every item was runtime-proven"):
+            assert _unnegated_evidence_claims(contradiction), (
+                f"the claim scanner reads {contradiction!r} as negated; a negator "
+                "for one claim is being borrowed by a later, different one"
+            )
+        assert not _unnegated_evidence_claims(
+            "were NOT induced and are not claimed - they remain static-only"), (
+            "the claim scanner refuses the approved statement"
         )
 
     # 6. THE PRE-EXCEL GATE IS PRE6, NOT P6-PRE. P6-PRE executes later, inside
@@ -3107,7 +3160,7 @@ def test_75_the_driver_banner_states_the_accepted_phase5_lifecycle() -> None:
         # although they were not induced by any run" carries both tokens and
         # asserts the opposite of the boundary; the negator arrives after the
         # claim it is supposed to qualify.
-        _assert_boundary_paragraph(banner, "NonceConsumed", "the driver banner")
+        _assert_approved_boundary(banner, "the driver banner")
         assert not re.search(r"still under runtime validation"
                              r"|have not yet been exercised", flat, re.I), (
             "the banner still describes Step 13 as open"
