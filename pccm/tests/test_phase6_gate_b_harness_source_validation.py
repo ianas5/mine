@@ -2806,3 +2806,74 @@ def test_230_the_source_battery_docstring_stays_at_run_4() -> None:
         finally:
             conformance.__file__ = saved
     assert refused, "the module docstring may describe the pre-closure state"
+
+
+# ===========================================================================
+# S. A hedge token is not a boundary
+# ===========================================================================
+# All three of these KEEP the words the previous controls searched for. That is
+# the point: each asserts that a static-only subject WAS proved, and each was
+# accepted by a detector that only looked for a nearby "static-only" or "not
+# induced". A control named "no runtime claim" was passing an explicit runtime
+# claim.
+def test_231_the_scenario_banner_claims_the_bounded_subjects_were_proved() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "    NonceConsumed projection and the selector-write ordering inside FinalCommit\n"
+        "    were NOT induced and are not claimed - they remain static-only, and §5 of\n",
+        "    NonceConsumed projection was runtime-proven; the selector-write ordering\n"
+        "    inside FinalCommit was runtime-proven too. Nevertheless they remain\n"
+        "    static-only, and §5 of\n")
+    _control("test_41", phase6=damaged)
+
+
+def test_232_the_scenario_banner_overclaim_is_refused_by_the_wording_control() -> None:
+    """The same damage, against the other detector that accepted it."""
+    damaged = _swap(
+        _PHASE6,
+        "    NonceConsumed projection and the selector-write ordering inside FinalCommit\n"
+        "    were NOT induced and are not claimed - they remain static-only, and §5 of\n",
+        "    NonceConsumed projection was runtime-proven; the selector-write ordering\n"
+        "    inside FinalCommit was runtime-proven too. Nevertheless they remain\n"
+        "    static-only, and §5 of\n")
+    _control("test_45", phase6=damaged)
+
+
+def test_233_the_driver_banner_claims_the_bounded_clauses_were_proved() -> None:
+    """The negator arrives AFTER the claim it is supposed to qualify."""
+    damaged = _swap(
+        _HARNESS,
+        "    NonceConsumed projection and the selector-write ordering inside FinalCommit -\n"
+        "    were not induced by any run and are not claimed by this one.\n",
+        "    NonceConsumed projection and the selector-write ordering inside FinalCommit -\n"
+        "    were all runtime-proven by Run 6, although they were not induced by any run.\n")
+    _control("test_75", harness=damaged)
+
+
+def test_234_the_source_battery_docstring_claims_the_bounded_list_was_proved() -> None:
+    """It points at §5 rather than listing the subjects, and the rule follows
+    the reference: nothing on that list was induced, and nothing here claims it
+    was."""
+    conformance_path = Path(conformance.__file__)
+    original = conformance_path.read_text(encoding="utf-8")
+    damaged = original.replace(
+        "is the bounded static-only list, nothing on it was induced, and nothing here\n"
+        "claims it was.",
+        "is the bounded static-only list, nothing on it was induced, but every item was\n"
+        "runtime-proven by Run 6.", 1)
+    assert damaged != original, "the mutation changed nothing"
+    with tempfile.TemporaryDirectory(prefix="pccm-overclaim-") as name:
+        target = Path(name) / conformance_path.name
+        target.write_text(damaged, encoding="utf-8")
+        saved = conformance.__file__
+        conformance.__file__ = str(target)
+        try:
+            refused = False
+            try:
+                conformance.test_45_the_current_wording_states_the_accepted_comparison_and_the_split()
+            except AssertionError as error:
+                refused = True
+                assert "unnegated runtime claim" in str(error), error
+        finally:
+            conformance.__file__ = saved
+    assert refused, "the docstring may claim the bounded list was runtime-proven"

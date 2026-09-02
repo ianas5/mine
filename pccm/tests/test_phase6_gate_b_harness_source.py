@@ -1156,6 +1156,96 @@ def test_40_no_mid_call_observation_is_claimed() -> None:
     assert "SOURCE evidence" in bank
 
 
+# ===========================================================================
+# The boundary, checked as a claim rather than as a token
+# ===========================================================================
+# An active region that names a static-only subject has to say BOTH halves: what
+# the closing run proved, and what it did not. A control that looked for a
+# nearby hedge token could be satisfied by
+#
+#     the private NonceConsumed projection was runtime-proven ...
+#     Nevertheless they remain static-only
+#
+# which asserts the opposite of the boundary and keeps the word that was being
+# searched for. So the affirmative evidence vocabulary is refused wherever it is
+# applied to a bounded subject, unless a negator stands between the start of the
+# clause and the claim itself. "were NOT induced" passes; "were all
+# runtime-proven by Run 6, although they were not induced" does not, because the
+# negator arrives after the claim it is supposed to qualify.
+AFFIRMATIVE_EVIDENCE = (
+    "runtime-proven", "runtime proven", "proven on Windows", "proved on Windows",
+    "exercised", "covered", "induced", "established by Run", "claimed",
+)
+NEGATORS = ("not ", "n't ", "never ", "no ", "nothing ", "cannot ", "neither ",
+            "without ")
+
+
+def _clauses(text: str) -> list[str]:
+    """The text in sub-clauses, so one claim cannot borrow another's negator.
+
+    Sentences and semicolons are not enough. `nothing on it was induced, but
+    every item was runtime-proven` is ONE sentence carrying a negated claim and
+    an unnegated one, and a sentence-level scan finds the `nothing` from the
+    first and reads the second as qualified. Commas and contrastive conjunctions
+    are where the second claim starts, so they are where the scan restarts.
+    """
+    flat = " ".join(text.split())
+    parts = re.split(r"(?<=[.;,])\s+|\s+(?=but |although |though |however |"
+                     r"nevertheless |yet |whereas )", flat, flags=re.I)
+    return [part for part in parts if part and part.strip()]
+
+
+def _unnegated_evidence_claims(text: str) -> list[str]:
+    """Every affirmative evidence claim with no negator before it in its clause."""
+    found = []
+    for clause in _clauses(text):
+        lowered = clause.lower()
+        for token in AFFIRMATIVE_EVIDENCE:
+            at = lowered.find(token.lower())
+            while at != -1:
+                before = lowered[:at]
+                if not any(negator in before for negator in NEGATORS):
+                    found.append(f"{token!r} in {clause[:160]!r}")
+                    break
+                at = lowered.find(token.lower(), at + 1)
+    return found
+
+
+def _bounded_paragraph(text: str, subject: str) -> str:
+    """The blank-line block naming `subject`, with comment markers stripped."""
+    stripped = "\n".join(line.lstrip("#").rstrip() for line in text.splitlines())
+    blocks = [block for block in re.split(r"\n\s*\n", stripped) if subject in block]
+    assert len(blocks) == 1, (
+        f"{subject} is named in {len(blocks)} paragraphs of this region, so "
+        "there is no single boundary paragraph to read"
+    )
+    return blocks[0]
+
+
+def _assert_boundary_paragraph(text: str, subject: str, where: str) -> str:
+    """The paragraph naming `subject` states both halves of the boundary."""
+    paragraph = _bounded_paragraph(text, subject)
+    assert "static-only" in paragraph or "static only" in paragraph, (
+        f"{where}: the paragraph naming {subject} does not say it remains static-only"
+    )
+    negated = [clause for clause in _clauses(paragraph)
+               if "induced" in clause.lower()
+               and any(negator in clause.lower().split("induced")[0]
+                       for negator in NEGATORS)]
+    # The same sub-clause scope: a negated "induced" somewhere else in the
+    # paragraph does not qualify a claim made in its own clause.
+    assert negated, (
+        f"{where}: the paragraph naming {subject} does not say the bounded "
+        "subjects were NOT induced"
+    )
+    overclaims = _unnegated_evidence_claims(paragraph)
+    assert not overclaims, (
+        f"{where}: the paragraph naming {subject} makes an unnegated runtime "
+        f"claim about a static-only subject: {overclaims}"
+    )
+    return paragraph
+
+
 def test_41_no_runtime_claim_is_made_about_the_private_consumption_flag() -> None:
     text = _text(PHASE6)
     assert "NonceConsumed" in text, "the exclusion is not stated at all"
@@ -1166,13 +1256,21 @@ def test_41_no_runtime_claim_is_made_about_the_private_consumption_flag() -> Non
         # FLATTENED. The exclusion is prose and wraps across lines, so a raw
         # substring search would miss "PowerShell cannot / observe it".
         window = " ".join(text[max(0, at - 500): at + 500].split())
-        # THREE WAYS OF SAYING THE SAME EXCLUSION, and the third arrived with
-        # the closure: the banner names this projection among the subjects that
-        # remain static-only because no run induced them. That is the exclusion,
-        # stated as a boundary rather than as an observability limit.
-        assert any(phrase in window for phrase in
-                   ("cannot observe", "Private Boolean", "static-only",
-                    "NOT induced", "not induced")), line
+        # TWO KINDS OF OCCURRENCE, AND EACH HAS ITS OWN RULE.
+        #
+        # A design occurrence is excluded by the observability limit, as it
+        # always was. A closure-banner occurrence is excluded by the boundary -
+        # but only if the SAME paragraph carries the boundary, and does not
+        # contradict it. Accepting a hedge token anywhere in a 500-character
+        # window let "NonceConsumed was runtime-proven ... Nevertheless they
+        # remain static-only" pass a control named "no runtime claim".
+        if ("cannot observe" in window) or ("Private Boolean" in window):
+            continue
+        banner = text.split("#>")[0]
+        assert at < len(banner), (
+            f"a NonceConsumed mention outside the banner carries no exclusion: {line}"
+        )
+        _assert_boundary_paragraph(banner, "NonceConsumed", "the Phase-6 banner")
 
 
 def test_42_the_no_replay_invariant_is_not_stated_as_digest_inequality() -> None:
@@ -1347,10 +1445,19 @@ def test_45_the_current_wording_states_the_accepted_comparison_and_the_split() -
                              r"|runtime[- ]proven", text, re.I), (
                 f"{where} does not separate the runtime authority from later commits"
             )
-            # AND THE BOUNDARY SURVIVES THE PASS.
+            # AND THE BOUNDARY SURVIVES THE PASS - as a CLAIM, not a token.
+            # The paragraph that names a bounded subject has to say it was not
+            # induced and remains static-only, and must not assert the opposite
+            # in the same breath. A token search here accepted "NonceConsumed
+            # was runtime-proven ... Nevertheless they remain static-only".
             assert re.search(r"static-only|not induced|were NOT induced", text, re.I), (
                 f"{where} drops the static-only boundary an all-green run did not cross"
             )
+            # The banner LISTS the bounded subjects; the docstring points at §5
+            # instead, and is checked on that reference below. Each is read the
+            # way it actually states the boundary.
+            if "NonceConsumed" in text:
+                _assert_boundary_paragraph(text, "NonceConsumed", where)
     else:
         assert re.search(r"Runs?\s+1-\d|Run \d", banner), (
             "the banner does not say which runs have executed"
@@ -1409,6 +1516,20 @@ def test_45_the_current_wording_states_the_accepted_comparison_and_the_split() -
         "this file's own docstring still denies the run that produced the "
         "behavioural evidence"
     )
+    # AND THE DOCSTRING'S OWN BOUNDARY SENTENCE IS A CLAIM TOO. It points at §5
+    # rather than listing the subjects, so the rule is applied to the paragraph
+    # that makes the reference: nothing on that list was induced, and nothing
+    # here claims it was.
+    if closing:
+        boundary = _bounded_paragraph(docstring, "bounded static-only list")
+        overclaims = _unnegated_evidence_claims(boundary)
+        assert not overclaims, (
+            "this battery's docstring makes an unnegated runtime claim about "
+            f"the bounded static-only list: {overclaims}"
+        )
+        assert re.search(r"nothing[^.]*induced", boundary, re.I), (
+            "the docstring does not say that nothing on the bounded list was induced"
+        )
 
     # 6. THE PRE-EXCEL GATE IS PRE6, NOT P6-PRE. P6-PRE executes later, inside
     #    the live session; a sentence that names both must distinguish them.
@@ -2982,6 +3103,11 @@ def test_75_the_driver_banner_states_the_accepted_phase5_lifecycle() -> None:
              "the banner drops the boundary the all-green run did not cross"),
         ):
             assert re.search(required, flat, re.I), why
+        # AND THE BOUNDARY IS A CLAIM. "were all runtime-proven by Run 6,
+        # although they were not induced by any run" carries both tokens and
+        # asserts the opposite of the boundary; the negator arrives after the
+        # claim it is supposed to qualify.
+        _assert_boundary_paragraph(banner, "NonceConsumed", "the driver banner")
         assert not re.search(r"still under runtime validation"
                              r"|have not yet been exercised", flat, re.I), (
             "the banner still describes Step 13 as open"

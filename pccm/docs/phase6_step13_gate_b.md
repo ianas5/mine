@@ -572,7 +572,7 @@ expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **231** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **235** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -826,6 +826,23 @@ the words its row must keep, checked in the SUBJECT CELL and, where the qualifie
 is a substring of the subject, required to appear in its own right: `ReadRaised`
 inside `SharedReadRaised` would otherwise satisfy the check while the pair had
 narrowed to one member. `test_220b` removes each qualifier in turn.
+
+**And a hedge token is not a boundary.** Broadening `test_41` to accept a nearby
+`static-only` made it fail open: a banner saying *"the private `NonceConsumed`
+projection was runtime-proven … Nevertheless they remain static-only"* passed a
+control named "no runtime claim", and so did `test_45` and `test_75` on the
+equivalent damage. The boundary is now read as a CLAIM. The paragraph naming a
+bounded subject must say it was not induced and remains static-only, and any
+affirmative evidence word applied to one of those subjects — runtime-proven,
+proven on Windows, exercised, covered, induced, established by Run 6, claimed —
+is refused unless a negator stands before it **in its own sub-clause**.
+
+Sentence scope was not enough: *"nothing on it was induced, but every item was
+runtime-proven"* is one sentence carrying a negated claim and an unnegated one,
+and a sentence-level scan borrows the first claim's negator for the second. The
+scan restarts at commas and at contrastive conjunctions, which is where the
+second claim begins. Four mutations keep the hedge tokens and assert the
+opposite anyway.
 
 Two of those eleven found controls reading an `Add-Check`'s LABEL while its
 predicate had been replaced by `$true` — the tracked-module blob comparison and
