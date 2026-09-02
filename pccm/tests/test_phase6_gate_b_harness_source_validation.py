@@ -2639,12 +2639,57 @@ def test_220_a_static_only_subject_is_dropped_by_the_all_green_run() -> None:
     # a surviving mutation and send the next reader after the wrong control.
     document = _DOC.read_text(encoding="utf-8")
     boundary = document.split("## 5.")[1].split("\n## ")[0]
-    for subject in conformance.STATIC_ONLY_SUBJECTS:
+    for subject, _ in conformance.STATIC_ONLY_SUBJECTS:
         rows = [line for line in boundary.splitlines()
                 if line.startswith("|") and subject in line]
         assert len(rows) == 1, (subject, len(rows))
         _closure_refuses(lambda doc, row=rows[0]: doc.replace(row + "\n", "", 1),
                          "has been dropped from the static-only list")
+
+
+def _occurrences(text: str, needle: str) -> list[int]:
+    found, at = [], text.find(needle)
+    while at != -1:
+        found.append(at)
+        at = text.find(needle, at + 1)
+    return found
+
+
+def test_220b_a_static_only_row_is_weakened_rather_than_dropped() -> None:
+    """Deleting a row is the obvious move and the least likely one. A row that
+    keeps its subject and loses its qualifier still LOOKS like the exclusion it
+    used to be - `ClearPending` without "after a known CONSUMED" is a different,
+    broader claim, and `SharedReadRaised` without `ReadRaised` silently narrows
+    the pair to one of its two members."""
+    document = _DOC.read_text(encoding="utf-8")
+    boundary = document.split("## 5.")[1].split("\n## ")[0]
+    for subject, qualifiers in conformance.STATIC_ONLY_SUBJECTS:
+        row = [line for line in boundary.splitlines()
+               if line.startswith("|") and subject in line][0]
+        for qualifier in qualifiers:
+            # THE OCCURRENCE THAT IS NOT INSIDE THE SUBJECT. `ReadRaised` is a
+            # substring of `SharedReadRaised`, and the qualifier can sit either
+            # side of the subject in the row, so the occurrence to remove is
+            # chosen by span: deleting the subject itself would exercise the
+            # dropped-row arm instead of the narrowing one, which is exactly the
+            # case this mutation exists for.
+            cells = row.split("|")
+            cell = cells[1]
+            subject_spans = [(m, m + len(subject))
+                             for m in _occurrences(cell, subject)]
+            damaged_row = None
+            for start in _occurrences(cell, qualifier):
+                end = start + len(qualifier)
+                if any(start >= a and end <= b for a, b in subject_spans):
+                    continue
+                cells[1] = cell[:start] + cell[end:]
+                damaged_row = "|".join(cells)
+                break
+            assert damaged_row is not None, (subject, qualifier)
+            assert damaged_row != row and subject in damaged_row, (subject, qualifier)
+            _closure_refuses(
+                lambda doc, old=row, new=damaged_row: doc.replace(old, new, 1),
+                "so the exclusion it records has narrowed")
 
 
 def test_221_the_closure_claims_the_unreachable_arms_were_induced() -> None:
@@ -2671,3 +2716,91 @@ def test_223_cross_implementation_parity_returns_to_static_only() -> None:
             "**No longer static-only:** cross-implementation parity (`P6-ORA`, D2b) and\nrun-ID exhaustion (`P6-RIDMAX`).",
             "| cross-implementation parity (`P6-ORA`) | not runnable. |", 1),
         "is back on the static-only list")
+
+
+
+# ===========================================================================
+# R. The active wording after closure
+# ===========================================================================
+def test_224_the_scenario_banner_stays_at_run_4() -> None:
+    """The banner described Run 4's world while Run 6 had closed the step, and
+    called the corrections Run 6 exercised unexercised."""
+    damaged = _swap(
+        _PHASE6,
+        "    WHAT HAS EXECUTED. Runs 1-6 have run.",
+        "    WHAT HAS EXECUTED. Runs 1-4 have run, and the corrections after Run 4\n"
+        "    are NOT among them - they are source.\n    Also,")
+    _control("test_45", phase6=damaged)
+
+
+def test_225_the_scenario_banner_loses_the_runtime_authority() -> None:
+    """A banner edited after the run must not read as evidence for the tree that
+    edited it."""
+    damaged = _PHASE6.replace("a3924e0", "this commit")
+    assert damaged != _PHASE6
+    _control("test_45", phase6=damaged)
+
+
+def test_226_the_scenario_banner_drops_the_static_only_boundary() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "    AND THE BOUNDARY SURVIVES THE PASS. An all-green run proves the scenarios\n",
+        "    AND EVERYTHING IS NOW PROVEN. An all-green run proves the scenarios\n")
+    damaged = damaged.replace("they remain static-only, and §5 of", "see §5 of")
+    damaged = damaged.replace("were NOT induced and are not claimed -", "were covered -")
+    _control("test_45", phase6=damaged)
+
+
+def test_227_the_driver_banner_stays_at_run_4() -> None:
+    """The active driver banner for a closed harness described it as still under
+    runtime validation."""
+    damaged = _swap(
+        _HARNESS,
+        "    PHASE 6 STEP 13 HAS COMPLETED WINDOWS/EXCEL RUNTIME VALIDATION.",
+        "    The Phase-6 Step-13 block dot-sourced below is the part still under\n"
+        "    runtime validation: the corrections have not yet been exercised on\n"
+        "    Windows. Separately,")
+    _control("test_75", harness=damaged)
+
+
+def test_228_the_driver_banner_loses_the_closing_run() -> None:
+    damaged = _HARNESS.replace("a3924e0", "a later commit")
+    assert damaged != _HARNESS
+    _control("test_75", harness=damaged)
+
+
+def test_229_the_driver_banner_drops_the_runtime_authority_distinction() -> None:
+    """Editing a banner does not make the commit that edited it runtime-proven."""
+    damaged = _swap(
+        _HARNESS,
+        "    RUN 6 IS THE RUNTIME AUTHORITY, not the later documentation and control\n"
+        "    commits that recorded it. Editing this banner does not make the commit that\n"
+        "    edited it runtime-proven.\n\n",
+        "")
+    _control("test_75", harness=damaged)
+
+
+def test_230_the_source_battery_docstring_stays_at_run_4() -> None:
+    """The docstring said Runs 1-4 had executed, and test_45 REQUIRED it to."""
+    conformance_path = Path(conformance.__file__)
+    original = conformance_path.read_text(encoding="utf-8")
+    damaged = original.replace(
+        "WHERE STEP 13 ACTUALLY STANDS. Runs 1-6 have executed and Step 13 is CLOSED.",
+        "WHERE STEP 13 ACTUALLY STANDS. Runs 1-4 have executed. What has NOT been\n"
+        "exercised on Windows is everything settled after Run 4.", 1)
+    assert damaged != original
+    with tempfile.TemporaryDirectory(prefix="pccm-step13-docstring2-") as name:
+        target = Path(name) / conformance_path.name
+        target.write_text(damaged, encoding="utf-8")
+        saved = conformance.__file__
+        conformance.__file__ = str(target)
+        try:
+            refused = False
+            try:
+                conformance.test_45_the_current_wording_states_the_accepted_comparison_and_the_split()
+            except AssertionError as error:
+                refused = True
+                assert "docstring" in str(error), error
+        finally:
+            conformance.__file__ = saved
+    assert refused, "the module docstring may describe the pre-closure state"

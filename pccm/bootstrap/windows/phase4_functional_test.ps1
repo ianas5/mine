@@ -156,10 +156,22 @@
           separately and never conflated
 
     PHASE 5 GATE B IS CLOSED. Its scenarios have executed on real Excel over
-    several Windows runs and Phase 5 was accepted on that evidence. The Phase-6
-    Step-13 block dot-sourced below is the part still under runtime validation:
-    Runs 1-4 have executed, Run 4 ran the Phase-6 behavioural matrix, and the
-    corrections made after it have not yet been exercised on Windows.
+    several Windows runs and Phase 5 was accepted on that evidence.
+
+    PHASE 6 STEP 13 HAS COMPLETED WINDOWS/EXCEL RUNTIME VALIDATION. Run 6, on
+    harness commit a3924e0, was the closing all-green run: 103 passed, 0 failed,
+    0 skipped, with the Phase-4 matrix 35/35, the Phase-5 Gate-B scenarios 39/39
+    and the Phase-6 Gate-B scenarios 29/29.
+
+    RUN 6 IS THE RUNTIME AUTHORITY, not the later documentation and control
+    commits that recorded it. Editing this banner does not make the commit that
+    edited it runtime-proven.
+
+    AND THE BOUNDARY SURVIVES THE PASS. The genuinely static-only clauses - the
+    PERSISTENCE_INDETERMINATE path, the genuine COM read raises, a ClearPending
+    failure after a known CONSUMED, the iteration ceiling, the private
+    NonceConsumed projection and the selector-write ordering inside FinalCommit -
+    were not induced by any run and are not claimed by this one.
 
     Safety, unchanged from the readiness gate: no security setting is altered, no
     registry key is touched, no Trusted Location is added, and no Excel process

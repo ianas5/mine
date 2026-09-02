@@ -13,12 +13,25 @@
     comments is a statement about SOURCE, and stays one until the scenario it
     describes has actually executed in Excel on Windows.
 
-    WHAT HAS EXECUTED. Runs 1-4 have run, and Run 4 executed the Phase-6
-    behavioural matrix for the first time: 24 of 29 scenarios passed, a real
-    production simulation published, repeated and recovered. The corrected
-    parity comparison, the P6-DET decoupling, the pre-open artefact capture and
-    the P6-FP3 preservation set are NOT among them - they are source, and no
-    Windows run has yet exercised them.
+    WHAT HAS EXECUTED. Runs 1-6 have run. Run 4 executed the Phase-6 behavioural
+    matrix for the first time and left five failures; Run 6 passed it 29 of 29,
+    and every correction made after Run 4 was exercised with it - the parity
+    comparison under the accepted Step-0 evidence policy, the P6-DET decoupling,
+    the pre-open artefact capture, the P6-FP3 preservation set, the two-class
+    module identity and the byte serialisation of the invariant artefacts.
+
+    RUN 6 IS THE RUNTIME AUTHORITY, and it ran harness commit a3924e0. Later
+    commits on this file are comment, documentation and control work: editing a
+    banner does not make the commit that edited it runtime-proven, and nothing
+    here may be read as evidence for a tree Windows never executed.
+
+    AND THE BOUNDARY SURVIVES THE PASS. An all-green run proves the scenarios
+    that ran, not the arms this harness cannot reach. The genuine
+    PERSISTENCE_INDETERMINATE path, the genuine COM read raises, a ClearPending
+    failure after a known CONSUMED, the iteration ceiling, the private
+    NonceConsumed projection and the selector-write ordering inside FinalCommit
+    were NOT induced and are not claimed - they remain static-only, and §5 of
+    docs/phase6_step13_gate_b.md is the bounded list.
 
     WHAT THIS FILE MAY NOT DO
     -------------------------

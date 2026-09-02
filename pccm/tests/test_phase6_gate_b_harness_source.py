@@ -35,13 +35,22 @@ WHAT A STATIC CONTROL CAN AND CANNOT SETTLE, which is a property and not a date.
 Nothing in this file proves runtime behaviour: whether Excel agrees is Gate B's
 question, on Windows.
 
-WHERE STEP 13 ACTUALLY STANDS. Runs 1-4 have executed. Run 4 was the first valid
-execution of the Phase-6 behavioural matrix - a real production simulation ran,
-published, repeated and recovered - so this file is no longer written above an
-unexercised harness. What has NOT been exercised on Windows is everything
-settled after Run 4: the corrected `P6-ORA` comparison under the accepted Step-0
-evidence policy, the `P6-DET` decoupling, the pre-open artefact capture, the
-`P6-FP3` preservation set, the D2 artefact split and the HEAD-byte binding.
+WHERE STEP 13 ACTUALLY STANDS. Runs 1-6 have executed and Step 13 is CLOSED. Run
+4 was the first valid execution of the Phase-6 behavioural matrix and left five
+failures; Run 6 passed it 29 of 29, and every correction settled after Run 4 was
+exercised with it - the `P6-ORA` comparison under the accepted Step-0 evidence
+policy, the `P6-DET` decoupling, the pre-open artefact capture, the `P6-FP3`
+preservation set, the D2 artefact split, the two-class module identity and the
+HEAD-byte binding.
+
+RUN 6 IS THE RUNTIME AUTHORITY, and it ran harness commit `a3924e0`. This file
+has been edited since, for wording and for controls; that does not make the
+commit which edited it runtime-proven, and no assertion here claims otherwise.
+
+AND THE BOUNDARY SURVIVES THE PASS. An all-green run proves the scenarios that
+ran, not the arms the harness cannot reach: §5 of `docs/phase6_step13_gate_b.md`
+is the bounded static-only list, nothing on it was induced, and nothing here
+claims it was.
 
 Runs standalone or under pytest.
 """
@@ -1157,7 +1166,13 @@ def test_41_no_runtime_claim_is_made_about_the_private_consumption_flag() -> Non
         # FLATTENED. The exclusion is prose and wraps across lines, so a raw
         # substring search would miss "PowerShell cannot / observe it".
         window = " ".join(text[max(0, at - 500): at + 500].split())
-        assert ("cannot observe" in window) or ("Private Boolean" in window), line
+        # THREE WAYS OF SAYING THE SAME EXCLUSION, and the third arrived with
+        # the closure: the banner names this projection among the subjects that
+        # remain static-only because no run induced them. That is the exclusion,
+        # stated as a boundary rather than as an observability limit.
+        assert any(phrase in window for phrase in
+                   ("cannot observe", "Private Boolean", "static-only",
+                    "NOT induced", "not induced")), line
 
 
 def test_42_the_no_replay_invariant_is_not_stated_as_digest_inequality() -> None:
@@ -1300,15 +1315,50 @@ def test_45_the_current_wording_states_the_accepted_comparison_and_the_split() -
         f"the repeatability row does not say which replay property it proves: {det.strip()}"
     )
 
-    # 4. THE BANNER NO LONGER DENIES EVERY EXECUTION. Runs 1-4 have run.
+    # 4. THE BANNER DESCRIBES THE STATE THE LEDGER RECORDS, and the ledger is
+    #    what decides which state that is. It denied every execution while three
+    #    runs had happened; then it described Run 4 while Run 6 had closed the
+    #    step. A demand written for either moment goes stale at the next one.
     for stale in ("NOTHING HERE HAS BEEN EXECUTED", "no Windows run has been made"):
         assert stale not in banner, f"the source banner still says {stale!r}"
-    assert re.search(r"Runs?\s+1-4|Run 4", banner), (
-        "the banner does not say which runs have executed"
-    )
-    # AND IT STILL SEPARATES WHAT HAS RUN FROM WHAT HAS NOT.
-    assert re.search(r"(are|is)\s+NOT\s+among\s+them|source,?\s+and\s+no\s+Windows\s+run",
-                     banner), "the banner does not say what remains unexercised"
+    closing = re.findall(r"\|\s*\*\*Run (\d+)\*\*\s*\|\s*`([^`]+)`\s*\|\s*([^|]*ALL GREEN[^|]*)\|", doc)
+    docstring = _text(Path(__file__)).split('"""')[1]
+    if closing:
+        number, authority, _ = closing[0]
+        for text, where in ((banner, "the source banner"),
+                            (docstring, "this battery's own docstring")):
+            assert re.search(rf"Runs?\s+1-{number}", text), (
+                f"{where} does not say that Runs 1-{number} have executed"
+            )
+            assert re.search(rf"Run {number}[^.]*29\s*(of|/)\s*29", text), (
+                f"{where} does not state the Phase-6 tally Run {number} reported"
+            )
+            # THE CORRECTIONS ARE NO LONGER DESCRIBED AS UNEXERCISED.
+            assert not re.search(r"(are|is)\s+NOT\s+among\s+them"
+                                 r"|no\s+Windows\s+run\s+has\s+yet\s+exercised"
+                                 r"|has\s+NOT\s+been\s+exercised", text), (
+                f"{where} still calls the post-Run-4 corrections unexercised"
+            )
+            # THE RUNTIME AUTHORITY IS THE RUN, NOT THE COMMIT THAT WROTE THIS.
+            assert authority in text, (
+                f"{where} does not name {authority} as the runtime authority"
+            )
+            assert re.search(r"does not make the commit[^.]*runtime-proven"
+                             r"|runtime[- ]proven", text, re.I), (
+                f"{where} does not separate the runtime authority from later commits"
+            )
+            # AND THE BOUNDARY SURVIVES THE PASS.
+            assert re.search(r"static-only|not induced|were NOT induced", text, re.I), (
+                f"{where} drops the static-only boundary an all-green run did not cross"
+            )
+    else:
+        assert re.search(r"Runs?\s+1-\d|Run \d", banner), (
+            "the banner does not say which runs have executed"
+        )
+        assert re.search(r"(are|is)\s+NOT\s+among\s+them"
+                         r"|source,?\s+and\s+no\s+Windows\s+run", banner), (
+            "the banner does not say what remains unexercised"
+        )
     for overclaim in ("Excel produced", "the run passed", "proven on Windows",
                       "confirmed in Excel"):
         assert overclaim not in _text(PHASE6), overclaim
@@ -1355,16 +1405,9 @@ def test_45_the_current_wording_states_the_accepted_comparison_and_the_split() -
         "cross-platform invariant"
     )
 
-    docstring = _text(Path(__file__)).split('"""')[1]
     assert "that run has not been made" not in docstring, (
-        "this file's own docstring still denies the run that produced Run 4's "
+        "this file's own docstring still denies the run that produced the "
         "behavioural evidence"
-    )
-    assert re.search(r"Runs? 1-4 have executed", docstring), (
-        "the docstring does not say which runs have executed"
-    )
-    assert re.search(r"has NOT been exercised|not been exercised", docstring), (
-        "the docstring records what has run without saying what has not"
     )
 
     # 6. THE PRE-EXCEL GATE IS PRE6, NOT P6-PRE. P6-PRE executes later, inside
@@ -2916,10 +2959,37 @@ def test_75_the_driver_banner_states_the_accepted_phase5_lifecycle() -> None:
          "the banner does not say where the final 35/35 comes from"),
         (r"PHASE 5 GATE B IS CLOSED",
          "the banner does not record that Phase 5 Gate B has executed"),
-        (r"Runs 1-4 have executed",
-         "the banner does not separate Phase 5's closure from Step 13's open state"),
     ):
         assert re.search(required, flat), why
+
+    # AND STEP 13'S OWN STATE, WHICHEVER THE LEDGER RECORDS. This demand named
+    # Runs 1-4 while Run 6 had closed the step, so the banner was required to
+    # keep describing a state it had left.
+    doc = _text(PCCM_ROOT / "docs" / "phase6_step13_gate_b.md")
+    closing = re.findall(r"\|\s*\*\*Run (\d+)\*\*\s*\|\s*`([^`]+)`\s*\|\s*([^|]*ALL GREEN[^|]*)\|", doc)
+    if closing:
+        number, authority, _ = closing[0]
+        for required, why in (
+            (r"COMPLETED WINDOWS/EXCEL RUNTIME VALIDATION|Step 13[^.]*closed",
+             "the banner does not record that Step 13 completed runtime validation"),
+            (rf"Run {number}[^.]*{authority}|{authority}[^.]*Run {number}",
+             f"the banner does not name Run {number} on {authority} as the closing run"),
+            (r"Phase-6 Gate-B scenarios 29/29|29/29",
+             "the banner does not state the Phase-6 tally"),
+            (r"RUNTIME AUTHORITY",
+             "the banner does not say which run the runtime evidence belongs to"),
+            (r"static-only|not induced",
+             "the banner drops the boundary the all-green run did not cross"),
+        ):
+            assert re.search(required, flat, re.I), why
+        assert not re.search(r"still under runtime validation"
+                             r"|have not yet been exercised", flat, re.I), (
+            "the banner still describes Step 13 as open"
+        )
+    else:
+        assert re.search(r"still under runtime validation", flat), (
+            "the banner does not separate Phase 5's closure from Step 13's state"
+        )
 
 
 def test_76_the_invariant_artefacts_are_written_as_bytes_not_translated_text() -> None:
@@ -3193,14 +3263,30 @@ def test_77_the_generated_projection_has_a_baseline_bound_identity() -> None:
 # ===========================================================================
 # Q. Closure is a claim, and a claim needs a control
 # ===========================================================================
-STATIC_ONLY_SUBJECTS = (
-    "PERSISTENCE_INDETERMINATE",
-    "SharedReadRaised",
-    "ClearPending",
-    "1 048 543",
-    "NonceConsumed",
-    "FinalCommit",
+# THE SEVEN BOUNDED SUBJECTS, each with what its row has to keep SAYING. A
+# token alone is not the subject: `ClearPending` unqualified would admit a row
+# that had quietly dropped "after a known CONSUMED", and `SharedReadRaised`
+# alone would admit one that had narrowed away `ReadRaised`. The first version
+# of this list carried six tokens and no qualifiers, so the seventh row could
+# be deleted and two others weakened without a single control noticing.
+STATIC_ONLY_SUBJECTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("PERSISTENCE_INDETERMINATE", ("AUTO_NONCE_INDETERMINATE",)),
+    ("SharedReadRaised", ("ReadRaised", "COM")),
+    ("ClearPending", ("CONSUMED",)),
+    ("1 048 543", ()),
+    ("NonceConsumed", ("private",)),
+    ("FinalCommit", ("selector-write ordering",)),
+    ("mutation controls", ("wording", "source")),
 )
+
+
+def _spans(text: str, needle: str) -> list[int]:
+    """Every start offset of `needle` in `text`."""
+    found, at = [], text.find(needle)
+    while at != -1:
+        found.append(at)
+        at = text.find(needle, at + 1)
+    return found
 
 
 def test_78_the_closure_states_what_run_6_established_and_no_more() -> None:
@@ -3276,11 +3362,32 @@ def test_78_the_closure_states_what_run_6_established_and_no_more() -> None:
 
     # 10. THE STATIC-ONLY BOUNDARY SURVIVES THE PASS, subject by subject.
     boundary = current.split("## 5.")[1].split("\n## ")[0]
-    for subject in STATIC_ONLY_SUBJECTS:
-        assert subject in boundary, (
-            f"{subject} has been dropped from the static-only list by an "
-            "all-green run that never induced it"
+    for subject, qualifiers in STATIC_ONLY_SUBJECTS:
+        rows = [line for line in boundary.splitlines()
+                if line.startswith("|") and subject in line]
+        assert len(rows) == 1, (
+            f"{subject} has been dropped from the static-only list, or split "
+            f"across {len(rows)} rows, by an all-green run that never induced it"
         )
+        # THE SUBJECT CELL, not the whole row. `| wording / source mutation
+        # controls | source-level by nature. |` satisfies a whole-row search for
+        # "source" from its SECOND cell, so the qualifier could be removed from
+        # the subject it qualifies and the check would still pass.
+        cell = rows[0].split("|")[1]
+        for qualifier in qualifiers:
+            # OUTSIDE THE SUBJECT ITSELF. `ReadRaised` is a substring of
+            # `SharedReadRaised`, so a containment test is satisfied by the
+            # subject alone and the pair could narrow to one member unseen -
+            # which is the whole point of pairing them.
+            spans = [(at, at + len(subject))
+                     for at in _spans(cell, subject)]
+            standalone = [at for at in _spans(cell, qualifier)
+                          if not any(at >= a and at + len(qualifier) <= b
+                                     for a, b in spans)]
+            assert standalone, (
+                f"the {subject} row no longer says {qualifier!r} in its own "
+                f"right, so the exclusion it records has narrowed: {cell.strip()}"
+            )
     for induced in (r"every\s+failure\s+mode\s+was\s+induced",
                     r"nothing\s+remains\s+(static|source)-only",
                     r"the\s+COM\s+(read\s+)?raises?\s+(were|was)\s+induced"):

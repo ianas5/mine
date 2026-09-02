@@ -572,7 +572,7 @@ expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **223** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **231** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -807,6 +807,25 @@ parity put back on the static-only list.
 removable when nothing failed, and the two that must not be removed were never
 about failure: the arms this harness cannot reach, and the single compile and
 single inventory the derived scenarios rest on.
+
+The closure round then found the same shape twice more, in the controls
+themselves. `test_45` and `test_75` REQUIRED the live banners to say `Runs 1-4
+have executed` and to call the post-Run-4 corrections unexercised — so an
+all-green matrix was not evidence that the active wording was current; the
+controls were forcing the stale wording to survive. Both are now conditioned on
+the ledger, like `test_66`: when a closing run is recorded, the banners must
+name it, state its Phase-6 tally, name `a3924e0` as the runtime authority, stop
+calling the corrections unexercised, and keep the static-only boundary. Six
+mutations restore the Run-4 wording in each of the three active regions.
+
+And the boundary list itself was under-controlled. `STATIC_ONLY_SUBJECTS` held
+six tokens where §5 has seven rows, so the seventh — the wording and source
+mutation controls — could be deleted unnoticed, and a row could keep its subject
+while losing the qualifier that bounds it. It is now seven subjects each with
+the words its row must keep, checked in the SUBJECT CELL and, where the qualifier
+is a substring of the subject, required to appear in its own right: `ReadRaised`
+inside `SharedReadRaised` would otherwise satisfy the check while the pair had
+narrowed to one member. `test_220b` removes each qualifier in turn.
 
 Two of those eleven found controls reading an `Add-Check`'s LABEL while its
 predicate had been replaced by `$true` — the tracked-module blob comparison and
