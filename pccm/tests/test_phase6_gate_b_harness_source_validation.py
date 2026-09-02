@@ -2878,8 +2878,15 @@ def test_234_the_source_battery_docstring_claims_the_bounded_list_was_proved() -
                 # scanner is asserted directly below, so the original ground of
                 # this mutation - a negator borrowed across a contrastive clause
                 # - stays proven rather than being taken on trust.
+                # REFUSED ON THE STRUCTURAL GROUND. This mutation replaces the
+                # sentence carrying the closure end anchor, so extraction refuses
+                # before comparison is even reached - a stronger refusal, not a
+                # weaker one. The semantic ground this mutation was written for -
+                # a negator borrowed across a contrastive clause - is asserted
+                # directly below rather than taken on trust.
                 assert "this battery's own docstring:" in str(error), error
-                assert "not the approved statement" in str(error), error
+                assert ("closure end anchor" in str(error)
+                        or "not the approved block" in str(error)), error
         finally:
             conformance.__file__ = saved
     assert refused, "the docstring may claim the bounded list was runtime-proven"
@@ -2951,7 +2958,13 @@ def test_238_the_docstring_negator_is_borrowed_by_a_runtime_claim() -> None:
         "is the bounded static-only list, nothing on it was induced and every item was\n"
         "runtime-proven by Run 6.", 1)
     assert damaged != original, "the mutation changed nothing"
-    _docstring_refuses(damaged, "not the approved statement")
+    _docstring_refuses(damaged, "this battery's own docstring:")
+    # And the borrowed negator this mutation is named for is refused on its own
+    # terms by the secondary scanner, so the structural refusal above is not the
+    # only thing standing between the docstring and this contradiction.
+    assert conformance._unnegated_evidence_claims(
+        "nothing on it was induced and every item was runtime-proven by Run 6."), (
+        "the secondary scanner reads the second claim as still negated")
 
 
 def test_239_a_separate_runtime_claim_joins_the_bounded_paragraph() -> None:
@@ -2979,3 +2992,102 @@ def test_240_the_approved_boundary_is_reworded_without_contradiction() -> None:
         "    were not induced by any run and are not claimed by this one.\n",
         "    were not induced by any run and are not asserted by this one.\n")
     _control("test_75", harness=damaged)
+
+
+# ===========================================================================
+# U. A second paragraph cannot reverse the first
+# ===========================================================================
+# The approved-PARAGRAPH model closed the borrowed-negator family and left a
+# larger hole open: leave the approved paragraph byte-for-byte intact and put the
+# contradiction in a NEW blank-line paragraph beside it. Nothing in a control
+# that compares one paragraph can adjudicate a different paragraph, so this is
+# not a wording problem and no rewording fixes it. The approved CLOSURE BLOCK
+# does: the protected span runs from the closure start anchor to the end anchor,
+# so an inserted paragraph either lands inside the block - where it breaks the
+# comparison - or names a bounded subject outside it, where the ownership rule
+# refuses it.
+def test_241_a_second_phase6_paragraph_reverses_the_approved_boundary() -> None:
+    """The approved boundary is untouched; the contradiction is its own
+    paragraph, immediately after the block and before the next heading."""
+    damaged = _swap(
+        _PHASE6,
+        "\n    WHAT THIS FILE MAY NOT DO\n",
+        "\n    Run 6 proved the private NonceConsumed projection.\n"
+        "\n    WHAT THIS FILE MAY NOT DO\n")
+    _control("test_41", phase6=damaged)
+
+
+def test_242_the_second_phase6_paragraph_is_refused_by_the_wording_control() -> None:
+    damaged = _swap(
+        _PHASE6,
+        "\n    WHAT THIS FILE MAY NOT DO\n",
+        "\n    Run 6 proved the private NonceConsumed projection.\n"
+        "\n    WHAT THIS FILE MAY NOT DO\n")
+    _control("test_45", phase6=damaged)
+
+
+def test_243_a_second_driver_paragraph_reverses_the_approved_boundary() -> None:
+    """test_02 also refuses this, because it enumerates the authorised driver
+    changes line by line. That is not enough: the named boundary detector must
+    refuse it on its own ground, or the boundary control is being credited with
+    a refusal it did not make."""
+    damaged = _swap(
+        _HARNESS,
+        "\n    Safety, unchanged from the readiness gate:",
+        "\n    Run 6 runtime-proven every genuinely static-only clause.\n"
+        "\n    Safety, unchanged from the readiness gate:")
+    _control("test_75", harness=damaged)
+
+
+def test_244_a_second_docstring_paragraph_reverses_the_approved_boundary() -> None:
+    conformance_path = Path(conformance.__file__)
+    original = conformance_path.read_text(encoding="utf-8")
+    damaged = original.replace(
+        "claims it was.\n\nRuns standalone or under pytest.",
+        "claims it was.\n\nRun 6 proved every item in §5.\n\n"
+        "Runs standalone or under pytest.", 1)
+    assert damaged != original, "the mutation changed nothing"
+    _docstring_refuses(damaged, "named outside the approved closure block")
+
+
+def test_245_a_duplicated_closure_start_anchor_makes_extraction_ambiguous() -> None:
+    """Two start anchors and there is no single block to compare. A extractor
+    that silently took the first, or the widest, would be proving nothing about
+    the region it did not read."""
+    damaged = _swap(
+        _PHASE6,
+        "\n    WHAT THIS FILE MAY NOT DO\n",
+        "\n    WHAT HAS EXECUTED. Run 6 executed every arm of the matrix.\n"
+        "\n    WHAT THIS FILE MAY NOT DO\n")
+    _control("test_41", phase6=damaged)
+
+
+def test_246_a_duplicated_closure_end_anchor_makes_extraction_ambiguous() -> None:
+    damaged = _swap(
+        _HARNESS,
+        "\n    Safety, unchanged from the readiness gate:",
+        "\n    The bounded subjects are not claimed by this one.\n"
+        "\n    Safety, unchanged from the readiness gate:")
+    _control("test_75", harness=damaged)
+
+
+def test_247_the_boundary_sentence_is_moved_out_of_the_closure_block() -> None:
+    """The boundary statement is cut out of the protected span and restated
+    after the next heading. What is left behind is still a syntactically valid
+    banner with a start anchor and an end anchor - the claim has simply stopped
+    being owned by the block that closes Step 13."""
+    boundary = (
+        "    AND THE BOUNDARY SURVIVES THE PASS. An all-green run proves the scenarios\n"
+        "    that ran, not the arms this harness cannot reach. The genuine\n"
+        "    PERSISTENCE_INDETERMINATE path, the genuine COM read raises, a ClearPending\n"
+        "    failure after a known CONSUMED, the iteration ceiling, the private\n"
+        "    NonceConsumed projection and the selector-write ordering inside FinalCommit\n"
+        "    were NOT induced and are not claimed - they remain static-only, and §5 of\n"
+        "    docs/phase6_step13_gate_b.md is the bounded list.\n")
+    assert _PHASE6.count(boundary) == 1, "the boundary statement moved or rewrapped"
+    damaged = _PHASE6.replace(boundary + "\n", "", 1)
+    assert "AND THE BOUNDARY SURVIVES THE PASS" not in damaged, (
+        "the boundary statement was not removed from its block")
+    damaged = _swap(damaged, "\n    WHAT IT DOES WRITE\n",
+                    "\n" + boundary + "\n    WHAT IT DOES WRITE\n")
+    _control("test_41", phase6=damaged)

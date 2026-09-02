@@ -572,7 +572,7 @@ expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **241** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **248** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -856,17 +856,47 @@ conjunction in the parser: the negator would then be borrowed by whatever
 connective was tried next. A scanner over unbounded prose can always be
 out-spelled, so it is no longer the primary control.
 
-**The boundary statement is an approved text.** Each of the three regions — the
-Phase-6 banner, the Phase-4 driver banner and the source battery's own docstring
-— carries exactly one paragraph opening `AND THE BOUNDARY SURVIVES THE PASS`, and
-`APPROVED_BOUNDARY` in `tests/test_phase6_gate_b_harness_source.py` holds that
-paragraph verbatim. `_assert_approved_boundary` isolates the marked paragraph in
-the region, normalises only what is intentionally irrelevant to meaning — comment
-markers and line wrapping — and requires equality with the approved text. Two
-paragraphs carrying the marker, or none, is itself a refusal: there must be one
-statement to compare. Nothing else may be substituted inside it, whatever
-vocabulary a replacement reaches for, so changing the architectural closure
-wording now requires changing its control — which is the point.
+**And approving one paragraph does not protect the region.** The first template
+locked only the paragraph carrying `AND THE BOUNDARY SURVIVES THE PASS`. That
+paragraph could then stand byte-for-byte intact while a new blank-line paragraph
+beside it asserted the opposite — `Run 6 proved the private NonceConsumed
+projection.` — and `test_41` and `test_45` both passed it. No wording of one
+paragraph can constrain a different paragraph, so this was never a wording
+problem.
+
+**The approved object is the whole closure block.** `APPROVED_CLOSURE_BLOCK` in
+`tests/test_phase6_gate_b_harness_source.py` holds, for each of the three active
+regions, a start anchor, an end anchor and the approved text between them:
+
+| region | from | to |
+|---|---|---|
+| Phase-6 banner | `WHAT HAS EXECUTED.` | `is the bounded list.` |
+| Phase-4 driver banner | `PHASE 6 STEP 13 HAS COMPLETED WINDOWS/EXCEL RUNTIME VALIDATION` | `are not claimed by this one.` |
+| source battery docstring | `WHERE STEP 13 ACTUALLY STANDS.` | `nothing here claims it was.` |
+
+`_assert_approved_closure` normalises the region first — comment markers and line
+wrapping, nothing else — so an anchor is not hostage to where a paragraph
+wrapped, then requires **exactly one** start anchor, **exactly one** end anchor,
+**exactly one** closure marker, start before end, and the whole span between them
+equal to the approved text. An extractor that silently selects the wrong span
+proves nothing about the region it did not read, so each of those is asserted
+rather than assumed. The block spans the Run-1-to-6 record, Run 6's 29 of 29, the
+post-Run-4 corrections, `a3924e0` as runtime authority, the statement that later
+comment and control commits are not runtime-proven, and the static-only
+boundary — nothing can be inserted, moved or reworded anywhere inside it.
+
+**And the block owns the claim.** A contradiction can also migrate outside the
+protected span, so `BOUNDED_SUBJECT_TOKENS` and `RUNTIME_PROOF_TOKENS` are
+refused anywhere else in these three regions: the seven §5 subjects, the ways the
+set is named without listing it (`§5`, the document name, `bounded list`,
+`static-only`), and the phrases that assert runtime proof. This is structural
+ownership rather than a scan — it asks *where* a subject is named, not what is
+said about it, so no choice of vocabulary slips past. The docstring closes by
+reference rather than by list, and a second claim there would name §5 rather
+than a subject; a subject-name list alone would not have seen it.
+
+Design and observability mentions outside the banner keep the rule they always
+had: `cannot observe` or `Private Boolean` in the same window.
 
 The clause scanner is retained as a **secondary** check, run over the approved
 paragraph after it has matched and asserted directly against the contradiction
@@ -877,6 +907,14 @@ the boundary statement: the borrowed-negator contradiction planted in each of th
 three regions, a plain `and` splice, an added affirmative sentence that keeps
 every approved hedge word beside it, and an innocuous rewording — each named
 detector refusing its own.
+
+Seven more cover the block: the approved boundary left untouched and reversed by
+a separate paragraph in each of the three regions, a duplicated start anchor, a
+duplicated end anchor, and the boundary sentence moved out of the block
+altogether while a syntactically valid banner is left behind. The driver case is
+worth its own note — `test_02` also refuses it, because it enumerates the
+authorised driver changes line by line, and a boundary control credited with a
+refusal it did not make is not a boundary control.
 
 ---
 

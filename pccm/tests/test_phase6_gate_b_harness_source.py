@@ -63,6 +63,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = PCCM_ROOT.parent
@@ -1180,49 +1181,141 @@ NEGATORS = ("not ", "n't ", "never ", "no ", "nothing ", "cannot ", "neither ",
             "without ")
 
 
-# THE APPROVED BOUNDARY STATEMENTS, one per active region.
+# THE APPROVED CLOSURE BLOCK, one per active region.
 #
-# The claim scanner below is defence-in-depth. It is NOT the authority, and two
-# rounds of trying to make it one showed why: a finite evidence vocabulary plus
-# free-form English negation is not a fail-closed rule. "not induced and
-# runtime-proven" reads as negated to any scanner that looks backwards for a
-# negator, and closing that case by splitting on `and` only moves the problem to
-# the next phrasing - "Run 6 proved the private projection", "verified at
-# runtime", "established dynamically".
+# WHY A BLOCK AND NOT A PARAGRAPH. Approving only the paragraph carrying "AND
+# THE BOUNDARY SURVIVES THE PASS" left the rest of the closure region
+# unadjudicated: the approved paragraph could stand byte-for-byte intact while a
+# NEW blank-line paragraph beside it asserted the opposite. That is fail-open,
+# and it is not a wording problem - no wording of one paragraph can constrain a
+# different paragraph. So the approved object is the whole CLOSURE REGION of
+# each active source, delimited by anchors, and nothing may be inserted, moved
+# or reworded anywhere inside it.
 #
-# So the boundary statement is APPROVED TEXT. The bounded paragraph of each
-# active region must be exactly this, once comment markers and line wrapping are
-# normalised away. Changing the architectural closure wording then requires
-# changing its control, which is the right cost for a statement this load-bearing
-# - and no replacement prose, added sentence or reworded claim can survive inside
-# the paragraph, whatever vocabulary it reaches for.
-APPROVED_BOUNDARY: dict[str, str] = {
-    "the source banner": (
-        "AND THE BOUNDARY SURVIVES THE PASS. An all-green run proves the "
-        "scenarios that ran, not the arms this harness cannot reach. The genuine "
-        "PERSISTENCE_INDETERMINATE path, the genuine COM read raises, a "
-        "ClearPending failure after a known CONSUMED, the iteration ceiling, the "
-        "private NonceConsumed projection and the selector-write ordering inside "
-        "FinalCommit were NOT induced and are not claimed - they remain "
-        "static-only, and §5 of docs/phase6_step13_gate_b.md is the bounded list."
+# WHY NOT A PARSER. Two rounds of trying to make a claim scanner the authority
+# showed why it cannot be one: a finite evidence vocabulary plus free-form
+# English negation is not a fail-closed rule. "not induced and runtime-proven"
+# reads as negated to any scanner that looks backwards for a negator, and
+# closing that case only moves the problem to the next phrasing. The block is
+# approved text, so a replacement claim cannot be spelled around it.
+#
+# The cost is deliberate: changing an architectural closure statement now
+# requires changing the control that approves it.
+class ClosureBlock(NamedTuple):
+    """An approved closure region: where it starts, where it ends, what it says."""
+
+    start: str
+    end: str
+    approved: str
+
+
+APPROVED_CLOSURE_BLOCK: dict[str, ClosureBlock] = {
+    "the source banner": ClosureBlock(
+        start='WHAT HAS EXECUTED.',
+        end='is the bounded list.',
+        approved=(
+            'WHAT HAS EXECUTED. Runs 1-6 have run. Run 4 executed the Phase-6 '
+            'behavioural matrix for the first time and left five failures; '
+            'Run 6 passed it 29 of 29, and every correction made after Run 4 '
+            'was exercised with it - the parity comparison under the accepted '
+            'Step-0 evidence policy, the P6-DET decoupling, the pre-open '
+            'artefact capture, the P6-FP3 preservation set, the two-class '
+            'module identity and the byte serialisation of the invariant '
+            'artefacts. RUN 6 IS THE RUNTIME AUTHORITY, and it ran harness '
+            'commit a3924e0. Later commits on this file are comment, '
+            'documentation and control work: editing a banner does not make '
+            'the commit that edited it runtime-proven, and nothing here may '
+            'be read as evidence for a tree Windows never executed. AND THE '
+            'BOUNDARY SURVIVES THE PASS. An all-green run proves the '
+            'scenarios that ran, not the arms this harness cannot reach. The '
+            'genuine PERSISTENCE_INDETERMINATE path, the genuine COM read '
+            'raises, a ClearPending failure after a known CONSUMED, the '
+            'iteration ceiling, the private NonceConsumed projection and the '
+            'selector-write ordering inside FinalCommit were NOT induced and '
+            'are not claimed - they remain static-only, and §5 of '
+            'docs/phase6_step13_gate_b.md is the bounded list.'
+        ),
     ),
-    "the driver banner": (
-        "AND THE BOUNDARY SURVIVES THE PASS. The genuinely static-only clauses - "
-        "the PERSISTENCE_INDETERMINATE path, the genuine COM read raises, a "
-        "ClearPending failure after a known CONSUMED, the iteration ceiling, the "
-        "private NonceConsumed projection and the selector-write ordering inside "
-        "FinalCommit - were not induced by any run and are not claimed by this "
-        "one."
+    "the driver banner": ClosureBlock(
+        start='PHASE 6 STEP 13 HAS COMPLETED WINDOWS/EXCEL RUNTIME VALIDATION',
+        end='are not claimed by this one.',
+        approved=(
+            'PHASE 6 STEP 13 HAS COMPLETED WINDOWS/EXCEL RUNTIME VALIDATION. '
+            'Run 6, on harness commit a3924e0, was the closing all-green run: '
+            '103 passed, 0 failed, 0 skipped, with the Phase-4 matrix 35/35, '
+            'the Phase-5 Gate-B scenarios 39/39 and the Phase-6 Gate-B '
+            'scenarios 29/29. RUN 6 IS THE RUNTIME AUTHORITY, not the later '
+            'documentation and control commits that recorded it. Editing this '
+            'banner does not make the commit that edited it runtime-proven. '
+            'AND THE BOUNDARY SURVIVES THE PASS. The genuinely static-only '
+            'clauses - the PERSISTENCE_INDETERMINATE path, the genuine COM '
+            'read raises, a ClearPending failure after a known CONSUMED, the '
+            'iteration ceiling, the private NonceConsumed projection and the '
+            'selector-write ordering inside FinalCommit - were not induced by '
+            'any run and are not claimed by this one.'
+        ),
     ),
-    "this battery's own docstring": (
-        "AND THE BOUNDARY SURVIVES THE PASS. An all-green run proves the "
-        "scenarios that ran, not the arms the harness cannot reach: §5 of "
-        "`docs/phase6_step13_gate_b.md` is the bounded static-only list, nothing "
-        "on it was induced, and nothing here claims it was."
+    "this battery's own docstring": ClosureBlock(
+        start='WHERE STEP 13 ACTUALLY STANDS.',
+        end='nothing here claims it was.',
+        approved=(
+            'WHERE STEP 13 ACTUALLY STANDS. Runs 1-6 have executed and Step '
+            '13 is CLOSED. Run 4 was the first valid execution of the Phase-6 '
+            'behavioural matrix and left five failures; Run 6 passed it 29 of '
+            '29, and every correction settled after Run 4 was exercised with '
+            'it - the `P6-ORA` comparison under the accepted Step-0 evidence '
+            'policy, the `P6-DET` decoupling, the pre-open artefact capture, '
+            'the `P6-FP3` preservation set, the D2 artefact split, the '
+            'two-class module identity and the HEAD-byte binding. RUN 6 IS '
+            'THE RUNTIME AUTHORITY, and it ran harness commit `a3924e0`. This '
+            'file has been edited since, for wording and for controls; that '
+            'does not make the commit which edited it runtime-proven, and no '
+            'assertion here claims otherwise. AND THE BOUNDARY SURVIVES THE '
+            'PASS. An all-green run proves the scenarios that ran, not the '
+            'arms the harness cannot reach: §5 of '
+            '`docs/phase6_step13_gate_b.md` is the bounded static-only list, '
+            'nothing on it was induced, and nothing here claims it was.'
+        ),
     ),
 }
 
-BOUNDARY_MARKER = "AND THE BOUNDARY SURVIVES THE PASS"
+CLOSURE_MARKER = "AND THE BOUNDARY SURVIVES THE PASS"
+
+# THE BOUNDED STATIC-ONLY SUBJECTS OF §5, plus the phrase that states the
+# boundary itself. The closure block OWNS every one of these inside its region:
+# a mention outside the block is a second closure claim, and a second closure
+# claim can contradict the first without touching it. This is structural
+# ownership rather than a scan - it asks WHERE a subject is named, not what is
+# said about it, so no choice of vocabulary slips past it.
+BOUNDED_SUBJECT_TOKENS = (
+    # the seven subjects themselves
+    "PERSISTENCE_INDETERMINATE",
+    "AUTO_NONCE_INDETERMINATE",
+    "NonceConsumed",
+    "ClearPending",
+    "iteration ceiling",
+    "selector-write ordering",
+    "read raises",
+    # and the ways the set is named without listing it. The docstring closes by
+    # REFERENCE - "§5 ... is the bounded static-only list" - so a second claim
+    # there would name §5, not a subject, and an owner list of subject names
+    # alone would not see it.
+    "static-only",
+    "static only",
+    "§5",
+    "phase6_step13_gate_b.md",
+    "bounded list",
+)
+
+# ASSERTING RUNTIME PROOF IS ITSELF OWNED. The block records what Run 6 proved;
+# outside it, in these three regions, there is no second place to say something
+# was proven at runtime. This is still structural - it asks where the phrase is,
+# not whether some parse of the sentence around it counts as negated.
+RUNTIME_PROOF_TOKENS = (
+    "runtime-proven",
+    "runtime proven",
+    "runtime-validated",
+)
 
 
 def _normalised(block: str) -> str:
@@ -1231,27 +1324,72 @@ def _normalised(block: str) -> str:
         line.lstrip().lstrip("#").strip() for line in block.splitlines()).split())
 
 
-def _assert_approved_boundary(region: str, where: str) -> str:
-    """The bounded paragraph of `region` IS the approved statement."""
-    approved = APPROVED_BOUNDARY[where]
-    stripped = "\n".join(line.lstrip().lstrip("#").rstrip()
-                         for line in region.splitlines())
-    blocks = [block for block in re.split(r"\n\s*\n", stripped)
-              if BOUNDARY_MARKER in block]
-    assert len(blocks) == 1, (
-        f"{where}: {len(blocks)} paragraphs carry the boundary marker, so there "
-        "is no single approved statement to compare"
+def _assert_approved_closure(region: str, where: str) -> str:
+    """The closure region of `region` IS the approved block, and owns the subject.
+
+    Extraction is deliberately explicit, because an extractor that silently
+    selects the wrong span is a control that proves nothing: exactly one start
+    anchor, exactly one end anchor, start before end, and the span between them
+    compared whole.
+    """
+    spec = APPROVED_CLOSURE_BLOCK[where]
+    # Normalise FIRST, so the anchors are matched against text whose comment
+    # markers and line wrapping are already gone. An anchor must not be hostage
+    # to where a paragraph happened to wrap.
+    flat = _normalised(region)
+
+    for anchor, label in ((spec.start, "start"), (spec.end, "end")):
+        found = flat.count(anchor)
+        assert found == 1, (
+            f"{where}: the closure {label} anchor {anchor!r} appears {found} "
+            "times, so there is no single closure block to extract"
+        )
+    markers = flat.count(CLOSURE_MARKER)
+    assert markers == 1, (
+        f"{where}: {markers} closure markers in this region; the active closure "
+        "state must be stated exactly once"
     )
-    actual = _normalised(blocks[0])
-    assert actual == approved, (
-        f"{where}: the boundary paragraph is not the approved statement.\n"
-        f"  approved: {approved}\n  actual:   {actual}"
+
+    begin = flat.index(spec.start)
+    finish = flat.index(spec.end) + len(spec.end)
+    assert begin < finish, (
+        f"{where}: the closure end anchor precedes the start anchor, so the "
+        "extracted span would not be the closure block"
     )
-    # DEFENCE IN DEPTH, and it cannot fire while the text is approved. It is
-    # exercised directly below so it is not carried untested.
-    overclaims = _unnegated_evidence_claims(actual)
+
+    block = flat[begin:finish]
+    assert block == spec.approved, (
+        f"{where}: the closure block is not the approved block.\n"
+        f"  approved: {spec.approved}\n  actual:   {block}"
+    )
+
+    # OWNERSHIP. Nothing outside the approved block may name a bounded subject
+    # or restate the boundary: that is exactly where a contradicting second
+    # claim would have to live, now that the block itself is approved text.
+    outside = f"{flat[:begin]} {flat[finish:]}"
+    strays = sorted({token for token in BOUNDED_SUBJECT_TOKENS + RUNTIME_PROOF_TOKENS
+                     if token in outside})
+    assert not strays, (
+        f"{where}: {strays} named outside the approved closure block; the block "
+        "owns the static-only boundary and there is no second place to state it"
+    )
+
+    # DEFENCE IN DEPTH, and it cannot fire while the block is approved. test_45
+    # exercises it directly so it is not carried untested.
+    #
+    # SCOPED TO THE BOUNDARY HALF. The block deliberately contains runtime claims
+    # that are TRUE - Run 6 did execute the matrix, and every post-Run-4
+    # correction WAS exercised with it. Those are the claims the block exists to
+    # record. Only the boundary half, from the marker on, is the half where an
+    # affirmative evidence word would contradict what it says.
+    assert CLOSURE_MARKER in block, (
+        f"{where}: the approved block does not contain the closure marker, so "
+        "the boundary statement is outside the block that owns it"
+    )
+    boundary = block[block.index(CLOSURE_MARKER):]
+    overclaims = _unnegated_evidence_claims(boundary)
     assert not overclaims, (f"{where}: {overclaims}")
-    return actual
+    return block
 
 
 def _clauses(text: str) -> list[str]:
@@ -1317,7 +1455,7 @@ def test_41_no_runtime_claim_is_made_about_the_private_consumption_flag() -> Non
         assert at < len(banner), (
             f"a NonceConsumed mention outside the banner carries no exclusion: {line}"
         )
-        _assert_approved_boundary(banner, "the source banner")
+        _assert_approved_closure(banner, "the source banner")
 
 
 def test_42_the_no_replay_invariant_is_not_stated_as_digest_inequality() -> None:
@@ -1503,7 +1641,7 @@ def test_45_the_current_wording_states_the_accepted_comparison_and_the_split() -
             # The banner LISTS the bounded subjects; the docstring points at §5
             # instead, and is checked on that reference below. Each is read the
             # way it actually states the boundary.
-            _assert_approved_boundary(text, where)
+            _assert_approved_closure(text, where)
     else:
         assert re.search(r"Runs?\s+1-\d|Run \d", banner), (
             "the banner does not say which runs have executed"
@@ -3160,7 +3298,7 @@ def test_75_the_driver_banner_states_the_accepted_phase5_lifecycle() -> None:
         # although they were not induced by any run" carries both tokens and
         # asserts the opposite of the boundary; the negator arrives after the
         # claim it is supposed to qualify.
-        _assert_approved_boundary(banner, "the driver banner")
+        _assert_approved_closure(banner, "the driver banner")
         assert not re.search(r"still under runtime validation"
                              r"|have not yet been exercised", flat, re.I), (
             "the banner still describes Step 13 as open"
