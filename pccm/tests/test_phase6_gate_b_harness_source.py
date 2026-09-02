@@ -114,6 +114,50 @@ GATE_B_ORACLE_PATH = BUILD / "phase6_gate_b_oracle_local.json"
 # nothing.
 PRODUCTION_BASELINE = "79e4600"
 
+# THE STEP-13 CLOSURE COMMIT, pinned.
+#
+# WHY THIS EXISTS. The closure controls below record a HISTORICAL fact: at
+# Step-13 closure, `pccm/src` and `pccm/spec` were unchanged relative to the
+# production baseline, so the closure was documentation and control work and
+# changed no production authority. That fact is about a moment in this
+# repository's history and it is settled forever.
+#
+# WRITTEN AGAINST HEAD, IT SAID SOMETHING ELSE ENTIRELY. `git diff 79e4600 --
+# pccm/src pccm/spec` compares the baseline to the CURRENT tree, so the control
+# asserted that no later phase may ever change production or spec again. That is
+# not what Step 13 established, and it is not a claim Step 13 was entitled to
+# make about work that had not happened yet: Phase 7 changes contracts under its
+# own authority, and later Phase-7 packages will change executable production
+# under theirs.
+#
+# It is the same shape of defect this battery has found repeatedly - pinning a
+# MOMENT instead of a PROPERTY - and the correction is the same: name the moment.
+STEP13_CLOSURE_COMMIT = "85778b2854fee431a845499e5a2fe37f40e96610"
+
+
+def _closure_production_diff(pathspec: tuple[str, ...]) -> str:
+    """What moved in `pathspec` between the baseline and the Step-13 closure.
+
+    TWO COMMITS, NEITHER OF THEM HEAD. The historical claim is proved against
+    the pinned pair, so it stays true as later phases advance the branch - and
+    it stays FALSIFIABLE, because either commit moving would change the answer.
+    """
+    # A pin that names a commit this history does not contain proves nothing, so
+    # the pin is checked before it is used.
+    merge_base = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", STEP13_CLOSURE_COMMIT, "HEAD"],
+        cwd=REPO_ROOT, capture_output=True,
+    ).returncode
+    assert merge_base == 0, (
+        f"the pinned Step-13 closure commit {STEP13_CLOSURE_COMMIT} is not an "
+        "ancestor of HEAD, so the historical evidence it names is not in this history"
+    )
+    return subprocess.run(
+        ["git", "diff", "--name-only", PRODUCTION_BASELINE, STEP13_CLOSURE_COMMIT,
+         "--", *pathspec],
+        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
+    ).stdout.decode("utf-8").strip()
+
 _CACHE: dict[str, object] = {}
 
 
@@ -372,13 +416,13 @@ def test_03_the_phase6_block_starts_nothing_of_its_own() -> None:
 
 
 def test_04_no_production_or_phase5_authority_is_written() -> None:
-    """Evidence infrastructure only: it changes no production file."""
-    changed = subprocess.run(
-        ["git", "diff", "--name-only", PRODUCTION_BASELINE, "--",
-         "pccm/src", "pccm/spec"],
-        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
-    ).stdout.decode("utf-8").strip()
-    assert changed == "", f"production authority moved: {changed}"
+    """Evidence infrastructure only: it changed no production file.
+
+    PAST TENSE, AND DELIBERATELY SO. The claim is about the Step-13 work, not
+    about every commit that will ever follow it.
+    """
+    changed = _closure_production_diff(("pccm/src", "pccm/spec"))
+    assert changed == "", f"production authority moved for Step 13: {changed}"
 
 
 # ===========================================================================
@@ -2047,13 +2091,9 @@ def test_52_the_artefact_identity_separates_the_two_commits() -> None:
 
 
 def test_53_the_pinned_baseline_really_is_unchanged_production() -> None:
-    """The pin is only worth what the tree behind it is."""
-    changed = subprocess.run(
-        ["git", "diff", "--name-only", PRODUCTION_BASELINE, "--",
-         "pccm/src/vba", "pccm/spec"],
-        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
-    ).stdout.decode("utf-8").strip()
-    assert changed == "", f"production authority moved: {changed}"
+    """The pin is only worth what the tree behind it was at closure."""
+    changed = _closure_production_diff(("pccm/src/vba", "pccm/spec"))
+    assert changed == "", f"production authority moved for Step 13: {changed}"
     frozen = json.loads(
         re.search(r"FROZEN_SOURCE = (\{.*?\})",
                   _text(PCCM_ROOT / "tests" / "test_phase6_integration_source.py"),
@@ -2239,6 +2279,22 @@ def test_58_a_drift_in_a_non_modsim_production_file_fails_the_freeze() -> None:
                 "the freeze control could not clone the repository: "
                 + result.stderr.decode("utf-8", "replace")[:200]
             )
+        # THE CLONE IS CHECKED OUT AT THE PINNED CLOSURE COMMIT, not at HEAD.
+        # Every command below then means exactly what it always meant - a real
+        # edit against a frozen tree - while the tree it is frozen against is
+        # the historical one this control is about. Detaching at the closure
+        # commit is also why the drift check can stay a working-tree edit: the
+        # freeze command still compares the baseline to the checkout in front
+        # of it, so a modified file is still what it catches.
+        checkout = subprocess.run(
+            ["git", "-C", str(clone), "checkout", "--quiet",
+             STEP13_CLOSURE_COMMIT],
+            capture_output=True,
+        )
+        assert checkout.returncode == 0, (
+            "the freeze control could not check out the pinned Step-13 closure "
+            "commit: " + checkout.stderr.decode("utf-8", "replace")[:200]
+        )
         victim = clone / "pccm" / "src" / "vba" / "modWorkbook.bas"
         assert victim.is_file(), victim
         assert "modWorkbook" not in _text(PHASE6), (
@@ -3670,9 +3726,7 @@ def test_78_the_closure_states_what_run_6_established_and_no_more() -> None:
     assert PRODUCTION_BASELINE in flat, (
         "the closure does not name the production baseline it closed against"
     )
-    changed = subprocess.run(
-        ["git", "diff", "--name-only", PRODUCTION_BASELINE, "--", "pccm/src", "pccm/spec"],
-        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout.decode().strip()
+    changed = _closure_production_diff(("pccm/src", "pccm/spec"))
     assert not changed, f"production moved for the closure: {changed}"
 
     # 10. THE STATIC-ONLY BOUNDARY SURVIVES THE PASS, subject by subject.

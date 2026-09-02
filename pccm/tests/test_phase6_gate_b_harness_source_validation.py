@@ -3183,3 +3183,64 @@ def test_253_the_structural_boundary_moves_up_and_truncates_the_envelope() -> No
         "\n    WHAT THIS FILE MAY NOT DO\n    -------------------------\n    * it restates",
         "\n    * it restates")
     _control("test_41", phase6=damaged)
+
+
+# ===========================================================================
+# W. The historical closure claim is pinned to a moment, and still falsifiable
+# ===========================================================================
+# The Step-13 closure controls once compared the production baseline to HEAD,
+# which quietly asserted that no later phase may ever change production or spec
+# again - a claim about work that had not happened. They now compare the
+# baseline to the PINNED closure commit, which is the historical fact Step 13
+# actually established.
+#
+# The danger of that correction is vacuity: a control that names a moment can
+# stop testing anything if the moment it names is wrong. This mutation repoints
+# the pin at a commit where `pccm/spec` genuinely DID move - the Phase-7 P7-1
+# preservation checkpoint - and requires every corrected control to refuse it.
+# Nothing here is synthetic: the drift is real, and it is in this history.
+_P7_1_PRESERVATION_COMMIT = "976dabe"
+
+
+def _closure_pin_refuses(control) -> str:
+    saved = conformance.STEP13_CLOSURE_COMMIT
+    conformance.STEP13_CLOSURE_COMMIT = _P7_1_PRESERVATION_COMMIT
+    try:
+        try:
+            control()
+        except AssertionError as error:
+            return str(error)
+    finally:
+        conformance.STEP13_CLOSURE_COMMIT = saved
+    raise AssertionError(
+        f"{control.__name__} accepted a closure pin at a commit where pccm/spec "
+        "had moved, so the historical production claim is no longer tested"
+    )
+
+
+def test_254_the_closure_production_claim_is_still_falsifiable() -> None:
+    for control in (
+        conformance.test_04_no_production_or_phase5_authority_is_written,
+        conformance.test_53_the_pinned_baseline_really_is_unchanged_production,
+        conformance.test_58_a_drift_in_a_non_modsim_production_file_fails_the_freeze,
+    ):
+        message = _closure_pin_refuses(control)
+        assert "moved" in message or "frozen" in message, (control.__name__, message)
+
+
+def test_255_a_closure_pin_outside_this_history_is_refused() -> None:
+    """A pin that names a commit this history does not contain proves nothing,
+    and would otherwise fail open as a dangling reference."""
+    saved = conformance.STEP13_CLOSURE_COMMIT
+    # A well-formed object name that is not an ancestor of HEAD.
+    conformance.STEP13_CLOSURE_COMMIT = "0" * 40
+    try:
+        refused = False
+        try:
+            conformance.test_04_no_production_or_phase5_authority_is_written()
+        except AssertionError as error:
+            refused = True
+            assert "not in this history" in str(error) or "ancestor" in str(error), error
+    finally:
+        conformance.STEP13_CLOSURE_COMMIT = saved
+    assert refused, "a closure pin outside this history was accepted"
