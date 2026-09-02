@@ -492,11 +492,21 @@ def test_22_the_module_is_in_the_stage_b_registry_as_a_generated_module() -> Non
                    "modSimFingerprint", "modSimNonce", "modSimReport"}
     for name in handwritten:
         assert name in modules and modules[name].generated is False, name
-    # AND NOTHING FURTHER WAS DECLARED EARLY. The Phase-6 registry is exactly
-    # the generated projection plus the six hand-written modules; a Step-12
-    # module cannot appear here ahead of the step that authorises it.
-    phase6 = {name for name in modules if name.startswith("modSim")}
-    assert phase6 == handwritten | {SIM_MODULE_NAME}, sorted(phase6)
+    # AND NOTHING WAS DECLARED EARLY, which is the claim - not that the registry
+    # never grows again. The Phase-6 set is exactly the generated projection plus
+    # its seven hand-written modules, and the only module beyond it is the one a
+    # later phase has actually landed: `modSimSensitivity`, the accepted P7-2
+    # pure kernel, hand-written. A module whose step has not run yet still cannot
+    # appear, and that is what the difference below is checked against.
+    phase6 = handwritten | {SIM_MODULE_NAME}
+    declared = {name for name in modules if name.startswith("modSim")}
+    assert phase6 <= declared, sorted(phase6 - declared)
+    assert declared - phase6 <= {"modSimSensitivity"}, sorted(declared - phase6)
+    for name in declared - phase6:
+        assert modules[name].generated is False, name
+        assert (PCCM_ROOT / "src" / "vba" / f"{name}.bas").is_file(), (
+            f"{name} is declared but has no source; a registry entry is not a module"
+        )
 
 
 def test_23_the_module_is_deterministic_across_two_emissions() -> None:

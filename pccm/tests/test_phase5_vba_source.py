@@ -381,6 +381,13 @@ PHASE6_MODULES = ("modSimRng", "modSimSample", "modSimEngine", "modSimStats",
 """Phase-6 hand-written source modules. Not Phase 5's, and named so the
 Phase-5 inventory equality below stays exact."""
 
+PHASE7_MODULES = ("modSimSensitivity",)
+"""Phase-7 hand-written source modules, named on the same terms as Phase 6's.
+
+The equality below is about PHASE 5: a further Phase-5 module still cannot
+appear. Later phases are admitted by name, one at a time, so admitting one never
+relaxes the half of the claim this test exists for."""
+
 
 def test_02_step_4_added_exactly_three_modules_and_no_fourth() -> None:
     """The accepted Step-4 module split is deliberate.
@@ -393,15 +400,17 @@ def test_02_step_4_added_exactly_three_modules_and_no_fourth() -> None:
 
     PHASE 6 IS NAMED, NOT ADMITTED. Its first source module, modSimRng, is on
     the right-hand side by name, so the Phase-5 half of this equality is
-    unchanged and a further Phase-5 module still cannot appear.
+    unchanged and a further Phase-5 module still cannot appear. Phase 7 joins on
+    exactly the same terms: `modSimSensitivity` is named, and naming it relaxes
+    nothing about Phase 5.
     """
     on_disk = set(_modules())
     assert on_disk == (set(PHASE4_MODULES) | set(KERNEL_MODULES)
                        | {STEP5_MODULE, STEP6_MODULE, STEP7_MODULE}
-                       | set(PHASE6_MODULES)), (
+                       | set(PHASE6_MODULES) | set(PHASE7_MODULES)), (
         f"unexpected hand-written module inventory: {sorted(on_disk)}"
     )
-    assert on_disk - set(PHASE6_MODULES) == (
+    assert on_disk - set(PHASE6_MODULES) - set(PHASE7_MODULES) == (
         set(PHASE4_MODULES) | set(KERNEL_MODULES)
         | {STEP5_MODULE, STEP6_MODULE, STEP7_MODULE}
     )

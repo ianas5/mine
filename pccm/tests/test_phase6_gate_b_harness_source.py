@@ -134,6 +134,12 @@ PRODUCTION_BASELINE = "79e4600"
 # MOMENT instead of a PROPERTY - and the correction is the same: name the moment.
 STEP13_CLOSURE_COMMIT = "85778b2854fee431a845499e5a2fe37f40e96610"
 
+# The seven hand-written simulation modules Run 6 executed and the freeze pins by
+# blob. `modSimContract` is excluded because it is generated and has no path in
+# src/vba; a later phase's module is excluded because Run 6 never ran it.
+FROZEN_PHASE6_MODULES = ("modSimRng", "modSimSample", "modSimEngine", "modSimStats",
+                         "modSimFingerprint", "modSimNonce", "modSimReport")
+
 
 def _closure_production_diff(pathspec: tuple[str, ...]) -> str:
     """What moved in `pathspec` between the baseline and the Step-13 closure.
@@ -2077,17 +2083,27 @@ def test_52_the_artefact_identity_separates_the_two_commits() -> None:
     )
     modules = code.split("function Get-Phase6TrackedModules")[1].split(
         "\nfunction ")[0]
-    for name in ("modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-                 "modSimFingerprint", "modSimNonce", "modSimReport"):
+    for name in FROZEN_PHASE6_MODULES:
         assert f"'{name}'" in modules, name
     assert "modSimContract" not in modules, (
         "the generated projection is back in the tracked-source blob loop; it "
         "has no path in src/vba and the comparison would pass blank against blank"
     )
-    # AND THE TRACKED SET IS EXACTLY THE HAND-WRITTEN FILES THAT EXIST.
-    handwritten = {path.stem for path in SRC_VBA.glob("modSim*.bas")}
+    # AND THE TRACKED SET IS EXACTLY THE PHASE-6 MODULES RUN 6 EXECUTED.
+    #
+    # It was written as "every modSim*.bas that exists", which was the same set
+    # while Phase 6 was the only phase. It is not the same set any more, and the
+    # difference matters in the direction that would do harm: a Phase-7 module
+    # added to this loop would be reported as bound to the production baseline
+    # by a harness that ran before it existed, which is a runtime claim for a
+    # tree Windows never executed. So the set is named by what it is.
     declared = set(re.findall(r"'(modSim\w+)'", modules))
-    assert declared == handwritten, (declared, handwritten)
+    assert declared == set(FROZEN_PHASE6_MODULES), (declared, FROZEN_PHASE6_MODULES)
+    later = {path.stem for path in SRC_VBA.glob("modSim*.bas")} - declared
+    for name in sorted(later):
+        assert f"'{name}'" not in modules, (
+            f"{name} post-dates Run 6 and is claimed as baseline-bound evidence by it"
+        )
 
 
 def test_53_the_pinned_baseline_really_is_unchanged_production() -> None:
