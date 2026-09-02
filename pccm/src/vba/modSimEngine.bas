@@ -59,6 +59,12 @@ Option Explicit
 ' the three modules is a hazard worth refusing.
 ' ==========================================================================
 
+' The two measures, named once. They are the `measure` argument of the shared
+' contribution routine and appear in its refusal text; naming them here keeps
+' the two spellings from drifting apart in three call sites.
+Public Const SIM_MEASURE_NOMINAL As String = "nominal"
+Public Const SIM_MEASURE_PV As String = "PV"
+
 ' One driver, prepared for the run. PRIVATE, and it never escapes the call.
 '
 ' It holds no worksheet row, no sheet name, no cell address, no ListObject, no
@@ -104,7 +110,6 @@ Public Function SimEngineRun(ByRef drivers() As DriverFactors, ByVal driverCount
     Dim valueState() As SimRngState, occurrenceState() As SimRngState
     Dim nominalTerm() As Double, pvTerm() As Double
     Dim stagedNominal() As Double, stagedPv() As Double
-    Dim contribution(0 To 2) As Double
     Dim costCount As Long, riskCount As Long
     Dim iteration As Long, index As Long
     Dim unitCost As Double, severity As Double, term As Double
@@ -174,24 +179,16 @@ Public Function SimEngineRun(ByRef drivers() As DriverFactors, ByVal driverCount
             ' the distribution and is applied exactly once, here.
             If Not SimEngineSampleValue(prepared(index), valueState(index), unitCost, _
                                         iteration, detail) Then Exit Function
-            contribution(0) = unitCost
-            contribution(1) = prepared(index).Quantity
-            contribution(2) = prepared(index).Knom
-            If Not SafeProduct(contribution, 3, term) Then
-                detail = "engine: iteration " & CStr(iteration) & ", cost line " & _
-                         prepared(index).PermanentId & ": the nominal contribution is not representable"
-                Exit Function
-            End If
+            If Not SimEngineContribution(prepared(index), unitCost, True, _
+                                         prepared(index).Knom, SIM_MEASURE_NOMINAL, _
+                                         iteration, term, detail) Then Exit Function
             nominalTerm(index) = term
             ' PV IS AN INDEPENDENT ACCUMULATOR. It is built from the same unit
             ' cost and the same Quantity against Kpv, never by discounting the
             ' nominal term that was just computed.
-            contribution(2) = prepared(index).Kpv
-            If Not SafeProduct(contribution, 3, term) Then
-                detail = "engine: iteration " & CStr(iteration) & ", cost line " & _
-                         prepared(index).PermanentId & ": the PV contribution is not representable"
-                Exit Function
-            End If
+            If Not SimEngineContribution(prepared(index), unitCost, True, _
+                                         prepared(index).Kpv, SIM_MEASURE_PV, _
+                                         iteration, term, detail) Then Exit Function
             pvTerm(index) = term
         Next index
 
@@ -216,29 +213,18 @@ Public Function SimEngineRun(ByRef drivers() As DriverFactors, ByVal driverCount
             ' still consumes nothing.
             If Not SimEngineSampleValue(prepared(index), valueState(index), severity, _
                                         iteration, detail) Then Exit Function
-            If occurred Then
-                ' A RISK HAS NO QUANTITY, and Probability was spent on the
-                ' Bernoulli draw and appears in no factor.
-                contribution(0) = severity
-                contribution(1) = prepared(index).Knom
-                If Not SafeProduct(contribution, 2, term) Then
-                    detail = "engine: iteration " & CStr(iteration) & ", risk " & _
-                             prepared(index).PermanentId & ": the nominal contribution is not representable"
-                    Exit Function
-                End If
-                nominalTerm(index) = term
-                contribution(1) = prepared(index).Kpv
-                If Not SafeProduct(contribution, 2, term) Then
-                    detail = "engine: iteration " & CStr(iteration) & ", risk " & _
-                             prepared(index).PermanentId & ": the PV contribution is not representable"
-                    Exit Function
-                End If
-                pvTerm(index) = term
-            Else
-                ' The severity that was sampled is discarded. It was still drawn.
-                nominalTerm(index) = 0#
-                pvTerm(index) = 0#
-            End If
+            ' A RISK HAS NO QUANTITY, and Probability was spent on the Bernoulli
+            ' draw and appears in no factor. When the Risk did not occur the
+            ' severity that was sampled is discarded - it was still drawn - and
+            ' the contribution is zero on both measures.
+            If Not SimEngineContribution(prepared(index), severity, occurred, _
+                                         prepared(index).Knom, SIM_MEASURE_NOMINAL, _
+                                         iteration, term, detail) Then Exit Function
+            nominalTerm(index) = term
+            If Not SimEngineContribution(prepared(index), severity, occurred, _
+                                         prepared(index).Kpv, SIM_MEASURE_PV, _
+                                         iteration, term, detail) Then Exit Function
+            pvTerm(index) = term
         Next index
 
         ' THE ACCEPTED SIGNED SUM, not a running total. A canonical sequence can
@@ -261,6 +247,156 @@ Public Function SimEngineRun(ByRef drivers() As DriverFactors, ByVal driverCount
     totalNominal = stagedNominal
     totalPv = stagedPv
     SimEngineRun = True
+End Function
+
+' ==========================================================================
+' THE ONE PER-DRIVER CONTRIBUTION, and there is exactly one of it
+'
+' Both the canonical iteration loop above and the replay below reach a driver's
+' contribution through here. That is the whole point of the routine existing:
+' sensitivity replays a driver in order to explain the total it already
+' published, so a second expression of this arithmetic - however carefully
+' copied - would let the explanation and the number drift apart while both
+' looked right.
+'
+' THE SHAPE IS THE ACCEPTED ONE, unchanged. A Cost Line multiplies its sampled
+' unit cost by the deterministic Quantity and the deployment factor. A Risk has
+' no Quantity, and Probability was already spent on the Bernoulli draw and
+' appears in no factor here. A Risk that did not occur contributes exactly zero
+' on both measures - the severity it drew is discarded, and it was still drawn.
+'
+' `factor` is Knom or Kpv. PV IS NOT DERIVED FROM NOMINAL: the caller passes the
+' other factor and gets an independent product, never a discounted total.
+' ==========================================================================
+Private Function SimEngineContribution(ByRef prepared As SimEngineDriver, _
+                                       ByVal sample As Double, ByVal occurred As Boolean, _
+                                       ByVal factor As Double, ByVal measure As String, _
+                                       ByVal iteration As Long, ByRef term As Double, _
+                                       ByRef detail As String) As Boolean
+    Dim factors(0 To 2) As Double
+    Dim count As Long
+    Dim kind As String
+
+    term = 0#
+    If prepared.IsRisk Then
+        If Not occurred Then
+            SimEngineContribution = True
+            Exit Function
+        End If
+        factors(0) = sample
+        factors(1) = factor
+        count = 2
+        kind = "risk"
+    Else
+        factors(0) = sample
+        factors(1) = prepared.Quantity
+        factors(2) = factor
+        count = 3
+        kind = "cost line"
+    End If
+    If Not SafeProduct(factors, count, term) Then
+        detail = "engine: iteration " & CStr(iteration) & ", " & kind & " " & _
+                 prepared.PermanentId & ": the " & measure & _
+                 " contribution is not representable"
+        Exit Function
+    End If
+    SimEngineContribution = True
+End Function
+
+' ==========================================================================
+' PER-DRIVER REPLAY - Phase 7
+'
+' Reconstructs ONE driver's nominal contribution sequence for the SAME accepted
+' run: same resolved model, same effective seed, same iteration count, same
+' canonical component-stream assignment. It is OBSERVATIONAL. It allocates no
+' run identity, consumes no AUTO nonce, writes nothing and changes no published
+' number; the successful run is the same successful run before and after.
+'
+' WHY IT PREPARES EVERY DRIVER AND REPLAYS ONE. A component's stream index comes
+' from its position in the canonical sequence of ALL components, so the target's
+' own initial state cannot be derived without building that sequence. Preparing
+' derives initial states by jump-ahead; it draws nothing. Only the target's
+' streams are then advanced, and no unrelated stream is consumed.
+'
+' SEQUENTIAL, NEVER A SEEK. A rejection sampler consumes a variable number of
+' uniforms per draw, so iteration j is reached by advancing to it. The withdrawn
+' direct-seek claim stays withdrawn.
+'
+' D6-18b IS REPRODUCED EXACTLY. For a Risk the occurrence draw comes first, once
+' per iteration at every Probability including 0 and 1, and the severity sampler
+' is then invoked UNCONDITIONALLY. Skipping the severity draw on a
+' non-occurrence would be faster and would produce a different severity sequence
+' from the run this replay claims to explain.
+'
+' ITERATION IDENTITY IS THE OUTPUT'S WHOLE VALUE. `contributions(j - 1)` is that
+' driver's contribution in accepted iteration j. Nothing is sorted, compacted,
+' renumbered or dropped - a zero from a Risk that did not occur is an
+' observation, not an absence - because P7-4 pairs this vector positionally with
+' the persisted TotalNom.
+' ==========================================================================
+Public Function SimEngineReplayDriver(ByRef drivers() As DriverFactors, _
+                                      ByVal driverCount As Long, _
+                                      ByVal effectiveSeed As Long, ByVal iterations As Long, _
+                                      ByVal permanentId As String, _
+                                      ByRef contributions() As Double, _
+                                      ByRef detail As String) As Boolean
+    Dim prepared() As SimEngineDriver
+    Dim valueState As SimRngState, occurrenceState As SimRngState
+    Dim costCount As Long, riskCount As Long
+    Dim index As Long, target As Long, iteration As Long
+    Dim sample As Double, term As Double, drawn As Double
+    Dim consumed As Long
+    Dim occurred As Boolean
+
+    detail = vbNullString
+    If iterations < 1 Then
+        detail = "engine: replay needs at least one iteration"
+        Exit Function
+    End If
+    If Not SimEnginePrepare(drivers, driverCount, effectiveSeed, prepared, _
+                            costCount, riskCount, detail) Then Exit Function
+
+    ' THE DRIVER IS FOUND BY PERMANENT ID, never by a row or a supply position.
+    ' A FULL SCAN, and the first match wins. Permanent ids are unique, so this
+    ' is the match; scanning past it costs nothing and keeps the loop shape the
+    ' rest of this module uses.
+    target = -1
+    For index = 0 To costCount + riskCount - 1
+        If target < 0 And prepared(index).PermanentId = permanentId Then
+            target = index
+        End If
+    Next index
+    If target < 0 Then
+        detail = "engine: replay was asked for driver " & permanentId & _
+                 ", which is not in this model"
+        Exit Function
+    End If
+
+    ReDim contributions(0 To iterations - 1)
+    valueState = prepared(target).ValueInitialState
+    If prepared(target).HasOccurrenceStream Then
+        occurrenceState = prepared(target).OccurrenceInitialState
+    End If
+
+    For iteration = 1 To iterations
+        occurred = True
+        If prepared(target).HasOccurrenceStream Then
+            If Not SimSampleBernoulli(occurrenceState, prepared(target).Probability, _
+                                      occurred, drawn, consumed, detail) Then
+                detail = "engine: iteration " & CStr(iteration) & ", risk " & _
+                         prepared(target).PermanentId & ": " & detail
+                Exit Function
+            End If
+        End If
+        ' UNCONDITIONAL, on both kinds. See D6-18b above.
+        If Not SimEngineSampleValue(prepared(target), valueState, sample, _
+                                    iteration, detail) Then Exit Function
+        If Not SimEngineContribution(prepared(target), sample, occurred, _
+                                     prepared(target).Knom, SIM_MEASURE_NOMINAL, _
+                                     iteration, term, detail) Then Exit Function
+        contributions(iteration - 1) = term
+    Next iteration
+    SimEngineReplayDriver = True
 End Function
 
 ' ==========================================================================

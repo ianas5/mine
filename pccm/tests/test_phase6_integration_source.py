@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -563,11 +564,69 @@ def test_22_the_manifest_is_the_module_inventory_authority() -> None:
 # ===========================================================================
 # 2/16. The accepted source is frozen
 # ===========================================================================
+# THE MODULES A LATER PHASE HAS REOPENED, and why each one was.
+#
+# The freeze records that Run 6 executed exactly these bytes. That is a
+# HISTORICAL fact and it stays true; what cannot stay true forever is "and no
+# byte will ever change again", because a later phase changing production code
+# under its own authority is the normal way this project moves. Read against the
+# current tree the freeze said the second thing.
+#
+# So a reopened module is verified where the fact actually lives - at the pinned
+# Step-13 closure commit - and its current bytes are then asserted to DIFFER,
+# which is the honest consequence: those bytes were never executed on Windows
+# and are not runtime-proven until a Phase-7 run says so.
+STEP13_CLOSURE_COMMIT = "85778b2854fee431a845499e5a2fe37f40e96610"
+REOPENED_SINCE_CLOSURE = {
+    "modSimEngine": "P7-3 extracted the shared per-driver contribution routine "
+                    "and added deterministic per-driver replay",
+}
+
+
+def _blob_at_closure(name: str) -> str:
+    blob = subprocess.run(
+        ["git", "show", f"{STEP13_CLOSURE_COMMIT}:pccm/src/vba/{name}.bas"],
+        cwd=PCCM_ROOT.parent, check=True, stdout=subprocess.PIPE).stdout
+    return hashlib.sha256(blob).hexdigest()
+
+
 def test_23_every_accepted_module_is_byte_identical() -> None:
+    """Unchanged modules at HEAD; reopened ones at the commit that froze them."""
     for name, expected in FROZEN_SOURCE.items():
+        if name in REOPENED_SINCE_CLOSURE:
+            continue
         path = SRC_VBA / f"{name}.bas"
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         assert actual == expected, f"{name}.bas moved: {actual}"
+
+
+def test_23a_a_reopened_module_still_matches_the_bytes_run_6_executed() -> None:
+    """The historical half, proved against the pinned commit rather than assumed.
+
+    If this fails, the freeze digest was never the Run-6 digest and every claim
+    resting on it is suspect - which is a different and much worse problem than
+    a module having legitimately moved since.
+    """
+    assert REOPENED_SINCE_CLOSURE, "nothing is reopened; this control has no subject"
+    for name, reason in REOPENED_SINCE_CLOSURE.items():
+        assert name in FROZEN_SOURCE, name
+        assert len(reason) > 40, f"{name} was reopened without a written reason"
+        assert _blob_at_closure(name) == FROZEN_SOURCE[name], (
+            f"{name}.bas at the Step-13 closure commit is not the frozen digest")
+
+
+def test_23b_a_reopened_module_is_not_claimed_as_runtime_proven() -> None:
+    """And the consequence is recorded, not left implicit.
+
+    Run 6 ran the closure bytes. A module that has moved since carries bytes
+    Windows has never executed, so listing it here is the statement that its
+    runtime evidence is OUTSTANDING - not a note that it was edited.
+    """
+    for name in REOPENED_SINCE_CLOSURE:
+        current = hashlib.sha256((SRC_VBA / f"{name}.bas").read_bytes()).hexdigest()
+        assert current != FROZEN_SOURCE[name], (
+            f"{name}.bas is byte-identical to the frozen Run-6 source, so it was "
+            "not reopened at all and must come off the reopened list")
 
 
 def test_24_the_generated_authority_is_byte_identical() -> None:

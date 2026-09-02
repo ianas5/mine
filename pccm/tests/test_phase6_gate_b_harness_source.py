@@ -2116,13 +2116,30 @@ def test_53_the_pinned_baseline_really_is_unchanged_production() -> None:
                   re.S).group(1).replace("'", '"').replace(",\n}", "\n}")
     )
     import hashlib
+    import subprocess
+    # A MODULE A LATER PHASE HAS REOPENED IS CHECKED WHERE THE FACT LIVES.
+    # The digests record what Run 6 executed, which is a statement about the
+    # closure commit; against the current tree they would instead forbid every
+    # later phase from touching production, which Step 13 never established.
+    # The owner of this list is the integration battery, read here rather than
+    # restated, so the two cannot drift.
+    reopened = set(re.findall(r'^    "(\w+)": "P7-',
+                              _text(PCCM_ROOT / "tests" / "test_phase6_integration_source.py"),
+                              re.M))
+    assert reopened, "the reopened-module list is empty or its shape changed"
     for name in ("modSimContract", "modSimRng", "modSimSample", "modSimEngine",
                  "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport"):
-        path = SRC_VBA / f"{name}.bas"
         if name == "modSimContract":
             continue  # generated, pinned by test_48's siblings
         assert name in frozen, name
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if name in reopened:
+            blob = subprocess.run(
+                ["git", "show", f"{STEP13_CLOSURE_COMMIT}:pccm/src/vba/{name}.bas"],
+                cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout
+            assert hashlib.sha256(blob).hexdigest() == frozen[name], (
+                f"{name}.bas at the closure commit is not the frozen digest")
+            continue
+        actual = hashlib.sha256((SRC_VBA / f"{name}.bas").read_bytes()).hexdigest()
         assert actual == frozen[name], f"{name}.bas moved: {actual}"
 
 

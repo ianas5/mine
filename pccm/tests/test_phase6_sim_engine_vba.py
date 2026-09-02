@@ -128,8 +128,26 @@ def _loop_body() -> str:
     return body[start:end]
 
 
+def _contribution() -> str:
+    """The shared per-driver contribution routine.
+
+    P7-3 EXTRACTED IT OUT OF THE LOOP so the replay and the simulation reach one
+    implementation. The properties the controls below assert did not change; the
+    place they are written down did, and reading the loop alone would now be
+    reading a body the arithmetic has left.
+    """
+    return _procedure("SimEngineContribution")
+
+
 def _constants() -> dict:
-    """The generated Phase-6 projection plus the accepted Phase-5 DIST kinds."""
+    """The generated Phase-6 projection, the Phase-5 DIST kinds, and the engine's own.
+
+    P7-3 ADDED THE THIRD SOURCE. `SIM_MEASURE_NOMINAL` and `SIM_MEASURE_PV` are
+    declared by modSimEngine itself, so the transcription cannot resolve them
+    unless this reads the module it is transcribing. They are read from the
+    source rather than restated here: a harness that hardcoded the two words
+    would still pass if the module swapped them.
+    """
     if "consts" not in _CACHE:
         out: dict = {}
         rendered = render_sim_contract_module(
@@ -137,7 +155,8 @@ def _constants() -> dict:
             load_sim_contract(SPEC / "sim_contract.yaml"),
             load_contract(SPEC / "input_contract.yaml"),
         )
-        for text in (rendered, CALC_FACTORS_BAS.read_text(encoding="utf-8")):
+        for text in (rendered, CALC_FACTORS_BAS.read_text(encoding="utf-8"),
+                     SIM_ENGINE_BAS.read_text(encoding="utf-8")):
             for line in text.splitlines():
                 match = re.match(r"^Public Const (\w+) As (\w+) = (.*)$", line)
                 if not match:
@@ -372,11 +391,15 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
 
 
 def test_03_there_is_exactly_one_public_entry_point() -> None:
-    assert _module().public_procedures == ["SimEngineRun"]
-    private = set(_module().procedures) - {"SimEngineRun"}
+    """TWO NOW, AND BOTH ARE NAMED. P7-3 added per-driver replay, which is a
+    second way IN and deliberately not a second way to compute: it reaches the
+    same preparation, the same sampler and the same contribution routine. The
+    set is asserted exactly, so a third entry point cannot appear unremarked."""
+    assert _module().public_procedures == ["SimEngineRun", "SimEngineReplayDriver"]
+    private = set(_module().procedures) - {"SimEngineRun", "SimEngineReplayDriver"}
     assert private == {
         "SimEnginePrepare", "SimEngineClaim", "SimEngineAdopt",
-        "SimEngineValidateFactor", "SimEngineSampleValue",
+        "SimEngineValidateFactor", "SimEngineSampleValue", "SimEngineContribution",
     }, sorted(private)
     # The prepared representation is PRIVATE, so it creates no second writable
     # trust boundary of the kind Step 7 had to harden.
@@ -471,8 +494,14 @@ def test_09_no_sampler_implementation_leaked_in() -> None:
     assert called == {"SimSampleUniform", "SimSampleTriangular",
                       "SimSamplePreparedBeta", "SimSamplePrepareBetaPert",
                       "SimSampleBernoulli", "SimSampleBetaShape"}, sorted(called)
-    # It does not implement the occurrence decision itself.
-    assert "occurred =" not in code.replace("If occurred", "")
+    # IT DOES NOT IMPLEMENT THE OCCURRENCE DECISION ITSELF. Every assignment to
+    # `occurred` must be the literal default a driver WITHOUT an occurrence
+    # stream takes; the real decision arrives ByRef from SimSampleBernoulli and
+    # is never written here.
+    assignments = {line.split("=", 1)[1].strip()
+                   for line in code.splitlines()
+                   if re.match(r"\s*occurred\s*=", line)}
+    assert assignments <= {"True"}, sorted(assignments)
 
 
 def test_10_no_statistic_digest_or_publication_exists() -> None:
@@ -658,9 +687,11 @@ def test_20_quantity_is_applied_exactly_once_and_the_total_is_linear() -> None:
         assert total == unit_cost * quantity
         if quantity != 1.0:
             assert total != twice, quantity
-    # And the SAMPLE support is unit cost, not total cost.
-    assert "prepared(index).Quantity" in _loop_body()
-    assert "contribution(0) = unitCost" in _loop_body()
+    # And the SAMPLE support is unit cost, not total cost. The loop hands the
+    # sampled unit cost to the shared routine, which is where Quantity is
+    # applied - once.
+    assert "unitCost" in _loop_body()
+    assert "factors(1) = prepared.Quantity" in _contribution()
 
 
 def test_21_d6_18b_severity_is_sampled_whatever_the_occurrence_decided() -> None:
@@ -940,13 +971,19 @@ def test_33_nominal_and_pv_are_independent_accumulators() -> None:
 
 def test_34_the_accepted_primitives_are_used_and_not_replaced() -> None:
     body = _loop_body()
-    assert body.count("SafeProduct(contribution, 3, term)") == 2   # cost nominal + PV
-    assert body.count("SafeProduct(contribution, 2, term)") == 2   # risk nominal + PV
+    # FOUR CONTRIBUTIONS PER ITERATION, cost and risk, nominal and PV - and all
+    # four now form their product in the one shared routine, which calls the
+    # accepted primitive exactly once.
+    assert body.count("SimEngineContribution(") == 4
+    assert _contribution().count("SafeProduct(factors, count, term)") == 1
+    assert "SafeProduct(" not in body, "a product is formed outside the shared routine"
     assert "SafeAccumulate" not in _code()
     # No naive running total, and no chained multiplication.
     for naive in ("= total +", "total = total", "measured = measured +",
                   "unitCost *", "severity *", "* prepared(index).Knom"):
         assert naive not in body, naive
+    for naive in ("sample *", "* factor", "* prepared.Quantity"):
+        assert naive not in _contribution(), naive
 
 
 def test_35_the_accumulation_order_is_canonical_and_matters() -> None:
@@ -1319,8 +1356,13 @@ def test_50_bernoulli_runs_once_per_risk_per_iteration_and_first() -> None:
     assert risk_arm.count("SimSampleBernoulli") == 1
     assert risk_arm.count("SimEngineSampleValue") == 1
     assert risk_arm.index("SimSampleBernoulli") < risk_arm.index("SimEngineSampleValue")
-    # The severity call sits OUTSIDE the occurred test.
-    assert risk_arm.index("SimEngineSampleValue") < risk_arm.index("If occurred Then")
+    # THE SEVERITY CALL SITS INSIDE NO CONDITIONAL AT ALL. P7-3 moved the
+    # occurrence test out of the loop with the contribution arithmetic, so the
+    # stronger statement is now also the simpler one: there is no `If occurred`
+    # in the risk arm for the sampler to be inside of.
+    assert "If occurred" not in risk_arm, (
+        "the risk arm regained an occurrence conditional; the severity call may "
+        "now sit inside it")
 
 
 def test_51_a_uniform_driver_is_sampled_on_min_and_max_alone() -> None:
@@ -1339,29 +1381,45 @@ def test_51_a_uniform_driver_is_sampled_on_min_and_max_alone() -> None:
 
 def test_52_a_risk_contribution_carries_no_quantity_and_no_probability() -> None:
     risk_arm = _loop_body().split("For index = costCount To driverCount - 1")[1]
-    occurred = risk_arm[risk_arm.index("If occurred Then"):]
-    assert "contribution(0) = severity" in occurred
-    assert "contribution(1) = prepared(index).Knom" in occurred
-    assert "contribution(1) = prepared(index).Kpv" in occurred
-    assert "SafeProduct(contribution, 2, term)" in occurred
-    for banned in ("Quantity", "Probability", "contribution(2)"):
-        assert banned not in occurred, banned
+    # THE LOOP asks for each measure once, passing the occurrence decision in.
+    assert risk_arm.count("SimEngineContribution(prepared(index), severity, occurred,") == 2
+    assert "prepared(index).Knom, SIM_MEASURE_NOMINAL" in risk_arm
+    assert "prepared(index).Kpv, SIM_MEASURE_PV" in risk_arm
+    # THE ROUTINE gives a risk two factors and neither is Quantity or
+    # Probability, and a risk that did not occur contributes zero.
+    contribution = _contribution()
+    risk_shape = contribution[contribution.index("If prepared.IsRisk Then"):
+                              contribution.index("Else")]
+    assert "factors(0) = sample" in risk_shape
+    assert "factors(1) = factor" in risk_shape
+    assert "count = 2" in risk_shape
+    assert "If Not occurred Then" in risk_shape
+    for banned in ("Quantity", "Probability", "factors(2)"):
+        assert banned not in risk_shape, banned
     # Probability is spent on the Bernoulli draw and folded into nothing.
     assert risk_arm.count("prepared(index).Probability") == 1
+    assert "Probability" not in contribution
     assert "Probability" not in _procedure("SimEngineAdopt").split("If factor.IsRisk Then")[0]
 
 
 def test_53_a_cost_contribution_is_unit_cost_times_quantity_times_a_factor() -> None:
+    """The shape, read in the shared routine, and the WIRING, read in the loop."""
     cost_arm = _loop_body().split("For index = costCount To driverCount - 1")[0]
-    assert "contribution(0) = unitCost" in cost_arm
-    assert "contribution(1) = prepared(index).Quantity" in cost_arm
-    assert "contribution(2) = prepared(index).Knom" in cost_arm
-    assert "contribution(2) = prepared(index).Kpv" in cost_arm
-    assert cost_arm.count("SafeProduct(contribution, 3, term)") == 2
-    # Quantity appears once per measure, never twice in one product.
-    assert cost_arm.count("prepared(index).Quantity") == 1
+    # THE LOOP: samples a unit cost, then asks for each measure once.
+    assert "SimEngineSampleValue(prepared(index), valueState(index), unitCost" in cost_arm
+    assert cost_arm.count("SimEngineContribution(prepared(index), unitCost, True,") == 2
+    assert "prepared(index).Knom, SIM_MEASURE_NOMINAL" in cost_arm
+    assert "prepared(index).Kpv, SIM_MEASURE_PV" in cost_arm
     for banned in ("Probability", "SimSampleBernoulli"):
         assert banned not in cost_arm, banned
+    # THE ROUTINE: three factors, and Quantity applied exactly once in the one
+    # place any contribution is formed.
+    contribution = _contribution()
+    assert "factors(0) = sample" in contribution
+    assert "factors(1) = prepared.Quantity" in contribution
+    assert "factors(2) = factor" in contribution
+    assert contribution.count("prepared.Quantity") == 1
+    assert "count = 3" in contribution
 
 
 def test_54_nominal_and_pv_diverge_when_their_factors_do() -> None:
