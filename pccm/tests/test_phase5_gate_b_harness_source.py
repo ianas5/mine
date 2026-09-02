@@ -1572,9 +1572,14 @@ def test_46_the_harness_source_states_what_has_and_has_not_been_run() -> None:
         "the driver banner does not record that Phase 5 Gate B has executed"
     )
     # AND THE LINE IS STILL DRAWN. A banner that only reported closure would be
-    # the same over-claim in the other direction.
+    # the same over-claim in the other direction - but WHERE the line falls
+    # moved when Step 13 closed. While Step 13 was open it was the Phase-6 block
+    # still under runtime validation; now that it is closed, what remains
+    # unproven is the bounded set of clauses no run could induce. Naming only
+    # the first is what made this control demand a state the harness had left.
     flat = " ".join(banner.split())
-    assert re.search(r"still under runtime validation|not yet been exercised", flat), (
+    assert re.search(r"still under runtime validation|not yet been exercised"
+                     r"|static-only|not induced", flat), (
         "the banner records what has run without saying what has not"
     )
 

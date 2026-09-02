@@ -651,10 +651,12 @@ def test_47_the_execution_boundary_is_removed_from_the_banner() -> None:
     not exercise. Dropping the second half turns a record into a claim."""
     damaged = _swap(
         _PHASE6,
-        "    parity comparison, the P6-DET decoupling, the pre-open artefact capture and\n"
-        "    the P6-FP3 preservation set are NOT among them - they are source, and no\n"
-        "    Windows run has yet exercised them.\n",
-        "    parity comparison and the P6-DET decoupling have been proven on Windows.\n")
+        "    AND THE BOUNDARY SURVIVES THE PASS. An all-green run proves the scenarios\n"
+        "    that ran, not the arms this harness cannot reach. The genuine\n",
+        "    EVERYTHING IS NOW PROVEN, including the arms this harness cannot reach.\n"
+        "    Formerly: the genuine\n")
+    damaged = damaged.replace("were NOT induced and are not claimed - they remain static-only, and §5 of",
+                              "are covered. See §5 of")
     _control("test_45", phase6=damaged)
 
 
@@ -1901,9 +1903,9 @@ def test_160_the_source_banner_denies_every_execution_again() -> None:
     """Runs 1-4 have run, and Run 4 executed the behavioural matrix."""
     damaged = _swap(
         _PHASE6,
-        "    WHAT HAS EXECUTED. Runs 1-4 have run",
+        "    WHAT HAS EXECUTED. Runs 1-6 have run.",
         "    NOTHING HERE HAS BEEN EXECUTED. As submitted, no Windows run has been\n"
-        "    made. Runs 1-4 have run")
+        "    made. Runs 1-6 have run.")
     message = _wording_refuses(phase6=damaged)
     assert "NOTHING HERE HAS BEEN EXECUTED" in message, message
 
