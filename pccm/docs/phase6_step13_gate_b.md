@@ -572,7 +572,7 @@ expected value; the failpoint and procedure names are checked copies; the
 projection agrees with the generated authority; the corpus is generated, bound
 and exact; the matrix is complete and fail-closed.
 
-`tests/test_phase6_gate_b_harness_source_validation.py` — **248** mutation
+`tests/test_phase6_gate_b_harness_source_validation.py` — **254** mutation
 controls, each requiring a **named** detector: F21 moved by a row and by a
 column, the final-commit range moved, both bank column pairs swapped, four
 identity rows moved, ladder rows shifted, both control defined names changed, the
@@ -864,36 +864,55 @@ projection.` — and `test_41` and `test_45` both passed it. No wording of one
 paragraph can constrain a different paragraph, so this was never a wording
 problem.
 
-**The approved object is the whole closure block.** `APPROVED_CLOSURE_BLOCK` in
-`tests/test_phase6_gate_b_harness_source.py` holds, for each of the three active
-regions, a start anchor, an end anchor and the approved text between them:
+**And an approved block that ends at its own last sentence leaves everything
+after that sentence unadjudicated.** Guarding it with a list of owned words —
+the §5 subject names, `§5` itself, `static-only`, `runtime-proven` — was the
+token window again in a new costume. `Run 6 proved every arm this harness cannot
+reach.` contains none of those words and asserts exactly what the boundary
+denies; placed after the block it was refused by **nothing**. A larger word list
+does not settle free-form English, which is the same lesson as the two negation
+rounds before it.
 
-| region | from | to |
+**The approved object is the closure envelope.** `APPROVED_CLOSURE_ENVELOPE` in
+`tests/test_phase6_gate_b_harness_source.py` holds, per active region, a start
+anchor, the next **structural** delimiter, and the approved text between them.
+The delimiter follows the approved content and is not part of it:
+
+| region | from | up to, not including |
 |---|---|---|
-| Phase-6 banner | `WHAT HAS EXECUTED.` | `is the bounded list.` |
-| Phase-4 driver banner | `PHASE 6 STEP 13 HAS COMPLETED WINDOWS/EXCEL RUNTIME VALIDATION` | `are not claimed by this one.` |
-| source battery docstring | `WHERE STEP 13 ACTUALLY STANDS.` | `nothing here claims it was.` |
+| Phase-6 banner | `WHAT HAS EXECUTED.` | `WHAT THIS FILE MAY NOT DO` |
+| Phase-4 driver banner | `PHASE 6 STEP 13 HAS COMPLETED WINDOWS/EXCEL RUNTIME VALIDATION` | `Safety, unchanged from the readiness gate:` |
+| source battery docstring | `WHERE STEP 13 ACTUALLY STANDS.` | `Runs standalone or under pytest.` |
+
+That is the whole repair. An end anchor *inside* the approved text can only prove
+the text up to itself is intact and says nothing about what was added after it; a
+delimiter *outside* it means any paragraph inserted before that delimiter changes
+the approved slice and is refused for that reason alone — whatever it says, in
+whatever vocabulary. No word in the inserted text is interpreted.
 
 `_assert_approved_closure` normalises the region first — comment markers and line
 wrapping, nothing else — so an anchor is not hostage to where a paragraph
-wrapped, then requires **exactly one** start anchor, **exactly one** end anchor,
-**exactly one** closure marker, start before end, and the whole span between them
-equal to the approved text. An extractor that silently selects the wrong span
-proves nothing about the region it did not read, so each of those is asserted
-rather than assumed. The block spans the Run-1-to-6 record, Run 6's 29 of 29, the
-post-Run-4 corrections, `a3924e0` as runtime authority, the statement that later
-comment and control commits are not runtime-proven, and the static-only
-boundary — nothing can be inserted, moved or reworded anywhere inside it.
+wrapped, then requires **exactly one** start anchor, **exactly one** structural
+delimiter, start before delimiter, **exactly one** closure marker inside the
+selected envelope, and the whole slice equal to the approved text. An extractor
+that silently selects the wrong span proves nothing about the region it did not
+read, so each of those is asserted rather than assumed. The envelope spans the
+Run-1-to-6 record, Run 6's 29 of 29, the post-Run-4 corrections, `a3924e0` as
+runtime authority, the statement that later comment and control commits are not
+runtime-proven, and the static-only boundary.
 
-**And the block owns the claim.** A contradiction can also migrate outside the
-protected span, so `BOUNDED_SUBJECT_TOKENS` and `RUNTIME_PROOF_TOKENS` are
-refused anywhere else in these three regions: the seven §5 subjects, the ways the
-set is named without listing it (`§5`, the document name, `bounded list`,
-`static-only`), and the phrases that assert runtime proof. This is structural
-ownership rather than a scan — it asks *where* a subject is named, not what is
-said about it, so no choice of vocabulary slips past. The docstring closes by
-reference rather than by list, and a second claim there would name §5 rather
-than a subject; a subject-name list alone would not have seen it.
+**The claim, stated exactly.** *The one active closure-state envelope of each
+region is exact approved text; changing or adding anything inside it requires
+changing the control.* That is mechanically provable and it is all that is
+claimed. It is **not** a claim that no sentence anywhere else in these files
+could describe the boundary — the owner word lists that would have been needed
+for that are retired, because a control whose documentation claims structural
+ownership must actually be wired to it.
+
+Outside the envelope, the specific existing controls stand unchanged: design and
+observability mentions keep the `cannot observe` / `Private Boolean` rule, and a
+`NonceConsumed` mention that is not a design occurrence must lie **inside** the
+envelope — a question of position, not of what the surrounding sentence means.
 
 Design and observability mentions outside the banner keep the rule they always
 had: `cannot observe` or `Private Boolean` in the same window.
@@ -915,6 +934,16 @@ altogether while a syntactically valid banner is left behind. The driver case is
 worth its own note — `test_02` also refuses it, because it enumerates the
 authorised driver changes line by line, and a boundary control credited with a
 refusal it did not make is not a boundary control.
+
+Six more prove the ownership is structural, and every one of them deliberately
+avoids the retired vocabulary: `Run 6 proved every arm this harness cannot
+reach.` in the Phase-6 envelope (refused by `test_41` and `test_45`), `Run 6
+established all unreachable clauses dynamically.` in the driver (`test_75`),
+`Run 6 verified all excluded branches at runtime.` in the docstring (`test_45`),
+a duplicated structural delimiter, and the delimiter moved up so part of the
+accepted closure text falls outside the envelope. A mutation that had to carry an
+owned word to be caught would prove nothing about vocabulary-free paraphrase, so
+`_vocabulary_free` asserts each sentence carries none.
 
 ---
 

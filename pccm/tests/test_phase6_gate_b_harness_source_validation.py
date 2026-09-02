@@ -2885,8 +2885,7 @@ def test_234_the_source_battery_docstring_claims_the_bounded_list_was_proved() -
                 # a negator borrowed across a contrastive clause - is asserted
                 # directly below rather than taken on trust.
                 assert "this battery's own docstring:" in str(error), error
-                assert ("closure end anchor" in str(error)
-                        or "not the approved block" in str(error)), error
+                assert "not the approved text" in str(error), error
         finally:
             conformance.__file__ = saved
     assert refused, "the docstring may claim the bounded list was runtime-proven"
@@ -2958,7 +2957,7 @@ def test_238_the_docstring_negator_is_borrowed_by_a_runtime_claim() -> None:
         "is the bounded static-only list, nothing on it was induced and every item was\n"
         "runtime-proven by Run 6.", 1)
     assert damaged != original, "the mutation changed nothing"
-    _docstring_refuses(damaged, "this battery's own docstring:")
+    _docstring_refuses(damaged, "not the approved text")
     # And the borrowed negator this mutation is named for is refused on its own
     # terms by the secondary scanner, so the structural refusal above is not the
     # only thing standing between the docstring and this contradiction.
@@ -3047,7 +3046,7 @@ def test_244_a_second_docstring_paragraph_reverses_the_approved_boundary() -> No
         "claims it was.\n\nRun 6 proved every item in §5.\n\n"
         "Runs standalone or under pytest.", 1)
     assert damaged != original, "the mutation changed nothing"
-    _docstring_refuses(damaged, "named outside the approved closure block")
+    _docstring_refuses(damaged, "not the approved text")
 
 
 def test_245_a_duplicated_closure_start_anchor_makes_extraction_ambiguous() -> None:
@@ -3090,4 +3089,97 @@ def test_247_the_boundary_sentence_is_moved_out_of_the_closure_block() -> None:
         "the boundary statement was not removed from its block")
     damaged = _swap(damaged, "\n    WHAT IT DOES WRITE\n",
                     "\n" + boundary + "\n    WHAT IT DOES WRITE\n")
+    _control("test_41", phase6=damaged)
+
+
+# ===========================================================================
+# V. Ownership is structural, and these mutations use none of the old vocabulary
+# ===========================================================================
+# Guarding the text outside an approved block with a list of owned words was the
+# token window again in a new costume. "Run 6 proved every arm this harness
+# cannot reach." contains no owned word and asserts exactly what the boundary
+# denies; against the block model it was refused by NOTHING. Every mutation below
+# deliberately avoids NonceConsumed, §5, static-only, runtime-proven and the rest
+# of that list. They are refused because the approved slice runs to the next
+# STRUCTURAL delimiter, so an inserted paragraph changes the slice - which is a
+# fact about position, not about what the paragraph says.
+_VOCABULARY_FREE = ("NonceConsumed", "§5", "static-only", "static only",
+                    "runtime-proven", "runtime proven", "runtime-validated",
+                    "PERSISTENCE_INDETERMINATE", "AUTO_NONCE_INDETERMINATE",
+                    "ClearPending", "iteration ceiling", "selector-write ordering",
+                    "read raises", "bounded list", "phase6_step13_gate_b.md")
+
+
+def _vocabulary_free(sentence: str) -> str:
+    """The mutation must not lean on any word the retired owner list held."""
+    carried = [token for token in _VOCABULARY_FREE if token in sentence]
+    assert not carried, (
+        f"{sentence!r} carries {carried}, so refusing it would not prove that "
+        "ownership is structural rather than vocabulary-based")
+    return sentence
+
+
+def test_248_a_vocabulary_free_claim_joins_the_phase6_envelope() -> None:
+    """Refused because the envelope reaches WHAT THIS FILE MAY NOT DO, so the
+    inserted paragraph is inside the approved slice. No word in it is
+    interpreted."""
+    claim = _vocabulary_free("Run 6 proved every arm this harness cannot reach.")
+    damaged = _swap(
+        _PHASE6, "\n    WHAT THIS FILE MAY NOT DO\n",
+        f"\n    {claim}\n\n    WHAT THIS FILE MAY NOT DO\n")
+    _control("test_41", phase6=damaged)
+
+
+def test_249_the_vocabulary_free_phase6_claim_is_refused_by_the_wording_control() -> None:
+    claim = _vocabulary_free("Run 6 proved every arm this harness cannot reach.")
+    damaged = _swap(
+        _PHASE6, "\n    WHAT THIS FILE MAY NOT DO\n",
+        f"\n    {claim}\n\n    WHAT THIS FILE MAY NOT DO\n")
+    _control("test_45", phase6=damaged)
+
+
+def test_250_a_vocabulary_free_claim_joins_the_driver_envelope() -> None:
+    claim = _vocabulary_free("Run 6 established all unreachable clauses dynamically.")
+    damaged = _swap(
+        _HARNESS, "\n    Safety, unchanged from the readiness gate:",
+        f"\n    {claim}\n\n    Safety, unchanged from the readiness gate:")
+    _control("test_75", harness=damaged)
+
+
+def test_251_a_vocabulary_free_claim_joins_the_docstring_envelope() -> None:
+    claim = _vocabulary_free("Run 6 verified all excluded branches at runtime.")
+    conformance_path = Path(conformance.__file__)
+    original = conformance_path.read_text(encoding="utf-8")
+    damaged = original.replace(
+        "claims it was.\n\nRuns standalone or under pytest.",
+        f"claims it was.\n\n{claim}\n\nRuns standalone or under pytest.", 1)
+    assert damaged != original, "the mutation changed nothing"
+    _docstring_refuses(damaged, "not the approved text")
+
+
+def test_252_a_duplicated_structural_next_boundary_fails_closed() -> None:
+    """Two structural delimiters and there is no single envelope. An extractor
+    that silently took the first, or the last, would be selecting a span it never
+    proved was the right one."""
+    damaged = _swap(
+        _PHASE6, "\n    WHAT IT DOES WRITE\n",
+        "\n    WHAT THIS FILE MAY NOT DO\n"
+        "\n    WHAT IT DOES WRITE\n")
+    _control("test_41", phase6=damaged)
+
+
+def test_253_the_structural_boundary_moves_up_and_truncates_the_envelope() -> None:
+    """The delimiter is moved ABOVE part of the accepted closure text, so the
+    selected envelope no longer contains what Step 13 actually closed with. The
+    remaining banner is still syntactically valid and still has both anchors."""
+    damaged = _swap(
+        _PHASE6,
+        "\n    AND THE BOUNDARY SURVIVES THE PASS.",
+        "\n    WHAT THIS FILE MAY NOT DO\n"
+        "    -------------------------\n"
+        "\n    AND THE BOUNDARY SURVIVES THE PASS.")
+    damaged = _swap(
+        damaged,
+        "\n    WHAT THIS FILE MAY NOT DO\n    -------------------------\n    * it restates",
+        "\n    * it restates")
     _control("test_41", phase6=damaged)

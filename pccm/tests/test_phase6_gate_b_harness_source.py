@@ -1181,38 +1181,59 @@ NEGATORS = ("not ", "n't ", "never ", "no ", "nothing ", "cannot ", "neither ",
             "without ")
 
 
-# THE APPROVED CLOSURE BLOCK, one per active region.
+# THE APPROVED CLOSURE ENVELOPE, one per active region.
 #
-# WHY A BLOCK AND NOT A PARAGRAPH. Approving only the paragraph carrying "AND
-# THE BOUNDARY SURVIVES THE PASS" left the rest of the closure region
-# unadjudicated: the approved paragraph could stand byte-for-byte intact while a
-# NEW blank-line paragraph beside it asserted the opposite. That is fail-open,
-# and it is not a wording problem - no wording of one paragraph can constrain a
-# different paragraph. So the approved object is the whole CLOSURE REGION of
-# each active source, delimited by anchors, and nothing may be inserted, moved
-# or reworded anywhere inside it.
+# WHAT IS APPROVED. Each active region states the closure state of Step 13 in one
+# place: from a start anchor, up to but NOT including the next STRUCTURAL
+# delimiter in that region - the following heading, or the following section
+# sentence. That whole slice is approved text. Nothing can be inserted, moved or
+# reworded anywhere inside it.
 #
-# WHY NOT A PARSER. Two rounds of trying to make a claim scanner the authority
-# showed why it cannot be one: a finite evidence vocabulary plus free-form
-# English negation is not a fail-closed rule. "not induced and runtime-proven"
-# reads as negated to any scanner that looks backwards for a negator, and
-# closing that case only moves the problem to the next phrasing. The block is
-# approved text, so a replacement claim cannot be spelled around it.
+# WHY THE END ANCHOR IS OUTSIDE THE APPROVED CONTENT. Three earlier versions of
+# this control each failed the same way, and the third is why the envelope exists.
+#
+#   1. A token window. "static-only" nearby was accepted as a hedge, so a banner
+#      could claim a subject was runtime-proven and add "Nevertheless they remain
+#      static-only" and pass.
+#   2. A claim parser. A negator was borrowed by a later, different claim -
+#      "were NOT induced and were runtime-proven" reads as negated to anything
+#      that only asks whether a negator appears earlier. Splitting on one more
+#      conjunction moves the problem to the next phrasing.
+#   3. An approved PARAGRAPH. The paragraph could stand byte-for-byte intact
+#      while a NEW paragraph beside it asserted the opposite, and no wording of
+#      one paragraph constrains a different paragraph.
+#
+# Widening to an approved BLOCK that ended at its own last sentence still left
+# everything after that sentence unadjudicated, and guarding it with a list of
+# owned words was the token window again in a new costume: "Run 6 proved every
+# arm this harness cannot reach." contains no owned word and asserts exactly what
+# the boundary denies. A larger word list does not fix free-form English.
+#
+# The envelope removes the need to interpret the words at all. Because the
+# approved slice runs to the next STRUCTURAL boundary, any paragraph inserted
+# before that boundary changes the approved slice and is refused for that reason
+# alone - whatever it says, in whatever vocabulary.
 #
 # The cost is deliberate: changing an architectural closure statement now
 # requires changing the control that approves it.
-class ClosureBlock(NamedTuple):
-    """An approved closure region: where it starts, where it ends, what it says."""
+class ClosureEnvelope(NamedTuple):
+    """An approved closure region: where it starts, what structurally ends it, what it says.
+
+    `next_boundary` is the delimiter that FOLLOWS the approved content and is not
+    part of it. That is the whole point: an end anchor inside the approved text
+    can only prove that the text up to itself is intact, and says nothing about
+    what was added after it.
+    """
 
     start: str
-    end: str
+    next_boundary: str
     approved: str
 
 
-APPROVED_CLOSURE_BLOCK: dict[str, ClosureBlock] = {
-    "the source banner": ClosureBlock(
+APPROVED_CLOSURE_ENVELOPE: dict[str, ClosureEnvelope] = {
+    "the source banner": ClosureEnvelope(
         start='WHAT HAS EXECUTED.',
-        end='is the bounded list.',
+        next_boundary='WHAT THIS FILE MAY NOT DO',
         approved=(
             'WHAT HAS EXECUTED. Runs 1-6 have run. Run 4 executed the Phase-6 '
             'behavioural matrix for the first time and left five failures; '
@@ -1236,9 +1257,9 @@ APPROVED_CLOSURE_BLOCK: dict[str, ClosureBlock] = {
             'docs/phase6_step13_gate_b.md is the bounded list.'
         ),
     ),
-    "the driver banner": ClosureBlock(
+    "the driver banner": ClosureEnvelope(
         start='PHASE 6 STEP 13 HAS COMPLETED WINDOWS/EXCEL RUNTIME VALIDATION',
-        end='are not claimed by this one.',
+        next_boundary='Safety, unchanged from the readiness gate:',
         approved=(
             'PHASE 6 STEP 13 HAS COMPLETED WINDOWS/EXCEL RUNTIME VALIDATION. '
             'Run 6, on harness commit a3924e0, was the closing all-green run: '
@@ -1255,9 +1276,9 @@ APPROVED_CLOSURE_BLOCK: dict[str, ClosureBlock] = {
             'any run and are not claimed by this one.'
         ),
     ),
-    "this battery's own docstring": ClosureBlock(
+    "this battery's own docstring": ClosureEnvelope(
         start='WHERE STEP 13 ACTUALLY STANDS.',
-        end='nothing here claims it was.',
+        next_boundary='Runs standalone or under pytest.',
         approved=(
             'WHERE STEP 13 ACTUALLY STANDS. Runs 1-6 have executed and Step '
             '13 is CLOSED. Run 4 was the first valid execution of the Phase-6 '
@@ -1281,42 +1302,6 @@ APPROVED_CLOSURE_BLOCK: dict[str, ClosureBlock] = {
 
 CLOSURE_MARKER = "AND THE BOUNDARY SURVIVES THE PASS"
 
-# THE BOUNDED STATIC-ONLY SUBJECTS OF §5, plus the phrase that states the
-# boundary itself. The closure block OWNS every one of these inside its region:
-# a mention outside the block is a second closure claim, and a second closure
-# claim can contradict the first without touching it. This is structural
-# ownership rather than a scan - it asks WHERE a subject is named, not what is
-# said about it, so no choice of vocabulary slips past it.
-BOUNDED_SUBJECT_TOKENS = (
-    # the seven subjects themselves
-    "PERSISTENCE_INDETERMINATE",
-    "AUTO_NONCE_INDETERMINATE",
-    "NonceConsumed",
-    "ClearPending",
-    "iteration ceiling",
-    "selector-write ordering",
-    "read raises",
-    # and the ways the set is named without listing it. The docstring closes by
-    # REFERENCE - "§5 ... is the bounded static-only list" - so a second claim
-    # there would name §5, not a subject, and an owner list of subject names
-    # alone would not see it.
-    "static-only",
-    "static only",
-    "§5",
-    "phase6_step13_gate_b.md",
-    "bounded list",
-)
-
-# ASSERTING RUNTIME PROOF IS ITSELF OWNED. The block records what Run 6 proved;
-# outside it, in these three regions, there is no second place to say something
-# was proven at runtime. This is still structural - it asks where the phrase is,
-# not whether some parse of the sentence around it counts as negated.
-RUNTIME_PROOF_TOKENS = (
-    "runtime-proven",
-    "runtime proven",
-    "runtime-validated",
-)
-
 
 def _normalised(block: str) -> str:
     """Presentation removed, and nothing else: comment markers and wrapping."""
@@ -1325,71 +1310,79 @@ def _normalised(block: str) -> str:
 
 
 def _assert_approved_closure(region: str, where: str) -> str:
-    """The closure region of `region` IS the approved block, and owns the subject.
+    """The closure envelope of `region` IS the approved text.
 
-    Extraction is deliberately explicit, because an extractor that silently
-    selects the wrong span is a control that proves nothing: exactly one start
-    anchor, exactly one end anchor, start before end, and the span between them
-    compared whole.
+    The claim proved here is narrow and mechanical, and deliberately no wider:
+    THE ONE ACTIVE CLOSURE-STATE ENVELOPE OF THIS REGION IS EXACT APPROVED TEXT.
+    It is not a claim that no sentence anywhere else in the file could describe
+    the boundary; design and observability prose lives outside the envelope and
+    keeps its own controls.
+
+    Extraction is asserted rather than assumed, because an extractor that
+    silently selects the wrong span is a control that proves nothing.
     """
-    spec = APPROVED_CLOSURE_BLOCK[where]
-    # Normalise FIRST, so the anchors are matched against text whose comment
-    # markers and line wrapping are already gone. An anchor must not be hostage
-    # to where a paragraph happened to wrap.
+    spec = APPROVED_CLOSURE_ENVELOPE[where]
+    # Normalise FIRST, so anchors are matched against text whose comment markers
+    # and line wrapping are already gone. An anchor must not be hostage to where
+    # a paragraph happened to wrap.
     flat = _normalised(region)
 
-    for anchor, label in ((spec.start, "start"), (spec.end, "end")):
+    for anchor, label in ((spec.start, "start"), (spec.next_boundary, "next-boundary")):
         found = flat.count(anchor)
         assert found == 1, (
             f"{where}: the closure {label} anchor {anchor!r} appears {found} "
-            "times, so there is no single closure block to extract"
+            "times, so there is no single closure envelope to extract"
         )
-    markers = flat.count(CLOSURE_MARKER)
-    assert markers == 1, (
-        f"{where}: {markers} closure markers in this region; the active closure "
-        "state must be stated exactly once"
-    )
 
     begin = flat.index(spec.start)
-    finish = flat.index(spec.end) + len(spec.end)
-    assert begin < finish, (
-        f"{where}: the closure end anchor precedes the start anchor, so the "
-        "extracted span would not be the closure block"
+    boundary = flat.index(spec.next_boundary)
+    assert begin < boundary, (
+        f"{where}: the structural next boundary precedes the closure start, so "
+        "the extracted span would not be the closure envelope"
     )
 
-    block = flat[begin:finish]
-    assert block == spec.approved, (
-        f"{where}: the closure block is not the approved block.\n"
-        f"  approved: {spec.approved}\n  actual:   {block}"
+    # rstrip removes the separator that flattening put between the last approved
+    # sentence and the delimiter. That is presentation, and it is the only thing
+    # removed here.
+    envelope = flat[begin:boundary].rstrip()
+    markers = envelope.count(CLOSURE_MARKER)
+    assert markers == 1, (
+        f"{where}: {markers} closure markers inside the envelope; the active "
+        "closure state must be stated exactly once"
+    )
+    assert envelope == spec.approved, (
+        f"{where}: the closure envelope is not the approved text.\n"
+        f"  approved: {spec.approved}\n  actual:   {envelope}"
     )
 
-    # OWNERSHIP. Nothing outside the approved block may name a bounded subject
-    # or restate the boundary: that is exactly where a contradicting second
-    # claim would have to live, now that the block itself is approved text.
-    outside = f"{flat[:begin]} {flat[finish:]}"
-    strays = sorted({token for token in BOUNDED_SUBJECT_TOKENS + RUNTIME_PROOF_TOKENS
-                     if token in outside})
-    assert not strays, (
-        f"{where}: {strays} named outside the approved closure block; the block "
-        "owns the static-only boundary and there is no second place to state it"
-    )
-
-    # DEFENCE IN DEPTH, and it cannot fire while the block is approved. test_45
+    # DEFENCE IN DEPTH, and it cannot fire while the envelope is approved. test_45
     # exercises it directly so it is not carried untested.
     #
-    # SCOPED TO THE BOUNDARY HALF. The block deliberately contains runtime claims
-    # that are TRUE - Run 6 did execute the matrix, and every post-Run-4
-    # correction WAS exercised with it. Those are the claims the block exists to
-    # record. Only the boundary half, from the marker on, is the half where an
-    # affirmative evidence word would contradict what it says.
-    assert CLOSURE_MARKER in block, (
-        f"{where}: the approved block does not contain the closure marker, so "
-        "the boundary statement is outside the block that owns it"
-    )
-    boundary = block[block.index(CLOSURE_MARKER):]
-    overclaims = _unnegated_evidence_claims(boundary)
+    # SCOPED TO THE BOUNDARY HALF. The envelope deliberately contains runtime
+    # claims that are TRUE - Run 6 did execute the matrix, and every post-Run-4
+    # correction WAS exercised with it. Those are the claims it exists to record.
+    # Only from the marker on would an affirmative evidence word contradict what
+    # it says.
+    overclaims = _unnegated_evidence_claims(envelope[envelope.index(CLOSURE_MARKER):])
     assert not overclaims, (f"{where}: {overclaims}")
-    return block
+    return envelope
+
+
+def _closure_envelope_span(region: str, where: str) -> tuple[int, int]:
+    """The envelope's span in the RAW region, for positional checks.
+
+    Both anchors are single-line in every active region, which is asserted here
+    rather than assumed: a wrapped anchor would silently return a span that is
+    not the envelope.
+    """
+    spec = APPROVED_CLOSURE_ENVELOPE[where]
+    for anchor, label in ((spec.start, "start"), (spec.next_boundary, "next-boundary")):
+        found = region.count(anchor)
+        assert found == 1, (
+            f"{where}: the raw {label} anchor {anchor!r} appears {found} times, "
+            "so there is no single raw envelope span"
+        )
+    return region.index(spec.start), region.index(spec.next_boundary)
 
 
 def _clauses(text: str) -> list[str]:
@@ -1451,9 +1444,14 @@ def test_41_no_runtime_claim_is_made_about_the_private_consumption_flag() -> Non
         # remain static-only" pass a control named "no runtime claim".
         if ("cannot observe" in window) or ("Private Boolean" in window):
             continue
+        # NOT A DESIGN OCCURRENCE, so it is a closure claim, and the closure
+        # state has exactly one place to live. POSITIONAL, not semantic: this
+        # asks WHERE the mention is, not what the sentence around it means.
         banner = text.split("#>")[0]
-        assert at < len(banner), (
-            f"a NonceConsumed mention outside the banner carries no exclusion: {line}"
+        begin, boundary = _closure_envelope_span(banner, "the source banner")
+        assert begin <= at < boundary, (
+            "a NonceConsumed mention outside the approved closure envelope "
+            f"carries no exclusion: {line}"
         )
         _assert_approved_closure(banner, "the source banner")
 
