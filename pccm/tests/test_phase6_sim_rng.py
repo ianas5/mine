@@ -532,10 +532,14 @@ def test_36_the_only_phase6_vba_is_the_generator_backbone() -> None:
                        "modSimStats.bas", "modSimFingerprint.bas",
                        "modSimReport.bas"):
         assert authorised in names, authorised
-    # Nothing beyond them. A Step-12 module would have to arrive with a step.
+    # Nothing beyond them WITHOUT A STEP THAT AUTHORISES IT - which is the
+    # claim, and it is unchanged. `modSimSensitivity` arrived with P7-2, so it
+    # is named here exactly as each Phase-6 module was named when its own step
+    # landed, rather than admitted by loosening the comparison.
     unauthorised = {n for n in names if n.startswith("modSim")} - {
         "modSimRng.bas", "modSimSample.bas", "modSimEngine.bas", "modSimStats.bas",
-        "modSimFingerprint.bas", "modSimNonce.bas", "modSimReport.bas"}
+        "modSimFingerprint.bas", "modSimNonce.bas", "modSimReport.bas",
+        "modSimSensitivity.bas"}
     assert unauthorised == set(), sorted(unauthorised)
     for path in sorted(src.glob("*.bas")):
         if path.stem == "modSimRng":

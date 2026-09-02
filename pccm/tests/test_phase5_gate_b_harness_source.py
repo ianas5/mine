@@ -61,6 +61,11 @@ name so a Phase-6 addition is visible rather than absorbed into a count."""
 _PHASE6_MANIFEST_MODULES = {"modSimContract", "modSimRng", "modSimSample",
                             "modSimEngine", "modSimStats", "modSimFingerprint",
                             "modSimNonce", "modSimReport"}
+_PHASE7_MANIFEST_MODULES = {"modSimSensitivity"}
+
+"""Phase-7 hand-written source modules, named on the same terms Phase 6 was:
+admitted by name, one at a time, so the earlier half of each inventory
+equality below stays exactly as strict as it was."""
 """Every module Phase 6 has added so far, BY NAME. Named rather than counted for
 the same reason: a module addition must be a visible edit here, and the
 exact-set assertions that consume it keep their full strength."""
@@ -585,7 +590,8 @@ def test_19_the_diagnostic_module_is_not_a_production_module() -> None:
     assert _PHASE5_MANIFEST_MODULES <= set(declared), (
         sorted(_PHASE5_MANIFEST_MODULES - set(declared))
     )
-    assert set(declared) - _PHASE5_MANIFEST_MODULES == _PHASE6_MANIFEST_MODULES
+    assert (set(declared) - _PHASE5_MANIFEST_MODULES
+            == _PHASE6_MANIFEST_MODULES | _PHASE7_MANIFEST_MODULES)
     # Not in the structure contract either, so it can never be emitted into one.
     contract = _text(SPEC / "structure_contract.yaml")
     assert DIAGNOSTIC_MODULE_NAME not in contract
@@ -972,13 +978,16 @@ def test_37_no_calculate_button_and_no_new_production_module() -> None:
     assert entry_points == set(emitted["manifest"]["vba"]["entry_points"])
     modules = {module["name"] for module in emitted["manifest"]["vba"]["modules"]}
     assert _PHASE5_MANIFEST_MODULES <= set(modules)
-    assert set(modules) - _PHASE5_MANIFEST_MODULES == _PHASE6_MANIFEST_MODULES
+    assert (set(modules) - _PHASE5_MANIFEST_MODULES
+            == _PHASE6_MANIFEST_MODULES | _PHASE7_MANIFEST_MODULES)
     on_disk = {path.stem for path in SRC_VBA.glob("*.bas")}
     assert DIAGNOSTIC_MODULE_NAME not in on_disk
-    # The thirteen Phase-5 hand-written modules, plus Phase 6's first source
-    # module. Named rather than counted, so an addition is visible.
-    assert on_disk == (_PHASE5_MANIFEST_MODULES
-                       - {"modConstants", "modCalcContract"}) | _PHASE6_HANDWRITTEN, (
+    # The thirteen Phase-5 hand-written modules, plus Phase 6's source modules
+    # and Phase 7's. Named rather than counted, so an addition is visible - and
+    # naming a later phase's module never relaxes the Phase-5 half.
+    assert on_disk == ((_PHASE5_MANIFEST_MODULES
+                        - {"modConstants", "modCalcContract"})
+                       | _PHASE6_HANDWRITTEN | _PHASE7_MANIFEST_MODULES), (
         f"a production module was added or removed: {sorted(on_disk)}"
     )
     # The harness asserts all three of those things at runtime too.

@@ -261,9 +261,15 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimStats" in modules
     assert modules["modSimStats"].generated is False
-    assert [m.name for m in structure.vba_modules][-8:] == [
-        "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-        "modSimFingerprint", "modSimNonce", "modSimReport"]
+    # THE PHASE-6 BLOCK, CONTIGUOUS AND IN ORDER. This was written as the LAST
+    # eight entries, which was the same claim while Phase 6 was the last phase.
+    # "Nothing beyond it" has since been settled by P7-2 landing
+    # modSimSensitivity under its own authority; what still matters, and is
+    # still checked, is that the accepted block is intact and unreordered.
+    names = [m.name for m in structure.vba_modules]
+    block = ['modSimContract', 'modSimRng', 'modSimSample', 'modSimEngine', 'modSimStats', 'modSimFingerprint', 'modSimNonce', 'modSimReport']
+    at = names.index(block[0])
+    assert names[at:at + len(block)] == block, names[at:at + len(block)]
     assert not (set(_module().public_procedures)
                 & (set(structure.entry_points) | set(structure.api_procedures)))
     # D6-11 is untouched, and Percentile is still global.

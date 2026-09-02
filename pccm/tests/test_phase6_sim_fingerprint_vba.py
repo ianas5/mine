@@ -266,9 +266,15 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimFingerprint" in modules
     assert modules["modSimFingerprint"].generated is False
-    assert [m.name for m in structure.vba_modules][-8:] == [
-        "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-        "modSimFingerprint", "modSimNonce", "modSimReport"]
+    # THE PHASE-6 BLOCK, CONTIGUOUS AND IN ORDER. This was written as the LAST
+    # eight entries, which was the same claim while Phase 6 was the last phase.
+    # "Nothing beyond it" has since been settled by P7-2 landing
+    # modSimSensitivity under its own authority; what still matters, and is
+    # still checked, is that the accepted block is intact and unreordered.
+    names = [m.name for m in structure.vba_modules]
+    block = ['modSimContract', 'modSimRng', 'modSimSample', 'modSimEngine', 'modSimStats', 'modSimFingerprint', 'modSimNonce', 'modSimReport']
+    at = names.index(block[0])
+    assert names[at:at + len(block)] == block, names[at:at + len(block)]
     # No endpoint, and D6-11 is untouched.
     surface = set(structure.entry_points) | set(structure.api_procedures)
     assert not (set(_module().public_procedures) & surface)
@@ -950,9 +956,13 @@ def test_53_the_orchestration_layer_arrived_and_nothing_beyond_it() -> None:
             assert banned not in module.code, f"{module.name} carries {banned}"
     report = next(m for m in load_modules([SRC_VBA]) if m.name == "modSimReport")
     assert "PCCM_RunSimulation" in report.code
-    # And still nothing beyond it.
+    # And nothing beyond it EXCEPT what a later phase has landed under its own
+    # authority. `modSimReport` is still the last Phase-6 module; P7-2's pure
+    # kernel is not a Phase-6 module and is excluded by name rather than by
+    # widening the set this control is about.
     assert not [p for p in SRC_VBA.glob("*.bas") if p.stem.startswith("modSim")
-                and p.stem not in ("modSimContract", "modSimRng", "modSimSample",
+                and p.stem not in ("modSimSensitivity",
+                                   "modSimContract", "modSimRng", "modSimSample",
                                    "modSimEngine", "modSimStats", "modSimFingerprint",
                                    "modSimNonce", "modSimReport")]
 

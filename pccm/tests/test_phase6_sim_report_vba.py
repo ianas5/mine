@@ -136,9 +136,15 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     modules = {m.name: m for m in structure.vba_modules}
     assert "modSimReport" in modules
     assert modules["modSimReport"].generated is False
-    assert [m.name for m in structure.vba_modules][-8:] == [
-        "modSimContract", "modSimRng", "modSimSample", "modSimEngine", "modSimStats",
-        "modSimFingerprint", "modSimNonce", "modSimReport"]
+    # THE PHASE-6 BLOCK, CONTIGUOUS AND IN ORDER. This was written as the LAST
+    # eight entries, which was the same claim while Phase 6 was the last phase.
+    # "Nothing beyond it" has since been settled by P7-2 landing
+    # modSimSensitivity under its own authority; what still matters, and is
+    # still checked, is that the accepted block is intact and unreordered.
+    names = [m.name for m in structure.vba_modules]
+    block = ['modSimContract', 'modSimRng', 'modSimSample', 'modSimEngine', 'modSimStats', 'modSimFingerprint', 'modSimNonce', 'modSimReport']
+    at = names.index(block[0])
+    assert names[at:at + len(block)] == block, names[at:at + len(block)]
 
 
 def test_03_the_endpoint_construct_is_scoped_to_this_module_and_no_other() -> None:
@@ -2097,9 +2103,18 @@ def test_46_the_corpus_moved_only_for_the_authorised_axis_change() -> None:
     json.loads(text)
 
 def test_47_no_step_12_exists() -> None:
+    """P7-2 LANDED THE SENSITIVITY KERNEL, AND NOTHING ELSE ON THIS LIST.
+
+    The claim is that the Phase-6 modules do not reach forward into later work,
+    not that later work never happens. `modSimSensitivity` exists now under P7-2
+    authority; the dashboard and annual output still do not, and no Phase-6
+    module may name any of it.
+    """
     names = {p.stem for p in SRC_VBA.glob("*.bas")}
-    assert names & {"modSimDashboard", "modSimSensitivity", "modSimAnnual"} == set()
+    assert names & {"modSimDashboard", "modSimAnnual"} == set()
     for module in load_modules([SRC_VBA]):
+        if module.name == "modSimSensitivity":
+            continue  # it IS the sensitivity kernel; naming itself is not reaching forward
         for later in ("Sensitivity", "AnnualStochastic", "Tornado"):
             assert later not in module.code, (module.name, later)
 

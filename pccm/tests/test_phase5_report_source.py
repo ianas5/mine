@@ -237,7 +237,7 @@ def test_02_the_phase_5_inventory_is_complete_and_nothing_of_phase_5_moved() -> 
                                             "modSimContract"}
     # Everything beyond the Phase-5 fifteen is Phase-6 and is named, so a
     # module cannot appear here unremarked.
-    assert set(names) - PHASE5_INVENTORY == PHASE6_INVENTORY
+    assert set(names) - PHASE5_INVENTORY == PHASE6_INVENTORY | PHASE7_INVENTORY
 
 
 PHASE5_INVENTORY = {
@@ -251,6 +251,11 @@ PHASE5_INVENTORY = {
 PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
                     "modSimStats", "modSimFingerprint", "modSimNonce",
                     "modSimReport"}
+PHASE7_INVENTORY = {"modSimSensitivity"}
+
+"""Phase-7 hand-written source modules, named on the same terms Phase 6 was:
+admitted by name, one at a time, so the earlier half of each inventory
+equality below stays exactly as strict as it was."""
 """Everything Phase 6 has added on top, also by name: a module cannot appear
 in the registry here unremarked."""
 

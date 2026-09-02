@@ -783,6 +783,11 @@ PHASE6_HANDWRITTEN = {"modSimRng", "modSimSample", "modSimEngine", "modSimStats"
                       "modSimFingerprint", "modSimNonce", "modSimReport"}
 """The Phase-6 hand-written modules. Named here so the Phase-5 inventory below
 stays an exact statement about Phase 5 rather than becoming an open set."""
+PHASE7_HANDWRITTEN = {"modSimSensitivity"}
+
+"""Phase-7 hand-written source modules, named on the same terms Phase 6 was:
+admitted by name, one at a time, so the earlier half of each inventory
+equality below stays exactly as strict as it was."""
 
 
 def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
@@ -794,9 +799,11 @@ def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
     """
     on_disk = set(_modules())
     assert on_disk == (
-        set(FROZEN_SHA256) | {CHECKER, "modCalcReport"} | PHASE6_HANDWRITTEN
+        set(FROZEN_SHA256) | {CHECKER, "modCalcReport"}
+        | PHASE6_HANDWRITTEN | PHASE7_HANDWRITTEN
     ), f"unexpected hand-written module inventory: {sorted(on_disk)}"
-    assert on_disk - PHASE6_HANDWRITTEN == set(FROZEN_SHA256) | {CHECKER, "modCalcReport"}
+    assert on_disk - PHASE6_HANDWRITTEN - PHASE7_HANDWRITTEN == (
+        set(FROZEN_SHA256) | {CHECKER, "modCalcReport"})
 
 
 # ===========================================================================

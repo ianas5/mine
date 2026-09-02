@@ -409,10 +409,15 @@ def test_20_the_implementation_arrived_in_step_11_and_only_there() -> None:
     # AND NOTHING BEYOND IT. The Phase-6 registry is exactly the generated
     # projection plus the six hand-written modules, so a Step-12 module cannot
     # be declared ahead of the step that authorises it.
-    assert {n for n in declared if n.startswith("modSim")} == {
-        "modSimContract", "modSimRng", "modSimSample", "modSimEngine",
-        "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport",
-    }, sorted(n for n in declared if n.startswith("modSim"))
+    # THE PHASE-6 SET, PRESENT AND COMPLETE. The claim is which module may carry
+    # the endpoint and the bank machinery - asserted above, for every module - not
+    # that the registry never grows. `modSimSensitivity` is P7-2's pure kernel and
+    # is named here rather than admitted by loosening the comparison.
+    simulation = {n for n in declared if n.startswith("modSim")}
+    phase6 = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
+              "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport"}
+    assert phase6 <= simulation, sorted(phase6 - simulation)
+    assert simulation - phase6 == {"modSimSensitivity"}, sorted(simulation - phase6)
 
 
 # ===========================================================================
