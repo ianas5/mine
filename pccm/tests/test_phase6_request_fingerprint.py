@@ -319,6 +319,13 @@ def test_18_the_implementation_arrived_in_step_10_and_nothing_beyond_it() -> Non
     from pccm_builder.vba_source import load_modules
 
     for module in load_modules([src]):
+        if module.name == "modSimPostReport":
+            # P7-4's orchestrator READS the published status through the
+            # accepted accessor, which necessarily names its owner. What it must
+            # not carry is the ENDPOINT - the ability to start a run - and that
+            # is what stays asserted here.
+            assert "PCCM_RunSimulation" not in module.code
+            continue
         if module.name != "modSimReport":
             for banned in ("PCCM_RunSimulation", "SimReport"):
                 assert banned not in module.code, f"{module.name} carries {banned}"

@@ -134,6 +134,12 @@ PRODUCTION_BASELINE = "79e4600"
 # MOMENT instead of a PROPERTY - and the correction is the same: name the moment.
 STEP13_CLOSURE_COMMIT = "85778b2854fee431a845499e5a2fe37f40e96610"
 
+# The projection THIS tree builds, which is not the one Run 6 executed. P7-4
+# contracted the Phase-7 sensitivity block and `modSimContract` is a projection
+# of the contracts, so it moved. Pinned here so a stray change is still caught.
+PHASE7_PROJECTION_IDENTITY = (
+    "11e58482e770d00911f24cf6d6d141d4d84046db2b008e3dc9dc39a88322284a")
+
 # The seven hand-written simulation modules Run 6 executed and the freeze pins by
 # blob. `modSimContract` is excluded because it is generated and has no path in
 # src/vba; a later phase's module is excluded because Run 6 never ran it.
@@ -3575,17 +3581,40 @@ def test_77_the_generated_projection_has_a_baseline_bound_identity() -> None:
     assert derived == BASELINE_PROJECTION_IDENTITY, (
         f"the baseline projection identity is {derived}, not the pinned value"
     )
-    # AND HEAD STILL PRODUCES IT, which is the actual claim about this tree.
-    assert canonical_module_identity(generated.read_bytes()) == derived, (
-        "HEAD's renderer no longer produces the accepted baseline projection"
+    # AND HEAD NO LONGER PRODUCES IT, which is the honest claim about this tree.
+    #
+    # P7-4 contracted the Phase-7 sensitivity block, and `modSimContract` is a
+    # PROJECTION of the contracts - so it changed, correctly. The baseline
+    # identity above is untouched and still derived from the baseline's own
+    # renderer and authorities, which is the property that stops a changed
+    # renderer blessing its own output. What changed is that this tree builds a
+    # DIFFERENT projection, and that one is not the module Run 6 executed.
+    current = canonical_module_identity(generated.read_bytes())
+    assert current == PHASE7_PROJECTION_IDENTITY, (
+        f"the Phase-7 projection identity is {current}, not the pinned value"
+    )
+    assert current != derived, (
+        "HEAD's renderer produces the baseline projection again; if that is "
+        "intended, the Phase-7 runtime note below must be revisited too"
     )
 
-    # 2. THE HARNESS CARRIES IT AS A CHECKED COPY.
+    # 2. THE HARNESS CARRIES THE RUN-6 IDENTITY AS A CHECKED COPY, and it is
+    #    the BASELINE one - the harness is Run-6 evidence and P7-4 does not
+    #    touch it. The consequence is deliberate and is stated rather than
+    #    smoothed over: run against this tree, the Phase-6 Gate-B harness would
+    #    REFUSE the Phase-7 projection, because it is not the module Run 6 ran.
+    #    Which identity a Phase-7 Windows run checks against is a Phase-7
+    #    acceptance decision, and nothing here may be read as having made it.
     code = _executable(PHASE6)
     assert BASELINE_PROJECTION_IDENTITY in code, (
         "the harness does not carry the accepted projection identity"
     )
     assert code.count(BASELINE_PROJECTION_IDENTITY) == 1
+    assert PHASE7_PROJECTION_IDENTITY not in code, (
+        "the Phase-6 harness has been given the Phase-7 projection identity; "
+        "that is a Run-6 evidence file and the substitution would make it claim "
+        "a module Run 6 never executed"
+    )
 
     # 3. THE JOIN THE STAGE-B IMPORT ACTUALLY WALKS. Not "a correct file exists
     #    somewhere": the manifest entry, the directory Stage B derives from it,
