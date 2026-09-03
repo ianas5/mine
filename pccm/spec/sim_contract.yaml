@@ -1301,6 +1301,48 @@ sim_data:
       A: {first_column: "J", last_column: "Q"}
       B: {first_column: "S", last_column: "Z"}
 
+    # ------------------------------------------------------------------
+    # THE STAMP - P7-4 DELTA, and the smallest one that makes the block safe.
+    #
+    # P7-1 contracted WHAT a sensitivity row holds. Three things were still
+    # missing before a row could be written safely, and each is a defect the
+    # block would otherwise have:
+    #
+    #   record_count   A later model can have FEWER drivers than the block
+    #                  already holds. Overwriting the first n rows would leave
+    #                  the surplus visible and indistinguishable from the new
+    #                  result, so the count bounds what is authoritative and
+    #                  the rows beyond it are cleared.
+    #   the identity   run_id, effective_seed, request_fingerprint and
+    #                  result_digest. Without them sensitivity from Run A can
+    #                  be presented as current for Run B, which is the one
+    #                  thing this whole block must not permit.
+    #   published      Written LAST, after the rows and the identity are in
+    #                  place and verified. A write that fails part way leaves
+    #                  this cell unpublished, so a partial block can never
+    #                  carry a current stamp.
+    #
+    # ROWS, NOT NEW ROWS. The stamp sits on rows the sheet already reserves,
+    # in the same columns the records use lower down - records begin at row 34,
+    # so rows 8-14 of those columns are free. reserved_rows is untouched, H is
+    # still 33 and the iteration ceiling does not move.
+    # ------------------------------------------------------------------
+    stamp:
+      bank_value_columns:
+        A: "J"
+        B: "S"
+      published_written_last: true
+      cleared_before_write: true
+      surplus_rows_cleared: true
+      fields:
+        - {key: "run_id", row: 8, value_type: "integer"}
+        - {key: "effective_seed", row: 9, value_type: "integer"}
+        - {key: "request_fingerprint", row: 10, value_type: "text"}
+        - {key: "result_digest", row: 11, value_type: "text"}
+        - {key: "iterations", row: 12, value_type: "integer"}
+        - {key: "record_count", row: 13, value_type: "integer"}
+        - {key: "published", row: 14, value_type: "text"}
+
   annual_records:
     header_row: 33
     first_record_row: 34

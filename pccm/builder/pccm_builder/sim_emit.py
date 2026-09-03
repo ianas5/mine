@@ -524,6 +524,34 @@ def render_sim_contract_module(
         module.const(f"SIM_SUMMARY_ROW_{_identifier(metric['key'])}", int(metric["row"]))
     module.raw()
 
+    # --- Phase-7 sensitivity records ----------------------------------------
+    # COLUMNS, NEVER ROWS. The block shares the iteration row axis, and its
+    # stamp sits above the first record row in the same columns, so nothing
+    # here moves the reserved-row count or the iteration ceiling.
+    sensitivity = raw["sim_data"]["sensitivity_records"]
+    module.section("Phase-7 sensitivity records (one row per driver, in ranked order)")
+    module.const("SIM_SENSITIVITY_HEADER_ROW", int(sensitivity["header_row"]))
+    module.const("SIM_SENSITIVITY_FIRST_ROW", int(sensitivity["first_record_row"]))
+    module.const("SIM_SENSITIVITY_FIELD_COUNT", len(sensitivity["columns"]))
+    for position, column in enumerate(sensitivity["columns"]):
+        module.const(
+            f"SIM_SENSITIVITY_OFFSET_{_identifier(column['key'])}", position)
+        module.const(
+            f"SIM_SENSITIVITY_HEADER_{_identifier(column['key'])}", str(column["header"]))
+    for label, bounds in sensitivity["banks"].items():
+        module.const(
+            f"SIM_SENSITIVITY_{_identifier(label)}_FIRST_COLUMN", str(bounds["first_column"]))
+        module.const(
+            f"SIM_SENSITIVITY_{_identifier(label)}_LAST_COLUMN", str(bounds["last_column"]))
+    stamp = sensitivity["stamp"]
+    for label, column in stamp["bank_value_columns"].items():
+        module.const(f"SIM_SENSITIVITY_STAMP_COLUMN_{_identifier(label)}", str(column))
+    for field in stamp["fields"]:
+        module.const(f"SIM_SENSITIVITY_STAMP_ROW_{_identifier(field['key'])}",
+                     int(field["row"]))
+    module.const("SIM_SENSITIVITY_PUBLISHED", "PUBLISHED")
+    module.raw()
+
     contingency = raw["sim_data"]["contingency_ladder"]
     module.section("Persisted contingency ladder (the WHOLE ladder, before any commit)")
     module.const("SIM_CONTINGENCY_LABEL_COLUMN", str(contingency["label_column"]))

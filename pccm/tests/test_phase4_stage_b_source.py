@@ -268,6 +268,7 @@ PHASE4_RAW_LINE_LIMIT = 900
 # so documentation is neither charged as sprawl nor unbounded.
 PHASE7_VBA_MODULES = (
     "modSimSensitivity",
+    "modSimPostReport",
 )
 
 PHASE5_CODE_LINE_LIMIT = 900
@@ -373,6 +374,12 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
     owners = {m.name for m in _all_modules()
               if phase6 & set(m.public_procedures)}
     assert owners == {"modSimReport"}, owners
+    # PHASE 7 declares its endpoint in the contract rather than by name here,
+    # and it has its own owner: the analysis of a run is not part of the run.
+    assert "PCCM_RunSensitivity" in data["vba"]["api_procedures"]
+    sensitivity_owners = {m.name for m in _all_modules()
+                          if "PCCM_RunSensitivity" in m.public_procedures}
+    assert sensitivity_owners == {"modSimPostReport"}, sensitivity_owners
     accounted = (set(data["vba"]["entry_points"])
                  | set(data["vba"]["harness_procedures"])
                  | set(data["vba"].get("api_procedures", []))

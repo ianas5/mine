@@ -110,6 +110,48 @@ presentation:
 # show the published distribution only half the time.
 # ---------------------------------------------------------------------------
 phase6_shell:
+  # -----------------------------------------------------------------------
+  # PHASE 7. The Sensitivity table, materialised as LOOKUPS and nothing else.
+  #
+  # Every cell reads the persisted `_SimData` sensitivity block for the active
+  # bank. Nothing here computes a rank, a correlation or an ordering: the
+  # authoritative answer was produced by PCCM_RunSensitivity and this sheet
+  # shows it, exactly as Results shows the distribution it never computed.
+  #
+  # THE WINDOW IS BOUNDED AND THE COUNT DECIDES. A row beyond the persisted
+  # record count is blank, so a later model with fewer drivers cannot leave a
+  # previous run's surplus rows on display.
+  #
+  # AND IT SAYS WHOSE ANSWER IT IS. The availability line above the table
+  # compares the sensitivity stamp against the active run's own identity, so a
+  # table produced for one run can never be read as current for another.
+  # -----------------------------------------------------------------------
+  sensitivity:
+    sheet: "Sensitivity"
+    label_column: "B"
+    first_column: "B"
+    heading_row: 8
+    note_row: 9
+    availability_row: 10
+    header_row: 12
+    first_row: 13
+    row_window: 200
+    heading: "Ranked Drivers"
+    note: "Spearman rank correlation of each driver's nominal contribution against Total Nominal Project Cost, over every iteration of the run named below. Monotone association, not a share of variance."
+    availability_label: "Sensitivity"
+    # THE THREE HONEST ANSWERS. Not produced; produced for THIS run; produced
+    # for a different one. The third is the case that must never be silent.
+    availability_formula: '=IF(_SimData!$D$30="","No simulation has been published.",IF(IF(_SimData!$D$30="A",_SimData!$J$14,_SimData!$S$14)<>"PUBLISHED","Not produced for this run. Run Sensitivity to produce it.",IF(AND(IF(_SimData!$D$30="A",_SimData!$J$10,_SimData!$S$10)=IF(_SimData!$D$30="A",_SimData!$D$10,_SimData!$F$10),IF(_SimData!$D$30="A",_SimData!$J$11,_SimData!$S$11)=IF(_SimData!$D$30="A",_SimData!$D$11,_SimData!$F$11)),"CURRENT for run "&IF(_SimData!$D$30="A",_SimData!$J$8,_SimData!$S$8),"NOT CURRENT - this table belongs to run "&IF(_SimData!$D$30="A",_SimData!$J$8,_SimData!$S$8)&", not to the published run.")))'
+    columns:
+      - {key: "driver_id", header: "Driver ID", column: "B", offset: 0}
+      - {key: "driver_type", header: "Type", column: "C", offset: 1}
+      - {key: "driver_name", header: "Name", column: "D", offset: 2}
+      - {key: "rho", header: "Rho", column: "E", offset: 3}
+      - {key: "abs_rho", header: "|Rho|", column: "F", offset: 4}
+      - {key: "rank", header: "Rank", column: "G", offset: 5}
+      - {key: "direction", header: "Direction", column: "H", offset: 6}
+      - {key: "status", header: "Status", column: "I", offset: 7}
+
   sim_data:
     sheet: "_SimData"
     identity_heading: "Run identity and publication state"

@@ -226,7 +226,23 @@ def _phase6_formula_cells(spec) -> dict[str, set[str]]:
         cells.add(f"{nominal}{row}")
         cells.add(f"{pv}{row}")
     assert label not in cells
-    return {sheet: cells}
+    permitted = {sheet: cells}
+
+    # PHASE 7 adds the Sensitivity table, and only there. Enumerated exactly, as
+    # Results is: every cell the shell writes a formula into, and no other. A
+    # window of lookup formulas is still a window with edges.
+    sensitivity = shell.get("sensitivity")
+    if sensitivity:
+        window: set[str] = set()
+        columns = sensitivity["columns"]
+        window.add(f"{columns[1]['column']}{sensitivity['availability_row']}")
+        for row_index in range(int(sensitivity["row_window"])):
+            row = int(sensitivity["first_row"]) + row_index
+            for column in columns:
+                window.add(f"{column['column']}{row}")
+        assert sensitivity["label_column"] + str(sensitivity["heading_row"]) not in window
+        permitted.setdefault(sensitivity["sheet"], set()).update(window)
+    return permitted
 
 
 def _formula_cells(workbook) -> list[str]:

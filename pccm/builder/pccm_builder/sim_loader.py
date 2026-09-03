@@ -534,6 +534,20 @@ LOCKED_SENSITIVITY_COLUMN_LAYOUT = (
     ("status", "Q", "Status", "text"),
 )
 LOCKED_SENSITIVITY_ROW_RULE = "one row per eligible driver, in ranked order"
+
+# THE STAMP, LOCKED. `published` is last on purpose: it is written after the
+# rows and the identity, so a write that fails part way leaves the block
+# unpublished rather than current.
+LOCKED_SENSITIVITY_STAMP = (
+    ("run_id", 8, "integer"),
+    ("effective_seed", 9, "integer"),
+    ("request_fingerprint", 10, "text"),
+    ("result_digest", 11, "text"),
+    ("iterations", 12, "integer"),
+    ("record_count", 13, "integer"),
+    ("published", 14, "text"),
+)
+LOCKED_SENSITIVITY_STAMP_COLUMNS = {"A": "J", "B": "S"}
 LOCKED_ANNUAL_ROW_RULE = "one row per applied project year"
 LOCKED_ANNUAL_INDEX_COLUMNS = {
     "A": {"project_index": "AB", "calendar_year": "AC"},
@@ -1150,8 +1164,14 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
     }),
     'sim_data.sensitivity_records': frozenset({
         'banks', 'columns', 'consumes_reserved_rows', 'first_record_row', 'footer_rows',
-        'header_row', 'row_rule', 'shares_row_axis_with_iteration_records'
+        'header_row', 'row_rule', 'shares_row_axis_with_iteration_records', 'stamp'
     }),
+    'sim_data.sensitivity_records.stamp': frozenset({
+        'bank_value_columns', 'cleared_before_write', 'fields',
+        'published_written_last', 'surplus_rows_cleared'
+    }),
+    'sim_data.sensitivity_records.stamp.bank_value_columns': frozenset({'A', 'B'}),
+    'sim_data.sensitivity_records.stamp.fields[]': frozenset({'key', 'row', 'value_type'}),
     'sim_data.sensitivity_records.columns[]': frozenset({
         'column', 'header', 'key', 'value_type'
     }),
@@ -3691,6 +3711,29 @@ def _validate_phase7_records(block: dict, where: str, header_row: int,
                 f"{swhere}: banks.{bank} spans {width} columns but the table has "
                 f"{len(LOCKED_SENSITIVITY_COLUMNS)} fields"
             )
+    # THE STAMP shares the record columns and sits on rows the sheet already
+    # reserves, above the first record row. It adds no row and moves no ceiling.
+    stwhere = f"{swhere}: stamp"
+    stamp = _map(sensitivity, "stamp", stwhere)
+    _require_true(stamp, "published_written_last", stwhere)
+    _require_true(stamp, "cleared_before_write", stwhere)
+    _require_true(stamp, "surplus_rows_cleared", stwhere)
+    stamp_columns = _map(stamp, "bank_value_columns", stwhere)
+    for bank, expected in LOCKED_SENSITIVITY_STAMP_COLUMNS.items():
+        _require_value(stamp_columns, bank, expected, stwhere)
+    _phase7_columns_clear_of_the_banks(stamp_columns.values(), stwhere)
+    stamp_fields = tuple(
+        (_req_str(entry, "key", stwhere), _req_int(entry, "row", stwhere),
+         _req_str(entry, "value_type", stwhere))
+        for entry in _seq(stamp, "fields", stwhere))
+    _exact_sequence(stamp_fields, LOCKED_SENSITIVITY_STAMP, f"{stwhere}: fields")
+    assert stamp_fields[-1][0] == "published"
+    for _key, row, _kind in stamp_fields:
+        if row >= first_row:
+            raise SimContractError(
+                f"{stwhere}: the stamp field at row {row} is at or below the first "
+                f"record row {first_row}; it would collide with a driver record")
+
     a_last = _column_number(_map(banks, "A", swhere)["last_column"], swhere)
     b_first = _column_number(_map(banks, "B", swhere)["first_column"], swhere)
     if b_first <= a_last:

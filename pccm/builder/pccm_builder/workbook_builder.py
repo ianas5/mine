@@ -343,6 +343,80 @@ def render_phase6_shell(
         _render_sim_data_shell(worksheet, shell["sim_data"], raw, sim, contract, styles)
     elif sheet_spec.name == "Results":
         _render_results_shell(worksheet, shell["results"], styles)
+    elif sheet_spec.name == shell["sensitivity"]["sheet"]:
+        _render_sensitivity_shell(worksheet, shell["sensitivity"], raw, styles)
+
+
+def _render_sensitivity_shell(
+    worksheet: Worksheet, block: dict[str, Any], raw: dict[str, Any],
+    styles: StyleBook,
+) -> None:
+    """The Ranked Drivers table, as LOOKUPS into the persisted block.
+
+    Not one cell computes anything. Every row reads the `_SimData` sensitivity
+    records of the ACTIVE bank at a fixed offset, and blanks itself beyond the
+    persisted record count - which is what stops a previous, longer result from
+    leaving surplus rows on display when a later model has fewer drivers.
+
+    The coordinates come from `sim_contract.yaml`; this function knows only
+    where on the sheet they go.
+    """
+    records = raw["sim_data"]["sensitivity_records"]
+    banks = records["banks"]
+    stamp = records["stamp"]
+    first_record_row = int(records["first_record_row"])
+    count_row = next(f["row"] for f in stamp["fields"] if f["key"] == "record_count")
+    published_row = next(f["row"] for f in stamp["fields"] if f["key"] == "published")
+    label_col = block["label_column"]
+    sheet = raw["sim_data"]["sheet"]
+    active = f"{sheet}!$D$30"
+
+    _write(worksheet, f"{label_col}{block['heading_row']}", block["heading"], styles.section)
+    _write(worksheet, f"{label_col}{block['note_row']}", block["note"], styles.note)
+    _write(worksheet, f"{label_col}{block['availability_row']}",
+           block["availability_label"], styles.label)
+    _write(worksheet, f"{block['columns'][1]['column']}{block['availability_row']}",
+           block["availability_formula"], styles.value)
+
+    for column in block["columns"]:
+        _write(worksheet, f"{column['column']}{block['header_row']}",
+               column["header"], styles.label)
+
+    def cell(bank: str, offset: int, row_index: int) -> str:
+        letter = _shift_column(banks[bank]["first_column"], offset)
+        return f"{sheet}!${letter}${first_record_row + row_index}"
+
+    def stamp_cell(bank: str, row: int) -> str:
+        return f"{sheet}!${stamp['bank_value_columns'][bank]}${row}"
+
+    for row_index in range(int(block["row_window"])):
+        sheet_row = int(block["first_row"]) + row_index
+        for column in block["columns"]:
+            offset = int(column["offset"])
+            # BLANK BEYOND THE COUNT. The persisted count is what bounds the
+            # authoritative result; the window is only how much of it can show.
+            formula = (
+                f'=IF({active}="","",'
+                f'IF(IF({active}="A",{stamp_cell("A", published_row)},'
+                f'{stamp_cell("B", published_row)})<>"PUBLISHED","",'
+                f'IF({row_index + 1}>IF({active}="A",{stamp_cell("A", count_row)},'
+                f'{stamp_cell("B", count_row)}),"",'
+                f'IF({active}="A",{cell("A", offset, row_index)},'
+                f'{cell("B", offset, row_index)}))))'
+            )
+            _write(worksheet, f"{column['column']}{sheet_row}", formula, styles.value)
+
+
+def _shift_column(letter: str, offset: int) -> str:
+    value = 0
+    for char in letter.upper():
+        value = value * 26 + (ord(char) - ord("A") + 1)
+    value += offset
+    out = ""
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        out = chr(ord("A") + remainder) + out
+    return out
 
 
 def _render_sim_data_shell(

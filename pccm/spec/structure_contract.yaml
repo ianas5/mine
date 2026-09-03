@@ -502,6 +502,9 @@ vba:
     - name: "modSimReport"
       generated: false
       responsibility: "Phase-6 workbook orchestration: the endpoint and the settled read accessors, the two simulation control reads, dual-bank publication into _SimData with verify-then-commit, and the attempt and status bookkeeping. The AUTO nonce lifecycle belongs to modSimNonce, which this module drives through a narrow scalar interface. It consumes the accepted pure simulation kernels and owns no simulation mathematics."
+    - name: "modSimPostReport"
+      generated: false
+      responsibility: "The Phase-7 sensitivity orchestration: the CURRENT-run precondition, the resolved-model bridge, the persisted TotalNom read, one-driver-at-a-time replay dispatch, ranking, the bounded _SimData sensitivity block with its identity stamp published last, and the refusal reporting. It owns no RNG, no sampler, no contribution arithmetic, no rank or correlation mathematics, no fingerprint, no digest and no simulation-state derivation; it consumes the accepted owners of each."
     - name: "modSimSensitivity"
       generated: false
       responsibility: "The pure Phase-7 sensitivity mathematics: mid-ranks with average ranks for ties, Spearman as Pearson over two already-ranked series, the undefined zero-variance status, and the ordering of finished driver results by absolute rho with a permanent-id tie-break. No driver replay, no RNG or component stream, no workbook access, no _SimData, no run identity, no state and no presentation."
@@ -541,6 +544,12 @@ vba:
     - "PCCM_CalculationAttemptDetail"
     - "PCCM_CalculationFingerprint"
     - "PCCM_CurrentInputFingerprint"
+    # PHASE 7. Sensitivity is deliberately NOT a button and NOT part of a run:
+    # a successful simulation must stay successful even if the analysis of it
+    # later fails, and at full N the analysis can cost about as much as the run
+    # it explains. It is externally callable, like the calculation surface
+    # above, and it belongs to modSimPostReport alone.
+    - "PCCM_RunSensitivity"
 
   # Constructs that must NOT appear in VBA. The Linux static tests and the Gate-B
   # persisted-project sweep assert their absence, so a later phase's
