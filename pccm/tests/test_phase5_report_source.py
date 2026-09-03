@@ -251,7 +251,7 @@ PHASE5_INVENTORY = {
 PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
                     "modSimStats", "modSimFingerprint", "modSimNonce",
                     "modSimReport"}
-PHASE7_INVENTORY = {"modSimSensitivity"}
+PHASE7_INVENTORY = {"modSimSensitivity", "modSimPostReport"}
 
 """Phase-7 hand-written source modules, named on the same terms Phase 6 was:
 admitted by name, one at a time, so the earlier half of each inventory
@@ -294,8 +294,17 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
         modules["modSimReport"].public_procedures)
     for name in phase6:
         assert name not in _reporter().public_procedures, name
+    # THE PHASE-7 SURFACE is named on the same terms as Phase 6's, so this stays
+    # an EXACT statement about Phase 5 rather than becoming "contains at least".
+    # It is one endpoint, owned by modSimPostReport, and it is not the
+    # reporter's.
+    phase7 = {"PCCM_RunSensitivity"}
+    assert set(modules["modSimPostReport"].public_procedures) == phase7, sorted(
+        modules["modSimPostReport"].public_procedures)
+    for name in phase7:
+        assert name not in _reporter().public_procedures, name
     found = {p for m in modules.values() for p in m.public_procedures
-             if p.startswith("PCCM_")} - phase4 - phase6
+             if p.startswith("PCCM_")} - phase4 - phase6 - phase7
     assert found == PCCM_ENDPOINTS, (
         f"unexpected: {sorted(found - PCCM_ENDPOINTS)}; missing: "
         f"{sorted(PCCM_ENDPOINTS - found)}"

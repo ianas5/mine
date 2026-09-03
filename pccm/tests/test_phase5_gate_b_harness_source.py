@@ -61,7 +61,7 @@ name so a Phase-6 addition is visible rather than absorbed into a count."""
 _PHASE6_MANIFEST_MODULES = {"modSimContract", "modSimRng", "modSimSample",
                             "modSimEngine", "modSimStats", "modSimFingerprint",
                             "modSimNonce", "modSimReport"}
-_PHASE7_MANIFEST_MODULES = {"modSimSensitivity"}
+_PHASE7_MANIFEST_MODULES = {"modSimSensitivity", "modSimPostReport"}
 
 """Phase-7 hand-written source modules, named on the same terms Phase 6 was:
 admitted by name, one at a time, so the earlier half of each inventory

@@ -544,11 +544,19 @@ vba:
     - "PCCM_CalculationAttemptDetail"
     - "PCCM_CalculationFingerprint"
     - "PCCM_CurrentInputFingerprint"
-    # PHASE 7. Sensitivity is deliberately NOT a button and NOT part of a run:
-    # a successful simulation must stay successful even if the analysis of it
-    # later fails, and at full N the analysis can cost about as much as the run
-    # it explains. It is externally callable, like the calculation surface
-    # above, and it belongs to modSimPostReport alone.
+
+  # THE PHASE-7 EXTERNALLY CALLABLE SURFACE, and it is a SEPARATE list on
+  # purpose. `api_procedures` above is the Phase-5 calculation surface, and the
+  # Phase-5 Gate-B controls require every entry in it to carry Windows evidence
+  # from the Phase-5 harness. PCCM_RunSensitivity has no such evidence and must
+  # not appear to: it is Phase-7 code that no Windows run has executed. Listing
+  # it here accounts for it - the orphan-macro test still sees it - without
+  # borrowing an evidence claim that belongs to another phase's harness.
+  #
+  # Sensitivity is deliberately not a button and not part of a run: a successful
+  # simulation must stay successful even if the analysis of it later fails, and
+  # at full N the analysis can cost about as much as the run it explains.
+  phase7_api_procedures:
     - "PCCM_RunSensitivity"
 
   # Constructs that must NOT appear in VBA. The Linux static tests and the Gate-B

@@ -539,7 +539,7 @@ def test_36_the_only_phase6_vba_is_the_generator_backbone() -> None:
     unauthorised = {n for n in names if n.startswith("modSim")} - {
         "modSimRng.bas", "modSimSample.bas", "modSimEngine.bas", "modSimStats.bas",
         "modSimFingerprint.bas", "modSimNonce.bas", "modSimReport.bas",
-        "modSimSensitivity.bas"}
+        "modSimSensitivity.bas", "modSimPostReport.bas"}
     assert unauthorised == set(), sorted(unauthorised)
     for path in sorted(src.glob("*.bas")):
         if path.stem == "modSimRng":

@@ -376,13 +376,14 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
     assert owners == {"modSimReport"}, owners
     # PHASE 7 declares its endpoint in the contract rather than by name here,
     # and it has its own owner: the analysis of a run is not part of the run.
-    assert "PCCM_RunSensitivity" in data["vba"]["api_procedures"]
+    assert data["vba"]["phase7_api_procedures"] == ["PCCM_RunSensitivity"]
     sensitivity_owners = {m.name for m in _all_modules()
                           if "PCCM_RunSensitivity" in m.public_procedures}
     assert sensitivity_owners == {"modSimPostReport"}, sensitivity_owners
     accounted = (set(data["vba"]["entry_points"])
                  | set(data["vba"]["harness_procedures"])
                  | set(data["vba"].get("api_procedures", []))
+                 | set(data["vba"].get("phase7_api_procedures", []))
                  | phase6)
     found = {
         p for m in _all_modules() for p in m.public_procedures if p.startswith("PCCM_")

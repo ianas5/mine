@@ -783,7 +783,7 @@ PHASE6_HANDWRITTEN = {"modSimRng", "modSimSample", "modSimEngine", "modSimStats"
                       "modSimFingerprint", "modSimNonce", "modSimReport"}
 """The Phase-6 hand-written modules. Named here so the Phase-5 inventory below
 stays an exact statement about Phase 5 rather than becoming an open set."""
-PHASE7_HANDWRITTEN = {"modSimSensitivity"}
+PHASE7_HANDWRITTEN = {"modSimSensitivity", "modSimPostReport"}
 
 """Phase-7 hand-written source modules, named on the same terms Phase 6 was:
 admitted by name, one at a time, so the earlier half of each inventory

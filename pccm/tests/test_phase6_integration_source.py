@@ -141,9 +141,14 @@ def _order(*tokens: str, body: str) -> list[int]:
 # ===========================================================================
 def test_01_the_bridge_is_the_only_phase5_entry_into_phase6() -> None:
     """One door, and every Phase-6 module either uses it or does not know it."""
-    callers = [name for name, module in _modules().items()
-               if BRIDGE in module.code and name != "modCalcReport"]
-    assert callers == [REPORT], callers
+    # ONE BRIDGE, and now two callers of it. The claim was never "one caller":
+    # it is that Phase 6 and later reach Phase 5 through this door and no other.
+    # P7-4's orchestrator needs the resolved model to replay a driver, and
+    # calling the accepted bridge is precisely how it avoids resolving one of
+    # its own. Both callers are named, so a third cannot appear unremarked.
+    callers = sorted(name for name, module in _modules().items()
+                     if BRIDGE in module.code and name != "modCalcReport")
+    assert callers == ["modSimPostReport", REPORT], callers
     # It is declared exactly once, in the accepted reporter.
     declarations = [name for name, module in _modules().items()
                     if re.search(rf"^(?:Public|Private) Function {BRIDGE}\b",
@@ -469,8 +474,13 @@ def test_17_the_two_public_surfaces_are_exactly_the_accepted_ones() -> None:
     phase4 = set(declared["entry_points"]) | set(declared["harness_procedures"])
     assert set(structure.api_procedures) == set(PHASE5_ENDPOINTS), sorted(
         structure.api_procedures)
-    assert found == phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC), sorted(
-        found ^ (phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC)))
+    # PHASE 7 has its own contract list, deliberately not `api_procedures`: the
+    # Phase-5 Gate-B controls require every entry there to carry Windows
+    # evidence, and a Phase-7 endpoint has none and must not appear to.
+    phase7 = set(declared["phase7_api_procedures"])
+    assert phase7 == {"PCCM_RunSensitivity"}, sorted(phase7)
+    assert found == phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7, sorted(
+        found ^ (phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7))
     assert not (phase4 & set(PHASE6_PUBLIC)), "a Phase-6 name entered the Phase-4 surface"
     # The reporter that owns Phase 5 gained exactly one non-endpoint Public name.
     extra = set(modules["modCalcReport"].public_procedures) - set(PHASE5_ENDPOINTS)
@@ -485,8 +495,14 @@ def test_18_no_invented_phase6_accessor_exists() -> None:
     for invented in ("PCCM_SimulationRunId", "PCCM_SimulationEffectiveSeed",
                      "PCCM_SimulationIterations", "PCCM_SimulationSeed",
                      "PCCM_SimulationLadder", "PCCM_SimulationContingency",
-                     "PCCM_RunSensitivity", "PCCM_Dashboard"):
+                     "PCCM_Dashboard"):
         assert invented not in code, invented
+    # PCCM_RunSensitivity LEFT THIS LIST when P7-4 landed it, exactly as each
+    # name leaves at the step that implements it. It is not invented now - it
+    # is declared, owned by one module, and asserted to be there.
+    owners = sorted(name for name, module in _modules().items()
+                    if "PCCM_RunSensitivity" in module.public_procedures)
+    assert owners == ["modSimPostReport"], owners
 
 
 # ===========================================================================
@@ -642,15 +658,62 @@ def test_23b_a_reopened_module_is_not_claimed_as_runtime_proven() -> None:
             "not reopened at all and must come off the reopened list")
 
 
+# THE RUN-6 PROJECTION, and the current one. They are different artefacts now.
+#
+# `modSimContract` is GENERATED from `sim_contract.yaml`, so contracting the
+# Phase-7 sensitivity block changed it. The identity Run 6 executed is a
+# historical fact and is unchanged; the projection this tree builds is a
+# different file that no Windows run has executed.
+RUN6_GENERATED_IDENTITY = "daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f1e8e1c215ac"
+PHASE7_GENERATED_IDENTITY = "11e58482e770d00911f24cf6d6d141d4d84046db2b008e3dc9dc39a88322284a"
+
+
 def test_24_the_generated_authority_is_byte_identical() -> None:
+    """Pinned, and pinned to the right thing.
+
+    A generated artefact is always frozen to SOMETHING; what a later phase
+    changes is which build those bytes come from. Both digests are asserted, so
+    a stray change to either is still caught.
+    """
     for path, expected in (
-        (BUILD / "vba" / "modSimContract.bas",
-         "daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f1e8e1c215ac"),
+        (BUILD / "vba" / "modSimContract.bas", PHASE7_GENERATED_IDENTITY),
         (BUILD / "phase6_cases.json",
          "8019683a0490fcf0740cf07244524973d9b7470c933f1003059025b6b019a0be"),
     ):
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         assert actual == expected, f"{path.name} moved: {actual}"
+
+
+def test_24a_the_run_6_projection_identity_is_still_what_the_harness_pins() -> None:
+    """The historical half, read from the artefact that actually carries it.
+
+    The Phase-6 Gate-B harness pins the identity Run 6 executed, and that file
+    is accepted Run-6 evidence which P7-4 does not touch. Reading the pin from
+    the harness rather than restating it here is what keeps this a statement
+    about the run instead of a literal agreeing with another literal.
+    """
+    harness = (PCCM_ROOT / "bootstrap" / "windows" /
+               "phase6_gate_b_scenarios.ps1").read_text(encoding="utf-8")
+    assert f"'{RUN6_GENERATED_IDENTITY}'" in harness, (
+        "the Gate-B harness no longer pins the Run-6 projection identity")
+
+
+def test_24b_the_current_projection_is_not_the_one_run_6_executed() -> None:
+    """AND THE CONSEQUENCE IS RECORDED, not left to be discovered on Windows.
+
+    Contracting the Phase-7 sensitivity block regenerated `modSimContract`, so
+    the projection this tree builds is not the module Run 6 ran. The Phase-6
+    Gate-B harness pins the Run-6 identity and would REFUSE this one - which is
+    the harness being right, not a defect in it. Phase-7 Windows acceptance has
+    to settle which identity its own run checks against; nothing here may be
+    read as that settlement having happened.
+    """
+    assert PHASE7_GENERATED_IDENTITY != RUN6_GENERATED_IDENTITY
+    actual = hashlib.sha256((BUILD / "vba" / "modSimContract.bas").read_bytes()).hexdigest()
+    assert actual == PHASE7_GENERATED_IDENTITY
+    assert actual != RUN6_GENERATED_IDENTITY, (
+        "the projection matches the Run-6 identity again; if that is intended, "
+        "this control and the Phase-7 runtime note must both be revisited")
 
 
 def test_25_the_accepted_reporter_prefix_is_still_byte_identical() -> None:
@@ -1198,7 +1261,10 @@ def test_36_the_range_check_helper_keeps_its_out_parameter() -> None:
     # about the Phase-6 surface rather than the whole repository.
     phase6 = [call for call in _qualified_calls()
               if call[0].startswith("modSim") and call[2] == "IsWholeInRange"]
-    assert len(phase6) == 5, [call[0] for call in phase6]
+    # SIX NOW. P7-4's orchestrator reads the published run identity through the
+    # same helper, with all four arguments - which is the property this control
+    # is about, and it is asserted for every caller below.
+    assert len(phase6) == 6, [call[0] for call in phase6]
     for caller, _target, _procedure, given, line in phase6:
         assert given == 4, f"{caller}: {given} argument(s) -- {line[:70]}"
 

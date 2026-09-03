@@ -398,6 +398,13 @@ def test_20_the_implementation_arrived_in_step_11_and_only_there() -> None:
     for module in load_modules([src]):
         if module.name == "modSimReport":
             continue
+        if module.name == "modSimPostReport":
+            # P7-4 READS the active bank to know which published result it is
+            # explaining. The claim here is about who may CARRY the endpoint and
+            # the bank TRANSACTION, so that is what stays asserted for it.
+            assert "PCCM_RunSimulation" not in module.code
+            assert "FinalCommit" not in module.code
+            continue
         for banned in ("PCCM_RunSimulation", "SIM_BANK_", "SIM_ACTIVE_BANK_ROW",
                        "SIM_FINAL_COMMIT_RANGE", "SIM_SUMMARY_", "SIM_CONTINGENCY_"):
             assert banned not in module.code, f"{module.name} carries {banned}"
@@ -417,7 +424,8 @@ def test_20_the_implementation_arrived_in_step_11_and_only_there() -> None:
     phase6 = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
               "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport"}
     assert phase6 <= simulation, sorted(phase6 - simulation)
-    assert simulation - phase6 == {"modSimSensitivity"}, sorted(simulation - phase6)
+    assert simulation - phase6 == {"modSimSensitivity", "modSimPostReport"}, sorted(
+        simulation - phase6)
 
 
 # ===========================================================================
