@@ -18,6 +18,7 @@ once here, in `com_lifecycle.ps1`.
 | `phase4_functional_test.ps1` | Phase-4 functional test matrix A–W, run against a disposable copy. |
 | `phase5_gate_b_scenarios.ps1` | Phase-5 Gate-B scenarios, dot-sourced into the functional test. |
 | `phase6_gate_b_scenarios.ps1` | Phase-6 Step-13 Gate-B scenarios, dot-sourced after the Phase-5 block, inside the same COM lifecycle. **Not yet run.** |
+| `phase7_timing_scenarios.ps1` | Phase-7 sensitivity **performance measurement**. Standalone, additive, and **not part of Gate B**: nothing above dot-sources it and it records no Gate-B result. See the section at the end. |
 
 ## Inputs
 
@@ -133,3 +134,43 @@ Unchanged from the run that closed the readiness gate:
   emergency path, only ever applied to a process this script created and can still
   positively identify by HWND-derived PID, process name and start time — and it is
   never reported as a pass.
+
+## The Phase-7 sensitivity timing script
+
+`phase7_timing_scenarios.ps1` answers one question that no Linux test can:
+**how long does `PCCM_RunSensitivity` take on real Excel?**
+
+It is a MEASUREMENT, not a gate. It records no Gate-B result, it is never
+dot-sourced by `phase4_functional_test.ps1`, and a number it produces is
+evidence for a decision, not the decision.
+
+It builds its model through the accepted Phase-5 fixture — production's own
+`PCCM_AddCostLine` / `PCCM_AddRisk` — runs a real `PCCM_RunSimulation`, and then
+times exactly one synchronous `Application.Run` of the real public endpoint.
+Three sizes of one model, driver count the only variable:
+
+| Scenario | Drivers | Iterations |
+|---|---|---|
+| `A` DEMO-LIKE | 20 | 10,000 |
+| `B` MEDIUM | 100 | 10,000 |
+| `C` DESIGN-SCALE PROBE | 300 | 10,000 |
+
+    powershell -ExecutionPolicy Bypass -File .\phase7_timing_scenarios.ps1 -Scenario A
+
+It refuses to start if `pccm/src`, `pccm/spec` or `pccm/builder` is modified:
+a measurement that cannot be attributed to a source revision is not evidence.
+The workbook is never saved, so no measurement carries a save cost.
+
+**The bound is an entry-gate, not a timeout.** `Application.Run` is synchronous
+and a running VBA procedure cannot be interrupted from the calling thread;
+killing Excel mid-mutation is the orphan `com_lifecycle.ps1` exists to prevent.
+Scenarios therefore run smallest first, every line of the report is flushed to
+disk as it is produced, and a scenario that exceeds `-SensitivityBudgetSeconds`
+stops the larger ones from being ENTERED. That refusal is itself performance
+evidence and is reported as such.
+
+`tests/test_phase7_timing_harness_source.py` validates the script statically on
+Linux: that the clock surrounds exactly one call and that the call is the real
+endpoint, that the declared scenarios are the scenarios it runs, that its
+addresses are the contract's, that its model has no zero-variance driver, and
+that it can neither modify production VBA nor orphan Excel.
