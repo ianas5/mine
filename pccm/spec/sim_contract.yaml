@@ -1884,6 +1884,24 @@ sensitivity:
     # accepted success.
     refused_attempt_destroys_prior_sensitivity: false
     prior_sensitivity_preserved_on_failure: true
+    # THE SHEET IS A WINDOW ONTO THE BLOCK, AND A WINDOW HAS EDGES.
+    #
+    # `ranking.top_n_truncation` is false and `ranking.population` is every
+    # eligible driver, and the persisted block honours both: the 300-driver
+    # design-scale probe persisted 300 records. The SHEET, though, is a fixed
+    # number of lookup rows, and at 200 it showed the first 200 of those 300
+    # and said nothing about the other 100. A materialisation that drops rows
+    # without saying so is a Top-N truncation wearing a different hat, and it
+    # is the one the reader actually sees.
+    #
+    # There is no contracted maximum driver population to derive a window
+    # from, so a fixed window can never be proved sufficient for every model.
+    # Both halves below are therefore required, and neither alone is enough:
+    # the window must clear the largest model this project has measured, AND
+    # an overflow must announce itself on the sheet.
+    silent_truncation_permitted: false
+    overflow_disclosure_required: true
+    sheet_window_owner: "workbook.yaml: phase6_shell.sensitivity.row_window"
 
 # =============================================================================
 # ANNUAL STOCHASTIC OUTPUT - Phase 7.

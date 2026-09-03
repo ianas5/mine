@@ -783,10 +783,11 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'touches_pending_auto_nonce_marker', 'writes_attempt_row'
     }),
     'sensitivity.display': frozenset({
-        'presented_as_current_when', 'presented_as_current_when_invalid',
-        'presented_as_current_when_stale', 'prior_sensitivity_preserved_on_failure',
-        'refused_attempt_destroys_prior_sensitivity', 'stale_must_be_labelled',
-        'state_owner'
+        'overflow_disclosure_required', 'presented_as_current_when',
+        'presented_as_current_when_invalid', 'presented_as_current_when_stale',
+        'prior_sensitivity_preserved_on_failure',
+        'refused_attempt_destroys_prior_sensitivity', 'sheet_window_owner',
+        'silent_truncation_permitted', 'stale_must_be_labelled', 'state_owner'
     }),
     'annual_stochastic': frozenset({
         'annual_distributions', 'contracted', 'iteration_annual_vector',
@@ -3186,6 +3187,12 @@ def _validate_sensitivity(raw: dict, path: Path) -> None:
     # Inherited from sim_state.on_failure.prior_sim_data_preserved.
     _require_false(display, "refused_attempt_destroys_prior_sensitivity", vwhere)
     _require_true(display, "prior_sensitivity_preserved_on_failure", vwhere)
+    # The sheet may show a window; it may not drop rows in silence.
+    _require_false(display, "silent_truncation_permitted", vwhere)
+    _require_true(display, "overflow_disclosure_required", vwhere)
+    _require_value(
+        display, "sheet_window_owner",
+        "workbook.yaml: phase6_shell.sensitivity.row_window", vwhere)
 
 
 # ---------------------------------------------------------------------------
@@ -4136,6 +4143,89 @@ def _validate_publication_shell(sim: SimContract, spec: WorkbookSpec) -> None:
             raise SimContractError(
                 f"{where}.results.run_stamp: the formula for {field_['key']!r} does not "
                 f"read its _SimData row {identity_rows[field_['key']]}"
+            )
+
+    # -----------------------------------------------------------------
+    # THE SENSITIVITY AVAILABILITY LINE READS CELLS THE CONTRACT OWNS
+    # -----------------------------------------------------------------
+    # It is a hand-written formula that names _SimData addresses, exactly as the
+    # Results formulas above do - and a hand-written address is a SECOND
+    # DECLARATION of something the contract already owns.
+    #
+    # That is not hypothetical. The P7-4 runtime correction moved the
+    # sensitivity block off columns J/S, where it had been sitting on top of the
+    # summary-statistics band, and onto CC/CL. Every generated record cell moved
+    # with it, because those are projected. This formula did not, because it is
+    # a literal, and nothing compared the two. The result was a sheet whose
+    # availability line read the statistics LABEL column - `Mean`, `P10` - so
+    # `<>"PUBLISHED"` was true forever and the sheet said "Not produced for this
+    # run" after a run that had just succeeded.
+    #
+    # So every _SimData reference in it is checked against the addresses the
+    # contract actually declares. A future move fails the build with the
+    # offending address named, instead of going quietly stale.
+    sensitivity_shell = shell.get("sensitivity")
+    if sensitivity_shell:
+        records = sim.raw["sim_data"]["sensitivity_records"]
+        stamp_columns = records["stamp"]["bank_value_columns"]
+        stamp_rows = {f["key"]: f["row"] for f in records["stamp"]["fields"]}
+        identity_columns = sim.raw["sim_data"]["run_identity"]["bank_value_columns"]
+        owned = set()
+        for column in stamp_columns.values():
+            for row in stamp_rows.values():
+                owned.add(f"${column}${row}")
+        for column in identity_columns.values():
+            for row in identity_rows.values():
+                owned.add(f"${column}${row}")
+        for row in identity_rows.values():
+            owned.add(f"${sim.raw['sim_data']['run_identity']['value_column']}${row}")
+        formula = sensitivity_shell["availability_formula"]
+        sheet_name = sim.raw["sim_data"]["sheet"]
+        referenced = re.findall(rf"{re.escape(sheet_name)}!(\$[A-Z]+\$\d+)", formula)
+        if not referenced:
+            raise SimContractError(
+                f"{where}.sensitivity: the availability formula reads no "
+                f"{sheet_name} cell at all"
+            )
+        for address in sorted(set(referenced)):
+            if address not in owned:
+                raise SimContractError(
+                    f"{where}.sensitivity: the availability formula reads "
+                    f"{sheet_name}!{address}, which is not an address the "
+                    "sensitivity stamp or the run identity declares. The block "
+                    "has moved and the formula has not."
+                )
+        # AND IT READS THE ONES IT MUST. Addresses being owned is not the same
+        # as the formula asking the right questions of them.
+        for key in ("published", "run_id", "request_fingerprint",
+                    "result_digest", "record_count"):
+            for bank, column in stamp_columns.items():
+                needed = f"{sheet_name}!${column}${stamp_rows[key]}"
+                if needed not in formula:
+                    raise SimContractError(
+                        f"{where}.sensitivity: the availability formula never "
+                        f"reads bank {bank}'s {key} at {needed}"
+                    )
+        # THE OVERFLOW DISCLOSURE COMPARES THE RECORD COUNT, not merely some
+        # cell, against the window it renders. Requiring the count's address to
+        # APPEAR somewhere is not the same requirement: the count also appears
+        # in the message text, so a comparison rewired to the run id would still
+        # have mentioned it, and the disclosure would fire on the wrong number
+        # or never. The predicate is reconstructed from the contract and matched
+        # whole.
+        window = int(sensitivity_shell["row_window"])
+        selector = (f"{sheet_name}!$"
+                    f"{sim.raw['sim_data']['run_identity']['value_column']}$"
+                    f"{identity_rows['active_bank']}")
+        counted = (f'IF({selector}="A",'
+                   f'{sheet_name}!${stamp_columns["A"]}${stamp_rows["record_count"]},'
+                   f'{sheet_name}!${stamp_columns["B"]}${stamp_rows["record_count"]})')
+        if f"{counted}>{window}" not in formula:
+            raise SimContractError(
+                f"{where}.sensitivity: the availability formula does not compare "
+                f"the persisted record count against its own {window}-row window. "
+                f"It must contain {counted}>{window}, so a result larger than the "
+                "window announces itself instead of being truncated in silence."
             )
 
     metrics = sim.raw["sim_data"]["summary_statistics"]["metrics"]

@@ -566,8 +566,27 @@ def test_33_the_sheet_says_whose_answer_it_is() -> None:
     assert "NOT CURRENT - this table belongs to run " in availability
     # It decides by comparing the STAMP against the published identity, not by
     # a flag someone could set.
-    assert "$J$10" in availability and "$D$10" in availability, "fingerprint not compared"
-    assert "$J$11" in availability and "$D$11" in availability, "digest not compared"
+    #
+    # THE ADDRESSES ARE DERIVED, NOT TYPED. This assertion used to name $J$10
+    # and $J$11 literally. When the P7-4 runtime correction moved the
+    # sensitivity block off J/S onto CC/CL, the formula in workbook.yaml stayed
+    # behind - and so did this test, which went on passing because it had
+    # restated the same stale address the formula had. A test that agrees with a
+    # defect is worse than no test: it certifies it.
+    raw = _raw_contract()["sim_data"]
+    stamp = raw["sensitivity_records"]["stamp"]
+    stamp_rows = {f["key"]: f["row"] for f in stamp["fields"]}
+    identity_rows = {f["key"]: f["row"] for f in raw["run_identity"]["fields"]}
+    for key, label in (("request_fingerprint", "fingerprint"),
+                       ("result_digest", "digest")):
+        for bank, column in stamp["bank_value_columns"].items():
+            assert f"${column}${stamp_rows[key]}" in availability, (
+                f"bank {bank}'s stamped {label} is never read"
+            )
+        for bank, column in raw["run_identity"]["bank_value_columns"].items():
+            assert f"${column}${identity_rows[key]}" in availability, (
+                f"bank {bank}'s published {label} is never compared against"
+            )
 
 
 def test_34_the_sheet_carries_no_tornado_and_no_variance_share() -> None:
@@ -594,3 +613,96 @@ def test_35_the_display_window_cannot_silently_exceed_the_block() -> None:
     ceiling = _raw_contract()["iterations"]["technical_ceiling"]["max_iterations_representable"]
     assert int(shell["row_window"]) <= ceiling
     assert int(records["first_record_row"]) == 34
+
+
+# ===========================================================================
+# THE 300-DRIVER TRUNCATION, AND WHY test_35 DID NOT CATCH IT
+# ===========================================================================
+# The design-scale timing probe persisted 300 sensitivity records and the sheet
+# displayed 200 of them, silently. `test_35` passed throughout: it asked whether
+# the window was within the block's physical reach, which it was, and never
+# asked the question that mattered - whether a reader could tell that rows were
+# missing. A control that pins a BOUND rather than the PROPERTY the bound exists
+# to protect is how a defect reaches Windows.
+#
+# These three ask the property instead, and they fail on the pre-correction
+# workbook: at row_window 200 the window does not clear the measured population
+# and the availability line carries no disclosure at all.
+DESIGN_SCALE_DRIVERS = 300  # the measured design-scale probe: 300 drivers, 10k iterations
+
+
+def test_36_the_window_clears_the_largest_measured_model() -> None:
+    """A window smaller than a model the project has actually run is a Top-N
+    truncation with a different name, and `ranking.top_n_truncation` is false."""
+    shell = _shell()
+    ranking = _raw_contract()["sensitivity"]["ranking"]
+    assert ranking["top_n_truncation"] is False
+    assert ranking["population"] == "every eligible non_zero_variance driver"
+    assert int(shell["row_window"]) > DESIGN_SCALE_DRIVERS, (
+        f"the sheet shows {shell['row_window']} rows but the design-scale probe "
+        f"produced {DESIGN_SCALE_DRIVERS} ranked drivers; the materialisation "
+        "must not be the thing that truncates a result the contract says is complete"
+    )
+
+
+def test_37_an_overflow_announces_itself_on_the_sheet() -> None:
+    """Capacity alone cannot be proved sufficient - no contract names a maximum
+    driver population - so the sheet must say when it has run out of room.
+
+    The window number in the formula is a CHECKED COPY of `row_window`, not a
+    second declaration: a raised window with a stale threshold in the formula
+    would disclose at the wrong count, or never.
+    """
+    shell = _shell()
+    display = _raw_contract()["sensitivity"]["display"]
+    assert display["silent_truncation_permitted"] is False
+    assert display["overflow_disclosure_required"] is True
+    assert display["sheet_window_owner"] == (
+        "workbook.yaml: phase6_shell.sensitivity.row_window")
+
+    window = int(shell["row_window"])
+    formula = _built_sheet()[
+        f"{shell['columns'][1]['column']}{shell['availability_row']}"].value
+    assert f">{window}" in formula, (
+        "the availability line must compare the persisted record count against "
+        f"the window it actually renders ({window})"
+    )
+    assert "showing the first" in formula and "ranked drivers" in formula, (
+        "an overflow must be announced in words the reader can act on"
+    )
+    assert "the complete result is persisted" in formula, (
+        "the reader must be told the missing rows exist, not merely that they "
+        "are not shown"
+    )
+    # BOTH banks, because the answer is whichever bank is active.
+    records = _raw_contract()["sim_data"]["sensitivity_records"]
+    count_row = next(f["row"] for f in records["stamp"]["fields"]
+                     if f["key"] == "record_count")
+    for bank, column in records["stamp"]["bank_value_columns"].items():
+        assert f"${column}${count_row}" in formula, (
+            f"the disclosure never reads bank {bank}'s record count"
+        )
+
+
+def test_38_the_disclosure_did_not_disturb_the_four_existing_answers() -> None:
+    """The correction appends; it does not rewrite what was accepted.
+
+    And it appends only where rows are actually shown: the two states that
+    display nothing at all - no publication, and not produced for this run -
+    cannot acquire a note about rows they are not displaying.
+    """
+    shell = _shell()
+    formula = _built_sheet()[
+        f"{shell['columns'][1]['column']}{shell['availability_row']}"].value
+    for answer in ("No simulation has been published.",
+                   "Not produced for this run. Run Sensitivity to produce it.",
+                   "CURRENT for run ",
+                   "NOT CURRENT - this table belongs to run "):
+        assert answer in formula, f"the accepted answer {answer!r} was lost"
+    head, _, tail = formula.partition("showing the first")
+    assert "No simulation has been published." in head
+    assert "Not produced for this run." in head
+    assert tail, "the disclosure is missing"
+    # The disclosure sits after the CURRENT/NOT CURRENT pair, so it can only
+    # extend an answer that is already showing rows.
+    assert head.rindex("NOT CURRENT - this table belongs to run ") < len(head)
