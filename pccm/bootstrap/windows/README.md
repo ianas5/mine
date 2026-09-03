@@ -155,7 +155,15 @@ Three sizes of one model, driver count the only variable:
 | `B` MEDIUM | 100 | 10,000 |
 | `C` DESIGN-SCALE PROBE | 300 | 10,000 |
 
-    powershell -ExecutionPolicy Bypass -File .\phase7_timing_scenarios.ps1 -Scenario A
+    powershell -ExecutionPolicy Bypass -File .\phase7_timing_scenarios.ps1 -Scenario All
+
+`-Scenario` **scopes** a run; it does not shorten the report. The default is `A`.
+Whatever the scope, the loop iterates all three declared scenarios and a
+scenario outside the scope is reported as `NOT SELECTED` and carried into the
+summary — deliberately distinct from the `NOT ENTERED` a budget refusal
+produces. The first run of this harness measured `A` and stopped with no line
+for `B` or `C`, because selection was a filter applied before the loop; that
+was a defect in the report, not in the loop, and it is what this shape prevents.
 
 It refuses to start if `pccm/src`, `pccm/spec` or `pccm/builder` is modified:
 a measurement that cannot be attributed to a source revision is not evidence.
@@ -171,6 +179,7 @@ evidence and is reported as such.
 
 `tests/test_phase7_timing_harness_source.py` validates the script statically on
 Linux: that the clock surrounds exactly one call and that the call is the real
-endpoint, that the declared scenarios are the scenarios it runs, that its
+endpoint, that the declared scenarios are the scenarios it iterates and every way out
+of the scenario loop reports itself, that its
 addresses are the contract's, that its model has no zero-variance driver, and
 that it can neither modify production VBA nor orphan Excel.

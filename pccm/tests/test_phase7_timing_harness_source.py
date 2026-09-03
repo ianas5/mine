@@ -858,3 +858,260 @@ def test_35_the_report_captures_every_required_observation() -> None:
     )
     missing = [label for label in required if label not in source]
     assert not missing, f"the report never emits: {missing}"
+
+
+# ===========================================================================
+# 8. THE SCENARIO LOOP REACHES EVERY SCENARIO IT DECLARES
+# ===========================================================================
+# Runtime run 1 of this harness measured scenario A and stopped. B and C were
+# never entered and nothing said why: `-Scenario A` had FILTERED THEM OUT OF
+# THE COLLECTION before the loop, so there was no scenario left to skip and no
+# skip to report. The loop itself was never defective.
+#
+# The correction made selection a reported outcome rather than a filter, and
+# these controls hold that shape. They are structural: the loop body is
+# brace-matched and every control transfer in it is classified by the construct
+# that encloses it, so a `continue` that belongs to the identity sweep is not
+# mistaken for one that skips a scenario, and a new one that does skip a
+# scenario cannot be added without being named here.
+LOOP_HEADER = "foreach ($case in $declared) {"
+
+CONSTRUCT = re.compile(
+    r"^(foreach|while|do|for|if|elseif|else|try|catch|finally|switch)\b")
+TRANSFER = re.compile(r"^(continue|break|return|exit|throw)\b")
+
+
+def _scenario_loop() -> tuple[int, list[tuple[int, str, list[str]]]]:
+    """(first body line, [(line no, text, enclosing-construct stack)]).
+
+    The stack is what makes the classification honest. `continue` at depth 3
+    inside `foreach ($fieldKey ...)` advances THAT loop; only a transfer whose
+    enclosing stack contains no inner loop acts on the scenario loop.
+    """
+    lines = _lines(TIMING)
+    starts = [i for i, line in enumerate(lines) if line.strip() == LOOP_HEADER]
+    assert len(starts) == 1, (
+        f"there must be exactly one scenario loop, written {LOOP_HEADER!r}; "
+        f"found {len(starts)}"
+    )
+    start = starts[0]
+    depth = 0
+    end = None
+    for index in range(start, len(lines)):
+        depth += lines[index].count("{") - lines[index].count("}")
+        if depth == 0 and index > start:
+            end = index
+            break
+    assert end is not None, "the scenario loop is not brace-balanced"
+
+    annotated: list[tuple[int, str, list[str]]] = []
+    stack: list[str] = []
+    for offset, line in enumerate(lines[start + 1 : end]):
+        stripped = line.strip()
+        annotated.append((start + 2 + offset, stripped, list(stack)))
+        for _ in range(line.count("{")):
+            head = stripped.split("{")[0].strip()
+            match = CONSTRUCT.match(head)
+            stack.append(match.group(1) if match else "block")
+        for _ in range(line.count("}")):
+            if stack:
+                stack.pop()
+    return start + 2, annotated
+
+
+def _scenario_level(annotated) -> list[tuple[int, str]]:
+    """Transfers that act on the SCENARIO loop, not on a loop nested in it."""
+    loops = {"foreach", "while", "do", "for"}
+    return [(number, text) for number, text, stack in annotated
+            if TRANSFER.match(text) and not (loops & set(stack))]
+
+
+def test_36_the_loop_iterates_the_declared_set_and_nothing_narrower() -> None:
+    """The collection the loop walks must be the full declared set.
+
+    This is the control that would have caught runtime run 1. `$selected`, a
+    pre-filtered copy, is exactly the shape that let two scenarios vanish
+    without a line of explanation.
+    """
+    source = _executable(TIMING)
+    assert "$declared = @(Get-Phase7TimingScenarios)" in source, (
+        "the declared set must come straight from the scenario table"
+    )
+    assignments = re.findall(r"^\s*\$declared\s*=", source, re.M)
+    assert len(assignments) == 1, (
+        f"$declared must be assigned exactly once and never re-filtered; found "
+        f"{len(assignments)} assignment(s)"
+    )
+    assert not re.search(r"\$declared\s*=\s*@\(\$declared", source), (
+        "the declared set must never be narrowed in place"
+    )
+    # And selection must not be able to shrink it by another route.
+    assert "$selected " not in source and "$selected)" not in source, (
+        "a pre-filtered scenario collection must not exist; selection is "
+        "reported per scenario inside the loop"
+    )
+
+
+def test_37_every_way_out_of_the_scenario_loop_is_named() -> None:
+    """Exactly three, all `continue`, all of which report themselves.
+
+    Nothing may leave the loop silently, and nothing may end the RUN from
+    inside it: a `break` would stop the remaining scenarios with no line, and a
+    `return`/`exit` would end the script before the summary and the shutdown.
+    """
+    _, annotated = _scenario_loop()
+    transfers = _scenario_level(annotated)
+    assert [text for _, text in transfers] == ["continue", "continue", "continue"], (
+        "the scenario loop must have exactly three scenario-level control "
+        f"transfers, all `continue`; found {transfers}"
+    )
+    for number, text, _ in annotated:
+        assert not re.match(r"^(break|return|exit)\b", text), (
+            f"line {number} ({text!r}) can end the run from inside the scenario "
+            "loop; the loop must always fall through to the summary and the "
+            "shutdown"
+        )
+    # Each `continue` must be preceded by a line that reports the skip, so a
+    # skipped scenario is always visible in the report.
+    reported = 0
+    for index, (number, text, _) in enumerate(annotated):
+        if text != "continue":
+            continue
+        window = " ".join(entry[1] for entry in annotated[max(0, index - 12): index])
+        if "NOT SELECTED" in window or "NOT ENTERED" in window or "ABANDONED" in window:
+            reported += 1
+    assert reported == 3, (
+        f"every scenario-level `continue` must report itself; {reported} of 3 do"
+    )
+
+
+def test_38_all_three_scenarios_are_entered_when_each_is_successful() -> None:
+    """The positive path, proved by exhausting the negative ones.
+
+    The loop walks the declared set (test_36), the only ways out are the three
+    named skips (test_37), and each of those three is guarded by a condition
+    that a successful, selected, under-budget scenario does not satisfy:
+
+        not selected     - false for every scenario when -Scenario is All
+        gate armed       - $gateReason is empty until something arms it
+        simulation failed- the announcement was OK|
+
+    So with three successful under-budget scenarios in scope, the loop
+    necessarily reaches all three.
+    """
+    _, annotated = _scenario_loop()
+    guards = [text for _, text, stack in annotated
+              if not stack and text.startswith("if (")]
+    assert guards[0] == "if ($selectedIds -notcontains [string]$case.Id) {", (
+        f"scope must be the loop's first decision; it is {guards[0]!r}"
+    )
+    assert guards[1] == "if ([string]::IsNullOrEmpty($gateReason)) {", (
+        "the budget check must follow scope, so an unselected scenario neither "
+        f"spends the budget nor arms the gate; found {guards[1]!r}"
+    )
+    assert guards[2] == "if (-not [string]::IsNullOrEmpty($gateReason)) {", (
+        f"the gate must be enforced next; found {guards[2]!r}"
+    )
+    # Nothing may arm the gate on the success path. Counted INSIDE the loop, so
+    # the one initialisation to '' outside it is not mistaken for an arming.
+    source = _executable(TIMING)
+    inside = [text for _, text, _ in annotated if text.startswith("$gateReason = ")]
+    assert len(inside) == 3, (
+        f"$gateReason must be armed in exactly three places inside the loop - the "
+        f"total-budget check, the simulation-failure path and the over-budget "
+        f"check; found {len(inside)}: {inside}"
+    )
+    outside = re.findall(r"^\$gateReason = ''$", source, re.M)
+    assert len(outside) == 1, (
+        "the gate must start disarmed, initialised exactly once before the loop"
+    )
+    # -Scenario All must select everything, so nothing is out of scope.
+    assert "if ($Scenario -ne 'All') { $selectedIds = @([string]$Scenario) }" in source, (
+        "-Scenario All must leave every declared scenario selected"
+    )
+    assert "$selectedIds = @($declared | ForEach-Object { [string]$_.Id })" in source, (
+        "the default selection must be every declared scenario's id"
+    )
+
+
+def test_39_an_over_budget_scenario_stops_the_later_ones_and_says_so() -> None:
+    """Armed after the measurement, enforced before the next scenario's work."""
+    first, annotated = _scenario_loop()
+    numbers = {text: number for number, text, _ in annotated}
+    source = _text(TIMING)
+    armed = re.search(
+        r"if \(\$sensitivityWatch\.Elapsed\.TotalSeconds -gt "
+        r"\[double\]\$SensitivityBudgetSeconds\) \{\s*\r?\n\s*\$gateReason =", source)
+    assert armed, "an over-budget measured time must arm the gate"
+
+    enforced_line = next(number for number, text, stack in annotated
+                         if not stack and text == "if (-not [string]::IsNullOrEmpty($gateReason)) {")
+    armed_line = next(number for number, text, _ in annotated
+                      if text.startswith("$gateReason = ('scenario '"))
+    assert enforced_line < armed_line, (
+        "the gate must be enforced at the TOP of the next iteration, after "
+        "being armed at the bottom of this one"
+    )
+    # The enforced branch reports NOT ENTERED and records an unentered row.
+    block = [text for number, text, _ in annotated
+             if enforced_line <= number <= enforced_line + 12]
+    assert any("NOT ENTERED: " in text for text in block), (
+        "a gated scenario must be reported as NOT ENTERED with its reason"
+    )
+    assert any("Selected = $true; Entered = $false" in text for text in block), (
+        "a gated scenario must be recorded as selected but not entered, so the "
+        "summary can tell a refusal from a scope"
+    )
+    assert first > 0 and numbers  # the parse produced a real body
+
+
+def test_40_the_summary_accounts_for_every_declared_scenario() -> None:
+    """One row per declared scenario, whatever happened to it.
+
+    Four outcomes, four rows: not selected, not entered, entered but not
+    measured, measured. A scenario that produced no row would vanish from the
+    summary exactly as B and C vanished from runtime run 1.
+    """
+    source = _executable(TIMING)
+    rows = re.findall(r"\$measurements\.Add\(\[pscustomobject\]@\{", source)
+    assert len(rows) == 4, (
+        f"there must be exactly four measurement-row sites - one per outcome; "
+        f"found {len(rows)}"
+    )
+    assert len(re.findall(r"Selected = \$false", source)) == 1, (
+        "exactly one outcome - not selected - may record Selected = $false"
+    )
+    assert len(re.findall(r"Selected = \$true", source)) == 3, (
+        "the other three outcomes must record Selected = $true"
+    )
+    for branch in ("NOT SELECTED - ", "NOT ENTERED - ", "NOT MEASURED - "):
+        assert branch in source, f"the summary must be able to print {branch!r}"
+    assert "declared scenario(s) accounted for above" in source, (
+        "the summary must state how many of the declared scenarios it accounted "
+        "for, so a missing row is visible rather than merely absent"
+    )
+
+
+def test_41_the_scope_of_the_run_is_reported_before_anything_is_measured() -> None:
+    """The report must say what it was asked to do, not only what it did.
+
+    Runtime run 1 was a correct scoped run whose report could not be told apart
+    from a truncated one. The header now names the scope and lists every
+    declared scenario against it.
+    """
+    source = _text(TIMING)
+    assert "SCENARIOS DECLARED, AND THE SCOPE OF THIS RUN" in source, (
+        "the report must carry a scope section"
+    )
+    assert "Write-Phase7Line ('-Scenario ' + $Scenario)" in source, (
+        "the scope section must name the -Scenario value it was given"
+    )
+    assert "'NOT SELECTED for this run'" in source, (
+        "the scope section must mark each declared scenario as selected or not"
+    )
+    scope = source.index("SCENARIOS DECLARED, AND THE SCOPE OF THIS RUN")
+    opening = source.index("New-Object -ComObject Excel.Application")
+    assert scope < opening, (
+        "the scope must be reported before Excel is started, so it survives a "
+        "run that fails on its first scenario"
+    )

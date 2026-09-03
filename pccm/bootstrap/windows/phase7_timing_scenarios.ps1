@@ -759,11 +759,24 @@ if ($revision.Dirty.Count -gt 0) {
     exit 1
 }
 
-$selected = @(Get-Phase7TimingScenarios)
-if ($Scenario -ne 'All') {
-    $selected = @($selected | Where-Object { $_.Id -eq $Scenario })
-}
-if ($selected.Count -eq 0) { Write-Host "no scenario '$Scenario'" -ForegroundColor Red; exit 1 }
+# THE DECLARED SET IS NEVER FILTERED AWAY.
+#
+# The first real run of this harness reported scenario A and then simply
+# stopped. There was no NOT ENTERED line for B or C and no gate reason, because
+# `-Scenario A` had removed them from the collection BEFORE the loop ever ran.
+# The loop was not defective; the REPORT was. A measurement harness whose whole
+# product is a report must never let a scenario disappear without saying why,
+# and "out of scope for this run" is a reason exactly as a budget refusal is.
+#
+# So selection stops being a filter and becomes a REPORTED OUTCOME: the loop
+# iterates every DECLARED scenario, always, and an unselected one is skipped
+# with its own line and its own summary row. The summary can then account for
+# every scenario the harness declares, whatever was asked of it.
+$declared = @(Get-Phase7TimingScenarios)
+$selectedIds = @($declared | ForEach-Object { [string]$_.Id })
+if ($Scenario -ne 'All') { $selectedIds = @([string]$Scenario) }
+$selectedCount = @($declared | Where-Object { $selectedIds -contains [string]$_.Id }).Count
+if ($selectedCount -eq 0) { Write-Host "no scenario '$Scenario'" -ForegroundColor Red; exit 1 }
 
 # ===========================================================================
 # A DISPOSABLE COPY OF THE BUILD, AND THE STAGE-B BOOTSTRAP
@@ -827,6 +840,16 @@ foreach ($module in $modules) {
     Write-Phase7Line ('  ' + $module.Name.PadRight(20) + ' ' + $module.Origin.PadRight(24) + ' ' + $shown)
 }
 Write-Phase7Line ''
+Write-Phase7Line 'SCENARIOS DECLARED, AND THE SCOPE OF THIS RUN'
+Write-Phase7Line '---------------------------------------------'
+Write-Phase7Line ('-Scenario ' + $Scenario)
+foreach ($scopeCase in $declared) {
+    $scope = 'NOT SELECTED for this run'
+    if ($selectedIds -contains [string]$scopeCase.Id) { $scope = 'selected' }
+    Write-Phase7Line ('  ' + $scopeCase.Id + '  ' + ([string]$scopeCase.DriverCount).PadLeft(4) +
+                      ' drivers, ' + [string]$scopeCase.Iterations + ' iterations  ' + $scope)
+}
+Write-Phase7Line ''
 Write-Phase7Line 'BOUNDS AND SAFETY'
 Write-Phase7Line '-----------------'
 Write-Phase7Line ('sensitivity budget     : ' + [string]$SensitivityBudgetSeconds + ' s per scenario')
@@ -878,7 +901,23 @@ try {
     # the accepted fixture requires.
     $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $inspection
 
-    foreach ($case in $selected) {
+    foreach ($case in $declared) {
+        # SCOPE FIRST, AND IT IS NOT A REFUSAL. An unselected scenario neither
+        # spends the budget nor arms the gate - it is reported and skipped, so a
+        # scoped run and a gated run can never be mistaken for one another.
+        if ($selectedIds -notcontains [string]$case.Id) {
+            Write-Phase7Line ('SCENARIO ' + $case.Id + ' - ' + $case.Title + ' (' +
+                              [string]$case.DriverCount + ' drivers)')
+            Write-Phase7Line ('  NOT SELECTED: this run was scoped to -Scenario ' + $Scenario +
+                              '. That is a scope, not a budget refusal and not a failure.')
+            Write-Phase7Line ''
+            $null = $measurements.Add([pscustomobject]@{
+                Id = $case.Id; Selected = $false; Entered = $false
+                Reason = ('not selected; this run was scoped to -Scenario ' + $Scenario)
+                SensitivityMs = [double]0; DriverCount = [int]$case.DriverCount
+            })
+            continue
+        }
         if ([string]::IsNullOrEmpty($gateReason)) {
             $elapsedTotal = $runStopwatch.Elapsed.TotalSeconds
             if ($elapsedTotal -gt [double]$TotalBudgetSeconds) {
@@ -892,7 +931,7 @@ try {
             Write-Phase7Line ('  NOT ENTERED: ' + $gateReason)
             Write-Phase7Line ''
             $null = $measurements.Add([pscustomobject]@{
-                Id = $case.Id; Entered = $false; Reason = $gateReason
+                Id = $case.Id; Selected = $true; Entered = $false; Reason = $gateReason
                 SensitivityMs = [double]0; DriverCount = [int]$case.DriverCount
             })
             continue
@@ -955,7 +994,8 @@ try {
             Write-Phase7Line '  ABANDONED: the simulation did not succeed, so there is nothing current to explain.'
             Write-Phase7Line ''
             $null = $measurements.Add([pscustomobject]@{
-                Id = $case.Id; Entered = $true; Reason = 'the simulation did not succeed'
+                Id = $case.Id; Selected = $true; Entered = $true
+                Reason = 'the simulation did not succeed'
                 SensitivityMs = [double]0; DriverCount = [int]$case.DriverCount
             })
             $gateReason = 'an earlier scenario could not produce a successful simulation'
@@ -1081,7 +1121,7 @@ try {
         Write-Phase7Line ''
 
         $null = $measurements.Add([pscustomobject]@{
-            Id = $case.Id; Entered = $true; Reason = ''
+            Id = $case.Id; Selected = $true; Entered = $true; Reason = ''
             SensitivityMs = [double]$sensitivityWatch.Elapsed.TotalMilliseconds
             DriverCount = [int]$case.DriverCount
         })
@@ -1148,7 +1188,10 @@ Write-Phase7Line ''
 Write-Phase7Line 'SUMMARY - PCCM_RunSensitivity WALL-CLOCK TIME'
 Write-Phase7Line '--------------------------------------------'
 foreach ($row in $measurements) {
-    if (-not $row.Entered) {
+    if (-not $row.Selected) {
+        Write-Phase7Line ('  ' + $row.Id + '  ' + ([string]$row.DriverCount).PadLeft(4) +
+                          ' drivers   NOT SELECTED - ' + $row.Reason)
+    } elseif (-not $row.Entered) {
         Write-Phase7Line ('  ' + $row.Id + '  ' + ([string]$row.DriverCount).PadLeft(4) +
                           ' drivers   NOT ENTERED - ' + $row.Reason)
     } elseif ($row.SensitivityMs -le 0) {
@@ -1159,6 +1202,8 @@ foreach ($row in $measurements) {
                           ' drivers   ' + (Format-Phase7Seconds $row.SensitivityMs))
     }
 }
+Write-Phase7Line ('  ' + [string]@($measurements).Count + ' of ' + [string]$declared.Count +
+                  ' declared scenario(s) accounted for above')
 Write-Phase7Line ''
 Write-Phase7Line ('whole run wall clock   : ' + (Format-Phase7Seconds $runStopwatch.Elapsed.TotalMilliseconds))
 Write-Phase7Line ''
