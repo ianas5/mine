@@ -582,6 +582,15 @@ REOPENED_SINCE_CLOSURE = {
                     "and added deterministic per-driver replay",
 }
 
+# AND A REOPENED MODULE IS FROZEN AGAIN, to the bytes the phase that reopened it
+# left behind. A module is always frozen to SOMETHING; what a later phase
+# changes is which commit those bytes come from, never whether they are pinned.
+# Dropping the pin instead would leave the one module under active change as the
+# only one a stray byte could move unnoticed.
+REOPENED_CURRENT = {
+    "modSimEngine": "51ac0af666cf2191984e278a9b99ffe32b9131783a468df118e5ac76ca6f4db3",
+}
+
 
 def _blob_at_closure(name: str) -> str:
     blob = subprocess.run(
@@ -592,9 +601,12 @@ def _blob_at_closure(name: str) -> str:
 
 def test_23_every_accepted_module_is_byte_identical() -> None:
     """Unchanged modules at HEAD; reopened ones at the commit that froze them."""
+    assert set(REOPENED_CURRENT) == set(REOPENED_SINCE_CLOSURE), (
+        "a reopened module has no current digest, so nothing pins its bytes")
     for name, expected in FROZEN_SOURCE.items():
-        if name in REOPENED_SINCE_CLOSURE:
-            continue
+        # A REOPENED MODULE IS STILL PINNED, to the digest of the phase that
+        # reopened it rather than to the Run-6 one.
+        expected = REOPENED_CURRENT.get(name, expected)
         path = SRC_VBA / f"{name}.bas"
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         assert actual == expected, f"{name}.bas moved: {actual}"
@@ -624,6 +636,7 @@ def test_23b_a_reopened_module_is_not_claimed_as_runtime_proven() -> None:
     """
     for name in REOPENED_SINCE_CLOSURE:
         current = hashlib.sha256((SRC_VBA / f"{name}.bas").read_bytes()).hexdigest()
+        assert current == REOPENED_CURRENT[name], f"{name}.bas moved: {current}"
         assert current != FROZEN_SOURCE[name], (
             f"{name}.bas is byte-identical to the frozen Run-6 source, so it was "
             "not reopened at all and must come off the reopened list")

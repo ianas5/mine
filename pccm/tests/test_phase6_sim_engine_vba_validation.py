@@ -273,8 +273,8 @@ def test_10_a_cost_lines_probability_is_read() -> None:
         "    target.Quantity = factor.Quantity\n")
     damaged = _swap(
         damaged,
-        "            contribution(1) = prepared(index).Quantity\n",
-        "            contribution(1) = prepared(index).Quantity * (1# + prepared(index).Probability)\n")
+        "        factors(1) = prepared.Quantity\n",
+        "        factors(1) = prepared.Quantity * (1# + prepared.Probability)\n")
     _control("test_29", damaged)
 
 
@@ -290,10 +290,9 @@ def test_11_a_risks_quantity_is_read() -> None:
         "    target.Quantity = factor.Quantity\n")
     damaged = _swap(
         damaged,
-        "                contribution(0) = severity\n"
-        "                contribution(1) = prepared(index).Knom\n",
-        "                contribution(0) = severity * prepared(index).Quantity\n"
-        "                contribution(1) = prepared(index).Knom\n")
+        "        factors(0) = sample\n        factors(1) = factor\n        count = 2\n",
+        "        factors(0) = sample * prepared.Quantity\n        factors(1) = factor\n"
+        "        count = 2\n")
     _control("test_30", damaged)
 
 
@@ -303,18 +302,17 @@ def test_11_a_risks_quantity_is_read() -> None:
 def test_12_quantity_is_omitted() -> None:
     damaged = _swap(
         _ORIGINAL,
-        "            contribution(1) = prepared(index).Quantity\n",
-        "            contribution(1) = 1#\n")
+        "        factors(1) = prepared.Quantity\n",
+        "        factors(1) = 1#\n")
     _control("test_20", damaged)
 
 
 def test_13_quantity_is_applied_twice() -> None:
     damaged = _swap(
         _ORIGINAL,
-        "            contribution(0) = unitCost\n"
-        "            contribution(1) = prepared(index).Quantity\n",
-        "            contribution(0) = unitCost * prepared(index).Quantity\n"
-        "            contribution(1) = prepared(index).Quantity\n")
+        "        factors(0) = sample\n        factors(1) = prepared.Quantity\n",
+        "        factors(0) = sample * prepared.Quantity\n"
+        "        factors(1) = prepared.Quantity\n")
     _control("test_20", damaged)
 
 
@@ -328,28 +326,25 @@ def test_14_the_total_cost_is_sampled_instead_of_the_unit_cost() -> None:
         "    target.MaxValue = factor.MaxValue * factor.Quantity\n")
     damaged = _swap(
         damaged,
-        "            contribution(1) = prepared(index).Quantity\n",
-        "            contribution(1) = 1#\n")
+        "        factors(1) = prepared.Quantity\n",
+        "        factors(1) = 1#\n")
     _control("test_20", damaged)
 
 
 def test_15_the_cost_nominal_term_uses_kpv() -> None:
     damaged = _swap(
         _ORIGINAL,
-        "            contribution(2) = prepared(index).Knom\n",
-        "            contribution(2) = prepared(index).Kpv\n")
+        "                                         prepared(index).Knom, SIM_MEASURE_NOMINAL, _\n",
+        "                                         prepared(index).Kpv, SIM_MEASURE_NOMINAL, _\n", 2)
     _control("test_33", damaged)
 
 
 def test_16_the_cost_pv_term_is_derived_from_the_nominal_one() -> None:
     damaged = _swap(
         _ORIGINAL,
-        "            contribution(2) = prepared(index).Kpv\n"
-        "            If Not SafeProduct(contribution, 3, term) Then\n"
-        '                detail = "engine: iteration " & CStr(iteration) & ", cost line " & _\n'
-        '                         prepared(index).PermanentId & ": the PV contribution is not representable"\n'
-        "                Exit Function\n"
-        "            End If\n"
+        "            If Not SimEngineContribution(prepared(index), unitCost, True, _\n"
+        "                                         prepared(index).Kpv, SIM_MEASURE_PV, _\n"
+        "                                         iteration, term, detail) Then Exit Function\n"
         "            pvTerm(index) = term\n",
         "            pvTerm(index) = nominalTerm(index)\n")
     _control("test_33", damaged)
@@ -358,21 +353,16 @@ def test_16_the_cost_pv_term_is_derived_from_the_nominal_one() -> None:
 def test_17_a_risk_contribution_gains_a_quantity_factor() -> None:
     damaged = _swap(
         _ORIGINAL,
-        "                contribution(0) = severity\n"
-        "                contribution(1) = prepared(index).Knom\n"
-        "                If Not SafeProduct(contribution, 2, term) Then\n",
-        "                contribution(0) = severity\n"
-        "                contribution(1) = prepared(index).Knom\n"
-        "                contribution(2) = 2#\n"
-        "                If Not SafeProduct(contribution, 3, term) Then\n")
+        "        factors(1) = factor\n        count = 2\n",
+        "        factors(1) = factor\n        factors(2) = 2#\n        count = 3\n")
     _control("test_52", damaged)
 
 
 def test_18_probability_is_folded_into_the_contribution() -> None:
     damaged = _swap(
         _ORIGINAL,
-        "                contribution(0) = severity\n",
-        "                contribution(0) = severity * prepared(index).Probability\n")
+        "        factors(0) = sample\n        factors(1) = factor\n",
+        "        factors(0) = sample * prepared.Probability\n        factors(1) = factor\n")
     _control("test_21", damaged)
 
 
@@ -381,7 +371,6 @@ def test_18_probability_is_folded_into_the_contribution() -> None:
 # ===========================================================================
 _SEVERITY_CALL = """            If Not SimEngineSampleValue(prepared(index), valueState(index), severity, _
                                         iteration, detail) Then Exit Function
-            If occurred Then
 """
 
 
@@ -391,6 +380,7 @@ def test_19_the_severity_sampler_is_skipped_when_the_risk_did_not_occur() -> Non
         """            If occurred Then
                 If Not SimEngineSampleValue(prepared(index), valueState(index), severity, _
                                             iteration, detail) Then Exit Function
+            End If
 """)
     _control("test_50", damaged)
 
@@ -402,7 +392,6 @@ def test_20_the_severity_sampler_is_skipped_at_probability_zero() -> None:
                 If Not SimEngineSampleValue(prepared(index), valueState(index), severity, _
                                             iteration, detail) Then Exit Function
             End If
-            If occurred Then
 """)
     _control("test_50", damaged)
 
@@ -450,14 +439,8 @@ def test_22_the_engine_implements_the_occurrence_comparison_itself() -> None:
 def test_23_safe_product_is_replaced_by_chained_multiplication() -> None:
     damaged = _swap(
         _ORIGINAL,
-        "            If Not SafeProduct(contribution, 3, term) Then\n"
-        '                detail = "engine: iteration " & CStr(iteration) & ", cost line " & _\n'
-        '                         prepared(index).PermanentId & ": the nominal contribution is not representable"\n'
-        "                Exit Function\n"
-        "            End If\n"
-        "            nominalTerm(index) = term\n",
-        "            term = contribution(0) * contribution(1) * contribution(2)\n"
-        "            nominalTerm(index) = term\n")
+        "    If Not SafeProduct(factors, count, term) Then\n",
+        "    term = factors(0) * factors(1)\n    If False Then\n")
     _control("test_34", damaged)
 
 
@@ -508,11 +491,14 @@ def test_26_the_accumulation_order_is_reversed() -> None:
 # 27-29. The hot loop
 # ===========================================================================
 def test_27_a_redim_is_introduced_inside_the_iteration_loop() -> None:
+    # ANCHORED ON THE CANONICAL LOOP. P7-3's replay opens with the same line, so
+    # the bare `For iteration` no longer names one place - and a ReDim planted
+    # in the replay would not be the defect this control is about.
     damaged = _swap(
         _ORIGINAL,
-        "    For iteration = 1 To iterations\n",
-        "    For iteration = 1 To iterations\n"
-        "        ReDim contribution(0 To 2)\n")
+        "    For iteration = 1 To iterations\n        For index = 0 To costCount - 1\n",
+        "    For iteration = 1 To iterations\n        ReDim nominalTerm(0 To 2)\n"
+        "        For index = 0 To costCount - 1\n")
     _control("test_38", damaged)
 
 
@@ -557,8 +543,8 @@ def test_30_a_direct_generator_draw_is_introduced() -> None:
 def test_31_a_generator_constant_is_read_directly() -> None:
     damaged = _after(
         _ORIGINAL,
-        "            contribution(2) = prepared(index).Knom\n",
-        "            If unitCost > SIM_RNG_M1 Then contribution(2) = 0#\n")
+        "        factors(2) = factor\n",
+        "        If sample > SIM_RNG_M1 Then factors(2) = 0#\n")
     _control("test_08", damaged)
 
 
@@ -571,10 +557,12 @@ def test_31a_the_algorithm_token_is_introduced() -> None:
 
 
 def test_32_a_worksheet_reference_is_introduced() -> None:
+    # ANCHORED ON THE ENTRY POINT'S OWN DECLARATIONS. P7-3 gave the replay the
+    # same local, so the bare declaration no longer names one place.
     damaged = _after(
         _ORIGINAL,
-        "    Dim prepared() As SimEngineDriver\n",
-        "    Dim probe As Worksheet\n")
+        "    Dim prepared() As SimEngineDriver\n    Dim valueState() As SimRngState",
+        "\n    Dim probe As Worksheet")
     _control("test_06", damaged)
 
 
