@@ -28,6 +28,28 @@ overflow behaviour are the Windows runtime's business, and Gate B is where they
 are settled against the same accepted vectors.
 
 --------------------------------------------------------------------------------
+AND `And`/`Or` ARE THE ONE PLACE THAT DIFFERENCE HAS ALREADY COST A RUN
+--------------------------------------------------------------------------------
+`_expr` rewrites VBA `And` to Python `and` and VBA `Or` to Python `or`. Those
+are NOT the same operator: PYTHON SHORT-CIRCUITS AND VBA DOES NOT. VBA evaluates
+both operands of `And` and `Or` whatever the first one answers.
+
+So an expression whose second operand is only safe because the first one
+excluded it - the ordinary `If index <= limit And thing(index) ...` shape - runs
+here and raises on Windows. It did: the P7-4 Windows run of 0734a38 failed with
+"Subscript out of range" inside `SimSensitivitySortAscending`, whose merge read
+`series(fromHigh)` after `fromHigh >= highEnd` had already said the right run
+was spent. Every ported vector for that sort was green, because here the read
+never happened.
+
+A GREEN PORTED VECTOR IS THEREFORE NO EVIDENCE ABOUT THAT CLASS. What supplies
+the evidence instead is `tests/test_phase7_runtime_defect_controls.py::test_01`,
+a source-level rule over every `.bas`: no operand of an `And`/`Or` may subscript
+an array with an index another operand of the same expression is comparing. This
+rewrite is left as it is, deliberately - making it eager would change how every
+transcribed module evaluates - and the rule above is what stands in for it.
+
+--------------------------------------------------------------------------------
 THIS IS TEST INFRASTRUCTURE AND CARRIES NO AUTHORITY
 --------------------------------------------------------------------------------
 It lives under `tests/` and NOTHING in `builder/`, `src/`, `spec/` or

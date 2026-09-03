@@ -524,14 +524,14 @@ LOCKED_ANNUAL_QUANTILE_COUNT = 11
 # The Phase-7 column allocation, locked. Letters are the persistence layout, so
 # a silent change to one of them moves published data.
 LOCKED_SENSITIVITY_COLUMN_LAYOUT = (
-    ("driver_id", "J", "Driver ID", "text"),
-    ("driver_type", "K", "Type", "text"),
-    ("driver_name", "L", "Name", "text"),
-    ("rho", "M", "Rho", "double"),
-    ("abs_rho", "N", "|Rho|", "double"),
-    ("rank", "O", "Rank", "integer"),
-    ("direction", "P", "Direction", "text"),
-    ("status", "Q", "Status", "text"),
+    ("driver_id", "CC", "Driver ID", "text"),
+    ("driver_type", "CD", "Type", "text"),
+    ("driver_name", "CE", "Name", "text"),
+    ("rho", "CF", "Rho", "double"),
+    ("abs_rho", "CG", "|Rho|", "double"),
+    ("rank", "CH", "Rank", "integer"),
+    ("direction", "CI", "Direction", "text"),
+    ("status", "CJ", "Status", "text"),
 )
 LOCKED_SENSITIVITY_ROW_RULE = "one row per eligible driver, in ranked order"
 
@@ -547,7 +547,7 @@ LOCKED_SENSITIVITY_STAMP = (
     ("record_count", 13, "integer"),
     ("published", 14, "text"),
 )
-LOCKED_SENSITIVITY_STAMP_COLUMNS = {"A": "J", "B": "S"}
+LOCKED_SENSITIVITY_STAMP_COLUMNS = {"A": "CC", "B": "CL"}
 LOCKED_ANNUAL_ROW_RULE = "one row per applied project year"
 LOCKED_ANNUAL_INDEX_COLUMNS = {
     "A": {"project_index": "AB", "calendar_year": "AC"},
@@ -3608,6 +3608,7 @@ def _parse_sim_data(raw: dict, path: Path) -> SimDataLayout:
             )
 
     _validate_phase7_records(block, where, header_row, first_row)
+    _validate_sim_data_occupancy(block, where, header_row, first_row)
 
     return SimDataLayout(
         sheet=sheet,
@@ -3632,6 +3633,14 @@ LOCKED_SENSITIVITY_COLUMNS = (
 
 # The columns the accepted iteration banks already own. A Phase-7 block that
 # landed on any of them would overwrite published distribution data.
+#
+# THIS SET IS NOT THE OCCUPANCY PROOF, and treating it as one is what let the
+# P7-1 sensitivity block be allocated on top of two accepted Phase-6 blocks.
+# `_phase7_columns_clear_of_the_banks` reads exactly this set, so it answered
+# "clear" for column J - which summary_statistics has owned since Phase 6 - and
+# for column S, which carries published contingency-ladder values. It says what
+# it checks and nothing more; `_validate_sim_data_occupancy` below is what
+# decides whether a cell is free.
 LOCKED_ITERATION_BANK_COLUMNS = frozenset({"B", "C", "D", "F", "G", "H"})
 
 
@@ -3643,6 +3652,14 @@ def _column_number(letter: str, where: str) -> int:
     for char in text:
         value = value * 26 + (ord(char) - ord("A") + 1)
     return value
+
+
+def _column_letter(number: int) -> str:
+    out = ""
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        out = chr(ord("A") + remainder) + out
+    return out
 
 
 def _phase7_block_shape(block: dict, name: str, where: str, header_row: int,
@@ -3681,6 +3698,151 @@ def _phase7_columns_clear_of_the_banks(letters, where: str) -> None:
                 f"{where}: column {letter!r} is owned by an iteration bank. A Phase-7 "
                 "block written there would overwrite published distribution data."
             )
+
+
+def _sim_data_footprints(block: dict, where: str, header_row: int,
+                         first_row: int) -> list[tuple[str, str, int, int]]:
+    """Every cell `_SimData` reserves, as (owner, column, first row, last row).
+
+    DERIVED FROM THE CONTRACT, never listed. A block that is added to the
+    contract and not added here would not be proved, so each entry below reads
+    the block it describes and fails on a missing key rather than skipping it.
+
+    ROW GRANULARITY MATTERS AND IS PRESERVED. `run_identity` is expanded FIELD
+    BY FIELD, because its bank columns are used only on `snapshot` rows: the
+    pending AUTO nonce legitimately lives at F21, which is the bank-B column on
+    a `counter` row, and a check that reserved the whole 8-30 band for both
+    bank columns would report that accepted cell as a collision.
+    """
+    out: list[tuple[str, str, int, int]] = []
+
+    identity = _map(block, "run_identity", where)
+    label = _req_str(identity, "label_column", where)
+    shared = _req_str(identity, "value_column", where)
+    note = _req_str(identity, "note_column", where)
+    banks = _map(identity, "bank_value_columns", where)
+    for field in _seq(identity, "fields", where):
+        key = _req_str(field, "key", where)
+        row = _req_int(field, "row", where)
+        owner = f"run_identity.{key}"
+        out.append((f"{owner} (label)", label, row, row))
+        out.append((f"{owner} (note)", note, row, row))
+        if _req_str(field, "group", where) == "snapshot":
+            for bank in ("A", "B"):
+                out.append((f"{owner} (bank {bank})", _req_str(banks, bank, where), row, row))
+        else:
+            out.append((f"{owner} (shared)", shared, row, row))
+
+    nonce = _map(block, "pending_auto_nonce", where)
+    nrow = _req_int(nonce, "row", where)
+    out.append(("pending_auto_nonce", _req_str(nonce, "column", where), nrow, nrow))
+
+    # THE THREE RECORD TABLES share one row axis and run to the end of the
+    # sheet - that is what the technical ceiling is computed from - so their
+    # footprint is the header row plus everything below it.
+    last = MAX_EXCEL_ROWS
+    iteration = _map(block, "iteration_records", where)
+    for bank, columns in _map(iteration, "banks", where).items():
+        for key, letter in columns.items():
+            out.append((f"iteration_records[{bank}].{key}", str(letter), header_row, last))
+
+    for name in ("sensitivity_records", "annual_records"):
+        table = _map(block, name, where)
+        for bank, span in _map(table, "banks", where).items() if name == "sensitivity_records" \
+                else ():
+            first_letter = _column_number(_req_str(span, "first_column", where), where)
+            last_letter = _column_number(_req_str(span, "last_column", where), where)
+            for number in range(first_letter, last_letter + 1):
+                out.append((f"{name}[{bank}]", _column_letter(number), header_row, last))
+
+    sensitivity = _map(block, "sensitivity_records", where)
+    stamp = _map(sensitivity, "stamp", where)
+    stamp_columns = _map(stamp, "bank_value_columns", where)
+    for field in _seq(stamp, "fields", where):
+        row = _req_int(field, "row", where)
+        key = _req_str(field, "key", where)
+        for bank in ("A", "B"):
+            out.append((f"sensitivity_stamp[{bank}].{key}",
+                        _req_str(stamp_columns, bank, where), row, row))
+
+    annual = _map(block, "annual_records", where)
+    quantiles = _req_int(annual, "quantile_count", where)
+    for group in ("index_columns", "selected_px_profile_columns"):
+        for bank, entry in _map(annual, group, where).items():
+            for key, letter in entry.items():
+                out.append((f"annual_records.{group}[{bank}].{key}", str(letter),
+                            header_row, last))
+    for bank, entry in _map(annual, "quantile_first_column", where).items():
+        for measure, letter in entry.items():
+            start = _column_number(str(letter), where)
+            for offset in range(quantiles):
+                out.append((f"annual_records.quantiles[{bank}/{measure}]",
+                            _column_letter(start + offset), header_row, last))
+
+    for name in ("summary_statistics", "contingency_ladder"):
+        table = _map(block, name, where)
+        lo = _req_int(table, "first_row", where)
+        hi = _req_int(table, "last_row", where)
+        out.append((f"{name}.labels", _req_str(table, "label_column", where), lo, hi))
+        for bank, entry in _map(table, "bank_value_columns", where).items():
+            for measure, letter in entry.items():
+                out.append((f"{name}.values[{bank}/{measure}]", str(letter), lo, hi))
+
+    return out
+
+
+def _validate_sim_data_occupancy(block: dict, where: str, header_row: int,
+                                 first_row: int) -> None:
+    """No two `_SimData` blocks may reserve the same CELL.
+
+    WHY THIS EXISTS, AND WHAT IT REPLACES
+    -------------------------------------
+    `_phase7_columns_clear_of_the_banks` compares a Phase-7 column against the
+    six columns the ITERATION banks own. It answered "clear" for the P7-1
+    sensitivity block at J-Q and S-Z, because neither band touches B, C, D, F,
+    G or H - and both bands were already owned:
+
+        summary_statistics  labels J, values K-N, rows 8-23
+        contingency_ladder  labels P, values Q-R (A), S-T (B), rows 8-18
+
+    The records start at row 34 and never met them; the STAMP at rows 8-14 of
+    the bank's first column landed straight on top. J8:J14 is the
+    summary-statistics label column, and reading the stamp on Windows returned
+    "Mean", "Sample Standard Deviation", "Minimum", "P10", "P50", "P55", "P60".
+    S8:S14 is published contingency-ladder bank-B nominal data, so a bank-B run
+    would have destroyed accepted Phase-6 numbers.
+
+    A LIST OF COLUMNS TO AVOID CANNOT PROVE THIS, whatever is on it: the next
+    block added to the sheet would have to be added to the list too, and the
+    list is exactly what nobody updated. So the property is decided instead -
+    the footprint of every declared block, cell by cell, must be pairwise
+    disjoint - and it is derived from the contract, so a new block is proved by
+    existing, not by being remembered.
+    """
+    footprints = _sim_data_footprints(block, where, header_row, first_row)
+    by_column: dict[str, list[tuple[str, int, int]]] = {}
+    for owner, column, lo, hi in footprints:
+        by_column.setdefault(str(column).strip().upper(), []).append((owner, lo, hi))
+    for column, entries in sorted(by_column.items()):
+        entries.sort(key=lambda item: (item[1], item[2], item[0]))
+        for index in range(len(entries)):
+            owner, lo, hi = entries[index]
+            for other, olo, ohi in entries[index + 1:]:
+                if olo > hi:
+                    break
+                if owner == other:
+                    continue
+                overlap_lo = max(lo, olo)
+                overlap_hi = min(hi, ohi)
+                if overlap_lo > overlap_hi:
+                    continue
+                raise SimContractError(
+                    f"{where}: {owner} and {other} both reserve "
+                    f"{column}{overlap_lo}:{column}{overlap_hi} on "
+                    f"{block.get('sheet', '_SimData')}. Two owners of one cell means "
+                    "one of them publishes on top of the other, and which one wins "
+                    "depends on the order they happen to be written in."
+                )
 
 
 def _validate_phase7_records(block: dict, where: str, header_row: int,

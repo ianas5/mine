@@ -82,6 +82,27 @@ def _workbook_spec() -> dict:
         return yaml.safe_load(handle)
 
 
+def _column_number(letter: str) -> int:
+    """A column letter as its 1-based ordinal.
+
+    Spelled out because the sensitivity block now lives past column Z, where
+    `ord(letter)` is not a column number and silently answers for the first
+    character alone.
+    """
+    value = 0
+    for char in str(letter).strip().upper():
+        value = value * 26 + (ord(char) - ord("A") + 1)
+    return value
+
+
+def _column_letter(number: int) -> str:
+    out = ""
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        out = chr(ord("A") + remainder) + out
+    return out
+
+
 def _function_body(source: str, name: str) -> str:
     """The text of one PowerShell function, brace-matched from its header.
 
@@ -535,13 +556,17 @@ def test_23_the_sensitivity_block_geometry_is_the_contracts() -> None:
 
     status = [column for column in records["columns"] if column["key"] == "status"][0]
     banks = records["banks"]
-    first = [column for column in records["columns"]][0]
-    offset = ord(status["column"]) - ord(first["column"])
+    first = records["columns"][0]
+    offset = _column_number(status["column"]) - _column_number(first["column"])
     for bank, span in banks.items():
-        expected = chr(ord(span["first_column"]) + offset)
-        assert f"'{bank}' = '{expected}'" in block, (
+        expected = _column_letter(_column_number(span["first_column"]) + offset)
+        assert re.search(rf"'{bank}' = '{expected}'", block), (
             f"the status column for bank {bank} is {expected}: the block starts at "
             f"{span['first_column']} and status sits {offset} column(s) into it"
+        )
+        assert f"'{bank}' = '{span['first_column']}'" in block, (
+            f"the id/stamp column for bank {bank} is the block's first column, "
+            f"{span['first_column']}"
         )
 
 

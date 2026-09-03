@@ -598,3 +598,52 @@ def test_32_the_identity_tie_break_never_compares_strings_directly() -> None:
     for shape in (r"Mid\$\([^)]*\)\s*[<>]", r"\bleft\s*[<>]\s*right",
                   r"\bright\s*[<>]\s*left", r"StrComp\("):
         assert not re.search(shape, stripped), f"a text comparison decides the order: {shape}"
+
+
+def test_33_a_scenario_a_shaped_sort_agrees_at_ten_thousand_observations() -> None:
+    """The scale the Windows run actually used, through the real source.
+
+    The P7-4 Windows failure was inside this module's merge, at 10,000
+    observations, and every existing vector here is small - the largest is a
+    handful of values. Small vectors never reach the merge pass where the
+    trailing block ends exactly at `count`, which is where the fault lived, so
+    the SIZE is part of what this proves.
+
+    Two shapes are exercised deliberately:
+
+      descending tail   the last two observations in descending order, which is
+                        what makes the first merge pass exhaust its right run
+                        before its left one
+      heavy ties        a Risk at 20% probability puts ~80% of a contribution
+                        column on one value, so the tie blocks here are the
+                        ordinary case rather than an edge one
+
+    The comparison is against `sim_sensitivity.mid_ranks`, the definition.
+    """
+    total = 10000
+    values = [float((index * 7919) % 4001) for index in range(total)]
+    # Force the trailing pair to descend, and keep it distinct from the ties.
+    values[-2] = 9_000_000.0
+    values[-1] = 8_000_000.0
+    assert values[-1] < values[-2]
+
+    ok, ranks, detail = _mid_ranks(values)
+    assert ok, detail
+    assert ranks == oracle.mid_ranks(values), "the sort or the ranking disagrees"
+    assert len(ranks) == total
+    # A sanity anchor on the extremes, so a wholesale rank shift cannot pass by
+    # matching a similarly shifted oracle.
+    assert max(ranks) == float(total)
+    assert min(ranks) >= 1.0
+
+    ascending = sorted(values)
+    assert ascending[-1] == 9_000_000.0 and ascending[-2] == 8_000_000.0
+
+    # AND ONE DRIVER'S SPEARMAN OVER IT, which is the pairing the endpoint makes
+    # for each of Scenario A's twenty drivers.
+    contributions = [value * 3.0 + ((index % 5) - 2) for index, value in enumerate(values)]
+    ok, rho, status, detail = _spearman(contributions, ranks)
+    assert ok, detail
+    expected_rho, expected_status = oracle.spearman(contributions, ranks)
+    assert status == expected_status, detail
+    assert abs(rho - expected_rho) <= 1e-12, (rho, expected_rho)

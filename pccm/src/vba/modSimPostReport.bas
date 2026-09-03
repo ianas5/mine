@@ -226,15 +226,29 @@ Private Function ReadRunIdentity(ByRef run As SensitivityRun, _
         detail = "sensitivity: the published run carries no identity to bind to"
         Exit Function
     End If
-    If Not ReadSnapshotLong(bank, SIM_IDENTITY_ROW_RUN_ID, run.RunId, detail) Then Exit Function
-    If Not ReadSnapshotLong(bank, SIM_IDENTITY_ROW_EFFECTIVE_SEED, _
+    ' EACH QUANTITY IS BOUNDED BY ITS OWN DOMAIN, and that is the correction
+    ' rather than a tidy-up. All three used to be read through one ceiling of
+    ' SIM_MAX_ITERATIONS, which is the iteration ceiling and has nothing to say
+    ' about a run id or a seed. The AUTO mapping is
+    ' effective_seed = 48271 ^ auto_nonce mod 2147483647, so nonce 0 gives 1 and
+    ' nonce 1 gives 48271 - both under the iteration ceiling by luck - while
+    ' nonce 2 already gives 182605794. Sensitivity would have refused every AUTO
+    ' run from the third one onward, reporting a legal seed as "not a whole
+    ' number". The domains below are the contract's own, projected.
+    If Not ReadSnapshotLong(bank, SIM_IDENTITY_ROW_RUN_ID, CDbl(SIM_RUN_ID_FIRST), _
+                            CDbl(SIM_RUN_ID_MAXIMUM), "run id", _
+                            run.RunId, detail) Then Exit Function
+    If Not ReadSnapshotLong(bank, SIM_IDENTITY_ROW_EFFECTIVE_SEED, CDbl(SIM_SEED_MIN), _
+                            CDbl(SIM_SEED_MAX), "effective seed", _
                             run.EffectiveSeed, detail) Then Exit Function
-    If Not ReadSnapshotLong(bank, SIM_IDENTITY_ROW_ITERATIONS_RUN, _
+    ' AND THE ITERATION COUNT CARRIES ITS BUSINESS MINIMUM. A published run was
+    ' required to have at least SIM_MIN_ITERATIONS iterations, so reading the
+    ' count back through that bound is what makes the persisted total a
+    ' multi-cell range: Range("C34:C34").Value2 is a SCALAR, not a 1x1 array,
+    ' and ReadTotals indexes what it reads as an array.
+    If Not ReadSnapshotLong(bank, SIM_IDENTITY_ROW_ITERATIONS_RUN, CDbl(SIM_MIN_ITERATIONS), _
+                            CDbl(SIM_MAX_ITERATIONS), "iteration count", _
                             run.Iterations, detail) Then Exit Function
-    If run.Iterations < 1 Then
-        detail = "sensitivity: the published run records no iterations"
-        Exit Function
-    End If
     ReadRunIdentity = True
 End Function
 
@@ -451,14 +465,23 @@ Private Function DriverNameOf(ByVal permanentId As String) As String
     DriverNameOf = modWorkbook.TextOf(modWorkbook.CellIn(table, row, column))
 End Function
 
+' ONE SNAPSHOT FIELD, READ THROUGH THE DOMAIN THE CALLER NAMES.
+'
+' The bounds are parameters because the three fields this reads have three
+' different domains, and a reader that carried one ceiling of its own would
+' apply it to all of them - which is exactly the defect this signature removes.
+' The message names the field, so a refusal says which quantity was out of its
+' own range rather than pointing at a row number.
 Private Function ReadSnapshotLong(ByVal bank As String, ByVal row As Long, _
+                                  ByVal minimum As Double, ByVal maximum As Double, _
+                                  ByVal what As String, _
                                   ByRef value As Long, ByRef detail As String) As Boolean
     Dim raw As Variant, measured As Double
 
     raw = SimSheet().Range(SnapshotColumn(bank) & CStr(row)).Value2
-    If Not modWorkbook.IsWholeInRange(raw, 0#, CDbl(SIM_MAX_ITERATIONS), measured) Then
-        detail = "sensitivity: the published run identity at row " & CStr(row) & _
-                 " is not a whole number"
+    If Not modWorkbook.IsWholeInRange(raw, minimum, maximum, measured) Then
+        detail = "sensitivity: the published " & what & " is not a whole number in " & _
+                 CStr(minimum) & " to " & CStr(maximum)
         Exit Function
     End If
     value = modWorkbook.SafeLong(measured)

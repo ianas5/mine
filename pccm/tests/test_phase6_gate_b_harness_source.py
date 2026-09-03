@@ -137,8 +137,16 @@ STEP13_CLOSURE_COMMIT = "85778b2854fee431a845499e5a2fe37f40e96610"
 # The projection THIS tree builds, which is not the one Run 6 executed. P7-4
 # contracted the Phase-7 sensitivity block and `modSimContract` is a projection
 # of the contracts, so it moved. Pinned here so a stray change is still caught.
+#
+# IT MOVED AGAIN, AND FOR A REASON THE WINDOWS RUN SUPPLIED. P7-1 had allocated
+# the sensitivity block at J-Q and S-Z, on top of the accepted
+# summary_statistics and contingency_ladder blocks; the P7-4 timing run of
+# 0734a38 read the stamp and got summary-statistics LABELS back. The block now
+# lives at CC-CJ and CL-CS, the projection carries those letters, and this is
+# the identity of that projection - 11e58482... was the identity of the
+# colliding layout and is not a value this tree may build again.
 PHASE7_PROJECTION_IDENTITY = (
-    "11e58482e770d00911f24cf6d6d141d4d84046db2b008e3dc9dc39a88322284a")
+    "2f4c6e4ad27d52aac67259f41b977818c858d7ba3082d50114ec45da05b55233")
 
 # The seven hand-written simulation modules Run 6 executed and the freeze pins by
 # blob. `modSimContract` is excluded because it is generated and has no path in

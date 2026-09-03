@@ -433,13 +433,44 @@ Private Function SimSensitivitySortAscending(ByRef series() As Double, ByVal cou
             fromLow = lowEnd
             fromHigh = midPoint
             For target = lowEnd To highEnd - 1
-                If fromLow < midPoint And _
-                   (fromHigh >= highEnd Or Not (series(fromHigh) < series(fromLow))) Then
-                    scratch(target) = series(fromLow)
-                    fromLow = fromLow + 1
-                Else
+                ' EXHAUSTION IS DECIDED BEFORE EITHER SIDE IS READ, and that
+                ' ordering is the whole correction rather than a style choice.
+                '
+                ' This used to be one expression:
+                '
+                '   If fromLow < midPoint And (fromHigh >= highEnd Or _
+                '      Not (series(fromHigh) < series(fromLow))) Then
+                '
+                ' VBA's `And` and `Or` are NOT short-circuit operators. Both
+                ' operands are evaluated whatever the first one answers, so
+                ' `series(fromHigh)` was read even when `fromHigh >= highEnd`
+                ' had already said the right run was spent - and in the final
+                ' merge of a pass `highEnd` IS `count`, which makes that read
+                ' `series(count)` on an array dimensioned `0 To count - 1`:
+                ' run-time error 9, "Subscript out of range". The same applies
+                ' to `series(fromLow)` when `fromLow` has reached `midPoint`.
+                '
+                ' Python's `and`/`or` DO short-circuit, so the transcribed port
+                ' never evaluated the out-of-range operand and every ported
+                ' vector passed. Nothing about the algorithm was wrong; the
+                ' expression relied on an evaluation rule VBA does not have.
+                '
+                ' The four branches decide exactly what the one expression
+                ' decided - equal values still take the LEFT run, so the sort
+                ' stays stable - and no branch can reach an index the branch
+                ' above it has not already excluded.
+                If fromLow >= midPoint Then
                     scratch(target) = series(fromHigh)
                     fromHigh = fromHigh + 1
+                ElseIf fromHigh >= highEnd Then
+                    scratch(target) = series(fromLow)
+                    fromLow = fromLow + 1
+                ElseIf series(fromHigh) < series(fromLow) Then
+                    scratch(target) = series(fromHigh)
+                    fromHigh = fromHigh + 1
+                Else
+                    scratch(target) = series(fromLow)
+                    fromLow = fromLow + 1
                 End If
             Next target
             lowEnd = lowEnd + 2 * runLength

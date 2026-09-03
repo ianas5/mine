@@ -1288,18 +1288,49 @@ sim_data:
     # The eighth field, `status`, carries "n/a - no variance" for a driver that
     # has no variance to correlate. It is the reason a zero-variance driver can
     # be reported without being ranked.
+    #
+    # ------------------------------------------------------------------
+    # WHERE THIS BLOCK LIVES, AND WHY IT MOVED
+    # ------------------------------------------------------------------
+    # P7-1 put bank A at J-Q and bank B at S-Z. Both bands were already taken
+    # on this sheet, and the Windows timing run of 0734a38 read the proof out
+    # of the workbook:
+    #
+    #   summary_statistics  label column J, values K-N, rows 8-23
+    #   contingency_ladder  label column P, values Q-R (A) and S-T (B), rows 8-18
+    #
+    # The records themselves start at row 34 and so never met either block,
+    # but THE STAMP SITS AT ROWS 8-14 of the bank's first column. J8:J14 is the
+    # summary-statistics label column, so reading the stamp on Windows returned
+    # that block's labels for rows 8 to 14 - the mean, the sample standard
+    # deviation, the minimum, and then the first four ladder labels, which this
+    # file deliberately does not spell because input_contract.yaml owns them.
+    # S8:S14 is worse: those are published contingency-ladder bank-B NOMINAL
+    # VALUES, so a bank-B sensitivity run would have overwritten accepted
+    # Phase-6 results.
+    #
+    # The block now occupies columns no other block reserves at ANY row, so
+    # the disjointness holds without a row-band argument - and
+    # `sim_loader.py` proves the whole sheet cell by cell rather than trusting
+    # a comment, which is what was missing when J-Q was chosen.
+    #
+    #   bank A  CC-CJ, stamp CC        bank B  CL-CS, stamp CL
+    #
+    # The highest column any other block reserves is CB (annual bank-B
+    # selected-Px PV), and CK is the gap between the two banks.
+    # ------------------------------------------------------------------
     columns:
-      - {key: "driver_id",   column: "J", header: "Driver ID", value_type: "text"}
-      - {key: "driver_type", column: "K", header: "Type",      value_type: "text"}
-      - {key: "driver_name", column: "L", header: "Name",      value_type: "text"}
-      - {key: "rho",         column: "M", header: "Rho",       value_type: "double"}
-      - {key: "abs_rho",     column: "N", header: "|Rho|",     value_type: "double"}
-      - {key: "rank",        column: "O", header: "Rank",      value_type: "integer"}
-      - {key: "direction",   column: "P", header: "Direction", value_type: "text"}
-      - {key: "status",      column: "Q", header: "Status",    value_type: "text"}
+      - {key: "driver_id",   column: "CC", header: "Driver ID", value_type: "text"}
+      - {key: "driver_type", column: "CD", header: "Type",      value_type: "text"}
+      - {key: "driver_name", column: "CE", header: "Name",      value_type: "text"}
+      - {key: "rho",         column: "CF", header: "Rho",       value_type: "double"}
+      - {key: "abs_rho",     column: "CG", header: "|Rho|",     value_type: "double"}
+      - {key: "rank",        column: "CH", header: "Rank",      value_type: "integer"}
+      - {key: "direction",   column: "CI", header: "Direction", value_type: "text"}
+      - {key: "status",      column: "CJ", header: "Status",    value_type: "text"}
     banks:
-      A: {first_column: "J", last_column: "Q"}
-      B: {first_column: "S", last_column: "Z"}
+      A: {first_column: "CC", last_column: "CJ"}
+      B: {first_column: "CL", last_column: "CS"}
 
     # ------------------------------------------------------------------
     # THE STAMP - P7-4 DELTA, and the smallest one that makes the block safe.
@@ -1324,13 +1355,21 @@ sim_data:
     #
     # ROWS, NOT NEW ROWS. The stamp sits on rows the sheet already reserves,
     # in the same columns the records use lower down - records begin at row 34,
-    # so rows 8-14 of those columns are free. reserved_rows is untouched, H is
-    # still 33 and the iteration ceiling does not move.
+    # so rows 8-14 of the BLOCK'S OWN columns are free. reserved_rows is
+    # untouched, H is still 33 and the iteration ceiling does not move.
+    #
+    # "OF THE BLOCK'S OWN COLUMNS" IS THE PART THAT WAS MISSING. The first
+    # version of this paragraph said rows 8-14 were free because the records
+    # begin at row 34 - true of the rows, and irrelevant, because the columns
+    # J and S it had chosen were already occupied at those rows by
+    # summary_statistics and contingency_ladder. Freedom is a property of the
+    # CELL, not of the row; see the relocation note above, and
+    # `sim_loader.py`, which now decides it cell by cell.
     # ------------------------------------------------------------------
     stamp:
       bank_value_columns:
-        A: "J"
-        B: "S"
+        A: "CC"
+        B: "CL"
       published_written_last: true
       cleared_before_write: true
       surplus_rows_cleared: true

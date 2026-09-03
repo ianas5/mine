@@ -664,8 +664,15 @@ def test_23b_a_reopened_module_is_not_claimed_as_runtime_proven() -> None:
 # Phase-7 sensitivity block changed it. The identity Run 6 executed is a
 # historical fact and is unchanged; the projection this tree builds is a
 # different file that no Windows run has executed.
+#
+# AND IT MOVED AGAIN AFTER THE FIRST WINDOWS EVIDENCE. The P7-4 timing run of
+# 0734a38 read the contracted sensitivity stamp and got summary-statistics
+# labels: P7-1 had allocated the block at J-Q and S-Z, over two accepted
+# Phase-6 blocks. The block is now at CC-CJ and CL-CS, so the projection of the
+# corrected contract is a third artefact. 11e58482... was the colliding layout
+# and must never be built again.
 RUN6_GENERATED_IDENTITY = "daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f1e8e1c215ac"
-PHASE7_GENERATED_IDENTITY = "11e58482e770d00911f24cf6d6d141d4d84046db2b008e3dc9dc39a88322284a"
+PHASE7_GENERATED_IDENTITY = "2f4c6e4ad27d52aac67259f41b977818c858d7ba3082d50114ec45da05b55233"
 
 
 def test_24_the_generated_authority_is_byte_identical() -> None:

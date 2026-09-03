@@ -347,12 +347,20 @@ function Get-IdColumnValues {
 # declaration: `tests/test_phase7_timing_harness_source.py` asserts every value
 # below against `pccm/spec/sim_contract.yaml`, `pccm/spec/workbook.yaml` and
 # `pccm/src/vba/modSimPostReport.bas`. The contract stays the authority.
+#
+# THE COLUMNS MOVED, AND THE HARNESS WAS NOT WHAT WAS WRONG. These read J and S
+# before the Windows run of 0734a38, because that is what the contract said. The
+# stamp came back as 'Mean', 'Sample Standard Deviation', 'Minimum', 'P10',
+# 'P50', 'P55', 'P60' - the summary-statistics labels of rows 8 to 14, which is
+# what J8:J14 has held since Phase 6. The harness read the contracted cells
+# faithfully; the contract had allocated the block on top of two accepted
+# blocks. The sensitivity block now lives at CC-CJ and CL-CS, and the values
+# below follow it because the tests below read them out of the contract.
 $script:Phase7SensitivityGeometry = [pscustomobject]@{
     HeaderRow       = 33
     FirstRecordRow  = 34
-    StampColumns    = @{ 'A' = 'J'; 'B' = 'S' }
-    StatusColumns   = @{ 'A' = 'Q'; 'B' = 'Z' }
-    IdColumns       = @{ 'A' = 'J'; 'B' = 'S' }
+    StampColumns    = @{ 'A' = 'CC'; 'B' = 'CL' }
+    StatusColumns   = @{ 'A' = 'CJ'; 'B' = 'CS' }
     StampRows       = @{
         run_id              = 8
         effective_seed      = 9

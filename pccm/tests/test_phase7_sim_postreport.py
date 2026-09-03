@@ -536,7 +536,13 @@ def test_31_a_row_beyond_the_persisted_count_is_blank() -> None:
         formula = sheet[f"{shell['columns'][0]['column']}"
                         f"{int(shell['first_row']) + row_index}"].value
         assert f"IF({row_index + 1}>IF(" in formula, (row_index, formula[:80])
-        assert f"$J${count_row}" in formula and f"$S${count_row}" in formula
+        # THE STAMP COLUMNS COME FROM THE CONTRACT. Spelling them here as $J$
+        # and $S$ is what let the P7-1 allocation survive review: two literals
+        # agreeing with a wrong contract look exactly like a checked copy
+        # agreeing with a right one.
+        columns = stamp["bank_value_columns"]
+        for bank in ("A", "B"):
+            assert f"${columns[bank]}${count_row}" in formula, (bank, formula)
 
 
 def test_32_an_unpublished_block_shows_nothing_at_all() -> None:
@@ -544,7 +550,9 @@ def test_32_an_unpublished_block_shows_nothing_at_all() -> None:
     stamp = _raw_contract()["sim_data"]["sensitivity_records"]["stamp"]
     published_row = next(f["row"] for f in stamp["fields"] if f["key"] == "published")
     formula = sheet[f"{shell['columns'][0]['column']}{shell['first_row']}"].value
-    assert f'$J${published_row},_SimData!$S${published_row})<>"PUBLISHED",""' in formula
+    columns = stamp["bank_value_columns"]
+    assert (f'${columns["A"]}${published_row},_SimData!${columns["B"]}'
+            f'${published_row})<>"PUBLISHED",""') in formula, formula
 
 
 def test_33_the_sheet_says_whose_answer_it_is() -> None:
