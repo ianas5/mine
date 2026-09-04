@@ -505,6 +505,9 @@ vba:
     - name: "modSimPostReport"
       generated: false
       responsibility: "The Phase-7 sensitivity orchestration: the CURRENT-run precondition, the resolved-model bridge, the persisted TotalNom read, one-driver-at-a-time replay dispatch, ranking, the bounded _SimData sensitivity block with its identity stamp published last, and the refusal reporting. It owns no RNG, no sampler, no contribution arithmetic, no rank or correlation mathematics, no fingerprint, no digest and no simulation-state derivation; it consumes the accepted owners of each."
+    - name: "modSimAnnual"
+      generated: false
+      responsibility: "The Phase-7 annual stochastic mathematics: the per-year regrouping of an accepted deployment factor, one iteration's annual vector over a block of project years, the per-year type-7 ladder and the convex selected-Px annual profile. It owns no RNG, no sampler, no stream assignment, no application state, no run identity, no persistence, no presentation and no sensitivity; it recomputes no inflation, FX or discount, regrouping only the resolved inputs Phase 5 carried into DriverFactors."
     - name: "modSimSensitivity"
       generated: false
       responsibility: "The pure Phase-7 sensitivity mathematics: mid-ranks with average ranks for ties, Spearman as Pearson over two already-ranked series, the undefined zero-variance status, and the ordering of finished driver results by absolute rho with a permanent-id tie-break. No driver replay, no RNG or component stream, no workbook access, no _SimData, no run identity, no state and no presentation."

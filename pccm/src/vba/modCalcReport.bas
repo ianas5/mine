@@ -480,10 +480,17 @@ Private Function BuildDriverFactors(ByRef package As CalculationPackage, _
                      ": the inflation profile is not in the resolved reference set"
             Exit Function
         End If
+        ' CARRIED, NOT RECOMPUTED. Phase 7 regroups these per project year; it
+        ' resolves no inflation, no FX and no discount of its own.
+        package.Drivers(index).FxRate = package.Model.DriverFxRates(index)
+        ReDim package.Drivers(index).Weights(0 To package.Model.Timeline.Duration - 1)
+        ReDim package.Drivers(index).Inflation(0 To package.Model.Timeline.Duration - 1)
         For offset = 0 To package.Model.Timeline.Duration - 1
             inflation(offset) = InflationFor(package, profile, _
                                              package.Model.CalendarYears(offset))
             weights(offset) = package.Model.Weights(index, offset)
+            package.Drivers(index).Weights(offset) = weights(offset)
+            package.Drivers(index).Inflation(offset) = inflation(offset)
         Next offset
         If Not modCalcFactors.BuildKnom(package.Model.DriverFxRates(index), weights, _
                                         inflation, package.Drivers(index).Knom, _

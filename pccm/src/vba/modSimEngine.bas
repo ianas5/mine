@@ -400,6 +400,153 @@ Public Function SimEngineReplayDriver(ByRef drivers() As DriverFactors, _
 End Function
 
 ' ==========================================================================
+' ANNUAL BLOCK REPLAY - the same run, deployed per project year
+'
+' THE ONLY DIFFERENCE FROM SimEngineRun IS THE FACTOR. The seed, the component
+' streams, the canonical driver order, the unconditional severity draw and the
+' contribution rule are all the accepted ones, reached through the accepted
+' procedures. What changes is which deployment factor is handed to
+' SimEngineContribution: Knom_y instead of Knom, Kpv_y instead of Kpv.
+'
+' So this is a REPLAY, not a second run. It allocates no run id, advances no
+' AUTO nonce, writes no attempt row and touches no persisted state. Two calls
+' with the same effective seed produce the same numbers, and the sum over a
+' full duration reconciles with the totals the accepted run published.
+'
+' IT RETURNS ONE BLOCK OF YEARS, column-major: column(j * yearCount + y). The
+' caller asks for the years it can afford to hold and asks again for the next
+' block; nothing here retains an iteration-by-year matrix for the whole
+' duration, and no driver-by-iteration-by-year matrix exists at any moment.
+' ==========================================================================
+Public Function SimEngineReplayAnnualBlock(ByRef drivers() As DriverFactors, _
+                                           ByVal driverCount As Long, _
+                                           ByVal effectiveSeed As Long, _
+                                           ByVal iterations As Long, _
+                                           ByRef yearFactors() As Double, _
+                                           ByVal factorStride As Long, _
+                                           ByVal firstYear As Long, ByVal yearCount As Long, _
+                                           ByVal measure As String, _
+                                           ByRef column() As Double, _
+                                           ByRef detail As String) As Boolean
+    Dim prepared() As SimEngineDriver
+    Dim valueState() As SimRngState, occurrenceState() As SimRngState
+    Dim costCount As Long, riskCount As Long
+    Dim index As Long, iteration As Long, year As Long, source As Long
+    Dim sample As Double, term As Double, drawn As Double
+    Dim consumed As Long
+    Dim occurred As Boolean
+    Dim factors() As Double
+    Dim terms() As Double, staged() As Double
+
+    detail = vbNullString
+    If iterations < 1 Then
+        detail = "engine: annual replay needs at least one iteration"
+        Exit Function
+    End If
+    If yearCount < 1 Then
+        detail = "engine: annual replay needs at least one project year"
+        Exit Function
+    End If
+    If measure <> SIM_MEASURE_NOMINAL And measure <> SIM_MEASURE_PV Then
+        detail = "engine: annual replay was asked for an unknown measure"
+        Exit Function
+    End If
+    If Not SimEnginePrepare(drivers, driverCount, effectiveSeed, prepared, _
+                            costCount, riskCount, detail) Then Exit Function
+
+    ' THE FACTORS ARE SUPPLIED, NOT DERIVED. The engine applies a deployment
+    ' factor; it does not know what one is made of. Inflation, FX and
+    ' discounting are the resolution owner's, and a `discount` argument here
+    ' would be model-resolution vocabulary inside the generator - which is
+    ' exactly what test_11 refuses, and rightly.
+    '
+    ' `yearFactors` is indexed by the caller's SUPPLY order, stride
+    ' `factorStride`, because only the caller knows its own array. The engine
+    ' maps supply order to CANONICAL order by PERMANENT ID, never by position,
+    ' so a caller cannot silently pair the wrong driver with the wrong factor.
+    If factorStride < firstYear + yearCount Then
+        detail = "engine: the supplied factors carry " & CStr(factorStride) & _
+                 " project year(s) and year " & CStr(firstYear + yearCount) & " was asked for"
+        Exit Function
+    End If
+    ReDim factors(0 To (costCount + riskCount) * yearCount - 1)
+    For index = 0 To costCount + riskCount - 1
+        source = -1
+        For iteration = 0 To driverCount - 1
+            If source < 0 Then
+                If drivers(LBound(drivers) + iteration).PermanentId = _
+                   prepared(index).PermanentId Then source = iteration
+            End If
+        Next iteration
+        If source < 0 Then
+            detail = "engine: annual replay lost driver " & prepared(index).PermanentId
+            Exit Function
+        End If
+        For year = 0 To yearCount - 1
+            factors(index * yearCount + year) = _
+                yearFactors(LBound(yearFactors) + source * factorStride + firstYear + year)
+        Next year
+    Next index
+
+    ReDim valueState(0 To costCount + riskCount)
+    ReDim occurrenceState(0 To costCount + riskCount)
+    ReDim terms(0 To costCount + riskCount)
+    ' ONE BLOCK'S TERMS, discarded with the iteration. Never drivers x
+    ' iterations x years: this is drivers x years, and it is overwritten.
+    ReDim staged(0 To (costCount + riskCount) * yearCount)
+    ReDim column(0 To iterations * yearCount - 1)
+    For index = 0 To costCount + riskCount - 1
+        valueState(index) = prepared(index).ValueInitialState
+        If prepared(index).HasOccurrenceStream Then
+            occurrenceState(index) = prepared(index).OccurrenceInitialState
+        End If
+    Next index
+
+    For iteration = 1 To iterations
+        For index = 0 To costCount + riskCount - 1
+            occurred = True
+            If prepared(index).HasOccurrenceStream Then
+                ' D6-18b. The occurrence draw comes first, exactly once per Risk
+                ' per iteration, at every Probability including 0 and 1.
+                If Not SimSampleBernoulli(occurrenceState(index), prepared(index).Probability, _
+                                          occurred, drawn, consumed, detail) Then
+                    detail = "engine: iteration " & CStr(iteration) & ", risk " & _
+                             prepared(index).PermanentId & ": " & detail
+                    Exit Function
+                End If
+            End If
+            ' UNCONDITIONAL, on both kinds, exactly as the accepted run draws it.
+            If Not SimEngineSampleValue(prepared(index), valueState(index), sample, _
+                                        iteration, detail) Then Exit Function
+            For year = 0 To yearCount - 1
+                ' THE ACCEPTED CONTRIBUTION RULE, given a different factor. Not a
+                ' regrouping of it: the same one exact product the total used.
+                If Not SimEngineContribution(prepared(index), sample, occurred, _
+                                             factors(index * yearCount + year), measure, _
+                                             iteration, term, detail) Then Exit Function
+                staged(year * (costCount + riskCount) + index) = term
+            Next year
+        Next index
+        ' ONE SafeSignedSum PER YEAR, over the drivers in CANONICAL ORDER - the
+        ' same accumulation SimEngineRun performs for the iteration total. A
+        ' running `+` here would be a second accumulation rule, and the sum over
+        ' years would then reconcile with nothing.
+        For year = 0 To yearCount - 1
+            For index = 0 To costCount + riskCount - 1
+                terms(index) = staged(year * (costCount + riskCount) + index)
+            Next index
+            If Not SafeSignedSum(terms, costCount + riskCount, _
+                    column((iteration - 1) * yearCount + year)) Then
+                detail = "engine: iteration " & CStr(iteration) & " project year " & _
+                         CStr(firstYear + year + 1) & " total is not representable"
+                Exit Function
+            End If
+        Next year
+    Next iteration
+    SimEngineReplayAnnualBlock = True
+End Function
+
+' ==========================================================================
 ' PREPARATION - everything that must happen exactly once
 '
 ' Validates the engine-relevant factor domain, collects the two identifier

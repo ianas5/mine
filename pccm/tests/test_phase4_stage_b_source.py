@@ -269,6 +269,7 @@ PHASE4_RAW_LINE_LIMIT = 900
 PHASE7_VBA_MODULES = (
     "modSimSensitivity",
     "modSimPostReport",
+    "modSimAnnual",
 )
 
 PHASE5_CODE_LINE_LIMIT = 900

@@ -124,6 +124,11 @@ Public Type DriverFactors
     IsRisk        As Boolean
     Knom          As Double
     Kpv           As Double
+    ' The RESOLVED per-year inputs Knom and Kpv were built from. Phase 7
+    ' regroups them per project year; it recomputes none of them.
+    FxRate        As Double
+    Weights()     As Double
+    Inflation()   As Double
     Quantity      As Double
     Probability   As Double
     DistKind      As Long

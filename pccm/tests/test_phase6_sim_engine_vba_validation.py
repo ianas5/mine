@@ -557,11 +557,13 @@ def test_31a_the_algorithm_token_is_introduced() -> None:
 
 
 def test_32_a_worksheet_reference_is_introduced() -> None:
-    # ANCHORED ON THE ENTRY POINT'S OWN DECLARATIONS. P7-3 gave the replay the
-    # same local, so the bare declaration no longer names one place.
+    # ANCHORED ON A DECLARATION ONLY SimEngineRun HAS. P7-3 gave the per-driver
+    # replay the same prepared/valueState locals and P7-5 gave them to the
+    # annual block too, so those name three places now. `stagedNominal` is the
+    # published run's own staging and belongs to the entry point alone.
     damaged = _after(
         _ORIGINAL,
-        "    Dim prepared() As SimEngineDriver\n    Dim valueState() As SimRngState",
+        "    Dim stagedNominal() As Double",
         "\n    Dim probe As Worksheet")
     _control("test_06", damaged)
 

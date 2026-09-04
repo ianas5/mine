@@ -395,8 +395,16 @@ def test_03_there_is_exactly_one_public_entry_point() -> None:
     second way IN and deliberately not a second way to compute: it reaches the
     same preparation, the same sampler and the same contribution routine. The
     set is asserted exactly, so a third entry point cannot appear unremarked."""
-    assert _module().public_procedures == ["SimEngineRun", "SimEngineReplayDriver"]
-    private = set(_module().procedures) - {"SimEngineRun", "SimEngineReplayDriver"}
+    assert _module().public_procedures == [
+        "SimEngineRun",
+        "SimEngineReplayDriver",
+        # P7-5. The same run deployed per project year: same seed, same streams,
+        # same canonical order, same contribution rule, a supplied factor per
+        # year instead of the scalar. It is a REPLAY - no run id, no nonce, no
+        # persisted state - and it derives no factor of its own.
+        "SimEngineReplayAnnualBlock",
+    ]
+    private = set(_module().procedures) - set(_module().public_procedures)
     assert private == {
         "SimEnginePrepare", "SimEngineClaim", "SimEngineAdopt",
         "SimEngineValidateFactor", "SimEngineSampleValue", "SimEngineContribution",
