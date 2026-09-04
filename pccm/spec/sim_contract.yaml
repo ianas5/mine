@@ -1665,6 +1665,31 @@ statistics:
       value: "(1 - f) * x[lo] + f * x[hi]"
     interpolation: "convex"
   sorting: "on_copies_only"
+  # ------------------------------------------------------------------
+  # WHICH SOURCE ITERATION OWNS AN ORDER STATISTIC
+  # ------------------------------------------------------------------
+  # The percentile VALUE never needed this. When two iteration totals are
+  # equal it does not matter which the sort returns - the number is the same
+  # either way - and nothing downstream asked the question.
+  #
+  # The Phase-7 selected-Px ANNUAL PROFILE does ask it. The profile blends the
+  # annual vectors of the two iterations owning the type-7 lo and hi positions,
+  # and two iterations with equal TOTALS can have entirely different annual
+  # SHAPES: the same money spread differently across years. Without a rule the
+  # profile would depend on the sort implementation, which is not an authority.
+  #
+  # So the rule is stated here, narrowly: among equal values the LOWER ORIGINAL
+  # ITERATION INDEX owns the position. It is a tie-break on IDENTITY only. It
+  # cannot move a percentile, because it chooses between candidates that are
+  # already equal, and that is proved by test rather than asserted.
+  order_statistic_identity:
+    exposed_for: "selected_px_annual_profile"
+    source_index_basis: "original_iteration_order"
+    equal_value_tie_break: "lower_original_iteration_index"
+    tie_break_changes_percentile_value: false
+    sort_implementation_order_is_authority: false
+    exposes_lo_hi_f: true
+    recomputes_percentile_value: false
   measures: ["nominal", "pv"]
   # Phase 6 stores the WHOLE ladder a selection could ask for, so Selected Px is
   # a deterministic lookup rather than a computation over samples. The ladder's

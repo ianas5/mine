@@ -284,11 +284,15 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
         assert rule.forbidden_in("modSimStats") is True, construct
 
 
-def test_03_the_public_surface_is_the_six_numerical_operations() -> None:
+def test_03_the_public_surface_is_the_accepted_numerical_operations() -> None:
     assert sorted(_module().public_procedures) == [
         "SimStatsContingency",
         "SimStatsDescribe",
         "SimStatsMean",
+        # P7-5. The order-statistic POSITION, not a seventh statistic: it
+        # computes no value and the annual profile is its only caller. The
+        # percentile it points at is still SimStatsQuantileType7's.
+        "SimStatsQuantilePosition",
         "SimStatsQuantileType7",
         "SimStatsSampleStandardDeviation",
         "SimStatsSelectedQuantile",
@@ -299,10 +303,22 @@ def test_03_the_public_surface_is_the_six_numerical_operations() -> None:
         "SimStatsProbabilityOf", "SimStatsQuantileSorted", "SimStatsSortAscending",
         "SimStatsSortedCopy", "SimStatsUnitScale", "SimStatsUsableProbability",
         "SimStatsUsableSequence", "SimStatsValidateLadder",
+        # P7-5. Both PRIVATE: the position exposure needs an ordered permutation
+        # of indices, and nothing outside this module may reach the permutation
+        # or the merge that builds it.
+        "SimStatsOrderedIndices", "SimStatsSortIndices",
+        # The ONE owner of the type-7 position arithmetic, shared by the value
+        # and the position exposure so the formula exists exactly once.
+        "SimStatsPositionOf",
     }, sorted(private)
     raw = _module().raw
     assert re.findall(r"^(Public|Private) Type (\w+)$", raw, re.M) == [
-        ("Public", "SimStatsMeasure")]
+        ("Public", "SimStatsMeasure"),
+        # P7-5. The order-statistic POSITION: two source ordinals, the
+        # interpolation fraction, and the two values they carry. It holds no
+        # statistic and no annual vector - the statistics module does not own
+        # what a position MEANS to its caller.
+        ("Public", "SimStatsPosition")]
 
 
 def test_04_the_summary_type_is_derived_reporting_output_only() -> None:
@@ -487,7 +503,23 @@ def test_13_the_sort_is_a_bottom_up_merge_and_not_quadratic() -> None:
                      ".Sort", "Sort(", "SortByKey", "QuickSort"):
         assert borrowed not in code, borrowed
     assert set(re.findall(r"\bSimStats\w*Sort\w*\b", code)) == {
-        "SimStatsSortAscending", "SimStatsSortedCopy", "SimStatsQuantileSorted"}
+        "SimStatsSortAscending", "SimStatsSortedCopy", "SimStatsQuantileSorted",
+        # P7-5. The same bottom-up merge, moving a permutation of INDICES
+        # instead of values, so the position exposure can name which element of
+        # the caller's original sequence owns an order statistic.
+        "SimStatsSortIndices"}
+    # AND IT IS THE SAME MERGE, not a second sort with its own habits. The
+    # contracted tie-break - equal values keep arrival order - is a property of
+    # this shape, so a divergence here would silently change which element owns
+    # a position while every value stayed identical.
+    indices = _procedure("SimStatsSortIndices")
+    assert "ReDim scratch(0 To count - 1)" in indices
+    assert indices.count("ReDim") == 1
+    assert "runLength = runLength * 2" in indices
+    assert "Do While runLength < count" in indices
+    assert "ElseIf values(base + order(fromLow)) <= values(base + order(fromHigh)) Then" in indices
+    for quadratic in ("For probe = index - 1 To 0 Step -1", "Do While probe >= 0"):
+        assert quadratic not in indices, quadratic
 
 
 def test_14_the_sort_orders_correctly_at_every_shape() -> None:
@@ -862,7 +894,15 @@ def test_32_the_probability_domain_is_closed_and_refused_outside() -> None:
         assert result.v == -1.0
     # No nearest-rank method and no (n + 1) * p anywhere.
     quantile = _procedure("SimStatsQuantileSorted")
-    assert "h = CDbl(count - 1) * p" in quantile
+    # THE FORMULA MOVED TO ITS ONE OWNER. P7-5 gave the type-7 position a
+    # second consumer - the annual profile needs to know WHICH order statistics
+    # a percentile came from - and two written-out copies would have been two
+    # declarations of one accepted formula. So the arithmetic lives in
+    # SimStatsPositionOf and the quantile CALLS it; the control follows it there
+    # rather than being satisfied by whichever copy it happened to find.
+    assert "h = CDbl(count - 1) * p" in _procedure("SimStatsPositionOf")
+    assert "SimStatsPositionOf(count, p, lowIndex, highIndex)" in quantile, (
+        "the quantile must take its position from the shared owner")
     for banned in ("count + 1", "(count + 1)", "Round(", "CInt(", "nearest"):
         assert banned not in quantile, banned
 

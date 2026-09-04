@@ -278,10 +278,15 @@ def test_12_the_type_7_position_formula_is_changed() -> None:
 
 
 def test_13_a_nearest_rank_method_is_substituted() -> None:
+    # The interpolation fraction is now returned by the shared position owner
+    # rather than assigned inside the quantile, so the mutation is applied where
+    # the arithmetic actually lives. Forcing it to zero is still exactly a
+    # nearest-rank substitution: every percentile would collapse onto the lower
+    # order statistic.
     damaged = _swap(
         _ORIGINAL,
-        "    fraction = h - CDbl(lowIndex)\n",
-        "    fraction = 0#\n")
+        "    SimStatsPositionOf = h - CDbl(lowIndex)\n",
+        "    SimStatsPositionOf = 0#\n")
     _control("test_28", damaged)
 
 

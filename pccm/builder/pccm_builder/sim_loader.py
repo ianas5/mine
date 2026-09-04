@@ -1253,11 +1253,17 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
     }),
     'statistics': frozenset({
         'fixed_nonselectable_percentiles', 'headline_percentiles',
-        'include_all_selectable_ladder_values', 'mean', 'measures', 'moments_and_extremes',
+        'include_all_selectable_ladder_values', 'mean', 'measures', 'order_statistic_identity', 'moments_and_extremes',
         'p10_selectable', 'percentile', 'selectable_ladder_locator', 'selectable_ladder_owner',
         'selected_confidence_level', 'sorting', 'standard_deviation'
     }),
     'statistics.mean': frozenset({'method', 'scale_safe_required'}),
+    'statistics.order_statistic_identity': frozenset({
+        'equal_value_tie_break', 'exposed_for', 'exposes_lo_hi_f',
+        'recomputes_percentile_value', 'source_index_basis',
+        'sort_implementation_order_is_authority',
+        'tie_break_changes_percentile_value'
+    }),
     'statistics.percentile': frozenset({'formula', 'interpolation', 'method'}),
     'statistics.percentile.formula': frozenset({'f', 'h', 'hi', 'lo', 'value'}),
     'statistics.selected_confidence_level': frozenset({
@@ -2828,6 +2834,25 @@ def _validate_statistics(raw: dict, path: Path) -> None:
     _require_value(pct, "interpolation", "convex", f"{where}: percentile")
 
     _require_value(block, "sorting", "on_copies_only", where)
+
+    # WHICH SOURCE ITERATION OWNS AN ORDER STATISTIC. Every leaf enforced: an
+    # unenforced leaf is a contract statement nothing has to obey, and the
+    # sweep that counts them would otherwise find this one.
+    identity = _map(block, "order_statistic_identity", where)
+    iwhere = f"{where}: order_statistic_identity"
+    _require_value(identity, "exposed_for", "selected_px_annual_profile", iwhere)
+    _require_value(identity, "source_index_basis", "original_iteration_order", iwhere)
+    _require_value(
+        identity, "equal_value_tie_break", "lower_original_iteration_index", iwhere)
+    # The tie-break chooses between candidates that are already equal, so it
+    # cannot move a value. Declaring otherwise would license one that could.
+    _require_false(identity, "tie_break_changes_percentile_value", iwhere)
+    # A sort is an implementation. It does not get to decide identity.
+    _require_false(identity, "sort_implementation_order_is_authority", iwhere)
+    _require_true(identity, "exposes_lo_hi_f", iwhere)
+    # The position is READ from the accepted percentile, never a second
+    # computation of it that could disagree with the published number.
+    _require_false(identity, "recomputes_percentile_value", iwhere)
     _exact_sequence(block.get("measures"), ("nominal", "pv"), f"{where}: measures")
 
     # The ladder is retained BY REFERENCE. Its values are not copied here, so a

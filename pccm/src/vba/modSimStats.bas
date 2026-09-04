@@ -99,6 +99,34 @@ Public Type SimStatsMeasure
 End Type
 
 ' ==========================================================================
+' WHERE A TYPE-7 PERCENTILE CAME FROM
+'
+' The percentile VALUE never needed this and does not use it: SimStatsQuantile
+' still answers exactly what it answered before, by the same route. This is a
+' separate question - WHICH SOURCE ITERATIONS own the two order statistics the
+' value was interpolated between - asked by exactly one caller, the Phase-7
+' selected-Px annual profile, which has to blend those two iterations' annual
+' vectors.
+'
+' LoSource and HiSource are ZERO-RELATIVE positions in the CALLER'S ORIGINAL,
+' UNSORTED sequence. The sorted position is an implementation detail and is
+' deliberately not exposed: a caller keys its own data by the order it supplied,
+' not by rank.
+'
+' THEY ARE NOT CALLED ITERATIONS, and that is not cosmetic. This module knows
+' nothing of runs, engines or simulations - `test_08` enforces exactly that -
+' and a field named for a simulation concept would import one into a pure
+' numerical kernel. What an ordinal position MEANS is the caller's business.
+' ==========================================================================
+Public Type SimStatsPosition
+    LoSource As Long
+    HiSource As Long
+    Fraction As Double
+    LoValue As Double
+    HiValue As Double
+End Type
+
+' ==========================================================================
 ' The sample mean
 '
 ' `sum(x) / n` is not implemented. [-1.7E308, 1.7E308, 1.7E308, 1.7E308] has a
@@ -638,13 +666,7 @@ Private Function SimStatsQuantileSorted(ByRef ordered() As Double, ByVal count A
     Dim lowIndex As Long, highIndex As Long
     Dim low As Double, high As Double, candidate As Double
 
-    h = CDbl(count - 1) * p
-    lowIndex = CLng(Fix(h))
-    If lowIndex < 0 Then lowIndex = 0
-    If lowIndex > count - 1 Then lowIndex = count - 1
-    highIndex = lowIndex + 1
-    If highIndex > count - 1 Then highIndex = count - 1
-    fraction = h - CDbl(lowIndex)
+    fraction = SimStatsPositionOf(count, p, lowIndex, highIndex)
     low = ordered(LBound(ordered) + lowIndex)
     high = ordered(LBound(ordered) + highIndex)
 
@@ -836,4 +858,173 @@ Private Function SimStatsProbabilityOf(ByVal label As String, ByRef p As Double,
     End If
     p = magnitude / 100#
     SimStatsProbabilityOf = True
+End Function
+
+' ==========================================================================
+' THE ORDER-STATISTIC POSITION, AND THE ITERATIONS THAT OWN IT
+'
+' `statistics.order_statistic_identity` in sim_contract.yaml is the authority.
+' Two properties matter and both are structural here rather than asserted:
+'
+'   IT RECOMPUTES NO PERCENTILE. h, lo, hi and f are formed by the same three
+'   statements SimStatsQuantileSorted uses, and no value is interpolated. A
+'   caller wanting the number still calls SimStatsQuantile and gets the
+'   published one.
+'
+'   IT SORTS A PERMUTATION, NOT THE DATA. The caller's array is never
+'   reordered - the retained iteration arrays keep their original order for the
+'   digest - and what is ordered is a vector of INDICES.
+'
+' THE TIE-BREAK IS NOT BOLTED ON. SimStatsSortIndices is the accepted merge of
+' SimStatsSortAscending with one substitution: it moves indices and compares
+' the values they point at. That merge is STABLE and its tie rule is `<=`, so
+' equal values keep the order they arrived in - which, for a vector initialised
+' to 0, 1, 2, ..., is ascending original iteration index. The contracted rule
+' "lower original iteration index wins" is therefore a PROPERTY OF THE ACCEPTED
+' SORT, not a second rule that could disagree with it.
+' ==========================================================================
+Public Function SimStatsQuantilePosition(ByRef values() As Double, ByVal count As Long, _
+                                         ByVal p As Double, ByRef position As SimStatsPosition, _
+                                         ByRef detail As String) As Boolean
+    Dim order() As Long
+    Dim fraction As Double
+    Dim lowIndex As Long, highIndex As Long
+
+    If Not SimStatsUsableSequence(values, count, "quantile position", detail) Then Exit Function
+    If Not SimStatsUsableProbability(p, detail) Then Exit Function
+    If Not SimStatsOrderedIndices(values, count, order, detail) Then Exit Function
+
+    ' THE SAME ARITHMETIC AS THE VALUE - literally, not equivalently.
+    fraction = SimStatsPositionOf(count, p, lowIndex, highIndex)
+
+    position.LoSource = order(lowIndex)
+    position.HiSource = order(highIndex)
+    position.Fraction = fraction
+    position.LoValue = values(LBound(values) + position.LoSource)
+    position.HiValue = values(LBound(values) + position.HiSource)
+    SimStatsQuantilePosition = True
+End Function
+
+' The ascending permutation of 0 .. count - 1, by the value each index points at.
+Private Function SimStatsOrderedIndices(ByRef values() As Double, ByVal count As Long, _
+                                        ByRef order() As Long, ByRef detail As String) As Boolean
+    Dim index As Long
+    If count < 1 Then
+        detail = "statistics: an empty sequence cannot be ordered"
+        Exit Function
+    End If
+    ReDim order(0 To count - 1)
+    For index = 0 To count - 1
+        order(index) = index
+    Next index
+    If Not SimStatsSortIndices(order, values, count, detail) Then Exit Function
+    SimStatsOrderedIndices = True
+End Function
+
+' ==========================================================================
+' SimStatsSortAscending, moving indices instead of values.
+'
+' Structurally identical to the accepted merge - same bottom-up runs, same
+' scratch buffer allocated once, same `<=` tie rule, same exhausted-run
+' branches in the same order - because a second sort that drifted from the
+' first would order equal values differently and silently change which
+' iteration owns a position.
+'
+' THE TWO EXHAUSTED-RUN TESTS COME FIRST AND ARE SEPARATE. A single combined
+' condition is what produced `Subscript out of range` in the Phase-7 sensitivity
+' merge: when the low run is exhausted, `values(order(fromLow))` must not be
+' evaluated at all, and only an ordering that tests `fromLow >= midPoint`
+' BEFORE any comparison guarantees that.
+' ==========================================================================
+Private Function SimStatsSortIndices(ByRef order() As Long, ByRef values() As Double, _
+                                     ByVal count As Long, ByRef detail As String) As Boolean
+    Dim scratch() As Long
+    Dim runLength As Long, lowEnd As Long, midPoint As Long, highEnd As Long
+    Dim fromLow As Long, fromHigh As Long, target As Long
+    Dim base As Long
+
+    detail = vbNullString
+    If count < 2 Then
+        SimStatsSortIndices = True
+        Exit Function
+    End If
+    ReDim scratch(0 To count - 1)
+    base = LBound(values)
+
+    runLength = 1
+    Do While runLength < count
+        lowEnd = 0
+        Do While lowEnd < count
+            midPoint = lowEnd + runLength
+            If midPoint > count Then midPoint = count
+            highEnd = lowEnd + 2 * runLength
+            If highEnd > count Then highEnd = count
+            If midPoint < highEnd Then
+                fromLow = lowEnd
+                fromHigh = midPoint
+                target = lowEnd
+                Do While target < highEnd
+                    If fromLow >= midPoint Then
+                        scratch(target) = order(fromHigh)
+                        fromHigh = fromHigh + 1
+                    ElseIf fromHigh >= highEnd Then
+                        scratch(target) = order(fromLow)
+                        fromLow = fromLow + 1
+                    ElseIf values(base + order(fromLow)) <= values(base + order(fromHigh)) Then
+                        scratch(target) = order(fromLow)
+                        fromLow = fromLow + 1
+                    Else
+                        scratch(target) = order(fromHigh)
+                        fromHigh = fromHigh + 1
+                    End If
+                    target = target + 1
+                Loop
+                For target = lowEnd To highEnd - 1
+                    order(target) = scratch(target)
+                Next target
+            End If
+            lowEnd = lowEnd + 2 * runLength
+        Loop
+        runLength = runLength * 2
+    Loop
+
+    SimStatsSortIndices = True
+End Function
+
+' ==========================================================================
+' THE TYPE-7 POSITION, AND THE ONLY PLACE IT IS COMPUTED
+'
+'     h  = (n - 1) * p
+'     lo = floor(h)
+'     hi = min(lo + 1, n - 1)
+'     f  = h - lo
+'
+' TWO CALLERS, ONE ARITHMETIC. The quantile VALUE needs these to interpolate
+' between two order statistics; the position EXPOSURE needs them to say which
+' two. Written out twice they would be two declarations of one accepted
+' formula, free to drift - and a drifted position would name the wrong source
+' element while the published value stayed correct, which is the hardest kind
+' of defect to see.
+'
+' `Fix` is `floor` here and only here: h is (n - 1) * p with n >= 1 and p in
+' [0, 1], so h is never negative and the two agree on every value this can see.
+'
+' IT RETURNS f AND HANDS BACK lo AND hi. A Sub taking three ByRef outs would
+' say the same thing, but f is a value and returning it keeps the call an
+' ordinary assignment rather than a bare statement.
+'
+' It reads NO element of any sequence. It is arithmetic on a count and a
+' probability, which is why exposing it cannot move a published number.
+' ==========================================================================
+Private Function SimStatsPositionOf(ByVal count As Long, ByVal p As Double, _
+                                    ByRef lowIndex As Long, _
+                                    ByRef highIndex As Long) As Double
+    Dim h As Double
+    h = CDbl(count - 1) * p
+    lowIndex = CLng(Fix(h))
+    If lowIndex < 0 Then lowIndex = 0
+    If lowIndex > count - 1 Then lowIndex = count - 1
+    highIndex = lowIndex + 1
+    If highIndex > count - 1 Then highIndex = count - 1
+    SimStatsPositionOf = h - CDbl(lowIndex)
 End Function
