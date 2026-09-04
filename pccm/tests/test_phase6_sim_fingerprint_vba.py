@@ -969,7 +969,7 @@ def test_53_the_orchestration_layer_arrived_and_nothing_beyond_it() -> None:
     # kernel is not a Phase-6 module and is excluded by name rather than by
     # widening the set this control is about.
     assert not [p for p in SRC_VBA.glob("*.bas") if p.stem.startswith("modSim")
-                and p.stem not in ("modSimSensitivity", "modSimPostReport",
+                and p.stem not in ("modSimSensitivity", "modSimPostReport", "modSimAnnual",
                                    "modSimContract", "modSimRng", "modSimSample",
                                    "modSimEngine", "modSimStats", "modSimFingerprint",
                                    "modSimNonce", "modSimReport")]

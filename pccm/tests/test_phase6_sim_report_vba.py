@@ -2113,7 +2113,7 @@ def test_47_no_step_12_exists() -> None:
     names = {p.stem for p in SRC_VBA.glob("*.bas")}
     assert names & {"modSimDashboard", "modSimAnnual"} == set()
     for module in load_modules([SRC_VBA]):
-        if module.name in ("modSimSensitivity", "modSimPostReport"):
+        if module.name in ("modSimSensitivity", "modSimPostReport", "modSimAnnual"):
             # These ARE the sensitivity work. Naming their own subject is not a
             # Phase-6 module reaching forward into a later one, which is what
             # this control is about.

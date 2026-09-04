@@ -238,16 +238,16 @@ End Function
 ' ceil(duration / width), computed without `/` on Longs so no rounding rule is
 ' inherited from a division.
 ' ==========================================================================
-Public Function SimAnnualBlockCount(ByVal duration As Long, ByVal width As Long) As Long
+Public Function SimAnnualBlockCount(ByVal duration As Long, ByVal blockWidth As Long) As Long
     Dim blocks As Long
-    If duration < 1 Or width < 1 Then
+    If duration < 1 Or blockWidth < 1 Then
         SimAnnualBlockCount = 0
         Exit Function
     End If
     ' `Fix` of a Double division, not the `\` operator: the accepted source
     ' transcriber does not model `\`, and a construct only the compiler can
     ' read is a construct no Linux test can check.
-    blocks = CLng(Fix(CDbl(duration) / CDbl(width)))
-    If blocks * width < duration Then blocks = blocks + 1
+    blocks = CLng(Fix(CDbl(duration) / CDbl(blockWidth)))
+    If blocks * blockWidth < duration Then blocks = blocks + 1
     SimAnnualBlockCount = blocks
 End Function

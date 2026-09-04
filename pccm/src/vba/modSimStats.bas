@@ -941,7 +941,7 @@ Private Function SimStatsSortIndices(ByRef order() As Long, ByRef values() As Do
     Dim scratch() As Long
     Dim runLength As Long, lowEnd As Long, midPoint As Long, highEnd As Long
     Dim fromLow As Long, fromHigh As Long, target As Long
-    Dim base As Long
+    Dim origin As Long
 
     detail = vbNullString
     If count < 2 Then
@@ -949,7 +949,7 @@ Private Function SimStatsSortIndices(ByRef order() As Long, ByRef values() As Do
         Exit Function
     End If
     ReDim scratch(0 To count - 1)
-    base = LBound(values)
+    origin = LBound(values)
 
     runLength = 1
     Do While runLength < count
@@ -970,7 +970,7 @@ Private Function SimStatsSortIndices(ByRef order() As Long, ByRef values() As Do
                     ElseIf fromHigh >= highEnd Then
                         scratch(target) = order(fromLow)
                         fromLow = fromLow + 1
-                    ElseIf values(base + order(fromLow)) <= values(base + order(fromHigh)) Then
+                    ElseIf values(origin + order(fromLow)) <= values(origin + order(fromHigh)) Then
                         scratch(target) = order(fromLow)
                         fromLow = fromLow + 1
                     Else

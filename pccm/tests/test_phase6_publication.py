@@ -424,7 +424,8 @@ def test_20_the_implementation_arrived_in_step_11_and_only_there() -> None:
     phase6 = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
               "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport"}
     assert phase6 <= simulation, sorted(phase6 - simulation)
-    assert simulation - phase6 == {"modSimSensitivity", "modSimPostReport"}, sorted(
+    assert simulation - phase6 == {"modSimSensitivity", "modSimPostReport",
+                                   "modSimAnnual"}, sorted(
         simulation - phase6)
 
 

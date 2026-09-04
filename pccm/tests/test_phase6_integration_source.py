@@ -595,7 +595,17 @@ def test_22_the_manifest_is_the_module_inventory_authority() -> None:
 STEP13_CLOSURE_COMMIT = "85778b2854fee431a845499e5a2fe37f40e96610"
 REOPENED_SINCE_CLOSURE = {
     "modSimEngine": "P7-3 extracted the shared per-driver contribution routine "
-                    "and added deterministic per-driver replay",
+                    "and added deterministic per-driver replay; P7-5 added "
+                    "annual block replay, which applies a supplied per-year "
+                    "factor to the same sampled observation",
+    "modCalcReport": "P7-5 copies the RESOLVED per-year inputs - FxRate, "
+                     "Weights, Inflation - into DriverFactors at the one site "
+                     "that already had all three in hand, so the annual layer "
+                     "can regroup them. It resolves nothing new.",
+    "modSimStats": "P7-5 exposed the type-7 ORDER-STATISTIC POSITION - which "
+                   "source ordinals a percentile was interpolated between - and "
+                   "extracted the h/lo/hi/f arithmetic into one owner shared by "
+                   "the value and the position. No percentile value changed.",
 }
 
 # AND A REOPENED MODULE IS FROZEN AGAIN, to the bytes the phase that reopened it
@@ -604,7 +614,9 @@ REOPENED_SINCE_CLOSURE = {
 # Dropping the pin instead would leave the one module under active change as the
 # only one a stray byte could move unnoticed.
 REOPENED_CURRENT = {
-    "modSimEngine": "51ac0af666cf2191984e278a9b99ffe32b9131783a468df118e5ac76ca6f4db3",
+    "modSimEngine": "9c307eae451252a983fc2c36205759335e14642557c3c4ecf9ab4ee30ec3237e",
+    "modSimStats": "da0e5bead56a875d1f1f5cf6a2073b8590ff6915419c10e64c74c46e2d690ea9",
+    "modCalcReport": "c9f728f06bc7bc89eff5eb6e389d9fa305083e82af89b9e34f50340499364671",
 }
 
 
@@ -724,14 +736,22 @@ def test_24b_the_current_projection_is_not_the_one_run_6_executed() -> None:
 
 
 def test_25_the_accepted_reporter_prefix_is_still_byte_identical() -> None:
-    """The Step-11 technique, re-proved at the integration layer."""
+    """The Step-11 technique, re-proved at the integration layer.
+
+    THE PREFIX DIGEST MOVED IN P7-5, and it is still a digest. P7-5 authorised
+    the smallest extension of the resolution handoff, and BuildDriverFactors -
+    which sits before this banner - now copies the resolved FxRate, Weights and
+    Inflation into DriverFactors. What the control asserts is unchanged: the
+    text before the bridge is pinned, and the bridge is still the only thing
+    after it. Only which commit those bytes come from has moved.
+    """
     banner = ("' ==========================================================================\n"
               "' STEP 11 ADDITION - THE PHASE-6 PREPARATION BRIDGE\n")
     text = (SRC_VBA / "modCalcReport.bas").read_text(encoding="utf-8")
     assert text.count(banner) == 1
     accepted = text[: text.index(banner)]
     assert hashlib.sha256(accepted.encode("utf-8")).hexdigest() == (
-        "5d4568aef01037fd2999915da87a550d02033441b8c26c80f9386d4fcf8b087f")
+        "8d67d3f18b1ea8c4a8baba478f025d486f71afaa1ac31beac88d7b7ecfff80a9")
     after = re.findall(r"^(?:Public|Private) (?:Function|Sub) (\w+)",
                        text[text.index(banner):], re.M)
     assert after == [BRIDGE], after
@@ -1088,17 +1108,21 @@ def test_26_no_step_13_scenario_exists_yet() -> None:
 
 
 def test_27_no_phase7_module_exists() -> None:
-    """P7-2 LANDED THE FIRST ONE, AND ONLY THE FIRST ONE.
+    """THE LIST SHRINKS ONE PACKAGE AT A TIME, AND ONLY WHEN ONE LANDS.
 
-    `modSimSensitivity` is no longer premature: the pure sensitivity kernel is
-    the accepted P7-2 package and the module registry declares it. Everything
-    else on this list still is - annual output is P7-5, replay is P7-3, and the
-    dashboard, charts and reconciliation are Phase 8. `modSimCorrelation` stays
-    on it permanently: inter-driver correlation is out of scope, not deferred.
+    `modSimSensitivity` came off it in P7-2 and `modSimAnnual` comes off it now:
+    the annual stochastic computation is the accepted P7-5 package and the
+    module registry declares it. `modSimPostReport` is P7-4's. Everything still
+    on the list is still premature - the dashboard, charts and reconciliation
+    are Phase 8, and `modSimReplay` names a module that will never exist because
+    replay lives in modSimEngine, which owns the generator. `modSimCorrelation`
+    stays on it permanently: inter-driver correlation is out of scope, not
+    deferred.
     """
     names = {path.stem for path in SRC_VBA.glob("*.bas")}
     assert "modSimSensitivity" in names, "the accepted P7-2 kernel is missing"
-    for premature in ("modSimDashboard", "modSimAnnual", "modSimReconcile",
+    assert "modSimAnnual" in names, "the accepted P7-5 annual module is missing"
+    for premature in ("modSimDashboard", "modSimReconcile",
                       "modSimCorrelation", "modSimReplay", "modSimCharts"):
         assert premature not in names, premature
     declared = {module.name for module in _structure().vba_modules}

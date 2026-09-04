@@ -198,12 +198,42 @@ def _accepted_fingerprint_source() -> str:
     return text[: text.index(STEP10_FINGERPRINT_BANNER)]
 
 
+# ===========================================================================
+# THE ONE P7-5 ADDITION, REVERSED BEFORE THE RUN-7 DIGEST IS TAKEN
+# ===========================================================================
+# P7-5 extended DriverFactors with the resolved per-year inputs. Moving the
+# pre-Run-7 digest to a new opaque number would have recorded THAT something
+# changed and stopped proving WHAT. Reversing the addition keeps the original
+# digest as the standard, so the control still says: since Run 7 this module
+# changed by the renames and by exactly these five lines, and by nothing else.
+#
+# The text is matched EXACTLY and its absence is a failure, so a later edit to
+# these lines cannot be absorbed silently - the reversal stops matching and the
+# digest moves.
+P7_5_ADDITIONS_BY_MODULE = {
+    "modCalcFactors": (
+        "    ' The RESOLVED per-year inputs Knom and Kpv were built from. Phase 7\n"
+        "    ' regroups them per project year; it recomputes none of them.\n"
+        "    FxRate        As Double\n"
+        "    Weights()     As Double\n"
+        "    Inflation()   As Double\n"
+    ),
+}
+
+
 def _assert_run7_rename_only(module: str) -> None:
-    """Reversing the Run-7 renames must restore the pre-Run-7 byte digest."""
+    """Reversing the Run-7 renames - and the one P7-5 addition - must restore
+    the pre-Run-7 byte digest."""
     import hashlib
 
     text = (_accepted_fingerprint_source() if module == "modCalcFingerprint"
             else (SRC_VBA / f"{module}.bas").read_text(encoding="utf-8"))
+    addition = P7_5_ADDITIONS_BY_MODULE.get(module)
+    if addition is not None:
+        assert addition in text, (
+            f"{module}: the P7-5 DriverFactors addition is not the text this "
+            "control reverses, so what else changed cannot be established")
+        text = text.replace(addition, "", 1)
     for new, old in RUN7_RENAMES_BY_MODULE[module].items():
         assert new in text, f"{module}: the Run-7 rename {new} is missing"
         text = re.sub(r"\b" + new + r"\b", old, text)
@@ -251,7 +281,7 @@ PHASE5_INVENTORY = {
 PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
                     "modSimStats", "modSimFingerprint", "modSimNonce",
                     "modSimReport"}
-PHASE7_INVENTORY = {"modSimSensitivity", "modSimPostReport"}
+PHASE7_INVENTORY = {"modSimSensitivity", "modSimPostReport", "modSimAnnual"}
 
 """Phase-7 hand-written source modules, named on the same terms Phase 6 was:
 admitted by name, one at a time, so the earlier half of each inventory
@@ -1127,7 +1157,13 @@ def test_51_the_accepted_modules_were_not_modified() -> None:
     frozen = {
         "modCalcResolve": "0890c612ade1b00b93568bcb32b42121f83bff1ec6647224cccaa59322b15afe",
         "modCalcCheck": "738343945932150470233cb2a0b7e6fea7617db1a877cae8e09d19085e39c43b",
-        "modCalcFactors": "701097ab3092a1fdec9ef7168d55f50248df1acf11e2517f0ea3c18fed278128",
+        # MOVED AGAIN IN P7-5, and still pinned. The annual layer needs the RESOLVED
+        # per-year inputs Knom and Kpv were built from, so DriverFactors gained
+        # FxRate, Weights and Inflation - three fields on a Type and nothing else.
+        # No factor arithmetic changed: BuildFactor, BuildKnom, BuildKpv,
+        # SafeProduct and the exact kernels are byte-identical, which is what
+        # test_phase5_vba_source.py's body digests prove separately.
+        "modCalcFactors": "1718e7c6d278ed2fa4260c16a868eb3c5510c4a7b313b2a9e19f2a08f3df2cd4",
         # ITS CURRENT BYTES. Moved ONCE, under the P5-ID authority decision taken
         # after Runtime Run 10: Central Basis applies to Cost Line AND Risk, per
         # spec/calc_contract.yaml applies_to, the accepted plan's tblCalcDrivers

@@ -400,22 +400,35 @@ def test_09_no_other_module_owns_a_statistic() -> None:
     a statistic of its own, so the ban on every computing token stands for it
     too.
     """
-    consumers = {"modSimReport"}
+    # THE PERMITTED CALL IS PER CONSUMER, because what each is entitled to ask
+    # for differs. modSimReport stores a described measure and a contingency;
+    # modSimAnnual (P7-5) asks for one percentile over one year's column, which
+    # is the whole of its relationship with statistics.
+    consumers = {
+        "modSimReport": {"SimStatsDescribe", "SimStatsContingency"},
+        "modSimAnnual": {"SimStatsQuantileType7"},
+    }
     for module in load_modules([SRC_VBA]):
         if module.name == "modSimStats":
             continue
         tokens = ("Quantile", "Percentile", "StandardDeviation", "Variance",
                   "SIM_QUANTILE", "SIM_STAT_", "Contingency")
         if module.name in consumers:
-            # It may CALL them and read their projected identities; it may not
-            # implement one.
+            permitted = consumers[module.name]
+            called = set(re.findall(r"modSimStats\.(\w+)", module.code))
+            assert called <= permitted, (module.name, sorted(called))
+            # THE BAN IS APPLIED WITH THE PERMITTED CALL SITES REMOVED, so a
+            # consumer is not convicted by the NAME of the thing it is entitled
+            # to call - `SimStatsQuantileType7` contains "Type7" - while an
+            # actual implementation still trips every token.
+            body = module.code
+            for name in permitted:
+                body = body.replace(f"modSimStats.{name}", "")
             for owned in ("SimStatsSortAscending", "SimStatsQuantileSorted",
                           "SimStatsUnitScale", "SimStatsConstantValue",
                           "SimStatsProbabilityOf", "Type7", "type_7",
                           "SafeSubtract", "n - 1"):
-                assert owned not in module.code, (module.name, owned)
-            called = set(re.findall(r"modSimStats\.(\w+)", module.code))
-            assert called <= {"SimStatsDescribe", "SimStatsContingency"}, sorted(called)
+                assert owned not in body, (module.name, owned)
             continue
         for token in tokens:
             assert token not in module.code, (module.name, token)
@@ -517,7 +530,7 @@ def test_13_the_sort_is_a_bottom_up_merge_and_not_quadratic() -> None:
     assert indices.count("ReDim") == 1
     assert "runLength = runLength * 2" in indices
     assert "Do While runLength < count" in indices
-    assert "ElseIf values(base + order(fromLow)) <= values(base + order(fromHigh)) Then" in indices
+    assert "ElseIf values(origin + order(fromLow)) <= values(origin + order(fromHigh)) Then" in indices
     for quadratic in ("For probe = index - 1 To 0 Step -1", "Do While probe >= 0"):
         assert quadratic not in indices, quadratic
 

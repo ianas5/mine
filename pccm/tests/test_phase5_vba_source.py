@@ -381,7 +381,7 @@ PHASE6_MODULES = ("modSimRng", "modSimSample", "modSimEngine", "modSimStats",
 """Phase-6 hand-written source modules. Not Phase 5's, and named so the
 Phase-5 inventory equality below stays exact."""
 
-PHASE7_MODULES = ("modSimSensitivity", "modSimPostReport")
+PHASE7_MODULES = ("modSimSensitivity", "modSimPostReport", "modSimAnnual")
 """Phase-7 hand-written source modules, named on the same terms as Phase 6's.
 
 The equality below is about PHASE 5: a further Phase-5 module still cannot
@@ -1055,7 +1055,14 @@ def _type_fields(module: VbaModule, name: str) -> list[str]:
 def test_46_the_phase_6_carry_types_are_the_locked_ones() -> None:
     factors = _kernel()["modCalcFactors"]
     assert _type_fields(factors, "DriverFactors") == [
-        "PermanentId", "IsRisk", "Knom", "Kpv", "Quantity", "Probability",
+        "PermanentId", "IsRisk", "Knom", "Kpv",
+        # P7-5. The RESOLVED inputs Knom and Kpv were built from, carried so the
+        # annual layer can regroup them per project year without resolving
+        # anything a second time. They are DATA ALREADY COMPUTED by the one
+        # accepted resolution point, not a second authority: no rate is looked
+        # up again, no profile resolved again, no discount series built again.
+        "FxRate", "Weights()", "Inflation()",
+        "Quantity", "Probability",
         "DistKind", "CentralBasis", "MinValue", "MostLikely", "MaxValue",
         "Central", "MeanValue",
     ]
@@ -2896,6 +2903,11 @@ P5ID_AUTHORISED_FUNCTIONS: dict[str, set[str]] = {
     # The label is RESOLVED here, once, for both driver kinds.
     "modCalcAnalytical": {"CentralBasisOf", "DeterministicCentral", "BuildDriverAudit"},
     # ...and PUBLISHED here, in the Risk branch that used to write Empty.
+    #
+    # P7-5's change to BuildDriverFactors is NOT listed here. It is REVERSED
+    # instead - see P7_5_TYPE_ADDITIONS - so the function still compares equal
+    # to the base text and stays on the must-not-move list below. An exception
+    # would have retired a guarantee; the reversal keeps it.
     "modCalcReport": {"DriversBlock"},
 }
 
@@ -2931,6 +2943,43 @@ def _vba_function_texts(source: str) -> dict[str, str]:
             out[name] = "\n".join(buffer)
             name = None
     return out
+
+
+# The P7-5 addition to DriverFactors, reversed before the Run-7 comparison.
+# Declarative only: three fields on a Type, no executable line touched.
+P7_5_TYPE_ADDITIONS = {
+    "modCalcFactors": (
+        "    ' The RESOLVED per-year inputs Knom and Kpv were built from. Phase 7\n"
+        "    ' regroups them per project year; it recomputes none of them.\n"
+        "    FxRate        As Double\n"
+        "    Weights()     As Double\n"
+        "    Inflation()   As Double\n"
+    ),
+    # And the COPY of those inputs, at the one site that already had all three.
+    # Reversed here for the same reason: BuildDriverFactors is on the P5-ID
+    # must-not-move list because that correction was forbidden to touch a
+    # calculation, and P7-5 did not touch one either. Removing it from that list
+    # would retire a guarantee; reversing the addition keeps it, and keeps the
+    # two changes from being conflated.
+    "modCalcReport": (
+        "        ' CARRIED, NOT RECOMPUTED. Phase 7 regroups these per project year; it\n"
+        "        ' resolves no inflation, no FX and no discount of its own.\n"
+        "        package.Drivers(index).FxRate = package.Model.DriverFxRates(index)\n"
+        "        ReDim package.Drivers(index).Weights(0 To package.Model.Timeline.Duration - 1)\n"
+        "        ReDim package.Drivers(index).Inflation(0 To package.Model.Timeline.Duration - 1)\n"
+    ),
+}
+
+# The two copies inside the existing per-year loop. Listed separately because
+# they are inserted into a loop the base text already had, rather than added
+# before it - and both halves must be reversed or the comparison is answering a
+# question about only part of the change.
+P7_5_LOOP_ADDITIONS = {
+    "modCalcReport": (
+        "            package.Drivers(index).Weights(offset) = weights(offset)\n"
+        "            package.Drivers(index).Inflation(offset) = inflation(offset)\n"
+    ),
+}
 
 
 def test_86b_every_run_7_rename_is_spelling_and_nothing_else() -> None:
@@ -3002,6 +3051,19 @@ def test_86b_every_run_7_rename_is_spelling_and_nothing_else() -> None:
         if original.returncode != 0:          # shallow clone or detached history
             continue
         reversed_text = "\n".join(lines)
+        # AND THE ONE P7-5 DECLARATION ADDITION IS REVERSED WITH THEM. It adds
+        # three fields to a Type and touches no executable line, so removing it
+        # must restore the base text EXACTLY - which is a stronger statement
+        # than granting the module an exception would have been. A future edit
+        # to these lines stops the reversal matching and the comparison fails.
+        for table in (P7_5_TYPE_ADDITIONS, P7_5_LOOP_ADDITIONS):
+            addition = table.get(module)
+            if addition is None:
+                continue
+            assert addition in reversed_text, (
+                f"{module}: a P7-5 addition is not the text this control "
+                "reverses, so what else changed cannot be established")
+            reversed_text = reversed_text.replace(addition, "", 1)
         if reversed_text == original.stdout:
             continue
 
