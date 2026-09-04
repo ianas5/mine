@@ -381,7 +381,7 @@ $script:Phase7SensitivitySheet = [pscustomobject]@{
     AvailabilityRow    = 10
     HeaderRow          = 12
     FirstRow           = 13
-    RowWindow          = 200
+    RowWindow          = 1000
     FirstColumn        = 'B'
     LastColumn         = 'I'
 }
