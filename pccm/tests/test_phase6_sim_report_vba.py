@@ -56,7 +56,14 @@ STEP11_REPORTER_BANNER = (
     "' STEP 11 ADDITION - THE PHASE-6 PREPARATION BRIDGE\n"
 )
 ACCEPTED_REPORTER_SHA256 = (
-    "5d4568aef01037fd2999915da87a550d02033441b8c26c80f9386d4fcf8b087f"
+    # MOVED ONCE IN P7-5, and still a digest. BuildDriverFactors - which sits
+    # before the Step-11 banner - now copies the resolved FxRate, Weights and
+    # Inflation into DriverFactors, the smallest extension of the resolution
+    # handoff that P7-5 authorised. What the control asserts is unchanged: the
+    # text before the bridge is pinned; only which commit those bytes come from
+    # has moved. test_phase5_vba_source.py proves separately that no calculation
+    # inside that function changed.
+    "8d67d3f18b1ea8c4a8baba478f025d486f71afaa1ac31beac88d7b7ecfff80a9"
 )
 
 PHASE6_PUBLIC = [
@@ -2103,15 +2110,16 @@ def test_46_the_corpus_moved_only_for_the_authorised_axis_change() -> None:
     json.loads(text)
 
 def test_47_no_step_12_exists() -> None:
-    """P7-2 LANDED THE SENSITIVITY KERNEL, AND NOTHING ELSE ON THIS LIST.
+    """PHASE-6 MODULES DO NOT REACH FORWARD; LATER WORK STILL HAPPENS.
 
-    The claim is that the Phase-6 modules do not reach forward into later work,
-    not that later work never happens. `modSimSensitivity` exists now under P7-2
-    authority; the dashboard and annual output still do not, and no Phase-6
-    module may name any of it.
+    The claim was never that later modules never appear - it is that no Phase-6
+    module NAMES one. `modSimSensitivity` arrived under P7-2, `modSimPostReport`
+    under P7-4 and `modSimAnnual` under P7-5; the dashboard still has not, and
+    the loop below is what enforces the claim, module by module.
     """
     names = {p.stem for p in SRC_VBA.glob("*.bas")}
-    assert names & {"modSimDashboard", "modSimAnnual"} == set()
+    assert names & {"modSimDashboard"} == set()
+    assert "modSimAnnual" in names, "the accepted P7-5 annual module is missing"
     for module in load_modules([SRC_VBA]):
         if module.name in ("modSimSensitivity", "modSimPostReport", "modSimAnnual"):
             # These ARE the sensitivity work. Naming their own subject is not a
