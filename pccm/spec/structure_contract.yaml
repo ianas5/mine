@@ -508,6 +508,12 @@ vba:
     - name: "modSimAnnual"
       generated: false
       responsibility: "The Phase-7 annual stochastic mathematics: the per-year regrouping of an accepted deployment factor, one iteration's annual vector over a block of project years, the per-year type-7 ladder and the convex selected-Px annual profile. It owns no RNG, no sampler, no stream assignment, no application state, no run identity, no persistence, no presentation and no sensitivity; it recomputes no inflation, FX or discount, regrouping only the resolved inputs Phase 5 carried into DriverFactors."
+    - name: "modSimAnnualRun"
+      generated: false
+      responsibility: "The Phase-7 annual stochastic endpoint: the CURRENT-run precondition, the reporting-selector resolution, the resolved-model bridge, the per-year factor build with its sum-back reconciliation, block-at-a-time replay dispatch, ladder and selected-Px profile assembly, and the refusal reporting. It owns no RNG, no sampler, no contribution arithmetic, no percentile arithmetic, no fingerprint, no digest and no simulation-state derivation, and it recomputes no inflation, FX or discount. It names no sheet, column or row: every cell belongs to modSimAnnualStore. It allocates no run id, advances no nonce and writes no iteration record."
+    - name: "modSimAnnualStore"
+      generated: false
+      responsibility: "Where the Phase-7 annual answer lives: every _SimData and analytical-year-table address the annual step reads or writes, the published-last identity stamp, the bounded clear that makes a shorter answer safe, and the Phase-8 handoff. The handoff reports the annual distributions and the selected-Px profile as two separate states, because a moved reporting selector retires the profile and must not retire the ladders, and a profile is never relabelled. It owns no mathematics and derives no simulation state; it consumes the accepted owners of each."
     - name: "modSimSensitivity"
       generated: false
       responsibility: "The pure Phase-7 sensitivity mathematics: mid-ranks with average ranks for ties, Spearman as Pearson over two already-ranked series, the undefined zero-variance status, and the ordering of finished driver results by absolute rho with a permanent-id tie-break. No driver replay, no RNG or component stream, no workbook access, no _SimData, no run identity, no state and no presentation."
@@ -561,6 +567,19 @@ vba:
   # at full N the analysis can cost about as much as the run it explains.
   phase7_api_procedures:
     - "PCCM_RunSensitivity"
+    # P7-6. The annual endpoint and the four Phase-8 handoff accessors. Same
+    # accounting, same reason: this is Phase-7 code that no Windows run has
+    # executed, and it must not appear to carry Phase-5 harness evidence.
+    #
+    # The annual step is deliberately not a button and not part of a run, for
+    # the reasons sensitivity is not: a successful simulation must stay
+    # successful if the annual decomposition of it later fails, and the user
+    # must be able to repeat it without producing a new stochastic result.
+    - "PCCM_RunAnnualStochastic"
+    - "PCCM_AnnualDistributionState"
+    - "PCCM_AnnualProfileState"
+    - "PCCM_AnnualProfilePx"
+    - "PCCM_AnnualYearCount"
 
   # Constructs that must NOT appear in VBA. The Linux static tests and the Gate-B
   # persisted-project sweep assert their absence, so a later phase's

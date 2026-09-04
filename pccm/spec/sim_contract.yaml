@@ -1481,6 +1481,56 @@ sim_data:
     # inconsistent and is not current whatever either half says.
     profile_current_requires_label_and_probability_match: true
     selector_change_requires_new_simulation: false
+    # ------------------------------------------------------------------
+    # THE PROJECT-YEAR AXIS IS READ, NOT REBUILT
+    # ------------------------------------------------------------------
+    # A year row needs its project index, its calendar year and the discount
+    # factor the PV factor was built with. All three are Phase-5 output that a
+    # CURRENT calculation has already published to the analytical year table,
+    # and the annual endpoint runs only on a CURRENT Phase 5. So it READS them.
+    #
+    # It does not resolve a timeline, does not build a discount series and does
+    # not consult a discount rate: a second construction of the axis is a second
+    # answer, and the discount factor Phase 7 uses would then be free to differ
+    # from the one Kpv was built from. Reading the published axis is the same
+    # discipline that makes sensitivity read the published iteration totals
+    # instead of replaying the run to get them back.
+    year_axis_source: "_Calc: tblCalcYears"
+    year_axis_recomputed: false
+    discount_series_rebuilt: false
+    timeline_resolved_here: false
+    # The axis and the resolved model must agree about how many project years
+    # there are. They come from one CURRENT calculation, so a disagreement is
+    # not a condition to reconcile - it is a refusal.
+    year_count_cross_checked_against_driver_weights: true
+    # ------------------------------------------------------------------
+    # THE PHASE-8 HANDOFF
+    # ------------------------------------------------------------------
+    # Phase 8 must be able to tell five situations apart, and a single Boolean
+    # cannot carry them: the distributions are current; the profile is current
+    # for the selector as it stands now; a profile exists but was computed for a
+    # different Px; no annual output was produced for the current run; the
+    # annual output on the sheet belongs to an earlier run.
+    #
+    # So there are TWO state accessors, because there are two products with two
+    # different currentness rules, plus the stamped Px itself - which is what
+    # lets a reader name the confidence level a profile actually belongs to
+    # rather than assuming it is the selected one.
+    handoff:
+      accessors:
+        - {name: "PCCM_AnnualDistributionState", value_type: "text"}
+        - {name: "PCCM_AnnualProfileState", value_type: "text"}
+        - {name: "PCCM_AnnualProfilePx", value_type: "text"}
+        - {name: "PCCM_AnnualYearCount", value_type: "integer"}
+      owner_module: "modSimAnnualStore"
+      single_boolean_permitted: false
+      distribution_states: ["NOT PRODUCED", "CURRENT", "HISTORICAL"]
+      profile_states: ["NOT PRODUCED", "CURRENT", "OTHER Px", "HISTORICAL"]
+      # A profile whose stamped label and stamped probability disagree with each
+      # other says nothing trustworthy about which Px it is, so it is reported
+      # as belonging to another Px - never as current, and never relabelled.
+      inconsistent_stamp_state: "OTHER Px"
+      states_derived_without_worksheet_access: true
 
   # THE STEP-9 SUMMARY, PERSISTED.
   #

@@ -398,12 +398,18 @@ def test_20_the_implementation_arrived_in_step_11_and_only_there() -> None:
     for module in load_modules([src]):
         if module.name == "modSimReport":
             continue
-        if module.name == "modSimPostReport":
-            # P7-4 READS the active bank to know which published result it is
-            # explaining. The claim here is about who may CARRY the endpoint and
-            # the bank TRANSACTION, so that is what stays asserted for it.
+        if module.name in ("modSimPostReport", "modSimAnnualRun", "modSimAnnualStore"):
+            # P7-4 and P7-6 READ the active bank to know which published result
+            # they are explaining or decomposing. The claim here is about who may
+            # CARRY the endpoint and the bank TRANSACTION, so that is what stays
+            # asserted for them: they read the bank and they commit nothing.
             assert "PCCM_RunSimulation" not in module.code
             assert "FinalCommit" not in module.code
+            # AND THE BRIDGE STAYS A BRIDGE. Only the module that owns the
+            # pipeline may reach the Phase-5 preparation; the store, which owns
+            # the addresses, may not resolve a model at all.
+            if module.name == "modSimAnnualStore":
+                assert "CalcPrepareSimulationInputs" not in module.code, module.name
             continue
         for banned in ("PCCM_RunSimulation", "SIM_BANK_", "SIM_ACTIVE_BANK_ROW",
                        "SIM_FINAL_COMMIT_RANGE", "SIM_SUMMARY_", "SIM_CONTINGENCY_"):
@@ -425,7 +431,8 @@ def test_20_the_implementation_arrived_in_step_11_and_only_there() -> None:
               "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport"}
     assert phase6 <= simulation, sorted(phase6 - simulation)
     assert simulation - phase6 == {"modSimSensitivity", "modSimPostReport",
-                                   "modSimAnnual"}, sorted(
+                                   "modSimAnnual", "modSimAnnualRun",
+                                   "modSimAnnualStore"}, sorted(
         simulation - phase6)
 
 

@@ -270,6 +270,13 @@ PHASE7_VBA_MODULES = (
     "modSimSensitivity",
     "modSimPostReport",
     "modSimAnnual",
+    # P7-6. The annual step is TWO modules, split the way the sensitivity step
+    # is not: one owns the pipeline and names no cell, the other owns every
+    # address and computes no number. A single module carrying both would have
+    # been 1696 raw and 1163 code lines - over both ceilings - which is the
+    # limit doing exactly what it exists to do.
+    "modSimAnnualRun",
+    "modSimAnnualStore",
 )
 
 PHASE5_CODE_LINE_LIMIT = 900
@@ -375,12 +382,35 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
     owners = {m.name for m in _all_modules()
               if phase6 & set(m.public_procedures)}
     assert owners == {"modSimReport"}, owners
-    # PHASE 7 declares its endpoint in the contract rather than by name here,
-    # and it has its own owner: the analysis of a run is not part of the run.
-    assert data["vba"]["phase7_api_procedures"] == ["PCCM_RunSensitivity"]
+    # PHASE 7 declares its endpoints in the contract rather than by name here,
+    # and each has its own owner: the analysis of a run is not part of the run,
+    # and the annual decomposition of one is not part of either.
+    assert data["vba"]["phase7_api_procedures"] == [
+        "PCCM_RunSensitivity",
+        "PCCM_RunAnnualStochastic",
+        "PCCM_AnnualDistributionState",
+        "PCCM_AnnualProfileState",
+        "PCCM_AnnualProfilePx",
+        "PCCM_AnnualYearCount",
+    ]
     sensitivity_owners = {m.name for m in _all_modules()
                           if "PCCM_RunSensitivity" in m.public_procedures}
     assert sensitivity_owners == {"modSimPostReport"}, sensitivity_owners
+    # AND THE ANNUAL SURFACE IS SPLIT BY OWNERSHIP, not scattered: the endpoint
+    # belongs to the producer and every handoff accessor to the store, because
+    # what the handoff reports is a property of what is stored.
+    annual_endpoint = {m.name for m in _all_modules()
+                       if "PCCM_RunAnnualStochastic" in m.public_procedures}
+    assert annual_endpoint == {"modSimAnnualRun"}, annual_endpoint
+    handoff = {"PCCM_AnnualDistributionState", "PCCM_AnnualProfileState",
+               "PCCM_AnnualProfilePx", "PCCM_AnnualYearCount"}
+    handoff_owners = {m.name for m in _all_modules()
+                      if handoff & set(m.public_procedures)}
+    assert handoff_owners == {"modSimAnnualStore"}, handoff_owners
+    for module in _all_modules():
+        if module.name == "modSimAnnualStore":
+            assert handoff <= set(module.public_procedures), (
+                "the store must publish every contracted handoff accessor")
     accounted = (set(data["vba"]["entry_points"])
                  | set(data["vba"]["harness_procedures"])
                  | set(data["vba"].get("api_procedures", []))

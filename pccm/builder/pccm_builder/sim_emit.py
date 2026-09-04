@@ -585,6 +585,13 @@ def render_sim_contract_module(
         module.const(f"SIM_ANNUAL_STAMP_ROW_{_identifier(field['key'])}",
                      int(field["row"]))
     module.const("SIM_ANNUAL_PUBLISHED", "PUBLISHED")
+    # THE HANDOFF VOCABULARY, PROJECTED. Phase 8 must tell five situations
+    # apart, and the words it tells them apart BY belong to the contract - a
+    # state string typed into a module is a second vocabulary, and the two
+    # would drift the first time either was reworded.
+    for state in dict.fromkeys(list(annual["handoff"]["distribution_states"]) +
+                               list(annual["handoff"]["profile_states"])):
+        module.const(f"SIM_ANNUAL_STATE_{_identifier(state)}", str(state))
     module.raw()
 
     contingency = raw["sim_data"]["contingency_ladder"]

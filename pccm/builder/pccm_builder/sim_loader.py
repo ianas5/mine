@@ -560,6 +560,29 @@ LOCKED_ANNUAL_STAMP_FIELDS = [
     ("published", 16, "text"),
 ]
 LOCKED_ANNUAL_ROW_RULE = "one row per applied project year"
+LOCKED_ANNUAL_YEAR_AXIS_SOURCE = "_Calc: tblCalcYears"
+LOCKED_ANNUAL_HANDOFF_OWNER = "modSimAnnualStore"
+LOCKED_ANNUAL_STATE_NOT_PRODUCED = "NOT PRODUCED"
+LOCKED_ANNUAL_STATE_CURRENT = "CURRENT"
+LOCKED_ANNUAL_STATE_HISTORICAL = "HISTORICAL"
+LOCKED_ANNUAL_STATE_OTHER_PX = "OTHER Px"
+LOCKED_ANNUAL_DISTRIBUTION_STATES = [
+    LOCKED_ANNUAL_STATE_NOT_PRODUCED,
+    LOCKED_ANNUAL_STATE_CURRENT,
+    LOCKED_ANNUAL_STATE_HISTORICAL,
+]
+LOCKED_ANNUAL_PROFILE_STATES = [
+    LOCKED_ANNUAL_STATE_NOT_PRODUCED,
+    LOCKED_ANNUAL_STATE_CURRENT,
+    LOCKED_ANNUAL_STATE_OTHER_PX,
+    LOCKED_ANNUAL_STATE_HISTORICAL,
+]
+LOCKED_ANNUAL_HANDOFF_ACCESSORS = [
+    ("PCCM_AnnualDistributionState", "text"),
+    ("PCCM_AnnualProfileState", "text"),
+    ("PCCM_AnnualProfilePx", "text"),
+    ("PCCM_AnnualYearCount", "integer"),
+]
 LOCKED_ANNUAL_INDEX_COLUMNS = {
     "A": {"project_index": "AB", "calendar_year": "AC"},
     "B": {"project_index": "BC", "calendar_year": "BD"},
@@ -1202,8 +1225,17 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
         'quantile_keys_owner', 'row_rule', 'selected_px_owner',
         'selected_px_resolution_owner', 'selector_move_invalidates_simulation',
         'selector_move_makes_profile_current', 'selected_px_profile_columns',
-        'shares_row_axis_with_iteration_records', 'stamp'
+        'shares_row_axis_with_iteration_records', 'stamp',
+        'discount_series_rebuilt', 'handoff', 'timeline_resolved_here',
+        'year_axis_recomputed', 'year_axis_source',
+        'year_count_cross_checked_against_driver_weights'
     }),
+    'sim_data.annual_records.handoff': frozenset({
+        'accessors', 'distribution_states', 'inconsistent_stamp_state',
+        'owner_module', 'profile_states', 'single_boolean_permitted',
+        'states_derived_without_worksheet_access'
+    }),
+    'sim_data.annual_records.handoff.accessors[]': frozenset({'name', 'value_type'}),
     'sim_data.annual_records.stamp': frozenset({
         'bank_value_columns', 'cleared_before_write', 'fields',
         'published_written_last', 'surplus_rows_cleared'
@@ -4003,6 +4035,44 @@ def _validate_phase7_records(block: dict, where: str, header_row: int,
     _require_false(annual, "profile_relabelled_on_selector_change", awhere)
     _require_true(annual, "profile_current_requires_label_and_probability_match", awhere)
     _require_false(annual, "selector_change_requires_new_simulation", awhere)
+
+    # THE AXIS IS PHASE-5 OUTPUT, READ BACK. Three leaves, each refusing a
+    # different way of inventing it: a second source, a recomputation, and a
+    # rebuilt discount series. The fourth refuses the timeline resolution that
+    # would have to happen before any of them.
+    _require_value(annual, "year_axis_source", LOCKED_ANNUAL_YEAR_AXIS_SOURCE, awhere)
+    _require_false(annual, "year_axis_recomputed", awhere)
+    _require_false(annual, "discount_series_rebuilt", awhere)
+    _require_false(annual, "timeline_resolved_here", awhere)
+    _require_true(annual, "year_count_cross_checked_against_driver_weights", awhere)
+
+    ahwhere = f"{awhere}: handoff"
+    handoff = _map(annual, "handoff", ahwhere)
+    _require_value(handoff, "owner_module", LOCKED_ANNUAL_HANDOFF_OWNER, ahwhere)
+    # THE SETTLEMENT, ENFORCED RATHER THAN DESCRIBED. Five situations must stay
+    # distinguishable, so a single Boolean is refused outright and the two state
+    # vocabularies are pinned - the profile's carries one extra member, which is
+    # the whole point: a profile can exist, be perfectly valid, and belong to a
+    # confidence level nobody is asking for.
+    _require_false(handoff, "single_boolean_permitted", ahwhere)
+    _require_true(handoff, "states_derived_without_worksheet_access", ahwhere)
+    for key, locked in (("distribution_states", LOCKED_ANNUAL_DISTRIBUTION_STATES),
+                        ("profile_states", LOCKED_ANNUAL_PROFILE_STATES)):
+        if [str(state) for state in _seq(handoff, key, ahwhere)] != locked:
+            raise SimContractError(f"{ahwhere}: {key} must be exactly {locked}")
+    inconsistent = _req_str(handoff, "inconsistent_stamp_state", ahwhere)
+    if inconsistent not in LOCKED_ANNUAL_PROFILE_STATES:
+        raise SimContractError(
+            f"{ahwhere}: inconsistent_stamp_state {inconsistent!r} is not a profile state")
+    if inconsistent == LOCKED_ANNUAL_STATE_CURRENT:
+        raise SimContractError(
+            f"{ahwhere}: a stamp that disagrees with itself may not be reported as "
+            f"{LOCKED_ANNUAL_STATE_CURRENT}")
+    accessors = [(_req_str(a, "name", ahwhere), _req_str(a, "value_type", ahwhere))
+                 for a in _seq(handoff, "accessors", ahwhere)]
+    if accessors != LOCKED_ANNUAL_HANDOFF_ACCESSORS:
+        raise SimContractError(
+            f"{ahwhere}: accessors must be exactly {LOCKED_ANNUAL_HANDOFF_ACCESSORS}")
 
     astwhere = f"{awhere}: stamp"
     annual_stamp = _map(annual, "stamp", astwhere)

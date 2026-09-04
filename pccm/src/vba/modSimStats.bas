@@ -415,6 +415,73 @@ Public Function SimStatsSelectedQuantile(ByRef quantileLabels() As String, _
 End Function
 
 ' ==========================================================================
+' THE LADDER'S PROBABILITIES - P7-6
+' ==========================================================================
+' The eleven rungs the summary already publishes, as the numbers a percentile
+' takes. The annual distributions are the SAME ladder taken per project year,
+' so they must ask for it the same way: through the projection and through the
+' one label decoder, never from a list written out a second time.
+'
+' It returns probabilities and no values, because nothing is being measured
+' here - this is the ladder's definition, not a run's answer.
+Public Function SimStatsLadderProbabilities(ByRef probabilities() As Double, _
+                                            ByRef detail As String) As Boolean
+    Dim index As Long
+    Dim label As String
+    Dim p As Double
+
+    detail = vbNullString
+    ReDim probabilities(0 To SIM_QUANTILE_COUNT - 1)
+    For index = 0 To SIM_QUANTILE_COUNT - 1
+        If Not SimStatsLadderLabel(index, label, detail) Then Exit Function
+        If Not SimStatsProbabilityOf(label, p, detail) Then Exit Function
+        probabilities(index) = p
+    Next index
+    SimStatsLadderProbabilities = True
+End Function
+
+' ==========================================================================
+' THE REPORTING SELECTOR, RESOLVED TO A PROBABILITY - P7-6
+' ==========================================================================
+' SimStatsSelectedQuantile answers "what is the selected total?" and needs a
+' measured ladder to do it. The annual PROFILE asks a different question -
+' "which probability did the user select?" - and asking it through the value
+' lookup would force a caller to carry a ladder of numbers it has no use for.
+'
+' THE SELECTABILITY RULES ARE THE SAME RULES, not a copy of them: a blank is
+' refused, the fixed level is refused as a selector, an unknown label is
+' refused, and the probability comes from the one label decoder. What differs
+' is only that no measured value is required or returned.
+Public Function SimStatsSelectedProbability(ByVal selectedLabel As String, _
+                                            ByRef p As Double, _
+                                            ByRef detail As String) As Boolean
+    Dim index As Long, found As Long
+    Dim label As String
+
+    detail = vbNullString
+    If Len(selectedLabel) = 0 Then
+        detail = "statistics: a blank confidence level"
+        Exit Function
+    End If
+    If StrComp(selectedLabel, SIM_QUANTILE_FIXED_1, vbBinaryCompare) = 0 Then
+        detail = "statistics: " & SIM_QUANTILE_FIXED_1 & _
+                 " is reported and fixed; it is not selectable"
+        Exit Function
+    End If
+
+    found = -1
+    For index = 0 To SIM_QUANTILE_COUNT - 1
+        If Not SimStatsLadderLabel(index, label, detail) Then Exit Function
+        If StrComp(label, selectedLabel, vbBinaryCompare) = 0 Then found = index
+    Next index
+    If found < 0 Then
+        detail = "statistics: an unknown confidence level"
+        Exit Function
+    End If
+    SimStatsSelectedProbability = SimStatsProbabilityOf(selectedLabel, p, detail)
+End Function
+
+' ==========================================================================
 ' Contingency
 '
 '     contingency = selected Px total - deterministic base estimate A

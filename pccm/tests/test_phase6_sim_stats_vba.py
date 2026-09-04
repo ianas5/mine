@@ -288,6 +288,12 @@ def test_03_the_public_surface_is_the_accepted_numerical_operations() -> None:
     assert sorted(_module().public_procedures) == [
         "SimStatsContingency",
         "SimStatsDescribe",
+        # P7-6. Two LOOKUPS through the one projected ladder, not two more
+        # statistics: neither measures anything and neither touches a sample.
+        # `SimStatsLadderProbabilities` returns the eleven rungs the summary
+        # already publishes, so the annual distributions cannot be taken at a
+        # second set of probabilities.
+        "SimStatsLadderProbabilities",
         "SimStatsMean",
         # P7-5. The order-statistic POSITION, not a seventh statistic: it
         # computes no value and the annual profile is its only caller. The
@@ -295,6 +301,10 @@ def test_03_the_public_surface_is_the_accepted_numerical_operations() -> None:
         "SimStatsQuantilePosition",
         "SimStatsQuantileType7",
         "SimStatsSampleStandardDeviation",
+        # P7-6. "Which probability did the user select?" - the question the
+        # annual profile asks, and the one the VALUE lookup below cannot answer
+        # without a measured ladder its caller has no use for.
+        "SimStatsSelectedProbability",
         "SimStatsSelectedQuantile",
     ]
     private = set(_module().procedures) - set(_module().public_procedures)
@@ -407,6 +417,17 @@ def test_09_no_other_module_owns_a_statistic() -> None:
     consumers = {
         "modSimReport": {"SimStatsDescribe", "SimStatsContingency"},
         "modSimAnnual": {"SimStatsQuantileType7"},
+        # P7-6. The annual endpoint asks for four things and computes none of
+        # them: the accepted ladder's probabilities, the order-statistic
+        # POSITION of the selected Px over the published totals, the percentile
+        # that position points at - for the profile reconciliation - and the
+        # resolution of the reporting selector to a probability.
+        "modSimAnnualRun": {"SimStatsLadderProbabilities", "SimStatsQuantilePosition",
+                            "SimStatsQuantileType7", "SimStatsSelectedProbability"},
+        # And the store asks for exactly one: whether a stamped label is a
+        # selectable confidence level and what probability it spells. That is a
+        # lookup through the one projected ladder, not a measurement.
+        "modSimAnnualStore": {"SimStatsSelectedProbability"},
     }
     for module in load_modules([SRC_VBA]):
         if module.name == "modSimStats":
@@ -424,6 +445,14 @@ def test_09_no_other_module_owns_a_statistic() -> None:
             body = module.code
             for name in permitted:
                 body = body.replace(f"modSimStats.{name}", "")
+            # THE SAME EXEMPTION FOR THE ACCEPTED ARITHMETIC OWNER. `SafeSubtract`
+            # is banned because a module that subtracts its own way is a module
+            # computing a deviation; calling modCalcFactors - which is the ONE
+            # owner of checked arithmetic - is the opposite of that. Convicting a
+            # consumer for delegating would push it toward a bare `-`.
+            for name in ("SafeSubtract", "SafeSignedSum", "SafeProduct",
+                         "IdentityAllowance", "ConditioningScaledMagnitude"):
+                body = body.replace(f"modCalcFactors.{name}", "")
             for owned in ("SimStatsSortAscending", "SimStatsQuantileSorted",
                           "SimStatsUnitScale", "SimStatsConstantValue",
                           "SimStatsProbabilityOf", "Type7", "type_7",
