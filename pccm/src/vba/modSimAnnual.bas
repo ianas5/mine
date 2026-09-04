@@ -28,8 +28,13 @@ Option Explicit
 ' Replay belongs to modSimEngine, which owns the generator and the contribution
 ' rule; the percentile belongs to modSimStats, which owns type 7. This module
 ' owns the ANNUAL arithmetic on top of both: the per-year regrouping of an
-' accepted factor, the block accumulation, the ladder assembly and the profile
-' blend.
+' accepted factor, the ladder assembly and the profile blend.
+'
+' IT DOES NOT BUILD AN ITERATION'S ANNUAL VECTOR. That is replay - the same
+' sample, the same occurrence, a different factor - and replay belongs to
+' modSimEngine, which owns the generator and the contribution rule. A second
+' way to produce an annual vector would be a second contribution rule able to
+' disagree with the accepted one.
 '
 ' --------------------------------------------------------------------------
 ' IT RECOMPUTES NO INFLATION, NO FX AND NO DISCOUNT
@@ -66,29 +71,34 @@ Public Const SIM_ANNUAL_BLOCK_WIDTH As Long = 12
 ' The same factors, in the same order, through the same exact-product kernel
 ' modCalcFactors uses on its way to the scalar. What differs is only that the
 ' sum is not taken.
-Public Function SimAnnualFactors(ByRef driver As DriverFactors, _
+' IT TAKES ARRAYS, NOT A DriverFactors. This module names no Phase-5 type and
+' knows nothing of drivers, registers or resolution: it is handed a rate and
+' three series and returns their per-year products. The caller unpacks what it
+' owns, which is also what keeps modSimAnnual a pure numerical module in the
+' way modSimStats is one.
+Public Function SimAnnualFactors(ByVal fxRate As Double, ByRef weights() As Double, _
+                                 ByRef inflation() As Double, _
                                  ByRef discount() As Double, _
                                  ByVal withDiscount As Boolean, _
                                  ByRef result() As Double, _
                                  ByRef detail As String) As Boolean
     Dim years As Long, index As Long
     Dim group() As Double, groupWidth As Long
+    Dim term As Double
 
     detail = vbNullString
-    years = UBound(driver.Weights) - LBound(driver.Weights) + 1
+    years = UBound(weights) - LBound(weights) + 1
     If years < 1 Then
-        detail = "annual: driver " & driver.PermanentId & " carries no project year"
+        detail = "annual: no project year to decompose a factor over"
         Exit Function
     End If
-    If UBound(driver.Inflation) - LBound(driver.Inflation) + 1 <> years Then
-        detail = "annual: driver " & driver.PermanentId & " has a weight for every " & _
-                 "project year but not an inflation factor"
+    If UBound(inflation) - LBound(inflation) + 1 <> years Then
+        detail = "annual: a weight for every project year but not an inflation factor"
         Exit Function
     End If
     If withDiscount Then
         If UBound(discount) - LBound(discount) + 1 < years Then
-            detail = "annual: the discount series is shorter than driver " & _
-                     driver.PermanentId & "'s project years"
+            detail = "annual: the discount series is shorter than the project years"
             Exit Function
         End If
         groupWidth = 4
@@ -99,74 +109,22 @@ Public Function SimAnnualFactors(ByRef driver As DriverFactors, _
     ReDim result(0 To years - 1)
     ReDim group(0 To groupWidth - 1)
     For index = 0 To years - 1
-        group(0) = driver.FxRate
-        group(1) = driver.Weights(LBound(driver.Weights) + index)
-        group(2) = driver.Inflation(LBound(driver.Inflation) + index)
+        group(0) = fxRate
+        group(1) = weights(LBound(weights) + index)
+        group(2) = inflation(LBound(inflation) + index)
         If withDiscount Then group(3) = discount(LBound(discount) + index)
-        If Not modCalcFactors.SafeProduct(group, groupWidth, result(index)) Then
-            detail = "annual: driver " & driver.PermanentId & " project year " & _
-                     CStr(index + 1) & " factor is not representable"
+        ' A SCALAR LOCAL, then the element. An array element handed straight
+        ' to a ByRef out-parameter is a construct the accepted source
+        ' transcriber cannot model, and a line only the compiler can read is a
+        ' line no Linux test can check.
+        If Not modCalcFactors.SafeProduct(group, groupWidth, term) Then
+            detail = "annual: project year " & CStr(index + 1) & _
+                     " factor is not representable"
             Exit Function
         End If
+        result(index) = term
     Next index
     SimAnnualFactors = True
-End Function
-
-' ==========================================================================
-' ONE ITERATION'S ANNUAL VECTOR, over the years of one block
-' ==========================================================================
-' A_j(y) = SUM_d observation_d_j * K_d_y
-'
-' THE OBSERVATION IS AN INPUT. It is the number the accepted run already
-' produced for driver d in iteration j - unit cost times quantity for a Cost
-' Line, severity for a Risk that occurred, and exactly zero for one that did
-' not. This module cannot sample and holds no generator; what it does is apply
-' a different deployment factor to a number that already exists.
-Public Function SimAnnualVector(ByRef observations() As Double, _
-                                ByRef factors() As Double, _
-                                ByVal driverCount As Long, ByVal yearCount As Long, _
-                                ByVal firstYear As Long, ByRef result() As Double, _
-                                ByRef detail As String) As Boolean
-    Dim year As Long, driver As Long
-    Dim terms() As Double, observation As Double, term As Double
-
-    detail = vbNullString
-    If driverCount < 1 Then
-        detail = "annual: a model with no drivers has no annual vector"
-        Exit Function
-    End If
-    If yearCount < 1 Then
-        detail = "annual: a block with no project years has no annual vector"
-        Exit Function
-    End If
-
-    ReDim result(0 To yearCount - 1)
-    ReDim terms(0 To driverCount - 1)
-    For year = 0 To yearCount - 1
-        For driver = 0 To driverCount - 1
-            observation = observations(LBound(observations) + driver)
-            If observation = 0# Then
-                ' A Risk that did not occur contributes EXACTLY zero to every
-                ' year. Forming 0 * K would be the same number and would also
-                ' refuse a factor the driver never reached.
-                terms(driver) = 0#
-            Else
-                If Not modCalcFactors.SafeMultiply(observation, _
-                        factors(driver * yearCount + year), term) Then
-                    detail = "annual: driver " & CStr(driver + 1) & " project year " & _
-                             CStr(firstYear + year + 1) & " contribution is not representable"
-                    Exit Function
-                End If
-                terms(driver) = term
-            End If
-        Next driver
-        If Not modCalcFactors.SafeSignedSum(terms, driverCount, result(year)) Then
-            detail = "annual: project year " & CStr(firstYear + year + 1) & _
-                     " total is not representable"
-            Exit Function
-        End If
-    Next year
-    SimAnnualVector = True
 End Function
 
 ' ==========================================================================

@@ -535,12 +535,12 @@ Public Function SimEngineReplayAnnualBlock(ByRef drivers() As DriverFactors, _
             For index = 0 To costCount + riskCount - 1
                 terms(index) = staged(year * (costCount + riskCount) + index)
             Next index
-            If Not SafeSignedSum(terms, costCount + riskCount, _
-                    column((iteration - 1) * yearCount + year)) Then
+            If Not SafeSignedSum(terms, costCount + riskCount, term) Then
                 detail = "engine: iteration " & CStr(iteration) & " project year " & _
                          CStr(firstYear + year + 1) & " total is not representable"
                 Exit Function
             End If
+            column((iteration - 1) * yearCount + year) = term
         Next year
     Next iteration
     SimEngineReplayAnnualBlock = True
