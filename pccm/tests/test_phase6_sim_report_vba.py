@@ -2114,17 +2114,19 @@ def test_47_no_step_12_exists() -> None:
 
     The claim was never that later modules never appear - it is that no Phase-6
     module NAMES one. `modSimSensitivity` arrived under P7-2, `modSimPostReport`
-    under P7-4 and `modSimAnnual` under P7-5; the dashboard still has not, and
-    the loop below is what enforces the claim, module by module.
+    under P7-4, `modSimAnnual` under P7-5 and the two annual orchestration
+    modules under P7-6; the dashboard still has not, and the loop below is what
+    enforces the claim, module by module.
     """
     names = {p.stem for p in SRC_VBA.glob("*.bas")}
     assert names & {"modSimDashboard"} == set()
     assert "modSimAnnual" in names, "the accepted P7-5 annual module is missing"
     for module in load_modules([SRC_VBA]):
-        if module.name in ("modSimSensitivity", "modSimPostReport", "modSimAnnual"):
-            # These ARE the sensitivity work. Naming their own subject is not a
-            # Phase-6 module reaching forward into a later one, which is what
-            # this control is about.
+        if module.name in ("modSimSensitivity", "modSimPostReport", "modSimAnnual",
+                           "modSimAnnualRun", "modSimAnnualStore"):
+            # These ARE the sensitivity and annual work. Naming their own subject
+            # is not a Phase-6 module reaching forward into a later one, which is
+            # what this control is about.
             continue
         for later in ("Sensitivity", "AnnualStochastic", "Tornado"):
             assert later not in module.code, (module.name, later)
