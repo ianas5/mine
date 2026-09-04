@@ -1405,6 +1405,57 @@ sim_data:
       A: {nominal: "AZ", pv: "BA"}
       B: {nominal: "CA", pv: "CB"}
     iteration_level_annual_values_persisted: false
+    # ------------------------------------------------------------------
+    # P7-6. THE PUBLICATION STAMP
+    # ------------------------------------------------------------------
+    # The block's own first column, rows 8-16, mirroring the sensitivity
+    # stamp: a stamp beside the records it describes cannot be paired with
+    # the wrong block by a later reader.
+    #
+    # WHY selected_px IS STAMPED AND THE SENSITIVITY STAMP HAS NO SUCH FIELD.
+    # `selected_confidence_level` is a REPORTING SELECTOR: it does not enter
+    # the request fingerprint, does not affect staleness and does not require
+    # a rerun. So a user may move it while the simulation stays CURRENT - and
+    # the persisted annual PROFILE is the blend for ONE particular Px. Without
+    # the Px recorded beside it, a profile computed at one confidence level
+    # would be read as the profile for whatever level is selected NOW, with
+    # every value intact and every identity field matching. The stamp records
+    # which Px the profile represents so a reader can tell.
+    #
+    # No percentile LABEL is written here. The selectable ladder is owned by
+    # input_contract.yaml, and naming one of its values in this file would be
+    # the copy that is free to drift from it.
+    #
+    # year_count bounds the records. A four-year run published after a
+    # twenty-year one must not leave years 5-20 readable as current, and a
+    # count is what says where the answer stops - not the last non-blank row.
+    stamp:
+      bank_value_columns: {A: "AB", B: "BC"}
+      published_written_last: true
+      cleared_before_write: true
+      surplus_rows_cleared: true
+      fields:
+        - {key: "run_id", row: 8, value_type: "integer"}
+        - {key: "effective_seed", row: 9, value_type: "integer"}
+        - {key: "request_fingerprint", row: 10, value_type: "text"}
+        - {key: "result_digest", row: 11, value_type: "text"}
+        - {key: "iterations", row: 12, value_type: "integer"}
+        - {key: "year_count", row: 13, value_type: "integer"}
+        - {key: "selected_px_label", row: 14, value_type: "text"}
+        - {key: "selected_px_probability", row: 15, value_type: "double"}
+        - {key: "published", row: 16, value_type: "text"}
+    # THE SELECTED Px IS NOT INVENTED HERE. It is the reporting selector the
+    # accepted contract already owns, resolved through the accepted ladder.
+    # P7-6 records WHICH Px a profile represents; it does not choose one.
+    selected_px_owner: "selected_confidence_level.source"
+    selected_px_resolution_owner: "statistics.selected_confidence_level"
+    # A moved selector does not invalidate the simulation, so it must not be
+    # allowed to invalidate the annual records either - but the profile it
+    # produced is no longer the profile the selector now asks for, and a
+    # reader must be able to see that.
+    profile_px_recorded_in_stamp: true
+    selector_move_invalidates_simulation: false
+    selector_move_makes_profile_current: false
 
   # THE STEP-9 SUMMARY, PERSISTED.
   #

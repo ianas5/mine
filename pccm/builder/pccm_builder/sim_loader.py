@@ -548,6 +548,17 @@ LOCKED_SENSITIVITY_STAMP = (
     ("published", 14, "text"),
 )
 LOCKED_SENSITIVITY_STAMP_COLUMNS = {"A": "CC", "B": "CL"}
+LOCKED_ANNUAL_STAMP_FIELDS = [
+    ("run_id", 8, "integer"),
+    ("effective_seed", 9, "integer"),
+    ("request_fingerprint", 10, "text"),
+    ("result_digest", 11, "text"),
+    ("iterations", 12, "integer"),
+    ("year_count", 13, "integer"),
+    ("selected_px_label", 14, "text"),
+    ("selected_px_probability", 15, "double"),
+    ("published", 16, "text"),
+]
 LOCKED_ANNUAL_ROW_RULE = "one row per applied project year"
 LOCKED_ANNUAL_INDEX_COLUMNS = {
     "A": {"project_index": "AB", "calendar_year": "AC"},
@@ -1182,9 +1193,18 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
     'sim_data.annual_records': frozenset({
         'consumes_reserved_rows', 'first_record_row', 'footer_rows', 'header_row',
         'index_columns', 'iteration_level_annual_values_persisted', 'max_rows_owner',
-        'quantile_count', 'quantile_first_column', 'quantile_keys_owner', 'row_rule',
-        'selected_px_profile_columns', 'shares_row_axis_with_iteration_records'
+        'profile_px_recorded_in_stamp', 'quantile_count', 'quantile_first_column',
+        'quantile_keys_owner', 'row_rule', 'selected_px_owner',
+        'selected_px_resolution_owner', 'selector_move_invalidates_simulation',
+        'selector_move_makes_profile_current', 'selected_px_profile_columns',
+        'shares_row_axis_with_iteration_records', 'stamp'
     }),
+    'sim_data.annual_records.stamp': frozenset({
+        'bank_value_columns', 'cleared_before_write', 'fields',
+        'published_written_last', 'surplus_rows_cleared'
+    }),
+    'sim_data.annual_records.stamp.bank_value_columns': frozenset({'A', 'B'}),
+    'sim_data.annual_records.stamp.fields[]': frozenset({'key', 'row', 'value_type'}),
     'sim_data.annual_records.index_columns': frozenset({'A', 'B'}),
     'sim_data.annual_records.index_columns.A': frozenset({'calendar_year', 'project_index'}),
     'sim_data.annual_records.index_columns.B': frozenset({'calendar_year', 'project_index'}),
@@ -3798,6 +3818,17 @@ def _sim_data_footprints(block: dict, where: str, header_row: int,
                         _req_str(stamp_columns, bank, where), row, row))
 
     annual = _map(block, "annual_records", where)
+    # THE ANNUAL STAMP IS A CLAIM LIKE ANY OTHER. Left out, its cells would be
+    # the one part of the Phase-7 allocation nothing proved disjoint - which is
+    # exactly how the sensitivity stamp came to sit on the statistics band.
+    annual_stamp = _map(annual, "stamp", where)
+    annual_stamp_columns = _map(annual_stamp, "bank_value_columns", where)
+    for field in _seq(annual_stamp, "fields", where):
+        row = _req_int(field, "row", where)
+        key = _req_str(field, "key", where)
+        for bank in ("A", "B"):
+            out.append((f"annual_stamp[{bank}].{key}",
+                        _req_str(annual_stamp_columns, bank, where), row, row))
     quantiles = _req_int(annual, "quantile_count", where)
     for group in ("index_columns", "selected_px_profile_columns"):
         for bank, entry in _map(annual, group, where).items():
@@ -3943,6 +3974,51 @@ def _validate_phase7_records(block: dict, where: str, header_row: int,
         )
     # THE LADDER, NEVER THE MATRIX.
     _require_false(annual, "iteration_level_annual_values_persisted", awhere)
+
+    # ------------------------------------------------------------------
+    # P7-6. THE PUBLICATION STAMP, AND THE Px THE PROFILE REPRESENTS
+    # ------------------------------------------------------------------
+    # Every leaf enforced. The selected-Px fields carry the weight here: the
+    # confidence-level selector is a REPORTING selector that changes nothing
+    # about validity, so a profile computed at one Px stays perfectly valid -
+    # and perfectly misleading - once the selector moves. Recording the Px
+    # beside the profile is what lets a reader tell.
+    _require_value(annual, "selected_px_owner",
+                   "selected_confidence_level.source", awhere)
+    _require_value(annual, "selected_px_resolution_owner",
+                   "statistics.selected_confidence_level", awhere)
+    _require_true(annual, "profile_px_recorded_in_stamp", awhere)
+    _require_false(annual, "selector_move_invalidates_simulation", awhere)
+    _require_false(annual, "selector_move_makes_profile_current", awhere)
+
+    astwhere = f"{awhere}: stamp"
+    annual_stamp = _map(annual, "stamp", astwhere)
+    _require_true(annual_stamp, "published_written_last", astwhere)
+    _require_true(annual_stamp, "cleared_before_write", astwhere)
+    _require_true(annual_stamp, "surplus_rows_cleared", astwhere)
+    annual_fields = [(_req_str(f, "key", astwhere), _req_int(f, "row", astwhere),
+                      _req_str(f, "value_type", astwhere))
+                     for f in _seq(annual_stamp, "fields", astwhere)]
+    if annual_fields != LOCKED_ANNUAL_STAMP_FIELDS:
+        raise SimContractError(
+            f"{astwhere}: fields must be exactly {LOCKED_ANNUAL_STAMP_FIELDS}"
+        )
+    # A STAMP MAY NOT SIT WHERE A RECORD WILL BE WRITTEN. The occupancy check
+    # proves disjointness against other BLOCKS; this proves it against the
+    # block's own records, which grow downward from first_record_row.
+    for _key, row, _kind in annual_fields:
+        if row >= first_row:
+            raise SimContractError(
+                f"{astwhere}: the stamp field at row {row} is at or below the "
+                f"first record row {first_row}; it would collide with a year record")
+    annual_stamp_columns = _map(annual_stamp, "bank_value_columns", astwhere)
+    for bank, group in (("A", "index_columns"), ("B", "index_columns")):
+        first_index = _map(_map(annual, group, awhere), bank, awhere)["project_index"]
+        if _req_str(annual_stamp_columns, bank, astwhere) != first_index:
+            raise SimContractError(
+                f"{astwhere}: bank {bank}'s stamp column must be its block's own "
+                f"first column {first_index}, so a stamp cannot be paired with "
+                "the wrong block")
     _require_value(annual, "row_rule", LOCKED_ANNUAL_ROW_RULE, awhere)
     _require_value(annual, "max_rows_owner",
                    "structure_contract.yaml: year_columns.max_generated_year_columns", awhere)
