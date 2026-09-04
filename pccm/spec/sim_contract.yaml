@@ -1456,6 +1456,31 @@ sim_data:
     profile_px_recorded_in_stamp: true
     selector_move_invalidates_simulation: false
     selector_move_makes_profile_current: false
+    # ------------------------------------------------------------------
+    # THE TWO ANNUAL PRODUCTS DO NOT SHARE A CURRENTNESS RULE
+    # ------------------------------------------------------------------
+    # The per-year percentile LADDERS are a property of the run alone: every
+    # rung of every year is computed across all iterations and no selector
+    # enters them. Moving the reporting selector cannot make them wrong, so it
+    # must not make them stale either - marking them stale would retire a
+    # correct answer for a reason that has nothing to do with it.
+    #
+    # The selected-Px PROFILE is the blend at ONE resolved Px. It stays
+    # historically valid for the Px stamped into it, and it stops being current
+    # the moment the selector resolves to a different one. It is never
+    # relabelled: a profile computed at one confidence level may not be
+    # presented as the profile for another.
+    #
+    # So a reader needs BOTH answers, and a single annual_current Boolean
+    # cannot carry them.
+    distribution_currentness_is_selector_specific: false
+    profile_currentness_is_selector_specific: true
+    profile_relabelled_on_selector_change: false
+    # BOTH stamped fields must agree with the authoritative resolution. A stamp
+    # whose label and probability disagree with each other is internally
+    # inconsistent and is not current whatever either half says.
+    profile_current_requires_label_and_probability_match: true
+    selector_change_requires_new_simulation: false
 
   # THE STEP-9 SUMMARY, PERSISTED.
   #

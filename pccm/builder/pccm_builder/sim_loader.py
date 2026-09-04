@@ -1193,7 +1193,12 @@ CLOSED_KEYS: dict[str, frozenset[str]] = {
     'sim_data.annual_records': frozenset({
         'consumes_reserved_rows', 'first_record_row', 'footer_rows', 'header_row',
         'index_columns', 'iteration_level_annual_values_persisted', 'max_rows_owner',
+        'distribution_currentness_is_selector_specific',
+        'profile_current_requires_label_and_probability_match',
+        'profile_currentness_is_selector_specific',
+        'profile_relabelled_on_selector_change',
         'profile_px_recorded_in_stamp', 'quantile_count', 'quantile_first_column',
+        'selector_change_requires_new_simulation',
         'quantile_keys_owner', 'row_rule', 'selected_px_owner',
         'selected_px_resolution_owner', 'selector_move_invalidates_simulation',
         'selector_move_makes_profile_current', 'selected_px_profile_columns',
@@ -3990,6 +3995,14 @@ def _validate_phase7_records(block: dict, where: str, header_row: int,
     _require_true(annual, "profile_px_recorded_in_stamp", awhere)
     _require_false(annual, "selector_move_invalidates_simulation", awhere)
     _require_false(annual, "selector_move_makes_profile_current", awhere)
+    # THE LADDER AND THE PROFILE DO NOT SHARE A RULE, and the contract says so
+    # in two separate leaves rather than one. Collapsing them would let a
+    # correct ladder be marked stale because a reporting selector moved.
+    _require_false(annual, "distribution_currentness_is_selector_specific", awhere)
+    _require_true(annual, "profile_currentness_is_selector_specific", awhere)
+    _require_false(annual, "profile_relabelled_on_selector_change", awhere)
+    _require_true(annual, "profile_current_requires_label_and_probability_match", awhere)
+    _require_false(annual, "selector_change_requires_new_simulation", awhere)
 
     astwhere = f"{awhere}: stamp"
     annual_stamp = _map(annual, "stamp", astwhere)

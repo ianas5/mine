@@ -552,6 +552,41 @@ def render_sim_contract_module(
     module.const("SIM_SENSITIVITY_PUBLISHED", "PUBLISHED")
     module.raw()
 
+    # --- Phase-7 annual records ---------------------------------------------
+    # COLUMNS, NEVER ROWS, on the same terms: the block shares the iteration row
+    # axis and its stamp sits above the first record row in the block's own
+    # first column. Every address a consumer uses comes from here, so a contract
+    # move reaches production without anyone retyping a letter - which is the
+    # defect that put the sensitivity availability formula on the statistics
+    # band and left it there.
+    annual = raw["sim_data"]["annual_records"]
+    module.section("Phase-7 annual records (one row per applied project year)")
+    module.const("SIM_ANNUAL_HEADER_ROW", int(annual["header_row"]))
+    module.const("SIM_ANNUAL_FIRST_ROW", int(annual["first_record_row"]))
+    module.const("SIM_ANNUAL_QUANTILE_COUNT", int(annual["quantile_count"]))
+    for label, columns in annual["index_columns"].items():
+        for key, letter in columns.items():
+            module.const(
+                f"SIM_ANNUAL_{_identifier(label)}_{_identifier(key)}_COLUMN", str(letter))
+    for label, measures in annual["quantile_first_column"].items():
+        for measure, letter in measures.items():
+            module.const(
+                f"SIM_ANNUAL_{_identifier(label)}_{_identifier(measure)}_FIRST_COLUMN",
+                str(letter))
+    for label, measures in annual["selected_px_profile_columns"].items():
+        for measure, letter in measures.items():
+            module.const(
+                f"SIM_ANNUAL_{_identifier(label)}_{_identifier(measure)}_PROFILE_COLUMN",
+                str(letter))
+    annual_stamp = annual["stamp"]
+    for label, column in annual_stamp["bank_value_columns"].items():
+        module.const(f"SIM_ANNUAL_STAMP_COLUMN_{_identifier(label)}", str(column))
+    for field in annual_stamp["fields"]:
+        module.const(f"SIM_ANNUAL_STAMP_ROW_{_identifier(field['key'])}",
+                     int(field["row"]))
+    module.const("SIM_ANNUAL_PUBLISHED", "PUBLISHED")
+    module.raw()
+
     contingency = raw["sim_data"]["contingency_ladder"]
     module.section("Persisted contingency ladder (the WHOLE ladder, before any commit)")
     module.const("SIM_CONTINGENCY_LABEL_COLUMN", str(contingency["label_column"]))
