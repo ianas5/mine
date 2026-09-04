@@ -381,7 +381,8 @@ PHASE6_MODULES = ("modSimRng", "modSimSample", "modSimEngine", "modSimStats",
 """Phase-6 hand-written source modules. Not Phase 5's, and named so the
 Phase-5 inventory equality below stays exact."""
 
-PHASE7_MODULES = ("modSimSensitivity", "modSimPostReport", "modSimAnnual")
+PHASE7_MODULES = ("modSimSensitivity", "modSimPostReport", "modSimAnnual",
+                  "modSimAnnualRun", "modSimAnnualStore")
 """Phase-7 hand-written source modules, named on the same terms as Phase 6's.
 
 The equality below is about PHASE 5: a further Phase-5 module still cannot

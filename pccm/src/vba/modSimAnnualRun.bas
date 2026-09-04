@@ -396,27 +396,27 @@ Private Function ReconcileTerms(ByRef terms() As Double, ByVal count As Long, _
                                 ByVal against As Double, ByVal what As String, _
                                 ByRef detail As String) As Boolean
     Dim summed As Double, difference As Double, allowance As Double
-    Dim scale As Double
+    Dim termScale As Double
     Dim index As Long
 
     If Not modCalcFactors.SafeSignedSum(terms, count, summed) Then
         detail = what & ": the per-year terms do not sum to a representable number"
         Exit Function
     End If
-    scale = 0#
+    termScale = 0#
     For index = 0 To count - 1
-        If Not modCalcFactors.ConditioningScaledMagnitude(scale, _
+        If Not modCalcFactors.ConditioningScaledMagnitude(termScale, _
                 terms(LBound(terms) + index), TOL_IDENTITY_RELATIVE_COEFFICIENT) Then
             detail = what & ": the reconciliation scale is not representable"
             Exit Function
         End If
     Next index
-    If Not modCalcFactors.ConditioningScaledMagnitude(scale, against, _
+    If Not modCalcFactors.ConditioningScaledMagnitude(termScale, against, _
             TOL_IDENTITY_RELATIVE_COEFFICIENT) Then
         detail = what & ": the reconciliation scale is not representable"
         Exit Function
     End If
-    If Not modCalcFactors.IdentityAllowance(scale, TOL_IDENTITY_ABSOLUTE_FLOOR, _
+    If Not modCalcFactors.IdentityAllowance(termScale, TOL_IDENTITY_ABSOLUTE_FLOOR, _
             TOL_IDENTITY_RELATIVE_COEFFICIENT, TOL_CONDITIONING_SCALE_FLOOR, _
             allowance) Then
         detail = what & ": the reconciliation allowance is not representable"
