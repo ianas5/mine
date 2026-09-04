@@ -294,6 +294,12 @@ Private Function LayoutIsSound(ByVal indexAt As Long, ByVal yearAt As Long, _
                  " column(s) and the contracted fields need " & CStr(needed)
         Exit Function
     End If
+    ' AND NO COLUMN IS LEFT UNWRITTEN - which follows and is not scanned for.
+    ' The count above is exactly the number of claims made below, every claim is
+    ' proved to be inside the block, and no two may share a slot. Twenty-six
+    ' distinct in-range claims over twenty-six columns leave none over. A loop
+    ' looking for a gap here could never find one, and code no input can reach is
+    ' code no test can check.
     ReDim used(0 To fields - 1)
     If Not Claim(used, fields, indexAt, "the project index", detail) Then Exit Function
     If Not Claim(used, fields, yearAt, "the calendar year", detail) Then Exit Function
@@ -305,13 +311,6 @@ Private Function LayoutIsSound(ByVal indexAt As Long, ByVal yearAt As Long, _
         slot = pvAt + rung
         If Not Claim(used, fields, slot, "a PV ladder rung", detail) Then Exit Function
     Next rung
-    For slot = 0 To fields - 1
-        If used(slot) = 0 Then
-            detail = "annual: column offset " & CStr(slot) & " is inside the record " & _
-                     "block and no contracted field writes it"
-            Exit Function
-        End If
-    Next slot
     LayoutIsSound = True
 End Function
 

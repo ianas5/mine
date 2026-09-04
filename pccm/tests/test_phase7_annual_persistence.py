@@ -547,6 +547,22 @@ def test_12_every_address_branches_on_the_bank() -> None:
         assert signature, f"{name} is missing"
         assert "bank As String" in signature.group(1), (
             f"{name} produces an address without being told the bank")
+    # AND EACH ARM MUST NAME ITS OWN BANK'S CONSTANT. A helper that took the
+    # bank and returned bank A's column whatever it was told would satisfy every
+    # claim above and silently publish one bank's answer into the other's block.
+    for name in helpers:
+        block = re.search(
+            rf"^Private Function {name}\(.*?\n(.*?)^End Function", text, re.M | re.S)
+        arms = re.findall(r"SIM_\w*(?:_A_|_B_|_COLUMN_A|_COLUMN_B)\w*", block.group(1))
+        if not arms:
+            continue
+        banks = {"A" if ("_A_" in token or token.endswith("_A")) else "B"
+                 for token in arms}
+        assert banks == {"A", "B"}, (
+            f"{name} resolves to bank {sorted(banks)} only; it cannot address "
+            "both banks")
+        assert len(set(arms)) == len(arms), f"{name} names a constant twice"
+
     # And no procedure mentions both banks' record columns outside the branch
     # that chooses between them.
     for block in re.finditer(r"^(Public|Private) Function (\w+)\(.*?\n(.*?)^End Function",
@@ -735,16 +751,42 @@ def test_23_a_broken_layout_is_refused_and_says_why(overrides, expected) -> None
     assert expected in detail, detail
 
 
-def test_24_a_gap_in_the_block_is_refused() -> None:
-    """Every column inside the block must be written by a contracted field. A
-    hole would be a column the writer never touches and the clear does."""
+def test_24_no_column_can_be_left_unwritten() -> None:
+    """A hole would be a column the writer never touches and the clear does -
+    and it is IMPOSSIBLE rather than checked for.
+
+    The guard exists in three parts: the block is exactly as wide as the number
+    of claims, every claim is proved to be inside it, and no two may share a
+    slot. Twenty-six distinct in-range claims over twenty-six columns leave none
+    over, so a scan for a gap could never find one. This asserts that reasoning
+    directly - over the real contract, and over every rearrangement that keeps
+    the three parts true - rather than leaving unreachable code standing in for
+    it.
+    """
     offsets = _offsets("A")
-    ok, detail = _layout(nominalAt=offsets["nominal"] + 1,
-                         pvAt=offsets["pv"] + 1,
-                         nominalProfileAt=offsets["nominal"],
-                         pvProfileAt=offsets["pv"])
+    fields = _fields("A")
+    claims = [offsets["project_index"], offsets["calendar_year"],
+              offsets["nominal_profile"], offsets["pv_profile"]]
+    claims += [offsets["nominal"] + rung for rung in range(11)]
+    claims += [offsets["pv"] + rung for rung in range(11)]
+    assert len(claims) == fields, "the claim count is not the block width"
+    assert len(set(claims)) == len(claims), "two contracted fields share a column"
+    assert set(claims) == set(range(fields)), "the claims do not cover the block"
+    # And the source no longer carries a scan that could never fire.
+    body = STORE_BAS.read_text(encoding="utf-8")
+    body = body[body.index("Private Function LayoutIsSound"):]
+    body = body[:body.index("\nEnd Function")]
+    assert "no contracted field writes it" not in body, (
+        "an unreachable exhaustiveness scan is back")
+
+
+def test_24b_an_overlap_is_what_a_gap_actually_looks_like() -> None:
+    """Because the count is fixed, any hole is also a collision - so the
+    collision guard is the one that fires, and it names both claimants."""
+    offsets = _offsets("A")
+    ok, detail = _layout(nominalProfileAt=offsets["nominal"])
     assert not ok
-    assert "no contracted field writes it" in detail or "both write" in detail, detail
+    assert "both write column offset" in detail, detail
 
 
 # ===========================================================================
@@ -808,6 +850,67 @@ def test_28_the_profile_sums_to_the_reported_percentile(measure) -> None:
     assert _vba()["ReconcileProfile"](
         list(profile), _identity(SelectedProbability=p), list(totals),
         _Ref(measure), detail), detail.v
+
+
+# THE BLOCKING, ACTUALLY EXERCISED.
+#
+# The accepted block width is twelve and the fixture is four years, so the
+# production above never takes a second pass - and an indexing defect that used
+# the DURATION where it should use the BLOCK's width would be invisible in every
+# test that came before this one. So the width is narrowed and the same
+# comparison is repeated: the answer must not depend on the blocking, because a
+# year's ladder is a function of that year's column alone.
+def _narrow(width: int) -> dict:
+    key = f"vba:{width}"
+    if key not in _CACHE:
+        saved = dict(_CACHE)
+        _CACHE.pop("vba", None)
+        _CACHE.pop("consts", None)
+        projected = dict(_projected())
+        projected["SIM_ANNUAL_BLOCK_WIDTH"] = width
+        _CACHE["consts"] = projected
+        _CACHE.pop("vba", None)
+        narrowed = _vba()
+        _CACHE.clear()
+        _CACHE.update(saved)
+        _CACHE[key] = narrowed
+    return _CACHE[key]
+
+
+@pytest.mark.parametrize("width", [1, 2, 3])
+def test_28b_the_answer_does_not_depend_on_the_blocking(width) -> None:
+    """One pass, two passes or four: the same ladders and the same profile.
+
+    An index that used the project duration where it should use the BLOCK's own
+    width would agree with the oracle at four years and twelve, and disagree
+    here on the first year of the second block.
+    """
+    p = 0.8
+    narrow = _narrow(width)
+    assert narrow["SIM_ANNUAL_BLOCK_WIDTH"] == width
+    blocks = narrow["SimAnnualBlockCount"](_Ref(YEARS), _Ref(width))
+    assert blocks == -(-YEARS // width) > 1, "the width did not force extra passes"
+
+    detail = _Ref("")
+    for measure in ("nominal", "PV"):
+        totals = replay._run_totals()[1 if measure == "PV" else 0]
+        position = narrow["_new"]("SimStatsPosition")
+        assert narrow["SimStatsQuantilePosition"](
+            list(totals), _Ref(len(totals)), _Ref(p), position, detail), detail.v
+        ladder, profile = [], []
+        assert narrow["ProduceAnnual"](
+            _identity(SelectedProbability=p), replay._records(),
+            _Ref(len(replay._records())), replay._year_factors(measure),
+            _Ref(measure), position, _probabilities(), ladder, profile,
+            detail), detail.v
+        expected = _oracle_ladder(measure, _probabilities())
+        rungs = len(_probabilities())
+        for year in range(YEARS):
+            for rung in range(rungs):
+                assert float(ladder[year * rungs + rung]) == expected[year][rung], (
+                    f"{measure} width {width} year {year + 1} rung {rung + 1}")
+        assert [float(v) for v in profile] == _oracle_profile(measure, p), (
+            f"{measure} at block width {width}")
 
 
 def test_29_the_ladder_is_not_the_profile() -> None:
@@ -972,18 +1075,34 @@ def test_37_the_reconciliation_refuses_rather_than_absorbs() -> None:
 
 
 def test_38_the_allowance_survives_cancellation() -> None:
-    """ERRATUM C1: the conditioning scale sums CONTRIBUTIONS, so a large model
-    whose terms cancel keeps a scale proportionate to the arithmetic that
-    happened rather than to the small number it happened to produce."""
+    """ERRATUM C1: the conditioning scale sums CONTRIBUTIONS, not aggregates.
+
+    THE TEST HAS TO DISCRIMINATE, and a difference of zero does not: it passes
+    under either scale. So the case chosen is one where the two scales DISAGREE
+    about the same difference.
+
+    The terms are 1e12, -1e12 and 1, so 2e12 of arithmetic produces an aggregate
+    of 1. The contribution scale is 1e-12 x 2e12 ~ 2; an aggregate-only scale
+    would be about 2e-12 and would fall to the 1e-6 floor. A residual of 1.0 is
+    inside the first and far outside the second - and at that conditioning it
+    genuinely is noise, which is the whole reason C1 exists.
+    """
     terms = [1e12, -1e12, 1.0]
     detail = _Ref("")
+    # Difference 1.0, against a contribution-conditioned allowance of about 2.
     assert _vba()["ReconcileTerms"](
-        list(terms), _Ref(3), _Ref(1.0), _Ref("cancelling"), detail), detail.v
-    # An aggregate-only scale would have been about 1e-12; the contribution
-    # scale is about 2, so a difference the aggregate scale would reject is
-    # correctly inside the allowance here.
+        list(terms), _Ref(3), _Ref(2.0), _Ref("cancelling"), detail), detail.v
+    # And the allowance is still an allowance: 4.0 is outside it.
     assert not _vba()["ReconcileTerms"](
         list(terms), _Ref(3), _Ref(5.0), _Ref("cancelling"), detail)
+    assert "outside the allowance of" in detail.v, detail.v
+    # THE SCALE IS BUILT FROM THE TERMS, structurally: the loop over the
+    # contributions is what an aggregate-only scale would delete.
+    body = _code(RUN_BAS)
+    body = body[body.index("Private Function ReconcileTerms"):]
+    body = body[:body.index("End Function")]
+    assert "For index = 0 To count - 1" in body, (
+        "the conditioning scale no longer sums the contributions")
 
 
 @pytest.mark.parametrize("label", ["", "P10", "P77", "TEN", "p80"])
@@ -1030,20 +1149,24 @@ def test_40_a_selectable_level_resolves_through_the_one_ladder(label, expected) 
 #
 # The one claim they share is the one that matters: NOTHING IS WRITTEN. The
 # publication is the last step of the pipeline and every refusal above it exits.
+# Each step, and HOW MANY TIMES it must appear. The count is what makes a
+# dropped measure visible: every per-measure step runs twice, once for nominal
+# and once for PV, and a pipeline that reconciled only the nominal profile would
+# still be in the right order.
 RUN_PIPELINE = (
-    "SimAnnualStoreCurrentRun",      # A, B
-    "ResolveSelectedPx",             # E
-    "ResolveDrivers",                # C, D
-    "SimAnnualStoreYearAxis",        # F
-    "CrossCheckYearCount",           # F
-    "BuildYearFactors",              # G, K
-    "SimStatsLadderProbabilities",
-    "SimAnnualStoreTotals",
-    "SimStatsQuantilePosition",
-    "ProduceAnnual",                 # H, I, J
-    "ReconcileProfile",              # K
-    "SimAnnualStoreFlatten",
-    "SimAnnualStorePublish",
+    ("SimAnnualStoreCurrentRun", 1),      # A, B
+    ("ResolveSelectedPx", 1),             # E
+    ("ResolveDrivers", 1),                # C, D
+    ("SimAnnualStoreYearAxis", 1),        # F
+    ("CrossCheckYearCount", 1),           # F
+    ("BuildYearFactors", 2),              # G, K - one per measure
+    ("SimStatsLadderProbabilities", 1),
+    ("SimAnnualStoreTotals", 2),
+    ("SimStatsQuantilePosition", 2),
+    ("ProduceAnnual", 2),                 # H, I, J
+    ("ReconcileProfile", 2),              # K
+    ("SimAnnualStoreFlatten", 1),
+    ("SimAnnualStorePublish", 1),
 )
 
 
@@ -1056,12 +1179,18 @@ def _run_annual_body() -> str:
 def test_41_the_pipeline_runs_in_the_contracted_order_and_publishes_last() -> None:
     body = _run_annual_body()
     positions = []
-    for step in RUN_PIPELINE:
-        assert step in body, f"the pipeline does not reach {step}"
+    for step, times in RUN_PIPELINE:
+        found = body.count(step)
+        assert found == times, (
+            f"{step} appears {found} time(s) in the pipeline and must appear "
+            f"{times}: a per-measure step that runs once has silently dropped a "
+            "measure")
         positions.append(body.index(step))
-    assert positions == sorted(positions), (
-        f"the pipeline is out of order: {RUN_PIPELINE}")
+    assert positions == sorted(positions), "the pipeline is out of order"
     assert positions[-1] == max(positions), "publication is not the last step"
+    # AND BOTH MEASURES REACH EVERY PER-MEASURE STEP BY NAME.
+    for measure in ("SIM_MEASURE_NOMINAL", "SIM_MEASURE_PV"):
+        assert body.count(measure) >= 2, f"{measure} is not carried through"
 
 
 def test_42_every_refusal_exits_before_the_publication() -> None:
@@ -1072,9 +1201,11 @@ def test_42_every_refusal_exits_before_the_publication() -> None:
     """
     body = _run_annual_body()
     refusals = [match.start() for match in re.finditer(r"RunAnnual = Refused\(", body)]
+    guarded = sum(times for _, times in RUN_PIPELINE)
+    assert len(refusals) == guarded, (
+        f"{len(refusals)} refusals for {guarded} guarded calls: a step is "
+        "unguarded, or a refusal has no step")
     publish = body.index("SimAnnualStorePublish")
-    assert len(refusals) >= len(RUN_PIPELINE) - 1, (
-        f"{len(refusals)} refusals for {len(RUN_PIPELINE)} steps")
     for start in refusals[:-1]:
         assert start < publish, "a refusal is written after the publication"
         tail = body[start:start + 200]
