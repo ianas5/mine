@@ -952,12 +952,12 @@ def test_53_the_orchestration_layer_arrived_and_nothing_beyond_it() -> None:
     for module in load_modules([SRC_VBA]):
         if module.name == "modSimReport":
             continue
-        if module.name == "modSimPostReport":
-            # P7-4's orchestrator READS the published block through the accepted
-            # accessors and the contracted coordinates. It publishes no
-            # simulation and owns no run identity - which is asserted where that
-            # claim belongs, in the Phase-7 battery - so what it must not have is
-            # the ENDPOINT, not the words.
+        if module.name in ("modSimPostReport", "modSimAnnualStore"):
+            # P7-4's orchestrator and P7-6's store READ the published block
+            # through the accepted accessors and the contracted coordinates.
+            # Neither publishes a simulation and neither owns a run identity -
+            # which is asserted where that claim belongs, in the Phase-7 battery
+            # - so what they must not have is the ENDPOINT, not the words.
             assert "PCCM_RunSimulation" not in module.code
             continue
         for banned in ("PCCM_RunSimulation", "SimReport", "_SimData"):
@@ -970,6 +970,7 @@ def test_53_the_orchestration_layer_arrived_and_nothing_beyond_it() -> None:
     # widening the set this control is about.
     assert not [p for p in SRC_VBA.glob("*.bas") if p.stem.startswith("modSim")
                 and p.stem not in ("modSimSensitivity", "modSimPostReport", "modSimAnnual",
+                                   "modSimAnnualRun", "modSimAnnualStore",
                                    "modSimContract", "modSimRng", "modSimSample",
                                    "modSimEngine", "modSimStats", "modSimFingerprint",
                                    "modSimNonce", "modSimReport")]

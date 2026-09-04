@@ -183,6 +183,12 @@ def _shim_product(factors, count, result, *rest):
     return True
 
 
+def _shim_ladder_extent(labels, values, label_extent, value_extent, *rest):
+    label_extent.v = len(labels)
+    value_extent.v = len(values)
+    return True
+
+
 def _unsupported(name):
     def shim(*args):
         raise AssertionError(f"{name} is not exercised by this path")
@@ -231,6 +237,7 @@ def _vba() -> dict:
             "SafeAccumulate": _shim_accumulate,
             "SafeDivide": _unsupported("SafeDivide"),
             "ConditioningScaledExact": _unsupported("ConditioningScaledExact"),
+            "SimStatsLadderExtent": _shim_ladder_extent,
         }
         extra.update(_address_shims())
         _CACHE["vba"] = _build_transcription(
@@ -260,6 +267,10 @@ def _vba() -> dict:
                     "SimStatsConstantValue", "SimStatsUnitScale",
                     "SimStatsLadderProbabilities", "SimStatsLadderLabel",
                     "SimStatsProbabilityOf", "SimStatsSelectedProbability",
+                    # P7-6 resolves the selector THROUGH the accepted value
+                    # lookup, so the accepted lookup and the ladder validation
+                    # it performs are executed here rather than assumed.
+                    "SimStatsSelectedQuantile", "SimStatsValidateLadder",
                 },
                 "modSimAnnualStore": {
                     "SimAnnualStoreFlatten", "LayoutIsSound", "Claim",
@@ -270,9 +281,17 @@ def _vba() -> dict:
                     "ReconcileProfile", "CrossCheckYearCount",
                 },
             },
-            signature_only={"modCalcFactors": {
-                "SafeProduct", "SafeSignedSum", "SafeMultiply", "SafeDivide",
-                "SafeSubtract", "SafeAccumulate", "ConditioningScaledExact"}},
+            signature_only={
+                "modCalcFactors": {
+                    "SafeProduct", "SafeSignedSum", "SafeMultiply", "SafeDivide",
+                    "SafeSubtract", "SafeAccumulate", "ConditioningScaledExact"},
+                # THE ONE PROCEDURE THE TRANSCRIBER CANNOT RUN. It answers "is
+                # this carrier allocated?" with an error handler, which is a VBA
+                # construct this engine does not model; every array this suite
+                # hands over is allocated by the same source, so the shim answers
+                # what the real one would and the carrier-shape refusals it
+                # guards are not what these tests are about.
+                "modSimStats": {"SimStatsLadderExtent"}},
             extra=extra,
         )
     return _CACHE["vba"]

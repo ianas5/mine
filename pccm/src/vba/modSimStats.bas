@@ -444,41 +444,38 @@ End Function
 ' THE REPORTING SELECTOR, RESOLVED TO A PROBABILITY - P7-6
 ' ==========================================================================
 ' SimStatsSelectedQuantile answers "what is the selected total?" and needs a
-' measured ladder to do it. The annual PROFILE asks a different question -
+' MEASURED ladder to do it. The annual profile asks a different question -
 ' "which probability did the user select?" - and asking it through the value
-' lookup would force a caller to carry a ladder of numbers it has no use for.
+' lookup would force a caller to carry a ladder of run values it has no use for.
 '
-' THE SELECTABILITY RULES ARE THE SAME RULES, not a copy of them: a blank is
-' refused, the fixed level is refused as a selector, an unknown label is
-' refused, and the probability comes from the one label decoder. What differs
-' is only that no measured value is required or returned.
+' SO IT ASKS THE SAME PROCEDURE A DIFFERENT LADDER. What is handed over here is
+' the projected labels paired with each rung's OWN probability, so the "value"
+' the accepted lookup returns IS the probability.
+'
+' THAT IS WHY THERE IS NO SECOND COPY OF THE SELECTABILITY RULES. A blank, the
+' fixed level, an unknown label, a duplicate label and a malformed carrier are
+' all refused by SimStatsSelectedQuantile and by nothing written here - so the
+' two entry points cannot come to disagree about what is selectable, and a
+' change to the rule reaches both by reaching one.
 Public Function SimStatsSelectedProbability(ByVal selectedLabel As String, _
                                             ByRef p As Double, _
                                             ByRef detail As String) As Boolean
-    Dim index As Long, found As Long
+    Dim labels() As String, probabilities() As Double
+    Dim index As Long
     Dim label As String
+    Dim resolved As Double
 
     detail = vbNullString
-    If Len(selectedLabel) = 0 Then
-        detail = "statistics: a blank confidence level"
-        Exit Function
-    End If
-    If StrComp(selectedLabel, SIM_QUANTILE_FIXED_1, vbBinaryCompare) = 0 Then
-        detail = "statistics: " & SIM_QUANTILE_FIXED_1 & _
-                 " is reported and fixed; it is not selectable"
-        Exit Function
-    End If
-
-    found = -1
+    If Not SimStatsLadderProbabilities(probabilities, detail) Then Exit Function
+    ReDim labels(0 To SIM_QUANTILE_COUNT - 1)
     For index = 0 To SIM_QUANTILE_COUNT - 1
         If Not SimStatsLadderLabel(index, label, detail) Then Exit Function
-        If StrComp(label, selectedLabel, vbBinaryCompare) = 0 Then found = index
+        labels(index) = label
     Next index
-    If found < 0 Then
-        detail = "statistics: an unknown confidence level"
-        Exit Function
-    End If
-    SimStatsSelectedProbability = SimStatsProbabilityOf(selectedLabel, p, detail)
+    If Not SimStatsSelectedQuantile(labels, probabilities, SIM_QUANTILE_COUNT, _
+                                    selectedLabel, resolved, detail) Then Exit Function
+    p = resolved
+    SimStatsSelectedProbability = True
 End Function
 
 ' ==========================================================================
