@@ -281,7 +281,8 @@ PHASE5_INVENTORY = {
 PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
                     "modSimStats", "modSimFingerprint", "modSimNonce",
                     "modSimReport"}
-PHASE7_INVENTORY = {"modSimSensitivity", "modSimPostReport", "modSimAnnual"}
+PHASE7_INVENTORY = {"modSimSensitivity", "modSimPostReport", "modSimAnnual",
+                    "modSimAnnualRun", "modSimAnnualStore"}
 
 """Phase-7 hand-written source modules, named on the same terms Phase 6 was:
 admitted by name, one at a time, so the earlier half of each inventory
@@ -328,9 +329,23 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
     # an EXACT statement about Phase 5 rather than becoming "contains at least".
     # It is one endpoint, owned by modSimPostReport, and it is not the
     # reporter's.
-    phase7 = {"PCCM_RunSensitivity"}
-    assert set(modules["modSimPostReport"].public_procedures) == phase7, sorted(
-        modules["modSimPostReport"].public_procedures)
+    # P7-6 adds the annual endpoint and the four Phase-8 handoff accessors, and
+    # they are named for the same reason: this stays an EXACT statement about
+    # Phase 5. Each is owned by exactly one module, and the ownership is part of
+    # the claim - the endpoint belongs to the producer, the handoff to the store.
+    phase7 = {"PCCM_RunSensitivity", "PCCM_RunAnnualStochastic",
+              "PCCM_AnnualDistributionState", "PCCM_AnnualProfileState",
+              "PCCM_AnnualProfilePx", "PCCM_AnnualYearCount"}
+    assert set(modules["modSimPostReport"].public_procedures) == {
+        "PCCM_RunSensitivity"}, sorted(modules["modSimPostReport"].public_procedures)
+    assert set(modules["modSimAnnualRun"].public_procedures) == {
+        "PCCM_RunAnnualStochastic"}, sorted(
+        modules["modSimAnnualRun"].public_procedures)
+    assert {p for p in modules["modSimAnnualStore"].public_procedures
+            if p.startswith("PCCM_")} == {
+        "PCCM_AnnualDistributionState", "PCCM_AnnualProfileState",
+        "PCCM_AnnualProfilePx", "PCCM_AnnualYearCount"}, sorted(
+        modules["modSimAnnualStore"].public_procedures)
     for name in phase7:
         assert name not in _reporter().public_procedures, name
     found = {p for m in modules.values() for p in m.public_procedures

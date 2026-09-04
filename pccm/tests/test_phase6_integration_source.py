@@ -144,11 +144,15 @@ def test_01_the_bridge_is_the_only_phase5_entry_into_phase6() -> None:
     # ONE BRIDGE, and now two callers of it. The claim was never "one caller":
     # it is that Phase 6 and later reach Phase 5 through this door and no other.
     # P7-4's orchestrator needs the resolved model to replay a driver, and
-    # calling the accepted bridge is precisely how it avoids resolving one of
-    # its own. Both callers are named, so a third cannot appear unremarked.
+    # P7-6's needs it to regroup a factor per project year; calling the accepted
+    # bridge is precisely how each avoids resolving one of its own. Every caller
+    # is named, so a further one cannot appear unremarked.
+    #
+    # THE ANNUAL STEP'S STORE IS NOT ONE OF THEM, and that is the split working:
+    # the module that owns the addresses resolves no model at all.
     callers = sorted(name for name, module in _modules().items()
                      if BRIDGE in module.code and name != "modCalcReport")
-    assert callers == ["modSimPostReport", REPORT], callers
+    assert callers == ["modSimAnnualRun", "modSimPostReport", REPORT], callers
     # It is declared exactly once, in the accepted reporter.
     declarations = [name for name, module in _modules().items()
                     if re.search(rf"^(?:Public|Private) Function {BRIDGE}\b",
@@ -419,12 +423,37 @@ def test_14_no_vba_module_writes_or_resolves_results() -> None:
     assert presentation["contingency_by_subtraction_on_results"] is False
 
 
+# THE TWO MODULES P7-6 ALLOWS TO SEE THE SELECTOR, and what each may do with it.
+#
+# The ban was never "nobody may read it" - it is that reading it may not affect
+# the SIMULATION: not its execution, not its request fingerprint, not its
+# staleness and not its run identity. The annual selected-Px profile is the one
+# legitimate consumer, because it IS a per-Px object, and the two modules below
+# are held to that: the producer resolves the selector and stamps it beside the
+# profile; the store reports which Px the stored profile belongs to. Neither may
+# reach a run, a nonce, a fingerprint or a digest, which the controls in this
+# file assert for every module including these two.
+SELECTOR_READERS = {"modSimAnnualRun", "modSimAnnualStore"}
+
+
 def test_15_selected_confidence_level_is_reporting_only() -> None:
     for name, module in _modules().items():
         text = module.code_without_string_removal
+        if name in SELECTOR_READERS:
+            # IT REACHES NO PART OF A RUN. That is the whole of the claim, and
+            # it is asserted rather than waived.
+            for banned in ("SimEngineRun", "SimNonce", "SimFpBuildRequestFingerprint",
+                           "SimFpResultDigest", "PCCM_RunSimulation"):
+                assert banned not in text, (
+                    f"{name} reads the reporting selector AND reaches {banned}")
+            continue
         for banned in ("inpSelectedConfidenceLevel", "SelectedConfidence",
                        "NM_INPUT_SELECTED_CONFIDENCE_LEVEL", "SelectedPx"):
             assert banned not in text, f"{name} reads the reporting selector"
+    # And the readers are the two the split allows, not whoever happens to.
+    reading = {name for name, module in _modules().items()
+               if "NM_INPUT_SELECTED_CONFIDENCE_LEVEL" in module.code}
+    assert reading <= SELECTOR_READERS, sorted(reading - SELECTOR_READERS)
     selector = _sim().raw["selected_confidence_level"]
     assert selector["participates_in_execution_validity"] is False
     assert selector["participates_in_request_fingerprint"] is False
@@ -478,7 +507,17 @@ def test_17_the_two_public_surfaces_are_exactly_the_accepted_ones() -> None:
     # Phase-5 Gate-B controls require every entry there to carry Windows
     # evidence, and a Phase-7 endpoint has none and must not appear to.
     phase7 = set(declared["phase7_api_procedures"])
-    assert phase7 == {"PCCM_RunSensitivity"}, sorted(phase7)
+    assert phase7 == {
+        "PCCM_RunSensitivity",
+        # P7-6. The annual endpoint and the four Phase-8 handoff accessors -
+        # named here for the same reason the sensitivity endpoint is, so a
+        # further Phase-7 endpoint cannot arrive unremarked.
+        "PCCM_RunAnnualStochastic",
+        "PCCM_AnnualDistributionState",
+        "PCCM_AnnualProfileState",
+        "PCCM_AnnualProfilePx",
+        "PCCM_AnnualYearCount",
+    }, sorted(phase7)
     assert found == phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7, sorted(
         found ^ (phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7))
     assert not (phase4 & set(PHASE6_PUBLIC)), "a Phase-6 name entered the Phase-4 surface"
@@ -605,7 +644,10 @@ REOPENED_SINCE_CLOSURE = {
     "modSimStats": "P7-5 exposed the type-7 ORDER-STATISTIC POSITION - which "
                    "source ordinals a percentile was interpolated between - and "
                    "extracted the h/lo/hi/f arithmetic into one owner shared by "
-                   "the value and the position. No percentile value changed.",
+                   "the value and the position. P7-6 added the ladder's own "
+                   "probabilities and the resolution of the reporting selector "
+                   "to a probability - both LOOKUPS through the same projected "
+                   "ladder. No percentile value changed in either round.",
 }
 
 # AND A REOPENED MODULE IS FROZEN AGAIN, to the bytes the phase that reopened it
@@ -615,7 +657,11 @@ REOPENED_SINCE_CLOSURE = {
 # only one a stray byte could move unnoticed.
 REOPENED_CURRENT = {
     "modSimEngine": "9c307eae451252a983fc2c36205759335e14642557c3c4ecf9ab4ee30ec3237e",
-    "modSimStats": "0c75c0902980ced0a7ad4d59b985f07b7bc9978a0723f2d45fb98dff0da7c7c8",
+    # P7-6 re-pins it: two LOOKUPS through the one projected ladder joined the
+    # public surface. A frozen digest is repointed in the same commit as the
+    # change that moved it, with the reason recorded above - never updated to
+    # whatever the file now hashes to.
+    "modSimStats": "efca0aeef7e0bdc55f6bc0fc06c99cfc48f5a8e521831a22df866962d19efcff",
     "modCalcReport": "c9f728f06bc7bc89eff5eb6e389d9fa305083e82af89b9e34f50340499364671",
 }
 
@@ -684,7 +730,11 @@ def test_23b_a_reopened_module_is_not_claimed_as_runtime_proven() -> None:
 # corrected contract is a third artefact. 11e58482... was the colliding layout
 # and must never be built again.
 RUN6_GENERATED_IDENTITY = "daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f1e8e1c215ac"
-PHASE7_GENERATED_IDENTITY = "2f4c6e4ad27d52aac67259f41b977818c858d7ba3082d50114ec45da05b55233"
+# AND IT MOVED AGAIN IN P7-6. The annual publication addresses, the stamp rows
+# and the handoff state vocabulary are all projected, so contracting them
+# regenerated the module for the third time in Phase 7. The Run-6 identity is
+# untouched; this is a different artefact that no Windows run has executed.
+PHASE7_GENERATED_IDENTITY = "453a773bc800b850539e20f30c538dc1006eaea054a82ed1b34bf46503a0afe9"
 
 
 def test_24_the_generated_authority_is_byte_identical() -> None:
@@ -1292,10 +1342,12 @@ def test_36_the_range_check_helper_keeps_its_out_parameter() -> None:
     # about the Phase-6 surface rather than the whole repository.
     phase6 = [call for call in _qualified_calls()
               if call[0].startswith("modSim") and call[2] == "IsWholeInRange"]
-    # SIX NOW. P7-4's orchestrator reads the published run identity through the
-    # same helper, with all four arguments - which is the property this control
-    # is about, and it is asserted for every caller below.
-    assert len(phase6) == 6, [call[0] for call in phase6]
+    # THIRTEEN NOW, and the number is not the point - every one of them
+    # supplying all four arguments is. P7-4's orchestrator reads the published
+    # run identity through this helper; P7-6's store reads the identity, the
+    # annual stamp it compares against, the year axis and the stamped year
+    # count through it too. The arity is asserted for every caller below.
+    assert len(phase6) == 13, [call[0] for call in phase6]
     for caller, _target, _procedure, given, line in phase6:
         assert given == 4, f"{caller}: {given} argument(s) -- {line[:70]}"
 

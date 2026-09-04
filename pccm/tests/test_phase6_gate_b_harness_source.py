@@ -145,8 +145,14 @@ STEP13_CLOSURE_COMMIT = "85778b2854fee431a845499e5a2fe37f40e96610"
 # lives at CC-CJ and CL-CS, the projection carries those letters, and this is
 # the identity of that projection - 11e58482... was the identity of the
 # colliding layout and is not a value this tree may build again.
+#
+# AND IT MOVED A THIRD TIME, IN P7-6. The annual publication addresses, the
+# annual stamp rows and the Phase-8 handoff state vocabulary are all projected
+# from the contract, so contracting them regenerated the module. The baseline
+# identity above is untouched; what this pin records is that the tree builds a
+# projection no Windows run has executed.
 PHASE7_PROJECTION_IDENTITY = (
-    "2f4c6e4ad27d52aac67259f41b977818c858d7ba3082d50114ec45da05b55233")
+    "453a773bc800b850539e20f30c538dc1006eaea054a82ed1b34bf46503a0afe9")
 
 # The seven hand-written simulation modules Run 6 executed and the freeze pins by
 # blob. `modSimContract` is excluded because it is generated and has no path in
