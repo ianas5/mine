@@ -502,7 +502,8 @@ def test_22_the_module_is_in_the_stage_b_registry_as_a_generated_module() -> Non
     declared = {name for name in modules if name.startswith("modSim")}
     assert phase6 <= declared, sorted(phase6 - declared)
     assert declared - phase6 <= {"modSimSensitivity", "modSimPostReport",
-                                "modSimAnnual"}, sorted(
+                                "modSimAnnual", "modSimAnnualRun",
+                                "modSimAnnualStore"}, sorted(
         declared - phase6)
     for name in declared - phase6:
         assert modules[name].generated is False, name
