@@ -661,7 +661,7 @@ REOPENED_CURRENT = {
     # public surface. A frozen digest is repointed in the same commit as the
     # change that moved it, with the reason recorded above - never updated to
     # whatever the file now hashes to.
-    "modSimStats": "efca0aeef7e0bdc55f6bc0fc06c99cfc48f5a8e521831a22df866962d19efcff",
+    "modSimStats": "28be6f005c3e6cef760ddb082b9a4440569948ebfe538f61ccba20f9a650c093",
     "modCalcReport": "c9f728f06bc7bc89eff5eb6e389d9fa305083e82af89b9e34f50340499364671",
 }
 
