@@ -615,7 +615,7 @@ REOPENED_SINCE_CLOSURE = {
 # only one a stray byte could move unnoticed.
 REOPENED_CURRENT = {
     "modSimEngine": "9c307eae451252a983fc2c36205759335e14642557c3c4ecf9ab4ee30ec3237e",
-    "modSimStats": "da0e5bead56a875d1f1f5cf6a2073b8590ff6915419c10e64c74c46e2d690ea9",
+    "modSimStats": "0c75c0902980ced0a7ad4d59b985f07b7bc9978a0723f2d45fb98dff0da7c7c8",
     "modCalcReport": "c9f728f06bc7bc89eff5eb6e389d9fa305083e82af89b9e34f50340499364671",
 }
 
