@@ -53,17 +53,47 @@
     total: it answers YES or NO, and never a third thing that a catch block has
     to turn into a failure.
 
-    THE RETAINED COM REFERENCE. Those four refusals are also why PID 27384
-    would not exit. A raising COM call leaves an ErrorRecord in the session's
-    `$Error` collection, `$Error` keeps up to 256 of them for the lifetime of
-    the session, and an ErrorRecord for a failed method invocation still
-    references the object the call was made on. The `finally` released the
-    named variables and the two GC passes then found the RCW still rooted, so
-    Excel's reference count never reached zero, `Application.Quit` left the
-    process running, `Wait-ExcelExit` timed out and the emergency path
-    force-stopped it. Here: no COM call on the passing path can raise, every
-    object is released by name, `$Error` is cleared before the collect, and a
-    run that needs the emergency path FAILS.
+    THE RETAINED COM REFERENCE, AND WHAT THE FIRST W1 RUN SETTLED. PID 27384
+    was first explained by `$Error`-rooted RCWs: a raising COM call leaves an
+    ErrorRecord that still references the object the call was made on, and
+    `$Error` keeps 256 of them for the life of the session. That explanation is
+    now REFUTED for the second run. At 408cb5d no COM call raised - 57 checks,
+    55 of them green - `$Error` was cleared before the collect, and PID 42716
+    still had to be force-stopped. Three more explanations are refuted too, and
+    each by something checkable rather than by argument:
+
+      * the automation guard holds no object. PCCM_AutomationBegin sets five
+        module-level Booleans and Strings and nothing else.
+      * no COM object crosses Application.Run. Every procedure this runner
+        calls is declared `As String`, `As Long`, or is a Sub, so the VARIANT
+        that comes back is a BSTR, an I4 or Empty.
+      * no acquisition is missing a release. There are 37 acquisitions in the
+        session and 37 releases, each in a `finally`.
+
+    WHAT WAS ACTUALLY WRONG WAS THE EVIDENCE. The shutdown ledger represented
+    THREE objects - Workbook, Workbooks, Application. The other 34 - VBProject,
+    VBComponents, one VBComponent per module and one CodeModule per inspected
+    module - were released through `Release-Transient`, which records NOTHING
+    when a release succeeds: not the label, not the count. So "every ledgered
+    release succeeded" was a true statement about 3 objects out of 37, and the
+    one number that names a retained reference - what `ReleaseComObject`
+    returned - was never observed for any of the 34.
+
+    `Marshal.ReleaseComObject` RETURNS THE REFERENCE COUNT REMAINING ON THAT
+    RCW. Zero means the runtime let go of it. Anything above zero means the
+    same underlying object was marshalled more times than it was released, and
+    that is the signature of the retained reference, per object, by name. So
+    every release in this runner now goes into the ledger with its count, and a
+    non-zero count is a FAILING CHECK that names the class. A run that still
+    will not exit with every count at zero is not holding a managed reference
+    at all, and the report will say so instead of leaving it open.
+
+    THE OTHER TWO HIDDEN-REFERENCE PATTERNS ARE REFUSED STRUCTURALLY, and
+    controls hold them refused: this runner never chains two COM property
+    accesses in one expression - `$a.B.C` acquires an intermediate that no
+    variable holds and no `finally` can release - and it never enumerates a COM
+    collection with `foreach`, which acquires an IEnumVARIANT nobody releases
+    either. Every component is fetched by index into a named variable.
 
 .PARAMETER BuildDir
     The Stage-A build directory to copy from. Defaults to <repo>/pccm/build.
@@ -223,6 +253,38 @@ function Test-W1ProcedureDeclared {
 }
 
 # ===========================================================================
+# EVERY RELEASE, WITH ITS COUNT
+# ===========================================================================
+# `Invoke-NamedRelease` writes the accepted ledger line but keeps the count to
+# itself, and `Release-Transient` says nothing at all on success - which is how
+# 34 of this run's 37 releases produced no evidence. This wraps the SAME
+# accepted primitive, `Release-ComObjectSafe`, writes the SAME ledger line, and
+# additionally records the one number that identifies a retained reference:
+# what ReleaseComObject had left. com_lifecycle.ps1 is not modified.
+$script:W1Residual = New-Object System.Collections.ArrayList
+
+function Invoke-W1Release {
+    param($Ledger, $Obj, [string]$Label)
+    $rec = Release-ComObjectSafe -Obj $Obj -Label $Label
+    if ($rec.Status -eq 'PASS') {
+        $Ledger.Attempted = $Ledger.Attempted + 1
+        $Ledger.Succeeded = $Ledger.Succeeded + 1
+        $null = $Ledger.Lines.Add(
+            ("      {0,-24} | PASS    | ReleaseComObject returned {1}" -f $rec.Label, $rec.Count))
+        if ([int]$rec.Count -ne 0) {
+            $null = $script:W1Residual.Add(
+                ([string]$rec.Label + ' left ' + [string]$rec.Count + ' outstanding'))
+        }
+    } elseif ($rec.Status -eq 'FAIL') {
+        $Ledger.Attempted = $Ledger.Attempted + 1
+        $null = $Ledger.Failed.Add($rec.Label)
+        $null = $Ledger.Lines.Add(("      {0,-24} | FAIL    | {1}" -f $rec.Label, $rec.Error))
+    } else {
+        $null = $Ledger.Lines.Add(("      {0,-24} | SKIPPED | {1}" -f $rec.Label, $rec.Error))
+    }
+}
+
+# ===========================================================================
 # THE ONE COM PASS OVER THE PROJECT
 # ===========================================================================
 # VBProject and VBComponents are acquired ONCE for the whole run, each
@@ -231,35 +293,52 @@ function Test-W1ProcedureDeclared {
 # map of name to text. No COM object crosses this boundary, so nothing later in
 # the run can hold one alive by accident.
 function Read-W1VbaProject {
-    param($Workbook, [string[]]$WantedModules)
+    param($Workbook, [string[]]$WantedModules, $Ledger)
     $result = [pscustomobject]@{
         Loaded       = @()
         Texts        = @{}
         Problem      = ''
         TrustRefused = $false
+        Acquired     = 0
     }
     $vbproj = $null; $comps = $null
     try {
+        # ONE HOP PER STATEMENT, ALWAYS INTO A NAMED VARIABLE. Writing this as
+        # $Workbook.VBProject.VBComponents would acquire a VBProject that no
+        # variable holds, so no finally could release it and no ledger line
+        # could record it - a retained reference by construction.
         $vbproj = $Workbook.VBProject
+        $result.Acquired = $result.Acquired + 1
         $comps = $vbproj.VBComponents
+        $result.Acquired = $result.Acquired + 1
         $names = New-Object System.Collections.ArrayList
         $total = [int]$comps.Count
+        # BY INDEX, NEVER BY foreach. Enumerating a COM collection acquires an
+        # IEnumVARIANT that PowerShell never hands back and nothing releases.
         for ($index = 1; $index -le $total; $index++) {
             $comp = $null; $code = $null
             try {
                 $comp = $comps.Item($index)
+                $result.Acquired = $result.Acquired + 1
                 $name = [string]$comp.Name
                 $null = $names.Add($name)
                 if ($WantedModules -contains $name) {
                     $code = $comp.CodeModule
+                    $result.Acquired = $result.Acquired + 1
                     $lineCount = [int]$code.CountOfLines
                     $text = ''
                     if ($lineCount -ge 1) { $text = [string]$code.Lines(1, $lineCount) }
                     $result.Texts[$name] = $text
                 }
             } finally {
-                if ($null -ne $code) { Release-Transient $code 'CodeModule';  $code = $null }
-                if ($null -ne $comp) { Release-Transient $comp 'VBComponent'; $comp = $null }
+                if ($null -ne $code) {
+                    Invoke-W1Release $Ledger $code ('CodeModule[' + [string]$index + ']')
+                    $code = $null
+                }
+                if ($null -ne $comp) {
+                    Invoke-W1Release $Ledger $comp ('VBComponent[' + [string]$index + ']')
+                    $comp = $null
+                }
             }
         }
         $result.Loaded = @($names)
@@ -270,8 +349,8 @@ function Read-W1VbaProject {
         $result.TrustRefused = (Test-TrustAccessError $_)
         $result.Problem = (Format-Err $_)
     } finally {
-        if ($null -ne $comps)  { Release-Transient $comps  'VBComponents'; $comps  = $null }
-        if ($null -ne $vbproj) { Release-Transient $vbproj 'VBProject';    $vbproj = $null }
+        if ($null -ne $comps)  { Invoke-W1Release $Ledger $comps  'VBComponents'; $comps  = $null }
+        if ($null -ne $vbproj) { Invoke-W1Release $Ledger $vbproj 'VBProject';    $vbproj = $null }
     }
     return $result
 }
@@ -382,9 +461,17 @@ $excelIdentity = $null
 $naturalExit = $false
 $emergencyRequired = $false
 $fatal = ''
+$comAcquired = 0
+
+# THE LEDGER IS CREATED BEFORE EXCEL EXISTS, so that every release of the run -
+# the VBE objects included - lands in ONE record with its count. Building it in
+# the shutdown, as the first version did, is precisely why 34 of 37 releases
+# were never represented anywhere.
+$rel = New-ReleaseLedger 'phase 7 W1 session'
 
 try {
     $excel = New-Object -ComObject Excel.Application
+    $comAcquired = $comAcquired + 1
     $excelIdentity = Get-ExcelIdentity -ExcelApp $excel -PreExistingPids $preExisting
     Write-W1Line ('EXCEL PROCESS OWNERSHIP: this run created PID ' +
                   [string]$excelIdentity.ProcessId + '. No process it did not create is')
@@ -395,7 +482,9 @@ try {
     $excel.AskToUpdateLinks = $false
 
     $workbooks = $excel.Workbooks
+    $comAcquired = $comAcquired + 1
     $wb = $workbooks.Open($stageBPath)
+    $comAcquired = $comAcquired + 1
 
     # AUTOMATION ON FIRST, no failure stage armed. A modal confirmation on a
     # headless run would hang until a person closed it, which is the one way
@@ -416,7 +505,13 @@ try {
     # -------------------------------------------------------------------
     Write-W1Line 'MODULES, COMPILE, SURFACE'
     Write-W1Line '-------------------------'
-    $project = Read-W1VbaProject -Workbook $wb -WantedModules $wantedModules
+    $project = Read-W1VbaProject -Workbook $wb -WantedModules $wantedModules -Ledger $rel
+    $comAcquired = $comAcquired + [int]$project.Acquired
+    # COLLECTED HERE, WHILE EXCEL IS STILL HEALTHY, rather than only at
+    # shutdown. Anything the runtime created and dropped during the VBE pass is
+    # finalised now, so the shutdown measures the objects this runner actually
+    # named instead of racing a finaliser queue.
+    [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
     if ($project.TrustRefused) { Write-W1Line (Get-TrustAccessGuidance) }
     $declaredModules = @($manifest.vba.modules | ForEach-Object { [string]$_.name })
     $missingModules = @($declaredModules | Where-Object { $project.Loaded -notcontains $_ })
@@ -544,27 +639,33 @@ try {
         $null = Add-W1Check ([string]$expectation.Name + ' answers the unrun state (' + $wanted + ')') `
             $answered ('returned ' + (Format-W1Value $value))
     }
+
+    # THE AUTOMATION GUARD IS TURNED OFF THE WAY THE PROVEN DRIVER TURNS IT OFF.
+    # The Phase-4/5/6 driver - the one harness whose owned Excel has exited
+    # naturally on this machine - ends its session with this call, and neither
+    # the frozen Phase-7 harness nor the first version of this runner did. It
+    # holds no COM reference either way (ClearAutomation resets five scalars),
+    # so this is parity with the proven path, not a theory about the leak.
+    try { $excel.Run('PCCM_AutomationEnd') | Out-Null } catch { }
 } catch {
     $fatal = (Format-Err $_)
     Write-W1Line ''
     Write-W1Line ('THE W1 SESSION DID NOT COMPLETE: ' + $fatal)
 } finally {
-    # THE ACCEPTED SHUTDOWN PATH. The ledger is built first and separately, so a
-    # failure while building it cannot skip the wait or the safety net below.
-    $rel = $null
-    try { $rel = New-ReleaseLedger 'phase 7 W1 session' } catch { $rel = $null }
+    # THE ACCEPTED SHUTDOWN PATH, against the ledger this run has been writing
+    # to since before Excel existed.
     try {
         if ($null -ne $wb) {
             try { $wb.Close($false); $rel.WorkbookClosed = $true }
             catch { $null = $rel.Failed.Add('Workbook.Close') }
         }
-        Invoke-NamedRelease $rel $wb        'Workbook';  $wb        = $null
-        Invoke-NamedRelease $rel $workbooks 'Workbooks'; $workbooks = $null
+        Invoke-W1Release $rel $wb        'Workbook';  $wb        = $null
+        Invoke-W1Release $rel $workbooks 'Workbooks'; $workbooks = $null
         if ($null -ne $excel) {
             try { $excel.Quit(); $rel.QuitCalled = $true }
             catch { $null = $rel.Failed.Add('Application.Quit') }
         }
-        Invoke-NamedRelease $rel $excel 'Excel.Application'; $excel = $null
+        Invoke-W1Release $rel $excel 'Excel.Application'; $excel = $null
     } finally {
         # $Error IS CLEARED BEFORE THE COLLECT, and this is the line that keeps
         # PID 27384 from happening again. An ErrorRecord from a failed COM call
@@ -576,8 +677,15 @@ try {
         [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
         [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
 
-        if ($null -ne $excelIdentity) { $naturalExit = Wait-ExcelExit -Identity $excelIdentity }
-        if ($null -ne $rel) { $rel.NaturalExit = $naturalExit }
+        # 90 SECONDS, EXPLICITLY, AND IT IS NOT A FIX. The accepted default is
+        # 25. Tearing down a VBE that has compiled 28 modules is the slowest
+        # shutdown in this repo, and a 25-second bound cannot tell "still
+        # referenced" from "still closing". Widening it removes the timing
+        # explanation; the release counts above decide the other one.
+        if ($null -ne $excelIdentity) {
+            $naturalExit = Wait-ExcelExit -Identity $excelIdentity -TimeoutSeconds 90
+        }
+        $rel.NaturalExit = $naturalExit
         Write-W1Line ''
         Write-W1Line 'EXCEL SHUTDOWN'
         Write-W1Line '--------------'
@@ -589,13 +697,16 @@ try {
             # not leave a process behind, and the verdict below refuses the run
             # because it was needed at all.
             $emergencyRequired = $true
-            if ($null -ne $rel) { $rel.EmergencyRequired = $true }
+            $rel.EmergencyRequired = $true
             $cleaned = Invoke-EmergencyExcelCleanup -Identity $excelIdentity -Label 'W1'
             Write-W1Line ('EXCEL SHUTDOWN: emergency cleanup was required (' + [string]$cleaned + ')')
         }
-        if ($null -ne $rel) { Write-W1Line (Format-ReleaseLedger $rel) }
-        foreach ($transient in @(Get-TransientFailures)) {
-            Write-W1Line ('      transient release FAILED: ' + [string]$transient)
+        # EVERY RELEASE OF THE RUN, WITH ITS COUNT. This is the evidence the
+        # first run could not produce: if a reference was retained, the object
+        # that retained it is named here with a number beside it.
+        Write-W1Line (Format-ReleaseLedger $rel)
+        foreach ($residual in @($script:W1Residual)) {
+            Write-W1Line ('      OUTSTANDING: ' + [string]$residual)
         }
     }
 }
@@ -605,7 +716,15 @@ try {
 # ===========================================================================
 $null = Add-W1Check 'the owned Excel process exited naturally' $naturalExit
 $null = Add-W1Check 'no emergency cleanup was required' (-not $emergencyRequired)
-$null = Add-W1Check 'every transient COM release succeeded' (@(Get-TransientFailures).Count -eq 0)
+$null = Add-W1Check 'every COM object acquired in this run was released' `
+    ([int]$rel.Attempted -eq [int]$comAcquired) `
+    ([string]$comAcquired + ' acquired, ' + [string]$rel.Attempted + ' released')
+$null = Add-W1Check 'every COM release succeeded' ($rel.Failed.Count -eq 0) `
+    ($rel.Failed -join ', ')
+# THE CHECK THE FAILED RUN COULD NOT MAKE. ReleaseComObject returns what is
+# left on that RCW; anything above zero IS the retained reference, named.
+$null = Add-W1Check 'every COM release left 0 outstanding references' `
+    (@($script:W1Residual).Count -eq 0) ((@($script:W1Residual)) -join '; ')
 
 $failed = @($script:W1Checks | Where-Object { -not $_.Ok })
 Write-W1Line ''

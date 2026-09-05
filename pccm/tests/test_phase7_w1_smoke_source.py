@@ -166,7 +166,8 @@ def test_05_no_computation_endpoint_is_ever_invoked() -> None:
     # The only literal endpoint it runs is the automation guard; everything else
     # is resolved from the contract projection.
     literals = [c for c in runnable if "'" in c]
-    assert all("PCCM_AutomationBegin" in c for c in literals), literals
+    assert all(("PCCM_AutomationBegin" in c) or ("PCCM_AutomationEnd" in c)
+               for c in literals), literals
 
 
 def test_06_the_frozen_harness_is_untouched() -> None:
@@ -463,26 +464,92 @@ def test_20_the_safe_accessors_are_the_four_and_their_unrun_answers() -> None:
 # E. COM LIFECYCLE AND SHUTDOWN
 # ===========================================================================
 
-def test_21_every_acquired_com_object_has_a_named_release() -> None:
-    """The seven the authorisation names, each released by the accepted policy."""
+def test_21_every_acquired_com_object_is_released_into_the_one_ledger() -> None:
+    """THE CORRECTION FOR THE SECOND W1 FAILURE.
+
+    The first version released the four VBE classes through `Release-Transient`,
+    which records nothing when a release succeeds - so 34 of the run's 37
+    releases produced no evidence at all, and "every ledgered release succeeded"
+    was a true statement about three objects. Every release now goes through one
+    helper, into one ledger, with the count ReleaseComObject returned.
+    """
     code = _code()
-    for label in ("'CodeModule'", "'VBComponent'", "'VBComponents'", "'VBProject'"):
-        assert f"Release-Transient" in code and label in code, label
-    for label in ("'Workbook'", "'Workbooks'", "'Excel.Application'"):
-        assert f"Invoke-NamedRelease $rel" in code and label in code, label
+    assert "Release-Transient" not in code, (
+        "a release still goes through the silent-on-success helper; its count "
+        "is the number that names a retained reference")
+    assert "Invoke-NamedRelease" not in code, (
+        "Invoke-NamedRelease writes the ledger line but keeps the count to "
+        "itself, which is what left the retained reference unobserved")
+    for label in ("'CodeModule[' + [string]$index + ']'",
+                  "'VBComponent[' + [string]$index + ']'",
+                  "'VBComponents'", "'VBProject'",
+                  "'Workbook'", "'Workbooks'", "'Excel.Application'"):
+        assert label in code, label
+    # THE LEDGER EXISTS BEFORE EXCEL DOES, or the VBE releases have nowhere to go.
+    ledger_at = code.index("$rel = New-ReleaseLedger")
+    excel_at = code.index("New-Object -ComObject Excel.Application")
+    assert ledger_at < excel_at, (
+        "the ledger is built in the shutdown again; the releases that happen "
+        "during the session cannot be recorded in a ledger that does not exist")
+    # AND THE HELPER REALLY RECORDS THE COUNT.
+    helper = _function("Invoke-W1Release")
+    assert "Release-ComObjectSafe" in helper, (
+        "the accepted primitive is the only thing allowed to call "
+        "ReleaseComObject; com_lifecycle.ps1 is not modified by this runner")
+    assert "$script:W1Residual.Add" in helper
+    assert "[int]$rec.Count -ne 0" in helper
+
+
+def test_21b_a_non_zero_release_count_fails_the_run() -> None:
+    """ReleaseComObject returns what is LEFT on that RCW. Zero means the runtime
+    let go; anything above zero is the retained reference, named, per object."""
+    code = _code()
+    assert "'every COM release left 0 outstanding references'" in code
+    assert "@($script:W1Residual).Count -eq 0" in code
+    assert "OUTSTANDING: " in code, (
+        "the residual counts are computed but never written to the report")
+    # And the acquisition/release balance is counted rather than assumed.
+    assert "'every COM object acquired in this run was released'" in code
+    assert "[int]$rel.Attempted -eq [int]$comAcquired" in code
+    assert code.count("$comAcquired = $comAcquired + 1") == 3, (
+        "the three session objects - Application, Workbooks, Workbook - are "
+        "each counted where they are acquired")
+    assert "$result.Acquired = $result.Acquired + 1" in code
+
+
+def test_21c_the_two_hidden_reference_patterns_are_refused() -> None:
+    """The two the authorisation named, refused structurally rather than argued.
+
+    A chained property access acquires an intermediate no variable holds, so no
+    finally can release it and no ledger line can record it. A foreach over a
+    COM collection acquires an IEnumVARIANT that PowerShell never hands back.
+    """
+    body = _function("Read-W1VbaProject")
+    chains = re.findall(r"\$(?:Workbook|vbproj|comps|comp|code|excel|wb|workbooks)"
+                        r"\.\w+\.\w+", body)
+    assert not chains, f"a chained COM property access acquires an unnamed intermediate: {chains}"
+    assert "foreach" not in body, (
+        "the project read enumerates the collection; enumeration acquires an "
+        "IEnumVARIANT that nothing releases - it must index by position")
+    assert "for ($index = 1; $index -le $total; $index++)" in body
+    # The whole runner, not only this function.
+    code = _code()
+    for chained in ("$wb.VBProject.", "$excel.Workbooks.", "$Workbook.VBProject."):
+        assert chained not in code, chained
 
 
 def test_22_no_com_object_escapes_the_project_read() -> None:
     """PLAIN DATA CROSSES THE BOUNDARY. A returned VBComponent would be a
     reference nothing later in the run knows it is holding."""
     body = _function("Read-W1VbaProject")
-    assert body.count("Release-Transient") == 4, (
+    assert body.count("Invoke-W1Release") == 4, (
         "the four VBE objects are CodeModule, VBComponent, VBComponents and "
-        "VBProject; each needs its own named release")
+        "VBProject; each needs its own ledgered release")
     returned = re.search(r"return \$result", body)
     assert returned, "the project read returns something other than its result record"
     # The record is built from names, strings and a boolean only.
     assert "Loaded" in body and "Texts" in body and "TrustRefused" in body
+    assert "Acquired" in body
     assert "$result.Texts[$name] = $text" in body
     for leak in ("$result.Component", "$result.CodeModule", "$result.Project"):
         assert leak not in body
@@ -501,12 +568,20 @@ def test_23_the_error_collection_is_cleared_before_the_collect() -> None:
     """
     code = _code()
     assert "$Error.Clear()" in code
-    clear_at = code.index("$Error.Clear()")
-    collect_at = code.index("[System.GC]::Collect()")
-    wait_at = code.index("Wait-ExcelExit")
+    # THE CLAIM IS ABOUT THE SHUTDOWN. There is now also a mid-session collect,
+    # taken while Excel is still healthy, and measuring the ordering across the
+    # whole file would read that one and prove nothing about the shutdown.
+    shutdown = code[code.index("Invoke-W1Release $rel $wb"):]
+    clear_at = shutdown.index("$Error.Clear()")
+    collect_at = shutdown.index("[System.GC]::Collect()")
+    wait_at = shutdown.index("Wait-ExcelExit")
     assert clear_at < collect_at < wait_at, (
         "the order must be clear, collect, wait: clearing after the collect "
         "leaves the RCW rooted for the collect that mattered")
+    # The mid-session collect finalises anything the VBE pass dropped while the
+    # process is still healthy, instead of racing the finaliser queue at exit.
+    read_at = code.index("$project = Read-W1VbaProject")
+    assert "[System.GC]::Collect()" in code[read_at:read_at + 900]
 
 
 def test_24_the_shutdown_is_the_accepted_path_on_every_route() -> None:
@@ -531,7 +606,8 @@ def test_25_emergency_cleanup_can_never_produce_a_pass() -> None:
     assert "$emergencyRequired = $true" in code
     assert "'no emergency cleanup was required' (-not $emergencyRequired)" in code
     assert "'the owned Excel process exited naturally' $naturalExit" in code
-    assert "'every transient COM release succeeded'" in code
+    assert "'every COM release succeeded'" in code
+    assert "'every COM release left 0 outstanding references'" in code
     # The verdict is a plain conjunction over the checks, so those three cannot
     # be recorded and then ignored.
     assert "$failed = @($script:W1Checks | Where-Object { -not $_.Ok })" in code
@@ -632,3 +708,46 @@ def test_32_a_compile_failure_stops_the_run() -> None:
     # failure actually surfaces; it feeds the compile check rather than escaping
     # as a fatal with no compile evidence recorded.
     assert "$compileFailure = $automationProblem" in code
+
+
+def test_33_the_automation_guard_is_ended_the_way_the_proven_driver_ends_it() -> None:
+    """PARITY WITH THE ONE NATURAL-EXIT PATH ON THIS MACHINE.
+
+    `phase4_functional_test.ps1` is the only harness whose owned Excel has
+    actually exited naturally after touching VBProject, VBComponents,
+    VBComponent, CodeModule and Application.Run, and it ends its session with
+    PCCM_AutomationEnd. Neither the frozen Phase-7 harness nor the first version
+    of this runner did. It holds no COM reference either way - ClearAutomation
+    resets five scalars - so this is parity with a proven path, not a theory.
+    """
+    proven = accepted._ps_code(WINDOWS / "phase4_functional_test.ps1")
+    assert "$excel.Run('PCCM_AutomationEnd')" in proven, (
+        "the proven driver no longer ends the automation guard; the parity "
+        "argument in the runner no longer describes it")
+    code = _code()
+    assert "$excel.Run('PCCM_AutomationEnd')" in code
+    end_at = code.index("$excel.Run('PCCM_AutomationEnd')")
+    close_at = code.index("$wb.Close($false)")
+    assert end_at < close_at, "the guard must be ended before the workbook closes"
+    # AND IT REALLY IS SCALAR-ONLY, so the parity claim cannot quietly become a
+    # claim about a released object.
+    app_state = (PCCM_ROOT / "src" / "vba" / "modAppState.bas").read_text(encoding="utf-8")
+    clear = re.search(r"^Public Sub ClearAutomation\(\)(.*?)^End Sub", app_state, re.M | re.S)
+    assert clear, "ClearAutomation is gone from modAppState"
+    for line in clear.group(1).strip().splitlines():
+        assert re.match(r"^\s*g\w+ = (False|True|vbNullString|\"\")\s*$", line), line
+
+
+def test_34_the_natural_exit_wait_is_bounded_explicitly() -> None:
+    """The accepted default is 25 seconds. Tearing down a VBE that has compiled
+    28 modules is the slowest shutdown in this repo, and a 25-second bound
+    cannot tell "still referenced" from "still closing" - so the bound is
+    widened deliberately and the release counts decide the other question."""
+    code = _code()
+    match = re.search(r"Wait-ExcelExit -Identity \$excelIdentity -TimeoutSeconds (\d+)", code)
+    assert match, "the wait no longer states its own bound"
+    assert int(match.group(1)) >= 60, (
+        f"{match.group(1)}s is not long enough to remove teardown time as an "
+        "explanation for a process that has not exited")
+    # It is still a WAIT, never a stop: the runner force-stops nothing itself.
+    assert "Stop-Process" not in code
