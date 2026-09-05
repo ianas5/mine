@@ -830,10 +830,16 @@ function Compare-P7CalcTotals {
         ($problems.Count -eq 0) ($problems -join '; '))
 }
 
+# THE SCENARIO ID IS PASSED, NOT READ OFF THE CASE. The Phase-5 harness
+# retired reaching into a case object for its id, subtree-wide, after Run 10,
+# where a fixture that had no such field was asked for one under StrictMode
+# 2.0. The corpus case here does carry one, but the ban is deliberately blunt
+# and its reasoning holds: the caller already knows which scenario it
+# dispatched, so naming it at the call site is clearer and reaches for nothing.
 function Invoke-P7InheritedScenario {
-    param($Excel, $Workbook, $Manifest, $Inspection, $Case, $Cases)
+    param($Excel, $Workbook, $Manifest, $Inspection, $Case, $Cases, [string]$Label)
 
-    $label = [string]$Case.id
+    $label = $Label
     Write-P7Line ($label + ' - ' + [string]$Case.title)
     Write-P7Line ('-' * (5 + ([string]$Case.title).Length))
     $model = $Case.model
@@ -1858,12 +1864,12 @@ try {
         'W2' {
             Invoke-P7InheritedScenario -Excel $excel -Workbook $wb -Manifest $manifest `
                 -Inspection $inspection `
-                -Case ($p7Cases.scenarios | Where-Object { [string]$_.id -ceq 'W2' }) -Cases $p7Cases
+                -Case ($p7Cases.scenarios | Where-Object { [string]$_.id -ceq 'W2' }) -Cases $p7Cases -Label 'W2'
         }
         'W3' {
             Invoke-P7InheritedScenario -Excel $excel -Workbook $wb -Manifest $manifest `
                 -Inspection $inspection `
-                -Case ($p7Cases.scenarios | Where-Object { [string]$_.id -ceq 'W3' }) -Cases $p7Cases
+                -Case ($p7Cases.scenarios | Where-Object { [string]$_.id -ceq 'W3' }) -Cases $p7Cases -Label 'W3'
         }
         'W4' {
             $null = Invoke-P7W4 -Excel $excel -Workbook $wb -Manifest $manifest `
