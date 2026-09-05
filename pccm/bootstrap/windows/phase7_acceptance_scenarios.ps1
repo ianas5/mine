@@ -157,7 +157,7 @@ function Get-Phase7AcceptanceScenarios {
 }
 
 # ===========================================================================
-# SIX HELPERS COPIED VERBATIM FROM THE ACCEPTED PHASE-7 TIMING HARNESS
+# SEVEN HELPERS COPIED VERBATIM FROM THE ACCEPTED PHASE-7 TIMING HARNESS
 # ===========================================================================
 # WHY THEY ARE COPIED RATHER THAN DOT-SOURCED. `phase4_functional_test.ps1` and
 # `phase7_timing_scenarios.ps1` both define them, and NEITHER is definition-only
@@ -167,6 +167,20 @@ function Get-Phase7AcceptanceScenarios {
 #
 # They are copied BYTE FOR BYTE from `phase7_timing_scenarios.ps1` so there is
 # one behaviour rather than two, and a source control pins them to it.
+#
+# `Write-RowObject` IS HERE BECAUSE OF A TRANSITIVE DEPENDENCY, and it is worth
+# naming: nothing in this file calls it. `Get-Phase5TypedTableBody` does - and
+# that function lives in `phase5_gate_b_scenarios.ps1`, which this harness DOES
+# dot-source, while its own helper lives in `phase4_functional_test.ps1`, which
+# this harness deliberately does not. In the accepted Gate-B runs the Phase-4
+# driver dot-sources the scenarios file, so the helper is in scope; reaching the
+# scenarios file directly leaves that dependency unmet, and W1 died on it before
+# a single check was recorded. The timing harness met the same gap the same way.
+function Write-RowObject {
+    param([object[]]$Row)
+    Write-Output -NoEnumerate $Row
+}
+
 function Get-NamedValue {
     param($Workbook, [string]$DefinedName)
     $names = $null; $nm = $null; $rng = $null
@@ -303,6 +317,117 @@ function Get-Phase7ModuleIdentities {
         }
     }
     return ,$out
+}
+
+# AND FIVE MORE FOR THE SAME TRANSITIVE REASON. None of them is called from
+# this file either: the accepted Phase-5 fixture choreography calls them, and
+# its own file does not define them. They are copied together rather than one
+# at a time because the closure control below proves the set is COMPLETE - a
+# helper found by running Windows and failing is a helper found too late.
+function Get-TableBody {
+    param($Workbook, [string]$SheetName, [string]$TableName)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $body = $null
+    $rowsObj = $null; $colsObj = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $body = $lo.DataBodyRange
+        # An empty body is a valid outcome: emit NOTHING. The caller's @(...) turns
+        # zero pipeline objects into an empty collection, which is exactly right.
+        if ($null -eq $body) { return }
+
+        # Row and column counts are read through named, released objects rather than
+        # through $body.Rows.Count, which would mint an unowned Range on every
+        # iteration of the loop.
+        $rowsObj = $body.Rows
+        $colsObj = $body.Columns
+        $rowCount = [int]$rowsObj.Count
+        $colCount = [int]$colsObj.Count
+        Release-Transient $rowsObj 'Range(rows)'; $rowsObj = $null
+        Release-Transient $colsObj 'Range(columns)'; $colsObj = $null
+
+        for ($r = 1; $r -le $rowCount; $r++) {
+            $line = @()
+            for ($c = 1; $c -le $colCount; $c++) {
+                $cell = $null
+                try {
+                    $cell = $body.Cells($r, $c)
+                    $v = $cell.Value2
+                    if ($null -eq $v) { $line += '' } else { $line += [string]$v }
+                } finally {
+                    if ($null -ne $cell) { Release-Transient $cell 'Range(cell)'; $cell = $null }
+                }
+            }
+            Write-RowObject $line
+        }
+    } finally {
+        if ($null -ne $rowsObj)         { Release-Transient $rowsObj         'Range(rows)';    $rowsObj         = $null }
+        if ($null -ne $colsObj)         { Release-Transient $colsObj         'Range(columns)'; $colsObj         = $null }
+        if ($null -ne $body)            { Release-Transient $body            'Range(body)';    $body            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';     $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects';    $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';      $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';     $localWorksheets = $null }
+    }
+    # No trailing return: every row has already been emitted, one object each.
+}
+
+function Get-TableRowCount {
+    param($Workbook, [string]$SheetName, [string]$TableName)
+    return @(Get-TableBody -Workbook $Workbook -SheetName $SheetName -TableName $TableName).Count
+}
+
+function Add-BlankTableRow {
+    param($Workbook, [string]$SheetName, [string]$TableName)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $rows = $null; $added = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $rows = $lo.ListRows
+        $added = $rows.Add()
+        return [int]$added.Index
+    } finally {
+        if ($null -ne $added)           { Release-Transient $added           'ListRow';     $added           = $null }
+        if ($null -ne $rows)            { Release-Transient $rows            'ListRows';    $rows            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+}
+
+function Remove-TableRow {
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowIndex)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $rows = $null; $victim = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $rows = $lo.ListRows
+        $victim = $rows.Item($RowIndex)
+        $victim.Delete()
+    } finally {
+        if ($null -ne $victim)          { Release-Transient $victim          'ListRow';     $victim          = $null }
+        if ($null -ne $rows)            { Release-Transient $rows            'ListRows';    $rows            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+}
+
+function Get-IdColumnValues {
+    param($Workbook, $Info)
+    $out = @()
+    foreach ($row in @(Get-TableBody -Workbook $Workbook -SheetName $Info.sheet -TableName $Info.table_name)) {
+        if ($row[0] -ne '') { $out += $row[0] }
+    }
+    return $out
 }
 
 # THE SELECTOR IS TEXT, AND Set-NamedValue WRITES NUMBERS.
@@ -1920,7 +2045,10 @@ try {
     # THE ACCEPTED SHUTDOWN PATH, unchanged. Workbook.Close without saving,
     # Application.Quit, named releases leaf-before-parent, Wait-ExcelExit, and
     # emergency cleanup ONLY for a process whose identity is still verified.
-    $rel = New-ReleaseLedger 'phase 7 acceptance session'
+    # THE LEDGER IS CREATED FIRST AND SEPARATELY, so that a failure while
+    # building it cannot skip the wait and the emergency path below.
+    $rel = $null
+    try { $rel = New-ReleaseLedger 'phase 7 acceptance session' } catch { $rel = $null }
     try {
         if ($null -ne $wb) {
             try { $wb.Close($false); $rel.WorkbookClosed = $true }
@@ -1935,9 +2063,20 @@ try {
     } finally {
         [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
         [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
+        # THE OUTCOME IS REPORTED ON EVERY PATH, INCLUDING THIS ONE.
+        #
+        # The W1 run that died on an undefined helper DID reach this block -
+        # the exception was raised inside the session try - so the owned
+        # process was closed, quit and waited for. What the report could not
+        # show is that it happened, because a line was written only when
+        # emergency cleanup was needed. Silence read exactly like an orphan.
+        # A harness failure must leave evidence of the process's fate.
         $exited = $false
         if ($null -ne $excelIdentity) { $exited = Wait-ExcelExit -Identity $excelIdentity }
-        if (-not $exited) {
+        if ($exited) {
+            Write-P7Line ('EXCEL SHUTDOWN: the owned process (PID ' +
+                          [string]$excelIdentity.ProcessId + ') exited naturally.')
+        } else {
             $cleaned = Invoke-EmergencyExcelCleanup -Identity $excelIdentity
             Write-P7Line ('EXCEL SHUTDOWN: emergency cleanup was required (' + [string]$cleaned + ')')
         }

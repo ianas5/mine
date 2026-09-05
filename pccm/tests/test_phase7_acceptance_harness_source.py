@@ -827,6 +827,210 @@ def test_42_the_harness_declares_the_shell_it_is_written_for() -> None:
     assert "PowerShell 6+ only" in text
 
 
+# ===========================================================================
+# H. THE CUSTOM-COMMAND CLOSURE
+# ===========================================================================
+# THE DEFECT THIS EXISTS FOR, AND WHY THE EARLIER CONTROL MISSED IT.
+#
+# W1 reached Excel, opened the workbook, and died before a single check with
+# "The term 'Write-RowObject' is not recognized". Nothing in the harness calls
+# it: `Get-Phase5TypedTableBody` does, that function lives in
+# `phase5_gate_b_scenarios.ps1` - which this harness dot-sources - and its own
+# helper lives in `phase4_functional_test.ps1`, which this harness deliberately
+# does not. In the accepted Gate-B runs the Phase-4 driver dot-sources the
+# scenarios file, so the helper is in scope; reaching the scenarios file
+# directly leaves the dependency unmet.
+#
+# The earlier resolution check only looked at commands THIS FILE names. The
+# dependency that broke W1 was transitive, so it was invisible to it. This
+# control follows the calls instead: from the harness's top level and its own
+# functions, INTO the dot-sourced files, transitively, and requires every custom
+# command reached along the way to be defined somewhere in that closure.
+#
+# It found five more of the same class after Write-RowObject - Get-TableBody,
+# Get-TableRowCount, Add-BlankTableRow, Remove-TableRow, Get-IdColumnValues -
+# each of which would have failed a later Windows scenario one at a time. A
+# helper found by running Windows and failing is a helper found too late.
+#
+# THREE KINDS OF COMMAND, distinguished on purpose: PowerShell built-ins, which
+# need no definition; functions this harness defines; and functions reached
+# through the three files it dot-sources. Anything else is undefined.
+POWERSHELL_BUILTINS = frozenset({
+    "Write-Host", "Write-Output", "Write-Verbose", "Write-Warning", "Write-Error",
+    "Write-Debug", "Write-Progress", "Get-Content", "Set-Content", "Add-Content",
+    "Out-File", "Out-Null", "Out-String", "Join-Path", "Split-Path", "Test-Path",
+    "Resolve-Path", "Convert-Path", "New-Item", "Remove-Item", "Copy-Item",
+    "Move-Item", "Rename-Item", "Get-Item", "Get-ChildItem", "New-Object",
+    "Get-Date", "Start-Sleep", "Measure-Command", "Measure-Object",
+    "ConvertFrom-Json", "ConvertTo-Json", "ConvertFrom-Csv", "ConvertTo-Csv",
+    "Import-Csv", "Export-Csv", "Where-Object", "ForEach-Object", "Select-Object",
+    "Sort-Object", "Group-Object", "Compare-Object", "Add-Member", "Get-Member",
+    "Select-String", "Format-List", "Format-Table", "Set-StrictMode",
+    "Set-Variable", "Get-Variable", "Remove-Variable", "New-Variable",
+    "Get-Command", "Get-Module", "Import-Module", "Get-Process", "Stop-Process",
+    "Wait-Process", "Start-Process", "Invoke-Expression", "Invoke-Command",
+    "Get-Random", "New-Guid", "Get-Location", "Set-Location", "Push-Location",
+    "Pop-Location", "Get-Host", "Read-Host", "Get-FileHash", "Get-Culture",
+})
+
+_VERB_NOUN = re.compile(r"(?<![\w\-.$])([A-Z][A-Za-z]*-[A-Za-z0-9]+)(?![\w\-])")
+
+
+def _ps_body(text: str) -> str:
+    """Comments AND string literals removed.
+
+    A verb-noun token inside a message - 'Gate-B', 'SHA-256', 'Stage-A' - is
+    prose, not a call. A scan that read those would report dozens of phantom
+    commands and bury the real ones among them.
+    """
+    text = re.sub(r"^<#.*?#>\n", "", text, flags=re.S)
+    text = "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
+    text = re.sub(r"'[^'\n]*'", "''", text)
+    text = re.sub(r'"[^"\n]*"', '""', text)
+    return re.sub(r"\s#[^\n]*", "", text)
+
+
+def _ps_functions(path: Path) -> dict[str, str]:
+    """name -> body, by brace matching rather than by a line pattern."""
+    code = _ps_body(path.read_text(encoding="utf-8"))
+    out: dict[str, str] = {}
+    for match in re.finditer(r"^function\s+([\w-]+)\s*\{", code, re.M):
+        start = match.end() - 1
+        depth = 0
+        for index in range(start, len(code)):
+            if code[index] == "{":
+                depth += 1
+            elif code[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    out[match.group(1)] = code[start:index]
+                    break
+    return out
+
+
+def _ps_top_level(path: Path) -> str:
+    code = _ps_body(path.read_text(encoding="utf-8"))
+    for body in _ps_functions(path).values():
+        code = code.replace(body, "")
+    return code
+
+
+def _dot_sourced() -> list[Path]:
+    sourced = re.findall(r"^\. \(Join-Path \$scriptDir '([\w.]+)'\)",
+                         _executable(), re.M)
+    assert sourced, "the harness dot-sources nothing"
+    return [WINDOWS / name for name in sourced]
+
+
+def _command_closure() -> tuple[set[str], list[tuple[str, str]]]:
+    defined: dict[str, tuple[str, str]] = {}
+    for path in [HARNESS] + _dot_sourced():
+        for name, body in _ps_functions(path).items():
+            defined.setdefault(name, (path.name, body))
+
+    seeds = [("<harness top level>", _ps_top_level(HARNESS))]
+    seeds += [(name, body) for name, (owner, body) in defined.items()
+              if owner == HARNESS.name]
+
+    seen: set[str] = set()
+    missing: list[tuple[str, str]] = []
+    work = list(seeds)
+    while work:
+        where, body = work.pop()
+        for call in sorted(set(_VERB_NOUN.findall(body))):
+            if call in POWERSHELL_BUILTINS:
+                continue
+            if call not in defined:
+                missing.append((where, call))
+                continue
+            if call in seen:
+                continue
+            seen.add(call)
+            work.append((call, defined[call][1]))
+    return seen, missing
+
+
+def test_43_every_custom_command_the_harness_reaches_is_defined() -> None:
+    """THE CONTROL THAT WOULD HAVE CAUGHT THE W1 FAILURE.
+
+    Transitive, because the dependency that broke it was: the harness never
+    names Write-RowObject, and would have failed on it - and then on five more
+    like it - one Windows session at a time.
+    """
+    reached, missing = _command_closure()
+    assert not missing, (
+        "custom command(s) called but defined nowhere in the harness or the "
+        "files it dot-sources:\n  " +
+        "\n  ".join(f"{call}  (reached from {where})"
+                     for where, call in sorted(set(missing))))
+    # The closure is real: a harness that reached almost nothing would pass the
+    # assertion above by proving nothing.
+    assert len(reached) > 80, f"only {len(reached)} custom commands reached"
+
+
+def test_44_the_transitively_needed_helpers_are_present_and_verbatim() -> None:
+    """The six the closure found, pinned to the accepted implementation.
+
+    None of them is called from this file - the accepted Phase-5 fixture
+    choreography calls them - so a reader has no local reason to expect them and
+    a control has to say why they are here.
+    """
+    timing = TIMING.read_text(encoding="utf-8")
+    transitive = ("Write-RowObject", "Get-TableBody", "Get-TableRowCount",
+                  "Add-BlankTableRow", "Remove-TableRow", "Get-IdColumnValues")
+    for name in transitive:
+        theirs = re.search(rf"^function {name} \{{(.*?)^\}}", timing, re.M | re.S)
+        assert theirs, f"{name} is no longer in the accepted timing harness"
+        assert _function(name) == theirs.group(1), (
+            f"{name} has drifted from the accepted implementation")
+        # AND IT REALLY IS TRANSITIVE: this file defines it and never calls it.
+        # That is the whole reason it is easy to leave out, and the reason a
+        # reader needs telling why it is here at all.
+        body = _ps_body(HARNESS.read_text(encoding="utf-8"))
+        for definition in _ps_functions(HARNESS).values():
+            body = body.replace(definition, "")
+        # The `function <name> {` headers survive the body removal; they are
+        # declarations, not calls.
+        body = "\n".join(line for line in body.splitlines()
+                         if not line.strip().startswith("function "))
+        assert not re.search(rf"(?<![\w\-.$]){name}(?![\w\-])", body), (
+            f"{name} is called from the harness after all; the transitive "
+            "justification in the source no longer describes it")
+    # The dot-sourced set is unchanged: adding phase4_functional_test.ps1 would
+    # RUN the Phase-4 matrix, which is why these are copied instead.
+    assert [p.name for p in _dot_sourced()] == [
+        "com_lifecycle.ps1", "phase5_gate_b_scenarios.ps1", "phase6_gate_b_scenarios.ps1"]
+
+
+def test_45_the_owned_excel_is_shut_down_on_every_path() -> None:
+    """A HARNESS FAILURE MUST NOT ORPHAN EXCEL, and the W1 failure was one.
+
+    The exception was raised inside the session try, so the finally ran and the
+    owned PID was closed, quit, waited for and - if it had not exited - cleaned
+    up. What the report could NOT show is that this happened, because the
+    shutdown wrote a line only on the emergency path. The ledger now reports on
+    every path, so a future failure leaves evidence of the process's fate rather
+    than silence.
+    """
+    body = _executable()
+    session = body[body.index("$excel = New-Object -ComObject Excel.Application"):]
+    finally_at = session.index("} finally {")
+    shutdown = session[finally_at:]
+    # The whole shutdown is itself inside a try/finally, so a failure while
+    # releasing still reaches the wait and the emergency path.
+    assert shutdown.count("finally") >= 2, (
+        "the shutdown has no inner finally; a release that throws would skip "
+        "Wait-ExcelExit and orphan the process")
+    for required in ("$wb.Close($false)", "$excel.Quit()", "Wait-ExcelExit",
+                     "Invoke-EmergencyExcelCleanup"):
+        assert required in shutdown, required
+    # AND IT REPORTS THE OUTCOME WHATEVER HAPPENED.
+    assert "EXCEL SHUTDOWN:" in shutdown
+    assert shutdown.count("EXCEL SHUTDOWN:") >= 2, (
+        "the shutdown reports only one outcome; the report must say what became "
+        "of the owned process on the normal path too")
+
+
 def test_38_the_build_emits_both_artefacts() -> None:
     build = (PCCM_ROOT / "builder" / "build_stage_a.py").read_text(encoding="utf-8")
     assert "emit_phase7_acceptance" in build
