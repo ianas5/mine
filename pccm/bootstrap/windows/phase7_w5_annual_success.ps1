@@ -646,22 +646,41 @@ function Get-W5IterationBlock {
 # The projection gives the FIRST ladder column per bank per measure and the
 # ladder's LENGTH; the eleven columns follow it. That is the contract's shape,
 # so the offset is computed rather than eleven letters being typed in.
+# THE DEFECT THAT STOPPED THE FIRST W5 RUN, and the reason it survived every
+# static control: this loop used to read
+#
+#     foreach ($character in [string]$Letters.ToUpperInvariant().ToCharArray())
+#
+# and a cast binds tighter than the enumeration, so `[string]` was applied to
+# the whole char[] rather than to each character. PowerShell renders an array as
+# a string by JOINING its elements with $OFS - a single space by default - so
+# ['A','D'] became the ONE-element sequence "A D", and the body then asked for
+# [char]"A D": "String must be exactly one character long."
+#
+# It worked for every single-letter column, because ['A'] renders as "A" and
+# [char]"A" is fine. The first multi-letter column it ever met was the projected
+# quantile first column, and that is exactly where the run died. There is no
+# cast here now: .ToCharArray() already yields the chars, one at a time, which
+# is the form the accepted harness has always used.
 function ConvertTo-W5ColumnNumber {
     param([string]$Letters)
     $number = 0
-    foreach ($character in [string]$Letters.ToUpperInvariant().ToCharArray()) {
-        $number = ($number * 26) + ([int][char]$character - 64)
+    foreach ($character in $Letters.ToUpperInvariant().ToCharArray()) {
+        $number = ($number * 26) + ([int]$character - 64)
     }
     return $number
 }
 
+# The inverse, in the same bijective base 26: there is no zero digit, so the
+# remainder is taken on (n - 1) and the quotient steps down by the digit that
+# was just emitted. Z -> AA is the boundary that proves it.
 function ConvertFrom-W5ColumnNumber {
     param([int]$Number)
     $letters = ''
     $remaining = $Number
     while ($remaining -gt 0) {
         $remainder = ($remaining - 1) % 26
-        $letters = [string][char](65 + $remainder) + $letters
+        $letters = ([string][char](65 + $remainder)) + $letters
         $remaining = [int](($remaining - $remainder - 1) / 26)
     }
     return $letters

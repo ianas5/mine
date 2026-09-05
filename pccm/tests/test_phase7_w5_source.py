@@ -833,3 +833,199 @@ def test_45_the_runner_states_what_no_windows_oracle_owns() -> None:
     assert "proved independently on Linux" in text or "proved independently" in text
     assert "PERSISTENCE, READ-BACK and RECONCILIATION" in text
     assert "reimplementing it in" in text or "copy of itself" in text
+
+
+# ===========================================================================
+# L. MULTI-LETTER EXCEL COLUMNS - THE DEFECT THAT STOPPED THE FIRST W5 RUN
+# ===========================================================================
+# The first W5 Windows run executed the annual endpoint successfully and then
+# died reading the records with
+#
+#     Cannot convert value "A D" to type "System.Char".
+#
+# because the letter-to-number helper cast the whole char[] to [string] instead
+# of enumerating it: PowerShell joins an array into a string with $OFS, so
+# ['A','D'] became the one-element sequence "A D". It worked for every
+# single-letter column and failed on the first multi-letter one, which is
+# exactly the projected quantile first column.
+
+REQUIRED_COLUMNS = ("A", "Z", "AA", "AD", "AN", "AO", "AY", "AZ", "BA", "BE", "BO",
+                    "BP", "BZ", "CA", "CB")
+
+
+def _column_arithmetic() -> tuple[int, int, int]:
+    """The three constants the runner's conversion is built on, read out of it.
+
+    A drifted radix or a drifted alphabet origin has to fail here rather than
+    silently shift every ladder column by a letter.
+    """
+    to_body = _function("ConvertTo-W5ColumnNumber")
+    from_body = _function("ConvertFrom-W5ColumnNumber")
+    radix = re.search(r"\$number = \(\$number \* (\d+)\) \+ \(\[int\]\$character - (\d+)\)", to_body)
+    assert radix, "the letter-to-number arithmetic is no longer readable"
+    origin = re.search(r"\[char\]\((\d+) \+ \$remainder\)", from_body)
+    assert origin, "the number-to-letter arithmetic is no longer readable"
+    base = int(radix.group(1))
+    # THE BIJECTIVE STRUCTURE, PINNED. Base 26 with no zero digit: the remainder
+    # is taken on (n - 1) and the quotient steps down by the digit just
+    # emitted. An ordinary remainder, or a quotient that forgets the digit,
+    # breaks precisely at the Z -> AA boundary and nowhere else - which is the
+    # kind of defect that reaches Windows. These are structure, not values, so
+    # they are asserted here rather than re-derived below.
+    assert f"$remainder = ($remaining - 1) % {base}" in from_body, (
+        "the remainder is no longer bijective; Z -> AA will be wrong")
+    assert f"$remaining = [int](($remaining - $remainder - 1) / {base})" in from_body, (
+        "the quotient no longer steps down by the digit just emitted")
+    return base, int(radix.group(2)), int(origin.group(1))
+
+
+def _to_number(letters: str) -> int:
+    """A translation of the runner's own loop, driven by its own constants.
+
+    It proves the ARITHMETIC, not the PowerShell engine - there is no shell
+    here. What proves the engine will run it is the control below that refuses
+    the cast which broke it.
+    """
+    radix, subtract, _ = _column_arithmetic()
+    number = 0
+    for character in letters.upper():
+        number = (number * radix) + (ord(character) - subtract)
+    return number
+
+
+def _from_number(number: int) -> str:
+    radix, _, origin = _column_arithmetic()
+    letters = ""
+    remaining = number
+    while remaining > 0:
+        remainder = (remaining - 1) % radix
+        letters = chr(origin + remainder) + letters
+        remaining = (remaining - remainder - 1) // radix
+    return letters
+
+
+def test_46_the_broken_cast_is_gone_and_cannot_come_back() -> None:
+    """THE EXACT ROOT CAUSE, refused by name.
+
+    A cast binds tighter than the enumeration, so `[string]` in front of
+    `.ToCharArray()` converts the ARRAY, not each element.
+    """
+    body = _function("ConvertTo-W5ColumnNumber")
+    assert "foreach ($character in $Letters.ToUpperInvariant().ToCharArray())" in body
+    # The PARAMETER is legitimately typed [string]; what must never come back
+    # is a cast in front of the enumerated expression.
+    assert not re.search(r"in\s*\[\w+\][^\n]*\.ToCharArray\(\)", body), (
+        "the whole char array is being cast again; that is the defect that "
+        "produced \"A D\"")
+    assert "[char]$character" not in body, (
+        "a char is being cast to a char, which is what made the broken form "
+        "look plausible")
+    # And nowhere else in the runner either.
+    code = _code()
+    for number, line in enumerate(code.splitlines(), 1):
+        if ".ToCharArray()" in line:
+            assert not re.search(r"in\s*\[\w+\][^\n]*\.ToCharArray\(\)", line), (
+                f"line {number}: {line.strip()}")
+    # THE ACCEPTED HARNESS HAS ALWAYS USED THE UNCAST FORM, which is what makes
+    # this a defect introduced here rather than a shared misunderstanding.
+    frozen = (WINDOWS / "phase7_acceptance_scenarios.ps1").read_text(encoding="utf-8")
+    assert "foreach ($ch in $Letters.ToUpperInvariant().ToCharArray()) {" in frozen
+
+
+def test_47_single_and_multi_letter_columns_convert_correctly() -> None:
+    """The boundaries the authorisation names, and the ones this workbook uses."""
+    known = {"A": 1, "B": 2, "Y": 25, "Z": 26, "AA": 27, "AB": 28, "AC": 29,
+             "AD": 30, "AN": 40, "AO": 41, "AY": 51, "AZ": 52, "BA": 53,
+             "BE": 57, "BO": 67, "BP": 68, "BZ": 78, "CA": 79, "CB": 80}
+    for letters, number in known.items():
+        assert _to_number(letters) == number, letters
+        assert _from_number(number) == letters, number
+    # THE Z -> AA BOUNDARY, both ways and in one step.
+    assert _to_number("Z") + 1 == _to_number("AA")
+    assert _from_number(_to_number("Z") + 1) == "AA"
+    # AND EVERY COLUMN THE ANNUAL REGION ACTUALLY USES ROUND-TRIPS.
+    for letters in REQUIRED_COLUMNS:
+        assert _from_number(_to_number(letters)) == letters, letters
+    # A dense round-trip over the whole two-letter range, so a boundary that is
+    # not one of the named ones cannot slip through either.
+    for number in range(1, 800):
+        assert _to_number(_from_number(number)) == number, number
+
+
+def test_48_the_ladder_offsets_land_on_the_projected_columns() -> None:
+    """THE ARITHMETIC THE RUNNER ACTUALLY PERFORMS: first column plus index, for
+    the projected ladder length, in every bank and both measures."""
+    projection = json.loads(
+        (BUILD / "phase7_acceptance_inspection.json").read_text(encoding="utf-8"))
+    records = projection["annual_records"]
+    count = records["quantile_count"]
+    spans: dict[str, tuple[int, int]] = {}
+    for bank, measures in records["quantile_first_column"].items():
+        for measure, first in measures.items():
+            start = _to_number(first)
+            columns = [_from_number(start + index) for index in range(count)]
+            assert columns[0] == first
+            assert len(set(columns)) == count
+            # Consecutive, with no gap and no repeat across a letter boundary.
+            assert [_to_number(c) for c in columns] == list(range(start, start + count))
+            spans[f"{bank}.{measure}"] = (start, start + count - 1)
+    # AD..AN and AO..AY for bank A is the real geometry; assert it by name so a
+    # projection change that moved the ladder is visible here.
+    assert spans["A.nominal"] == (_to_number("AD"), _to_number("AN"))
+    assert spans["A.pv"] == (_to_number("AO"), _to_number("AY"))
+
+
+def test_49_no_ladder_span_collides_with_another_projected_column() -> None:
+    """A ladder that ran one column too far would overwrite the selected-Px
+    profile, and the arithmetic above is the only thing keeping them apart."""
+    projection = json.loads(
+        (BUILD / "phase7_acceptance_inspection.json").read_text(encoding="utf-8"))
+    records = projection["annual_records"]
+    count = records["quantile_count"]
+    used: dict[int, str] = {}
+
+    def claim(number: int, owner: str) -> None:
+        assert number not in used, (
+            f"{owner} collides with {used[number]} at column "
+            f"{_from_number(number)}")
+        used[number] = owner
+
+    for bank, columns in records["index_columns"].items():
+        for key, letters in columns.items():
+            claim(_to_number(letters), f"{bank}.index.{key}")
+    for bank, measures in records["quantile_first_column"].items():
+        for measure, first in measures.items():
+            start = _to_number(first)
+            for index in range(count):
+                claim(start + index, f"{bank}.ladder.{measure}")
+    for bank, measures in records["selected_px_profile_columns"].items():
+        for measure, letters in measures.items():
+            claim(_to_number(letters), f"{bank}.profile.{measure}")
+    assert len(used) == len(set(used))
+
+
+def test_50_every_annual_read_uses_the_one_conversion_path() -> None:
+    """THE AUDIT THE AUTHORISATION ASKED FOR, so the same defect cannot be found
+    one range at a time: every annual reader either takes a projected column
+    verbatim or goes through the two helpers, and there is no second, private
+    piece of column arithmetic anywhere in the runner."""
+    code = _own_code()
+    conversions = re.findall(r"ConvertTo-W5ColumnNumber|ConvertFrom-W5ColumnNumber", code)
+    assert len(conversions) == 4, (
+        f"expected two definitions and two call sites, found {conversions}")
+    # No hand-rolled alternative: no other place multiplies by the radix or
+    # offsets an alphabet origin.
+    radix, subtract, origin = _column_arithmetic()
+    outside = code
+    for name in ("ConvertTo-W5ColumnNumber", "ConvertFrom-W5ColumnNumber"):
+        outside = outside.replace(_function(name), "")
+    for constant in (str(radix), str(subtract), str(origin)):
+        assert not re.search(rf"\b{constant}\b", outside), (
+            f"the constant {constant} appears outside the conversion helpers; "
+            "column arithmetic must have exactly one owner")
+    # And the readers that do NOT convert take their column straight from the
+    # projection, which is what the address controls above already require.
+    for name in ("Get-W5AnnualStamp", "Get-W5AnnualFirstRecord", "Get-W5AnnualRegionIndex"):
+        body = _function(name)
+        assert "ConvertTo-W5ColumnNumber" not in body, name
+        assert "ConvertFrom-W5ColumnNumber" not in body, name
