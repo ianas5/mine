@@ -1148,7 +1148,10 @@ try {
             $null = $recordProblems.Add('row ' + [string]($offset + 1) + ' calendar_year ' +
                                         (Format-SimValue $record['calendar_year']))
         }
-        foreach ($measure in @('nominal', 'pv')) {
+        # THE MEASURES ARE THE PROJECTION'S, here as everywhere else: the annual
+        # ladder publishes one per measure the contract declares, and a measure
+        # typed in here could quietly stop being checked.
+        foreach ($measure in @($p7.annual_records.quantile_first_column.$bank.PSObject.Properties.Name)) {
             $ladder = @($record[('ladder_' + $measure)])
             if ($ladder.Count -ne $ladderCount) {
                 $null = $ladderProblems.Add('row ' + [string]($offset + 1) + ' ' + $measure +
@@ -1234,11 +1237,30 @@ try {
     # RECONCILIATION AGAINST THE AUTHORITATIVE TOTAL Px
     # -------------------------------------------------------------------
     Write-W5Line ''
-    Write-W5Line 'RECONCILIATION: sum_y Profile_Px(y) = reported Px'
-    Write-W5Line '------------------------------------------------'
+    Write-W5Line 'RECONCILIATION: the TOTAL, the identity, and the contingency'
+    Write-W5Line '-----------------------------------------------------------'
+
+    # TWO LADDERS, TWO MEANINGS, AND THE FIRST W5 RUN CONFLATED THEM.
+    #
+    # `_SimData` publishes eleven rungs per bank per measure in TWO blocks, and
+    # they are not the same quantity. The projection now says which is which:
+    #
+    #   summary_statistics  quantile_N = the TOTAL percentile over the published
+    #                       iteration totals
+    #   contingency_ladder  quantile_N = selected_px_total -
+    #                       deterministic_base_estimate_a
+    #
+    # The first version read the CONTINGENCY block and called it the total, so
+    # all four reconciliations failed by exactly the deterministic base - 1998.76
+    # nominal and 1855.21 PV on this fixture, which are a_nom and a_pv. The
+    # profile sum reconciles to the TOTAL and never to a contingency; the
+    # contingency then has its own identity, and that identity is the contract's
+    # own formula rather than one written here.
+    $semantics = $p7.summary_semantics
     $grid = $iterationsBefore.Values
     $ladderRowKey = 'quantile_' + [string]($selectedIndex + 1)
-    foreach ($measure in @('nominal', 'pv')) {
+    $contingencyBlock = $simInspection.sim_data.contingency_ladder
+    foreach ($measure in @($semantics.contingency_measures | ForEach-Object { [string]$_ })) {
         $column = 2
         if ($measure -eq 'pv') { $column = 3 }
         $totals = New-Object System.Collections.ArrayList
@@ -1247,46 +1269,81 @@ try {
             if ($value -is [double]) { $null = $totals.Add([double]$value) }
         }
         $derived = Get-W5Type7Value -Values ([double[]]@($totals)) -Probability $selectedProbability
-        $published = Get-SimRawCell -Workbook $wb -Inspection $simInspection `
-            -Address ([string]$simInspection.sim_data.contingency_ladder.bank_value_columns.$bank.$measure +
-                      [string]([int]$simInspection.sim_data.contingency_ladder.rows.$ladderRowKey))
 
-        # THE PUBLISHED LADDER IS THE AUTHORITATIVE TOTAL Px, and the contract's
-        # own Type-7 over the published iteration column is the independent
-        # route to the same number. They are compared to each other first, so a
-        # reconciliation that passed against a wrong total would be caught.
-        $ladderScale = 0.0
-        if ($published -is [double]) { $ladderScale = [Math]::Abs([double]$published) }
-        $ladderScale = $ladderScale + [Math]::Abs($derived)
-        $ladderAllowance = Get-W5IdentityAllowance -Provenance $cases.provenance `
-            -ConditioningScale $ladderScale
-        $ladderDelta = [double]::PositiveInfinity
-        if ($published -is [double]) { $ladderDelta = [Math]::Abs([double]$published - $derived) }
+        # (A) THE TOTAL, from the block the projection NAMES as the total
+        # percentile block, cross-checked against the contract's own Type-7 over
+        # the published iteration column before anything is reconciled to it: a
+        # reconciliation against a wrong total would pass.
+        $total = Get-SimSummaryValue -Workbook $wb -Inspection $simInspection `
+            -Bank $bank -Measure $measure -RowKey $ladderRowKey
+        $totalScale = [Math]::Abs($derived)
+        if ($total -is [double]) { $totalScale = $totalScale + [Math]::Abs([double]$total) }
+        $totalAllowance = Get-W5IdentityAllowance -Provenance $cases.provenance `
+            -ConditioningScale $totalScale
+        $totalDelta = [double]::PositiveInfinity
+        if ($total -is [double]) { $totalDelta = [Math]::Abs([double]$total - $derived) }
         $null = Add-W5Check ('the published ' + $measure + ' ' + $selectedLabel +
-                             ' equals the contract' + [char]39 + 's Type-7 value over the iteration column') `
-            (($published -is [double]) -and ($ladderDelta -le $ladderAllowance)) `
-            ('published ' + (Format-SimValue $published) + ', derived ' + [string]$derived +
-             ', delta ' + [string]$ladderDelta + ', allowance ' + [string]$ladderAllowance)
+                             ' TOTAL equals the contract' + [char]39 +
+                             's Type-7 value over the iteration column') `
+            (($total -is [double]) -and ($totalDelta -le $totalAllowance)) `
+            ('published ' + (Format-SimValue $total) + ', derived ' + [string]$derived +
+             ', delta ' + [string]$totalDelta + ', allowance ' + [string]$totalAllowance)
 
-        # AND THE IDENTITY ITSELF. The conditioning scale names the magnitude of
-        # the arithmetic performed - the annual terms summed, plus the aggregate
-        # they are compared against - never the magnitude of the net result.
+        # (B) THE IDENTITY THE CONTRACT NAMES: sum_y Profile_Px(y) = reported Px.
+        # The conditioning scale names the magnitude of the arithmetic performed
+        # - the annual terms summed, plus the aggregate they are compared
+        # against - never the magnitude of the net result.
         $sum = [double]$profileSums[$measure]
         $scale = [double]$profileScale[$measure]
-        if ($published -is [double]) { $scale = $scale + [Math]::Abs([double]$published) }
+        if ($total -is [double]) { $scale = $scale + [Math]::Abs([double]$total) }
         $identityAllowance = Get-W5IdentityAllowance -Provenance $cases.provenance `
             -ConditioningScale $scale
         $delta = [double]::PositiveInfinity
-        if ($published -is [double]) { $delta = [Math]::Abs($sum - [double]$published) }
+        if ($total -is [double]) { $delta = [Math]::Abs($sum - [double]$total) }
         $null = Add-W5Check ('the ' + $measure + ' selected-Px profile sums to the reported ' +
-                             $selectedLabel) `
-            (($published -is [double]) -and ($delta -le $identityAllowance)) `
-            ('sum ' + [string]$sum + ', reported ' + (Format-SimValue $published) +
+                             $selectedLabel + ' TOTAL') `
+            (($total -is [double]) -and ($delta -le $identityAllowance)) `
+            ('sum ' + [string]$sum + ', total ' + (Format-SimValue $total) +
              ', delta ' + [string]$delta + ', allowance ' + [string]$identityAllowance +
              ' (conditioning scale ' + [string]$scale + ')')
-        Write-W5Line ('    ' + $measure.PadRight(8) + ' sum ' + [string]$sum +
-                      '  reported ' + (Format-SimValue $published) +
-                      '  delta ' + [string]$delta)
+
+        # (C) THE CONTINGENCY LADDER, ON ITS OWN TERMS. The formula is the
+        # contract's, projected; the baseline is the deterministic base this
+        # session already matched against the independent Phase-5 oracle, and it
+        # is THE SAME MEASURE'S base - a contingency built on the other measure's
+        # base would be wrong by the gap between them and by nothing that looks
+        # like an error.
+        $baseline = Get-SimSummaryValue -Workbook $wb -Inspection $simInspection `
+            -Bank $bank -Measure $measure -RowKey ([string]$semantics.baseline_metric_key)
+        $contingency = Get-SimRawCell -Workbook $wb -Inspection $simInspection `
+            -Address ([string]$contingencyBlock.bank_value_columns.$bank.$measure +
+                      [string]([int]$contingencyBlock.rows.$ladderRowKey))
+        $expectedContingency = [double]::NaN
+        $contingencyDelta = [double]::PositiveInfinity
+        $contingencyScale = 0.0
+        if (($total -is [double]) -and ($baseline -is [double])) {
+            $expectedContingency = [double]$total - [double]$baseline
+            $contingencyScale = [Math]::Abs([double]$total) + [Math]::Abs([double]$baseline)
+            if ($contingency -is [double]) {
+                $contingencyDelta = [Math]::Abs([double]$contingency - $expectedContingency)
+            }
+        }
+        $contingencyAllowance = Get-W5IdentityAllowance -Provenance $cases.provenance `
+            -ConditioningScale $contingencyScale
+        $null = Add-W5Check ('the published ' + $measure + ' ' + $selectedLabel +
+                             ' contingency is ' + [string]$semantics.contingency_formula) `
+            (($contingency -is [double]) -and ($baseline -is [double]) -and
+             ($total -is [double]) -and ($contingencyDelta -le $contingencyAllowance)) `
+            ('published ' + (Format-SimValue $contingency) + ', total ' +
+             (Format-SimValue $total) + ' - base ' + (Format-SimValue $baseline) + ' = ' +
+             [string]$expectedContingency + ', delta ' + [string]$contingencyDelta +
+             ', allowance ' + [string]$contingencyAllowance)
+
+        Write-W5Line ('    ' + $measure.PadRight(8) + ' profile sum ' + [string]$sum +
+                      '  total ' + (Format-SimValue $total) +
+                      '  base ' + (Format-SimValue $baseline) +
+                      '  contingency ' + (Format-SimValue $contingency) +
+                      '  identity delta ' + [string]$delta)
     }
 
     # -------------------------------------------------------------------

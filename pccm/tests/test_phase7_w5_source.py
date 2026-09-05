@@ -661,7 +661,9 @@ def test_36_every_year_is_checked_for_a_complete_ordered_ladder() -> None:
     assert "$ladder.Count -ne $ladderCount" in code, "a short ladder would pass"
     assert "$value -isnot [double]" in code, "a ladder value published as text would pass"
     assert "[double]$value -lt $previous" in code, "an out-of-order ladder would pass"
-    assert "foreach ($measure in @('nominal', 'pv'))" in code
+    assert ("foreach ($measure in "
+            "@($p7.annual_records.quantile_first_column.$bank.PSObject.Properties.Name))") in code, (
+        "the per-year ladder loop no longer visits every projected measure")
     # THE CALENDAR YEAR IS DERIVED FROM THE FIXTURE, never typed in.
     assert "[int]$model.timeline.start_year + $offset" in code
 
@@ -735,13 +737,13 @@ def test_40_the_conditioning_scale_names_the_arithmetic_not_the_result() -> None
     aggregate they are compared against."""
     code = _own_code()
     assert "$profileScale[$measure] = $profileScale[$measure] + [Math]::Abs([double]$profile)" in code
-    assert "$scale = $scale + [Math]::Abs([double]$published)" in code
+    assert "$scale = $scale + [Math]::Abs([double]$total)" in code
     assert "$scale = [double]$profileScale[$measure]" in code
     # THE IDENTITY IS REQUIRED TO HOLD, not merely evaluated and printed.
-    assert "(($published -is [double]) -and ($delta -le $identityAllowance)) `" in code, (
+    assert "(($total -is [double]) -and ($delta -le $identityAllowance)) `" in code, (
         "the reconciliation no longer requires the delta to be within the "
         "allowance")
-    assert "$delta = [Math]::Abs($sum - [double]$published)" in code
+    assert "$delta = [Math]::Abs($sum - [double]$total)" in code
     assert "selected-Px profile sums to the reported" in code
     assert "', delta ' + [string]$delta" in code
     assert "conditioning scale " in code
@@ -750,14 +752,12 @@ def test_40_the_conditioning_scale_names_the_arithmetic_not_the_result() -> None
 
 
 def test_41_the_published_total_px_is_cross_checked_before_it_is_relied_on() -> None:
-    """A reconciliation against a WRONG total would pass. So the published
-    ladder value and the contract's Type-7 over the iteration column are
-    compared to each other first, under the same identity rule."""
+    """A reconciliation against a WRONG total would pass. So the published total
+    and the contract's Type-7 over the iteration column are compared to each
+    other first, under the same identity rule."""
     code = _own_code()
-    assert "equals the contract" in code and "s Type-7 value over the iteration column" in code
+    assert "TOTAL equals the contract" in code and "s Type-7 value over the iteration column" in code
     assert "$ladderRowKey = 'quantile_' + [string]($selectedIndex + 1)" in code
-    assert "contingency_ladder.bank_value_columns.$bank.$measure" in code
-    assert "contingency_ladder.rows.$ladderRowKey" in code
     cross_at = _at("s Type-7 value over the iteration column")
     identity_at = _at("selected-Px profile sums to the reported")
     assert cross_at < identity_at, (
@@ -1029,3 +1029,144 @@ def test_50_every_annual_read_uses_the_one_conversion_path() -> None:
         body = _function(name)
         assert "ConvertTo-W5ColumnNumber" not in body, name
         assert "ConvertFrom-W5ColumnNumber" not in body, name
+
+
+# ===========================================================================
+# M. TOTAL Px IS NOT CONTINGENCY - THE SEMANTIC THE SECOND W5 RUN EXPOSED
+# ===========================================================================
+# The second Windows run reconciled perfectly and still failed four checks. The
+# annual computation was right; the HARNESS had read the wrong published block.
+# `_SimData` carries two eleven-rung ladders per bank per measure:
+#
+#   summary_statistics  quantile_N = the TOTAL percentile
+#   contingency_ladder  quantile_N = selected_px_total - deterministic base A
+#
+# so the runner's "total" was smaller than the real one by exactly the
+# deterministic base: 1998.76 nominal and 1855.21 PV on this fixture, which are
+# the oracle's a_nom and a_pv.
+
+def _semantics() -> dict:
+    return json.loads(
+        (BUILD / "phase7_acceptance_inspection.json").read_text(encoding="utf-8")
+    )["summary_semantics"]
+
+
+def test_51_the_contract_declares_the_two_ladders_are_different_quantities() -> None:
+    """TRACED, NOT INFERRED FROM THE NUMBERS."""
+    contract = (PCCM_ROOT / "spec" / "sim_contract.yaml").read_text(encoding="utf-8")
+    assert 'formula: "selected_px_total - deterministic_base_estimate_a"' in contract
+    assert 'baseline: "deterministic_base_estimate_a"' in contract
+    # The summary block's rungs are the totals, sourced from the describe pass.
+    assert re.search(r'\{key: "quantile_1", row: 11, label: null, source: "SimStatsDescribe"\}',
+                     contract), "the summary quantile rungs are no longer the described totals"
+    assert re.search(r'\{key: "deterministic_base_a", row: 23', contract)
+    # And the baselines the contract FORBIDS, so the identity cannot drift into
+    # a mean or an analytical expectation.
+    for forbidden in ("simulation_mean", "analytical_expected_total", "a_plus_emv"):
+        assert forbidden in contract, forbidden
+
+
+def test_52_the_semantic_is_projected_rather_than_left_to_be_guessed() -> None:
+    """THE PROJECTION DEFECT THE DIAGNOSIS FOUND. Nothing carried the difference
+    between the two blocks, so the harness had to infer it - and inferred wrong.
+    The contract's own words are projected now."""
+    semantics = _semantics()
+    assert semantics["total_percentile_block"] == "summary_statistics"
+    assert semantics["contingency_block"] == "contingency_ladder"
+    assert semantics["contingency_formula"] == "selected_px_total - deterministic_base_estimate_a"
+    assert semantics["contingency_baseline"] == "deterministic_base_estimate_a"
+    assert semantics["contingency_measures"] == ["nominal", "pv"]
+    assert semantics["baseline_metric_key"] == "deterministic_base_a"
+    # It is projected FROM the contract, not retyped in the builder.
+    generator = (PCCM_ROOT / "builder" / "pccm_builder"
+                 / "phase7_acceptance.py").read_text(encoding="utf-8")
+    assert 'sim.raw["contingency"]["formula"]' in generator
+    assert 'sim.raw["contingency"]["baseline"]' in generator
+    assert 'sim.raw["contingency"]["measures"]' in generator
+    assert '"selected_px_total - deterministic_base_estimate_a"' not in generator, (
+        "the formula is retyped in the builder rather than projected")
+    # THE NEW SECTION IS SUBJECT TO THE SAME RULE AS THE OTHERS: no value, no
+    # tolerance, no bound. The scan is over the DATA sections, as the builder's
+    # own is - `purpose` is prose about the file and says the word "tolerance"
+    # in order to forbid it.
+    projection = json.loads(
+        (BUILD / "phase7_acceptance_inspection.json").read_text(encoding="utf-8"))
+    payload = {key: value for key, value in projection.items()
+               if key in ("annual_records", "handoff", "command_surface",
+                          "summary_semantics")}
+    text = json.dumps(payload)
+    for forbidden in ("tolerance", "expected", "allowance", "budget"):
+        assert forbidden not in text, forbidden
+    assert "summary_semantics" in generator[generator.index("payload = {"):
+                                            generator.index("payload = {") + 400], (
+        "the new data section is outside the builder's own forbidden-token scan")
+
+
+def test_53_the_total_is_read_from_the_total_block_not_the_contingency_block() -> None:
+    """THE EXACT CORRECTION. The profile sum reconciles to the TOTAL, and the
+    total comes from the block the projection names as the total block."""
+    code = _own_code()
+    assert "$total = Get-SimSummaryValue -Workbook $wb -Inspection $simInspection `" in code
+    assert "-Bank $bank -Measure $measure -RowKey $ladderRowKey" in code
+    # The contingency block is read ONLY for the contingency identity.
+    total_at = _at("$total = Get-SimSummaryValue")
+    contingency_at = _at("$contingency = Get-SimRawCell")
+    assert total_at < contingency_at
+    assert "$delta = [Math]::Abs($sum - [double]$total)" in code, (
+        "the profile sum is compared against something other than the total")
+    assert "$contingency = " not in code[:total_at], (
+        "a contingency value is in play before the total is even read")
+    # And the profile-sum check names the TOTAL in its own label, so a report
+    # cannot be misread the way the first run's was.
+    assert "$selectedLabel + ' TOTAL'" in code, (
+        "the profile-sum check no longer names the TOTAL in its own label; the "
+        "first run's report was misread for exactly that reason")
+
+
+def test_54_the_contingency_has_its_own_identity_from_the_projected_formula() -> None:
+    code = _own_code()
+    assert "$expectedContingency = [double]$total - [double]$baseline" in code, (
+        "the contingency identity is not total minus baseline")
+    assert "$semantics.contingency_formula" in code, (
+        "the check does not name the contract's own formula")
+    assert "$semantics.baseline_metric_key" in code, (
+        "the baseline row is named in the runner rather than projected")
+    assert "'deterministic_base_a'" not in code, (
+        "the baseline metric key is typed into the runner")
+    assert "$contingencyDelta -le $contingencyAllowance" in code
+    # THE BASELINE IS THE SAME MEASURE'S. A nominal contingency built on the PV
+    # base would be wrong by the gap between them and by nothing that looks like
+    # an error, so the measure is threaded through both reads.
+    baseline_line = re.search(r"\$baseline = Get-SimSummaryValue[^\n]*\n[^\n]*", code)
+    assert baseline_line and "-Bank $bank -Measure $measure" in baseline_line.group(0)
+    total_line = re.search(r"\$total = Get-SimSummaryValue[^\n]*\n[^\n]*", code)
+    assert total_line and "-Bank $bank -Measure $measure" in total_line.group(0)
+
+
+def test_55_the_measures_come_from_the_projection() -> None:
+    code = _own_code()
+    assert "foreach ($measure in @($semantics.contingency_measures" in code
+    assert "@('nominal', 'pv')" not in code, (
+        "a measure list is typed into the runner rather than projected")
+    assert "$p7.annual_records.quantile_first_column.$bank.PSObject.Properties.Name" in code, (
+        "the annual ladder measures are not read from the projection either")
+
+
+def test_56_the_deterministic_base_explains_the_four_prior_failures() -> None:
+    """THE ARITHMETIC OF THE DIAGNOSIS, held as a control.
+
+    The differences the failed run reported are the deterministic base A for
+    each measure, to within Double round-off - which is what proves the harness
+    read the contingency ladder rather than the total.
+    """
+    totals = _fixture()["expected"]["totals"]
+    observed = {
+        "nominal": 2500.08844593261 - 501.32817888261116,
+        "pv": 2320.34609764057 - 465.13700246725875,
+    }
+    assert abs(observed["nominal"] - totals["a_nom"]) < 1e-9, (
+        observed["nominal"], totals["a_nom"])
+    assert abs(observed["pv"] - totals["a_pv"]) < 1e-9, (observed["pv"], totals["a_pv"])
+    # AND THE BASE THE WORKBOOK PUBLISHES IS THE ONE THE ORACLE OWNS - already
+    # required by this runner as a prerequisite, and by W4 before it.
+    assert "the deterministic totals match the independent Phase-5 oracle" in _own_code()

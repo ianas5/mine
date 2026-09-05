@@ -61,7 +61,11 @@ CASES_FILENAME = "phase7_acceptance_cases.json"
 # allowlist refuses the next unforeseen key, a banned list only refuses the ones
 # somebody already thought of.
 ALLOWED_INSPECTION_KEYS = ("schema_version", "purpose", "provenance",
-                           "annual_records", "handoff", "command_surface")
+                           "annual_records", "handoff", "command_surface",
+                           "summary_semantics")
+ALLOWED_SEMANTIC_KEYS = ("total_percentile_block", "contingency_block",
+                         "contingency_formula", "contingency_baseline",
+                         "contingency_measures", "baseline_metric_key")
 ALLOWED_ANNUAL_KEYS = ("sheet", "header_row", "first_record_row", "quantile_count",
                        "max_record_rows", "index_columns", "quantile_first_column",
                        "selected_px_profile_columns", "stamp")
@@ -139,6 +143,31 @@ def build_phase7_inspection(sim: SimContract, max_record_rows: int) -> dict[str,
         "command_surface": {
             "annual_endpoint": "PCCM_RunAnnualStochastic",
             "handoff_accessors": [str(entry["name"]) for entry in handoff["accessors"]],
+        },
+        # WHICH PUBLISHED LADDER MEANS WHAT.
+        #
+        # `_SimData` publishes TWO eleven-rung ladders per bank per measure and
+        # they are not the same quantity. The summary block's quantile rungs are
+        # the TOTAL percentile over the iteration totals; the contingency block's
+        # rungs are `selected_px_total - deterministic_base_estimate_a`, which is
+        # a smaller number by exactly the deterministic base.
+        #
+        # Nothing projected that distinction before, so the Windows harness had
+        # to infer it - and W5 inferred it wrongly, reading the contingency
+        # ladder as the total and failing four reconciliations by exactly the
+        # deterministic base. The semantic is the contract's, so it is projected
+        # here rather than left to be guessed. No value, no tolerance, no bound:
+        # the names of the blocks and the formula the contract already declares.
+        "summary_semantics": {
+            "total_percentile_block": "summary_statistics",
+            "contingency_block": "contingency_ladder",
+            "contingency_formula": str(sim.raw["contingency"]["formula"]),
+            "contingency_baseline": str(sim.raw["contingency"]["baseline"]),
+            "contingency_measures": [str(m) for m in sim.raw["contingency"]["measures"]],
+            # The summary metric key the baseline is published under, so a
+            # reader never has to know that "deterministic_base_estimate_a" and
+            # the row key are the same thing.
+            "baseline_metric_key": "deterministic_base_a",
         },
     }
 
@@ -412,6 +441,17 @@ def validate_phase7_artifacts(inspection: dict[str, Any], cases: dict[str, Any])
                 f"{INSPECTION_FILENAME}: annual_records.stamp")
     _check_keys(inspection["handoff"], ALLOWED_HANDOFF_KEYS,
                 f"{INSPECTION_FILENAME}: handoff")
+    _check_keys(inspection["summary_semantics"], ALLOWED_SEMANTIC_KEYS,
+                f"{INSPECTION_FILENAME}: summary_semantics")
+    # THE BASELINE MUST BE A METRIC THE SUMMARY BLOCK ACTUALLY PUBLISHES, or the
+    # projected semantic names a row nobody can read.
+    semantics = inspection["summary_semantics"]
+    if str(semantics["baseline_metric_key"]) not in str(semantics["contingency_baseline"]).replace(
+            "_estimate", ""):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: the projected baseline metric key "
+            f"{semantics['baseline_metric_key']!r} does not name the contract's "
+            f"baseline {semantics['contingency_baseline']!r}")
     _check_keys(cases, ALLOWED_CASE_KEYS, CASES_FILENAME)
     for scenario in cases["scenarios"]:
         _check_keys(scenario, ALLOWED_SCENARIO_KEYS,
@@ -423,7 +463,8 @@ def validate_phase7_artifacts(inspection: dict[str, Any], cases: dict[str, Any])
     # without tripping over its own explanation would be a rule nobody could
     # document.
     payload = {key: value for key, value in inspection.items()
-               if key in ("annual_records", "handoff", "command_surface")}
+               if key in ("annual_records", "handoff", "command_surface",
+                          "summary_semantics")}
     text = json.dumps(payload)
     # `iterations`, `effective_seed` and `year_count` DO appear in it and are
     # addresses: they are the names of stamp ROWS, which is where to look, not
