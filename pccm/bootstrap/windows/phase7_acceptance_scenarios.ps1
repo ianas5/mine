@@ -91,8 +91,13 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptDir 'phase5_gate_b_scenarios.ps1')
 . (Join-Path $scriptDir 'phase6_gate_b_scenarios.ps1')
 
-$repoRoot = (Resolve-Path (Join-Path $scriptDir '..' '..' '..')).Path
-$pccmRoot = (Resolve-Path (Join-Path $scriptDir '..' '..')).Path
+# WINDOWS POWERSHELL 5.1. `Join-Path a b c` - a child per positional argument -
+# is PowerShell 6+ only; on 5.1 Join-Path takes exactly -Path and -ChildPath and
+# the third argument is refused with "A positional parameter cannot be found".
+# The acceptance machine runs 5.1, so this is the form all four accepted
+# harnesses already use, and it is used here for the same reason.
+$pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
+$repoRoot = Split-Path -Parent $pccmRoot
 if ([string]::IsNullOrWhiteSpace($BuildDir)) { $BuildDir = Join-Path $pccmRoot 'build' }
 
 # ===========================================================================

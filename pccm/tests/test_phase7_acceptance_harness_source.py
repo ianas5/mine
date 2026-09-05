@@ -664,6 +664,169 @@ def test_37_the_harness_reads_the_projection_and_the_corpus_it_needs() -> None:
     assert "Run the Stage-A build first" in _text()
 
 
+# ===========================================================================
+# G. WINDOWS POWERSHELL 5.1 COMPATIBILITY
+# ===========================================================================
+# THE ACCEPTANCE MACHINE RUNS WINDOWS POWERSHELL 5.1, and the first W1 attempt
+# never reached Excel: `Join-Path $scriptDir '..' '..' '..'` - a child per
+# positional argument - is PowerShell 6+ only, and 5.1 refuses the third
+# argument outright with "A positional parameter cannot be found that accepts
+# argument '..'". No Excel started, so no runtime evidence was produced and
+# nothing was learned except that the harness could not run.
+#
+# A Linux test suite cannot execute PowerShell, so it cannot prove the script
+# runs. What it CAN do is refuse the constructs that are known not to exist in
+# 5.1 - which is exactly the class the failure belonged to.
+#
+# THE SCAN COVERS THE WHOLE SUBTREE, not just the new file. The other six are
+# clean today and have run on 5.1; a control scoped to one file would let the
+# next edit of any of them reintroduce the same defect.
+PS51_ONLY_CONSTRUCTS = (
+    ("ternary ?: (PS7+)", r"[^'\"]\s\?\s[^?]"),
+    ("null-coalescing ?? or ??= (PS7+)", r"\?\?"),
+    ("null-conditional ?. (PS7+)", r"\$\{?\w+\}?\?\."),
+    ("pipeline chain && or || (PS7+)", r"(?<![&|])(&&|\|\|)(?![&|])"),
+    ("ForEach-Object -Parallel (PS7+)", r"-Parallel\b"),
+    ("Split-Path -LeafBase (PS6+)", r"-LeafBase\b"),
+    ("ConvertFrom-Json -AsHashtable (PS6+)", r"-AsHashtable\b"),
+    ("ConvertFrom-Json -Depth (PS6+)", r"ConvertFrom-Json[^\n]*-Depth\b"),
+    ("utf8NoBOM / utf8BOM encoding (PS6+)", r"utf8(No)?BOM"),
+    ("Get-Content -AsByteStream (PS6+)", r"-AsByteStream\b"),
+    ("Test-Json (PS6+)", r"\bTest-Json\b"),
+    ("Get-Error (PS7+)", r"\bGet-Error\b"),
+    ("Start-ThreadJob (PS6+)", r"\bStart-ThreadJob\b"),
+    ("$IsWindows / $IsLinux / $IsMacOS (PS6+)", r"\$Is(Windows|Linux|MacOS)\b"),
+    ("Where-Object -Not (PS6+)", r"Where-Object\s+-Not\b"),
+    ("Sort-Object -Stable (PS6+)", r"Sort-Object[^\n]*-Stable\b"),
+    ("Get-ChildItem -FollowSymlink (PS6+)", r"-FollowSymlink\b"),
+    ("Copy-Item -FromSession (PS6+)", r"-FromSession\b"),
+    ("$PSStyle (PS7+)", r"\$PSStyle\b"),
+    ("[System.IO.Path]::Join (.NET Core only)", r"\[System\.IO\.Path\]::Join\b"),
+    ("StringSplitOptions.TrimEntries (.NET Core only)", r"TrimEntries"),
+)
+
+
+def _powershell_files() -> list[Path]:
+    return sorted(WINDOWS.glob("*.ps1"))
+
+
+def _ps_code(path: Path) -> str:
+    """The script with its block comment and line comments removed.
+
+    The .SYNOPSIS header of the acceptance harness EXPLAINS the 5.1 rule and
+    names the construct it refuses, so a scan that read the prose would convict
+    the file of documenting itself.
+    """
+    body = re.sub(r"^<#.*?#>\n", "", path.read_text(encoding="utf-8"), flags=re.S)
+    return "\n".join(line for line in body.splitlines()
+                      if not line.strip().startswith("#"))
+
+
+def _join_path_positional_count(line: str) -> int | None:
+    """How many POSITIONAL arguments a Join-Path call on this line takes.
+
+    Tokenised with parenthesis and quote awareness on purpose: a whitespace
+    split calls `Join-Path $a (Split-Path -Leaf $b)` four arguments and would
+    fail every correct call in the tree.
+    """
+    at = line.find("Join-Path")
+    if at < 0:
+        return None
+    depth = 0
+    quote = ""
+    token = ""
+    tokens: list[str] = []
+    for character in line[at + len("Join-Path"):]:
+        if quote:
+            token += character
+            if character == quote:
+                quote = ""
+            continue
+        if character in "'\"":
+            quote = character
+            token += character
+            continue
+        if character in "([{":
+            depth += 1
+            token += character
+            continue
+        if character in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+            token += character
+            continue
+        if character.isspace() and depth == 0:
+            if token:
+                tokens.append(token)
+                token = ""
+            continue
+        token += character
+    if token:
+        tokens.append(token)
+    return len([t for t in tokens if not t.startswith("-")])
+
+
+def test_39_no_join_path_takes_more_than_one_child() -> None:
+    """THE EXACT DEFECT THAT STOPPED W1, refused across the whole subtree.
+
+    Windows PowerShell 5.1's Join-Path binds -Path and -ChildPath and nothing
+    else; a second child is an unbindable positional argument and the call fails
+    before anything runs.
+    """
+    offenders: list[str] = []
+    for path in _powershell_files():
+        for number, line in enumerate(_ps_code(path).splitlines(), 1):
+            count = _join_path_positional_count(line)
+            if count is not None and count > 2:
+                offenders.append(f"{path.name}:{number}: {line.strip()[:90]}")
+    assert not offenders, (
+        "Join-Path with more than one child is PowerShell 6+ only and fails on "
+        "the 5.1 acceptance machine:\n  " + "\n  ".join(offenders))
+
+
+def test_40_the_acceptance_harness_resolves_its_roots_the_accepted_way() -> None:
+    """And it resolves them the way the four harnesses that have RUN on 5.1 do.
+
+    Refusing the broken form is not enough on its own: the replacement has to be
+    a form with Windows evidence behind it, not a second guess.
+    """
+    code = _ps_code(HARNESS)
+    assert "$pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)" in code
+    assert "$repoRoot = Split-Path -Parent $pccmRoot" in code
+    # THE SAME TWO LINES THE ACCEPTED HARNESSES USE, character for character.
+    accepted = _ps_code(TIMING)
+    assert "$pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)" in accepted
+    assert "$repoRoot = Split-Path -Parent $pccmRoot" in accepted
+    # And the broken construction is gone from the file entirely.
+    assert "Join-Path $scriptDir '..'" not in HARNESS.read_text(encoding="utf-8")
+
+
+def test_41_no_powershell_6_or_7_only_construct_is_used() -> None:
+    """The class the W1 failure belonged to, refused as a class.
+
+    A Linux suite cannot run PowerShell, so it cannot prove the script works. It
+    can refuse what is known not to exist on 5.1, which is what this does.
+    """
+    offenders: list[str] = []
+    for path in _powershell_files():
+        code = _ps_code(path)
+        for label, pattern in PS51_ONLY_CONSTRUCTS:
+            for number, line in enumerate(code.splitlines(), 1):
+                if re.search(pattern, line):
+                    offenders.append(f"{path.name}:{number}: {label}: {line.strip()[:80]}")
+    assert not offenders, (
+        "a construct that does not exist in Windows PowerShell 5.1:\n  " +
+        "\n  ".join(offenders))
+
+
+def test_42_the_harness_declares_the_shell_it_is_written_for() -> None:
+    """Recorded where the next person editing it will read it."""
+    text = HARNESS.read_text(encoding="utf-8")
+    assert "WINDOWS POWERSHELL 5.1" in text
+    assert "PowerShell 6+ only" in text
+
+
 def test_38_the_build_emits_both_artefacts() -> None:
     build = (PCCM_ROOT / "builder" / "build_stage_a.py").read_text(encoding="utf-8")
     assert "emit_phase7_acceptance" in build
