@@ -62,10 +62,15 @@ CASES_FILENAME = "phase7_acceptance_cases.json"
 # somebody already thought of.
 ALLOWED_INSPECTION_KEYS = ("schema_version", "purpose", "provenance",
                            "annual_records", "handoff", "command_surface",
-                           "summary_semantics")
+                           "summary_semantics", "selector_semantics")
 ALLOWED_SEMANTIC_KEYS = ("total_percentile_block", "contingency_block",
                          "contingency_formula", "contingency_baseline",
                          "contingency_measures", "baseline_metric_key")
+ALLOWED_SELECTOR_KEYS = ("distribution_currentness_is_selector_specific",
+                         "profile_currentness_is_selector_specific",
+                         "profile_relabelled_on_selector_change",
+                         "selector_change_requires_new_simulation",
+                         "selector_input_key")
 ALLOWED_ANNUAL_KEYS = ("sheet", "header_row", "first_record_row", "quantile_count",
                        "max_record_rows", "index_columns", "quantile_first_column",
                        "selected_px_profile_columns", "stamp")
@@ -168,6 +173,31 @@ def build_phase7_inspection(sim: SimContract, max_record_rows: int) -> dict[str,
             # reader never has to know that "deterministic_base_estimate_a" and
             # the row key are the same thing.
             "baseline_metric_key": "deterministic_base_a",
+        },
+        # WHAT MOVING THE REPORTING SELECTOR MAY AND MAY NOT DO.
+        #
+        # The two annual products do NOT share a currentness rule, and the whole
+        # of W6 is that difference: the per-year ladders are a property of the
+        # run alone and no selector enters them, while the selected-Px profile
+        # is the blend at ONE resolved Px and stops being current the moment the
+        # selector resolves to a different one - without ever being relabelled.
+        #
+        # These are the contract's own booleans, projected so the Windows runner
+        # states the rule it is testing instead of encoding it. W5 was corrected
+        # for exactly the opposite: a semantic nothing projected, which the
+        # harness then had to guess.
+        "selector_semantics": {
+            "distribution_currentness_is_selector_specific": bool(
+                annual["distribution_currentness_is_selector_specific"]),
+            "profile_currentness_is_selector_specific": bool(
+                annual["profile_currentness_is_selector_specific"]),
+            "profile_relabelled_on_selector_change": bool(
+                annual["profile_relabelled_on_selector_change"]),
+            "selector_change_requires_new_simulation": bool(
+                annual["selector_change_requires_new_simulation"]),
+            # The input the selector lives in, so the runner writes the one the
+            # contract names rather than the one it remembers.
+            "selector_input_key": "selected_confidence_level",
         },
     }
 
@@ -443,6 +473,17 @@ def validate_phase7_artifacts(inspection: dict[str, Any], cases: dict[str, Any])
                 f"{INSPECTION_FILENAME}: handoff")
     _check_keys(inspection["summary_semantics"], ALLOWED_SEMANTIC_KEYS,
                 f"{INSPECTION_FILENAME}: summary_semantics")
+    _check_keys(inspection["selector_semantics"], ALLOWED_SELECTOR_KEYS,
+                f"{INSPECTION_FILENAME}: selector_semantics")
+    # THE TWO ANNUAL PRODUCTS MUST NOT SHARE A CURRENTNESS RULE. If they ever
+    # did, the selector scenario would be proving nothing.
+    selector = inspection["selector_semantics"]
+    if (bool(selector["distribution_currentness_is_selector_specific"])
+            == bool(selector["profile_currentness_is_selector_specific"])):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: the distribution and the profile now share "
+            "a selector-currentness rule; the annual handoff needs two states "
+            "because they do not")
     # THE BASELINE MUST BE A METRIC THE SUMMARY BLOCK ACTUALLY PUBLISHES, or the
     # projected semantic names a row nobody can read.
     semantics = inspection["summary_semantics"]
@@ -464,7 +505,7 @@ def validate_phase7_artifacts(inspection: dict[str, Any], cases: dict[str, Any])
     # document.
     payload = {key: value for key, value in inspection.items()
                if key in ("annual_records", "handoff", "command_surface",
-                          "summary_semantics")}
+                          "summary_semantics", "selector_semantics")}
     text = json.dumps(payload)
     # `iterations`, `effective_seed` and `year_count` DO appear in it and are
     # addresses: they are the names of stamp ROWS, which is where to look, not
