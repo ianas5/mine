@@ -260,6 +260,7 @@ def _vba() -> dict:
                                    "IdentityAllowance"},
                 "modSimStats": {
                     "SimStatsQuantileType7", "SimStatsQuantileSorted",
+                    "SimStatsQuantileLadder",
                     "SimStatsSortedCopy", "SimStatsSortAscending",
                     "SimStatsQuantilePosition", "SimStatsPositionOf",
                     "SimStatsOrderedIndices", "SimStatsSortIndices",

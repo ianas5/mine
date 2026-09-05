@@ -298,6 +298,11 @@ def test_03_the_public_surface_is_the_accepted_numerical_operations() -> None:
         # P7-5. The order-statistic POSITION, not a seventh statistic: it
         # computes no value and the annual profile is its only caller. The
         # percentile it points at is still SimStatsQuantileType7's.
+        # P7-6 CORRECTION. A WHOLE LADDER over ONE ordered copy - not a
+        # seventh statistic and not a second type 7: it evaluates the same
+        # accepted rule the standalone entry point does, and exists because
+        # eleven rungs taken over one series were costing eleven sorts of it.
+        "SimStatsQuantileLadder",
         "SimStatsQuantilePosition",
         "SimStatsQuantileType7",
         "SimStatsSampleStandardDeviation",
@@ -416,7 +421,11 @@ def test_09_no_other_module_owns_a_statistic() -> None:
     # is the whole of its relationship with statistics.
     consumers = {
         "modSimReport": {"SimStatsDescribe", "SimStatsContingency"},
-        "modSimAnnual": {"SimStatsQuantileType7"},
+        # P7-6 CORRECTION: a year's ELEVEN rungs, over one ordered copy. It is
+        # still one call per year and still the whole of modSimAnnual's
+        # relationship with statistics; what changed is that the copy is made
+        # once instead of once per rung.
+        "modSimAnnual": {"SimStatsQuantileLadder"},
         # P7-6. The annual endpoint asks for four things and computes none of
         # them: the accepted ladder's probabilities, the order-statistic
         # POSITION of the selected Px over the published totals, the percentile

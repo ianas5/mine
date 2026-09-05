@@ -298,6 +298,64 @@ Public Function SimStatsQuantileType7(ByRef values() As Double, ByVal count As L
 End Function
 
 ' ==========================================================================
+' A WHOLE LADDER OF QUANTILES, SORTING EXACTLY ONCE
+' ==========================================================================
+' The same reason SimStatsDescribe exists in the shape it does: an ordered copy
+' serves every rung taken over the same series, and calling the standalone
+' entry point per rung sorts the series again for each one.
+'
+' SimAnnualLadder needed exactly that and did not have it, so the annual
+' distributions cost eleven sorts of N per project year per measure - 22 * Y -
+' where two per year is enough. This is the service it was missing.
+'
+' IT IS NOT A SECOND TYPE 7. The position and the interpolation belong to
+' SimStatsQuantileSorted, which belongs to SimStatsPositionOf; this evaluates
+' the accepted rule against one ordered copy instead of against eleven
+' identical ones, so every value it returns is the value the standalone entry
+' point returns.
+'
+' TRANSACTIONAL, and the caller's series is not touched: the ladder is built
+' into a local and committed only when every rung succeeded, and the sort is
+' performed on a COPY.
+Public Function SimStatsQuantileLadder(ByRef values() As Double, ByVal count As Long, _
+                                       ByRef probabilities() As Double, _
+                                       ByVal probabilityCount As Long, _
+                                       ByRef results() As Double, _
+                                       ByRef detail As String) As Boolean
+    Dim ordered() As Double, ladder() As Double
+    Dim index As Long
+    Dim candidate As Double
+
+    detail = vbNullString
+    If count < 1 Then
+        detail = "statistics: an empty sequence has no quantile"
+        Exit Function
+    End If
+    If probabilityCount < 1 Then
+        detail = "statistics: an empty ladder has no rungs"
+        Exit Function
+    End If
+    If Not SimStatsUsableSequence(values, count, "quantile", detail) Then Exit Function
+
+    ' ONCE. Not once per rung.
+    If Not SimStatsSortedCopy(values, count, ordered, detail) Then Exit Function
+
+    ReDim ladder(0 To probabilityCount - 1)
+    For index = 0 To probabilityCount - 1
+        If Not SimStatsUsableProbability(probabilities(LBound(probabilities) + index), _
+                                         detail) Then Exit Function
+        If Not SimStatsQuantileSorted(ordered, count, _
+                                      probabilities(LBound(probabilities) + index), _
+                                      candidate, detail) Then Exit Function
+        ladder(index) = candidate
+    Next index
+
+    results = ladder
+    SimStatsQuantileLadder = True
+End Function
+
+
+' ==========================================================================
 ' Every statistic of one measure, SORTING EXACTLY ONCE
 '
 ' The ordered copy is formed here and reused for all eleven ladder values; the

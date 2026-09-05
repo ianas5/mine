@@ -647,7 +647,11 @@ REOPENED_SINCE_CLOSURE = {
                    "the value and the position. P7-6 added the ladder's own "
                    "probabilities and the resolution of the reporting selector "
                    "to a probability - both LOOKUPS through the same projected "
-                   "ladder. No percentile value changed in either round.",
+                   "ladder. The P7-6 performance correction then added the "
+                   "BATCH ladder: one ordered copy serving every rung taken "
+                   "over the same series, because eleven rungs of one year "
+                   "were costing eleven sorts of it. No percentile value "
+                   "changed in any of the three rounds.",
 }
 
 # AND A REOPENED MODULE IS FROZEN AGAIN, to the bytes the phase that reopened it
@@ -658,10 +662,12 @@ REOPENED_SINCE_CLOSURE = {
 REOPENED_CURRENT = {
     "modSimEngine": "9c307eae451252a983fc2c36205759335e14642557c3c4ecf9ab4ee30ec3237e",
     # P7-6 re-pins it: two LOOKUPS through the one projected ladder joined the
-    # public surface. A frozen digest is repointed in the same commit as the
-    # change that moved it, with the reason recorded above - never updated to
-    # whatever the file now hashes to.
-    "modSimStats": "28be6f005c3e6cef760ddb082b9a4440569948ebfe538f61ccba20f9a650c093",
+    # public surface, and the P7-6 performance correction then added the batch
+    # ladder - one ordered copy serving every rung taken over the same series.
+    # A frozen digest is repointed in the same commit as the change that moved
+    # it, with the reason recorded above - never updated to whatever the file
+    # now hashes to.
+    "modSimStats": "c44d4424bc1958ce2363018d923f1c65a90c648ccdb6b6594562e8349706e6ff",
     "modCalcReport": "c9f728f06bc7bc89eff5eb6e389d9fa305083e82af89b9e34f50340499364671",
 }
 

@@ -135,6 +135,7 @@ def _vba() -> dict:
                 # helpers each of those depends on.
                 "modSimStats": {
                     "SimStatsQuantileType7", "SimStatsQuantileSorted",
+                    "SimStatsQuantileLadder",
                     "SimStatsSortedCopy", "SimStatsSortAscending",
                     "SimStatsQuantilePosition", "SimStatsPositionOf",
                     "SimStatsOrderedIndices", "SimStatsSortIndices",

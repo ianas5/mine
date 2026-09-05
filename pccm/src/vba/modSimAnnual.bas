@@ -134,14 +134,21 @@ End Function
 ' year - produce that block's type-7 ladder, year by year.
 '
 ' THE PERCENTILE IS modSimStats'. There is no second type-7 here: a year's
-' ladder is SimStatsQuantileType7 over that year's column, which is an ordinary
-' sequence of iteration values.
+' ladder is the accepted type-7 rule over that year's column, which is an
+' ordinary sequence of iteration values.
+'
+' ONE SORT PER YEAR PER MEASURE, NOT ELEVEN. A year's eleven rungs are taken
+' over ONE series, so one ordered copy serves all of them - and the standalone
+' quantile entry point sorts a fresh copy on every call, which made the annual
+' distributions cost 11 sorts of N per year per measure, 22 * Y per invocation.
+' SimStatsQuantileLadder is the batch service that removes the multiplier; it
+' evaluates the SAME accepted rule against one ordered copy, so no value moves.
 Public Function SimAnnualLadder(ByRef column() As Double, ByVal iterations As Long, _
                                 ByVal yearCount As Long, ByRef probabilities() As Double, _
                                 ByVal probabilityCount As Long, _
                                 ByRef ladder() As Double, ByRef detail As String) As Boolean
     Dim year As Long, rung As Long, iteration As Long
-    Dim series() As Double, value As Double
+    Dim series() As Double, rungs() As Double
 
     detail = vbNullString
     If iterations < 1 Then
@@ -159,13 +166,13 @@ Public Function SimAnnualLadder(ByRef column() As Double, ByVal iterations As Lo
         For iteration = 0 To iterations - 1
             series(iteration) = column(iteration * yearCount + year)
         Next iteration
+        If Not modSimStats.SimStatsQuantileLadder(series, iterations, probabilities, _
+                                                  probabilityCount, rungs, detail) Then
+            detail = "annual: project year " & CStr(year + 1) & ": " & detail
+            Exit Function
+        End If
         For rung = 0 To probabilityCount - 1
-            If Not modSimStats.SimStatsQuantileType7(series, iterations, _
-                    probabilities(LBound(probabilities) + rung), value, detail) Then
-                detail = "annual: project year " & CStr(year + 1) & ": " & detail
-                Exit Function
-            End If
-            ladder(year * probabilityCount + rung) = value
+            ladder(year * probabilityCount + rung) = rungs(LBound(rungs) + rung)
         Next rung
     Next year
     SimAnnualLadder = True
