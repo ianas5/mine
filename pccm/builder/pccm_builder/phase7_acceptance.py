@@ -364,6 +364,29 @@ def build_phase7_cases(calc: CalcContract, sim: SimContract,
             # project already treats as noise, applied to values many orders of
             # magnitude above it.
             "comparison_absolute_floor": float(calc.tolerances.identity_absolute_floor),
+            # AND THE WHOLE IDENTITY RULE, for the ONE comparison the absolute
+            # floor alone cannot express. W5 reconciles the sum of the annual
+            # selected-Px profile against the reported total Px - the identity
+            # `sum_y Profile_Px(y) = reported Px` that sim_contract names and
+            # refuses to price, because the numeric allowance belongs to the
+            # project's accepted identity rule:
+            #
+            #     |delta| <= max(floor, coefficient * conditioning_scale)
+            #     conditioning_scale >= scale_floor
+            #
+            # All three numbers are the accepted ones, projected rather than
+            # copied, so the Windows runner reads the rule instead of choosing
+            # one. Nothing here is new: I3c/I4c already use exactly these.
+            "identity_absolute_floor": float(calc.tolerances.identity_absolute_floor),
+            "identity_relative_coefficient": float(calc.tolerances.identity_relative_coefficient),
+            "conditioning_scale_floor": float(calc.tolerances.conditioning_scale_floor),
+            "identity_rule": (
+                "|delta| <= max(identity_absolute_floor, "
+                "identity_relative_coefficient * max(conditioning_scale_floor, "
+                "conditioning_scale)); the conditioning scale names the "
+                "magnitude of the arithmetic performed, never the magnitude of "
+                "its net result."
+            ),
             "expectation_authority": (
                 "The independent Phase-5 implementation the accepted "
                 "phase5_cases.json corpus is built from. Phase 7 changed no line "
