@@ -200,8 +200,12 @@ def main(argv: list[str] | None = None) -> int:
     # against; widening their schema to carry Phase-7 geometry would change an
     # artefact whose identity is historical evidence. The Windows acceptance
     # harness reads both pairs.
+    # BOTH STRUCTURAL LIMITS. The year-column limit fixes W3's duration; the
+    # calendar-year window fixes where a 200-year span may sit, and W3's
+    # original 2026 start put its last year beyond it.
     phase7 = emit_phase7_acceptance(
-        sim, calc, structure.limits.max_generated_year_columns, out_path.parent)
+        sim, calc, structure.limits.max_generated_year_columns,
+        structure.limits.min_year, structure.limits.max_year, out_path.parent)
 
     say(f"  built    : {out_path}")
     say(f"  emitted  : {artifacts.module_path}")

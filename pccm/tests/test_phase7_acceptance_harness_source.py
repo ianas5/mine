@@ -307,12 +307,17 @@ def test_13b_the_emitter_itself_refuses_a_cartesian_case() -> None:
     that is asserted here by regenerating from the live contracts and by
     planting the collapse the rule exists to refuse.
     """
-    from pccm_builder import load_calc_contract
+    from pccm_builder import load_calc_contract, load_structure_contract
     from pccm_builder import phase7_acceptance as emitter
 
     calc = load_calc_contract(SPEC / "calc_contract.yaml")
     sim = load_sim_contract(SPEC / "sim_contract.yaml")
-    regenerated = emitter.build_phase7_cases(calc, sim, 200)
+    # THE CALENDAR WINDOW REACHES THE GENERATOR TOO. W3's 200 years have to sit
+    # somewhere the structural boundary allows, and the first W3 Windows run
+    # died because nothing computed where that was.
+    limits = load_structure_contract(SPEC / "structure_contract.yaml").limits
+    regenerated = emitter.build_phase7_cases(
+        calc, sim, 200, limits.min_year, limits.max_year)
     built = {entry["id"]: entry for entry in regenerated["scenarios"]}
     for scenario in ("W2", "W3", "W4", "W7"):
         assert built[scenario]["model"] == _case(scenario)["model"], (
@@ -330,7 +335,8 @@ def test_13b_the_emitter_itself_refuses_a_cartesian_case() -> None:
 
         emitter._model = collapsed
         with pytest.raises(ValueError, match="more drivers"):
-            emitter.build_phase7_cases(calc, sim, 200)
+            emitter.build_phase7_cases(
+                calc, sim, 200, limits.min_year, limits.max_year)
     finally:
         emitter._model = original
 

@@ -239,10 +239,27 @@ def _model(driver_count: int, duration: int, base_year: int = 2026,
 
 
 def build_phase7_cases(calc: CalcContract, sim: SimContract,
-                       max_record_rows: int) -> dict[str, Any]:
+                       max_record_rows: int, min_year: int,
+                       max_year: int) -> dict[str, Any]:
     tolerances = tolerances_from(calc)
     w2 = _model(driver_count=300, duration=5)
-    w3 = _model(driver_count=10, duration=200)
+    # W3 SITS AT BOTH STRUCTURAL LIMITS AT ONCE, AND THE SECOND ONE IS WHY THIS
+    # ARITHMETIC IS HERE. The year-column limit fixes the DURATION at 200; the
+    # calendar-year window fixes where those 200 years may sit. A 200-year
+    # project starting in 2026 ends in 2225, and production refuses it - as it
+    # should - with "Last Project Year would be 2225, beyond the supported
+    # structural year boundary 2200", so the fixture never reached
+    # PCCM_Calculate and proved nothing about a 200-long array.
+    #
+    # The start year is therefore DERIVED from the window rather than chosen:
+    # the last of 200 project years lands exactly on max_year, which is the only
+    # placement that exercises the full duration AND the top of the calendar
+    # window in one fixture. Base year equals start year, as in every other
+    # acceptance model, so the inflation span is the 199 years after the base.
+    w3_duration = int(max_record_rows)
+    w3_start = int(max_year) - w3_duration + 1
+    w3 = _model(driver_count=10, duration=w3_duration,
+                base_year=w3_start, start_year=w3_start)
     # The behavioural fixture: small, deterministic, and shared by W4, W5 and
     # W6 so the annual checks all bind to one identity.
     w4 = _model(driver_count=5, duration=4)
@@ -254,6 +271,31 @@ def build_phase7_cases(calc: CalcContract, sim: SimContract,
         raise ValueError(
             "W3 must sit at the structural maximum on generated project-year "
             f"columns: {max_record_rows}, not {w3['timeline']['duration']}")
+    # AND ITS LAST YEAR IS THE TOP OF THE WINDOW, not merely inside it: a
+    # fixture that had drifted below the boundary would still be 200 years long
+    # and would no longer prove the maximum span is supported.
+    w3_last = int(w3["timeline"]["start_year"]) + int(w3["timeline"]["duration"]) - 1
+    if w3_last != int(max_year):
+        raise ValueError(
+            f"W3 must end exactly at the structural maximum calendar year "
+            f"{max_year}, not {w3_last}")
+    # EVERY ACCEPTANCE MODEL STAYS INSIDE THE WINDOW. The defect that stopped
+    # W3 was a calendar span nobody had checked, so it is checked for all of
+    # them rather than for the one that failed.
+    for label, model in (("W2", w2), ("W3", w3), ("W4", w4),
+                         ("W7 long", w7_long), ("W7 short", w7_short)):
+        timeline = model["timeline"]
+        first = int(timeline["start_year"])
+        base = int(timeline["base_year"])
+        last = first + int(timeline["duration"]) - 1
+        if base < int(min_year) or first < int(min_year):
+            raise ValueError(
+                f"{label} starts at {min(base, first)}, before the structural "
+                f"minimum calendar year {min_year}")
+        if last > int(max_year):
+            raise ValueError(
+                f"{label} would end at {last}, beyond the structural maximum "
+                f"calendar year {max_year}")
     if len(w2["cost_lines"]) + len(w2["risks"]) <= len(w3["cost_lines"]) + len(w3["risks"]):
         raise ValueError("W2 must carry more drivers than W3, or it proves nothing W3 does not")
     if int(w2["timeline"]["duration"]) >= int(w3["timeline"]["duration"]):
@@ -369,9 +411,10 @@ def validate_phase7_artifacts(inspection: dict[str, Any], cases: dict[str, Any])
 
 
 def emit_phase7_acceptance(sim: SimContract, calc: CalcContract,
-                           max_record_rows: int, build_dir: Path) -> tuple[Path, Path]:
+                           max_record_rows: int, min_year: int, max_year: int,
+                           build_dir: Path) -> tuple[Path, Path]:
     inspection = build_phase7_inspection(sim, max_record_rows)
-    cases = build_phase7_cases(calc, sim, max_record_rows)
+    cases = build_phase7_cases(calc, sim, max_record_rows, min_year, max_year)
     validate_phase7_artifacts(inspection, cases)
     inspection_path = build_dir / INSPECTION_FILENAME
     cases_path = build_dir / CASES_FILENAME

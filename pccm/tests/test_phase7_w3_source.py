@@ -33,8 +33,14 @@ PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "tests"))
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
 
+import pytest  # noqa: E402
+
 import test_phase7_acceptance_harness_source as accepted  # noqa: E402
-from pccm_builder import load_calc_contract  # noqa: E402
+from pccm_builder import (  # noqa: E402
+    load_calc_contract,
+    load_sim_contract,
+    load_structure_contract,
+)
 
 WINDOWS = PCCM_ROOT / "bootstrap" / "windows"
 RUNNER = WINDOWS / "phase7_w3_long_years.ps1"
@@ -134,6 +140,31 @@ def _w3() -> dict:
     case = [s for s in _cases()["scenarios"] if s["id"] == "W3"]
     assert case, "the acceptance corpus carries no W3 scenario"
     return case[0]
+
+
+def _year_window() -> tuple[int, int, int]:
+    """(min_year, max_year, max_generated_year_columns) from the structural contract.
+
+    THE AUTHORITY, NOT A REMEMBERED NUMBER. The W3 fixture's calendar span is
+    derived from these, so the assertions about it have to be too - the round
+    that produced 2026-2225 failed precisely because a literal span was carried
+    around instead of being derived.
+    """
+    text = (PCCM_ROOT / "spec" / "structure_contract.yaml").read_text(encoding="utf-8")
+    values = {}
+    for key in ("min_year", "max_year", "max_generated_year_columns"):
+        match = re.search(rf"^\s*{key}:\s*(\d+)\s*$", text, re.M)
+        assert match, f"structure_contract.yaml declares no {key}"
+        values[key] = int(match.group(1))
+    return values["min_year"], values["max_year"], values["max_generated_year_columns"]
+
+
+def _span() -> tuple[int, int, int]:
+    """(first calendar year, last calendar year, duration) of the W3 fixture."""
+    timeline = _w3()["model"]["timeline"]
+    first = int(timeline["start_year"])
+    duration = int(timeline["duration"])
+    return first, first + duration - 1, duration
 
 
 def _inspection() -> dict:
@@ -780,8 +811,9 @@ def test_36_the_corpus_really_carries_two_hundred_distinct_populated_years() -> 
     assert years == 200
     indices = [row["project_index"] for row in expected["calc_years"]]
     assert indices == list(range(1, 201))
+    first, last, _ = _span()
     calendars = [row["calendar_year"] for row in expected["calc_years"]]
-    assert calendars == list(range(2026, 2026 + 200))
+    assert calendars == list(range(first, last + 1))
     # STRICTLY DECREASING DISCOUNT FACTORS: a fixture whose later years were
     # copies of an earlier one would make the probes vacuous.
     factors = [row["discount_factor"] for row in expected["calc_years"]]
@@ -796,9 +828,10 @@ def test_37_the_final_year_is_genuinely_populated_in_the_authority() -> None:
     """The runner requires year 200 to carry a real, non-zero number in every
     column. That is only a meaningful demand if the oracle's year 200 does."""
     expected = _w3()["expected"]
+    _, last, _ = _span()
     final_year = expected["annual"][-1]
     assert final_year["project_index"] == 200
-    assert final_year["calendar_year"] == 2225
+    assert final_year["calendar_year"] == last
     for field in ("base_cost_nominal", "expected_risk_nominal", "total_nominal",
                   "base_cost_pv", "expected_risk_pv", "total_pv"):
         value = final_year[field]
@@ -821,8 +854,9 @@ def test_38_the_inflation_surface_spans_every_profile_and_every_year() -> None:
     seen = {(row["profile"], row["calendar_year"]) for row in rows}
     assert len(seen) == len(rows), "duplicate profile/year rows in the corpus"
     for profile in profiles:
+        first, last, _ = _span()
         span = sorted(row["calendar_year"] for row in rows if row["profile"] == profile)
-        assert span == list(range(2026, 2026 + years)), profile
+        assert span == list(range(first, last + 1)), profile
     # The cumulative factor really compounds across 200 years, so a truncated
     # inflation array could not produce the last row by accident.
     last = max(row["cumulative_factor"] for row in rows)
@@ -840,3 +874,228 @@ def test_39_no_stochastic_endpoint_is_ever_invoked() -> None:
     literals = [call for call in runnable if "'" in call]
     for call in literals:
         assert ("PCCM_CalculationStatus" in call) or ("PCCM_AutomationEnd" in call), call
+
+
+# ===========================================================================
+# I. THE CALENDAR SPAN - THE DEFECT THAT STOPPED THE FIRST W3 RUN
+# ===========================================================================
+# W3 never reached PCCM_Calculate. Its 200 years started in 2026 and would have
+# ended in 2225, and production refused the timeline: "Last Project Year would
+# be 2225, beyond the supported structural year boundary 2200." Production was
+# right; the FIXTURE was wrong. The correction derives the start year from the
+# contract instead of choosing one, and these controls hold it derived.
+
+def test_40_the_fixture_span_is_inside_the_structural_window() -> None:
+    """THE REFUSAL THAT STOPPED THE FIRST RUN, refused here instead."""
+    min_year, max_year, _ = _year_window()
+    timeline = _w3()["model"]["timeline"]
+    first, last, duration = _span()
+    assert int(timeline["base_year"]) >= min_year
+    assert first >= min_year, (first, min_year)
+    assert last <= max_year, (
+        f"the W3 span ends at {last}, beyond the structural maximum {max_year}; "
+        "production would refuse the timeline before PCCM_Calculate")
+    assert duration == 200
+
+
+def test_41_the_last_project_year_sits_exactly_on_the_maximum() -> None:
+    """INSIDE THE WINDOW IS NOT ENOUGH. A fixture that had drifted below the
+    boundary would still be 200 years long and would no longer prove that the
+    maximum span is supported - which is half of what W3 is for."""
+    _, max_year, max_columns = _year_window()
+    first, last, duration = _span()
+    assert last == max_year, (last, max_year)
+    assert duration == max_columns, (duration, max_columns)
+    # AND THAT IS THE ONLY PLACEMENT THAT DOES BOTH.
+    assert first == max_year - max_columns + 1
+    assert _w3()["expected"]["applied_timeline"] == f"{first}/{first}/{duration}"
+
+
+def test_42_the_start_year_is_derived_by_the_generator_not_typed_in() -> None:
+    """The generator computes it from the contract, and the contract reaches it.
+
+    A literal that happened to work would pass every assertion above and break
+    again the next time a boundary moved.
+    """
+    generator = (PCCM_ROOT / "builder" / "pccm_builder"
+                 / "phase7_acceptance.py").read_text(encoding="utf-8")
+    assert "w3_start = int(max_year) - w3_duration + 1" in generator, (
+        "the W3 start year is no longer derived from the structural maximum")
+    assert "base_year=w3_start, start_year=w3_start" in generator
+    first, _, _ = _span()
+    assert f"start_year={first}" not in generator, "the derived year has been hard-coded"
+    assert f"= {first}" not in generator
+    # THE WINDOW REALLY REACHES THE GENERATOR.
+    caller = (PCCM_ROOT / "builder" / "build_stage_a.py").read_text(encoding="utf-8")
+    assert "structure.limits.min_year, structure.limits.max_year" in caller
+    assert "def build_phase7_cases(calc: CalcContract, sim: SimContract,\n" \
+           "                       max_record_rows: int, min_year: int,\n" \
+           "                       max_year: int)" in generator
+
+
+def test_43_the_generator_refuses_a_span_outside_the_window() -> None:
+    """The check that would have caught this before Windows, for every model."""
+    generator = (PCCM_ROOT / "builder" / "pccm_builder"
+                 / "phase7_acceptance.py").read_text(encoding="utf-8")
+    assert "beyond the structural maximum" in generator
+    assert "before the structural\\n                f\"minimum calendar year" in generator or \
+           "before the structural " in generator
+    assert "must end exactly at the structural maximum calendar year" in generator
+    # It covers every acceptance model, not only the one that failed.
+    for label in ('"W2"', '"W3"', '"W4"', '"W7 long"', '"W7 short"'):
+        assert label in generator, label
+
+
+def test_44_every_other_acceptance_model_stays_inside_the_window() -> None:
+    """The correction must not have moved a scenario that was already valid."""
+    min_year, max_year, _ = _year_window()
+    for case in _cases()["scenarios"]:
+        timeline = case["model"]["timeline"]
+        first = int(timeline["start_year"])
+        last = first + int(timeline["duration"]) - 1
+        assert min_year <= int(timeline["base_year"]) <= max_year, case["id"]
+        assert min_year <= first and last <= max_year, (case["id"], first, last)
+    # W2 IS CLOSED AND ITS FIXTURE IS UNCHANGED.
+    w2 = [s for s in _cases()["scenarios"] if s["id"] == "W2"][0]
+    assert w2["model"]["timeline"] == {"base_year": 2026, "start_year": 2026, "duration": 5}
+
+
+def test_45_the_runner_carries_no_calendar_literal_of_its_own() -> None:
+    """Every year the runner talks about comes from the corpus, so a fixture
+    whose span moves again cannot leave the runner asserting the old one."""
+    code = _own_code()
+    years = re.findall(r"(?<![\w.])(1[89]\d\d|2[0-2]\d\d)(?![\w.])", code)
+    assert not years, f"calendar-year literals in the W3 runner: {sorted(set(years))}"
+    assert "$case.expected.applied_timeline" in code
+
+
+def _emitter_inputs():
+    """The live contracts, and the generator module the corpus is built by."""
+    from pccm_builder import phase7_acceptance as emitter
+
+    spec = PCCM_ROOT / "spec"
+    calc = load_calc_contract(spec / "calc_contract.yaml")
+    sim = load_sim_contract(spec / "sim_contract.yaml")
+    limits = load_structure_contract(spec / "structure_contract.yaml").limits
+    return emitter, calc, sim, limits
+
+
+def _build(emitter, calc, sim, limits):
+    return emitter.build_phase7_cases(
+        calc, sim, limits.max_generated_year_columns, limits.min_year, limits.max_year)
+
+
+def test_46_the_generator_refuses_the_span_that_stopped_the_first_w3_run() -> None:
+    """THE DEFECT ITSELF, PLANTED AND REFUSED.
+
+    A message in the source is not a guard. This puts W3's 200 years back where
+    they were - starting in 2026, ending in 2225 - and requires emission to
+    fail, so the corpus can never again carry a span production will refuse
+    before PCCM_Calculate.
+    """
+    emitter, calc, sim, limits = _emitter_inputs()
+    original = emitter._model
+    try:
+        def shifted(driver_count, duration, **rest):
+            if duration == limits.max_generated_year_columns:
+                rest = dict(rest)
+                rest["base_year"] = 2026
+                rest["start_year"] = 2026
+            return original(driver_count, duration, **rest)
+
+        emitter._model = shifted
+        # THE EXACT GUARD, not merely some guard: with only the window check in
+        # place this span would still be refused, and a control that accepted
+        # either message could not tell the two apart.
+        with pytest.raises(ValueError, match="must end exactly at the structural maximum"):
+            _build(emitter, calc, sim, limits)
+    finally:
+        emitter._model = original
+    # And unplanted, it emits.
+    assert _build(emitter, calc, sim, limits)["scenarios"]
+
+
+def test_47_the_generator_refuses_any_model_that_leaves_the_window() -> None:
+    """Not only W3's. The span nobody checked was the defect, so the check is
+    over every acceptance model - proved by planting the fault in another one."""
+    emitter, calc, sim, limits = _emitter_inputs()
+    original = emitter._model
+    try:
+        def overshoot(driver_count, duration, **rest):
+            # W2's five years, pushed so its last year clears the boundary while
+            # W3's own placement stays correct.
+            if duration == 5:
+                rest = dict(rest)
+                rest["base_year"] = limits.max_year - 2
+                rest["start_year"] = limits.max_year - 2
+            return original(driver_count, duration, **rest)
+
+        emitter._model = overshoot
+        with pytest.raises(ValueError, match="beyond the structural maximum"):
+            _build(emitter, calc, sim, limits)
+    finally:
+        emitter._model = original
+
+
+def test_48_the_generator_refuses_a_model_below_the_minimum_year() -> None:
+    """The other end of the window, which no scenario currently approaches and
+    which therefore needs a control rather than an example."""
+    emitter, calc, sim, limits = _emitter_inputs()
+    original = emitter._model
+    try:
+        def undershoot(driver_count, duration, **rest):
+            if duration == 4:
+                rest = dict(rest)
+                rest["base_year"] = limits.min_year - 5
+                rest["start_year"] = limits.min_year - 5
+            return original(driver_count, duration, **rest)
+
+        emitter._model = undershoot
+        with pytest.raises(ValueError, match="before the structural"):
+            _build(emitter, calc, sim, limits)
+    finally:
+        emitter._model = original
+
+
+def test_49_the_built_corpus_is_what_the_generator_now_produces() -> None:
+    """The corpus on disk was regenerated from the corrected model, not edited.
+
+    A hand-edited JSON would pass every span assertion above and would no longer
+    be the oracle's answer for the model it carries.
+    """
+    emitter, calc, sim, limits = _emitter_inputs()
+    regenerated = {entry["id"]: entry for entry in _build(emitter, calc, sim, limits)["scenarios"]}
+    for scenario in ("W2", "W3", "W4", "W7"):
+        built = [s for s in _cases()["scenarios"] if s["id"] == scenario][0]
+        assert regenerated[scenario]["model"] == built["model"], (
+            f"{scenario}: the corpus model is not what the generator produces")
+        assert regenerated[scenario]["expected"] == built["expected"], (
+            f"{scenario}: the corpus expectation is not what the oracle now "
+            "computes for that model; the artefact was edited rather than rebuilt")
+
+
+def test_46b_the_generator_refuses_a_span_that_merely_fits() -> None:
+    """INSIDE THE WINDOW IS NOT ENOUGH, and this is the plant that proves the
+    rule is "ends exactly at the maximum" rather than "ends somewhere legal".
+
+    A W3 shifted one year earlier is 200 years long and entirely within the
+    calendar window - it would pass every boundary check - and it would no
+    longer prove that the maximum span is supported, which is half of what W3
+    exists for.
+    """
+    emitter, calc, sim, limits = _emitter_inputs()
+    original = emitter._model
+    try:
+        def early(driver_count, duration, **rest):
+            if duration == limits.max_generated_year_columns:
+                start = limits.max_year - duration  # one year short of the top
+                rest = dict(rest)
+                rest["base_year"] = start
+                rest["start_year"] = start
+            return original(driver_count, duration, **rest)
+
+        emitter._model = early
+        with pytest.raises(ValueError, match="must end exactly at the structural maximum"):
+            _build(emitter, calc, sim, limits)
+    finally:
+        emitter._model = original
