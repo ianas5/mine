@@ -40,6 +40,7 @@ from pccm_builder import (  # noqa: E402
     emit_calc_artifacts,
     emit_inspection,
     emit_sim_artifacts,
+    emit_phase7_acceptance,
     emit_sim_gate_b_artifacts,
     emit_stage_b,
     SimContractError,
@@ -194,6 +195,13 @@ def main(argv: list[str] | None = None) -> int:
     # The Phase-6 Gate-B pair, for the Windows harness only: addresses in one,
     # oracle expectations in the other. No workbook content, no VBA, no layout.
     sim_gate_b = emit_sim_gate_b_artifacts(out_path.parent, spec, sim, contract, calc)
+    # THE PHASE-7 ACCEPTANCE PAIR, and it is a SEPARATE pair on purpose. The
+    # Phase-6 files above are the projection and corpus Run 6 was accepted
+    # against; widening their schema to carry Phase-7 geometry would change an
+    # artefact whose identity is historical evidence. The Windows acceptance
+    # harness reads both pairs.
+    phase7 = emit_phase7_acceptance(
+        sim, calc, structure.limits.max_generated_year_columns, out_path.parent)
 
     say(f"  built    : {out_path}")
     say(f"  emitted  : {artifacts.module_path}")
@@ -207,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  emitted  : {sim_gate_b.inspection_path}")
     say(f"  emitted  : {sim_gate_b.cases_path}")
     say(f"  emitted  : {sim_gate_b.oracle_path}  (host-local oracle evidence)")
+    say(f"  emitted  : {phase7[0]}")
+    say(f"  emitted  : {phase7[1]}")
     say(f"  stamped  : builder {metadata.builder_version}, {metadata.build_timestamp}")
     say("")
     say("Structural verification:")
