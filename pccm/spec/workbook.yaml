@@ -351,11 +351,78 @@ phase6_shell:
       quantile_pv: '=IF(OR(_SimData!$D$30="",COUNTIF(_SimData!$J$12:$J$21,inpSelectedConfidenceLevel)=0),"",IF(_SimData!$D$30="A",INDEX(_SimData!$L$11:$L$21,MATCH(inpSelectedConfidenceLevel,_SimData!$J$11:$J$21,0)),INDEX(_SimData!$N$11:$N$21,MATCH(inpSelectedConfidenceLevel,_SimData!$J$11:$J$21,0))))'
       contingency_nominal: '=IF(OR(_SimData!$D$30="",COUNTIF(_SimData!$P$9:$P$18,inpSelectedConfidenceLevel)=0),"",IF(_SimData!$D$30="A",INDEX(_SimData!$Q$8:$Q$18,MATCH(inpSelectedConfidenceLevel,_SimData!$P$8:$P$18,0)),INDEX(_SimData!$S$8:$S$18,MATCH(inpSelectedConfidenceLevel,_SimData!$P$8:$P$18,0))))'
       contingency_pv: '=IF(OR(_SimData!$D$30="",COUNTIF(_SimData!$P$9:$P$18,inpSelectedConfidenceLevel)=0),"",IF(_SimData!$D$30="A",INDEX(_SimData!$R$8:$R$18,MATCH(inpSelectedConfidenceLevel,_SimData!$P$8:$P$18,0)),INDEX(_SimData!$T$8:$T$18,MATCH(inpSelectedConfidenceLevel,_SimData!$P$8:$P$18,0))))'
-    deferred:
-      - {row: 51, title: "Annual Cash Flow", note_row: 52,
-         note: "Deferred. Mean annual cash flow split base cost / risk / total, nominal and PV."}
-      - {row: 54, title: "Reconciliation", note_row: 55,
-         note: "Deferred. The analytical bridge from deterministic base estimate to selected Px."}
+    # -------------------------------------------------------------------
+    # PHASE 8, STEP 1. The two sections this sheet reserved from the start.
+    #
+    # `sheets: Results` has declared "Full statistical output, cash flow and the
+    # analytical reconciliation bridge" since Phase 1, and the two blocks below
+    # were carried as `deferred` placeholders until the thing they present
+    # existed. Phase 7 produced it, so they stop being placeholders here. NO NEW
+    # WORKSHEET: the workbook stays at fourteen sheets and this is the surface
+    # the existing design pointed at.
+    #
+    # NOT ONE `_SimData` ADDRESS IS WRITTEN BELOW, and that is deliberate. The
+    # Sensitivity availability line above spells its addresses as literals, and
+    # P7-4 is what that cost: the persisted block moved from J/S to CC/CL, every
+    # generated cell moved with it, and the hand-written formula did not - so a
+    # successful run reported "Not produced for this run" forever. These blocks
+    # carry ROWS, LABELS, HEADERS and FORMATS only. Every column letter, every
+    # stamp row and every state word is resolved by the renderer from
+    # `sim_contract.yaml`, and the two identity tolerances come from
+    # `calc_contract.yaml`. A contract move moves this sheet with it.
+    # -------------------------------------------------------------------
+    annual:
+      heading_row: 51
+      note_row: 52
+      distribution_state_row: 53
+      profile_state_row: 54
+      profile_px_row: 55
+      year_count_row: 56
+      header_row: 58
+      first_row: 59
+      heading: "Annual Cash Flow"
+      note: "The selected-Px annual profile of the published run, read back from the stored result. The publication marker and the stamped year count decide how far the answer reaches - never the last non-blank row. Nothing here recomputes a percentile, a profile or a blend."
+      labels:
+        distribution_state: "Annual Distributions"
+        profile_state: "Annual Profile"
+        profile_px: "Profile Confidence Level"
+        year_count: "Years Covered"
+      columns:
+        - {key: "project_index", header: "Project Year", column: "B",
+           source: "index", field: "project_index", format: "year"}
+        - {key: "calendar_year", header: "Calendar Year", column: "D",
+           source: "index", field: "calendar_year", format: "year"}
+        - {key: "nominal", header: "Selected Px - Nominal (SAR)", column: "F",
+           source: "profile", field: "nominal", format: "money"}
+        - {key: "pv", header: "Selected Px - PV (SAR)", column: "H",
+           source: "profile", field: "pv", format: "money"}
+    reconciliation:
+      heading_row: 260
+      note_row: 261
+      header_row: 262
+      first_row: 263
+      heading: "Reconciliation"
+      note: "The accepted identity: the selected-Px annual profile sums to the reported selected-Px TOTAL. The verdict below is taken on the stored values, not on the rounded figures shown."
+      headers: {label: "Check", nominal: "Nominal (SAR)", pv: "PV (SAR)"}
+      rows:
+        - {key: "total", label: "Total at Selected Px", format: "money"}
+        - {key: "profile_sum", label: "Sum of Annual Profile", format: "money"}
+        - {key: "difference", label: "Difference", format: "delta"}
+        - {key: "allowance", label: "Identity Allowance", format: "delta"}
+        - {key: "status", label: "Status", format: "text"}
+      verdicts:
+        reconciled: "Reconciled"
+        mismatch: "NOT RECONCILED"
+        # A reconciliation of a profile that is not the current answer must not
+        # read as one that is. The state word is APPENDED between these two
+        # fragments, never substituted for the verdict.
+        qualifier_prefix: " - for the "
+        qualifier_suffix: " profile, not the current model answer"
+    number_formats:
+      money: "#,##0"
+      year: "0"
+      delta: "0.00E+00"
+      text: "General"
 
 sheets:
 
@@ -501,10 +568,14 @@ sheets:
     title: "Results"
     subtitle: "Simulation results and statistical summary"
     freeze_panes: "A6"
-    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
+    # G and H are Phase-8 Step-1 additions: the annual table is the first
+    # four-column table on this sheet. F keeps its width - `_write_block` uses
+    # column F as the note column across the workbook - and nothing that was
+    # already here moves.
+    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46, G: 3, H: 26 }
     blocks:
       - type: note
-        text: "Phase 6 publishes run identity, summary statistics and selected-confidence reporting. Annual cash flow and reconciliation remain deferred."
+        text: "Run identity, summary statistics and selected-confidence reporting are published by the simulation; the annual cash flow and the reconciliation below are read back from the stored annual result."
       - type: section
         title: "Run Stamp"
         note: "Reserved for model version, run id, timestamp, iterations, seed and applied timeline."
@@ -513,10 +584,10 @@ sheets:
         note: "Reserved for the percentile ladder, mean, standard deviation and dispersion."
       - type: section
         title: "Annual Cash Flow"
-        note: "Reserved for mean annual cash flow split base cost / risk / total, nominal and PV."
+        note: "The selected-Px annual profile of the published run, nominal and PV."
       - type: section
         title: "Reconciliation"
-        note: "Reserved for the analytical bridge from deterministic base estimate to selected Px."
+        note: "The selected-Px annual profile against the reported selected-Px total."
 
   - name: "Sensitivity"
     codename: "shSensitivity"

@@ -463,8 +463,15 @@ def test_21_the_results_shell_is_materialised_where_the_manifest_says() -> None:
     selected = results["selected"]
     assert sheet[f"{label}{selected['quantile_row']}"].value == "Selected Px"
     assert sheet[f"{label}{selected['contingency_row']}"].value == "Contingency"
-    for deferred in results["deferred"]:
-        assert sheet[f"{label}{deferred['row']}"].value == deferred["title"]
+    # PHASE 8 STEP 1 replaced the two deferred placeholders with the sections
+    # they reserved. The accepted Phase-6 geometry above is untouched; what was
+    # `deferred` is now `annual` and `reconciliation`, and their headings are
+    # checked here so this control still covers the whole sheet.
+    assert "deferred" not in results, "the Phase-8 sections did not replace the placeholders"
+    assert sheet[f"{label}{results['annual']['heading_row']}"].value == (
+        results["annual"]["heading"])
+    assert sheet[f"{label}{results['reconciliation']['heading_row']}"].value == (
+        results["reconciliation"]["heading"])
 
 
 def test_22_the_sim_data_shell_carries_labels_and_no_data() -> None:

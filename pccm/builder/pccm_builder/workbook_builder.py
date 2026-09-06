@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from openpyxl import Workbook
@@ -31,6 +32,7 @@ from .names import apply_defined_names
 from .spec_loader import SheetSpec, WorkbookSpec
 from .structure_loader import StructureContract, validate_structure_against
 from .calc_loader import CalcContract
+from .sim_emit import ANNUAL_PUBLISHED_MARKER
 from .calc_render import render_calc_workspace
 from .structure_render import render_applied_timeline, render_grid, render_identity
 from .styling import StyleBook
@@ -166,7 +168,7 @@ def build_workbook(
         # `_SimData` commit can never be followed by a failed Results write.
         if sim is not None and spec.phase6_shell:
             render_phase6_shell(worksheet, sheet_spec, spec.phase6_shell, sim, contract,
-                                styles)
+                                styles, calc, structure)
 
     # Remove openpyxl's default sheet only after the real sheets exist, so the
     # workbook is never momentarily empty.
@@ -330,6 +332,8 @@ def render_phase6_shell(
     sim: Any,
     contract: InputContract,
     styles: StyleBook,
+    calc: CalcContract | None = None,
+    structure: StructureContract | None = None,
 ) -> None:
     """Materialise the empty publication shell.
 
@@ -342,7 +346,7 @@ def render_phase6_shell(
     if sheet_spec.name == raw["sim_data"]["sheet"]:
         _render_sim_data_shell(worksheet, shell["sim_data"], raw, sim, contract, styles)
     elif sheet_spec.name == "Results":
-        _render_results_shell(worksheet, shell["results"], styles)
+        _render_results_shell(worksheet, shell["results"], styles, raw, calc, structure)
     elif sheet_spec.name == shell["sensitivity"]["sheet"]:
         _render_sensitivity_shell(worksheet, shell["sensitivity"], raw, styles)
 
@@ -491,6 +495,8 @@ def _render_persisted_block(
 
 def _render_results_shell(
     worksheet: Worksheet, block: dict[str, Any], styles: StyleBook,
+    raw: dict[str, Any] | None = None, calc: CalcContract | None = None,
+    structure: StructureContract | None = None,
 ) -> None:
     label_col = block["label_column"]
     nominal_col = block["nominal_column"]
@@ -511,10 +517,13 @@ def _render_results_shell(
            styles.label)
     _write(worksheet, f"{pv_col}{summary['header_row']}", summary["headers"]["pv"],
            styles.label)
+    money = block["number_formats"]["money"]
     for metric in summary["metrics"]:
         _write(worksheet, f"{label_col}{metric['row']}", metric["label"], styles.label)
         _write(worksheet, f"{nominal_col}{metric['row']}", metric["nominal"], styles.value)
         _write(worksheet, f"{pv_col}{metric['row']}", metric["pv"], styles.value)
+        worksheet[f"{nominal_col}{metric['row']}"].number_format = money
+        worksheet[f"{pv_col}{metric['row']}"].number_format = money
 
     selected = block["selected"]
     _write(worksheet, f"{label_col}{selected['confidence_level_row']}",
@@ -533,10 +542,324 @@ def _render_results_shell(
            selected["contingency_nominal"], styles.value)
     _write(worksheet, f"{pv_col}{selected['contingency_row']}",
            selected["contingency_pv"], styles.value)
+    # THE TWO MONEY ROWS OF THE SELECTED BLOCK. The confidence level above them
+    # is a LABEL - P80 is not a quantity - and is deliberately left alone.
+    for row in (selected["quantile_row"], selected["contingency_row"]):
+        worksheet[f"{nominal_col}{row}"].number_format = money
+        worksheet[f"{pv_col}{row}"].number_format = money
 
-    for deferred in block["deferred"]:
-        _write(worksheet, f"{label_col}{deferred['row']}", deferred["title"], styles.section)
-        _write(worksheet, f"{label_col}{deferred['note_row']}", deferred["note"], styles.note)
+    if raw is not None and "annual" in block:
+        window = _annual_row_window(structure)
+        # THE WINDOW IS SIZED BY A CONTRACT THIS FILE DOES NOT OWN. If the
+        # structural year maximum grows, the annual table grows with it - and
+        # the reconciliation below has a FIXED heading row. Nothing else would
+        # notice the collision: the later write simply wins and both sections
+        # would still "render". So it is refused here, in the build, naming the
+        # two numbers that disagree.
+        last = int(block["annual"]["first_row"]) + window - 1
+        heading = int(block["reconciliation"]["heading_row"])
+        if last >= heading:
+            raise ValueError(
+                f"the annual record window reaches row {last} but the reconciliation "
+                f"heading is at row {heading}; the structural year maximum grew past "
+                "the space the Results layout reserves for it")
+        _render_annual_section(worksheet, block, styles, raw, window)
+        _render_reconciliation_section(worksheet, block, styles, raw, calc, window)
+
+
+# ===========================================================================
+# PHASE 8, STEP 1 - THE ANNUAL CASH FLOW AND THE RECONCILIATION
+# ===========================================================================
+# PRESENTATION, AND NOTHING ELSE. Every cell below is a LOOKUP into the annual
+# result Phase 7 published, or ordinary display arithmetic over cells that are
+# already on this sheet. Nothing here computes a percentile, replays a run,
+# blends a profile, resolves a selector or constructs a contingency: those have
+# owners, and a worksheet that repeated any of them would be a second engine
+# that no test of the VBA would ever see.
+#
+# AND NOT ONE ADDRESS IS TYPED. The Sensitivity availability line writes its
+# `_SimData` addresses as literals, and P7-4 is what that cost: the persisted
+# block moved and the formula did not, so a sheet reported "Not produced for
+# this run" after a run that had just succeeded. Every column letter, stamp row
+# and state word below is resolved from `sim_contract.yaml` at build time, and
+# the two identity tolerances from `calc_contract.yaml`.
+
+
+class _AnnualAddresses:
+    """Where the published annual answer lives, resolved from the contract.
+
+    One object so the four formula builders cannot disagree about which bank
+    selector, which stamp row or which record column they are reading.
+    """
+
+    def __init__(self, raw: dict[str, Any]) -> None:
+        self.sheet = str(raw["sim_data"]["sheet"])
+        identity = raw["sim_data"]["run_identity"]
+        self._identity_rows = {f["key"]: int(f["row"]) for f in identity["fields"]}
+        self._identity_banks = identity["bank_value_columns"]
+        self._shared_column = str(identity["value_column"])
+        annual = raw["sim_data"]["annual_records"]
+        self._annual = annual
+        self._stamp_banks = annual["stamp"]["bank_value_columns"]
+        self._stamp_rows = {f["key"]: int(f["row"]) for f in annual["stamp"]["fields"]}
+        self.first_record_row = int(annual["first_record_row"])
+        handoff = annual["handoff"]
+        self.not_produced = str(handoff["distribution_states"][0])
+        self.distribution_current = str(handoff["distribution_states"][1])
+        self.historical = str(handoff["distribution_states"][-1])
+        self.profile_current = str(handoff["profile_states"][1])
+        self.other_px = str(handoff["inconsistent_stamp_state"])
+        self.simulation_current = str(raw["sim_state"]["states"][0])
+
+    # The published bank decides every read below, and it is a cell.
+    def active_bank(self) -> str:
+        return (f'{self.sheet}!${self._shared_column}$'
+                f'{self._identity_rows["active_bank"]}')
+
+    def shared(self, key: str) -> str:
+        """A row the two banks share - the derived status, the counters."""
+        return f'{self.sheet}!${self._shared_column}${self._identity_rows[key]}'
+
+    def _switch(self, banks: dict[str, str], row: int) -> str:
+        return (f'IF({self.active_bank()}="A",'
+                f'{self.sheet}!${banks["A"]}${row},{self.sheet}!${banks["B"]}${row})')
+
+    def run(self, key: str) -> str:
+        """A field of the published run's own identity."""
+        return self._switch(self._identity_banks, self._identity_rows[key])
+
+    def stamp(self, key: str) -> str:
+        """A field of the annual publication stamp."""
+        return self._switch(self._stamp_banks, self._stamp_rows[key])
+
+    def record(self, source: str, field: str, offset: int) -> str:
+        """One cell of one annual record, `offset` rows into the block."""
+        columns = (self._annual["index_columns"] if source == "index"
+                   else self._annual["selected_px_profile_columns"])
+        banks = {bank: columns[bank][field] for bank in ("A", "B")}
+        return self._switch(banks, self.first_record_row + offset)
+
+
+def _annual_row_window(structure: StructureContract | None) -> int:
+    """How many record rows the sheet must be able to show.
+
+    THE STRUCTURAL MAXIMUM ON GENERATED PROJECT-YEAR COLUMNS, which is what
+    bounds the annual block - never a duration this project happens to have run.
+    A four-year model and a two-hundred-year model use the same sheet, and the
+    stamped year count blanks everything past the answer.
+    """
+    if structure is None:
+        raise ValueError(
+            "the Results annual table needs the structural contract: its row window "
+            "is the maximum generated project-year count and must not be written here")
+    window = int(structure.limits.max_generated_year_columns)
+    if window < 1:
+        raise ValueError(f"the structural year maximum is {window}, which shows nothing")
+    return window
+
+
+def _annual_state_formulas(at: _AnnualAddresses, block: dict[str, Any],
+                           value_col: str) -> dict[str, str]:
+    """The four state lines above the table.
+
+    THE RULE IS THE CONTRACT'S, READ THE WAY A WORKSHEET CAN READ IT. An annual
+    answer exists when the stamp carries the publication marker; it is CURRENT
+    when the simulation is current AND the stamp's own identity is the published
+    run's identity - all five fields, because a run id says which attempt while
+    the fingerprint says which request and the digest says which answer. Anything
+    else published is HISTORICAL, and the profile inherits that verdict before
+    the selector is allowed to speak at all.
+    """
+    annual = block["annual"]
+    marker = ANNUAL_PUBLISHED_MARKER
+    produced = f'AND({at.active_bank()}<>"",{at.stamp("published")}="{marker}")'
+    belongs = ",".join((
+        f'{at.stamp("run_id")}={at.run("run_id")}',
+        f'{at.stamp("effective_seed")}={at.run("effective_seed")}',
+        f'{at.stamp("request_fingerprint")}={at.run("request_fingerprint")}',
+        f'{at.stamp("result_digest")}={at.run("result_digest")}',
+        f'{at.stamp("iterations")}={at.run("iterations_run")}',
+    ))
+    distribution_cell = f'${value_col}${annual["distribution_state_row"]}'
+    return {
+        "distribution_state": (
+            f'=IF(NOT({produced}),"{at.not_produced}",'
+            f'IF(AND({at.shared("simulation_status")}="{at.simulation_current}",'
+            f'{belongs}),"{at.distribution_current}","{at.historical}"))'),
+        # THE LADDERS' VERDICT IS THE FLOOR. A profile cannot be current for a
+        # run whose distributions are not, and it is never relabelled: what
+        # changes when the selector moves is only that nobody is asking for the
+        # Px it was computed at.
+        "profile_state": (
+            f'=IF({distribution_cell}<>"{at.distribution_current}",{distribution_cell},'
+            f'IF({at.stamp("selected_px_label")}=inpSelectedConfidenceLevel,'
+            f'"{at.profile_current}","{at.other_px}"))'),
+        "profile_px": (
+            f'=IF({distribution_cell}="{at.not_produced}","",'
+            f'{at.stamp("selected_px_label")})'),
+        # THE STAMPED COUNT SAYS WHERE THE ANSWER STOPS. Never the last
+        # non-blank row: a four-year run published over a twenty-year one leaves
+        # nothing behind, and the count is what says so.
+        "year_count": (
+            f'=IF({distribution_cell}="{at.not_produced}","",'
+            f'{at.stamp("year_count")})'),
+    }
+
+
+def _render_annual_section(
+    worksheet: Worksheet, block: dict[str, Any], styles: StyleBook,
+    raw: dict[str, Any], window: int,
+) -> None:
+    annual = block["annual"]
+    label_col = block["label_column"]
+    value_col = block["nominal_column"]
+    formats = block["number_formats"]
+    at = _AnnualAddresses(raw)
+
+    _write(worksheet, f"{label_col}{annual['heading_row']}", annual["heading"], styles.section)
+    worksheet.row_dimensions[int(annual["heading_row"])].height = styles.row_height("section")
+    _write(worksheet, f"{label_col}{annual['note_row']}", annual["note"], styles.note)
+
+    formulas = _annual_state_formulas(at, block, value_col)
+    for key in ("distribution_state", "profile_state", "profile_px", "year_count"):
+        row = int(annual[f"{key}_row"])
+        _write(worksheet, f"{label_col}{row}", annual["labels"][key], styles.label)
+        cell = worksheet[f"{value_col}{row}"]
+        cell.value = formulas[key]
+        cell.font = styles.value
+        if key == "year_count":
+            cell.number_format = formats["year"]
+
+    header_row = int(annual["header_row"])
+    for column in annual["columns"]:
+        cell = worksheet[f"{column['column']}{header_row}"]
+        cell.value = column["header"]
+        styles.apply_table_header(cell)
+
+    # THE WINDOW IS THE STRUCTURAL MAXIMUM, not a duration anybody has run. A
+    # row beyond the stamped year count blanks itself, so a longer previous
+    # answer can never leave surplus years on display.
+    distribution_cell = f"${value_col}${annual['distribution_state_row']}"
+    year_count_cell = f"${value_col}${annual['year_count_row']}"
+    first_row = int(annual["first_row"])
+    for offset in range(window):
+        sheet_row = first_row + offset
+        for column in annual["columns"]:
+            lookup = at.record(column["source"], column["field"], offset)
+            cell = worksheet[f"{column['column']}{sheet_row}"]
+            cell.value = (f'=IF(OR({distribution_cell}="{at.not_produced}",'
+                          f'{offset + 1}>{year_count_cell}),"",{lookup})')
+            cell.font = styles.value
+            cell.number_format = formats[column["format"]]
+
+
+def _render_reconciliation_section(
+    worksheet: Worksheet, block: dict[str, Any], styles: StyleBook,
+    raw: dict[str, Any], calc: CalcContract | None, window: int,
+) -> None:
+    """`sum_y Profile_Px(y) = Total Px`, checked on the stored values.
+
+    THE TOTAL IS READ FROM THE TOTAL, and this is where W5 went wrong once: the
+    summary block's quantile rungs are the percentile of the iteration TOTALS,
+    while the contingency block's rungs are `selected_px_total - deterministic
+    base` - a smaller number by exactly the base. The row this reads is the
+    Selected Px row, never the Contingency row below it.
+
+    THE VERDICT IS TAKEN UNROUNDED. The cells are formatted for a reader; the
+    comparison is between the stored Doubles, against the project's own identity
+    allowance, and no profile is scaled to make it pass.
+    """
+    reconciliation = block["reconciliation"]
+    annual = block["annual"]
+    label_col = block["label_column"]
+    nominal_col = block["nominal_column"]
+    pv_col = block["pv_column"]
+    formats = block["number_formats"]
+    at = _AnnualAddresses(raw)
+    if calc is None:
+        raise ValueError(
+            "the Results reconciliation needs the calculation contract: its identity "
+            "allowance is calc_contract.yaml's and must not be written here")
+
+    _write(worksheet, f"{label_col}{reconciliation['heading_row']}",
+           reconciliation["heading"], styles.section)
+    worksheet.row_dimensions[int(reconciliation["heading_row"])].height = (
+        styles.row_height("section"))
+    _write(worksheet, f"{label_col}{reconciliation['note_row']}",
+           reconciliation["note"], styles.note)
+
+    header_row = int(reconciliation["header_row"])
+    for column, key in ((label_col, "label"), (nominal_col, "nominal"), (pv_col, "pv")):
+        cell = worksheet[f"{column}{header_row}"]
+        cell.value = reconciliation["headers"][key]
+        styles.apply_table_header(cell)
+
+    rows = {entry["key"]: int(reconciliation["first_row"]) + index
+            for index, entry in enumerate(reconciliation["rows"])}
+    selected = block["selected"]
+    distribution_cell = f"${nominal_col}${annual['distribution_state_row']}"
+    profile_state_cell = f"${nominal_col}${annual['profile_state_row']}"
+    first = int(annual["first_row"])
+    last = first + window - 1
+    profile_columns = {column["field"]: column["column"]
+                       for column in annual["columns"] if column["source"] == "profile"}
+
+    tolerances = calc.tolerances
+    absolute = _excel_number(tolerances.identity_absolute_floor)
+    relative = _excel_number(tolerances.identity_relative_coefficient)
+    scale_floor = _excel_number(tolerances.conditioning_scale_floor)
+    verdicts = reconciliation["verdicts"]
+
+    for measure, display_col in (("nominal", nominal_col), ("pv", pv_col)):
+        profile_range = (f'${profile_columns[measure]}${first}'
+                         f':${profile_columns[measure]}${last}')
+        total = f'${display_col}${rows["total"]}'
+        profile_sum = f'${display_col}${rows["profile_sum"]}'
+        difference = f'${display_col}${rows["difference"]}'
+        allowance = f'${display_col}${rows["allowance"]}'
+        blank_guard = f'OR({total}="",{profile_sum}="")'
+        # SUMIF IGNORES THE BLANKED ROWS. ABS over the range would meet the empty
+        # strings the window writes past the year count and fail the whole cell.
+        absolute_sum = (f'(SUMIF({profile_range},">0")-SUMIF({profile_range},"<0"))')
+        cells = {
+            # The authoritative TOTAL, taken from the cell this sheet already
+            # publishes it in - not re-derived, and not the contingency below it.
+            "total": f'=${display_col}${selected["quantile_row"]}',
+            "profile_sum": (f'=IF({distribution_cell}="{at.not_produced}","",'
+                            f'SUM({profile_range}))'),
+            "difference": f'=IF({blank_guard},"",{total}-{profile_sum})',
+            "allowance": (f'=IF({blank_guard},"",MAX({absolute},{relative}*'
+                          f'MAX({scale_floor},ABS({total})+{absolute_sum})))'),
+            "status": (f'=IF(OR({total}="",{difference}=""),"",'
+                       f'IF(ABS({difference})<={allowance},'
+                       f'"{verdicts["reconciled"]}","{verdicts["mismatch"]}")'
+                       f'&IF({profile_state_cell}="{at.profile_current}",""'
+                       f',"{verdicts["qualifier_prefix"]}"&{profile_state_cell}&'
+                       f'"{verdicts["qualifier_suffix"]}"))'),
+        }
+        for entry in reconciliation["rows"]:
+            key = entry["key"]
+            row = rows[key]
+            if measure == "nominal":
+                _write(worksheet, f"{label_col}{row}", entry["label"], styles.label)
+            cell = worksheet[f"{display_col}{row}"]
+            cell.value = cells[key]
+            cell.font = styles.value
+            cell.number_format = formats[entry["format"]]
+
+
+def _excel_number(value: float) -> str:
+    """A contract tolerance, written so Excel parses it back to the same Double.
+
+    PLAIN DECIMAL, NOT `repr`. `repr(1e-12)` is `1e-12`, and a lowercase
+    exponent in a formula is a bet on a parser this project cannot test from
+    Linux. `0.000000000001` reads back to the same binary64 and cannot be
+    misparsed by anything.
+    """
+    text = format(Decimal(repr(float(value))), "f")
+    if Decimal(text) != Decimal(repr(float(value))):  # pragma: no cover - defensive
+        raise ValueError(f"{value!r} could not be written as an exact decimal")
+    return text
 
 
 def _populate_blocks(

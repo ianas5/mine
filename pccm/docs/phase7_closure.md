@@ -23,18 +23,25 @@ on the branch shipped production code. It did not.
 
 | Authority | Commit | What it is |
 |---|---|---|
-| **Production / spec implementation** | `79d4c3e` | the last commit that changed a byte under `pccm/src` or `pccm/spec`. Every executable VBA module and every contract Phase 7 was accepted on is rooted here. |
+| **Production / spec implementation** | `79d4c3e` | the last commit that changed a byte under `pccm/src` or `pccm/spec` **at the point the Windows evidence was produced**. Every executable VBA module and every contract Phase 7 was accepted on is rooted here. |
 | **Windows acceptance evidence** | `ad78988` | the branch HEAD the accepted runtime evidence was produced against. It introduced **no** production VBA and **no** spec change. |
 
 Established from the repository, not asserted:
 
 ```text
-$ git log --oneline -1 -- pccm/src pccm/spec
+$ git log --oneline -1 ad78988 -- pccm/src pccm/spec
 79d4c3e P7-6 correction: a whole ladder of quantiles, sorting exactly once
 
 $ git diff --stat 79d4c3e ad78988 -- pccm/src pccm/spec
 (no output)
 ```
+
+The query is bounded at the acceptance head on purpose. Later phases move on:
+Phase 8 changes `spec/workbook.yaml`, which is the workbook's presentation
+layout, on the output sheet. That does not move Phase 7's baseline, and an
+unbounded query would make it look as though it had. What must never change
+after `ad78988` is `pccm/src` - the production VBA these scenarios were run
+against - and a control asserts exactly that on every commit.
 
 Every one of the fourteen commits between the two touches only
 `pccm/bootstrap/windows`, `pccm/builder` and `pccm/tests` — Windows runners,
@@ -118,8 +125,8 @@ as such. Nothing in this record re-derives, re-runs or infers a Windows number.
 
 | Measurement | Value | How |
 |---|---|---|
-| Test suites in `pccm/tests` | **72 files** | file count at HEAD |
-| Tests collected at HEAD | **4,663** | `pytest tests --collect-only` |
+| Test suites in `pccm/tests` | **73 files** | file count at HEAD |
+| Tests collected at HEAD | **4,695** | `pytest tests --collect-only` |
 | Phase-7 suites / tests | **23 suites, 974 tests** | `pytest tests/test_phase7*.py --collect-only` |
 | W1–W8 static controls | **307 tests** | the eight W-suites |
 | Stage A | **351 passed / 0 failed** | `python3 builder/build_stage_a.py` on the clean tree |
@@ -131,9 +138,15 @@ sweep collected 4,643 and reported 4,638 passing; the five that did not were the
 dirty-tree artefact family, cleared by committing and rebuilding Stage A, and
 re-run green afterwards inside the focused 488. So all 4,643 have been observed
 passing at that tree — **across two runs rather than one**. The tree now
-collects 4,663 because this settlement added its own 20 controls, which are run
-below but have never been part of a full sweep. No single sweep has covered all
-4,663. One command would settle it and it has not been run.
+collects 4,695: this settlement added its own controls, and Phase 8 Step 1
+added the Results presentation suite after it. Those have been run focused and
+have never been part of a full sweep, so no single sweep has covered all 4,695.
+One command would settle it and it has not been run.
+
+These two counts move whenever a later phase adds a suite, which is why the
+control that pins them re-derives them from the tree rather than comparing them
+with a number somebody typed. The **evidence** they describe - the eight
+scenarios, the two authorities, the harness classification - does not move.
 
 ### 3.2 Historical — reported, not re-establishable from committed evidence
 

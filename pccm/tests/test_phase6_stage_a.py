@@ -1782,9 +1782,13 @@ STALE_RESULTS_PHRASES = (
 )
 
 # Deferred means deferred. Nothing on Results may imply these exist.
+# PHASE 8 STEP 1 implemented the annual cash flow and the reconciliation, so
+# they leave this list: a sheet that presents them is no longer over-claiming.
+# What stays forbidden is everything Phase 8 has NOT built - the dashboard, the
+# charts and the sensitivity rendering - and the Phase-9 model-check UI.
 FORBIDDEN_RESULTS_CLAIMS = (
     "sensitivity", "correlation", "dashboard", "spearman",
-    "reconciliation is implemented", "annual cash flow is implemented",
+    "s-curve", "histogram", "tornado",
 )
 
 
@@ -1795,7 +1799,10 @@ def _results_strings() -> list[str]:
     try:
         sheet = workbook["Results"]
         found = []
-        for row in sheet.iter_rows(min_row=1, max_row=80, max_col=8):
+        # PHASE 8 STEP 1 put the reconciliation below a 200-row annual window,
+        # so the scan follows the sheet rather than stopping at a row number
+        # that was large enough before it existed.
+        for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, max_col=8):
             for cell in row:
                 if isinstance(cell.value, str) and not cell.value.startswith("="):
                     found.append(cell.value)
@@ -1818,26 +1825,27 @@ def test_93_the_built_results_sheet_says_what_is_actually_published() -> None:
     # AND IT SAYS THE TRUE THING. The subtitle names the sheet's actual content,
     # and the note names what Phase 6 publishes and what is still deferred.
     assert "Simulation results and statistical summary" in strings, strings[:6]
-    note = next((s for s in strings if s.startswith("Phase 6 publishes")), None)
+    note = next((s for s in strings if s.startswith("Run identity")), None)
     assert note is not None, strings[:6]
     for named in ("run identity", "summary statistics", "selected-confidence"):
-        assert named in note, (named, note)
-    for deferred in ("Annual cash flow", "reconciliation"):
-        assert deferred in note, (deferred, note)
-    assert "deferred" in note
+        assert named in note.lower(), (named, note)
+    # AND THE TWO SECTIONS ARE NO LONGER DEFERRED. Phase 8 Step 1 built them, so
+    # the note names them as read back rather than as reserved.
+    for built in ("annual cash flow", "reconciliation"):
+        assert built in note.lower(), (built, note)
+    assert "deferred" not in note.lower()
 
 
 def test_94_results_claims_nothing_that_does_not_exist() -> None:
-    """Deferred sections stay deferred, and nothing implies a Phase-7 feature."""
+    """Nothing implies a feature a later Phase-8 step still owns."""
     lowered = "\n".join(_results_strings()).lower()
     for claim in FORBIDDEN_RESULTS_CLAIMS:
         assert claim not in lowered, f"Results implies {claim!r} exists"
-    # The two deferred sections keep their deferred notes.
+    # The two sections are present and nothing is still advertised as deferred.
     strings = _results_strings()
     assert "Annual Cash Flow" in strings
     assert "Reconciliation" in strings
-    deferred_notes = [s for s in strings if s.startswith("Deferred.")]
-    assert len(deferred_notes) == 2, deferred_notes
+    assert not [s for s in strings if s.startswith("Deferred.")], strings
 
 
 def test_95_only_the_wording_moved_and_the_layout_did_not() -> None:
@@ -1865,8 +1873,11 @@ def test_95_only_the_wording_moved_and_the_layout_did_not() -> None:
         for key, text in selected["labels"].items():
             row = selected[f"{key}_row"]
             assert sheet[f"{label}{row}"].value == text, (key, row)
-        for entry in shell["deferred"]:
-            assert sheet[f"{label}{entry['row']}"].value == entry["title"], entry
+        # The Phase-8 sections replaced the deferred placeholders in place; the
+        # accepted rows above did not move, which is what this control is for.
+        assert "deferred" not in shell
+        for entry in (shell["annual"], shell["reconciliation"]):
+            assert sheet[f"{label}{entry['heading_row']}"].value == entry["heading"], entry
             assert sheet[f"{label}{entry['note_row']}"].value == entry["note"], entry
     finally:
         workbook.close()
@@ -1882,7 +1893,10 @@ def test_95_only_the_wording_moved_and_the_layout_did_not() -> None:
     assert shell["summary"]["first_row"] == 29 and shell["summary"]["last_row"] == 44
     assert selected["confidence_level_row"] == 46
     assert selected["quantile_row"] == 47 and selected["contingency_row"] == 48
-    assert [entry["row"] for entry in shell["deferred"]] == [51, 54]
+    # The Phase-8 sections start exactly where the placeholders did, so the
+    # accepted geometry above is provably unmoved.
+    assert shell["annual"]["heading_row"] == 51
+    assert shell["reconciliation"]["heading_row"] > shell["annual"]["first_row"]
     # The formulas are structural and were not touched by a wording change.
     for formula_key in ("confidence_level_formula", "quantile_nominal", "quantile_pv",
                         "contingency_nominal", "contingency_pv"):

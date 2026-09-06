@@ -140,7 +140,7 @@ def verify_workbook(
         # PHASE 6 adds presentation formulas to Results, and only there. They are
         # enumerated from the accepted publication shell rather than waved
         # through: a formula in any cell the shell does not name still fails.
-        for sheet, cells in _phase6_formula_cells(spec).items():
+        for sheet, cells in _phase6_formula_cells(spec, structure).items():
             permitted.setdefault(sheet, set()).update(cells)
         unexpected = [
             found
@@ -204,7 +204,9 @@ def _contains(worksheet, text: str) -> bool:
     return False
 
 
-def _phase6_formula_cells(spec) -> dict[str, set[str]]:
+def _phase6_formula_cells(
+    spec, structure: StructureContract | None = None,
+) -> dict[str, set[str]]:
     """The exact cells the Phase-6 publication shell writes a formula into."""
     shell = getattr(spec, "phase6_shell", None) or {}
     results = shell.get("results")
@@ -225,6 +227,25 @@ def _phase6_formula_cells(spec) -> dict[str, set[str]]:
     for row in (selected["quantile_row"], selected["contingency_row"]):
         cells.add(f"{nominal}{row}")
         cells.add(f"{pv}{row}")
+    # PHASE 8, STEP 1. The annual table and the reconciliation, enumerated the
+    # same way: every cell the shell writes a formula into, and no other. The
+    # annual window is the structural maximum on generated project-year columns,
+    # so the permitted set is the same size whatever duration a model has.
+    annual = results.get("annual")
+    if annual and structure is not None:
+        window = int(structure.limits.max_generated_year_columns)
+        for key in ("distribution_state", "profile_state", "profile_px", "year_count"):
+            cells.add(f"{nominal}{annual[f'{key}_row']}")
+        first = int(annual["first_row"])
+        for offset in range(window):
+            for column in annual["columns"]:
+                cells.add(f"{column['column']}{first + offset}")
+    reconciliation = results.get("reconciliation")
+    if reconciliation:
+        first = int(reconciliation["first_row"])
+        for index in range(len(reconciliation["rows"])):
+            cells.add(f"{nominal}{first + index}")
+            cells.add(f"{pv}{first + index}")
     assert label not in cells
     permitted = {sheet: cells}
 

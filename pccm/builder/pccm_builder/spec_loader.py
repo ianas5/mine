@@ -146,7 +146,65 @@ def _parse_phase6_shell(raw: dict[str, Any], path: Path) -> dict[str, Any]:
 
     walk(shell["sim_data"], f"{path}: phase6_shell.sim_data", False)
     walk(shell["results"], f"{path}: phase6_shell.results", True)
+    _check_results_layout(shell["results"], path)
     return shell
+
+
+def _check_results_layout(results: dict[str, Any], path: Path) -> None:
+    """The Phase-8 sections must fit BELOW the accepted Phase-6 ones.
+
+    THE ROWS ARE THE WHOLE CONTRACT BETWEEN THESE BLOCKS. Phase 6's run stamp,
+    summary and selected-Px rows were accepted at fixed coordinates and a
+    Windows harness reads them; a Phase-8 section that started one row too high
+    would overwrite an accepted cell and every check of it would still pass,
+    because both would be reading whatever landed there last.
+
+    And a declared format must exist. A `format` key naming a number format the
+    block does not carry is a KeyError deep inside the renderer, at which point
+    the message is about a dictionary rather than about the manifest.
+    """
+    where = f"{path}: phase6_shell.results"
+    annual = results.get("annual")
+    if annual is None:
+        return
+    if "reconciliation" not in results or "number_formats" not in results:
+        raise SpecError(
+            f"{where}: the annual section needs both a reconciliation block and "
+            "number_formats; a half-declared Phase-8 surface renders half a sheet")
+    reconciliation = results["reconciliation"]
+    formats = results["number_formats"]
+
+    accepted_last = max(
+        [int(f["row"]) for f in results["run_stamp"]["fields"]]
+        + [int(m["row"]) for m in results["summary"]["metrics"]]
+        + [int(results["selected"][key]) for key in
+           ("confidence_level_row", "quantile_row", "contingency_row")]
+    )
+    if int(annual["heading_row"]) <= accepted_last:
+        raise SpecError(
+            f"{where}.annual: starts at row {annual['heading_row']}, which is inside "
+            f"the accepted Phase-6 layout ending at row {accepted_last}")
+
+    window_top = int(annual["first_row"])
+    if int(annual["header_row"]) >= window_top:
+        raise SpecError(
+            f"{where}.annual: the header row must sit above the first record row")
+    if int(reconciliation["heading_row"]) <= window_top:
+        raise SpecError(
+            f"{where}.reconciliation: starts at row {reconciliation['heading_row']}, "
+            f"which is inside the annual record window beginning at {window_top}")
+
+    used = [column["format"] for column in annual["columns"]]
+    used += [row["format"] for row in reconciliation["rows"]]
+    used += ["year"]
+    missing = sorted({name for name in used if name not in formats})
+    if missing:
+        raise SpecError(f"{where}.number_formats: no format is declared for {missing}")
+    for column in annual["columns"]:
+        if column["source"] not in ("index", "profile"):
+            raise SpecError(
+                f"{where}.annual: column {column['key']!r} names source "
+                f"{column['source']!r}, which is not an annual record block")
 
 
 def load_spec(path: str | Path) -> WorkbookSpec:

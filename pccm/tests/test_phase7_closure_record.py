@@ -125,12 +125,26 @@ def test_03_phase_6_runtime_authority_is_kept_historical() -> None:
 # ===========================================================================
 
 def test_10_the_implementation_authority_is_the_last_commit_touching_src_or_spec() -> None:
-    """THE CLAIM THE WHOLE SETTLEMENT RESTS ON, re-derived rather than repeated."""
-    out = _git("log", "--format=%h", "-1", "--", "pccm/src", "pccm/spec").strip()
+    """THE CLAIM THE WHOLE SETTLEMENT RESTS ON, re-derived rather than repeated.
+
+    BOUNDED AT THE ACCEPTANCE HEAD, and it has to be. This is a statement about
+    PHASE 7: the last commit that changed production or a contract at the point
+    the Windows evidence was produced. Phase 8 changes `spec/workbook.yaml` -
+    presentation layout, on the output sheet - and an unbounded query would then
+    return Phase 8's commit and make this control read as though Phase 7's
+    baseline had moved. It has not; the range is what says so."""
+    out = _git("log", "--format=%h", "-1", ACCEPTANCE_HEAD,
+               "--", "pccm/src", "pccm/spec").strip()
     assert out.startswith(IMPLEMENTATION_AUTHORITY), (
-        f"the last commit touching pccm/src or pccm/spec is {out!r}, but the "
-        f"record names {IMPLEMENTATION_AUTHORITY}")
+        f"the last commit touching pccm/src or pccm/spec up to {ACCEPTANCE_HEAD} "
+        f"is {out!r}, but the record names {IMPLEMENTATION_AUTHORITY}")
     assert IMPLEMENTATION_AUTHORITY in _text()
+    # AND NO LATER COMMIT MAY TOUCH pccm/src. Phase 8 is presentation: it may
+    # move the workbook manifest and it may not move a line of production VBA.
+    since = _git("log", "--name-only", "--format=", f"{ACCEPTANCE_HEAD}..HEAD")
+    offenders = sorted({line.strip() for line in since.splitlines()
+                        if line.strip().startswith("pccm/src/")})
+    assert not offenders, f"production VBA changed after the Phase-7 evidence head: {offenders}"
 
 
 def test_11_no_production_or_spec_byte_moved_between_the_two_authorities() -> None:

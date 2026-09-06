@@ -95,6 +95,16 @@ class SimArtifacts:
     cases_path: Path
 
 
+# THE ANNUAL PUBLICATION MARKER, OWNED ONCE.
+#
+# It is written into `SIM_ANNUAL_PUBLISHED` for the VBA and read by the
+# Phase-8 Results formulas, which decide whether an annual answer exists at
+# all. Two copies of this string would let the sheet report NOT PRODUCED
+# after a publication that had just succeeded - the shape of the P7-4 defect,
+# in a different place.
+ANNUAL_PUBLISHED_MARKER = "PUBLISHED"
+
+
 def emit_sim_artifacts(
     build_dir: Path,
     spec: WorkbookSpec,
@@ -584,7 +594,7 @@ def render_sim_contract_module(
     for field in annual_stamp["fields"]:
         module.const(f"SIM_ANNUAL_STAMP_ROW_{_identifier(field['key'])}",
                      int(field["row"]))
-    module.const("SIM_ANNUAL_PUBLISHED", "PUBLISHED")
+    module.const("SIM_ANNUAL_PUBLISHED", ANNUAL_PUBLISHED_MARKER)
     # THE HANDOFF VOCABULARY, PROJECTED. Phase 8 must tell five situations
     # apart, and the words it tells them apart BY belong to the contract - a
     # state string typed into a module is a second vocabulary, and the two
