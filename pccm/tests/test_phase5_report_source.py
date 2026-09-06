@@ -267,7 +267,8 @@ def test_02_the_phase_5_inventory_is_complete_and_nothing_of_phase_5_moved() -> 
                                             "modSimContract"}
     # Everything beyond the Phase-5 fifteen is Phase-6 and is named, so a
     # module cannot appear here unremarked.
-    assert set(names) - PHASE5_INVENTORY == PHASE6_INVENTORY | PHASE7_INVENTORY
+    assert set(names) - PHASE5_INVENTORY == (
+        PHASE6_INVENTORY | PHASE7_INVENTORY | PHASE8_INVENTORY)
 
 
 PHASE5_INVENTORY = {
@@ -283,6 +284,11 @@ PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine
                     "modSimReport"}
 PHASE7_INVENTORY = {"modSimSensitivity", "modSimPostReport", "modSimAnnual",
                     "modSimAnnualRun", "modSimAnnualStore"}
+PHASE8_INVENTORY = {"modResultsState"}
+"""And Phase 8's one module, by name on the same terms. DISCLOSED: it should
+have been named when the module landed and was not, so this equality has been
+failing on the branch since then. The control did its job; the round that added
+the module did not run it."""
 
 """Phase-7 hand-written source modules, named on the same terms Phase 6 was:
 admitted by name, one at a time, so the earlier half of each inventory
@@ -321,8 +327,18 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
         "PCCM_SimulationResultDigest", "PCCM_SimulationAttemptResult",
         "PCCM_SimulationAttemptDetail",
     }
-    assert set(modules["modSimReport"].public_procedures) == phase6, sorted(
-        modules["modSimReport"].public_procedures)
+    # P8-1 adds ONE non-endpoint procedure to modSimReport: SimReportDerivedStatus,
+    # the module's existing private status derivation exposed under its own name
+    # so a worksheet cell can ask for it without also asking for the two derived
+    # rows to be rewritten - which Excel forbids a cell to do, and which is what
+    # put #VALUE! in both Results state cells. It carries no PCCM_ prefix
+    # BECAUSE IT IS NOT AN ENDPOINT: no cell and no button reaches it by name.
+    # That is why it is named beside the surface rather than inside it, and why
+    # this file's endpoint count is untouched by it.
+    read_only = {"SimReportDerivedStatus"}
+    assert set(modules["modSimReport"].public_procedures) == phase6 | read_only, (
+        sorted(modules["modSimReport"].public_procedures))
+    assert not any(name.startswith("PCCM_") for name in read_only), read_only
     for name in phase6:
         assert name not in _reporter().public_procedures, name
     # THE PHASE-7 SURFACE is named on the same terms as Phase 6's, so this stays
@@ -336,6 +352,17 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
     phase7 = {"PCCM_RunSensitivity", "PCCM_RunAnnualStochastic",
               "PCCM_AnnualDistributionState", "PCCM_AnnualProfileState",
               "PCCM_AnnualProfilePx", "PCCM_AnnualYearCount"}
+    # P8-1's four worksheet adapters, owned by modResultsState and named for the
+    # same reason every earlier phase's surface is named here: so this stays an
+    # EXACT statement about Phase 5 rather than becoming "contains at least".
+    # DISCLOSED - they should have been named when the module landed and were
+    # not, so this control has been failing on the branch since then.
+    phase8 = {"PCCM_ResultsAnnualDistributionState", "PCCM_ResultsAnnualProfileState",
+              "PCCM_ResultsAnnualProfilePx", "PCCM_ResultsAnnualYearCount"}
+    assert set(modules["modResultsState"].public_procedures) == phase8, sorted(
+        modules["modResultsState"].public_procedures)
+    for name in phase8:
+        assert name not in _reporter().public_procedures, name
     assert set(modules["modSimPostReport"].public_procedures) == {
         "PCCM_RunSensitivity"}, sorted(modules["modSimPostReport"].public_procedures)
     assert set(modules["modSimAnnualRun"].public_procedures) == {
@@ -349,7 +376,7 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
     for name in phase7:
         assert name not in _reporter().public_procedures, name
     found = {p for m in modules.values() for p in m.public_procedures
-             if p.startswith("PCCM_")} - phase4 - phase6 - phase7
+             if p.startswith("PCCM_")} - phase4 - phase6 - phase7 - phase8
     assert found == PCCM_ENDPOINTS, (
         f"unexpected: {sorted(found - PCCM_ENDPOINTS)}; missing: "
         f"{sorted(PCCM_ENDPOINTS - found)}"

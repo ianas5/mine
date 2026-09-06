@@ -831,6 +831,17 @@ PHASE7_HANDWRITTEN = {"modSimSensitivity", "modSimPostReport", "modSimAnnual",
 admitted by name, one at a time, so the earlier half of each inventory
 equality below stays exactly as strict as it was."""
 
+PHASE8_HANDWRITTEN = {"modResultsState"}
+"""The Phase-8 Results state adapter, admitted on exactly the terms Phase 6 and
+Phase 7 were: by name, one at a time.
+
+DISCLOSED. It should have been named when the module landed and was not, so this
+inventory has been failing on the branch since then. That is what the control is
+FOR - a module appearing unremarked is precisely what it refuses - and it did
+refuse. What went wrong is that nobody ran it: the round that added the module
+validated itself against a chosen subset of suites, and this one was not in the
+subset. The lesson is about how a round proves itself, not about the rule."""
+
 
 def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
     """Asserted in both directions, so a module cannot appear unremarked.
@@ -842,9 +853,9 @@ def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
     on_disk = set(_modules())
     assert on_disk == (
         set(FROZEN_SHA256) | {CHECKER, "modCalcReport"}
-        | PHASE6_HANDWRITTEN | PHASE7_HANDWRITTEN
+        | PHASE6_HANDWRITTEN | PHASE7_HANDWRITTEN | PHASE8_HANDWRITTEN
     ), f"unexpected hand-written module inventory: {sorted(on_disk)}"
-    assert on_disk - PHASE6_HANDWRITTEN - PHASE7_HANDWRITTEN == (
+    assert on_disk - PHASE6_HANDWRITTEN - PHASE7_HANDWRITTEN - PHASE8_HANDWRITTEN == (
         set(FROZEN_SHA256) | {CHECKER, "modCalcReport"})
 
 
