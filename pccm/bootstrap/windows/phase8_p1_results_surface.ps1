@@ -794,55 +794,91 @@ function Test-P81Blank {
 # same cells and only the expected answers differ. A second copy per part would
 # be six chances to check six slightly different things.
 
-function Invoke-P81StateChecks {
-    param($Excel, $Workbook, $Inspection, $P7, [string]$Stage, [string]$Distribution,
+# ===========================================================================
+# THE OBSERVATION ORDER, AND WHY IT IS AN ORDER AND NOT A HABIT
+# ===========================================================================
+# THE DEFECT THIS SHAPE EXISTS TO PREVENT. The four Results cells are checked
+# against the same accessors invoked directly through `Application.Run` - and
+# that direct invocation runs in a VBA context, where the status derivation MAY
+# legitimately persist the two derived rows. Doing it first would let the probe
+# update `simulation_status` and then let the worksheet wrapper look correct on
+# rows the probe had just written: the runner would have manufactured the very
+# agreement it was sent to test, and the UDF/recalculation question would come
+# back "fine" whatever the truth was.
+#
+# So every phase observes in one order, and one function owns it:
+#
+#   1  derived rows, BEFORE any recalculation
+#   2  ordinary recalculation
+#   3  derived rows, immediately AFTER it and before anything out-of-cell
+#   4  the four Results cells, FROZEN - formula, Value2, Text, error class
+#   5  every assertion that needs only those frozen values
+#   6  and ONLY NOW the four accessors, directly
+#   7  parity, against the values frozen at step 4 - never re-read
+#   8  derived rows after the direct call, reported apart from step 3
+#
+# NOTHING RECALCULATES BETWEEN 6 AND 7. The frozen record is the observation;
+# the direct call is a second, later question asked of the same workbook.
+
+function Get-P81DerivedRows {
+    param($Workbook, $Inspection)
+    $out = New-Object System.Collections.Specialized.OrderedDictionary
+    foreach ($key in @(Get-P81RowsInGroup -Inspection $Inspection -Group 'derived')) {
+        $out.Add([string]$key, (Get-SimField -Workbook $Workbook -Inspection $Inspection `
+            -FieldKey $key))
+    }
+    return $out
+}
+
+# EVERY ASSERTION THAT NEEDS ONLY THE FROZEN CELLS. Not one of them may reach a
+# procedure: if a check here called an accessor it would be step 6 wearing step
+# 5's name.
+function Invoke-P81FrozenStateChecks {
+    param($Cells, $Inspection, [string]$Stage, [string]$Distribution,
           [string]$Profile, $ExpectedPx, $ExpectedYears)
-    $cells = Get-P81StateCells -Workbook $Workbook -Inspection $Inspection
-    $null = Add-P81StateEvaluatedCheck -Cells $cells -Stage $Stage
-    foreach ($key in $cells.Keys) {
+    foreach ($key in $Cells.Keys) {
         Write-P81Line ('    ' + $Stage.PadRight(10) + ([string]$key).PadRight(20) +
-                       (Format-P81Cell $cells[$key]))
+                       (Format-P81Cell $Cells[$key]))
     }
     $null = Add-P81Check ($Stage + ': the annual distributions display ' + $Distribution) `
-        (Test-SimExactText -Actual $cells['distribution_state'].Value -Expected $Distribution) `
-        (Format-P81Cell $cells['distribution_state'])
+        (Test-SimExactText -Actual $Cells['distribution_state'].Value -Expected $Distribution) `
+        (Format-P81Cell $Cells['distribution_state'])
     $null = Add-P81Check ($Stage + ': the annual profile displays ' + $Profile) `
-        (Test-SimExactText -Actual $cells['profile_state'].Value -Expected $Profile) `
-        (Format-P81Cell $cells['profile_state'])
+        (Test-SimExactText -Actual $Cells['profile_state'].Value -Expected $Profile) `
+        (Format-P81Cell $Cells['profile_state'])
     if ($null -eq $ExpectedPx) {
         $null = Add-P81Check ($Stage + ': no profile confidence level is shown') `
-            (Test-P81Blank -Cell $cells['profile_px']) (Format-P81Cell $cells['profile_px'])
+            (Test-P81Blank -Cell $Cells['profile_px']) (Format-P81Cell $Cells['profile_px'])
     } else {
         $null = Add-P81Check ($Stage + ': the profile confidence level shown is ' + [string]$ExpectedPx) `
-            (Test-SimExactText -Actual $cells['profile_px'].Value -Expected ([string]$ExpectedPx)) `
-            (Format-P81Cell $cells['profile_px'])
+            (Test-SimExactText -Actual $Cells['profile_px'].Value -Expected ([string]$ExpectedPx)) `
+            (Format-P81Cell $Cells['profile_px'])
     }
     $null = Add-P81Check ($Stage + ': the year count shown is ' + [string]$ExpectedYears) `
-        (Test-P81SameNumber -Cell $cells['year_count'] -Expected ([double]$ExpectedYears)) `
-        (Format-P81Cell $cells['year_count'])
+        (Test-P81SameNumber -Cell $Cells['year_count'] -Expected ([double]$ExpectedYears)) `
+        (Format-P81Cell $Cells['year_count'])
     # AND THE CELL IS STILL A CALL. A right answer from a cell somebody had
     # since typed over would look identical to a right answer from the adapter.
     $wrong = @()
-    foreach ($key in $cells.Keys) {
+    foreach ($key in $Cells.Keys) {
         $expected = '=' + [string]$Inspection.state.$key.procedure + '()'
-        if (([string]$cells[$key].Formula) -cne $expected) {
-            $wrong += ([string]$key + ': ' + [string]$cells[$key].Formula)
+        if (([string]$Cells[$key].Formula) -cne $expected) {
+            $wrong += ([string]$key + ': ' + [string]$Cells[$key].Formula)
         }
     }
     $null = Add-P81Check ($Stage + ': every state cell is still a call to its adapter') `
         ($wrong.Count -eq 0) ($wrong -join '; ')
+}
 
-    # THE CELL AGAINST THE OWNER, ASKED TWO DIFFERENT WAYS. The cell reaches the
-    # accessor through a volatile adapter during a RECALCULATION; this asks the
-    # same accessor directly through Application.Run, which is a VBA context and
-    # may write where a worksheet function may not. If the two ever disagree,
-    # the sheet is showing something the semantic owner does not say - and that
-    # is the whole claim P8-1 makes.
+# STEP 6 AND STEP 7, TOGETHER AND NOWHERE ELSE. The cells are not re-read: the
+# comparison is against the record frozen before this function was entered.
+function Invoke-P81AccessorParity {
+    param($Excel, $Frozen, $Inspection, $P7, [string]$Stage)
     $direct = Get-P81Handoff -Excel $Excel -P7 $P7
     $accessors = @($P7.command_surface.handoff_accessors | ForEach-Object { [string]$_ })
     $disagreed = @()
     $index = 0
-    foreach ($key in $cells.Keys) {
+    foreach ($key in $Frozen.Keys) {
         $accessor = [string]$accessors[$index]
         $index = $index + 1
         if ([string]$Inspection.state.$key.accessor -cne $accessor) {
@@ -850,7 +886,7 @@ function Invoke-P81StateChecks {
                            [string]$Inspection.state.$key.accessor + ', not ' + $accessor)
             continue
         }
-        $shown = $cells[$key].Value
+        $shown = $Frozen[$key].Value
         $said = $direct[$accessor]
         # A count arrives as a Long from VBA and as a Double from a cell; the
         # comparison is on the VALUE, and a type difference across that boundary
@@ -864,14 +900,77 @@ function Invoke-P81StateChecks {
             $same = ([double]$shown -eq [double]$said)
         }
         if (-not $same) {
-            $disagreed += ([string]$key + ': cell ' + (Format-P81Cell $cells[$key]) +
+            $disagreed += ([string]$key + ': frozen cell ' + (Format-P81Cell $Frozen[$key]) +
                            ' vs ' + $accessor + ' ' + (Format-SimValue $said))
         }
     }
-    $null = Add-P81Check ($Stage + ': every state cell shows what its accessor says') `
+    $null = Add-P81Check ($Stage + ': every frozen state cell shows what its accessor says') `
         ($disagreed.Count -eq 0) ($disagreed -join '; ')
-    return $cells
+    return $direct
 }
+
+# THE WHOLE OBSERVATION, IN ITS ONE ORDER. Every phase goes through here; a
+# phase that assembled the steps for itself would be free to assemble them
+# wrongly, which is exactly what happened before this function existed.
+function Invoke-P81Observation {
+    param($Excel, $Workbook, $Inspection, $SimInspection, $P7, [string]$Stage,
+          [string]$Distribution, [string]$Profile, $ExpectedPx, $ExpectedYears,
+          [switch]$GateOnly)
+    # (1) and (2)
+    $beforeRecalc = Get-P81DerivedRows -Workbook $Workbook -Inspection $SimInspection
+    $null = Invoke-P81Recalculate -Excel $Excel -Stage $Stage
+    # (3) BEFORE ANYTHING OUT-OF-CELL. This is the only capture that can be
+    # attributed to the recalculation, and it is taken while that is still true.
+    $afterRecalc = Get-P81DerivedRows -Workbook $Workbook -Inspection $SimInspection
+    # (4)
+    $frozen = Get-P81StateCells -Workbook $Workbook -Inspection $Inspection
+    $evaluated = Add-P81StateEvaluatedCheck -Cells $frozen -Stage $Stage
+    # (5)
+    if ($evaluated -and (-not $GateOnly)) {
+        Invoke-P81FrozenStateChecks -Cells $frozen -Inspection $Inspection -Stage $Stage `
+            -Distribution $Distribution -Profile $Profile -ExpectedPx $ExpectedPx `
+            -ExpectedYears $ExpectedYears
+    }
+    # (6) and (7)
+    $direct = $null
+    $afterDirect = $afterRecalc
+    if ($evaluated) {
+        $direct = Invoke-P81AccessorParity -Excel $Excel -Frozen $frozen `
+            -Inspection $Inspection -P7 $P7 -Stage $Stage
+        # (8) REPORTED APART. A row that moved here moved because this runner
+        # asked, not because the workbook recalculated.
+        $afterDirect = Get-P81DerivedRows -Workbook $Workbook -Inspection $SimInspection
+    }
+    Write-P81Line ('    ' + $Stage + ': THE DERIVED STATUS ROWS, IN OBSERVATION ORDER')
+    $movedByRecalc = 0
+    $movedByDirect = 0
+    foreach ($key in $beforeRecalc.Keys) {
+        $recalcVerdict = 'unchanged'
+        if (-not (Test-SimSameValue -A $beforeRecalc[[string]$key] -B $afterRecalc[[string]$key])) {
+            $recalcVerdict = 'updated'
+            $movedByRecalc = $movedByRecalc + 1
+        }
+        $directVerdict = 'unchanged'
+        if (-not (Test-SimSameValue -A $afterRecalc[[string]$key] -B $afterDirect[[string]$key])) {
+            $directVerdict = 'updated'
+            $movedByDirect = $movedByDirect + 1
+        }
+        Write-P81Line ('      ' + ([string]$key).PadRight(24) +
+                       'recalc: ' + $recalcVerdict.PadRight(11) +
+                       'direct: ' + $directVerdict.PadRight(11) +
+                       (Format-SimValue $beforeRecalc[[string]$key]) + ' -> ' +
+                       (Format-SimValue $afterRecalc[[string]$key]) + ' -> ' +
+                       (Format-SimValue $afterDirect[[string]$key]))
+    }
+    Write-P81Line ('      OBSERVED at ' + $Stage + ': ' + [string]$movedByRecalc +
+                   ' derived row(s) moved during the recalculation, ' + [string]$movedByDirect +
+                   ' more when the accessors were then called directly.')
+    return [pscustomobject]@{
+        Cells = $frozen; Evaluated = $evaluated; Direct = $direct
+        BeforeRecalc = $beforeRecalc; AfterRecalc = $afterRecalc; AfterDirect = $afterDirect
+    }
+}
+
 
 # THE TABLE AGAINST THE PAYLOAD IT CLAIMS TO SHOW, cell by cell, plus the first
 # row past the answer. A sheet that showed the right four years and left a fifth
@@ -1268,14 +1367,13 @@ try {
     Write-P81Line ''
     Write-P81Line 'PART 0 - NOTHING HAS RUN'
     Write-P81Line '------------------------'
-    $null = Invoke-P81Recalculate -Excel $excel -Stage 'part 0'
-    $emptyCells = Get-P81StateCells -Workbook $wb -Inspection $p8
-    $stateEvaluated = Add-P81StateEvaluatedCheck -Cells $emptyCells -Stage 'part 0'
-    foreach ($key in $emptyCells.Keys) {
-        Write-P81Line ('    part 0     ' + ([string]$key).PadRight(20) +
-                       (Format-P81Cell $emptyCells[$key]))
-    }
-    if (-not $stateEvaluated) {
+    # THE SAME ORDER AS EVERY OTHER PHASE, and the gate is inside it: the cells
+    # are frozen before anything is asked out of a cell, so a failure here is a
+    # failure of the worksheet and not of the order it was observed in.
+    $observation0 = Invoke-P81Observation -Excel $excel -Workbook $wb -Inspection $p8 `
+        -SimInspection $simInspection -P7 $p7 -Stage 'part 0' -Distribution $notProduced `
+        -Profile $notProduced -ExpectedPx $null -ExpectedYears 0
+    if (-not $observation0.Evaluated) {
         $stoppedOnStateEvaluation = $true
         Write-P81Line ''
         Write-P81Line 'STOP. THE FOUR RESULTS STATE CELLS DID NOT EVALUATE.'
@@ -1286,16 +1384,29 @@ try {
         Write-P81Line 'patched around it and no later part will be attempted: the decision about'
         Write-P81Line 'whether a non-writing semantic accessor is required is not this runner' + [char]39 + 's.'
         Write-P81Line ''
-        foreach ($key in $emptyCells.Keys) {
+        foreach ($key in $observation0.Cells.Keys) {
             Write-P81Line ('    ' + ([string]$key).PadRight(20) +
                            [string]$p8.state.$key.procedure + '()  ->  ' +
-                           (Format-P81Cell $emptyCells[$key]))
+                           (Format-P81Cell $observation0.Cells[$key]))
+        }
+        # AND ONE DIAGNOSTIC, AFTER THE OBSERVATION IS ALREADY FROZEN AND FAILED.
+        # No parity is claimed and no check is added: whether the same accessors
+        # answer normally OUTSIDE a cell is the single most useful fact for
+        # deciding what to do about this, and taking it now cannot change what
+        # was already recorded above.
+        Write-P81Line ''
+        Write-P81Line '    DIAGNOSTIC (not a check): the same accessors, called outside a cell'
+        try {
+            $diagnostic = Get-P81Handoff -Excel $excel -P7 $p7
+            foreach ($accessor in @($p7.command_surface.handoff_accessors)) {
+                Write-P81Line ('      ' + ([string]$accessor).PadRight(34) +
+                               (Format-SimValue $diagnostic[[string]$accessor]))
+            }
+        } catch {
+            Write-P81Line ('      the accessors also failed outside a cell: ' + (Format-Err $_))
         }
         throw 'the Results state cells did not evaluate; P8-1 stopped at part 0'
     }
-
-    $null = Invoke-P81StateChecks -Excel $excel -Workbook $wb -Inspection $p8 -P7 $p7 -Stage 'part 0' `
-        -Distribution $notProduced -Profile $notProduced -ExpectedPx $null -ExpectedYears 0
 
     # NO FABRICATED ZERO. An empty cash flow is not a cash flow of zeros: a
     # zero would sum, reconcile and one day chart exactly like a real one.
@@ -1408,10 +1519,10 @@ try {
         -Bank $bank -Count $iterations -Ledger $rel
     $comAcquired = $comAcquired + [int]$iterationsA.Acquired
 
-    $null = Invoke-P81Recalculate -Excel $excel -Stage 'part A'
-    $null = Invoke-P81StateChecks -Excel $excel -Workbook $wb -Inspection $p8 -P7 $p7 -Stage 'part A' `
-        -Distribution $annualCurrent -Profile $profileCurrent -ExpectedPx $firstLabel `
-        -ExpectedYears $yearCount
+    $observationA = Invoke-P81Observation -Excel $excel -Workbook $wb -Inspection $p8 `
+        -SimInspection $simInspection -P7 $p7 -Stage 'part A' -Distribution $annualCurrent `
+        -Profile $profileCurrent -ExpectedPx $firstLabel -ExpectedYears $yearCount
+    $null = $observationA
     Invoke-P81AnnualChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount -StartYear $startYear -Stage 'part A'
     Invoke-P81ReconciliationChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection `
@@ -1427,10 +1538,10 @@ try {
     Set-P81NamedText -Workbook $wb `
         -DefinedName ([string]$inspection.inputs.($p7.selector_semantics.selector_input_key).defined_name) `
         -Value $secondLabel
-    $null = Invoke-P81Recalculate -Excel $excel -Stage 'part B'
-    $null = Invoke-P81StateChecks -Excel $excel -Workbook $wb -Inspection $p8 -P7 $p7 -Stage 'part B' `
-        -Distribution $annualCurrent -Profile $otherPx -ExpectedPx $firstLabel `
-        -ExpectedYears $yearCount
+    $observationB = Invoke-P81Observation -Excel $excel -Workbook $wb -Inspection $p8 `
+        -SimInspection $simInspection -P7 $p7 -Stage 'part B' -Distribution $annualCurrent `
+        -Profile $otherPx -ExpectedPx $firstLabel -ExpectedYears $yearCount
+    $null = $observationB
     # THE PERSISTED ANSWER IS STILL THE ONE ON THE SHEET, and it is still the
     # P80 one. A presentation layer that relabelled it would be claiming a blend
     # nobody computed.
@@ -1463,10 +1574,10 @@ try {
         -Endpoint ([string]$p7.command_surface.annual_endpoint)
     $null = Add-P81Check ('part C: ' + [string]$p7.command_surface.annual_endpoint +
                           ' succeeded on the moved selector') ($rerun -like 'OK|*') $rerun
-    $null = Invoke-P81Recalculate -Excel $excel -Stage 'part C'
-    $null = Invoke-P81StateChecks -Excel $excel -Workbook $wb -Inspection $p8 -P7 $p7 -Stage 'part C' `
-        -Distribution $annualCurrent -Profile $profileCurrent -ExpectedPx $secondLabel `
-        -ExpectedYears $yearCount
+    $observationC = Invoke-P81Observation -Excel $excel -Workbook $wb -Inspection $p8 `
+        -SimInspection $simInspection -P7 $p7 -Stage 'part C' -Distribution $annualCurrent `
+        -Profile $profileCurrent -ExpectedPx $secondLabel -ExpectedYears $yearCount
+    $null = $observationC
     Invoke-P81AnnualChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount -StartYear $startYear -Stage 'part C'
     Invoke-P81ReconciliationChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection `
@@ -1497,12 +1608,6 @@ try {
     Write-P81Line '----------------------------------------------'
     Write-P81Line 'THE VOLATILE ADAPTERS EXIST FOR THIS. No endpoint is invoked; if the sheet'
     Write-P81Line 'still says CURRENT here, the correction did not work.'
-    $derivedRows = @(Get-P81RowsInGroup -Inspection $simInspection -Group 'derived')
-    $derivedBefore = New-Object System.Collections.Specialized.OrderedDictionary
-    foreach ($key in $derivedRows) {
-        $derivedBefore.Add([string]$key, (Get-SimField -Workbook $wb -Inspection $simInspection `
-            -FieldKey $key))
-    }
     $captureD0 = Get-P81BankCapture -Workbook $wb -Inspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount
     $iterationsControl = [string]$simInspection.controls.monte_carlo_iterations.defined_name
@@ -1514,13 +1619,16 @@ try {
          (([string]$requestBefore) -cne ([string]$requestAfter))) `
         ($iterationsControl + ': ' + [string]$requestBefore + ' -> ' + [string]$requestAfter) `
         'PREREQUISITE'
-    $null = Invoke-P81Recalculate -Excel $excel -Stage 'part D'
+    $observationD = Invoke-P81Observation -Excel $excel -Workbook $wb -Inspection $p8 `
+        -SimInspection $simInspection -P7 $p7 -Stage 'part D' -Distribution $historical `
+        -Profile $historical -ExpectedPx $secondLabel -ExpectedYears $yearCount
+    $null = $observationD
+    # THE CALCULATION STATUS IS ASKED AFTER THE OBSERVATION IS FROZEN. It is an
+    # out-of-cell call like any other, and part D's whole question is what the
+    # worksheet said before this runner asked anything.
     $null = Add-P81Check 'part D: the deterministic calculation is still CURRENT' `
         ((([string]$excel.Run('PCCM_CalculationStatus')) -ceq $calcCurrent)) `
         ([string]$excel.Run('PCCM_CalculationStatus'))
-    $null = Invoke-P81StateChecks -Excel $excel -Workbook $wb -Inspection $p8 -P7 $p7 -Stage 'part D' `
-        -Distribution $historical -Profile $historical -ExpectedPx $secondLabel `
-        -ExpectedYears $yearCount
     Invoke-P81AnnualChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount -StartYear $startYear -Stage 'part D'
     Invoke-P81ReconciliationChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection `
@@ -1532,28 +1640,16 @@ try {
     $null = Add-P81Check 'part D: the persisted annual payload survived the recalculation' `
         ($movedD.Moved -eq 0) $movedD.Detail
 
-    # WHAT EXCEL ACTUALLY DID WITH THE DERIVED ROWS. REPORTED, NOT ASSERTED. The
-    # accessors reach a status derivation that persists two rows and a worksheet
-    # function may not write; whether the write was ignored, allowed or refused
-    # is the thing this run exists to observe, and imposing an expectation on it
-    # would be deciding the answer in advance.
+    # THE FOUR-WAY ANSWER PART D EXISTS FOR, already recorded above in
+    # observation order: the derived rows before the recalculation, after it,
+    # the frozen cells taken at that moment, and the rows again after the
+    # accessors were finally called directly. The four outcomes stay apart -
+    # the recalculation updated the rows; it left them alone and the cells were
+    # right anyway; the cells errored; or only the later direct call moved them.
     Write-P81Line ''
-    Write-P81Line '    THE DERIVED STATUS ROWS ACROSS A WORKSHEET RECALCULATION'
-    $derivedMoved = 0
-    foreach ($key in $derivedRows) {
-        $after = Get-SimField -Workbook $wb -Inspection $simInspection -FieldKey $key
-        $verdict = 'unchanged'
-        if (-not (Test-SimSameValue -A $derivedBefore[[string]$key] -B $after)) {
-            $verdict = 'updated'
-            $derivedMoved = $derivedMoved + 1
-        }
-        Write-P81Line ('      ' + ([string]$key).PadRight(24) + $verdict.PadRight(12) +
-                       (Format-SimValue $derivedBefore[[string]$key]) + ' -> ' +
-                       (Format-SimValue $after))
-    }
-    Write-P81Line ('      OBSERVED: ' + [string]$derivedMoved + ' of ' +
-                   [string]@($derivedRows).Count + ' derived rows moved during a recalculation ' +
-                   'in which no endpoint was invoked.')
+    Write-P81Line ('    part D: the worksheet observation was frozen before any accessor was ' +
+                   'invoked out of a cell, so the row movement above is the recalculation' +
+                   [char]39 + 's alone.')
     Write-P81Line ''
 
     # ===================================================================
@@ -1572,13 +1668,14 @@ try {
     $calcAnnouncement = Invoke-P81Endpoint -Excel $excel -Endpoint 'PCCM_Calculate'
     $null = Add-P81Check 'part E: PCCM_Calculate refuses the edited model' `
         ($calcAnnouncement -like 'FAIL|*') $calcAnnouncement
+    $observationE = Invoke-P81Observation -Excel $excel -Workbook $wb -Inspection $p8 `
+        -SimInspection $simInspection -P7 $p7 -Stage 'part E' -Distribution $historical `
+        -Profile $historical -ExpectedPx $secondLabel -ExpectedYears $yearCount
+    $null = $observationE
+    # AFTER THE FROZEN OBSERVATION, for the reason part D states.
     $null = Add-P81Check 'part E: the model is no longer CURRENT' `
         ((([string]$excel.Run('PCCM_CalculationStatus')) -cne $calcCurrent)) `
         ([string]$excel.Run('PCCM_CalculationStatus'))
-    $null = Invoke-P81Recalculate -Excel $excel -Stage 'part E'
-    $null = Invoke-P81StateChecks -Excel $excel -Workbook $wb -Inspection $p8 -P7 $p7 -Stage 'part E' `
-        -Distribution $historical -Profile $historical -ExpectedPx $secondLabel `
-        -ExpectedYears $yearCount
     Invoke-P81AnnualChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount -StartYear $startYear -Stage 'part E'
     Invoke-P81ReconciliationChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection `

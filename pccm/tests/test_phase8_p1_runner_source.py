@@ -240,7 +240,7 @@ def test_13_the_runner_carries_no_dead_function() -> None:
 
 def test_20_the_state_evaluation_gate_is_the_first_live_assertion() -> None:
     code = _code()
-    gate = code.index("$stateEvaluated = Add-P81StateEvaluatedCheck")
+    gate = code.index("$observation0 = Invoke-P81Observation")
     for later in ("Set-Phase5Fixture", "Invoke-Phase6Simulation",
                   "$p7.command_surface.annual_endpoint", "PCCM_Calculate"):
         assert code.index(later) > gate, (
@@ -249,14 +249,23 @@ def test_20_the_state_evaluation_gate_is_the_first_live_assertion() -> None:
 
 def test_21_a_failed_gate_stops_the_run_and_is_not_worked_around() -> None:
     code = _code()
-    assert "if (-not $stateEvaluated) {" in code
-    stop = code[code.index("if (-not $stateEvaluated) {"):]
-    stop = stop[:stop.index("$null = Invoke-P81StateChecks")]
-    assert "$stoppedOnStateEvaluation = $true" in stop
-    assert "throw" in stop, "a failed gate must end the session, not be logged and passed"
+    assert "if (-not $observation0.Evaluated) {" in code
+    stop = code[code.index("if (-not $observation0.Evaluated) {"):]
+    end = stop.index("throw 'the Results state cells did not evaluate")
+    assert "$stoppedOnStateEvaluation = $true" in stop[:end], (
+        "a failed gate must be recorded as a stop")
+    assert stop[end:].startswith("throw"), (
+        "a failed gate must end the session, not be logged and passed")
+    stop = stop[:end]
     for workaround in ("Resume Next", "-ErrorAction SilentlyContinue", "Text -eq",
-                       "PCCM_RunAnnualStochastic", "PCCM_RunSimulation"):
+                       "PCCM_RunAnnualStochastic", "PCCM_RunSimulation",
+                       "Invoke-P81Recalculate", "Get-P81StateCells"):
         assert workaround not in stop, f"the gate is worked around with {workaround}"
+    # THE ONE THING THE STOP MAY DO is ask the same accessors outside a cell,
+    # after the failed observation is already frozen - and it must be labelled
+    # as a diagnostic rather than counted as a check.
+    assert "DIAGNOSTIC (not a check)" in stop
+    assert "Add-P81Check" not in stop, "the stop block adds a check after the gate failed"
     assert "P8-1: STOPPED AT THE STATE-EVALUATION GATE" in code
 
 
@@ -412,24 +421,34 @@ def test_42_part_d_invokes_no_endpoint_and_only_recalculates() -> None:
     for endpoint in ("Invoke-Phase6Simulation", "Invoke-P81Endpoint",
                      "Invoke-Phase5ProductionOperation", "PCCM_RunAnnualStochastic"):
         assert endpoint not in part, f"part D invokes {endpoint}"
-    assert "Invoke-P81Recalculate -Excel $excel -Stage 'part D'" in part
     assert "Set-NamedValue" in part and "monte_carlo_iterations" in part
+    # AND NOTHING OUT-OF-CELL BETWEEN THE INPUT MOVE AND THE FROZEN OBSERVATION.
+    # A direct accessor here could persist the derived rows and make the
+    # worksheet wrapper look correct on rows this runner had just written.
+    window = part[part.index("Set-NamedValue -Workbook $wb -DefinedName $iterationsControl"):
+                  part.index("$observationD = Invoke-P81Observation")]
+    for out_of_cell in ("$excel.Run(", "Get-P81Handoff", "Invoke-P81Endpoint",
+                        "Invoke-P81AccessorParity"):
+        assert out_of_cell not in window, (
+            f"part D calls {out_of_cell} between the input change and the cell freeze")
+    assert "$observationD = Invoke-P81Observation" in part
 
 
-def test_43_part_d_reports_the_derived_rows_and_asserts_nothing_about_them() -> None:
-    """THE OBSERVATION THE ROUND EXISTS FOR. Whether Excel ignored, allowed or
-    refused the write is what is being settled; an expectation here would decide
-    it in advance."""
-    code = _code()
-    part = code[code.index("PART D - ITERATIONS CHANGE"):code.index("PART E - AN INVALID MODEL")]
-    assert "THE DERIVED STATUS ROWS ACROSS A WORKSHEET RECALCULATION" in part
-    assert "'unchanged'" in part and "'updated'" in part
-    assert "OBSERVED: " in part
-    block = part[part.index("THE DERIVED STATUS ROWS ACROSS A WORKSHEET RECALCULATION"):]
-    block = block[:block.index("OBSERVED: ")]
-    assert "Add-P81Check" not in block, (
-        "the derived rows are asserted rather than reported; whether Excel ignored, "
-        "allowed or refused the write is the observation, not a requirement")
+def test_43_the_derived_rows_are_reported_in_observation_order_and_asserted_nowhere() -> None:
+    """THE OBSERVATION THE ROUND EXISTS FOR, AND ITS FOUR OUTCOMES KEPT APART.
+    Whether Excel ignored, allowed or refused the write is what is being
+    settled; an expectation would decide it in advance, and folding the
+    recalculation's effect together with the direct call's would make the
+    answer unreadable."""
+    body = _function("Invoke-P81Observation")
+    assert "THE DERIVED STATUS ROWS, IN OBSERVATION ORDER" in body
+    assert "'unchanged'" in body and "'updated'" in body
+    assert "recalc: " in body and "direct: " in body, (
+        "the two causes of a row moving are not reported apart")
+    assert "OBSERVED at " in body
+    report = body[body.index("THE DERIVED STATUS ROWS, IN OBSERVATION ORDER"):]
+    assert "Add-P81Check" not in report, (
+        "the derived rows are asserted rather than reported")
 
 
 def test_43b_the_two_historical_parts_expect_historical() -> None:
@@ -440,8 +459,10 @@ def test_43b_the_two_historical_parts_expect_historical() -> None:
     for marker, ending in (("PART D - ITERATIONS CHANGE", "PART E - AN INVALID MODEL"),
                            ("PART E - AN INVALID MODEL", "[System.GC]::Collect(); ")):
         part = code[code.index(marker):code.index(ending)]
-        assert "-Distribution $historical -Profile $historical" in part, (
-            f"{marker} does not expect the historical state on both products")
+        assert "-Distribution $historical `" in part, (
+            f"{marker} does not expect the historical distribution state")
+        assert "-Profile $historical" in part, (
+            f"{marker} does not expect the historical profile state")
         assert "$annualCurrent" not in part and "$profileCurrent" not in part, (
             f"{marker} expects a current state somewhere")
 
@@ -469,15 +490,54 @@ def test_45_the_selector_parts_prove_the_payload_moved_and_did_not() -> None:
 
 
 def test_46_the_state_cells_are_cross_checked_against_the_accessors() -> None:
-    body = _function("Invoke-P81StateChecks")
+    body = _function("Invoke-P81AccessorParity")
     assert "Get-P81Handoff -Excel $Excel -P7 $P7" in body
     assert "$P7.command_surface.handoff_accessors" in body
     assert "shows what its accessor says" in body
     assert "$Inspection.state.$key.accessor" in body
-    # AND THE CELL IS STILL THE CALL. Checked by its substance, not by the words
-    # in its label: a renamed check is still a check, a deleted comparison is not.
-    assert "$expected = '=' + [string]$Inspection.state.$key.procedure + '()'" in body
-    assert "-cne $expected" in body
+    # THE COMPARISON IS AGAINST THE FROZEN RECORD, never a fresh read: a cell
+    # re-read after the accessor ran would be reporting the probe's own effect.
+    assert "$Frozen[$key]" in body
+    for reread in ("Get-P81StateCells", "Get-P81Cell", "Invoke-P81Recalculate",
+                   "$Excel.Calculate"):
+        assert reread not in body, (
+            f"the parity comparison {reread}s between the direct call and the check")
+    frozen = _function("Invoke-P81FrozenStateChecks")
+    assert "$expected = '=' + [string]$Inspection.state.$key.procedure + '()'" in frozen
+    assert "-cne $expected" in frozen
+
+
+def test_46b_every_phase_observes_in_the_one_mandated_order() -> None:
+    """ONE FUNCTION OWNS THE ORDER. A phase that assembled the steps for itself
+    would be free to assemble them wrongly, which is what happened before this
+    function existed."""
+    code = _code()
+    body = _function("Invoke-P81Observation")
+    positions = [body.index(step) for step in (
+        "$beforeRecalc = Get-P81DerivedRows",
+        "Invoke-P81Recalculate -Excel $Excel -Stage $Stage",
+        "$afterRecalc = Get-P81DerivedRows",
+        "$frozen = Get-P81StateCells",
+        "$evaluated = Add-P81StateEvaluatedCheck",
+        "Invoke-P81FrozenStateChecks",
+        "Invoke-P81AccessorParity",
+        "$afterDirect = Get-P81DerivedRows")]
+    assert positions == sorted(positions), (
+        "the observation steps are not in the mandated order")
+    # THE FROZEN CHECKS MAY NOT REACH A PROCEDURE. A check there that called an
+    # accessor would be step 6 wearing step 5's name.
+    frozen = _function("Invoke-P81FrozenStateChecks")
+    for out_of_cell in ("Get-P81Handoff", "$Excel", "Application.Run", ".Run("):
+        assert out_of_cell not in frozen, f"the frozen checks reach {out_of_cell}"
+    # AND EVERY PHASE GOES THROUGH IT. No phase may freeze cells for itself.
+    for stage in ("part 0", "part A", "part B", "part C", "part D", "part E"):
+        assert f"-Stage '{stage}'" in code, stage
+    assert code.count("Invoke-P81Observation -Excel $excel") == 6
+    assert code.count("Get-P81StateCells") == 2, (
+        "the state cells are read outside the observation orchestrator")
+    # Definition, the parity step, and the failed-gate diagnostic. Nowhere else.
+    assert code.count("Get-P81Handoff") == 3, (
+        "the accessors are called outside the parity step and the failed-gate diagnostic")
 
 
 def test_47_the_empty_part_refuses_a_fabricated_zero_and_a_blank_pass() -> None:
