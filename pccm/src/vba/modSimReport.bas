@@ -185,6 +185,17 @@ Public Function PCCM_SimulationStatus() As String
     PCCM_SimulationStatus = status
 End Function
 
+' THE SAME DERIVATION, WITHOUT THE PERSISTENCE. PCCM_SimulationStatus above
+' derives AND writes D28:D29; Excel forbids the write to a function a worksheet
+' cell called, so a Results state cell that reached it showed #VALUE!. The
+' derivation was already pure - the persistence is the caller's - and this
+' exposes the pure half so a read-only caller can ask without asking for the
+' record to be rewritten. It is NOT a second status: one derivation, two entry
+' points, differing only in whether D28:D29 is rewritten after it.
+Public Function SimReportDerivedStatus() As String
+    SimReportDerivedStatus = DeriveSimStatus()
+End Function
+
 Public Function PCCM_SimulationRequestFingerprint() As String
     ' THE STORED one, from the ACTIVE bank. It never recomputes: this is what
     ' the last successful run was asked, and a recomputation here would answer a

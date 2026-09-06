@@ -139,19 +139,59 @@ def test_10_the_implementation_authority_is_the_last_commit_touching_src_or_spec
         f"the last commit touching pccm/src or pccm/spec up to {ACCEPTANCE_HEAD} "
         f"is {out!r}, but the record names {IMPLEMENTATION_AUTHORITY}")
     assert IMPLEMENTATION_AUTHORITY in _text()
-    # AND NO MODULE THE PHASE-7 SCENARIOS RAN AGAINST MAY BE MODIFIED. That is
-    # the claim the evidence rests on, and it is narrower than "pccm/src never
-    # changes": a later phase may ADD a module - P8-1 adds the Results state
-    # adapter - without touching a byte any Windows run executed. A modification
-    # or a deletion is a different thing entirely, and neither is allowed.
+    # AND NO MODULE THE PHASE-7 SCENARIOS RAN AGAINST MAY BE MODIFIED WITHOUT
+    # BEING DECLARED. That is the claim the evidence rests on, and it is narrower
+    # than "pccm/src never changes" in two ways.
+    #
+    # FIRST, a later phase may ADD a module - P8-1 adds the Results state
+    # adapter - without touching a byte any Windows run executed.
+    #
+    # SECOND, AND THIS IS THE THIRD REFINEMENT OF THIS CONTROL, disclosed: a
+    # later phase can find a REAL DEFECT in a Phase-7-owned module. P8-1's first
+    # complete Windows run found one - the annual state accessors reached a
+    # procedure that persists two cells, which Excel forbids to a worksheet
+    # function, so both Results state cells showed #VALUE!. Refusing that
+    # correction would have left the defect; making it silently would have left
+    # this record claiming bytes were untouched when they were not. So the rule
+    # is DECLARATION, not prohibition: every modified path must appear in the
+    # record's §1.1 table. An undeclared modification still fails here, which is
+    # the property that makes this a control rather than a comment.
+    #
+    # A DELETION IS NEVER PERMITTED, declared or not: a module the evidence ran
+    # against cannot stop existing.
     changes = _git("diff", "--name-status", ACCEPTANCE_HEAD, "HEAD", "--", "pccm/src")
-    offenders = sorted(
-        line.split("\t", 1)[1].strip()
-        for line in changes.splitlines()
-        if line.strip() and not line.split("\t", 1)[0].strip().startswith("A"))
-    assert not offenders, (
-        f"a module the Phase-7 evidence was produced against was modified or "
-        f"removed after {ACCEPTANCE_HEAD}: {offenders}")
+    text = _text()
+    declared_block = text.split("### 1.1")[1].split("---")[0] if "### 1.1" in text else ""
+    modified, deleted, undeclared = [], [], []
+    for line in changes.splitlines():
+        if not line.strip():
+            continue
+        state, path = line.split("\t", 1)[0].strip(), line.split("\t", 1)[1].strip()
+        if state.startswith("A"):
+            continue
+        if state.startswith("D"):
+            deleted.append(path)
+            continue
+        modified.append(path)
+        if path not in declared_block:
+            undeclared.append(path)
+    assert not deleted, (
+        f"a module the Phase-7 evidence was produced against was removed after "
+        f"{ACCEPTANCE_HEAD}: {deleted}")
+    assert not undeclared, (
+        f"a module the Phase-7 evidence was produced against was modified after "
+        f"{ACCEPTANCE_HEAD} without being declared in the record's §1.1 table: "
+        f"{undeclared}")
+    # AND A DECLARATION IS ONLY A DECLARATION IF IT SAYS ENOUGH. Every declared
+    # module needs a reason and the round that found it, not just a filename.
+    if modified:
+        assert "Found by" in declared_block and "P8-1" in declared_block, (
+            "the §1.1 table does not say who found the correction or why")
+        for authority in (IMPLEMENTATION_AUTHORITY, ACCEPTANCE_HEAD):
+            assert authority in text, authority
+        assert "does **not** reopen Phase 7" in text, (
+            "the record does not state that a later correction leaves both "
+            "authorities where they are")
 
 
 def test_11_no_production_or_spec_byte_moved_between_the_two_authorities() -> None:
@@ -381,3 +421,64 @@ def test_45_phase_8_is_named_as_next_and_not_started() -> None:
                      "PCCM_AnnualProfilePx", "PCCM_AnnualYearCount"):
         assert accessor in text, f"the record does not name {accessor}"
         assert f"Function {accessor}" in store, f"{accessor} is not a real accessor"
+
+
+def test_21_every_declared_later_correction_is_real_and_resolvable() -> None:
+    """A DECLARATION HAS TO CUT BOTH WAYS. test_10 refuses an undeclared
+    modification; this refuses a declaration nobody made - a row naming a module
+    that was never touched, or a commit subject that resolves to nothing, would
+    turn the table into decoration and let the next real change hide beside it."""
+    text = _text()
+    if "### 1.1" not in text:
+        pytest.skip("no later correction has been declared")
+    block = text.split("### 1.1")[1].split("\n---")[0]
+    rows = [line for line in block.splitlines()
+            if line.startswith("| `pccm/src/")]
+    assert rows, "the §1.1 section exists but declares nothing"
+
+    changed = {
+        line.split("\t", 1)[1].strip()
+        for line in _git("diff", "--name-status", ACCEPTANCE_HEAD, "HEAD",
+                         "--", "pccm/src").splitlines()
+        if line.strip() and not line.split("\t", 1)[0].strip().startswith("A")}
+
+    for row in rows:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        path, subject = cells[0].strip("`"), cells[1]
+        assert path in changed, (
+            f"the record declares a correction to {path}, but that file is "
+            f"unmodified since {ACCEPTANCE_HEAD}")
+        # THE SUBJECT RESOLVES TO EXACTLY ONE COMMIT, and that commit is the one
+        # that touched the file.
+        found = _git("log", "--format=%h", f"--grep={subject}", "--fixed-strings",
+                     f"{ACCEPTANCE_HEAD}..HEAD").split()
+        assert len(found) == 1, (
+            f"the subject {subject!r} resolves to {len(found)} commits after "
+            f"{ACCEPTANCE_HEAD}, not one")
+        touched = _git("show", "--name-only", "--format=", found[0]).split()
+        assert path in touched, (
+            f"{found[0]} is declared as the correction to {path} but does not touch it")
+        # AND THE ROW SAYS WHAT CHANGED, not merely that something did.
+        assert len(cells[3]) > 80, f"the declaration for {path} explains nothing"
+
+
+def test_22_the_declared_correction_did_not_move_either_authority() -> None:
+    """THE POINT OF §1.1: a later correction is recorded, and the two historical
+    authorities stay exactly where they were. If a correction were allowed to
+    move them, the record would be re-writing Phase 7's history rather than
+    annotating it."""
+    text = _text()
+    if "### 1.1" not in text:
+        pytest.skip("no later correction has been declared")
+    # BOTH AUTHORITIES ARE STILL DERIVED THE SAME WAY, bounded at the acceptance
+    # head - which is what makes them immune to anything committed afterwards.
+    bounded = _git("log", "--format=%h", "-1", ACCEPTANCE_HEAD,
+                   "--", "pccm/src", "pccm/spec").strip()
+    assert bounded.startswith(IMPLEMENTATION_AUTHORITY), bounded
+    assert _git("diff", "--stat", IMPLEMENTATION_AUTHORITY, ACCEPTANCE_HEAD,
+                "--", "pccm/src", "pccm/spec").strip() == ""
+    # AND THE RECORD SAYS SO IN WORDS, so a reader is not left to infer it.
+    section = text.split("### 1.1")[1].split("\n---")[0]
+    assert "does **not** reopen Phase 7" in section
+    assert "does **not** move either authority" in section
+    assert IMPLEMENTATION_AUTHORITY in section and ACCEPTANCE_HEAD in section

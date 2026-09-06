@@ -1238,13 +1238,31 @@ def test_42_every_refusal_exits_before_the_publication() -> None:
 ])
 def test_43_the_precondition_refuses_a_run_it_may_not_explain(token, expected) -> None:
     """A and B. The status is asked for, never re-derived - a second derivation
-    of run state is a second answer to the only question that matters."""
+    of run state is a second answer to the only question that matters.
+
+    THE PRECONDITION IS NOW SETTLED IN ONE PLACE FOR TWO CALLERS. P8-1's first
+    complete Windows run showed that the persisting entry point raises when a
+    worksheet cell reaches it, so the command path and the read path ask
+    different entry points of modSimReport - and hand the identical answer to
+    the identical settlement, `CurrentRunFor`, which is where both refusals and
+    the one state comparison live. That is where this control reads them."""
     code = _code(STORE_BAS)
     assert token in code
     assert expected in code
-    body = code[code.index("Public Function SimAnnualStoreCurrentRun"):]
-    body = body[:body.index("End Function")]
-    assert "SIM_STATE_CURRENT" in body
+    settlement = code[code.index("Private Function CurrentRunFor"):]
+    settlement = settlement[:settlement.index("End Function")]
+    assert "SIM_STATE_CURRENT" in settlement
+    assert expected in settlement, "the refusal moved out of the shared settlement"
+    # BOTH PRECONDITIONS DELEGATE TO IT, and neither settles anything itself.
+    for entry, asked in (("Public Function SimAnnualStoreCurrentRun(",
+                          "modSimReport.PCCM_SimulationStatus()"),
+                         ("Public Function SimAnnualStoreCurrentRunReadOnly(",
+                          "modSimReport.SimReportDerivedStatus()")):
+        body = code[code.index(entry):]
+        body = body[:body.index("End Function")]
+        assert asked in body, f"{entry} no longer asks {asked}"
+        assert "CurrentRunFor(" in body, f"{entry} settles the precondition itself"
+        assert "SIM_STATE_" not in body, f"{entry} carries a state word of its own"
     # NOT re-derived: the module reaches no state machinery of its own, and the
     # only simulation-state word it carries is the one it compares against.
     assert "DeriveStatus" not in code

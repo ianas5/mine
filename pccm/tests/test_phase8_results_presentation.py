@@ -329,19 +329,30 @@ def test_20_the_owner_still_owns_every_arm_of_the_rule() -> None:
 
 
 def test_21_the_distribution_verdict_is_the_stores_and_reaches_the_live_status() -> None:
-    """THE FIRST DISCLOSED DEFECT, CLOSED. The banner used to read the PERSISTED
-    status, so an ordinary model change left it saying CURRENT until some later
-    operation re-evaluated it. The accessor derives the status instead."""
+    """THE FIRST DISCLOSED DEFECT, STILL CLOSED. The banner used to read the
+    PERSISTED status, so an ordinary model change left it saying CURRENT until
+    some later operation re-evaluated it. The accessor derives the status.
+
+    RESTATED, NOT WEAKENED, AFTER THE P8-1 READ-ONLY CORRECTION. What that
+    correction changed is which ENTRY POINT the read path asks through - the one
+    that does not also rewrite D28:D29 - and this control now names it. The
+    claim is unchanged: the state cell is answered from a FRESH derivation, not
+    from the stored word. Both entry points return DeriveSimStatus()."""
     store = (SRC / "modSimAnnualStore.bas").read_text(encoding="utf-8")
-    assert "SimAnnualStoreCurrentRun(run, detail)" in store
-    current_run = store[store.index("Public Function SimAnnualStoreCurrentRun"):]
-    current_run = current_run[:current_run.index("Public Function SimAnnualStoreIdentity")]
-    assert "modSimReport.PCCM_SimulationStatus()" in current_run, (
+    assert "SimAnnualStoreCurrentRunReadOnly(run, detail)" in store
+    read_path = store[store.index("Public Function SimAnnualStoreCurrentRunReadOnly"):]
+    read_path = read_path[:read_path.index("End Function")]
+    assert "modSimReport.SimReportDerivedStatus()" in read_path, (
         "the store no longer asks for a freshly derived status")
     report = (SRC / "modSimReport.bas").read_text(encoding="utf-8")
-    status = report[report.index("Public Function PCCM_SimulationStatus"):]
-    status = status[:status.index("Public Function PCCM_SimulationRequestFingerprint")]
-    assert "DeriveSimStatus()" in status, "the status is no longer re-derived"
+    for entry, follower in (("Public Function SimReportDerivedStatus", "End Function"),
+                            ("Public Function PCCM_SimulationStatus", "End Function")):
+        body = report[report.index(entry):]
+        body = body[:body.index(follower)]
+        assert "DeriveSimStatus()" in body, f"{entry} no longer re-derives the status"
+    # AND THE STORED WORD IS STILL NOT WHAT ANY OF THEM RETURNS.
+    assert "SharedText(SIM_IDENTITY_ROW_SIMULATION_STATUS)" not in store, (
+        "the store reads the persisted status word again")
 
 
 def test_22_the_adapters_are_volatile_and_only_the_adapters_are() -> None:
@@ -704,3 +715,412 @@ def test_55_the_window_may_not_grow_over_the_reconciliation() -> None:
     last = int(shell["annual"]["first_row"]) + _window() - 1
     assert last < int(shell["reconciliation"]["heading_row"]), (last, shell)
     assert hasattr(workbook_builder, "_annual_row_window")
+
+
+# ===========================================================================
+# THE WORKSHEET PATH IS READ-ONLY - THE DEFECT THE FIRST COMPLETE RUN FOUND
+# ===========================================================================
+# WHAT HAPPENED, FROM A LIVE EXCEL. Part 0 evaluated all four state cells. From
+# Part A onward - the moment a publication existed - the two STATE cells showed
+# #VALUE! and the annual table and reconciliation cascaded off them.
+#
+# THE CHAIN, IN FOUR HOPS:
+#     Results!D53   =PCCM_ResultsAnnualDistributionState()
+#       -> modResultsState.PCCM_ResultsAnnualDistributionState
+#       -> modSimAnnualStore.PCCM_AnnualDistributionState
+#       -> modSimAnnualStore.SimAnnualStoreCurrentRun     (as it then was)
+#       -> modSimReport.PCCM_SimulationStatus
+#       -> modSimReport.WriteStatusBlock
+#       -> SimSheet.Range("D28:D29").Value2 = block       <- PROHIBITED
+#
+# WHY PART 0 SURVIVED IT. Both accessors read the active publication bank first
+# and return NOT PRODUCED when there is none. With no bank the guard exits
+# before the precondition is ever asked for, so the write was never attempted.
+# A publication makes the guard pass, and the very next thing the accessor does
+# is ask a question that used to rewrite two cells.
+#
+# WHY THE OTHER TWO CELLS NEVER FAILED. PCCM_AnnualProfilePx and
+# PCCM_AnnualYearCount read the stamp and stop. They never reach the
+# precondition, so they never reached the write - which is exactly the pattern
+# the live report showed, and it is the strongest single piece of evidence for
+# the diagnosis.
+#
+# THE FIX IS AN OWNERSHIP SPLIT, NOT A SUPPRESSION. DeriveSimStatus was already
+# pure; only its caller persisted. modSimReport now exposes the pure half under
+# its own name, the store has a read-only precondition beside the command one,
+# and the two accessors take the read-only one. No state rule moved, nothing was
+# duplicated, and no error is being swallowed anywhere.
+
+ADAPTERS = (
+    "PCCM_ResultsAnnualDistributionState",
+    "PCCM_ResultsAnnualProfileState",
+    "PCCM_ResultsAnnualProfilePx",
+    "PCCM_ResultsAnnualYearCount",
+)
+
+# EVERY WAY THIS PROJECT'S VBA CHANGES A WORKBOOK. Assignment through a Range or
+# a Cells, a ListObject row operation, and the two clearing verbs. In-memory
+# `Scripting.Dictionary.Add` is deliberately NOT here: it writes to a variable,
+# not to the book, and treating it as a mutation would make the control cry wolf
+# in modInflation and modStructuralCheck for no reason.
+_WORKBOOK_WRITE = re.compile(
+    r"""(?:\.Value2|\.Value|\.Formula\w*|\.NumberFormat|\.Text)\s*=(?!=)"""
+    r"""|\.ClearContents\b|\.EntireRow\.Delete\b|ListRows\.Add\b|\.ListRows\("""
+    r"""|Application\.(?:Calculation|EnableEvents|ScreenUpdating)\s*=""")
+
+
+def _vba_procedures() -> dict[tuple[str, str], str]:
+    """Every procedure in every production module, keyed (module, name), with
+    comments and string literals removed so a WORD in prose is never a call."""
+    if "vba_procs" not in _CACHE:
+        from pccm_builder.vba_source import load_modules
+
+        out: dict[tuple[str, str], str] = {}
+        for module in load_modules([SRC]):
+            lines = module.code.splitlines()
+            index = 0
+            while index < len(lines):
+                head = re.match(
+                    r"\s*(?:Public |Private |Friend )?(?:Static )?"
+                    r"(?:Function|Sub|Property (?:Get|Let|Set))\s+([A-Za-z_]\w*)",
+                    lines[index])
+                if head:
+                    end = index + 1
+                    while end < len(lines) and not re.match(
+                            r"\s*End (?:Function|Sub|Property)\b", lines[end]):
+                        end += 1
+                    out[(module.name, head.group(1))] = "\n".join(lines[index + 1:end])
+                    index = end
+                index += 1
+        _CACHE["vba_procs"] = out
+    return _CACHE["vba_procs"]  # type: ignore[return-value]
+
+
+def _callees(module: str, body: str) -> set[tuple[str, str]]:
+    """DELIBERATELY OVER-INCLUSIVE. A qualified `modX.Name` is a call; a bare
+    identifier that names a procedure of the SAME module is treated as one even
+    where it is a variable of that name. Over-inclusion can only ever make a
+    read-only claim harder to satisfy, never easier, which is the direction a
+    safety control has to err in."""
+    procedures = _vba_procedures()
+    found: set[tuple[str, str]] = set()
+    for match in re.finditer(r"\b(mod\w+)\.([A-Za-z_]\w*)", body):
+        found.add((match.group(1), match.group(2)))
+    for match in re.finditer(r"\b([A-Za-z_]\w*)\b", body):
+        if (module, match.group(1)) in procedures:
+            found.add((module, match.group(1)))
+    return found
+
+
+def _reachable(root: tuple[str, str]) -> set[tuple[str, str]]:
+    procedures = _vba_procedures()
+    seen: set[tuple[str, str]] = set()
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        body = procedures.get(current)
+        if body is None:
+            continue
+        for callee in _callees(current[0], body):
+            if callee in procedures and callee not in seen:
+                stack.append(callee)
+    return seen
+
+
+def _writes_reachable_from(root: tuple[str, str]) -> list[str]:
+    procedures = _vba_procedures()
+    out: list[str] = []
+    for procedure in sorted(_reachable(root)):
+        for line in procedures.get(procedure, "").splitlines():
+            if _WORKBOOK_WRITE.search(line):
+                out.append(f"{procedure[0]}.{procedure[1]}: {line.strip()[:80]}")
+    return out
+
+
+def test_60_the_call_graph_is_read_and_the_helper_is_not_vacuous() -> None:
+    """THE INSTRUMENT, BEFORE THE MEASUREMENT. A reachability control that
+    silently found no procedures would pass forever, so this proves the graph is
+    populated, that it crosses modules, and that it does detect a write where one
+    genuinely is."""
+    procedures = _vba_procedures()
+    assert len(procedures) > 400, len(procedures)
+    assert ("modResultsState", "PCCM_ResultsAnnualDistributionState") in procedures
+    assert ("modSimReport", "WriteStatusBlock") in procedures
+    # IT CROSSES MODULES.
+    reached = _reachable(("modResultsState", "PCCM_ResultsAnnualDistributionState"))
+    assert ("modSimAnnualStore", "PCCM_AnnualDistributionState") in reached
+    assert len({module for module, _ in reached}) > 3, reached
+    # AND IT FINDS THE WRITE THAT IS STILL THERE, on the command path.
+    writes = _writes_reachable_from(("modSimReport", "PCCM_SimulationStatus"))
+    assert any("WriteStatusBlock" in entry for entry in writes), writes
+
+
+@pytest.mark.parametrize("adapter", ADAPTERS)
+def test_61_no_worksheet_adapter_can_reach_a_workbook_write(adapter: str) -> None:
+    """THE CENTRAL CLAIM, TAKEN OVER THE WHOLE TRANSITIVE CLOSURE rather than
+    over the adapter's own four lines. A cell may not change the book, so
+    nothing a cell can call may either - however many hops away it is."""
+    writes = _writes_reachable_from(("modResultsState", adapter))
+    assert not writes, (
+        f"{adapter} can reach a workbook write:\n  " + "\n  ".join(writes))
+
+
+@pytest.mark.parametrize("adapter,persisting", [
+    (a, p) for a in ADAPTERS
+    for p in (("modSimReport", "PCCM_SimulationStatus"),
+              ("modSimReport", "WriteStatusBlock"),
+              ("modCalcReport", "PCCM_CalculationStatus"),
+              ("modCalcReport", "WriteStatusBlock"))
+])
+def test_62_no_worksheet_adapter_reaches_a_persisting_entry_point(
+        adapter: str, persisting: tuple[str, str]) -> None:
+    """NAMED, NOT INFERRED. The two status endpoints and the two writers behind
+    them are the specific procedures the live failure went through; each is
+    asserted unreachable by name so a re-connection is caught even if some later
+    refactor made the write itself unrecognisable to the pattern above."""
+    assert persisting not in _reachable(("modResultsState", adapter)), (
+        f"{adapter} reaches {persisting[0]}.{persisting[1]} again")
+
+
+def test_63_the_command_path_still_persists_and_is_unchanged() -> None:
+    """THE OTHER HALF OF THE SPLIT. An operation invoked from a button or an
+    endpoint still derives AND persists: that is accepted Phase-7 behaviour and
+    the correction must not have quietly removed it."""
+    store = (SRC / "modSimAnnualStore.bas").read_text(encoding="utf-8")
+    run = (SRC / "modSimAnnualRun.bas").read_text(encoding="utf-8")
+    assert "modSimAnnualStore.SimAnnualStoreCurrentRun(run, detail)" in run, (
+        "the annual run no longer uses the command precondition")
+    command = store[store.index("Public Function SimAnnualStoreCurrentRun"):]
+    command = command[:command.index("End Function")]
+    assert "modSimReport.PCCM_SimulationStatus()" in command, (
+        "the command path no longer asks through the persisting entry point")
+    assert ("modSimReport", "WriteStatusBlock") in _reachable(
+        ("modSimAnnualRun", "RunAnnual")), (
+        "the annual run no longer reaches the status persistence it always did")
+    report = (SRC / "modSimReport.bas").read_text(encoding="utf-8")
+    status = report[report.index("Public Function PCCM_SimulationStatus"):]
+    status = status[:status.index("End Function")]
+    assert "WriteStatusBlock status" in status, "PCCM_SimulationStatus stopped persisting"
+
+
+def test_64_there_is_exactly_one_derivation_and_both_paths_return_it() -> None:
+    """NO SECOND STATUS ENGINE. The split is about who WRITES, not about what
+    the answer is: one private derivation, two public entry points over it, and
+    the read-only one adds nothing of its own."""
+    report = (SRC / "modSimReport.bas").read_text(encoding="utf-8")
+    code = "\n".join(line for line in report.splitlines()
+                     if not line.lstrip().startswith("'"))
+    assert code.count("Private Function DeriveSimStatus") == 1, (
+        "there is not exactly one simulation-status derivation")
+    pure = code[code.index("Public Function SimReportDerivedStatus"):]
+    pure = pure[:pure.index("End Function")]
+    assert "DeriveSimStatus()" in pure
+    for forbidden in ("WriteStatusBlock", "SIM_STATE_", "If ", "Range", ".Value"):
+        assert forbidden not in pure, (
+            f"the read-only status entry point does more than delegate: {forbidden}")
+    # AND THE STORE SETTLES BOTH PATHS IN ONE PLACE.
+    store = (SRC / "modSimAnnualStore.bas").read_text(encoding="utf-8")
+    store_code = "\n".join(line for line in store.splitlines()
+                           if not line.lstrip().startswith("'"))
+    assert store_code.count("Private Function CurrentRunFor") == 1
+    assert store_code.count("CurrentRunFor(") == 3, (
+        "the two preconditions no longer share one settlement")
+    assert re.findall(r"SIM_STATE_\w+", store_code) == ["SIM_STATE_CURRENT"], (
+        "the store carries a second simulation-state vocabulary")
+
+
+def test_65_the_adapter_still_owns_no_state_rule_after_the_correction() -> None:
+    """THE CORRECTION HAPPENED IN THE OWNER, NOT IN THE PRESENTATION. Nothing
+    was copied down into modResultsState to route around the write."""
+    adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
+    code = "\n".join(line for line in adapter.splitlines()
+                     if not line.lstrip().startswith("'"))
+    for rule in ("SIM_ANNUAL_STATE_", "SIM_STATE_", "CURRENT", "HISTORICAL",
+                 "OTHER", "NOT PRODUCED", "StrComp", "DeriveSimStatus",
+                 "SimReportDerivedStatus", "StampText", "SimAnnualStoreCurrentRun"):
+        assert rule not in code, f"the adapter has acquired a state rule: {rule}"
+    assert len(re.findall(r"^Public Function (\w+)", code, re.M)) == 4
+    # AND IT STILL CALLS THE ACCESSORS, one each, unchanged.
+    for accessor in ("PCCM_AnnualDistributionState", "PCCM_AnnualProfileState",
+                     "PCCM_AnnualProfilePx", "PCCM_AnnualYearCount"):
+        assert code.count(f"modSimAnnualStore.{accessor}()") == 1, accessor
+
+
+@pytest.mark.parametrize("name,mutate,expect", [
+    # RECONNECT THE UDF TO THE WRITING PATH - the defect itself, restored.
+    ("the read path is pointed back at the persisting precondition",
+     lambda store, report: (store.replace("SimAnnualStoreCurrentRunReadOnly(run, detail)",
+                                          "SimAnnualStoreCurrentRun(run, detail)"), report),
+     "write"),
+    # MAKE THE READ-ONLY ENTRY POINT PERSIST TOO - the split in name only.
+    ("the read-only entry point persists as well",
+     lambda store, report: (store, report.replace(
+         "    SimReportDerivedStatus = DeriveSimStatus()",
+         "    SimReportDerivedStatus = DeriveSimStatus()\n    WriteStatusBlock "
+         "SimReportDerivedStatus")),
+     "write"),
+    # DUPLICATE A STATE ARM INSIDE THE STORE'S READ PATH - a second authority.
+    ("a second state vocabulary appears in the store",
+     lambda store, report: (store.replace(
+         "Public Function SimAnnualStoreCurrentRunReadOnly",
+         "Public Function SimAnnualStoreExtraState()\n"
+         "    SimAnnualStoreExtraState = SIM_STATE_STALE\n"
+         "End Function\n\n"
+         "Public Function SimAnnualStoreCurrentRunReadOnly"), report),
+     "vocabulary"),
+])
+def test_66_the_mutations_that_would_undo_the_correction_are_refused(
+        name: str, mutate, expect: str) -> None:
+    """EACH MUTATION APPLIED TO A COPY OF THE TWO MODULES IN A TEMPORARY TREE,
+    with the controls above re-run over it. Nothing on disk changes."""
+    import shutil
+    import tempfile
+
+    from pccm_builder.vba_source import load_modules
+
+    with tempfile.TemporaryDirectory() as raw:
+        temp = Path(raw) / "vba"
+        shutil.copytree(SRC, temp)
+        store_path = temp / "modSimAnnualStore.bas"
+        report_path = temp / "modSimReport.bas"
+        store, report = mutate(store_path.read_text(encoding="utf-8"),
+                               report_path.read_text(encoding="utf-8"))
+        store_path.write_text(store, encoding="utf-8")
+        report_path.write_text(report, encoding="utf-8")
+        assert (store, report) != (SRC.joinpath("modSimAnnualStore.bas").read_text(
+            encoding="utf-8"), SRC.joinpath("modSimReport.bas").read_text(
+            encoding="utf-8")), f"the mutation '{name}' changed nothing"
+
+        procedures: dict[tuple[str, str], str] = {}
+        for module in load_modules([temp]):
+            lines = module.code.splitlines()
+            index = 0
+            while index < len(lines):
+                head = re.match(
+                    r"\s*(?:Public |Private |Friend )?(?:Static )?"
+                    r"(?:Function|Sub|Property (?:Get|Let|Set))\s+([A-Za-z_]\w*)",
+                    lines[index])
+                if head:
+                    end = index + 1
+                    while end < len(lines) and not re.match(
+                            r"\s*End (?:Function|Sub|Property)\b", lines[end]):
+                        end += 1
+                    procedures[(module.name, head.group(1))] = "\n".join(
+                        lines[index + 1:end])
+                    index = end
+                index += 1
+
+        def callees(module: str, body: str) -> set[tuple[str, str]]:
+            found: set[tuple[str, str]] = set()
+            for match in re.finditer(r"\b(mod\w+)\.([A-Za-z_]\w*)", body):
+                found.add((match.group(1), match.group(2)))
+            for match in re.finditer(r"\b([A-Za-z_]\w*)\b", body):
+                if (module, match.group(1)) in procedures:
+                    found.add((module, match.group(1)))
+            return found
+
+        def reachable(root):
+            seen, stack = set(), [root]
+            while stack:
+                current = stack.pop()
+                if current in seen:
+                    continue
+                seen.add(current)
+                for callee in callees(current[0], procedures.get(current, "")):
+                    if callee in procedures and callee not in seen:
+                        stack.append(callee)
+            return seen
+
+        if expect == "write":
+            offending = [
+                adapter for adapter in ADAPTERS
+                if any(_WORKBOOK_WRITE.search(line)
+                       for procedure in reachable(("modResultsState", adapter))
+                       for line in procedures.get(procedure, "").splitlines())]
+            assert offending, f"'{name}' left every adapter read-only"
+        else:
+            code = "\n".join(line for line in store.splitlines()
+                             if not line.lstrip().startswith("'"))
+            assert re.findall(r"SIM_STATE_\w+", code) != ["SIM_STATE_CURRENT"], (
+                f"'{name}' did not introduce a second state vocabulary")
+
+
+def test_67_the_four_required_state_semantics_are_still_the_owners() -> None:
+    """THE SEMANTICS THE CORRECTION MUST NOT HAVE MOVED. Every arm the live
+    parts depend on - NOT PRODUCED, CURRENT, OTHER Px, HISTORICAL - is still
+    decided by the same two private rules in the same module, and the accessors
+    still feed them the same three facts."""
+    store = (SRC / "modSimAnnualStore.bas").read_text(encoding="utf-8")
+    for rule, arms in (
+            ("Private Function DistributionStateOf",
+             ("SIM_ANNUAL_STATE_NOT_PRODUCED", "SIM_ANNUAL_STATE_CURRENT",
+              "SIM_ANNUAL_STATE_HISTORICAL")),
+            ("Private Function ProfileStateOf",
+             ("ProfileStateOf = distribution", "SIM_ANNUAL_STATE_OTHER_PX",
+              "SIM_ANNUAL_STATE_CURRENT"))):
+        body = store[store.index(rule):]
+        body = body[:body.index("\nEnd Function")]
+        for arm in arms:
+            assert arm in body, f"{rule} lost the arm {arm!r}"
+    # THE THREE FACTS, AND THE READ-ONLY PRECONDITION AMONG THEM.
+    for accessor in ("PCCM_AnnualDistributionState", "PCCM_AnnualProfileState"):
+        body = store[store.index(f"Public Function {accessor}"):]
+        body = body[:body.index("\nEnd Function")]
+        assert "SIM_ANNUAL_STAMP_ROW_PUBLISHED" in body
+        assert "SimAnnualStoreCurrentRunReadOnly(run, detail)" in body, (
+            f"{accessor} is not on the read-only precondition")
+        assert "StampBelongsTo(bank, run)" in body
+        assert "If Not IsBank(bank) Then" in body, (
+            f"{accessor} lost the guard that makes Part 0 answer NOT PRODUCED")
+    # AND THE TWO THAT NEVER FAILED STILL NEVER ASK THE PRECONDITION.
+    for accessor in ("PCCM_AnnualProfilePx", "PCCM_AnnualYearCount"):
+        body = store[store.index(f"Public Function {accessor}"):]
+        body = body[:body.index("\nEnd Function")]
+        assert "CurrentRun" not in body, f"{accessor} has acquired the precondition"
+
+
+# EVERYTHING ELSE A WORKSHEET FUNCTION MAY NOT DO. A write is what broke this
+# one, but it is not the only prohibition, and the next one would present
+# identically: an error object in a cell and nothing to say which line raised.
+# So the read path is swept for the whole class, not just the member that bit.
+_UDF_HOSTILE = re.compile(
+    r"\.Select\b|\.Activate\b|MsgBox|Application\.Run\b|\.Calculate\b"
+    r"|Application\.(?:ScreenUpdating|EnableEvents|Calculation|DisplayAlerts)\s*="
+    r"|ListRows\.Add|\.EntireRow|\.Delete\b|\.Copy\b|\.PasteSpecial|SendKeys"
+    r"|\.SaveAs\b|ActiveWorkbook|ActiveSheet|Selection\b|DoEvents")
+
+
+@pytest.mark.parametrize("adapter", ADAPTERS)
+def test_68_the_read_path_does_nothing_else_a_cell_is_forbidden_to_do(
+        adapter: str) -> None:
+    """THE WHOLE CLASS, NOT THE ONE MEMBER. Selecting, activating, running an
+    endpoint, forcing a calculation, changing an application setting, showing a
+    dialog, or touching the active book instead of a named one - each is
+    prohibited to a function called from a cell, and each would fail exactly the
+    way the write did."""
+    procedures = _vba_procedures()
+    offenders = [
+        f"{module}.{name}: {line.strip()[:80]}"
+        for module, name in sorted(_reachable(("modResultsState", adapter)))
+        for line in procedures.get((module, name), "").splitlines()
+        if _UDF_HOSTILE.search(line)]
+    assert not offenders, (
+        f"{adapter} can reach an operation a worksheet function may not "
+        f"perform:\n  " + "\n  ".join(offenders))
+
+
+def test_69_the_hostile_sweep_is_not_vacuous() -> None:
+    """THE SWEEP ABOVE PROVES A NEGATIVE, so it has to be shown capable of a
+    positive. Each pattern is matched against a line that genuinely contains
+    it, and the graph it runs over is shown to be populated."""
+    for line in ("    ws.Select", "    Application.Run \"PCCM_Calculate\"",
+                 "    Application.ScreenUpdating = False", "    MsgBox detail",
+                 "    ActiveSheet.Range(\"A1\").Value2 = 1", "    DoEvents"):
+        assert _UDF_HOSTILE.search(line), line
+    for line in ("    value = Sh(SIM_DATA_SHEET).Range(\"D30\").Value2",
+                 "    If Len(status) = 0 Then Exit Function"):
+        assert not _UDF_HOSTILE.search(line), line
+    assert len(_reachable(("modResultsState", ADAPTERS[1]))) > 100

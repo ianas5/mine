@@ -66,6 +66,18 @@ ACCEPTED_REPORTER_SHA256 = (
     "8d67d3f18b1ea8c4a8baba478f025d486f71afaa1ac31beac88d7b7ecfff80a9"
 )
 
+# THE SEVEN PHASE-6 PROCEDURES, PLUS ONE DECLARED PHASE-8 ADDITION.
+#
+# `SimReportDerivedStatus` is the eighth, and it is listed apart because it is
+# not a Phase-6 procedure and must not be read as one. P8-1's first complete
+# Windows run showed that PCCM_SimulationStatus - which derives AND persists -
+# raises when a worksheet cell reaches it, because a cell may not change the
+# book. The derivation was already pure; this exposes it under its own name so a
+# read-only caller can ask without asking for a rewrite.
+#
+# IT ADDS NO SEMANTIC. It returns DeriveSimStatus() and nothing else, it carries
+# no PCCM_ prefix because it is not an endpoint or a worksheet function, and the
+# structure contract's API lists are unchanged by it.
 PHASE6_PUBLIC = [
     "PCCM_CurrentSimulationRequestFingerprint",
     "PCCM_RunSimulation",
@@ -75,6 +87,7 @@ PHASE6_PUBLIC = [
     "PCCM_SimulationResultDigest",
     "PCCM_SimulationStatus",
 ]
+PHASE8_READ_ONLY_ADDITION = "SimReportDerivedStatus"
 
 _CACHE: dict[str, object] = {}
 
@@ -180,7 +193,19 @@ def test_03_the_endpoint_construct_is_scoped_to_this_module_and_no_other() -> No
 
 
 def test_04_the_public_surface_is_exactly_the_seven_settled_procedures() -> None:
-    assert sorted(_module().public_procedures) == PHASE6_PUBLIC
+    """THE SEVEN, AND THE ONE DECLARED ADDITION - never anything else. A public
+    procedure that appeared without being named here would be a new entry point
+    nobody authorised."""
+    assert sorted(_module().public_procedures) == sorted(
+        PHASE6_PUBLIC + [PHASE8_READ_ONLY_ADDITION])
+    # AND THE ADDITION IS A DELEGATION, NOT AN ENDPOINT. No PCCM_ prefix, so no
+    # cell and no button can reach it by name; one statement, and that statement
+    # is the accepted derivation.
+    assert not PHASE8_READ_ONLY_ADDITION.startswith("PCCM_")
+    body = _procedure(PHASE8_READ_ONLY_ADDITION)
+    statements = [line.strip() for line in body.splitlines()
+                  if line.strip() and not line.strip().startswith(("Public", "End"))]
+    assert statements == [f"{PHASE8_READ_ONLY_ADDITION} = DeriveSimStatus()"], statements
     surface = _sim().raw["command_surface"]
     assert set(PHASE6_PUBLIC) == set(surface["read_accessors"]) | {
         surface["automation_endpoint"]}

@@ -1038,10 +1038,23 @@ function Invoke-P81AnnualChecks {
 # THE RECONCILIATION, RE-DERIVED AND COMPARED. The sheet's own answer is checked
 # against the authoritative total, the persisted profile and the project's
 # identity rule - never against the formatted string beside it.
+# THE TWO Px THIS BLOCK IS ABOUT ARE NOT THE SAME Px, and P8-1's first complete
+# Windows run is what proved it. `Selected Px` on row 47 is
+#   =IF(...COUNTIF(...,inpSelectedConfidenceLevel)...INDEX(...MATCH(inpSelectedConfidenceLevel...)))
+# so the displayed TOTAL follows the LIVE REPORTING SELECTOR, immediately, on a
+# recalculation. The annual profile follows the STAMP - the Px it was actually
+# blended at - and is never relabelled. In Part A, C, D and E the two coincide.
+# In Part B they do not, and that divergence is the whole point of Part B: it is
+# what makes the profile OTHER Px, and it is why the reconciliation carries a
+# qualifier at all. A reconciliation that always reconciled would need none.
+#
+# SO THE TOTAL'S RUNG IS THE SELECTOR'S, always. The profile's Px is read off
+# the sheet's own stamp cell by the state checks, not asserted here.
 function Invoke-P81ReconciliationChecks {
     param($Workbook, $Inspection, $SimInspection, $P7, [string]$Bank, [int]$YearCount,
-          [string]$Label, [int]$LadderIndex, $ProfileState, [string]$Stage)
-    $rowKey = 'quantile_' + [string]($LadderIndex + 1)
+          [string]$SelectorLabel, [int]$SelectorIndex, $ProfileState, [string]$Stage)
+    $Label = $SelectorLabel
+    $rowKey = 'quantile_' + [string]($SelectorIndex + 1)
     $contingencyBlock = $SimInspection.sim_data.contingency_ladder
     $measures = @($P7.summary_semantics.contingency_measures | ForEach-Object { [string]$_ })
     foreach ($measure in $measures) {
@@ -1108,19 +1121,38 @@ function Invoke-P81ReconciliationChecks {
 
         # (D) THE VERDICT, TAKEN THE WAY THE SHEET SHOULD HAVE TAKEN IT - on the
         # stored values, not on anything rounded for a reader.
-        $shouldReconcile = $false
-        if (($cells['difference'].Value -is [double]) -and ($cells['allowance'].Value -is [double])) {
-            $shouldReconcile = ([Math]::Abs([double]$cells['difference'].Value) -le
-                                [double]$cells['allowance'].Value)
-        }
-        $verdict = [string]$Inspection.reconciliation.verdicts.mismatch
-        if ($shouldReconcile) { $verdict = [string]$Inspection.reconciliation.verdicts.reconciled }
+        # A VERDICT NEEDS TWO NUMBERS, AND SAYS SO WHEN IT HAS NOT GOT THEM.
+        # The first complete run reported `unrounded verdict NOT RECONCILED`
+        # beside a delta of 0 and an allowance of 1E-06, which reads as a broken
+        # oracle and is not one: the difference and allowance CELLS were
+        # #VALUE!, the numbers printed beside them were this runner's own
+        # arithmetic, and a comparison that could not be made was being labelled
+        # as a comparison that came out negative. The check still FAILS - an
+        # unreadable reconciliation is a failure - but it now fails saying what
+        # actually happened.
+        $comparable = (($cells['difference'].Value -is [double]) -and
+                       ($cells['allowance'].Value -is [double]))
         $status = ''
         if (-not $cells['status'].IsError) { $status = [string]$cells['status'].Value }
-        $null = Add-P81Check ($Stage + ': the displayed ' + $measure +
-                              ' status agrees with the unrounded comparison') `
-            ($status.StartsWith($verdict)) ((Format-P81Cell $cells['status']) +
-                                            ', unrounded verdict ' + $verdict)
+        if (-not $comparable) {
+            $null = Add-P81Check ($Stage + ': the displayed ' + $measure +
+                                  ' status could be checked at all') $false `
+                ('no verdict could be taken: difference ' +
+                 (Format-P81Cell $cells['difference']) + ', allowance ' +
+                 (Format-P81Cell $cells['allowance']) + ', status ' +
+                 (Format-P81Cell $cells['status']))
+        } else {
+            $shouldReconcile = ([Math]::Abs([double]$cells['difference'].Value) -le
+                                [double]$cells['allowance'].Value)
+            $verdict = [string]$Inspection.reconciliation.verdicts.mismatch
+            if ($shouldReconcile) {
+                $verdict = [string]$Inspection.reconciliation.verdicts.reconciled
+            }
+            $null = Add-P81Check ($Stage + ': the displayed ' + $measure +
+                                  ' status agrees with the unrounded comparison') `
+                ($status.StartsWith($verdict)) ((Format-P81Cell $cells['status']) +
+                                                ', unrounded verdict ' + $verdict)
+        }
         # (E) AND IT SAYS WHOSE PROFILE IT IS. A reconciliation of a profile the
         # selector is no longer asking for must not read as the current answer.
         $currentProfile = [string]$P7.handoff.profile_states[1]
@@ -1552,8 +1584,8 @@ try {
     Invoke-P81AnnualChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount -StartYear $startYear -Stage 'part A'
     Invoke-P81ReconciliationChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection `
-        -P7 $p7 -Bank $bank -YearCount $yearCount -Label $firstLabel -LadderIndex $firstIndex `
-        -ProfileState $profileCurrent -Stage 'part A'
+        -P7 $p7 -Bank $bank -YearCount $yearCount -SelectorLabel $firstLabel `
+        -SelectorIndex $firstIndex -ProfileState $profileCurrent -Stage 'part A'
 
     # ===================================================================
     # PART B - THE SELECTOR MOVES AND NOTHING ELSE DOES
@@ -1568,14 +1600,40 @@ try {
         -SimInspection $simInspection -P7 $p7 -Stage 'part B' -Distribution $annualCurrent `
         -Profile $otherPx -ExpectedPx $firstLabel -ExpectedYears $yearCount
     $null = $observationB
-    # THE PERSISTED ANSWER IS STILL THE ONE ON THE SHEET, and it is still the
-    # P80 one. A presentation layer that relabelled it would be claiming a blend
-    # nobody computed.
+    # THE TWO HALVES OF PART B, STATED AS TWO SEPARATE CLAIMS, because the whole
+    # part exists to show they can disagree.
+    #
+    # (i) THE TOTAL MOVED. Row 47 resolves inpSelectedConfidenceLevel against the
+    # summary ladder, so a recalculation alone must retarget it - and if it did
+    # not, the sheet would be reporting a total nobody selected.
+    $totalMoved = New-Object System.Collections.ArrayList
+    foreach ($measure in @($p7.summary_semantics.contingency_measures |
+                           ForEach-Object { [string]$_ })) {
+        $cellsB = Get-P81ReconciliationCells -Workbook $wb -Inspection $p8 -Measure $measure
+        $wasLabel = Get-SimSummaryValue -Workbook $wb -Inspection $simInspection `
+            -Bank $bank -Measure $measure -RowKey ('quantile_' + [string]($firstIndex + 1))
+        $nowLabel = Get-SimSummaryValue -Workbook $wb -Inspection $simInspection `
+            -Bank $bank -Measure $measure -RowKey ('quantile_' + [string]($secondIndex + 1))
+        if (-not (Test-P81SameNumber -Cell $cellsB['total'] -Expected $nowLabel)) {
+            $null = $totalMoved.Add($measure + ': ' + (Format-P81Cell $cellsB['total']) +
+                                    ' is not the ' + $secondLabel + ' total ' +
+                                    (Format-SimValue $nowLabel))
+        }
+        if (Test-P81SameNumber -Cell $cellsB['total'] -Expected $wasLabel) {
+            $null = $totalMoved.Add($measure + ': the total is still the ' + $firstLabel +
+                                    ' one, so the selector did not reach it')
+        }
+    }
+    $null = Add-P81Check ('part B: the displayed TOTAL followed the selector to ' +
+                          $secondLabel) ($totalMoved.Count -eq 0) (($totalMoved) -join '; ')
+    # (ii) THE PERSISTED ANSWER DID NOT. It is still the P80 blend, and a
+    # presentation layer that relabelled it would be claiming a blend nobody
+    # computed. That is the divergence, and it is why the profile is OTHER Px.
     Invoke-P81AnnualChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount -StartYear $startYear -Stage 'part B'
     Invoke-P81ReconciliationChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection `
-        -P7 $p7 -Bank $bank -YearCount $yearCount -Label $firstLabel -LadderIndex $firstIndex `
-        -ProfileState $otherPx -Stage 'part B'
+        -P7 $p7 -Bank $bank -YearCount $yearCount -SelectorLabel $secondLabel `
+        -SelectorIndex $secondIndex -ProfileState $otherPx -Stage 'part B'
     $captureB = Get-P81BankCapture -Workbook $wb -Inspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount
     $movedB = Compare-P81Surface -Before $captureA -After $captureB
@@ -1607,8 +1665,8 @@ try {
     Invoke-P81AnnualChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount -StartYear $startYear -Stage 'part C'
     Invoke-P81ReconciliationChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection `
-        -P7 $p7 -Bank $bank -YearCount $yearCount -Label $secondLabel -LadderIndex $secondIndex `
-        -ProfileState $profileCurrent -Stage 'part C'
+        -P7 $p7 -Bank $bank -YearCount $yearCount -SelectorLabel $secondLabel `
+        -SelectorIndex $secondIndex -ProfileState $profileCurrent -Stage 'part C'
     # THE PROFILE REALLY CHANGED. If the sheet had cached the P80 answer it
     # would still reconcile - against the wrong total - so the payload itself is
     # required to have moved while the run identity did not.
@@ -1658,8 +1716,8 @@ try {
     Invoke-P81AnnualChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount -StartYear $startYear -Stage 'part D'
     Invoke-P81ReconciliationChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection `
-        -P7 $p7 -Bank $bank -YearCount $yearCount -Label $secondLabel -LadderIndex $secondIndex `
-        -ProfileState $historical -Stage 'part D'
+        -P7 $p7 -Bank $bank -YearCount $yearCount -SelectorLabel $secondLabel `
+        -SelectorIndex $secondIndex -ProfileState $historical -Stage 'part D'
     $captureD1 = Get-P81BankCapture -Workbook $wb -Inspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount
     $movedD = Compare-P81Surface -Before $captureD0 -After $captureD1
@@ -1705,8 +1763,8 @@ try {
     Invoke-P81AnnualChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount -StartYear $startYear -Stage 'part E'
     Invoke-P81ReconciliationChecks -Workbook $wb -Inspection $p8 -SimInspection $simInspection `
-        -P7 $p7 -Bank $bank -YearCount $yearCount -Label $secondLabel -LadderIndex $secondIndex `
-        -ProfileState $historical -Stage 'part E'
+        -P7 $p7 -Bank $bank -YearCount $yearCount -SelectorLabel $secondLabel `
+        -SelectorIndex $secondIndex -ProfileState $historical -Stage 'part E'
     $captureE = Get-P81BankCapture -Workbook $wb -Inspection $simInspection -P7 $p7 `
         -Bank $bank -YearCount $yearCount
     $movedE = Compare-P81Surface -Before $captureD1 -After $captureE

@@ -45,11 +45,57 @@ than "`pccm/src` never changes", and deliberately: a later phase may add a
 module - P8-1 adds the Results state adapter - without touching a byte any
 Windows run executed. A control asserts that no file under `pccm/src` is
 modified or removed after `ad78988`; additions are allowed and are visible in
-the diff.
+the diff, and a **declared later correction** — §1.1 — is allowed and must be
+named there.
 
 Every one of the fourteen commits between the two touches only
 `pccm/bootstrap/windows`, `pccm/builder` and `pccm/tests` — Windows runners,
 acceptance-corpus fixture and projection metadata, and their static controls.
+
+### 1.1 Later corrections to shared owners — declared, not denied
+
+A later phase can find a real defect in a module Phase 7 was accepted against.
+Pretending otherwise would leave two bad options: leave the defect, or change
+the bytes and let this record go on claiming `79d4c3e` was the last commit that
+touched them. Neither is acceptable, so the record carries a third: **the
+modification is permitted and it is named here.**
+
+This does **not** reopen Phase 7 and it does **not** move either authority.
+`79d4c3e` remains the implementation baseline the eight scenarios were built
+from; `ad78988` remains the evidence head they were produced against. What a row
+below says is that a byte those scenarios executed has changed **since** that
+evidence was produced, which commit changed it, and why — so that any later
+reading of the Phase-7 evidence knows exactly what is no longer identical to the
+tree it was produced on.
+
+A row names the correction by its **commit subject**, not by a hash. The hash of
+the commit that lands a row cannot be written inside that row, and a placeholder
+that a later commit fills in is a claim nobody checks. The subject is unique,
+and it resolves:
+
+```text
+$ git log --format='%h %s' --grep='the Results state path is read-only' -1
+```
+
+| Module | Correction | Found by | What changed, and why |
+|---|---|---|---|
+| `pccm/src/vba/modSimReport.bas` | P8-1: the Results state path is read-only | P8-1, first complete Windows run | Adds `SimReportDerivedStatus`, a public delegation returning the existing private `DeriveSimStatus()`. **No derivation, no persistence and no existing procedure changed.** `PCCM_SimulationStatus` still derives *and* writes `_SimData!D28:D29`, exactly as Phase 7 accepted it. |
+| `pccm/src/vba/modSimAnnualStore.bas` | P8-1: the Results state path is read-only | P8-1, first complete Windows run | Splits the annual precondition into a command path (`SimAnnualStoreCurrentRun`, unchanged behaviour, still asks the persisting entry point, still the one `modSimAnnualRun` uses) and a read path (`SimAnnualStoreCurrentRunReadOnly`), both settling through one private `CurrentRunFor`. The two state accessors take the read path. **No state rule moved and no refusal text changed.** |
+
+**The defect these rows exist for.** `PCCM_AnnualDistributionState` and
+`PCCM_AnnualProfileState` reached `PCCM_SimulationStatus`, which persists the
+derived status pair. Excel forbids that to a function a worksheet cell called,
+so from the moment a publication existed both Results state cells showed
+`#VALUE!`. Phase 7 never saw it: its scenarios call the accessors through
+`Application.Run`, out of cell, where the write is permitted. It is a Phase-8
+integration defect in a Phase-7-owned module, and that is precisely the case
+§1.1 was written for.
+
+**What the runtime evidence still stands on.** Every W-scenario invoked these
+accessors out of cell, where both paths behave identically — the read path
+returns the same string from the same derivation. The one observable difference
+is that `_SimData!D28:D29` is no longer rewritten as a side effect of asking,
+and no accepted scenario asserted that it was.
 
 ---
 
@@ -131,7 +177,7 @@ as such. Nothing in this record re-derives, re-runs or infers a Windows number.
 |---|---|---|
 | Test suites in `pccm/tests` | **72 files** at the closure commit `b844915` | file count |
 | Tests collected | **4,663** at the closure commit `b844915` | `pytest tests --collect-only` |
-| Phase-7 suites / tests | **23 suites, 974 tests** | `pytest tests/test_phase7*.py --collect-only` |
+| Phase-7 suites / tests | **23 suites, 976 tests** | `pytest tests/test_phase7*.py --collect-only` |
 | W1–W8 static controls | **307 tests** | the eight W-suites |
 | Stage A | **351 passed / 0 failed** | `python3 builder/build_stage_a.py` on the clean tree |
 | Focused Gate-B + Phase-7 suites | **488 passed / 0 failed** | post-commit, clean tree |
@@ -277,6 +323,10 @@ provenance from W1–W8 and this record does not blur them.
 6. The **Phase-6 runtime authority remains historical evidence only.** It is not
    superseded as a record of Phase 6; it simply no longer stands in for Phase-7
    functionality, which now has runtime authority of its own.
+7. **Two Phase-7 modules have been modified since `ad78988`** by a declared
+   Phase-8 integration correction (§1.1). The accepted Windows evidence was
+   produced before that change, and this record does not claim it was re-run
+   afterwards.
 
 ---
 

@@ -58,11 +58,34 @@ End Type
 ' simulation state changes, and an annual answer belonging to an earlier
 ' successful run is left exactly where it is.
 ' ==========================================================================
+' THE COMMAND PATH. It asks through modSimReport.PCCM_SimulationStatus, which
+' derives the status AND persists the derived pair - the accepted Phase-7
+' behaviour of an operation invoked from a button or an endpoint, unchanged.
 Public Function SimAnnualStoreCurrentRun(ByRef run As SimAnnualIdentity, _
                                          ByRef detail As String) As Boolean
-    Dim status As String
+    SimAnnualStoreCurrentRun = CurrentRunFor(modSimReport.PCCM_SimulationStatus(), _
+                                             run, detail)
+End Function
 
-    status = modSimReport.PCCM_SimulationStatus()
+' THE READ PATH, AND THE ONLY DIFFERENCE IS WHO WRITES.
+'
+' P8-1 found the split from a live Excel: a worksheet cell may not persist
+' anything, so a state accessor that reached the persisting entry point raised
+' and the cell showed #VALUE!. The status a reader needs is the same status; it
+' simply must not be accompanied by a rewrite of D28:D29.
+'
+' NO SECOND SEMANTIC. Both wrappers hand the identical string to the identical
+' settlement below, so a divergence between the two is not possible without
+' modSimReport deriving twice - which it does not.
+Public Function SimAnnualStoreCurrentRunReadOnly(ByRef run As SimAnnualIdentity, _
+                                                 ByRef detail As String) As Boolean
+    SimAnnualStoreCurrentRunReadOnly = CurrentRunFor( _
+        modSimReport.SimReportDerivedStatus(), run, detail)
+End Function
+
+Private Function CurrentRunFor(ByVal status As String, _
+                               ByRef run As SimAnnualIdentity, _
+                               ByRef detail As String) As Boolean
     If Len(status) = 0 Then
         detail = "annual: no successful simulation has been published, so there " & _
                  "is nothing to decompose"
@@ -75,7 +98,7 @@ Public Function SimAnnualStoreCurrentRun(ByRef run As SimAnnualIdentity, _
                  "a way the sheet could not show. Run the simulation again first."
         Exit Function
     End If
-    SimAnnualStoreCurrentRun = SimAnnualStoreIdentity(run, detail)
+    CurrentRunFor = SimAnnualStoreIdentity(run, detail)
 End Function
 
 Public Function SimAnnualStoreIdentity(ByRef run As SimAnnualIdentity, _
@@ -431,9 +454,12 @@ Public Function PCCM_AnnualDistributionState() As String
         PCCM_AnnualDistributionState = SIM_ANNUAL_STATE_NOT_PRODUCED
         Exit Function
     End If
+    ' THE READ PATH, BECAUSE A CELL IS ASKING. Same status, same settlement;
+    ' what it does not do is rewrite the derived status rows, which a worksheet
+    ' function is not permitted to do and which no reader needs.
     PCCM_AnnualDistributionState = DistributionStateOf( _
         StampText(bank, SIM_ANNUAL_STAMP_ROW_PUBLISHED), _
-        SimAnnualStoreCurrentRun(run, detail), StampBelongsTo(bank, run))
+        SimAnnualStoreCurrentRunReadOnly(run, detail), StampBelongsTo(bank, run))
 End Function
 
 Public Function PCCM_AnnualProfileState() As String
@@ -448,9 +474,10 @@ Public Function PCCM_AnnualProfileState() As String
         PCCM_AnnualProfileState = SIM_ANNUAL_STATE_NOT_PRODUCED
         Exit Function
     End If
+    ' THE READ PATH, for the same reason as the distribution above.
     distribution = DistributionStateOf( _
         StampText(bank, SIM_ANNUAL_STAMP_ROW_PUBLISHED), _
-        SimAnnualStoreCurrentRun(run, detail), StampBelongsTo(bank, run))
+        SimAnnualStoreCurrentRunReadOnly(run, detail), StampBelongsTo(bank, run))
 
     stamped = StampText(bank, SIM_ANNUAL_STAMP_ROW_SELECTED_PX_LABEL)
     stampedProbability = StampNumber(bank, SIM_ANNUAL_STAMP_ROW_SELECTED_PX_PROBABILITY)

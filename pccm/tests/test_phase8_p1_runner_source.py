@@ -29,6 +29,7 @@ sys.path.insert(0, str(PCCM_ROOT / "tests"))
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
 
 import pytest  # noqa: E402
+import yaml  # noqa: E402
 
 import test_phase7_acceptance_harness_source as accepted  # noqa: E402
 
@@ -977,3 +978,147 @@ def test_76_the_four_orderings_that_would_break_the_prerequisite_are_refused(
         except (AssertionError, ValueError) as failure:
             refused.append(f"{rule.__name__}: {failure}")
     assert refused, f"'{name}' survived every ordering rule"
+
+
+# ===========================================================================
+# THE TWO RUNNER EXPECTATIONS THE FIRST COMPLETE RUN PROVED WRONG
+# ===========================================================================
+# NEITHER IS A PRODUCTION DEFECT, and both were audited against the contract
+# before a line moved.
+#
+# A. THE PART-B TOTAL. `spec/workbook.yaml` builds Results row 47 as
+#        =IF(OR(...,COUNTIF(...,inpSelectedConfidenceLevel)=0),"",
+#            ...INDEX(...,MATCH(inpSelectedConfidenceLevel,...)))
+#    so the displayed TOTAL resolves the LIVE reporting selector. Part B writes
+#    that very defined name and recalculates, so the total MUST move to the new
+#    label. The annual profile follows the STAMP and does not move - which is
+#    what makes it OTHER Px, and is the only reason the reconciliation carries a
+#    qualifier at all. The runner was asserting the total stayed at the first
+#    label. THE RUNNER WAS WRONG.
+#
+# B. THE RECONCILIATION VERDICT. The sheet's status formula is
+#        IF(ABS(difference)<=allowance,"Reconciled","NOT RECONCILED")&qualifier
+#    and the oracle applies the identical rule to the identical cells - so the
+#    rule was never the problem. What was wrong was the label: when those cells
+#    were #VALUE! the oracle still announced `unrounded verdict NOT RECONCILED`
+#    beside its own separately computed delta of 0, which reads as a broken
+#    oracle. A comparison that could not be made is now reported as one. The
+#    check still fails; no error is suppressed and no tolerance moved.
+
+SELECTOR_FORMULA_NAME = "inpSelectedConfidenceLevel"
+
+
+def test_80_the_reconciliation_total_is_always_the_selectors_rung() -> None:
+    """THE ROLE IS IN THE PARAMETER NAME, so a call site cannot pass the stamp's
+    Px by accident. The old name said neither."""
+    code = _code()
+    signature = _function("Invoke-P81ReconciliationChecks")
+    assert "[string]$SelectorLabel" in signature and "[int]$SelectorIndex" in signature, (
+        "the reconciliation oracle does not name the total's rung as the selector's")
+    assert "$rowKey = 'quantile_' + [string]($SelectorIndex + 1)" in signature, (
+        "the total's rung is not taken from the selector index")
+    assert "-LadderIndex $" not in code, (
+        "a call site still passes the old role-blind ladder index")
+    # EVERY CALL SITE, TAKEN AS THE 400 CHARACTERS AFTER THE NAME so a later
+    # call's arguments can never be read as this one's.
+    sites = [code[m.end():m.end() + 400]
+             for m in re.finditer(r"Invoke-P81ReconciliationChecks -", code)]
+    assert len(sites) == 5, f"{len(sites)} reconciliation call sites, expected five"
+    stages = sorted(re.search(r"-Stage '([^']+)'", site).group(1) for site in sites)
+    assert stages == ["part A", "part B", "part C", "part D", "part E"], stages
+    for site in sites:
+        assert "-SelectorLabel " in site and "-SelectorIndex " in site
+
+
+def test_81_part_b_expects_the_total_to_follow_the_selector_and_the_profile_not_to() -> None:
+    """THE CORRECTED EXPECTATION, AND BOTH HALVES OF IT. Part B is the one part
+    where the two Px differ, so it is the one part that can prove they are two
+    different things."""
+    code = _code()
+    part = code[code.index("PART B - "):code.index("PART C - ")]
+    # THE TOTAL FOLLOWS THE SELECTOR.
+    assert "-SelectorLabel $secondLabel" in part, (
+        "part B still reconciles against the first label's total")
+    assert "-SelectorIndex $secondIndex" in part
+    assert "$firstLabel" in part, "part B no longer mentions the label it moved away from"
+    # AND IT IS ASSERTED POSITIVELY, not merely implied by the reconciliation.
+    assert "the displayed TOTAL followed the selector to" in part, (
+        "nothing in part B asserts that the total actually moved")
+    assert "is still the ' + $firstLabel" in part, (
+        "part B does not refuse a total that stayed where it was")
+    # THE PROFILE DOES NOT FOLLOW IT.
+    assert "-ProfileState $otherPx" in part, "part B no longer expects OTHER Px"
+    assert "-ExpectedPx $firstLabel" in part, (
+        "part B no longer expects the persisted profile to still be the first label's")
+
+
+def test_82_the_selector_the_runner_writes_is_the_one_the_total_reads() -> None:
+    """THE TWO ENDS OF THE CLAIM, JOINED. The audit is only sound if the defined
+    name Part B writes is the same one row 47's formula resolves - proved from
+    the manifest and the projection, not asserted."""
+    shell = yaml.safe_load((SPEC / "workbook.yaml").read_text(encoding="utf-8"))
+    selected = shell["phase6_shell"]["results"]["selected"]
+    for key in ("quantile_nominal", "quantile_pv"):
+        assert SELECTOR_FORMULA_NAME in selected[key], (
+            f"the displayed total no longer resolves {SELECTOR_FORMULA_NAME}")
+    projection = _projection()
+    assert projection["selected"]["total_row"] == int(selected["quantile_row"])
+    inspection = json.loads(
+        (BUILD / "phase5_gate_b_inspection.json").read_text(encoding="utf-8"))
+    p7 = json.loads(
+        (BUILD / "phase7_acceptance_inspection.json").read_text(encoding="utf-8"))
+    key = p7["selector_semantics"]["selector_input_key"]
+    assert inspection["inputs"][key]["defined_name"] == SELECTOR_FORMULA_NAME, (
+        "the selector the runner writes is not the name the total reads")
+    # AND THE RUNNER WRITES THAT NAME, through the projection rather than typed.
+    assert SELECTOR_FORMULA_NAME not in _code(), (
+        "the runner types the defined name instead of projecting it")
+    assert "selector_semantics.selector_input_key" in _code()
+
+
+def test_83_the_oracle_refuses_to_name_a_verdict_it_could_not_take() -> None:
+    """AN UNREADABLE RECONCILIATION IS A FAILURE, AND IT SAYS WHY. The check
+    still fails - this is not a softened assertion - but it no longer reports a
+    negative comparison that was never performed."""
+    body = _function("Invoke-P81ReconciliationChecks")
+    assert "$comparable = " in body, "the oracle does not test whether it can compare"
+    assert "no verdict could be taken" in body, (
+        "the oracle still labels an unreadable pair as NOT RECONCILED")
+    # THE INDETERMINATE BRANCH FAILS. A `$false` literal, not a computed verdict.
+    indeterminate = body[body.index("if (-not $comparable) {"):]
+    indeterminate = indeterminate[:indeterminate.index("} else {")]
+    assert "') $false `" in indeterminate, (
+        "the indeterminate branch does not fail the check")
+    for suppressor in ("IFERROR", "return", "continue", "-eq $true"):
+        assert suppressor not in indeterminate, (
+            f"the indeterminate branch suppresses rather than reports: {suppressor}")
+    # AND THE COMPARISON ITSELF IS UNCHANGED: the sheet's rule, on the cells.
+    comparison = body[body.index("} else {"):]
+    comparison = comparison[:comparison.index("agrees with the unrounded comparison")]
+    assert "[Math]::Abs([double]$cells['difference'].Value) -le" in comparison
+    assert "[double]$cells['allowance'].Value" in comparison
+    assert "-lt " not in comparison, "the allowance comparison was weakened to strict"
+
+
+def test_84_the_sheet_and_the_oracle_apply_the_same_verdict_rule() -> None:
+    """ONE RULE, TWO IMPLEMENTATIONS, CHECKED AGAINST EACH OTHER - which is the
+    only reason the oracle is worth having. If the builder ever rounded the
+    comparison or folded the state qualifier into it, this fails."""
+    builder = (PCCM_ROOT / "builder" / "pccm_builder" / "workbook_builder.py").read_text(
+        encoding="utf-8")
+    assert 'IF(ABS({difference})<={allowance},' in builder, (
+        "the sheet no longer takes the verdict as ABS(difference) <= allowance")
+    assert "ROUND" not in builder[builder.index('"status": ('):
+                                  builder.index('"status": (') + 600], (
+        "the sheet rounds the values the verdict is taken on")
+    # THE QUALIFIER IS APPENDED, NEVER FOLDED IN - so a state word can never
+    # change a numeric verdict, in either implementation.
+    status = builder[builder.index('"status": ('):builder.index('"status": (') + 600]
+    assert status.index('IF(ABS(') < status.index('qualifier_prefix'), (
+        "the state qualifier is evaluated before the numeric verdict")
+    oracle = _function("Invoke-P81ReconciliationChecks")
+    verdict = oracle[oracle.index("$comparable = "):
+                     oracle.index("$currentProfile = ")]
+    for state_word in ("ProfileState", "qualifier"):
+        assert state_word not in verdict, (
+            f"state qualification leaks into the numeric verdict: {state_word}")
