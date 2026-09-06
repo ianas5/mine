@@ -115,6 +115,100 @@ def _projection() -> dict:
 
 
 # ===========================================================================
+# THE COMMA-BINDS-TIGHTER-THAN-ARITHMETIC DETECTOR
+# ===========================================================================
+# THE DEFECT IT EXISTS FOR, IN ONE LINE. PowerShell's comma binds TIGHTER than
+# its arithmetic, so `@(0, 1, [int]$x - 1)` is `(0, 1, [int]$x) - 1` - an
+# Object[] minus an integer. The first Windows run of P8-1 died on precisely
+# that, one statement past the gate it had just passed:
+#
+#     Method invocation failed because [System.Object[]] does not contain a
+#     method named 'op_Subtraction'.
+#
+# The cast was present and correct; it simply applied to an operand that was
+# never the left-hand side. Nothing in a Python test can parse PowerShell
+# properly, so this reads the shape rather than the grammar: inside a bracket
+# group where a comma IS the array operator, a top-level arithmetic operator is
+# the trap. A METHOD CALL's argument list is not a comma expression - the
+# arguments are parsed separately - so `[Math]::Min($a + 1, $b)` is safe, and
+# the opening bracket is classified by what precedes it.
+_ARITHMETIC = set("+-*/%")
+
+
+def _comma_bound_arithmetic(code: str) -> list[tuple[int, str]]:
+    out: list[tuple[int, str]] = []
+    stack: list[dict] = []
+    index, size, line = 0, len(code), 1
+    while index < size:
+        char = code[index]
+        if char == "\n":
+            line += 1
+            index += 1
+            continue
+        if char == "#":
+            while index < size and code[index] != "\n":
+                index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            index += 1
+            while index < size:
+                if code[index] == "\n":
+                    line += 1
+                if code[index] == quote:
+                    if index + 1 < size and code[index + 1] == quote:
+                        index += 2
+                        continue
+                    break
+                if quote == '"' and code[index] == "`":
+                    index += 1
+                index += 1
+            index += 1
+            continue
+        if char in "([{":
+            kind = "group"
+            if char == "(":
+                # A CALL'S BRACKET TOUCHES ITS NAME. `Foo(` and `[Math]::Min(`
+                # are calls; `-Offset (` and `in @(` and a bare `(` are not, and
+                # the whitespace is what says so - which is the distinction the
+                # first draft of this detector got wrong, and it let a mutation
+                # through in exactly that shape.
+                adjacent = code[:index]
+                if adjacent.rstrip().endswith("@") and adjacent.endswith("@"):
+                    kind = "array"
+                elif re.search(r"[\w\]\.]$", adjacent) and not adjacent.endswith("$"):
+                    kind = "call"
+                else:
+                    kind = "array"
+            elif char == "[":
+                before = code[:index]
+                kind = "array" if re.search(r"[\w\)\]]$", before) else "type"
+            stack.append({"kind": kind, "line": line, "comma": False,
+                          "arith": False, "start": index})
+            index += 1
+            continue
+        if char in ")]}":
+            if stack:
+                top = stack.pop()
+                if top["kind"] == "array" and top["comma"] and top["arith"]:
+                    out.append((top["line"],
+                                code[top["start"]:index + 1].replace("\n", " ")[:90]))
+            index += 1
+            continue
+        if stack and stack[-1]["kind"] in ("array", "call"):
+            if char == ",":
+                stack[-1]["comma"] = True
+            elif char in _ARITHMETIC and stack[-1]["kind"] == "array":
+                previous = code[index - 1] if index else " "
+                following = code[index + 1] if index + 1 < size else " "
+                # A binary operator has whitespace on both sides; `-eq`, a
+                # negative literal and a `-Parameter` name do not.
+                if previous == " " and following == " ":
+                    stack[-1]["arith"] = True
+        index += 1
+    return out
+
+# ===========================================================================
 # A. SCOPE
 # ===========================================================================
 
@@ -590,3 +684,102 @@ def test_53_the_recalculation_records_the_calculation_mode() -> None:
     body = _function("Invoke-P81Recalculate")
     assert "$Excel.Calculation" in body and "$Excel.Calculate()" in body
     assert "Application.Calculation = " in body
+
+
+# ===========================================================================
+# G. THE SCALAR-VERSUS-ARRAY DEFECT THE FIRST WINDOWS RUN FOUND
+# ===========================================================================
+
+def test_60_no_comma_expression_is_an_operand_of_arithmetic() -> None:
+    """THE EXACT FAILURE, AS A CLASS. Not the one line: any place where a comma
+    list and arithmetic meet at the same level."""
+    found = _comma_bound_arithmetic(_text())
+    assert not found, (
+        "a comma expression is an operand of arithmetic; PowerShell's comma binds "
+        "tighter, so this is an Object[] in an arithmetic position:\n  " +
+        "\n  ".join(f"line {line}: {text}" for line, text in found))
+
+
+def test_61_the_detector_detects(caplog=None) -> None:
+    """A CONTROL THAT CANNOT FAIL IS NOT A CONTROL. The detector is shown to
+    fire on the expression that actually broke the run, and on the one other
+    instance of the class in the tree - which is in the FROZEN harness, is
+    genuinely broken, and is left exactly where history put it."""
+    broken = "$fabricated = @(0, 1, [int]$p8.annual.row_window - 1)\n"
+    assert _comma_bound_arithmetic(broken), "the detector misses the defect it was written for"
+    safe = "$last = [int]$p8.annual.row_window - 1\n$fabricated = @(0, 1, $last)\n"
+    assert not _comma_bound_arithmetic(safe), "the detector fires on the correction"
+    call = "$x = [Math]::Min($YearCount + 2, [int]$window)\n"
+    assert not _comma_bound_arithmetic(call), (
+        "the detector fires on a method call, whose arguments are not a comma expression")
+    parenthesised = "$x = @(0, 1, ([int]$w - 1))\n"
+    assert not _comma_bound_arithmetic(parenthesised)
+
+
+def test_62_no_live_windows_runner_carries_the_defect() -> None:
+    """AND IT IS SWEPT, not checked one runner at a time. The frozen acceptance
+    harness carries the only other instance in the tree - `$Block[$Year, $Offset
+    + 1]`, which really does fail with "cannot index into a 2 dimensional array
+    with index [1,0,1]" - and it is history: never patched, never run again, and
+    named here so its exclusion is a statement rather than a gap."""
+    frozen = WINDOWS / "phase7_acceptance_scenarios.ps1"
+    for path in sorted(WINDOWS.glob("*.ps1")):
+        found = _comma_bound_arithmetic(path.read_text(encoding="utf-8"))
+        if path == frozen:
+            assert found, "the frozen harness no longer carries its known instance"
+            assert len(found) == 1, found
+            continue
+        assert not found, f"{path.name} carries comma-bound arithmetic: {found}"
+
+
+def test_63_the_failing_part_0_path_is_covered_and_corrected() -> None:
+    """THE EXACT LINE THAT FAILED, and the shape that replaced it: the far end
+    of the window is a named integer computed before the list, not arithmetic
+    inside it."""
+    code = _code()
+    part = code[code.index("$observation0 = Invoke-P81Observation"):
+                code.index("PART A - A SUCCESSFUL ANNUAL RESULT")]
+    assert "$lastAnnualOffset = [int]$p8.annual.row_window - 1" in part, (
+        "the far end of the annual window is not computed into a named integer")
+    assert "foreach ($offset in @(0, 1, $lastAnnualOffset)) {" in part
+    assert "@(0, 1, [int]$p8.annual.row_window - 1)" not in code, (
+        "the expression that broke the first Windows run is back")
+    # AND THE SAMPLE IS STILL THE ONE PART 0 NEEDS: the first row, its
+    # neighbour, and the far end of the structural window.
+    assert "$p8.annual.row_window" in part
+    assert _projection()["annual"]["row_window"] >= 200
+
+
+def test_64_projected_row_arithmetic_is_always_cast_to_an_integer() -> None:
+    """A ROW NUMBER FROM JSON IS AN Int64, AND A COLUMN IS A STRING. Every place
+    the runner does arithmetic on a projected coordinate casts it first, so an
+    operand can never arrive as whatever ConvertFrom-Json felt like returning."""
+    own = _own_code()
+    for projected in re.finditer(
+            r"\$(?:p8|Inspection|P7|simInspection|SimInspection)\."
+            r"[\w.$]*(?:row|rows|first_row|header_row|row_window|Count)\b\s*[-+]\s",
+            own):
+        text = own[max(0, projected.start() - 12):projected.end()]
+        # A CAST OR A COUNT. `[int]` for arithmetic and `[string]` for the
+        # concatenations that build an address are both scalar conversions; what
+        # must never happen is a raw ConvertFrom-Json member in an operand.
+        assert re.search(r"\[(?:int|string|double|long)\]", text) or ".Count" in text, (
+            f"projected row arithmetic on an uncast operand: {text!r}")
+
+
+def test_65_helpers_that_return_a_collection_are_consumed_as_one() -> None:
+    """MADE EXPLICIT, so a collection is never read as a scalar. These three
+    return sets, not values, and every call site takes them as sets."""
+    text = _text()
+    for name, returns in (("Get-P81RowsInGroup", "@($out)"),
+                          ("Get-P81DerivedRows", "an ordered dictionary"),
+                          ("Get-P81StateCells", "an ordered dictionary")):
+        assert name in text, name
+    assert "return @($out)" in _function("Get-P81RowsInGroup"), (
+        "Get-P81RowsInGroup must return a collection explicitly")
+    # AND NOBODY SUBTRACTS FROM ONE.
+    for call in re.finditer(r"(Get-P81RowsInGroup|Get-P81DerivedRows|Get-P81StateCells)"
+                            r"[^\n]*", text):
+        line = call.group(0)
+        assert not re.search(r"\)\s*[-+*/]\s", line), (
+            f"a collection-returning helper is used in arithmetic: {line.strip()!r}")

@@ -1410,8 +1410,25 @@ try {
 
     # NO FABRICATED ZERO. An empty cash flow is not a cash flow of zeros: a
     # zero would sum, reconcile and one day chart exactly like a real one.
+    #
+    # THE THREE OFFSETS PART 0 SAMPLES: the first row, its neighbour, and the far
+    # end of the structural window. THE LAST ONE IS COMPUTED HERE, INTO A NAMED
+    # INTEGER, and never inside the list.
+    #
+    # `@(0, 1, [int]$x - 1)` DOES NOT MEAN WHAT IT LOOKS LIKE. PowerShell's comma
+    # binds TIGHTER than its arithmetic, so that expression is `(0, 1, [int]$x) - 1`
+    # - an Object[] minus an integer - and the first Windows run of P8-1 died on
+    # exactly it, one statement past the gate it had just passed:
+    #
+    #     Method invocation failed because [System.Object[]] does not contain a
+    #     method named 'op_Subtraction'.
+    #
+    # The cast was there and was correct; it simply applied to an operand that was
+    # never the left-hand side. Naming the value first removes the trap rather
+    # than parenthesising around it.
+    $lastAnnualOffset = [int]$p8.annual.row_window - 1
     $fabricated = New-Object System.Collections.ArrayList
-    foreach ($offset in @(0, 1, [int]$p8.annual.row_window - 1)) {
+    foreach ($offset in @(0, 1, $lastAnnualOffset)) {
         $shown = Get-P81AnnualDisplayRow -Workbook $wb -Inspection $p8 -Offset $offset
         foreach ($column in @($p8.annual.columns)) {
             if (-not (Test-P81Blank -Cell $shown[[string]$column.key])) {
