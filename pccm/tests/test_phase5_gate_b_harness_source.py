@@ -63,6 +63,9 @@ _PHASE6_MANIFEST_MODULES = {"modSimContract", "modSimRng", "modSimSample",
                             "modSimNonce", "modSimReport"}
 _PHASE7_MANIFEST_MODULES = {"modSimSensitivity", "modSimPostReport", "modSimAnnual",
                             "modSimAnnualRun", "modSimAnnualStore"}
+_PHASE8_MANIFEST_MODULES = {"modResultsState"}
+"""P8-1's Results state adapter, admitted by name on the same terms as every
+phase before it. Naming it relaxes nothing about the Phase-5 half below."""
 
 """Phase-7 hand-written source modules, named on the same terms Phase 6 was:
 admitted by name, one at a time, so the earlier half of each inventory
@@ -592,7 +595,8 @@ def test_19_the_diagnostic_module_is_not_a_production_module() -> None:
         sorted(_PHASE5_MANIFEST_MODULES - set(declared))
     )
     assert (set(declared) - _PHASE5_MANIFEST_MODULES
-            == _PHASE6_MANIFEST_MODULES | _PHASE7_MANIFEST_MODULES)
+            == _PHASE6_MANIFEST_MODULES | _PHASE7_MANIFEST_MODULES
+            | _PHASE8_MANIFEST_MODULES)
     # Not in the structure contract either, so it can never be emitted into one.
     contract = _text(SPEC / "structure_contract.yaml")
     assert DIAGNOSTIC_MODULE_NAME not in contract
@@ -980,7 +984,8 @@ def test_37_no_calculate_button_and_no_new_production_module() -> None:
     modules = {module["name"] for module in emitted["manifest"]["vba"]["modules"]}
     assert _PHASE5_MANIFEST_MODULES <= set(modules)
     assert (set(modules) - _PHASE5_MANIFEST_MODULES
-            == _PHASE6_MANIFEST_MODULES | _PHASE7_MANIFEST_MODULES)
+            == _PHASE6_MANIFEST_MODULES | _PHASE7_MANIFEST_MODULES
+            | _PHASE8_MANIFEST_MODULES)
     on_disk = {path.stem for path in SRC_VBA.glob("*.bas")}
     assert DIAGNOSTIC_MODULE_NAME not in on_disk
     # The thirteen Phase-5 hand-written modules, plus Phase 6's source modules
@@ -988,7 +993,8 @@ def test_37_no_calculate_button_and_no_new_production_module() -> None:
     # naming a later phase's module never relaxes the Phase-5 half.
     assert on_disk == ((_PHASE5_MANIFEST_MODULES
                         - {"modConstants", "modCalcContract"})
-                       | _PHASE6_HANDWRITTEN | _PHASE7_MANIFEST_MODULES), (
+                       | _PHASE6_HANDWRITTEN | _PHASE7_MANIFEST_MODULES
+                       | _PHASE8_MANIFEST_MODULES), (
         f"a production module was added or removed: {sorted(on_disk)}"
     )
     # The harness asserts all three of those things at runtime too.

@@ -266,6 +266,12 @@ PHASE4_RAW_LINE_LIMIT = 900
 # PHASE 7. The pure sensitivity kernel is measured on the same pair of limits as
 # the Phase-5 and Phase-6 kernels: a code ceiling for sprawl and a raw ceiling
 # so documentation is neither charged as sprawl nor unbounded.
+# P8-1. The Results state adapter: four volatile wrappers over the Phase-7
+# handoff accessors, so a cell can ask the owner of a semantic instead of
+# rebuilding half of it. It is named here on the same terms as every other
+# phase's modules - a further Phase-8 module cannot arrive unremarked.
+PHASE8_VBA_MODULES = ("modResultsState",)
+
 PHASE7_VBA_MODULES = (
     "modSimSensitivity",
     "modSimPostReport",
@@ -322,7 +328,7 @@ def test_05_no_module_is_a_dumping_ground() -> None:
     by_name = {m.name: m for m in _handwritten_modules()}
     assert set(by_name) == (
         set(PHASE4_VBA_MODULES) | set(PHASE5_VBA_MODULES) | set(PHASE6_VBA_MODULES)
-        | set(PHASE7_VBA_MODULES)
+        | set(PHASE7_VBA_MODULES) | set(PHASE8_VBA_MODULES)
     ), (
         "the hand-written module inventory changed; the size limits below are "
         "assigned per module and must be assigned for the new one too"
@@ -332,7 +338,8 @@ def test_05_no_module_is_a_dumping_ground() -> None:
         assert raw < PHASE4_RAW_LINE_LIMIT, (
             f"{name} is {raw} raw lines; split its responsibilities"
         )
-    for name in PHASE5_VBA_MODULES + PHASE6_VBA_MODULES + PHASE7_VBA_MODULES:
+    for name in (PHASE5_VBA_MODULES + PHASE6_VBA_MODULES + PHASE7_VBA_MODULES
+                 + PHASE8_VBA_MODULES):
         raw, _, _, code = _line_metrics(by_name[name])
         assert code < PHASE5_CODE_LINE_LIMIT, (
             f"{name} is {code} code lines; split its responsibilities"
@@ -407,6 +414,17 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
     handoff_owners = {m.name for m in _all_modules()
                       if handoff & set(m.public_procedures)}
     assert handoff_owners == {"modSimAnnualStore"}, handoff_owners
+    # P8-1. THE PRESENTATION ADAPTERS ARE SOMEWHERE ELSE, and they are wrappers:
+    # the semantic stays with the store. A Phase-8 name inside the store would
+    # mean the display had been let into the owner.
+    adapters = set(data["vba"]["phase8_api_procedures"])
+    assert adapters == {"PCCM_ResultsAnnualDistributionState",
+                        "PCCM_ResultsAnnualProfileState",
+                        "PCCM_ResultsAnnualProfilePx",
+                        "PCCM_ResultsAnnualYearCount"}, sorted(adapters)
+    adapter_owners = {m.name for m in _all_modules()
+                      if adapters & set(m.public_procedures)}
+    assert adapter_owners == {"modResultsState"}, adapter_owners
     for module in _all_modules():
         if module.name == "modSimAnnualStore":
             assert handoff <= set(module.public_procedures), (
@@ -415,6 +433,7 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
                  | set(data["vba"]["harness_procedures"])
                  | set(data["vba"].get("api_procedures", []))
                  | set(data["vba"].get("phase7_api_procedures", []))
+                 | set(data["vba"].get("phase8_api_procedures", []))
                  | phase6)
     found = {
         p for m in _all_modules() for p in m.public_procedures if p.startswith("PCCM_")

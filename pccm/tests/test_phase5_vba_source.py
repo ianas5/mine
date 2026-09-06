@@ -383,6 +383,7 @@ Phase-5 inventory equality below stays exact."""
 
 PHASE7_MODULES = ("modSimSensitivity", "modSimPostReport", "modSimAnnual",
                   "modSimAnnualRun", "modSimAnnualStore")
+PHASE8_MODULES = ("modResultsState",)
 """Phase-7 hand-written source modules, named on the same terms as Phase 6's.
 
 The equality below is about PHASE 5: a further Phase-5 module still cannot
@@ -408,10 +409,12 @@ def test_02_step_4_added_exactly_three_modules_and_no_fourth() -> None:
     on_disk = set(_modules())
     assert on_disk == (set(PHASE4_MODULES) | set(KERNEL_MODULES)
                        | {STEP5_MODULE, STEP6_MODULE, STEP7_MODULE}
-                       | set(PHASE6_MODULES) | set(PHASE7_MODULES)), (
+                       | set(PHASE6_MODULES) | set(PHASE7_MODULES)
+                       | set(PHASE8_MODULES)), (
         f"unexpected hand-written module inventory: {sorted(on_disk)}"
     )
-    assert on_disk - set(PHASE6_MODULES) - set(PHASE7_MODULES) == (
+    assert (on_disk - set(PHASE6_MODULES) - set(PHASE7_MODULES)
+            - set(PHASE8_MODULES)) == (
         set(PHASE4_MODULES) | set(KERNEL_MODULES)
         | {STEP5_MODULE, STEP6_MODULE, STEP7_MODULE}
     )

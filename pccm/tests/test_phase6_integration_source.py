@@ -518,8 +518,16 @@ def test_17_the_two_public_surfaces_are_exactly_the_accepted_ones() -> None:
         "PCCM_AnnualProfilePx",
         "PCCM_AnnualYearCount",
     }, sorted(phase7)
-    assert found == phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7, sorted(
-        found ^ (phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7))
+    # P8-1 adds its presentation adapters on the same terms: a separate contract
+    # list, because Phase-8 code carries no Windows evidence either.
+    phase8 = set(declared["phase8_api_procedures"])
+    assert phase8 == {"PCCM_ResultsAnnualDistributionState",
+                      "PCCM_ResultsAnnualProfileState",
+                      "PCCM_ResultsAnnualProfilePx",
+                      "PCCM_ResultsAnnualYearCount"}, sorted(phase8)
+    assert not (phase8 & phase7), "an adapter was declared as a Phase-7 accessor"
+    expected = phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7 | phase8
+    assert found == expected, sorted(found ^ expected)
     assert not (phase4 & set(PHASE6_PUBLIC)), "a Phase-6 name entered the Phase-4 surface"
     # The reporter that owns Phase 5 gained exactly one non-endpoint Public name.
     extra = set(modules["modCalcReport"].public_procedures) - set(PHASE5_ENDPOINTS)

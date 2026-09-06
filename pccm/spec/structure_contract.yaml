@@ -514,6 +514,10 @@ vba:
     - name: "modSimAnnualStore"
       generated: false
       responsibility: "Where the Phase-7 annual answer lives: every _SimData and analytical-year-table address the annual step reads or writes, the published-last identity stamp, the bounded clear that makes a shorter answer safe, and the Phase-8 handoff. The handoff reports the annual distributions and the selected-Px profile as two separate states, because a moved reporting selector retires the profile and must not retire the ladders, and a profile is never relabelled. It owns no mathematics and derives no simulation state; it consumes the accepted owners of each."
+    # PHASE 8. The presentation adapter, and the smallest one that can exist.
+    - name: "modResultsState"
+      generated: false
+      responsibility: "The Phase-8 Results state adapter: four volatile wrappers that return what the Phase-7 handoff accessors say, so a worksheet cell can ask the owner of a semantic instead of rebuilding half of it. It owns no state rule - no publication marker, no stamp identity test, no selector arm and no state word - no mathematics, no persistence, no run identity and no endpoint. It is volatile because the annual state depends on very nearly the whole workbook and a range argument would be a second, partial copy of the request fingerprint's scope; nothing heavier than these four accessor calls is made volatile."
     - name: "modSimSensitivity"
       generated: false
       responsibility: "The pure Phase-7 sensitivity mathematics: mid-ranks with average ranks for ties, Spearman as Pearson over two already-ranked series, the undefined zero-variance status, and the ordering of finished driver results by absolute rho with a permanent-id tie-break. No driver replay, no RNG or component stream, no workbook access, no _SimData, no run identity, no state and no presentation."
@@ -580,6 +584,18 @@ vba:
     - "PCCM_AnnualProfileState"
     - "PCCM_AnnualProfilePx"
     - "PCCM_AnnualYearCount"
+
+  # P8-1. The presentation adapters, declared apart from the Phase-7 accessors
+  # they call for the same reason Phase 7 was declared apart from Phase 6: this
+  # is Phase-8 code that no Windows run has executed, and it must not appear to
+  # carry Phase-7 evidence. They are wrappers - the semantic stays with the
+  # accessor - and they exist only because a zero-argument function in a cell is
+  # never re-run on its own.
+  phase8_api_procedures:
+    - "PCCM_ResultsAnnualDistributionState"
+    - "PCCM_ResultsAnnualProfileState"
+    - "PCCM_ResultsAnnualProfilePx"
+    - "PCCM_ResultsAnnualYearCount"
 
   # Constructs that must NOT appear in VBA. The Linux static tests and the Gate-B
   # persisted-project sweep assert their absence, so a later phase's

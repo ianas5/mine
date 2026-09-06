@@ -40,8 +40,12 @@ The query is bounded at the acceptance head on purpose. Later phases move on:
 Phase 8 changes `spec/workbook.yaml`, which is the workbook's presentation
 layout, on the output sheet. That does not move Phase 7's baseline, and an
 unbounded query would make it look as though it had. What must never change
-after `ad78988` is `pccm/src` - the production VBA these scenarios were run
-against - and a control asserts exactly that on every commit.
+after `ad78988` is any MODULE these scenarios were run against. That is narrower
+than "`pccm/src` never changes", and deliberately: a later phase may add a
+module - P8-1 adds the Results state adapter - without touching a byte any
+Windows run executed. A control asserts that no file under `pccm/src` is
+modified or removed after `ad78988`; additions are allowed and are visible in
+the diff.
 
 Every one of the fourteen commits between the two touches only
 `pccm/bootstrap/windows`, `pccm/builder` and `pccm/tests` — Windows runners,
@@ -126,7 +130,7 @@ as such. Nothing in this record re-derives, re-runs or infers a Windows number.
 | Measurement | Value | How |
 |---|---|---|
 | Test suites in `pccm/tests` | **73 files** | file count at HEAD |
-| Tests collected at HEAD | **4,695** | `pytest tests --collect-only` |
+| Tests collected at HEAD | **4,700** | `pytest tests --collect-only` |
 | Phase-7 suites / tests | **23 suites, 974 tests** | `pytest tests/test_phase7*.py --collect-only` |
 | W1–W8 static controls | **307 tests** | the eight W-suites |
 | Stage A | **351 passed / 0 failed** | `python3 builder/build_stage_a.py` on the clean tree |
@@ -138,9 +142,9 @@ sweep collected 4,643 and reported 4,638 passing; the five that did not were the
 dirty-tree artefact family, cleared by committing and rebuilding Stage A, and
 re-run green afterwards inside the focused 488. So all 4,643 have been observed
 passing at that tree — **across two runs rather than one**. The tree now
-collects 4,695: this settlement added its own controls, and Phase 8 Step 1
+collects 4,700: this settlement added its own controls, and Phase 8 Step 1
 added the Results presentation suite after it. Those have been run focused and
-have never been part of a full sweep, so no single sweep has covered all 4,695.
+have never been part of a full sweep, so no single sweep has covered all 4,700.
 One command would settle it and it has not been run.
 
 These two counts move whenever a later phase adds a suite, which is why the

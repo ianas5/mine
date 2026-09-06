@@ -139,12 +139,19 @@ def test_10_the_implementation_authority_is_the_last_commit_touching_src_or_spec
         f"the last commit touching pccm/src or pccm/spec up to {ACCEPTANCE_HEAD} "
         f"is {out!r}, but the record names {IMPLEMENTATION_AUTHORITY}")
     assert IMPLEMENTATION_AUTHORITY in _text()
-    # AND NO LATER COMMIT MAY TOUCH pccm/src. Phase 8 is presentation: it may
-    # move the workbook manifest and it may not move a line of production VBA.
-    since = _git("log", "--name-only", "--format=", f"{ACCEPTANCE_HEAD}..HEAD")
-    offenders = sorted({line.strip() for line in since.splitlines()
-                        if line.strip().startswith("pccm/src/")})
-    assert not offenders, f"production VBA changed after the Phase-7 evidence head: {offenders}"
+    # AND NO MODULE THE PHASE-7 SCENARIOS RAN AGAINST MAY BE MODIFIED. That is
+    # the claim the evidence rests on, and it is narrower than "pccm/src never
+    # changes": a later phase may ADD a module - P8-1 adds the Results state
+    # adapter - without touching a byte any Windows run executed. A modification
+    # or a deletion is a different thing entirely, and neither is allowed.
+    changes = _git("diff", "--name-status", ACCEPTANCE_HEAD, "HEAD", "--", "pccm/src")
+    offenders = sorted(
+        line.split("\t", 1)[1].strip()
+        for line in changes.splitlines()
+        if line.strip() and not line.split("\t", 1)[0].strip().startswith("A"))
+    assert not offenders, (
+        f"a module the Phase-7 evidence was produced against was modified or "
+        f"removed after {ACCEPTANCE_HEAD}: {offenders}")
 
 
 def test_11_no_production_or_spec_byte_moved_between_the_two_authorities() -> None:

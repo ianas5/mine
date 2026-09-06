@@ -96,6 +96,11 @@ def _text_cells() -> list[str]:
     return found
 
 
+def _state_address(key: str) -> str:
+    shell = _shell()
+    return f"{shell['nominal_column']}{shell['annual'][f'{key}_row']}"
+
+
 def _formula(address: str) -> str:
     value = _sheet()[address].value
     assert isinstance(value, str) and value.startswith("="), (address, value)
@@ -206,104 +211,220 @@ def test_13_no_state_word_is_typed_into_the_manifest() -> None:
     assert ANNUAL_PUBLISHED_MARKER not in text
 
 
-def test_14_the_publication_marker_has_one_owner() -> None:
-    """The sheet decides whether an annual answer exists at all by comparing the
-    stamp against this marker. A second copy of the string would let the sheet
-    report NOT PRODUCED after a publication that had just succeeded."""
-    emitted = (BUILD / "vba" / "modSimContract.bas").read_text(encoding="utf-8")
-    assert (f'Public Const SIM_ANNUAL_PUBLISHED As String = '
-            f'"{ANNUAL_PUBLISHED_MARKER}"') in emitted
-    assert f'="{ANNUAL_PUBLISHED_MARKER}"' in _formula(_state_address("distribution_state"))
+def test_14_the_state_cells_call_the_phase_7_accessors_through_an_adapter() -> None:
+    """THE CORRECTION. Each state cell is a call and nothing else - no marker,
+    no identity comparison, no selector arm, no state word. The adapter names
+    are derived from the accessor names, so a renamed accessor cannot leave a
+    stale wrapper on the sheet."""
+    accessors = [str(e["name"]) for e in _annual_contract()["handoff"]["accessors"]]
+    keys = ("distribution_state", "profile_state", "profile_px", "year_count")
+    assert len(accessors) == len(keys), accessors
+    for key, accessor in zip(keys, accessors):
+        adapter = "PCCM_Results" + accessor[len("PCCM_"):]
+        assert _formula(_state_address(key)) == f"={adapter}()", key
 
 
-def _state_address(key: str) -> str:
-    shell = _shell()
-    return f"{shell['nominal_column']}{shell['annual'][f'{key}_row']}"
-
-
-# ===========================================================================
-# C. STATE DISPLAY: THE FOUR HONEST ANSWERS
-# ===========================================================================
-
-def test_20_the_distribution_state_uses_the_contracts_own_vocabulary() -> None:
+def test_15_the_adapter_owns_no_state_rule_at_all() -> None:
+    """A WRAPPER, NOT A SECOND ENGINE. The module may call the accessors and do
+    nothing else with a state: no state word, no marker, no stamp comparison."""
+    module = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
+    code = "\n".join(line for line in module.splitlines()
+                     if not line.lstrip().startswith("'"))
     handoff = _annual_contract()["handoff"]
-    formula = _formula(_state_address("distribution_state"))
-    for state in handoff["distribution_states"]:
-        assert f'"{state}"' in formula, (state, formula)
-    assert f'"{handoff["inconsistent_stamp_state"]}"' not in formula, (
-        "OTHER Px is a PROFILE state; the distributions never carry it")
+    for state in set(handoff["distribution_states"]) | set(handoff["profile_states"]):
+        assert f'"{state}"' not in code, f"the adapter spells the state word {state!r}"
+    assert f'"{ANNUAL_PUBLISHED_MARKER}"' not in code
+    for owned in ("StampText", "SharedText", "IsPublished", "StrComp", "Select Case",
+                  "SIM_ANNUAL", "SIM_IDENTITY"):
+        assert owned not in code, f"the adapter reaches into the store through {owned}"
+    called = set(re.findall(r"modSimAnnualStore\.(PCCM_\w+)", code))
+    assert called == {str(e["name"]) for e in handoff["accessors"]}, sorted(called)
 
 
-def test_21_current_requires_the_stamp_to_be_this_runs_own_identity() -> None:
-    """ALL FIVE FIELDS. A run id says which attempt; the fingerprint says which
-    request and the digest says which answer. Any one of them alone would let a
-    different run's annual result be presented as this one's."""
+def test_16_the_worksheet_holds_no_copy_of_the_state_decision_tree() -> None:
+    """THE ROOT ISSUE, CHECKED WHERE IT WAS. Not one formula on the sheet may
+    decide currentness: no publication-marker comparison, no stamp-against-run
+    identity test, and no persisted simulation status read."""
     raw = _raw()
-    identity = {f["key"]: int(f["row"]) for f in raw["sim_data"]["run_identity"]["fields"]}
-    stamp = {f["key"]: int(f["row"])
-             for f in _annual_contract()["stamp"]["fields"]}
-    formula = _formula(_state_address("distribution_state"))
-    stamp_columns = _annual_contract()["stamp"]["bank_value_columns"]
-    run_columns = raw["sim_data"]["run_identity"]["bank_value_columns"]
     sheet_name = raw["sim_data"]["sheet"]
-    pairs = (("run_id", "run_id"), ("effective_seed", "effective_seed"),
-             ("request_fingerprint", "request_fingerprint"),
-             ("result_digest", "result_digest"), ("iterations", "iterations_run"))
-    for stamp_key, run_key in pairs:
-        for bank in ("A", "B"):
-            assert f"{sheet_name}!${stamp_columns[bank]}${stamp[stamp_key]}" in formula, stamp_key
-            assert f"{sheet_name}!${run_columns[bank]}${identity[run_key]}" in formula, run_key
-    # AND THE SIMULATION ITSELF MUST STILL BE CURRENT.
-    status_row = identity["simulation_status"]
+    stamp = {f["key"]: int(f["row"]) for f in _annual_contract()["stamp"]["fields"]}
+    stamp_columns = _annual_contract()["stamp"]["bank_value_columns"]
+    identity = {f["key"]: int(f["row"]) for f in raw["sim_data"]["run_identity"]["fields"]}
     value_column = raw["sim_data"]["run_identity"]["value_column"]
-    assert f"{sheet_name}!${value_column}${status_row}" in formula
-    assert f'="{raw["sim_state"]["states"][0]}"' in formula
+    forbidden = {f"{sheet_name}!${value_column}${identity['simulation_status']}":
+                 "the persisted simulation status"}
+    for key in ("published", "run_id", "effective_seed", "request_fingerprint",
+                "result_digest", "iterations"):
+        for bank in ("A", "B"):
+            forbidden[f"{sheet_name}!${stamp_columns[bank]}${stamp[key]}"] = (
+                f"the annual stamp's {key}")
+    # THE ACCEPTED RUN STAMP IS NOT A VERDICT. It reports the persisted status
+    # under its own label - "Simulation Status (last evaluated)" - which is what
+    # that block has always done and is exactly the caveat the reader needs. The
+    # ban is on DECIDING with these addresses, so the run-stamp rows, whose rows
+    # the manifest declares, are read out of the sweep rather than excused.
+    stamp_rows = {int(f["row"]) for f in _shell()["run_stamp"]["fields"]}
+    sheet = _sheet()
+    for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, max_col=10):
+        for cell in row:
+            if not isinstance(cell.value, str) or not cell.value.startswith("="):
+                continue
+            if cell.row in stamp_rows:
+                continue
+            for address, what in forbidden.items():
+                # ANCHORED AT THE ROW NUMBER. `$AB$8` is a prefix of `$AB$80`,
+                # which is an ordinary record cell 72 rows into the annual
+                # window - matching on the substring would convict the table of
+                # reading the stamp it never touches.
+                assert not re.search(re.escape(address) + r"(?!\d)", cell.value), (
+                    f"{cell.coordinate} decides state from {what}; the accessor owns it")
+    # And the run stamp reports it as LAST EVALUATED, never as the annual state.
+    labels = [f["label"] for f in _shell()["run_stamp"]["fields"]
+              if f["key"] == "simulation_status"]
+    assert labels and "last evaluated" in labels[0].lower(), labels
+    assert f'"{ANNUAL_PUBLISHED_MARKER}"' not in "\n".join(
+        str(c.value) for r in sheet.iter_rows() for c in r if c.value is not None)
 
 
-def test_22_the_profile_inherits_the_distribution_verdict_first() -> None:
-    """A profile cannot be current for a run whose distributions are not, and it
-    is never relabelled: what changes when the selector moves is only that
-    nobody is asking for the Px it was computed at."""
-    handoff = _annual_contract()["handoff"]
-    shell = _shell()
-    formula = _formula(_state_address("profile_state"))
-    distribution_cell = f"${shell['nominal_column']}${shell['annual']['distribution_state_row']}"
-    assert formula.startswith(f'=IF({distribution_cell}<>"{handoff["distribution_states"][1]}"'
-                              f',{distribution_cell},'), formula
-    assert f'"{handoff["inconsistent_stamp_state"]}"' in formula
-    assert "inpSelectedConfidenceLevel" in formula, (
-        "the selector arm must compare the STAMPED Px against the selected one")
+def test_17_the_renderer_can_no_longer_compose_a_verdict() -> None:
+    source = (PCCM_ROOT / "builder" / "pccm_builder" / "workbook_builder.py").read_text(
+        encoding="utf-8")
+    block = source[source.index("def _annual_state_formulas("):
+                   source.index("def _render_annual_section(")]
+    for decision in ("stamp(", "run(", "AND(", "NOT(", "simulation_status",
+                     "distribution_current", "historical", "other_px"):
+        assert decision not in block, (
+            f"the state formula builder still composes a verdict using {decision!r}")
+    assert "state_procedures()" in block
 
 
-def test_23_nothing_is_fabricated_when_nothing_was_produced() -> None:
-    """NOT PRODUCED SHOWS NOTHING. A zero here would be a cash flow the model
-    never produced, and it would sum, reconcile and chart like a real one."""
+# ===========================================================================
+# C. STATE DISPLAY: THE FOUR HONEST ANSWERS, ASKED OF THEIR OWNER
+# ===========================================================================
+
+def test_20_the_owner_still_owns_every_arm_of_the_rule() -> None:
+    """THE SECOND DISCLOSED DEFECT, CLOSED. The old formula implemented the
+    selector arm of ProfileStateOf and not the stamp-consistency arm; now the
+    whole function decides, and this control fails if the store stops carrying
+    either arm - which would mean the sheet had quietly lost one again."""
+    store = (SRC / "modSimAnnualStore.bas").read_text(encoding="utf-8")
+    profile = store[store.index("Private Function ProfileStateOf"):]
+    profile = profile[:profile.index("Private Function StampBelongsTo")]
+    # THE GUARDS, NOT THE NAMES. A parameter that is still declared and never
+    # tested is exactly what the old worksheet formula was: an arm that exists
+    # on paper and decides nothing.
+    for guard in ("If Not stampConsistent Then",
+                  "If Not selectorResolved Then",
+                  "If StrComp(distribution, SIM_ANNUAL_STATE_CURRENT, "
+                  "vbBinaryCompare) <> 0 Then"):
+        assert guard in profile, f"the arm guarded by `{guard}` no longer decides anything"
+    assert "SIM_ANNUAL_STATE_OTHER_PX" in profile
+    assert "ProfileStateOf = distribution" in profile, (
+        "the profile no longer inherits the distribution verdict")
+    assert "If False Then" not in profile, "an arm was short-circuited"
+    caller = store[store.index("Public Function PCCM_AnnualProfileState"):]
+    caller = caller[:caller.index("Public Function PCCM_AnnualProfilePx")]
+    assert "SimStatsSelectedProbability" in caller, (
+        "the stamped label is no longer checked against its own probability")
+
+
+def test_21_the_distribution_verdict_is_the_stores_and_reaches_the_live_status() -> None:
+    """THE FIRST DISCLOSED DEFECT, CLOSED. The banner used to read the PERSISTED
+    status, so an ordinary model change left it saying CURRENT until some later
+    operation re-evaluated it. The accessor derives the status instead."""
+    store = (SRC / "modSimAnnualStore.bas").read_text(encoding="utf-8")
+    assert "SimAnnualStoreCurrentRun(run, detail)" in store
+    current_run = store[store.index("Public Function SimAnnualStoreCurrentRun"):]
+    current_run = current_run[:current_run.index("Public Function SimAnnualStoreIdentity")]
+    assert "modSimReport.PCCM_SimulationStatus()" in current_run, (
+        "the store no longer asks for a freshly derived status")
+    report = (SRC / "modSimReport.bas").read_text(encoding="utf-8")
+    status = report[report.index("Public Function PCCM_SimulationStatus"):]
+    status = status[:status.index("Public Function PCCM_SimulationRequestFingerprint")]
+    assert "DeriveSimStatus()" in status, "the status is no longer re-derived"
+
+
+def test_22_the_adapters_are_volatile_and_only_the_adapters_are() -> None:
+    """VOLATILITY IS THE MECHANISM AND IT IS FENCED. A zero-argument function
+    has no inputs Excel can watch, so without this it would answer once and keep
+    answering. Nothing heavier is made volatile: not the calculation, not the
+    simulation, not the annual run, not sensitivity."""
+    adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
+    functions = re.findall(r"^Public Function (\w+)", adapter, re.M)
+    assert len(functions) == 4, functions
+    assert adapter.count("Application.Volatile True") == 4, (
+        "every adapter must be volatile, and there must be nothing else to make volatile")
+    for module in sorted(SRC.glob("*.bas")):
+        if module.name == "modResultsState.bas":
+            continue
+        text = module.read_text(encoding="utf-8")
+        code = "\n".join(line for line in text.splitlines()
+                         if not line.lstrip().startswith("'"))
+        assert "Application.Volatile" not in code, (
+            f"{module.name} was made volatile; only the four presentation adapters may be")
+
+
+def test_23_an_unavailable_accessor_fails_loud_rather_than_wrong() -> None:
+    """A WRONG STATE WORD IS INDISTINGUISHABLE FROM A RIGHT ONE. Two of the four
+    accessors reach a function that persists the derived status rows, and Excel
+    does not let a function called from a cell change the workbook. If that ever
+    raises rather than being ignored, the cell must show an error - never a
+    plausible state."""
+    adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
+    assert adapter.count("On Error GoTo Unavailable") == 4
+    assert adapter.count("CVErr(xlErrValue)") == 4
+    assert "Resume Next" not in adapter, (
+        "swallowing the error would let the adapter return an empty state")
+
+
+def test_24_no_endpoint_is_invoked_to_refresh_presentation_state() -> None:
+    """The display asks what the state IS. It never runs anything to find out."""
+    adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
+    for endpoint in ("PCCM_Calculate", "PCCM_RunSimulation", "PCCM_RunAnnualStochastic",
+                     "PCCM_RunSensitivity", "PCCM_AutomationBegin"):
+        assert endpoint not in adapter, f"the adapter invokes {endpoint}"
+    sheet = _sheet()
+    formulas = "\n".join(str(c.value) for r in sheet.iter_rows() for c in r
+                         if isinstance(c.value, str) and c.value.startswith("="))
+    for endpoint in ("PCCM_Calculate(", "PCCM_RunSimulation(",
+                     "PCCM_RunAnnualStochastic(", "PCCM_RunSensitivity("):
+        assert endpoint not in formulas, f"a cell invokes {endpoint}"
+
+
+def test_25_nothing_is_fabricated_when_nothing_was_produced() -> None:
+    """NOT PRODUCED SHOWS NOTHING, and the verdict it blanks on is the
+    accessor's. A zero here would be a cash flow the model never produced, and
+    it would sum, reconcile and later chart like a real one."""
     handoff = _annual_contract()["handoff"]
     not_produced = handoff["distribution_states"][0]
     shell = _shell()
-    guard = f'${shell["nominal_column"]}${shell["annual"]["distribution_state_row"]}="{not_produced}"'
+    guard = (f'${shell["nominal_column"]}${shell["annual"]["distribution_state_row"]}'
+             f'="{not_produced}"')
     for offset in (0, _window() - 1):
         row = int(shell["annual"]["first_row"]) + offset
         for column in shell["annual"]["columns"]:
             formula = _formula(f"{column['column']}{row}")
             assert guard in formula, (column["key"], formula)
             assert ',"",' in formula, (column["key"], formula)
-    for key in ("profile_px", "year_count"):
-        assert guard in _formula(_state_address(key))
 
 
-def test_24_historical_data_stays_visible_and_stays_labelled() -> None:
-    """The contract keeps a superseded answer readable; the sheet must show it
-    and must not let it read as the current one."""
+def test_26_historical_and_other_px_stay_visible_and_stay_labelled() -> None:
+    """The contract keeps a superseded answer readable and never relabels a
+    profile; the sheet blanks the window on NOT PRODUCED alone, and the state
+    line beside it says which of the four it is."""
     handoff = _annual_contract()["handoff"]
-    historical = handoff["distribution_states"][-1]
     shell = _shell()
     row_formula = _formula(f"{shell['annual']['columns'][0]['column']}"
                            f"{shell['annual']['first_row']}")
-    assert f'"{historical}"' not in row_formula, (
-        "the rows blank on NOT PRODUCED only; a historical answer stays visible")
-    state = _formula(_state_address("distribution_state"))
-    assert f'"{historical}"' in state
+    for still_visible in (handoff["distribution_states"][-1],
+                          handoff["inconsistent_stamp_state"]):
+        assert f'"{still_visible}"' not in row_formula, (
+            f"the record window blanks on {still_visible}; it must stay readable")
+    assert _sheet()[f"{shell['label_column']}"
+                    f"{shell['annual']['profile_state_row']}"].value == (
+        shell["annual"]["labels"]["profile_state"])
+    # AND THE STAMPED Px IS THE STAMP'S, whatever the selector says now.
+    assert _formula(_state_address("profile_px")).endswith("ProfilePx()")
 
 
 # ===========================================================================
@@ -347,13 +468,17 @@ def test_32_no_duration_this_project_has_run_is_written_anywhere() -> None:
         assert literal not in annual_source, f"the renderer hard-codes {literal!r}"
 
 
-def test_33_the_year_count_comes_from_the_stamp() -> None:
-    stamp = {f["key"]: int(f["row"]) for f in _annual_contract()["stamp"]["fields"]}
-    columns = _annual_contract()["stamp"]["bank_value_columns"]
-    sheet_name = _raw()["sim_data"]["sheet"]
-    formula = _formula(_state_address("year_count"))
-    for bank in ("A", "B"):
-        assert f"{sheet_name}!${columns[bank]}${stamp['year_count']}" in formula
+def test_33_the_year_count_comes_from_the_handoff_authority() -> None:
+    """AND THE STAMP IS STILL WHAT IT READS - in the accessor, where the rule
+    that a count says where the answer stops has always lived."""
+    accessors = [str(e["name"]) for e in _annual_contract()["handoff"]["accessors"]]
+    assert _formula(_state_address("year_count")) == (
+        f"=PCCM_Results{accessors[3][len('PCCM_'):]}()")
+    store = (SRC / "modSimAnnualStore.bas").read_text(encoding="utf-8")
+    body = store[store.index(f"Public Function {accessors[3]}"):]
+    body = body[:body.index("' =====")] if "' =====" in body else body[:1200]
+    assert "SIM_ANNUAL_STAMP_ROW_YEAR_COUNT" in body, (
+        "the year count accessor no longer reads the stamped count")
 
 
 # ===========================================================================

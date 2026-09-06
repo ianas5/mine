@@ -32,7 +32,9 @@ from .names import apply_defined_names
 from .spec_loader import SheetSpec, WorkbookSpec
 from .structure_loader import StructureContract, validate_structure_against
 from .calc_loader import CalcContract
-from .sim_emit import ANNUAL_PUBLISHED_MARKER
+# The Phase-8 adapters wrap the Phase-7 accessors under this prefix; the
+# structural contract declares the four resulting procedure names.
+RESULTS_STATE_PREFIX = "PCCM_Results"
 from .calc_render import render_calc_workspace
 from .structure_render import render_applied_timeline, render_grid, render_identity
 from .styling import StyleBook
@@ -604,12 +606,14 @@ class _AnnualAddresses:
         self._stamp_rows = {f["key"]: int(f["row"]) for f in annual["stamp"]["fields"]}
         self.first_record_row = int(annual["first_record_row"])
         handoff = annual["handoff"]
+        # THE ONLY TWO STATE WORDS THE SHEET STILL NEEDS, and neither is used to
+        # DECIDE anything. `not_produced` blanks the record window over a verdict
+        # the accessor reached; `profile_current` decides whether the
+        # reconciliation status needs its "not the current answer" qualifier.
+        # Every other state word left this file with the decision tree.
         self.not_produced = str(handoff["distribution_states"][0])
-        self.distribution_current = str(handoff["distribution_states"][1])
-        self.historical = str(handoff["distribution_states"][-1])
         self.profile_current = str(handoff["profile_states"][1])
-        self.other_px = str(handoff["inconsistent_stamp_state"])
-        self.simulation_current = str(raw["sim_state"]["states"][0])
+        self._accessors = [str(entry["name"]) for entry in handoff["accessors"]]
 
     # The published bank decides every read below, and it is a cell.
     def active_bank(self) -> str:
@@ -631,6 +635,22 @@ class _AnnualAddresses:
     def stamp(self, key: str) -> str:
         """A field of the annual publication stamp."""
         return self._switch(self._stamp_banks, self._stamp_rows[key])
+
+    def state_procedures(self) -> dict[str, str]:
+        """The Phase-8 adapter for each Phase-7 handoff accessor, by position.
+
+        The contract declares the accessors in one order - distributions,
+        profile, Px, year count - and the adapter for each is that name with the
+        presentation prefix. Deriving the four rather than listing them keeps a
+        renamed accessor from silently leaving a stale wrapper on the sheet.
+        """
+        keys = ("distribution_state", "profile_state", "profile_px", "year_count")
+        if len(self._accessors) != len(keys):
+            raise ValueError(
+                f"the handoff declares {len(self._accessors)} accessors; the Results "
+                f"state block presents {len(keys)}")
+        return {key: RESULTS_STATE_PREFIX + name[len("PCCM_"):]
+                for key, name in zip(keys, self._accessors)}
 
     def record(self, source: str, field: str, offset: int) -> str:
         """One cell of one annual record, `offset` rows into the block."""
@@ -660,50 +680,27 @@ def _annual_row_window(structure: StructureContract | None) -> int:
 
 def _annual_state_formulas(at: _AnnualAddresses, block: dict[str, Any],
                            value_col: str) -> dict[str, str]:
-    """The four state lines above the table.
+    """The four state lines above the table - ASKED, NOT DERIVED.
 
-    THE RULE IS THE CONTRACT'S, READ THE WAY A WORKSHEET CAN READ IT. An annual
-    answer exists when the stamp carries the publication marker; it is CURRENT
-    when the simulation is current AND the stamp's own identity is the published
-    run's identity - all five fields, because a run id says which attempt while
-    the fingerprint says which request and the digest says which answer. Anything
-    else published is HISTORICAL, and the profile inherits that verdict before
-    the selector is allowed to speak at all.
+    THE CORRECTION THIS BLOCK EXISTS FOR. These four cells used to rebuild the
+    annual state out of `_SimData`: compare the publication marker, compare five
+    stamp fields against the published run, read the persisted simulation
+    status, then compare the stamped Px against the selector. It was a
+    presentation layer owning half a semantic, and it was wrong in two specific
+    ways. It read the PERSISTED simulation status, so after an ordinary model
+    change the banner kept saying CURRENT until some later operation happened to
+    re-evaluate it. And it implemented the selector arm of the profile rule while
+    the accepted accessor also weighs whether the stamp agrees with itself - so a
+    stamp whose label and probability disagreed would have been shown as current.
+
+    Now each cell calls the Phase-7 accessor and prints what it says. There is no
+    marker comparison, no identity test, no selector arm and no state word in any
+    formula this function builds. What the sheet still does with the answer -
+    blanking the record window when nothing was produced - is presentation over a
+    verdict somebody else reached, which is the line this block is meant to sit on.
     """
-    annual = block["annual"]
-    marker = ANNUAL_PUBLISHED_MARKER
-    produced = f'AND({at.active_bank()}<>"",{at.stamp("published")}="{marker}")'
-    belongs = ",".join((
-        f'{at.stamp("run_id")}={at.run("run_id")}',
-        f'{at.stamp("effective_seed")}={at.run("effective_seed")}',
-        f'{at.stamp("request_fingerprint")}={at.run("request_fingerprint")}',
-        f'{at.stamp("result_digest")}={at.run("result_digest")}',
-        f'{at.stamp("iterations")}={at.run("iterations_run")}',
-    ))
-    distribution_cell = f'${value_col}${annual["distribution_state_row"]}'
-    return {
-        "distribution_state": (
-            f'=IF(NOT({produced}),"{at.not_produced}",'
-            f'IF(AND({at.shared("simulation_status")}="{at.simulation_current}",'
-            f'{belongs}),"{at.distribution_current}","{at.historical}"))'),
-        # THE LADDERS' VERDICT IS THE FLOOR. A profile cannot be current for a
-        # run whose distributions are not, and it is never relabelled: what
-        # changes when the selector moves is only that nobody is asking for the
-        # Px it was computed at.
-        "profile_state": (
-            f'=IF({distribution_cell}<>"{at.distribution_current}",{distribution_cell},'
-            f'IF({at.stamp("selected_px_label")}=inpSelectedConfidenceLevel,'
-            f'"{at.profile_current}","{at.other_px}"))'),
-        "profile_px": (
-            f'=IF({distribution_cell}="{at.not_produced}","",'
-            f'{at.stamp("selected_px_label")})'),
-        # THE STAMPED COUNT SAYS WHERE THE ANSWER STOPS. Never the last
-        # non-blank row: a four-year run published over a twenty-year one leaves
-        # nothing behind, and the count is what says so.
-        "year_count": (
-            f'=IF({distribution_cell}="{at.not_produced}","",'
-            f'{at.stamp("year_count")})'),
-    }
+    del block, value_col  # the layout no longer feeds the state formulas
+    return {key: f"={procedure}()" for key, procedure in at.state_procedures().items()}
 
 
 def _render_annual_section(
