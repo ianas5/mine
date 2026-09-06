@@ -783,3 +783,197 @@ def test_65_helpers_that_return_a_collection_are_consumed_as_one() -> None:
         line = call.group(0)
         assert not re.search(r"\)\s*[-+*/]\s", line), (
             f"a collection-returning helper is used in arithmetic: {line.strip()!r}")
+
+
+# ===========================================================================
+# THE LOCKED FX SEED - THE PREREQUISITE THE FIRST RUN NEVER PRIMED
+# ===========================================================================
+# WHAT HAPPENED. The second Windows run passed the whole of Part 0 and then died
+# on the first statement of Part A with the accepted helper's own refusal:
+#
+#     the locked FX seed was never captured. Save-Phase5LockedFxSeed must run on
+#     the untouched Stage-B workbook, before any Phase-5 mutation.
+#
+# Step C of Invoke-Phase5FixtureSteps restores the FX table from a seed captured
+# before step A, Clear-Phase5Registers, wiped the registers. P8-1 was composed
+# from W8's parts and that one line was dropped, so there was nothing to restore
+# from. The controls below pin the line, its position, and the two properties
+# that make the position legal: the capture is a read, and Part 0 is a read.
+#
+# THE ORDERING RULES ARE FUNCTIONS, NOT ASSERTIONS BURIED IN A TEST, so the
+# mutation control at the end can run the very same rules against a deliberately
+# broken copy of the source and require them to refuse it.
+
+# EVERY WRITE THE RUNNER COULD MAKE. A Phase-5 mutation is any of these; the
+# fixture's own first mutation, Clear-Phase5Registers, is reached through
+# Set-Phase5Fixture.
+MUTATORS = (
+    "Set-Phase5Fixture", "Clear-Phase5Registers", "Set-NamedValue", "Set-TableCell",
+    "Set-P81NamedText", "Invoke-P81Endpoint", "Add-BlankTableRow", "Remove-TableRow",
+    "Set-Phase5TypedCell", "Reset-Phase5FxTable", "ClearContents", ".Value2 =",
+)
+CAPTURE = "$null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $inspection"
+SESSION = "$rel = New-ReleaseLedger"
+COMPILED = "the current VBAProject compiles in real Excel"
+PART0 = "PART 0 - NOTHING HAS RUN"
+PARTA = "PART A - A SUCCESSFUL ANNUAL RESULT"
+
+
+def _capture_is_singular(code: str) -> None:
+    """EXACTLY ONE CAPTURE, in the accepted call shape."""
+    count = code.count("Save-Phase5LockedFxSeed")
+    assert count == 1, f"the locked FX seed must be captured exactly once; found {count}"
+    assert CAPTURE in code, "the capture is not the call shape W2 through W8 use"
+
+
+def _capture_is_at_the_accepted_point(code: str) -> None:
+    """AFTER THE COMPILE PREREQUISITE, BEFORE PART 0, BEFORE THE FIXTURE."""
+    assert code.index(COMPILED) < code.index("Save-Phase5LockedFxSeed"), (
+        "the seed is captured before the compile prerequisite")
+    assert code.index("Save-Phase5LockedFxSeed") < code.index(PART0), (
+        "the seed is captured after Part 0 has begun")
+    assert code.index("Save-Phase5LockedFxSeed") < code.index("Set-Phase5Fixture"), (
+        "the seed is captured after the fixture has already mutated the workbook")
+
+
+def _nothing_mutates_before_the_capture(code: str) -> None:
+    """THE HELPER'S OWN PRECONDITION: an untouched workbook."""
+    before = code[code.index(SESSION):code.index("Save-Phase5LockedFxSeed")]
+    for mutator in MUTATORS:
+        assert mutator not in before, (
+            f"{mutator} runs before the locked FX seed is captured")
+
+
+def _part_0_completes_before_any_mutation(code: str) -> None:
+    """PART 0 RUNS TO ITS END, AND WRITES NOTHING, before the fixture exists."""
+    part0, fixture = code.index(PART0), code.index("Set-Phase5Fixture")
+    assert part0 < code.index(PARTA) < fixture, (
+        "Part A does not begin between the end of Part 0 and the fixture")
+    body = code[part0:fixture]
+    for mutator in MUTATORS:
+        assert mutator not in body, f"Part 0 mutates the workbook through {mutator}"
+
+
+def test_70_the_locked_fx_seed_is_captured_exactly_once_by_the_accepted_helper() -> None:
+    """CAPTURED, ONCE, AND NOT REINVENTED. The seed comes from the accepted
+    Phase-5 helper the fixture itself reads back from - not from a second
+    capture, and not from a local copy of the logic."""
+    code = _code()
+    _capture_is_singular(code)
+    assert "Save-Phase5LockedFxSeed" in PHASE5.read_text(encoding="utf-8"), (
+        "the accepted helper is not where the runner dot-sources it from")
+    for name in ("Save-Phase5LockedFxSeed", "Get-Phase5LockedFxSeed", "Reset-Phase5FxTable"):
+        assert not re.search(rf"^function\s+{name}\b", code, re.M), (
+            f"{name} is redefined in the runner instead of reused")
+    assert "Phase5LockedFxSeed = " not in code, (
+        "the runner assigns the accepted helper's seed variable itself")
+
+
+def test_71_the_capture_is_at_the_lifecycle_point_the_accepted_runners_use() -> None:
+    """THE ORDER W2 THROUGH W8 WERE ACCEPTED WITH, proved against W8 rather than
+    described: compile prerequisite, then the seed, then the fixture."""
+    _capture_is_at_the_accepted_point(_code())
+    w8 = accepted._ps_code(W8)
+    assert (w8.index(COMPILED) < w8.index("Save-Phase5LockedFxSeed")
+            < w8.index("Set-Phase5Fixture")), "W8 is not the order this control claims"
+
+
+def test_72_nothing_mutates_the_phase_5_fixture_before_the_seed_is_captured() -> None:
+    """A SEED CAPTURED AFTER A WRITE IS THE WRONG SEED, and the helper cannot
+    tell. Nothing in the session may write before this line."""
+    _nothing_mutates_before_the_capture(_code())
+
+
+def test_73_part_0_completes_before_the_first_fixture_mutation() -> None:
+    """PART 0 IS AN OBSERVATION OF A WORKBOOK NOTHING HAS TOUCHED. It runs to its
+    end before the fixture is applied, and it writes nothing itself."""
+    code = _code()
+    _part_0_completes_before_any_mutation(code)
+    # AND THE GATE IS STILL INSIDE PART 0, ahead of everything the fixture makes
+    # possible: a run that cannot evaluate the four cells stops before it writes.
+    body = code[code.index(PART0):code.index("Set-Phase5Fixture")]
+    assert body.index("$observation0 = Invoke-P81Observation") < body.index(
+        "$stoppedOnStateEvaluation = $true")
+
+
+def test_74_the_capture_is_read_only_so_part_0_still_sees_an_untouched_workbook() -> None:
+    """THE PROPERTY THAT MAKES THE POSITION LEGAL. Save-Phase5LockedFxSeed sits
+    ahead of Part 0, which would be indefensible if it wrote anything. Read the
+    accepted helper and prove it does not: it is handed no Excel application, and
+    everything it touches is a reader."""
+    phase5 = accepted._ps_code(PHASE5)
+    match = re.search(r"^function\s+Save-Phase5LockedFxSeed\s*\{", phase5, re.M)
+    assert match, "Save-Phase5LockedFxSeed is not defined in the accepted Phase-5 source"
+    start, depth, body = match.end() - 1, 0, None
+    for index in range(start, len(phase5)):
+        if phase5[index] == "{":
+            depth += 1
+        elif phase5[index] == "}":
+            depth -= 1
+            if depth == 0:
+                body = phase5[start:index]
+                break
+    assert body, "the helper body could not be read"
+    for writer in ("Set-TableCell", "Set-Phase5TypedCell", "Set-NamedValue",
+                   "Add-BlankTableRow", "Remove-TableRow", "ClearContents",
+                   ".Value2 =", ".Formula", "$Excel", "Excel.Run"):
+        assert writer not in body, f"the capture is not read-only: it uses {writer}"
+    assert "Get-Phase5TypedTableBody" in body, "the capture no longer reads the FX table"
+
+
+def test_75_the_fixture_is_applied_through_the_proven_helper_in_its_own_order() -> None:
+    """NO STEP OF THE ACCEPTED FIXTURE IS RESEQUENCED HERE. The runner asks for
+    the whole fixture, once, with W8's argument shape; the A-to-H order stays
+    where it was accepted, inside Invoke-Phase5FixtureSteps, which is also where
+    the seed is read back."""
+    code = _code()
+    assert code.count("Set-Phase5Fixture") == 1, "the fixture is applied more than once"
+    call = re.search(r"Set-Phase5Fixture(?:.|\n)*?-Model \$model\)", code)
+    assert call, "the fixture call does not have the accepted argument shape"
+    for argument in ("-Excel $excel", "-Workbook $wb", "-Manifest $manifest",
+                     "-Inspection $inspection", "-Model $model"):
+        assert argument in call.group(0), f"the fixture call is missing {argument}"
+    phase5 = accepted._ps_code(PHASE5)
+    assert re.search(r"^function\s+Invoke-Phase5FixtureSteps\b", phase5, re.M), (
+        "the accepted fixture step function is gone")
+    assert "Get-Phase5LockedFxSeed" in phase5, "the fixture no longer reads the seed back"
+    for step in ("Clear-Phase5Registers", "Reset-Phase5FxTable", "Invoke-Phase5FixtureSteps"):
+        assert step not in code, f"the runner reaches around the fixture and calls {step}"
+
+
+@pytest.mark.parametrize("name,mutate", [
+    # THE CAPTURE MOVED PAST THE FIXTURE - the defect the second run died of,
+    # reintroduced one statement later instead of omitted.
+    ("the capture moved after the fixture",
+     lambda code: code.replace(CAPTURE + "\n", "", 1).replace(
+         "$applied = [string](Set-Phase5Fixture",
+         "$applied = [string](Set-Phase5Fixture", 1).replace(
+         "-Model $model)", "-Model $model)\n        " + CAPTURE, 1)),
+    # THE CAPTURE DELETED - the state the runner was actually in.
+    ("the capture deleted", lambda code: code.replace(CAPTURE + "\n", "", 1)),
+    # THE CAPTURE DUPLICATED - a second read after the fixture would overwrite
+    # the untouched seed with a mutated one, silently.
+    ("the capture duplicated",
+     lambda code: code.replace("-Model $model)", "-Model $model)\n        " + CAPTURE, 1)),
+    # THE FIXTURE MOVED AHEAD OF PART 0 - Part 0 stops being an observation of a
+    # workbook nothing has touched.
+    ("the fixture moved ahead of part 0",
+     lambda code: code.replace(
+         CAPTURE, CAPTURE + "\n    $null = Set-Phase5Fixture -Excel $excel", 1)),
+])
+def test_76_the_four_orderings_that_would_break_the_prerequisite_are_refused(
+        name: str, mutate) -> None:
+    """THE MUTATIONS, RUN AGAINST THE RULES ABOVE. Each one is applied to a copy
+    of the source in memory - nothing on disk changes - and at least one of the
+    four ordering rules must refuse it. A mutation that survives every rule means
+    the rules are decoration."""
+    mutated = mutate(_code())
+    assert mutated != _code(), f"the mutation '{name}' changed nothing"
+    refused = []
+    for rule in (_capture_is_singular, _capture_is_at_the_accepted_point,
+                 _nothing_mutates_before_the_capture, _part_0_completes_before_any_mutation):
+        try:
+            rule(mutated)
+        except (AssertionError, ValueError) as failure:
+            refused.append(f"{rule.__name__}: {failure}")
+    assert refused, f"'{name}' survived every ordering rule"

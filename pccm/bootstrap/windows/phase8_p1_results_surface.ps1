@@ -1360,6 +1360,15 @@ try {
     $null = Add-P81Check 'the current VBAProject compiles in real Excel' `
         ([string]::IsNullOrWhiteSpace($compileFailure)) $compileFailure 'PREREQUISITE'
     if (-not [string]::IsNullOrWhiteSpace($compileFailure)) { throw $compileFailure }
+    # THE LOCKED FX SEED, CAPTURED ONCE, ON THE UNTOUCHED STAGE-B WORKBOOK, at the
+    # lifecycle point W2 through W8 capture it: after the compile prerequisite and
+    # before the first Phase-5 mutation, which is Clear-Phase5Registers inside
+    # Set-Phase5Fixture. Step C of the accepted fixture restores the FX table from
+    # this seed, so a run that never captured it cannot restore it - that is the
+    # refusal Get-Phase5LockedFxSeed raises. The accepted helper READS: a typed
+    # table body read and one script variable, no writer and no $Excel, so Part 0
+    # below still observes a workbook nothing has touched.
+    $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $inspection
 
     # ===================================================================
     # PART 0 - EMPTY, AND THE ONE QUESTION THAT COMES FIRST
