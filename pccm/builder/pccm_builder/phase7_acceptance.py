@@ -63,7 +63,8 @@ CASES_FILENAME = "phase7_acceptance_cases.json"
 ALLOWED_INSPECTION_KEYS = ("schema_version", "purpose", "provenance",
                            "annual_records", "handoff", "command_surface",
                            "summary_semantics", "selector_semantics",
-                           "publication_semantics")
+                           "publication_semantics", "model_states")
+ALLOWED_MODEL_STATE_KEYS = ("derived_status", "attempt_result")
 ALLOWED_SEMANTIC_KEYS = ("total_percentile_block", "contingency_block",
                          "contingency_formula", "contingency_baseline",
                          "contingency_measures", "baseline_metric_key")
@@ -96,7 +97,8 @@ PUBLISHED_MARKER = "PUBLISHED"
 # ===========================================================================
 # THE PROJECTION
 # ===========================================================================
-def build_phase7_inspection(sim: SimContract, max_record_rows: int) -> dict[str, Any]:
+def build_phase7_inspection(sim: SimContract, calc: CalcContract,
+                            max_record_rows: int) -> dict[str, Any]:
     raw = sim.raw["sim_data"]
     annual = raw["annual_records"]
     stamp = annual["stamp"]
@@ -233,6 +235,28 @@ def build_phase7_inspection(sim: SimContract, max_record_rows: int) -> dict[str,
             ],
             "bank_labels": [str(bank)
                             for bank in sim.raw["publication"]["banks"]["labels"]],
+        },
+        # THE TWO ORTHOGONAL CALCULATION AXES, PROJECTED VERBATIM.
+        #
+        # calc_contract.yaml owns them and says why they are two: "REFUSED is an
+        # ATTEMPT result. It is never a derived status: an invalid model is
+        # INVALID whether or not anyone pressed Calculate." The loader already
+        # refuses a contract that merges them, and W8's whole subject is that a
+        # refused attempt is not a replacement persistent state - so the runner
+        # has to be able to name a MODEL state without spelling one, and to
+        # prove the two vocabularies stay disjoint.
+        #
+        # Only the Phase-6 SIMULATION vocabularies were projected before, in
+        # phase6_gate_b_cases.json. Reading a model status through those would
+        # be exactly the axis-merging the contract forbids, and the Windows
+        # harness had no third option but to type the word. It has one now.
+        #
+        # LISTS, IN THE CONTRACT'S OWN DECLARATION ORDER. No member is named
+        # here and no member is given a key of its own: the order is as much the
+        # contract's statement as the spelling is, and a reader indexes it.
+        "model_states": {
+            "derived_status": [str(state) for state in calc.derived_status_labels],
+            "attempt_result": [str(state) for state in calc.attempt_result_labels],
         },
     }
 
@@ -519,6 +543,23 @@ def validate_phase7_artifacts(inspection: dict[str, Any], cases: dict[str, Any])
                 f"{INSPECTION_FILENAME}: selector_semantics")
     _check_keys(inspection["publication_semantics"], ALLOWED_PUBLICATION_KEYS,
                 f"{INSPECTION_FILENAME}: publication_semantics")
+    _check_keys(inspection["model_states"], ALLOWED_MODEL_STATE_KEYS,
+                f"{INSPECTION_FILENAME}: model_states")
+    # THE TWO CALCULATION AXES MUST STAY DISJOINT. A projection that let an
+    # attempt result appear in the derived-status list would hand the Windows
+    # harness a vocabulary in which REFUSED is a persistent state, which is the
+    # one thing W8 exists to disprove.
+    states = inspection["model_states"]
+    if not states["derived_status"] or not states["attempt_result"]:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: model_states carries an empty axis; a "
+            "state word cannot be projected from a list with no members")
+    overlap = sorted(set(states["derived_status"]) & set(states["attempt_result"]))
+    if overlap:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: the derived-status and attempt-result axes "
+            f"now share {overlap}; they are orthogonal and a refused attempt is "
+            "never a persistent state")
     # SURPLUS ROWS MUST BE CLEARED, or "the row after the answer is blank" is
     # not a property any scenario could require.
     publication = inspection["publication_semantics"]
@@ -564,7 +605,7 @@ def validate_phase7_artifacts(inspection: dict[str, Any], cases: dict[str, Any])
     payload = {key: value for key, value in inspection.items()
                if key in ("annual_records", "handoff", "command_surface",
                           "summary_semantics", "selector_semantics",
-                          "publication_semantics")}
+                          "publication_semantics", "model_states")}
     text = json.dumps(payload)
     # `iterations`, `effective_seed` and `year_count` DO appear in it and are
     # addresses: they are the names of stamp ROWS, which is where to look, not
@@ -577,7 +618,7 @@ def validate_phase7_artifacts(inspection: dict[str, Any], cases: dict[str, Any])
 def emit_phase7_acceptance(sim: SimContract, calc: CalcContract,
                            max_record_rows: int, min_year: int, max_year: int,
                            build_dir: Path) -> tuple[Path, Path]:
-    inspection = build_phase7_inspection(sim, max_record_rows)
+    inspection = build_phase7_inspection(sim, calc, max_record_rows)
     cases = build_phase7_cases(calc, sim, max_record_rows, min_year, max_year)
     validate_phase7_artifacts(inspection, cases)
     inspection_path = build_dir / INSPECTION_FILENAME

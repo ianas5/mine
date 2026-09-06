@@ -612,7 +612,9 @@ def test_33_the_builder_refuses_a_contract_that_merged_the_two_rules() -> None:
     spec = PCCM_ROOT / "spec"
     sim = load_sim_contract(spec / "sim_contract.yaml")
     limits = load_structure_contract(spec / "structure_contract.yaml").limits
-    inspection = emitter.build_phase7_inspection(sim, limits.max_generated_year_columns)
+    inspection = emitter.build_phase7_inspection(
+        sim, load_calc_contract(PCCM_ROOT / "spec" / "calc_contract.yaml"),
+        limits.max_generated_year_columns)
     cases = emitter.build_phase7_cases(
         sim=sim, calc=load_calc_contract(spec / "calc_contract.yaml"),
         max_record_rows=limits.max_generated_year_columns,
