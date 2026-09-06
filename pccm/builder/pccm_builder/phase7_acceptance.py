@@ -62,10 +62,14 @@ CASES_FILENAME = "phase7_acceptance_cases.json"
 # somebody already thought of.
 ALLOWED_INSPECTION_KEYS = ("schema_version", "purpose", "provenance",
                            "annual_records", "handoff", "command_surface",
-                           "summary_semantics", "selector_semantics")
+                           "summary_semantics", "selector_semantics",
+                           "publication_semantics")
 ALLOWED_SEMANTIC_KEYS = ("total_percentile_block", "contingency_block",
                          "contingency_formula", "contingency_baseline",
                          "contingency_measures", "baseline_metric_key")
+ALLOWED_PUBLICATION_KEYS = ("published_written_last", "cleared_before_write",
+                            "surplus_rows_cleared", "authority_rule",
+                            "candidate_target", "bank_labels")
 ALLOWED_SELECTOR_KEYS = ("distribution_currentness_is_selector_specific",
                          "profile_currentness_is_selector_specific",
                          "profile_relabelled_on_selector_change",
@@ -81,7 +85,8 @@ ALLOWED_CASE_KEYS = ("schema_version", "purpose", "provenance", "scenarios")
 ALLOWED_SCENARIO_KEYS = ("id", "title", "purpose", "dimension", "model",
                          "expected", "iterations", "seed_mode", "supplied_seed",
                          "selected_confidence_level", "second_confidence_level",
-                         "shrink_model")
+                         "shrink_model", "second_supplied_seed",
+                         "shrink_expected")
 
 # The published marker text. It is production's own constant, projected here
 # from the same place `sim_emit` projects it into VBA.
@@ -198,6 +203,36 @@ def build_phase7_inspection(sim: SimContract, max_record_rows: int) -> dict[str,
             # The input the selector lives in, so the runner writes the one the
             # contract names rather than the one it remembers.
             "selector_input_key": "selected_confidence_level",
+        },
+        # WHERE AN ANNUAL ANSWER STOPS, AND WHICH BANK IT LANDS IN.
+        #
+        # The contract is explicit that a count says where the answer stops -
+        # not the last non-blank row - and that a four-year run published after
+        # a twenty-year one must not leave years 5-20 readable as current. The
+        # marker is written LAST and the surplus rows are cleared, so a reader
+        # has two independent facts to check and a harness has no excuse for
+        # calling residue authoritative.
+        #
+        # The candidate-target map is the bank cycle itself, projected so a
+        # runner never assumes that a blank selector means A or that A is
+        # followed by B.
+        "publication_semantics": {
+            "published_written_last": bool(stamp["published_written_last"]),
+            "cleared_before_write": bool(stamp["cleared_before_write"]),
+            "surplus_rows_cleared": bool(stamp["surplus_rows_cleared"]),
+            "authority_rule": (
+                "a record row is authoritative only when the stamp carries the "
+                "publication marker and the row index is within the stamped "
+                "year_count; the last non-blank row is never the authority"
+            ),
+            "candidate_target": [
+                {"active_bank": (None if active == "" else str(active)),
+                 "candidate_bank": str(candidate)}
+                for active, candidate in
+                sorted(sim.raw["publication"]["banks"]["candidate_target"].items())
+            ],
+            "bank_labels": [str(bank)
+                            for bank in sim.raw["publication"]["banks"]["labels"]],
         },
     }
 
@@ -401,7 +436,14 @@ def build_phase7_cases(calc: CalcContract, sim: SimContract,
             ),
             "model": w7_long, "expected": evaluate(w7_long, tolerances),
             "shrink_model": w7_short,
+            "shrink_expected": evaluate(w7_short, tolerances),
             "iterations": 1000, "seed_mode": "FIXED", "supplied_seed": 20260906,
+            # THE SECOND BANK NEEDS A DISTINCT REQUEST, DETERMINISTICALLY. A run
+            # is told apart by its identity, not by when it happened, so the B
+            # run changes the FIXED seed rather than relying on a timestamp: a
+            # different effective seed is a different request fingerprint and a
+            # different result digest, reproducibly.
+            "second_supplied_seed": 20260907,
             "selected_confidence_level": "P80",
         },
     ]
@@ -475,6 +517,22 @@ def validate_phase7_artifacts(inspection: dict[str, Any], cases: dict[str, Any])
                 f"{INSPECTION_FILENAME}: summary_semantics")
     _check_keys(inspection["selector_semantics"], ALLOWED_SELECTOR_KEYS,
                 f"{INSPECTION_FILENAME}: selector_semantics")
+    _check_keys(inspection["publication_semantics"], ALLOWED_PUBLICATION_KEYS,
+                f"{INSPECTION_FILENAME}: publication_semantics")
+    # SURPLUS ROWS MUST BE CLEARED, or "the row after the answer is blank" is
+    # not a property any scenario could require.
+    publication = inspection["publication_semantics"]
+    if not bool(publication["surplus_rows_cleared"]):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: the contract no longer clears surplus "
+            "annual rows; a shrink scenario cannot require row 5 to be blank")
+    # AND THE BANK CYCLE MUST BE A CYCLE, not a one-way move.
+    targets = {str(entry["active_bank"]): str(entry["candidate_bank"])
+               for entry in publication["candidate_target"]}
+    if sorted(publication["bank_labels"]) != ["A", "B"] or len(targets) != 3:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: the publication bank cycle is no longer "
+            f"two banks and three transitions: {targets}")
     # THE TWO ANNUAL PRODUCTS MUST NOT SHARE A CURRENTNESS RULE. If they ever
     # did, the selector scenario would be proving nothing.
     selector = inspection["selector_semantics"]
@@ -505,7 +563,8 @@ def validate_phase7_artifacts(inspection: dict[str, Any], cases: dict[str, Any])
     # document.
     payload = {key: value for key, value in inspection.items()
                if key in ("annual_records", "handoff", "command_surface",
-                          "summary_semantics", "selector_semantics")}
+                          "summary_semantics", "selector_semantics",
+                          "publication_semantics")}
     text = json.dumps(payload)
     # `iterations`, `effective_seed` and `year_count` DO appear in it and are
     # addresses: they are the names of stamp ROWS, which is where to look, not
