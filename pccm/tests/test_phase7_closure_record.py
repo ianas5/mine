@@ -161,7 +161,7 @@ def test_10_the_implementation_authority_is_the_last_commit_touching_src_or_spec
     # against cannot stop existing.
     changes = _git("diff", "--name-status", ACCEPTANCE_HEAD, "HEAD", "--", "pccm/src")
     text = _text()
-    declared_block = text.split("### 1.1")[1].split("---")[0] if "### 1.1" in text else ""
+    declared_block = text.split("### 1.1")[1].split("\n---")[0] if "### 1.1" in text else ""
     modified, deleted, undeclared = [], [], []
     for line in changes.splitlines():
         if not line.strip():
