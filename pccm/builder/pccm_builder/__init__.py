@@ -46,6 +46,7 @@ from .sim_rng import (
     SimRngError,
 )
 from .phase7_acceptance import emit_phase7_acceptance
+from .phase8_results import emit_phase8_results
 from .sim_emit import emit_sim_artifacts, emit_sim_gate_b_artifacts
 from .sim_oracle import (
     AnalyticalExpectation,
@@ -156,7 +157,8 @@ __all__ = [
     "emit_calc_artifacts",       # build_stage_a.py, Phase 5 Gate-A Step-3 tests
     "emit_inspection",           # build_stage_a.py, Phase 5 Gate-B harness
     "emit_sim_artifacts",        # build_stage_a.py, Phase 6 Step-5 tests
-    "emit_phase7_acceptance",    # build_stage_a.py, Phase 7 acceptance harness
+    "emit_phase7_acceptance",
+    "emit_phase8_results",    # build_stage_a.py, Phase 8 Results projection
     "emit_sim_gate_b_artifacts", # build_stage_a.py, Phase 6 Gate-B harness
     "emit_stage_b",              # build_stage_a.py, Phase 4 Stage-B emission tests
     "load_calc_contract",        # Phase 5 Gate-A Step-1 tests

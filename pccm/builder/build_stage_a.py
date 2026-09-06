@@ -41,6 +41,7 @@ from pccm_builder import (  # noqa: E402
     emit_inspection,
     emit_sim_artifacts,
     emit_phase7_acceptance,
+    emit_phase8_results,
     emit_sim_gate_b_artifacts,
     emit_stage_b,
     SimContractError,
@@ -207,6 +208,13 @@ def main(argv: list[str] | None = None) -> int:
         sim, calc, structure.limits.max_generated_year_columns,
         structure.limits.min_year, structure.limits.max_year, out_path.parent)
 
+    # THE PHASE-8 RESULTS PROJECTION, on the terms Phase 7's pair was added:
+    # its own file, because the earlier ones are the artefacts earlier runs were
+    # accepted against.
+    phase8 = emit_phase8_results(
+        spec, calc, sim.raw, structure.limits.max_generated_year_columns,
+        out_path.parent)
+
     say(f"  built    : {out_path}")
     say(f"  emitted  : {artifacts.module_path}")
     say(f"  emitted  : {artifacts.manifest_path}")
@@ -221,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  emitted  : {sim_gate_b.oracle_path}  (host-local oracle evidence)")
     say(f"  emitted  : {phase7[0]}")
     say(f"  emitted  : {phase7[1]}")
+    say(f"  emitted  : {phase8}")
     say(f"  stamped  : builder {metadata.builder_version}, {metadata.build_timestamp}")
     say("")
     say("Structural verification:")

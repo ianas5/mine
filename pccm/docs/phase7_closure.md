@@ -129,8 +129,8 @@ as such. Nothing in this record re-derives, re-runs or infers a Windows number.
 
 | Measurement | Value | How |
 |---|---|---|
-| Test suites in `pccm/tests` | **73 files** | file count at HEAD |
-| Tests collected at HEAD | **4,700** | `pytest tests --collect-only` |
+| Test suites in `pccm/tests` | **72 files** at the closure commit `b844915` | file count |
+| Tests collected | **4,663** at the closure commit `b844915` | `pytest tests --collect-only` |
 | Phase-7 suites / tests | **23 suites, 974 tests** | `pytest tests/test_phase7*.py --collect-only` |
 | W1–W8 static controls | **307 tests** | the eight W-suites |
 | Stage A | **351 passed / 0 failed** | `python3 builder/build_stage_a.py` on the clean tree |
@@ -142,15 +142,20 @@ sweep collected 4,643 and reported 4,638 passing; the five that did not were the
 dirty-tree artefact family, cleared by committing and rebuilding Stage A, and
 re-run green afterwards inside the focused 488. So all 4,643 have been observed
 passing at that tree — **across two runs rather than one**. The tree now
-collects 4,700: this settlement added its own controls, and Phase 8 Step 1
-added the Results presentation suite after it. Those have been run focused and
-have never been part of a full sweep, so no single sweep has covered all 4,700.
-One command would settle it and it has not been run.
+collects 4,731: this settlement added its own controls, and Phase 8 has added
+suites after it. Those have been run focused and have never been part of a full
+sweep, so no single sweep has covered all of them. One command would settle it
+and it has not been run.
 
-These two counts move whenever a later phase adds a suite, which is why the
-control that pins them re-derives them from the tree rather than comparing them
-with a number somebody typed. The **evidence** they describe - the eight
-scenarios, the two authorities, the harness classification - does not move.
+THE FIRST TWO ROWS ARE A SNAPSHOT, AND SAY SO. They describe the tree at the
+closure commit, because a tree-wide count moves every time any later phase adds
+a suite - and it has moved twice since, for reasons that have nothing to do with
+Phase 7. Re-deriving them at HEAD would make this record need an edit whenever
+somebody wrote a test, which is a record that says less each time it is touched.
+The counts below them are Phase-7-scoped and closed, so those are still
+re-derived from the tree on every run. The **evidence** all of them describe -
+the eight scenarios, the two authorities, the harness classification - does not
+move at all.
 
 ### 3.2 Historical — reported, not re-establishable from committed evidence
 

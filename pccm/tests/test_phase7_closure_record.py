@@ -242,11 +242,18 @@ def test_22_the_abandoned_harness_is_frozen_and_unreachable() -> None:
 # ===========================================================================
 
 def test_30_the_re_established_static_numbers_are_true_today() -> None:
+    """THE PHASE-7-SCOPED COUNTS ARE RE-DERIVED; THE TREE-WIDE ONES ARE A
+    SNAPSHOT. A tree-wide total moves whenever any later phase adds a suite, and
+    a record that needed an edit every time somebody wrote a test would say less
+    each time it was touched. So the record labels those two as the tree at the
+    closure commit, and this control requires the label rather than the number."""
     text = _text()
-    suites = len(list(TESTS.glob("test_*.py")))
-    assert f"**{suites} files**" in text, f"the tree has {suites} test files"
-    total = _collected("tests")
-    assert f"**{total:,}**" in text, f"pytest collects {total:,} tests"
+    snapshot = text.split("### 3.1")[1].split("### 3.2")[0]
+    for row in ("Test suites in `pccm/tests`", "Tests collected"):
+        line = [l for l in snapshot.splitlines() if l.startswith(f"| {row}")]
+        assert line, row
+        assert "at the closure commit `b844915`" in line[0], (
+            f"{row} is presented as a live count; it is a snapshot")
     phase7 = _collected("tests/test_phase7*.py")
     phase7_suites = len(list(TESTS.glob("test_phase7*.py")))
     assert f"**{phase7_suites} suites, {phase7} tests**" in text
