@@ -35,8 +35,8 @@ SCHEMA_VERSION = 1
 INSPECTION_FILENAME = "phase8_charts_inspection.json"
 
 ALLOWED_KEYS = ("schema_version", "purpose", "provenance", "bridge_sheet",
-                "chart_sheet", "sensitivity_sheet", "bridge", "charts",
-                "number_formats")
+                "chart_sheet", "sensitivity_sheet", "sensitivity_endpoint",
+                "bridge", "charts", "number_formats")
 
 # THE CHART TYPES THIS PROJECT PERMITS. Two dimensions, three shapes. A third
 # dimension carries no data here and distorts the comparison a chart exists to
@@ -170,6 +170,7 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int) -> dict[str,
         "bridge_sheet": str(charts["bridge_sheet"]),
         "chart_sheet": str(charts["chart_sheet"]),
         "sensitivity_sheet": str(charts["sensitivity_sheet"]),
+        "sensitivity_endpoint": str(charts["sensitivity_endpoint"]),
         "bridge": blocks,
         "charts": projected,
         "number_formats": {str(k): str(v)
@@ -246,6 +247,14 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
         if not block["authority"]:
             raise ValueError(
                 f"{INSPECTION_FILENAME}: bridge block {name!r} names no authority")
+
+    # THE ENDPOINT IS AN ENDPOINT, not a worksheet function. A chart that could
+    # be produced by a cell would be a chart that reran an analysis to draw
+    # itself.
+    if not str(inspection["sensitivity_endpoint"]).startswith("PCCM_Run"):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: {inspection['sensitivity_endpoint']!r} is not a "
+            "run endpoint")
 
     contract = inspection["bin_contract"]
     if contract["bin_count"] < 2:

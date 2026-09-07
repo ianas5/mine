@@ -627,6 +627,13 @@ phase6_shell:
     # ranked driver population, so it is the tornado's presentation authority -
     # the manifest names it here rather than letting a chart discover it.
     sensitivity_sheet: "Sensitivity"
+    # THE ENDPOINT THAT PRODUCES THE RANKING THE TORNADO PLOTS. Named here
+    # because the tornado is its only consumer in this layer, and because a
+    # Windows runner that had to type it would be a second declaration of
+    # something the structure contract owns. Nothing calls it automatically:
+    # sensitivity is produced when an operator asks for it, and the chart says
+    # so when nobody has.
+    sensitivity_endpoint: "PCCM_RunSensitivity"
     number_formats:
       money: "#,##0"
       year: "0"

@@ -755,6 +755,12 @@ def test_70_the_manifest_refuses_each_way_a_chart_lies(
     ("two charts share an anchor",
      lambda inspection: inspection["charts"][1].__setitem__(
          "anchor", inspection["charts"][0]["anchor"])),
+    # THE RANKING PRODUCED BY A CELL RATHER THAN BY AN OPERATOR. A worksheet
+    # function here would mean the tornado could rerun the analysis in order to
+    # draw itself, which is the second analytical authority this layer refuses.
+    ("the sensitivity endpoint becomes a worksheet function",
+     lambda inspection: inspection.__setitem__(
+         "sensitivity_endpoint", "PCCM_SensitivityRanking")),
 ])
 def test_71_the_projection_validator_refuses_each_incoherent_chart(
         name: str, mutate) -> None:
@@ -769,7 +775,7 @@ def test_71_the_projection_validator_refuses_each_incoherent_chart(
 
 
 def test_72_the_unmutated_manifest_passes_both_gates() -> None:
-    """SO THE TWELVE REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
+    """SO THE THIRTEEN REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
     fixture."""
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
     inspection = build_phase8_charts_inspection(
@@ -777,6 +783,28 @@ def test_72_the_unmutated_manifest_passes_both_gates() -> None:
     validate_phase8_charts_inspection(inspection)
     assert inspection == _projection(), (
         "the committed chart projection is not what the manifest now produces")
+
+
+def test_72a_the_sensitivity_endpoint_is_projected_from_the_manifest() -> None:
+    """THE TORNADO'S PRODUCER IS DECLARED, NOT DISCOVERED. A Windows runner that
+    had to type the endpoint would be a second declaration of something the
+    manifest owns, and P7-4 is what that costs when the first one moves.
+
+    NOTHING CALLS IT AUTOMATICALLY. Naming it here is not a licence for a chart,
+    an adapter or a recalculation to produce a ranking; sensitivity is produced
+    when an operator asks, and the tornado says so when nobody has."""
+    spec = load_spec(MANIFEST)
+    declared = spec.phase6_shell["charts"]["sensitivity_endpoint"]
+    structure = load_structure_contract(SPEC / "structure_contract.yaml")
+    inspection = build_phase8_charts_inspection(
+        spec, structure.limits.max_generated_year_columns)
+    assert inspection["sensitivity_endpoint"] == declared
+    assert declared == "PCCM_RunSensitivity"
+    # AND IT IS AN ENDPOINT THE COMMAND SURFACE ACTUALLY PUBLISHES - a Sub, so
+    # no cell can reach it.
+    source = (SRC / "modSimPostReport.bas").read_text(encoding="utf-8")
+    assert f"Public Sub {declared}()" in source, (
+        f"{declared} is not a published command endpoint")
 
 
 # ===========================================================================
