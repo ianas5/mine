@@ -447,7 +447,13 @@ def test_34_the_histogram_plots_the_count_against_the_lower_edge() -> None:
     assert spec["kind"] == "column"
     assert [series["key"] for series in spec["series"]] == ["count"]
     assert spec["categories"]["key"] == "lower"
-    assert spec["state_source"] == "distribution_state"
+    # THE PUBLISHED SIMULATION'S OWN STATE. Repointed at the P8-3 pre-Windows
+    # correction: the annual line reads NOT PRODUCED whenever the annual step
+    # has not run, which says nothing about a histogram whose data is present
+    # and current, and the persisted `(last evaluated)` row was proved live to
+    # still read CURRENT after a request change.
+    assert spec["state_source"] == "simulation_state"
+    assert spec["state_source"] != "distribution_state"
     assert spec["source_block"] == "distribution"
 
 
@@ -541,7 +547,9 @@ def test_53_an_unavailable_ranking_is_stated_rather_than_drawn_empty() -> None:
     availability = (f"{sensitivity['sheet']}!"
                     f"${sensitivity['columns'][1]['column']}$"
                     f"{sensitivity['availability_row']}")
-    formula = _formula(f"{_shell()['results']['nominal_column']}{status['first_row']}")
+    availability_row = next(row["row"] for row in status["rows"]
+                            if row["key"] == "sensitivity_availability")
+    formula = _formula(f"{_shell()['results']['nominal_column']}{availability_row}")
     assert availability in formula, formula
     # MIRRORED, NEVER RE-DERIVED: no arm of that sentence is rebuilt here.
     for banned in ("PUBLISHED", "CURRENT", "IF(AND(", "COUNTIF"):
@@ -562,7 +570,7 @@ def test_60_every_chart_names_a_state_source_it_does_not_own() -> None:
     """A CHART CARRIES NO STATE LOGIC. It inherits the state its source already
     publishes, and the projection says where a reader finds it."""
     published = {"distribution_state", "profile_state", "profile_px",
-                 "sensitivity_availability"}
+                 "sensitivity_availability", "simulation_state"}
     for spec in _by_key().values():
         assert spec["state_source"] in published, spec
         assert spec["no_data_value"] == "NA()"
@@ -683,3 +691,428 @@ def test_72_the_unmutated_manifest_passes_both_gates() -> None:
     validate_phase8_charts_inspection(inspection)
     assert inspection == _projection(), (
         "the committed chart projection is not what the manifest now produces")
+
+
+# ===========================================================================
+# H. THE PRE-WINDOWS STATE CORRECTION
+# ===========================================================================
+# WHAT WAS WRONG, AND IT WAS WRONG IN TWO DIRECTIONS.
+#
+# THE HISTOGRAM plots the published SIMULATION distribution and was qualified by
+# the ANNUAL distribution state. That state consumes the live simulation status,
+# so it could never say CURRENT while the simulation was stale - safe in the
+# over-claiming direction - but it reads NOT PRODUCED whenever the annual step
+# has not run, which says nothing at all about a histogram whose data is present
+# and current.
+#
+# THE TORNADO was worse. Its only qualifier compared two PERSISTED records - the
+# sensitivity block's stored fingerprint against the published run's stored
+# fingerprint - and is therefore structurally blind to a model that has moved
+# since. After a request change with nothing rerun it still read
+# "CURRENT for run N" while the model had moved past run N. That is
+# over-claiming, and no amount of reading it more carefully fixes it.
+#
+# WHAT NEITHER MAY EVER USE is Results row 23, the persisted
+# `Simulation Status (last evaluated)`. P8-1 proved in live Excel that it can
+# still read CURRENT after a request change.
+
+LIVE_ADAPTER = "PCCM_ResultsSimulationState"
+PURE_OWNER = "SimReportDerivedStatus"
+WRITING_PATH = "PCCM_SimulationStatus"
+
+
+def _adapter_source() -> str:
+    return (SRC / "modResultsState.bas").read_text(encoding="utf-8")
+
+
+def _adapter_body(name: str) -> str:
+    source = _adapter_source()
+    start = source.index(f"Public Function {name}")
+    return source[start:source.index("End Function", start)]
+
+
+def _vba_procedures() -> dict[tuple[str, str], str]:
+    if "vba" not in _CACHE:
+        from pccm_builder.vba_source import load_modules
+
+        out: dict[tuple[str, str], str] = {}
+        for module in load_modules([SRC]):
+            lines = module.code.splitlines()
+            index = 0
+            while index < len(lines):
+                head = re.match(
+                    r"\s*(?:Public |Private |Friend )?(?:Static )?"
+                    r"(?:Function|Sub|Property (?:Get|Let|Set))\s+([A-Za-z_]\w*)",
+                    lines[index])
+                if head:
+                    end = index + 1
+                    while end < len(lines) and not re.match(
+                            r"\s*End (?:Function|Sub|Property)\b", lines[end]):
+                        end += 1
+                    out[(module.name, head.group(1))] = "\n".join(lines[index + 1:end])
+                    index = end
+                index += 1
+        _CACHE["vba"] = out
+    return _CACHE["vba"]
+
+
+def _reachable(root: tuple[str, str]) -> set[tuple[str, str]]:
+    procedures = _vba_procedures()
+    seen: set[tuple[str, str]] = set()
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        body = procedures.get(current, "")
+        found: set[tuple[str, str]] = set()
+        for match in re.finditer(r"\b(mod\w+)\.([A-Za-z_]\w*)", body):
+            found.add((match.group(1), match.group(2)))
+        for match in re.finditer(r"\b([A-Za-z_]\w*)\b", body):
+            if (current[0], match.group(1)) in procedures:
+                found.add((current[0], match.group(1)))
+        for callee in found:
+            if callee in procedures and callee not in seen:
+                stack.append(callee)
+    return seen
+
+
+_WORKBOOK_WRITE = re.compile(
+    r"""(?:\.Value2|\.Value|\.Formula\w*|\.NumberFormat|\.Text)\s*=(?!=)"""
+    r"""|\.ClearContents\b|\.EntireRow\.Delete\b|ListRows\.Add\b""")
+_UDF_HOSTILE = re.compile(
+    r"\.Select\b|\.Activate\b|MsgBox|Application\.Run\b|\.Calculate\b"
+    r"|Application\.(?:ScreenUpdating|EnableEvents|Calculation|DisplayAlerts)\s*="
+    r"|ActiveSheet|Selection\b|DoEvents|\.SaveAs\b")
+
+
+def test_80_the_live_adapter_is_a_thin_volatile_delegation() -> None:
+    """THE SAME SHAPE AS THE FOUR P8-1 ADAPTERS, and nothing more: volatile
+    because a zero-argument function has no input Excel can watch, loud on
+    error because a plausible wrong state word is worse than an error, and one
+    statement because a presentation layer owns no semantic."""
+    body = _adapter_body(LIVE_ADAPTER)
+    assert "Application.Volatile True" in body
+    assert "On Error GoTo Unavailable" in body
+    assert "CVErr(xlErrValue)" in body
+    assert "Resume Next" not in body, "the adapter swallows the error"
+    statements = [line.strip() for line in body.splitlines()
+                  if line.strip() and not line.strip().startswith("'")
+                  and not line.strip().startswith(("Public", "Exit", "Unavailable"))]
+    assert statements == [
+        "On Error GoTo Unavailable",
+        "Application.Volatile True",
+        f"{LIVE_ADAPTER} = modSimReport.{PURE_OWNER}()",
+        f"{LIVE_ADAPTER} = CVErr(xlErrValue)",
+    ], statements
+
+
+def test_81_it_delegates_to_the_accepted_pure_owner_and_never_to_the_writer() -> None:
+    """THE PURE HALF, BY NAME. P8-1 split `DeriveSimStatus` out from the entry
+    point that also persists it, precisely so a worksheet cell could ask without
+    asking for a rewrite. This is that split being used."""
+    body = _adapter_body(LIVE_ADAPTER)
+    assert f"modSimReport.{PURE_OWNER}()" in body
+    assert WRITING_PATH not in body, "the adapter reaches the writing status path"
+    reachable = _reachable(("modResultsState", LIVE_ADAPTER))
+    assert ("modSimReport", PURE_OWNER) in reachable
+    assert ("modSimReport", "DeriveSimStatus") in reachable
+    for forbidden in (("modSimReport", WRITING_PATH),
+                      ("modSimReport", "WriteStatusBlock"),
+                      ("modCalcReport", "PCCM_CalculationStatus"),
+                      ("modCalcReport", "WriteStatusBlock")):
+        assert forbidden not in reachable, (
+            f"{LIVE_ADAPTER} reaches {forbidden[0]}.{forbidden[1]}")
+
+
+def test_82_the_whole_call_graph_of_the_live_adapter_is_read_only() -> None:
+    """TAKEN OVER THE TRANSITIVE CLOSURE, not over the adapter's four lines. A
+    cell may not change the book, so nothing a cell can call may either -
+    however many hops away."""
+    procedures = _vba_procedures()
+    reachable = _reachable(("modResultsState", LIVE_ADAPTER))
+    assert len(reachable) > 100, len(reachable)
+    offenders = [
+        f"{module}.{name}: {line.strip()[:70]}"
+        for module, name in sorted(reachable)
+        for line in procedures.get((module, name), "").splitlines()
+        if _WORKBOOK_WRITE.search(line) or _UDF_HOSTILE.search(line)]
+    assert not offenders, "\n  ".join(offenders)
+
+
+def test_83_no_state_arm_is_duplicated_in_the_adapter_module() -> None:
+    """A RULE IS A DECISION, NOT A DELEGATION. The module may call the owner of
+    a semantic; it may never branch on one."""
+    code = "\n".join(line for line in _adapter_source().splitlines()
+                     if not line.lstrip().startswith("'"))
+    for rule in ("SIM_STATE_", "SIM_ANNUAL_STATE_", "CURRENT", "STALE", "INVALID",
+                 "HISTORICAL", "NOT PRODUCED", "StrComp", "If ", "Select Case",
+                 "DeriveSimStatus", "WriteStatusBlock"):
+        assert rule not in code, f"the adapter module decides a state: {rule}"
+    assert code.count(f"modSimReport.{PURE_OWNER}()") == 1
+
+
+def test_84_the_histogram_is_qualified_by_the_live_simulation_state() -> None:
+    """NOT THE ANNUAL STATE, AND NOT THE PERSISTED ROW. Both were wrong for
+    different reasons, and both are asserted against by name."""
+    spec = _by_key()["histogram"]
+    assert spec["state_source"] == "simulation_state"
+    assert spec["state_source"] not in ("distribution_state", "profile_state")
+    status = _projection()["bridge"]["status"]
+    row = next(entry["row"] for entry in status["rows"]
+               if entry["key"] == "simulation_state")
+    formula = _formula(f"{_shell()['results']['nominal_column']}{row}")
+    assert formula == f"={LIVE_ADAPTER}()", formula
+    # AND IT IS NOT THE `(last evaluated)` ROW. P8-1 proved live that that one
+    # can still read CURRENT after a request change.
+    stamp = {f["key"]: f["row"] for f in _results_projection()["run_stamp"]["fields"]}
+    persisted = f"${_results_projection()['columns']['nominal']}${stamp['simulation_status']}"
+    assert persisted not in formula, "the histogram borrows the persisted status row"
+
+
+def test_85_request_drift_and_an_invalid_model_cannot_leave_it_current() -> None:
+    """THE MECHANISM, TRACED TO THE SOURCE rather than asserted. The adapter
+    delegates to `DeriveSimStatus`, which recomputes the CURRENT request
+    fingerprint from live inputs and compares it to the published one - so a
+    changed request yields STALE and an unformable model yields INVALID, with no
+    endpoint invoked and nothing persisted."""
+    report = (SRC / "modSimReport.bas").read_text(encoding="utf-8")
+    derive = report[report.index("Private Function DeriveSimStatus"):]
+    derive = derive[:derive.index("\nEnd Function")]
+    assert "CurrentRequestFingerprint(fingerprint, detail)" in derive, (
+        "the derivation no longer recomputes the current request")
+    assert "SIM_STATE_STALE" in derive and "SIM_STATE_INVALID" in derive
+    assert "SIM_STATE_CURRENT" in derive
+    # THE WORD IS PASSED THROUGH UNTRANSLATED. Folding STALE and INVALID into
+    # HISTORICAL would invent a Phase-8 vocabulary for a caption's convenience.
+    body = _adapter_body(LIVE_ADAPTER)
+    for word in ("HISTORICAL", "STALE", "INVALID", "CURRENT"):
+        assert word not in body, f"the adapter translates the state word {word!r}"
+    # AND THE RECOMPUTATION IS SIDE-EFFECT FREE.
+    current = report[report.index("Private Function CurrentRequestFingerprint"):]
+    current = current[:current.index("\nEnd Function")]
+    assert "SIDE-EFFECT FREE" in current
+
+
+def test_86_the_tornado_carries_two_conditions_that_do_not_collapse() -> None:
+    """TWO QUESTIONS, TWO ANSWERS. "Does this ranked table belong to the
+    published run?" is a comparison of two persisted records and is blind to a
+    model that has moved since; "does that run still match the model?" is the
+    live one. Either alone said CURRENT after the request drifted."""
+    spec = _by_key()["tornado"]
+    assert spec["state_source"] == "sensitivity_availability"
+    assert spec["also_qualified_by"] == "simulation_state"
+    assert spec["state_source"] != spec["also_qualified_by"]
+    # AND THE AVAILABILITY SENTENCE REALLY IS BLIND ON ITS OWN - which is why
+    # the second condition exists. It calls no UDF and reads only persisted
+    # cells, so nothing in it can notice a model change.
+    availability = _shell()["sensitivity"]["availability_formula"]
+    assert "PCCM_" not in availability, (
+        "the availability sentence now reaches a live evaluator; the second "
+        "condition may have become redundant and this control should be revisited")
+    assert "_SimData!" in availability
+    # THE OTHER THREE CHARTS DECLARE NO SECOND CONDITION, so this is not a
+    # blanket field nobody reads.
+    for key in ("s_curve", "histogram", "annual_cash_flow"):
+        assert _by_key()[key]["also_qualified_by"] is None, key
+
+
+def test_87_both_qualifications_are_visible_with_the_charts() -> None:
+    """THE PREVIOUS ARRANGEMENT PUT THE STATE FORTY ROWS ABOVE THE PLOTS, which
+    is no qualification at all for a reader who has scrolled. Two things fix it
+    and neither creates a second authority: the executive status block is frozen
+    on screen, and the two chart-specific lines sit inside the region,
+    immediately above the first plot."""
+    dashboard = json.loads(
+        (BUILD / "phase8_dashboard_inspection.json").read_text(encoding="utf-8"))
+    region = dashboard["chart_region"]
+    status = next(section for section in dashboard["sections"]
+                  if section["key"] == "chart_status")
+    keys = {entry["key"] for entry in status["rows"]}
+    assert keys == {"simulation_state", "sensitivity_availability"}, keys
+    # INSIDE THE REGION, ABOVE EVERY PLOT.
+    for entry in status["rows"]:
+        assert int(region["heading_row"]) < entry["row"] < int(region["first_row"]), entry
+    first_chart = min(int(re.sub(r"[A-Z]", "", chart["anchor"]))
+                      for chart in _projection()["charts"])
+    assert max(entry["row"] for entry in status["rows"]) < first_chart
+    assert first_chart - max(entry["row"] for entry in status["rows"]) <= 4, (
+        "the chart status is no longer adjacent to the plots it qualifies")
+    # AND THE EXECUTIVE STATUS BLOCK IS FROZEN ON SCREEN.
+    sheet = _workbook()[dashboard["sheet"]]
+    assert sheet.freeze_panes, "the Dashboard does not freeze its status block"
+    frozen_below = int(re.sub(r"[A-Z]", "", sheet.freeze_panes))
+    summary = next(section for section in dashboard["sections"]
+                   if section["key"] == "status")
+    assert max(entry["row"] for entry in summary["rows"]) < frozen_below, (
+        "the frozen pane does not keep the whole Result Status block on screen")
+
+
+def test_88_the_chart_status_reaches_the_dashboard_only_through_results() -> None:
+    """ONE SURFACE. The live state is a Results cell and the availability is a
+    Results cell; the Dashboard mirrors both from there. A Dashboard formula
+    reading Sensitivity - or `_SimData` - would be a second surface for the
+    sheet P8-2 established reads one."""
+    sheet = _workbook()[_projection()["chart_sheet"]]
+    for row in sheet.iter_rows():
+        for cell in row:
+            if not (isinstance(cell.value, str) and cell.value.startswith("=")):
+                continue
+            for forbidden in ("_SimData", "_Calc", "Sensitivity!"):
+                assert forbidden not in cell.value, (
+                    f"Dashboard!{cell.coordinate} reads {forbidden}: {cell.value!r}")
+            assert cell.value.count("Results!") == 2, cell.coordinate
+
+
+def test_89_the_p8_1_and_p8_2_accepted_geometry_still_holds() -> None:
+    """THE CORRECTION ADDS; IT DOES NOT MOVE ANYTHING ACCEPTED."""
+    p81 = yaml.safe_load(_git("show", f"{P81_ACCEPTANCE}:pccm/spec/workbook.yaml"))
+    assert p81["phase6_shell"]["results"] == _shell()["results"]
+    p82 = yaml.safe_load(_git("show", f"{P82_ACCEPTANCE}:pccm/spec/workbook.yaml"))
+    accepted = p82["phase6_shell"]["dashboard"]
+    current = _shell()["dashboard"]
+    for key in ("sheet", "source_sheet", "label_column", "nominal_column",
+                "pv_column", "mirror_formula", "number_formats"):
+        assert accepted[key] == current[key], key
+    assert current["sections"][:len(accepted["sections"])] == accepted["sections"], (
+        "an accepted P8-2 summary section changed")
+
+
+@pytest.mark.parametrize("name,mutate", [
+    # THE HISTOGRAM PUT BACK ON THE ANNUAL STATE.
+    ("the histogram is repointed at the annual state",
+     lambda charts, shell: charts["charts"][1].__setitem__(
+         "state_source", "distribution_state")),
+    # THE HISTOGRAM PUT ON THE PERSISTED `(last evaluated)` ROW.
+    ("the histogram is repointed at the persisted status row",
+     lambda charts, shell: charts["charts"][1].__setitem__(
+         "state_source", "simulation_status")),
+    # THE TORNADO LOSING ITS LIVE CONDITION.
+    ("the tornado stops asking whether the run matches the model",
+     lambda charts, shell: charts["charts"][3].pop("also_qualified_by")),
+    # THE TWO CONDITIONS COLLAPSED INTO ONE.
+    ("the tornado names one condition twice",
+     lambda charts, shell: charts["charts"][3].__setitem__(
+         "also_qualified_by", "sensitivity_availability")),
+    # THE LIVE STATE LINE REMOVED FROM THE BRIDGE ENTIRELY.
+    ("the bridge stops publishing the live simulation state",
+     lambda charts, shell: charts["bridge"]["status"].__setitem__(
+         "rows", [row for row in charts["bridge"]["status"]["rows"]
+                  if row["key"] != "simulation_state"])),
+])
+def test_90_each_way_of_losing_the_correction_is_refused(name: str, mutate) -> None:
+    """EACH MUTATION APPLIED TO A COPY OF THE MANIFEST. The loader refuses the
+    ones it can see; the rest are caught by the state-source rules above, re-run
+    here against the mutated projection."""
+    path = _mutated(mutate)
+    try:
+        try:
+            spec = load_spec(path)
+        except SpecError:
+            return  # refused at the gate, which is the strongest outcome
+        structure = load_structure_contract(SPEC / "structure_contract.yaml")
+        inspection = build_phase8_charts_inspection(
+            spec, structure.limits.max_generated_year_columns)
+        histogram = next(c for c in inspection["charts"] if c["key"] == "histogram")
+        tornado = next(c for c in inspection["charts"] if c["key"] == "tornado")
+        broken = (
+            histogram["state_source"] != "simulation_state"
+            or tornado["also_qualified_by"] != "simulation_state"
+            or tornado["also_qualified_by"] == tornado["state_source"]
+            or "simulation_state" not in {row["key"]
+                                          for row in inspection["bridge"]["status"]["rows"]})
+        assert broken, f"'{name}' left the correction intact"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+# THE RULES THE ADAPTER MUST SATISFY, AS FUNCTIONS OVER ITS SOURCE, so the
+# mutations below are refused by the SAME checks that pass on the real module
+# rather than by a restatement of them.
+def _adapter_is_thin_and_volatile(source: str) -> None:
+    start = source.index(f"Public Function {LIVE_ADAPTER}")
+    body = source[start:source.index("End Function", start)]
+    assert "Application.Volatile True" in body, (
+        "the adapter is not volatile; a zero-argument cell would answer once")
+    assert "On Error GoTo Unavailable" in body and "CVErr(xlErrValue)" in body
+    statements = [line.strip() for line in body.splitlines()
+                  if line.strip() and not line.strip().startswith("'")
+                  and not line.strip().startswith(("Public", "Exit", "Unavailable"))]
+    assert statements == [
+        "On Error GoTo Unavailable",
+        "Application.Volatile True",
+        f"{LIVE_ADAPTER} = modSimReport.{PURE_OWNER}()",
+        f"{LIVE_ADAPTER} = CVErr(xlErrValue)",
+    ], statements
+
+
+def _adapter_never_writes(source: str) -> None:
+    code = "\n".join(line for line in source.splitlines()
+                     if not line.lstrip().startswith("'"))
+    assert WRITING_PATH not in code, "the adapter reaches the writing status path"
+    assert "WriteStatusBlock" not in code
+
+
+def _adapter_owns_no_rule(source: str) -> None:
+    code = "\n".join(line for line in source.splitlines()
+                     if not line.lstrip().startswith("'"))
+    for rule in ("SIM_STATE_", "SIM_ANNUAL_STATE_", "CURRENT", "STALE", "INVALID",
+                 "HISTORICAL", "NOT PRODUCED", "StrComp", "If ", "Select Case",
+                 "DeriveSimStatus"):
+        assert rule not in code, f"the adapter module decides a state: {rule}"
+
+
+ADAPTER_RULES = (_adapter_is_thin_and_volatile, _adapter_never_writes,
+                 _adapter_owns_no_rule)
+
+
+@pytest.mark.parametrize("name,mutate", [
+    # THE ADAPTER CALLING THE WRITING PATH - the P8-1 defect, reintroduced.
+    ("the adapter calls the writing status path",
+     lambda code: code.replace(f"modSimReport.{PURE_OWNER}()",
+                               f"modSimReport.{WRITING_PATH}()")),
+    # STATE LOGIC DUPLICATED INTO THE ADAPTER MODULE.
+    ("a state arm is duplicated in the adapter",
+     lambda code: code.replace(
+         f"    {LIVE_ADAPTER} = modSimReport.{PURE_OWNER}()",
+         f"    If modSimReport.{PURE_OWNER}() = SIM_STATE_STALE Then\n"
+         f"        {LIVE_ADAPTER} = \"HISTORICAL\"\n"
+         f"    Else\n"
+         f"        {LIVE_ADAPTER} = modSimReport.{PURE_OWNER}()\n"
+         f"    End If")),
+    # STALE AND INVALID FOLDED INTO HISTORICAL FOR A TIDIER CAPTION.
+    ("the adapter translates the state word",
+     lambda code: code.replace(
+         f"    {LIVE_ADAPTER} = modSimReport.{PURE_OWNER}()",
+         f"    {LIVE_ADAPTER} = \"HISTORICAL\"")),
+    # THE VOLATILITY REMOVED - the cell would answer once and never again.
+    ("the adapter stops being volatile",
+     lambda code: code.replace(
+         f"    Application.Volatile True\n    {LIVE_ADAPTER} =",
+         f"    {LIVE_ADAPTER} =")),
+    # THE ERROR SWALLOWED - a plausible wrong word instead of a visible failure.
+    ("the adapter swallows its error",
+     lambda code: code.replace(
+         f"    {LIVE_ADAPTER} = CVErr(xlErrValue)", f"    {LIVE_ADAPTER} = \"\"")),
+])
+def test_91_each_production_mutation_of_the_adapter_is_refused(
+        name: str, mutate) -> None:
+    """APPLIED TO A COPY OF THE MODULE IN MEMORY and run against the same three
+    rules the real module satisfies. Nothing on disk changes."""
+    mutated = mutate(_adapter_source())
+    assert mutated != _adapter_source(), f"'{name}' changed nothing"
+    refused = []
+    for rule in ADAPTER_RULES:
+        try:
+            rule(mutated)
+        except (AssertionError, ValueError) as failure:
+            refused.append(f"{rule.__name__}: {failure}")
+    assert refused, f"'{name}' survived every adapter rule"
+
+
+def test_92_the_adapter_rules_pass_on_the_real_module() -> None:
+    """SO THE FIVE REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
+    fixture."""
+    for rule in ADAPTER_RULES:
+        rule(_adapter_source())

@@ -176,7 +176,10 @@ def test_04_no_dashboard_state_owner_was_added_to_the_vba() -> None:
         assert "Dashboard" not in code, (
             f"{module.name} names the Dashboard in executable code")
     adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
-    assert len(re.findall(r"^Public Function (\w+)", adapter, re.M)) == 4
+    # FIVE SINCE P8-3 - four annual, one live simulation - and none of them is
+    # a Dashboard owner. The claim this control makes is about the Dashboard,
+    # and it is unchanged: no module names it in executable code.
+    assert len(re.findall(r"^Public Function (\w+)", adapter, re.M)) == 5
 
 
 # ===========================================================================
@@ -566,9 +569,12 @@ def _mutated_spec(mutate) -> Path:
              "source_key": "profile_px", "format": "text"}),
      None),
     # A SECTION GROWN INTO THE RESERVED REGION.
-    ("a section reaches into the chart region",
-     lambda dash, res: dash["sections"][4].__setitem__("first_row", 52),
-     "chart region reserved from row"),
+    # A SUMMARY SECTION GROWN DOWN INTO THE SPACE CHARTS ARE DRAWN IN. P8-3
+    # places ONE section inside the region on purpose - the chart-status lines,
+    # above every plot - so the mutation moves a different section there.
+    ("a summary section reaches into the chart region",
+     lambda dash, res: dash["sections"][4].__setitem__("first_row", 62),
+     "inside the chart region; only 'chart_status' may"),
     # A SOURCE KEY RESULTS DOES NOT PUBLISH - the P7-4 stale-address shape.
     ("a row mirrors a key Results does not publish",
      lambda dash, res: dash["sections"][1]["rows"][0].__setitem__(

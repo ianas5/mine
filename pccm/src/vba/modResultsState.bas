@@ -101,3 +101,38 @@ Public Function PCCM_ResultsAnnualYearCount() As Variant
 Unavailable:
     PCCM_ResultsAnnualYearCount = CVErr(xlErrValue)
 End Function
+
+' ==========================================================================
+' THE FIFTH ADAPTER, AND IT IS NOT AN ANNUAL ONE
+' ==========================================================================
+' P8-3 DISCOVERED THE NEED FROM ITS OWN CHART LAYER. The histogram plots the
+' published SIMULATION distribution, and the only live state Results exposed
+' was the four annual lines above. Two things were wrong with borrowing one:
+'
+'   THE ANNUAL STATE ANSWERS ABOUT THE ANNUAL PRODUCT. It reads NOT PRODUCED
+'   whenever the annual step has not run - which says nothing about a histogram
+'   whose data is present and current.
+'
+'   AND THE PERSISTED ROW IS NOT AN ANSWER AT ALL. `_SimData` D28 is the
+'   LAST EVALUATED status; P8-1 proved live that it can still read CURRENT
+'   after a request change. A chart qualified by it would look current for a
+'   run the model has moved past.
+'
+' SO THE SEMANTIC OWNER IS ASKED DIRECTLY, through the pure evaluator the P8-1
+' read-only correction introduced. `SimReportDerivedStatus` returns exactly what
+' `DeriveSimStatus` says and writes nothing; `PCCM_SimulationStatus` - which
+' derives the same answer AND persists it - is not reachable from here, because
+' a worksheet cell may not change the workbook.
+'
+' THE WORD IS PASSED THROUGH UNTRANSLATED. STALE stays STALE and INVALID stays
+' INVALID: they are different facts about a model, and a presentation layer that
+' folded both into HISTORICAL would be inventing a vocabulary to make a chart
+' caption tidier. Phase 8 owns no state word.
+Public Function PCCM_ResultsSimulationState() As Variant
+    On Error GoTo Unavailable
+    Application.Volatile True
+    PCCM_ResultsSimulationState = modSimReport.SimReportDerivedStatus()
+    Exit Function
+Unavailable:
+    PCCM_ResultsSimulationState = CVErr(xlErrValue)
+End Function

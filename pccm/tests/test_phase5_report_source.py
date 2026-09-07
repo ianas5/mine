@@ -357,8 +357,14 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
     # EXACT statement about Phase 5 rather than becoming "contains at least".
     # DISCLOSED - they should have been named when the module landed and were
     # not, so this control has been failing on the branch since then.
+    # P8-3 ADDS A FIFTH, and it is not an annual one: the chart layer needed a
+    # live SIMULATION state, because the four above answer about the annual
+    # product and read NOT PRODUCED whenever the annual step has not run. Named
+    # here on the same terms as the other four - one at a time - so a sixth
+    # cannot arrive unremarked.
     phase8 = {"PCCM_ResultsAnnualDistributionState", "PCCM_ResultsAnnualProfileState",
-              "PCCM_ResultsAnnualProfilePx", "PCCM_ResultsAnnualYearCount"}
+              "PCCM_ResultsAnnualProfilePx", "PCCM_ResultsAnnualYearCount",
+              "PCCM_ResultsSimulationState"}
     assert set(modules["modResultsState"].public_procedures) == phase8, sorted(
         modules["modResultsState"].public_procedures)
     for name in phase8:

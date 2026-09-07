@@ -41,6 +41,15 @@ SPEC = PCCM_ROOT / "spec"
 BUILD = PCCM_ROOT / "build"
 SRC = PCCM_ROOT / "src" / "vba"
 
+# THE FOUR ANNUAL ADAPTERS P8-1 SETTLED. P8-3 adds a fifth, named where it is
+# asserted rather than folded in here, so the two families stay distinguishable.
+ADAPTERS = (
+    "PCCM_ResultsAnnualDistributionState",
+    "PCCM_ResultsAnnualProfileState",
+    "PCCM_ResultsAnnualProfilePx",
+    "PCCM_ResultsAnnualYearCount",
+)
+
 _CACHE: dict = {}
 
 
@@ -387,8 +396,13 @@ def test_22_the_adapters_are_volatile_and_only_the_adapters_are() -> None:
     simulation, not the annual run, not sensitivity."""
     adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
     functions = re.findall(r"^Public Function (\w+)", adapter, re.M)
-    assert len(functions) == 4, functions
-    assert adapter.count("Application.Volatile True") == 4, (
+    # FIVE SINCE P8-3, AND THE FIFTH IS NAMED. The chart layer needed a live
+    # SIMULATION state: the four annual ones read NOT PRODUCED whenever the
+    # annual step has not run, which says nothing about a histogram whose data
+    # is present. The count is asserted with the names so a sixth cannot arrive
+    # unremarked.
+    assert tuple(functions) == ADAPTERS + ("PCCM_ResultsSimulationState",), functions
+    assert adapter.count("Application.Volatile True") == len(functions), (
         "every adapter must be volatile, and there must be nothing else to make volatile")
     for module in sorted(SRC.glob("*.bas")):
         if module.name == "modResultsState.bas":
@@ -397,7 +411,7 @@ def test_22_the_adapters_are_volatile_and_only_the_adapters_are() -> None:
         code = "\n".join(line for line in text.splitlines()
                          if not line.lstrip().startswith("'"))
         assert "Application.Volatile" not in code, (
-            f"{module.name} was made volatile; only the four presentation adapters may be")
+            f"{module.name} was made volatile; only the presentation adapters may be")
 
 
 def test_23_an_unavailable_accessor_fails_loud_rather_than_wrong() -> None:
@@ -407,8 +421,10 @@ def test_23_an_unavailable_accessor_fails_loud_rather_than_wrong() -> None:
     raises rather than being ignored, the cell must show an error - never a
     plausible state."""
     adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
-    assert adapter.count("On Error GoTo Unavailable") == 4
-    assert adapter.count("CVErr(xlErrValue)") == 4
+    count = len(re.findall(r"^Public Function (\w+)", adapter, re.M))
+    assert count == 5, count
+    assert adapter.count("On Error GoTo Unavailable") == count
+    assert adapter.count("CVErr(xlErrValue)") == count
     assert "Resume Next" not in adapter, (
         "swallowing the error would let the adapter return an empty state")
 
@@ -776,12 +792,6 @@ def test_55_the_window_may_not_grow_over_the_reconciliation() -> None:
 # and the two accessors take the read-only one. No state rule moved, nothing was
 # duplicated, and no error is being swallowed anywhere.
 
-ADAPTERS = (
-    "PCCM_ResultsAnnualDistributionState",
-    "PCCM_ResultsAnnualProfileState",
-    "PCCM_ResultsAnnualProfilePx",
-    "PCCM_ResultsAnnualYearCount",
-)
 
 # EVERY WAY THIS PROJECT'S VBA CHANGES A WORKBOOK. Assignment through a Range or
 # a Cells, a ListObject row operation, and the two clearing verbs. In-memory
@@ -963,15 +973,32 @@ def test_65_the_adapter_still_owns_no_state_rule_after_the_correction() -> None:
     adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
     code = "\n".join(line for line in adapter.splitlines()
                      if not line.lstrip().startswith("'"))
+    # A RULE IS A DECISION, NOT A DELEGATION. The adapter may CALL the owner of
+    # a semantic; what it may never do is decide one - no constant, no
+    # comparison, no marker test, no state word of its own.
+    #
+    # `SimReportDerivedStatus` left this list at P8-3 and that is the whole
+    # point of the correction: the fifth adapter calls it, exactly as the other
+    # four call their accessors. `DeriveSimStatus` - the private derivation
+    # itself - stays banned, because reaching past the owner into its internals
+    # would be the duplication this control exists for.
     for rule in ("SIM_ANNUAL_STATE_", "SIM_STATE_", "CURRENT", "HISTORICAL",
-                 "OTHER", "NOT PRODUCED", "StrComp", "DeriveSimStatus",
-                 "SimReportDerivedStatus", "StampText", "SimAnnualStoreCurrentRun"):
+                 "OTHER", "NOT PRODUCED", "STALE", "INVALID", "StrComp",
+                 "DeriveSimStatus", "StampText", "SimAnnualStoreCurrentRun",
+                 "WriteStatusBlock", "If ", "Select Case"):
         assert rule not in code, f"the adapter has acquired a state rule: {rule}"
-    assert len(re.findall(r"^Public Function (\w+)", code, re.M)) == 4
+    assert len(re.findall(r"^Public Function (\w+)", code, re.M)) == 5
     # AND IT STILL CALLS THE ACCESSORS, one each, unchanged.
     for accessor in ("PCCM_AnnualDistributionState", "PCCM_AnnualProfileState",
                      "PCCM_AnnualProfilePx", "PCCM_AnnualYearCount"):
         assert code.count(f"modSimAnnualStore.{accessor}()") == 1, accessor
+    # P8-3'S FIFTH DELEGATES TO THE ACCEPTED PURE OWNER AND TO NOTHING ELSE.
+    # `SimReportDerivedStatus` is the read-only half P8-1 split out;
+    # `PCCM_SimulationStatus` derives the same answer AND persists it, which a
+    # worksheet cell may not do.
+    assert code.count("modSimReport.SimReportDerivedStatus()") == 1
+    assert "PCCM_SimulationStatus" not in code, (
+        "the adapter reaches the writing status path")
 
 
 @pytest.mark.parametrize("name,mutate,expect", [

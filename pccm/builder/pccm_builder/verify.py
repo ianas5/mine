@@ -284,12 +284,17 @@ def _phase6_formula_cells(
             for offset in range(len(section["rows"])):
                 for column in columns:
                     mirrored.add(f"{column}{first + offset}")
-        # NOTHING IN THE LABEL COLUMN AND NOTHING IN THE RESERVED REGION. Both
-        # are asserted rather than assumed: a label is text and the chart region
-        # is empty, so a formula in either is a defect this set must not bless.
+        # NOTHING IN THE LABEL COLUMN AND NOTHING IN THE DRAWING SPACE. A label
+        # is text, and the rows a chart is anchored over hold no values - so a
+        # formula in either is a defect this set must not bless.
+        #
+        # THE BOUNDARY IS `first_row`, NOT `heading_row`. P8-3 places the
+        # chart-status mirrors between the region's note and the first chart
+        # row: inside the region on purpose, above every plot, and they are
+        # mirrors like any other, so they belong in this set.
         assert not any(cell.startswith(dashboard["label_column"]) for cell in mirrored)
         region = dashboard["chart_region"]
-        reserved = range(int(region["heading_row"]), int(region["last_row"]) + 1)
+        reserved = range(int(region["first_row"]), int(region["last_row"]) + 1)
         assert not any(int(cell[len(nominal_col):]) in reserved
                        for cell in mirrored if cell.startswith(nominal_col))
         permitted.setdefault(dashboard["sheet"], set()).update(mirrored)

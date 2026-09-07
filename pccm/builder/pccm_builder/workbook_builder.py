@@ -1190,18 +1190,47 @@ def _chart_bridge_drivers(block: dict[str, Any],
     return out
 
 
+# THE PHASE-8 ADAPTER THE LIVE SIMULATION STATE IS ASKED THROUGH. Named here
+# rather than typed at the call site so the one name a formula spells is the one
+# the structure contract declares.
+RESULTS_SIMULATION_STATE_ADAPTER = "PCCM_ResultsSimulationState"
+
+
 def _chart_bridge_status(block: dict[str, Any],
-                         sensitivity: dict[str, Any]) -> list[tuple[int, str, str, str]]:
-    """(row, label, column, formula) for the one state line the charts need that
-    Results does not already publish. MIRRORED, never re-derived: the sentence
-    and every arm of it belong to the Sensitivity sheet."""
+                         sensitivity: dict[str, Any]) -> list[tuple[int, str, str]]:
+    """(row, label, formula) for the two state lines the charts need that
+    Results does not already publish.
+
+    NEITHER IS RE-DERIVED HERE, and they are not the same KIND of thing.
+
+      simulation_state          the accepted pure evaluator, asked through a
+                                volatile adapter. Live: it recomputes the
+                                current request fingerprint and compares it to
+                                the published one, so it goes STALE the moment
+                                the request drifts, with no endpoint invoked.
+                                The word is passed through untranslated.
+
+      sensitivity_availability  a sentence the Sensitivity sheet already writes,
+                                MIRRORED whole. It compares two PERSISTED
+                                records - which ranked table belongs to which
+                                published run - and is therefore blind to a
+                                model that has moved since. That is exactly why
+                                the tornado needs the line above it as well.
+    """
     availability = (f"{sensitivity['sheet']}!"
                     f"${sensitivity['columns'][1]['column']}$"
                     f"{sensitivity['availability_row']}")
+    formulas = {
+        "simulation_state": f"={RESULTS_SIMULATION_STATE_ADAPTER}()",
+        "sensitivity_availability": f'=IF({availability}="","",{availability})',
+    }
     out = []
     for index, entry in enumerate(block["rows"]):
-        out.append((int(block["first_row"]) + index, str(entry["label"]),
-                    f'=IF({availability}="","",{availability})'))
+        key = str(entry["source"])
+        if key not in formulas:
+            raise ValueError(
+                f"the chart status block names source {key!r}, which nothing supplies")
+        out.append((int(block["first_row"]) + index, str(entry["label"]), formulas[key]))
     return out
 
 

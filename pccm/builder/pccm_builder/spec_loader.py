@@ -209,7 +209,14 @@ def _check_dashboard_layout(dashboard: dict[str, Any], results: dict[str, Any],
             str(entry["key"]) for entry in charts["bridge"]["status"]["rows"]}
     formats = dashboard["number_formats"]
     region = dashboard["chart_region"]
-    reserved_top = int(region["heading_row"])
+    # WHAT THE REGION ACTUALLY PROTECTS IS THE SPACE A CHART IS DRAWN IN, which
+    # is `first_row` onward. The rule read `heading_row` while nothing was meant
+    # to sit inside the region at all; P8-3 places ONE section there on purpose -
+    # the chart-status lines, immediately above the plots they qualify - so the
+    # boundary moves to the row that matters and the exception is named rather
+    # than allowed in by a loosened comparison.
+    reserved_top = int(region["first_row"])
+    chart_status_key = "chart_status"
     occupied: dict[int, str] = {}
 
     for section in dashboard["sections"]:
@@ -228,7 +235,14 @@ def _check_dashboard_layout(dashboard: dict[str, Any], results: dict[str, Any],
             if row >= reserved_top:
                 raise SpecError(
                     f"{where}: section {key!r} reaches row {row}, at or inside the "
-                    f"chart region reserved from row {reserved_top}")
+                    f"space charts are drawn in, reserved from row {reserved_top}")
+            # AND ONLY THE CHART-STATUS SECTION MAY SIT INSIDE THE REGION AT
+            # ALL. Any other section drifting below the heading would be the
+            # summary growing into the charts, which is what this check is for.
+            if row >= int(region["heading_row"]) and key != chart_status_key:
+                raise SpecError(
+                    f"{where}: section {key!r} sits at row {row}, inside the chart "
+                    f"region; only {chart_status_key!r} may")
         for entry in section["rows"]:
             block, source = str(entry["source_block"]), str(entry["source_key"])
             if block not in available:
@@ -243,8 +257,8 @@ def _check_dashboard_layout(dashboard: dict[str, Any], results: dict[str, Any],
                 raise SpecError(
                     f"{where}.number_formats: no format is declared for "
                     f"{entry['format']!r}")
-    if int(region["note_row"]) <= reserved_top or int(region["last_row"]) <= int(
-            region["note_row"]):
+    if not (int(region["heading_row"]) < int(region["note_row"])
+            < int(region["first_row"]) <= int(region["last_row"])):
         raise SpecError(f"{where}.chart_region rows are not in ascending order")
 
 
@@ -402,6 +416,15 @@ def _check_charts_layout(charts: dict[str, Any], results: dict[str, Any],
                 raise SpecError(
                     f"{where}: chart {key!r} plots {series['key']!r}, which the "
                     f"{source} block does not publish")
+        second = chart.get("also_qualified_by")
+        if second is not None and str(second) not in state_words:
+            raise SpecError(
+                f"{where}: chart {key!r} names a second qualifier {second!r}, which "
+                f"nothing publishes")
+        if second is not None and str(second) == str(chart["state_source"]):
+            raise SpecError(
+                f"{where}: chart {key!r} names the same state source twice; two "
+                "conditions that are one condition are one condition")
         if str(chart["state_source"]) not in state_words:
             raise SpecError(
                 f"{where}: chart {key!r} names state source "

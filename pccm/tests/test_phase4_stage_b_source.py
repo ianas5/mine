@@ -446,11 +446,16 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
     # P8-1. THE PRESENTATION ADAPTERS ARE SOMEWHERE ELSE, and they are wrappers:
     # the semantic stays with the store. A Phase-8 name inside the store would
     # mean the display had been let into the owner.
+    # P8-3 ADDS A FIFTH, and it is not an annual one: a live SIMULATION state
+    # for the chart layer. It is an adapter on the same terms - the semantic
+    # stays with modSimReport, which owns the derivation it delegates to - and
+    # it is named here one at a time so a sixth cannot arrive unremarked.
     adapters = set(data["vba"]["phase8_api_procedures"])
     assert adapters == {"PCCM_ResultsAnnualDistributionState",
                         "PCCM_ResultsAnnualProfileState",
                         "PCCM_ResultsAnnualProfilePx",
-                        "PCCM_ResultsAnnualYearCount"}, sorted(adapters)
+                        "PCCM_ResultsAnnualYearCount",
+                        "PCCM_ResultsSimulationState"}, sorted(adapters)
     adapter_owners = {m.name for m in _all_modules()
                       if adapters & set(m.public_procedures)}
     assert adapter_owners == {"modResultsState"}, adapter_owners

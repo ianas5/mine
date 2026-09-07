@@ -552,13 +552,19 @@ phase6_shell:
       # here would be one Results cell under two labels, which the projection
       # refuses. What is genuinely new is whether the sensitivity ranking the
       # tornado plots is available at all, and for which run.
+      # P8-3. PLACED INSIDE THE CHART REGION, DIRECTLY ABOVE THE CHARTS, and
+      # that position is the point. The annual state lines are frozen on screen
+      # by the pane setting above; these two are the ones the histogram and the
+      # tornado need, and a reader meets them immediately before the plots they
+      # qualify rather than forty rows away.
       - key: "chart_status"
-        row: 52
-        note_row: 53
-        first_row: 54
+        row: 60
+        note_row: 61
+        first_row: 62
         title: "Chart Status"
-        note: "The charts below plot the same published answer the summary above reports, and inherit its state. This line covers the one ranking the summary does not: an unavailable or superseded sensitivity result is said so here rather than drawn as an empty tornado."
+        note: "The two lines the charts below need that the summary above does not carry. The simulation state is live: it goes STALE the moment the request drifts, with nothing rerun. The availability sentence says whether the ranked sensitivity table belongs to the published run - a different question, and neither answers the other."
         rows:
+          - {key: "simulation_state", source_block: "chart_status", source_key: "simulation_state", format: "text"}
           - {key: "sensitivity_availability", source_block: "chart_status", source_key: "sensitivity_availability", format: "text"}
     # THE CHART REGION. P8-3 draws into it; the cells inside it stay empty,
     # because a chart is an object anchored over cells rather than a value in
@@ -567,8 +573,11 @@ phase6_shell:
     chart_region:
       heading_row: 57
       note_row: 58
-      first_row: 59
-      last_row: 120
+      # THE FIRST ROW A CHART MAY BE ANCHORED IN. The chart-status section sits
+      # between the note and this row: inside the region, above every plot, and
+      # below the summary it must not disturb.
+      first_row: 64
+      last_row: 124
       heading: "Charts"
       note: "The cumulative cost curve, the total-cost distribution, the annual cash flow and the top drivers by rank correlation. Each plots the published answer the summary above reports and inherits its state; none of them recomputes anything."
     number_formats:
@@ -677,8 +686,16 @@ phase6_shell:
         note_row: 529
         first_row: 530
         heading: "Chart Status"
-        note: "The one state line the charts need that Results does not already publish. Mirrored from Sensitivity rather than re-derived, so the Dashboard keeps mirroring one sheet."
+        note: "The two state lines the charts need that Results does not already publish. Neither is re-derived here: the simulation state is the accepted pure evaluator asked through a volatile adapter, and the availability sentence is mirrored whole from Sensitivity, so the Dashboard keeps mirroring one sheet."
         rows:
+          # THE LIVE SIMULATION STATE, and it is the one the histogram needs.
+          # Results already publishes the persisted `(last evaluated)` row, and
+          # P8-1 proved in live Excel that it can still read CURRENT after a
+          # request change - so a chart qualified by it would look current for a
+          # run the model has moved past. This asks the pure semantic owner
+          # instead, through a volatile adapter, and passes the word through
+          # untranslated: STALE stays STALE and INVALID stays INVALID.
+          - {key: "simulation_state", label: "Simulation State (live)", source: "simulation_state", format: "text"}
           - {key: "sensitivity_availability", label: "Sensitivity Availability", source: "sensitivity_availability", format: "text"}
     # -----------------------------------------------------------------
     # THE CHARTS, ON THE DASHBOARD, IN THE RESERVED REGION
@@ -689,7 +706,7 @@ phase6_shell:
     charts:
       - key: "s_curve"
         kind: "line"
-        anchor: "B62"
+        anchor: "B65"
         width: 9.6
         height: 7.2
         title: "Cumulative Cost"
@@ -701,7 +718,7 @@ phase6_shell:
         state_source: "profile_state"
       - key: "histogram"
         kind: "column"
-        anchor: "F62"
+        anchor: "F65"
         width: 9.6
         height: 7.2
         title: "Total Cost Distribution"
@@ -709,10 +726,13 @@ phase6_shell:
         categories: "lower"
         series:
           - {key: "count", name: "Iterations"}
-        state_source: "distribution_state"
+        # THE PUBLISHED SIMULATION'S OWN STATE, not the annual product's. The
+        # annual line reads NOT PRODUCED whenever the annual step has not run,
+        # which says nothing about a histogram whose data is present.
+        state_source: "simulation_state"
       - key: "annual_cash_flow"
         kind: "column"
-        anchor: "B82"
+        anchor: "B85"
         width: 9.6
         height: 7.2
         title: "Annual Cash Flow"
@@ -723,7 +743,7 @@ phase6_shell:
         state_source: "profile_state"
       - key: "tornado"
         kind: "bar"
-        anchor: "F82"
+        anchor: "F85"
         width: 9.6
         height: 7.2
         title: "Top Drivers by Rank Correlation"
@@ -731,7 +751,15 @@ phase6_shell:
         categories: "driver_name"
         series:
           - {key: "rho", name: "Rho"}
+        # TWO QUESTIONS, AND THEY DO NOT COLLAPSE. The availability sentence
+        # answers "does this ranked table belong to the published run?" by
+        # comparing two PERSISTED records - it is structurally blind to a model
+        # that has moved since. The live simulation state answers "does that
+        # published run still match the model?". A tornado is only current when
+        # both are, and either one alone would have said CURRENT after the
+        # request drifted.
         state_source: "sensitivity_availability"
+        also_qualified_by: "simulation_state"
 
 sheets:
 
@@ -743,7 +771,13 @@ sheets:
     show_gridlines: false
     title: "Dashboard"
     subtitle: "Executive summary - every figure is a mirror of Results"
-    freeze_panes: null
+    # P8-3. THE RESULT STATUS BLOCK STAYS ON SCREEN. Rows 8-16 carry the annual
+    # distribution and profile states, the published profile Px, the year count
+    # and the selected level; the charts are forty rows below them. Without this
+    # a reader scrolled to a chart sees no state at all, and HISTORICAL becomes
+    # indistinguishable from CURRENT by simply being out of view. Freezing costs
+    # nothing, duplicates nothing, and creates no second authority.
+    freeze_panes: "A17"
     column_widths: { A: 3, B: 34, C: 3, D: 22, E: 3, F: 22, G: 3, H: 22 }
     blocks:
       # P8-2. THE SECTION PLACEHOLDERS ARE GONE, replaced by the projected

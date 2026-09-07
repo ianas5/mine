@@ -539,11 +539,17 @@ def test_17_the_two_public_surfaces_are_exactly_the_accepted_ones() -> None:
     }, sorted(phase7)
     # P8-1 adds its presentation adapters on the same terms: a separate contract
     # list, because Phase-8 code carries no Windows evidence either.
+    # P8-3 ADDS A FIFTH, and it is not an annual one: the chart layer needed a
+    # live SIMULATION state, because the four above answer about the annual
+    # product and read NOT PRODUCED whenever the annual step has not run. Named
+    # here on the same terms as the other four - one at a time - so a sixth
+    # cannot arrive unremarked.
     phase8 = set(declared["phase8_api_procedures"])
     assert phase8 == {"PCCM_ResultsAnnualDistributionState",
                       "PCCM_ResultsAnnualProfileState",
                       "PCCM_ResultsAnnualProfilePx",
-                      "PCCM_ResultsAnnualYearCount"}, sorted(phase8)
+                      "PCCM_ResultsAnnualYearCount",
+                      "PCCM_ResultsSimulationState"}, sorted(phase8)
     assert not (phase8 & phase7), "an adapter was declared as a Phase-7 accessor"
     expected = phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7 | phase8
     assert found == expected, sorted(found ^ expected)

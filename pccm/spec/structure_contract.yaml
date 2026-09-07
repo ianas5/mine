@@ -596,6 +596,14 @@ vba:
     - "PCCM_ResultsAnnualProfileState"
     - "PCCM_ResultsAnnualProfilePx"
     - "PCCM_ResultsAnnualYearCount"
+    # P8-3. THE FIFTH, AND IT IS NOT AN ANNUAL ONE. The chart layer needed a
+    # live SIMULATION state: the four above answer about the annual product and
+    # read NOT PRODUCED whenever the annual step has not run, and the persisted
+    # `(last evaluated)` row was proved live to still read CURRENT after a
+    # request change. This delegates to modSimReport.SimReportDerivedStatus -
+    # the pure evaluator the P8-1 read-only correction introduced - and owns no
+    # state rule of its own.
+    - "PCCM_ResultsSimulationState"
 
   # Constructs that must NOT appear in VBA. The Linux static tests and the Gate-B
   # persisted-project sweep assert their absence, so a later phase's

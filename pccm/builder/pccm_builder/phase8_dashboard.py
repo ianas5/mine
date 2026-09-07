@@ -232,10 +232,14 @@ def validate_phase8_dashboard_inspection(inspection: dict[str, Any]) -> None:
                     f"{INSPECTION_FILENAME}: rows {seen_rows[entry['row']]!r} and "
                     f"{entry['key']!r} both occupy row {entry['row']}")
             seen_rows[entry["row"]] = entry["key"]
-            if entry["row"] >= region["heading_row"]:
+            # THE SPACE A CHART IS DRAWN IN IS `first_row` ONWARD. P8-3 places
+            # the chart-status lines between the region's note and that row -
+            # inside the region on purpose, immediately above the plots they
+            # qualify - so the boundary is the row that matters.
+            if entry["row"] >= region["first_row"]:
                 raise ValueError(
                     f"{INSPECTION_FILENAME}: {entry['key']!r} sits at row "
-                    f"{entry['row']}, inside the reserved chart region")
+                    f"{entry['row']}, in the space charts are drawn in")
             for measure, cells in entry["cells"].items():
                 if cells["dashboard"] in seen_dashboard_cells:
                     raise ValueError(

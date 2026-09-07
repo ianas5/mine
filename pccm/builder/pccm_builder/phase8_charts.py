@@ -143,6 +143,14 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int) -> dict[str,
             # carries no state logic of its own; it inherits the state its
             # source already publishes, and this names where a reader finds it.
             "state_source": str(chart["state_source"]),
+            # A SECOND CONDITION WHERE ONE ANSWER IS NOT ENOUGH. The tornado
+            # needs BOTH "does this ranked table belong to the published run?"
+            # and "does that published run still match the model?": the first
+            # compares two persisted records and is blind to a model that has
+            # moved since, so either alone would have said CURRENT after the
+            # request drifted. They do not collapse.
+            "also_qualified_by": (str(chart["also_qualified_by"])
+                                  if chart.get("also_qualified_by") else None),
             # WHAT THE CHART DOES WHEN THERE IS NOTHING TO PLOT. Not a promise
             # about pixels: a statement about the value the bridge supplies, and
             # NA() is the value every chart type declines to draw.
