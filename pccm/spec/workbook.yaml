@@ -546,23 +546,192 @@ phase6_shell:
           - {key: "seed_mode", source_block: "run_stamp", source_key: "seed_mode", format: "text"}
           - {key: "effective_seed", source_block: "run_stamp", source_key: "effective_seed", format: "text"}
           - {key: "applied_timeline", source_block: "run_stamp", source_key: "applied_timeline", format: "text"}
-    # THE SPACE THE NEXT STEP NEEDS, RESERVED AND EMPTY. A heading and a note,
-    # no chart object and no placeholder cell. It is declared here so the
-    # summary above can never grow down into it unnoticed: the loader refuses a
-    # section that reaches this row, which is the check the Results annual
-    # window has against the reconciliation heading.
+      # P8-3. THE ONE STATE LINE THE CHARTS NEED THAT IS NOT ALREADY ABOVE.
+      # The annual distribution state, the profile state and the profile Px are
+      # mirrored at rows 10-12 and a reader meets them there; repeating them
+      # here would be one Results cell under two labels, which the projection
+      # refuses. What is genuinely new is whether the sensitivity ranking the
+      # tornado plots is available at all, and for which run.
+      - key: "chart_status"
+        row: 52
+        note_row: 53
+        first_row: 54
+        title: "Chart Status"
+        note: "The charts below plot the same published answer the summary above reports, and inherit its state. This line covers the one ranking the summary does not: an unavailable or superseded sensitivity result is said so here rather than drawn as an empty tornado."
+        rows:
+          - {key: "sensitivity_availability", source_block: "chart_status", source_key: "sensitivity_availability", format: "text"}
+    # THE CHART REGION. P8-3 draws into it; the cells inside it stay empty,
+    # because a chart is an object anchored over cells rather than a value in
+    # them. It is declared here so the summary above can never grow down into it
+    # unnoticed: the loader refuses a section that reaches this row.
     chart_region:
-      heading_row: 54
-      note_row: 55
-      first_row: 56
-      last_row: 96
+      heading_row: 57
+      note_row: 58
+      first_row: 59
+      last_row: 120
       heading: "Charts"
-      note: "Reserved for the S-curve, the distribution histogram, the mean annual cash flow and the top sensitivity drivers. Not implemented in this step; nothing is drawn here yet."
+      note: "The cumulative cost curve, the total-cost distribution, the annual cash flow and the top drivers by rank correlation. Each plots the published answer the summary above reports and inherits its state; none of them recomputes anything."
     number_formats:
       money: "#,##0"
       year: "0"
       delta: "0.00E+00"
       text: "General"
+
+  # -------------------------------------------------------------------
+  # PHASE 8, STEP 3. The analytical chart layer.
+  #
+  # A SEPARATE BLOCK ON PURPOSE. The `results:` block above is the surface the
+  # accepted P8-1 Windows run was produced against and a control asserts it is
+  # byte-identical to that commit; `dashboard:` is P8-2's. Charts need geometry
+  # in BOTH sheets, so they get their own block rather than growing either of
+  # the two that already carry accepted evidence.
+  #
+  # THE ARCHITECTURE, IN ONE LINE PER HOP:
+  #   accepted engine -> Results (or Sensitivity) -> chart bridge -> chart
+  # No chart series reads `_SimData` or `_Calc`. The BRIDGE does, exactly as
+  # every other Results formula does, because Results is the presentation
+  # surface that is allowed to; a chart pointed at machine storage would be a
+  # fourth reader of a block whose addresses have already moved once.
+  #
+  # WHY A BRIDGE AT ALL, RATHER THAN CHARTING RESULTS DIRECTLY. Two reasons and
+  # they are both about honesty, not convenience:
+  #
+  #   BLANK IS NOT ZERO, BUT EXCEL CHARTS IT AS ZERO. The display tables emit
+  #   "" past the stamped year count and when nothing is produced. A chart
+  #   series over "" plots a flat run of zeros - fabricated years that look like
+  #   a project costing nothing. The bridge emits NA() instead, which every
+  #   chart type declines to plot. The display table keeps its "" because a
+  #   READER wants an empty cell and a CHART wants an absent point.
+  #
+  #   A CUMULATIVE SERIES DOES NOT EXIST ANYWHERE YET. It is display arithmetic
+  #   over cells already on the sheet - a running SUM of the published profile -
+  #   and it is the one series this step adds. It re-allocates nothing.
+  #
+  # EVERY BLOCK BELOW IS DERIVED CHART-ONLY DATA. None of it is an analytical
+  # output, none of it is an authority, and nothing but a chart reads it. It is
+  # rendered visibly rather than hidden so an auditor can see what each chart is
+  # actually plotting.
+  charts:
+    bridge_sheet: "Results"
+    chart_sheet: "Dashboard"
+    # THE ONE HOP OUTSIDE RESULTS. Sensitivity is where Phase 7 publishes the
+    # ranked driver population, so it is the tornado's presentation authority -
+    # the manifest names it here rather than letting a chart discover it.
+    sensitivity_sheet: "Sensitivity"
+    number_formats:
+      money: "#,##0"
+      year: "0"
+      rho: "0.000"
+      text: "General"
+    # -----------------------------------------------------------------
+    # THE BRIDGE, ON RESULTS, BELOW EVERYTHING THE EARLIER STEPS OWN
+    # -----------------------------------------------------------------
+    bridge:
+      heading_row: 272
+      note_row: 273
+      heading: "Chart Data"
+      note: "Derived for the Dashboard charts and read by nothing else. Not an analytical output and not an authority: every value below is taken from the published tables above, with NA() where a chart must plot no point rather than a zero."
+      annual:
+        heading_row: 275
+        note_row: 276
+        header_row: 278
+        first_row: 279
+        heading: "Annual Series"
+        note: "The published annual profile, bounded by the stamped year count, plus its running total. NA() past the last stamped year and whenever no annual result is produced."
+        columns:
+          - {key: "project_index", header: "Project Year", column: "B", source: "annual", field: "project_index", format: "year"}
+          - {key: "calendar_year", header: "Calendar Year", column: "D", source: "annual", field: "calendar_year", format: "year"}
+          - {key: "annual_nominal", header: "Annual Nominal", column: "F", source: "annual", field: "nominal", format: "money"}
+          - {key: "cumulative_nominal", header: "Cumulative Nominal", column: "H", source: "cumulative", field: "nominal", format: "money"}
+          - {key: "cumulative_pv", header: "Cumulative PV", column: "J", source: "cumulative", field: "pv", format: "money"}
+      distribution:
+        heading_row: 483
+        note_row: 484
+        header_row: 486
+        first_row: 487
+        bin_count: 20
+        heading: "Distribution Bins"
+        note: "Equal-width bins across the published minimum and maximum of the total nominal cost, counted over the published iteration column. No statistic is recomputed here: the edges come from the summary rows above and the counts are a tally."
+        # NOMINAL ONLY, AND DELIBERATELY. The headline TOTAL and the contingency
+        # this workbook exists to set are read off the nominal ladder; a second
+        # histogram on a different scale would double the ink and halve the
+        # readability for a question nobody asked at this altitude.
+        measure: "nominal"
+        columns:
+          - {key: "lower", header: "Bin Lower", column: "B", format: "money"}
+          - {key: "upper", header: "Bin Upper", column: "D", format: "money"}
+          - {key: "count", header: "Iterations", column: "F", format: "year"}
+      drivers:
+        heading_row: 511
+        note_row: 512
+        header_row: 514
+        first_row: 515
+        top_n: 10
+        heading: "Top Drivers"
+        note: "The first rows of the accepted Sensitivity ranking, in the order that sheet publishes them. This block selects a window; it does not rank, re-sort or sign anything."
+        columns:
+          - {key: "driver_name", header: "Driver", column: "B", source: "driver_name", format: "text"}
+          - {key: "rho", header: "Rho", column: "D", source: "rho", format: "rho"}
+      status:
+        heading_row: 528
+        note_row: 529
+        first_row: 530
+        heading: "Chart Status"
+        note: "The one state line the charts need that Results does not already publish. Mirrored from Sensitivity rather than re-derived, so the Dashboard keeps mirroring one sheet."
+        rows:
+          - {key: "sensitivity_availability", label: "Sensitivity Availability", source: "sensitivity_availability", format: "text"}
+    # -----------------------------------------------------------------
+    # THE CHARTS, ON THE DASHBOARD, IN THE RESERVED REGION
+    # -----------------------------------------------------------------
+    # NO CHART JUNK. Every chart below is 2-D, has no legend unless it carries
+    # more than one series, has no major gridlines on the category axis, and
+    # carries its title once - on the chart, not repeated in a cell above it.
+    charts:
+      - key: "s_curve"
+        kind: "line"
+        anchor: "B62"
+        width: 9.6
+        height: 7.2
+        title: "Cumulative Cost"
+        source: "annual"
+        categories: "calendar_year"
+        series:
+          - {key: "cumulative_nominal", name: "Cumulative Nominal"}
+          - {key: "cumulative_pv", name: "Cumulative PV"}
+        state_source: "profile_state"
+      - key: "histogram"
+        kind: "column"
+        anchor: "F62"
+        width: 9.6
+        height: 7.2
+        title: "Total Cost Distribution"
+        source: "distribution"
+        categories: "lower"
+        series:
+          - {key: "count", name: "Iterations"}
+        state_source: "distribution_state"
+      - key: "annual_cash_flow"
+        kind: "column"
+        anchor: "B82"
+        width: 9.6
+        height: 7.2
+        title: "Annual Cash Flow"
+        source: "annual"
+        categories: "calendar_year"
+        series:
+          - {key: "annual_nominal", name: "Annual Nominal"}
+        state_source: "profile_state"
+      - key: "tornado"
+        kind: "bar"
+        anchor: "F82"
+        width: 9.6
+        height: 7.2
+        title: "Top Drivers by Rank Correlation"
+        source: "drivers"
+        categories: "driver_name"
+        series:
+          - {key: "rho", name: "Rho"}
+        state_source: "sensitivity_availability"
 
 sheets:
 

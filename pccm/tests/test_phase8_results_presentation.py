@@ -142,12 +142,37 @@ def test_03_nothing_is_still_advertised_as_deferred() -> None:
 
 
 def test_04_no_later_phase_is_implied(self=None) -> None:
-    """Phase 8 Step 1 is three sections. It must not advertise the dashboard,
-    the charts or the Phase-9 model-check UI that come after it."""
+    """Phase 8 Step 1 is three sections. It must not advertise a phase that has
+    not happened.
+
+    NARROWED AT P8-3, AND DISCLOSED. The original list banned every word for
+    every later step, which was right while every one of them was later. Two
+    have now landed: P8-2 built the Dashboard and P8-3 put a chart bridge on
+    THIS sheet, so those rows legitimately name what they are for - a block
+    called 'Chart Data' that did not say it was for the charts would be worse,
+    not better. What is still banned is what is still ahead: the Phase-9
+    model-check UI and the Phase-10 hardening language. The P8-3 words are
+    permitted only in the rows the chart projection declares, which is what the
+    second half of this control checks."""
+    banned_everywhere = ("warning", "repair", "remediation", "sign-off")
     lowered = "\n".join(_text_cells()).lower()
-    for later in ("dashboard", "s-curve", "histogram", "tornado", "chart",
-                  "sensitivity", "spearman", "correlation", "warning", "repair"):
+    for later in banned_everywhere:
         assert later not in lowered, f"Results implies {later!r} exists here"
+    # AND THE CHART VOCABULARY IS CONFINED TO THE CHART BRIDGE. A P8-1 row that
+    # started talking about charts would be the accepted surface drifting.
+    charts = json.loads(
+        (BUILD / "phase8_charts_inspection.json").read_text(encoding="utf-8"))
+    bridge_top = int(charts["bridge"]["heading_row"])
+    sheet = _sheet()
+    for row in range(1, bridge_top):
+        for column in "BDFHJ":
+            value = sheet[f"{column}{row}"].value
+            if not isinstance(value, str) or value.startswith("="):
+                continue
+            for later in ("dashboard", "s-curve", "histogram", "tornado", "chart",
+                          "spearman"):
+                assert later not in value.lower(), (
+                    f"Results!{column}{row} names {later!r} above the chart bridge")
 
 
 # ===========================================================================

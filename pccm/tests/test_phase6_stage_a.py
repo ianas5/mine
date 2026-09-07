@@ -1786,9 +1786,23 @@ STALE_RESULTS_PHRASES = (
 # they leave this list: a sheet that presents them is no longer over-claiming.
 # What stays forbidden is everything Phase 8 has NOT built - the dashboard, the
 # charts and the sensitivity rendering - and the Phase-9 model-check UI.
+# NARROWED AT P8-3, AND DISCLOSED. This list banned the whole Phase-8 chart
+# vocabulary from Results, which was right while every one of those things was
+# a later step. P8-3 put a chart bridge ON THIS SHEET, so those rows now
+# legitimately name what they are for - a block called "Chart Data" that did not
+# say it was for the charts would be worse, not better.
+#
+# THE CONTROL DID NOT WEAKEN, IT MOVED. What was a ban everywhere is now a
+# CONFINEMENT: the chart words are permitted only at or below the bridge heading
+# the projection declares, and are still refused above it, which is where the
+# accepted P8-1 surface lives. The words below are the ones still ahead of this
+# step and are still banned outright.
 FORBIDDEN_RESULTS_CLAIMS = (
-    "sensitivity", "correlation", "dashboard", "spearman",
-    "s-curve", "histogram", "tornado",
+    "model check", "remediation", "sign-off", "hardening",
+)
+# Permitted only inside the chart bridge, and refused above it.
+CHART_VOCABULARY = (
+    "dashboard", "s-curve", "histogram", "tornado", "chart", "spearman",
 )
 
 
@@ -1837,7 +1851,10 @@ def test_93_the_built_results_sheet_says_what_is_actually_published() -> None:
 
 
 def test_94_results_claims_nothing_that_does_not_exist() -> None:
-    """Nothing implies a feature a later Phase-8 step still owns."""
+    """Nothing implies a feature a later phase still owns, and the chart
+    vocabulary P8-3 introduced stays inside the block that earned it."""
+    import json
+
     lowered = "\n".join(_results_strings()).lower()
     for claim in FORBIDDEN_RESULTS_CLAIMS:
         assert claim not in lowered, f"Results implies {claim!r} exists"
@@ -1846,6 +1863,23 @@ def test_94_results_claims_nothing_that_does_not_exist() -> None:
     assert "Annual Cash Flow" in strings
     assert "Reconciliation" in strings
     assert not [s for s in strings if s.startswith("Deferred.")], strings
+
+    # AND THE CHART WORDS ARE CONFINED TO THE CHART BRIDGE. A P8-1 row that
+    # started talking about charts would be the accepted surface drifting.
+    from openpyxl import load_workbook
+
+    charts = json.loads(
+        (PCCM_ROOT / "build" / "phase8_charts_inspection.json").read_text(
+            encoding="utf-8"))
+    bridge_top = int(charts["bridge"]["heading_row"])
+    sheet = load_workbook(_built_tree() / "PCCM_stageA.xlsx")["Results"]
+    for row in sheet.iter_rows(min_row=1, max_row=bridge_top - 1, max_col=10):
+        for cell in row:
+            if not isinstance(cell.value, str) or cell.value.startswith("="):
+                continue
+            for word in CHART_VOCABULARY:
+                assert word not in cell.value.lower(), (
+                    f"Results!{cell.coordinate} names {word!r} above the chart bridge")
 
 
 def test_95_only_the_wording_moved_and_the_layout_did_not() -> None:

@@ -41,6 +41,7 @@ from pccm_builder import (  # noqa: E402
     emit_inspection,
     emit_sim_artifacts,
     emit_phase7_acceptance,
+    emit_phase8_charts,
     emit_phase8_dashboard,
     emit_phase8_results,
     emit_sim_gate_b_artifacts,
@@ -222,6 +223,12 @@ def main(argv: list[str] | None = None) -> int:
     # which is the only claim this step makes.
     phase8_dashboard = emit_phase8_dashboard(spec, out_path.parent)
 
+    # P8-3. THE CHART PROJECTION, and its own file for the same reason: the two
+    # above are what the accepted P8-1 and P8-2 Windows runs were produced
+    # against. It carries what each chart plots and the authority behind it.
+    phase8_charts = emit_phase8_charts(
+        spec, structure.limits.max_generated_year_columns, out_path.parent)
+
     say(f"  built    : {out_path}")
     say(f"  emitted  : {artifacts.module_path}")
     say(f"  emitted  : {artifacts.manifest_path}")
@@ -238,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  emitted  : {phase7[1]}")
     say(f"  emitted  : {phase8}")
     say(f"  emitted  : {phase8_dashboard}")
+    say(f"  emitted  : {phase8_charts}")
     say(f"  stamped  : builder {metadata.builder_version}, {metadata.build_timestamp}")
     say("")
     say("Structural verification:")

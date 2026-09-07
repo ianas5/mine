@@ -123,13 +123,28 @@ def test_01_the_workbook_still_has_exactly_fourteen_sheets() -> None:
         "the Dashboard is no longer the first sheet a reader opens")
 
 
-def test_02_no_chart_exists_anywhere_in_the_workbook() -> None:
-    """P8-2 DRAWS NOTHING. The S-curve, the histogram and the tornado belong to
-    a later step; a chart object here would be that step started early and
-    unreviewed."""
+def test_02_exactly_the_projected_charts_exist_and_only_on_the_dashboard() -> None:
+    """RESTATED AT P8-3, AND DISCLOSED. This control read "P8-2 draws nothing",
+    which was the whole truth while charts were a later step. P8-3 draws into
+    the region P8-2 reserved, so the claim changes from ABSENCE to INVENTORY:
+    exactly the charts the projection declares, on the sheet it names, and not
+    one anywhere else.
+
+    THE STRENGTH IS UNCHANGED. An undeclared chart still fails here, on any
+    sheet including this one, and so does a picture - which is how a chart gets
+    pasted in rather than built."""
+    charts = json.loads(
+        (BUILD / "phase8_charts_inspection.json").read_text(encoding="utf-8"))
+    expected = {chart["key"] for chart in charts["charts"]}
+    assert expected, "the chart projection declares nothing"
     for worksheet in _workbook().worksheets:
-        charts = list(getattr(worksheet, "_charts", []))
-        assert not charts, f"{worksheet.title} carries {len(charts)} chart(s)"
+        found = list(getattr(worksheet, "_charts", []))
+        if worksheet.title == charts["chart_sheet"]:
+            assert len(found) == len(expected), (
+                f"{worksheet.title} carries {len(found)} charts; the projection "
+                f"declares {len(expected)}")
+        else:
+            assert not found, f"{worksheet.title} carries {len(found)} chart(s)"
         images = list(getattr(worksheet, "_images", []))
         assert not images, f"{worksheet.title} carries {len(images)} image(s)"
 

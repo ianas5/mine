@@ -37,7 +37,11 @@ ALLOWED_KEYS = ("schema_version", "purpose", "provenance", "sheet", "source_shee
 
 # The Results blocks a Dashboard row may mirror. Named here so a fifth block
 # cannot be mirrored without this file being edited to say so.
-SOURCE_BLOCKS = ("run_stamp", "summary", "selected", "state", "reconciliation")
+SOURCE_BLOCKS = ("run_stamp", "summary", "selected", "state", "reconciliation",
+                 # P8-3. The chart bridge's status rows live ON RESULTS, so a
+                 # Dashboard mirror of one is still a mirror of Results and the
+                 # accepted P8-2 rule - this sheet reads one surface - holds.
+                 "chart_status")
 
 
 def _results_rows(results: dict[str, Any]) -> dict[str, dict[str, int]]:
@@ -82,6 +86,16 @@ def _results_labels(results: dict[str, Any]) -> dict[str, dict[str, str]]:
     }
 
 
+def _chart_status(charts: dict[str, Any] | None) -> tuple[dict[str, int], dict[str, str]]:
+    if not charts:
+        return {}, {}
+    status = charts["bridge"]["status"]
+    first = int(status["first_row"])
+    rows = {str(e["key"]): first + index for index, e in enumerate(status["rows"])}
+    labels = {str(e["key"]): str(e["label"]) for e in status["rows"]}
+    return rows, labels
+
+
 def build_phase8_dashboard_inspection(spec: WorkbookSpec) -> dict[str, Any]:
     shell = spec.phase6_shell or {}
     dashboard = shell.get("dashboard")
@@ -97,6 +111,10 @@ def build_phase8_dashboard_inspection(spec: WorkbookSpec) -> dict[str, Any]:
 
     rows = _results_rows(results)
     labels = _results_labels(results)
+    status_rows, status_labels = _chart_status(shell.get("charts"))
+    if status_rows:
+        rows["chart_status"] = status_rows
+        labels["chart_status"] = status_labels
     source_columns = {
         "nominal": str(results["nominal_column"]),
         "pv": str(results["pv_column"]),

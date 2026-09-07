@@ -293,6 +293,48 @@ def _phase6_formula_cells(
         assert not any(int(cell[len(nominal_col):]) in reserved
                        for cell in mirrored if cell.startswith(nominal_col))
         permitted.setdefault(dashboard["sheet"], set()).update(mirrored)
+
+    # PHASE 8, STEP 3. The chart bridge, enumerated on exactly the terms above:
+    # every cell the bridge writes a formula into, and no other.
+    #
+    # IT LIVES ON RESULTS AND IS ADDED TO THE RESULTS SET, because that is where
+    # it is. A separate permission for "the chart rows" would be a second place
+    # to loosen when a bridge block grew, and the whole value of this
+    # enumeration is that there is one.
+    chart_block = shell.get("charts")
+    if chart_block and structure is not None:
+        bridge = chart_block["bridge"]
+        bridge_cells: set[str] = set()
+        window = int(structure.limits.max_generated_year_columns)
+        annual_bridge = bridge["annual"]
+        for offset in range(window):
+            row = int(annual_bridge["first_row"]) + offset
+            for column in annual_bridge["columns"]:
+                bridge_cells.add(f"{column['column']}{row}")
+        distribution = bridge["distribution"]
+        for index in range(int(distribution["bin_count"])):
+            row = int(distribution["first_row"]) + index
+            for column in distribution["columns"]:
+                bridge_cells.add(f"{column['column']}{row}")
+        drivers = bridge["drivers"]
+        for index in range(int(drivers["top_n"])):
+            row = int(drivers["first_row"]) + index
+            for column in drivers["columns"]:
+                bridge_cells.add(f"{column['column']}{row}")
+        status = bridge["status"]
+        for index in range(len(status["rows"])):
+            bridge_cells.add(
+                f"{results['nominal_column']}{int(status['first_row']) + index}")
+        # THE BRIDGE USES COLUMN B FOR DATA, not for captions - a project year
+        # and a driver name are values here - so a label-column ban would be the
+        # wrong check. The check that matters is the one below: the bridge may
+        # not land on a single cell the accepted P8-1 surface already owns.
+        # Those cells carry evidence a Windows run was produced against, and an
+        # overlap would let both sets read whatever was written last.
+        collision = sorted(bridge_cells & cells)
+        assert not collision, (
+            f"the P8-3 chart bridge overlaps the accepted P8-1 Results cells: {collision}")
+        permitted.setdefault(chart_block["bridge_sheet"], set()).update(bridge_cells)
     return permitted
 
 

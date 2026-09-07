@@ -46,6 +46,7 @@ from .sim_rng import (
     SimRngError,
 )
 from .phase7_acceptance import emit_phase7_acceptance
+from .phase8_charts import emit_phase8_charts
 from .phase8_dashboard import emit_phase8_dashboard
 from .phase8_results import emit_phase8_results
 from .sim_emit import emit_sim_artifacts, emit_sim_gate_b_artifacts
@@ -159,6 +160,7 @@ __all__ = [
     "emit_inspection",           # build_stage_a.py, Phase 5 Gate-B harness
     "emit_sim_artifacts",        # build_stage_a.py, Phase 6 Step-5 tests
     "emit_phase7_acceptance",
+    "emit_phase8_charts",     # build_stage_a.py, Phase 8 chart projection
     "emit_phase8_dashboard",  # build_stage_a.py, Phase 8 Dashboard projection
     "emit_phase8_results",    # build_stage_a.py, Phase 8 Results projection
     "emit_sim_gate_b_artifacts", # build_stage_a.py, Phase 6 Gate-B harness

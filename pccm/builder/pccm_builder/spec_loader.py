@@ -149,12 +149,17 @@ def _parse_phase6_shell(raw: dict[str, Any], path: Path) -> dict[str, Any]:
     _check_results_layout(shell["results"], path)
     if "dashboard" in shell:
         walk(shell["dashboard"], f"{path}: phase6_shell.dashboard", True)
-        _check_dashboard_layout(shell["dashboard"], shell["results"], path)
+        _check_dashboard_layout(shell["dashboard"], shell["results"], path,
+                                shell.get("charts"))
+    if "charts" in shell:
+        walk(shell["charts"], f"{path}: phase6_shell.charts", True)
+        _check_charts_layout(shell["charts"], shell["results"],
+                             shell.get("dashboard"), path)
     return shell
 
 
 def _check_dashboard_layout(dashboard: dict[str, Any], results: dict[str, Any],
-                            path: Path) -> None:
+                            path: Path, charts: dict[str, Any] | None = None) -> None:
     """P8-2. The Dashboard sections must not overlap each other, must not reach
     the reserved chart region, and must mirror rows Results actually publishes.
 
@@ -195,6 +200,13 @@ def _check_dashboard_layout(dashboard: dict[str, Any], results: dict[str, Any],
         "state": {"distribution_state", "profile_state", "profile_px", "year_count"},
         "reconciliation": {str(e["key"]) for e in results["reconciliation"]["rows"]},
     }
+    # P8-3. THE CHART BRIDGE IS ON RESULTS, so a Dashboard mirror of one of its
+    # status rows is still a mirror of Results and the accepted P8-2 rule - this
+    # sheet reads one surface - is untouched. It is named here rather than
+    # allowed in by a loosened comparison.
+    if charts:
+        available["chart_status"] = {
+            str(entry["key"]) for entry in charts["bridge"]["status"]["rows"]}
     formats = dashboard["number_formats"]
     region = dashboard["chart_region"]
     reserved_top = int(region["heading_row"])
@@ -291,6 +303,123 @@ def _check_results_layout(results: dict[str, Any], path: Path) -> None:
             raise SpecError(
                 f"{where}.annual: column {column['key']!r} names source "
                 f"{column['source']!r}, which is not an annual record block")
+
+
+def _check_charts_layout(charts: dict[str, Any], results: dict[str, Any],
+                         dashboard: dict[str, Any] | None, path: Path) -> None:
+    """P8-3. The bridge must sit BELOW everything the earlier steps own, its
+    blocks must not overlap each other, and every chart must name a series the
+    bridge actually publishes.
+
+    WHY EACH ONE IS HERE.
+
+    THE BRIDGE STARTS BELOW THE ACCEPTED SURFACE. Results rows up to the
+    reconciliation carry P8-1 evidence a Windows run was produced against. A
+    bridge block that started one row too high would overwrite one and every
+    check of it would still pass, because both would read whatever landed there
+    last - the same collision this file already refuses between the annual
+    window and the reconciliation.
+
+    A CHART THAT NAMES A SERIES NOTHING PUBLISHES is the P7-4 shape: an address
+    that resolves to nothing, in silence, forever. It must fail the BUILD,
+    naming the series.
+
+    AND THE CHART REGION HAS TO CONTAIN THE CHARTS. An anchor above the reserved
+    region would land a chart on top of the executive summary.
+    """
+    where = f"{path}: phase6_shell.charts"
+    bridge = charts["bridge"]
+    if charts.get("bridge_sheet") != results["sheet"]:
+        raise SpecError(
+            f"{where}.bridge_sheet is {charts.get('bridge_sheet')!r}; the bridge lives "
+            f"on {results['sheet']!r}, which is the surface the charts may read")
+
+    accepted_last = max(
+        [int(results["reconciliation"]["first_row"])
+         + len(results["reconciliation"]["rows"]) - 1,
+         int(results["annual"]["first_row"]) - 1]
+    )
+    if int(bridge["heading_row"]) <= accepted_last:
+        raise SpecError(
+            f"{where}.bridge: starts at row {bridge['heading_row']}, at or inside the "
+            f"accepted Results layout ending at row {accepted_last}")
+
+    # EVERY BRIDGE BLOCK, ITS EXTENT, AND NO TWO OF THEM ON ONE ROW.
+    extents = {
+        "annual": (int(bridge["annual"]["first_row"]), 0),
+        "distribution": (int(bridge["distribution"]["first_row"]),
+                         int(bridge["distribution"]["bin_count"])),
+        "drivers": (int(bridge["drivers"]["first_row"]), int(bridge["drivers"]["top_n"])),
+        "status": (int(bridge["status"]["first_row"]), len(bridge["status"]["rows"])),
+    }
+    occupied: dict[int, str] = {int(bridge["heading_row"]): "bridge",
+                                int(bridge["note_row"]): "bridge"}
+    for name, block in (("annual", bridge["annual"]),
+                        ("distribution", bridge["distribution"]),
+                        ("drivers", bridge["drivers"]),
+                        ("status", bridge["status"])):
+        rows = [int(block["heading_row"]), int(block["note_row"])]
+        if "header_row" in block:
+            rows.append(int(block["header_row"]))
+        first, count = extents[name]
+        rows += [first + offset for offset in range(count)]
+        for row in rows:
+            if row in occupied:
+                raise SpecError(
+                    f"{where}.bridge: blocks {occupied[row]!r} and {name!r} both write "
+                    f"row {row}")
+            occupied[row] = name
+
+    formats = charts["number_formats"]
+    for block in (bridge["annual"], bridge["distribution"], bridge["drivers"]):
+        for column in block["columns"]:
+            if str(column["format"]) not in formats:
+                raise SpecError(
+                    f"{where}.number_formats: no format is declared for "
+                    f"{column['format']!r}")
+
+    published = {
+        "annual": {str(c["key"]) for c in bridge["annual"]["columns"]},
+        "distribution": {str(c["key"]) for c in bridge["distribution"]["columns"]},
+        "drivers": {str(c["key"]) for c in bridge["drivers"]["columns"]},
+    }
+    state_words = {"distribution_state", "profile_state", "profile_px"} | {
+        str(entry["key"]) for entry in bridge["status"]["rows"]}
+    anchors: set[str] = set()
+    for chart in charts["charts"]:
+        key = str(chart["key"])
+        source = str(chart["source"])
+        if source not in published:
+            raise SpecError(
+                f"{where}: chart {key!r} reads block {source!r}, which the bridge "
+                f"does not publish")
+        if str(chart["categories"]) not in published[source]:
+            raise SpecError(
+                f"{where}: chart {key!r} takes its categories from "
+                f"{chart['categories']!r}, which the {source} block does not publish")
+        for series in chart["series"]:
+            if str(series["key"]) not in published[source]:
+                raise SpecError(
+                    f"{where}: chart {key!r} plots {series['key']!r}, which the "
+                    f"{source} block does not publish")
+        if str(chart["state_source"]) not in state_words:
+            raise SpecError(
+                f"{where}: chart {key!r} names state source "
+                f"{chart['state_source']!r}, which nothing publishes")
+        # NO 3-D, EVER. It is not a style preference: a third dimension carries
+        # no data here and distorts the comparison the chart exists to make.
+        if str(chart["kind"]) not in ("line", "column", "bar"):
+            raise SpecError(f"{where}: chart {key!r} is a {chart['kind']!r} chart")
+        if chart["anchor"] in anchors:
+            raise SpecError(f"{where}: two charts are anchored at {chart['anchor']}")
+        anchors.add(str(chart["anchor"]))
+        if dashboard:
+            region = dashboard["chart_region"]
+            row = int("".join(ch for ch in str(chart["anchor"]) if ch.isdigit()))
+            if not (int(region["first_row"]) <= row <= int(region["last_row"])):
+                raise SpecError(
+                    f"{where}: chart {key!r} is anchored at row {row}, outside the "
+                    f"reserved region {region['first_row']}-{region['last_row']}")
 
 
 def load_spec(path: str | Path) -> WorkbookSpec:

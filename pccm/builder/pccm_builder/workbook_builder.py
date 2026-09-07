@@ -351,8 +351,19 @@ def render_phase6_shell(
         _render_results_shell(worksheet, shell["results"], styles, raw, calc, structure)
     elif sheet_spec.name == shell["sensitivity"]["sheet"]:
         _render_sensitivity_shell(worksheet, shell["sensitivity"], raw, styles)
-    elif "dashboard" in shell and sheet_spec.name == shell["dashboard"]["sheet"]:
-        _render_dashboard_shell(worksheet, shell["dashboard"], shell["results"], styles)
+
+    if ("charts" in shell) and (sheet_spec.name == shell["charts"]["bridge_sheet"]) \
+            and (structure is not None):
+        _render_chart_bridge(worksheet, shell["charts"], shell["results"],
+                             shell["sensitivity"], raw,
+                             int(structure.limits.max_generated_year_columns), styles)
+    if "dashboard" in shell and sheet_spec.name == shell["dashboard"]["sheet"]:
+        _render_dashboard_shell(worksheet, shell["dashboard"], shell["results"], styles,
+                                shell.get("charts"))
+        if ("charts" in shell) and (structure is not None):
+            _render_dashboard_charts(
+                worksheet, shell["charts"],
+                int(structure.limits.max_generated_year_columns))
 
 
 # ===========================================================================
@@ -410,6 +421,18 @@ def _dashboard_row_index(results: dict[str, Any]) -> dict[str, dict[str, int]]:
     }
 
 
+def _chart_status_rows(charts: dict[str, Any] | None) -> dict[str, int]:
+    """P8-3's bridge status rows, addressable by the Dashboard exactly as a
+    Results block is - because that is where they live. The bridge is ON
+    Results, so a Dashboard mirror of one is still a mirror of Results and the
+    accepted P8-2 rule that this sheet reads one surface is untouched."""
+    if not charts:
+        return {}
+    status = charts["bridge"]["status"]
+    return {str(entry["key"]): int(status["first_row"]) + index
+            for index, entry in enumerate(status["rows"])}
+
+
 def _dashboard_labels(results: dict[str, Any]) -> dict[str, dict[str, str]]:
     """The label Results already shows for each row, so this sheet never types
     a second one. Which rung `quantile_10` spells is the simulation contract's
@@ -438,7 +461,7 @@ def _dashboard_labels(results: dict[str, Any]) -> dict[str, dict[str, str]]:
 
 def _render_dashboard_shell(
     worksheet: Worksheet, block: dict[str, Any], results: dict[str, Any],
-    styles: StyleBook,
+    styles: StyleBook, charts: dict[str, Any] | None = None,
 ) -> None:
     label_col = block["label_column"]
     nominal_col = block["nominal_column"]
@@ -448,6 +471,12 @@ def _render_dashboard_shell(
     formats = block["number_formats"]
     rows_by_block = _dashboard_row_index(results)
     labels_by_block = _dashboard_labels(results)
+    chart_status = _chart_status_rows(charts)
+    if chart_status:
+        rows_by_block["chart_status"] = chart_status
+        labels_by_block["chart_status"] = {
+            str(entry["key"]): str(entry["label"])
+            for entry in charts["bridge"]["status"]["rows"]}
 
     source_columns = {
         "nominal": results["nominal_column"],
@@ -1010,6 +1039,321 @@ def _excel_number(value: float) -> str:
     if Decimal(text) != Decimal(repr(float(value))):  # pragma: no cover - defensive
         raise ValueError(f"{value!r} could not be written as an exact decimal")
     return text
+
+
+# ===========================================================================
+# PHASE 8, STEP 3 - THE CHART BRIDGE, ON RESULTS
+# ===========================================================================
+# EVERY FORMULA BELOW IS DERIVED CHART-ONLY DATA. It re-allocates nothing,
+# re-ranks nothing and recomputes no statistic: the bin edges are the published
+# minimum and maximum, the counts are a tally, the cumulative series is a
+# running SUM of the published profile, and the driver window is the first rows
+# of a sheet that is already ranked.
+#
+# NA() IS THE WHOLE REASON THIS BLOCK EXISTS. The display tables above emit ""
+# past the stamped year count and when nothing is produced, which is right for a
+# READER and wrong for a CHART: Excel plots "" as zero, so a series over the
+# 200-row window would draw 196 fabricated years of a project costing nothing.
+# NA() is the value every chart type declines to plot.
+
+
+def _chart_bridge_annual(block: dict[str, Any], results: dict[str, Any],
+                         raw: dict[str, Any],
+                         window: int) -> list[tuple[int, str, str]]:
+    """One (row, column, formula) per cell of the annual chart series."""
+    annual = results["annual"]
+    at = _AnnualAddresses(raw)
+    display = {str(column["field"]): str(column["column"]) for column in annual["columns"]}
+    nominal_col = results["nominal_column"]
+    state = f"${nominal_col}${annual['distribution_state_row']}"
+    years = f"${nominal_col}${annual['year_count_row']}"
+    first = int(annual["first_row"])
+    out: list[tuple[int, str, str]] = []
+    for offset in range(window):
+        year = offset + 1
+        source_row = first + offset
+        # THE SAME GUARD THE DISPLAY TABLE USES, and it has to be: a chart point
+        # that outlived its row would be a year the run never published.
+        guard = f'OR({state}="{at.not_produced}",{year}>{years})'
+        for column in block["columns"]:
+            key = str(column["key"])
+            if str(column["source"]) == "annual":
+                cell = f"${display[str(column['field'])]}${source_row}"
+                formula = f"=IF({guard},NA(),{cell})"
+            else:
+                # THE ONE SERIES THIS STEP ADDS: a running total of the
+                # published profile, bounded at this row. Display arithmetic
+                # over cells already on the sheet, not a second allocation.
+                column_letter = display[str(column["field"])]
+                span = f"${column_letter}${first}:${column_letter}${source_row}"
+                formula = f"=IF({guard},NA(),SUM({span}))"
+            out.append((int(block["first_row"]) + offset, str(column["column"]), formula))
+    return out
+
+
+def _chart_bridge_distribution(block: dict[str, Any], results: dict[str, Any],
+                               raw: dict[str, Any]) -> list[tuple[int, str, str]]:
+    """The histogram's bins: equal width across the PUBLISHED minimum and
+    maximum, counted over the published iteration column.
+
+    THE CONTRACT, STATED WHERE IT IS IMPLEMENTED:
+
+      count      `bin_count` bins, from the manifest. A fixed count, not a rule
+                 that reads the data - so the same run always bins the same way
+                 and two readers never see two histograms of one result.
+      width      (maximum - minimum) / bin_count, both read off the published
+                 summary rows. No statistic is recomputed here.
+      edges      bin i covers [lower, upper), so every iteration lands in
+                 exactly one bin - EXCEPT the last, which closes at <= upper so
+                 the maximum itself is counted rather than falling off the end.
+                 That is what makes the counts sum to the iteration count.
+      empty      no publication -> every bin is NA(), never 0. A histogram of
+                 zeros is a confident picture of a run that never happened.
+      zero range maximum <= minimum means every iteration produced the same
+                 total. Width would be 0 and every edge identical, so the first
+                 bin takes the whole population and the rest are NA().
+    """
+    summary = {str(metric["key"]): int(metric["row"])
+               for metric in results["summary"]["metrics"]}
+    stamp = {str(field["key"]): int(field["row"])
+             for field in results["run_stamp"]["fields"]}
+    nominal_col = results["nominal_column"]
+    minimum = f"${nominal_col}${summary['minimum']}"
+    maximum = f"${nominal_col}${summary['maximum']}"
+    iterations = f"${nominal_col}${stamp['iterations_run']}"
+    published = f"${nominal_col}${stamp['run_id']}"
+
+    records = raw["sim_data"]["iteration_records"]
+    sheet = raw["sim_data"]["sheet"]
+    first_row = int(records["first_iteration_row"])
+    banks = records["banks"]
+    measure = "total_" + str(block["measure"])
+    # THE SAME BANK SELECTOR EVERY OTHER RESULTS FORMULA USES, resolved by the
+    # accepted object rather than reassembled here.
+    active = _AnnualAddresses(raw).active_bank()
+    ranges = {}
+    for bank, columns in banks.items():
+        column = str(columns[measure])
+        ranges[bank] = (f"{sheet}!${column}${first_row}:"
+                        f"INDEX({sheet}!${column}:${column},{first_row - 1}+{iterations})")
+    labels = sorted(ranges)
+    count = int(block["bin_count"])
+    columns = {str(column["key"]): str(column["column"]) for column in block["columns"]}
+    out: list[tuple[int, str, str]] = []
+    for index in range(count):
+        row = int(block["first_row"]) + index
+        width = f"(({maximum}-{minimum})/{count})"
+        lower = f"({minimum}+{index}*{width})"
+        upper = f"({minimum}+{index + 1}*{width})"
+        blank = f'{published}=""'
+        degenerate = f"{maximum}<={minimum}"
+        out.append((row, columns["lower"],
+                    f"=IF({blank},NA(),IF({degenerate},{minimum},{lower}))"))
+        out.append((row, columns["upper"],
+                    f"=IF({blank},NA(),IF({degenerate},{maximum},{upper}))"))
+        # THE LAST BIN CLOSES. Everything below it is half-open.
+        comparison = "<=" if index == count - 1 else "<"
+        tally = (f'IF({active}="{labels[0]}",'
+                 f'COUNTIFS({ranges[labels[0]]},">="&{lower},'
+                 f'{ranges[labels[0]]},"{comparison}"&{upper}),'
+                 f'COUNTIFS({ranges[labels[1]]},">="&{lower},'
+                 f'{ranges[labels[1]]},"{comparison}"&{upper}))')
+        # THE DEGENERATE CASE PUTS THE WHOLE POPULATION IN THE FIRST BIN. Which
+        # bin that is, is known here rather than asked of Excel.
+        whole = iterations if index == 0 else "NA()"
+        out.append((row, columns["count"],
+                    f"=IF({blank},NA(),IF({degenerate},{whole},{tally}))"))
+    return out
+
+
+def _chart_bridge_drivers(block: dict[str, Any],
+                          sensitivity: dict[str, Any]) -> list[tuple[int, str, str]]:
+    """The top N rows of the accepted Sensitivity ranking, in that sheet's own
+    order. THIS SELECTS A WINDOW. It does not rank, re-sort, re-sign or
+    re-threshold: the ranking is Phase 7's and the row order IS the rank order,
+    so taking the first N rows preserves it by construction."""
+    sheet = sensitivity["sheet"]
+    columns = {str(column["key"]): str(column["column"])
+               for column in sensitivity["columns"]}
+    first = int(sensitivity["first_row"])
+    out: list[tuple[int, str, str]] = []
+    for index in range(int(block["top_n"])):
+        row = int(block["first_row"]) + index
+        source_row = first + index
+        for column in block["columns"]:
+            source = f"{sheet}!${columns[str(column['source'])]}${source_row}"
+            # A RANK THAT DOES NOT EXIST IS NOT A ZERO-LENGTH BAR. Fewer
+            # eligible drivers than N must draw fewer bars, not N-k bars of
+            # nothing sitting on the axis looking measured.
+            out.append((row, str(column["column"]),
+                        f'=IF({source}="",NA(),{source})'))
+    return out
+
+
+def _chart_bridge_status(block: dict[str, Any],
+                         sensitivity: dict[str, Any]) -> list[tuple[int, str, str, str]]:
+    """(row, label, column, formula) for the one state line the charts need that
+    Results does not already publish. MIRRORED, never re-derived: the sentence
+    and every arm of it belong to the Sensitivity sheet."""
+    availability = (f"{sensitivity['sheet']}!"
+                    f"${sensitivity['columns'][1]['column']}$"
+                    f"{sensitivity['availability_row']}")
+    out = []
+    for index, entry in enumerate(block["rows"]):
+        out.append((int(block["first_row"]) + index, str(entry["label"]),
+                    f'=IF({availability}="","",{availability})'))
+    return out
+
+
+def _render_chart_bridge(worksheet: Worksheet, charts: dict[str, Any],
+                         results: dict[str, Any], sensitivity: dict[str, Any],
+                         raw: dict[str, Any], window: int, styles: StyleBook) -> None:
+    bridge = charts["bridge"]
+    label_col = results["label_column"]
+    formats = charts["number_formats"]
+
+    _write(worksheet, f"{label_col}{bridge['heading_row']}", bridge["heading"], styles.section)
+    worksheet.row_dimensions[int(bridge["heading_row"])].height = styles.row_height("section")
+    _write(worksheet, f"{label_col}{bridge['note_row']}", bridge["note"], styles.note)
+
+    def header(block: dict[str, Any]) -> None:
+        _write(worksheet, f"{label_col}{block['heading_row']}", block["heading"],
+               styles.section)
+        worksheet.row_dimensions[int(block["heading_row"])].height = \
+            styles.row_height("section")
+        _write(worksheet, f"{label_col}{block['note_row']}", block["note"], styles.note)
+        if "header_row" not in block:
+            return
+        for column in block["columns"]:
+            cell = worksheet[f"{column['column']}{block['header_row']}"]
+            cell.value = column["header"]
+            styles.apply_table_header(cell)
+
+    def emit(block: dict[str, Any], cells: list[tuple[int, str, str]]) -> None:
+        kinds = {str(column["column"]): str(column["format"])
+                 for column in block["columns"]}
+        for row, column, formula in cells:
+            cell = worksheet[f"{column}{row}"]
+            cell.value = formula
+            cell.font = styles.value
+            cell.number_format = formats[kinds[column]]
+
+    header(bridge["annual"])
+    emit(bridge["annual"], _chart_bridge_annual(bridge["annual"], results, raw, window))
+    header(bridge["distribution"])
+    emit(bridge["distribution"],
+         _chart_bridge_distribution(bridge["distribution"], results, raw))
+    header(bridge["drivers"])
+    emit(bridge["drivers"], _chart_bridge_drivers(bridge["drivers"], sensitivity))
+
+    status = bridge["status"]
+    _write(worksheet, f"{label_col}{status['heading_row']}", status["heading"], styles.section)
+    worksheet.row_dimensions[int(status["heading_row"])].height = styles.row_height("section")
+    _write(worksheet, f"{label_col}{status['note_row']}", status["note"], styles.note)
+    for row, label, formula in _chart_bridge_status(status, sensitivity):
+        _write(worksheet, f"{label_col}{row}", label, styles.label)
+        cell = worksheet[f"{results['nominal_column']}{row}"]
+        cell.value = formula
+        cell.font = styles.value
+        cell.number_format = formats["text"]
+
+
+# ===========================================================================
+# PHASE 8, STEP 3 - THE CHARTS, ON THE DASHBOARD
+# ===========================================================================
+# FOUR CHARTS, EACH POINTED AT THE BRIDGE AND AT NOTHING ELSE. Not one series
+# reads `_SimData`, `_Calc`, or even a Results display table directly: the
+# bridge is the only thing a chart is allowed to see, because the bridge is
+# where "" was turned into NA() and a chart that skipped it would plot
+# fabricated zeros.
+#
+# NO CHART JUNK, AND THE RULES ARE HERE RATHER THAN IN A STYLE GUIDE NOBODY
+# READS: two dimensions only, a legend only when there is more than one series
+# to tell apart, no gridlines on the category axis, and the title on the chart
+# once - never repeated in a cell above it.
+
+
+def _chart_ranges(charts: dict[str, Any], window: int) -> dict[str, dict[str, Any]]:
+    """For each bridge block: its sheet, its first and last data row, and the
+    column each published key sits in. One resolution, read by the chart builder
+    and by the projection, so the two cannot disagree about what is plotted."""
+    bridge = charts["bridge"]
+    sheet = str(charts["bridge_sheet"])
+    extents = {
+        "annual": (bridge["annual"], window),
+        "distribution": (bridge["distribution"], int(bridge["distribution"]["bin_count"])),
+        "drivers": (bridge["drivers"], int(bridge["drivers"]["top_n"])),
+    }
+    out: dict[str, dict[str, Any]] = {}
+    for name, (block, count) in extents.items():
+        first = int(block["first_row"])
+        out[name] = {
+            "sheet": sheet,
+            "first_row": first,
+            "last_row": first + count - 1,
+            "columns": {str(column["key"]): str(column["column"])
+                        for column in block["columns"]},
+            "headers": {str(column["key"]): str(column["header"])
+                        for column in block["columns"]},
+        }
+    return out
+
+
+def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
+                             window: int) -> None:
+    from openpyxl.chart import BarChart, LineChart, Series
+
+    ranges = _chart_ranges(charts, window)
+    for spec in charts["charts"]:
+        block = ranges[str(spec["source"])]
+        sheet = block["sheet"]
+        first, last = int(block["first_row"]), int(block["last_row"])
+
+        if str(spec["kind"]) == "line":
+            chart = LineChart()
+        else:
+            chart = BarChart()
+            # `col` is a vertical column chart; `bar` is a horizontal one, which
+            # is what makes a tornado a tornado.
+            chart.type = "col" if str(spec["kind"]) == "column" else "bar"
+            chart.grouping = "clustered"
+            chart.overlap = -10 if len(spec["series"]) > 1 else 100
+
+        chart.title = str(spec["title"])
+        chart.style = None
+        chart.height = float(spec["height"])
+        chart.width = float(spec["width"])
+
+        # THE RANGE IS SPELLED WITH ITS SHEET, always. An openpyxl Reference
+        # built without a worksheet resolves against the chart's OWN sheet -
+        # the Dashboard - which holds none of this data, so every range below
+        # is an explicit string naming the bridge sheet.
+        for series in spec["series"]:
+            column = block["columns"][str(series["key"])]
+            item = Series(f"'{sheet}'!${column}${first}:${column}${last}",
+                          title=str(series["name"]))
+            if str(spec["kind"]) == "line":
+                item.smooth = False
+            chart.series.append(item)
+
+        category_column = block["columns"][str(spec["categories"])]
+        chart.set_categories(
+            f"'{sheet}'!${category_column}${first}:${category_column}${last}")
+
+        # A LEGEND EARNS ITS SPACE OR IT GOES. One series needs no key.
+        if len(spec["series"]) < 2:
+            chart.legend = None
+        else:
+            chart.legend.position = "b"
+            chart.legend.overlay = False
+        chart.x_axis.majorGridlines = None
+        chart.y_axis.majorGridlines = None
+        chart.x_axis.title = None
+        chart.y_axis.title = None
+        chart.x_axis.delete = False
+        chart.y_axis.delete = False
+        worksheet.add_chart(chart, str(spec["anchor"]))
+
 
 
 def _populate_blocks(
