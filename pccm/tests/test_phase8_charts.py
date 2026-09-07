@@ -123,6 +123,86 @@ def _git(*args: str) -> str:
 
 
 # ===========================================================================
+# PRODUCTION MODIFICATIONS DECLARED SINCE THE ACCEPTANCE COMMIT
+# ===========================================================================
+# THE ORIGINAL CLAIM WAS "no pccm/src change since the acceptance commit", and
+# it was true when written. The P8-3 pre-Windows correction made it false on
+# purpose: the chart layer needed a live simulation state, and the only honest
+# place for it was a fifth adapter in the module that already owns the
+# worksheet-safe presentation surface.
+#
+# SO THE RULE BECOMES DECLARATION, NOT PROHIBITION - the same settlement the
+# Phase-7 closure record reached for the same reason. An undeclared change still
+# fails. A deletion still fails, declared or not. And a DECLARED file may only
+# be ADDED to: the diff against the acceptance commit must remove no line, so a
+# declaration cannot be used to quietly edit an accepted procedure.
+#
+# That last clause is why this is stricter than what it replaces, not weaker.
+# The old control could only say "nothing changed"; this one says "exactly this
+# changed, additively, and here is why".
+DECLARED_PRODUCTION_CORRECTIONS = {
+    "pccm/src/vba/modResultsState.bas": (
+        "P8-3 pre-Windows correction: adds the thin volatile adapter "
+        "PCCM_ResultsSimulationState, delegating to the accepted pure evaluator "
+        "modSimReport.SimReportDerivedStatus. The chart layer needed a live "
+        "SIMULATION state: the four annual adapters answer about the annual "
+        "product and read NOT PRODUCED whenever the annual step has not run, and "
+        "the persisted (last evaluated) row was proved live at P8-1 to keep "
+        "reading CURRENT after a request change."
+    ),
+}
+
+
+def _declared_production_changes(git, since: str) -> None:
+    """Every production change since *since* is declared, additive, and real.
+
+    THREE SEPARATE FAILURES, because they are three different mistakes:
+
+      undeclared   a module changed and nobody said so - the thing this control
+                   has always existed to catch
+      deleted      a module the accepted evidence ran against stopped existing,
+                   which no declaration may permit
+      edited       a DECLARED file lost a line. A declaration buys the right to
+                   ADD to a module, never to rewrite what was accepted in it.
+
+    And a fourth, in the other direction: a declaration naming a file that was
+    never touched would let the next real change hide beside it.
+    """
+    changes = git("diff", "--name-status", f"{since}..HEAD", "--", "pccm/src")
+    modified, deleted = [], []
+    for line in changes.splitlines():
+        if not line.strip():
+            continue
+        state, path = line.split("\t", 1)[0].strip(), line.split("\t", 1)[1].strip()
+        if state.startswith("A"):
+            continue
+        (deleted if state.startswith("D") else modified).append(path)
+
+    assert not deleted, (
+        f"a module the accepted evidence ran against was removed after {since}: "
+        f"{deleted}")
+    undeclared = [p for p in modified if p not in DECLARED_PRODUCTION_CORRECTIONS]
+    assert not undeclared, (
+        f"production changed after {since} without being declared: {undeclared}")
+
+    for path in modified:
+        # ADDITIVE ONLY. A declaration is permission to extend a module, not to
+        # edit one; a removed line means an accepted procedure was rewritten.
+        removed = [line for line in
+                   git("diff", f"{since}..HEAD", "--", path).splitlines()
+                   if line.startswith("-") and not line.startswith("---")]
+        assert not removed, (
+            f"{path} is declared but not additive; {len(removed)} line(s) were "
+            f"removed from what was accepted at {since}")
+        assert len(DECLARED_PRODUCTION_CORRECTIONS[path]) > 80, (
+            f"the declaration for {path} explains nothing")
+    # A DECLARATION FOR AN UNTOUCHED FILE IS DECORATION, and the next real
+    # change would hide beside it.
+    stale = [p for p in DECLARED_PRODUCTION_CORRECTIONS if p not in modified]
+    assert not stale, f"declared corrections that changed nothing: {stale}"
+
+
+# ===========================================================================
 # A. GENERAL - THE INVENTORY, AND WHAT IT MAY NOT DISTURB
 # ===========================================================================
 def test_01_the_workbook_still_has_exactly_fourteen_sheets() -> None:
@@ -284,9 +364,15 @@ def test_09_the_bridge_does_not_touch_the_accepted_p8_1_cells() -> None:
 
 
 def test_10_no_vba_and_no_new_state_algorithm_arrived_with_the_charts() -> None:
-    """FORMULA-ONLY, and the state words still belong to their owner."""
-    changed = _git("diff", "--name-only", f"{P82_ACCEPTANCE}..HEAD", "--", "pccm/src")
-    assert changed.strip() == "", f"production VBA changed in P8-3: {changed}"
+    """THE CHART LAYER ITSELF IS FORMULA-ONLY, and the state words still belong
+    to their owner.
+
+    RESTATED AT THE P8-3 PRE-WINDOWS CORRECTION. This read "no production VBA
+    changed", which was true of the chart layer and became false when the
+    correction added the live simulation adapter the charts needed. The claim is
+    now DECLARATION rather than prohibition - and it is stricter, because a
+    declared file must also be purely additive."""
+    _declared_production_changes(_git, P82_ACCEPTANCE)
     for module in sorted(SRC.glob("*.bas")):
         code = "\n".join(line for line in module.read_text(encoding="utf-8").splitlines()
                          if not line.lstrip().startswith("'"))
@@ -1116,3 +1202,166 @@ def test_92_the_adapter_rules_pass_on_the_real_module() -> None:
     fixture."""
     for rule in ADAPTER_RULES:
         rule(_adapter_source())
+
+
+# ===========================================================================
+# I. THE RESTATED OWNERSHIP CONTROLS ARE NOT VACUOUS
+# ===========================================================================
+# THE TWO RESTATEMENTS THIS SECTION GUARDS. A control that changed from
+# "nothing may change" to "declared changes may" is only worth what its refusals
+# are worth, so each refusal is exercised against a deliberately broken copy of
+# the evidence rather than described.
+
+
+class _FakeGit:
+    """A git that answers with the diff a mutation wants tested. Nothing on
+    disk changes and no repository is touched."""
+
+    def __init__(self, name_status: str, per_path: dict[str, str] | None = None) -> None:
+        self._name_status = name_status
+        self._per_path = per_path or {}
+
+    def __call__(self, *args: str) -> str:
+        if "--name-status" in args:
+            return self._name_status
+        return self._per_path.get(args[-1], "")
+
+
+@pytest.mark.parametrize("name,git,expected", [
+    # AN UNDECLARED MODULE CHANGED - the thing this control has always been for.
+    ("an undeclared production module changed",
+     _FakeGit("M\tpccm/src/vba/modSimEngine.bas\n"
+              "M\tpccm/src/vba/modResultsState.bas\n"),
+     "without being declared"),
+    # A MODULE DELETED - no declaration may ever permit this.
+    ("a production module was deleted",
+     _FakeGit("D\tpccm/src/vba/modSimStats.bas\n"
+              "M\tpccm/src/vba/modResultsState.bas\n"),
+     "was removed"),
+    # A DECLARED FILE EDITED RATHER THAN EXTENDED. A declaration buys the right
+    # to ADD to a module, never to rewrite an accepted procedure in it.
+    ("a declared file lost a line",
+     _FakeGit("M\tpccm/src/vba/modResultsState.bas\n",
+              {"pccm/src/vba/modResultsState.bas":
+               "--- a/x\n+++ b/x\n-    Application.Volatile True\n+    Nothing\n"}),
+     "not additive"),
+    # A DECLARATION FOR A FILE NOBODY TOUCHED - decoration the next real change
+    # would hide beside.
+    ("the declared correction changed nothing",
+     _FakeGit(""),
+     "declared corrections that changed nothing"),
+])
+def test_93_the_declared_production_rule_refuses_each_undeclared_shape(
+        name: str, git, expected: str) -> None:
+    with pytest.raises(AssertionError, match=re.escape(expected)):
+        _declared_production_changes(git, P82_ACCEPTANCE)
+
+
+def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None:
+    """SO THE FOUR REFUSALS ABOVE ARE REFUSALS OF THE MUTATION. And the one
+    declared correction really is the adapter addition it says it is."""
+    _declared_production_changes(_git, P81_ACCEPTANCE)
+    _declared_production_changes(_git, P82_ACCEPTANCE)
+    assert set(DECLARED_PRODUCTION_CORRECTIONS) == {
+        "pccm/src/vba/modResultsState.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
+    reason = DECLARED_PRODUCTION_CORRECTIONS["pccm/src/vba/modResultsState.bas"]
+    assert LIVE_ADAPTER in reason and PURE_OWNER in reason, reason
+
+
+# ===========================================================================
+# J. THE PROCEDURE-LEVEL modSimReport DETECTOR IS NOT VACUOUS
+# ===========================================================================
+def _modules_with(name: str, extra_code: str):
+    """The real module set with one module's code extended in memory."""
+    from pccm_builder.vba_source import VbaModule, load_modules
+
+    out = []
+    for module in load_modules([SRC]):
+        if module.name == name:
+            out.append(VbaModule(name=module.name, path=module.path,
+                                 raw=module.raw + "\n" + extra_code))
+        else:
+            out.append(module)
+    return out
+
+
+@pytest.mark.parametrize("name,module,injected,rule", [
+    # A FINGERPRINT BUILT INSIDE THE PRESENTATION ADAPTER.
+    ("the adapter constructs a fingerprint", "modResultsState",
+     "Public Function Probe() As String\n"
+     "    Probe = modSimFingerprint.SimFpBuildRequestFingerprint()\n"
+     "End Function", "both"),
+    # A FINGERPRINT READ INSIDE THE PRESENTATION ADAPTER.
+    ("the adapter reads a stored fingerprint", "modResultsState",
+     "Public Function Probe() As String\n"
+     "    Probe = modSimReport.PCCM_SimulationRequestFingerprint()\n"
+     "End Function", "both"),
+    # THE PERMITTED DEPENDENCY BROADENED BEYOND THE PURE EVALUATOR.
+    ("the adapter calls a second modSimReport procedure", "modResultsState",
+     "Public Function Probe() As String\n"
+     "    Probe = modSimReport.PCCM_SimulationStatus()\n"
+     "End Function", "ownership"),
+    # THE RUN ENDPOINT ESCAPING ITS OWNER.
+    ("a module acquires the run endpoint", "modSimAnnualStore",
+     "Public Function Probe() As String\n"
+     "    Probe = PCCM_RunSimulation()\n"
+     "End Function", "ownership"),
+    # AN UNDECLARED MODULE REACHING THE OWNER AT ALL.
+    ("an undeclared module names the owner", "modSimStats",
+     "Public Function Probe() As String\n"
+     "    Probe = modSimReport.SimReportDerivedStatus()\n"
+     "End Function", "ownership"),
+    # A FINGERPRINT PROCEDURE NAMED OUTSIDE ITS TWO OWNERS.
+    ("a third module names a fingerprint procedure", "modSimEngine",
+     "Public Function Probe() As String\n"
+     "    Probe = SimFpResultDigest()\n"
+     "End Function", "ownership"),
+    # THE MACHINE SHEET NAMED BY THE PRESENTATION ADAPTER.
+    ("the adapter names the machine sheet", "modResultsState",
+     "Public Function Probe() As String\n"
+     '    Probe = "_SimData"\n'
+     "End Function", "fingerprint"),
+])
+def test_95_the_procedure_level_detector_refuses_each_ownership_breach(
+        name: str, module: str, injected: str, rule: str) -> None:
+    """EACH BREACH INJECTED INTO A COPY OF THE MODULE SET IN MEMORY, and run
+    against the same two rules the real tree satisfies. Nothing on disk
+    changes."""
+    import test_phase6_request_fingerprint as controls
+
+    modules = _modules_with(module, injected)
+    refused = []
+    for rule_name, checker in (("ownership", controls._assert_sim_report_ownership),
+                               ("fingerprint",
+                                controls._assert_results_state_owns_no_fingerprint)):
+        if rule not in ("both", rule_name):
+            continue
+        try:
+            checker(modules)
+        except AssertionError as failure:
+            refused.append(f"{rule_name}: {failure}")
+    assert refused, f"'{name}' survived the detector"
+
+
+def test_96_the_procedure_level_detector_passes_on_the_real_tree() -> None:
+    """SO THE SEVEN REFUSALS ABOVE ARE REFUSALS OF THE INJECTION, not of the
+    fixture - and the declared call sets are exactly what the tree does."""
+    import re as _re
+
+    import test_phase6_request_fingerprint as controls
+    from pccm_builder.vba_source import load_modules
+
+    modules = load_modules([SRC])
+    controls._assert_sim_report_ownership(modules)
+    controls._assert_results_state_owns_no_fingerprint(modules)
+    actual = {}
+    for module in modules:
+        if module.name == "modSimReport":
+            continue
+        called = set(_re.findall(r"modSimReport\.(\w+)", module.code))
+        if called:
+            actual[module.name] = called
+    assert actual == controls.SIM_REPORT_CALLERS, {
+        k: sorted(v) for k, v in actual.items()}
+    assert controls.SIM_REPORT_CALLERS["modResultsState"] == {PURE_OWNER}, (
+        "the worksheet adapter's permitted dependency is no longer the pure evaluator")

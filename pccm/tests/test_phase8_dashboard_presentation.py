@@ -110,6 +110,86 @@ def _git(*args: str) -> str:
 
 
 # ===========================================================================
+# PRODUCTION MODIFICATIONS DECLARED SINCE THE ACCEPTANCE COMMIT
+# ===========================================================================
+# THE ORIGINAL CLAIM WAS "no pccm/src change since the acceptance commit", and
+# it was true when written. The P8-3 pre-Windows correction made it false on
+# purpose: the chart layer needed a live simulation state, and the only honest
+# place for it was a fifth adapter in the module that already owns the
+# worksheet-safe presentation surface.
+#
+# SO THE RULE BECOMES DECLARATION, NOT PROHIBITION - the same settlement the
+# Phase-7 closure record reached for the same reason. An undeclared change still
+# fails. A deletion still fails, declared or not. And a DECLARED file may only
+# be ADDED to: the diff against the acceptance commit must remove no line, so a
+# declaration cannot be used to quietly edit an accepted procedure.
+#
+# That last clause is why this is stricter than what it replaces, not weaker.
+# The old control could only say "nothing changed"; this one says "exactly this
+# changed, additively, and here is why".
+DECLARED_PRODUCTION_CORRECTIONS = {
+    "pccm/src/vba/modResultsState.bas": (
+        "P8-3 pre-Windows correction: adds the thin volatile adapter "
+        "PCCM_ResultsSimulationState, delegating to the accepted pure evaluator "
+        "modSimReport.SimReportDerivedStatus. The chart layer needed a live "
+        "SIMULATION state: the four annual adapters answer about the annual "
+        "product and read NOT PRODUCED whenever the annual step has not run, and "
+        "the persisted (last evaluated) row was proved live at P8-1 to keep "
+        "reading CURRENT after a request change."
+    ),
+}
+
+
+def _declared_production_changes(git, since: str) -> None:
+    """Every production change since *since* is declared, additive, and real.
+
+    THREE SEPARATE FAILURES, because they are three different mistakes:
+
+      undeclared   a module changed and nobody said so - the thing this control
+                   has always existed to catch
+      deleted      a module the accepted evidence ran against stopped existing,
+                   which no declaration may permit
+      edited       a DECLARED file lost a line. A declaration buys the right to
+                   ADD to a module, never to rewrite what was accepted in it.
+
+    And a fourth, in the other direction: a declaration naming a file that was
+    never touched would let the next real change hide beside it.
+    """
+    changes = git("diff", "--name-status", f"{since}..HEAD", "--", "pccm/src")
+    modified, deleted = [], []
+    for line in changes.splitlines():
+        if not line.strip():
+            continue
+        state, path = line.split("\t", 1)[0].strip(), line.split("\t", 1)[1].strip()
+        if state.startswith("A"):
+            continue
+        (deleted if state.startswith("D") else modified).append(path)
+
+    assert not deleted, (
+        f"a module the accepted evidence ran against was removed after {since}: "
+        f"{deleted}")
+    undeclared = [p for p in modified if p not in DECLARED_PRODUCTION_CORRECTIONS]
+    assert not undeclared, (
+        f"production changed after {since} without being declared: {undeclared}")
+
+    for path in modified:
+        # ADDITIVE ONLY. A declaration is permission to extend a module, not to
+        # edit one; a removed line means an accepted procedure was rewritten.
+        removed = [line for line in
+                   git("diff", f"{since}..HEAD", "--", path).splitlines()
+                   if line.startswith("-") and not line.startswith("---")]
+        assert not removed, (
+            f"{path} is declared but not additive; {len(removed)} line(s) were "
+            f"removed from what was accepted at {since}")
+        assert len(DECLARED_PRODUCTION_CORRECTIONS[path]) > 80, (
+            f"the declaration for {path} explains nothing")
+    # A DECLARATION FOR AN UNTOUCHED FILE IS DECORATION, and the next real
+    # change would hide beside it.
+    stale = [p for p in DECLARED_PRODUCTION_CORRECTIONS if p not in modified]
+    assert not stale, f"declared corrections that changed nothing: {stale}"
+
+
+# ===========================================================================
 # A. THE SHEET, AND WHAT IT IS NOT
 # ===========================================================================
 def test_01_the_workbook_still_has_exactly_fourteen_sheets() -> None:
@@ -506,10 +586,20 @@ def test_40_the_accepted_p8_1_results_geometry_did_not_move() -> None:
         "the accepted P8-1 Results block changed in this step")
 
 
-def test_41_no_production_vba_changed_in_this_step() -> None:
-    """FORMULA-ONLY MEANS FORMULA-ONLY."""
-    changed = _git("diff", "--name-only", f"{P81_ACCEPTANCE}..HEAD", "--", "pccm/src")
-    assert changed.strip() == "", f"production VBA changed in P8-2: {changed}"
+def test_41_every_later_production_change_is_declared_and_additive() -> None:
+    """THE DASHBOARD ITSELF IS FORMULA-ONLY, and it still is.
+
+    RESTATED AT THE P8-3 PRE-WINDOWS CORRECTION. This read "no production VBA
+    changed since P8-1's acceptance", which was true of P8-2 and became false
+    when P8-3 added the live simulation adapter its charts needed. Declaration
+    replaces prohibition, and adds an additive-only clause the old blanket claim
+    could not express."""
+    _declared_production_changes(_git, P81_ACCEPTANCE)
+    # AND THE DASHBOARD STILL OWNS NO VBA OF ITS OWN.
+    for module in sorted(SRC.glob("*.bas")):
+        code = "\n".join(line for line in module.read_text(encoding="utf-8").splitlines()
+                         if not line.lstrip().startswith("'"))
+        assert "Dashboard" not in code, f"{module.name} names the Dashboard"
 
 
 def test_42_the_dashboard_is_declared_everywhere_a_surface_must_be() -> None:

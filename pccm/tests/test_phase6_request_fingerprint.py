@@ -305,6 +305,114 @@ def test_17_the_corpus_group_is_exactly_these_five_cases() -> None:
 # ===========================================================================
 # E. Scope: no implementation exists yet
 # ===========================================================================
+# ===========================================================================
+# WHO MAY REACH INTO modSimReport, AND FOR EXACTLY WHAT
+# ===========================================================================
+# THE ORIGINAL RULE WAS A TOKEN BAN: no module but `modSimReport` may contain
+# the string `SimReport`. It was a proxy for a real invariant - the orchestration
+# layer and the run endpoint belong to one module - and as a proxy it worked
+# until three modules legitimately needed to READ from that owner. Each was then
+# exempted WHOLESALE, which is the wrong shape: an exempt module could have
+# called anything in `modSimReport`, including the fingerprint builders, and this
+# control would have said nothing.
+#
+# SO IT IS A PROCEDURE-LEVEL DETECTOR NOW. Every module that names the owner
+# declares WHICH of its procedures it calls, and the set must match exactly.
+# That is strictly stronger than the ban it replaces for every module on this
+# list, because the ban only ever said "not at all" or - once exempted -
+# "anything at all".
+#
+# `modResultsState` IS THE NARROWEST ENTRY AND DELIBERATELY SO. It is called
+# FROM WORKSHEET CELLS, so it may reach exactly one procedure: the pure
+# read-only status evaluator. Not the writing status path, not a fingerprint,
+# not a digest.
+SIM_REPORT_CALLERS = {
+    "modSimPostReport": {
+        "PCCM_SimulationRequestFingerprint",
+        "PCCM_SimulationResultDigest",
+        "PCCM_SimulationStatus",
+    },
+    "modSimAnnualStore": {
+        "PCCM_SimulationRequestFingerprint",
+        "PCCM_SimulationResultDigest",
+        "PCCM_SimulationStatus",
+        "SimReportDerivedStatus",
+    },
+    # P8-3. The worksheet-safe presentation adapter, and the only module on this
+    # list that Excel calls from a cell.
+    "modResultsState": {"SimReportDerivedStatus"},
+}
+
+# THE FINGERPRINT IS CONSTRUCTED IN ONE MODULE AND FRAMED IN ONE OTHER. Nobody
+# else may name any `SimFp` procedure at all - which is wider than the two
+# public builders the old control named, and therefore stricter.
+FINGERPRINT_OWNERS = ("modSimFingerprint", "modSimReport")
+
+# WHAT A PRESENTATION ADAPTER MAY NEVER TOUCH. Constructing, comparing,
+# reconstructing or storing a fingerprint or a digest is fingerprint ownership,
+# wherever it happens.
+FINGERPRINT_CONSTRUCTS = (
+    "SimFp", "PCCM_SimulationRequestFingerprint", "PCCM_SimulationResultDigest",
+    "PCCM_CurrentSimulationRequestFingerprint", "RequestFingerprint",
+    "ResultDigest", "FP_MOD_", "FP_INIT_",
+)
+
+
+def _assert_sim_report_ownership(modules) -> None:
+    """The endpoint, the fingerprint and the owner's surface, checked by
+    procedure rather than by token."""
+    import re as _re
+
+    for module in modules:
+        if module.name == "modSimReport":
+            continue
+        # THE ENDPOINT IS THE ONE THING NO DECLARATION BUYS. Only the owner may
+        # carry the ability to start a run.
+        assert "PCCM_RunSimulation" not in module.code, (
+            f"{module.name} carries the run endpoint")
+        called = set(_re.findall(r"modSimReport\.(\w+)", module.code))
+        if module.name in SIM_REPORT_CALLERS:
+            assert called == SIM_REPORT_CALLERS[module.name], (
+                f"{module.name} calls {sorted(called)} out of modSimReport; "
+                f"{sorted(SIM_REPORT_CALLERS[module.name])} is declared")
+        else:
+            # EVERY OTHER MODULE IS STILL SUBJECT TO THE ORIGINAL BAN.
+            assert "SimReport" not in module.code, (
+                f"{module.name} names modSimReport without being declared")
+        if module.name not in FINGERPRINT_OWNERS:
+            assert "SimFp" not in module.code, (
+                f"{module.name} names a fingerprint procedure")
+
+    # THE OWNER MAY FRAME A FINGERPRINT; IT MAY NOT REACH INSIDE ONE.
+    report = next(m for m in modules if m.name == "modSimReport")
+    for private in ("SimFpRequestSuffix", "SimFpVersionedResultDigest",
+                    "SimFpDigestRecord", "SimFpRetainedExtent"):
+        assert private not in report.code, f"modSimReport reaches {private}"
+
+
+def _assert_results_state_owns_no_fingerprint(modules) -> None:
+    """P8-3. THE PRESENTATION ADAPTER COMPUTES NO IDENTITY.
+
+    It is called from worksheet cells, so its whole surface is four annual
+    delegations and one status delegation. A fingerprint or a digest appearing
+    here - constructed, compared, read or stored - would mean the display had
+    started deciding which run it was looking at.
+    """
+    adapter = next((m for m in modules if m.name == "modResultsState"), None)
+    if adapter is None:
+        return
+    for construct in FINGERPRINT_CONSTRUCTS:
+        assert construct not in adapter.code, (
+            f"modResultsState reaches the fingerprint construct {construct}")
+    # THE SHEET NAME IS CHECKED WITH THE STRING LITERALS STILL IN. A worksheet
+    # is reached BY its name - `Sh("_SimData")` - and `.code` strips literals,
+    # so checking there would have asked a question that could not fail. This
+    # was found by a mutation that survived, and it is the reason the two checks
+    # read different views of the same module.
+    assert "_SimData" not in adapter.code_without_string_removal, (
+        "modResultsState names the machine sheet")
+
+
 def test_18_the_implementation_arrived_in_step_10_and_nothing_beyond_it() -> None:
     """Step 10A closed the grammar with NO implementation. Step 10 then built it.
 
@@ -318,26 +426,13 @@ def test_18_the_implementation_arrived_in_step_10_and_nothing_beyond_it() -> Non
     assert "modSimReport.bas" in names, "Step 11 built the orchestration layer"
     from pccm_builder.vba_source import load_modules
 
-    for module in load_modules([src]):
-        if module.name in ("modSimPostReport", "modSimAnnualStore"):
-            # P7-4's orchestrator and P7-6's store READ the published status and
-            # identity through the accepted accessors, which necessarily name
-            # their owner. What they must not carry is the ENDPOINT - the ability
-            # to start a run - and that is what stays asserted here.
-            assert "PCCM_RunSimulation" not in module.code
-            continue
-        if module.name != "modSimReport":
-            for banned in ("PCCM_RunSimulation", "SimReport"):
-                assert banned not in module.code, f"{module.name} carries {banned}"
-        # THE FRAMING IS STILL OWNED BY ONE MODULE. modSimReport CALLS the two
-        # public entry points; no third module may name either.
-        if module.name not in ("modSimFingerprint", "modSimReport"):
-            for owned in ("SimFpBuildRequestFingerprint", "SimFpResultDigest"):
-                assert owned not in module.code, f"{module.name} carries {owned}"
-    report = next(m for m in load_modules([src]) if m.name == "modSimReport")
-    for private in ("SimFpRequestSuffix", "SimFpVersionedResultDigest",
-                    "SimFpDigestRecord", "SimFpRetainedExtent"):
-        assert private not in report.code, private
+    # RESTATED AT THE P8-3 PRE-WINDOWS CORRECTION, and made stricter. The rule
+    # here was a TOKEN BAN with two wholesale exemptions; it is now a
+    # procedure-level detector in which every module that names the owner
+    # declares exactly which of its procedures it calls. See the module header.
+    modules = load_modules([src])
+    _assert_sim_report_ownership(modules)
+    _assert_results_state_owns_no_fingerprint(modules)
 
 
 def test_19_the_accepted_phase5_encoder_was_not_reopened() -> None:
