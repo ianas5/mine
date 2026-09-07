@@ -2143,10 +2143,19 @@ def test_53_the_pinned_baseline_really_is_unchanged_production() -> None:
     # later phase from touching production, which Step 13 never established.
     # The owner of this list is the integration battery, read here rather than
     # restated, so the two cannot drift.
-    reopened = set(re.findall(r'^    "(\w+)": "P7-',
+    # ANY DECLARED PHASE, NOT JUST PHASE 7. The reason strings are prefixed with
+    # the round that reopened the module, and this pattern hard-coded "P7-" -
+    # so P8-1's entry for modSimReport was invisible here and the module fell
+    # through to a current-tree comparison it was never meant to face. The list
+    # is still read from its owner rather than restated, and the shape is still
+    # asserted; what is no longer assumed is which phase last needed it.
+    reopened = set(re.findall(r'^    "(\w+)": "P\d',
                               _text(PCCM_ROOT / "tests" / "test_phase6_integration_source.py"),
                               re.M))
     assert reopened, "the reopened-module list is empty or its shape changed"
+    assert "modSimReport" in reopened, (
+        "the reopened list no longer carries the module P8-1 corrected, so this "
+        "control would compare it against a closure digest it cannot match")
     for name in ("modSimContract", "modSimRng", "modSimSample", "modSimEngine",
                  "modSimStats", "modSimFingerprint", "modSimNonce", "modSimReport"):
         if name == "modSimContract":
