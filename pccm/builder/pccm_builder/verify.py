@@ -263,6 +263,36 @@ def _phase6_formula_cells(
                 window.add(f"{column['column']}{row}")
         assert sensitivity["label_column"] + str(sensitivity["heading_row"]) not in window
         permitted.setdefault(sensitivity["sheet"], set()).update(window)
+
+    # PHASE 8, STEP 2. The Dashboard executive summary, enumerated on exactly
+    # the terms above: every cell the shell writes a mirror into, and no other.
+    #
+    # THE COUNT IS THE POINT. A section carrying a header pair writes both the
+    # nominal and the PV column; a section without one writes the nominal column
+    # alone. Enumerating that from the manifest rather than permitting the sheet
+    # wholesale is what keeps a stray formula - in the reserved chart region, in
+    # a label column, in a row no section declares - a build failure rather than
+    # a thing nobody notices.
+    dashboard = shell.get("dashboard")
+    if dashboard:
+        mirrored: set[str] = set()
+        nominal_col = dashboard["nominal_column"]
+        pv_col = dashboard["pv_column"]
+        for section in dashboard["sections"]:
+            columns = (nominal_col, pv_col) if section.get("headers") else (nominal_col,)
+            first = int(section["first_row"])
+            for offset in range(len(section["rows"])):
+                for column in columns:
+                    mirrored.add(f"{column}{first + offset}")
+        # NOTHING IN THE LABEL COLUMN AND NOTHING IN THE RESERVED REGION. Both
+        # are asserted rather than assumed: a label is text and the chart region
+        # is empty, so a formula in either is a defect this set must not bless.
+        assert not any(cell.startswith(dashboard["label_column"]) for cell in mirrored)
+        region = dashboard["chart_region"]
+        reserved = range(int(region["heading_row"]), int(region["last_row"]) + 1)
+        assert not any(int(cell[len(nominal_col):]) in reserved
+                       for cell in mirrored if cell.startswith(nominal_col))
+        permitted.setdefault(dashboard["sheet"], set()).update(mirrored)
     return permitted
 
 

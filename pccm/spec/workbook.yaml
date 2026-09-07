@@ -424,6 +424,146 @@ phase6_shell:
       delta: "0.00E+00"
       text: "General"
 
+  # -------------------------------------------------------------------
+  # PHASE 8, STEP 2. The Dashboard executive summary.
+  #
+  # DASHBOARD OWNS NOTHING. Every analytical value below is a MIRROR of a
+  # Results cell - `=IF(Results!$D$47="","",Results!$D$47)` - and there is no
+  # second form of it anywhere in this block. It derives no state, resolves no
+  # percentile, subtracts no base, sums no profile and compares nothing to a
+  # tolerance. That is not a style preference: P8-1 spent a round establishing
+  # that a presentation layer owning half a semantic owns a semantic that will
+  # diverge, and this sheet is one layer further from the owner than that one.
+  #
+  # NOT ONE `_SimData` ADDRESS APPEARS BELOW, and not one Results ROW NUMBER
+  # either. A row is named by the BLOCK and KEY it has on Results
+  # (`summary`/`deterministic_base_a`, `selected`/`total`, `state`/`profile_px`),
+  # and the renderer resolves that pair against the same `results:` block above
+  # that built the Results sheet. Move a Results row and this sheet moves with
+  # it; delete one and the build fails naming the key. There is exactly one
+  # geometry authority and it is not this block.
+  #
+  # WHAT IS DELIBERATELY ABSENT. There is no deterministic-model-status line,
+  # because Results does not publish one - see `status.note`. Inventing it here
+  # from `_Calc` would be the bypass this step exists to refuse.
+  dashboard:
+    sheet: "Dashboard"
+    source_sheet: "Results"
+    label_column: "B"
+    nominal_column: "D"
+    pv_column: "F"
+    # A MIRROR, AND THE BLANK IS PART OF IT. The guard is what stops an empty
+    # Results cell arriving here as a hard zero: Excel reads a blank reference
+    # as 0, and a fabricated 0 next to the words NOT PRODUCED is exactly the
+    # dishonesty P8-1's empty-state gate was built to catch. `{ref}` is the
+    # resolved absolute address of the Results cell and nothing else is
+    # substituted into it.
+    mirror_formula: '=IF({ref}="","",{ref})'
+    sections:
+      - key: "status"
+        row: 8
+        note_row: 9
+        first_row: 10
+        title: "Result Status"
+        # THE LIVE ANSWER IS THE ANNUAL STATE, and the order of these rows says
+        # so. The four state lines are volatile Phase-8 adapters over the
+        # accepted Phase-7 accessors: they re-derive on every calculation cycle.
+        # The two simulation-status lines beneath them are the PERSISTED pair -
+        # Results labels its own row "(last evaluated)" - so they are shown
+        # last, under their own heading, and never as the headline. Reading them
+        # as the current state is the first defect P8-1 disclosed.
+        note: "The annual state lines are re-derived live on every recalculation. The simulation status beneath them is the last evaluated record, not a live answer, and is shown for provenance only."
+        rows:
+          - {key: "distribution_state", source_block: "state", source_key: "distribution_state", format: "text"}
+          - {key: "profile_state", source_block: "state", source_key: "profile_state", format: "text"}
+          - {key: "profile_px", source_block: "state", source_key: "profile_px", format: "text"}
+          - {key: "year_count", source_block: "state", source_key: "year_count", format: "year"}
+          - {key: "selected_confidence_level", source_block: "selected", source_key: "confidence_level", format: "text"}
+          - {key: "simulation_status", source_block: "run_stamp", source_key: "simulation_status", format: "text"}
+          - {key: "status_evaluated_at", source_block: "run_stamp", source_key: "status_evaluated_at", format: "text"}
+      - key: "headline"
+        row: 18
+        note_row: 19
+        header_row: 20
+        first_row: 21
+        title: "Headline Cost"
+        note: "The deterministic base, the total at the selected confidence level, and the difference between them. Blank until a simulation has been published."
+        headers: {label: "Measure", nominal: "Nominal (SAR)", pv: "PV (SAR)"}
+        # THE TWO LADDERS STAY TWO ROWS. W5 read the contingency block as the
+        # total and failed four reconciliations by exactly the deterministic
+        # base; a dashboard that showed one of them under the other's name would
+        # make the same error unfalsifiable, because nothing here recomputes the
+        # difference that would expose it.
+        rows:
+          - {key: "deterministic_base", source_block: "summary", source_key: "deterministic_base_a", format: "money", emphasis: false}
+          - {key: "selected_total", source_block: "selected", source_key: "total", format: "money", emphasis: true}
+          - {key: "contingency", source_block: "selected", source_key: "contingency", format: "money", emphasis: true}
+      - key: "distribution"
+        row: 25
+        note_row: 26
+        header_row: 27
+        first_row: 28
+        title: "Distribution Summary"
+        note: "Persisted by the run. Nothing on this sheet recomputes a statistic, and no percentile is interpolated here."
+        headers: {label: "Statistic", nominal: "Nominal (SAR)", pv: "PV (SAR)"}
+        # NAMED BY LADDER KEY, NEVER BY THE WORD "P90". Which rung each key
+        # spells is the simulation contract's to say, and Results already
+        # carries its label; this sheet takes that label rather than typing a
+        # second one that a contract move would silently falsify.
+        rows:
+          - {key: "mean", source_block: "summary", source_key: "mean", format: "money"}
+          - {key: "sample_standard_deviation", source_block: "summary", source_key: "sample_standard_deviation", format: "money"}
+          - {key: "lower", source_block: "summary", source_key: "quantile_1", format: "money"}
+          - {key: "median", source_block: "summary", source_key: "quantile_2", format: "money"}
+          - {key: "upper", source_block: "summary", source_key: "quantile_10", format: "money"}
+      - key: "annual"
+        row: 34
+        note_row: 35
+        header_row: 36
+        first_row: 37
+        title: "Annual Profile and Reconciliation"
+        # NOT THE TABLE. The 200-row annual window stays on Results; an
+        # executive needs to know that a profile exists, whose Px it is, whether
+        # it is the current answer and whether it reconciles - which is four
+        # lines, and the state lines above already carry the first three.
+        note: "The identity, taken on Results from the stored values. The status carries its own qualifier when the profile is not the current model answer; this sheet repeats that qualifier and never strips it."
+        headers: {label: "Check", nominal: "Nominal (SAR)", pv: "PV (SAR)"}
+        rows:
+          - {key: "total", source_block: "reconciliation", source_key: "total", format: "money"}
+          - {key: "profile_sum", source_block: "reconciliation", source_key: "profile_sum", format: "money"}
+          - {key: "difference", source_block: "reconciliation", source_key: "difference", format: "delta"}
+          - {key: "status", source_block: "reconciliation", source_key: "status", format: "text"}
+      - key: "context"
+        row: 43
+        note_row: 44
+        first_row: 45
+        title: "Run Context"
+        note: "The identity of the published run, as Results records it. Blank until a simulation commits."
+        rows:
+          - {key: "run_id", source_block: "run_stamp", source_key: "run_id", format: "text"}
+          - {key: "model_version", source_block: "run_stamp", source_key: "model_version", format: "text"}
+          - {key: "iterations_run", source_block: "run_stamp", source_key: "iterations_run", format: "year"}
+          - {key: "seed_mode", source_block: "run_stamp", source_key: "seed_mode", format: "text"}
+          - {key: "effective_seed", source_block: "run_stamp", source_key: "effective_seed", format: "text"}
+          - {key: "applied_timeline", source_block: "run_stamp", source_key: "applied_timeline", format: "text"}
+    # THE SPACE THE NEXT STEP NEEDS, RESERVED AND EMPTY. A heading and a note,
+    # no chart object and no placeholder cell. It is declared here so the
+    # summary above can never grow down into it unnoticed: the loader refuses a
+    # section that reaches this row, which is the check the Results annual
+    # window has against the reconciliation heading.
+    chart_region:
+      heading_row: 54
+      note_row: 55
+      first_row: 56
+      last_row: 96
+      heading: "Charts"
+      note: "Reserved for the S-curve, the distribution histogram, the mean annual cash flow and the top sensitivity drivers. Not implemented in this step; nothing is drawn here yet."
+    number_formats:
+      money: "#,##0"
+      year: "0"
+      delta: "0.00E+00"
+      text: "General"
+
 sheets:
 
   - name: "Dashboard"
@@ -433,27 +573,17 @@ sheets:
     purpose: "Executive decision summary. Read-only; every figure originates on Results."
     show_gridlines: false
     title: "Dashboard"
-    subtitle: "Executive summary - populated after a simulation run"
+    subtitle: "Executive summary - every figure is a mirror of Results"
     freeze_panes: null
     column_widths: { A: 3, B: 34, C: 3, D: 22, E: 3, F: 22, G: 3, H: 22 }
     blocks:
+      # P8-2. THE SECTION PLACEHOLDERS ARE GONE, replaced by the projected
+      # geometry in `phase6_shell.dashboard`. What stays is the one line that
+      # says where these numbers come from - it belongs to the sheet rather
+      # than to any section of it, and it sits at the manifest's body start
+      # row, two rows above the first projected heading.
       - type: note
-        text: "Not implemented yet. No results, charts or formulas are implemented yet."
-      - type: section
-        title: "Run Status"
-        note: "Model status, run identity and staleness banner."
-      - type: section
-        title: "Headline Figures"
-        note: "Base estimate, expected risk exposure, selected Px total, contingency."
-      - type: section
-        title: "Statistical Summary"
-        note: "Mean, standard deviation, P10 / P50 / selected Px / P90, nominal and PV."
-      - type: section
-        title: "Charts"
-        note: "S-curve, distribution histogram, mean annual cash flow, top sensitivity drivers."
-      - type: section
-        title: "Basis and Assumptions"
-        note: "Deterministic basis, escalation base year, FX convention, discounting convention."
+        text: "Every figure on this sheet is a mirror of a Results cell. Nothing here is derived, recomputed or re-stated: Results is the authority for every value, every state word and every reconciliation verdict below."
 
   - name: "Setup"
     codename: "shSetup"

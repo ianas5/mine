@@ -351,6 +351,159 @@ def render_phase6_shell(
         _render_results_shell(worksheet, shell["results"], styles, raw, calc, structure)
     elif sheet_spec.name == shell["sensitivity"]["sheet"]:
         _render_sensitivity_shell(worksheet, shell["sensitivity"], raw, styles)
+    elif "dashboard" in shell and sheet_spec.name == shell["dashboard"]["sheet"]:
+        _render_dashboard_shell(worksheet, shell["dashboard"], shell["results"], styles)
+
+
+# ===========================================================================
+# PHASE 8, STEP 2 - THE DASHBOARD EXECUTIVE SUMMARY
+# ===========================================================================
+# ONE GEOMETRY AUTHORITY, AND IT IS THE RESULTS BLOCK. Every cell this renderer
+# writes is `=IF(Results!$D$nn="","",Results!$D$nn)`, and it never learns `nn`
+# from the dashboard block: the manifest names a Results BLOCK and KEY, and the
+# resolver below turns that pair into a row by reading the same `results:`
+# structure that built the Results sheet minutes earlier. A Results row that
+# moves takes this sheet with it; a key that stops existing fails the build by
+# name rather than silently mirroring the wrong cell, which is the P7-4 failure
+# mode - a hand-written address that went stale in silence and reported "Not
+# produced for this run" forever.
+#
+# AND THE MIRROR IS THE WHOLE IMPLEMENTATION. There is no arithmetic here: no
+# subtraction of a base from a total, no sum of a profile, no comparison to an
+# allowance, no state word and no verdict. Whatever Results says, this sheet
+# says, including the blank - `IF(ref="","",ref)` is what stops Excel reading an
+# empty Results cell back as a hard 0 and printing a fabricated zero beside the
+# words NOT PRODUCED.
+
+
+def _dashboard_row_index(results: dict[str, Any]) -> dict[str, dict[str, int]]:
+    """Every addressable Results row, by block and key.
+
+    Built from the results block itself so the two can never disagree. The
+    reconciliation rows are positional on Results - first_row plus the index of
+    the entry - and are resolved here exactly the way the Results renderer
+    resolves them, rather than being re-counted from a different starting row.
+    """
+    annual = results["annual"]
+    reconciliation = results["reconciliation"]
+    selected = results["selected"]
+    return {
+        "run_stamp": {str(field["key"]): int(field["row"])
+                      for field in results["run_stamp"]["fields"]},
+        "summary": {str(metric["key"]): int(metric["row"])
+                    for metric in results["summary"]["metrics"]},
+        "selected": {
+            "confidence_level": int(selected["confidence_level_row"]),
+            # THE TWO LADDERS, NAMED APART HERE TOO. `total` is the summary
+            # block's rung at the selected level; `contingency` is that same
+            # money less the deterministic base. A dashboard that resolved both
+            # to one row would present one under the other's name and nothing on
+            # the sheet would contradict it.
+            "total": int(selected["quantile_row"]),
+            "contingency": int(selected["contingency_row"]),
+        },
+        "state": {key: int(annual[f"{key}_row"])
+                  for key in ("distribution_state", "profile_state",
+                              "profile_px", "year_count")},
+        "reconciliation": {str(entry["key"]): int(reconciliation["first_row"]) + index
+                           for index, entry in enumerate(reconciliation["rows"])},
+    }
+
+
+def _dashboard_labels(results: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """The label Results already shows for each row, so this sheet never types
+    a second one. Which rung `quantile_10` spells is the simulation contract's
+    to say; repeating "P90" here would be a second declaration that a contract
+    move would falsify in silence."""
+    reconciliation = results["reconciliation"]
+    return {
+        "run_stamp": {str(f["key"]): str(f["label"])
+                      for f in results["run_stamp"]["fields"]},
+        "summary": {str(m["key"]): str(m["label"])
+                    for m in results["summary"]["metrics"]},
+        # KEYED THE WAY THE ROW INDEX KEYS THEM. Results names its own label
+        # `quantile`; the row index calls that row `total`, because that is what
+        # the money in it is. One spelling, resolved here, so a section entry
+        # cannot address a row under one name and a label under another.
+        "selected": {
+            "confidence_level": str(results["selected"]["labels"]["confidence_level"]),
+            "total": str(results["selected"]["labels"]["quantile"]),
+            "contingency": str(results["selected"]["labels"]["contingency"]),
+        },
+        "state": {str(k): str(v) for k, v in results["annual"]["labels"].items()},
+        "reconciliation": {str(e["key"]): str(e["label"])
+                           for e in reconciliation["rows"]},
+    }
+
+
+def _render_dashboard_shell(
+    worksheet: Worksheet, block: dict[str, Any], results: dict[str, Any],
+    styles: StyleBook,
+) -> None:
+    label_col = block["label_column"]
+    nominal_col = block["nominal_column"]
+    pv_col = block["pv_column"]
+    source_sheet = block["source_sheet"]
+    template = block["mirror_formula"]
+    formats = block["number_formats"]
+    rows_by_block = _dashboard_row_index(results)
+    labels_by_block = _dashboard_labels(results)
+
+    source_columns = {
+        "nominal": results["nominal_column"],
+        "pv": results["pv_column"],
+    }
+
+    def mirror(source_block: str, source_key: str, measure: str) -> str:
+        try:
+            row = rows_by_block[source_block][source_key]
+        except KeyError as error:
+            raise ValueError(
+                f"the Dashboard mirrors {source_block}.{source_key}, which the "
+                f"Results block does not publish"
+            ) from error
+        reference = f"{source_sheet}!${source_columns[measure]}${row}"
+        return template.format(ref=reference)
+
+    for section in block["sections"]:
+        _write(worksheet, f"{label_col}{section['row']}", section["title"], styles.section)
+        worksheet.row_dimensions[int(section["row"])].height = styles.row_height("section")
+        _write(worksheet, f"{label_col}{section['note_row']}", section["note"], styles.note)
+
+        if section.get("headers"):
+            header_row = int(section["header_row"])
+            for column, key in ((label_col, "label"), (nominal_col, "nominal"),
+                                (pv_col, "pv")):
+                cell = worksheet[f"{column}{header_row}"]
+                cell.value = section["headers"][key]
+                styles.apply_table_header(cell)
+
+        row = int(section["first_row"])
+        for entry in section["rows"]:
+            source_block = str(entry["source_block"])
+            source_key = str(entry["source_key"])
+            label = labels_by_block[source_block][source_key]
+            _write(worksheet, f"{label_col}{row}", label, styles.label)
+            # THE HEADLINE PAIR IS THE ONLY THING BOLDED, and it is bolded
+            # rather than recomputed. Emphasis is presentation; the number is
+            # still the same mirror as every other row on the sheet.
+            font = styles.value_locked if entry.get("emphasis") else styles.value
+            measures = ("nominal", "pv") if section.get("headers") else ("nominal",)
+            for measure in measures:
+                column = nominal_col if measure == "nominal" else pv_col
+                cell = worksheet[f"{column}{row}"]
+                cell.value = mirror(source_block, source_key, measure)
+                cell.font = font
+                cell.number_format = formats[str(entry["format"])]
+            row += 1
+
+    # THE RESERVED REGION, AND IT STAYS EMPTY. A heading and a note; no chart
+    # object, no series, no anchor and no placeholder cell. P8-2 draws nothing.
+    region = block["chart_region"]
+    _write(worksheet, f"{label_col}{region['heading_row']}", region["heading"],
+           styles.section)
+    worksheet.row_dimensions[int(region["heading_row"])].height = styles.row_height("section")
+    _write(worksheet, f"{label_col}{region['note_row']}", region["note"], styles.note)
 
 
 def _render_sensitivity_shell(

@@ -41,6 +41,7 @@ from pccm_builder import (  # noqa: E402
     emit_inspection,
     emit_sim_artifacts,
     emit_phase7_acceptance,
+    emit_phase8_dashboard,
     emit_phase8_results,
     emit_sim_gate_b_artifacts,
     emit_stage_b,
@@ -215,6 +216,12 @@ def main(argv: list[str] | None = None) -> int:
         spec, calc, sim.raw, structure.limits.max_generated_year_columns,
         out_path.parent)
 
+    # P8-2. THE DASHBOARD PROJECTION, and its own file for the same reason: the
+    # Results projection above is what the accepted P8-1 Windows run was
+    # produced against. It carries the Results-cell each Dashboard cell mirrors,
+    # which is the only claim this step makes.
+    phase8_dashboard = emit_phase8_dashboard(spec, out_path.parent)
+
     say(f"  built    : {out_path}")
     say(f"  emitted  : {artifacts.module_path}")
     say(f"  emitted  : {artifacts.manifest_path}")
@@ -230,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  emitted  : {phase7[0]}")
     say(f"  emitted  : {phase7[1]}")
     say(f"  emitted  : {phase8}")
+    say(f"  emitted  : {phase8_dashboard}")
     say(f"  stamped  : builder {metadata.builder_version}, {metadata.build_timestamp}")
     say("")
     say("Structural verification:")

@@ -147,7 +147,93 @@ def _parse_phase6_shell(raw: dict[str, Any], path: Path) -> dict[str, Any]:
     walk(shell["sim_data"], f"{path}: phase6_shell.sim_data", False)
     walk(shell["results"], f"{path}: phase6_shell.results", True)
     _check_results_layout(shell["results"], path)
+    if "dashboard" in shell:
+        walk(shell["dashboard"], f"{path}: phase6_shell.dashboard", True)
+        _check_dashboard_layout(shell["dashboard"], shell["results"], path)
     return shell
+
+
+def _check_dashboard_layout(dashboard: dict[str, Any], results: dict[str, Any],
+                            path: Path) -> None:
+    """P8-2. The Dashboard sections must not overlap each other, must not reach
+    the reserved chart region, and must mirror rows Results actually publishes.
+
+    WHY EACH ONE IS HERE.
+
+    OVERLAP is silent. Two sections whose rows intersect both render, the later
+    one wins, and every check of the loser reads the winner's value - which is
+    exactly the class of defect the Results annual/reconciliation collision
+    check above was written for, one sheet along.
+
+    THE CHART REGION is reserved for a step that has not happened. A summary
+    that grew down into it would be overwritten the moment P8-3 draws there, and
+    the failure would look like a chart bug rather than a layout one.
+
+    A DANGLING SOURCE KEY is the P7-4 failure mode. The Dashboard names Results
+    rows by block and key precisely so a moved row moves the mirror; a key that
+    Results does not publish must fail the BUILD, naming the key, rather than
+    reaching the renderer as a KeyError or - worse - resolving to nothing.
+    """
+    where = f"{path}: phase6_shell.dashboard"
+    if dashboard.get("source_sheet") != results["sheet"]:
+        raise SpecError(
+            f"{where}.source_sheet is {dashboard.get('source_sheet')!r}; the Dashboard "
+            f"mirrors {results['sheet']!r} and nothing else")
+    template = str(dashboard.get("mirror_formula", ""))
+    # THE BLANK GUARD IS NOT OPTIONAL. Excel reads an empty reference back as 0,
+    # so a bare `=Results!$D$47` prints a fabricated zero under the words NOT
+    # PRODUCED. The guard is the difference between an honest blank and a lie.
+    if template.count("{ref}") != 2 or not template.startswith('=IF({ref}=""'):
+        raise SpecError(
+            f"{where}.mirror_formula must guard the reference against blank before "
+            f"returning it; found {template!r}")
+
+    available = {
+        "run_stamp": {str(f["key"]) for f in results["run_stamp"]["fields"]},
+        "summary": {str(m["key"]) for m in results["summary"]["metrics"]},
+        "selected": {"confidence_level", "total", "contingency"},
+        "state": {"distribution_state", "profile_state", "profile_px", "year_count"},
+        "reconciliation": {str(e["key"]) for e in results["reconciliation"]["rows"]},
+    }
+    formats = dashboard["number_formats"]
+    region = dashboard["chart_region"]
+    reserved_top = int(region["heading_row"])
+    occupied: dict[int, str] = {}
+
+    for section in dashboard["sections"]:
+        key = str(section["key"])
+        rows = [int(section["row"]), int(section["note_row"])]
+        if section.get("headers"):
+            rows.append(int(section["header_row"]))
+        first = int(section["first_row"])
+        rows += [first + offset for offset in range(len(section["rows"]))]
+        for row in rows:
+            if row in occupied:
+                raise SpecError(
+                    f"{where}: sections {occupied[row]!r} and {key!r} both write row "
+                    f"{row}")
+            occupied[row] = key
+            if row >= reserved_top:
+                raise SpecError(
+                    f"{where}: section {key!r} reaches row {row}, at or inside the "
+                    f"chart region reserved from row {reserved_top}")
+        for entry in section["rows"]:
+            block, source = str(entry["source_block"]), str(entry["source_key"])
+            if block not in available:
+                raise SpecError(
+                    f"{where}: section {key!r} mirrors block {block!r}, which Results "
+                    f"does not publish")
+            if source not in available[block]:
+                raise SpecError(
+                    f"{where}: section {key!r} mirrors {block}.{source!r}, which the "
+                    f"Results {block} block does not publish")
+            if str(entry["format"]) not in formats:
+                raise SpecError(
+                    f"{where}.number_formats: no format is declared for "
+                    f"{entry['format']!r}")
+    if int(region["note_row"]) <= reserved_top or int(region["last_row"]) <= int(
+            region["note_row"]):
+        raise SpecError(f"{where}.chart_region rows are not in ascending order")
 
 
 def _check_results_layout(results: dict[str, Any], path: Path) -> None:
