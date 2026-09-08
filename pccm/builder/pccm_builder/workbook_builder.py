@@ -1185,27 +1185,84 @@ def _chart_bridge_distribution(block: dict[str, Any], results: dict[str, Any],
     return out
 
 
+# THE FIELD THAT SAYS WHETHER A PUBLISHED ROW IS PART OF THE RANKED POPULATION.
+#
+# Not `rho <> ""`. A driver's rho being absent is a CONSEQUENCE of its being
+# outside the ranking, and reading the consequence would make the chart's
+# eligibility rule a second, weaker statement of the contract's. The contract
+# says `excluded_from_ranking: true` for a zero-variance driver, and RANK is
+# where the publication writes that down: FillRecord gives every DEFINED record
+# its ranked position and leaves this field blank for every record that has
+# none.
+#
+# AND IT IS NOT THE STATUS TEXT EITHER, which would need a literal. Two labels
+# exist today and only one of them - "n/a - no variance" - is declared in the
+# contract; matching on the other would put a string in this file that nothing
+# owns, and matching on the declared one would admit any third diagnostic status
+# somebody later adds. Rank needs no literal and is immune to both.
+TORNADO_ELIGIBILITY_FIELD = "rank"
+
+
 def _chart_bridge_drivers(block: dict[str, Any],
                           sensitivity: dict[str, Any]) -> list[tuple[int, str, str]]:
-    """The top N rows of the accepted Sensitivity ranking, in that sheet's own
-    order. THIS SELECTS A WINDOW. It does not rank, re-sort, re-sign or
-    re-threshold: the ranking is Phase 7's and the row order IS the rank order,
-    so taking the first N rows preserves it by construction."""
+    """The top N rows of the accepted Sensitivity RANKED POPULATION, in that
+    sheet's own order.
+
+    THIS SELECTS A WINDOW. It does not rank, re-sort, re-sign or re-threshold:
+    the ranking is Phase 7's and the row order IS the rank order, so taking the
+    first N preserves it by construction.
+
+    WHAT IT SELECTS FROM IS THE POINT. The sheet holds the ranked rows FOLLOWED
+    BY the diagnostic ones - Publish writes the eligible drivers first and then
+    appends every record that has no rho to rank - so "the first N rows of the
+    sheet" and "the first N of the ranked population" are the same set only
+    while at least N drivers are eligible. Below that they diverge, and a
+    zero-variance driver entered the chart's category window.
+
+    THE CONTRACT IS EXPLICIT that it must not:
+
+        zero_variance:
+          excluded_from_ranking: true
+          excluded_from_tornado_input: true
+
+    and `excluded_from_tornado_input` is a SEPARATE clause from `rho_reported:
+    false` and `reported_as_zero_rho: false` beside it. Read as "its bar is
+    blank" it would restate those two and say nothing of its own; the only
+    reading under which it adds anything is that the driver is not part of the
+    tornado's input at all - neither its value nor its identity. `ranking` says
+    the same thing from the other side: `population: "every eligible
+    non_zero_variance driver"`.
+
+    SO EVERY FIELD IS GATED ON ELIGIBILITY, the category as much as the value.
+    The gate is positional and preserves order exactly: the diagnostic rows are
+    always the tail, so gating row by row removes them without compacting,
+    re-sorting or moving anything.
+    """
     sheet = sensitivity["sheet"]
     columns = {str(column["key"]): str(column["column"])
                for column in sensitivity["columns"]}
+    if TORNADO_ELIGIBILITY_FIELD not in columns:
+        raise ValueError(
+            f"the Sensitivity sheet publishes no {TORNADO_ELIGIBILITY_FIELD!r} "
+            "column; the tornado has no authoritative way to tell a ranked "
+            "driver from a diagnostic row")
     first = int(sensitivity["first_row"])
     out: list[tuple[int, str, str]] = []
     for index in range(int(block["top_n"])):
         row = int(block["first_row"]) + index
         source_row = first + index
+        eligible = f"{sheet}!${columns[TORNADO_ELIGIBILITY_FIELD]}${source_row}"
         for column in block["columns"]:
             source = f"{sheet}!${columns[str(column['source'])]}${source_row}"
             # A RANK THAT DOES NOT EXIST IS NOT A ZERO-LENGTH BAR. Fewer
             # eligible drivers than N must draw fewer bars, not N-k bars of
             # nothing sitting on the axis looking measured.
+            #
+            # AND A ROW THAT IS NOT RANKED IS NOT A CATEGORY. The second guard
+            # is the eligibility one and it comes first: a diagnostic row is
+            # absent from the chart entirely, not present with an empty bar.
             out.append((row, str(column["column"]),
-                        f'=IF({source}="",NA(),{source})'))
+                        f'=IF({eligible}="",NA(),IF({source}="",NA(),{source}))'))
     return out
 
 

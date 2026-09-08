@@ -29,6 +29,9 @@ import re
 from typing import Any
 
 from .artifact_io import write_lf_artifact
+from .workbook_builder import (
+    TORNADO_ELIGIBILITY_FIELD as _TORNADO_ELIGIBILITY_FIELD,
+)
 from .spec_loader import WorkbookSpec
 
 SCHEMA_VERSION = 1
@@ -37,7 +40,8 @@ INSPECTION_FILENAME = "phase8_charts_inspection.json"
 
 ALLOWED_KEYS = ("schema_version", "purpose", "provenance", "bridge_sheet",
                 "chart_sheet", "sensitivity_sheet", "sensitivity_endpoint",
-                "sensitivity_source", "bridge", "charts", "number_formats")
+                "sensitivity_source", "zero_variance_status", "bridge", "charts",
+                "number_formats")
 
 # THE CHART TYPES THIS PROJECT PERMITS. Two dimensions, three shapes. A third
 # dimension carries no data here and distorts the comparison a chart exists to
@@ -104,7 +108,8 @@ def _bridge_blocks(charts: dict[str, Any], window: int) -> dict[str, Any]:
     return out
 
 
-def build_phase8_charts_inspection(spec: WorkbookSpec, window: int) -> dict[str, Any]:
+def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
+                                   sim: Any) -> dict[str, Any]:
     shell = spec.phase6_shell or {}
     charts = shell.get("charts")
     if not charts:
@@ -179,9 +184,29 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int) -> dict[str,
                 f"{INSPECTION_FILENAME}: the tornado mirrors {key!r}, which the "
                 "Sensitivity sheet does not publish")
         source_columns.append({"key": key, "column": declared[key]})
+    # THE FIELD THAT DECIDES WHETHER A PUBLISHED ROW IS IN THE TORNADO AT ALL.
+    # The sheet holds the ranked rows followed by the diagnostic ones, so a
+    # consumer checking the chart against the sheet has to know which is which -
+    # and must not decide for itself. Carried by the same name the bridge gates
+    # on, so the two cannot disagree.
+    eligibility = str(_TORNADO_ELIGIBILITY_FIELD)
+    if eligibility not in declared:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: the Sensitivity sheet publishes no "
+            f"{eligibility!r} column; the tornado cannot tell a ranked driver "
+            "from a diagnostic row")
+    # THE ONE STATUS A CONSUMER OF THIS PROJECTION HAS TO RECOGNISE, carried
+    # from the sensitivity contract that declares it. A runner proving a
+    # zero-variance driver is absent from the chart must first find that driver
+    # on the sheet, and typing the label would be a second declaration of a
+    # contract string. It is NOT put in the Phase-6 gate-B cases, whose bytes are
+    # digest-pinned Gate-B evidence: a Phase-8 need does not get to move those.
+    zero_variance_status = str(
+        sim.raw["sensitivity"]["zero_variance"]["status_label"])
     sensitivity_source = {
         "first_row": int(sensitivity["first_row"]),
         "row_window": int(sensitivity["row_window"]),
+        "eligibility": {"key": eligibility, "column": declared[eligibility]},
         "columns": source_columns,
     }
 
@@ -208,6 +233,7 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int) -> dict[str,
         # and only the two fields the tornado mirrors are carried. The sheet's
         # NAME is not repeated: `sensitivity_sheet` above already declares it.
         "sensitivity_source": sensitivity_source,
+        "zero_variance_status": zero_variance_status,
         "bridge": blocks,
         "charts": projected,
         "number_formats": {str(k): str(v)
@@ -288,15 +314,36 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
     # THE SOURCE THE TORNADO MIRRORS. A consumer dereferences every one of these
     # to read a published Sensitivity row; a missing field is not a failed
     # assertion on Windows, it is a terminated session, so it fails here.
+    if not str(inspection.get("zero_variance_status", "")).strip():
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: no zero_variance_status; a consumer could "
+            "not tell a diagnostic row from a ranked one on the sheet")
     if "sensitivity_source" not in inspection:
         raise ValueError(
             f"{INSPECTION_FILENAME}: no sensitivity_source; the tornado has no "
             "projected route to the ranking it mirrors")
     source = inspection["sensitivity_source"]
+    # THE ELIGIBILITY FIELD IS NOT ONE OF THE PLOTTED COLUMNS. It decides which
+    # rows are in the chart at all; a source that carried it as a plotted field
+    # would draw the rank.
+    if "eligibility" not in source:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: sensitivity_source names no eligibility "
+            "field; a diagnostic row could not be told from a ranked one")
     for field in ("first_row", "row_window", "columns"):
         if field not in source:
             raise ValueError(
                 f"{INSPECTION_FILENAME}: sensitivity_source carries no {field!r}")
+    eligibility = source["eligibility"]
+    if not re.fullmatch(r"[A-Z]{1,3}", str(eligibility["column"])):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: the eligibility column "
+            f"{eligibility['column']!r} is not a column letter")
+    if any(str(column["key"]) == str(eligibility["key"])
+           for column in source["columns"]):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: {eligibility['key']!r} is both the "
+            "eligibility field and a plotted series")
     if int(source["first_row"]) < 1:
         raise ValueError(
             f"{INSPECTION_FILENAME}: sensitivity_source.first_row is not a row")
@@ -337,8 +384,9 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
             f"{INSPECTION_FILENAME}: {contract['bin_count']} bins is not a histogram")
 
 
-def emit_phase8_charts(spec: WorkbookSpec, window: int, build_dir: Path) -> Path:
-    inspection = build_phase8_charts_inspection(spec, window)
+def emit_phase8_charts(spec: WorkbookSpec, window: int, build_dir: Path,
+                       sim: Any) -> Path:
+    inspection = build_phase8_charts_inspection(spec, window, sim)
     validate_phase8_charts_inspection(inspection)
     path = build_dir / INSPECTION_FILENAME
     write_lf_artifact(path, json.dumps(inspection, indent=2) + "\n")

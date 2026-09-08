@@ -195,10 +195,25 @@ def test_01_there_is_one_dedicated_p8_3_runner() -> None:
     assert _text().startswith("<#"), "the runner has no synopsis"
     assert "P8-3" in _text()
     # AND IT IS NOT THE EARLIER RUNNERS EDITED. Their accepted evidence stands
-    # at their own commits and neither may be repurposed.
+    # at their own commits and none may be repurposed. Each Phase-8 runner is
+    # named with what it is for, so a fourth file cannot appear as an unexplained
+    # entry in a list - and so a later one cannot quietly become a place to
+    # re-run what an earlier one already established.
+    roles = {
+        "phase8_p1_results_surface.ps1": "the Results presentation surface",
+        "phase8_p2_dashboard_surface.ps1": "the Dashboard executive summary",
+        "phase8_p3_chart_surface.ps1": "the analytical charts",
+        # P8-Z is deliberately tiny and deliberately separate: the accepted W4
+        # fixture has no zero-variance driver, so the one question the P8-3
+        # closure turned on cannot be asked inside the accepted suite without
+        # re-running it.
+        "phase8_pz_zero_variance.ps1": "one question: a zero-variance driver "
+                                       "is not a tornado category",
+    }
     others = sorted(path.name for path in WINDOWS.glob("phase8_*.ps1"))
-    assert others == ["phase8_p1_results_surface.ps1", "phase8_p2_dashboard_surface.ps1",
-                      "phase8_p3_chart_surface.ps1"], others
+    assert others == sorted(roles), others
+    for name, role in roles.items():
+        assert len(role) > 20, name
 
 
 def test_02_only_the_three_definition_only_files_are_dot_sourced() -> None:

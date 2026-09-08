@@ -60,6 +60,11 @@ def _shell() -> dict:
     return _CACHE["shell"]
 
 
+def _sim_contract():
+    from pccm_builder import load_sim_contract
+    return load_sim_contract(SPEC / "sim_contract.yaml")
+
+
 def _projection() -> dict:
     if "charts" not in _CACHE:
         _CACHE["charts"] = json.loads(
@@ -828,7 +833,8 @@ def test_71_the_projection_validator_refuses_each_incoherent_chart(
     PROJECTION is incoherent - so the projection's own validator must."""
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
     inspection = build_phase8_charts_inspection(
-        load_spec(MANIFEST), structure.limits.max_generated_year_columns)
+        load_spec(MANIFEST), structure.limits.max_generated_year_columns,
+        _sim_contract())
     mutate(inspection)
     with pytest.raises(ValueError):
         validate_phase8_charts_inspection(inspection)
@@ -839,7 +845,8 @@ def test_72_the_unmutated_manifest_passes_both_gates() -> None:
     fixture."""
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
     inspection = build_phase8_charts_inspection(
-        load_spec(MANIFEST), structure.limits.max_generated_year_columns)
+        load_spec(MANIFEST), structure.limits.max_generated_year_columns,
+        _sim_contract())
     validate_phase8_charts_inspection(inspection)
     assert inspection == _projection(), (
         "the committed chart projection is not what the manifest now produces")
@@ -857,7 +864,8 @@ def test_72a_the_sensitivity_endpoint_is_projected_from_the_manifest() -> None:
     declared = spec.phase6_shell["charts"]["sensitivity_endpoint"]
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
     inspection = build_phase8_charts_inspection(
-        spec, structure.limits.max_generated_year_columns)
+        spec, structure.limits.max_generated_year_columns,
+        _sim_contract())
     assert inspection["sensitivity_endpoint"] == declared
     assert declared == "PCCM_RunSensitivity"
     # AND IT IS AN ENDPOINT THE COMMAND SURFACE ACTUALLY PUBLISHES - a Sub, so
@@ -1187,7 +1195,8 @@ def test_90_each_way_of_losing_the_correction_is_refused(name: str, mutate) -> N
             return  # refused at the gate, which is the strongest outcome
         structure = load_structure_contract(SPEC / "structure_contract.yaml")
         inspection = build_phase8_charts_inspection(
-            spec, structure.limits.max_generated_year_columns)
+            spec, structure.limits.max_generated_year_columns,
+            _sim_contract())
         histogram = next(c for c in inspection["charts"] if c["key"] == "histogram")
         tornado = next(c for c in inspection["charts"] if c["key"] == "tornado")
         broken = (

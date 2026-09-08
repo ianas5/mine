@@ -1296,3 +1296,563 @@ def test_57_the_guard_rules_pass_on_the_real_builder() -> None:
     for key, formula in rendered.items():
         assert formula == _sensitivity_cell(key), (
             f"{key}: the renderer and the built workbook disagree")
+
+
+# ===========================================================================
+# K. THE TORNADO INPUT IS THE RANKED POPULATION - P8-3 FINAL CLOSURE
+# ===========================================================================
+# THE CONTRACT CLAUSE, READ LITERALLY. `zero_variance` carries five sibling
+# statements, and `excluded_from_tornado_input: true` sits beside
+# `rho_reported: false` and `reported_as_zero_rho: false`. Read as "its bar is
+# blank" it would restate those two and mean nothing of its own. The only
+# reading under which it says anything is that the driver is not part of the
+# tornado's input AT ALL - neither its value nor its identity. `ranking` says
+# the same from the other side: population is "every eligible non_zero_variance
+# driver".
+#
+# WHY THE BRIDGE VIOLATED IT. Publish writes the eligible drivers in ranked
+# order and then APPENDS the diagnostic ones, so "the first N rows of the sheet"
+# equals "the first N of the ranked population" only while at least N drivers
+# are eligible. Below that they diverge, and a zero-variance driver entered the
+# category window - after 94c6b37 with no bar, but still as a category.
+#
+# THESE TESTS EVALUATE THE FORMULAS. A tiny Excel-subset evaluator resolves the
+# real generated bridge and Sensitivity formulas against a simulated _SimData,
+# so the assertions are about what the workbook COMPUTES, not what its text
+# looks like.
+ZERO_VARIANCE_STATUS = "n/a - no variance"
+
+
+def _sensitivity_columns() -> dict[str, str]:
+    return {str(c["key"]): str(c["column"]) for c in _shell()["columns"]}
+
+
+class _Book:
+    """A tiny evaluator for the exact formula shapes these two layers emit.
+
+    IT UNDERSTANDS NOTHING ELSE. `IF`, `NA()`, `=`, `<>`, a cell reference and a
+    string literal - which is every construct in the generated bridge and
+    Sensitivity formulas - and it raises on anything it does not recognise, so a
+    formula that grew a new shape cannot be silently mis-evaluated.
+    """
+
+    NA = object()
+
+    def __init__(self, cells: dict[str, object]):
+        self.cells = cells
+
+    def value(self, ref: str):
+        key = ref.replace("$", "")
+        if key not in self.cells:
+            # AN UNWRITTEN CELL IS EMPTY, and Excel reads an empty reference
+            # back as 0. Modelling that is the whole reason this exists.
+            return 0
+        held = self.cells[key]
+        return "" if held is None else held
+
+    def evaluate(self, formula: str):
+        assert formula.startswith("="), formula
+        result = self._expr(formula[1:])
+        return result
+
+    def _split(self, text: str) -> list[str]:
+        parts, depth, quoted, token = [], 0, False, ""
+        for char in text:
+            if char == '"':
+                quoted = not quoted
+            if not quoted:
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                elif char == "," and depth == 0:
+                    parts.append(token)
+                    token = ""
+                    continue
+            token += char
+        parts.append(token)
+        return parts
+
+    def _expr(self, text: str):
+        text = text.strip()
+        if text == "NA()":
+            return self.NA
+        if text.startswith("IF(") and text.endswith(")"):
+            condition, when_true, when_false = self._split(text[3:-1])
+            return self._expr(when_true if self._condition(condition)
+                              else when_false)
+        if text.startswith('"') and text.endswith('"'):
+            return text[1:-1]
+        if re.fullmatch(r"-?\d+(\.\d+)?", text):
+            return float(text) if "." in text else int(text)
+        if re.fullmatch(r"[A-Za-z_]+!\$?[A-Z]{1,3}\$?\d+", text):
+            return self.value(text.split("!", 1)[1])
+        raise AssertionError(f"the evaluator does not understand {text!r}")
+
+    def _condition(self, text: str) -> bool:
+        for operator in ("<>", ">", "="):
+            index, depth, quoted = -1, 0, False
+            for position, char in enumerate(text):
+                if char == '"':
+                    quoted = not quoted
+                if quoted:
+                    continue
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                elif depth == 0 and text.startswith(operator, position):
+                    index = position
+                    break
+            if index < 0:
+                continue
+            left = self._expr(text[:index])
+            right = self._expr(text[index + len(operator):])
+            if operator == "=":
+                return left == right
+            if operator == "<>":
+                return left != right
+            return (left or 0) > (right or 0)
+        raise AssertionError(f"the evaluator does not understand {text!r}")
+
+
+def _zero_variance_book(drivers: list[dict]) -> _Book:
+    """A published _SimData bank A holding these records, in Publish's own order.
+
+    RANKED FIRST, DIAGNOSTIC APPENDED - the order the module writes, reproduced
+    rather than assumed: eligible records carry a rank, the rest carry blanks
+    for every measure and the zero-variance status label.
+    """
+    records = _raw_contract()["sim_data"]["sensitivity_records"]
+    sheet = _raw_contract()["sim_data"]["sheet"]
+    first_record_row = int(records["first_record_row"])
+    stamp = {f["key"]: f["row"] for f in records["stamp"]["fields"]}
+    stamp_col = records["stamp"]["bank_value_columns"]["A"]
+    offsets = {str(c["key"]): int(c["offset"]) for c in _shell()["columns"]}
+
+    def shift(letter: str, by: int) -> str:
+        value = 0
+        for char in letter:
+            value = value * 26 + (ord(char) - ord("A") + 1)
+        value += by
+        out = ""
+        while value:
+            value, remainder = divmod(value - 1, 26)
+            out = chr(ord("A") + remainder) + out
+        return out
+
+    bank_first = records["banks"]["A"]["first_column"]
+    cells: dict[str, object] = {
+        "D30": "A",
+        f"{stamp_col}{stamp['published']}": "PUBLISHED",
+        f"{stamp_col}{stamp['record_count']}": len(drivers),
+    }
+    eligible = [d for d in drivers if d["status"] != ZERO_VARIANCE_STATUS]
+    diagnostic = [d for d in drivers if d["status"] == ZERO_VARIANCE_STATUS]
+    for position, driver in enumerate(eligible + diagnostic):
+        row = first_record_row + position
+        ranked = driver["status"] != ZERO_VARIANCE_STATUS
+        fields = {
+            "driver_id": driver["id"],
+            "driver_type": driver.get("type", "Cost"),
+            "driver_name": driver["name"],
+            "rho": driver["rho"] if ranked else None,
+            "abs_rho": abs(driver["rho"]) if ranked else None,
+            "rank": position + 1 if ranked else None,
+            "direction": ("-" if ranked and driver["rho"] < 0 else
+                          "+" if ranked else None),
+            "status": driver["status"],
+        }
+        for key, held in fields.items():
+            cells[f"{shift(bank_first, offsets[key])}{row}"] = held
+    return _Book(cells), sheet
+
+
+def _resolve(book: _Book, formula: str):
+    return book.evaluate(formula)
+
+
+# THE FIXTURE §4 REQUIRES: several DEFINED drivers, one of them with a genuine
+# measured rho of exactly 0, one zero-variance driver, and fewer than ten
+# DEFINED drivers in total.
+ZERO_VARIANCE_FIXTURE = [
+    {"id": "CL-001", "name": "Strong positive", "rho": 0.81, "status": "ranked"},
+    {"id": "R-001", "name": "Strong negative", "rho": -0.64, "status": "ranked"},
+    {"id": "CL-002", "name": "Weak positive", "rho": 0.12, "status": "ranked"},
+    # A MEASURED ZERO. The driver varied and no monotone association was found -
+    # which is a RESULT, and entirely different from having none to look for.
+    {"id": "CL-003", "name": "Measured zero", "rho": 0.0, "status": "ranked"},
+    # AND THE ONE THAT MUST NOT REACH THE CHART.
+    {"id": "R-002", "name": "Constant impact", "rho": None,
+     "status": ZERO_VARIANCE_STATUS},
+]
+
+
+def _tornado_rows() -> list[dict]:
+    """What the tornado bridge actually resolves to, row by row, over the
+    fixture - using the REAL generated formulas from the built workbook."""
+    import openpyxl
+    from pccm_builder.spec_loader import load_spec
+
+    book, _ = _zero_variance_book(ZERO_VARIANCE_FIXTURE)
+    charts = load_spec(SPEC / "workbook.yaml").phase6_shell["charts"]
+    drivers = charts["bridge"]["drivers"]
+    workbook = openpyxl.load_workbook(PCCM_ROOT / "build" / "PCCM_stageA.xlsx")
+    results = workbook[charts["bridge_sheet"]]
+    sensitivity = workbook[charts["sensitivity_sheet"]]
+    columns = {str(c["key"]): str(c["column"]) for c in drivers["columns"]}
+    first = int(drivers["first_row"])
+
+    def sheet_value(address: str):
+        return _resolve(book, sensitivity[address].value)
+
+    rows = []
+    for index in range(int(drivers["top_n"])):
+        row = {}
+        for key, column in columns.items():
+            formula = results[f"{column}{first + index}"].value
+            # THE BRIDGE READS THE SENSITIVITY SHEET, which is itself a formula.
+            resolved = formula
+            for match in sorted(set(re.findall(
+                    r"Sensitivity!\$([A-Z]{1,3})\$(\d+)", formula)),
+                    key=lambda m: -(len(m[0]) + len(m[1]))):
+                value = sheet_value(f"{match[0]}{match[1]}")
+                literal = ('""' if value == "" else
+                           f'"{value}"' if isinstance(value, str) else str(value))
+                resolved = resolved.replace(
+                    f"Sensitivity!${match[0]}${match[1]}", literal)
+            row[key] = _Book({}).evaluate(resolved)
+        rows.append(row)
+    return rows
+
+
+def test_60_the_contract_excludes_a_zero_variance_driver_from_the_tornado() -> None:
+    """THE LITERAL READING. `excluded_from_tornado_input` is a SEPARATE clause
+    from the two beside it, so it cannot mean what they already say."""
+    zero_variance = _raw_contract()["sensitivity"]["zero_variance"]
+    assert zero_variance["excluded_from_tornado_input"] is True
+    # THE TWO CLAUSES IT WOULD OTHERWISE RESTATE.
+    assert zero_variance["rho_reported"] is False
+    assert zero_variance["reported_as_zero_rho"] is False
+    # AND THE RANKING SAYS IT FROM THE OTHER SIDE.
+    ranking = _raw_contract()["sensitivity"]["ranking"]
+    assert ranking["population"] == "every eligible non_zero_variance driver"
+    assert ranking["top_n_truncation"] is False, (
+        "Phase 7 stopped producing the whole ranked population; Top-N is the "
+        "chart's choice to make and it needs everything to choose from")
+
+
+def test_61_the_ranked_drivers_all_appear_in_published_order() -> None:
+    """POSITIVE, NEGATIVE, AND A GENUINELY MEASURED ZERO."""
+    rows = _tornado_rows()
+    ranked = [d for d in ZERO_VARIANCE_FIXTURE
+              if d["status"] != ZERO_VARIANCE_STATUS]
+    for index, driver in enumerate(ranked):
+        assert rows[index]["driver_name"] == driver["name"], (
+            f"row {index + 1} is not the published driver of that rank")
+        assert rows[index]["rho"] == driver["rho"], (
+            f"{driver['name']}: rho {rows[index]['rho']} != {driver['rho']}")
+    # THE SIGN SURVIVES, and the order is the sheet's, not a re-sort.
+    assert rows[0]["rho"] > 0 and rows[1]["rho"] < 0
+    assert [r["driver_name"] for r in rows[:len(ranked)]] == [
+        d["name"] for d in ranked]
+
+
+def test_62_a_measured_zero_is_not_an_undefined_one() -> None:
+    """THE DISTINCTION THE WHOLE CLAUSE RESTS ON. A driver that varied and
+    showed no monotone association HAS a result; one with nothing to correlate
+    has none. The first is plotted at zero; the second is absent."""
+    rows = _tornado_rows()
+    measured = next(i for i, d in enumerate(ZERO_VARIANCE_FIXTURE)
+                    if d["name"] == "Measured zero")
+    assert rows[measured]["rho"] == 0.0, "the measured zero was excluded"
+    assert rows[measured]["driver_name"] == "Measured zero"
+    assert rows[measured]["rho"] is not _Book.NA
+
+
+def test_63_the_zero_variance_driver_is_not_a_category_and_not_a_bar() -> None:
+    """NEITHER ITS VALUE NOR ITS IDENTITY reaches the chart."""
+    rows = _tornado_rows()
+    absent = {"Constant impact"}
+    for row in rows:
+        assert row["driver_name"] not in absent, (
+            "the zero-variance driver is still a tornado category")
+    ranked = [d for d in ZERO_VARIANCE_FIXTURE
+              if d["status"] != ZERO_VARIANCE_STATUS]
+    for row in rows[len(ranked):]:
+        assert row["driver_name"] is _Book.NA, (
+            "a row beyond the ranked population carries a category")
+        assert row["rho"] is _Book.NA, (
+            "a row beyond the ranked population carries a value")
+
+
+def test_64_fewer_eligible_drivers_yield_fewer_categories_and_no_filler() -> None:
+    rows = _tornado_rows()
+    ranked = [d for d in ZERO_VARIANCE_FIXTURE
+              if d["status"] != ZERO_VARIANCE_STATUS]
+    assert len(ranked) < 10, "the fixture no longer exercises the short case"
+    plotted = [r for r in rows if r["rho"] is not _Book.NA]
+    assert len(plotted) == len(ranked), (
+        f"{len(plotted)} categories for {len(ranked)} eligible drivers")
+    # NO FILLER OF ANY KIND, and in particular not a zero or a blank.
+    for row in rows[len(ranked):]:
+        assert row["rho"] is _Book.NA and row["driver_name"] is _Book.NA
+        assert row["rho"] != 0 and row["driver_name"] != ""
+    # AND THE WINDOW IS STILL AT MOST TEN.
+    from pccm_builder.spec_loader import load_spec
+    drivers = load_spec(SPEC / "workbook.yaml").phase6_shell["charts"]["bridge"]["drivers"]
+    assert int(drivers["top_n"]) == 10
+    assert len(rows) == 10
+
+
+def test_65_the_diagnostic_row_is_still_on_the_sensitivity_sheet() -> None:
+    """RETAINED DIAGNOSTICALLY. Excluding it from the CHART is not removing it
+    from the record: the sheet still shows the driver, its type, its name and
+    the status that says why it has no rho."""
+    assert _raw_contract()["sensitivity"]["zero_variance"][
+        "retained_diagnostically"] is True
+    import openpyxl
+    from pccm_builder.spec_loader import load_spec
+    book, _ = _zero_variance_book(ZERO_VARIANCE_FIXTURE)
+    workbook = openpyxl.load_workbook(PCCM_ROOT / "build" / "PCCM_stageA.xlsx")
+    sheet = workbook[load_spec(SPEC / "workbook.yaml").phase6_shell[
+        "sensitivity"]["sheet"]]
+    columns = _sensitivity_columns()
+    first = int(_shell()["first_row"])
+    # THE DIAGNOSTIC ROW IS THE LAST PUBLISHED ONE.
+    row = first + len(ZERO_VARIANCE_FIXTURE) - 1
+
+    def cell(key: str):
+        return _resolve(book, sheet[f"{columns[key]}{row}"].value)
+
+    assert cell("driver_id") == "R-002", cell("driver_id")
+    assert cell("driver_name") == "Constant impact"
+    assert cell("status") == ZERO_VARIANCE_STATUS
+    # AND ITS MEASURES ARE BLANK, NOT ZERO - the 94c6b37 guard, still holding.
+    for measure in ("rho", "abs_rho", "rank", "direction"):
+        assert cell(measure) == "", (
+            f"{measure} reads {cell(measure)!r}; a zero-variance driver reports "
+            "no measurement, not a measurement of zero")
+
+
+def test_66_the_bridge_gates_on_rank_and_not_on_a_blank_rho() -> None:
+    """THE AUTHORITATIVE FIELD. rho being absent is a CONSEQUENCE of exclusion
+    from the ranking; rank is where the publication writes the exclusion down."""
+    import openpyxl
+    from pccm_builder.spec_loader import load_spec
+    charts = load_spec(SPEC / "workbook.yaml").phase6_shell["charts"]
+    drivers = charts["bridge"]["drivers"]
+    columns = _sensitivity_columns()
+    workbook = openpyxl.load_workbook(PCCM_ROOT / "build" / "PCCM_stageA.xlsx")
+    results = workbook[charts["bridge_sheet"]]
+    first = int(drivers["first_row"])
+    sheet = charts["sensitivity_sheet"]
+    for index in range(int(drivers["top_n"])):
+        gate = f'IF({sheet}!${columns["rank"]}${int(_shell()["first_row"]) + index}="",NA(),'
+        for column in drivers["columns"]:
+            formula = results[f"{column['column']}{first + index}"].value
+            assert formula.startswith("=" + gate), (
+                f"{column['key']} row {index + 1} is not gated on rank: {formula}")
+    # AND THE ELIGIBILITY FIELD IS NOT ITSELF PLOTTED.
+    assert "rank" not in {str(c["source"]) for c in drivers["columns"]}
+
+
+def test_67_the_publication_keeps_rank_and_status_in_agreement() -> None:
+    """SO GATING ON RANK IS GATING ON THE SAME POPULATION THE STATUS NAMES. The
+    two are written in the same two branches and cannot drift apart."""
+    fill = _procedure("FillRecord")
+    defined = fill[fill.index("If record.Status = SIM_SENSITIVITY_DEFINED Then"):
+                   fill.index("    Else")]
+    undefined = fill[fill.index("    Else"):]
+    assert "SIM_SENSITIVITY_OFFSET_RANK + 1) = rank" in defined
+    assert "SENSITIVITY_RANKED_LABEL" in defined
+    assert "SIM_SENSITIVITY_OFFSET_RANK + 1) = vbNullString" in undefined
+    assert "SENSITIVITY_NO_VARIANCE_LABEL" in undefined
+    # AND THE ZERO-VARIANCE LABEL IS THE CONTRACT'S.
+    module = POST_BAS.read_text(encoding="utf-8")
+    assert f'SENSITIVITY_NO_VARIANCE_LABEL As String = "{ZERO_VARIANCE_STATUS}"' \
+        in module
+    assert _raw_contract()["sensitivity"]["zero_variance"]["status_label"] == \
+        ZERO_VARIANCE_STATUS
+
+
+# ---------------------------------------------------------------------------
+# THE MUTATIONS
+# ---------------------------------------------------------------------------
+def _bridge_rows(mutate=None) -> list[tuple[int, str, str]]:
+    """The tornado bridge formulas the builder emits, optionally from a mutated
+    copy of its source. Only the two functions under test are recompiled, over
+    the real module's globals."""
+    from pccm_builder import workbook_builder as real
+    from pccm_builder.spec_loader import load_spec
+
+    source = Path(real.__file__).read_text(encoding="utf-8")
+    if mutate is not None:
+        mutated = mutate(source)
+        assert mutated != source, "the mutation changed nothing"
+        source = mutated
+    body = re.search(r"^TORNADO_ELIGIBILITY_FIELD = .*?^def _chart_bridge_drivers"
+                     r"\(.*?(?=\n\n(?:#|[A-Z_]+ =|def ))", source, re.S | re.M)
+    assert body, "the tornado bridge builder is gone"
+    namespace = dict(real.__dict__)
+    exec(compile(body.group(0), real.__file__, "exec"), namespace)
+    charts = load_spec(SPEC / "workbook.yaml").phase6_shell["charts"]
+    return namespace["_chart_bridge_drivers"](
+        charts["bridge"]["drivers"], _shell())
+
+
+def _tornado_input_rules(rows: list[tuple[int, str, str]]) -> None:
+    """The tornado plots the ranked population, in the sheet's own order."""
+    from pccm_builder.spec_loader import load_spec
+    charts = load_spec(SPEC / "workbook.yaml").phase6_shell["charts"]
+    drivers = charts["bridge"]["drivers"]
+    sheet = charts["sensitivity_sheet"]
+    columns = _sensitivity_columns()
+    first_source = int(_shell()["first_row"])
+    top_n = int(drivers["top_n"])
+    assert top_n <= 10, f"the tornado window grew to {top_n}"
+    assert len(rows) == top_n * len(drivers["columns"]), (
+        f"{len(rows)} cells for {top_n} rows of {len(drivers['columns'])} fields")
+    by_row: dict[int, list[str]] = {}
+    for row, _column, formula in rows:
+        by_row.setdefault(row, []).append(formula)
+    for index, row in enumerate(sorted(by_row)):
+        gate = f'{sheet}!${columns["rank"]}${first_source + index}'
+        for formula in by_row[row]:
+            # EVERY FIELD IS GATED, the category as much as the value.
+            assert formula.startswith(f'=IF({gate}="",NA(),'), (
+                f"row {index + 1} is not gated on the ranked position: {formula}")
+            # AND THE ROW IT READS IS THE POSITIONAL ONE - no re-sort, no
+            # compaction, no ABS ordering.
+            assert f"${first_source + index}" in formula, (
+                f"row {index + 1} does not read source row {first_source + index}")
+            for banned in ("LARGE(", "SMALL(", "RANK(", "ABS(", "SORT(",
+                           "INDEX(", "MATCH(", "AGGREGATE("):
+                assert banned not in formula, (
+                    f"the bridge re-derives the order: {banned}")
+            # NO FILLER. An excluded row is absent, never a zero or a blank.
+            assert ',NA(),' in formula and ',0)' not in formula, formula
+    # THE ELIGIBILITY FIELD IS NOT PLOTTED.
+    assert "rank" not in {str(c["source"]) for c in drivers["columns"]}
+
+
+@pytest.mark.parametrize("name,mutate", [
+    # THE DEFECT ITSELF: the first N SHEET rows again.
+    ("the tornado takes the first N sheet rows again",
+     lambda src: src.replace(
+         "                        f'=IF({eligible}=\"\",NA(),IF({source}=\"\",NA(),{source}))'))",
+         "                        f'=IF({source}=\"\",NA(),{source})'))", 1)),
+    # ELIGIBILITY INFERRED FROM THE BLANK RHO - the consequence read instead of
+    # the cause, and a weaker second statement of the contract's rule.
+    ("eligibility is inferred from a blank rho",
+     lambda src: src.replace('TORNADO_ELIGIBILITY_FIELD = "rank"',
+                             'TORNADO_ELIGIBILITY_FIELD = "rho"', 1)),
+    # THE CATEGORY KEPT AND ONLY THE BAR SUPPRESSED - the residual this
+    # settlement exists to remove.
+    ("the category is kept and only the bar is gated",
+     lambda src: src.replace(
+         "            source = f\"{sheet}!${columns[str(column['source'])]}${source_row}\"",
+         "            source = f\"{sheet}!${columns[str(column['source'])]}${source_row}\"\n"
+         "            if str(column['source']) != 'rho':\n"
+         "                out.append((row, str(column['column']),\n"
+         "                            f'=IF({source}=\"\",NA(),{source})'))\n"
+         "                continue", 1)),
+    # THE EXCLUDED ROW COERCED TO SOMETHING RATHER THAN ABSENT.
+    ("an excluded row is coerced to zero",
+     lambda src: src.replace(
+         "                        f'=IF({eligible}=\"\",NA(),IF({source}=\"\",NA(),{source}))'))",
+         "                        f'=IF({eligible}=\"\",0,IF({source}=\"\",NA(),{source}))'))", 1)),
+    # A MEASURED ZERO EXCLUDED - the opposite error, and just as wrong.
+    ("a measured zero is excluded with the undefined ones",
+     lambda src: src.replace(
+         "                        f'=IF({eligible}=\"\",NA(),IF({source}=\"\",NA(),{source}))'))",
+         "                        f'=IF({source}=0,NA(),IF({source}=\"\",NA(),{source}))'))", 1)),
+    # THE ORDER RE-DERIVED IN RESULTS.
+    ("the bridge re-ranks in Results",
+     lambda src: src.replace(
+         "            source = f\"{sheet}!${columns[str(column['source'])]}${source_row}\"",
+         "            source = (f\"LARGE({sheet}!${columns[str(column['source'])]}\"\n"
+         "                      f\"$13:${columns[str(column['source'])]}$22,{index + 1})\")",
+         1)),
+    # THE WINDOW GROWN PAST TEN.
+    ("the top N exceeds ten",
+     lambda src: src.replace("    for index in range(int(block[\"top_n\"])):",
+                             "    for index in range(int(block[\"top_n\"]) + 5):", 1)),
+])
+def test_68_each_way_of_getting_the_tornado_input_wrong_is_refused(
+        name: str, mutate) -> None:
+    with pytest.raises((AssertionError, KeyError, ValueError)):
+        _tornado_input_rules(_bridge_rows(mutate))
+
+
+def test_69_the_tornado_input_rules_pass_on_the_real_builder() -> None:
+    """SO THE SEVEN REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, and the emitted
+    rows really are what the built workbook holds."""
+    import openpyxl
+    from pccm_builder.spec_loader import load_spec
+    rows = _bridge_rows()
+    _tornado_input_rules(rows)
+    charts = load_spec(SPEC / "workbook.yaml").phase6_shell["charts"]
+    results = openpyxl.load_workbook(
+        PCCM_ROOT / "build" / "PCCM_stageA.xlsx")[charts["bridge_sheet"]]
+    for row, column, formula in rows:
+        assert results[f"{column}{row}"].value == formula, (
+            f"{column}{row}: the builder and the built workbook disagree")
+
+
+@pytest.mark.parametrize("name,mutate", [
+    # THE DIAGNOSTIC ROWS SIMPLY NOT WRITTEN. Excluding a driver from the chart
+    # must never become excluding it from the record.
+    ("the diagnostic records stop being appended",
+     lambda src: src.replace(
+         "        If results(index).Status <> SIM_SENSITIVITY_DEFINED Then\n"
+         "            FillRecord block, slot + 1, results(index), 0\n"
+         "            slot = slot + 1\n"
+         "        End If", "", 1)),
+    # THE STAMPED COUNT NARROWED TO THE RANKED ONES, which would blank the
+    # diagnostic rows on the sheet through the count bound.
+    ("the stamped count covers only the ranked drivers",
+     lambda src: src.replace(
+         "SIM_SENSITIVITY_STAMP_ROW_RECORD_COUNT).Value2 = driverCount",
+         "SIM_SENSITIVITY_STAMP_ROW_RECORD_COUNT).Value2 = eligibleCount", 1)),
+    # THE COMPLETENESS CHECK DROPPED, so a missing record would go unnoticed.
+    ("the publication stops proving it wrote every driver",
+     lambda src: src.replace("    If slot <> driverCount Then",
+                             "    If False Then", 1)),
+])
+def test_69a_removing_the_diagnostic_rows_from_persistence_is_refused(
+        name: str, mutate) -> None:
+    """RETAINED DIAGNOSTICALLY IS A CONTRACT CLAUSE. The chart correction must
+    not be paid for out of the record."""
+    source = POST_BAS.read_text(encoding="utf-8")
+    mutated = mutate(source)
+    assert mutated != source, f"the mutation '{name}' changed nothing"
+    publish = re.search(r"^Private Function Publish.*?^End Function",
+                        mutated, re.S | re.M)
+    assert publish, "the publication is gone"
+    publish = publish.group(0)
+    with pytest.raises(AssertionError):
+        assert "If results(index).Status <> SIM_SENSITIVITY_DEFINED Then" in publish, (
+            "the diagnostic records are no longer appended")
+        assert ("SIM_SENSITIVITY_STAMP_ROW_RECORD_COUNT).Value2 = driverCount"
+                in publish), "the stamped count no longer covers them"
+        assert "If slot <> driverCount Then" in publish, (
+            "the publication no longer proves it wrote a row for every driver")
+
+
+def test_70_the_diagnostic_row_is_never_removed_from_persistence() -> None:
+    """THE ONE THING THIS CORRECTION MAY NOT DO. Excluding a driver from the
+    CHART is not removing it from the record - Publish still writes every
+    driver, and the stamped count still covers them all."""
+    publish = _procedure("Publish")
+    assert "If results(index).Status <> SIM_SENSITIVITY_DEFINED Then" in publish
+    assert "SIM_SENSITIVITY_STAMP_ROW_RECORD_COUNT).Value2 = driverCount" in publish
+    assert "If slot <> driverCount Then" in publish, (
+        "the publication no longer proves it wrote a row for every driver")
+    # AND NOTHING IN THE BRIDGE BUILDER TOUCHES PERSISTENCE.
+    from pccm_builder import workbook_builder as real
+    body = re.search(r"^def _chart_bridge_drivers\(.*?(?=\n\ndef )",
+                     Path(real.__file__).read_text(encoding="utf-8"), re.S | re.M)
+    for reach in ("_SimData", "ClearRecords", "record_count", "Value2"):
+        assert reach not in body.group(0), (
+            f"the tornado bridge reaches into persistence: {reach}")

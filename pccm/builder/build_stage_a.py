@@ -227,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     # above are what the accepted P8-1 and P8-2 Windows runs were produced
     # against. It carries what each chart plots and the authority behind it.
     phase8_charts = emit_phase8_charts(
-        spec, structure.limits.max_generated_year_columns, out_path.parent)
+        spec, structure.limits.max_generated_year_columns, out_path.parent, sim)
 
     say(f"  built    : {out_path}")
     say(f"  emitted  : {artifacts.module_path}")
