@@ -56,9 +56,26 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# ALL THREE ARE DEFINITION-ONLY AT TOP LEVEL. Dot-sourcing them defines
+# functions and script variables and runs no scenario.
 . (Join-Path $scriptDir 'com_lifecycle.ps1')
 . (Join-Path $scriptDir 'phase5_gate_b_scenarios.ps1')
 . (Join-Path $scriptDir 'phase6_gate_b_scenarios.ps1')
+
+# EVERY PATH THIS RUNNER NEEDS, DERIVED FROM WHERE THE SCRIPT IS - the accepted
+# pattern, and now the same three lines the accepted runners use rather than a
+# variation on them.
+#
+#   bootstrap/windows  ->  pccm  ->  the repository root
+#
+# NOT THE WORKING DIRECTORY. The documented invocation is from the repository
+# root, but nothing here may depend on that: a runner that only worked when
+# launched from one place would be a runner whose evidence depended on how it
+# was started.
+$pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
+$repoRoot = Split-Path -Parent $pccmRoot
+if ([string]::IsNullOrWhiteSpace($BuildDir)) { $BuildDir = Join-Path $pccmRoot 'build' }
 
 $script:P8ZChecks = New-Object System.Collections.ArrayList
 $script:P8ZLines = New-Object System.Collections.ArrayList
@@ -666,9 +683,6 @@ function Get-P8ZCategoryValues {
 # ===========================================================================
 # THE PROJECTIONS, READ THE ONE WAY THEY ARE MEANT TO BE READ
 # ===========================================================================
-if ([string]::IsNullOrWhiteSpace($BuildDir)) {
-    $BuildDir = Join-Path (Split-Path -Parent (Split-Path -Parent $scriptDir)) 'build'
-}
 $manifestPath   = Join-Path $BuildDir 'stage_b_manifest.json'
 $inspectPath    = Join-Path $BuildDir 'phase5_gate_b_inspection.json'
 $simInspectPath = Join-Path $BuildDir 'phase6_gate_b_inspection.json'
@@ -696,8 +710,43 @@ $tornado = $null
 foreach ($spec in @($charts.charts)) { if ([string]$spec.key -ceq 'tornado') { $tornado = $spec } }
 if ($null -eq $tornado) { throw 'the chart projection carries no tornado' }
 
-$revision = Get-P8ZSourceRevision
+# THE SOURCE REVISION, BEFORE ANYTHING ELSE HAPPENS.
+#
+# RUN 1 DIED HERE and never reached Excel: this called the helper with NO
+# -RepoRoot, so it took the parameter's empty default and asked git to report
+# HEAD for ''. The accepted runners pass the derived root explicitly and that is
+# what this does now.
+#
+# AND THE REFUSAL THAT WAS MISSING ENTIRELY. The accepted runners will not run
+# against a modified pccm/src, pccm/spec or pccm/builder, because a result from
+# a tree that is not a commit cannot be attributed to one. This runner had no
+# such check at all - a worse defect than the empty root, because it would have
+# produced a green report rather than an error.
+$revision = $null
+try { $revision = Get-P8ZSourceRevision -RepoRoot $repoRoot }
+catch { Write-Host (Format-Err $_) -ForegroundColor Red; exit 1 }
+if ($revision.Dirty.Count -gt 0) {
+    Write-Host 'REFUSED, BEFORE EXCEL WAS STARTED.' -ForegroundColor Red
+    Write-Host ''
+    Write-Host ('pccm/src, pccm/spec or pccm/builder is modified, so a P8-Z result ' +
+                'could not be attributed to a source revision:') -ForegroundColor Red
+    foreach ($line in $revision.Dirty) { Write-Host ('    ' + $line) -ForegroundColor Red }
+    exit 1
+}
+
 $stageBPath = Join-Path $BuildDir 'PCCM_stageA.xlsx'
+
+# AND EVERY FILE IT IS ABOUT TO READ EXISTS, named one at a time. A missing
+# artefact is a Stage A that was not built, and saying so here costs a second
+# rather than a Windows turn.
+foreach ($required in @($manifestPath, $inspectPath, $simInspectPath, $casesPath,
+                        $chartPath, $stageBPath)) {
+    if (-not (Test-Path -LiteralPath $required)) {
+        Write-Host ('REFUSED, BEFORE EXCEL WAS STARTED: ' + $required +
+                    ' does not exist. Build Stage A first.') -ForegroundColor Red
+        exit 1
+    }
+}
 
 Write-P8ZLine 'PCCM - PHASE 8 P8-Z: A ZERO-VARIANCE DRIVER IS NOT A TORNADO CATEGORY'
 Write-P8ZLine '====================================================================='

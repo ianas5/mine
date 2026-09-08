@@ -298,3 +298,201 @@ def test_26_the_eligibility_field_is_projected_and_not_typed() -> None:
     # NO SENSITIVITY ADDRESS IS TYPED ANYWHERE.
     for typed in ("'D13'", "'E13'", "'G13'", '"D13"', "Sensitivity!"):
         assert typed not in code, f"the runner types a sensitivity address {typed}"
+
+
+# ===========================================================================
+# D. STARTUP - WHAT RUN 1 DIED ON, BEFORE IT REACHED EXCEL
+# ===========================================================================
+# WHAT HAPPENED. `Get-P8ZSourceRevision` takes -RepoRoot; this runner called it
+# with NO ARGUMENT, so the parameter took its empty default and git was asked to
+# report HEAD for ''. The throw printed the empty root back, which is what named
+# the defect. A whole Windows turn, spent before Excel opened.
+#
+# AND A WORSE ONE BESIDE IT. The accepted runners REFUSE TO RUN against a
+# modified pccm/src, pccm/spec or pccm/builder - a result from a tree that is
+# not a commit cannot be attributed to one. This runner had no such check at
+# all. That would not have errored; it would have produced a green report.
+PWSH = "/opt/pwsh/pwsh"
+
+
+def test_30_the_repo_root_is_derived_the_way_the_accepted_runners_derive_it() -> None:
+    """THREE LINES, AND THEY ARE THE ACCEPTED ONES rather than a variation."""
+    mine = _code()
+    theirs = accepted._ps_code(P83)
+    for line in ("$pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)",
+                 "$repoRoot = Split-Path -Parent $pccmRoot",
+                 "if ([string]::IsNullOrWhiteSpace($BuildDir)) "
+                 "{ $BuildDir = Join-Path $pccmRoot 'build' }"):
+        assert line in mine, f"the accepted derivation line is missing: {line}"
+        assert line in theirs, f"the accepted runner no longer carries: {line}"
+    # AND IT IS DERIVED ONCE. A second derivation is a second answer waiting to
+    # disagree with the first.
+    assert mine.count("$repoRoot = ") == 1
+    assert mine.count("$pccmRoot = ") == 1
+    assert mine.count("$BuildDir = Join-Path") == 1
+
+
+def test_31_nothing_depends_on_the_working_directory() -> None:
+    """THE SCRIPT'S OWN LOCATION IS THE ONLY ANCHOR."""
+    code = _code()
+    assert "$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path" in code
+    for cwd in ("Get-Location", "$PWD", "Resolve-Path '.'", "Convert-Path '.'",
+                "Set-Location"):
+        assert cwd not in code, f"the runner reads the working directory: {cwd}"
+
+
+def test_32_no_machine_specific_path_appears_anywhere() -> None:
+    text = _text()
+    for absolute in ("C:\\", "D:\\", "/home/", "Users\\", "OneDrive", "Desktop",
+                     "$env:USERPROFILE", "$HOME"):
+        assert absolute not in text, f"a machine-specific path is hard-coded: {absolute}"
+
+
+def test_33_the_source_revision_is_captured_with_the_derived_root() -> None:
+    """THE EXACT DEFECT. The helper is never called without its root again."""
+    code = _code()
+    assert "Get-P8ZSourceRevision -RepoRoot $repoRoot" in code
+    assert not re.search(r"Get-P8ZSourceRevision(?!\s+-RepoRoot)(?!\s*\{)", code), (
+        "the helper is called without a repository root")
+    assert code.index("Get-P8ZSourceRevision -RepoRoot") < code.index(
+        "New-Object -ComObject Excel.Application"), (
+        "Excel is started before the run can be attributed to a revision")
+
+
+def test_34_a_missing_head_is_still_fatal_and_a_dirty_tree_still_refuses() -> None:
+    """SOURCE ATTRIBUTION IS NOT WEAKENED BY BEING FIXED."""
+    helper = _function("Get-P8ZSourceRevision")
+    assert "throw (" in helper, "a missing HEAD stopped being fatal"
+    assert "Write-Warning" not in helper, "a missing HEAD was downgraded to a warning"
+    code = _code()
+    assert "catch { Write-Host (Format-Err $_) -ForegroundColor Red; exit 1 }" in code, (
+        "a failure to resolve HEAD no longer stops the run")
+    assert "if ($revision.Dirty.Count -gt 0) {" in code, (
+        "the runner will run against a modified tree")
+    assert "REFUSED, BEFORE EXCEL WAS STARTED." in code
+    assert code.index("$revision.Dirty.Count") < code.index(
+        "New-Object -ComObject Excel.Application")
+
+
+def test_35_every_artefact_is_checked_before_excel_is_started() -> None:
+    code = _code()
+    assert "foreach ($required in @($manifestPath, $inspectPath, $simInspectPath," in code
+    assert "Test-Path -LiteralPath $required" in code
+    assert code.index("$required") < code.index(
+        "New-Object -ComObject Excel.Application")
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_36_the_derivation_resolves_every_startup_path_from_the_script_alone() -> None:
+    """EXECUTED, NOT READ. The runner's own three derivation lines are run with
+    the working directory somewhere else entirely, and every file the runner
+    opens before Excel is required to exist at the path they produce.
+
+    This is the control that would have cost nothing and saved a Windows turn."""
+    import subprocess
+    import tempfile
+
+    code = _code()
+    derivation = [line for line in code.splitlines()
+                  if line.startswith(("$pccmRoot = ", "$repoRoot = ",
+                                      "if ([string]::IsNullOrWhiteSpace($BuildDir)"))]
+    assert len(derivation) == 3, derivation
+    script = "\n".join([
+        "Set-StrictMode -Version 2.0",
+        "$ErrorActionPreference = 'Stop'",
+        "Set-Location ([System.IO.Path]::GetTempPath())",
+        "$BuildDir = ''",
+        f"$scriptDir = '{WINDOWS}'",
+        *derivation,
+        "$names = @('stage_b_manifest.json','phase5_gate_b_inspection.json',",
+        "           'phase6_gate_b_inspection.json','phase7_acceptance_cases.json',",
+        "           'phase8_charts_inspection.json','PCCM_stageA.xlsx')",
+        "foreach ($name in $names) {",
+        "    $path = Join-Path $BuildDir $name",
+        "    if (-not (Test-Path -LiteralPath $path)) { Write-Output ('MISSING ' + $path) }",
+        "}",
+        "if ([string]::IsNullOrWhiteSpace($repoRoot)) { Write-Output 'EMPTY repoRoot' }",
+        "$head = [string](& git -C $repoRoot rev-parse HEAD 2>$null)",
+        "if ([string]::IsNullOrWhiteSpace($head)) { Write-Output 'EMPTY head' }",
+        "Write-Output ('OK ' + $repoRoot)",
+    ])
+    with tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False,
+                                     encoding="utf-8") as handle:
+        handle.write(script + "\n")
+        path = handle.name
+    try:
+        done = subprocess.run([PWSH, "-NoProfile", "-File", path],
+                              capture_output=True, text=True, timeout=180)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    assert done.returncode == 0, done.stderr[:2000]
+    lines = [l.strip() for l in done.stdout.splitlines() if l.strip()]
+    problems = [l for l in lines if not l.startswith("OK ")]
+    assert not problems, "the derivation does not resolve:\n  " + "\n  ".join(problems)
+    assert lines[-1] == f"OK {PCCM_ROOT.parent}", lines
+
+
+def _startup_rules(code: str) -> None:
+    """Everything the startup has to be true of, over an arbitrary copy."""
+    assert "$pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)" in code, (
+        "the pccm root is not two parents up from the script")
+    assert "$repoRoot = Split-Path -Parent $pccmRoot" in code, (
+        "the repository root is not the pccm root's parent")
+    assert "Get-P8ZSourceRevision -RepoRoot $repoRoot" in code, (
+        "the source revision is not asked with the derived root")
+    assert not re.search(r"Get-P8ZSourceRevision(?!\s+-RepoRoot)(?!\s*\{)", code), (
+        "the helper is called without a repository root")
+    assert "if ($revision.Dirty.Count -gt 0) {" in code, (
+        "a modified tree no longer refuses")
+    assert "catch { Write-Host (Format-Err $_) -ForegroundColor Red; exit 1 }" in code, (
+        "a failure to resolve HEAD no longer stops the run")
+    helper = re.search(r"function\s+Get-P8ZSourceRevision\s*\{(.*?)\n\}", code, re.S)
+    assert helper, "the source-revision helper is gone"
+    assert "throw (" in helper.group(1), "a missing HEAD stopped being fatal"
+    assert "& git -C $RepoRoot rev-parse HEAD" in code, (
+        "git is no longer told which repository to answer for")
+    for cwd in ("Get-Location", "$PWD", "Set-Location"):
+        assert cwd not in code, f"the runner reads the working directory: {cwd}"
+    for absolute in ("C:\\", "OneDrive", "$env:USERPROFILE"):
+        assert absolute not in code, f"a machine-specific path is hard-coded: {absolute}"
+
+
+@pytest.mark.parametrize("name,mutate", [
+    ("the source revision is asked without a root",
+     lambda code: code.replace("Get-P8ZSourceRevision -RepoRoot $repoRoot",
+                               "Get-P8ZSourceRevision", 1)),
+    ("the repo root is empty",
+     lambda code: code.replace("$repoRoot = Split-Path -Parent $pccmRoot",
+                               "$repoRoot = ''", 1)),
+    ("one parent traversal is removed",
+     lambda code: code.replace(
+         "$pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)",
+         "$pccmRoot = Split-Path -Parent $scriptDir", 1)),
+    ("the root is taken from the working directory",
+     lambda code: code.replace("$repoRoot = Split-Path -Parent $pccmRoot",
+                               "$repoRoot = (Get-Location).Path", 1)),
+    ("the Windows clone path is hard-coded",
+     lambda code: code.replace(
+         "$repoRoot = Split-Path -Parent $pccmRoot",
+         "$repoRoot = 'C:\\Users\\pcd\\OneDrive\\Desktop\\PCCM-GateB\\mine'", 1)),
+    ("git is invoked without a working directory",
+     lambda code: code.replace("& git -C $RepoRoot rev-parse HEAD",
+                               "& git rev-parse HEAD", 1)),
+    ("a missing HEAD becomes a warning",
+     lambda code: code.replace(
+         "        throw ('git could not report HEAD for ' + $RepoRoot +",
+         "        Write-Warning ('git could not report HEAD for ' + $RepoRoot +", 1)),
+    ("a modified tree stops refusing",
+     lambda code: code.replace("if ($revision.Dirty.Count -gt 0) {",
+                               "if ($false) {", 1)),
+])
+def test_37_each_way_of_losing_the_startup_is_refused(name: str, mutate) -> None:
+    mutated = mutate(_code())
+    assert mutated != _code(), f"the mutation '{name}' changed nothing"
+    with pytest.raises(AssertionError):
+        _startup_rules(mutated)
+
+
+def test_38_the_startup_rules_pass_on_the_real_runner() -> None:
+    """SO THE EIGHT REFUSALS ABOVE ARE REFUSALS OF THE MUTATION."""
+    _startup_rules(_code())
