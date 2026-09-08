@@ -140,6 +140,20 @@ def _git(*args: str) -> str:
 # That last clause is why this is stricter than what it replaces, not weaker.
 # The old control could only say "nothing changed"; this one says "exactly this
 # changed, additively, and here is why".
+# AND ONE MORE THING A DECLARATION HAS TO SAY, added when P8-3's fourth Windows
+# run found a REAL DEFECT rather than a gap: WHICH LINES IT MAY REMOVE.
+#
+# The rule above is additive-only, and that is right for an adapter being added
+# to a module. It cannot express a one-line OWNERSHIP correction: reading the
+# wrong column is fixed by not reading the wrong column, and there is no way to
+# do that additively. Refusing the correction would leave the defect; relaxing
+# the rule to "declared files may be edited" would retire the protection.
+#
+# SO A DECLARATION NAMES ITS REMOVALS EXACTLY. Each entry is (reason, removals):
+# an empty tuple keeps the file additive-only, and any other removed line still
+# fails. That is stricter than what it replaces, not weaker - the old control
+# could say "this file may grow"; this one says "this file may grow, and may
+# lose exactly this line".
 DECLARED_PRODUCTION_CORRECTIONS = {
     "pccm/src/vba/modResultsState.bas": (
         "P8-3 pre-Windows correction: adds the thin volatile adapter "
@@ -148,7 +162,21 @@ DECLARED_PRODUCTION_CORRECTIONS = {
         "SIMULATION state: the four annual adapters answer about the annual "
         "product and read NOT PRODUCED whenever the annual step has not run, and "
         "the persisted (last evaluated) row was proved live at P8-1 to keep "
-        "reading CURRENT after a request change."
+        "reading CURRENT after a request change.",
+        (),
+    ),
+    "pccm/src/vba/modSimPostReport.bas": (
+        "P8-3 Windows run 4: a risk publishes its RISK NAME. DriverNameOf read "
+        "COL_RISK_REGISTER_DESCRIPTION for a risk - the column driver_contract "
+        "declares required: false, an optional note - so a risk without one "
+        "published no name at all, and the empty string reached the sheet "
+        "through a .Value2 array write as a numeric zero. It now reads "
+        "COL_RISK_REGISTER_RISK_NAME, which that contract declares required: "
+        "true. The cost-line branch is untouched and was always right: a cost "
+        "line has no name column and its description is its required label. No "
+        "driver id, rank, signed rho, absolute rho, direction, status, ordering, "
+        "fingerprint or replay mathematics is touched.",
+        ("    column = COL_RISK_REGISTER_DESCRIPTION",),
     ),
 }
 
@@ -186,16 +214,23 @@ def _declared_production_changes(git, since: str) -> None:
         f"production changed after {since} without being declared: {undeclared}")
 
     for path in modified:
-        # ADDITIVE ONLY. A declaration is permission to extend a module, not to
-        # edit one; a removed line means an accepted procedure was rewritten.
-        removed = [line for line in
+        # ADDITIVE, OR REMOVING EXACTLY WHAT THE DECLARATION NAMED. A declaration
+        # is permission to extend a module and - only where it says so, line for
+        # line - to correct one. Anything else removed means an accepted
+        # procedure was rewritten.
+        reason, allowed = DECLARED_PRODUCTION_CORRECTIONS[path]
+        removed = [line[1:] for line in
                    git("diff", f"{since}..HEAD", "--", path).splitlines()
                    if line.startswith("-") and not line.startswith("---")]
-        assert not removed, (
-            f"{path} is declared but not additive; {len(removed)} line(s) were "
-            f"removed from what was accepted at {since}")
-        assert len(DECLARED_PRODUCTION_CORRECTIONS[path]) > 80, (
-            f"the declaration for {path} explains nothing")
+        undeclared_removals = [line for line in removed if line not in allowed]
+        assert not undeclared_removals, (
+            f"{path} removes {len(undeclared_removals)} line(s) its declaration "
+            f"does not name: {undeclared_removals[:3]}")
+        # AND A NAMED REMOVAL THAT NEVER HAPPENED is a licence held in reserve.
+        unused = [line for line in allowed if line not in removed]
+        assert not unused, (
+            f"{path} declares it removes {unused}, and it does not")
+        assert len(reason) > 80, f"the declaration for {path} explains nothing"
     # A DECLARATION FOR AN UNTOUCHED FILE IS DECORATION, and the next real
     # change would hide beside it.
     stale = [p for p in DECLARED_PRODUCTION_CORRECTIONS if p not in modified]
@@ -1297,7 +1332,27 @@ class _FakeGit:
      _FakeGit("M\tpccm/src/vba/modResultsState.bas\n",
               {"pccm/src/vba/modResultsState.bas":
                "--- a/x\n+++ b/x\n-    Application.Volatile True\n+    Nothing\n"}),
-     "not additive"),
+     "does not name"),
+    # A DECLARED FILE LOSING A LINE ITS DECLARATION DOES NOT NAME. Naming one
+    # removal does not open the file: everything else is still an edit to an
+    # accepted procedure.
+    ("a file declared for one removal loses a different line",
+     _FakeGit("M\tpccm/src/vba/modSimPostReport.bas\n"
+              "M\tpccm/src/vba/modResultsState.bas\n",
+              {"pccm/src/vba/modSimPostReport.bas":
+               "--- a/x\n+++ b/x\n"
+               "-    column = COL_RISK_REGISTER_DESCRIPTION\n"
+               "+    column = COL_RISK_REGISTER_RISK_NAME\n"
+               "-        block(row, SIM_SENSITIVITY_OFFSET_RANK + 1) = rank\n"}),
+     "does not name"),
+    # A NAMED REMOVAL HELD IN RESERVE. A declaration that permits a removal
+    # which never happened is a licence waiting for the next change to use.
+    ("a declared removal never happened",
+     _FakeGit("M\tpccm/src/vba/modSimPostReport.bas\n"
+              "M\tpccm/src/vba/modResultsState.bas\n",
+              {"pccm/src/vba/modSimPostReport.bas":
+               "--- a/x\n+++ b/x\n+    ' a comment\n"}),
+     "declares it removes"),
     # A DECLARATION FOR A FILE NOBODY TOUCHED - decoration the next real change
     # would hide beside.
     ("the declared correction changed nothing",
@@ -1311,14 +1366,42 @@ def test_93_the_declared_production_rule_refuses_each_undeclared_shape(
 
 
 def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None:
-    """SO THE FOUR REFUSALS ABOVE ARE REFUSALS OF THE MUTATION. And the one
-    declared correction really is the adapter addition it says it is."""
+    """SO THE SIX REFUSALS ABOVE ARE REFUSALS OF THE MUTATION. And each declared
+    correction really is what it says it is."""
     _declared_production_changes(_git, P81_ACCEPTANCE)
     _declared_production_changes(_git, P82_ACCEPTANCE)
     assert set(DECLARED_PRODUCTION_CORRECTIONS) == {
-        "pccm/src/vba/modResultsState.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
-    reason = DECLARED_PRODUCTION_CORRECTIONS["pccm/src/vba/modResultsState.bas"]
+        "pccm/src/vba/modResultsState.bas",
+        "pccm/src/vba/modSimPostReport.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
+    reason, removals = DECLARED_PRODUCTION_CORRECTIONS[
+        "pccm/src/vba/modResultsState.bas"]
     assert LIVE_ADAPTER in reason and PURE_OWNER in reason, reason
+    assert removals == (), "the adapter addition is additive and stays so"
+    # THE LABEL CORRECTION REMOVES EXACTLY ONE LINE, and names which.
+    reason, removals = DECLARED_PRODUCTION_CORRECTIONS[
+        "pccm/src/vba/modSimPostReport.bas"]
+    assert removals == ("    column = COL_RISK_REGISTER_DESCRIPTION",), removals
+    assert "COL_RISK_REGISTER_RISK_NAME" in reason
+    assert "required: true" in reason and "required: false" in reason, (
+        "the declaration does not say what made the old column the wrong one")
+
+
+def test_94a_the_label_correction_is_the_only_thing_that_module_lost() -> None:
+    """THE NARROW EXTENSION, CHECKED AGAINST THE REPOSITORY. Whatever else the
+    module gained, the single line it lost is the one the declaration names."""
+    path = "pccm/src/vba/modSimPostReport.bas"
+    removed = [line[1:] for line in
+               _git("diff", f"{P81_ACCEPTANCE}..HEAD", "--", path).splitlines()
+               if line.startswith("-") and not line.startswith("---")]
+    assert removed == ["    column = COL_RISK_REGISTER_DESCRIPTION"], removed
+    # AND THE MEASURE AND ORDERING LINES ARE STILL THERE, unmoved.
+    source = (SRC / "modSimPostReport.bas").read_text(encoding="utf-8")
+    for kept in ("block(row, SIM_SENSITIVITY_OFFSET_RHO + 1) = record.Rho",
+                 "block(row, SIM_SENSITIVITY_OFFSET_ABS_RHO + 1) = record.AbsRho",
+                 "block(row, SIM_SENSITIVITY_OFFSET_RANK + 1) = rank",
+                 "DirectionOf(record.Rho)",
+                 "column = COL_COST_LINES_DESCRIPTION"):
+        assert kept in source, f"the label correction disturbed {kept!r}"
 
 
 # ===========================================================================

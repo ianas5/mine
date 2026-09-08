@@ -379,7 +379,13 @@ def _declare(decl: str, env: dict, types: dict, procs: dict, pad: str,
         env[name] = ("udt", kind)
         return pad + f"{name} = _new({kind!r})"
     env[name] = ("scalar", kind)
-    return pad + f"{name} = _Ref({_DEFAULT[kind]})"
+    # AN OBJECT REFERENCE STARTS AS Nothing. VBA's four value types have their
+    # own zero; anything else declared here is a reference the procedure will
+    # `Set`, and Nothing is what it holds until it does. Modelling it as None
+    # rather than refusing to compile lets a procedure that merely CARRIES a
+    # workbook object be transcribed - the object itself is still bound by the
+    # caller through `extra`, so nothing about Excel is being simulated.
+    return pad + f"{name} = _Ref({_DEFAULT.get(kind, 'None')})"
 
 
 def _bounds(bounds: str, env: dict, procs: dict) -> str:
@@ -390,6 +396,13 @@ def _bounds(bounds: str, env: dict, procs: dict) -> str:
 def _emit(text: str, out: list[str], indent: int, env: dict, types: dict,
           procs: dict, procname: str) -> int:
     pad = "    " * indent
+    # `Set x = y` IS AN ASSIGNMENT. VBA needs the keyword to say the right-hand
+    # side is an object reference rather than its default property; nothing here
+    # has default properties, so the keyword carries no meaning this
+    # transcription can lose, and the statement is an ordinary assignment.
+    setter = re.match(r"^Set\s+(.+?\s*=\s*.+)$", text)
+    if setter:
+        text = setter.group(1)
     if re.match(r"^(Dim|ReDim)\s", text):
         for decl in _split_commas(text.split(" ", 1)[1]):
             out.append(_declare(decl, env, types, procs, pad,

@@ -448,13 +448,25 @@ Private Function DriverTypeOf(ByVal permanentId As String) As String
     End If
 End Function
 
+' EACH REGISTER'S OWN REQUIRED LABEL, WHICH IS NOT THE SAME COLUMN IN BOTH.
+'
+' P8-3 Windows run 4 published two ranked risks whose Name cell held a numeric
+' zero. This read the risk register's DESCRIPTION - which driver_contract.yaml
+' declares `required: false`, an optional free-text note - and ignored
+' RISK NAME, which that contract declares `required: true` and is the risk's
+' user-facing label. A risk with no description therefore published no name.
+'
+' THE COST-LINE SIDE IS UNCHANGED AND WAS ALWAYS RIGHT: a cost line has no
+' separate name field, and its DESCRIPTION is the `required: true` column that
+' labels it. The two registers simply carry their label under different keys,
+' and the constant for each is the one the contract owns.
 Private Function DriverNameOf(ByVal permanentId As String) As String
     Dim kind As String, table As ListObject
     Dim row As Long, column As Long
 
     kind = modProfiling.RiskKind()
     row = modDrivers.RowOfId(kind, permanentId)
-    column = COL_RISK_REGISTER_DESCRIPTION
+    column = COL_RISK_REGISTER_RISK_NAME
     If row < 1 Then
         kind = modProfiling.CostKind()
         row = modDrivers.RowOfId(kind, permanentId)

@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import re
 import sys
+
+import pytest
 from pathlib import Path
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
@@ -706,3 +708,327 @@ def test_38_the_disclosure_did_not_disturb_the_four_existing_answers() -> None:
     # The disclosure sits after the CURRENT/NOT CURRENT pair, so it can only
     # extend an answer that is already showing rows.
     assert head.rindex("NOT CURRENT - this table belongs to run ") < len(head)
+
+
+# ===========================================================================
+# H. THE DRIVER LABEL - P8-3 WINDOWS RUN 4
+# ===========================================================================
+# WHAT THE LIVE RUN FOUND. `PCCM_RunSensitivity` published "5 ranked of 5
+# drivers" and two of the five Name cells held a NUMERIC ZERO. The W4 fixture
+# carries three cost lines and two risks, and the two zeroes were the two risks.
+#
+# THE DEFECT, FROM THE CONTRACT AND NOT FROM THE COINCIDENCE. Each register
+# carries its label under a different key, and driver_contract.yaml says which:
+#
+#   cost_lines.description    required: true    the cost line's only label
+#   risk_register.risk_name   required: true    the risk's user-facing name
+#   risk_register.description required: FALSE   an optional free-text note
+#
+# DriverNameOf read DESCRIPTION for BOTH. For a cost line that is the required
+# label and was always right. For a risk it is the optional note, so a risk
+# without one published no name at all - and the empty string that produced
+# reached the sheet through a `.Value2` array write, which stored it as a
+# numeric zero rather than leaving the cell empty. That is the `0` Run 4 saw.
+#
+# THESE TESTS EXECUTE THE REAL SOURCE. The transcriber compiles DriverNameOf out
+# of the .bas file and the two registers are simulated, so the assertions are
+# about what the module DOES, not about what its text looks like - and they fail
+# against the pre-fix source, which is the only way to know they test anything.
+def _register_columns() -> dict[str, int]:
+    """The register column ordinals, READ OUT OF THE GENERATED modConstants.
+
+    Not retyped here and not taken from the manifest: modConstants is what the
+    module under test actually compiles against, so a column that moved would
+    move here too rather than leaving this fixture describing a workbook that
+    no longer exists."""
+    generated = (PCCM_ROOT / "build" / "vba" / "modConstants.bas").read_text(
+        encoding="utf-8")
+    found = dict(re.findall(
+        r"^Public Const (COL_(?:RISK_REGISTER|COST_LINES)_\w+) As Long = (\d+)",
+        generated, re.M))
+    assert found, "modConstants publishes no register column ordinals"
+    return {name: int(value) for name, value in found.items()}
+
+
+def _register_fixture(risk_name: str, risk_description: str,
+                      cost_description: str) -> dict:
+    """Two registers, keyed the way modDrivers keys them. Column ordinals are
+    the generated modConstants values, never retyped here."""
+    constants = _register_columns()
+    return {
+        "RISK": {
+            "R-001": {
+                constants["COL_RISK_REGISTER_RISK_ID"]: "R-001",
+                constants["COL_RISK_REGISTER_RISK_NAME"]: risk_name,
+                constants["COL_RISK_REGISTER_DESCRIPTION"]: risk_description,
+            },
+        },
+        "COST": {
+            "CL-001": {
+                constants["COL_COST_LINES_COST_LINE_ID"]: "CL-001",
+                constants["COL_COST_LINES_CATEGORY"]: "Civils",
+                constants["COL_COST_LINES_DESCRIPTION"]: cost_description,
+            },
+        },
+    }
+
+
+def _published_name(permanent_id: str, registers: dict) -> str:
+    """Run the module's own DriverNameOf over a simulated workbook."""
+    from phase6_vba_transcribe import build as _build
+
+    seen: dict = {}
+
+    def row_of_id(kind, driver_id):
+        table = registers.get(_val(kind), {})
+        ids = list(table)
+        value = _val(driver_id)
+        return ids.index(value) + 1 if value in ids else 0
+
+    def register_table(kind):
+        return _val(kind)
+
+    def cell_in(table, row, column):
+        rows = registers.get(_val(table), {})
+        key = list(rows)[_val(row) - 1]
+        # A CELL THAT WAS NEVER WRITTEN IS EMPTY, exactly as an unpopulated
+        # optional column is on the sheet.
+        return rows[key].get(_val(column), None)
+
+    def text_of(cell):
+        value = _val(cell)
+        # modWorkbook.TextOf is Trim$(CStr(Target.Value & "")): an empty cell
+        # becomes the empty string, which is what then reached .Value2.
+        return "" if value is None else str(value).strip()
+
+    namespace = _build(
+        {"modSimPostReport": POST_BAS},
+        dict(engine._constants(), **_register_columns()),
+        only={"modSimPostReport": {"DriverNameOf"}},
+        extra={
+            "RiskKind": lambda: "RISK",
+            "CostKind": lambda: "COST",
+            "RowOfId": row_of_id,
+            "RegisterTable": register_table,
+            "CellIn": cell_in,
+            "TextOf": text_of,
+            "seen": seen,
+        })
+    return namespace["DriverNameOf"](_Ref(permanent_id))
+
+
+def test_40_a_risk_publishes_its_risk_name_when_the_description_is_blank() -> None:
+    """THE EXACT DEFECT. This is the W4 shape: Risk Name populated, Description
+    never written. Against the pre-fix source it publishes the empty string."""
+    registers = _register_fixture(risk_name="GateB R-001", risk_description="",
+                                  cost_description="GateB CL-001")
+    assert _published_name("R-001", registers) == "GateB R-001"
+
+
+def test_41_a_risk_publishes_the_name_even_when_both_columns_are_populated() -> None:
+    """THE DISCRIMINATOR. With two DIFFERENT texts present, only the field that
+    is actually read can be observed - a blank description alone could be
+    satisfied by any fallback rule."""
+    registers = _register_fixture(risk_name="THE RISK NAME",
+                                  risk_description="THE DESCRIPTION NOTE",
+                                  cost_description="GateB CL-001")
+    published = _published_name("R-001", registers)
+    assert published == "THE RISK NAME"
+    assert published != "THE DESCRIPTION NOTE", (
+        "the risk still publishes its optional description")
+
+
+def test_42_a_risk_never_publishes_its_identifier_as_its_name() -> None:
+    """AND NOT THE ID EITHER. The identity field is published separately; a name
+    that repeated it would lose the label without looking empty."""
+    registers = _register_fixture(risk_name="THE RISK NAME",
+                                  risk_description="THE DESCRIPTION NOTE",
+                                  cost_description="GateB CL-001")
+    assert _published_name("R-001", registers) != "R-001"
+
+
+def test_43_the_cost_line_label_is_unchanged() -> None:
+    """THE COST-LINE SIDE WAS ALWAYS RIGHT and must stay exactly as it was: its
+    description is the `required: true` column that labels it, and it has no
+    separate name field to move to."""
+    registers = _register_fixture(risk_name="THE RISK NAME",
+                                  risk_description="THE DESCRIPTION NOTE",
+                                  cost_description="GateB CL-001")
+    assert _published_name("CL-001", registers) == "GateB CL-001"
+    # AND IT IS THE DESCRIPTION IT READS, proved by moving that value alone.
+    moved = _register_fixture(risk_name="THE RISK NAME",
+                              risk_description="THE DESCRIPTION NOTE",
+                              cost_description="A DIFFERENT COST LABEL")
+    assert _published_name("CL-001", moved) == "A DIFFERENT COST LABEL"
+
+
+def test_44_every_published_name_is_text_and_none_is_a_numeric_zero() -> None:
+    """THE W4 POPULATION, AS THE FIXTURE ACTUALLY WRITES IT: three cost lines
+    with descriptions, two risks with names and NO description. Run 4 published
+    two numeric zeroes here."""
+    constants = _register_columns()
+    registers = {"RISK": {}, "COST": {}}
+    for index in (1, 2):
+        registers["RISK"][f"R-00{index}"] = {
+            constants["COL_RISK_REGISTER_RISK_ID"]: f"R-00{index}",
+            constants["COL_RISK_REGISTER_RISK_NAME"]: f"GateB R-00{index}",
+            # THE FIXTURE NEVER WRITES THIS ONE.
+        }
+    for index in (1, 2, 3):
+        registers["COST"][f"CL-00{index}"] = {
+            constants["COL_COST_LINES_COST_LINE_ID"]: f"CL-00{index}",
+            constants["COL_COST_LINES_DESCRIPTION"]: f"GateB CL-00{index}",
+        }
+    published = {driver: _published_name(driver, registers)
+                 for driver in ("R-001", "R-002", "CL-001", "CL-002", "CL-003")}
+    for driver, name in published.items():
+        assert isinstance(name, str), f"{driver} publishes a {type(name).__name__}"
+        assert name.strip(), f"{driver} publishes an empty label"
+        assert name != "0", f"{driver} publishes a numeric zero as its label"
+    assert published["R-001"] == "GateB R-001"
+    assert published["R-002"] == "GateB R-002"
+    assert len(set(published.values())) == 5, "two drivers share a label"
+
+
+def test_45_the_correction_touched_the_label_and_nothing_else() -> None:
+    """THE MEASURE FIELDS, THE IDENTITY FIELDS AND THE ORDERING ARE UNTOUCHED.
+    A label fix that moved a rho, a rank or the sort would be a different change
+    wearing this one's authorisation."""
+    fill = _procedure("FillRecord")
+    # THE THREE IDENTITY FIELDS still come from where they came from.
+    assert "record.PermanentId" in fill
+    assert "DriverTypeOf(record.PermanentId)" in fill
+    assert "DriverNameOf(record.PermanentId)" in fill
+    # THE MEASURES ARE STILL THE RECORD'S OWN, not recomputed or re-signed.
+    for measure in ("record.Rho", "record.AbsRho"):
+        assert measure in fill, f"{measure} is no longer written from the record"
+    assert "rank" in fill
+    # AND NOTHING IN THE MODULE RE-RANKS OR RE-SIGNS while labelling.
+    name = _procedure("DriverNameOf")
+    for banned in ("Rho", "Rank", "Sort", "Abs", "Fingerprint", "Digest"):
+        assert banned not in name, (
+            f"the label lookup reaches into {banned}")
+    # THE ONE COLUMN THAT MOVED, and it moved to the constant that owns it.
+    assert "COL_RISK_REGISTER_RISK_NAME" in name
+    assert "COL_COST_LINES_DESCRIPTION" in name
+    assert "COL_RISK_REGISTER_DESCRIPTION" not in name, (
+        "the risk label reads the optional description again")
+    # NO NUMERIC COLUMN LITERAL: the ordinals stay the generated constants'.
+    assert not re.search(r"column\s*=\s*\d+", name), (
+        "a column ordinal is typed into the label lookup")
+
+
+def test_46_the_contract_is_what_makes_the_choice_of_column_right() -> None:
+    """NOT A PREFERENCE. Each register's label is the column its own contract
+    declares required, and the two registers do not agree on which key that is."""
+    import yaml
+    contract = yaml.safe_load(
+        (SPEC / "driver_contract.yaml").read_text(encoding="utf-8"))
+    registers = contract["registers"]
+
+    def column(register: str, key: str) -> dict:
+        return next(c for c in registers[register]["columns"] if c["key"] == key)
+
+    assert column("risk_register", "risk_name")["required"] is True
+    assert column("risk_register", "risk_name")["type"] == "text"
+    assert column("risk_register", "description")["required"] is False, (
+        "the risk description became required; the label question reopens")
+    assert column("cost_lines", "description")["required"] is True, (
+        "the cost line description stopped being its required label")
+    # A COST LINE HAS NO NAME COLUMN TO MOVE TO, which is why only one side
+    # of the lookup changed.
+    assert not any(c["key"] == "name" or c["key"] == "cost_line_name"
+                   for c in registers["cost_lines"]["columns"])
+
+
+# ---------------------------------------------------------------------------
+# THE MUTATIONS
+# ---------------------------------------------------------------------------
+# EACH IS A WAY THE LABEL CORRECTION COULD LOOK DONE AND NOT BE. They are
+# applied to a COPY of the module source in memory and the rules above are
+# re-run over it; nothing on disk changes. Four of them are the pre-fix defect
+# in a different costume, and three are the ways a fix could overreach.
+def _label_rules(source: str) -> None:
+    """Everything this correction claims, checked over an arbitrary copy."""
+    name = re.search(r"^Private Function DriverNameOf.*?^End Function",
+                     source, re.S | re.M)
+    assert name, "the label lookup is gone"
+    name = name.group(0)
+    # THE RISK READS ITS REQUIRED NAME, THE COST LINE ITS REQUIRED DESCRIPTION.
+    assert "COL_RISK_REGISTER_RISK_NAME" in name, (
+        "the risk label does not read the risk name")
+    assert "COL_RISK_REGISTER_DESCRIPTION" not in name, (
+        "the risk label reads the optional description")
+    assert "COL_COST_LINES_DESCRIPTION" in name, (
+        "the cost-line label stopped reading its description")
+    # NEITHER IS THE IDENTIFIER.
+    for identifier in ("COL_RISK_REGISTER_RISK_ID", "COL_COST_LINES_COST_LINE_ID"):
+        assert identifier not in name, f"the label publishes {identifier}"
+    # NO NUMERIC ORDINAL, and no invented value for a name that is not there.
+    assert not re.search(r"column\s*=\s*\d+", name), (
+        "a column ordinal is typed instead of named")
+    for invented in ('= "0"', "= \"unnamed\"", "= permanentId", "IIf("):
+        assert invented not in name, (
+            f"a missing label is coerced to an invented value: {invented}")
+    # AND THE LOOKUP STAYS A LOOKUP.
+    for reach in ("Rho", "Rank", "Sort", "AbsRho", "Fingerprint", "Digest"):
+        assert reach not in name, f"the label lookup reaches into {reach}"
+    # THE MEASURES AND THE ORDER ARE UNTOUCHED.
+    fill = re.search(r"^Private Sub FillRecord.*?^End Sub", source, re.S | re.M)
+    assert fill, "the record writer is gone"
+    fill = fill.group(0)
+    assert "block(row, SIM_SENSITIVITY_OFFSET_RHO + 1) = record.Rho" in fill, (
+        "the signed rho is no longer written from the record")
+    assert "block(row, SIM_SENSITIVITY_OFFSET_ABS_RHO + 1) = record.AbsRho" in fill
+    assert "block(row, SIM_SENSITIVITY_OFFSET_RANK + 1) = rank" in fill, (
+        "the rank is no longer the one it was handed")
+    assert "DirectionOf(record.Rho)" in fill, "the direction stopped following the sign"
+
+
+@pytest.mark.parametrize("name,mutate", [
+    # THE DEFECT ITSELF, RESTORED.
+    ("the risk label reads the optional description again",
+     lambda src: src.replace("    column = COL_RISK_REGISTER_RISK_NAME",
+                             "    column = COL_RISK_REGISTER_DESCRIPTION", 1)),
+    # THE RIGHT COLUMN BY THE WRONG ROUTE. A literal 2 is correct today and
+    # silently wrong the moment the register gains a column.
+    ("the risk name column is hard-coded",
+     lambda src: src.replace("    column = COL_RISK_REGISTER_RISK_NAME",
+                             "    column = 2", 1)),
+    # THE IDENTIFIER PUBLISHED AS THE LABEL - never empty, and never a name.
+    ("the driver id is published as the driver name",
+     lambda src: src.replace("    column = COL_RISK_REGISTER_RISK_NAME",
+                             "    column = COL_RISK_REGISTER_RISK_ID", 1)),
+    # THE COST-LINE SIDE MOVED TOO, which no contract asks for.
+    ("the cost-line label stops reading its description",
+     lambda src: src.replace("        column = COL_COST_LINES_DESCRIPTION",
+                             "        column = COL_COST_LINES_CATEGORY", 1)),
+    # THE SYMPTOM PAPERED OVER INSTEAD OF THE OWNERSHIP FIXED.
+    ("a missing label is coerced to a value",
+     lambda src: src.replace(
+         "    DriverNameOf = modWorkbook.TextOf(modWorkbook.CellIn(table, row, column))",
+         "    DriverNameOf = modWorkbook.TextOf(modWorkbook.CellIn(table, row, column))\n"
+         "    If Len(DriverNameOf) = 0 Then DriverNameOf = \"0\"", 1)),
+    # THE SIGN CHANGED WHILE THE LABEL WAS BEING FIXED.
+    ("the signed rho is published as a magnitude",
+     lambda src: src.replace(
+         "        block(row, SIM_SENSITIVITY_OFFSET_RHO + 1) = record.Rho",
+         "        block(row, SIM_SENSITIVITY_OFFSET_RHO + 1) = record.AbsRho", 1)),
+    # THE RANK REWRITTEN WHILE THE LABEL WAS BEING FIXED.
+    ("the rank stops being the one the ranking assigned",
+     lambda src: src.replace(
+         "        block(row, SIM_SENSITIVITY_OFFSET_RANK + 1) = rank",
+         "        block(row, SIM_SENSITIVITY_OFFSET_RANK + 1) = row", 1)),
+])
+def test_47_each_way_of_getting_the_label_wrong_is_refused(name: str, mutate) -> None:
+    source = POST_BAS.read_text(encoding="utf-8")
+    mutated = mutate(source)
+    assert mutated != source, f"the mutation '{name}' changed nothing"
+    with pytest.raises(AssertionError):
+        _label_rules(mutated)
+
+
+def test_48_the_label_rules_pass_on_the_real_module() -> None:
+    """SO THE SEVEN REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
+    fixture."""
+    _label_rules(POST_BAS.read_text(encoding="utf-8"))
