@@ -581,16 +581,35 @@ def _render_sensitivity_shell(
         sheet_row = int(block["first_row"]) + row_index
         for column in block["columns"]:
             offset = int(column["offset"])
+            # THE ACTIVE BANK'S CELL FOR THIS ROW AND FIELD.
+            picked = (f'IF({active}="A",{cell("A", offset, row_index)},'
+                      f'{cell("B", offset, row_index)})')
             # BLANK BEYOND THE COUNT. The persisted count is what bounds the
             # authoritative result; the window is only how much of it can show.
+            #
+            # AND BLANK WHERE THE RECORD ITSELF IS BLANK, which is the same
+            # guard the Dashboard mirror carries and for the same reason: EXCEL
+            # READS AN EMPTY REFERENCE BACK AS ZERO. Without it a field the
+            # publisher deliberately left empty arrives here as a measured 0.
+            #
+            # THAT IS NOT A COSMETIC POINT. A zero-variance driver is published
+            # with rho, |rho|, rank and direction all blank - sim_contract says
+            # `rho_reported: false`, `reported_as_zero_rho: false`, because
+            # "zero variance is UNDEFINED, not zero" and printing 0 asserts a
+            # measurement nobody could make. An unguarded reference turned all
+            # four of those blanks into 0 on this sheet, and the chart bridge's
+            # own `=""` guard cannot catch a number, so the tornado drew a
+            # zero-length bar for a driver with no measurable association.
+            #
+            # A MEASURED ZERO STILL SHOWS. `0=""` is FALSE in Excel, so an
+            # eligible driver whose rho really is 0 passes through untouched.
             formula = (
                 f'=IF({active}="","",'
                 f'IF(IF({active}="A",{stamp_cell("A", published_row)},'
                 f'{stamp_cell("B", published_row)})<>"PUBLISHED","",'
                 f'IF({row_index + 1}>IF({active}="A",{stamp_cell("A", count_row)},'
                 f'{stamp_cell("B", count_row)}),"",'
-                f'IF({active}="A",{cell("A", offset, row_index)},'
-                f'{cell("B", offset, row_index)}))))'
+                f'IF({picked}="","",{picked}))))'
             )
             _write(worksheet, f"{column['column']}{sheet_row}", formula, styles.value)
 

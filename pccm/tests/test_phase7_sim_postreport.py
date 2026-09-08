@@ -1032,3 +1032,267 @@ def test_48_the_label_rules_pass_on_the_real_module() -> None:
     """SO THE SEVEN REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
     fixture."""
     _label_rules(POST_BAS.read_text(encoding="utf-8"))
+
+
+# ===========================================================================
+# J. ZERO VARIANCE IS UNDEFINED, NOT ZERO - P8-3 CLOSURE
+# ===========================================================================
+# THE PATH, END TO END. A driver whose contribution never varies has no monotone
+# association to find, so the kernel gives it no rho. It is still PUBLISHED -
+# Publish writes the eligible drivers in ranked order and then appends every
+# record whose Status is not SIM_SENSITIVITY_DEFINED - and FillRecord's Else
+# branch deliberately writes vbNullString to rho, |rho|, rank and direction,
+# with only the status label carrying "n/a - no variance".
+#
+# WHERE IT WENT WRONG. The Sensitivity sheet reads each field as a LOOKUP into
+# the active bank, and the innermost term was a BARE REFERENCE. Excel reads an
+# empty reference back as ZERO, so all four deliberately-blank fields arrived on
+# the sheet as a measured 0 - and the chart bridge's own `=""` guard cannot
+# catch a number, so a driver with no measurable association reached the tornado
+# as a zero-length bar.
+#
+# THE CONTRACT SAYS THIS IN AS MANY WORDS: "Zero variance is UNDEFINED, not
+# zero. Reporting rho = 0 for a constant column asserts 'no monotone association
+# was found', which is a measurement. No measurement was possible."
+def _sensitivity_cell(column_key: str, row_offset: int = 0) -> str:
+    shell = _shell()
+    column = next(c for c in shell["columns"] if c["key"] == column_key)
+    return _built_sheet()[
+        f"{column['column']}{int(shell['first_row']) + row_offset}"].value
+
+
+def test_50_the_contract_forbids_a_zero_variance_driver_from_reporting_zero() -> None:
+    """THE RULE THIS EXISTS TO KEEP. Read from the contract, not restated."""
+    zero_variance = _raw_contract()["sensitivity"]["zero_variance"]
+    assert zero_variance["rho_reported"] is False
+    assert zero_variance["reported_as_zero_rho"] is False
+    assert zero_variance["excluded_from_ranking"] is True
+    assert zero_variance["excluded_from_tornado_input"] is True
+    assert zero_variance["retained_diagnostically"] is True, (
+        "a zero-variance driver stopped being reported at all; it is excluded "
+        "from the RANKING, not from the table")
+    assert zero_variance["status_label"] == "n/a - no variance"
+
+
+def test_51_a_zero_variance_record_is_published_with_no_measure() -> None:
+    """SO THE BLANKS ARE REAL AND THEY REACH THE SHEET. This is what makes the
+    presentation guard necessary rather than defensive."""
+    publish = _procedure("Publish")
+    # THE ELIGIBLE ONES FIRST, THEN EVERYTHING ELSE - so a zero-variance driver
+    # occupies a published row, and one inside the first rows whenever fewer
+    # than that many drivers are eligible.
+    assert "For position = 0 To eligibleCount - 1" in publish
+    assert "If results(index).Status <> SIM_SENSITIVITY_DEFINED Then" in publish, (
+        "the ineligible records are no longer appended")
+    assert "SIM_SENSITIVITY_STAMP_ROW_RECORD_COUNT).Value2 = driverCount" in publish, (
+        "the persisted count no longer covers the diagnostic rows")
+    fill = _procedure("FillRecord")
+    undefined = fill[fill.index("    Else"):]
+    for measure in ("RHO", "ABS_RHO", "RANK", "DIRECTION"):
+        assert f"SIM_SENSITIVITY_OFFSET_{measure} + 1) = vbNullString" in undefined, (
+            f"{measure} is no longer left blank for a zero-variance driver")
+    assert "SENSITIVITY_NO_VARIANCE_LABEL" in undefined
+
+
+def _record_reference(column_key: str, row_offset: int = 0) -> str:
+    """The exact bank-picking expression the sheet must guard, DERIVED from the
+    contract coordinates rather than read back out of the formula.
+
+    Deriving it is the point: a control that lifted the expression out of the
+    formula it is checking would agree with whatever it found there."""
+    records = _raw_contract()["sim_data"]["sensitivity_records"]
+    sheet = _raw_contract()["sim_data"]["sheet"]
+    columns = {c["key"]: int(c["offset"]) if "offset" in c else None
+               for c in _shell()["columns"]}
+    offset = columns[column_key]
+    assert offset is not None, column_key
+
+    def shift(letter: str, by: int) -> str:
+        value = 0
+        for char in letter:
+            value = value * 26 + (ord(char) - ord("A") + 1)
+        value += by
+        out = ""
+        while value:
+            value, remainder = divmod(value - 1, 26)
+            out = chr(ord("A") + remainder) + out
+        return out
+
+    row = int(records["first_record_row"]) + row_offset
+    banks = records["banks"]
+    active = f'{sheet}!$D$30'
+    a = f'{sheet}!${shift(banks["A"]["first_column"], offset)}${row}'
+    b = f'{sheet}!${shift(banks["B"]["first_column"], offset)}${row}'
+    return f'IF({active}="A",{a},{b})'
+
+
+@pytest.mark.parametrize("column_key", ["rho", "abs_rho", "rank", "direction",
+                                        "driver_name", "driver_id", "driver_type",
+                                        "status"])
+def test_52_every_sensitivity_field_guards_its_empty_reference(column_key: str) -> None:
+    """EXCEL READS AN EMPTY REFERENCE BACK AS ZERO, so every field guards it -
+    not only the four a zero-variance row leaves blank. A field that is blank
+    for any reason must arrive blank.
+
+    THE ASSERTION IS ON THE RECORD REFERENCE ITSELF. The formula's outer bounds
+    already contain `=""` three times over, so testing the formula for that
+    string proves nothing - which is exactly what the first version of this
+    control did, and it passed against the unguarded build."""
+    formula = _sensitivity_cell(column_key)
+    picked = _record_reference(column_key)
+    assert picked in formula, (
+        f"{column_key} does not read the record the contract places it at: "
+        f"{picked}")
+    guarded = f'IF({picked}="","",{picked})'
+    assert guarded in formula, (
+        f"{column_key} reads its record UNGUARDED; Excel returns 0 for an empty "
+        f"reference and a deliberately blank field becomes a measured zero.\n"
+        f"  wanted: {guarded}\n  formula: {formula}")
+
+
+def test_53_the_guard_did_not_swallow_a_measured_zero() -> None:
+    """A DRIVER WHOSE RHO REALLY IS 0 STILL SHOWS 0. `0=""` is FALSE in Excel,
+    so the guard tests emptiness and never a value - which is the whole
+    difference between "no measurement" and "a measurement of zero"."""
+    formula = _sensitivity_cell("rho")
+    picked = _record_reference("rho")
+    assert f'IF({picked}="","",{picked})' in formula
+    for numeric in (f'IF({picked}=0', 'ISNUMBER(', 'ISBLANK(', 'N(', 'ABS(',
+                    'IFERROR('):
+        assert numeric not in formula, (
+            f"the guard tests a value rather than emptiness: {numeric}")
+
+
+def test_54_the_four_blank_bounds_are_still_blank_and_still_bounded() -> None:
+    """THE THREE CONDITIONS THAT WERE ALREADY THERE ARE UNTOUCHED. The guard is
+    a fourth; it did not replace the publication, count or activity bounds."""
+    formula = _sensitivity_cell("rho")
+    shell = _shell()
+    records = _raw_contract()["sim_data"]["sensitivity_records"]
+    count_row = next(f["row"] for f in records["stamp"]["fields"]
+                     if f["key"] == "record_count")
+    published_row = next(f["row"] for f in records["stamp"]["fields"]
+                         if f["key"] == "published")
+    assert '<>"PUBLISHED"' in formula, "the publication bound was lost"
+    assert f"${count_row}" in formula, "the record-count bound was lost"
+    assert f"${published_row}" in formula, "the published-stamp bound was lost"
+    assert formula.count('IF(') >= 4, "the guard replaced a bound instead of adding one"
+    # AND THE WINDOW IS STILL THE MANIFEST'S.
+    assert int(shell["row_window"]) >= 1
+
+
+def test_55_the_tornado_bridge_now_receives_a_blank_and_draws_nothing() -> None:
+    """THE END OF THE CHAIN. The bridge refuses to plot where its source is
+    blank; it could never refuse a number. With the sheet blank, the refusal
+    fires - and this is checked at the bridge WITHOUT changing it."""
+    import openpyxl
+    from pccm_builder.spec_loader import load_spec
+    charts = load_spec(SPEC / "workbook.yaml").phase6_shell["charts"]
+    drivers = charts["bridge"]["drivers"]
+    workbook = openpyxl.load_workbook(PCCM_ROOT / "build" / "PCCM_stageA.xlsx")
+    sheet = workbook[charts["bridge_sheet"]]
+    rho = next(c for c in drivers["columns"] if c["key"] == "rho")
+    formula = sheet[f"{rho['column']}{int(drivers['first_row'])}"].value
+    assert 'NA()' in formula, "the bridge stopped refusing an absent driver"
+    assert '=""' in formula, "the bridge no longer tests its source for emptiness"
+    # THE BRIDGE IS UNCHANGED - the correction is upstream of it.
+    assert formula.startswith(f"=IF({charts['sensitivity_sheet']}!")
+
+
+# ---------------------------------------------------------------------------
+# THE MUTATIONS - each is a way the guard could look present and not be
+# ---------------------------------------------------------------------------
+def _rendered(mutate=None) -> dict[str, str]:
+    """The Sensitivity row-1 formulas the builder produces, optionally from a
+    mutated copy of its source.
+
+    ONLY THE RENDERER IS RECOMPILED, over the real module's own globals. Exec-ing
+    the whole module would drag in its imports and dataclasses and prove nothing
+    extra; rebinding the one function under test against everything else as it
+    really is keeps the mutation the only difference. Nothing on disk changes
+    and no workbook is written."""
+    from pccm_builder import workbook_builder as real
+
+    source = Path(real.__file__).read_text(encoding="utf-8")
+    if mutate is not None:
+        mutated = mutate(source)
+        assert mutated != source, "the mutation changed nothing"
+        source = mutated
+    body = re.search(r"^def _render_sensitivity_shell\(.*?(?=\n\ndef )",
+                     source, re.S | re.M)
+    assert body, "the sensitivity renderer is gone"
+    namespace = dict(real.__dict__)
+    exec(compile(body.group(0), real.__file__, "exec"), namespace)
+
+    written: dict[str, str] = {}
+
+    class _Cell:
+        def __init__(self, key):
+            self._key = key
+
+        @property
+        def value(self):
+            return written.get(self._key)
+
+        @value.setter
+        def value(self, new):
+            written[self._key] = new
+
+    class _Sheet:
+        def __getitem__(self, address):
+            return _Cell(address)
+
+    from pccm_builder.spec_loader import load_spec
+    shell = _shell()
+    styles = real.StyleBook(load_spec(SPEC / "workbook.yaml").presentation)
+    namespace["_render_sensitivity_shell"](_Sheet(), shell, _raw_contract(), styles)
+    first = int(shell["first_row"])
+    return {c["key"]: written.get(f"{c['column']}{first}", "")
+            for c in shell["columns"]}
+
+
+def _guard_rules(rendered: dict[str, str]) -> None:
+    """Every field guards its record reference, and the bounds are still there."""
+    for key, formula in rendered.items():
+        picked = _record_reference(key)
+        assert picked in formula, f"{key} does not read its contracted record"
+        assert f'IF({picked}="","",{picked})' in formula, (
+            f"{key} reads its record unguarded")
+        assert '<>"PUBLISHED"' in formula, f"{key} lost the publication bound"
+
+
+@pytest.mark.parametrize("name,mutate", [
+    # THE DEFECT ITSELF, RESTORED.
+    ("the record reference is read unguarded",
+     lambda src: src.replace('f\'IF({picked}="","",{picked}))))\'',
+                             'f\'{picked})))\'', 1)),
+    # THE GUARD TESTING THE WRONG THING. `0=0` is TRUE, so a genuinely measured
+    # zero would be blanked - the opposite error and just as wrong.
+    ("the guard blanks a measured zero",
+     lambda src: src.replace('f\'IF({picked}="","",{picked}))))\'',
+                             'f\'IF({picked}=0,"",{picked}))))\'', 1)),
+    # THE GUARD APPLIED TO SOMETHING THAT IS NEVER EMPTY, which is the same as
+    # not guarding: the active-bank selector always holds a value.
+    ("the guard tests the bank selector instead of the record",
+     lambda src: src.replace('f\'IF({picked}="","",{picked}))))\'',
+                             'f\'IF({active}="","",{picked}))))\'', 1)),
+    # A PUBLICATION BOUND TRADED FOR THE GUARD rather than added to it.
+    ("the guard replaced the publication bound",
+     lambda src: src.replace(
+         'f\'IF(IF({active}="A",{stamp_cell("A", published_row)},\'\n'
+         '                f\'{stamp_cell("B", published_row)})<>"PUBLISHED","",\'',
+         '', 1)),
+])
+def test_56_each_way_of_losing_the_guard_is_refused(name: str, mutate) -> None:
+    with pytest.raises(AssertionError):
+        _guard_rules(_rendered(mutate))
+
+
+def test_57_the_guard_rules_pass_on_the_real_builder() -> None:
+    """SO THE FOUR REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
+    fixture - and the renderer really does produce what the built workbook holds."""
+    rendered = _rendered()
+    _guard_rules(rendered)
+    for key, formula in rendered.items():
+        assert formula == _sensitivity_cell(key), (
+            f"{key}: the renderer and the built workbook disagree")

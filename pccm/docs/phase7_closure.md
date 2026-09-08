@@ -179,7 +179,7 @@ as such. Nothing in this record re-derives, re-runs or infers a Windows number.
 |---|---|---|
 | Test suites in `pccm/tests` | **72 files** at the closure commit `b844915` | file count |
 | Tests collected | **4,663** at the closure commit `b844915` | `pytest tests --collect-only` |
-| Phase-7 suites / tests | **23 suites, 991 tests** | `pytest tests/test_phase7*.py --collect-only` |
+| Phase-7 suites / tests | **23 suites, 1009 tests** | `pytest tests/test_phase7*.py --collect-only` |
 | W1–W8 static controls | **307 tests** | the eight W-suites |
 | Stage A | **351 passed / 0 failed** | `python3 builder/build_stage_a.py` on the clean tree |
 | Focused Gate-B + Phase-7 suites | **488 passed / 0 failed** | post-commit, clean tree |
