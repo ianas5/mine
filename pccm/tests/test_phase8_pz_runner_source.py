@@ -51,7 +51,16 @@ COPIED_FROM_P83 = (
 # THE ONE READER THIS SCENARIO ADDS, because Get-P8ZCharts captures the plotted
 # VALUES and the category RANGE but not the category VALUES - and "no category
 # for that driver" is a statement about the latter.
-ADDED = ("Get-P8ZCategoryValues",)
+ADDED = (
+    # Get-P8ZCharts captures the plotted VALUES and the category RANGE, not the
+    # category VALUES, and "no category for that driver" is about the latter.
+    "Get-P8ZCategoryValues",
+    # AND NO DATA ON THE CATEGORY AXIS IS NOT SHAPED LIKE NO DATA ON THE VALUE
+    # AXIS: Series.Values gives #N/A as the numeric CVErr code, Series.XValues
+    # gives it as the error's text. Run 4 reported six false mismatches for want
+    # of this one.
+    "Test-P8ZNoCategory",
+)
 
 _CACHE: dict = {}
 
@@ -118,7 +127,11 @@ def test_02_it_reruns_none_of_the_accepted_scenarios() -> None:
 def test_03_it_asks_one_question_and_stays_small() -> None:
     code = _code()
     checks = re.findall(r"Add-P8ZCheck\s*\(?'([^']+)'", code)
-    assert len(checks) <= 24, f"{len(checks)} checks is not a tiny scenario"
+    # STILL TINY AGAINST THE 189-CHECK ACCEPTANCE SUITE. The budget grew when
+    # the one conflated chart assertion was replaced by the separate questions
+    # the contract actually asks - more checks saying less each, which is the
+    # direction a report should move.
+    assert len(checks) <= 32, f"{len(checks)} checks is not a tiny scenario"
     assert len(checks) >= 8, f"only {len(checks)} checks; the nine required "
     # ONE WORKBOOK, ONE SESSION.
     assert code.count("$workbooks.Open(") == 1
@@ -1048,3 +1061,235 @@ def _read_path_rules(code: str) -> None:
 def test_57_the_read_path_rules_pass_on_the_real_runner() -> None:
     """SO THE EIGHT REFUSALS ABOVE ARE REFUSALS OF THE MUTATION."""
     _read_path_rules(_code())
+
+
+# ===========================================================================
+# G. #N/A SOURCE SLOTS ARE NOT DRAWN CATEGORIES
+# ===========================================================================
+# RUN 4 ANSWERED THE QUESTION AND THEN REPORTED A FALSE FAILURE. The chart was
+# right: four categories, four bars, CL-001 absent. What failed was
+# `every drawn category matches a bridge cell that carries one`, six times, for
+# the six empty slots of the fixed ten-cell source range.
+#
+# THE TWO AXES DO NOT RETURN #N/A THE SAME WAY. `Series.Values` gives the
+# numeric CVErr code, which Test-P8ZNoPoint knows. `Series.XValues` gives the
+# error's TEXT, because a category axis is textual - so the detector said "a
+# point is drawn" for every empty slot.
+#
+# THREE THINGS THE RUNNER NOW KEEPS APART:
+#   A SLOT      one of the ten cells of the fixed Top-10 range. Always ten.
+#   A CATEGORY  a slot whose BRIDGE cell carries a driver identity.
+#   A BAR       a slot whose VALUE is a real number.
+def _category_functions() -> str:
+    """The comparison's own logic, extracted for execution: it is pure and
+    reads no COM, so what it decides can be established here rather than
+    asserted about its source."""
+    parts = ["Set-StrictMode -Version 2.0", "$ErrorActionPreference = 'Stop'",
+             "function Test-SimBlank {", "    param($Value)",
+             "    if ($null -eq $Value) { return $true }",
+             "    if ($Value -is [string]) { return [string]::IsNullOrWhiteSpace($Value) }",
+             "    return $false", "}"]
+    source = _text()
+    for name in ("Test-P8ZNoPoint", "Test-P8ZNoCategory", "Test-P8ZSameValue"):
+        start = source.index(f"function {name} {{")
+        depth = 0
+        for index in range(start, len(source)):
+            if source[index] == "{":
+                depth += 1
+            elif source[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    parts.append(source[start:index + 1])
+                    break
+    error_table = source[source.index("$script:P8ZErrorCodes = @{"):]
+    parts.insert(2, error_table[:error_table.index("}") + 1])
+    return "\n".join(parts)
+
+
+def _classify(slots: list[tuple[str, str]]) -> list[str]:
+    """Run the runner's own no-category test over (label, PowerShell literal)
+    pairs and return which it calls 'no category'."""
+    import subprocess
+    import tempfile
+    body = [_category_functions()]
+    for label, literal in slots:
+        body.append(f"Write-Output ('{label}=' + "
+                    f"[string][bool](Test-P8ZNoCategory -Value {literal}))")
+    with tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False,
+                                     encoding="utf-8") as handle:
+        handle.write("\n".join(body) + "\n")
+        path = handle.name
+    try:
+        done = subprocess.run([PWSH, "-NoProfile", "-File", path],
+                              capture_output=True, text=True, timeout=180)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    assert done.returncode == 0, done.stderr[:2000]
+    return [line.strip() for line in done.stdout.splitlines() if line.strip()]
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_60_no_data_is_recognised_in_both_the_forms_excel_returns_it() -> None:
+    """THE EXACT REGRESSION. The value axis gives a numeric code; the category
+    axis gives text. Both are the absence of a category."""
+    results = _classify([
+        ("numeric_na", "(-2146826246)"),
+        ("textual_na", "'#N/A'"),
+        ("textual_ref", "'#REF!'"),
+        ("null", "$null"),
+        ("empty", "''"),
+        ("a_real_name", "'GateB CL-002'"),
+        ("a_number", "([double]0.42)"),
+        ("a_zero", "([double]0)"),
+        ("a_zero_string", "'0'"),
+    ])
+    expected = {
+        "numeric_na": True, "textual_na": True, "textual_ref": True,
+        "null": True, "empty": True,
+        # A REAL NAME, A REAL NUMBER AND A ZERO ARE ALL SOMETHING. Treating a
+        # zero as "no category" would hide exactly the filler this refuses.
+        "a_real_name": False, "a_number": False, "a_zero": False,
+        "a_zero_string": False,
+    }
+    got = dict(line.split("=", 1) for line in results)
+    wrong = {k: got[k] for k in expected if (got[k] == "True") != expected[k]}
+    assert not wrong, f"the category test misreads: {wrong}"
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_61_the_old_detector_would_still_fail_run_4() -> None:
+    """SO test_60 IS NOT VACUOUS. The value-axis test alone - which is what Run 4
+    used on the category axis - calls the textual #N/A a drawn point."""
+    import subprocess
+    import tempfile
+    body = [_category_functions(),
+            "Write-Output ('value_axis_on_text=' + "
+            "[string][bool](Test-P8ZNoPoint -Value '#N/A'))"]
+    with tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False,
+                                     encoding="utf-8") as handle:
+        handle.write("\n".join(body) + "\n")
+        path = handle.name
+    try:
+        done = subprocess.run([PWSH, "-NoProfile", "-File", path],
+                              capture_output=True, text=True, timeout=180)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    assert done.returncode == 0, done.stderr[:1000]
+    assert "value_axis_on_text=False" in done.stdout, (
+        "the value-axis test now handles the textual form too; this control's "
+        "premise is gone")
+
+
+def test_62_the_runner_keeps_slots_categories_and_bars_apart() -> None:
+    code = _code()
+    # AN EMPTY SLOT IS SKIPPED, NOT COMPARED AS A CATEGORY.
+    assert "$plottedAbsent = (Test-P8ZNoCategory -Value $plotted)" in code
+    assert "if ($cellAbsent) {" in code and "continue" in code
+    # A REAL CATEGORY IS COMPARED THROUGH THE ACCEPTED SEMANTICS, not stringified.
+    assert "Test-P8ZSameValue -A $cell.Value -B $plotted" in code, (
+        "the category comparison stringifies instead of comparing values")
+    for stringified in ("[string]$plotted -eq", "[string]$plotted -ceq",
+                        "$plotted.ToString()"):
+        assert stringified not in code, f"the category is stringified: {stringified}"
+    # AND THE FIXED GEOMETRY IS STATED RATHER THAN HIDDEN.
+    assert "the fixed Top-" in code
+    assert "the tornado source range is the projected ten-slot window" in code
+    assert "source slots     : " in code
+    # THE RUNNER NEVER CLAIMS THE RANGE HAS ONLY THE DRAWN COUNT.
+    assert "$names.Count -eq [int]$drivers.row_count" in code
+
+
+def test_63_all_six_contract_questions_are_asked_separately() -> None:
+    """EACH ITS OWN CHECK, so a report says which one failed."""
+    code = _code()
+    for question in (
+            "the tornado source range is the projected ten-slot window",
+            "no empty source slot supplies a tornado category",
+            "no tornado category is an Excel error name",
+            "every drawn category is the bridge cell it was drawn from",
+            "every tornado category is an eligible ranked driver",
+            "every eligible ranked driver is drawn exactly once",
+            "the tornado draws exactly as many categories as were ranked",
+            "it draws exactly as many bars as categories",
+            "the zero-variance driver is not a tornado category",
+            "the zero-variance driver has no bar"):
+        assert question in code, f"the runner no longer asks: {question}"
+    # THE OLD CONFLATED ONE IS GONE.
+    assert "every drawn category matches a bridge cell that carries one" not in code
+
+
+# ---------------------------------------------------------------------------
+# THE MUTATIONS
+# ---------------------------------------------------------------------------
+def _category_rules(code: str) -> None:
+    """Everything the category comparison has to be true of."""
+    assert "$plottedAbsent = (Test-P8ZNoCategory -Value $plotted)" in code, (
+        "an empty slot is judged by the value-axis test again")
+    assert "Test-P8ZSameValue -A $cell.Value -B $plotted" in code, (
+        "a real category is no longer compared to its bridge cell")
+    assert "no empty source slot supplies a tornado category" in code, (
+        "a fabricated category in an empty slot would pass")
+    assert "no tornado category is an Excel error name" in code, (
+        "an error name could be drawn as a driver identity")
+    assert "every eligible ranked driver is drawn exactly once" in code, (
+        "a missing or duplicated ranked driver would pass")
+    assert "it draws exactly as many bars as categories" in code, (
+        "categories and bars are no longer required to agree")
+    assert "the tornado draws exactly as many categories as were ranked" in code, (
+        "the category count is no longer tied to the ranked population")
+    assert "the zero-variance driver is not a tornado category" in code
+    body = re.search(r"function\s+Test-P8ZNoCategory\s*\{(.*?)\n\}", code, re.S)
+    assert body, "the category no-data test is gone"
+    assert "foreach ($name in $script:P8ZErrorCodes.Values) {" in body.group(1), (
+        "the textual form of an Excel error is no longer recognised")
+    assert "if (Test-P8ZNoPoint -Value $Value) { return $true }" in body.group(1), (
+        "the numeric form of an Excel error is no longer recognised")
+
+
+@pytest.mark.parametrize("name,mutate", [
+    # THE REGRESSION: the textual #N/A treated as a point again.
+    ("the textual error form stops being recognised",
+     lambda code: code.replace(
+         "        foreach ($name in $script:P8ZErrorCodes.Values) {\n"
+         "            if (([string]$Value) -ceq [string]$name) { return $true }",
+         "        foreach ($name in @()) {\n"
+         "            if (([string]$Value) -ceq [string]$name) { return $true }", 1)),
+    # AND THE NUMERIC ONE.
+    ("the numeric error form stops being recognised",
+     lambda code: code.replace(
+         "    if (Test-P8ZNoPoint -Value $Value) { return $true }", "", 1)),
+    # A FABRICATED CATEGORY IN AN EMPTY SLOT, accepted.
+    ("a category in an empty slot stops being refused",
+     lambda code: code.replace("no empty source slot supplies a tornado category",
+                               "no empty source slot supplies a tornado categorie", 1)),
+    # AN ERROR NAME ACCEPTED AS AN IDENTITY.
+    ("an error name may be a driver identity",
+     lambda code: code.replace("no tornado category is an Excel error name",
+                               "no tornado category is an Excel error nam", 1)),
+    # THE CATEGORY NO LONGER COMPARED TO ITS BRIDGE CELL.
+    ("a drawn category stops being compared to its bridge cell",
+     lambda code: code.replace("Test-P8ZSameValue -A $cell.Value -B $plotted",
+                               "$true -or $cell.Value -or $plotted", 1)),
+    # A RANKED DRIVER MISSING OR DRAWN TWICE.
+    ("a missing or duplicated ranked driver stops being refused",
+     lambda code: code.replace("every eligible ranked driver is drawn exactly once",
+                               "every eligible ranked driver is drawn exactly onc", 1)),
+    # CATEGORIES AND BARS ALLOWED TO DISAGREE.
+    ("categories and bars may disagree",
+     lambda code: code.replace("it draws exactly as many bars as categories",
+                               "it draws exactly as many bars as categorie", 1)),
+    # THE COUNT UNTIED FROM THE RANKED POPULATION.
+    ("the category count is untied from the eligible count",
+     lambda code: code.replace("the tornado draws exactly as many categories as were ranked",
+                               "the tornado draws exactly as many categories as were ranke", 1)),
+])
+def test_64_each_way_of_misreading_a_slot_is_refused(name: str, mutate) -> None:
+    mutated = mutate(_code())
+    assert mutated != _code(), f"the mutation '{name}' changed nothing"
+    with pytest.raises(AssertionError):
+        _category_rules(mutated)
+
+
+def test_65_the_category_rules_pass_on_the_real_runner() -> None:
+    """SO THE EIGHT REFUSALS ABOVE ARE REFUSALS OF THE MUTATION."""
+    _category_rules(_code())

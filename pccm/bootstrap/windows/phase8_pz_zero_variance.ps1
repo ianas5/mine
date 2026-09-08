@@ -590,6 +590,31 @@ function Test-P8ZNoPoint {
     return $false
 }
 
+# NO DATA ON THE CATEGORY AXIS IS NOT SHAPED LIKE NO DATA ON THE VALUE AXIS.
+#
+# RUN 4 FAILED ON EXACTLY THIS. `Series.Values` returns #N/A as the numeric CVErr
+# code, which Test-P8ZNoPoint knows. `Series.XValues` returns it as the error's
+# TEXT - a category axis is textual - so the six empty slots of the fixed ten-cell
+# source range came back as the string '#N/A', Test-P8ZNoPoint said "that is a
+# point", and the runner reported six mismatches against a chart that was
+# entirely correct.
+#
+# AN ERROR NAME IS NOT AN IDENTITY. Whatever form it arrives in - null, the
+# numeric code, an empty string, or the text Excel renders - it means the slot
+# carries no category. It is never a driver called '#N/A'.
+function Test-P8ZNoCategory {
+    param($Value)
+    if ($null -eq $Value) { return $true }
+    if (Test-P8ZNoPoint -Value $Value) { return $true }
+    if ($Value -is [string]) {
+        if ([string]::IsNullOrWhiteSpace([string]$Value)) { return $true }
+        foreach ($name in $script:P8ZErrorCodes.Values) {
+            if (([string]$Value) -ceq [string]$name) { return $true }
+        }
+    }
+    return $false
+}
+
 function Format-P8ZPoint {
     param($Value)
     if ($null -eq $Value) { return '<empty>' }
@@ -1051,8 +1076,17 @@ try {
         ([string]$series.ValuesRange -ceq [string](@($tornado.series)[0].range)) `
         ([string]$series.ValuesRange)
 
-    # (5), (6) AND (7). A category is drawn only where the bridge carries one,
-    # and the bridge carries one only for a ranked driver.
+    # (5), (6) AND (7). THREE DIFFERENT THINGS, and Run 4 failed for conflating
+    # two of them:
+    #
+    #   A SLOT      one of the ten cells of the fixed Top-10 source range. There
+    #               are always ten, whatever is published. That geometry is
+    #               deliberate and is not compacted to hide empty slots.
+    #   A CATEGORY  a slot whose BRIDGE cell carries a driver identity.
+    #   A BAR       a slot whose VALUE is a real number.
+    #
+    # Six slots carrying #N/A are six slots with no category, not six categories
+    # named '#N/A'.
     $drawnCategories = New-Object System.Collections.ArrayList
     $drawnValues = 0
     $names = @($bridge['driver_name'])
@@ -1060,25 +1094,65 @@ try {
     $points = @($series.Values)
     $categories = @(Get-P8ZCategoryValues -Workbook $wb `
         -SheetName ([string]$charts.chart_sheet) -Title ([string]$tornado.title))
-    $mismatched = New-Object System.Collections.ArrayList
+    $fabricated = New-Object System.Collections.ArrayList
+    $disagreeing = New-Object System.Collections.ArrayList
+    $errorNamed = New-Object System.Collections.ArrayList
     for ($index = 0; $index -lt $names.Count; $index++) {
-        $cellAbsent = ((Test-P8ZBlank -Cell $names[$index]) -or $names[$index].IsError)
-        $pointAbsent = $true
-        if ($index -lt $categories.Count) { $pointAbsent = (Test-P8ZNoPoint -Value $categories[$index]) }
-        if ($cellAbsent -ne $pointAbsent) {
-            $null = $mismatched.Add('row ' + [string]($index + 1) + ': bridge ' +
-                                    (Format-P8ZCell $names[$index]) + ', plotted ' +
-                                    (Format-P8ZPoint $categories[$index]))
+        $cell = $names[$index]
+        $cellAbsent = ((Test-P8ZBlank -Cell $cell) -or $cell.IsError)
+        $plotted = $null
+        if ($index -lt $categories.Count) { $plotted = $categories[$index] }
+        $plottedAbsent = (Test-P8ZNoCategory -Value $plotted)
+        if ($cellAbsent) {
+            # THE BRIDGE SAYS THERE IS NO DRIVER HERE. A category rendered
+            # anyway would be a fabricated identity - the one thing an empty
+            # slot must never become.
+            if (-not $plottedAbsent) {
+                $null = $fabricated.Add('slot ' + [string]($index + 1) + ': bridge ' +
+                                        (Format-P8ZCell $cell) + ', plotted ' +
+                                        (Format-P8ZPoint $plotted))
+            }
+            continue
         }
-        if (-not $cellAbsent) { $null = $drawnCategories.Add([string]$names[$index].Value) }
+        # A REAL CATEGORY. It must be exactly the bridge's, compared as a value
+        # through the accepted semantics rather than by stringifying either side.
+        if ($plottedAbsent -or (-not (Test-P8ZSameValue -A $cell.Value -B $plotted))) {
+            $null = $disagreeing.Add('slot ' + [string]($index + 1) + ': bridge ' +
+                                     (Format-P8ZCell $cell) + ', plotted ' +
+                                     (Format-P8ZPoint $plotted))
+        }
+        # AND AN ERROR NAME IS NEVER AN IDENTITY, whichever side produced it.
+        foreach ($errorName in $script:P8ZErrorCodes.Values) {
+            if (([string]$cell.Value) -ceq [string]$errorName) {
+                $null = $errorNamed.Add('slot ' + [string]($index + 1) + ': ' + [string]$errorName)
+            }
+        }
+        $null = $drawnCategories.Add([string]$cell.Value)
         if ($index -lt $points.Count) {
             if (-not (Test-P8ZNoPoint -Value $points[$index])) { $drawnValues = $drawnValues + 1 }
         }
     }
-    $null = Add-P8ZCheck 'every drawn category matches a bridge cell that carries one' `
-        ($mismatched.Count -eq 0) (($mismatched -join '; '))
+    Write-P8ZLine ('    source slots     : ' + [string]$names.Count +
+                   ' (the fixed Top-' + [string]$drivers.row_count + ' geometry)')
     Write-P8ZLine ('    categories drawn : ' + ($drawnCategories -join ', '))
     Write-P8ZLine ('    ranked drivers   : ' + ($rankedNames -join ', '))
+
+    # (1) THE FIXED RANGE MAY HOLD NO-DATA SLOTS. It has ten cells whatever is
+    #     published; that geometry is the chart's and is not compacted.
+    $null = Add-P8ZCheck 'the tornado source range is the projected ten-slot window' `
+        ($names.Count -eq [int]$drivers.row_count) `
+        ([string]$names.Count + ' slots against a projected ' +
+         [string]$drivers.row_count)
+    # (2) AN EMPTY SLOT SUPPLIES NO IDENTITY. #N/A on the value axis arrives as a
+    #     numeric error code and on the category axis as the error's text; both
+    #     mean the same thing and neither is a driver.
+    $null = Add-P8ZCheck 'no empty source slot supplies a tornado category' `
+        ($fabricated.Count -eq 0) (($fabricated -join '; '))
+    $null = Add-P8ZCheck 'no tornado category is an Excel error name' `
+        ($errorNamed.Count -eq 0) (($errorNamed -join '; '))
+    # (3) AND EVERY REAL ONE IS EXACTLY THE BRIDGE'S.
+    $null = Add-P8ZCheck 'every drawn category is the bridge cell it was drawn from' `
+        ($disagreeing.Count -eq 0) (($disagreeing -join '; '))
 
     # (5) NOT A CATEGORY.
     $null = Add-P8ZCheck 'the zero-variance driver is not a tornado category' `
@@ -1102,9 +1176,26 @@ try {
     }
     $null = Add-P8ZCheck 'every tornado category is an eligible ranked driver' `
         ($unexpected.Count -eq 0) (($unexpected -join '; '))
+    # (4) AND EACH ONE EXACTLY ONCE. A ranked driver missing, or drawn twice,
+    #     both give the right total against the wrong picture.
+    $missingRanked = New-Object System.Collections.ArrayList
+    $duplicated = New-Object System.Collections.ArrayList
+    foreach ($ranked in $rankedNames) {
+        $seen = 0
+        foreach ($drawn in $drawnCategories) { if ($drawn -ceq $ranked) { $seen = $seen + 1 } }
+        if ($seen -eq 0) { $null = $missingRanked.Add([string]$ranked) }
+        if ($seen -gt 1) { $null = $duplicated.Add([string]$ranked + ' x' + [string]$seen) }
+    }
+    $null = Add-P8ZCheck 'every eligible ranked driver is drawn exactly once' `
+        (($missingRanked.Count -eq 0) -and ($duplicated.Count -eq 0)) `
+        ('missing: ' + ($missingRanked -join ', ') + '; duplicated: ' + ($duplicated -join ', '))
+    # (6) CATEGORIES, BARS AND THE RANKED POPULATION ARE ONE NUMBER.
     $null = Add-P8ZCheck 'the tornado draws exactly as many categories as were ranked' `
         ($drawnCategories.Count -eq $rankedNames.Count) `
         ([string]$drawnCategories.Count + ' drawn, ' + [string]$rankedNames.Count + ' ranked')
+    $null = Add-P8ZCheck 'it draws exactly as many bars as categories' `
+        ($drawnValues -eq $drawnCategories.Count) `
+        ([string]$drawnValues + ' bars, ' + [string]$drawnCategories.Count + ' categories')
     $null = Add-P8ZCheck 'fewer than the projected top N are drawn, and nothing fills the rest' `
         (($drawnCategories.Count -lt [int]$drivers.row_count) -and
          ($drawnValues -eq $drawnCategories.Count)) `
