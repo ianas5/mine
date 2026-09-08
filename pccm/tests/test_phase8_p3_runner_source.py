@@ -753,6 +753,184 @@ def test_68_the_runner_converts_the_cell_to_a_split() -> None:
 
 
 # ===========================================================================
+# E3. EVERY PROJECTION PROPERTY THE RUNNER TOUCHES
+# ===========================================================================
+# TWO WINDOWS RUNS, TWO MISSING PROPERTIES. `freeze_panes` was read off the
+# dashboard projection, which does not own it; `columns` and `first_row` were
+# read off the Phase-6 gate-B inspection, which describes the machine sheet and
+# the publication banks and has no Sensitivity presentation layout at all.
+#
+# NEITHER WAS A FAILED ASSERTION. StrictMode 2.0 makes an absent property a
+# terminated session, so each cost a full Windows run and left everything after
+# the crash unobserved. One missing-property crash per run is not a rate anyone
+# should accept, and the fix is not to be more careful - it is to resolve every
+# dereference here, against the artefacts the runner will actually be handed.
+
+# WHICH LOADED VARIABLE IS WHICH ARTEFACT, and the parameter names the same
+# objects arrive under inside the functions.
+PROJECTION_ROOTS = {
+    "manifest": "stage_b_manifest.json",
+    "inspection": "phase5_gate_b_inspection.json",
+    "simInspection": "phase6_gate_b_inspection.json",
+    "gateBCases": "phase6_gate_b_cases.json",
+    "p7": "phase7_acceptance_inspection.json",
+    "cases": "phase7_acceptance_cases.json",
+    "p8": "phase8_results_inspection.json",
+    "dash": "phase8_dashboard_inspection.json",
+    "charts": "phase8_charts_inspection.json",
+    "P8": "phase8_results_inspection.json",
+    "Dashboard": "phase8_dashboard_inspection.json",
+    "Charts": "phase8_charts_inspection.json",
+    "P7": "phase7_acceptance_inspection.json",
+}
+
+# POWERSHELL'S OWN MEMBERS, not keys of the JSON. A trailing .Count on a
+# projected list is the language's, and reflection through .PSObject is how the
+# runner enumerates a block whose field names the manifest owns.
+PS_MEMBERS = ("Count", "Keys", "Values", "Length", "ToCharArray", "PSObject",
+              "Properties", "Name")
+
+
+def _resolve_projection(obj, parts: list[str]) -> str | None:
+    """Walk a dotted path. A list resolves through its first element, because a
+    projected list is homogeneous by construction and the runner indexes it."""
+    for part in parts:
+        while isinstance(obj, list):
+            if not obj:
+                return f"empty list before .{part}"
+            obj = obj[0]
+        if not isinstance(obj, dict):
+            return f"not an object at .{part}"
+        if part not in obj:
+            return f"no key {part!r} (has: {', '.join(sorted(obj))})"
+        obj = obj[part]
+    return None
+
+
+def test_70_every_projection_property_the_runner_reads_exists() -> None:
+    """THE CONTROL THAT REPLACES A WINDOWS RUN. Nothing here needs Excel: the
+    generated artefacts are on disk and every path the runner walks can be
+    walked now."""
+    data = {name: json.loads((BUILD / filename).read_text(encoding="utf-8"))
+            for name, filename in PROJECTION_ROOTS.items()}
+    code = _code()
+    pattern = r"\$(" + "|".join(PROJECTION_ROOTS) + r")((?:\.[A-Za-z_][A-Za-z0-9_]*)+)"
+    unresolved: list[str] = []
+    checked = 0
+    for match in re.finditer(pattern, code):
+        name, chain = match.group(1), match.group(2)
+        parts = chain.strip(".").split(".")
+        while parts and parts[-1] in PS_MEMBERS:
+            parts = parts[:-1]
+        if not parts:
+            continue
+        checked += 1
+        why = _resolve_projection(data[name], parts)
+        if why:
+            unresolved.append(f"${name}{chain} -> {why}")
+    assert not unresolved, (
+        "the runner would abort on a property that is not there:\n  " +
+        "\n  ".join(sorted(set(unresolved))))
+    assert checked >= 50, (
+        f"only {checked} dereferences were resolved; the sweep has stopped "
+        "finding them and would pass a runner that read nothing")
+
+
+def test_71_the_property_audit_catches_a_property_that_is_not_there() -> None:
+    """SO test_70 IS NOT VACUOUS. Both real failures are replayed against it."""
+    data = {name: json.loads((BUILD / filename).read_text(encoding="utf-8"))
+            for name, filename in PROJECTION_ROOTS.items()}
+    # RUN 1: the freeze read off an object that does not own it.
+    assert _resolve_projection(data["charts"], ["freeze_panes"]) is not None
+    # RUN 2: the Sensitivity layout read off the Phase-6 machine inspection.
+    assert _resolve_projection(data["simInspection"], ["columns"]) is not None
+    assert _resolve_projection(data["simInspection"], ["first_row"]) is not None
+    # AND THE CORRECT OWNERS RESOLVE.
+    assert _resolve_projection(data["dash"], ["freeze_panes"]) is None
+    assert _resolve_projection(
+        data["charts"], ["sensitivity_source", "columns", "column"]) is None
+    assert _resolve_projection(
+        data["charts"], ["sensitivity_source", "first_row"]) is None
+
+
+# ---------------------------------------------------------------------------
+# THE TORNADO'S TWO SIDES
+# ---------------------------------------------------------------------------
+def test_72_the_tornado_source_is_owned_by_the_sensitivity_block() -> None:
+    """PHASE-6 SHELL DECLARES THE SENSITIVITY SHEET'S LAYOUT; the chart
+    projection carries only the two fields the tornado mirrors, looked up BY KEY
+    so a neighbouring column cannot be picked up by position - `abs_rho` sits
+    directly beside `rho`."""
+    manifest = yaml.safe_load((SPEC / "workbook.yaml").read_text(encoding="utf-8"))
+    declared = {str(column["key"]): str(column["column"])
+                for column in manifest["phase6_shell"]["sensitivity"]["columns"]}
+    source = _projection()["sensitivity_source"]
+    assert source["first_row"] == manifest["phase6_shell"]["sensitivity"]["first_row"]
+    for column in source["columns"]:
+        assert declared[column["key"]] == column["column"], (
+            f"{column['key']} is projected at {column['column']}, declared at "
+            f"{declared[column['key']]}")
+    # THE SIGNED COLUMN, NOT THE MAGNITUDE.
+    rho = next(c for c in source["columns"] if c["key"] == "rho")
+    assert rho["column"] == declared["rho"] != declared["abs_rho"], (
+        "the tornado mirrors the absolute magnitude; the sign is the point")
+    # AND EXACTLY WHAT THE BRIDGE PLOTS, in the same order.
+    plotted = [c["key"] for c in _projection()["bridge"]["drivers"]["columns"]]
+    assert [c["key"] for c in source["columns"]] == plotted
+
+
+def test_73_the_runner_reads_the_sensitivity_layout_from_that_owner_only() -> None:
+    code = _code()
+    assert "-Sensitivity $charts.sensitivity_source" in code, (
+        "the tornado does not read the projected sensitivity source")
+    # NOT FROM AN OBJECT THAT MERELY HAS A `columns` PROPERTY.
+    for wrong in ("$simInspection.columns", "$simInspection.first_row",
+                  "-Sensitivity $simInspection", "-Sensitivity $p8",
+                  "-Sensitivity $dash", "-Sensitivity $manifest"):
+        assert wrong not in code, f"the tornado source is read off {wrong}"
+    # AND NO SENSITIVITY ADDRESS IS TYPED. The sheet's data starts at D13/E13;
+    # neither the columns nor the row may appear as a literal.
+    body = _function("Invoke-P83TornadoRowChecks")
+    for typed in ("'D'", '"D"', "'E'", '"E"', "'D13'", "'E13'", "13"):
+        assert typed not in body, f"the tornado types the sensitivity address {typed}"
+    assert "$columns['driver_name']" in body and "$columns['rho']" in body
+    assert "$columns['abs_rho']" not in body, (
+        "the tornado reads the absolute magnitude")
+
+
+def test_74_the_tornado_preserves_the_published_order_and_the_sign() -> None:
+    """PHASE 7 RANKED THEM. This runner checks that bridge row k is Sensitivity
+    row first+k and nothing else - it does not re-derive the order, and it does
+    not lose a negative driver to a magnitude comparison."""
+    body = _function("Invoke-P83TornadoRowChecks")
+    assert "$sourceRow = $first + $index" in body, (
+        "the source row is not the positional one")
+    assert "for ($index = 0; $index -lt $names.Count; $index++)" in body, (
+        "the plotted rows are not walked in published order")
+    assert "Test-SimExactDouble -Actual $bridgeRho.Value" in body, (
+        "the signed rho is not compared exactly")
+    for banned in ("Sort-Object", "-Descending", "[Math]::Abs", "$names.Count - 1",
+                   "$index--", "[array]::Reverse"):
+        assert banned not in body, f"the tornado reorders for itself: {banned}"
+    # N IS THE PROJECTION'S, and the plotted count may not exceed it.
+    assert "$plotted -le $names.Count" in body
+    assert _projection()["bridge"]["drivers"]["row_count"] == 10
+    # AND NOTHING IS FABRICATED WHEN FEWER THAN N ARE PUBLISHED.
+    assert "if ($sourcePresent -ne $bridgePresent) {" in body
+    assert "if (-not $sourcePresent) { continue }" in body
+
+
+def test_75_a_missing_source_column_stops_the_runner_rather_than_misreading() -> None:
+    """AN ABSENT KEY WOULD BUILD THE ADDRESS `13` AND READ SOME OTHER CELL. The
+    runner refuses instead, which is the difference between a wrong answer and
+    no answer."""
+    body = _function("Invoke-P83TornadoRowChecks")
+    assert "foreach ($required in @('driver_name', 'rho')) {" in body
+    assert "if (-not $columns.ContainsKey($required)) {" in body
+    assert "throw (" in body
+
+
+# ===========================================================================
 # F. MUTATIONS - each is a way this runner could pass while proving nothing
 # ===========================================================================
 def _order_ok(code: str) -> None:
@@ -856,8 +1034,31 @@ def _freeze_ok(code: str) -> None:
         "the column split is not compared against the declaration")
 
 
+def _tornado_source_ok(code: str) -> None:
+    """THE RANKING IS MIRRORED FROM ITS OWNER, BY KEY, IN PUBLISHED ORDER."""
+    assert "-Sensitivity $charts.sensitivity_source" in code, (
+        "the tornado does not read the projected sensitivity source")
+    for wrong in ("-Sensitivity $simInspection", "-Sensitivity $p8",
+                  "-Sensitivity $dash", "-Sensitivity $manifest",
+                  "$simInspection.columns"):
+        assert wrong not in code, f"the tornado source is read off {wrong}"
+    body = re.search(r"function\s+Invoke-P83TornadoRowChecks\s*\{(.*?)\n\}", code, re.S)
+    assert body, "the tornado row comparison is gone"
+    body = body.group(1)
+    assert "$columns['driver_name']" in body and "$columns['rho']" in body, (
+        "the tornado no longer looks its columns up by the keys the bridge plots")
+    assert "$columns['abs_rho']" not in body, "the tornado reads a magnitude"
+    assert "$columns['driver_id']" not in body, "the tornado reads the wrong field"
+    for typed in ("'D13'", "'E13'", "'D'", "'E'"):
+        assert typed not in body, f"the tornado types a sensitivity address {typed}"
+    assert "$sourceRow = $first + $index" in body, (
+        "the source row is no longer the positional one")
+    for banned in ("Sort-Object", "-Descending", "[array]::Reverse", "$index--"):
+        assert banned not in body, f"the tornado reorders for itself: {banned}"
+
+
 RULES = (_order_ok, _oracle_ok, _recalc_only_ok, _qualification_ok, _fabrication_ok,
-         _axis_ok, _freeze_ok)
+         _axis_ok, _freeze_ok, _tornado_source_ok)
 
 
 @pytest.mark.parametrize("name,mutate", [
@@ -957,6 +1158,40 @@ RULES = (_order_ok, _oracle_ok, _recalc_only_ok, _qualification_ok, _fabrication
      lambda code: code.replace(
          "        -Simulation $simInvalid -Distribution $historical",
          "        -Simulation $simCurrent -Distribution $historical", 1)),
+    # ---- THE SIX FROM THE SECOND WINDOWS RUN ----
+    # `.columns` OFF THE WRONG PROJECTION - the crash itself, restored. The
+    # Phase-6 gate-B inspection describes the machine sheet and the publication
+    # banks; it has no Sensitivity presentation layout and no `columns` at all.
+    ("the sensitivity layout is read off the phase-6 machine inspection",
+     lambda code: code.replace("-Sensitivity $charts.sensitivity_source",
+                               "-Sensitivity $simInspection")),
+    # THE RHO POINTED AT THE MAGNITUDE. `abs_rho` sits in the very next column,
+    # so every driver would still plot - and every negative one would lose its
+    # direction, which is the one thing a tornado exists to show.
+    ("the tornado reads the absolute magnitude",
+     lambda code: code.replace("$columns['rho']", "$columns['abs_rho']", 1)),
+    # THE NAME POINTED AT ANOTHER PUBLISHED FIELD.
+    ("the driver name is read from the wrong column",
+     lambda code: code.replace("$columns['driver_name']", "$columns['driver_id']", 1)),
+    # THE ADDRESS TYPED INTO THE RUNNER.
+    ("a sensitivity address is hard-coded",
+     lambda code: code.replace(
+         "            -Address ($columns['driver_name'] + [string]$sourceRow)",
+         "            -Address ('D' + [string]$sourceRow)", 1)),
+    # THE TOP-N REORDERED IN POWERSHELL. Phase 7 ranked these; a runner that
+    # re-ordered them would agree with itself about a bridge that had drifted.
+    ("the top N is reordered in the runner",
+     lambda code: code.replace(
+         "        $sourceRow = $first + $index",
+         "        $sourceRow = $first + ($names.Count - 1 - $index)", 1)),
+    # AND THE POSITIONAL WALK REPLACED BY A SORT.
+    ("the tornado sorts the published rows",
+     lambda code: code.replace(
+         "    $mismatched = New-Object System.Collections.ArrayList\n"
+         "    $plotted = 0",
+         "    $mismatched = New-Object System.Collections.ArrayList\n"
+         "    $plotted = 0\n"
+         "    $names = @($names | Sort-Object)", 1)),
     # AN OUT-OF-CELL CALL MOVED INSIDE THE OBSERVATION.
     ("an out-of-cell call moves inside the observation",
      lambda code: code.replace(
@@ -980,7 +1215,7 @@ def test_50_each_way_of_passing_while_proving_nothing_is_refused(
 
 
 def test_51_the_rules_pass_on_the_unmutated_runner() -> None:
-    """SO THE SIXTEEN REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
+    """SO THE TWENTY-TWO REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
     fixture."""
     code = _code()
     for rule in RULES:

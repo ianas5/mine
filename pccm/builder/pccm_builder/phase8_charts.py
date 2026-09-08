@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from .artifact_io import write_lf_artifact
@@ -36,7 +37,7 @@ INSPECTION_FILENAME = "phase8_charts_inspection.json"
 
 ALLOWED_KEYS = ("schema_version", "purpose", "provenance", "bridge_sheet",
                 "chart_sheet", "sensitivity_sheet", "sensitivity_endpoint",
-                "bridge", "charts", "number_formats")
+                "sensitivity_source", "bridge", "charts", "number_formats")
 
 # THE CHART TYPES THIS PROJECT PERMITS. Two dimensions, three shapes. A third
 # dimension carries no data here and distorts the comparison a chart exists to
@@ -158,6 +159,32 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int) -> dict[str,
             "legend": len(chart["series"]) > 1,
         })
 
+    # THE PUBLISHED SENSITIVITY SURFACE, PROJECTED BY KEY. The tornado bridge
+    # declares which driver fields it mirrors; those same keys are looked up in
+    # the sensitivity presentation block, so the two cannot drift apart and a
+    # neighbouring column - `abs_rho` sits beside `rho` - cannot be picked up by
+    # position.
+    sensitivity = shell.get("sensitivity")
+    if not sensitivity:
+        raise ValueError(
+            "workbook.yaml carries no phase6_shell.sensitivity; the tornado has "
+            "no published ranking to mirror")
+    declared = {str(column["key"]): str(column["column"])
+                for column in sensitivity["columns"]}
+    source_columns = []
+    for column in bridge["drivers"]["columns"]:
+        key = str(column["key"])
+        if key not in declared:
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: the tornado mirrors {key!r}, which the "
+                "Sensitivity sheet does not publish")
+        source_columns.append({"key": key, "column": declared[key]})
+    sensitivity_source = {
+        "first_row": int(sensitivity["first_row"]),
+        "row_window": int(sensitivity["row_window"]),
+        "columns": source_columns,
+    }
+
     return {
         "schema_version": SCHEMA_VERSION,
         "purpose": (
@@ -171,6 +198,16 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int) -> dict[str,
         "chart_sheet": str(charts["chart_sheet"]),
         "sensitivity_sheet": str(charts["sensitivity_sheet"]),
         "sensitivity_endpoint": str(charts["sensitivity_endpoint"]),
+        # WHERE THE RANKING THE TORNADO MIRRORS ACTUALLY SITS. The bridge block
+        # above says where the ten plotted rows live on Results; this says which
+        # published Sensitivity rows they must reproduce, so a consumer can
+        # compare the two WITHOUT re-ranking anything.
+        #
+        # ONE FACT, ONE OWNER. Every value here is read off
+        # phase6_shell.sensitivity - the presentation authority for that sheet -
+        # and only the two fields the tornado mirrors are carried. The sheet's
+        # NAME is not repeated: `sensitivity_sheet` above already declares it.
+        "sensitivity_source": sensitivity_source,
         "bridge": blocks,
         "charts": projected,
         "number_formats": {str(k): str(v)
@@ -247,6 +284,44 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
         if not block["authority"]:
             raise ValueError(
                 f"{INSPECTION_FILENAME}: bridge block {name!r} names no authority")
+
+    # THE SOURCE THE TORNADO MIRRORS. A consumer dereferences every one of these
+    # to read a published Sensitivity row; a missing field is not a failed
+    # assertion on Windows, it is a terminated session, so it fails here.
+    if "sensitivity_source" not in inspection:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: no sensitivity_source; the tornado has no "
+            "projected route to the ranking it mirrors")
+    source = inspection["sensitivity_source"]
+    for field in ("first_row", "row_window", "columns"):
+        if field not in source:
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: sensitivity_source carries no {field!r}")
+    if int(source["first_row"]) < 1:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: sensitivity_source.first_row is not a row")
+    # AND IT MIRRORS EXACTLY WHAT THE BRIDGE PLOTS - no more, no fewer, same
+    # order. A source column the bridge does not carry would be a field nothing
+    # plots; a bridge column with no source would be a plotted value with
+    # nothing to check it against.
+    plotted = [str(column["key"]) for column in inspection["bridge"]["drivers"]["columns"]]
+    mirrored = [str(column["key"]) for column in source["columns"]]
+    if mirrored != plotted:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: the tornado plots {plotted} and mirrors "
+            f"{mirrored}; they must be the same fields in the same order")
+    for column in source["columns"]:
+        if not re.fullmatch(r"[A-Z]{1,3}", str(column["column"])):
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: sensitivity_source column "
+                f"{column['column']!r} is not a column letter")
+    # A MAGNITUDE IS NOT A SIGNED CORRELATION. The tornado shows direction; a
+    # source pointed at the absolute column would lose every negative driver's
+    # sign and no plotted value would look wrong.
+    if any(str(column["key"]).startswith("abs_") for column in source["columns"]):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: the tornado mirrors an absolute magnitude; "
+            "the sign is what the chart exists to show")
 
     # THE ENDPOINT IS AN ENDPOINT, not a worksheet function. A chart that could
     # be produced by a cell would be a chart that reran an analysis to draw

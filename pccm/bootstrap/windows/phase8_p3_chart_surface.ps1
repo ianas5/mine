@@ -1234,9 +1234,22 @@ function Invoke-P83TornadoRowChecks {
         return 0
     }
 
+    # THE PUBLISHED SENSITIVITY LAYOUT, FROM THE PROJECTION THAT OWNS IT.
+    # `sensitivity_source` is projected from phase6_shell.sensitivity - the
+    # presentation authority for that sheet - and the projection validator binds
+    # its keys to the very fields the tornado bridge plots. So this runner does
+    # not know, and must not decide, which columns those are.
     $columns = @{}
     foreach ($column in @($Sensitivity.columns)) { $columns[[string]$column.key] = [string]$column.column }
     $first = [int]$Sensitivity.first_row
+    # A MISSING KEY WOULD BUILD THE ADDRESS `13` AND READ THE WRONG CELL IN
+    # SILENCE. It stops here instead.
+    foreach ($required in @('driver_name', 'rho')) {
+        if (-not $columns.ContainsKey($required)) {
+            throw ('the projected sensitivity source publishes no ' + $required +
+                   ' column; it carries ' + (@($columns.Keys) -join ', '))
+        }
+    }
     $mismatched = New-Object System.Collections.ArrayList
     $plotted = 0
     for ($index = 0; $index -lt $names.Count; $index++) {
@@ -1603,7 +1616,7 @@ try {
     Invoke-P83AnnualSeriesChecks -Observation $observation0 -Stage 'part 0' -ExpectedYears 0
     Invoke-P83HistogramChecks -Observation $observation0 -Stage 'part 0' -ExpectedBins $binCount
     $null = Invoke-P83TornadoRowChecks -Workbook $wb -Observation $observation0 `
-        -Sensitivity $simInspection -SheetName ([string]$charts.sensitivity_sheet) -Stage 'part 0'
+        -Sensitivity $charts.sensitivity_source -SheetName ([string]$charts.sensitivity_sheet) -Stage 'part 0'
     Invoke-P83TornadoQualification -Observation $observation0 -Stage 'part 0' `
         -Simulation $simInvalid -CurrentWord $simCurrent `
         -UnavailablePhrase 'No simulation has been published'
@@ -1669,7 +1682,7 @@ try {
         -Simulation $simCurrent -CurrentWord $simCurrent
     # THE TORNADO HAS NOTHING, AND SAYS SO.
     $null = Invoke-P83TornadoRowChecks -Workbook $wb -Observation $observationA1 `
-        -Sensitivity $simInspection -SheetName ([string]$charts.sensitivity_sheet) -Stage 'part A1'
+        -Sensitivity $charts.sensitivity_source -SheetName ([string]$charts.sensitivity_sheet) -Stage 'part A1'
     Invoke-P83TornadoQualification -Observation $observationA1 -Stage 'part A1' `
         -Simulation $simCurrent -CurrentWord $simCurrent `
         -UnavailablePhrase $notProducedPhrase
@@ -1701,7 +1714,7 @@ try {
         -Simulation $simCurrent -Distribution $annualCurrent -Profile $profileCurrent `
         -ExpectedPx $firstLabel -ExpectedYears $yearCount
     $plottedA2 = Invoke-P83TornadoRowChecks -Workbook $wb -Observation $observationA2 `
-        -Sensitivity $simInspection -SheetName ([string]$charts.sensitivity_sheet) `
+        -Sensitivity $charts.sensitivity_source -SheetName ([string]$charts.sensitivity_sheet) `
         -Stage 'part A2' -Published
     $null = Add-P83Check 'part A2: the tornado plots at least one ranked driver' `
         ($plottedA2 -ge 1) ([string]$plottedA2 + ' drivers plotted')

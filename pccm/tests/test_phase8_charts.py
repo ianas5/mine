@@ -755,6 +755,31 @@ def test_70_the_manifest_refuses_each_way_a_chart_lies(
     ("two charts share an anchor",
      lambda inspection: inspection["charts"][1].__setitem__(
          "anchor", inspection["charts"][0]["anchor"])),
+    # THE SOURCE THE TORNADO MIRRORS, SIMPLY GONE - the second Windows run's
+    # crash, seen from the side that can refuse it before Excel is opened.
+    ("the sensitivity source is missing",
+     lambda inspection: inspection.pop("sensitivity_source")),
+    ("the sensitivity source loses its first row",
+     lambda inspection: inspection["sensitivity_source"].pop("first_row")),
+    ("the sensitivity source loses its columns",
+     lambda inspection: inspection["sensitivity_source"].pop("columns")),
+    # THE MAGNITUDE MIRRORED INSTEAD OF THE SIGNED CORRELATION. Every driver
+    # would still plot; every negative one would lose its direction.
+    ("the tornado mirrors the absolute magnitude",
+     lambda inspection: inspection["sensitivity_source"]["columns"][1].__setitem__(
+         "key", "abs_rho")),
+    # A SOURCE FIELD THE BRIDGE DOES NOT PLOT.
+    ("the source mirrors a field the bridge does not plot",
+     lambda inspection: inspection["sensitivity_source"]["columns"][0].__setitem__(
+         "key", "driver_id")),
+    # THE TWO SIDES IN DIFFERENT ORDERS - a positional comparison would then
+    # check the name against the rho.
+    ("the source and the bridge disagree about order",
+     lambda inspection: inspection["sensitivity_source"]["columns"].reverse()),
+    # A ROW NUMBER WHERE A COLUMN LETTER BELONGS.
+    ("a source column stops being a column",
+     lambda inspection: inspection["sensitivity_source"]["columns"][0].__setitem__(
+         "column", "13")),
     # THE RANKING PRODUCED BY A CELL RATHER THAN BY AN OPERATOR. A worksheet
     # function here would mean the tornado could rerun the analysis in order to
     # draw itself, which is the second analytical authority this layer refuses.
@@ -775,7 +800,7 @@ def test_71_the_projection_validator_refuses_each_incoherent_chart(
 
 
 def test_72_the_unmutated_manifest_passes_both_gates() -> None:
-    """SO THE THIRTEEN REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
+    """SO THE TWENTY REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
     fixture."""
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
     inspection = build_phase8_charts_inspection(
