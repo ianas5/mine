@@ -77,8 +77,21 @@ $pccmRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
 $repoRoot = Split-Path -Parent $pccmRoot
 if ([string]::IsNullOrWhiteSpace($BuildDir)) { $BuildDir = Join-Path $pccmRoot 'build' }
 
-$script:P8ZChecks = New-Object System.Collections.ArrayList
+# EVERY SCRIPT-SCOPE VARIABLE THE COPIED FUNCTIONS READ, INITIALISED HERE.
+#
+# RUN 2 DIED ON THIS. `Write-P8ZLine` reads $script:P8ZPath and `Invoke-P8ZRelease`
+# reads $script:P8ZResidual; both are copied from the accepted runner, which
+# initialises FOUR variables at this point. This file initialised two, so the
+# first line the runner ever wrote raised under StrictMode. The lesson is not
+# "add two lines" - it is that copying a function copies its dependencies on
+# script state, and nothing checked that.
 $script:P8ZLines = New-Object System.Collections.ArrayList
+# THE REPORT PATH, EMPTY UNTIL THERE IS ONE. Write-P8ZLine tests it before
+# using it, so lines written before the temp directory exists are held in
+# memory and flushed once it does.
+$script:P8ZPath = ''
+$script:P8ZChecks = New-Object System.Collections.ArrayList
+$script:P8ZResidual = New-Object System.Collections.ArrayList
 
 $script:P8ZErrorCodes = @{
     -2146826288 = '#NULL!'; -2146826281 = '#DIV/0!'; -2146826273 = '#VALUE!'
@@ -734,7 +747,36 @@ if ($revision.Dirty.Count -gt 0) {
     exit 1
 }
 
-$stageBPath = Join-Path $BuildDir 'PCCM_stageA.xlsx'
+
+# ===========================================================================
+# THE DISPOSABLE WORKING COPY, AND THE STAGE-B BOOTSTRAP
+# ===========================================================================
+# THE ACCEPTED PATTERN, AND THIS RUNNER DID NOT HAVE IT. It pointed at
+# build/PCCM_stageA.xlsx directly - a workbook with NO VBA in it - so the very
+# first thing it would have asked Excel to do could not have worked. Every
+# accepted runner copies the artefacts to a temp directory and runs
+# build_stage_b.ps1 there to produce the macro-enabled workbook.
+#
+# AND IT WORKS ON THE COPY, so the repository's build/ is never touched by a
+# run and a failed run leaves its report behind rather than a mutated tree.
+$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
+    ('pccm-phase8-pz-' + (Get-Date).ToString('yyyyMMdd-HHmmss'))
+$null = New-Item -ItemType Directory -Path $tempRoot -Force
+Copy-Item -LiteralPath (Join-Path $BuildDir ([string]$manifest.stage_a_filename)) -Destination $tempRoot
+foreach ($artefact in @($manifestPath, $inspectPath, $simInspectPath, $casesPath,
+                        $chartPath)) {
+    Copy-Item -LiteralPath $artefact -Destination $tempRoot
+}
+Copy-Item -LiteralPath (Join-Path $BuildDir 'vba') -Destination $tempRoot -Recurse
+
+# THE REPORT PATH IS KNOWN NOW, so every line from here is written through.
+$script:P8ZPath = Join-Path $tempRoot 'phase8_pz_zero_variance.txt'
+$stageBPath = Join-Path $tempRoot ([string]$manifest.stage_b_filename)
+
+$bootstrap = Join-Path $scriptDir 'build_stage_b.ps1'
+& $bootstrap -BuildDir $tempRoot -Force
+$bootstrapExit = $LASTEXITCODE
+$bootstrapOk = (($bootstrapExit -eq 0) -and (Test-Path -LiteralPath $stageBPath))
 
 # AND EVERY FILE IT IS ABOUT TO READ EXISTS, named one at a time. A missing
 # artefact is a Stage A that was not built, and saying so here costs a second
@@ -757,13 +799,33 @@ Write-P8ZLine ('eligibility field : ' + [string]$source.eligibility.key +
                ' at ' + $sensitivitySheet + '!' + $eligibilityColumn)
 Write-P8ZLine ''
 
-$ledger = New-ReleaseLedger
-$excel = $null; $wb = $null; $workbooks = $null
-$comAcquired = 0
+$null = Add-P8ZCheck 'the Stage-B workbook was bootstrapped' $bootstrapOk `
+    ('build_stage_b.ps1 exit ' + [string]$bootstrapExit) 'PREREQUISITE'
+if (-not $bootstrapOk) {
+    Write-P8ZLine ''
+    Write-P8ZLine 'STOP. The Stage-B workbook was not produced; nothing below could run.'
+    Write-Host ('The report is at ' + $script:P8ZPath) -ForegroundColor Cyan
+    exit 1
+}
+
+# ===========================================================================
+# THE SESSION
+# ===========================================================================
+# EVERY VARIABLE THE CLEANUP READS IS ASSIGNED BEFORE THE TRY IS ENTERED, so
+# the finally block is safe however early the try fails - including before
+# Excel exists at all.
+$preExisting = @(Get-PreExistingExcelPids)
+$rel = New-ReleaseLedger
+$excel = $null; $workbooks = $null; $wb = $null
+$excelIdentity = $null
+$naturalExit = $false
+$emergencyRequired = $false
 $fatal = ''
+$comAcquired = 0
 try {
     $excel = New-Object -ComObject Excel.Application
     $comAcquired = $comAcquired + 1
+    $excelIdentity = Get-ExcelIdentity -ExcelApp $excel -PreExistingPids $preExisting
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
     $excel.AskToUpdateLinks = $false
@@ -997,18 +1059,98 @@ try {
     Write-P8ZLine ''
     Write-P8ZLine ('THE P8-Z SESSION DID NOT COMPLETE: ' + $fatal)
 } finally {
-    Invoke-P8ZRelease -Ledger $ledger -Excel ([ref]$excel) -Workbook ([ref]$wb) `
-        -Workbooks ([ref]$workbooks) -Acquired $comAcquired
+    # THE ACCEPTED SHUTDOWN, AND IT IS SAFE FROM AN EARLY FAILURE. Every handle
+    # is $null until it is acquired and every counter is assigned before the try,
+    # so this runs correctly even if the very first statement inside the try
+    # threw and Excel was never created.
+    try {
+        if ($null -ne $wb) {
+            try { $wb.Close($false); $rel.WorkbookClosed = $true }
+            catch { $null = $rel.Failed.Add('Workbook.Close') }
+        }
+        Invoke-P8ZRelease $rel $wb        'Workbook';  $wb        = $null
+        Invoke-P8ZRelease $rel $workbooks 'Workbooks'; $workbooks = $null
+        if ($null -ne $excel) {
+            try { $excel.Quit(); $rel.QuitCalled = $true }
+            catch { $null = $rel.Failed.Add('Application.Quit') }
+        }
+        Invoke-P8ZRelease $rel $excel 'Excel.Application'; $excel = $null
+    } finally {
+        $Error.Clear()
+        [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
+        [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
+
+        if ($null -ne $excelIdentity) {
+            $naturalExit = Wait-ExcelExit -Identity $excelIdentity -TimeoutSeconds 90
+        }
+        $rel.NaturalExit = $naturalExit
+        Write-P8ZLine ''
+        Write-P8ZLine 'EXCEL SHUTDOWN'
+        Write-P8ZLine '--------------'
+        if ($null -eq $excelIdentity) {
+            Write-P8ZLine 'EXCEL SHUTDOWN: no Excel process was ever owned by this run.'
+        } elseif ($naturalExit) {
+            Write-P8ZLine ('EXCEL SHUTDOWN: the owned process (PID ' +
+                           [string]$excelIdentity.ProcessId + ') exited naturally.')
+        } else {
+            $emergencyRequired = $true
+            $rel.EmergencyRequired = $true
+            $cleaned = Invoke-EmergencyExcelCleanup -Identity $excelIdentity -Label 'P8-Z'
+            Write-P8ZLine ('EXCEL SHUTDOWN: emergency cleanup was required (' + [string]$cleaned + ')')
+        }
+        Write-P8ZLine (Format-ReleaseLedger $rel)
+        foreach ($residual in @($script:P8ZResidual)) {
+            Write-P8ZLine ('      OUTSTANDING: ' + [string]$residual)
+        }
+        foreach ($transient in @(Get-TransientFailures)) {
+            Write-P8ZLine ('      transient release FAILED: ' + [string]$transient)
+        }
+    }
 }
 
-$failed = 0
-foreach ($check in @($script:P8ZChecks)) { if ([string]$check.Status -ceq 'FAIL') { $failed = $failed + 1 } }
+# ===========================================================================
+# THE LIFECYCLE VERDICT, on the same terms the accepted runners use
+# ===========================================================================
+# NOT RE-TESTING P8-3. These are this run's OWN lifecycle facts: a result from a
+# session that leaked Excel is not evidence about a chart.
+$null = Add-P8ZCheck 'the owned Excel process exited naturally' $naturalExit
+$null = Add-P8ZCheck 'no emergency cleanup was required' (-not $emergencyRequired)
+$null = Add-P8ZCheck 'every COM object this runner acquired was released' `
+    ([int]$rel.Attempted -eq [int]$comAcquired) `
+    ([string]$comAcquired + ' acquired, ' + [string]$rel.Attempted + ' released')
+$null = Add-P8ZCheck 'every COM release succeeded' ($rel.Failed.Count -eq 0) ($rel.Failed -join ', ')
+$null = Add-P8ZCheck 'every COM release left 0 outstanding references' `
+    (@($script:P8ZResidual).Count -eq 0) ((@($script:P8ZResidual)) -join '; ')
+
+# THE VERDICT, ON THE ACCEPTED RECORD'S OWN FIELDS.
+#
+# THIS READ `$check.Status`, WHICH Add-P8ZCheck NEVER WRITES. The record carries
+# Kind, Label, Ok and Detail; under StrictMode a missing property raises, so
+# every run of this file - including one where every check passed - would have
+# died at the last line. The accepted runners split the record on Kind and test
+# Ok, and that is what this does now.
+$results = @($script:P8ZChecks | Where-Object { [string]$_.Kind -eq 'RESULT' })
+$prereqs = @($script:P8ZChecks | Where-Object { [string]$_.Kind -eq 'PREREQUISITE' })
+$failedResults = @($results | Where-Object { -not $_.Ok })
+$failedPrereqs = @($prereqs | Where-Object { -not $_.Ok })
 Write-P8ZLine ''
-Write-P8ZLine ('P8-Z: ' + [string]@($script:P8ZChecks).Count + ' checked, ' +
-               [string]$failed + ' failed')
-$ok = (($failed -eq 0) -and [string]::IsNullOrWhiteSpace($fatal))
+Write-P8ZLine 'VERDICT'
+Write-P8ZLine '-------'
+Write-P8ZLine ('prerequisites     : ' + [string]$prereqs.Count + ' checked, ' +
+               [string]$failedPrereqs.Count + ' failed')
+Write-P8ZLine ('scenario results  : ' + [string]$results.Count + ' checked, ' +
+               [string]$failedResults.Count + ' failed')
+foreach ($failure in @($failedPrereqs + $failedResults)) {
+    Write-P8ZLine ('    FAILED: ' + [string]$failure.Label + ' -- ' + [string]$failure.Detail)
+}
+$ok = (($failedResults.Count -eq 0) -and ($failedPrereqs.Count -eq 0) -and
+       [string]::IsNullOrWhiteSpace($fatal))
 Write-P8ZLine ('P8-Z ' + $(if ($ok) { 'PASS' } else { 'FAIL' }))
 Write-P8ZLine ''
 Write-P8ZLine 'THIS RUNNER ANSWERS ONE QUESTION. It is not the P8-3 acceptance suite and'
 Write-P8ZLine 'no result here re-establishes or disturbs that acceptance.'
+Write-P8ZLine ''
+Write-P8ZLine ('report            : ' + $script:P8ZPath)
+Write-Host ('The report is at ' + $script:P8ZPath) -ForegroundColor Cyan
+Write-Host 'The working copy is left in place so the report survives; delete it when done.'
 if ($ok) { exit 0 } else { exit 1 }
