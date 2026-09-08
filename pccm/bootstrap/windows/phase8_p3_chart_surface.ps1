@@ -1039,6 +1039,34 @@ function Invoke-P83StateChecks {
 # proved in live Excel that `Simulation Status (last evaluated)` can still read
 # CURRENT after a request change; if that happens here, the two cells disagree
 # and the report shows exactly that, with the chart qualified by the live one.
+# TWO QUESTIONS, AND AN ANSWER TO ONE IS NOT AN ANSWER TO THE OTHER.
+#
+#   THE MODEL'S CURRENT SEMANTIC STATE is whatever the accepted owner derives -
+#   on an untouched workbook the simulation prerequisites do not resolve, so the
+#   owner returns INVALID by its first ordered rule.
+#
+#   WHETHER A SIMULATION HAS EVER BEEN PUBLISHED is a different fact, and the
+#   contract keeps it separate on purpose: the no-successful-snapshot rule
+#   returns a BLANK status rather than a word, so a state word can never be read
+#   as evidence about publication in either direction. An INVALID model does not
+#   imply a historical run exists, and it does not imply one does not.
+#
+# So this asks the publication question directly, from the run identity and from
+# what the bridge carries, and it never consults the state word.
+function Invoke-P83PublicationExistence {
+    param($Observation, [string]$Stage)
+    $run = Get-P83Frozen -Observation $Observation -Key 'run_stamp.run_id'
+    $null = Add-P83Check ($Stage + ': no run identity exists, so nothing has been published') `
+        (Test-P83Blank -Cell $run) (Format-P83Cell $run)
+    $counts = @($Observation.Bridge['distribution.count'])
+    $drawn = 0
+    foreach ($cell in $counts) {
+        if (-not ($cell.IsError -or (Test-P83Blank -Cell $cell))) { $drawn = $drawn + 1 }
+    }
+    $null = Add-P83Check ($Stage + ': the histogram bridge carries no distribution to plot') `
+        ($drawn -eq 0) ([string]$drawn + ' of ' + [string]$counts.Count + ' bins carry a count')
+}
+
 function Invoke-P83QualificationChecks {
     param($Observation, [string]$Stage, [string]$Simulation, [string]$CurrentWord)
     $live = Get-P83Frozen -Observation $Observation -Key 'simulation_state'
@@ -1077,9 +1105,16 @@ function Invoke-P83TornadoQualification {
     $null = Add-P83Check ($Stage + ': the tornado carries the live simulation state as well') `
         (Test-SimExactText -Actual $live.Value -Expected $Simulation) (Format-P83Cell $live)
     if ($Simulation -cne $CurrentWord) {
+        # THIS CHECK NAMES A STATE, SO IT ASSERTS THAT STATE. Asserting only
+        # `not CURRENT` would pass for every word that is not CURRENT, including
+        # one from the wrong axis entirely - which is how a check printed
+        # `qualified NOT CALCULATED` beside a cell reading INVALID and still
+        # passed. The divergence from the published run is the SECOND half of the
+        # condition, not the whole of it.
         $null = Add-P83Check ($Stage + ': the tornado is qualified ' + $Simulation +
                               ' even though its ranking still names the published run') `
-            (-not (Test-SimExactText -Actual $live.Value -Expected $CurrentWord)) `
+            ((Test-SimExactText -Actual $live.Value -Expected $Simulation) -and `
+             (-not (Test-SimExactText -Actual $live.Value -Expected $CurrentWord))) `
             ('availability ' + (Format-P83Cell $availability) + ', live ' + (Format-P83Cell $live))
     }
 }
@@ -1300,15 +1335,24 @@ function Test-P83Layout {
         try { $columns = [int]$window.SplitColumn } catch { $columns = -1 }
         $split = 'FreezePanes=' + [string]$frozen + ' SplitRow=' + [string]$rows +
                  ' SplitColumn=' + [string]$columns
-        # THE MANIFEST DECLARES A CELL; EXCEL REPORTS A SPLIT. `A17` freezes the
-        # sixteen rows above it and no columns, which is what is asserted.
+        # THE MANIFEST DECLARES A CELL; EXCEL REPORTS A SPLIT, and the cell is
+        # the sheet's own `freeze_panes` declaration carried through the
+        # projection. Everything above and left of that cell is frozen, so the
+        # split is one less than each of its coordinates - `A17` is sixteen rows
+        # and no columns, `C12` would be eleven rows and two columns. The
+        # conversion is general because the declaration is the authority; this
+        # runner does not know which cell it will be handed.
+        $wantCell = [string]$Dashboard.freeze_panes
+        $wantLetters = ''
         $wantRow = 0
-        foreach ($character in ([string]$Dashboard.freeze_panes).ToCharArray()) {
+        foreach ($character in $wantCell.ToCharArray()) {
             if ([char]::IsDigit($character)) { $wantRow = $wantRow * 10 + [int]::Parse([string]$character) }
+            else { $wantLetters = $wantLetters + [string]$character }
         }
-        $null = Add-P83Check ($Stage + ': the Dashboard freezes the rows above ' +
-                              [string]$Dashboard.freeze_panes) `
-            ($frozen -and ($rows -eq ($wantRow - 1)) -and ($columns -eq 0)) $split
+        $wantColumn = ConvertTo-P83ColumnNumber -Letters $wantLetters
+        $null = Add-P83Check ($Stage + ': the Dashboard freezes everything above and left of ' +
+                              $wantCell) `
+            ($frozen -and ($rows -eq ($wantRow - 1)) -and ($columns -eq ($wantColumn - 1))) $split
         # AND THE FROZEN BAND REALLY COVERS THE STATUS BLOCK, so a reader
         # scrolled to a chart still sees the annual state.
         $statusLast = 0
@@ -1449,10 +1493,18 @@ $annualCurrent = [string]$p7.handoff.distribution_states[1]
 $profileCurrent = [string]$p7.handoff.profile_states[1]
 $otherPx = [string]$p7.handoff.inconsistent_stamp_state
 $historical = [string]$p7.handoff.distribution_states[$p7.handoff.distribution_states.Count - 1]
-$calcNotCalculated = [string]$p7.model_states.derived_status[0]
+# TWO ORTHOGONAL AXES, AND THEY ARE NOT THE SAME VOCABULARY. The CALCULATION
+# axis is NOT CALCULATED / CURRENT / STALE / INVALID and belongs to
+# PCCM_CalculationStatus. The SIMULATION axis is exactly CURRENT / STALE /
+# INVALID - the sim contract says there is no fourth state, and a workbook with
+# no publication holds a BLANK status rather than a word - and it is what
+# Results publishes as the live simulation state. NOT CALCULATED is not a
+# simulation state and never was; reading one axis's words and asserting them of
+# the other cell is what failed the first Windows run.
 $calcCurrent = [string]$p7.model_states.derived_status[1]
-$calcStale = [string]$p7.model_states.derived_status[2]
-$calcInvalid = [string]$p7.model_states.derived_status[3]
+$simCurrent = [string]$gateBCases.vocabulary.sim_states[0]
+$simStale = [string]$gateBCases.vocabulary.sim_states[1]
+$simInvalid = [string]$gateBCases.vocabulary.sim_states[2]
 # THE SENSITIVITY SHEET'S OWN UNAVAILABLE WORDING, taken from the manifest the
 # sheet was built from rather than retyped here.
 $notProducedPhrase = 'Not produced for this run'
@@ -1539,9 +1591,12 @@ try {
     Write-P83Line '------------------------'
     $observation0 = Invoke-P83Observation -Excel $excel -Workbook $wb -P8 $p8 -Charts $charts `
         -Stage 'part 0'
+    # (A) THE CURRENT MODEL'S SEMANTIC STATE, from the accepted owner.
     Invoke-P83StateChecks -Observation $observation0 -Stage 'part 0' `
-        -Simulation $calcNotCalculated -Distribution $notProduced -Profile $notProducedProfile `
+        -Simulation $simInvalid -Distribution $notProduced -Profile $notProducedProfile `
         -ExpectedPx $null -ExpectedYears 0
+    # (B) WHETHER ANYTHING HAS EVER BEEN PUBLISHED, asked without the state word.
+    Invoke-P83PublicationExistence -Observation $observation0 -Stage 'part 0'
     # NOTHING IS PLOTTED, AND THAT IS DIFFERENT FROM PLOTTING ZEROS. The
     # comparison inside the observation already refuses a point where the bridge
     # says there is none; these count what the bridge itself carries.
@@ -1550,7 +1605,7 @@ try {
     $null = Invoke-P83TornadoRowChecks -Workbook $wb -Observation $observation0 `
         -Sensitivity $simInspection -SheetName ([string]$charts.sensitivity_sheet) -Stage 'part 0'
     Invoke-P83TornadoQualification -Observation $observation0 -Stage 'part 0' `
-        -Simulation $calcNotCalculated -CurrentWord $calcCurrent `
+        -Simulation $simInvalid -CurrentWord $simCurrent `
         -UnavailablePhrase 'No simulation has been published'
     Test-P83Layout -Workbook $wb -Dashboard $dash -Charts $charts -Stage 'part 0'
 
@@ -1606,17 +1661,17 @@ try {
     $observationA1 = Invoke-P83Observation -Excel $excel -Workbook $wb -P8 $p8 -Charts $charts `
         -Stage 'part A1'
     Invoke-P83StateChecks -Observation $observationA1 -Stage 'part A1' `
-        -Simulation $calcCurrent -Distribution $annualCurrent -Profile $profileCurrent `
+        -Simulation $simCurrent -Distribution $annualCurrent -Profile $profileCurrent `
         -ExpectedPx $firstLabel -ExpectedYears $yearCount
     Invoke-P83AnnualSeriesChecks -Observation $observationA1 -Stage 'part A1' -ExpectedYears $yearCount
     Invoke-P83HistogramChecks -Observation $observationA1 -Stage 'part A1' -ExpectedBins $binCount -Published
     Invoke-P83QualificationChecks -Observation $observationA1 -Stage 'part A1' `
-        -Simulation $calcCurrent -CurrentWord $calcCurrent
+        -Simulation $simCurrent -CurrentWord $simCurrent
     # THE TORNADO HAS NOTHING, AND SAYS SO.
     $null = Invoke-P83TornadoRowChecks -Workbook $wb -Observation $observationA1 `
         -Sensitivity $simInspection -SheetName ([string]$charts.sensitivity_sheet) -Stage 'part A1'
     Invoke-P83TornadoQualification -Observation $observationA1 -Stage 'part A1' `
-        -Simulation $calcCurrent -CurrentWord $calcCurrent `
+        -Simulation $simCurrent -CurrentWord $simCurrent `
         -UnavailablePhrase $notProducedPhrase
 
     # ===================================================================
@@ -1643,7 +1698,7 @@ try {
     $observationA2 = Invoke-P83Observation -Excel $excel -Workbook $wb -P8 $p8 -Charts $charts `
         -Stage 'part A2'
     Invoke-P83StateChecks -Observation $observationA2 -Stage 'part A2' `
-        -Simulation $calcCurrent -Distribution $annualCurrent -Profile $profileCurrent `
+        -Simulation $simCurrent -Distribution $annualCurrent -Profile $profileCurrent `
         -ExpectedPx $firstLabel -ExpectedYears $yearCount
     $plottedA2 = Invoke-P83TornadoRowChecks -Workbook $wb -Observation $observationA2 `
         -Sensitivity $simInspection -SheetName ([string]$charts.sensitivity_sheet) `
@@ -1651,7 +1706,7 @@ try {
     $null = Add-P83Check 'part A2: the tornado plots at least one ranked driver' `
         ($plottedA2 -ge 1) ([string]$plottedA2 + ' drivers plotted')
     Invoke-P83TornadoQualification -Observation $observationA2 -Stage 'part A2' `
-        -Simulation $calcCurrent -CurrentWord $calcCurrent -ExpectAvailable `
+        -Simulation $simCurrent -CurrentWord $simCurrent -ExpectAvailable `
         -UnavailablePhrase $notProducedPhrase
     # THE OTHER THREE CHARTS DID NOT MOVE. Sensitivity publishes its own block;
     # it does not touch the annual answer or the distribution.
@@ -1679,10 +1734,10 @@ try {
     # selector is not a simulation fingerprint input, so the histogram's state
     # must stay exactly where it was while the profile's moves to OTHER Px.
     Invoke-P83StateChecks -Observation $observationB -Stage 'part B' `
-        -Simulation $calcCurrent -Distribution $annualCurrent -Profile $otherPx `
+        -Simulation $simCurrent -Distribution $annualCurrent -Profile $otherPx `
         -ExpectedPx $firstLabel -ExpectedYears $yearCount
     Invoke-P83QualificationChecks -Observation $observationB -Stage 'part B' `
-        -Simulation $calcCurrent -CurrentWord $calcCurrent
+        -Simulation $simCurrent -CurrentWord $simCurrent
     # THE PRESERVED P80 PROFILE IS STILL WHAT THE ANNUAL CHARTS PLOT.
     $null = Compare-P83Bridge -Before $observationA2 -After $observationB `
         -Keys @('annual.project_index', 'annual.calendar_year', 'annual.annual_nominal',
@@ -1695,7 +1750,7 @@ try {
         -Keys @('drivers.driver_name', 'drivers.rho') -Stage 'part B' `
         -What 'the tornado is untouched by a reporting selector'
     Invoke-P83TornadoQualification -Observation $observationB -Stage 'part B' `
-        -Simulation $calcCurrent -CurrentWord $calcCurrent -ExpectAvailable `
+        -Simulation $simCurrent -CurrentWord $simCurrent -ExpectAvailable `
         -UnavailablePhrase $notProducedPhrase
     # AND THE RUN IDENTITY DID NOT MOVE.
     $runB = Get-P83Frozen -Observation $observationB -Key 'run_stamp.run_id'
@@ -1717,7 +1772,7 @@ try {
     $observationC = Invoke-P83Observation -Excel $excel -Workbook $wb -P8 $p8 -Charts $charts `
         -Stage 'part C'
     Invoke-P83StateChecks -Observation $observationC -Stage 'part C' `
-        -Simulation $calcCurrent -Distribution $annualCurrent -Profile $profileCurrent `
+        -Simulation $simCurrent -Distribution $annualCurrent -Profile $profileCurrent `
         -ExpectedPx $secondLabel -ExpectedYears $yearCount
     Invoke-P83AnnualSeriesChecks -Observation $observationC -Stage 'part C' -ExpectedYears $yearCount
     # THE ANNUAL CHARTS FOLLOWED THE REPUBLISHED PROFILE.
@@ -1763,14 +1818,14 @@ try {
     $observationD = Invoke-P83Observation -Excel $excel -Workbook $wb -P8 $p8 -Charts $charts `
         -Stage 'part D'
     Invoke-P83StateChecks -Observation $observationD -Stage 'part D' `
-        -Simulation $calcStale -Distribution $historical -Profile $historical `
+        -Simulation $simStale -Distribution $historical -Profile $historical `
         -ExpectedPx $secondLabel -ExpectedYears $yearCount
     # THE QUALIFICATION IS THE LIVE STATE, AND THE PERSISTED ROW IS RECORDED
     # BESIDE IT SO THE DISTINCTION IS EVIDENCE.
     Invoke-P83QualificationChecks -Observation $observationD -Stage 'part D' `
-        -Simulation $calcStale -CurrentWord $calcCurrent
+        -Simulation $simStale -CurrentWord $simCurrent
     Invoke-P83TornadoQualification -Observation $observationD -Stage 'part D' `
-        -Simulation $calcStale -CurrentWord $calcCurrent -ExpectAvailable `
+        -Simulation $simStale -CurrentWord $simCurrent -ExpectAvailable `
         -UnavailablePhrase $notProducedPhrase
     # THE PRESERVED EVIDENCE IS STILL THERE. A stale answer is qualified, not
     # erased: the histogram still describes the successful publication and the
@@ -1811,12 +1866,12 @@ try {
     $observationE = Invoke-P83Observation -Excel $excel -Workbook $wb -P8 $p8 -Charts $charts `
         -Stage 'part E'
     Invoke-P83StateChecks -Observation $observationE -Stage 'part E' `
-        -Simulation $calcInvalid -Distribution $historical -Profile $historical `
+        -Simulation $simInvalid -Distribution $historical -Profile $historical `
         -ExpectedPx $secondLabel -ExpectedYears $yearCount
     Invoke-P83QualificationChecks -Observation $observationE -Stage 'part E' `
-        -Simulation $calcInvalid -CurrentWord $calcCurrent
+        -Simulation $simInvalid -CurrentWord $simCurrent
     Invoke-P83TornadoQualification -Observation $observationE -Stage 'part E' `
-        -Simulation $calcInvalid -CurrentWord $calcCurrent -ExpectAvailable `
+        -Simulation $simInvalid -CurrentWord $simCurrent -ExpectAvailable `
         -UnavailablePhrase $notProducedPhrase
     # THE SUCCESSFUL HISTORICAL PAYLOAD IS INTACT.
     Invoke-P83HistogramChecks -Observation $observationE -Stage 'part E' -ExpectedBins $binCount -Published

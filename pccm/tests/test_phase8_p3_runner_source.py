@@ -30,6 +30,7 @@ PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "tests"))
 
 import pytest  # noqa: E402
+import yaml  # noqa: E402
 
 import test_phase7_acceptance_harness_source as accepted  # noqa: E402
 
@@ -42,6 +43,7 @@ LIFECYCLE = WINDOWS / "com_lifecycle.ps1"
 PHASE5 = WINDOWS / "phase5_gate_b_scenarios.ps1"
 PHASE6 = WINDOWS / "phase6_gate_b_scenarios.ps1"
 BUILD = PCCM_ROOT / "build"
+SPEC = PCCM_ROOT / "spec"
 
 DOT_SOURCED = (LIFECYCLE, PHASE5, PHASE6)
 
@@ -111,8 +113,7 @@ def _function(name: str) -> str:
     return body
 
 
-def _part(name: str) -> str:
-    code = _code()
+def _part_of(code: str, name: str) -> str:
     starts = []
     for banner in BANNERS:
         marker = f"Write-P83Line '{banner}'"
@@ -123,6 +124,41 @@ def _part(name: str) -> str:
              "part C": 4, "part D": 5, "part E": 6}[name]
     end = starts[index + 1] if index + 1 < len(starts) else len(code)
     return code[starts[index]:end]
+
+
+def _part(name: str) -> str:
+    return _part_of(_code(), name)
+
+
+def _gate_b_cases() -> dict:
+    if "gateb" not in _CACHE:
+        _CACHE["gateb"] = json.loads(
+            (BUILD / "phase6_gate_b_cases.json").read_text(encoding="utf-8"))
+    return _CACHE["gateb"]
+
+
+def _dashboard() -> dict:
+    if "dash" not in _CACHE:
+        _CACHE["dash"] = json.loads(
+            (BUILD / "phase8_dashboard_inspection.json").read_text(encoding="utf-8"))
+    return _CACHE["dash"]
+
+
+def _sim_state_word(variable: str) -> str:
+    """The word a `$sim*` runner variable actually resolves to.
+
+    The runner reads the SIMULATION axis out of the gate-B projection, which
+    reads it from `sim_contract.yaml: label_sets.sim_state`. Resolving the index
+    here means a control compares against the CONTRACT, not against a name a
+    runner chose - the distinction that matters, because the calculation axis
+    spells two of its four states identically.
+    """
+    match = re.search(
+        re.escape(variable) + r"\s*=\s*\[string\]\$gateBCases\.vocabulary\.sim_states\[(\d+)\]",
+        _code())
+    assert match, f"{variable} is not read from the projected simulation axis"
+    states = _gate_b_cases()["vocabulary"]["sim_states"]
+    return str(states[int(match.group(1))])
 
 
 def _projection() -> dict:
@@ -496,13 +532,21 @@ def test_44_the_tornado_requires_both_conditions() -> None:
     assert tornado["also_qualified_by"] == "simulation_state"
 
 
-@pytest.mark.parametrize("part,word", [("part D", "$calcStale"), ("part E", "$calcInvalid")])
+@pytest.mark.parametrize("part,word,expected", [
+    ("part D", "$simStale", "STALE"), ("part E", "$simInvalid", "INVALID")])
 def test_45_the_stale_and_invalid_qualifications_cannot_be_dropped(
-        part: str, word: str) -> None:
+        part: str, word: str, expected: str) -> None:
     """A STALE OR INVALID CHART STAYS VISIBLE AND STAYS QUALIFIED. Preserved
-    evidence is not erased; it is labelled."""
+    evidence is not erased; it is labelled.
+
+    AND THE WORD IS THE SIMULATION AXIS'S. Naming a variable is not enough - the
+    control resolves it through the projection to the contract's own label, so a
+    variable that pointed at the calculation axis would be caught even where the
+    two axes happen to spell a state the same way."""
     body = _part(part)
     assert f"-Simulation {word}" in body, f"{part} does not expect {word}"
+    assert _sim_state_word(word) == expected, (
+        f"{part}'s {word} does not resolve to {expected} on the simulation axis")
     assert "Invoke-P83QualificationChecks" in body
     assert "Invoke-P83TornadoQualification" in body
     # AND THE PRESERVED PAYLOAD IS STILL ASSERTED PRESENT.
@@ -528,6 +572,184 @@ def test_47_part_0_expects_no_point_anywhere() -> None:
     assert "-ExpectedPx $null" in body
     assert "Invoke-P83HistogramChecks" in body
     assert "-Published" not in body, "part 0 expects a published payload"
+
+
+# ===========================================================================
+# E2. THE TWO AXES, AND THE ONE PROPERTY THE FIRST WINDOWS RUN COULD NOT FIND
+# ===========================================================================
+# WHAT THE FIRST LIVE RUN ESTABLISHED, and it is worth stating because both
+# defects below were the runner's and neither was production's.
+#
+# The calculation axis is NOT CALCULATED / CURRENT / STALE / INVALID. The
+# simulation axis is CURRENT / STALE / INVALID and nothing else - sim_contract
+# says so in as many words, and a workbook with no publication holds a BLANK
+# status rather than a fourth label. The runner read all four calculation words
+# and asserted one of them, NOT CALCULATED, of the LIVE SIMULATION state cell.
+# The accepted owner returned INVALID, which is what its first ordered rule
+# says an untouched workbook gets, and the runner called that a failure.
+def test_60_the_simulation_axis_has_no_fourth_state() -> None:
+    """SO `NOT CALCULATED` CANNOT BE A SIMULATION EXPECTATION - it is not a word
+    on that axis at all."""
+    states = _gate_b_cases()["vocabulary"]["sim_states"]
+    assert states == ["CURRENT", "STALE", "INVALID"], states
+    assert "NOT CALCULATED" not in states
+    # AND IT IS THE CALCULATION AXIS THAT OWNS THAT WORD.
+    calc = json.loads((BUILD / "phase7_acceptance_inspection.json").read_text(
+        encoding="utf-8"))["model_states"]["derived_status"]
+    assert calc[0] == "NOT CALCULATED"
+    assert set(states) < set(calc), (
+        "the two axes no longer overlap the way these controls assume")
+
+
+def test_61_part_0_expects_the_state_the_accepted_owner_derives() -> None:
+    """INVALID, AND FROM THE CONTRACT RATHER THAN FROM A GUESS.
+
+    sim_contract.yaml's derivation is ORDERED and the first matching rule wins.
+    Rule 1 is `current_prerequisites_do_not_resolve -> INVALID`; rule 2 is
+    `no_successful_snapshot_exists -> null`. On an untouched workbook the
+    calculation is NOT CALCULATED, so the simulation's prerequisites do not
+    resolve and rule 1 fires before rule 2 is ever reached."""
+    contract = yaml.safe_load((SPEC / "sim_contract.yaml").read_text(encoding="utf-8"))
+    rules = contract["sim_state"]["derivation"]["rules"]
+    assert contract["sim_state"]["derivation"]["ordered"] is True
+    first = min(rules, key=lambda rule: rule["order"])
+    assert first["condition"] == "current_prerequisites_do_not_resolve"
+    assert first["status"] == "INVALID"
+    assert contract["sim_state"]["definitions"]["INVALID"] == (
+        "current simulation prerequisites do not resolve")
+    # AND THE RUNNER EXPECTS EXACTLY THAT.
+    body = _part("part 0")
+    assert "-Simulation $simInvalid" in body
+    assert _sim_state_word("$simInvalid") == "INVALID"
+
+
+def test_62_no_calculation_word_is_asserted_of_a_simulation_cell() -> None:
+    """THE AXES STAY APART. Every `-Simulation` and `-CurrentWord` argument comes
+    off the simulation axis; the calculation axis survives only where the cell
+    being compared is PCCM_CalculationStatus."""
+    code = _code()
+    for match in re.finditer(r"-(?:Simulation|CurrentWord)\s+(\$\w+)", code):
+        assert match.group(1).startswith("$sim"), (
+            f"a simulation expectation reads {match.group(1)}")
+    for calc in re.finditer(r"\$calc(?:Current|Stale|Invalid|NotCalculated)\b", code):
+        line = code[code.rfind("\n", 0, calc.start()) + 1:code.find("\n", calc.start())]
+        assert ("model_states.derived_status" in line or
+                "PCCM_CalculationStatus" in line or
+                "$calcStatus" in line), (
+            f"a calculation word is used away from the calculation axis: {line.strip()!r}")
+    assert "$calcNotCalculated" not in code, (
+        "the runner still carries the calculation axis's fourth word")
+
+
+def test_63_a_qualification_check_asserts_the_state_it_names() -> None:
+    """THE VACUOUS CHECK, REFUSED. It printed `qualified NOT CALCULATED` beside a
+    cell reading INVALID and passed, because it asserted only `not CURRENT` -
+    true of every word that is not CURRENT, including one from the wrong axis."""
+    checked = 0
+    for name in ("Invoke-P83StateChecks", "Invoke-P83QualificationChecks",
+                 "Invoke-P83TornadoQualification"):
+        body = _function(name)
+        calls = [match.start() for match in re.finditer(r"Add-P83Check\b", body)]
+        for index, start in enumerate(calls):
+            end = calls[index + 1] if index + 1 < len(calls) else len(body)
+            call = body[start:end]
+            title = call[:call.find("\n")]
+            # WHICH STATE VARIABLE THIS CHECK'S NAME PROMISES. Only the title
+            # line is read: a state word interpolated into the sentence a reader
+            # sees is the claim the condition then has to make good.
+            promised = [word for word in re.findall(r"\$\w+", title)
+                        if word in ("$Simulation", "$Distribution", "$Profile")]
+            if not promised:
+                continue
+            checked += 1
+            # AND THE CONDITION - this call's own text, never the next one's -
+            # must compare the observed cell against that very variable.
+            condition = call[len(title):]
+            for word in promised:
+                assert f"-Expected {word}" in condition, (
+                    f"{name} names {word} and does not assert it: "
+                    f"{title.strip()[:90]!r}")
+    assert checked >= 4, (
+        f"only {checked} state-naming checks were examined; the sweep has stopped "
+        "finding them")
+
+
+def test_64_the_publication_question_is_asked_without_the_state_word() -> None:
+    """AN INVALID MODEL IS NOT A PUBLISHED RUN, AND NOT AN UNPUBLISHED ONE
+    EITHER. The contract keeps the two apart - the no-snapshot rule returns a
+    BLANK, not a word - so the runner must ask publication directly."""
+    body = _function("Invoke-P83PublicationExistence")
+    assert "run_stamp.run_id" in body
+    assert "Test-P83Blank -Cell $run" in body
+    assert "distribution.count" in body
+    for leak in ("simulation_state", "$Simulation", "Test-SimExactText"):
+        assert leak not in body, (
+            f"the publication question consults the state word via {leak}")
+    part0 = _part("part 0")
+    assert "Invoke-P83PublicationExistence -Observation $observation0" in part0
+    # AND THE SENSITIVITY SENTENCE SAYS THE SAME THING SEPARATELY.
+    assert "-UnavailablePhrase 'No simulation has been published'" in part0
+
+
+# ---------------------------------------------------------------------------
+# THE FREEZE THAT WAS NOT THERE
+# ---------------------------------------------------------------------------
+# The runner asked the DASHBOARD PROJECTION for `freeze_panes`. That projection
+# is built from `phase6_shell.dashboard`, and the declaration lives on the SHEET
+# - `sheets[Dashboard].freeze_panes`, a worksheet-layout property every sheet
+# has. The projection never carried it, StrictMode 2.0 refuses a property that
+# is not there, and the session aborted. The fix carries the field; it does not
+# type the cell.
+def test_65_the_freeze_is_declared_once_and_projected_from_there() -> None:
+    manifest = yaml.safe_load((SPEC / "workbook.yaml").read_text(encoding="utf-8"))
+    dashboard = manifest["phase6_shell"]["dashboard"]
+    assert "freeze_panes" not in dashboard, (
+        "the shell block now declares a freeze too; there would be two authorities")
+    sheet = next(s for s in manifest["sheets"] if s["name"] == dashboard["sheet"])
+    declared = sheet["freeze_panes"]
+    assert declared, "the Dashboard sheet declares no freeze"
+    assert _dashboard()["freeze_panes"] == declared, (
+        "the projection does not carry the sheet's declaration")
+
+
+def test_66_the_projected_freeze_exists_before_windows() -> None:
+    """THE POINT OF THIS ONE. A missing property is not a failed assertion on
+    Windows - it is an aborted session, forty minutes in, with the rest of the
+    run unobserved."""
+    projection = _dashboard()
+    assert "freeze_panes" in projection, (
+        "the runner would abort on a property that is not there")
+    assert re.fullmatch(r"[A-Z]{1,3}[1-9][0-9]*", str(projection["freeze_panes"]))
+    # AND THE FREEZE IS ABOVE THE CHARTS, or it qualifies nothing.
+    row = int(re.sub(r"[A-Z]", "", str(projection["freeze_panes"])))
+    assert row <= int(projection["chart_region"]["first_row"])
+
+
+def test_67_the_runner_reads_the_freeze_from_the_projection_only() -> None:
+    code = _code()
+    assert "$Dashboard.freeze_panes" in code, (
+        "the runner does not read the projected declaration")
+    for literal in ("'A17'", '"A17"'):
+        assert literal not in code, f"the runner types the freeze cell {literal}"
+    # NO OTHER OBJECT MAY ANSWER THIS QUESTION.
+    for wrong in ("$Charts.freeze_panes", "$charts.freeze_panes", "$P8.freeze_panes",
+                  "$p8.freeze_panes", "$manifest.freeze_panes"):
+        assert wrong not in code, f"the freeze is read off {wrong}"
+
+
+def test_68_the_runner_converts_the_cell_to_a_split() -> None:
+    """EXCEL REPORTS A SPLIT, NOT A CELL. Everything above and left of the
+    declared cell is frozen, so both coordinates convert - and the conversion is
+    general, because the runner does not get to know which cell it is handed."""
+    body = _function("Test-P83Layout")
+    assert "$window.SplitRow" in body and "$window.SplitColumn" in body
+    assert "$window.FreezePanes" in body
+    assert "ConvertTo-P83ColumnNumber -Letters $wantLetters" in body, (
+        "the column half of the declared cell is not converted")
+    assert "($rows -eq ($wantRow - 1))" in body
+    assert "($columns -eq ($wantColumn - 1))" in body, (
+        "the column split is compared against a constant rather than the "
+        "declaration")
 
 
 # ===========================================================================
@@ -578,6 +800,13 @@ def _qualification_ok(code: str) -> None:
     assert tornado, "the tornado qualification is gone"
     assert "-Key 'simulation_state'" in tornado.group(1), (
         "the tornado stopped asking whether the run matches the model")
+    # AND THE DIVERGENCE CHECK ASSERTS THE STATE IT NAMES. Asserting only
+    # `not CURRENT` passes for every other word, including one off the wrong
+    # axis, which is how it printed NOT CALCULATED beside a cell reading INVALID.
+    divergence = tornado.group(1)[tornado.group(1).find(
+        "even though its ranking still names the published run"):]
+    assert "Test-SimExactText -Actual $live.Value -Expected $Simulation" in divergence, (
+        "the divergence check names a state it does not assert")
 
 
 def _fabrication_ok(code: str) -> None:
@@ -587,7 +816,48 @@ def _fabrication_ok(code: str) -> None:
         "a drawn point is no longer compared against an absent cell")
 
 
-RULES = (_order_ok, _oracle_ok, _recalc_only_ok, _qualification_ok, _fabrication_ok)
+def _axis_ok(code: str) -> None:
+    """EVERY SIMULATION EXPECTATION RESOLVES, THROUGH THE PROJECTION, TO THE WORD
+    THE CONTRACT REQUIRES FOR THAT PART. Names prove nothing: the calculation
+    axis spells two of its four states exactly as the simulation axis does, so
+    the rule follows the index into the contract's own label set."""
+    states = _gate_b_cases()["vocabulary"]["sim_states"]
+    resolved: dict[str, str] = {}
+    for match in re.finditer(
+            r"(\$\w+)\s*=\s*\[string\]\$gateBCases\.vocabulary\.sim_states\[(\d+)\]",
+            code):
+        resolved[match.group(1)] = str(states[int(match.group(2))])
+    for part, expected in (("part 0", "INVALID"), ("part D", "STALE"),
+                           ("part E", "INVALID")):
+        body = _part_of(code, part)
+        found = re.search(r"-Simulation\s+(\$\w+)", body)
+        assert found, f"{part} makes no simulation-state expectation"
+        word = resolved.get(found.group(1))
+        assert word is not None, (
+            f"{part} expects {found.group(1)}, which is not read off the "
+            "projected simulation axis")
+        assert word == expected, f"{part} expects {word}, not {expected}"
+    assert "$calcNotCalculated" not in code, (
+        "the calculation axis's fourth word is back in the runner")
+
+
+def _freeze_ok(code: str) -> None:
+    """THE FREEZE COMES FROM THE PROJECTED SHEET DECLARATION AND IS CONVERTED."""
+    assert "$Dashboard.freeze_panes" in code, "the projected declaration is not read"
+    for literal in ("'A17'", '"A17"'):
+        assert literal not in code, f"the runner types the freeze cell {literal}"
+    for wrong in ("$Charts.freeze_panes", "$charts.freeze_panes", "$P8.freeze_panes",
+                  "$p8.freeze_panes", "$manifest.freeze_panes"):
+        assert wrong not in code, f"the freeze is read off {wrong}"
+    body = re.search(r"function\s+Test-P83Layout\s*\{(.*?)\n\}", code, re.S)
+    assert body, "the layout check is gone"
+    assert "ConvertTo-P83ColumnNumber -Letters $wantLetters" in body.group(1)
+    assert "($columns -eq ($wantColumn - 1))" in body.group(1), (
+        "the column split is not compared against the declaration")
+
+
+RULES = (_order_ok, _oracle_ok, _recalc_only_ok, _qualification_ok, _fabrication_ok,
+         _axis_ok, _freeze_ok)
 
 
 @pytest.mark.parametrize("name,mutate", [
@@ -644,6 +914,49 @@ RULES = (_order_ok, _oracle_ok, _recalc_only_ok, _qualification_ok, _fabrication
      lambda code: code.replace(
          "function Get-P83BridgeFrozen {",
          "function Get-P83BridgeFrozen {\n    $null = Get-SimRawCell", 1)),
+    # ---- THE SIX FROM THE FIRST WINDOWS RUN ----
+    # PART 0 EXPECTING THE WRONG STATE. The runner did exactly this: it asserted
+    # the calculation axis's NOT CALCULATED of the live SIMULATION state cell.
+    ("part 0 expects the wrong simulation state",
+     lambda code: code.replace(
+         "        -Simulation $simInvalid -Distribution $notProduced",
+         "        -Simulation $simCurrent -Distribution $notProduced", 1)),
+    # THE SAME DEFECT IN ITS ORIGINAL FORM: a word from the other axis.
+    ("part 0 expects a calculation word of a simulation cell",
+     lambda code: code.replace(
+         "$simCurrent = [string]$gateBCases.vocabulary.sim_states[0]",
+         "$calcNotCalculated = [string]$p7.model_states.derived_status[0]\n"
+         "$simCurrent = [string]$gateBCases.vocabulary.sim_states[0]", 1).replace(
+         "        -Simulation $simInvalid -Distribution $notProduced",
+         "        -Simulation $calcNotCalculated -Distribution $notProduced", 1)),
+    # A QUALIFICATION CHECK THAT STOPS COMPARING THE STATE - the vacuous check,
+    # restored exactly as it passed on Windows while printing the wrong word.
+    ("a qualification check stops comparing the state it names",
+     lambda code: code.replace(
+         "            ((Test-SimExactText -Actual $live.Value -Expected $Simulation) -and `\n"
+         "             (-not (Test-SimExactText -Actual $live.Value -Expected $CurrentWord))) `",
+         "            (-not (Test-SimExactText -Actual $live.Value -Expected $CurrentWord)) `", 1)),
+    # THE FREEZE CELL TYPED INTO THE RUNNER.
+    ("the freeze cell is hard-coded",
+     lambda code: code.replace(
+         "        $wantCell = [string]$Dashboard.freeze_panes",
+         "        $wantCell = 'A17'", 1)),
+    # THE FREEZE READ OFF THE WRONG PROJECTION OBJECT - which is the shape of the
+    # original defect, and StrictMode turns it into an aborted session.
+    ("the freeze is read off the charts projection",
+     lambda code: code.replace(
+         "        $wantCell = [string]$Dashboard.freeze_panes",
+         "        $wantCell = [string]$Charts.freeze_panes", 1)),
+    # PART D'S STALE QUALIFICATION QUIETLY BECOMING CURRENT.
+    ("part D stops expecting STALE",
+     lambda code: code.replace(
+         "        -Simulation $simStale -Distribution $historical",
+         "        -Simulation $simCurrent -Distribution $historical", 1)),
+    # AND PART E'S INVALID.
+    ("part E stops expecting INVALID",
+     lambda code: code.replace(
+         "        -Simulation $simInvalid -Distribution $historical",
+         "        -Simulation $simCurrent -Distribution $historical", 1)),
     # AN OUT-OF-CELL CALL MOVED INSIDE THE OBSERVATION.
     ("an out-of-cell call moves inside the observation",
      lambda code: code.replace(
@@ -667,7 +980,7 @@ def test_50_each_way_of_passing_while_proving_nothing_is_refused(
 
 
 def test_51_the_rules_pass_on_the_unmutated_runner() -> None:
-    """SO THE NINE REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
+    """SO THE SIXTEEN REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
     fixture."""
     code = _code()
     for rule in RULES:

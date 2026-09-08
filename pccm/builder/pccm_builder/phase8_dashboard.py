@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from .artifact_io import write_lf_artifact
@@ -32,8 +33,8 @@ SCHEMA_VERSION = 1
 INSPECTION_FILENAME = "phase8_dashboard_inspection.json"
 
 ALLOWED_KEYS = ("schema_version", "purpose", "provenance", "sheet", "source_sheet",
-                "columns", "source_columns", "mirror_formula", "sections",
-                "chart_region", "number_formats")
+                "freeze_panes", "columns", "source_columns", "mirror_formula",
+                "sections", "chart_region", "number_formats")
 
 # The Results blocks a Dashboard row may mirror. Named here so a fifth block
 # cannot be mirrored without this file being edited to say so.
@@ -166,6 +167,17 @@ def build_phase8_dashboard_inspection(spec: WorkbookSpec) -> dict[str, Any]:
             "rows": entries,
         })
 
+    # THE SHEET DECLARATION, NOT THE SHELL BLOCK. spec.sheet() raises if the
+    # Dashboard is not declared at all, which is a different failure and one the
+    # loader already reports.
+    freeze_panes = spec.sheet(str(dashboard["sheet"])).freeze_panes
+    if not freeze_panes:
+        raise ValueError(
+            f"workbook.yaml declares no freeze_panes for the "
+            f"{dashboard['sheet']} sheet; the executive status block would "
+            "scroll out of view above the charts")
+    freeze_panes = str(freeze_panes)
+
     region = dashboard["chart_region"]
     return {
         "schema_version": SCHEMA_VERSION,
@@ -178,6 +190,12 @@ def build_phase8_dashboard_inspection(spec: WorkbookSpec) -> dict[str, Any]:
         "provenance": {"workbook_manifest": "workbook.yaml"},
         "sheet": str(dashboard["sheet"]),
         "source_sheet": source_sheet,
+        # WHERE THE SHEET FREEZES, FROM THE SHEET'S OWN DECLARATION. It is a
+        # worksheet-layout fact - every sheet in the manifest declares one - so
+        # `phase6_shell.dashboard` is not its owner and does not carry it. A
+        # consumer that needed it had no projected route to it and would have had
+        # to type the cell; this carries it, from the one place it is declared.
+        "freeze_panes": freeze_panes,
         "columns": {
             "label": str(dashboard["label_column"]),
             "nominal": nominal_col,
@@ -210,6 +228,24 @@ def validate_phase8_dashboard_inspection(inspection: dict[str, Any]) -> None:
         raise ValueError(
             f"{INSPECTION_FILENAME}: the Dashboard mirrors itself; Results is the "
             "authority, not this sheet")
+
+    # THE FREEZE MUST BE A CELL, AND IT MUST BE ABOVE THE CHARTS. A consumer
+    # converts this to Excel's SplitRow/SplitColumn, so a missing or malformed
+    # declaration has to fail here rather than reaching a runner as an absent
+    # property - which is exactly how it failed the first Windows run.
+    if "freeze_panes" not in inspection:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: no freeze_panes; the executive status block "
+            "would scroll out of view above the charts")
+    frozen = str(inspection["freeze_panes"])
+    if not re.fullmatch(r"[A-Z]{1,3}[1-9][0-9]*", frozen):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: freeze_panes {frozen!r} is not a cell address")
+    frozen_row = int(re.sub(r"[A-Z]", "", frozen))
+    if frozen_row > int(inspection["chart_region"]["first_row"]):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: the freeze at {frozen} is below the first "
+            "chart row; a reader scrolled to a chart would see no state")
 
     template = inspection["mirror_formula"]
     if template.count("{ref}") != 2 or '=""' not in template:

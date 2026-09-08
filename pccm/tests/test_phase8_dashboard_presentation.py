@@ -706,6 +706,69 @@ def test_50_the_manifest_refuses_each_ownership_mistake(
         path.unlink(missing_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# THE FREEZE, AND WHERE IT IS DECLARED
+# ---------------------------------------------------------------------------
+# THE FIRST P8-3 WINDOWS RUN ABORTED HERE. A runner asked this projection for
+# `freeze_panes` and the projection did not carry it: the declaration is a
+# WORKSHEET-LAYOUT property that every sheet in the manifest has, so it lives on
+# `sheets[Dashboard]` and never on `phase6_shell.dashboard`, which is what this
+# file is built from. StrictMode turns an absent property into a terminated
+# session rather than a failed assertion, so the rest of the run was unobserved.
+def test_52_the_freeze_is_projected_from_the_sheet_that_declares_it() -> None:
+    manifest = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    shell = manifest["phase6_shell"]["dashboard"]
+    assert "freeze_panes" not in shell, (
+        "the shell block declares a freeze as well; there would be two "
+        "authorities for one worksheet fact and no rule about which governs")
+    sheet = next(s for s in manifest["sheets"] if s["name"] == shell["sheet"])
+    assert _projection()["freeze_panes"] == sheet["freeze_panes"]
+    # AND IT IS ABOVE THE CHARTS, or it qualifies nothing that is drawn.
+    row = int(re.sub(r"[A-Z]", "", str(_projection()["freeze_panes"])))
+    assert row <= int(_projection()["chart_region"]["first_row"])
+
+
+@pytest.mark.parametrize("name,mutate", [
+    # THE FIELD SIMPLY ABSENT - the original defect, seen from this side.
+    ("the projection stops carrying the freeze",
+     lambda inspection: inspection.pop("freeze_panes")),
+    # A SPLIT COUNT WHERE A CELL BELONGS. A consumer converts a cell to Excel's
+    # SplitRow; handed a number it would freeze the wrong band or throw.
+    ("the freeze becomes a row count",
+     lambda inspection: inspection.__setitem__("freeze_panes", "17")),
+    # A RANGE, NOT A CELL.
+    ("the freeze becomes a range",
+     lambda inspection: inspection.__setitem__("freeze_panes", "A17:H17")),
+    # FROZEN BELOW THE FIRST CHART, which is the same as not freezing at all: a
+    # reader scrolled to a plot sees no state line above it.
+    ("the freeze drops below the first chart",
+     lambda inspection: inspection.__setitem__("freeze_panes", "A99")),
+])
+def test_53_the_validator_refuses_each_broken_freeze(name: str, mutate) -> None:
+    inspection = build_phase8_dashboard_inspection(load_spec(MANIFEST))
+    mutate(inspection)
+    with pytest.raises(ValueError):
+        validate_phase8_dashboard_inspection(inspection)
+
+
+def test_54_the_builder_refuses_a_dashboard_sheet_that_declares_no_freeze() -> None:
+    """AND IT FAILS ON LINUX, WHERE FAILING IS CHEAP."""
+    def drop(dash, res):
+        pass
+    path = _mutated_spec(drop)
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for sheet in raw["sheets"]:
+            if sheet["name"] == raw["phase6_shell"]["dashboard"]["sheet"]:
+                sheet["freeze_panes"] = None
+        path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        spec = load_spec(path)
+        with pytest.raises(ValueError, match="freeze_panes"):
+            build_phase8_dashboard_inspection(spec)
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def test_51_the_mutation_harness_is_not_vacuous() -> None:
     """THE UNMUTATED MANIFEST PASSES BOTH GATES, so the eight refusals above are
     refusals of the mutation and not of the fixture."""
