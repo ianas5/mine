@@ -713,6 +713,10 @@ $case = $null
 foreach ($scenario in @($cases.scenarios)) { if ([string]$scenario.id -ceq 'W4') { $case = $scenario } }
 if ($null -eq $case) { throw 'the acceptance corpus carries no W4 scenario' }
 $model = $case.model
+# THE REQUEST IS PART OF THE FIXTURE, NOT A DEFAULT. Both come off the same
+# accepted case, so the runner cannot name W4 while running something else.
+$iterations = [int]$case.iterations
+$suppliedSeed = [double]$case.supplied_seed
 
 $source = $charts.sensitivity_source
 $eligibilityColumn = [string]$source.eligibility.column
@@ -794,7 +798,10 @@ Write-P8ZLine 'PCCM - PHASE 8 P8-Z: A ZERO-VARIANCE DRIVER IS NOT A TORNADO CATE
 Write-P8ZLine '====================================================================='
 Write-P8ZLine ''
 Write-P8ZLine ('source revision   : ' + $revision.Head)
-Write-P8ZLine ('fixture           : ' + [string]$case.id + ', one cost line made constant')
+Write-P8ZLine ('fixture           : ' + [string]$case.id + ' model and request, ' +
+               'one cost line made constant')
+Write-P8ZLine ('request           : ' + [string]$iterations + ' iterations, seed ' +
+               [string]$suppliedSeed)
 Write-P8ZLine ('eligibility field : ' + [string]$source.eligibility.key +
                ' at ' + $sensitivitySheet + '!' + $eligibilityColumn)
 Write-P8ZLine ''
@@ -877,6 +884,22 @@ try {
     Write-P8ZLine ('    ' + $constantId + ' fixed at ' + [string]$fixedValue +
                    ' across min, most likely and max')
 
+    # THE ACCEPTED W4 SIMULATION REQUEST, APPLIED EXACTLY.
+    #
+    # RUN 3 PUBLISHED 10000 ITERATIONS while the banner said "W4". Applying the
+    # W4 MODEL is not applying the W4 REQUEST: the iteration count and the seed
+    # live in the workbook's control cells, which the fixture does not touch, so
+    # the run inherited whatever the workbook happened to hold. A runner that
+    # names its fixture has to be the fixture it names.
+    Set-NamedValue -Workbook $wb `
+        -DefinedName ([string]$simInspect.controls.monte_carlo_iterations.defined_name) `
+        -Value ([double]$iterations)
+    Set-NamedValue -Workbook $wb `
+        -DefinedName ([string]$simInspect.controls.random_seed.defined_name) `
+        -Value $suppliedSeed
+    Write-P8ZLine ('    the W4 request applied: ' + [string]$iterations +
+                   ' iterations, supplied seed ' + [string]$suppliedSeed)
+
     # -------------------------------------------------------------------
     # THE RUN
     # -------------------------------------------------------------------
@@ -901,47 +924,84 @@ try {
     Write-P8ZLine ''
     Write-P8ZLine 'THE SHEET - THE DIAGNOSTIC ROW IS RETAINED'
     Write-P8ZLine '------------------------------------------'
+    # THE WHOLE PUBLISHED SURFACE, from the projection that carries it.
+    #
+    # RUN 3 DIED HERE. This map was built from `sensitivity_source.columns` -
+    # the two fields the TORNADO mirrors - plus the eligibility field, and then
+    # asked for 'status'. A missing hashtable key is $null under StrictMode
+    # rather than an error, so the address became '13' and Excel refused it with
+    # 0x800A03EC. The projection now carries every published column, and the
+    # lookup below refuses a key it does not have instead of building an address
+    # out of one.
     $columns = @{}
-    foreach ($column in @($source.columns)) { $columns[[string]$column.key] = [string]$column.column }
-    $columns[[string]$source.eligibility.key] = $eligibilityColumn
+    foreach ($column in @($source.published_columns)) {
+        $columns[[string]$column.key] = [string]$column.column
+    }
+    foreach ($required in @('driver_id', 'driver_name', 'status', 'rho', 'abs_rho',
+                            'rank', 'direction')) {
+        if (-not $columns.ContainsKey($required)) {
+            throw ('the projected Sensitivity surface publishes no ' + $required +
+                   ' column; it carries ' + (@($columns.Keys) -join ', '))
+        }
+    }
+    # AND EVERY ADDRESS THIS SECTION WILL BUILD IS A CELL BEFORE ANY IS USED. A
+    # malformed one is a terminated session forty minutes in; saying so here
+    # costs nothing.
+    foreach ($key in @($columns.Keys)) {
+        if ([string]$columns[$key] -notmatch '^[A-Z]{1,3}$') {
+            throw ('the projected column for ' + $key + ' is ' +
+                   [char]39 + [string]$columns[$key] + [char]39 + ', not a column letter')
+        }
+    }
+    if ($sourceFirstRow -lt 1) {
+        throw ('the projected Sensitivity first row is ' + [string]$sourceFirstRow)
+    }
 
-    # THE WHOLE PUBLISHED WINDOW IS WALKED. Which row the diagnostic driver
-    # landed on is the publication's business, not this runner's: it is found by
-    # its NAME, not assumed to be last.
+    # THE DIAGNOSTIC ROW IS FOUND BY DRIVER IDENTITY, not by ordinal and not by
+    # its status text. Which row the publication put it on is the publication's
+    # business; WHICH DRIVER was made constant is this runner's, and the
+    # permanent id is what ties the two together.
     $constantName = ''
     $constantSheetRow = 0
+    $constantStatus = $null
     $rankedNames = New-Object System.Collections.ArrayList
     $blankMeasures = New-Object System.Collections.ArrayList
-    for ($index = 0; $index -lt [int]$drivers.row_count + 4; $index++) {
+    $walked = [int]$source.row_window
+    if ($walked -gt ([int]$drivers.row_count + 4)) { $walked = [int]$drivers.row_count + 4 }
+    for ($index = 0; $index -lt $walked; $index++) {
         $sheetRow = $sourceFirstRow + $index
+        $id = Get-P8ZCell -Workbook $wb -SheetName $sensitivitySheet `
+            -Address ($columns['driver_id'] + [string]$sheetRow)
+        if (Test-P8ZBlank -Cell $id) { continue }
         $status = Get-P8ZCell -Workbook $wb -SheetName $sensitivitySheet `
             -Address ($columns['status'] + [string]$sheetRow)
-        if (Test-P8ZBlank -Cell $status) { continue }
         $name = Get-P8ZCell -Workbook $wb -SheetName $sensitivitySheet `
             -Address ($columns['driver_name'] + [string]$sheetRow)
         $rank = Get-P8ZCell -Workbook $wb -SheetName $sensitivitySheet `
             -Address ($columns['rank'] + [string]$sheetRow)
-        Write-P8ZLine ('    row ' + [string]$sheetRow + ': ' + (Format-P8ZCell $name) +
+        Write-P8ZLine ('    row ' + [string]$sheetRow + ': ' + (Format-P8ZCell $id) +
+                       ', ' + (Format-P8ZCell $name) +
                        ', status ' + (Format-P8ZCell $status) + ', rank ' + (Format-P8ZCell $rank))
-        if ([string]$status.Value -ceq $zeroVarianceStatus) {
+        if ([string]$id.Value -ceq $constantId) {
             $constantName = [string]$name.Value
             $constantSheetRow = $sheetRow
+            $constantStatus = $status
         } else {
             $null = $rankedNames.Add([string]$name.Value)
         }
     }
 
     # (2) AND (3) THE DIAGNOSTIC ROW IS PRESENT, AND SAYS WHY.
-    $null = Add-P8ZCheck 'the zero-variance driver is still published on the Sensitivity sheet' `
+    $null = Add-P8ZCheck ('the driver made constant, ' + $constantId +
+                          ', is still published on the Sensitivity sheet') `
         ($constantSheetRow -ge 1) ('found at row ' + [string]$constantSheetRow)
     if ($constantSheetRow -lt 1) {
-        throw 'no row carried the zero-variance status; the fixture did not produce one'
+        throw ('no published row carried ' + $constantId +
+               '; the fixture did not reach the sheet')
     }
-    $statusCell = Get-P8ZCell -Workbook $wb -SheetName $sensitivitySheet `
-        -Address ($columns['status'] + [string]$constantSheetRow)
     $null = Add-P8ZCheck ('its status is ' + $zeroVarianceStatus) `
-        ([string]$statusCell.Value -ceq $zeroVarianceStatus) `
-        (Format-P8ZCell $statusCell)
+        ([string]$constantStatus.Value -ceq $zeroVarianceStatus) `
+        (Format-P8ZCell $constantStatus)
 
     # (4) ITS MEASURES DISPLAY BLANK, NOT ZERO.
     foreach ($measure in @('rho', 'abs_rho', 'rank', 'direction')) {

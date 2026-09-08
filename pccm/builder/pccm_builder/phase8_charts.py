@@ -203,10 +203,23 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
     # digest-pinned Gate-B evidence: a Phase-8 need does not get to move those.
     zero_variance_status = str(
         sim.raw["sensitivity"]["zero_variance"]["status_label"])
+    # THE WHOLE PUBLISHED SURFACE, separately from the two fields the tornado
+    # mirrors. A consumer proving what a DIAGNOSTIC row holds has to read its
+    # status, its identity and the measures that must be blank - none of which
+    # the chart plots, and none of which `columns` may carry, because that list
+    # is bound to exactly what the bridge draws.
+    #
+    # RUN 3 DIED FOR WANT OF THIS. The runner built its column map from
+    # `columns` plus the eligibility field, then asked for `status`; a missing
+    # hashtable key is $null under StrictMode rather than an error, so the
+    # address became "13" and Excel refused it with 0x800A03EC.
+    published_columns = [{"key": str(column["key"]), "column": str(column["column"])}
+                         for column in sensitivity["columns"]]
     sensitivity_source = {
         "first_row": int(sensitivity["first_row"]),
         "row_window": int(sensitivity["row_window"]),
         "eligibility": {"key": eligibility, "column": declared[eligibility]},
+        "published_columns": published_columns,
         "columns": source_columns,
     }
 
@@ -330,11 +343,31 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
         raise ValueError(
             f"{INSPECTION_FILENAME}: sensitivity_source names no eligibility "
             "field; a diagnostic row could not be told from a ranked one")
-    for field in ("first_row", "row_window", "columns"):
+    for field in ("first_row", "row_window", "columns", "published_columns"):
         if field not in source:
             raise ValueError(
                 f"{INSPECTION_FILENAME}: sensitivity_source carries no {field!r}")
+    # EVERY FIELD THE SHEET PUBLISHES, AND EVERY ONE A CONSUMER MAY NEED. The
+    # mirrored columns and the eligibility field must be among them, or a reader
+    # would have to go somewhere else - or, as Run 3 did, build a broken address.
+    published = {str(column["key"]): str(column["column"])
+                 for column in source["published_columns"]}
+    if not published:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: sensitivity_source publishes no columns")
+    for column in source["published_columns"]:
+        if not re.fullmatch(r"[A-Z]{1,3}", str(column["column"])):
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: published column "
+                f"{column['column']!r} is not a column letter")
     eligibility = source["eligibility"]
+    missing = [key for key in
+               [str(c["key"]) for c in source["columns"]] + [str(eligibility["key"])]
+               if key not in published]
+    if missing:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: {missing} are used but not among the "
+            "published Sensitivity columns")
     if not re.fullmatch(r"[A-Z]{1,3}", str(eligibility["column"])):
         raise ValueError(
             f"{INSPECTION_FILENAME}: the eligibility column "

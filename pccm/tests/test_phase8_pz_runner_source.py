@@ -223,9 +223,10 @@ def test_21_it_proves_the_row_is_retained_and_its_measures_are_blank() -> None:
     assert "@('rho', 'abs_rho', 'rank', 'direction')" in code, (
         "not every measure is checked for a fabricated zero")
     assert "are blank and not zero" in code
-    # THE ROW IS FOUND BY ITS STATUS, not assumed to be last.
+    # THE ROW IS FOUND BY DRIVER IDENTITY, not assumed to be last - which
+    # test_53 states in full; here it is only that the row is discovered.
     assert "$constantSheetRow = $sheetRow" in code
-    assert "not assumed to be last" in _text()
+    assert "not by ordinal and not by" in _text()
 
 
 def test_22_the_exclusion_is_proved_at_the_chart_and_not_at_the_bridge() -> None:
@@ -597,6 +598,13 @@ def _dry_run(source: str) -> tuple[int, str]:
         "{ throw 'build_stage_b.ps1 is not beside the runner' }\n"
         "Set-Content -LiteralPath $stageBPath -Value 'dry run' -Encoding UTF8\n"
         "$bootstrapExit = 0")
+    # AND THE CLEAN-TREE REFUSAL IS NEUTRALISED, because this test is about
+    # whether the startup can be WALKED, not about whether this checkout happens
+    # to be committed. The refusal is real and is asserted in its own control;
+    # leaving it live here would make every run of this test depend on the state
+    # of the working tree it was run from.
+    head = head.replace("if ($revision.Dirty.Count -gt 0) {",
+                        "if ($false -and $revision.Dirty.Count -gt 0) {")
     head += "\nWrite-Output 'REACHED THE EXCEL BOUNDARY'\nexit 0\n"
     scratch = WINDOWS / "__p8z_dryrun_tmp.ps1"
     scratch.write_text(head, encoding="utf-8")
@@ -623,7 +631,7 @@ def test_43_the_startup_reaches_the_excel_boundary_under_strict_mode() -> None:
     # AND IT REALLY DID THE WORK, rather than skipping to the end.
     for evidence in ("A ZERO-VARIANCE DRIVER IS NOT A TORNADO CATEGORY",
                      "source revision   : ", "eligibility field : ",
-                     "the Stage-B workbook was bootstrapped"):
+                     "request           : ", "the Stage-B workbook was bootstrapped"):
         assert evidence in out, f"the startup did not reach {evidence!r}:\n{out[-2000:]}"
 
 
@@ -660,6 +668,8 @@ def test_45_the_cleanup_runs_safely_when_excel_was_never_created() -> None:
         "& $bootstrap -BuildDir $tempRoot -Force\n$bootstrapExit = $LASTEXITCODE",
         "Set-Content -LiteralPath $stageBPath -Value 'dry run' -Encoding UTF8\n"
         "$bootstrapExit = 0")
+    broken = broken.replace("if ($revision.Dirty.Count -gt 0) {",
+                            "if ($false -and $revision.Dirty.Count -gt 0) {")
     scratch = WINDOWS / "__p8z_cleanup_tmp.ps1"
     scratch.write_text(broken, encoding="utf-8")
     try:
@@ -797,3 +807,244 @@ def test_48_the_audit_and_dry_run_pass_on_the_real_runner() -> None:
     assert code == 0 and out == "CLEAN", out
     exit_code, output = _dry_run(_text())
     assert exit_code == 0 and "REACHED THE EXCEL BOUNDARY" in output
+
+
+# ===========================================================================
+# F. EVERY LIVE CELL ADDRESS THIS RUNNER BUILDS
+# ===========================================================================
+# RUN 3 DIED ON ONE. The column map was built from `sensitivity_source.columns`
+# - the two fields the TORNADO mirrors - and then asked for 'status'. A missing
+# hashtable key is $null under StrictMode rather than an error, so
+#
+#     $columns['status'] + [string]$sheetRow   ->   '' + '13'   ->   '13'
+#
+# and Excel refused Range("13") with 0x800A03EC. The AST audit could not see it:
+# nothing was UNINITIALISED. A hashtable miss is a different class, and this is
+# the instrument for it.
+def _sensitivity_columns() -> dict[str, str]:
+    return {str(c["key"]): str(c["column"])
+            for c in _charts()["sensitivity_source"]["published_columns"]}
+
+
+def _addresses_the_runner_builds() -> list[tuple[str, str]]:
+    """Every (label, A1 address) the post-sensitivity read path constructs, built
+    the way the runner builds them - from the projection, over the real
+    published window."""
+    charts = _charts()
+    source = charts["sensitivity_source"]
+    drivers = charts["bridge"]["drivers"]
+    columns = _sensitivity_columns()
+    first = int(source["first_row"])
+    walked = min(int(source["row_window"]), int(drivers["row_count"]) + 4)
+
+    out: list[tuple[str, str]] = []
+    # THE SHEET WALK, and then the diagnostic row's own fields.
+    for index in range(walked):
+        row = first + index
+        for key in ("driver_id", "status", "driver_name", "rank"):
+            out.append((f"walk {key} row {index + 1}", f"{columns[key]}{row}"))
+    for key in ("rho", "abs_rho", "rank", "direction", "status", "driver_name",
+                "driver_id"):
+        out.append((f"diagnostic {key}", f"{columns[key]}{first + walked - 1}"))
+    # THE RESULTS BRIDGE, category and value.
+    for column in drivers["columns"]:
+        for index in range(int(drivers["row_count"])):
+            out.append((f"bridge {column['key']} row {index + 1}",
+                        f"{column['column']}{int(drivers['first_row']) + index}"))
+    return out
+
+
+A1 = re.compile(r"^[A-Z]{1,3}[1-9][0-9]*$")
+
+
+def test_50_every_address_the_read_path_builds_is_a_cell() -> None:
+    """NOT ONE OF THEM IS '13'."""
+    malformed = [(label, address) for label, address in _addresses_the_runner_builds()
+                 if not A1.fullmatch(address)]
+    assert not malformed, f"the runner would build {len(malformed)} bad addresses: {malformed[:5]}"
+
+
+def test_51_every_row_and_column_is_one_based_and_within_the_sheet() -> None:
+    charts = _charts()
+    source = charts["sensitivity_source"]
+    drivers = charts["bridge"]["drivers"]
+    for label, address in _addresses_the_runner_builds():
+        letters = re.sub(r"[0-9]", "", address)
+        row = int(re.sub(r"[A-Z]", "", address))
+        assert row >= 1, f"{label}: row {row}"
+        column = 0
+        for character in letters:
+            column = column * 26 + (ord(character) - ord("A") + 1)
+        assert column >= 1, f"{label}: column {letters}"
+        assert column <= 16384 and row <= 1048576, f"{label}: {address} is off the sheet"
+    # AND THE WINDOW WALKED IS WITHIN WHAT THE SHEET PUBLISHES.
+    walked = min(int(source["row_window"]), int(drivers["row_count"]) + 4)
+    assert walked <= int(source["row_window"]), (
+        "the runner walks past the published Sensitivity window")
+    assert walked >= int(drivers["row_count"]), (
+        "the runner walks fewer rows than the tornado can draw")
+
+
+def test_52_every_field_the_runner_needs_is_in_the_projection() -> None:
+    """THE DEFECT, AS A PROJECTION QUESTION. Every key the runner indexes must be
+    published; a miss is $null and $null builds '13'."""
+    published = _sensitivity_columns()
+    code = _code()
+    indexed = set(re.findall(r"\$columns\['([a-z_]+)'\]", code))
+    assert indexed, "the runner indexes no columns; this control has gone blind"
+    missing = sorted(indexed - set(published))
+    assert not missing, (
+        f"the runner indexes {missing}, which the projection does not publish")
+    # AND IT REFUSES A MISS RATHER THAN BUILDING AN ADDRESS FROM ONE.
+    assert "if (-not $columns.ContainsKey($required)) {" in code, (
+        "a missing column key would silently become an empty address again")
+    assert "not a column letter" in code, (
+        "a projected column that is not a letter would reach Excel")
+    assert "$source.published_columns" in code, (
+        "the map is not built from the published surface")
+    assert "foreach ($column in @($source.columns)) { $columns[" not in code, (
+        "the map is built from the two mirrored fields again")
+
+
+def test_53_the_diagnostic_row_is_found_by_driver_identity() -> None:
+    """NOT BY ORDINAL, AND NOT BY ITS STATUS TEXT. Which row the publication put
+    it on is the publication's business; which driver was made constant is this
+    runner's, and the permanent id ties them together."""
+    code = _code()
+    assert "if ([string]$id.Value -ceq $constantId) {" in code, (
+        "the diagnostic row is not matched on the driver identity")
+    assert "$constantId = [string]$constant.permanent_id" in code
+    # NO ORDINAL ASSUMPTION ANYWHERE.
+    for assumed in ("$sourceFirstRow + 4", "$sourceFirstRow + [int]$drivers.row_count",
+                    "the last published row", "$constantSheetRow = $sourceFirstRow +"):
+        assert assumed not in code, f"the diagnostic row is assumed: {assumed}"
+    # AND THE STATUS IS THEN CHECKED ON THAT ROW rather than used to find it.
+    assert code.index("if ([string]$id.Value -ceq $constantId) {") < code.index(
+        "'its status is '"), "the status is read before the row is identified"
+
+
+def test_54_the_runner_applies_the_request_it_names() -> None:
+    """RUN 3 PUBLISHED 10000 ITERATIONS UNDER A BANNER THAT SAID W4. Applying the
+    W4 model is not applying the W4 request: iterations and seed live in control
+    cells the fixture does not touch."""
+    code = _code()
+    assert "$iterations = [int]$case.iterations" in code
+    assert "$suppliedSeed = [double]$case.supplied_seed" in code
+    assert "$simInspect.controls.monte_carlo_iterations.defined_name" in code, (
+        "the iteration count is never set")
+    assert "$simInspect.controls.random_seed.defined_name" in code, (
+        "the seed is never set")
+    # AND BOTH ARE APPLIED BEFORE THE SIMULATION RUNS.
+    assert code.index("monte_carlo_iterations") < code.index("'PCCM_RunSimulation'"), (
+        "the request is applied after the simulation")
+    # THE BANNER SAYS WHAT WAS APPLIED.
+    assert "model and request" in code
+    assert "'request           : '" in code
+    # AND IT IS THE ACCEPTED CASE'S OWN VALUE.
+    cases = json.loads((BUILD / "phase7_acceptance_cases.json").read_text(encoding="utf-8"))
+    w4 = next(s for s in cases["scenarios"] if s["id"] == "W4")
+    assert int(w4["iterations"]) == 1000, w4["iterations"]
+
+
+def test_55_the_address_controls_catch_the_map_that_failed_on_windows() -> None:
+    """SO test_50-52 ARE NOT VACUOUS. Rebuild the column map the way 1da7186
+    built it - from the two mirrored fields plus the eligibility one - and the
+    same addresses come out malformed."""
+    charts = _charts()
+    source = charts["sensitivity_source"]
+    old_map = {str(c["key"]): str(c["column"]) for c in source["columns"]}
+    old_map[str(source["eligibility"]["key"])] = str(source["eligibility"]["column"])
+    assert "status" not in old_map, "the old map already had status; nothing to prove"
+    # THE FIRST ADDRESS THE FAILING SECTION BUILT.
+    first = int(source["first_row"])
+    address = f"{old_map.get('status', '')}{first}"
+    assert address == "13", address
+    assert not A1.fullmatch(address), "Range('13') would have been accepted"
+    for key in ("status", "abs_rho", "direction", "driver_id"):
+        assert key not in old_map, key
+        assert not A1.fullmatch(f"{old_map.get(key, '')}{first}")
+
+
+@pytest.mark.parametrize("name,mutate,rule", [
+    # THE DEFECT ITSELF: the map built from the mirrored fields again.
+    ("the column map is built from the mirrored fields",
+     lambda code: code.replace("foreach ($column in @($source.published_columns)) {",
+                               "foreach ($column in @($source.columns)) {", 1),
+     "map"),
+    # A MISSING KEY ALLOWED TO BECOME AN EMPTY ADDRESS.
+    ("a missing column key stops being refused",
+     lambda code: code.replace("if (-not $columns.ContainsKey($required)) {",
+                               "if ($false) {", 1),
+     "map"),
+    # A COLUMN LETTER THAT IS NOT A LETTER, unchecked.
+    ("a malformed projected column stops being refused",
+     lambda code: code.replace("if ([string]$columns[$key] -notmatch '^[A-Z]{1,3}$') {",
+                               "if ($false) {", 1),
+     "map"),
+    # A ZERO-BASED ROW.
+    ("the sheet walk starts one row too early",
+     lambda code: code.replace("$sheetRow = $sourceFirstRow + $index",
+                               "$sheetRow = $sourceFirstRow + $index - 1", 1),
+     "row"),
+    # THE FIRST ROW ITSELF ZEROED, which Excel refuses outright.
+    ("the projected first row is not checked",
+     lambda code: code.replace("if ($sourceFirstRow -lt 1) {", "if ($false) {", 1),
+     "row"),
+    # THE DIAGNOSTIC ROW ASSUMED BY ORDINAL.
+    ("the diagnostic row is assumed to be the last one",
+     lambda code: code.replace("if ([string]$id.Value -ceq $constantId) {",
+                               "if ($index -eq 4) {", 1),
+     "identity"),
+    # AND FOUND BY ITS STATUS TEXT rather than by which driver was made constant.
+    ("the diagnostic row is found by its status text",
+     lambda code: code.replace("if ([string]$id.Value -ceq $constantId) {",
+                               "if ([string]$status.Value -ceq $zeroVarianceStatus) {", 1),
+     "identity"),
+    # THE REQUEST LEFT AT WHATEVER THE WORKBOOK HELD.
+    ("the iteration count is never applied",
+     lambda code: code.replace(
+         "        -DefinedName ([string]$simInspect.controls.monte_carlo_iterations.defined_name) `",
+         "        -DefinedName ([string]$simInspect.controls.random_seed.defined_name) `", 1),
+     "request"),
+])
+def test_56_each_way_of_getting_the_read_path_wrong_is_refused(
+        name: str, mutate, rule: str) -> None:
+    code = _code()
+    mutated = mutate(code)
+    assert mutated != code, f"the mutation '{name}' changed nothing"
+    with pytest.raises(AssertionError):
+        _read_path_rules(mutated)
+
+
+def _read_path_rules(code: str) -> None:
+    """Everything the post-sensitivity read path has to be true of."""
+    published = _sensitivity_columns()
+    # THE MAP COMES FROM THE PUBLISHED SURFACE and refuses what it lacks.
+    assert "foreach ($column in @($source.published_columns)) {" in code, (
+        "the column map is not built from the published surface")
+    assert "if (-not $columns.ContainsKey($required)) {" in code, (
+        "a missing column key would become an empty address")
+    assert "if ([string]$columns[$key] -notmatch '^[A-Z]{1,3}$') {" in code, (
+        "a projected column that is not a letter would reach Excel")
+    for indexed in set(re.findall(r"\$columns\['([a-z_]+)'\]", code)):
+        assert indexed in published, f"the runner indexes unpublished {indexed}"
+    # EVERY ROW IS ONE-BASED.
+    # THE WHOLE STATEMENT, not a substring of it: "+ $index - 1" contains
+    # "+ $index" and would have satisfied a looser check.
+    assert re.search(r"^\s*\$sheetRow = \$sourceFirstRow \+ \$index\s*$", code, re.M), (
+        "the sheet walk no longer starts at the projected first row")
+    assert "if ($sourceFirstRow -lt 1) {" in code, (
+        "a first row below 1 would reach Excel")
+    # THE DIAGNOSTIC ROW IS THE ONE CARRYING THE DRIVER THAT WAS MADE CONSTANT.
+    assert "if ([string]$id.Value -ceq $constantId) {" in code, (
+        "the diagnostic row is not matched on driver identity")
+    # AND THE REQUEST IS THE ONE THE BANNER NAMES.
+    assert "$simInspect.controls.monte_carlo_iterations.defined_name" in code, (
+        "the iteration count is never applied")
+    assert "$simInspect.controls.random_seed.defined_name" in code, (
+        "the seed is never applied")
+
+
+def test_57_the_read_path_rules_pass_on_the_real_runner() -> None:
+    """SO THE EIGHT REFUSALS ABOVE ARE REFUSALS OF THE MUTATION."""
+    _read_path_rules(_code())
