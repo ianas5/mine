@@ -526,6 +526,12 @@ def build_phase9_inspection(plan: ModelCheckPlan) -> dict[str, Any]:
             "columns": [{"key": str(c["key"]), "header": str(c["header"]),
                          "column": str(c["column"])}
                         for c in register["columns"]],
+            # THE ROWS THAT REPORT AN ABSENCE RATHER THAN A FAULT, named so a
+            # runner can assert they are never counted without having to know
+            # which check ids they happen to be.
+            "optional_publications": [str(check["check_id"])
+                                      for check in plan.ordered_checks
+                                      if check.get("optional_publication")],
             "disclosure_row": plan.summary_row("disclosure"),
             "disclosure_template": str(plan.block["disclosure_template"]),
             # THE OVERFLOW CLAIM, SPELLED OUT so a runner checks the right thing:
@@ -673,6 +679,20 @@ def validate_phase9_inspection(inspection: dict[str, Any]) -> None:
             f"{INSPECTION_FILENAME}: the register reaches the evaluation block")
     if not register["no_data_formula"].startswith("="):
         raise ValueError(f"{INSPECTION_FILENAME}: the no-data representation is not a formula")
+
+    optional = register["optional_publications"]
+    if not optional:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: no optional publication is declared; the "
+            "sheet would have nothing to report as absent-but-not-defective")
+    declared = {str(entry["check_id"]): str(entry["severity"])
+                for entry in inspection["evaluation"]["declared_checks"]}
+    for check_id in optional:
+        severity = declared.get(check_id)
+        if severity in vocabulary["actionable_severities"]:
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: the optional publication {check_id} is "
+                f"{severity}; its absence is not a defect")
 
     candidates = inspection["evaluation"]["candidates"]
     if candidates["structural_slots"] < register["row_window"]:

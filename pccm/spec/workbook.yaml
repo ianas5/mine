@@ -384,6 +384,12 @@ phase9_shell:
       - check_id: "SIM-050"
         group: "Simulation"
         severity: "INFO"
+        # AN OPTIONAL PRODUCT THAT HAS NOT BEEN PRODUCED IS NOT A DEFECT. No
+        # accepted contract makes the simulation, the annual step or the
+        # sensitivity ranking mandatory, so their absence is context and can
+        # never be actionable. The flag is projected so a runner can check that
+        # without knowing which ids they happen to be.
+        optional_publication: true
         subject: ""
         condition: '{simulation_publication}=""'
         message: "No simulation has been published. Simulation is optional and its absence is not a defect."
@@ -420,6 +426,7 @@ phase9_shell:
       - check_id: "ANN-030"
         group: "Annual"
         severity: "INFO"
+        optional_publication: true
         subject: ""
         condition: '{annual_distribution_state}="NOT PRODUCED"'
         message: "No annual result has been produced. The annual step is optional and its absence is not a defect."
@@ -442,6 +449,10 @@ phase9_shell:
       - check_id: "SEN-010"
         group: "Sensitivity"
         severity: "INFO"
+        # THE WHOLE SENTENCE, INCLUDING "not produced for this run". The
+        # Sensitivity sheet says all three of its honest answers in one line and
+        # Model Check mirrors it rather than splitting it into rows of its own.
+        optional_publication: true
         subject: ""
         condition: '{sensitivity_availability}<>""'
         message: "{sensitivity_availability}"

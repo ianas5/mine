@@ -300,6 +300,15 @@ def _parse_phase9_shell(raw: dict[str, Any], path: Path) -> dict[str, Any]:
         for field_name in ("check_id", "message", "guidance", "condition"):
             if not str(check.get(field_name, "")).strip():
                 raise SpecError(f"{entry_where}: {field_name} is empty")
+        # AN OPTIONAL PRODUCT THAT WAS NOT PRODUCED MAY NEVER BE ACTIONABLE. No
+        # accepted contract makes the simulation, the annual step or the
+        # sensitivity ranking mandatory, so a row reporting one's absence is
+        # context. Marking such a row ERROR or WARNING would make Model Check
+        # invent an obligation nobody wrote down.
+        if check.get("optional_publication") and check["severity"] in actionable:
+            raise SpecError(
+                f"{entry_where}: an optional publication is declared "
+                f"{check['severity']}; its absence is not a defect")
         # A CONDITION MAY ONLY NAME A READING. This is the P7-4 rule applied to
         # a formula fragment: a key that no reading publishes must fail the
         # build by name rather than resolve to nothing at render time.

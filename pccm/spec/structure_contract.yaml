@@ -605,6 +605,22 @@ vba:
     # state rule of its own.
     - "PCCM_ResultsSimulationState"
 
+  # P9-2. The Model Check adapter, declared apart from the Phase-8 five for the
+  # reason those were declared apart from the Phase-7 accessors: it is Phase-9
+  # code that no Windows run has executed, and it must not appear to carry
+  # Phase-8 evidence.
+  #
+  # IT IS A WRAPPER, AND IT LIVES BESIDE THEM. The semantic stays with
+  # modCalcReport: this delegates to CalcReportDerivedStatus, the pure half of
+  # the derivation PCCM_CalculationStatus also runs, and owns no state rule of
+  # its own. It exists for the two reasons the five above exist - a
+  # zero-argument function in a cell is never re-run on its own, and the
+  # persisted `_Calc` C19 row is last-evaluated rather than live - plus the one
+  # that made a split necessary rather than merely useful: the owner's own entry
+  # point WRITES, and a worksheet cell may not change the workbook.
+  phase9_api_procedures:
+    - "PCCM_ModelCheckCalculationState"
+
   # Constructs that must NOT appear in VBA. The Linux static tests and the Gate-B
   # persisted-project sweep assert their absence, so a later phase's
   # functionality cannot leak in early.

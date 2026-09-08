@@ -295,7 +295,13 @@ def test_08_the_accepted_reporter_prefix_is_byte_identical() -> None:
         ACCEPTED_REPORTER_SHA256), "an accepted line of modCalcReport moved"
     added = re.findall(r"^(?:Public|Private) (?:Function|Sub) (\w+)",
                        text[text.index(STEP11_REPORTER_BANNER):], re.M)
-    assert added == ["CalcPrepareSimulationInputs"], added
+    # TWO NOW, IN ORDER, AND NAMED. P9-2 appended CalcReportDerivedStatus after
+    # the bridge - the module's existing private DeriveStatus exposed under its
+    # own name, so a worksheet cell can ask for the calculation state without
+    # also asking for C19:C20 to be rewritten. The prefix hash above is what
+    # proves the accepted region did not move; this names what came after it, so
+    # a THIRD addition still fails here.
+    assert added == ["CalcPrepareSimulationInputs", "CalcReportDerivedStatus"], added
 
 
 def test_09_the_bridge_is_internal_and_reuses_the_accepted_preparation() -> None:

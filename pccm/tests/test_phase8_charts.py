@@ -1398,13 +1398,26 @@ def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None
     correction really is what it says it is."""
     _declared_production_changes(_git, P81_ACCEPTANCE)
     _declared_production_changes(_git, P82_ACCEPTANCE)
+    # THE EXACT SET, AND IT GREW BY ONE AT P9-2. Naming them keeps this as
+    # strict as it was: a FOURTH declaration still fails here, and so does a
+    # removal or a rename of any of these three.
     assert set(DECLARED_PRODUCTION_CORRECTIONS) == {
+        "pccm/src/vba/modCalcReport.bas",
         "pccm/src/vba/modResultsState.bas",
         "pccm/src/vba/modSimPostReport.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
     reason, removals = DECLARED_PRODUCTION_CORRECTIONS[
         "pccm/src/vba/modResultsState.bas"]
     assert LIVE_ADAPTER in reason and PURE_OWNER in reason, reason
     assert removals == (), "the adapter addition is additive and stays so"
+    # THE P9-2 SPLIT, ON THE SAME TERMS: additive only, and the declaration says
+    # what it exposes, what it delegates to, and what it leaves alone.
+    reason, removals = DECLARED_PRODUCTION_CORRECTIONS[
+        "pccm/src/vba/modCalcReport.bas"]
+    assert removals == (), "the pure-derivation exposure is additive and stays so"
+    assert "CalcReportDerivedStatus" in reason, reason
+    assert "DeriveStatus" in reason and "PrepareCurrentCalculation" in reason, reason
+    assert "PCCM_CalculationStatus" in reason and "WriteStatusBlock" in reason, (
+        "the declaration does not say which entry point still persists")
     # THE LABEL CORRECTION REMOVES EXACTLY ONE LINE, and names which.
     reason, removals = DECLARED_PRODUCTION_CORRECTIONS[
         "pccm/src/vba/modSimPostReport.bas"]

@@ -456,8 +456,15 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
                         "PCCM_ResultsAnnualProfilePx",
                         "PCCM_ResultsAnnualYearCount",
                         "PCCM_ResultsSimulationState"}, sorted(adapters)
+    # P9-2 ADDS A SIXTH AND IT IS DECLARED SEPARATELY, so the Phase-8 set above
+    # stays EXACTLY five and a sixth Phase-8 adapter still fails here. A live
+    # CALCULATION state, on the same terms: the semantic stays with
+    # modCalcReport, which owns the pure derivation it delegates to.
+    phase9_adapters = set(data["vba"]["phase9_api_procedures"])
+    assert phase9_adapters == {"PCCM_ModelCheckCalculationState"}, sorted(phase9_adapters)
+    assert not (phase9_adapters & adapters), "an adapter is declared under two phases"
     adapter_owners = {m.name for m in _all_modules()
-                      if adapters & set(m.public_procedures)}
+                      if (adapters | phase9_adapters) & set(m.public_procedures)}
     assert adapter_owners == {"modResultsState"}, adapter_owners
     for module in _all_modules():
         if module.name == "modSimAnnualStore":
@@ -468,6 +475,7 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
                  | set(data["vba"].get("api_procedures", []))
                  | set(data["vba"].get("phase7_api_procedures", []))
                  | set(data["vba"].get("phase8_api_procedures", []))
+                 | set(data["vba"].get("phase9_api_procedures", []))
                  | phase6)
     found = {
         p for m in _all_modules() for p in m.public_procedures if p.startswith("PCCM_")

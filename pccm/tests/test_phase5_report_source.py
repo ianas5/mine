@@ -365,9 +365,13 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
     phase8 = {"PCCM_ResultsAnnualDistributionState", "PCCM_ResultsAnnualProfileState",
               "PCCM_ResultsAnnualProfilePx", "PCCM_ResultsAnnualYearCount",
               "PCCM_ResultsSimulationState"}
-    assert set(modules["modResultsState"].public_procedures) == phase8, sorted(
+    # P9-2 ADDS A SIXTH ADAPTER TO THE SAME MODULE, and it is a live CALCULATION
+    # state. Named separately so the Phase-8 set stays exactly five - a sixth
+    # PHASE-8 adapter still fails - and so a SEVENTH cannot arrive unremarked.
+    phase9 = {"PCCM_ModelCheckCalculationState"}
+    assert set(modules["modResultsState"].public_procedures) == phase8 | phase9, sorted(
         modules["modResultsState"].public_procedures)
-    for name in phase8:
+    for name in phase8 | phase9:
         assert name not in _reporter().public_procedures, name
     assert set(modules["modSimPostReport"].public_procedures) == {
         "PCCM_RunSensitivity"}, sorted(modules["modSimPostReport"].public_procedures)
@@ -381,8 +385,8 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
         modules["modSimAnnualStore"].public_procedures)
     for name in phase7:
         assert name not in _reporter().public_procedures, name
-    found = {p for m in modules.values() for p in m.public_procedures
-             if p.startswith("PCCM_")} - phase4 - phase6 - phase7 - phase8
+    found = ({p for m in modules.values() for p in m.public_procedures
+              if p.startswith("PCCM_")} - phase4 - phase6 - phase7 - phase8 - phase9)
     assert found == PCCM_ENDPOINTS, (
         f"unexpected: {sorted(found - PCCM_ENDPOINTS)}; missing: "
         f"{sorted(PCCM_ENDPOINTS - found)}"
@@ -419,12 +423,24 @@ def test_08_the_only_other_public_names_are_the_failpoint_stages() -> None:
     """Public because a later harness arms them BY NAME. Nothing else is public."""
     module = _reporter()
     extra = set(module.public_procedures) - PCCM_ENDPOINTS
-    # EXACTLY ONE additional Public procedure, and it is the accepted Step-11A
-    # internal bridge. It is not an endpoint: it carries no PCCM_ prefix, no
-    # button binds to it, and it is Public only because modSimReport must reach
-    # the ONE accepted preparation rather than rebuild it.
-    assert extra == {"CalcPrepareSimulationInputs"}, (
-        f"unexpected Public procedure(s): {sorted(extra - {'CalcPrepareSimulationInputs'})}"
+    # EXACTLY TWO additional Public procedures, and neither is an endpoint:
+    # neither carries a PCCM_ prefix and no button binds to either.
+    #
+    #   CalcPrepareSimulationInputs   the accepted Step-11A internal bridge,
+    #                                 Public only because modSimReport must reach
+    #                                 the ONE accepted preparation rather than
+    #                                 rebuild it.
+    #   CalcReportDerivedStatus       P9-2, and it is SimReportDerivedStatus one
+    #                                 module along: the module's existing private
+    #                                 derivation exposed under its own name so a
+    #                                 worksheet cell can ask for it without also
+    #                                 asking for C19:C20 to be rewritten, which
+    #                                 Excel forbids a cell to do.
+    #
+    # NAMED, NOT COUNTED, so a third still fails here.
+    expected = {"CalcPrepareSimulationInputs", "CalcReportDerivedStatus"}
+    assert extra == expected, (
+        f"unexpected Public procedure(s): {sorted(extra - expected)}"
     )
     assert not any(name.startswith("PCCM_") for name in extra)
     public_constants = {

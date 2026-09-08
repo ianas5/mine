@@ -551,12 +551,22 @@ def test_17_the_two_public_surfaces_are_exactly_the_accepted_ones() -> None:
                       "PCCM_ResultsAnnualYearCount",
                       "PCCM_ResultsSimulationState"}, sorted(phase8)
     assert not (phase8 & phase7), "an adapter was declared as a Phase-7 accessor"
-    expected = phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7 | phase8
+    # P9-2 declares its own adapter in its own contract list, on exactly the
+    # terms Phase 8 declared its five: Phase-9 code carries no Windows evidence
+    # either, and the Phase-8 set above stays exactly five.
+    phase9 = set(declared["phase9_api_procedures"])
+    assert phase9 == {"PCCM_ModelCheckCalculationState"}, sorted(phase9)
+    assert not (phase9 & (phase7 | phase8)), "an adapter is declared twice"
+    expected = (phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7
+                | phase8 | phase9)
     assert found == expected, sorted(found ^ expected)
     assert not (phase4 & set(PHASE6_PUBLIC)), "a Phase-6 name entered the Phase-4 surface"
     # The reporter that owns Phase 5 gained exactly one non-endpoint Public name.
+    # TWO NON-ENDPOINT PUBLIC NAMES, NAMED RATHER THAN COUNTED, so a third
+    # still fails: the Step-11 preparation bridge, and P9-2's read-only
+    # exposure of the module's own status derivation.
     extra = set(modules["modCalcReport"].public_procedures) - set(PHASE5_ENDPOINTS)
-    assert extra == {BRIDGE}, sorted(extra)
+    assert extra == {BRIDGE, "CalcReportDerivedStatus"}, sorted(extra)
     # NO PHASE-6 BUTTON.
     for endpoint in PHASE6_PUBLIC:
         assert endpoint not in set(structure.entry_points), endpoint
@@ -673,7 +683,14 @@ REOPENED_SINCE_CLOSURE = {
     "modCalcReport": "P7-5 copies the RESOLVED per-year inputs - FxRate, "
                      "Weights, Inflation - into DriverFactors at the one site "
                      "that already had all three in hand, so the annual layer "
-                     "can regroup them. It resolves nothing new.",
+                     "can regroup them. It resolves nothing new. P9-2 then "
+                     "added CalcReportDerivedStatus, the module's existing "
+                     "private DeriveStatus exposed under its own name so a "
+                     "worksheet cell can ask for the calculation state without "
+                     "also asking for C19:C20 to be rewritten - which Excel "
+                     "forbids a cell to do, and which is the P8-1 defect one "
+                     "module along. Nothing existing changed: "
+                     "PCCM_CalculationStatus still derives and still writes.",
     "modSimStats": "P7-5 exposed the type-7 ORDER-STATISTIC POSITION - which "
                    "source ordinals a percentile was interpolated between - and "
                    "extracted the h/lo/hi/f arithmetic into one owner shared by "
@@ -711,7 +728,13 @@ REOPENED_CURRENT = {
     # it, with the reason recorded above - never updated to whatever the file
     # now hashes to.
     "modSimStats": "c44d4424bc1958ce2363018d923f1c65a90c648ccdb6b6594562e8349706e6ff",
-    "modCalcReport": "c9f728f06bc7bc89eff5eb6e389d9fa305083e82af89b9e34f50340499364671",
+    # P9-2 re-pins it: CalcReportDerivedStatus joined the public surface. Three
+    # code lines, one statement, returning the module's existing private
+    # DeriveStatus over its existing private PrepareCurrentCalculation. The
+    # digest is repointed in the same commit as the change that moved it, with
+    # the reason recorded in REOPENED_SINCE_CLOSURE - never updated to whatever
+    # the file now hashes to.
+    "modCalcReport": "505b6894aefb1f9493a2d730026a69d20efe7a99c1d263e7a8421c1baf16210e",
     # P8-1 re-pins it: SimReportDerivedStatus joined the public surface. Three
     # code lines, one statement, returning the module's existing private
     # DeriveSimStatus(). The digest is repointed in the same commit as the change
@@ -859,7 +882,10 @@ def test_25_the_accepted_reporter_prefix_is_still_byte_identical() -> None:
         "8d67d3f18b1ea8c4a8baba478f025d486f71afaa1ac31beac88d7b7ecfff80a9")
     after = re.findall(r"^(?:Public|Private) (?:Function|Sub) (\w+)",
                        text[text.index(banner):], re.M)
-    assert after == [BRIDGE], after
+    # AND P9-2 ADDED A SECOND, AFTER THE BRIDGE AND AFTER EVERYTHING
+    # ACCEPTED. The prefix hash above is what proves the accepted
+    # region did not move; this names what has been appended to it.
+    assert after == [BRIDGE, "CalcReportDerivedStatus"], after
 
 
 # ===========================================================================

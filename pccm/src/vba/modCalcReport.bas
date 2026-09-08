@@ -1192,23 +1192,7 @@ Public Function CalcPrepareSimulationInputs(ByRef drivers() As DriverFactors, _
     CalcPrepareSimulationInputs = True
 End Function
 
-' ==========================================================================
-' THE SAME DERIVATION, WITHOUT THE PERSISTENCE
-' ==========================================================================
-' PCCM_CalculationStatus above derives the status AND writes C19:C20 through
-' WriteStatusBlock. Excel forbids a function a worksheet cell called to change
-' the workbook, so a Model Check cell that reached it would show #VALUE! - the
-' P8-1 defect exactly, one module along.
-'
-' The derivation was already pure: DeriveStatus and PrepareCurrentCalculation
-' write nothing, and the persistence is the CALLER's. This exposes the pure half
-' so a read-only caller can ask what the current inputs say about the stored
-' snapshot without asking for the record to be rewritten.
-'
-' IT IS NOT A SECOND STATUS. One derivation, two entry points, differing only in
-' whether C19:C20 is rewritten afterwards. No state word is invented here, no
-' rule is duplicated, and PCCM_CalculationStatus is untouched: the operations
-' path still records what it always recorded.
+' The pure half of PCCM_CalculationStatus: one derivation, two entry points, and only that one writes C19:C20. Reasoning: the Phase-7 closure record 1.1.
 Public Function CalcReportDerivedStatus() As String
     Dim package As CalculationPackage, detail As String
     CalcReportDerivedStatus = DeriveStatus(package, PrepareCurrentCalculation(package, detail))

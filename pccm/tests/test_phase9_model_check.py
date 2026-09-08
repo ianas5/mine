@@ -803,6 +803,36 @@ def test_38_the_optional_publications_are_never_warnings() -> None:
     assert _counts(result) == (0, 0)
 
 
+def test_38b_the_projection_names_the_optional_publications() -> None:
+    """§11 REQUIRES A RUNNER TO BE ABLE TO FIND THEM. The register lists them by
+    id so a Windows runner never has to know which ids they are, and the
+    validator refuses a projection in which one of them is actionable."""
+    projection = _projection()
+    optional = projection["register"]["optional_publications"]
+    assert set(optional) == {"SIM-050", "ANN-030", "SEN-010"}, optional
+    severities = {c["check_id"]: c["severity"] for c in _plan().ordered_checks}
+    for check_id in optional:
+        assert severities[check_id] == _plan().informational, check_id
+    # AND THE VALIDATOR REFUSES ONE THAT WAS PROMOTED.
+    broken = copy.deepcopy(projection)
+    for entry in broken["evaluation"]["declared_checks"]:
+        if entry["check_id"] == "SIM-050":
+            entry["severity"] = "WARNING"
+    with pytest.raises(ValueError, match="not a defect"):
+        validate_phase9_inspection(broken)
+
+
+def test_38c_the_loader_refuses_an_actionable_optional_publication() -> None:
+    from pccm_builder.spec_loader import SpecError
+
+    def edit(block):
+        for check in block["checks"]:
+            if check.get("optional_publication"):
+                check["severity"] = "WARNING"
+    with pytest.raises(SpecError, match="not a defect"):
+        _mutate_manifest(edit)
+
+
 def test_39_not_calculated_is_actionable() -> None:
     plan = _plan()
     severities = {c["check_id"]: c["severity"] for c in plan.ordered_checks}
@@ -941,6 +971,41 @@ def _private_names(module: str) -> list[str]:
     return re.findall(r"^Private (?:Function|Sub) (\w+)", _code(module), re.MULTILINE)
 
 
+def test_41b_the_sensitivity_presentation_reaches_no_vba_at_all() -> None:
+    """FORMULA-ONLY, AND MIRRORED WHOLE. The availability sentence is the
+    Sensitivity sheet's own worksheet formula over `_SimData`; Model Check copies
+    the sentence and adds no judgement of its own to it."""
+    plan = _plan()
+    entry = next(e for e in plan.readings["rows"] if e["key"] == "sensitivity_availability")
+    assert entry["kind"] == "sensitivity_availability"
+    formula = plan.reading_formula(entry)
+    assert "PCCM_" not in formula, f"the sensitivity reading calls VBA: {formula}"
+    sensitivity = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))[
+        "phase6_shell"]["sensitivity"]
+    column = str(sensitivity["columns"][1]["column"])
+    assert f"{sensitivity['sheet']}!${column}${sensitivity['availability_row']}" in formula
+    # AND THE ROW THAT SHOWS IT IS INFO, because a persisted comparison is
+    # context: it is blind to model drift and is paired with the live simulation
+    # state rather than judged on its own.
+    check = next(c for c in plan.ordered_checks if c["check_id"] == "SEN-010")
+    assert check["severity"] == plan.informational
+
+
+def test_41c_the_annual_readings_are_the_accepted_phase_8_adapters() -> None:
+    """PHASE 9 ADDED ONE ADAPTER AND BORROWED FOUR. The annual read path is the
+    one P8-1 accepted; nothing here reaches past it into modSimAnnualStore."""
+    plan = _plan()
+    annual = [str(e["procedure"]) for e in plan.readings["rows"]
+              if e["kind"] == "procedure" and str(e["key"]).startswith("annual_")]
+    assert annual == ["PCCM_ResultsAnnualDistributionState",
+                      "PCCM_ResultsAnnualProfileState",
+                      "PCCM_ResultsAnnualProfilePx",
+                      "PCCM_ResultsAnnualYearCount"], annual
+    joined = "\n".join(str(v) for v in _cells(plan).values())
+    for owner in ("PCCM_AnnualDistributionState()", "PCCM_AnnualProfileState()"):
+        assert owner not in joined, f"a Model Check cell reaches past the adapter to {owner}"
+
+
 def test_42_the_persisting_entry_points_are_not_reachable_from_a_cell() -> None:
     plan = _plan()
     formulas = [plan.reading_formula(e) for e in plan.readings["rows"]]
@@ -1006,6 +1071,36 @@ def test_46_the_new_source_is_purely_additive() -> None:
         assert not removed, f"{module} removes {len(removed)} line(s): {removed[:3]}"
 
 
+def test_47_no_module_silently_changed_its_line_endings() -> None:
+    """A DEFECT THIS STEP ACTUALLY MADE, AND THE CONTROL THAT NOW CATCHES IT.
+
+    `modCalcReport.bas` is CRLF throughout and an edit written with LF newlines
+    rewrote every line of it. Nothing about the source read differently; the diff
+    was the whole file, the additive guarantee was gone, and VBA injection expects
+    the separators the module was written with. So the convention itself is now
+    part of what may not change.
+    """
+    head = "ad78988"
+    for module in sorted(SRC.glob("*.bas")):
+        path = f"pccm/src/vba/{module.name}"
+        before = subprocess.run(["git", "show", f"{head}:{path}"], cwd=REPO_ROOT,
+                                capture_output=True)
+        if before.returncode != 0:
+            continue          # added after the acceptance head; it sets its own
+        raw = module.read_bytes()
+        was_crlf = b"\r\n" in before.stdout
+        is_crlf = b"\r\n" in raw
+        assert was_crlf == is_crlf, (
+            f"{module.name} changed line-ending convention: "
+            f"{'CRLF' if was_crlf else 'LF'} -> {'CRLF' if is_crlf else 'LF'}")
+        # AND IT IS NOT MIXED, which is what a careless append leaves behind.
+        assert raw.count(b"\n") == (raw.count(b"\r\n") if is_crlf else raw.count(b"\n")), \
+            f"{module.name} mixes line endings"
+        if is_crlf:
+            assert raw.count(b"\n") == raw.count(b"\r\n"), (
+                f"{module.name} mixes LF lines into a CRLF module")
+
+
 # ===========================================================================
 # G. MUTATIONS - ZERO SURVIVORS
 # ===========================================================================
@@ -1067,6 +1162,11 @@ def test_50_mutation_an_optional_publication_promoted_to_warning() -> None:
         for check in block["checks"]:
             if check["check_id"] == "SIM-050":
                 check["severity"] = "WARNING"
+                # THE FLAG COMES OFF TOO, because the loader now refuses the
+                # flagged form outright - test_38c is that refusal. Removing it
+                # is what lets this mutation reach the SHEET, so the runtime
+                # consequence is demonstrated as well as the build-time one.
+                check.pop("optional_publication", None)
     plan = _mutate_manifest(edit)
     result = _evaluate(plan, {"calculation_state": "CURRENT"})
     assert _counts(result) == (0, 1), "the mutation changed nothing"
