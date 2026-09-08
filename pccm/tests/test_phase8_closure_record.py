@@ -37,6 +37,12 @@ ACCEPTANCE = {
 SUPPLEMENTAL = ("bfae0eb", 23)
 FINAL_TREE = "bfae0eb"
 
+# THE COMMIT THIS RECORD IS ABOUT - the Phase-8 closure settlement itself. Every
+# claim the record makes about "the tree" is a claim about THIS tree, and is
+# checked against it rather than against whatever the working directory holds
+# while a later phase is being built.
+CLOSURE_COMMIT = "32e441e"
+
 # PHASE 7'S TWO AUTHORITIES. This record may not move them.
 PHASE7_IMPLEMENTATION = "79d4c3e"
 PHASE7_ACCEPTANCE = "ad78988"
@@ -74,13 +80,30 @@ def test_02_phase_9_is_not_started_and_says_so() -> None:
     text = _text()
     assert "Phase 9 is not started by this record." in text
     assert "**Phase 9 has not started.**" in text
-    # AND THE TREE AGREES. A record claiming Phase 9 is unstarted while Phase-9
-    # work existed would be the one claim nobody would check.
+    # AND THE TREE AGREED, AT THE COMMIT THIS RECORD IS ABOUT.
+    #
+    # THE CLAIM WAS RE-ANCHORED, NOT RETIRED, AND HERE IS WHY. As first written
+    # this scanned TODAY's working tree, which made a record about a closed phase
+    # depend on what every later phase does next: Phase 9 starting would falsify
+    # a statement about Phase 8 that never stopped being true. That is the wrong
+    # shape for an evidence record - and it went red the moment Phase 9 Step 1
+    # was recorded, which is how it was found.
+    #
+    # SO IT ASKS THE COMMIT INSTEAD. The record says Phase 9 was not started by
+    # it; the check is that the CLOSURE COMMIT'S OWN TREE carried no Phase-9
+    # file. That is the claim the sentence actually makes, it is immune to
+    # everything committed afterwards, and it is stricter than the original in
+    # the way that matters: a Phase-9 file smuggled into the closure commit still
+    # fails, and now it fails forever rather than only until the next phase
+    # legitimately started.
+    listing = _git("ls-tree", "-r", "--name-only", CLOSURE_COMMIT, "pccm/").split()
     for pattern in ("phase9", "phase_9"):
-        found = [p.name for p in (PCCM_ROOT / "tests").glob(f"*{pattern}*")]
-        found += [p.name for p in (PCCM_ROOT / "docs").glob(f"*{pattern}*")]
-        found += [p.name for p in (PCCM_ROOT / "bootstrap" / "windows").glob(f"*{pattern}*")]
-        assert not found, f"Phase-9 work exists in the tree: {found}"
+        found = [name for name in listing
+                 if pattern in name.rsplit("/", 1)[-1].lower()
+                 and name.split("/")[1] in ("tests", "docs", "bootstrap")]
+        assert not found, (
+            f"the Phase-8 closure commit {CLOSURE_COMMIT} already carried Phase-9 "
+            f"work: {found}")
 
 
 # ===========================================================================

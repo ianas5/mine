@@ -5,9 +5,14 @@ WHAT A CONTRACT RECORD IS FOR. It is the authority P9-2 will be built against.
 Every claim it makes about an existing owner is therefore re-derived here, so a
 plan built on it cannot rest on a fact that has quietly stopped being true.
 
-AND IT IS A CONTRACT, NOT AN IMPLEMENTATION. The last control refuses the day
-this record starts describing work that exists: no Phase-9 production, spec or
-builder change may be in the tree while this document says none is.
+AND IT IS A CONTRACT, NOT AN IMPLEMENTATION - which is a claim about the commit
+that RECORDED it, not about every commit after it. As first written, two controls
+scanned today's working tree for Phase-9 work and refused to find any. That made
+a design record's honesty depend on nobody ever implementing it, and it went red
+the hour P9-2 began, which is how it was found. Both now ask the STEP-1 COMMIT's
+own tree, which is the tree the sentence is about, and both gained the other
+half of the claim: what P9-2 actually built has to be what this record
+authorised. That is stricter than "nothing exists yet" ever was.
 
 Runs standalone or under pytest.
 """
@@ -25,6 +30,25 @@ sys.path.insert(0, str(PCCM_ROOT / "tests"))
 
 import pytest  # noqa: E402
 import yaml  # noqa: E402
+
+# THE COMMIT THAT RECORDED THIS CONTRACT. Everything the record says about "the
+# tree" is a statement about this tree.
+STEP_1_COMMIT = "dd082c9"
+
+
+def _git(*args: str) -> str:
+    import subprocess
+
+    return subprocess.run(["git", *args], cwd=PCCM_ROOT.parent, check=True,
+                          stdout=subprocess.PIPE, text=True).stdout
+
+
+def _at_step_1(path: str) -> str:
+    import subprocess
+
+    result = subprocess.run(["git", "show", f"{STEP_1_COMMIT}:{path}"],
+                            cwd=PCCM_ROOT.parent, capture_output=True, text=True)
+    return result.stdout if result.returncode == 0 else ""
 
 
 def _text() -> str:
@@ -54,20 +78,61 @@ def test_01_the_record_declares_itself_design_only() -> None:
     assert "P9-2 HAS NOT STARTED." in text
 
 
-def test_02_no_phase_9_implementation_exists_in_the_tree() -> None:
-    """THE CLAIM NOBODY WOULD OTHERWISE CHECK."""
-    strays = []
-    for directory, pattern in ((PCCM_ROOT / "builder" / "pccm_builder", "phase9*"),
-                               (PCCM_ROOT / "bootstrap" / "windows", "*phase9*"),
-                               (PCCM_ROOT / "build", "phase9*")):
-        strays += [p.name for p in directory.glob(pattern)]
-    assert not strays, f"Phase-9 implementation exists while the record says none does: {strays}"
-    # AND THE TWO SPEC ADDITIONS IT PLANS ARE NOT THERE YET.
-    manifest = yaml.safe_load((SPEC / "workbook.yaml").read_text(encoding="utf-8"))
-    assert "phase9_shell" not in manifest, "phase9_shell already exists"
-    inputs = yaml.safe_load((SPEC / "input_contract.yaml").read_text(encoding="utf-8"))
+def test_02_no_phase_9_implementation_existed_when_this_was_recorded() -> None:
+    """THE CLAIM NOBODY WOULD OTHERWISE CHECK, asked of the commit that made it."""
+    listing = _git("ls-tree", "-r", "--name-only", STEP_1_COMMIT, "pccm/").split()
+    strays = [name for name in listing
+              if "phase9" in name.rsplit("/", 1)[-1].lower()
+              and name.split("/")[1] in ("builder", "bootstrap", "build", "spec", "src")]
+    assert not strays, (
+        f"the Step-1 commit {STEP_1_COMMIT} already carried an implementation while the "
+        f"record said none did: {strays}")
+    # AND THE TWO SPEC ADDITIONS IT PLANNED WERE NOT THERE YET.
+    manifest = yaml.safe_load(_at_step_1("pccm/spec/workbook.yaml"))
+    assert "phase9_shell" not in manifest, "phase9_shell already existed"
+    inputs = yaml.safe_load(_at_step_1("pccm/spec/input_contract.yaml"))
     assert "recommended_iterations" not in inputs["inputs"]["monte_carlo_iterations"], (
-        "the recommendation field already exists; §9.1 is out of date")
+        "the recommendation field already existed; §9.1 was out of date when written")
+
+
+def test_02b_what_was_built_is_what_this_record_authorised() -> None:
+    """THE OTHER HALF OF THE CLAIM. A plan is only worth recording if the thing
+    built from it is the thing it described.
+
+    WHAT IS ASSERTED, AND WHY NOT MORE. §13 is a PLAN - "files expected to
+    change" - not a whitelist, so requiring that nothing else exist would forbid
+    a control written for a file the plan did name, which is legitimate work.
+    What is asserted is that every planned file exists once P9-2 has run, and
+    that any additional Phase-9 file sits in a directory the plan already
+    reaches. A Phase-9 file in a directory §13 never mentions is work the record
+    did not describe, and that still fails."""
+    expected = {line.strip() for line in
+                _text().split("## 13.")[1].split("```text")[1].split("```")[0].splitlines()
+                if line.strip()}
+    planned = {line.split()[0] for line in expected if line and not line.startswith("#")}
+    found = sorted(str(path.relative_to(PCCM_ROOT)) for area in
+                   ("builder", "bootstrap", "spec", "src", "tests", "docs")
+                   for path in (PCCM_ROOT / area).rglob("*phase9*")
+                   if path.is_file() and "__pycache__" not in str(path))
+    # THE RECORD AND ITS OWN CONTROLS ARE STEP 1's OWN ARTEFACTS. §13 lists what
+    # P9-2 changes; it does not list the document making the list, or the file
+    # you are reading.
+    own = {"docs/phase9_step1_contract.md", "tests/test_phase9_step1_contract.py"}
+    directories = {plan.rsplit("/", 1)[0] for plan in planned if "/" in plan}
+    for name in found:
+        if name in own:
+            continue
+        assert name.rsplit("/", 1)[0] in directories, (
+            f"{name} is Phase-9 work in a directory the record's §13 never reaches")
+    assert own <= set(found), sorted(found)
+
+    # AND ONCE P9-2 HAS RUN, EVERY NEW FILE THE PLAN NAMED EXISTS. Until then
+    # the plan is simply not finished, which is not a failure.
+    if any(name.startswith("builder/") for name in found):
+        missing = [plan for plan in planned
+                   if plan.endswith((".py", ".ps1", ".json")) and "phase9" in plan
+                   and not (PCCM_ROOT / plan).is_file()]
+        assert not missing, f"§13 planned files P9-2 did not produce: {missing}"
 
 
 # ===========================================================================
@@ -89,12 +154,33 @@ def test_10_every_named_owner_exists(module: str, name: str) -> None:
     assert name in _text(), f"the record does not name {name}"
 
 
-def test_11_the_adapter_it_authorises_does_not_exist_yet() -> None:
-    """THE AUTHORISATION IS FOR WORK NOT DONE."""
+def test_11_the_adapter_it_authorises_was_work_not_yet_done() -> None:
+    """THE AUTHORISATION WAS FOR WORK NOT DONE, at the commit that authorised it."""
     for name in ("CalcReportDerivedStatus", "PCCM_ModelCheckCalculationState"):
         assert name in _text(), f"the record does not name {name}"
-        assert name not in _module("modCalcReport.bas"), f"{name} already exists"
-        assert name not in _module("modResultsState.bas"), f"{name} already exists"
+        assert name not in _at_step_1("pccm/src/vba/modCalcReport.bas"), (
+            f"{name} already existed when the record authorised it")
+        assert name not in _at_step_1("pccm/src/vba/modResultsState.bas"), (
+            f"{name} already existed when the record authorised it")
+
+
+def test_11b_the_authorised_adapter_was_built_where_it_was_authorised() -> None:
+    """AND THE AUTHORISATION WAS HONOURED, OR NOT USED AT ALL. §8 names the owner
+    module for each half; an adapter that landed somewhere else would be an
+    authorisation quoted rather than followed."""
+    calc, state = _module("modCalcReport.bas"), _module("modResultsState.bas")
+    if "CalcReportDerivedStatus" not in calc and \
+            "PCCM_ModelCheckCalculationState" not in state:
+        pytest.skip("P9-2 has not built the adapter")
+    assert "Public Function CalcReportDerivedStatus" in calc, (
+        "the pure derivation was not exposed in modCalcReport, which §8 names")
+    assert "Public Function PCCM_ModelCheckCalculationState" in state, (
+        "the adapter is not in modResultsState, which §8 names as the owner")
+    assert "modCalcReport.CalcReportDerivedStatus()" in state, (
+        "the adapter does not delegate to the pure derivation §8 authorises")
+    # AND PCCM_CalculationStatus IS UNTOUCHED, which §8 states in as many words.
+    assert "WriteStatusBlock status" in _procedure("modCalcReport.bas",
+                                                  "PCCM_CalculationStatus")
 
 
 # ===========================================================================

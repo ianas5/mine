@@ -37,6 +37,7 @@ from .calc_loader import CalcContract
 RESULTS_STATE_PREFIX = "PCCM_Results"
 from .calc_render import render_calc_workspace
 from .structure_render import render_applied_timeline, render_grid, render_identity
+from .phase9_model_check import ModelCheckPlan
 from .styling import StyleBook
 from .validation import apply_validation
 
@@ -171,6 +172,14 @@ def build_workbook(
         if sim is not None and spec.phase6_shell:
             render_phase6_shell(worksheet, sheet_spec, spec.phase6_shell, sim, contract,
                                 styles, calc, structure)
+            # PHASE 9. The Model Check surface, on the same terms and for the
+            # same reason: it is materialised at BUILD time so a sheet can never
+            # be half-written by an operation that failed halfway through. It is
+            # gated on `sim` alongside the publication shell because everything
+            # it aggregates is a Phase-6/7/8 owner's answer - with no simulation
+            # contract loaded there is nothing for it to mirror.
+            if spec.phase9_shell:
+                render_phase9_model_check(worksheet, sheet_spec, spec, contract, styles)
 
     # Remove openpyxl's default sheet only after the real sheets exist, so the
     # workbook is never momentarily empty.
@@ -1531,3 +1540,125 @@ def _write(worksheet: Worksheet, address: str, value: Any, font) -> None:
     cell = worksheet[address]
     cell.value = value
     cell.font = font
+
+
+# ===========================================================================
+# PHASE 9 - THE MODEL CHECK SURFACE
+# ===========================================================================
+# PRESENTATION, AND NOTHING ELSE. Every cell below either calls an accepted
+# read-only accessor, mirrors a cell another accepted sheet publishes, or does
+# ordinary display arithmetic over cells that are already on this sheet.
+# Nothing here validates anything: the structural report, the calculation state,
+# the simulation state, the annual states and the Sensitivity sentence all have
+# owners, and a worksheet that repeated one of them would be a second validator
+# that no test of the VBA would ever see.
+#
+# AND NOT ONE ADDRESS IS TYPED. Every row, column and threshold comes from
+# `ModelCheckPlan`, which resolves them from the manifest and the input
+# contract. A reading that moves takes its conditions, its register and its
+# counts with it.
+
+
+def render_phase9_model_check(
+    worksheet: Worksheet, sheet_spec: SheetSpec, spec: WorkbookSpec,
+    contract: InputContract, styles: StyleBook,
+) -> None:
+    shell = spec.phase6_shell or {}
+    plan = ModelCheckPlan(spec, contract, shell["results"], shell["sensitivity"])
+    if sheet_spec.name != plan.sheet:
+        return
+
+    _render_model_check_summary(worksheet, plan, styles)
+    _render_model_check_register(worksheet, plan, styles)
+    _render_model_check_evaluation(worksheet, plan, styles)
+
+
+def _render_model_check_summary(worksheet: Worksheet, plan: ModelCheckPlan,
+                                styles: StyleBook) -> None:
+    label_col, value_col = plan.label_column, plan.value_column
+    summary = plan.summary
+    _write(worksheet, f"{label_col}{summary['heading_row']}", summary["heading"],
+           styles.section)
+    worksheet.row_dimensions[int(summary["heading_row"])].height = styles.row_height("section")
+    _write(worksheet, f"{label_col}{summary['note_row']}", summary["note"], styles.note)
+
+    for entry in summary["rows"]:
+        row = int(entry["row"])
+        _write(worksheet, f"{label_col}{row}", entry["label"], styles.label)
+        cell = worksheet[f"{value_col}{row}"]
+        cell.value = plan.summary_formula(str(entry["key"]))
+        cell.font = styles.value
+        cell.number_format = plan.number_formats[str(entry["format"])]
+
+
+def _render_model_check_register(worksheet: Worksheet, plan: ModelCheckPlan,
+                                 styles: StyleBook) -> None:
+    register = plan.register
+    label_col = plan.label_column
+    _write(worksheet, f"{label_col}{register['heading_row']}", register["heading"],
+           styles.section)
+    worksheet.row_dimensions[int(register["heading_row"])].height = styles.row_height("section")
+    _write(worksheet, f"{label_col}{register['note_row']}", register["note"], styles.note)
+
+    header_row = int(register["header_row"])
+    for column in register["columns"]:
+        cell = worksheet[f"{column['column']}{header_row}"]
+        cell.value = column["header"]
+        styles.apply_table_header(cell)
+
+    text_format = plan.number_formats["text"]
+    for position, row in enumerate(plan.register_rows(), start=1):
+        for column in register["columns"]:
+            cell = worksheet[f"{column['column']}{row}"]
+            cell.value = plan.register_formula(position, str(column["key"]))
+            cell.font = styles.value
+            cell.number_format = text_format
+
+
+def _render_model_check_evaluation(worksheet: Worksheet, plan: ModelCheckPlan,
+                                   styles: StyleBook) -> None:
+    """The source the summary is computed from, on the sheet and in plain sight.
+
+    IT IS NOT HIDDEN, and that is the point. Every number above can be added up
+    by hand from these rows; a summary whose working was somewhere the reader
+    could not see would be asking to be trusted rather than checked.
+    """
+    label_col, value_col = plan.label_column, plan.value_column
+    evaluation = plan.evaluation
+    _write(worksheet, f"{label_col}{evaluation['heading_row']}", evaluation["heading"],
+           styles.section)
+    worksheet.row_dimensions[int(evaluation["heading_row"])].height = \
+        styles.row_height("section")
+    _write(worksheet, f"{label_col}{evaluation['note_row']}", evaluation["note"], styles.note)
+
+    readings = plan.readings
+    _write(worksheet, f"{label_col}{readings['heading_row']}", readings["heading"],
+           styles.section)
+    header_row = int(readings["header_row"])
+    for column, key in ((label_col, "label"), (value_col, "value")):
+        cell = worksheet[f"{column}{header_row}"]
+        cell.value = readings["headers"][key]
+        styles.apply_table_header(cell)
+    for entry in readings["rows"]:
+        row = int(entry["row"])
+        _write(worksheet, f"{label_col}{row}", entry["label"], styles.label)
+        cell = worksheet[f"{value_col}{row}"]
+        cell.value = plan.reading_formula(entry)
+        cell.font = styles.value
+        cell.number_format = plan.number_formats[str(entry["format"])]
+
+    candidates = plan.candidates
+    _write(worksheet, f"{label_col}{candidates['heading_row']}", candidates["heading"],
+           styles.section)
+    header_row = int(candidates["header_row"])
+    for column in candidates["columns"]:
+        cell = worksheet[f"{column['column']}{header_row}"]
+        cell.value = column["header"]
+        styles.apply_table_header(cell)
+
+    formulas = plan.candidate_formulas()
+    for row, entry in formulas.items():
+        for key, value in entry.items():
+            cell = worksheet[f"{plan.candidate_column(key)}{row}"]
+            cell.value = value
+            cell.font = styles.value

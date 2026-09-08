@@ -136,3 +136,38 @@ Public Function PCCM_ResultsSimulationState() As Variant
 Unavailable:
     PCCM_ResultsSimulationState = CVErr(xlErrValue)
 End Function
+
+' ==========================================================================
+' THE SIXTH ADAPTER - THE LIVE CALCULATION STATE, FOR MODEL CHECK
+' ==========================================================================
+' PHASE 9 NEEDS A LIVE CALCULATION STATE and there was none a cell could ask
+' for. The two reasons are the two this module already exists for:
+'
+'   THE PERSISTED ROW IS NOT AN ANSWER. _Calc C19 is the LAST EVALUATED status.
+'   After an ordinary input change it goes on reading CURRENT until something
+'   happens to re-evaluate it, so a Model Check built on it would report a
+'   model as current after the model had moved - which is the whole failure the
+'   sheet exists to catch.
+'
+'   AND THE OWNER'S OWN ENTRY POINT WRITES. PCCM_CalculationStatus derives the
+'   status and then persists it; a worksheet cell may not change the workbook.
+'
+' SO THE SEMANTIC OWNER IS ASKED THROUGH ITS PURE HALF, exactly as the
+' simulation adapter above asks modSimReport.SimReportDerivedStatus. No rule
+' moves, no word is translated, and NOT CALCULATED / CURRENT / STALE / INVALID
+' arrive on the sheet spelled the way modCalcReport spells them.
+'
+' VOLATILE FOR THE REASON THE OTHERS ARE. It takes no arguments, and its true
+' dependency is every input the calculation fingerprint covers. Enumerating that
+' as a range argument would be a second, partial copy of the fingerprint's scope.
+'
+' AND IT FAILS LOUD. A wrong state word is indistinguishable from a right one;
+' an error is not.
+Public Function PCCM_ModelCheckCalculationState() As Variant
+    On Error GoTo Unavailable
+    Application.Volatile True
+    PCCM_ModelCheckCalculationState = modCalcReport.CalcReportDerivedStatus()
+    Exit Function
+Unavailable:
+    PCCM_ModelCheckCalculationState = CVErr(xlErrValue)
+End Function

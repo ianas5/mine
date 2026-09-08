@@ -42,6 +42,7 @@ from pccm_builder import (  # noqa: E402
     emit_sim_artifacts,
     emit_phase7_acceptance,
     emit_phase8_charts,
+    emit_phase9_model_check,
     emit_phase8_dashboard,
     emit_phase8_results,
     emit_sim_gate_b_artifacts,
@@ -229,6 +230,14 @@ def main(argv: list[str] | None = None) -> int:
     phase8_charts = emit_phase8_charts(
         spec, structure.limits.max_generated_year_columns, out_path.parent, sim)
 
+    # PHASE 9. THE MODEL CHECK PROJECTION, and its own file for the reason every
+    # projection above has its own: the earlier ones are the artefacts the
+    # accepted Windows runs were produced against. It carries the addresses, the
+    # vocabularies, the overflow wording and the advisory threshold - the
+    # threshold being the INPUT CONTRACT's, carried rather than restated, so a
+    # runner checks the advisory against the number the sheet was built from.
+    phase9 = emit_phase9_model_check(spec, contract, out_path.parent)
+
     say(f"  built    : {out_path}")
     say(f"  emitted  : {artifacts.module_path}")
     say(f"  emitted  : {artifacts.manifest_path}")
@@ -246,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     say(f"  emitted  : {phase8}")
     say(f"  emitted  : {phase8_dashboard}")
     say(f"  emitted  : {phase8_charts}")
+    say(f"  emitted  : {phase9}")
     say(f"  stamped  : builder {metadata.builder_version}, {metadata.build_timestamp}")
     say("")
     say("Structural verification:")

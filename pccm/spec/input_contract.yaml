@@ -167,6 +167,28 @@ inputs:
     required: true
     editable: true
     default: 10000
+    # THE MACHINE-READABLE RECOMMENDATION, AND IT IS NOT A BOUND.
+    #
+    # The note below has assigned the <10000 advisory to Model Check since the
+    # input contract was accepted, but the VALUE lived only in two places a
+    # program must not read: `default` above, and the user-facing `prompt`
+    # string below. Phase 9 has to evaluate the advisory, so the value gets one
+    # machine-readable owner here and every consumer reads it.
+    #
+    # WHY NOT `default`. A default is what a NEW workbook starts with; a
+    # recommendation is advice about a value the operator has since chosen.
+    # They coincide today and are different concepts, and a Model Check that
+    # read `default` would silently change its advice the day somebody changed
+    # what a new workbook starts with.
+    #
+    # WHY NOT THE PROMPT. It is prose written for a person. Advisory logic that
+    # parsed "10000 or more is recommended" would break on a comma, a rewording
+    # or a translation, and would fail silently rather than loudly.
+    #
+    # AND IT IS NOT VALIDATION. `validation.formula1` below is the LOCKED HARD
+    # MINIMUM of 1000 and is untouched by this field. No maximum is introduced.
+    # Entering 1000 is permitted, produces an advisory, and is never refused.
+    recommended_iterations: 10000
     number_format: "#,##0"
     validation:
       kind: "whole"
@@ -176,7 +198,7 @@ inputs:
       prompt: "Whole number, minimum 1000. 10000 or more is recommended."
       error_title: "Invalid iteration count"
       error: "Monte Carlo Iterations must be a whole number of at least 1000."
-    note: "1000 is the locked hard minimum. No upper limit is imposed; the <10000 advisory belongs to Model Check."
+    note: "1000 is the locked hard minimum. No upper limit is imposed; the <10000 advisory belongs to Model Check, which reads recommended_iterations above and never this prose."
 
   discount_rate:
     sheet: "Setup"

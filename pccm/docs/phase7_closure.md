@@ -76,6 +76,7 @@ and it resolves:
 ```text
 $ git log --format='%h %s' --grep='the Results state path is read-only' -1
 $ git log --format='%h %s' --grep='a risk publishes its risk name' -1
+$ git log --format='%h %s' --grep='the live calculation state is read-only' -1
 ```
 
 | Module | Correction | Found by | What changed, and why |
@@ -83,6 +84,7 @@ $ git log --format='%h %s' --grep='a risk publishes its risk name' -1
 | `pccm/src/vba/modSimReport.bas` | P8-1: the Results state path is read-only | P8-1, first complete Windows run | Adds `SimReportDerivedStatus`, a public delegation returning the existing private `DeriveSimStatus()`. **No derivation, no persistence and no existing procedure changed.** `PCCM_SimulationStatus` still derives *and* writes `_SimData!D28:D29`, exactly as Phase 7 accepted it. |
 | `pccm/src/vba/modSimAnnualStore.bas` | P8-1: the Results state path is read-only | P8-1, first complete Windows run | Splits the annual precondition into a command path (`SimAnnualStoreCurrentRun`, unchanged behaviour, still asks the persisting entry point, still the one `modSimAnnualRun` uses) and a read path (`SimAnnualStoreCurrentRunReadOnly`), both settling through one private `CurrentRunFor`. The two state accessors take the read path. **No state rule moved and no refusal text changed.** |
 | `pccm/src/vba/modSimPostReport.bas` | P8-3 Windows run 4: a risk publishes its risk name | P8-3, fourth Windows run | `DriverNameOf` read `COL_RISK_REGISTER_DESCRIPTION` for a risk — the column `driver_contract.yaml` declares `required: false`, an optional note — and so published no name for a risk that had none. It now reads `COL_RISK_REGISTER_RISK_NAME`, which that contract declares `required: true`. **One line.** The cost-line branch is untouched and was always right: a cost line has no name column, and its description is its `required: true` label. No driver id, rank, signed rho, absolute rho, direction, status, ordering, fingerprint or replay mathematics is touched. |
+| `pccm/src/vba/modCalcReport.bas` | P9-2: the live calculation state is read-only | P9-2, the Model Check surface | Adds `CalcReportDerivedStatus`, a public delegation returning the existing private `DeriveStatus()` over the existing private `PrepareCurrentCalculation()`. **No derivation, no persistence and no existing procedure changed.** `PCCM_CalculationStatus` still derives *and* writes `_Calc!C19:C20`, exactly as Phase 5 accepted it and Phase 7 ran it. The reason is the P8-1 reason one module along: Excel forbids a function a worksheet cell called to change the workbook, so a Model Check cell reaching the persisting entry point would show `#VALUE!`. The derivation was already pure and the persistence is the caller's, so this exposes the pure half - one derivation, two entry points, differing only in whether `C19:C20` is rewritten afterwards. |
 
 **The defect these rows exist for.** `PCCM_AnnualDistributionState` and
 `PCCM_AnnualProfileState` reached `PCCM_SimulationStatus`, which persists the

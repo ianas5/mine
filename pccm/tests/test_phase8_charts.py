@@ -167,7 +167,26 @@ DECLARED_PRODUCTION_CORRECTIONS = {
         "SIMULATION state: the four annual adapters answer about the annual "
         "product and read NOT PRODUCED whenever the annual step has not run, and "
         "the persisted (last evaluated) row was proved live at P8-1 to keep "
-        "reading CURRENT after a request change.",
+        "reading CURRENT after a request change. P9-2 adds a SIXTH adapter to "
+        "the same module on the same pattern, PCCM_ModelCheckCalculationState, "
+        "delegating to modCalcReport.CalcReportDerivedStatus: Model Check needed "
+        "a live CALCULATION state, the persisted _Calc C19 row is last-evaluated "
+        "and goes on reading CURRENT after an input change, and the owner's own "
+        "entry point persists and so may not be called from a cell. Both "
+        "additions are whole new procedures; no existing one is touched.",
+        (),
+    ),
+    "pccm/src/vba/modCalcReport.bas": (
+        "P9-2: the live calculation state is read-only. Adds "
+        "CalcReportDerivedStatus, a public delegation returning the existing "
+        "private DeriveStatus over the existing private PrepareCurrentCalculation. "
+        "PCCM_CalculationStatus derives the same answer AND writes C19:C20 through "
+        "WriteStatusBlock, and Excel forbids a function a worksheet cell called to "
+        "change the workbook - the P8-1 defect exactly, one module along. The "
+        "derivation was already pure and the persistence is the caller's, so this "
+        "exposes the pure half. No derivation, no persistence, no state word and "
+        "no existing procedure changed: PCCM_CalculationStatus still derives and "
+        "still writes, exactly as Phase 5 accepted it.",
         (),
     ),
     "pccm/src/vba/modSimPostReport.bas": (

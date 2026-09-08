@@ -85,6 +85,369 @@ presentation:
     label_column: "B"
     value_column: "D"
 
+# ---------------------------------------------------------------------------
+# PHASE 9 - THE MODEL CHECK SURFACE
+# ---------------------------------------------------------------------------
+# MODEL CHECK OWNS NO FACT. Every row below is a PRESENTATION of something an
+# accepted owner already decided: the structural report, the live calculation
+# state, the live simulation state, the four annual accessors, the Sensitivity
+# sheet's own availability sentence and the requested iteration count. There is
+# no state machine here, no second derivation, and no severity that changes a
+# refusal anybody else would make.
+#
+# WHY THE REGISTER IS DECLARED AND NOT DISCOVERED. A check's severity, group,
+# message and guidance are contract text; only WHETHER IT APPLIES is a runtime
+# question. Declaring the population means the ORDER is fixed at build time -
+# severity, then group, then check id - so the sheet cannot depend on the order
+# in which Excel happened to evaluate anything. Discovery order is not an input
+# to this layout.
+#
+# WHY TWO ROWS FOR ONE SIMULATION WORD. `SIM-010` and `SIM-020` both fire on
+# simulation INVALID and are mutually exclusive on the calculation state. That
+# is the Step-1 rule expressed as two conditions rather than as one row with a
+# severity that moves: a severity that moved could not be sorted at build time,
+# and a reader could not tell which rule produced the word in front of them.
+#
+# WHY THE STRUCTURAL FAULTS ARE SLOTS. ValidateStructure returns a LIST whose
+# length nobody can know in advance, one fault per line. The slots below carry
+# that list one line per row; the TOTAL is counted from the report string itself
+# and is therefore exact and unbounded, whatever the slot capacity is.
+# ---------------------------------------------------------------------------
+phase9_shell:
+  model_check:
+    sheet: "Model Check"
+    label_column: "B"
+    value_column: "D"
+    # RESTATED HERE ONLY SO THE TWO CAN BE COMPARED. The sheet entry below is
+    # the authority; the builder refuses a mismatch rather than letting a
+    # projection promise a freeze the workbook does not have.
+    freeze_panes: "A6"
+
+    # THE VOCABULARIES, DECLARED ONCE. Sort ranks are the list positions: a
+    # severity or a group that is not in these lists has no ordinal and fails
+    # the build rather than sorting somewhere arbitrary.
+    severity_order: ["ERROR", "WARNING", "INFO"]
+    group_order: ["Structure", "Inputs", "Calculation", "Simulation", "Annual", "Sensitivity"]
+    # ACTIONABLE IS A PROPERTY OF SEVERITY AND NOTHING ELSE. INFO is context;
+    # it is displayed faithfully and never counted, so it can never move the
+    # Overall Status.
+    actionable_severities: ["ERROR", "WARNING"]
+    overall_states: ["PASS", "WARNING", "ERROR"]
+
+    # THE VISIBLE WINDOW. One hundred rows, and one hundred is a RENDERING
+    # capacity, never a claim about how many checks exist: the counts above the
+    # register are computed over the whole logical population and the
+    # disclosure below says so in words whenever the population is larger.
+    row_window: 100
+    disclosure_template: "Showing the first {window} of {total} checks."
+    # THE ACCEPTED NO-DATA REPRESENTATION. An empty slot is not a check, exactly
+    # as an empty tornado slot is not a category: Excel plots and compares "" as
+    # a hard zero, and a zero here would be an issue nobody reported.
+    no_data_formula: "=NA()"
+    # THE SAME GUARD THE DASHBOARD MIRRORS USE, and for the same reason: Excel
+    # reads an empty reference back as a hard 0, so an unguarded mirror of a
+    # blank publication cell would print a fabricated zero where the honest
+    # answer is "nothing has been published".
+    mirror_formula: '=IF({ref}="","",{ref})'
+
+    number_formats:
+      text: "@"
+      count: "#,##0"
+      timestamp: "yyyy-mm-dd hh:mm:ss"
+
+    summary:
+      heading_row: 6
+      note_row: 7
+      heading: "Overall Model Status"
+      note: "The aggregate of the register below. Errors and Warnings are the ACTIONABLE rows; information rows are context and are never counted. The Overall Status is derived from those two counts and from nothing else."
+      rows:
+        - {key: "overall_status", row: 8, label: "Overall Status", format: "text"}
+        - {key: "error_count", row: 9, label: "Errors", format: "count"}
+        - {key: "warning_count", row: 10, label: "Warnings", format: "count"}
+        - {key: "info_count", row: 11, label: "Information", format: "count"}
+        - {key: "total_checks", row: 12, label: "Checks evaluated", format: "count"}
+        - {key: "evaluated", row: 13, label: "Evaluated", format: "timestamp"}
+        - {key: "disclosure", row: 14, label: "Disclosure", format: "text"}
+
+    register:
+      heading_row: 15
+      note_row: 16
+      header_row: 17
+      first_row: 18
+      heading: "Validation Results"
+      note: "One row per issue, ordered by severity, then by group in the declared order, then by check id. Never by worksheet position and never by the order anything was discovered. A row that reads #N/A is an unused slot, not a check."
+      columns:
+        - {key: "check_id", header: "Check ID", column: "B"}
+        - {key: "group", header: "Group", column: "C"}
+        - {key: "severity", header: "Severity", column: "D"}
+        - {key: "subject", header: "Subject", column: "E"}
+        - {key: "message", header: "Message", column: "F"}
+        - {key: "guidance", header: "Guidance", column: "G"}
+
+    # -------------------------------------------------------------------
+    # THE EVALUATION SOURCE, IN PLAIN SIGHT
+    # -------------------------------------------------------------------
+    # It is on the sheet, below the register, and it is not hidden. Every
+    # number in the summary can be added up by hand from these rows, which is
+    # the whole claim the summary makes.
+    evaluation:
+      heading_row: 120
+      note_row: 121
+      heading: "Evaluation Source"
+      note: "What the register is computed from. The readings are what the owners answered; the candidates are every declared check and every structural fault slot, in the fixed order, with the flags that decide whether each one is shown and counted."
+      readings:
+        heading_row: 123
+        header_row: 124
+        first_row: 125
+        heading: "Readings"
+        headers: {label: "Reading", value: "Value"}
+        # EVERY ROW NAMES ITS OWNER. `procedure` calls a worksheet-safe
+        # accessor; `mirror` reads a cell another accepted sheet already
+        # publishes; `defined_name` reads the entered input itself; `derived`
+        # is arithmetic over the rows above it and reaches nothing new.
+        #
+        # `anchor: true` MARKS A ZERO-ARGUMENT ACCESSOR THAT IS NOT VOLATILE.
+        # Excel cannot see such a function's dependencies, so a cell holding one
+        # would answer once and keep that answer forever - the defect the P8-1
+        # record names. The anchored cells are made dependents of the volatile
+        # `evaluated` heartbeat instead, which is the same declaration
+        # `Application.Volatile` makes, expressed by the caller that needs it
+        # rather than inside a module the command paths share.
+        rows:
+          - {key: "calculation_state", row: 125, label: "Calculation State (live)", kind: "procedure", procedure: "PCCM_ModelCheckCalculationState", format: "text"}
+          - {key: "simulation_state", row: 126, label: "Simulation State (live)", kind: "procedure", procedure: "PCCM_ResultsSimulationState", format: "text"}
+          - {key: "annual_distribution_state", row: 127, label: "Annual Distributions (live)", kind: "procedure", procedure: "PCCM_ResultsAnnualDistributionState", format: "text"}
+          - {key: "annual_profile_state", row: 128, label: "Annual Profile (live)", kind: "procedure", procedure: "PCCM_ResultsAnnualProfileState", format: "text"}
+          - {key: "annual_profile_px", row: 129, label: "Profile Confidence Level (live)", kind: "procedure", procedure: "PCCM_ResultsAnnualProfilePx", format: "text"}
+          - {key: "annual_year_count", row: 130, label: "Years Covered (live)", kind: "procedure", procedure: "PCCM_ResultsAnnualYearCount", format: "count"}
+          - {key: "structural_report", row: 131, label: "Structural Report (live)", kind: "procedure", procedure: "PCCM_StructuralReport", anchor: true, format: "text"}
+          - {key: "calculation_attempt_result", row: 132, label: "Last Calculation Attempt (last attempt)", kind: "procedure", procedure: "PCCM_CalculationAttemptResult", anchor: true, format: "text"}
+          - {key: "calculation_attempt_detail", row: 133, label: "Last Calculation Attempt Detail (last attempt)", kind: "procedure", procedure: "PCCM_CalculationAttemptDetail", anchor: true, format: "text"}
+          - {key: "requested_iterations", row: 134, label: "Monte Carlo Iterations (requested)", kind: "defined_name", defined_name: "inpMonteCarloIterations", format: "count"}
+          - {key: "simulation_publication", row: 135, label: "Last Successful Simulation (publication)", kind: "mirror", source_block: "run_stamp", source_key: "last_successful_stamp", format: "text"}
+          - {key: "published_run_id", row: 136, label: "Published Run ID (publication)", kind: "mirror", source_block: "run_stamp", source_key: "run_id", format: "text"}
+          - {key: "published_iterations_run", row: 137, label: "Iterations Run (publication)", kind: "mirror", source_block: "run_stamp", source_key: "iterations_run", format: "count"}
+          - {key: "simulation_status_last_evaluated", row: 138, label: "Simulation Status (last evaluated)", kind: "mirror", source_block: "run_stamp", source_key: "simulation_status", format: "text"}
+          - {key: "sensitivity_availability", row: 139, label: "Sensitivity Availability (persisted comparison)", kind: "sensitivity_availability", format: "text"}
+          - {key: "structural_fault_count", row: 140, label: "Structural Faults Reported", kind: "derived", derived: "structural_fault_count", format: "count"}
+          - {key: "structural_surplus", row: 141, label: "Structural Faults Beyond The Slot Capacity", kind: "derived", derived: "structural_surplus", format: "count"}
+      candidates:
+        heading_row: 143
+        header_row: 144
+        first_row: 145
+        heading: "Candidates"
+        # THE SLOT CAPACITY IS THE VISIBLE WINDOW, and it is enough by
+        # construction: structural faults are ERROR in the first group, so they
+        # sort ahead of everything else, and a slot past the hundredth could
+        # never be displayed even if it existed. The count above does not depend
+        # on this number - it is read from the report string - so a larger fault
+        # population is still reported in full, it is simply not all drawn.
+        structural_slots: 100
+        columns:
+          - {key: "ordinal", header: "#", column: "B"}
+          - {key: "check_id", header: "Check ID", column: "C"}
+          - {key: "group", header: "Group", column: "D"}
+          - {key: "severity", header: "Severity", column: "E"}
+          - {key: "subject", header: "Subject", column: "F"}
+          - {key: "message", header: "Message", column: "G"}
+          - {key: "guidance", header: "Guidance", column: "H"}
+          - {key: "active", header: "Active", column: "I"}
+          - {key: "dedup_key", header: "Dedup Key", column: "J"}
+          - {key: "counted", header: "Counted", column: "K"}
+          - {key: "sequence", header: "Sequence", column: "L"}
+          - {key: "line_start", header: "Line Start", column: "M"}
+          - {key: "line_end", header: "Line End", column: "N"}
+          - {key: "line", header: "Fault Line", column: "O"}
+
+    # -------------------------------------------------------------------
+    # THE STRUCTURAL FAULT SLOTS - what one line of the owner's report becomes
+    # -------------------------------------------------------------------
+    # ONE ROW PER FAULT, and the identity is the owner's own. `check_id` is the
+    # bracketed key ValidateStructure prints, which names WHICH invariant
+    # failed; `subject` is the rest of the line, which is how the owner
+    # identifies WHAT failed. Model Check parses neither into a permanent id of
+    # its own invention: it shows what the owner said.
+    structural:
+      group: "Structure"
+      severity: "ERROR"
+      guidance: "Correct the reported structural fault, then re-run the structural operation that reports it."
+
+    # -------------------------------------------------------------------
+    # THE DECLARED REGISTER
+    # -------------------------------------------------------------------
+    # `condition` is a worksheet expression over the READING KEYS above, written
+    # as {key}. Nothing here spells a cell address: the builder resolves each key
+    # to the row the readings block gives it, so a reading that moves takes its
+    # conditions with it and a key that stops existing fails the BUILD by name.
+    #
+    # `{recommended_iterations}` resolves to the value the INPUT CONTRACT owns.
+    # It is not written here, and <recommended> in a message or a guidance
+    # sentence is the same value formatted for a reader. There is no literal.
+    #
+    # A `subject`, `message` or `check_id` that is exactly {key} becomes a
+    # reference to that reading. Anything else is text.
+    checks:
+      - check_id: "STR-000"
+        group: "Structure"
+        severity: "INFO"
+        subject: ""
+        condition: '{structural_fault_count}=0'
+        message: "Structural validation reports no fault."
+        guidance: "No action is required."
+
+      - check_id: "INP-010"
+        group: "Inputs"
+        severity: "WARNING"
+        subject: "Monte Carlo Iterations"
+        condition: '{requested_iterations}<{recommended_iterations}'
+        message: "Monte Carlo iterations are below the recommended <recommended>; simulation precision may be lower at this setting."
+        guidance: "Increase Monte Carlo Iterations on Setup to <recommended> or more before the next simulation run."
+      - check_id: "INP-011"
+        group: "Inputs"
+        severity: "INFO"
+        subject: "Monte Carlo Iterations"
+        condition: '{requested_iterations}>={recommended_iterations}'
+        message: "Monte Carlo iterations are at or above the recommended <recommended>."
+        guidance: "No action is required."
+
+      - check_id: "CAL-010"
+        group: "Calculation"
+        severity: "ERROR"
+        subject: ""
+        condition: '{calculation_state}="INVALID"'
+        message: "The inputs as they stand cannot form a valid calculation, so no result can be produced from them."
+        guidance: "Correct the refused input, then press Calculate on Setup."
+      - check_id: "CAL-020"
+        group: "Calculation"
+        severity: "WARNING"
+        subject: ""
+        condition: '{calculation_state}="NOT CALCULATED"'
+        message: "No calculation has been performed for this model."
+        guidance: "Press Calculate on Setup to produce the calculated model."
+      - check_id: "CAL-030"
+        group: "Calculation"
+        severity: "WARNING"
+        subject: ""
+        condition: '{calculation_state}="STALE"'
+        message: "The inputs have changed since the last successful calculation."
+        guidance: "Press Calculate on Setup to bring the calculated model up to date."
+      - check_id: "CAL-040"
+        group: "Calculation"
+        severity: "INFO"
+        subject: ""
+        condition: '{calculation_state}="CURRENT"'
+        message: "The calculated model is current for the inputs as they stand."
+        guidance: "No action is required."
+      - check_id: "CAL-050"
+        group: "Calculation"
+        severity: "INFO"
+        subject: "{calculation_attempt_result}"
+        condition: 'AND({calculation_attempt_result}<>"",{calculation_attempt_result}<>"NONE")'
+        message: "The last recorded calculation attempt (last attempt). It is history and never the live state above."
+        guidance: "No action is required; the live Calculation State reading is the current answer."
+      - check_id: "CAL-051"
+        group: "Calculation"
+        severity: "INFO"
+        subject: "{calculation_attempt_detail}"
+        condition: '{calculation_attempt_detail}<>""'
+        message: "What the last calculation attempt reported (last attempt). Where an input was refused, this is where the owner named it."
+        guidance: "No action is required; press Calculate to produce a fresh answer."
+
+      - check_id: "SIM-010"
+        group: "Simulation"
+        severity: "ERROR"
+        subject: ""
+        condition: 'AND({simulation_state}="INVALID",{calculation_state}="CURRENT")'
+        message: "The simulation request cannot be formed even though the calculation is current, so the fault belongs to the request itself."
+        guidance: "Correct the iteration count or the seed on Setup, then run the simulation again."
+      - check_id: "SIM-020"
+        group: "Simulation"
+        severity: "INFO"
+        subject: ""
+        condition: 'AND({simulation_state}="INVALID",{calculation_state}<>"CURRENT")'
+        message: "The simulation is INVALID because the calculation is not current. The calculation row is the root cause and this row is shown as context rather than counted a second time."
+        guidance: "Resolve the calculation state; this clears with it."
+      - check_id: "SIM-030"
+        group: "Simulation"
+        severity: "WARNING"
+        subject: ""
+        condition: '{simulation_state}="STALE"'
+        message: "The model has changed since the published simulation was run."
+        guidance: "Run Simulation on Setup to publish a result for the model as it stands."
+      - check_id: "SIM-040"
+        group: "Simulation"
+        severity: "INFO"
+        subject: ""
+        condition: '{simulation_state}="CURRENT"'
+        message: "The published simulation is current for the model as it stands."
+        guidance: "No action is required."
+      - check_id: "SIM-050"
+        group: "Simulation"
+        severity: "INFO"
+        subject: ""
+        condition: '{simulation_publication}=""'
+        message: "No simulation has been published. Simulation is optional and its absence is not a defect."
+        guidance: "Run Simulation on Setup when a probabilistic result is wanted."
+      - check_id: "SIM-060"
+        group: "Simulation"
+        severity: "INFO"
+        subject: "{published_run_id}"
+        condition: '{simulation_publication}<>""'
+        message: "The published run (publication history)."
+        guidance: "No action is required."
+      - check_id: "SIM-070"
+        group: "Simulation"
+        severity: "INFO"
+        subject: "{simulation_status_last_evaluated}"
+        condition: '{simulation_status_last_evaluated}<>""'
+        message: "The simulation status as it was last evaluated (last evaluated). It is history and never the live state above."
+        guidance: "No action is required; the live Simulation State reading is the current answer."
+
+      - check_id: "ANN-010"
+        group: "Annual"
+        severity: "WARNING"
+        subject: ""
+        condition: '{annual_profile_state}="HISTORICAL"'
+        message: "The stored annual profile belongs to an earlier run."
+        guidance: "Run Annual Stochastic on Setup again for the published run."
+      - check_id: "ANN-020"
+        group: "Annual"
+        severity: "WARNING"
+        subject: "{annual_profile_px}"
+        condition: '{annual_profile_state}="OTHER Px"'
+        message: "The stored annual profile belongs to a different confidence level from the one now selected."
+        guidance: "Run Annual Stochastic on Setup again at the selected confidence level."
+      - check_id: "ANN-030"
+        group: "Annual"
+        severity: "INFO"
+        subject: ""
+        condition: '{annual_distribution_state}="NOT PRODUCED"'
+        message: "No annual result has been produced. The annual step is optional and its absence is not a defect."
+        guidance: "Run Annual Stochastic on Setup when an annual profile is wanted."
+      - check_id: "ANN-040"
+        group: "Annual"
+        severity: "INFO"
+        subject: "{annual_year_count}"
+        condition: '{annual_distribution_state}="CURRENT"'
+        message: "The stored annual distributions are current for the published run, over the stamped year count."
+        guidance: "No action is required."
+      - check_id: "ANN-050"
+        group: "Annual"
+        severity: "WARNING"
+        subject: ""
+        condition: '{annual_distribution_state}="HISTORICAL"'
+        message: "The stored annual distributions belong to an earlier run."
+        guidance: "Run Annual Stochastic on Setup again for the published run."
+
+      - check_id: "SEN-010"
+        group: "Sensitivity"
+        severity: "INFO"
+        subject: ""
+        condition: '{sensitivity_availability}<>""'
+        message: "{sensitivity_availability}"
+        guidance: "No action is required; the sentence is the Sensitivity sheet's own and is a persisted comparison."
+
+
 # -----------------------------------------------------------------------------
 # Sheets, in locked order.
 #
@@ -886,18 +1249,20 @@ sheets:
     purpose: "Validation register and the gate that blocks simulation on ERROR."
     show_gridlines: false
     title: "Model Check"
-    subtitle: "Validation register - no rules are implemented in Phase 1"
+    subtitle: "Validation register - the aggregate of what the model's own owners report"
     freeze_panes: "A6"
-    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 46 }
-    blocks:
-      - type: note
-        text: "Not implemented yet. No checks, severities or overall status logic exist yet."
-      - type: section
-        title: "Overall Model Status"
-        note: "Reserved for the aggregate PASS / WARNING / ERROR status."
-      - type: section
-        title: "Validation Results"
-        note: "Reserved for the check register: id, group, severity, result, offending IDs, guidance."
+    # PHASE 9. The register is six columns wide, so this sheet no longer uses
+    # the two-column label/value shape the placeholder had. B through G are the
+    # register; the evaluation source below it runs on to O and is deliberately
+    # left at the default width, which is also what keeps the header rule -
+    # drawn across the declared columns - over the register and not over the
+    # working columns behind it.
+    column_widths: { A: 3, B: 24, C: 14, D: 12, E: 44, F: 72, G: 72 }
+    # ONE AUTHOR. `body: model_check` names `phase9_shell.model_check` as the
+    # layout authority for this sheet, and the loader refuses blocks beside a
+    # body: a placeholder block next to a rendered surface would be two authors
+    # writing into the same rows, and whichever ran last would win in silence.
+    body: "model_check"
 
   - name: "Results"
     codename: "shResults"

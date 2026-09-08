@@ -82,6 +82,14 @@ class InputSpec:
     number_format: str
     validation: dict[str, Any] | None
     note: str | None
+    # THE ADVISORY THRESHOLD, WHERE THE VALUE ITSELF LIVES.
+    #
+    # `None` for every input that has no recommendation, which is all but one.
+    # It is deliberately NOT folded into `validation`: validation is what the
+    # workbook REFUSES, and a recommendation refuses nothing. Anything that
+    # wants the number reads it from here - never from `default`, and never by
+    # parsing `validation.prompt`.
+    recommended_iterations: int | None = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +201,29 @@ class InputContract:
     @property
     def reporting_currency(self) -> str:
         return self.model_invariants["reporting_currency"]
+
+    def recommendation_for(self, key: str) -> int:
+        """The advisory threshold owned by input *key*, or a loud refusal.
+
+        ONE OWNER, AND ASKING IS THE ONLY WAY TO GET IT. Every consumer - the
+        condition formula, the advisory sentence, the guidance sentence and the
+        projection - comes through here, so the value is written down once. A
+        consumer that typed the number instead would be a second owner, and the
+        two would agree right up until somebody changed one.
+
+        REMOVAL FAILS THE BUILD. Returning a fallback - the default, a literal,
+        None - would let the advisory quietly stop advising, which is exactly
+        the silent failure this field exists to prevent.
+        """
+        spec = self.inputs.get(key)
+        if spec is None:
+            raise ContractError(
+                f"{self.source_path}: no input {key!r} to carry a recommendation")
+        if spec.recommended_iterations is None:
+            raise ContractError(
+                f"{self.source_path}: input {key!r} declares no "
+                "recommended_iterations; the Model Check advisory has no threshold")
+        return int(spec.recommended_iterations)
 
     def table_by_name(self, name: str) -> TableSpec | None:
         for table in self.all_tables:
@@ -364,8 +395,49 @@ def _parse_inputs(raw: Any, path: Path) -> dict[str, InputSpec]:
             number_format=_req_str(entry, "number_format", where),
             validation=validation,
             note=entry.get("note"),
+            recommended_iterations=_parse_recommendation(entry, where),
         )
     return result
+
+
+def _parse_recommendation(entry: dict[str, Any], where: str) -> int | None:
+    """The advisory threshold, checked hard enough that losing it fails loudly.
+
+    THE FAILURE THIS EXISTS FOR is silent removal. A Model Check advisory whose
+    threshold quietly disappeared would simply stop advising, and nothing on the
+    sheet would say so. So the key is optional, but a key that IS present must be
+    a usable whole number, and the consumer that needs one asks for it by name
+    and gets a ContractError when it is gone.
+
+    AND IT MAY NEVER BE A BOUND. A recommendation below the input's own locked
+    minimum could never fire; a recommendation offered on an input that refuses
+    nothing has no minimum to sit above. Both are declaration errors, not
+    runtime surprises, so both fail the build.
+    """
+    if "recommended_iterations" not in entry:
+        return None
+    value = entry["recommended_iterations"]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ContractError(
+            f"{where}: recommended_iterations must be a positive whole number, "
+            f"not {value!r}")
+    validation = entry.get("validation") or {}
+    minimum = validation.get("formula1")
+    if minimum is None:
+        raise ContractError(
+            f"{where}: recommended_iterations is declared on an input that "
+            "declares no minimum; a recommendation has nothing to sit above")
+    try:
+        floor = int(str(minimum))
+    except ValueError as error:
+        raise ContractError(
+            f"{where}: recommended_iterations cannot be compared with the "
+            f"declared minimum {minimum!r}") from error
+    if value < floor:
+        raise ContractError(
+            f"{where}: recommended_iterations {value} is below the locked "
+            f"minimum {floor}; it could never advise")
+    return value
 
 
 def _parse_tables(raw: Any, path: Path) -> dict[str, TableSpec]:

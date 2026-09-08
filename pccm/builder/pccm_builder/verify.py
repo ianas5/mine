@@ -142,6 +142,12 @@ def verify_workbook(
         # through: a formula in any cell the shell does not name still fails.
         for sheet, cells in _phase6_formula_cells(spec, structure).items():
             permitted.setdefault(sheet, set()).update(cells)
+        # PHASE 9 adds the Model Check surface, and only there. Enumerated on
+        # exactly the terms above: every cell the plan writes a formula into, and
+        # no other. A formula in a label column, in a gap between the sections or
+        # anywhere the plan does not name is still a build failure.
+        for sheet, cells in _phase9_formula_cells(spec, contract).items():
+            permitted.setdefault(sheet, set()).update(cells)
         unexpected = [
             found
             for found in _formula_cells(workbook)
@@ -341,6 +347,43 @@ def _phase6_formula_cells(
             f"the P8-3 chart bridge overlaps the accepted P8-1 Results cells: {collision}")
         permitted.setdefault(chart_block["bridge_sheet"], set()).update(bridge_cells)
     return permitted
+
+
+def _phase9_formula_cells(spec, contract: InputContract | None = None) -> dict[str, set[str]]:
+    """The exact cells the Phase-9 Model Check plan writes a formula into.
+
+    THE PLAN IS ASKED; NOTHING IS RE-DERIVED. If this function worked the
+    geometry out for itself it would be a second layout authority, and the two
+    would agree until one moved - which is precisely the failure the plan object
+    exists to make impossible.
+    """
+    shell = getattr(spec, "phase9_shell", None) or {}
+    if not shell or contract is None:
+        return {}
+    phase6 = getattr(spec, "phase6_shell", None) or {}
+    if "results" not in phase6 or "sensitivity" not in phase6:
+        return {}
+    from .phase9_model_check import ModelCheckPlan
+
+    plan = ModelCheckPlan(spec, contract, phase6["results"], phase6["sensitivity"])
+    cells = plan.formula_cells()
+    # THE REGISTER USES COLUMN B FOR DATA, not for captions - a check id is a
+    # value here - so a label-column ban would be the wrong check. What must hold
+    # is that no formula lands on a HEADING, a NOTE or a HEADER row: those are
+    # the sheet's captions, and a formula in one would be a value wearing a
+    # caption's clothes.
+    captions = {
+        int(plan.summary["heading_row"]), int(plan.summary["note_row"]),
+        int(plan.register["heading_row"]), int(plan.register["note_row"]),
+        int(plan.register["header_row"]),
+        int(plan.evaluation["heading_row"]), int(plan.evaluation["note_row"]),
+        int(plan.readings["heading_row"]), int(plan.readings["header_row"]),
+        int(plan.candidates["heading_row"]), int(plan.candidates["header_row"]),
+    }
+    landed = sorted(cell for cell in cells
+                    if int("".join(c for c in cell if c.isdigit())) in captions)
+    assert not landed, f"the Model Check plan writes a formula onto a caption row: {landed}"
+    return {plan.sheet: cells}
 
 
 def _formula_cells(workbook) -> list[str]:

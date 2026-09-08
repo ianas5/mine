@@ -15,7 +15,14 @@ import yaml
 
 VALID_VISIBILITY = ("visible", "hidden", "veryHidden")
 VALID_BLOCK_TYPES = ("section", "note")
-VALID_BODIES = ("contract", "drivers", "structure")
+# "model_check" is Phase 9's, and it is a BODY rather than a list of blocks
+# for one reason: the rule below forbids a body-bodied sheet from also
+# declaring blocks, so naming the body is what guarantees that exactly one
+# author writes into those rows. A placeholder block beside a rendered
+# surface is two authors, and whichever ran last would win in silence.
+_PLACEHOLDERS = re.compile(r"\{([a-z_]+)\}")
+
+VALID_BODIES = ("contract", "drivers", "structure", "model_check")
 CODENAME_RE = re.compile(r"^sh[A-Z][A-Za-z0-9]*$")
 
 
@@ -52,6 +59,7 @@ class WorkbookSpec:
     sheets: list[SheetSpec]
     source_path: Path
     phase6_shell: dict[str, Any] = field(default_factory=dict)
+    phase9_shell: dict[str, Any] = field(default_factory=dict)
 
     @property
     def sheet_names(self) -> list[str]:
@@ -155,6 +163,164 @@ def _parse_phase6_shell(raw: dict[str, Any], path: Path) -> dict[str, Any]:
         walk(shell["charts"], f"{path}: phase6_shell.charts", True)
         _check_charts_layout(shell["charts"], shell["results"],
                              shell.get("dashboard"), path)
+    return shell
+
+
+# ===========================================================================
+# PHASE 9 - THE MODEL CHECK SHELL
+# ===========================================================================
+# SHAPE ONLY, and the shape is where this layout can go wrong silently. Two
+# sections that overlap both render and the later one wins; a register window
+# that reaches the evaluation block below it would overwrite the very rows the
+# summary is computed from, and every count would still look like a number.
+# Both are refused here, naming the two numbers that disagree.
+#
+# THE VOCABULARIES ARE CHECKED AGAINST THEMSELVES. A severity or a group that is
+# not in the declared order has no sort ordinal, so it would sort somewhere
+# arbitrary and the register's determinism would be a claim rather than a fact.
+
+_MODEL_CHECK_SECTIONS = ("summary", "register", "evaluation", "structural", "checks")
+
+
+def _parse_phase9_shell(raw: dict[str, Any], path: Path) -> dict[str, Any]:
+    shell = raw.get("phase9_shell")
+    if shell is None:
+        return {}
+    if not isinstance(shell, dict):
+        raise SpecError(f"{path}: phase9_shell must be a mapping")
+    if "model_check" not in shell:
+        raise SpecError(f"{path}: phase9_shell omits 'model_check'")
+    block = shell["model_check"]
+    if not isinstance(block, dict):
+        raise SpecError(f"{path}: phase9_shell.model_check must be a mapping")
+    where = f"{path}: phase9_shell.model_check"
+    for section in _MODEL_CHECK_SECTIONS:
+        if section not in block:
+            raise SpecError(f"{where} omits {section!r}")
+
+    severities = block["severity_order"]
+    groups = block["group_order"]
+    for name, order in (("severity_order", severities), ("group_order", groups)):
+        if not isinstance(order, list) or not order or len(set(order)) != len(order):
+            raise SpecError(f"{where}.{name} must be a non-empty list of distinct words")
+    actionable = block["actionable_severities"]
+    if not set(actionable) <= set(severities):
+        raise SpecError(
+            f"{where}.actionable_severities names a severity the order does not: "
+            f"{sorted(set(actionable) - set(severities))}")
+    # INFO IS CONTEXT. An actionable INFO would let a row that judges nothing
+    # move the Overall Status, which is the one thing the severity taxonomy says
+    # it may never do.
+    informational = [s for s in severities if s not in actionable]
+    if len(informational) != 1:
+        raise SpecError(
+            f"{where}: exactly one severity must be non-actionable, found {informational}")
+
+    window = block["row_window"]
+    if not isinstance(window, int) or isinstance(window, bool) or window < 1:
+        raise SpecError(f"{where}.row_window must be a positive whole number")
+    template = block["disclosure_template"]
+    for token in ("{window}", "{total}"):
+        if token not in template:
+            raise SpecError(f"{where}.disclosure_template omits {token}")
+    if not str(block["no_data_formula"]).startswith("="):
+        raise SpecError(f"{where}.no_data_formula must be a formula")
+
+    summary = block["summary"]
+    rows = [int(entry["row"]) for entry in summary["rows"]]
+    if rows != sorted(rows) or len(set(rows)) != len(rows):
+        raise SpecError(f"{where}.summary rows are not strictly increasing: {rows}")
+    keys = [str(entry["key"]) for entry in summary["rows"]]
+    if len(set(keys)) != len(keys):
+        raise SpecError(f"{where}.summary declares a key twice")
+
+    register = block["register"]
+    if not (int(register["header_row"]) < int(register["first_row"])):
+        raise SpecError(f"{where}.register header is not above its first row")
+    if int(register["first_row"]) <= max(rows):
+        raise SpecError(
+            f"{where}.register starts at row {register['first_row']}, at or above the "
+            f"summary's last row {max(rows)}")
+    last = int(register["first_row"]) + window - 1
+
+    evaluation = block["evaluation"]
+    if last >= int(evaluation["heading_row"]):
+        raise SpecError(
+            f"{where}: the register window reaches row {last} but the evaluation "
+            f"block heading is at row {evaluation['heading_row']}; the visible "
+            "register would overwrite the rows the summary is computed from")
+    readings = evaluation["readings"]
+    reading_rows = [int(entry["row"]) for entry in readings["rows"]]
+    expected = list(range(int(readings["first_row"]),
+                          int(readings["first_row"]) + len(reading_rows)))
+    if reading_rows != expected:
+        raise SpecError(
+            f"{where}.evaluation.readings rows are not contiguous from "
+            f"{readings['first_row']}: {reading_rows}")
+    reading_keys = [str(entry["key"]) for entry in readings["rows"]]
+    if len(set(reading_keys)) != len(reading_keys):
+        raise SpecError(f"{where}.evaluation.readings declares a key twice")
+    candidates = evaluation["candidates"]
+    if int(candidates["heading_row"]) <= max(reading_rows):
+        raise SpecError(
+            f"{where}.evaluation.candidates begins at or above the last reading row")
+    slots = candidates["structural_slots"]
+    if not isinstance(slots, int) or isinstance(slots, bool) or slots < window:
+        raise SpecError(
+            f"{where}.evaluation.candidates.structural_slots is {slots!r}; it must be a "
+            f"whole number at least as large as the {window}-row visible window, or a "
+            "displayable fault would have no slot to be displayed from")
+    letters = [str(column["column"]) for column in candidates["columns"]]
+    if len(set(letters)) != len(letters):
+        raise SpecError(f"{where}.evaluation.candidates reuses a column letter")
+
+    structural = block["structural"]
+    if structural["group"] not in groups or structural["severity"] not in severities:
+        raise SpecError(f"{where}.structural names a group or severity the order does not")
+    # AND THE STRUCTURAL FAULTS MUST SORT FIRST. The candidate block puts the
+    # slots ahead of every declared check because that concatenation IS the
+    # sorted order - which is only true while (structural severity, structural
+    # group) is the minimum of both vocabularies.
+    if severities.index(structural["severity"]) != 0 or groups.index(structural["group"]) != 0:
+        raise SpecError(
+            f"{where}.structural is {structural['severity']}/{structural['group']}, which "
+            "is not first in both declared orders; the slots would no longer sort ahead "
+            "of the declared register")
+
+    checks = block["checks"]
+    if not isinstance(checks, list) or not checks:
+        raise SpecError(f"{where}.checks must be a non-empty list")
+    known = set(reading_keys) | {"recommended_iterations"}
+    for index, check in enumerate(checks):
+        entry_where = f"{where}.checks[{index}] ({check.get('check_id')!r})"
+        if check["severity"] not in severities:
+            raise SpecError(f"{entry_where}: severity {check['severity']!r} is not declared")
+        if check["group"] not in groups:
+            raise SpecError(f"{entry_where}: group {check['group']!r} is not declared")
+        for field_name in ("check_id", "message", "guidance", "condition"):
+            if not str(check.get(field_name, "")).strip():
+                raise SpecError(f"{entry_where}: {field_name} is empty")
+        # A CONDITION MAY ONLY NAME A READING. This is the P7-4 rule applied to
+        # a formula fragment: a key that no reading publishes must fail the
+        # build by name rather than resolve to nothing at render time.
+        for token in _PLACEHOLDERS.findall(str(check["condition"])):
+            if token not in known:
+                raise SpecError(
+                    f"{entry_where}: the condition names {token!r}, which no reading "
+                    "publishes")
+        for field_name in ("subject", "message"):
+            value = str(check.get(field_name) or "")
+            tokens = _PLACEHOLDERS.findall(value)
+            if not tokens:
+                continue
+            if value != "{" + tokens[0] + "}" or len(tokens) != 1:
+                raise SpecError(
+                    f"{entry_where}: {field_name} mixes text with a reading reference; a "
+                    "reference must be the whole value")
+            if tokens[0] not in set(reading_keys):
+                raise SpecError(
+                    f"{entry_where}: {field_name} names {tokens[0]!r}, which no reading "
+                    "publishes")
     return shell
 
 
@@ -463,6 +629,7 @@ def load_spec(path: str | Path) -> WorkbookSpec:
     presentation = _require(raw, "presentation", str(path))
     raw_sheets = _require(raw, "sheets", str(path))
     shell = _parse_phase6_shell(raw, path)
+    phase9 = _parse_phase9_shell(raw, path)
 
     for key in ("name", "short_name", "model_version", "build_phase", "reporting_currency"):
         _require_str(model, key, f"{path}: model")
@@ -488,6 +655,7 @@ def load_spec(path: str | Path) -> WorkbookSpec:
         sheets=sheets,
         source_path=path,
         phase6_shell=shell,
+        phase9_shell=phase9,
     )
 
 

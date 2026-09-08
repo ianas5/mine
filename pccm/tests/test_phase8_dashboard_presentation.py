@@ -200,10 +200,14 @@ def test_04_no_dashboard_state_owner_was_added_to_the_vba() -> None:
         assert "Dashboard" not in code, (
             f"{module.name} names the Dashboard in executable code")
     adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
-    # FIVE SINCE P8-3 - four annual, one live simulation - and none of them is
-    # a Dashboard owner. The claim this control makes is about the Dashboard,
-    # and it is unchanged: no module names it in executable code.
-    assert len(re.findall(r"^Public Function (\w+)", adapter, re.M)) == 5
+    # FOUR ANNUAL, ONE LIVE SIMULATION SINCE P8-3, ONE LIVE CALCULATION SINCE
+    # P9-2 - and none of them is a Dashboard owner. The claim this control makes
+    # is about the DASHBOARD and it is unchanged: no module names it in
+    # executable code, and no adapter here answers a Dashboard question.
+    functions = re.findall(r"^Public Function (\w+)", adapter, re.M)
+    assert not [name for name in functions if "Dashboard" in name], functions
+    assert all(name.startswith(("PCCM_Results", "PCCM_ModelCheck"))
+               for name in functions), functions
 
 
 # ===========================================================================

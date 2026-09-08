@@ -50,6 +50,14 @@ ADAPTERS = (
     "PCCM_ResultsAnnualYearCount",
 )
 
+# THE MODULE'S WHOLE PUBLIC SURFACE, IN ORDER, as later phases have extended it.
+# Named rather than counted, so an addition has to be declared here to pass and
+# a rename or a reorder still fails.
+LATER_ADAPTERS = ADAPTERS + (
+    "PCCM_ResultsSimulationState",        # P8-3, the live simulation state
+    "PCCM_ModelCheckCalculationState",    # P9-2, the live calculation state
+)
+
 _CACHE: dict = {}
 
 
@@ -396,12 +404,19 @@ def test_22_the_adapters_are_volatile_and_only_the_adapters_are() -> None:
     simulation, not the annual run, not sensitivity."""
     adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
     functions = re.findall(r"^Public Function (\w+)", adapter, re.M)
-    # FIVE SINCE P8-3, AND THE FIFTH IS NAMED. The chart layer needed a live
-    # SIMULATION state: the four annual ones read NOT PRODUCED whenever the
-    # annual step has not run, which says nothing about a histogram whose data
-    # is present. The count is asserted with the names so a sixth cannot arrive
-    # unremarked.
-    assert tuple(functions) == ADAPTERS + ("PCCM_ResultsSimulationState",), functions
+    # FIVE SINCE P8-3 AND SIX SINCE P9-2, EACH ONE NAMED. The chart layer needed
+    # a live SIMULATION state: the four annual ones read NOT PRODUCED whenever
+    # the annual step has not run, which says nothing about a histogram whose
+    # data is present. Model Check then needed a live CALCULATION state, for the
+    # same two reasons one module along - the persisted `_Calc` C19 row is
+    # last-evaluated, and the owner's own entry point persists and so may not be
+    # called from a cell.
+    #
+    # THE CONTROL DID NOT WEAKEN WHEN IT GREW. It said "the count is asserted
+    # with the names so a sixth cannot arrive unremarked", and a sixth arrived
+    # and is remarked. A SEVENTH still fails, and so does a rename, a reorder or
+    # a removal - which is more than a count on its own could ever say.
+    assert tuple(functions) == LATER_ADAPTERS, functions
     assert adapter.count("Application.Volatile True") == len(functions), (
         "every adapter must be volatile, and there must be nothing else to make volatile")
     for module in sorted(SRC.glob("*.bas")):
@@ -421,8 +436,9 @@ def test_23_an_unavailable_accessor_fails_loud_rather_than_wrong() -> None:
     raises rather than being ignored, the cell must show an error - never a
     plausible state."""
     adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
-    count = len(re.findall(r"^Public Function (\w+)", adapter, re.M))
-    assert count == 5, count
+    functions = tuple(re.findall(r"^Public Function (\w+)", adapter, re.M))
+    assert functions == LATER_ADAPTERS, functions
+    count = len(functions)
     assert adapter.count("On Error GoTo Unavailable") == count
     assert adapter.count("CVErr(xlErrValue)") == count
     assert "Resume Next" not in adapter, (
@@ -987,7 +1003,7 @@ def test_65_the_adapter_still_owns_no_state_rule_after_the_correction() -> None:
                  "DeriveSimStatus", "StampText", "SimAnnualStoreCurrentRun",
                  "WriteStatusBlock", "If ", "Select Case"):
         assert rule not in code, f"the adapter has acquired a state rule: {rule}"
-    assert len(re.findall(r"^Public Function (\w+)", code, re.M)) == 5
+    assert tuple(re.findall(r"^Public Function (\w+)", code, re.M)) == LATER_ADAPTERS
     # AND IT STILL CALLS THE ACCESSORS, one each, unchanged.
     for accessor in ("PCCM_AnnualDistributionState", "PCCM_AnnualProfileState",
                      "PCCM_AnnualProfilePx", "PCCM_AnnualYearCount"):

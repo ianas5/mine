@@ -47,6 +47,7 @@ from .sim_rng import (
 )
 from .phase7_acceptance import emit_phase7_acceptance
 from .phase8_charts import emit_phase8_charts
+from .phase9_model_check import ModelCheckPlan, emit_phase9_model_check
 from .phase8_dashboard import emit_phase8_dashboard
 from .phase8_results import emit_phase8_results
 from .sim_emit import emit_sim_artifacts, emit_sim_gate_b_artifacts
@@ -161,6 +162,8 @@ __all__ = [
     "emit_sim_artifacts",        # build_stage_a.py, Phase 6 Step-5 tests
     "emit_phase7_acceptance",
     "emit_phase8_charts",     # build_stage_a.py, Phase 8 chart projection
+    "emit_phase9_model_check",  # build_stage_a.py, Phase 9 Model Check projection
+    "ModelCheckPlan",         # the one Model Check layout authority
     "emit_phase8_dashboard",  # build_stage_a.py, Phase 8 Dashboard projection
     "emit_phase8_results",    # build_stage_a.py, Phase 8 Results projection
     "emit_sim_gate_b_artifacts", # build_stage_a.py, Phase 6 Gate-B harness
