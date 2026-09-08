@@ -59,8 +59,27 @@ SHARED_WITH_P82 = (
     "Write-P83Line", "Add-P83Check", "Invoke-P83Release", "Get-P83SourceRevision",
     "Invoke-P83Endpoint", "Set-P83NamedText", "Get-P83Register",
     "Get-P83RegisterColumnIndex", "Get-P83RegisterRowIndex", "Get-P83Cell",
-    "Format-P83Cell", "Test-P83Blank", "Test-P83SameCellValue", "Invoke-P83Recalculate",
+    "Format-P83Cell", "Test-P83Blank", "Invoke-P83Recalculate",
 )
+
+# THE ONE PART THAT IS DELIBERATELY NOT P8-2's ANY MORE, and why.
+#
+# P8-2 mirrored scalars: a Dashboard cell against the Results cell behind it,
+# neither of which is ever an error in a healthy workbook, so answering
+# "not equal" whenever either side was an error cost that runner nothing.
+#
+# P8-3 COMPARES CHART BRIDGES, and those carry NA() by design after the
+# published window - a bar that does not exist must not be drawn as a zero. The
+# inherited rule made every preservation check over a partly-empty block report
+# `<Int32 -2146826246> -> <Int32 -2146826246>`: the same value, called movement,
+# six times in Run 3. The divergence is declared here rather than hidden, and
+# the control below requires it to be a real one.
+DIVERGED_FROM_P82 = {
+    "Test-P83SameCellValue": (
+        "Excel error values need semantic equality: the same error code is the "
+        "same absence, a different code is a broken reference, and neither is "
+        "blank or zero."),
+}
 
 BANNERS = (
     "PART 0 - NOTHING HAS RUN",
@@ -201,15 +220,31 @@ def test_03_the_ten_helpers_are_byte_identical_to_the_accepted_source() -> None:
 
 
 def test_04_the_reused_p82_parts_are_the_p82_ones_renamed() -> None:
+    """REUSING A LIFECYCLE THAT HAS RUN ON WINDOWS MEANS REUSING IT - and where
+    P8-3 needs different behaviour, saying so rather than editing quietly."""
     p82 = accepted._ps_code(P82)
     mine = _code()
-    for name in SHARED_WITH_P82:
+
+    def bodies(name: str) -> tuple[str, str]:
         original = name.replace("P83", "P82")
         theirs = re.search(rf"^function\s+{re.escape(original)}\s*\{{.*?^\}}", p82, re.S | re.M)
         ours = re.search(rf"^function\s+{re.escape(name)}\s*\{{.*?^\}}", mine, re.S | re.M)
         assert theirs and ours, name
-        assert theirs.group(0).replace("P82", "P83") == ours.group(0), (
-            f"{name} diverged from the accepted P8-2 {original}")
+        return theirs.group(0).replace("P82", "P83"), ours.group(0)
+
+    for name in SHARED_WITH_P82:
+        theirs, ours = bodies(name)
+        assert theirs == ours, (
+            f"{name} diverged from the accepted P8-2 original without being "
+            "declared in DIVERGED_FROM_P82")
+    # A DECLARED DIVERGENCE MUST BE A REAL ONE. Declaring a part changed and
+    # leaving it identical would retire a control by paperwork.
+    for name, reason in DIVERGED_FROM_P82.items():
+        theirs, ours = bodies(name)
+        assert theirs != ours, f"{name} is declared changed and is not"
+        assert len(reason) > 40, f"{name} is declared changed with no reason"
+    # AND NOTHING IS BOTH.
+    assert not (set(SHARED_WITH_P82) & set(DIVERGED_FROM_P82))
 
 
 def test_05_the_runner_carries_no_powershell_6_construct() -> None:
@@ -557,10 +592,11 @@ def test_45_the_stale_and_invalid_qualifications_cannot_be_dropped(
 def test_46_the_tornado_rows_are_compared_positionally_and_signed() -> None:
     """PHASE 7 OWNS THE RANKING. Bridge row k must be Sensitivity row first+k -
     which is what "took the first N in the published order" means - and the rho
-    is compared as an exact double so a negative stays negative."""
+    is compared through the one semantic owner, which applies no tolerance, so a
+    negative stays negative and a changed magnitude of any size is a change."""
     body = _function("Invoke-P83TornadoRowChecks")
     assert "$sourceRow = $first + $index" in body
-    assert "Test-SimExactDouble -Actual $bridgeRho.Value" in body
+    assert "Test-P83SameCellValue -Left $bridgeRho -Right $sourceRho" in body
     assert "abs_rho" not in body, "the runner compares the absolute value"
     for banned in ("Sort-Object", "[Math]::Abs", "-Descending"):
         assert banned not in body, f"the runner re-ranks: {banned}"
@@ -907,8 +943,8 @@ def test_74_the_tornado_preserves_the_published_order_and_the_sign() -> None:
         "the source row is not the positional one")
     assert "for ($index = 0; $index -lt $names.Count; $index++)" in body, (
         "the plotted rows are not walked in published order")
-    assert "Test-SimExactDouble -Actual $bridgeRho.Value" in body, (
-        "the signed rho is not compared exactly")
+    assert "Test-P83SameCellValue -Left $bridgeRho -Right $sourceRho" in body, (
+        "the signed rho is not compared through the one semantic owner")
     for banned in ("Sort-Object", "-Descending", "[Math]::Abs", "$names.Count - 1",
                    "$index--", "[array]::Reverse"):
         assert banned not in body, f"the tornado reorders for itself: {banned}"
@@ -917,7 +953,7 @@ def test_74_the_tornado_preserves_the_published_order_and_the_sign() -> None:
     assert _projection()["bridge"]["drivers"]["row_count"] == 10
     # AND NOTHING IS FABRICATED WHEN FEWER THAN N ARE PUBLISHED.
     assert "if ($sourcePresent -ne $bridgePresent) {" in body
-    assert "if (-not $sourcePresent) { continue }" in body
+    assert "if (-not $sourcePresent) {" in body
 
 
 def test_75_a_missing_source_column_stops_the_runner_rather_than_misreading() -> None:
@@ -928,6 +964,221 @@ def test_75_a_missing_source_column_stops_the_runner_rather_than_misreading() ->
     assert "foreach ($required in @('driver_name', 'rho')) {" in body
     assert "if (-not $columns.ContainsKey($required)) {" in body
     assert "throw (" in body
+
+
+# ===========================================================================
+# E4. THE COMPARATOR, EXECUTED
+# ===========================================================================
+# WHAT RUN 3 EXPOSED. 187 checks, 7 failed, and six of the seven reported pairs
+# like `<Int32 -2146826246> -> <Int32 -2146826246>` - the SAME value, declared
+# different. -2146826246 is Excel's #N/A through COM, which is exactly what the
+# chart bridge emits after the published window so a bar that does not exist is
+# not drawn as a zero. The old equality answered `not equal` the moment either
+# side was an error, before ever reading what the error was.
+#
+# THE SEVENTH had the same shape one type along: the tornado's name comparison
+# went through a text helper that returns false when the actual value is not a
+# String, so a numeric label was refused before any comparison happened.
+#
+# THESE CONTROLS RUN THE COMPARATOR. It is pure logic with no COM in it, so its
+# behaviour can be established here rather than asserted about its source - and
+# a truth table is the only honest way to show that an equality distinguishes
+# what it must and nothing more.
+PWSH = "/opt/pwsh/pwsh"
+
+TRUTH_TABLE = [
+    # (label, left, right, expected)
+    ("same #N/A",              "(C $na '#N/A')",   "(C $na '#N/A')",   True),
+    ("#N/A vs #REF!",          "(C $na '#N/A')",   "(C $ref '#REF!')", False),
+    ("#N/A vs blank",          "(C $na '#N/A')",   "(C $null)",        False),
+    ("#N/A vs zero",           "(C $na '#N/A')",   "(C ([double]0))",  False),
+    ("blank vs #N/A",          "(C $null)",        "(C $na '#N/A')",   False),
+    ("Int32 4 vs Double 4",    "(C ([int]4))",     "(C ([double]4))",  True),
+    ("Double 4 vs Double 5",   "(C ([double]4))",  "(C ([double]5))",  False),
+    ("a tiny difference",      "(C ([double]4))",  "(C ([double]4.0000000001))", False),
+    ("same driver name",       "(C 'GateB CL-001')", "(C 'GateB CL-001')", True),
+    ("different driver names", "(C 'GateB CL-001')", "(C 'GateB CL-002')", False),
+    ("case differs",           "(C 'Alpha')",      "(C 'alpha')",      False),
+    ("text vs number",         "(C '4')",          "(C ([double]4))",  False),
+    ("blank vs blank",         "(C $null)",        "(C '')",           True),
+    ("blank vs zero",          "(C $null)",        "(C ([double]0))",  False),
+    ("a rho that changed sign", "(C ([double]-0.42))", "(C ([double]0.42))", False),
+    ("the same signed rho",    "(C ([double]-0.42))", "(C ([double]-0.42))", True),
+]
+
+
+def _extract_function(name: str) -> str:
+    """The function's own source, braces balanced, out of the runner on disk."""
+    source = _text()
+    start = source.index(f"function {name} {{")
+    depth = 0
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f"{name} is not closed")
+
+
+def _run_comparator(cases: list[tuple[str, str, str, bool]]) -> list[tuple[str, bool]]:
+    """Run the runner's OWN comparator over the cases and return what it said."""
+    import subprocess
+    import tempfile
+    body = ["Set-StrictMode -Version 2.0", "$ErrorActionPreference = 'Stop'",
+            # THE ONE HELPER IT LEANS ON, copied from the accepted Phase-6 file.
+            "function Test-SimBlank {", "    param($Value)",
+            "    if ($null -eq $Value) { return $true }",
+            "    if ($Value -is [string]) { return [string]::IsNullOrWhiteSpace($Value) }",
+            "    return $false", "}"]
+    body.append(_extract_function("Test-P83SameCellValue"))
+    body.append(_extract_function("Test-P83SameValue"))
+    body.append("function C { param($v, [string]$err = '')")
+    body.append("  return [pscustomobject]@{ Value = $v; ErrorName = $err; "
+                "IsError = ($err -ne '') } }")
+    body.append("$na = -2146826246; $ref = -2146826265")
+    for label, left, right, _ in cases:
+        body.append(f"Write-Output ([string][bool](Test-P83SameCellValue "
+                    f"-Left {left} -Right {right}))")
+    with tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False,
+                                     encoding="utf-8") as handle:
+        handle.write("\n".join(body) + "\n")
+        path = handle.name
+    try:
+        done = subprocess.run([PWSH, "-NoProfile", "-File", path],
+                              capture_output=True, text=True, timeout=180)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    assert done.returncode == 0, done.stderr[:2000]
+    lines = [l.strip() for l in done.stdout.splitlines() if l.strip()]
+    assert len(lines) == len(cases), (len(lines), done.stdout[:500])
+    return [(cases[i][0], lines[i] == "True") for i in range(len(cases))]
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_80_the_comparator_makes_every_distinction_the_charts_depend_on() -> None:
+    """THE SEMANTIC TRUTH TABLE, run against the runner's own comparator."""
+    results = _run_comparator(TRUTH_TABLE)
+    wrong = [f"{label}: got {got}, expected {case[3]}"
+             for (label, got), case in zip(results, TRUTH_TABLE) if got != case[3]]
+    assert not wrong, "the comparator does not distinguish:\n  " + "\n  ".join(wrong)
+
+
+# THE FIVE MOVEMENTS §6 REQUIRES THE PRESERVATION CHECKS TO STILL CATCH once
+# the same error code compares equal. The point of a semantic comparison is that
+# it stops reporting the non-movement WITHOUT stopping reporting these.
+DETECTION_TABLE = [
+    # (label, before, after, still-equal?)
+    ("a post-window #N/A becomes a fabricated zero",
+     "(C $na '#N/A')", "(C ([double]0))", False),
+    ("a post-window #N/A becomes a fabricated value",
+     "(C $na '#N/A')", "(C ([double]1234.5))", False),
+    ("a valid row becomes no-data",
+     "(C ([double]1234.5))", "(C $na '#N/A')", False),
+    ("a sixth tornado driver appears where there was none",
+     "(C $na '#N/A')", "(C 'GateB R-002')", False),
+    ("one error code becomes another",
+     "(C $na '#N/A')", "(C $ref '#REF!')", False),
+    ("a signed rho changes",
+     "(C ([double]-0.42))", "(C ([double]-0.31))", False),
+    ("a rho keeps its magnitude and loses its sign",
+     "(C ([double]-0.42))", "(C ([double]0.42))", False),
+    ("a driver category changes",
+     "(C 'GateB CL-001')", "(C 'GateB R-002')", False),
+    ("a preserved annual value changes",
+     "(C ([double]4821017.25))", "(C ([double]4821017.26))", False),
+    # AND THE NON-MOVEMENTS THAT MADE RUN 3 RED, which must now be quiet.
+    ("an untouched post-window #N/A", "(C $na '#N/A')", "(C $na '#N/A')", True),
+    ("an untouched annual value",
+     "(C ([double]4821017.25))", "(C ([double]4821017.25))", True),
+    ("an untouched driver name", "(C 'GateB CL-001')", "(C 'GateB CL-001')", True),
+]
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_80a_the_preservation_checks_still_catch_every_real_movement() -> None:
+    """THE HALF THAT MATTERS. Making the same error compare equal must not make
+    a fabricated zero, an extra driver, a changed sign or a moved annual value
+    compare equal too - and the whole bridge capacity is still compared, so
+    nothing is skipped merely for holding #N/A."""
+    results = _run_comparator(DETECTION_TABLE)
+    wrong = [f"{label}: got equal={got}, expected equal={case[3]}"
+             for (label, got), case in zip(results, DETECTION_TABLE) if got != case[3]]
+    assert not wrong, "the comparator misses a real movement:\n  " + "\n  ".join(wrong)
+    # AND THE PRESERVATION CHECK COMPARES THE WHOLE BLOCK, not a trimmed window.
+    body = _function("Compare-P83Bridge")
+    assert "for ($index = 0; $index -lt $left.Count; $index++)" in body, (
+        "the preservation comparison no longer walks the whole capacity")
+    assert "if ($left.Count -ne $right.Count)" in body, (
+        "a block that changed length would not be reported")
+    for skip in ("IsError) { continue }", "-not $cell.IsError", "#N/A"):
+        assert skip not in body, (
+            f"the preservation comparison skips rows rather than comparing them: {skip}")
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_81_the_truth_table_is_not_vacuous() -> None:
+    """IT MUST CONTAIN BOTH ANSWERS, and the specific pair Run 3 got wrong."""
+    assert any(case[3] for case in TRUTH_TABLE)
+    assert any(not case[3] for case in TRUTH_TABLE)
+    labels = [case[0] for case in TRUTH_TABLE]
+    for required in ("same #N/A", "#N/A vs #REF!", "#N/A vs blank", "#N/A vs zero",
+                     "Int32 4 vs Double 4", "different driver names"):
+        assert required in labels, f"the table does not cover {required}"
+    # AND THE OLD RULE WOULD HAVE FAILED IT. `same #N/A` is the pair the runner
+    # reported as movement six times over.
+    old = dict(zip(labels, [False if "#N/A" in label and "vs" not in label else None
+                            for label in labels]))
+    assert old["same #N/A"] is False, "the regression this table exists for is gone"
+
+
+def test_82_one_comparison_owner_and_the_wiring_checks_stay_strict() -> None:
+    """NO SEVENTH CALL SITE WITH ITS OWN NOTION OF EQUALITY."""
+    code = _code()
+    # THE OLD TYPE-GATED HELPERS ARE GONE FROM EVERY CELL-TO-CELL COMPARISON.
+    assert "Test-SimSameValue" not in code, (
+        "a preservation comparison still uses the type-gated helper")
+    body = _function("Invoke-P83TornadoRowChecks")
+    assert "Test-SimExactText" not in body, (
+        "the tornado still refuses a non-string before comparing")
+    assert "Test-P83SameCellValue -Left $bridgeName -Right $sourceName" in body
+    assert "Test-P83SameCellValue -Left $bridgeRho -Right $sourceRho" in body
+    # PRESERVATION GOES THROUGH THE OWNER.
+    assert "Test-P83SameCellValue -Left $left[$index] -Right $right[$index]" in \
+        _function("Compare-P83Bridge")
+    # AND THE PLOTTED POINT USES THE VALUE HALF OF THE SAME RULE.
+    assert "Test-P83SameValue -A $cell.Value -B $point" in _function("Invoke-P83ChartChecks")
+    # THE STATE WORDS ARE STILL COMPARED AS TEXT AND MUST STAY THAT WAY: a state
+    # cell that stopped being a String is a finding, not a subtype to absorb.
+    assert "Test-SimExactText -Actual $live.Value -Expected $Simulation" in \
+        _function("Invoke-P83StateChecks")
+    # AND THE CHART WIRING IS STILL EXACT STRING WORK ON THE SERIES FORMULA.
+    charts = _function("Invoke-P83ChartChecks")
+    assert "-cne" in charts, "the range comparison stopped being case-exact"
+    assert "$series.Formula" in charts
+
+
+def test_83_a_non_text_driver_name_is_its_own_finding() -> None:
+    """THE ZEROES ARE NOT WAVED AWAY. The contract types driver_name as text, so
+    a published label arriving as a number is a statement about the SENSITIVITY
+    SHEET, and no comparator change can make it right. It is reported under its
+    own name so a reader can tell it from a mirror that disagrees."""
+    body = _function("Invoke-P83TornadoRowChecks")
+    assert "if ($sourceName.Value -isnot [string]) {" in body
+    assert "every published driver name is text" in body
+    # AND IT IS A SEPARATE CHECK from the mirror comparison.
+    assert body.index("every published driver name is text") > body.index(
+        "every plotted driver is the Sensitivity row of the same rank")
+    # AND THE OTHER HALF OF THE SAME QUESTION: a ranked driver whose NAME is
+    # blank is absent from the chart for a reason that is not "the ranking
+    # ended", and the runner says which.
+    assert "every ranked driver has a name to plot it under" in body
+    contract = yaml.safe_load((SPEC / "sim_contract.yaml").read_text(encoding="utf-8"))
+    columns = contract["sim_data"]["sensitivity_records"]["columns"]
+    name = next(c for c in columns if c["key"] == "driver_name")
+    assert name["value_type"] == "text", (
+        "the contract no longer types the driver name as text")
 
 
 # ===========================================================================
@@ -985,6 +1236,33 @@ def _qualification_ok(code: str) -> None:
         "even though its ranking still names the published run"):]
     assert "Test-SimExactText -Actual $live.Value -Expected $Simulation" in divergence, (
         "the divergence check names a state it does not assert")
+
+
+def _comparator_ok(code: str) -> None:
+    """ONE SEMANTIC EQUALITY, AND IT MAKES EVERY DISTINCTION THE CHARTS NEED."""
+    body = re.search(r"function\s+Test-P83SameCellValue\s*\{(.*?)\n\}", code, re.S)
+    assert body, "the comparison owner is gone"
+    body = body.group(1)
+    # ERRORS COMPARED AS ERRORS, BY IDENTITY - not all-equal, not all-unequal.
+    assert "if (-not ($Left.IsError -and $Right.IsError)) { return $false }" in body, (
+        "an error is compared against a non-error as though it could match")
+    assert "[string]$Left.ErrorName -ceq [string]$Right.ErrorName" in body, (
+        "two errors are not distinguished by code")
+    assert "if ($Left.IsError -or $Right.IsError) { return $false }" not in body, (
+        "the comparator refuses an error before reading it")
+    value = re.search(r"function\s+Test-P83SameValue\s*\{(.*?)\n\}", code, re.S)
+    assert value, "the value half of the rule is gone"
+    value = value.group(1)
+    # BLANK IS NOT ZERO, AND TEXT IS NOT A NUMBER.
+    assert "if ($leftBlank -or $rightBlank) { return ($leftBlank -and $rightBlank) }" in value
+    assert "if ($leftText -ne $rightText) { return $false }" in value, (
+        "text and numbers are allowed to meet")
+    assert "[string]$A -ceq [string]$B" in value, "text is not compared exactly"
+    # NO TOLERANCE ANYWHERE IN IT.
+    for slack in ("-lt 0.5", "-le 0.000", "[Math]::Round", "-tolerance", "Abs("):
+        assert slack not in value, f"a tolerance entered the comparator: {slack}"
+    # AND NOTHING ELSE COMPARES TWO CELLS.
+    assert "Test-SimSameValue" not in code, "a second notion of equality is back"
 
 
 def _fabrication_ok(code: str) -> None:
@@ -1055,10 +1333,23 @@ def _tornado_source_ok(code: str) -> None:
         "the source row is no longer the positional one")
     for banned in ("Sort-Object", "-Descending", "[array]::Reverse", "$index--"):
         assert banned not in body, f"the tornado reorders for itself: {banned}"
+    # A CATEGORY THAT IS NOT TEXT IS A FINDING ABOUT THE SOURCE, and it keeps
+    # its own name. Absorbing it into the mirror comparison would let a numeric
+    # label pass as soon as both sides carried the same number.
+    assert "if ($sourceName.Value -isnot [string]) {" in body, (
+        "a non-text published driver name is no longer detected")
+    assert "every published driver name is text" in body, (
+        "the non-text driver name has stopped being its own check")
+    # AND A RANKED DRIVER WITH NO LABEL IS REPORTED RATHER THAN SKIPPED. Without
+    # this the chart shows fewer bars than were ranked and says nothing.
+    assert "every ranked driver has a name to plot it under" in body, (
+        "a published driver with a blank name disappears silently")
+    assert "if (-not ((Test-P83Blank -Cell $sourceRho) -or $sourceRho.IsError)) {" in body, (
+        "the unnamed-driver finding is not decided by the published rho")
 
 
 RULES = (_order_ok, _oracle_ok, _recalc_only_ok, _qualification_ok, _fabrication_ok,
-         _axis_ok, _freeze_ok, _tornado_source_ok)
+         _axis_ok, _freeze_ok, _tornado_source_ok, _comparator_ok)
 
 
 @pytest.mark.parametrize("name,mutate", [
@@ -1099,9 +1390,9 @@ RULES = (_order_ok, _oracle_ok, _recalc_only_ok, _qualification_ok, _fabrication
     # not, and why that rule is scoped to a function rather than dropped.
     ("the runner ranks the drivers by magnitude",
      lambda code: code.replace(
-         "    $mismatched = New-Object System.Collections.ArrayList\n"
+         "    $unnamed = New-Object System.Collections.ArrayList\n"
          "    $plotted = 0",
-         "    $mismatched = New-Object System.Collections.ArrayList\n"
+         "    $unnamed = New-Object System.Collections.ArrayList\n"
          "    $plotted = 0\n"
          "    $largest = [Math]::Abs([double]$rhos[0].Value)", 1)),
     # THE RUNNER SORTING THE TORNADO FOR ITSELF.
@@ -1187,11 +1478,64 @@ RULES = (_order_ok, _oracle_ok, _recalc_only_ok, _qualification_ok, _fabrication
     # AND THE POSITIONAL WALK REPLACED BY A SORT.
     ("the tornado sorts the published rows",
      lambda code: code.replace(
-         "    $mismatched = New-Object System.Collections.ArrayList\n"
+         "    $unnamed = New-Object System.Collections.ArrayList\n"
          "    $plotted = 0",
-         "    $mismatched = New-Object System.Collections.ArrayList\n"
+         "    $unnamed = New-Object System.Collections.ArrayList\n"
          "    $plotted = 0\n"
          "    $names = @($names | Sort-Object)", 1)),
+    # ---- THE FIVE FROM THE THIRD WINDOWS RUN ----
+    # THE COMPARATOR BACK AS IT WAS - the rule that called the same #N/A
+    # movement six times over.
+    ("an error is refused before it is read",
+     lambda code: code.replace(
+         "    if ($Left.IsError -or $Right.IsError) {\n"
+         "        if (-not ($Left.IsError -and $Right.IsError)) { return $false }\n"
+         "        return ([string]$Left.ErrorName -ceq [string]$Right.ErrorName)\n"
+         "    }",
+         "    if ($Left.IsError -or $Right.IsError) { return $false }", 1)),
+    # THE OPPOSITE OVERCORRECTION, and the worse one: all errors equal. A
+    # post-window #N/A becoming #REF! is a broken reference, and this would call
+    # it preserved.
+    ("every error is treated as the same error",
+     lambda code: code.replace(
+         "        return ([string]$Left.ErrorName -ceq [string]$Right.ErrorName)",
+         "        return $true", 1)),
+    # NO-DATA BECOMING A FABRICATED VALUE, ACCEPTED. An error matched against a
+    # number is the fabricated point this layer exists to refuse.
+    ("an error is allowed to equal a value",
+     lambda code: code.replace(
+         "        if (-not ($Left.IsError -and $Right.IsError)) { return $false }",
+         "        if (-not ($Left.IsError -and $Right.IsError)) { return $true }", 1)),
+    # BLANK ABSORBED INTO ZERO - Excel plots an empty reference as zero, which
+    # is the whole reason the bridge emits NA() instead.
+    ("blank is allowed to equal zero",
+     lambda code: code.replace(
+         "    if ($leftBlank -or $rightBlank) { return ($leftBlank -and $rightBlank) }",
+         "    if ($leftBlank -and $rightBlank) { return $true }", 1)),
+    # TEXT AND NUMBERS ALLOWED TO MEET, which would let a driver named '4' pass
+    # for a rho of 4.
+    ("text is allowed to equal a number",
+     lambda code: code.replace(
+         "    if ($leftText -ne $rightText) { return $false }",
+         "    if ($leftText -ne $rightText) { return $true }", 1)),
+    # A TOLERANCE, which would hide a real chart payload change.
+    ("a tolerance is applied to plotted values",
+     lambda code: code.replace(
+         "    return ([double]$A -eq [double]$B)",
+         "    return ([Math]::Abs([double]$A - [double]$B) -lt 0.5)", 1)),
+    # AND THE NON-TEXT DRIVER NAME QUIETLY ABSORBED instead of reported.
+    ("a non-text driver name stops being reported",
+     lambda code: code.replace(
+         "        if ($sourceName.Value -isnot [string]) {\n"
+         "            $null = $notText.Add('row ' + [string]($index + 1) + ': ' +\n"
+         "                                 (Format-P83Cell $sourceName))\n"
+         "        }", "", 1)),
+    # A RANKED DRIVER WITH NO LABEL, SILENTLY DROPPED - the chart would show
+    # fewer bars than were ranked and nothing would say so.
+    ("an unnamed ranked driver disappears silently",
+     lambda code: code.replace(
+         "            if (-not ((Test-P83Blank -Cell $sourceRho) -or $sourceRho.IsError)) {",
+         "            if ($false) {", 1)),
     # AN OUT-OF-CELL CALL MOVED INSIDE THE OBSERVATION.
     ("an out-of-cell call moves inside the observation",
      lambda code: code.replace(
@@ -1215,7 +1559,7 @@ def test_50_each_way_of_passing_while_proving_nothing_is_refused(
 
 
 def test_51_the_rules_pass_on_the_unmutated_runner() -> None:
-    """SO THE TWENTY-TWO REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
+    """SO THE THIRTY REFUSALS ABOVE ARE REFUSALS OF THE MUTATION, not of the
     fixture."""
     code = _code()
     for rule in RULES:

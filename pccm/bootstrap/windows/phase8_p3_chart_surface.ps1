@@ -503,17 +503,69 @@ function Test-P83Blank {
     return (Test-SimBlank -Value $Cell.Value)
 }
 
-# EXACT AGREEMENT, AND BLANK COUNTS AS A VALUE. A mirror of an empty cell must
-# be empty; `Test-SimSameValue` settles the ordinary cases and the two blanks are
-# named first because "" and $null and a missing value all arrive here.
+# THE ONE SEMANTIC EQUALITY IN THIS RUNNER, and every preservation comparison
+# goes through it.
+#
+# WHAT RUN 3 EXPOSED. The previous version answered `not equal` the moment
+# EITHER side was an error, before looking at what the error was. The chart
+# bridge emits NA() on purpose - a bar that does not exist must not be a zero -
+# so every block wider than its published window carries #N/A in BOTH snapshots
+# of every preservation check. Six checks reported
+# `<Int32 -2146826246> -> <Int32 -2146826246>` and called it movement: the same
+# value, declared different, because the comparison never reached the value.
+#
+# WHAT THIS ANSWERS, and each line is a distinction the charts depend on:
+#
+#   error vs error    equal ONLY if it is the SAME error. #N/A becoming #REF!
+#                     is a broken reference, not a preserved absence.
+#   error vs blank    never equal. An empty cell plots as zero; NA() is what
+#                     stops it. They are opposite instructions to Excel.
+#   error vs number   never equal. This is the fabricated point the whole layer
+#                     exists to refuse, and calling it unchanged would be the
+#                     worst answer this runner could give.
+#   blank vs blank    equal.
+#   text vs text      ORDINAL, case-sensitive. A driver is its name.
+#   text vs number    never equal, and never by stringifying either one.
+#   number vs number  equal by NUMERIC VALUE. Int32 4 and Double 4 are the same
+#                     reading of the same cell - COM chooses the subtype, not
+#                     the workbook - and no tolerance is applied, so a real
+#                     change of any size is still a change.
 function Test-P83SameCellValue {
     param($Left, $Right)
     if (($null -eq $Left) -or ($null -eq $Right)) { return $false }
-    if ($Left.IsError -or $Right.IsError) { return $false }
-    $leftBlank = Test-SimBlank -Value $Left.Value
-    $rightBlank = Test-SimBlank -Value $Right.Value
+    # 1. ERRORS ARE COMPARED AS ERRORS, BY IDENTITY.
+    if ($Left.IsError -or $Right.IsError) {
+        if (-not ($Left.IsError -and $Right.IsError)) { return $false }
+        return ([string]$Left.ErrorName -ceq [string]$Right.ErrorName)
+    }
+    # 2-4. EVERYTHING THAT IS NOT AN ERROR, decided in one place so a chart
+    #      point and a worksheet cell are read by the same rule.
+    return (Test-P83SameValue -A $Left.Value -B $Right.Value)
+}
+
+# THE VALUE HALF OF THE SAME RULE. A plotted point arrives off
+# Series.Values as a bare value with no cell around it, so the caller that
+# compares one against a bridge cell needs this without the error wrapper -
+# and must not get a second, quietly different, notion of equality.
+function Test-P83SameValue {
+    param($A, $B)
+    # BLANK IS ITS OWN THING, and is not zero.
+    $leftBlank = Test-SimBlank -Value $A
+    $rightBlank = Test-SimBlank -Value $B
     if ($leftBlank -or $rightBlank) { return ($leftBlank -and $rightBlank) }
-    return (Test-SimSameValue -A $Left.Value -B $Right.Value)
+    # TEXT AND NUMBERS DO NOT MEET, and neither is stringified to make them.
+    $leftText = ($A -is [string])
+    $rightText = ($B -is [string])
+    if ($leftText -ne $rightText) { return $false }
+    if ($leftText) { return ([string]$A -ceq [string]$B) }
+    if (($A -is [bool]) -or ($B -is [bool])) {
+        if (-not (($A -is [bool]) -and ($B -is [bool]))) { return $false }
+        return ([bool]$A -eq [bool]$B)
+    }
+    # NUMERIC, ACROSS THE COM SUBTYPE. COM chooses Int32 or Double for the same
+    # reading of the same cell; the workbook does not. No tolerance is applied,
+    # so a real change of any size is still a change.
+    return ([double]$A -eq [double]$B)
 }
 
 # ORDINARY RECALCULATION, AND WHAT THE APPLICATION WAS SET TO WHEN IT HAPPENED.
@@ -927,7 +979,10 @@ function Invoke-P83ChartChecks {
                     continue
                 }
                 if ($pointBlank) { continue }
-                if (-not (Test-SimSameValue -A $cell.Value -B $point)) {
+                # THE SAME RULE THE PRESERVATION CHECKS USE. Both sides are
+                # known present and non-error here, and a plotted 4 must equal a
+                # bridge 4 whichever numeric subtype COM handed each of them.
+                if (-not (Test-P83SameValue -A $cell.Value -B $point)) {
                     $null = $wrongPayload.Add($spec.key + ' row ' + [string]($row + 1) + ': cell ' +
                                               (Format-SimValue $cell.Value) + ', plotted ' +
                                               (Format-SimValue $point))
@@ -1251,6 +1306,8 @@ function Invoke-P83TornadoRowChecks {
         }
     }
     $mismatched = New-Object System.Collections.ArrayList
+    $notText = New-Object System.Collections.ArrayList
+    $unnamed = New-Object System.Collections.ArrayList
     $plotted = 0
     for ($index = 0; $index -lt $names.Count; $index++) {
         $sourceRow = $first + $index
@@ -1268,15 +1325,43 @@ function Invoke-P83TornadoRowChecks {
                                     (Format-P83Cell $bridgeName))
             continue
         }
-        if (-not $sourcePresent) { continue }
+        if (-not $sourcePresent) {
+            # A PUBLISHED DRIVER WITH NOTHING TO CALL IT. The row is absent from
+            # the tornado because its NAME is absent, not because the ranking
+            # ended - and those are entirely different facts. Read off the
+            # published surface only: a row that carries a rho is a driver the
+            # ranking published, so a blank name beside a present rho is a
+            # statement about the Sensitivity sheet and is reported as one.
+            if (-not ((Test-P83Blank -Cell $sourceRho) -or $sourceRho.IsError)) {
+                $null = $unnamed.Add('row ' + [string]($index + 1) + ': rho ' +
+                                     (Format-P83Cell $sourceRho) + ', name ' +
+                                     (Format-P83Cell $sourceName))
+            }
+            continue
+        }
         $plotted = $plotted + 1
-        if (-not (Test-SimExactText -Actual $bridgeName.Value -Expected ([string]$sourceName.Value))) {
+        # THE CATEGORY IS A NAME, AND A NAME IS TEXT. The contract types
+        # driver_name as text, so a published label that arrives as a number is
+        # a finding about the SOURCE, reported under its own name rather than
+        # folded into a mismatch - the two are different defects and a reader
+        # must be able to tell them apart. Run 3 could not: the text comparison
+        # refused a non-string before comparing, so a numeric label and a wrong
+        # label produced the same sentence.
+        if ($sourceName.Value -isnot [string]) {
+            $null = $notText.Add('row ' + [string]($index + 1) + ': ' +
+                                 (Format-P83Cell $sourceName))
+        }
+        # AND THE MIRROR IS COMPARED SEMANTICALLY, through the one owner, so a
+        # legitimate label of any type is compared by value rather than refused
+        # by type.
+        if (-not (Test-P83SameCellValue -Left $bridgeName -Right $sourceName)) {
             $null = $mismatched.Add('row ' + [string]($index + 1) + ' name: ' +
                                     (Format-P83Cell $bridgeName) + ' vs ' + (Format-P83Cell $sourceName))
         }
-        # THE SIGN IS THE POINT OF A TORNADO. An exact double comparison keeps a
-        # negative rho negative; a magnitude test would not.
-        if (-not (Test-SimExactDouble -Actual $bridgeRho.Value -Expected ([double]$sourceRho.Value))) {
+        # THE SIGN IS THE POINT OF A TORNADO. An exact numeric comparison keeps a
+        # negative rho negative; a magnitude test would not, and the one owner
+        # applies no tolerance.
+        if (-not (Test-P83SameCellValue -Left $bridgeRho -Right $sourceRho)) {
             $null = $mismatched.Add('row ' + [string]($index + 1) + ' rho: ' +
                                     (Format-P83Cell $bridgeRho) + ' vs ' + (Format-P83Cell $sourceRho))
         }
@@ -1286,6 +1371,16 @@ function Invoke-P83TornadoRowChecks {
         ($mismatched.Count -eq 0) (($mismatched -join '; '))
     $null = Add-P83Check ($Stage + ': the tornado plots at most the projected top N') `
         ($plotted -le $names.Count) ([string]$plotted + ' of ' + [string]$names.Count)
+    # ITS OWN FINDING. If this fails, the published Sensitivity Name column is
+    # not carrying text for every ranked driver, and no comparator change can
+    # make that right - the sheet is what would need looking at.
+    $null = Add-P83Check ($Stage + ': every published driver name is text') `
+        ($notText.Count -eq 0) (($notText -join '; '))
+    # AND NO RANKED DRIVER IS MISSING FROM THE CHART BECAUSE IT HAS NO LABEL.
+    # Without this a driver the ranking published simply does not appear, and
+    # the tornado looks complete while showing fewer bars than were ranked.
+    $null = Add-P83Check ($Stage + ': every ranked driver has a name to plot it under') `
+        ($unnamed.Count -eq 0) (($unnamed -join '; '))
     return $plotted
 }
 
