@@ -115,6 +115,26 @@ $script:P9ErrorCodes = @{
 # created above - which is the P8-Z run-2 lesson stated as code rather than as
 # a comment.
 
+# `Write-RowObject` IS HERE BECAUSE OF A TRANSITIVE DEPENDENCY, and Windows run 1
+# is what it cost to leave it out. NOTHING IN THIS FILE CALLS IT.
+# `Get-Phase5TypedTableBody` does, and that function lives in
+# `phase5_gate_b_scenarios.ps1`, which this runner DOES dot-source - while its
+# own definition lives in `phase4_functional_test.ps1`, which this runner
+# deliberately does not, because that file is a Phase-4 driver and not a
+# definition library. In the accepted Gate-B runs the Phase-4 driver dot-sources
+# the scenarios file, so the helper is in scope; reaching the scenarios file
+# directly leaves the dependency unmet.
+#
+# THIS RUNNER REACHES IT THROUGH `Save-Phase5LockedFxSeed`, one line after the
+# third prerequisite. W1 died the same way before a single check was recorded,
+# the timing harness met the same gap the same way, and P9 run 1 died on it
+# after five - which is why test_29 below now proves every command this runner
+# names resolves, rather than trusting an assembly to have copied everything.
+function Write-RowObject {
+    param([object[]]$Row)
+    Write-Output -NoEnumerate $Row
+}
+
 function Get-NamedValue {
     param($Workbook, [string]$DefinedName)
     $names = $null; $nm = $null; $rng = $null
@@ -145,6 +165,182 @@ function Set-NamedValue {
         if ($null -ne $nm)    { Release-Transient $nm    'Name';        $nm    = $null }
         if ($null -ne $names) { Release-Transient $names 'Names';       $names = $null }
     }
+}
+
+# THE SEVEN TABLE HELPERS THE DOT-SOURCED FIXTURE NEEDS, UNDER THEIR OWN NAMES.
+# THIS RUNNER CALLS NONE OF THEM. `Set-Phase5Fixture` does - through
+# Invoke-Phase5FixtureSteps, Reset-Phase5FxTable, Clear-Phase5Registers,
+# Write-Phase5InflationRates and Invoke-Phase5AddDriverAndRequireSuccess - and
+# that fixture lives in `phase5_gate_b_scenarios.ps1`, which this runner
+# dot-sources while deliberately not dot-sourcing the Phase-4 driver the helpers
+# live in.
+#
+# THE ASSEMBLY THAT BUILT THIS RUNNER COPIED THE THREE IT USED ITSELF AND
+# RENAMED THEM INTO A P9 NAMESPACE - Set-P9TableCell, Add-P9BlankTableRow,
+# Remove-P9TableRow below - and dropped the four it had no use for. The fixture
+# needs all seven under the ORIGINAL names, so run 1 died on the first one it
+# reached and seven more were waiting behind it. They are copied BYTE FOR BYTE
+# from phase8_pz_zero_variance.ps1 so there is one behaviour rather than two,
+# and test_29 below pins them to it.
+function Get-TableColumnNames {
+    param($Workbook, [string]$SheetName, [string]$TableName)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $cols = $null
+    $out = @()
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $cols = $lo.ListColumns
+        $colCount = [int]$cols.Count
+        for ($i = 1; $i -le $colCount; $i++) {
+            $c = $null
+            try { $c = $cols.Item($i); $out += [string]$c.Name }
+            finally { if ($null -ne $c) { Release-Transient $c 'ListColumn'; $c = $null } }
+        }
+    } finally {
+        if ($null -ne $cols)            { Release-Transient $cols            'ListColumns'; $cols            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+    return $out
+}
+
+function Set-TableCell {
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowIndex, [int]$ColumnIndex, $Value)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $body = $null; $cell = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $body = $lo.DataBodyRange
+        $cell = $body.Cells($RowIndex, $ColumnIndex)
+        if ($null -eq $Value) {
+            # A genuine blank, not zero. The two are different assumptions and the
+            # harness has to be able to create each of them deliberately.
+            $null = $cell.ClearContents()
+        } elseif ($Value -is [string]) {
+            $cell.Value2 = [string]$Value
+        } else {
+            $cell.Value2 = [double]$Value
+        }
+    } finally {
+        if ($null -ne $cell)            { Release-Transient $cell            'Range(cell)'; $cell            = $null }
+        if ($null -ne $body)            { Release-Transient $body            'Range(body)'; $body            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+}
+
+function Get-TableBody {
+    param($Workbook, [string]$SheetName, [string]$TableName)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $body = $null
+    $rowsObj = $null; $colsObj = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $body = $lo.DataBodyRange
+        # An empty body is a valid outcome: emit NOTHING. The caller's @(...) turns
+        # zero pipeline objects into an empty collection, which is exactly right.
+        if ($null -eq $body) { return }
+
+        # Row and column counts are read through named, released objects rather than
+        # through $body.Rows.Count, which would mint an unowned Range on every
+        # iteration of the loop.
+        $rowsObj = $body.Rows
+        $colsObj = $body.Columns
+        $rowCount = [int]$rowsObj.Count
+        $colCount = [int]$colsObj.Count
+        Release-Transient $rowsObj 'Range(rows)'; $rowsObj = $null
+        Release-Transient $colsObj 'Range(columns)'; $colsObj = $null
+
+        for ($r = 1; $r -le $rowCount; $r++) {
+            $line = @()
+            for ($c = 1; $c -le $colCount; $c++) {
+                $cell = $null
+                try {
+                    $cell = $body.Cells($r, $c)
+                    $v = $cell.Value2
+                    if ($null -eq $v) { $line += '' } else { $line += [string]$v }
+                } finally {
+                    if ($null -ne $cell) { Release-Transient $cell 'Range(cell)'; $cell = $null }
+                }
+            }
+            Write-RowObject $line
+        }
+    } finally {
+        if ($null -ne $rowsObj)         { Release-Transient $rowsObj         'Range(rows)';    $rowsObj         = $null }
+        if ($null -ne $colsObj)         { Release-Transient $colsObj         'Range(columns)'; $colsObj         = $null }
+        if ($null -ne $body)            { Release-Transient $body            'Range(body)';    $body            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';     $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects';    $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';      $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';     $localWorksheets = $null }
+    }
+    # No trailing return: every row has already been emitted, one object each.
+}
+
+function Get-TableRowCount {
+    param($Workbook, [string]$SheetName, [string]$TableName)
+    return @(Get-TableBody -Workbook $Workbook -SheetName $SheetName -TableName $TableName).Count
+}
+
+function Add-BlankTableRow {
+    param($Workbook, [string]$SheetName, [string]$TableName)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $rows = $null; $added = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $rows = $lo.ListRows
+        $added = $rows.Add()
+        return [int]$added.Index
+    } finally {
+        if ($null -ne $added)           { Release-Transient $added           'ListRow';     $added           = $null }
+        if ($null -ne $rows)            { Release-Transient $rows            'ListRows';    $rows            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+}
+
+function Remove-TableRow {
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowIndex)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $rows = $null; $victim = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $rows = $lo.ListRows
+        $victim = $rows.Item($RowIndex)
+        $victim.Delete()
+    } finally {
+        if ($null -ne $victim)          { Release-Transient $victim          'ListRow';     $victim          = $null }
+        if ($null -ne $rows)            { Release-Transient $rows            'ListRows';    $rows            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+}
+
+function Get-IdColumnValues {
+    param($Workbook, $Info)
+    $out = @()
+    foreach ($row in @(Get-TableBody -Workbook $Workbook -SheetName $Info.sheet -TableName $Info.table_name)) {
+        if ($row[0] -ne '') { $out += $row[0] }
+    }
+    return $out
 }
 
 function Set-P9TableCell {
@@ -1298,12 +1494,20 @@ try {
 
     # THE WORKBOOK IS NEVER SAVED. A run that wrote its fixture back would make
     # the next run start somewhere else.
-    $wb.Close($false)
+    # EVERY LIFECYCLE FACT IS RECORDED WHERE IT HAPPENS. Run 1 reported
+    # Workbook.Close, Application.Quit and natural PID exit as False while the
+    # verdict below passed the natural-exit check, because this runner performed
+    # the actions and - alone among the accepted runners - never wrote them to
+    # the ledger it then printed. The fields were not pre-cleanup state and not
+    # final state; they were their initialised False.
+    try { $wb.Close($false); $rel.WorkbookClosed = $true }
+    catch { $null = $rel.Failed.Add('Workbook.Close'); throw }
     Invoke-P9Release -Ledger $rel -Obj $wb -Label 'Workbook'
     $wb = $null
     Invoke-P9Release -Ledger $rel -Obj $workbooks -Label 'Workbooks'
     $workbooks = $null
-    $excel.Quit()
+    try { $excel.Quit(); $rel.QuitCalled = $true }
+    catch { $null = $rel.Failed.Add('Application.Quit'); throw }
     Invoke-P9Release -Ledger $rel -Obj $excel -Label 'Application'
     $excel = $null
     $Error.Clear()
@@ -1315,8 +1519,13 @@ try {
     Write-P9Line ''
     Write-P9Line ('FATAL: ' + $fatal)
 } finally {
+    # THE FATAL PATH RECORDS WHAT IT DID, on the same terms as the path above.
+    # A Close or a Quit that throws here is not swallowed: it joins the failed
+    # labels, so `every COM release succeeded` reports it instead of the run
+    # looking clean because nobody wrote the failure down.
     if ($null -ne $wb) {
-        try { $wb.Close($false) } catch { }
+        try { $wb.Close($false); $rel.WorkbookClosed = $true }
+        catch { $null = $rel.Failed.Add('Workbook.Close') }
         Invoke-P9Release -Ledger $rel -Obj $wb -Label 'Workbook'
         $wb = $null
     }
@@ -1325,7 +1534,8 @@ try {
         $workbooks = $null
     }
     if ($null -ne $excel) {
-        try { $excel.Quit() } catch { }
+        try { $excel.Quit(); $rel.QuitCalled = $true }
+        catch { $null = $rel.Failed.Add('Application.Quit') }
         Invoke-P9Release -Ledger $rel -Obj $excel -Label 'Application'
         $excel = $null
         $Error.Clear()
@@ -1337,6 +1547,10 @@ try {
         $emergencyRequired = $true
         $null = Invoke-EmergencyExcelCleanup -Identity $excelIdentity
     }
+    # ONE FACT, WRITTEN ONCE, READ BY BOTH THE LEDGER AND THE VERDICT. The two
+    # cannot disagree about this run because there is no second copy to drift.
+    $rel.NaturalExit = $naturalExit
+    $rel.EmergencyRequired = $emergencyRequired
     Write-P9Line ''
     Write-P9Line 'COM LIFECYCLE'
     Write-P9Line '-------------'
@@ -1352,8 +1566,8 @@ try {
 # ===========================================================================
 # THIS RUN'S OWN LIFECYCLE FACTS. A result from a session that leaked Excel is
 # not evidence about a worksheet.
-$null = Add-P9Check 'the owned Excel process exited naturally' $naturalExit
-$null = Add-P9Check 'no emergency cleanup was required' (-not $emergencyRequired)
+$null = Add-P9Check 'the owned Excel process exited naturally' $rel.NaturalExit
+$null = Add-P9Check 'no emergency cleanup was required' (-not $rel.EmergencyRequired)
 $null = Add-P9Check 'every COM object this runner acquired was released' `
     ([int]$rel.Attempted -eq [int]$comAcquired) `
     ([string]$comAcquired + ' acquired, ' + [string]$rel.Attempted + ' released')

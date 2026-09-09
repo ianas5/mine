@@ -229,6 +229,52 @@ def test_10_it_re_runs_no_phase_8_acceptance() -> None:
     assert "THIS RUNNER ANSWERS PHASE-9 QUESTIONS ONLY" in _text()
 
 
+def _function_extents() -> list[tuple[str, int, int]]:
+    """(name, first line, last line) for every function in the runner.
+
+    ASKED OF THE PARSER, NOT OF A REGULAR EXPRESSION. Attributing a line to the
+    nearest `function` above it gets top-level code wrong, and top-level code is
+    exactly where an unnoticed write would sit.
+    """
+    script = (
+        '$e=$null;$t=$null;'
+        f'$a=[System.Management.Automation.Language.Parser]::ParseFile("{RUNNER}",[ref]$t,[ref]$e);'
+        'if($e.Count -gt 0){exit 1};'
+        '$a.FindAll({param($n) $n -is '
+        '[System.Management.Automation.Language.FunctionDefinitionAst]},$true) | '
+        'ForEach-Object { $_.Name + "|" + $_.Extent.StartLineNumber + "|" + '
+        '$_.Extent.EndLineNumber }')
+    done = subprocess.run([PWSH, "-NoProfile", "-Command", script],
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout + done.stderr
+    out = []
+    for line in done.stdout.splitlines():
+        if not line.strip():
+            continue
+        name, start, end = line.split("|")
+        out.append((name, int(start), int(end)))
+    return out
+
+
+def _functions_containing(pattern: str) -> set[str]:
+    """The names of the functions whose bodies match *pattern*.
+
+    A match OUTSIDE every function raises rather than being dropped: silence
+    about top-level code is how this kind of control goes quietly vacuous.
+    """
+    extents = _function_extents()
+    found: set[str] = set()
+    for number, line in enumerate(_text().splitlines(), 1):
+        if line.strip().startswith("#") or not re.search(pattern, line):
+            continue
+        owners = [name for name, start, end in extents if start <= number <= end]
+        assert owners, f"line {number} matches {pattern!r} outside every function: {line.strip()}"
+        # THE INNERMOST ONE, since PowerShell allows nesting.
+        found.add(max(((name, start) for name, start, end in extents
+                       if start <= number <= end), key=lambda pair: pair[1])[0])
+    return found
+
+
 def test_11_it_writes_no_model_check_cell_and_saves_nothing() -> None:
     """THE SURFACE UNDER TEST IS NOT EDITED BY THE TEST. Everything the runner
     changes is an INPUT - a register cell, an iteration count, a seed - and the
@@ -236,9 +282,22 @@ def test_11_it_writes_no_model_check_cell_and_saves_nothing() -> None:
     code = _code()
     assert "$wb.Save()" not in code and ".SaveAs(" not in code
     assert "$wb.Close($false)" in code, "the runner does not close without saving"
-    # The only writes are through the two input helpers and production endpoints.
-    writes = re.findall(r"\.Value2\s*=", code)
-    assert len(writes) <= 3, f"the runner writes cells directly {len(writes)} times"
+    # EVERY WRITER IS NAMED, NOT COUNTED. This used to allow "at most three
+    # `.Value2 =`", and restoring the seven table helpers the dot-sourced
+    # fixture needs took it to five - a control that convicts a correction it
+    # has no opinion about. Naming the functions allowed to write is stricter:
+    # a write in a NEW place fails however few writes there are in total, and a
+    # write at top level, outside any helper, fails too.
+    writers = _functions_containing(r"\.Value2\s*=")
+    assert writers == {
+        # THE RUNNER'S OWN INPUT WRITERS. A register cell, an iteration count,
+        # a seed - never a Model Check cell.
+        "Set-NamedValue", "Set-P9TableCell",
+        # AND THE ACCEPTED PHASE-4 HELPERS THE DOT-SOURCED FIXTURE CALLS,
+        # restored here byte for byte because this runner does not dot-source
+        # the driver they live in.
+        "Set-TableCell",
+    }, sorted(writers)
     for helper in ("Set-NamedValue", "Set-P9TableCell"):
         assert helper in code
     # AND NOTHING IS WRITTEN TO THE SHEET IT READS.
@@ -493,6 +552,242 @@ def test_27_the_cleanup_runs_safely_when_excel_was_never_created() -> None:
     assert "COM LIFECYCLE" in out, f"the finally block did not finish:\n{out[-2500:]}"
     assert "P9-1 FAIL" in out, out[-2500:]
     assert done.returncode == 1, done.returncode
+
+
+# ===========================================================================
+# I. WINDOWS RUN 1 - EVERY COMMAND THE RUNNER CAN REACH MUST RESOLVE
+# ===========================================================================
+# WHAT RUN 1 COST. The session died on `The term 'Write-RowObject' is not
+# recognized` after five checks - past the Stage-B bootstrap, past the
+# VBAProject compile, past a worksheet-called adapter answering INVALID, and
+# before a single Phase-9 question was asked. Nothing in the runner called that
+# function: a function in a DOT-SOURCED file did, and its definition lives in a
+# Phase-4 driver this runner deliberately does not dot-source.
+#
+# A TEXT CONTROL COULD NOT HAVE CAUGHT IT. The name is not in the runner. So the
+# control is a call-graph closure over the runner and everything it dot-sources,
+# and it found seven more of exactly the same defect waiting behind the first.
+RESOLUTION_AUDIT = PCCM_ROOT / "tests" / "powershell_command_resolution_audit.ps1"
+
+# THE HELPERS THE DOT-SOURCED FIXTURE NEEDS, AND WHERE THEY CAME FROM. Copied
+# byte for byte so there is one behaviour rather than two.
+ACCEPTED_HELPER_SOURCE = WINDOWS / "phase8_pz_zero_variance.ps1"
+RESTORED_HELPERS = ("Get-TableColumnNames", "Set-TableCell", "Get-TableBody",
+                    "Get-TableRowCount", "Add-BlankTableRow", "Remove-TableRow",
+                    "Get-IdColumnValues", "Write-RowObject")
+
+
+def _audit(path: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [PWSH, "-NoProfile", "-File", str(RESOLUTION_AUDIT), "-Path", str(path)],
+        capture_output=True, text=True, timeout=300)
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_28_every_command_the_runner_can_reach_resolves() -> None:
+    """THE CLASS THAT ENDED WINDOWS RUN 1, closed at its own level."""
+    done = _audit(RUNNER)
+    assert done.returncode == 0, done.stdout.strip()
+    assert done.stdout.startswith("CLEAN"), done.stdout
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+@pytest.mark.parametrize("helper", RESTORED_HELPERS)
+def test_28a_removing_any_restored_helper_is_caught(helper: str) -> None:
+    """SO THE AUDIT IS NOT VACUOUS - once per helper, because run 1 proved that
+    one missing definition hides the seven behind it."""
+    source = _text()
+    start = source.index(f"function {helper} {{")
+    end = source.index("\nfunction ", start)
+    broken = source[:start] + source[end + 1:]
+    assert f"function {helper} {{" not in broken, helper
+    scratch = WINDOWS / "__p9_resolution_tmp.ps1"
+    scratch.write_text(broken, encoding="utf-8")
+    try:
+        done = _audit(scratch)
+    finally:
+        scratch.unlink(missing_ok=True)
+    assert done.returncode == 1, done.stdout
+    assert f"UNRESOLVED {helper}" in done.stdout, done.stdout
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_28b_renaming_a_helper_is_caught_too() -> None:
+    """A RENAME LEAVES THE DEFINITION IN THE FILE and the call site broken,
+    which a "is it defined anywhere" control would pass."""
+    source = _text()
+    broken = source.replace("function Write-RowObject {",
+                            "function Write-RowObjectV2 {", 1)
+    assert broken != source
+    scratch = WINDOWS / "__p9_rename_tmp.ps1"
+    scratch.write_text(broken, encoding="utf-8")
+    try:
+        done = _audit(scratch)
+    finally:
+        scratch.unlink(missing_ok=True)
+    assert done.returncode == 1, done.stdout
+    assert "UNRESOLVED Write-RowObject" in done.stdout, done.stdout
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_28c_a_helper_defined_twice_is_caught() -> None:
+    """DEFINED EXACTLY ONCE. Two definitions mean the later one silently wins
+    and the reader cannot tell which behaviour ran."""
+    source = _text()
+    start = source.index("function Write-RowObject {")
+    end = source.index("\nfunction ", start)
+    doubled = source[:end] + "\n" + source[start:end] + source[end:]
+    assert doubled.count("function Write-RowObject {") == 2
+    scratch = WINDOWS / "__p9_double_tmp.ps1"
+    scratch.write_text(doubled, encoding="utf-8")
+    try:
+        done = _audit(scratch)
+    finally:
+        scratch.unlink(missing_ok=True)
+    assert done.returncode == 1, done.stdout
+    assert "DUPLICATE write-rowobject" in done.stdout, done.stdout
+
+
+def test_29_the_restored_helpers_are_the_accepted_ones_byte_for_byte() -> None:
+    """NOT A SECOND IMPLEMENTATION. The fixture that calls these is accepted
+    Gate-B code; a helper that behaved slightly differently here would make this
+    runner's fixture a different fixture."""
+    accepted = ACCEPTED_HELPER_SOURCE.read_text(encoding="utf-8")
+    runner = _text()
+    for helper in RESTORED_HELPERS:
+        marker = f"function {helper} {{"
+        assert accepted.count(marker) == 1, helper
+        assert runner.count(marker) == 1, helper
+        want = accepted[accepted.index(marker):]
+        want = want[:want.index("\nfunction ")]
+        got = runner[runner.index(marker):]
+        got = got[:got.index("\nfunction ")]
+        assert got == want, f"{helper} is not the accepted helper byte for byte"
+
+
+def test_29a_no_definition_is_unreachable_because_of_where_it_sits() -> None:
+    """SCOPE AND ORDER. Every function this runner defines is defined at FILE
+    scope - not nested inside another function, where it would exist only while
+    that function ran - and the dot-sources that bring the rest into scope
+    happen before any of them is called."""
+    source = _text()
+    for name, start, end in _function_extents():
+        enclosing = [other for other, s, e in _function_extents()
+                     if other != name and s < start and end < e]
+        assert not enclosing, f"{name} is nested inside {enclosing}"
+    # THE DOT-SOURCES COME FIRST, before the first call of anything.
+    last_dot = max(source.index(f". (Join-Path $scriptDir '{f}')")
+                   for f in ("com_lifecycle.ps1", "phase5_gate_b_scenarios.ps1",
+                             "phase6_gate_b_scenarios.ps1"))
+    assert last_dot < source.index("function Write-RowObject {")
+    assert last_dot < source.index("Set-Phase5Fixture")
+
+
+# ===========================================================================
+# J. WINDOWS RUN 1 - THE FATAL PATH TELLS ONE TRUTH
+# ===========================================================================
+# WHAT RUN 1 ALSO SHOWED. The COM lifecycle ledger printed
+#   Workbook.Close : False / Application.Quit : False / natural PID exit : False
+# and the verdict immediately below printed
+#   [PASS] the owned Excel process exited naturally
+#   [PASS] no emergency cleanup was required
+# Those fields were not pre-cleanup state and not final state. This runner
+# performed the actions and - alone among the accepted runners - never wrote
+# them to the ledger it then printed, so they were their initialised False and
+# would have read False on a perfect run.
+def test_30_every_lifecycle_fact_the_report_prints_is_recorded() -> None:
+    code = _code()
+    for field in ("$rel.WorkbookClosed = $true", "$rel.QuitCalled = $true",
+                  "$rel.NaturalExit = $naturalExit",
+                  "$rel.EmergencyRequired = $emergencyRequired"):
+        assert field in code, f"the ledger never records {field}"
+    # BOTH PATHS RECORD, not just the one that succeeds.
+    assert code.count("$rel.WorkbookClosed = $true") == 2, (
+        "one of the close paths records nothing")
+    assert code.count("$rel.QuitCalled = $true") == 2, (
+        "one of the quit paths records nothing")
+    # AND A CLOSE OR QUIT THAT THROWS IS DISCLOSED rather than swallowed. The
+    # scope is the shutdown region only: Write-P9Line's own `catch { }` guards
+    # the transcript write, so a full-file ban would convict the thing that
+    # keeps a stopped run's observations on disk.
+    shutdown = code[code.index("$wb.Close($false)"):]
+    assert "catch { }" not in shutdown, "a lifecycle failure is swallowed silently"
+    for label in ("$rel.Failed.Add('Workbook.Close')",
+                  "$rel.Failed.Add('Application.Quit')"):
+        assert label in code, f"a failure of {label} would go unrecorded"
+
+
+def test_31_the_verdict_reads_the_ledger_it_prints() -> None:
+    """THE REPORT CANNOT CONTRADICT ITSELF because there is one copy of the
+    fact. A verdict reading a separate local is how run 1 managed to print
+    `natural PID exit : False` and PASS the natural-exit check together."""
+    code = _code()
+    assert "Add-P9Check 'the owned Excel process exited naturally' $rel.NaturalExit" in code
+    assert ("Add-P9Check 'no emergency cleanup was required' (-not $rel.EmergencyRequired)"
+            in code)
+    # THE LOCALS ARE NOT WHAT THE VERDICT READS.
+    assert "'the owned Excel process exited naturally' $naturalExit" not in code
+    assert "'no emergency cleanup was required' (-not $emergencyRequired)" not in code
+    # AND THE LEDGER IS ASSIGNED AFTER THE EMERGENCY DECISION, so it carries the
+    # FINAL state rather than a state from before cleanup ran.
+    assert code.index("$emergencyRequired = $true") < code.index("$rel.NaturalExit = $naturalExit")
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_32_a_fatal_before_the_scenarios_still_reports_coherently() -> None:
+    """RUN 1'S OWN SHAPE, WALKED: a fatal after Excel exists and before any
+    scenario. The ledger and the verdict must agree about this run."""
+    if not (PCCM_ROOT / "build" / "phase9_model_check_inspection.json").is_file():
+        pytest.skip("Stage A has not been built into pccm/build")
+    source = _text()
+    broken = source.replace(
+        "    $excel = New-Object -ComObject Excel.Application",
+        "    throw 'DRY RUN: a fatal before the scenarios'", 1)
+    assert broken != source
+    broken = broken.replace(
+        "& $bootstrap -BuildDir $tempRoot -Force\n$bootstrapExit = $LASTEXITCODE",
+        "Set-Content -LiteralPath $stageBPath -Value 'dry run' -Encoding UTF8\n"
+        "$bootstrapExit = 0")
+    broken = broken.replace("if ($revision.Dirty.Count -gt 0) {",
+                            "if ($false -and $revision.Dirty.Count -gt 0) {")
+    scratch = WINDOWS / "__p9_fatal_tmp.ps1"
+    scratch.write_text(broken, encoding="utf-8")
+    try:
+        done = subprocess.run([PWSH, "-NoProfile", "-File", str(scratch)],
+                              cwd="/tmp", capture_output=True, text=True, timeout=300)
+    finally:
+        scratch.unlink(missing_ok=True)
+    out = done.stdout + done.stderr
+    assert "DRY RUN: a fatal before the scenarios" in out, out[-2500:]
+    assert "COM LIFECYCLE" in out, out[-2500:]
+    # THE LEDGER AND THE VERDICT SAY THE SAME THING. No Excel was ever owned
+    # here, so natural exit is False - and the natural-exit check must FAIL,
+    # which is the pairing run 1 got wrong in the other direction.
+    ledger = re.search(r"natural PID exit\s*:\s*(\w+)", out)
+    assert ledger, out[-2500:]
+    passed = "[PASS] the owned Excel process exited naturally" in out
+    assert (ledger.group(1) == "True") == passed, (
+        f"the ledger says natural PID exit = {ledger.group(1)} and the verdict "
+        f"{'passed' if passed else 'failed'} the natural-exit check")
+    assert "P9-1 FAIL" in out, out[-2500:]
+
+
+def test_33_the_structural_heartbeat_scenario_is_unchanged() -> None:
+    """THE ONE QUESTION THIS WHOLE RUNNER EXISTS FOR. A runner correction may
+    not edit it, so it is pinned rather than described."""
+    import hashlib
+
+    source = _text()
+    start = source.index("    # THE ANCHOR - A STRUCTURAL FAULT RAISED AFTER THE WORKBOOK OPENED")
+    start = source.rindex("    # ------", 0, start)
+    end = source.index(
+        "    # -------------------------------------------------------------------",
+        source.index("Write-P9Line 'THE ANCHOR - A FAULT RAISED AFTER THE WORKBOOK OPENED'"))
+    block = source[start:end]
+    assert hashlib.sha256(block.encode("utf-8")).hexdigest() == (
+        "c111c6eb59814077e120e262fb81a930b4ca93bf38ba94f9fd5cb3a2114abdb4"), (
+        "the structural-heartbeat scenario moved; it is pending Windows and "
+        "a runner correction may not touch it")
 
 
 if __name__ == "__main__":  # pragma: no cover
