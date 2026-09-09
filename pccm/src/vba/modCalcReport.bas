@@ -1192,8 +1192,8 @@ Public Function CalcPrepareSimulationInputs(ByRef drivers() As DriverFactors, _
     CalcPrepareSimulationInputs = True
 End Function
 
-' The pure half of PCCM_CalculationStatus: one derivation, two entry points, and only that one writes C19:C20. Reasoning: the Phase-7 closure record 1.1.
-Public Function CalcReportDerivedStatus() As String
-    Dim package As CalculationPackage, detail As String
+' The pure half of PCCM_CalculationStatus: one derivation, two entry points, and only that one writes C19:C20. `detail` is the SAME live refusal text the preparation already wrote, handed back rather than discarded, and empty whenever the preparation succeeded; it is REQUIRED because both callers want it and a typed Optional with no default does not compile. Reasoning: the Phase-7 closure record 1.1.
+Public Function CalcReportDerivedStatus(ByRef detail As String) As String
+    Dim package As CalculationPackage
     CalcReportDerivedStatus = DeriveStatus(package, PrepareCurrentCalculation(package, detail))
 End Function

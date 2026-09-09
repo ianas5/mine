@@ -461,7 +461,8 @@ def test_08_no_orphan_pccm_macro_exists() -> None:
     # CALCULATION state, on the same terms: the semantic stays with
     # modCalcReport, which owns the pure derivation it delegates to.
     phase9_adapters = set(data["vba"]["phase9_api_procedures"])
-    assert phase9_adapters == {"PCCM_ModelCheckCalculationState"}, sorted(phase9_adapters)
+    assert phase9_adapters == {"PCCM_ModelCheckCalculationState",
+                               "PCCM_ModelCheckRefusalDetail"}, sorted(phase9_adapters)
     assert not (phase9_adapters & adapters), "an adapter is declared under two phases"
     adapter_owners = {m.name for m in _all_modules()
                       if (adapters | phase9_adapters) & set(m.public_procedures)}

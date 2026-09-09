@@ -116,17 +116,52 @@ def test_05_the_forbidden_constructs_control_is_not_vacuous() -> None:
 # ===========================================================================
 # C. NOT ONE ADDRESS, NAME OR THRESHOLD IS TYPED
 # ===========================================================================
+def _string_literals() -> list[str]:
+    """Every quoted literal in the runner, scanned LINE BY LINE.
+
+    THE SCAN USED TO PAIR QUOTES ACROSS THE WHOLE FILE and that made it partly
+    vacuous: one unbalanced apostrophe anywhere - in a message, in a word like
+    "runner's" - desynchronised the alternation and swallowed everything after
+    it until the next quote. A literal address in the swallowed region would
+    have passed unseen, which is exactly what this control exists to stop.
+    Pairing per line bounds any desync to the line that caused it, and there are
+    no here-strings in this file for a line-wise scan to break.
+    """
+    found: list[str] = []
+    for line in _code().splitlines():
+        found += [single or double for single, double
+                  in re.findall(r"'([^']*)'|\"([^\"]*)\"", line)]
+    return found
+
+
 def test_06_no_worksheet_address_is_spelled_in_the_runner() -> None:
     """P7-4 IS WHAT A TYPED ADDRESS COSTS: the persisted block moved, the
     formula did not, and a sheet reported "not produced" after a run that had
     just succeeded. Every address here comes from a projection."""
-    literals = re.findall(r"'([^']*)'|\"([^\"]*)\"", _code())
-    typed = []
-    for single, double in literals:
-        value = single or double
-        if re.fullmatch(r"\$?[A-Z]{1,3}\$?\d{1,5}", value):
-            typed.append(value)
+    # THE ACCEPTANCE SCENARIO IDS ARE NOT ADDRESSES, and they are read from the
+    # corpus rather than listed here - a typed exclusion would be a second name
+    # for something the corpus already owns.
+    import json
+
+    corpus = PCCM_ROOT / "build" / "phase7_acceptance_cases.json"
+    allowed = set()
+    if corpus.is_file():
+        allowed = {str(s["id"]) for s in json.loads(corpus.read_text(encoding="utf-8"))["scenarios"]}
+    typed = [value for value in _string_literals()
+             if re.fullmatch(r"\$?[A-Z]{1,3}\$?\d{1,5}", value) and value not in allowed]
     assert not typed, f"the runner spells worksheet addresses: {sorted(set(typed))}"
+
+
+def test_06b_the_address_scan_is_not_vacuous() -> None:
+    """SO THE SCAN IS PROVED TO SEE. An address literal injected anywhere - even
+    after an apostrophe that used to blind it - has to be found."""
+    injected = _code() + "\n$x = 'D8'\n$y = \"the runner's own note\" ; $z = '$AB$1234'\n"
+    found = []
+    for line in injected.splitlines():
+        found += [single or double for single, double
+                  in re.findall(r"'([^']*)'|\"([^\"]*)\"", line)]
+    hits = {value for value in found if re.fullmatch(r"\$?[A-Z]{1,3}\$?\d{1,5}", value)}
+    assert {"D8", "$AB$1234"} <= hits, sorted(hits)
 
 
 def test_07_no_defined_name_is_spelled_in_the_runner() -> None:

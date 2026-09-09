@@ -134,6 +134,7 @@ _BLANK_READINGS: dict[str, Any] = {
     "annual_profile_px": "",
     "annual_year_count": 0,
     "structural_report": "",
+    "calculation_refusal_detail": "",
     "calculation_attempt_result": "",
     "calculation_attempt_detail": "",
     # READ, NOT TYPED. A harness that spelled the number would be exactly the
@@ -860,6 +861,219 @@ def test_40_the_two_state_axes_stay_apart() -> None:
 
 
 # ===========================================================================
+# E2. P9-2A - THE LIVE REFUSAL DETAIL
+# ===========================================================================
+# WHAT CHANGED AND WHY. The actionable calculation ERROR used to carry a static
+# contract sentence, and the only text naming the fault was the PERSISTED last
+# attempt - history, blank until somebody has pressed Calculate, and stale the
+# moment the model moves past it. The row now carries the sentence the CURRENT
+# preparation wrote on its way to deciding the status.
+#
+# WHAT DID NOT CHANGE, AND IS A DECLARED GAP. Step-1 §11 scenario F asks that
+# row to name the offending PERMANENT ID in its Subject. The owner has the id in
+# hand when it refuses, but publishes only a sentence: there is no structured
+# field anywhere in the accepted owners carrying the offending id on its own.
+# Recovering it would mean parsing prose, which is refused. test_46c states that
+# limitation as a fact about the source so it cannot be forgotten.
+
+def _refusal(driver: str = "CL-0001") -> str:
+    """A refusal sentence shaped exactly the way the owner shapes one.
+
+    modCalcCheck.DriverLabel builds "cost line <id>" or "risk <id>", and
+    OrderingFailure appends ": <Distribution> requires Min <= Most Likely <= Max".
+    """
+    return f"cost line {driver}: Triangular requires Min <= Most Likely <= Max"
+
+
+def test_46a_the_actionable_error_carries_the_live_reason() -> None:
+    """A. THE LIVE SENTENCE REACHES THE ACTIONABLE ROW, and the persisted one is
+    somewhere else entirely."""
+    plan = _plan()
+    result = _evaluate(plan, {
+        "calculation_state": "INVALID", "simulation_state": "INVALID",
+        "calculation_refusal_detail": _refusal("CL-0001"),
+        "calculation_attempt_result": "REFUSED",
+        "calculation_attempt_detail": _refusal("CL-0009")})
+    error = next(r for r in result["shown"] if r["severity"] == "ERROR")
+    assert error["check_id"] == "CAL-010", error
+    assert error["group"] == "Calculation"
+    assert error["message"] == _refusal("CL-0001"), error["message"]
+    # AND IT IS NOT THE PERSISTED ONE. The two are deliberately different here,
+    # so a row that reached for history instead of the live model would show it.
+    assert _refusal("CL-0009") not in str(error["message"])
+    persisted = next(r for r in result["shown"] if r["check_id"] == "CAL-051")
+    assert persisted["subject"] == _refusal("CL-0009")
+    assert persisted["severity"] == plan.informational
+    assert "last attempt" in str(persisted["message"])
+
+
+def test_46b_the_live_reason_moves_with_the_model_and_clears_with_it() -> None:
+    """B and C. The live row follows the CURRENT model - no publication, no
+    calculation attempt, nothing persisted is involved - and it is gone the
+    moment the model is valid again."""
+    plan = _plan()
+    first = _evaluate(plan, {"calculation_state": "INVALID",
+                             "calculation_refusal_detail": _refusal("CL-0001")})
+    moved = _evaluate(plan, {"calculation_state": "INVALID",
+                             "calculation_refusal_detail": _refusal("CL-0002")})
+    assert next(r for r in first["shown"] if r["check_id"] == "CAL-010")["message"] == \
+        _refusal("CL-0001")
+    assert next(r for r in moved["shown"] if r["check_id"] == "CAL-010")["message"] == \
+        _refusal("CL-0002")
+    # NOTHING WAS PUBLISHED AND NOTHING WAS ATTEMPTED in either reading, so the
+    # live row cannot have come from a persisted source.
+    for result in (first, moved):
+        assert "CAL-050" not in _ids(result) and "CAL-051" not in _ids(result)
+    # AND CORRECTING THE INPUT CLEARS IT.
+    corrected = _evaluate(plan, {"calculation_state": "CURRENT",
+                                 "calculation_refusal_detail": ""})
+    assert "CAL-010" not in _ids(corrected), _ids(corrected)
+    assert _counts(corrected) == (0, 0)
+
+
+def test_46c_the_permanent_id_is_only_in_prose_and_that_is_reported() -> None:
+    """THE DECLARED GAP, STATED AS A FACT ABOUT THE SOURCE.
+
+    The owner names the driver when it refuses - and it builds that name from
+    ResolvedDriver.PermanentId, which it holds. What it publishes is a STRING.
+    Three modules write such sentences in four different shapes, so no parser
+    could be written that a fifth shape would not silently break. This control
+    exists so the day a structured field appears, it fails and is removed.
+    """
+    check = _code("modCalcCheck")
+    assert "Private Function DriverLabel(ByRef driver As ResolvedDriver) As String" in check
+    assert "driver.PermanentId" in check, "the owner does hold the id"
+    # THE PUBLISHED SHAPE IS A SENTENCE AND NOTHING ELSE.
+    assert ("Public Function CheckResolvedModel(ByRef model As ResolvedModel, _\n"
+            "                                   ByRef detail As String) As Boolean") in check
+    assert "ByRef subject" not in check and "ByRef offending" not in check.lower()
+    # AND NO OWNER ANYWHERE PUBLISHES THE ID ON ITS OWN.
+    for module in sorted(SRC.glob("*.bas")):
+        code = _code(module.stem)
+        for structured in ("OffendingId", "RefusalSubject", "FailingDriverId"):
+            assert structured not in code, (
+                f"{module.name} publishes {structured}; the gap is closed and this "
+                "control should be replaced by the real assertion")
+    # AND MODEL CHECK PARSES NOTHING. No formula on the sheet takes the sentence
+    # apart - the only text-splitting on the surface is the structural report's
+    # own line separator, which the owner writes deliberately.
+    plan = _plan()
+    detail = plan.reading_cell("calculation_refusal_detail")
+    for value in _cells(plan).values():
+        if isinstance(value, str) and detail in value:
+            for splitter in ("FIND(", "MID(", "LEFT(", "RIGHT(", "SEARCH("):
+                assert splitter not in value, (
+                    f"a Model Check formula takes the refusal sentence apart: {value}")
+
+
+def test_46d_the_root_cause_is_still_counted_exactly_once() -> None:
+    """The live reason did not add a row. One actionable ERROR, the simulation
+    that follows from it still context, and the counts still reconcile."""
+    plan = _plan()
+    result = _evaluate(plan, {
+        "calculation_state": "INVALID", "simulation_state": "INVALID",
+        "calculation_refusal_detail": _refusal(),
+        "calculation_attempt_result": "REFUSED",
+        "calculation_attempt_detail": _refusal("CL-0009")})
+    errors = [r for r in result["shown"] if r["severity"] == "ERROR"]
+    assert len(errors) == 1, [r["check_id"] for r in errors]
+    assert _counts(result) == (1, 0)
+    assert result["summary"]["overall_status"] == "ERROR"
+    assert int(result["summary"]["total_checks"]) == len(result["shown"])
+    assert "SIM-020" in _ids(result) and "SIM-010" not in _ids(result)
+
+
+def test_46e_mutation_the_persisted_detail_substituted_for_the_live_one() -> None:
+    """E. THE SUBSTITUTION THAT WOULD LOOK RIGHT AND BE WRONG. History reads
+    plausibly; it is simply about a workbook that no longer exists."""
+    def edit(block):
+        for check in block["checks"]:
+            if check["check_id"] == "CAL-010":
+                check["message"] = "{calculation_attempt_detail}"
+    plan = _mutate_manifest(edit)
+    broken = _evaluate(plan, {"calculation_state": "INVALID",
+                              "calculation_refusal_detail": _refusal("CL-0001"),
+                              "calculation_attempt_detail": _refusal("CL-0009")})
+    message = next(r for r in broken["shown"] if r["check_id"] == "CAL-010")["message"]
+    assert message == _refusal("CL-0009"), "the mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_live_reason(plan)
+
+
+def _assert_live_reason(plan: ModelCheckPlan) -> None:
+    check = next(c for c in plan.ordered_checks if c["check_id"] == "CAL-010")
+    assert str(check["message"]) == "{calculation_refusal_detail}", check["message"]
+
+
+def test_46f_mutation_the_live_reason_is_blanked() -> None:
+    def edit(block):
+        for check in block["checks"]:
+            if check["check_id"] == "CAL-010":
+                check["message"] = "The model is invalid."
+    plan = _mutate_manifest(edit)
+    broken = _evaluate(plan, {"calculation_state": "INVALID",
+                              "calculation_refusal_detail": _refusal()})
+    assert next(r for r in broken["shown"]
+                if r["check_id"] == "CAL-010")["message"] == "The model is invalid."
+    with pytest.raises(AssertionError):
+        _assert_live_reason(plan)
+    _assert_live_reason(_plan())
+
+
+def test_46g_mutation_a_duplicate_actionable_error_for_the_same_root_cause() -> None:
+    def edit(block):
+        for check in block["checks"]:
+            if check["check_id"] == "SIM-020":
+                check["severity"] = "ERROR"
+    plan = _mutate_manifest(edit)
+    broken = _evaluate(plan, {"calculation_state": "INVALID", "simulation_state": "INVALID",
+                              "calculation_refusal_detail": _refusal()})
+    assert _counts(broken) == (2, 0), "the mutation changed nothing"
+    healthy = _evaluate(_plan(), {"calculation_state": "INVALID",
+                                  "simulation_state": "INVALID",
+                                  "calculation_refusal_detail": _refusal()})
+    assert _counts(healthy) == (1, 0)
+
+
+def test_46h_mutation_a_persisting_path_supplies_the_live_reason() -> None:
+    """D and E. The live reason may not come from a function that writes."""
+    def edit(block):
+        for entry in block["evaluation"]["readings"]["rows"]:
+            if entry["key"] == "calculation_refusal_detail":
+                entry["procedure"] = "PCCM_CalculationStatus"
+    plan = _mutate_manifest(edit)
+    inspection = build_phase9_inspection(plan)
+    with pytest.raises(ValueError, match="persists"):
+        validate_phase9_inspection(inspection)
+
+
+def test_46i_the_live_reason_path_is_read_only_and_volatile() -> None:
+    """D. The transitive walk in test_41 covers every cell-called procedure; this
+    names what the new one is, so a reader can see the split without re-deriving
+    it."""
+    plan = _plan()
+    entry = next(e for e in plan.readings["rows"]
+                 if e["key"] == "calculation_refusal_detail")
+    assert entry["procedure"] == "PCCM_ModelCheckRefusalDetail"
+    assert plan.reading_formula(entry) == "=PCCM_ModelCheckRefusalDetail()"
+    adapter = _procedure("modResultsState", "PCCM_ModelCheckRefusalDetail")
+    assert "Application.Volatile True" in adapter
+    assert "modCalcReport.CalcReportDerivedStatus(detail)" in adapter
+    assert "CVErr(xlErrValue)" in adapter, "the adapter must fail loud, not wrong"
+    assert "PCCM_CalculationStatus" not in adapter
+    assert "PCCM_CalculationAttemptDetail" not in adapter, (
+        "the live reason may not be taken from the persisted attempt")
+    # AND THE OWNER HANDS BACK WHAT IT ALREADY WROTE; nothing is re-derived.
+    exposure = _procedure("modCalcReport", "CalcReportDerivedStatus")
+    assert "ByRef detail As String" in exposure
+    assert "Optional" not in exposure, (
+        "a typed Optional with no default is a VBA compile error, and both "
+        "callers supply the argument")
+    assert "PrepareCurrentCalculation(package, detail)" in exposure
+    assert "WriteStatusBlock" not in exposure
+
+
+# ===========================================================================
 # F. WORKSHEET SAFETY
 # ===========================================================================
 _PERSISTING = {
@@ -1029,7 +1243,11 @@ def test_43_the_structural_path_is_still_read_only() -> None:
 
 def test_44_the_new_calculation_adapter_is_the_authorised_split() -> None:
     calc = _code("modCalcReport")
-    assert "Public Function CalcReportDerivedStatus() As String" in calc
+    # THE OUT-PARAMETER IS REQUIRED, NOT OPTIONAL. A typed Optional with no
+    # default is a VBA COMPILE ERROR, and both callers supply the argument
+    # anyway - the same settlement modDrivers.HighestIssued reached after it
+    # cost a Gate-B build.
+    assert "Public Function CalcReportDerivedStatus(ByRef detail As String) As String" in calc
     body = _procedure("modCalcReport", "CalcReportDerivedStatus")
     assert "DeriveStatus(" in body and "PrepareCurrentCalculation(" in body
     assert "WriteStatusBlock" not in body
@@ -1041,7 +1259,7 @@ def test_44_the_new_calculation_adapter_is_the_authorised_split() -> None:
     assert "Public Function PCCM_ModelCheckCalculationState() As Variant" in state
     adapter = _procedure("modResultsState", "PCCM_ModelCheckCalculationState")
     assert "Application.Volatile True" in adapter
-    assert "modCalcReport.CalcReportDerivedStatus()" in adapter
+    assert "modCalcReport.CalcReportDerivedStatus(detail)" in adapter
     assert "CVErr(xlErrValue)" in adapter, "the adapter must fail loud, not wrong"
     assert "PCCM_CalculationStatus" not in adapter
 

@@ -368,7 +368,11 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
     # P9-2 ADDS A SIXTH ADAPTER TO THE SAME MODULE, and it is a live CALCULATION
     # state. Named separately so the Phase-8 set stays exactly five - a sixth
     # PHASE-8 adapter still fails - and so a SEVENTH cannot arrive unremarked.
-    phase9 = {"PCCM_ModelCheckCalculationState"}
+    # P9-2A ADDS A SEVENTH, and it is the live REASON rather than the live
+    # state: the calculation state says a model is invalid, and this says why,
+    # from the same preparation. Named beside the sixth so an eighth cannot
+    # arrive unremarked.
+    phase9 = {"PCCM_ModelCheckCalculationState", "PCCM_ModelCheckRefusalDetail"}
     assert set(modules["modResultsState"].public_procedures) == phase8 | phase9, sorted(
         modules["modResultsState"].public_procedures)
     for name in phase8 | phase9:

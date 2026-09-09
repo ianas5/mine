@@ -620,6 +620,14 @@ vba:
   # point WRITES, and a worksheet cell may not change the workbook.
   phase9_api_procedures:
     - "PCCM_ModelCheckCalculationState"
+    # P9-2A. THE LIVE REFUSAL DETAIL, and it is the reason the sixth adapter was
+    # not enough on its own. The calculation state says a model is INVALID; it
+    # does not say WHY, and the only text that did was the persisted LAST
+    # ATTEMPT - history, blank until somebody has pressed Calculate, and stale
+    # the moment the model moves past it. This returns the sentence the current
+    # preparation already wrote on its way to deciding the status. Nothing is
+    # re-derived, nothing is parsed, and no validation rule moves.
+    - "PCCM_ModelCheckRefusalDetail"
 
   # Constructs that must NOT appear in VBA. The Linux static tests and the Gate-B
   # persisted-project sweep assert their absence, so a later phase's

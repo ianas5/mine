@@ -164,10 +164,47 @@ End Function
 ' AND IT FAILS LOUD. A wrong state word is indistinguishable from a right one;
 ' an error is not.
 Public Function PCCM_ModelCheckCalculationState() As Variant
+    Dim detail As String
     On Error GoTo Unavailable
     Application.Volatile True
-    PCCM_ModelCheckCalculationState = modCalcReport.CalcReportDerivedStatus()
+    ' THE DETAIL IS TAKEN AND DROPPED HERE ON PURPOSE. It is required because a
+    ' typed Optional with no default does not compile and both callers want it;
+    ' the row that reports WHY is the adapter below, not this one.
+    PCCM_ModelCheckCalculationState = modCalcReport.CalcReportDerivedStatus(detail)
     Exit Function
 Unavailable:
     PCCM_ModelCheckCalculationState = CVErr(xlErrValue)
+End Function
+
+' ==========================================================================
+' THE SEVENTH ADAPTER - THE LIVE REFUSAL DETAIL, FOR MODEL CHECK
+' ==========================================================================
+' MODEL CHECK HAD NO LIVE REASON, ONLY A PERSISTED ONE. When the current inputs
+' cannot form a calculation, the sheet could say THAT it was invalid but not
+' WHY: the only text naming the fault was PCCM_CalculationAttemptDetail, which
+' is the LAST ATTEMPT - history, blank until somebody has pressed Calculate, and
+' stale the moment the model moves past it. An actionable error whose reason
+' came from there would be describing a workbook that no longer exists.
+'
+' SO THE OWNER IS ASKED FOR THE TEXT IT ALREADY PRODUCED. modCalcReport's
+' preparation builds one refusal sentence on the way to deciding the status;
+' CalcReportDerivedStatus now hands that sentence back instead of discarding it.
+' NOTHING IS RE-DERIVED AND NOTHING IS PARSED: the detail is returned exactly as
+' the owner wrote it, and the status it comes with is not this function's to
+' report - the sixth adapter above already reports it.
+'
+' AND IT IS EMPTY WHEN THERE IS NOTHING TO SAY. The preparation clears the
+' detail before it starts and assigns it only on a failing branch, so a valid
+' current model yields the empty string rather than a stale sentence.
+'
+' VOLATILE AND LOUD, for the reasons every adapter above is.
+Public Function PCCM_ModelCheckRefusalDetail() As Variant
+    Dim detail As String, ignored As String
+    On Error GoTo Unavailable
+    Application.Volatile True
+    ignored = modCalcReport.CalcReportDerivedStatus(detail)
+    PCCM_ModelCheckRefusalDetail = detail
+    Exit Function
+Unavailable:
+    PCCM_ModelCheckRefusalDetail = CVErr(xlErrValue)
 End Function

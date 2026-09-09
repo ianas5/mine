@@ -173,7 +173,11 @@ DECLARED_PRODUCTION_CORRECTIONS = {
         "a live CALCULATION state, the persisted _Calc C19 row is last-evaluated "
         "and goes on reading CURRENT after an input change, and the owner's own "
         "entry point persists and so may not be called from a cell. Both "
-        "additions are whole new procedures; no existing one is touched.",
+        "additions are whole new procedures; no existing one is touched. P9-2A "
+        "adds a SEVENTH, PCCM_ModelCheckRefusalDetail: the calculation state "
+        "says a model is invalid and this says WHY, taken from the same "
+        "preparation rather than from the persisted last attempt, which is "
+        "history and stale the moment the model moves past it.",
         (),
     ),
     "pccm/src/vba/modCalcReport.bas": (
@@ -186,7 +190,11 @@ DECLARED_PRODUCTION_CORRECTIONS = {
         "derivation was already pure and the persistence is the caller's, so this "
         "exposes the pure half. No derivation, no persistence, no state word and "
         "no existing procedure changed: PCCM_CalculationStatus still derives and "
-        "still writes, exactly as Phase 5 accepted it.",
+        "still writes, exactly as Phase 5 accepted it. P9-2A gives that same "
+        "accessor an Optional ByRef detail so the refusal sentence the "
+        "preparation already wrote is handed back instead of discarded - the "
+        "signature is the only line that moved, and the module's size against "
+        "its accepted raw-line ceiling is unchanged.",
         (),
     ),
     "pccm/src/vba/modSimPostReport.bas": (

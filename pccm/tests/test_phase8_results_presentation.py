@@ -56,6 +56,7 @@ ADAPTERS = (
 LATER_ADAPTERS = ADAPTERS + (
     "PCCM_ResultsSimulationState",        # P8-3, the live simulation state
     "PCCM_ModelCheckCalculationState",    # P9-2, the live calculation state
+    "PCCM_ModelCheckRefusalDetail",       # P9-2A, the live reason it is invalid
 )
 
 _CACHE: dict = {}

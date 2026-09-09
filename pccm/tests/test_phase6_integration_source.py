@@ -555,7 +555,8 @@ def test_17_the_two_public_surfaces_are_exactly_the_accepted_ones() -> None:
     # terms Phase 8 declared its five: Phase-9 code carries no Windows evidence
     # either, and the Phase-8 set above stays exactly five.
     phase9 = set(declared["phase9_api_procedures"])
-    assert phase9 == {"PCCM_ModelCheckCalculationState"}, sorted(phase9)
+    assert phase9 == {"PCCM_ModelCheckCalculationState",
+                      "PCCM_ModelCheckRefusalDetail"}, sorted(phase9)
     assert not (phase9 & (phase7 | phase8)), "an adapter is declared twice"
     expected = (phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7
                 | phase8 | phase9)
@@ -690,7 +691,13 @@ REOPENED_SINCE_CLOSURE = {
                      "also asking for C19:C20 to be rewritten - which Excel "
                      "forbids a cell to do, and which is the P8-1 defect one "
                      "module along. Nothing existing changed: "
-                     "PCCM_CalculationStatus still derives and still writes.",
+                     "PCCM_CalculationStatus still derives and still writes. "
+                     "P9-2A then gave that same accessor an Optional ByRef "
+                     "detail, so the refusal sentence the preparation already "
+                     "wrote is handed back instead of discarded. The signature "
+                     "is the only line that moved; no rule, no derivation and "
+                     "no existing caller changed, and the module is unchanged "
+                     "in size against its accepted raw-line ceiling.",
     "modSimStats": "P7-5 exposed the type-7 ORDER-STATISTIC POSITION - which "
                    "source ordinals a percentile was interpolated between - and "
                    "extracted the h/lo/hi/f arithmetic into one owner shared by "
@@ -730,11 +737,18 @@ REOPENED_CURRENT = {
     "modSimStats": "c44d4424bc1958ce2363018d923f1c65a90c648ccdb6b6594562e8349706e6ff",
     # P9-2 re-pins it: CalcReportDerivedStatus joined the public surface. Three
     # code lines, one statement, returning the module's existing private
-    # DeriveStatus over its existing private PrepareCurrentCalculation. The
-    # digest is repointed in the same commit as the change that moved it, with
-    # the reason recorded in REOPENED_SINCE_CLOSURE - never updated to whatever
-    # the file now hashes to.
-    "modCalcReport": "505b6894aefb1f9493a2d730026a69d20efe7a99c1d263e7a8421c1baf16210e",
+    # DeriveStatus over its existing private PrepareCurrentCalculation. P9-2A
+    # re-pins it again: that accessor now takes a required ByRef detail and
+    # hands back the refusal sentence the preparation already wrote. The digest
+    # is repointed in the same commit as the change that moved it, with the
+    # reason recorded in REOPENED_SINCE_CLOSURE - never updated to whatever the
+    # file now hashes to.
+    #
+    # AND THE RUN-6 DIGEST IN FROZEN_SOURCE ABOVE IS NOT THIS ONE. They are two
+    # different facts about two different trees, and a previous commit here
+    # overwrote the historical one by taking the first regex match. test_23a is
+    # what caught that; the two are edited by position now, never by pattern.
+    "modCalcReport": "ffc671c3a02efe57c976fca391e1d9fce1a7dfaceec875cc021c9245be41c4e8",
     # P8-1 re-pins it: SimReportDerivedStatus joined the public surface. Three
     # code lines, one statement, returning the module's existing private
     # DeriveSimStatus(). The digest is repointed in the same commit as the change

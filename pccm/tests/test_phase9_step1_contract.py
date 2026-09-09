@@ -176,7 +176,7 @@ def test_11b_the_authorised_adapter_was_built_where_it_was_authorised() -> None:
         "the pure derivation was not exposed in modCalcReport, which §8 names")
     assert "Public Function PCCM_ModelCheckCalculationState" in state, (
         "the adapter is not in modResultsState, which §8 names as the owner")
-    assert "modCalcReport.CalcReportDerivedStatus()" in state, (
+    assert "modCalcReport.CalcReportDerivedStatus(" in state, (
         "the adapter does not delegate to the pure derivation §8 authorises")
     # AND PCCM_CalculationStatus IS UNTOUCHED, which §8 states in as many words.
     assert "WriteStatusBlock status" in _procedure("modCalcReport.bas",

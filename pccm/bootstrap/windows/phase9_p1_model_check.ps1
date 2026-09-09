@@ -36,6 +36,14 @@
          slot must be #N/A - never blank, never 0 - and the counts above it must
          equal the rows below it, in every state the model passes through.
 
+      5. IS THE ACTIONABLE ERROR'S REASON THE LIVE ONE? P9-2A points the
+         calculation ERROR at the sentence the CURRENT preparation wrote. In
+         scenario F the persisted last attempt describes a SUCCESSFUL
+         calculation of a model that no longer exists, so a row that reached for
+         history instead of the live model reads plausibly and is wrong - which
+         is exactly the shape of defect a static control cannot see and a run
+         can.
+
     HOW THE STATES ARE REACHED. Through production, and only through production.
     The accepted W4 fixture is applied, then PCCM_Calculate, then
     PCCM_RunSimulation, then ordinary edits: an iteration count moved across the
@@ -1014,6 +1022,7 @@ try {
         'PREREQUISITE'
     if ($breakable) {
         $firstLine = @($model.cost_lines)[0]
+        $constantId = [string]$firstLine.permanent_id
         $restoreMax = [double]$firstLine.max_value
         # A MAXIMUM BELOW THE MINIMUM. Production refuses the package; nothing
         # here writes a state word.
@@ -1031,6 +1040,62 @@ try {
         $null = Add-P9Check 'F: the root cause is counted exactly once' `
             ([double]$surfaceF.Summary['error_count'] -eq 1) `
             ('errors=' + (Format-P9Cell $surfaceF.Summary['error_count']))
+
+        # -----------------------------------------------------------------
+        # P9-2A. THE ACTIONABLE ERROR CARRIES THE LIVE REASON
+        # -----------------------------------------------------------------
+        # THE OWNER'S OWN SENTENCE, AS OF THE MODEL AS IT STANDS. Two things
+        # are asked of it, and the second is the one that matters: that it is
+        # the LIVE reason and not the persisted last attempt, which is history
+        # and - at this point in the run - describes a SUCCESSFUL calculation
+        # of a model that no longer exists.
+        $liveReason = [string](Format-P9Cell $surfaceF.Readings['calculation_refusal_detail'])
+        $persistedReason = [string](Format-P9Cell $surfaceF.Readings['calculation_attempt_detail'])
+        Write-P9Line ('    live reason      : ' + $liveReason)
+        Write-P9Line ('    persisted detail : ' + $persistedReason)
+        $errorRows = @()
+        foreach ($row in $shownF) {
+            if ([string]$row.severity -ceq [string]@($projection.vocabulary.severity_order)[0]) {
+                $errorRows += $row
+            }
+        }
+        $null = Add-P9Check 'F: exactly one actionable ERROR row is displayed' `
+            ($errorRows.Count -eq 1) ([string]$errorRows.Count + ' row(s)')
+        if ($errorRows.Count -eq 1) {
+            $null = Add-P9Check 'F: the actionable ERROR carries the live refusal reason' `
+                (([string]$errorRows[0].message -ceq $liveReason) -and
+                 (-not [string]::IsNullOrWhiteSpace($liveReason))) `
+                (Format-P9Cell $errorRows[0].message)
+            # AND THE OWNER NAMES THE OFFENDING DRIVER IN IT. The permanent id
+            # is not structurally available - modCalcCheck publishes a SENTENCE,
+            # not a field - so what is asserted is that the id the runner made
+            # invalid APPEARS in the live reason. The Subject column staying
+            # model-wide is a DECLARED GAP recorded in the P9-2A return, not a
+            # thing this runner may quietly assert its way past.
+            $null = Add-P9Check 'F: the live reason names the driver the runner made invalid' `
+                ([string]$errorRows[0].message -clike ('*' + $constantId + '*')) `
+                ('looking for ' + $constantId + ' in: ' + (Format-P9Cell $errorRows[0].message))
+            $null = Add-P9Check 'F: the actionable ERROR is not the persisted detail' `
+                (([string]$errorRows[0].message -cne $persistedReason) -or
+                 [string]::IsNullOrWhiteSpace($persistedReason)) `
+                ('live=' + $liveReason + ' persisted=' + $persistedReason)
+        }
+        # AND THE PERSISTED LAST-ATTEMPT ROWS ARE SEPARATE, LABELLED AND NOT
+        # COUNTED. They may say anything; what they may not do is be the live
+        # answer or move the summary.
+        $attemptRows = @()
+        foreach ($row in $shownF) {
+            if (([string]$row.message) -match '\(last attempt\)') { $attemptRows += $row }
+        }
+        $countedAttempts = @()
+        foreach ($row in $attemptRows) {
+            if ([string]$row.severity -cne [string]$projection.vocabulary.informational_severity) {
+                $countedAttempts += ([string]$row.check_id + '=' + [string]$row.severity)
+            }
+        }
+        $null = Add-P9Check 'F: every (last attempt) row is labelled and none is counted' `
+            (($attemptRows.Count -gt 0) -and ($countedAttempts.Count -eq 0)) `
+            ([string]$attemptRows.Count + ' labelled, ' + ($countedAttempts -join ', '))
         $simCounted = @()
         foreach ($row in $shownF) {
             if (([string]$row.group -ceq 'Simulation') -and
