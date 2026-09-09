@@ -36,6 +36,8 @@ PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
 sys.path.insert(0, str(PCCM_ROOT / "tests"))
 
+from vba_subject_plumbing import reverse_subject_plumbing  # noqa: E402
+
 from pccm_builder import load_sim_contract, load_structure_contract  # noqa: E402
 from pccm_builder.vba_source import (  # noqa: E402
     VbaModule,
@@ -177,7 +179,7 @@ def test_01_the_bridge_is_the_only_phase5_entry_into_phase6() -> None:
 
 def test_02_the_bridge_reuses_the_accepted_preparation_and_gates_on_current() -> None:
     body = _procedure("modCalcReport", BRIDGE)
-    assert "PrepareCurrentCalculation(package, detail)" in body, (
+    assert "PrepareCurrentCalculation(package, detail, subject)" in body, (
         "the bridge no longer reuses the accepted preparation"
     )
     assert "CALC_STATUS_CURRENT" in body, "the CURRENT gate is gone"
@@ -556,7 +558,9 @@ def test_17_the_two_public_surfaces_are_exactly_the_accepted_ones() -> None:
     # either, and the Phase-8 set above stays exactly five.
     phase9 = set(declared["phase9_api_procedures"])
     assert phase9 == {"PCCM_ModelCheckCalculationState",
-                      "PCCM_ModelCheckRefusalDetail"}, sorted(phase9)
+                      "PCCM_ModelCheckRefusalDetail",
+                      # P9-2B: the structured subject of that refusal.
+                      "PCCM_ModelCheckRefusalSubject"}, sorted(phase9)
     assert not (phase9 & (phase7 | phase8)), "an adapter is declared twice"
     expected = (phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7
                 | phase8 | phase9)
@@ -697,7 +701,13 @@ REOPENED_SINCE_CLOSURE = {
                      "wrote is handed back instead of discarded. The signature "
                      "is the only line that moved; no rule, no derivation and "
                      "no existing caller changed, and the module is unchanged "
-                     "in size against its accepted raw-line ceiling.",
+                     "in size against its accepted raw-line ceiling. P9-2B then "
+                     "threaded a structured subject through the same "
+                     "preparation so the offending permanent id reaches a "
+                     "caller as a VALUE rather than inside the refusal "
+                     "sentence: signatures and call sites only, and the "
+                     "accepted reporter prefix still hashes to the digest it "
+                     "always did once the plumbing is reversed.",
     "modSimStats": "P7-5 exposed the type-7 ORDER-STATISTIC POSITION - which "
                    "source ordinals a percentile was interpolated between - and "
                    "extracted the h/lo/hi/f arithmetic into one owner shared by "
@@ -740,15 +750,17 @@ REOPENED_CURRENT = {
     # DeriveStatus over its existing private PrepareCurrentCalculation. P9-2A
     # re-pins it again: that accessor now takes a required ByRef detail and
     # hands back the refusal sentence the preparation already wrote. The digest
-    # is repointed in the same commit as the change that moved it, with the
-    # reason recorded in REOPENED_SINCE_CLOSURE - never updated to whatever the
-    # file now hashes to.
+    # P9-2B re-pins it once more: that accessor now carries a structured
+    # subject as well, threaded through the preparation it already ran. The
+    # digest is repointed in the same commit as the change that moved it, with
+    # the reason recorded in REOPENED_SINCE_CLOSURE - never updated to whatever
+    # the file now hashes to.
     #
     # AND THE RUN-6 DIGEST IN FROZEN_SOURCE ABOVE IS NOT THIS ONE. They are two
     # different facts about two different trees, and a previous commit here
     # overwrote the historical one by taking the first regex match. test_23a is
     # what caught that; the two are edited by position now, never by pattern.
-    "modCalcReport": "ffc671c3a02efe57c976fca391e1d9fce1a7dfaceec875cc021c9245be41c4e8",
+    "modCalcReport": "362edd3a7367440c537ecff22624b34b7cdfded0b23364ce80029af23a1a2903",
     # P8-1 re-pins it: SimReportDerivedStatus joined the public surface. Three
     # code lines, one statement, returning the module's existing private
     # DeriveSimStatus(). The digest is repointed in the same commit as the change
@@ -891,7 +903,9 @@ def test_25_the_accepted_reporter_prefix_is_still_byte_identical() -> None:
               "' STEP 11 ADDITION - THE PHASE-6 PREPARATION BRIDGE\n")
     text = (SRC_VBA / "modCalcReport.bas").read_text(encoding="utf-8")
     assert text.count(banner) == 1
-    accepted = text[: text.index(banner)]
+    # P9-2B's plumbing is reversed before the accepted prefix is measured, so
+    # the historical digest below does not move.
+    accepted = reverse_subject_plumbing("modCalcReport", text[: text.index(banner)])
     assert hashlib.sha256(accepted.encode("utf-8")).hexdigest() == (
         "8d67d3f18b1ea8c4a8baba478f025d486f71afaa1ac31beac88d7b7ecfff80a9")
     after = re.findall(r"^(?:Public|Private) (?:Function|Sub) (\w+)",

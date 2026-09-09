@@ -39,6 +39,9 @@ from pathlib import Path
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
+sys.path.insert(0, str(PCCM_ROOT / "tests"))
+
+from vba_subject_plumbing import reverse_subject_plumbing  # noqa: E402
 
 from pccm_builder.vba_source import (  # noqa: E402
     VbaModule,
@@ -3029,6 +3032,11 @@ def test_86b_every_run_7_rename_is_spelling_and_nothing_else() -> None:
             source = _accepted_reporter_source()
         else:
             source = path.read_text()
+        # AND THE P9-2B PLUMBING IS REVERSED FIRST, so the functions it threaded
+        # still compare equal to the base text and stay on the must-not-move
+        # list. Listing them as authorised instead would have retired that
+        # guarantee; the reversal keeps it, exactly as P7-5's addition is kept.
+        source = reverse_subject_plumbing(module, source)
         lines = source.split("\n")
         for procedure, old, new in jobs:
             lo, hi = span(lines, procedure)

@@ -33,6 +33,7 @@ from pathlib import Path
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
+sys.path.insert(0, str(PCCM_ROOT / "tests"))
 
 from pccm_builder.vba_source import VbaModule, load_modules, logical_statements  # noqa: E402
 
@@ -172,6 +173,17 @@ P7_5_ADDITIONS_BY_MODULE = {
 }
 
 
+
+# THE P9-2B SUBJECT PLUMBING IS REVERSED BEFORE THE RUN-7 DIGEST IS TAKEN.
+# P9-2B threads a structured `subject` out-parameter through the current-model
+# preparation. Moving the pre-Run-7 digest to a new opaque number would have
+# recorded THAT something changed and stopped proving WHAT - the same reason the
+# P7-5 addition is reversed rather than absorbed. The rule lives in
+# tests/vba_subject_plumbing.py so every suite that pins these bytes reverses
+# exactly the same thing.
+from vba_subject_plumbing import reverse_subject_plumbing  # noqa: E402
+
+
 def _assert_run7_rename_only(module: str) -> None:
     """Reversing the Run-7 renames - and the one P7-5 addition - must restore
     the pre-Run-7 byte digest."""
@@ -179,6 +191,7 @@ def _assert_run7_rename_only(module: str) -> None:
 
     text = (_accepted_fingerprint_source() if module == "modCalcFingerprint"
             else (SRC_VBA / f"{module}.bas").read_text(encoding="utf-8"))
+    text = reverse_subject_plumbing(module, text)
     addition = P7_5_ADDITIONS_BY_MODULE.get(module)
     if addition is not None:
         assert addition in text, (
@@ -701,7 +714,12 @@ def test_43_no_numerical_kernel_is_duplicated() -> None:
 # Recorded as digests rather than asked of git, so the check holds in a
 # reconstructed tree that has no repository.
 FROZEN_SHA256 = {
-    "modCalcResolve": "0890c612ade1b00b93568bcb32b42121f83bff1ec6647224cccaa59322b15afe",
+    # MOVED AT P9-2B, and still pinned. The Phase-9 structured refusal
+    # correction threads a `subject` out-parameter through the existing
+    # current-model preparation. The PRE-RUN-7 digest above did NOT move:
+    # _reverse_p9_2b_plumbing takes the plumbing back out and requires the
+    # Phase-7 bytes back, which is what says nothing else rode along.
+    "modCalcResolve": "56f3f57fee168ae3658c4a404eff0022ca180e09a78ba051a49a6b89f52aa192",
     # Runtime Run 3 authorisation: the MAX_DOUBLE Const overflowed VBA's
     # fifteen-significant-digit literal parser, so the boundary is now BUILT
     # from MAX_SIGNIFICAND * 2^971. See test_57 in test_phase5_vba_source.py.

@@ -57,6 +57,7 @@ LATER_ADAPTERS = ADAPTERS + (
     "PCCM_ResultsSimulationState",        # P8-3, the live simulation state
     "PCCM_ModelCheckCalculationState",    # P9-2, the live calculation state
     "PCCM_ModelCheckRefusalDetail",       # P9-2A, the live reason it is invalid
+    "PCCM_ModelCheckRefusalSubject",      # P9-2B, which driver that reason is about
 )
 
 _CACHE: dict = {}

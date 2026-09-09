@@ -628,6 +628,12 @@ vba:
     # preparation already wrote on its way to deciding the status. Nothing is
     # re-derived, nothing is parsed, and no validation rule moves.
     - "PCCM_ModelCheckRefusalDetail"
+    # P9-2B. THE STRUCTURED SUBJECT OF THAT REFUSAL - the permanent id the
+    # refusing owner already holds, handed out as a VALUE rather than left
+    # inside the sentence. Same preparation, same call, second ByRef output: no
+    # second traversal, no lookup, and nothing parsed. Blank when the refusal is
+    # model-wide, because no driver is at fault in one.
+    - "PCCM_ModelCheckRefusalSubject"
 
   # Constructs that must NOT appear in VBA. The Linux static tests and the Gate-B
   # persisted-project sweep assert their absence, so a later phase's

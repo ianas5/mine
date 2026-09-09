@@ -38,6 +38,7 @@ from pathlib import Path
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
+sys.path.insert(0, str(PCCM_ROOT / "tests"))
 
 from pccm_builder.vba_source import VbaModule, load_modules, logical_statements  # noqa: E402
 
@@ -221,6 +222,17 @@ P7_5_ADDITIONS_BY_MODULE = {
 }
 
 
+
+# THE P9-2B SUBJECT PLUMBING IS REVERSED BEFORE THE RUN-7 DIGEST IS TAKEN.
+# P9-2B threads a structured `subject` out-parameter through the current-model
+# preparation. Moving the pre-Run-7 digest to a new opaque number would have
+# recorded THAT something changed and stopped proving WHAT - the same reason the
+# P7-5 addition is reversed rather than absorbed. The rule lives in
+# tests/vba_subject_plumbing.py so every suite that pins these bytes reverses
+# exactly the same thing.
+from vba_subject_plumbing import reverse_subject_plumbing  # noqa: E402
+
+
 def _assert_run7_rename_only(module: str) -> None:
     """Reversing the Run-7 renames - and the one P7-5 addition - must restore
     the pre-Run-7 byte digest."""
@@ -228,6 +240,7 @@ def _assert_run7_rename_only(module: str) -> None:
 
     text = (_accepted_fingerprint_source() if module == "modCalcFingerprint"
             else (SRC_VBA / f"{module}.bas").read_text(encoding="utf-8"))
+    text = reverse_subject_plumbing(module, text)
     addition = P7_5_ADDITIONS_BY_MODULE.get(module)
     if addition is not None:
         assert addition in text, (
@@ -372,7 +385,10 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
     # state: the calculation state says a model is invalid, and this says why,
     # from the same preparation. Named beside the sixth so an eighth cannot
     # arrive unremarked.
-    phase9 = {"PCCM_ModelCheckCalculationState", "PCCM_ModelCheckRefusalDetail"}
+    phase9 = {"PCCM_ModelCheckCalculationState", "PCCM_ModelCheckRefusalDetail",
+              # P9-2B: the structured subject of that refusal, so the actionable
+              # row can name the offending driver without reading its sentence.
+              "PCCM_ModelCheckRefusalSubject"}
     assert set(modules["modResultsState"].public_procedures) == phase8 | phase9, sorted(
         modules["modResultsState"].public_procedures)
     for name in phase8 | phase9:
@@ -469,7 +485,7 @@ def test_09_three_endpoints_share_one_preparation_path() -> None:
     module = _reporter()
     for procedure in ("RunCalculation", "PCCM_CalculationStatus",
                       "PCCM_CurrentInputFingerprint"):
-        assert "PrepareCurrentCalculation(package, detail)" in _body(module, procedure), (
+        assert "PrepareCurrentCalculation(package, detail, subject)" in _body(module, procedure), (
             f"{procedure} does not use the shared preparation path"
         )
 
@@ -945,7 +961,7 @@ def test_34_a_failed_attempt_re_derives_the_status() -> None:
         assert "CALC_ATTEMPT_FAILED" in body, f"{procedure} records the wrong result"
         assert "CALC_STATUS_FAILED" not in body, "FAILED is not a status"
     fresh = _body(module, "CurrentStatus")
-    assert "PrepareCurrentCalculation(package, detail)" in fresh, (
+    assert "PrepareCurrentCalculation(package, detail, subject)" in fresh, (
         "the re-derivation must run a fresh preparation against the restored state"
     )
 
@@ -961,7 +977,7 @@ def test_35_the_stored_fingerprint_accessor_does_not_recompute() -> None:
 def test_36_the_current_fingerprint_accessor_returns_blank_when_invalid() -> None:
     """Not a sentinel digest - a sentinel would eventually be compared."""
     statements = _statements(_reporter(), "PCCM_CurrentInputFingerprint")
-    assert statements.index("If PrepareCurrentCalculation(package, detail) Then") >= 0
+    assert statements.index("If PrepareCurrentCalculation(package, detail, subject) Then") >= 0
     assigns = [t for t in statements if t.startswith("PCCM_CurrentInputFingerprint =")]
     assert assigns == ["PCCM_CurrentInputFingerprint = package.Fingerprint"], (
         "the only assignment is the prepared digest; the invalid path falls "
@@ -1223,8 +1239,24 @@ def test_51_the_accepted_modules_were_not_modified() -> None:
     import hashlib
 
     frozen = {
-        "modCalcResolve": "0890c612ade1b00b93568bcb32b42121f83bff1ec6647224cccaa59322b15afe",
-        "modCalcCheck": "738343945932150470233cb2a0b7e6fea7617db1a877cae8e09d19085e39c43b",
+        # MOVED AT P9-2B, and still pinned. The Phase-9 structured refusal
+        # correction threads a `subject` out-parameter through the existing
+        # current-model preparation so a caller can have the offending permanent
+        # id as a VALUE instead of reading it out of the sentence. Signatures,
+        # call sites and the id assignments themselves - no condition, no
+        # message, no Boolean and no arithmetic. test_46 in
+        # test_phase9_model_check.py proves that mechanically, line by line,
+        # against the Phase-7 acceptance head.
+        "modCalcResolve": "56f3f57fee168ae3658c4a404eff0022ca180e09a78ba051a49a6b89f52aa192",
+        # MOVED AT P9-2B, and still pinned. The Phase-9 structured refusal
+        # correction threads a `subject` out-parameter through the existing
+        # current-model preparation so a caller can have the offending permanent
+        # id as a VALUE instead of reading it out of the sentence. Signatures,
+        # call sites and the id assignments themselves - no condition, no
+        # message, no Boolean and no arithmetic. test_46 in
+        # test_phase9_model_check.py proves that mechanically, line by line,
+        # against the Phase-7 acceptance head.
+        "modCalcCheck": "fbf83eaffd92703ce9dda46d18d99e59db3633690696c53bf239f07fb81cafc7",
         # MOVED AGAIN IN P7-5, and still pinned. The annual layer needs the RESOLVED
         # per-year inputs Knom and Kpv were built from, so DriverFactors gained
         # FxRate, Weights and Inflation - three fields on a Type and nothing else.

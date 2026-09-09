@@ -56,11 +56,20 @@ Private Const PROFILE_SUM_TARGET As Double = 1#
 ' The entry point
 ' ==========================================================================
 Public Function CheckResolvedModel(ByRef model As ResolvedModel, _
-                                   ByRef detail As String) As Boolean
+                                   ByRef detail As String, _
+                                   ByRef subject As String) As Boolean
     ' Model-level predicates first, then per-driver ones. A model with no
     ' drivers still has a timeline and a discount rate, and both must hold.
+    '
+    ' SUBJECT IS PLUMBING, NOT A RULE. It carries the permanent id this function
+    ' ALREADY holds when a per-driver predicate refuses - the same id DriverLabel
+    ' builds its sentence from - so a caller can have it without reading prose.
+    ' No condition, no Boolean and no message below is touched by it. It is blank
+    ' for a model-level refusal, because no driver is at fault in one, and blank
+    ' again on success, so a later refusal elsewhere cannot inherit it.
     Dim index As Long
     detail = vbNullString
+    subject = vbNullString
     If Not CheckTimeline(model.Timeline, detail) Then Exit Function
     If Not CheckDiscountRate(model.Timeline, detail) Then Exit Function
 
@@ -79,11 +88,13 @@ Public Function CheckResolvedModel(ByRef model As ResolvedModel, _
     End If
 
     For index = 0 To model.DriverCount - 1
+        subject = model.Drivers(LBound(model.Drivers) + index).PermanentId
         If Not CheckDriver(model.Drivers(LBound(model.Drivers) + index), detail) Then
             Exit Function
         End If
         If Not CheckProfileSum(model, index, detail) Then Exit Function
     Next index
+    subject = vbNullString
     CheckResolvedModel = True
 End Function
 

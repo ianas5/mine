@@ -164,13 +164,13 @@ End Function
 ' AND IT FAILS LOUD. A wrong state word is indistinguishable from a right one;
 ' an error is not.
 Public Function PCCM_ModelCheckCalculationState() As Variant
-    Dim detail As String
+    Dim detail As String, subject As String
     On Error GoTo Unavailable
     Application.Volatile True
     ' THE DETAIL IS TAKEN AND DROPPED HERE ON PURPOSE. It is required because a
     ' typed Optional with no default does not compile and both callers want it;
     ' the row that reports WHY is the adapter below, not this one.
-    PCCM_ModelCheckCalculationState = modCalcReport.CalcReportDerivedStatus(detail)
+    PCCM_ModelCheckCalculationState = modCalcReport.CalcReportDerivedStatus(detail, subject)
     Exit Function
 Unavailable:
     PCCM_ModelCheckCalculationState = CVErr(xlErrValue)
@@ -199,12 +199,44 @@ End Function
 '
 ' VOLATILE AND LOUD, for the reasons every adapter above is.
 Public Function PCCM_ModelCheckRefusalDetail() As Variant
-    Dim detail As String, ignored As String
+    Dim detail As String, subject As String, ignored As String
     On Error GoTo Unavailable
     Application.Volatile True
-    ignored = modCalcReport.CalcReportDerivedStatus(detail)
+    ignored = modCalcReport.CalcReportDerivedStatus(detail, subject)
     PCCM_ModelCheckRefusalDetail = detail
     Exit Function
 Unavailable:
     PCCM_ModelCheckRefusalDetail = CVErr(xlErrValue)
+End Function
+
+' ==========================================================================
+' THE EIGHTH ADAPTER - THE LIVE REFUSAL SUBJECT, FOR MODEL CHECK
+' ==========================================================================
+' THE SAME PREPARATION, THE OTHER OUTPUT. P9-2A gave Model Check the sentence a
+' refusal is written in; this gives it the PERMANENT ID that refusal is about,
+' as a value rather than as words inside one. The two come out of one call to
+' one preparation: there is no second traversal, no second validation and no
+' lookup of any kind here.
+'
+' NOTHING IS PARSED. The id is the one modCalcCheck and modCalcResolve already
+' hold when they refuse - the same id their sentences are built from - handed
+' out through a ByRef rather than recovered from prose afterwards.
+'
+' AND IT IS BLANK WHEN NO DRIVER IS AT FAULT. A missing register, an unusable
+' discount rate, an inflation grid that is not there: those are model-wide, no
+' permanent id exists for them, and this returns the empty string rather than
+' the last driver anybody happened to look at. The owners clear it on success
+' for exactly that reason.
+'
+' NO CACHE, NO STATIC, NO MODULE STATE. Every call re-asks the owner; nothing
+' here remembers the previous answer.
+Public Function PCCM_ModelCheckRefusalSubject() As Variant
+    Dim detail As String, subject As String, ignored As String
+    On Error GoTo Unavailable
+    Application.Volatile True
+    ignored = modCalcReport.CalcReportDerivedStatus(detail, subject)
+    PCCM_ModelCheckRefusalSubject = subject
+    Exit Function
+Unavailable:
+    PCCM_ModelCheckRefusalSubject = CVErr(xlErrValue)
 End Function

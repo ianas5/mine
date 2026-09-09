@@ -27,6 +27,9 @@ from pathlib import Path
 
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
+sys.path.insert(0, str(PCCM_ROOT / "tests"))
+
+from vba_subject_plumbing import reverse_subject_plumbing  # noqa: E402
 
 from pccm_builder import (  # noqa: E402
     load_contract,
@@ -290,7 +293,12 @@ def test_08_the_accepted_reporter_prefix_is_byte_identical() -> None:
 
     text = CALC_REPORT_BAS.read_text(encoding="utf-8")
     assert text.count(STEP11_REPORTER_BANNER) == 1
-    accepted = text[: text.index(STEP11_REPORTER_BANNER)]
+    # P9-2B THREADED A SUBJECT THROUGH THE PREFIX, AND IT IS REVERSED HERE.
+    # The accepted digest does not move: taking the plumbing back out has to
+    # restore the accepted bytes exactly, which is a stronger statement than a
+    # new number would have been.
+    accepted = reverse_subject_plumbing(
+        "modCalcReport", text[: text.index(STEP11_REPORTER_BANNER)])
     assert hashlib.sha256(accepted.encode("utf-8")).hexdigest() == (
         ACCEPTED_REPORTER_SHA256), "an accepted line of modCalcReport moved"
     added = re.findall(r"^(?:Public|Private) (?:Function|Sub) (\w+)",
@@ -307,7 +315,7 @@ def test_08_the_accepted_reporter_prefix_is_byte_identical() -> None:
 def test_09_the_bridge_is_internal_and_reuses_the_accepted_preparation() -> None:
     body = _procedure("CalcPrepareSimulationInputs", CALC_REPORT_BAS)
     assert not body.lstrip().startswith("Public Function PCCM_")
-    assert "PrepareCurrentCalculation(package, detail)" in body
+    assert "PrepareCurrentCalculation(package, detail, subject)" in body
     assert "DeriveStatus(package, True)" in body
     assert "CALC_STATUS_CURRENT" in body
     bridge = _sim().raw["phase5_bridge"]

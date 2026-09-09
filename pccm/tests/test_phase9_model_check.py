@@ -135,6 +135,7 @@ _BLANK_READINGS: dict[str, Any] = {
     "annual_year_count": 0,
     "structural_report": "",
     "calculation_refusal_detail": "",
+    "calculation_refusal_subject": "",
     "calculation_attempt_result": "",
     "calculation_attempt_detail": "",
     # READ, NOT TYPED. A harness that spelled the number would be exactly the
@@ -931,39 +932,119 @@ def test_46b_the_live_reason_moves_with_the_model_and_clears_with_it() -> None:
     assert _counts(corrected) == (0, 0)
 
 
-def test_46c_the_permanent_id_is_only_in_prose_and_that_is_reported() -> None:
-    """THE DECLARED GAP, STATED AS A FACT ABOUT THE SOURCE.
+def test_46c_no_prose_is_parsed_anywhere() -> None:
+    """THE RULE THE WHOLE CORRECTION EXISTS TO KEEP. The permanent id is now a
+    VALUE, threaded out of the owners that already hold it. Nothing recovers it
+    from the sentence beside it - not in VBA, not in a formula, not here.
 
-    The owner names the driver when it refuses - and it builds that name from
-    ResolvedDriver.PermanentId, which it holds. What it publishes is a STRING.
-    Three modules write such sentences in four different shapes, so no parser
-    could be written that a fifth shape would not silently break. This control
-    exists so the day a structured field appears, it fails and is removed.
+    Three modules write refusal sentences in four different shapes, so a parser
+    would have been broken by a fifth. There is none.
     """
-    check = _code("modCalcCheck")
-    assert "Private Function DriverLabel(ByRef driver As ResolvedDriver) As String" in check
-    assert "driver.PermanentId" in check, "the owner does hold the id"
-    # THE PUBLISHED SHAPE IS A SENTENCE AND NOTHING ELSE.
-    assert ("Public Function CheckResolvedModel(ByRef model As ResolvedModel, _\n"
-            "                                   ByRef detail As String) As Boolean") in check
-    assert "ByRef subject" not in check and "ByRef offending" not in check.lower()
-    # AND NO OWNER ANYWHERE PUBLISHES THE ID ON ITS OWN.
-    for module in sorted(SRC.glob("*.bas")):
-        code = _code(module.stem)
-        for structured in ("OffendingId", "RefusalSubject", "FailingDriverId"):
-            assert structured not in code, (
-                f"{module.name} publishes {structured}; the gap is closed and this "
-                "control should be replaced by the real assertion")
-    # AND MODEL CHECK PARSES NOTHING. No formula on the sheet takes the sentence
-    # apart - the only text-splitting on the surface is the structural report's
-    # own line separator, which the owner writes deliberately.
     plan = _plan()
-    detail = plan.reading_cell("calculation_refusal_detail")
-    for value in _cells(plan).values():
-        if isinstance(value, str) and detail in value:
-            for splitter in ("FIND(", "MID(", "LEFT(", "RIGHT(", "SEARCH("):
-                assert splitter not in value, (
-                    f"a Model Check formula takes the refusal sentence apart: {value}")
+    # NOT IN THE WORKSHEET. The only text-splitting on the surface is the
+    # structural report's own line separator, which its owner writes.
+    for reading in ("calculation_refusal_detail", "calculation_attempt_detail"):
+        cell = plan.reading_cell(reading)
+        for value in _cells(plan).values():
+            if isinstance(value, str) and cell in value:
+                for splitter in ("FIND(", "MID(", "LEFT(", "RIGHT(", "SEARCH(", "SUBSTITUTE("):
+                    assert splitter not in value, (
+                        f"a Model Check formula takes a refusal sentence apart: {value}")
+    # NOR IN THE ADAPTERS. They hand a ByRef out; they do not read one.
+    for name in ("PCCM_ModelCheckRefusalSubject", "PCCM_ModelCheckRefusalDetail"):
+        body = _procedure("modResultsState", name)
+        for splitter in ("InStr", "Mid$", "Mid(", "Left(", "Right(", "Split("):
+            assert splitter not in body, f"{name} parses text: {splitter}"
+    # NOR IN THE OWNERS. Every subject assignment is a permanent id read from a
+    # resolved driver, never a fragment of a sentence.
+    import re
+
+    for module in ("modCalcCheck", "modCalcResolve", "modCalcReport"):
+        for line in _code(module).splitlines():
+            match = re.match(r"\s*subject = (.+)$", line)
+            if match is None:
+                continue
+            source = match.group(1).strip()
+            assert source == "vbNullString" or source.endswith(".PermanentId"), (
+                f"{module} sets subject from something that is not a permanent id: {source}")
+
+
+def test_46c1_every_subject_names_the_same_driver_the_message_does() -> None:
+    """THE WRONG-DRIVER MUTATION, REFUSED STRUCTURALLY. A subject taken from a
+    different index than the sentence beside it would name an innocent driver -
+    worse than naming none - and would read perfectly plausibly. So the id
+    EXPRESSION must be one the owner already uses for that same refusal."""
+    import re
+
+    expressions: dict[str, set[str]] = {}
+    for module in ("modCalcCheck", "modCalcResolve"):
+        code = _code(module)
+        used = set(re.findall(r"([A-Za-z_][\w.()+ ]*?\.PermanentId)", code))
+        assigned = {m.group(1).strip() for m in
+                    re.finditer(r"^\s*subject = (.+\.PermanentId)\s*$", code, re.M)}
+        assert assigned, f"{module} threads no subject at all"
+        unknown = {a for a in assigned if a not in used}
+        assert not unknown, (
+            f"{module} sets subject from an id expression it uses nowhere else: {unknown}")
+        expressions[module] = assigned
+    # AND THE ONE THAT MATTERS IS THE LOOP'S OWN INDEX, not a neighbour's.
+    check = _code("modCalcCheck")
+    loop = check[check.index("For index = 0 To model.DriverCount - 1"):]
+    loop = loop[:loop.index("Next index")]
+    assert "subject = model.Drivers(LBound(model.Drivers) + index).PermanentId" in loop
+    assert "index + 1" not in loop and "index - 1" not in loop, loop
+
+
+def test_46c2_the_owners_clear_the_subject_so_it_cannot_leak() -> None:
+    """THE LEAK THAT WOULD BE INVISIBLE. A subject set for driver seven and left
+    behind would attach the next model-wide refusal - a missing register, an
+    unusable discount rate - to a driver that had nothing to do with it.
+
+    Two rules make it impossible: the preparation clears at entry, and every
+    owner that sets a subject speculatively clears it again on its own success.
+    """
+    prepare = _procedure("modCalcReport", "PrepareCurrentCalculation")
+    assert "subject = vbNullString" in prepare, "the preparation does not clear at entry"
+    assert prepare.index("subject = vbNullString") < prepare.index("ResolveModel"), (
+        "the clear happens after the first owner could have set it")
+    for module, name in (("modCalcCheck", "CheckResolvedModel"),
+                         ("modCalcResolve", "ResolveModel"),
+                         ("modCalcResolve", "ReadDriverRow"),
+                         ("modCalcResolve", "ResolveProfileWeights")):
+        body = _procedure(module, name)
+        if "subject = vbNullString" not in body and ".PermanentId" not in body:
+            continue
+        lines = [line.strip() for line in body.splitlines()]
+        sets = [i for i, line in enumerate(lines) if line.startswith("subject = ")
+                and not line.endswith("vbNullString")]
+        clears = [i for i, line in enumerate(lines) if line == "subject = vbNullString"]
+        success = [i for i, line in enumerate(lines) if line == f"{name} = True"]
+        if not sets:
+            continue
+        assert clears, f"{module}.{name} sets a subject and never clears one"
+        assert success, f"{module}.{name} has no single success line to guard"
+        # A CLEAR STANDS BETWEEN THE LAST SPECULATIVE SET AND THE SUCCESS EXIT.
+        assert any(max(sets) < clear < success[-1] for clear in clears), (
+            f"{module}.{name} can succeed while still holding a subject")
+
+
+def test_46c3_no_owner_keeps_a_last_refusal_cache() -> None:
+    """NO STATIC, NO MODULE STATE. The subject is an output of one call, not a
+    thing anybody remembers between calls."""
+    import re
+
+    for module in ("modCalcCheck", "modCalcResolve", "modCalcReport", "modResultsState"):
+        code = _code(module)
+        assert not re.search(r"^\s*Static\b", code, re.M), f"{module} declares a Static"
+        # MODULE LEVEL IS COLUMN ZERO AND ABOVE THE FIRST PROCEDURE. A `Dim`
+        # inside a procedure body is a local and is none of this control's
+        # business; scanning for one indented would convict every function in
+        # the file, which is how the first draft of this failed.
+        for line in code.splitlines():
+            if re.match(r"^(Public|Private)\s+(Function|Sub)\b", line):
+                break
+            assert not re.match(r"^(Public|Private|Dim)\s+\w+\s+As\s", line), (
+                f"{module} declares module-level mutable state: {line.strip()}")
 
 
 def test_46d_the_root_cause_is_still_counted_exactly_once() -> None:
@@ -1058,19 +1139,340 @@ def test_46i_the_live_reason_path_is_read_only_and_volatile() -> None:
     assert plan.reading_formula(entry) == "=PCCM_ModelCheckRefusalDetail()"
     adapter = _procedure("modResultsState", "PCCM_ModelCheckRefusalDetail")
     assert "Application.Volatile True" in adapter
-    assert "modCalcReport.CalcReportDerivedStatus(detail)" in adapter
+    assert "modCalcReport.CalcReportDerivedStatus(detail, subject)" in adapter
     assert "CVErr(xlErrValue)" in adapter, "the adapter must fail loud, not wrong"
     assert "PCCM_CalculationStatus" not in adapter
     assert "PCCM_CalculationAttemptDetail" not in adapter, (
         "the live reason may not be taken from the persisted attempt")
     # AND THE OWNER HANDS BACK WHAT IT ALREADY WROTE; nothing is re-derived.
     exposure = _procedure("modCalcReport", "CalcReportDerivedStatus")
-    assert "ByRef detail As String" in exposure
+    assert "ByRef detail As String, ByRef subject As String" in exposure
     assert "Optional" not in exposure, (
-        "a typed Optional with no default is a VBA compile error, and both "
-        "callers supply the argument")
-    assert "PrepareCurrentCalculation(package, detail)" in exposure
+        "a typed Optional with no default is a VBA compile error, and every "
+        "caller supplies the argument")
+    assert "PrepareCurrentCalculation(package, detail, subject)" in exposure
     assert "WriteStatusBlock" not in exposure
+
+
+# ===========================================================================
+# E3. P9-2B - THE STRUCTURED REFUSAL SUBJECT
+# ===========================================================================
+# THE REFUSAL FAMILIES, AND WHICH OF THEM CAN NAME A DRIVER.
+#
+# This is the audit §3 asks for, written as data so it can be checked rather
+# than believed. A family is driver-specific when the refusing owner holds a
+# ResolvedDriver at the moment it refuses; it is model-wide when no driver is at
+# fault and no id exists to report.
+REFUSAL_FAMILIES = (
+    # (owner, family, driver-specific, where the subject comes from)
+    ("modCalcResolve", "structural prerequisites", False, ""),
+    ("modCalcResolve", "applied timeline / project years", False, ""),
+    ("modCalcResolve", "register missing", False, ""),
+    ("modCalcResolve", "driver row: identity unreadable", False,
+     "the Permanent ID itself could not be read, so there is no id to name"),
+    ("modCalcResolve", "driver row: currency, profile, distribution, scalars",
+     True, "ReadDriverRow, from driver.PermanentId once the id is known"),
+    ("modCalcResolve", "FX table / reporting currency", False, ""),
+    ("modCalcResolve", "inflation grid / profile years", False, ""),
+    ("modCalcResolve", "profiling grid row and columns", True,
+     "ResolveProfileWeights, from drivers(...).PermanentId at the loop"),
+    ("modCalcResolve", "driver currency not in reference set", True,
+     "AttachDriverFx, from model.Drivers(index).PermanentId"),
+    ("modCalcCheck", "timeline / discount rate / driver count", False, ""),
+    ("modCalcCheck", "three-point ordering (cost line and risk)", True,
+     "CheckResolvedModel, from model.Drivers(...).PermanentId at the loop"),
+    ("modCalcCheck", "Quantity, Probability", True,
+     "CheckResolvedModel, same loop"),
+    ("modCalcCheck", "profiling weight sum", True,
+     "CheckResolvedModel, same loop"),
+    # NOT COVERED, AND THE REASON IS A SIZE CEILING RATHER THAN A DESIGN CHOICE.
+    ("modCalcAnalytical", "per-driver conditioning magnitude (Contribute)",
+     True, "NOT THREADED - modCalcAnalytical is at its raw-line ceiling"),
+    ("modCalcAnalytical", "I5 profile-sum identity", True,
+     "NOT THREADED - modCalcAnalytical is at its raw-line ceiling"),
+    ("modCalcAnalytical", "measure totals, conditioning coefficient", False, ""),
+    ("modCalcReport", "inflation profile not in reference set", True,
+     "NOT THREADED - modCalcReport is at its raw-line ceiling"),
+    ("modCalcReport", "Knom / Kpv factor build", True,
+     "NOT THREADED - modCalcReport is at its raw-line ceiling"),
+    ("modCalcReport", "driver audit build", True,
+     "NOT THREADED - modCalcReport is at its raw-line ceiling"),
+    ("modCalcReport", "fingerprint record encoding", True,
+     "NOT THREADED - modCalcReport is at its raw-line ceiling"),
+    ("modCalcReport", "reconciliation identities, fingerprint construction", False, ""),
+)
+
+_THREADED = {"modCalcResolve", "modCalcCheck"}
+
+
+def test_46j_every_threaded_owner_really_threads_and_the_rest_are_named() -> None:
+    """THE COVERAGE TABLE IS CHECKED AGAINST THE SOURCE, not merely written.
+
+    A module the table says threads must actually set a subject; a module it
+    says does not must actually not - so the table cannot quietly become a
+    description of what somebody hoped was true.
+    """
+    for module in ("modCalcResolve", "modCalcCheck", "modCalcAnalytical"):
+        sets = [line for line in _code(module).splitlines()
+                if line.strip().startswith("subject = ")]
+        if module in _THREADED:
+            assert sets, f"{module} is listed as threaded and threads nothing"
+        else:
+            assert not sets, (
+                f"{module} threads a subject; the coverage table says it does not")
+    unthreaded = {owner for owner, _f, specific, source in REFUSAL_FAMILIES
+                  if specific and source.startswith("NOT THREADED")}
+    assert unthreaded == {"modCalcAnalytical", "modCalcReport"}, sorted(unthreaded)
+    # AND THE REASON IS TRUE. Both are at the ceiling the size control enforces,
+    # which is why they are reported rather than patched.
+    for module in sorted(unthreaded):
+        raw = (SRC / f"{module}.bas").read_text(encoding="utf-8").splitlines()
+        assert len(raw) >= 1198, (module, len(raw))
+
+
+@pytest.mark.parametrize("driver", ["CL-0001", "RSK-0004"])
+def test_46k_the_actionable_error_names_the_offending_driver(driver: str) -> None:
+    """A, B, C, D. Whatever family refused, the row shows the id as a VALUE in
+    the Subject column - a cost line or a risk, from any threaded owner."""
+    plan = _plan()
+    result = _evaluate(plan, {
+        "calculation_state": "INVALID", "simulation_state": "INVALID",
+        "calculation_refusal_detail": f"cost line {driver}: Triangular requires "
+                                      "Min <= Most Likely <= Max",
+        "calculation_refusal_subject": driver})
+    error = next(r for r in result["shown"] if r["severity"] == "ERROR")
+    assert error["check_id"] == "CAL-010"
+    assert error["subject"] == driver, error
+    assert driver in str(error["message"])
+    assert _counts(result) == (1, 0)
+
+
+def test_46l_a_model_wide_refusal_leaves_the_subject_blank() -> None:
+    """F. No driver is at fault in a missing register or an unusable discount
+    rate, and a fabricated id would be worse than none."""
+    result = _evaluate(_plan(), {
+        "calculation_state": "INVALID",
+        "calculation_refusal_detail": "the FX table tblFXRates is missing",
+        "calculation_refusal_subject": ""})
+    error = next(r for r in result["shown"] if r["severity"] == "ERROR")
+    assert error["subject"] == "", error
+    assert error["subject"] != 0, "a blank subject reached the sheet as a zero"
+    assert "tblFXRates" in str(error["message"])
+    assert _counts(result) == (1, 0)
+
+
+def test_46m_the_subject_moves_and_clears_with_the_model() -> None:
+    """G, H and I. It follows the CURRENT model; nothing published or attempted
+    is consulted, and a persisted id that says otherwise does not win."""
+    plan = _plan()
+    first = _evaluate(plan, {"calculation_state": "INVALID",
+                             "calculation_refusal_detail": _refusal("CL-0001"),
+                             "calculation_refusal_subject": "CL-0001"})
+    moved = _evaluate(plan, {"calculation_state": "INVALID",
+                             "calculation_refusal_detail": _refusal("CL-0002"),
+                             "calculation_refusal_subject": "CL-0002",
+                             # HISTORY SAYS SOMETHING ELSE ENTIRELY, on purpose.
+                             "calculation_attempt_result": "REFUSED",
+                             "calculation_attempt_detail": _refusal("CL-0009")})
+    assert next(r for r in first["shown"] if r["check_id"] == "CAL-010")["subject"] == "CL-0001"
+    row = next(r for r in moved["shown"] if r["check_id"] == "CAL-010")
+    assert row["subject"] == "CL-0002", row
+    persisted = next(r for r in moved["shown"] if r["check_id"] == "CAL-051")
+    assert "CL-0009" in str(persisted["subject"])
+    assert persisted["severity"] == plan.informational
+    corrected = _evaluate(plan, {"calculation_state": "CURRENT",
+                                 "calculation_refusal_detail": "",
+                                 "calculation_refusal_subject": ""})
+    assert "CAL-010" not in _ids(corrected)
+    assert _counts(corrected) == (0, 0)
+
+
+def test_46n_the_subject_reading_is_the_live_adapter() -> None:
+    """§5 wiring, and §6's read-only rule for the path it adds."""
+    plan = _plan()
+    entry = next(e for e in plan.readings["rows"]
+                 if e["key"] == "calculation_refusal_subject")
+    assert entry["procedure"] == "PCCM_ModelCheckRefusalSubject"
+    assert plan.reading_formula(entry) == "=PCCM_ModelCheckRefusalSubject()"
+    check = next(c for c in plan.ordered_checks if c["check_id"] == "CAL-010")
+    assert str(check["subject"]) == "{calculation_refusal_subject}", check["subject"]
+    assert str(check["message"]) == "{calculation_refusal_detail}", check["message"]
+    adapter = _procedure("modResultsState", "PCCM_ModelCheckRefusalSubject")
+    assert "Application.Volatile True" in adapter
+    assert "modCalcReport.CalcReportDerivedStatus(detail, subject)" in adapter
+    assert "CVErr(xlErrValue)" in adapter
+    for banned in ("PCCM_CalculationStatus", "PCCM_CalculationAttemptDetail", "Static"):
+        assert banned not in adapter, f"the subject adapter reaches {banned}"
+    # ONE PREPARATION, TWO OUTPUTS. There is no second traversal to find the id.
+    assert adapter.count("CalcReportDerivedStatus") == 1
+
+
+# --- the source mutations -------------------------------------------------
+def _subject_sources(text: str) -> list[str]:
+    import re
+
+    return [m.group(1).strip() for m in
+            re.finditer(r"^\s*subject = (.+)$", text, re.M)]
+
+
+def _assert_sources_are_permanent_ids(text: str) -> None:
+    for source in _subject_sources(text):
+        assert source == "vbNullString" or source.endswith(".PermanentId"), source
+
+
+@pytest.mark.parametrize("replacement,label", [
+    (".Currency", "a description-like field"),
+    ("CStr(rowIndex)", "a worksheet row number"),
+    ('"CL-0001"', "a hard-coded id"),
+])
+def test_46o_mutation_the_subject_stops_being_a_permanent_id(replacement: str,
+                                                             label: str) -> None:
+    """A subject taken from anything but the driver's permanent id - its
+    currency, its row number, a literal - reads plausibly and is wrong."""
+    text = _code("modCalcCheck")
+    mutated = text.replace(
+        "subject = model.Drivers(LBound(model.Drivers) + index).PermanentId",
+        f"subject = model.Drivers(LBound(model.Drivers) + index){replacement}"
+        if replacement.startswith(".") else f"subject = {replacement}", 1)
+    assert mutated != text, label
+    with pytest.raises(AssertionError):
+        _assert_sources_are_permanent_ids(mutated)
+    _assert_sources_are_permanent_ids(text)
+
+
+def test_46p_mutation_a_driver_specific_refusal_leaves_the_subject_blank() -> None:
+    """The set removed from the loop: every per-driver refusal in modCalcCheck
+    would then report no id at all."""
+    text = _code("modCalcCheck")
+    mutated = text.replace(
+        "        subject = model.Drivers(LBound(model.Drivers) + index).PermanentId\n", "", 1)
+    assert mutated != text
+    assert not [line for line in mutated.splitlines()
+                if line.strip().startswith("subject = ")
+                and line.strip().endswith(".PermanentId")], "the mutation changed nothing"
+    # WHICH test_46j REFUSES, because a threaded owner must actually thread.
+    assert [line for line in text.splitlines()
+            if line.strip().startswith("subject = ")
+            and line.strip().endswith(".PermanentId")]
+
+
+def test_46q_mutation_a_stale_subject_survives_a_success() -> None:
+    """The clear removed: a subject set for the last driver would attach itself
+    to the next model-wide refusal, naming a driver that had nothing to do
+    with it."""
+    text = _code("modCalcCheck")
+    mutated = text.replace("    subject = vbNullString\n    CheckResolvedModel = True",
+                           "    CheckResolvedModel = True", 1)
+    assert mutated != text
+    lines = [line.strip() for line in mutated.splitlines()]
+    sets = [i for i, line in enumerate(lines)
+            if line.startswith("subject = ") and not line.endswith("vbNullString")]
+    clears = [i for i, line in enumerate(lines) if line == "subject = vbNullString"]
+    success = [i for i, line in enumerate(lines) if line == "CheckResolvedModel = True"]
+    assert not any(max(sets) < clear < success[-1] for clear in clears), (
+        "the mutation changed nothing")
+
+
+def test_46r_mutation_the_subject_is_taken_from_the_persisted_attempt() -> None:
+    def edit(block):
+        for check in block["checks"]:
+            if check["check_id"] == "CAL-010":
+                check["subject"] = "{calculation_attempt_detail}"
+    plan = _mutate_manifest(edit)
+    broken = _evaluate(plan, {"calculation_state": "INVALID",
+                              "calculation_refusal_subject": "CL-0001",
+                              "calculation_attempt_detail": _refusal("CL-0009")})
+    row = next(r for r in broken["shown"] if r["check_id"] == "CAL-010")
+    assert "CL-0009" in str(row["subject"]), "the mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_live_subject(plan)
+    _assert_live_subject(_plan())
+
+
+def _assert_live_subject(plan: ModelCheckPlan) -> None:
+    check = next(c for c in plan.ordered_checks if c["check_id"] == "CAL-010")
+    assert str(check["subject"]) == "{calculation_refusal_subject}", check["subject"]
+
+
+def test_46t_the_plumbing_reversal_hides_nothing() -> None:
+    """THE REVERSAL IS WHY NO HISTORICAL DIGEST MOVED, so it has to be proved it
+    cannot absorb anything else. A changed condition, a reworded message, a
+    flipped Boolean and a moved constant all survive it - and then the digests
+    that stayed put fail, exactly as they always did."""
+    import hashlib
+    import sys as _sys
+
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_subject_plumbing import reverse_subject_plumbing
+
+    text = (SRC / "modCalcCheck.bas").read_text(encoding="utf-8")
+    baseline = subprocess.run(["git", "show", "ad78988:pccm/src/vba/modCalcCheck.bas"],
+                              cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
+                              text=True).stdout
+    # AS IT STANDS, REVERSING RESTORES THE PHASE-7 BYTES EXACTLY.
+    assert reverse_subject_plumbing("modCalcCheck", text) == baseline, (
+        "the subject plumbing is not the only thing that changed in modCalcCheck")
+
+    semantic = (
+        ("a validation condition", "driver.MinValue > driver.MostLikely",
+         "driver.MinValue >= driver.MostLikely"),
+        ("a Boolean outcome", "CheckResolvedModel = True", "CheckResolvedModel = False"),
+        ("a refusal message", "Quantity must be strictly positive",
+         "Quantity must be positive"),
+        ("a constant", "PROFILE_SUM_TARGET", "PROFILE_SUM_LIMIT"),
+    )
+    for label, before, after in semantic:
+        mutated = text.replace(before, after, 1)
+        assert mutated != text, label
+        restored = reverse_subject_plumbing("modCalcCheck", mutated)
+        assert restored != baseline, (
+            f"the reversal absorbed {label}; it would have hidden a real change")
+        assert hashlib.sha256(restored.encode()).hexdigest() != \
+            hashlib.sha256(baseline.encode()).hexdigest()
+
+
+def test_46u_the_reversal_refuses_to_run_on_text_it_does_not_recognise() -> None:
+    """A comment block that is not what the reversal removes means the module
+    changed in a way nobody described. It refuses rather than guessing."""
+    import sys as _sys
+
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_subject_plumbing import COMMENT_ADDITIONS, reverse_subject_plumbing
+
+    text = (SRC / "modCalcResolve.bas").read_text(encoding="utf-8")
+    block = COMMENT_ADDITIONS["modCalcResolve"][0]
+    with pytest.raises(AssertionError, match="not the text this reversal removes"):
+        reverse_subject_plumbing("modCalcResolve", text.replace(block, "", 1))
+    # AND A MODULE IT KNOWS NOTHING ABOUT COMES BACK UNTOUCHED.
+    assert reverse_subject_plumbing("modSimEngine", "anything") == "anything"
+
+
+def test_46s_the_historical_byte_pins_were_not_overwritten() -> None:
+    """§4, AND IT IS HERE BECAUSE THE HAZARD ALREADY HAPPENED ONCE. A regex that
+    took the first match repointed the Run-6 CLOSURE digest instead of the
+    current pin. History is history: it is verified against the commit it is
+    about, never against today's tree."""
+    import hashlib
+    import re
+
+    source = (PCCM_ROOT / "tests" / "test_phase6_integration_source.py").read_text(
+        encoding="utf-8")
+    closure = re.search(r'STEP13_CLOSURE_COMMIT = "([0-9a-f]{40})"', source).group(1)
+    frozen = source[source.index("FROZEN_SOURCE = {"):]
+    frozen = frozen[:frozen.index("}")]
+    pins = dict(re.findall(r'"(\w+)": "([0-9a-f]{64})"', frozen))
+    assert pins, "the historical pin table is empty"
+    for module, digest in pins.items():
+        blob = subprocess.run(["git", "show", f"{closure}:pccm/src/vba/{module}.bas"],
+                              cwd=REPO_ROOT, capture_output=True)
+        assert blob.returncode == 0, module
+        actual = hashlib.sha256(blob.stdout).hexdigest()
+        assert actual == digest, (
+            f"the historical pin for {module} no longer matches the bytes at "
+            f"{closure[:7]}; a current digest has been written over history")
+    # AND THE MODULES THIS PHASE TOUCHED ARE AMONG THEM, so the check is not
+    # about somebody else's files.
+    assert {"modCalcReport"} <= set(pins), sorted(pins)
 
 
 # ===========================================================================
@@ -1247,7 +1649,8 @@ def test_44_the_new_calculation_adapter_is_the_authorised_split() -> None:
     # default is a VBA COMPILE ERROR, and both callers supply the argument
     # anyway - the same settlement modDrivers.HighestIssued reached after it
     # cost a Gate-B build.
-    assert "Public Function CalcReportDerivedStatus(ByRef detail As String) As String" in calc
+    assert ("Public Function CalcReportDerivedStatus(ByRef detail As String, "
+            "ByRef subject As String) As String") in calc
     body = _procedure("modCalcReport", "CalcReportDerivedStatus")
     assert "DeriveStatus(" in body and "PrepareCurrentCalculation(" in body
     assert "WriteStatusBlock" not in body
@@ -1259,7 +1662,7 @@ def test_44_the_new_calculation_adapter_is_the_authorised_split() -> None:
     assert "Public Function PCCM_ModelCheckCalculationState() As Variant" in state
     adapter = _procedure("modResultsState", "PCCM_ModelCheckCalculationState")
     assert "Application.Volatile True" in adapter
-    assert "modCalcReport.CalcReportDerivedStatus(detail)" in adapter
+    assert "modCalcReport.CalcReportDerivedStatus(detail, subject)" in adapter
     assert "CVErr(xlErrValue)" in adapter, "the adapter must fail loud, not wrong"
     assert "PCCM_CalculationStatus" not in adapter
 
@@ -1273,50 +1676,140 @@ def test_45_the_adapter_invents_no_state_word() -> None:
         assert f'"{word}"' not in adapter, f"the adapter spells {word!r}"
 
 
-def test_46_the_new_source_is_purely_additive() -> None:
-    """A declaration buys the right to ADD to an accepted module, never to
-    rewrite one. Checked against the Phase-7 acceptance head."""
-    head = "ad78988"
-    for module in ("modCalcReport.bas", "modResultsState.bas"):
-        path = f"pccm/src/vba/{module}"
-        # AGAINST THE WORKING TREE, not against HEAD: a control that only ever
-        # sees committed history cannot refuse the edit that is being made.
-        diff = subprocess.run(["git", "diff", head, "--", path],
-                              cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
-                              text=True).stdout
-        removed = [line for line in diff.splitlines()
-                   if line.startswith("-") and not line.startswith("---")]
-        assert not removed, f"{module} removes {len(removed)} line(s): {removed[:3]}"
+# THE PHASE-9 PRODUCTION CORRECTIONS, DECLARED
+# ---------------------------------------------------------------------------
+# P9-2 and P9-2A were purely ADDITIVE and the control said so. P9-2B is not:
+# threading a structured subject through the preparation edits signatures and
+# call sites in modules the Phase-7 evidence ran against, and it was authorised
+# on exactly those terms.
+#
+# SO THE CLAIM BECOMES MECHANICAL RATHER THAN BLANKET. A declared file may lose
+# a line ONLY if the same line comes back with nothing added but the subject
+# plumbing. That is stronger than a hand-listed set of permitted removals: it
+# proves, line by line, that no condition, no message, no Boolean and no
+# arithmetic moved - because if any of them had, the normalised line would not
+# match.
+# LONGEST FIRST, and applied in that order: stripping the short form first
+# leaves the remains of the long one behind, which is how the first draft of
+# this turned `detail = vbNullString: subject = vbNullString` into
+# `detail = vbNullString: = vbNullString` and failed its own sanity check.
+PHASE9_PLUMBING = tuple(sorted((
+    ": subject = vbNullString", "subject = vbNullString", "ByRef subject As String",
+    ", subject As String", "subject As String", ", subject", " subject", "subject",
+), key=len, reverse=True))
+
+DECLARED_PHASE9_CORRECTIONS = {
+    "pccm/src/vba/modResultsState.bas": "additive",
+    "pccm/src/vba/modCalcReport.bas": "plumbing",
+    "pccm/src/vba/modCalcCheck.bas": "plumbing",
+    "pccm/src/vba/modCalcResolve.bas": "plumbing",
+}
 
 
-def test_47_no_module_silently_changed_its_line_endings() -> None:
-    """A DEFECT THIS STEP ACTUALLY MADE, AND THE CONTROL THAT NOW CATCHES IT.
+def _normalise(line: str) -> str:
+    """A line with every subject-plumbing token taken back out of it.
 
-    `modCalcReport.bas` is CRLF throughout and an edit written with LF newlines
-    rewrote every line of it. Nothing about the source read differently; the diff
-    was the whole file, the additive guarantee was gone, and VBA injection expects
-    the separators the module was written with. So the convention itself is now
-    part of what may not change.
+    Separators the plumbing brought with it go too - a trailing comma left by a
+    removed parameter, a stranded statement colon - so that a signature with the
+    parameter and one without normalise to the same text. Nothing else is
+    touched: the comparison would be worthless if it also tidied real code.
     """
+    text = line
+    for token in PHASE9_PLUMBING:
+        text = text.replace(token, "")
+    text = " ".join(text.split())
+    while text.endswith(",") or text.endswith(":"):
+        text = text[:-1].rstrip()
+    return text.replace(", )", ")").replace("( ", "(").replace(" )", ")").replace(",)", ")")
+
+
+def _logical(lines: list[str]) -> list[str]:
+    """VBA continuation lines rejoined.
+
+    A parameter added to a signature can push it onto another line, so one
+    REMOVED physical line becomes two INSERTED ones. Comparing physical lines
+    would call that a rewrite; comparing the statements they belong to sees it
+    for what it is.
+    """
+    joined, buffer = [], ""
+    for line in lines:
+        buffer = (buffer + " " + line.strip()) if buffer else line.rstrip()
+        if buffer.rstrip().endswith(" _"):
+            buffer = buffer.rstrip()[:-1]
+            continue
+        joined.append(buffer)
+        buffer = ""
+    if buffer:
+        joined.append(buffer)
+    return joined
+
+
+def test_46_every_production_change_is_declared_and_is_only_plumbing() -> None:
     head = "ad78988"
-    for module in sorted(SRC.glob("*.bas")):
-        path = f"pccm/src/vba/{module.name}"
+    changed = subprocess.run(["git", "diff", "--name-status", head, "--", "pccm/src"],
+                             cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
+                             text=True).stdout
+    modified, added = [], []
+    for line in changed.splitlines():
+        if not line.strip():
+            continue
+        state, path = line.split("\t", 1)[0].strip(), line.split("\t", 1)[1].strip()
+        assert not state.startswith("D"), f"a module the evidence ran against was removed: {path}"
+        (added if state.startswith("A") else modified).append(path)
+
+    phase8 = {"pccm/src/vba/modSimAnnualStore.bas", "pccm/src/vba/modSimPostReport.bas",
+              "pccm/src/vba/modSimReport.bas"}
+    undeclared = [p for p in modified
+                  if p not in DECLARED_PHASE9_CORRECTIONS and p not in phase8]
+    assert not undeclared, f"production changed without being declared: {undeclared}"
+
+    for path, kind in DECLARED_PHASE9_CORRECTIONS.items():
+        diff = subprocess.run(["git", "diff", head, "--", path], cwd=REPO_ROOT,
+                              check=True, stdout=subprocess.PIPE, text=True).stdout
+        removed = [line[1:] for line in diff.splitlines()
+                   if line.startswith("-") and not line.startswith("---")]
+        inserted = [line[1:] for line in diff.splitlines()
+                    if line.startswith("+") and not line.startswith("+++")]
+        if kind == "additive":
+            assert not removed, f"{path} is declared additive and removes {len(removed)} line(s)"
+            continue
+        # EVERY REMOVED LINE COMES BACK, PLUMBING APART.
+        available = [_normalise(line) for line in _logical(inserted)]
+        for line in _logical(removed):
+            wanted = _normalise(line)
+            assert wanted in available, (
+                f"{path} lost a line that is not merely re-plumbed:\n  {line.strip()}")
+            available.remove(wanted)
+
+
+def test_46_1_the_plumbing_normaliser_is_not_a_blanket_pass() -> None:
+    """SO THE CONTROL ABOVE MEANS SOMETHING. Taking the subject tokens out must
+    not take a condition, a message or a Boolean out with them."""
+    assert _normalise("If x > 0 Then") == "If x > 0 Then"
+    assert _normalise('detail = "cost line " & id') == 'detail = "cost line " & id'
+    assert _normalise("CheckResolvedModel = True") == "CheckResolvedModel = True"
+    # A REAL EDIT SURVIVES NORMALISATION AND SO IS STILL CAUGHT.
+    assert _normalise("If x > 0 Then") != _normalise("If x >= 0 Then")
+    assert _normalise("    detail = vbNullString: subject = vbNullString") == \
+        _normalise("    detail = vbNullString")
+    assert _normalise("ByRef detail As String, ByRef subject As String") == \
+        _normalise("ByRef detail As String")
+
+
+def test_46_2_no_module_changed_its_line_endings() -> None:
+    """The P9-2 defect, still refused - and now over four modules rather than
+    two."""
+    head = "ad78988"
+    for path in DECLARED_PHASE9_CORRECTIONS:
         before = subprocess.run(["git", "show", f"{head}:{path}"], cwd=REPO_ROOT,
                                 capture_output=True)
         if before.returncode != 0:
-            continue          # added after the acceptance head; it sets its own
-        raw = module.read_bytes()
-        was_crlf = b"\r\n" in before.stdout
-        is_crlf = b"\r\n" in raw
-        assert was_crlf == is_crlf, (
-            f"{module.name} changed line-ending convention: "
-            f"{'CRLF' if was_crlf else 'LF'} -> {'CRLF' if is_crlf else 'LF'}")
-        # AND IT IS NOT MIXED, which is what a careless append leaves behind.
-        assert raw.count(b"\n") == (raw.count(b"\r\n") if is_crlf else raw.count(b"\n")), \
-            f"{module.name} mixes line endings"
+            continue
+        raw = (REPO_ROOT / path).read_bytes()
+        was_crlf, is_crlf = b"\r\n" in before.stdout, b"\r\n" in raw
+        assert was_crlf == is_crlf, f"{path} changed line-ending convention"
         if is_crlf:
-            assert raw.count(b"\n") == raw.count(b"\r\n"), (
-                f"{module.name} mixes LF lines into a CRLF module")
+            assert raw.count(b"\n") == raw.count(b"\r\n"), f"{path} mixes line endings"
 
 
 # ===========================================================================

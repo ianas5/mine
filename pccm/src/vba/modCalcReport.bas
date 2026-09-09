@@ -203,9 +203,9 @@ Public Function PCCM_CalculationStatus() As String
     ' Re-evaluates the status and writes ONLY C19:C20. It touches no analytical
     ' block and no part of the last-success record: status is last-evaluated,
     ' not live, and asking for it is not a calculation.
-    Dim package As CalculationPackage, detail As String
+    Dim package As CalculationPackage, detail As String, subject As String
     Dim prepared As Boolean, status As String
-    prepared = PrepareCurrentCalculation(package, detail)
+    prepared = PrepareCurrentCalculation(package, detail, subject)
     status = DeriveStatus(package, prepared)
     WriteStatusBlock status
     PCCM_CalculationStatus = status
@@ -222,8 +222,8 @@ Public Function PCCM_CurrentInputFingerprint() As String
     ' The digest of the CURRENT inputs, through the same preparation path the
     ' write uses. Empty when the current inputs would be refused - not a
     ' sentinel digest, because a sentinel would eventually be compared.
-    Dim package As CalculationPackage, detail As String
-    If PrepareCurrentCalculation(package, detail) Then
+    Dim package As CalculationPackage, detail As String, subject As String
+    If PrepareCurrentCalculation(package, detail, subject) Then
         PCCM_CurrentInputFingerprint = package.Fingerprint
     End If
 End Function
@@ -242,14 +242,14 @@ End Function
 Private Function RunCalculation(ByRef committed As Boolean) As OperationResult
     Dim package As CalculationPackage, snapshot As CalculationSnapshot
     Dim successBlock As Variant
-    Dim detail As String, prepared As Boolean
+    Dim detail As String, subject As String, prepared As Boolean
 
     ' PREPARATION AND SNAPSHOT SIT IN THEIR OWN ENVELOPE. A CONTROLLED refusal
     ' from the accepted machinery is REFUSED; an unexpected runtime error in the
     ' same region is FAILED. Downgrading a runtime fault to a refusal to keep
     ' going would report a model problem the user does not have.
     On Error GoTo PreWriteFailed
-    prepared = PrepareCurrentCalculation(package, detail)
+    prepared = PrepareCurrentCalculation(package, detail, subject)
     If prepared Then CaptureSnapshot snapshot
     On Error GoTo 0
 
@@ -367,12 +367,13 @@ End Function
 ' Preparation - the ONE definition of a valid current calculation
 ' ==========================================================================
 Private Function PrepareCurrentCalculation(ByRef package As CalculationPackage, _
-                                           ByRef detail As String) As Boolean
+                                           ByRef detail As String, _
+                                           ByRef subject As String) As Boolean
     Dim blank As CalculationPackage
     package = blank
-    detail = vbNullString
-    If Not modCalcResolve.ResolveModel(package.Model, detail) Then Exit Function
-    If Not modCalcCheck.CheckResolvedModel(package.Model, detail) Then Exit Function
+    detail = vbNullString: subject = vbNullString
+    If Not modCalcResolve.ResolveModel(package.Model, detail, subject) Then Exit Function
+    If Not modCalcCheck.CheckResolvedModel(package.Model, detail, subject) Then Exit Function
     If Not BuildFactorTables(package, detail) Then Exit Function
     If Not BuildDriverFactors(package, detail) Then Exit Function
     If Not BuildAudits(package, detail) Then Exit Function
@@ -670,8 +671,8 @@ Private Function CurrentStatus() As String
     ' Freshly derived, from a fresh preparation. Used after a rollback, where
     ' the question is what the CURRENT inputs say about the RESTORED snapshot -
     ' never "the attempt failed, so the status is failed".
-    Dim package As CalculationPackage, detail As String
-    CurrentStatus = DeriveStatus(package, PrepareCurrentCalculation(package, detail))
+    Dim package As CalculationPackage, detail As String, subject As String
+    CurrentStatus = DeriveStatus(package, PrepareCurrentCalculation(package, detail, subject))
 End Function
 
 ' ==========================================================================
@@ -1157,11 +1158,11 @@ Public Function CalcPrepareSimulationInputs(ByRef drivers() As DriverFactors, _
                                             ByRef decimalSeparator As String, _
                                             ByRef detail As String) As Boolean
     Dim package As CalculationPackage
-    Dim status As String
+    Dim status As String, subject As String
 
     detail = vbNullString
     ' The SAME accepted preparation the endpoint uses. Not a copy of it.
-    If Not PrepareCurrentCalculation(package, detail) Then Exit Function
+    If Not PrepareCurrentCalculation(package, detail, subject) Then Exit Function
 
     ' D6-14: Phase 6 runs on a CURRENT Phase 5 or it does not run. This does not
     ' call PCCM_Calculate and does not repair anything - a simulation that
@@ -1191,9 +1192,7 @@ Public Function CalcPrepareSimulationInputs(ByRef drivers() As DriverFactors, _
 
     CalcPrepareSimulationInputs = True
 End Function
-
-' The pure half of PCCM_CalculationStatus: one derivation, two entry points, and only that one writes C19:C20. `detail` is the SAME live refusal text the preparation already wrote, handed back rather than discarded, and empty whenever the preparation succeeded; it is REQUIRED because both callers want it and a typed Optional with no default does not compile. Reasoning: the Phase-7 closure record 1.1.
-Public Function CalcReportDerivedStatus(ByRef detail As String) As String
+Public Function CalcReportDerivedStatus(ByRef detail As String, ByRef subject As String) As String
     Dim package As CalculationPackage
-    CalcReportDerivedStatus = DeriveStatus(package, PrepareCurrentCalculation(package, detail))
+    CalcReportDerivedStatus = DeriveStatus(package, PrepareCurrentCalculation(package, detail, subject))
 End Function

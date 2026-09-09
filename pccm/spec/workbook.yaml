@@ -222,20 +222,21 @@ phase9_shell:
           - {key: "annual_year_count", row: 130, label: "Years Covered (live)", kind: "procedure", procedure: "PCCM_ResultsAnnualYearCount", format: "count"}
           - {key: "structural_report", row: 131, label: "Structural Report (live)", kind: "procedure", procedure: "PCCM_StructuralReport", anchor: true, format: "text"}
           - {key: "calculation_refusal_detail", row: 132, label: "Why The Current Model Is Refused (live)", kind: "procedure", procedure: "PCCM_ModelCheckRefusalDetail", format: "text"}
-          - {key: "calculation_attempt_result", row: 133, label: "Last Calculation Attempt (last attempt)", kind: "procedure", procedure: "PCCM_CalculationAttemptResult", anchor: true, format: "text"}
-          - {key: "calculation_attempt_detail", row: 134, label: "Last Calculation Attempt Detail (last attempt)", kind: "procedure", procedure: "PCCM_CalculationAttemptDetail", anchor: true, format: "text"}
-          - {key: "requested_iterations", row: 135, label: "Monte Carlo Iterations (requested)", kind: "defined_name", defined_name: "inpMonteCarloIterations", format: "count"}
-          - {key: "simulation_publication", row: 136, label: "Last Successful Simulation (publication)", kind: "mirror", source_block: "run_stamp", source_key: "last_successful_stamp", format: "text"}
-          - {key: "published_run_id", row: 137, label: "Published Run ID (publication)", kind: "mirror", source_block: "run_stamp", source_key: "run_id", format: "text"}
-          - {key: "published_iterations_run", row: 138, label: "Iterations Run (publication)", kind: "mirror", source_block: "run_stamp", source_key: "iterations_run", format: "count"}
-          - {key: "simulation_status_last_evaluated", row: 139, label: "Simulation Status (last evaluated)", kind: "mirror", source_block: "run_stamp", source_key: "simulation_status", format: "text"}
-          - {key: "sensitivity_availability", row: 140, label: "Sensitivity Availability (persisted comparison)", kind: "sensitivity_availability", format: "text"}
-          - {key: "structural_fault_count", row: 141, label: "Structural Faults Reported", kind: "derived", derived: "structural_fault_count", format: "count"}
-          - {key: "structural_surplus", row: 142, label: "Structural Faults Beyond The Slot Capacity", kind: "derived", derived: "structural_surplus", format: "count"}
+          - {key: "calculation_refusal_subject", row: 133, label: "Which Driver The Refusal Is About (live)", kind: "procedure", procedure: "PCCM_ModelCheckRefusalSubject", format: "text"}
+          - {key: "calculation_attempt_result", row: 134, label: "Last Calculation Attempt (last attempt)", kind: "procedure", procedure: "PCCM_CalculationAttemptResult", anchor: true, format: "text"}
+          - {key: "calculation_attempt_detail", row: 135, label: "Last Calculation Attempt Detail (last attempt)", kind: "procedure", procedure: "PCCM_CalculationAttemptDetail", anchor: true, format: "text"}
+          - {key: "requested_iterations", row: 136, label: "Monte Carlo Iterations (requested)", kind: "defined_name", defined_name: "inpMonteCarloIterations", format: "count"}
+          - {key: "simulation_publication", row: 137, label: "Last Successful Simulation (publication)", kind: "mirror", source_block: "run_stamp", source_key: "last_successful_stamp", format: "text"}
+          - {key: "published_run_id", row: 138, label: "Published Run ID (publication)", kind: "mirror", source_block: "run_stamp", source_key: "run_id", format: "text"}
+          - {key: "published_iterations_run", row: 139, label: "Iterations Run (publication)", kind: "mirror", source_block: "run_stamp", source_key: "iterations_run", format: "count"}
+          - {key: "simulation_status_last_evaluated", row: 140, label: "Simulation Status (last evaluated)", kind: "mirror", source_block: "run_stamp", source_key: "simulation_status", format: "text"}
+          - {key: "sensitivity_availability", row: 141, label: "Sensitivity Availability (persisted comparison)", kind: "sensitivity_availability", format: "text"}
+          - {key: "structural_fault_count", row: 142, label: "Structural Faults Reported", kind: "derived", derived: "structural_fault_count", format: "count"}
+          - {key: "structural_surplus", row: 143, label: "Structural Faults Beyond The Slot Capacity", kind: "derived", derived: "structural_surplus", format: "count"}
       candidates:
-        heading_row: 143
-        header_row: 144
-        first_row: 145
+        heading_row: 145
+        header_row: 146
+        first_row: 147
         heading: "Candidates"
         # THE SLOT CAPACITY IS THE VISIBLE WINDOW, and it is enough by
         # construction: structural faults are ERROR in the first group, so they
@@ -314,16 +315,12 @@ phase9_shell:
       - check_id: "CAL-010"
         group: "Calculation"
         severity: "ERROR"
-        # THE SUBJECT IS STILL MODEL-WIDE, AND THAT IS A KNOWN GAP, not a
-        # decision. Step-1 §11 scenario F asks this row to name the offending
-        # permanent id. The owner that refuses the model HAS the id in hand -
-        # modCalcCheck.DriverLabel builds "cost line CL-0001" from
-        # ResolvedDriver.PermanentId - but it publishes only a SENTENCE, and
-        # there is no structured field anywhere in the accepted owners carrying
-        # the offending id on its own. Reconstructing it would mean parsing
-        # prose written by three different modules in four different shapes,
-        # which is refused. The gap is reported, not papered over.
-        subject: ""
+        # THE OFFENDING PERMANENT ID, AS A VALUE. P9-2B threads it out of the
+        # owners that already hold it when they refuse; nothing here parses the
+        # sentence beside it. It is legitimately BLANK for a model-wide refusal
+        # - a missing register, an unusable discount rate - because no driver is
+        # at fault in one, and a fabricated id would be worse than none.
+        subject: "{calculation_refusal_subject}"
         condition: '{calculation_state}="INVALID"'
         # THE OWNER'S OWN LIVE SENTENCE, not a paraphrase and not the persisted
         # one. It names the fault - and, in prose, the driver - as of the model

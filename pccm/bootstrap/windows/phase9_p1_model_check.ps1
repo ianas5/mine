@@ -36,7 +36,12 @@
          slot must be #N/A - never blank, never 0 - and the counts above it must
          equal the rows below it, in every state the model passes through.
 
-      5. IS THE ACTIONABLE ERROR'S REASON THE LIVE ONE? P9-2A points the
+      5. IS THE ACTIONABLE ERROR'S SUBJECT THE RIGHT DRIVER? P9-2B threads the
+         offending permanent id out of the owner that refuses, so scenario F can
+         assert EQUALITY against the id the runner itself invalidated rather
+         than looking for it inside a sentence.
+
+      6. IS THE ACTIONABLE ERROR'S REASON THE LIVE ONE? P9-2A points the
          calculation ERROR at the sentence the CURRENT preparation wrote. In
          scenario F the persisted last attempt describes a SUCCESSFUL
          calculation of a model that no longer exists, so a row that reached for
@@ -1066,13 +1071,20 @@ try {
                 (([string]$errorRows[0].message -ceq $liveReason) -and
                  (-not [string]::IsNullOrWhiteSpace($liveReason))) `
                 (Format-P9Cell $errorRows[0].message)
-            # AND THE OWNER NAMES THE OFFENDING DRIVER IN IT. The permanent id
-            # is not structurally available - modCalcCheck publishes a SENTENCE,
-            # not a field - so what is asserted is that the id the runner made
-            # invalid APPEARS in the live reason. The Subject column staying
-            # model-wide is a DECLARED GAP recorded in the P9-2A return, not a
-            # thing this runner may quietly assert its way past.
-            $null = Add-P9Check 'F: the live reason names the driver the runner made invalid' `
+            # AND THE SUBJECT IS THE ID ITSELF, as a VALUE. P9-2B threads it out
+            # of the owner that refused; this asserts EQUALITY with the id the
+            # runner itself invalidated, not that it appears somewhere in a
+            # sentence. A row naming any other driver fails here.
+            $null = Add-P9Check 'F: the actionable ERROR Subject is the invalidated permanent id' `
+                ([string]$errorRows[0].subject -ceq $constantId) `
+                ('subject=' + (Format-P9Cell $errorRows[0].subject) + ' expected ' + $constantId)
+            $null = Add-P9Check 'F: the live subject reading agrees with the displayed Subject' `
+                ([string](Format-P9Cell $surfaceF.Readings['calculation_refusal_subject']) -ceq `
+                 [string]$errorRows[0].subject) `
+                (Format-P9Cell $surfaceF.Readings['calculation_refusal_subject'])
+            # AND THE SENTENCE STILL NAMES IT TOO, which is the owner's own
+            # message and not something the sheet composed.
+            $null = Add-P9Check 'F: the live reason names the same driver' `
                 ([string]$errorRows[0].message -clike ('*' + $constantId + '*')) `
                 ('looking for ' + $constantId + ' in: ' + (Format-P9Cell $errorRows[0].message))
             $null = Add-P9Check 'F: the actionable ERROR is not the persisted detail' `
@@ -1080,6 +1092,17 @@ try {
                  [string]::IsNullOrWhiteSpace($persistedReason)) `
                 ('live=' + $liveReason + ' persisted=' + $persistedReason)
         }
+        # AND THE SIMULATION THAT FOLLOWS FROM IT IS CONTEXT, NOT A SECOND ERROR.
+        $simCountedF = @()
+        foreach ($row in $shownF) {
+            if (([string]$row.group -ceq 'Simulation') -and
+                ([string]$row.severity -cne [string]$projection.vocabulary.informational_severity)) {
+                $simCountedF += ([string]$row.check_id + '=' + [string]$row.severity)
+            }
+        }
+        $null = Add-P9Check 'F: simulation INVALID creates no duplicate actionable ERROR' `
+            ($simCountedF.Count -eq 0) ($simCountedF -join ', ')
+
         # AND THE PERSISTED LAST-ATTEMPT ROWS ARE SEPARATE, LABELLED AND NOT
         # COUNTED. They may say anything; what they may not do is be the live
         # answer or move the summary.

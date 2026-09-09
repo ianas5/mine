@@ -177,7 +177,10 @@ DECLARED_PRODUCTION_CORRECTIONS = {
         "adds a SEVENTH, PCCM_ModelCheckRefusalDetail: the calculation state "
         "says a model is invalid and this says WHY, taken from the same "
         "preparation rather than from the persisted last attempt, which is "
-        "history and stale the moment the model moves past it.",
+        "history and stale the moment the model moves past it. P9-2B adds an "
+        "EIGHTH, PCCM_ModelCheckRefusalSubject, giving that same row the "
+        "offending permanent id as a VALUE - threaded out of the owner that "
+        "refuses, never parsed out of its sentence.",
         (),
     ),
     "pccm/src/vba/modCalcReport.bas": (
@@ -194,7 +197,10 @@ DECLARED_PRODUCTION_CORRECTIONS = {
         "accessor an Optional ByRef detail so the refusal sentence the "
         "preparation already wrote is handed back instead of discarded - the "
         "signature is the only line that moved, and the module's size against "
-        "its accepted raw-line ceiling is unchanged.",
+        "its accepted raw-line ceiling is unchanged. P9-2B threads a structured "
+        "subject through the same preparation, which is signatures and call "
+        "sites only: reversing the plumbing restores the accepted reporter "
+        "prefix byte for byte, which is what says no rule rode along.",
         (),
     ),
     "pccm/src/vba/modSimPostReport.bas": (

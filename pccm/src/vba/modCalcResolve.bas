@@ -113,8 +113,15 @@ End Type
 ' ==========================================================================
 ' The entry point. The ORDER OF THE CALLS BELOW IS THE SEMANTIC RULE.
 ' ==========================================================================
-Public Function ResolveModel(ByRef model As ResolvedModel, ByRef detail As String) As Boolean
+Public Function ResolveModel(ByRef model As ResolvedModel, ByRef detail As String, _
+                            ByRef subject As String) As Boolean
+    ' SUBJECT IS PLUMBING, NOT A RULE. Where a refusal below is about ONE driver
+    ' the owner already holds its permanent id; this carries that id out so a
+    ' caller need not read the sentence. It stays blank for every model-wide
+    ' refusal - a missing register, an FX table, an inflation grid - because no
+    ' driver is at fault in those, and blank on success.
     detail = vbNullString
+    subject = vbNullString
     ' STEP 0 - the PHASE-4 STRUCTURAL PREREQUISITES, invoked and never
     ' duplicated. They come first because there is no point resolving
     ' calculation inputs out of a workbook whose structure is not current.
@@ -125,7 +132,7 @@ Public Function ResolveModel(ByRef model As ResolvedModel, ByRef detail As Strin
 
     ' STEP 1 - identify the drivers. Nothing about FX or inflation is consulted
     ' until this has succeeded.
-    If Not ResolveDrivers(model.Drivers, model.DriverCount, detail) Then Exit Function
+    If Not ResolveDrivers(model.Drivers, model.DriverCount, detail, subject) Then Exit Function
 
     ' STEP 2 - derive the reference sets FROM those drivers.
     If Not ReferencedCurrencies(model.Drivers, model.DriverCount, _
@@ -140,9 +147,9 @@ Public Function ResolveModel(ByRef model As ResolvedModel, ByRef detail As Strin
                                  model.InflationRates, model.RequiredYearCount, _
                                  detail) Then Exit Function
 
-    If Not AttachDriverFx(model, detail) Then Exit Function
+    If Not AttachDriverFx(model, detail, subject) Then Exit Function
     If Not ResolveProfileWeights(model.Drivers, model.DriverCount, model.Timeline, _
-                                 model.Weights, detail) Then Exit Function
+                                 model.Weights, detail, subject) Then Exit Function
     ResolveModel = True
 End Function
 
@@ -258,7 +265,7 @@ End Function
 ' Driver identification
 ' ==========================================================================
 Public Function ResolveDrivers(ByRef drivers() As ResolvedDriver, ByRef driverCount As Long, _
-                               ByRef detail As String) As Boolean
+                               ByRef detail As String, ByRef subject As String) As Boolean
     ' AN EMPTY DRIVER SET IS VALID. A workbook with no Cost Lines and no Risks
     ' resolves to zero drivers and an empty reference set; no minimum-driver
     ' rule is invented here, because no accepted contract states one.
@@ -271,8 +278,8 @@ Public Function ResolveDrivers(ByRef drivers() As ResolvedDriver, ByRef driverCo
         Exit Function
     End If
     ReDim drivers(0 To capacity - 1)
-    If Not ReadRegister(KIND_COST, drivers, driverCount, detail) Then Exit Function
-    If Not ReadRegister(KIND_RISK, drivers, driverCount, detail) Then Exit Function
+    If Not ReadRegister(KIND_COST, drivers, driverCount, detail, subject) Then Exit Function
+    If Not ReadRegister(KIND_RISK, drivers, driverCount, detail, subject) Then Exit Function
     ResolveDrivers = True
 End Function
 
@@ -283,7 +290,8 @@ Private Function RegisterRowCapacity(ByVal sheetName As String, _
 End Function
 
 Private Function ReadRegister(ByVal kind As Long, ByRef drivers() As ResolvedDriver, _
-                              ByRef driverCount As Long, ByRef detail As String) As Boolean
+                              ByRef driverCount As Long, ByRef detail As String, _
+                              ByRef subject As String) As Boolean
     Dim table As ListObject, rowIndex As Long, rows As Long
     Dim sheetName As String, tableName As String, label As String
     Dim idColumn As Long, slot As Long
@@ -309,7 +317,7 @@ Private Function ReadRegister(ByVal kind As Long, ByRef drivers() As ResolvedDri
         ' different questions and only one of them may trim.
         If Len(modWorkbook.TextOf(modWorkbook.CellIn(table, rowIndex, idColumn))) > 0 Then
             slot = driverCount
-            If Not ReadDriverRow(kind, table, rowIndex, drivers(slot), label, detail) Then
+            If Not ReadDriverRow(kind, table, rowIndex, drivers(slot), label, detail, subject) Then
                 Exit Function
             End If
             driverCount = driverCount + 1
@@ -320,7 +328,8 @@ End Function
 
 Private Function ReadDriverRow(ByVal kind As Long, ByVal table As ListObject, _
                                ByVal rowIndex As Long, ByRef driver As ResolvedDriver, _
-                               ByVal label As String, ByRef detail As String) As Boolean
+                               ByVal label As String, ByRef detail As String, _
+                               ByRef subject As String) As Boolean
     Dim where As String
     Dim idColumn As Long, currencyColumn As Long, profileColumn As Long
     Dim distributionColumn As Long, scalarColumn As Long
@@ -351,6 +360,9 @@ Private Function ReadDriverRow(ByVal kind As Long, ByVal table As ListObject, _
     If Not ExactIdentifier(table, rowIndex, idColumn, driver.PermanentId, _
                            where & ": Permanent ID", detail) Then Exit Function
     where = label & " " & driver.PermanentId
+    ' FROM HERE THE ROW HAS AN IDENTITY. Anything refused above this line is a
+    ' row whose Permanent ID could not be read at all, and it has no id to name.
+    subject = driver.PermanentId
     If Not ExactIdentifier(table, rowIndex, currencyColumn, driver.Currency, _
                            where & ": Currency", detail) Then Exit Function
     If Not ExactIdentifier(table, rowIndex, profileColumn, driver.InflationProfile, _
@@ -387,6 +399,7 @@ Private Function ReadDriverRow(ByVal kind As Long, ByVal table As ListObject, _
         If Not NumericCell(table, rowIndex, likelyColumn, driver.MostLikely, _
                            where & ": Most Likely", detail) Then Exit Function
     End If
+    subject = vbNullString
     ReadDriverRow = True
 End Function
 
@@ -713,7 +726,8 @@ Public Function ResolveProfileWeights(ByRef drivers() As ResolvedDriver, _
                                       ByVal driverCount As Long, _
                                       ByRef timeline As ResolvedTimeline, _
                                       ByRef weights() As Double, _
-                                      ByRef detail As String) As Boolean
+                                      ByRef detail As String, _
+                                      ByRef subject As String) As Boolean
     Dim costGrid As ListObject, riskGrid As ListObject, grid As ListObject
     Dim index As Long, offset As Long, row As Long, column As Long
     Dim keyColumn As Long, fixedCols As Long, weight As Double
@@ -740,6 +754,7 @@ Public Function ResolveProfileWeights(ByRef drivers() As ResolvedDriver, _
 
     ReDim weights(0 To driverCount - 1, 0 To timeline.Duration - 1)
     For index = 0 To driverCount - 1
+        subject = drivers(LBound(drivers) + index).PermanentId
         If drivers(LBound(drivers) + index).IsRisk Then
             Set grid = riskGrid
             keyColumn = GCOL_RISK_PROFILING_RISK_ID
@@ -773,10 +788,12 @@ Public Function ResolveProfileWeights(ByRef drivers() As ResolvedDriver, _
             weights(index, offset) = weight
         Next offset
     Next index
+    subject = vbNullString
     ResolveProfileWeights = True
 End Function
 
-Private Function AttachDriverFx(ByRef model As ResolvedModel, ByRef detail As String) As Boolean
+Private Function AttachDriverFx(ByRef model As ResolvedModel, ByRef detail As String, _
+                                ByRef subject As String) As Boolean
     ' Each driver's own rate, taken from the already-resolved referenced set.
     ' Nothing is looked up in the workbook a second time.
     Dim index As Long, probe As Long, found As Boolean
@@ -796,6 +813,7 @@ Private Function AttachDriverFx(ByRef model As ResolvedModel, ByRef detail As St
             End If
         Next probe
         If Not found Then
+            subject = model.Drivers(index).PermanentId
             detail = "driver " & model.Drivers(index).PermanentId & _
                      ": currency is not in the resolved reference set"
             Exit Function
