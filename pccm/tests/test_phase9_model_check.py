@@ -1007,6 +1007,22 @@ def test_46c2_the_owners_clear_the_subject_so_it_cannot_leak() -> None:
     assert "subject = vbNullString" in prepare, "the preparation does not clear at entry"
     assert prepare.index("subject = vbNullString") < prepare.index("ResolveModel"), (
         "the clear happens after the first owner could have set it")
+
+    # AND EVERY TRAVERSAL ENTRY CLEARS BEFORE IT LOOKS AT ANYTHING. The three
+    # procedures a whole traversal starts at take the parameter from a caller
+    # and must not inherit whatever that caller was holding. The clears further
+    # down are what stop a SUCCESSFUL owner leaving an id behind; these are what
+    # stop one traversal's id reaching the next, and they are separate rules -
+    # dropping either used to be visible only as a moved byte pin.
+    for module, name, first in (("modCalcReport", "PrepareCurrentCalculation", "ResolveModel"),
+                                ("modCalcResolve", "ResolveModel", "ResolveDrivers"),
+                                ("modCalcCheck", "CheckResolvedModel", "For ")):
+        body = _procedure(module, name)
+        assert "subject = vbNullString" in body, (
+            f"{module}.{name} takes a subject from its caller and never clears it")
+        assert body.index("subject = vbNullString") < body.index(first), (
+            f"{module}.{name} clears the subject only after it has begun work, so a "
+            "caller's id can still reach a refusal raised before that point")
     for module, name in (("modCalcCheck", "CheckResolvedModel"),
                          ("modCalcResolve", "ResolveModel"),
                          ("modCalcResolve", "ReadDriverRow"),
