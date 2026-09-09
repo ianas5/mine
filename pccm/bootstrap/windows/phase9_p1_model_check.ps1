@@ -525,17 +525,74 @@ function Get-P9Block {
     # ONE COM CALL PER BLOCK, not one per cell. A hundred register rows read a
     # cell at a time is ten thousand round trips per scenario; Value2 over a
     # range returns the whole rectangle as one array.
+    #
+    # THE ARRAY IS RETURNED INSIDE AN OBJECT, AND THAT IS THE WHOLE POINT.
+    # Windows run 2 died because this function returned the array directly:
+    # `Value2` over a multi-cell range marshals to a RANK-2 object[,], and
+    # PowerShell ENUMERATES a multidimensional array on its way out of a
+    # function, so the caller received a FLAT object[]. `$block[$row, 1]` on a
+    # flat array is not a two-dimensional read - it is PowerShell's multi-index
+    # selection, and it quietly returns a TWO-ELEMENT object[]. Every reading
+    # looked plausible until the first `[double]`, which is why Scenario A got
+    # as far as it did. A property is never unrolled, so the rank survives.
+    #
+    # NOTHING INDEXES `.Rect` DIRECTLY. Get-P9BlockCell below is the only
+    # reader, because the failure above was a SILENT wrong answer before it was
+    # a crash.
     $worksheets = $null; $ws = $null; $rng = $null
     try {
         $worksheets = $Workbook.Worksheets
         $ws = $worksheets.Item($SheetName)
         $rng = $ws.Range($Address)
-        return $rng.Value2
+        return [pscustomobject]@{ Sheet = $SheetName; Address = $Address; Rect = $rng.Value2 }
     } finally {
         if ($null -ne $rng)        { Release-Transient $rng        'Range(block)'; $rng        = $null }
         if ($null -ne $ws)         { Release-Transient $ws         'Worksheet';    $ws         = $null }
         if ($null -ne $worksheets) { Release-Transient $worksheets 'Worksheets';   $worksheets = $null }
     }
+}
+
+function Get-P9BlockCell {
+    param($Block, [int]$Row, [int]$Column)
+    # EXACTLY ONE CELL, OR A FAILURE THAT SAYS WHERE. The contract:
+    #
+    #   a rank-2 block      the cell at ($Row, $Column) in the SHEET's own
+    #                       1-based coordinates, read through GetValue so the
+    #                       array's real lower bounds are honoured
+    #   a single-cell read  Value2 hands back a scalar rather than an array;
+    #                       only (1, 1) may ask for it
+    #   a rank-1 block      REFUSED. That is the run-2 shape - a rectangle that
+    #                       has been flattened - and there is no honest way to
+    #                       recover ($Row, $Column) from it
+    #   more than one value REFUSED, with the sheet and address named. Taking
+    #                       element 0 would be a plausible wrong answer, which
+    #                       is exactly what run 2 produced
+    #
+    # WHAT IT DOES NOT DO. It does not convert, coerce or stringify: a blank
+    # comes back as $null, an Excel error comes back as the negative Int32 that
+    # Test-P9Error recognises, and text comes back as text. Deciding what a cell
+    # MEANS belongs to the caller that knows which cell it asked for.
+    $where = 'block ' + [string]$Block.Sheet + '!' + [string]$Block.Address +
+             ' at (' + [string]$Row + ',' + [string]$Column + ')'
+    $values = $Block.Rect
+    if ($values -is [array]) {
+        if ($values.Rank -ne 2) {
+            throw ($where + ': the block arrived with rank ' + [string]$values.Rank +
+                   ' instead of 2, so the rectangle has been flattened and no ' +
+                   'row/column read of it can be trusted')
+        }
+        $cell = $values.GetValue($Row, $Column)
+    } else {
+        if (($Row -ne 1) -or ($Column -ne 1)) {
+            throw ($where + ': the block is a single cell and only (1,1) exists in it')
+        }
+        $cell = $values
+    }
+    if ($cell -is [array]) {
+        throw ($where + ': the read produced ' + [string]@($cell).Count +
+               ' values where exactly one was expected')
+    }
+    return $cell
 }
 
 function Get-P9ColumnLetter {
@@ -601,7 +658,8 @@ function Read-P9Surface {
         -Address ($valueColumn + [string]$firstSummary + ':' + $valueColumn + [string]$lastSummary)
     $summary = @{}
     foreach ($entry in $summaryRows) {
-        $summary[$entry.Key] = $summaryBlock[($entry.Row - $firstSummary + 1), 1]
+        $summary[$entry.Key] = Get-P9BlockCell -Block $summaryBlock `
+            -Row ($entry.Row - $firstSummary + 1) -Column 1
     }
 
     $readingRows = @()
@@ -615,7 +673,8 @@ function Read-P9Surface {
         -Address ($valueColumn + [string]$firstReading + ':' + $valueColumn + [string]$lastReading)
     $readings = @{}
     foreach ($entry in $readingRows) {
-        $readings[$entry.Key] = $readingBlock[($entry.Row - $firstReading + 1), 1]
+        $readings[$entry.Key] = Get-P9BlockCell -Block $readingBlock `
+            -Row ($entry.Row - $firstReading + 1) -Column 1
     }
 
     $columns = @($Projection.register.columns)
@@ -634,8 +693,8 @@ function Read-P9Surface {
         $record = @{}
         for ($index = 0; $index -lt $columns.Count; $index++) {
             $key = [string]$columns[$index].column
-            $record[[string]$columns[$index].key] =
-                $registerBlock[($offset + 1), ((ConvertTo-P9ColumnNumber $key) - $firstColumn + 1)]
+            $record[[string]$columns[$index].key] = Get-P9BlockCell -Block $registerBlock `
+                -Row ($offset + 1) -Column ((ConvertTo-P9ColumnNumber $key) - $firstColumn + 1)
         }
         $rows += [pscustomobject]$record
     }
@@ -1010,8 +1069,8 @@ try {
     $headerRow = [int]$projection.register.header_row
     $headerProblems = @()
     foreach ($column in @($projection.register.columns)) {
-        $cell = Get-P9Block -Workbook $wb -SheetName $modelCheckSheet `
-            -Address ([string]$column.column + [string]$headerRow)
+        $cell = Get-P9BlockCell -Block (Get-P9Block -Workbook $wb -SheetName $modelCheckSheet `
+            -Address ([string]$column.column + [string]$headerRow)) -Row 1 -Column 1
         if ([string]$cell -cne [string]$column.header) {
             $headerProblems += ([string]$column.column + $headerRow + ' reads ' +
                                 (Format-P9Cell $cell) + ', expected ' + [string]$column.header)
@@ -1103,8 +1162,8 @@ try {
     $after = Get-P9Block -Workbook $wb -SheetName $calcSheet -Address $calcStatusRange
     $changed = @()
     for ($index = 1; $index -le 2; $index++) {
-        $wasValue = (Format-P9Cell $before[$index, 1])
-        $nowValue = (Format-P9Cell $after[$index, 1])
+        $wasValue = (Format-P9Cell (Get-P9BlockCell -Block $before -Row $index -Column 1))
+        $nowValue = (Format-P9Cell (Get-P9BlockCell -Block $after -Row $index -Column 1))
         if ($wasValue -cne $nowValue) {
             $changed += ($calcValueColumn + [string]($calcStatusRow + $index - 1) + ': ' +
                          $wasValue + ' -> ' + $nowValue)
@@ -1485,7 +1544,8 @@ try {
     $stillStatus = Get-P9Block -Workbook $wb -SheetName $calcSheet -Address $calcStatusRange
     $stillChanged = @()
     for ($index = 1; $index -le 2; $index++) {
-        if ((Format-P9Cell $finalStatus[$index, 1]) -cne (Format-P9Cell $stillStatus[$index, 1])) {
+        if ((Format-P9Cell (Get-P9BlockCell -Block $finalStatus -Row $index -Column 1)) -cne
+            (Format-P9Cell (Get-P9BlockCell -Block $stillStatus -Row $index -Column 1))) {
             $stillChanged += ($calcValueColumn + [string]($calcStatusRow + $index - 1))
         }
     }

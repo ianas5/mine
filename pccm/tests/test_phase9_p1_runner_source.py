@@ -790,5 +790,123 @@ def test_33_the_structural_heartbeat_scenario_is_unchanged() -> None:
         "a runner correction may not touch it")
 
 
+# ===========================================================================
+# K. WINDOWS RUN 2 - ONE CELL MEANS ONE CELL
+# ===========================================================================
+# WHAT RUN 2 COST. Nine checks passed - the geometry, the register headers,
+# every Scenario-A reading answered without an Excel error - and then
+# `Cannot convert the "System.Object[]" value ... to type "System.Double"`.
+#
+# THE MECHANISM, AND IT WAS A SILENT WRONG ANSWER BEFORE IT WAS A CRASH.
+# Get-P9Block returned Value2 straight out of the function. Value2 over a
+# multi-cell range marshals to a RANK-2 object[,], and PowerShell ENUMERATES a
+# multidimensional array on its way out of a function - so the caller held a
+# FLAT object[]. `$block[$row, 1]` on a flat array is not a two-dimensional
+# read; it is PowerShell's multi-index selection, and it returns TWO elements
+# without complaining. Every reading in the surface was a two-element array.
+# The readings check passed because it only asks whether a value is an Excel
+# error; the first `[double]` is where it finally showed.
+PROBE = PCCM_ROOT / "tests" / "p9_block_contract_probe.ps1"
+PROBE_MARKER = "#<FUNCTIONS-FROM-THE-RUNNER>"
+
+# THE READER, ITS CONTRACT, AND THE THREE FUNCTIONS THAT DECIDE WHAT A CELL IS.
+PROBED_FUNCTIONS = ("Get-P9Block", "Get-P9BlockCell", "Test-P9Error", "Test-P9Na",
+                    "Format-P9Cell")
+
+
+def _function_source(name: str, text: str | None = None) -> str:
+    source = _text() if text is None else text
+    marker = f"function {name} {{"
+    assert source.count(marker) == 1, name
+    start = source.index(marker)
+    return source[start:source.index("\nfunction ", start)]
+
+
+def _run_probe(runner_text: str | None = None) -> subprocess.CompletedProcess:
+    """The probe, spliced with the functions AS THE RUNNER ACTUALLY SHIPS THEM."""
+    spliced = PROBE.read_text(encoding="utf-8").replace(
+        PROBE_MARKER,
+        "\n\n".join(_function_source(name, runner_text) for name in PROBED_FUNCTIONS))
+    scratch = PCCM_ROOT / "tests" / "__p9_probe_tmp.ps1"
+    scratch.write_text(spliced, encoding="utf-8")
+    try:
+        return subprocess.run([PWSH, "-NoProfile", "-File", str(scratch)],
+                              capture_output=True, text=True, timeout=300)
+    finally:
+        scratch.unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_34_the_block_reader_honours_its_scalar_contract() -> None:
+    """EXECUTED, NOT DESCRIBED. The rectangle keeps its rank through the return;
+    a cell reads back as itself; a flattened block, a coordinate outside a
+    single cell and a read that would yield more than one value are all
+    REFUSED with the sheet and address named; an Excel error keeps its identity;
+    a blank stays blank. And the OLD shape still reproduces the run-2 message,
+    which is what says this is the defect that was fixed."""
+    done = _run_probe()
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "ALL CLEAN" in done.stdout, done.stdout
+    assert "FAIL" not in done.stdout, done.stdout
+    # AND IT REALLY ASSERTED SOMETHING.
+    assert done.stdout.count("PASS ") >= 16, done.stdout
+
+
+def test_35_no_block_is_indexed_behind_the_contract() -> None:
+    """THE READER IS THE ONLY READER. A `.Values[...]` anywhere, or a surviving
+    two-index read of a block, would be the run-2 defect written out again."""
+    code = _code()
+    assert ".Rect[" not in code, "a block is indexed directly, behind the contract"
+    # THE SHAPE THAT WAS WRONG: `$something[$row, $column]`.
+    stray = re.findall(r"\$\w+\[\s*\$?\w+\s*,\s*\d+\s*\]", code)
+    assert not stray, f"a two-index read of a block survives: {stray}"
+    # EVERY BLOCK IS READ THROUGH THE CONTRACT, and there is at least one.
+    assert code.count("Get-P9BlockCell") >= 6, code.count("Get-P9BlockCell")
+    # AND THE CONTRACT NEVER TAKES AN ELEMENT SILENTLY.
+    contract = _function_source("Get-P9BlockCell")
+    assert "[0]" not in contract, "the contract selects an element by position"
+    for refusal in ("the rectangle has been flattened", "only (1,1) exists",
+                    "values where exactly one was expected"):
+        assert refusal in contract, f"the contract does not refuse: {refusal}"
+
+
+def test_36_every_numeric_cast_reads_a_proven_scalar() -> None:
+    """THE CLASS AUDIT RUN-1 TAUGHT. Not "fix the one that failed": every
+    reachable numeric conversion is classified, and the ones whose input comes
+    from a worksheet must come through the contract."""
+    code = _code()
+    # A CAST OVER A SURFACE VALUE IS FINE ONLY BECAUSE THE SURFACE IS BUILT
+    # THROUGH THE CONTRACT. That is the load-bearing fact, so it is asserted.
+    surface = _function_source("Read-P9Surface")
+    for field in ("$summary[$entry.Key]", "$readings[$entry.Key]",
+                  "$record[[string]$columns[$index].key]"):
+        assignment = surface[surface.index(field):]
+        assignment = assignment[:assignment.index("\n", assignment.index("-Column"))]
+        assert "Get-P9BlockCell" in assignment, f"{field} does not use the contract"
+    # AND NO CAST READS A WORKSHEET VALUE DIRECTLY. `$property.Value` is the
+    # JSON property bag ConvertFrom-Json hands back, not a COM Range.Value, so
+    # it is named as the one shape this rule is not about rather than being
+    # swept up by a substring.
+    for cast in re.findall(r"\[(?:double|int|long)\]\s*\$[^\s)]+", code):
+        for reader in (".Value2", ".Text"):
+            assert reader not in cast, f"a numeric cast reads a COM value directly: {cast}"
+        assert (".Value" not in cast) or cast.startswith("[int]$property.Value"), (
+            f"a numeric cast reads a COM value directly: {cast}")
+
+
+def test_37_the_cleanup_settlement_from_run_1_is_unchanged() -> None:
+    """RUN 2'S COM LIFECYCLE WAS COHERENT AND GREEN - Workbook.Close True,
+    Application.Quit True, natural PID exit True, emergency False. This
+    correction does not touch that code, and may not."""
+    code = _code()
+    assert code.count("$rel.WorkbookClosed = $true") == 2
+    assert code.count("$rel.QuitCalled = $true") == 2
+    assert "$rel.NaturalExit = $naturalExit" in code
+    assert "$rel.EmergencyRequired = $emergencyRequired" in code
+    assert "Add-P9Check 'the owned Excel process exited naturally' $rel.NaturalExit" in code
+    shutdown = code[code.index("$wb.Close($false)"):]
+    assert "catch { }" not in shutdown
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
