@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["COMMENT_ADDITIONS", "reverse_subject_plumbing"]
+__all__ = ["COMMENT_ADDITIONS", "reverse_line", "reverse_subject_plumbing"]
 
 # The prose P9-2B added, per module, matched EXACTLY. Absence is a failure: if
 # the text is not what this reverses, what else changed cannot be established.
@@ -51,7 +51,37 @@ COMMENT_ADDITIONS: dict[str, tuple[str, ...]] = {
     # modCalcReport's plumbing added no commentary: the reporter prefix is at its
     # accepted raw-line ceiling and had none to spare.
     "modCalcReport": (),
+    # NOR DID modCalcAnalytical's. P9-3 completes the coverage in a module one
+    # line under its ceiling, so every assignment rides on a statement that was
+    # already there and not one line of prose could be afforded.
+    "modCalcAnalytical": (),
 }
+
+
+def reverse_line(line: str) -> str | None:
+    """One line with the subject plumbing taken off it, or None if it goes.
+
+    ONE DEFINITION OF WHAT PLUMBING LOOKS LIKE. The whole-module reversal below
+    and the line-by-line declaration control in test_phase9_model_check.py both
+    ask this, so neither can be quietly more permissive than the other.
+    """
+    # A LINE THAT IS NOTHING BUT A SUBJECT ASSIGNMENT GOES ENTIRELY. Every one of
+    # them is either the id the owner already holds or the clear that stops it
+    # leaking; neither existed before. `[^:]*$` keeps this to a line that is ONLY
+    # that assignment: a compound line is handled below, and deleting the whole
+    # of one would take a real statement with it.
+    if re.match(r"^\s*subject = [^:]*$", line):
+        return None
+    line = re.sub(r",?\s*ByRef subject As String", "", line)
+    line = line.replace(", subject As String", "")
+    # AND ONE APPENDED TO AN EXISTING STATEMENT COMES OFF IT. Two modules are at
+    # their raw-line ceiling, so their assignments ride on statements that were
+    # already there - `Next slot: subject = vbNullString`, `who =
+    # audits(index).PermanentId: subject = who`. The assignment is always LAST on
+    # the line, so removing from the colon to the end restores the original
+    # statement exactly and can never eat one.
+    line = re.sub(r":\s*subject = .*$", "", line)
+    return re.sub(r",\s*subject(?=\))", "", line)
 
 
 def reverse_subject_plumbing(module: str, text: str) -> str:
@@ -72,16 +102,10 @@ def reverse_subject_plumbing(module: str, text: str) -> str:
 
     stripped: list[str] = []
     for line in text.split("\n"):
-        # A LINE THAT IS NOTHING BUT A SUBJECT ASSIGNMENT GOES ENTIRELY. Every
-        # one of them is either the id the owner already holds or the clear that
-        # stops it leaking; neither existed before.
-        if re.match(r"^\s*subject = ", line):
+        reversed_line = reverse_line(line)
+        if reversed_line is None:
             continue
-        line = re.sub(r",?\s*ByRef subject As String", "", line)
-        line = line.replace(", subject As String", "")
-        line = line.replace(": subject = vbNullString", "")
-        line = re.sub(r",\s*subject(?=\))", "", line)
-        stripped.append(line)
+        stripped.append(reversed_line)
 
     # AND A SIGNATURE THE PARAMETER SPLIT IS PUT BACK ON ONE LINE. Without this
     # the reversal would leave a dangling continuation and every digest would

@@ -375,15 +375,15 @@ Private Function PrepareCurrentCalculation(ByRef package As CalculationPackage, 
     If Not modCalcResolve.ResolveModel(package.Model, detail, subject) Then Exit Function
     If Not modCalcCheck.CheckResolvedModel(package.Model, detail, subject) Then Exit Function
     If Not BuildFactorTables(package, detail) Then Exit Function
-    If Not BuildDriverFactors(package, detail) Then Exit Function
-    If Not BuildAudits(package, detail) Then Exit Function
+    If Not BuildDriverFactors(package, detail, subject) Then Exit Function
+    If Not BuildAudits(package, detail, subject) Then Exit Function
     If Not modCalcAnalytical.AccumulateTotals(package.Audits, package.Model.DriverCount, _
                                               package.Totals, package.Magnitudes, _
-                                              detail) Then Exit Function
-    If Not BuildAnnual(package, detail) Then Exit Function
+                                              detail, subject) Then Exit Function
+    If Not BuildAnnual(package, detail, subject) Then Exit Function
     If Not modCalcAnalytical.Reconcile(package.Totals, package.Annual, package.Drivers, _
                                        package.Model.DriverCount, package.Model.Weights, _
-                                       package.Magnitudes, package.Checks, detail) Then
+                                       package.Magnitudes, package.Checks, detail, subject) Then
         Exit Function
     End If
     If Not modCalcAnalytical.AllIdentitiesHold(package.Checks) Then
@@ -391,7 +391,7 @@ Private Function PrepareCurrentCalculation(ByRef package As CalculationPackage, 
         Exit Function
     End If
     CountCurrencyReferences package
-    If Not BuildFingerprint(package, detail) Then Exit Function
+    If Not BuildFingerprint(package, detail, subject) Then Exit Function
     If Len(package.Fingerprint) = 0 Then
         detail = "the calculation fingerprint could not be constructed"
         Exit Function
@@ -439,7 +439,7 @@ Private Function BuildFactorTables(ByRef package As CalculationPackage, _
 End Function
 
 Private Function BuildDriverFactors(ByRef package As CalculationPackage, _
-                                    ByRef detail As String) As Boolean
+                                    ByRef detail As String, ByRef subject As String) As Boolean
     ' One DriverFactors per resolved driver, with Knom and Kpv from the accepted
     ' builders.
     '
@@ -459,7 +459,7 @@ Private Function BuildDriverFactors(ByRef package As CalculationPackage, _
     ReDim inflation(0 To package.Model.Timeline.Duration - 1)
     ReDim weights(0 To package.Model.Timeline.Duration - 1)
 
-    For index = 0 To package.Model.DriverCount - 1
+    For index = 0 To package.Model.DriverCount - 1: subject = package.Model.Drivers(index).PermanentId
         With package.Drivers(index)
             .PermanentId = package.Model.Drivers(index).PermanentId
             .IsRisk = package.Model.Drivers(index).IsRisk
@@ -505,19 +505,19 @@ Private Function BuildDriverFactors(ByRef package As CalculationPackage, _
             detail = "driver " & package.Model.Drivers(index).PermanentId & " Kpv: " & detail
             Exit Function
         End If
-    Next index
+    Next index: subject = vbNullString
     BuildDriverFactors = True
 End Function
 
 Private Function BuildAudits(ByRef package As CalculationPackage, _
-                             ByRef detail As String) As Boolean
+                             ByRef detail As String, ByRef subject As String) As Boolean
     Dim index As Long
     If package.Model.DriverCount = 0 Then
         BuildAudits = True
         Exit Function
     End If
     ReDim package.Audits(0 To package.Model.DriverCount - 1)
-    For index = 0 To package.Model.DriverCount - 1
+    For index = 0 To package.Model.DriverCount - 1: subject = package.Drivers(index).PermanentId
         ' BuildDriverAudit derives Central and MeanValue and every published
         ' per-driver amount. Nothing is recomputed here.
         If Not modCalcAnalytical.BuildDriverAudit(package.Drivers(index), _
@@ -526,12 +526,12 @@ Private Function BuildAudits(ByRef package As CalculationPackage, _
             Exit Function
         End If
         package.Audits(index).PermanentId = package.Drivers(index).PermanentId
-    Next index
+    Next index: subject = vbNullString
     BuildAudits = True
 End Function
 
 Private Function BuildAnnual(ByRef package As CalculationPackage, _
-                             ByRef detail As String) As Boolean
+                             ByRef detail As String, ByRef subject As String) As Boolean
     Dim inflation() As Double, index As Long, offset As Long, profile As Long
     If package.Model.DriverCount > 0 Then
         ReDim inflation(0 To package.Model.DriverCount - 1, _
@@ -547,11 +547,11 @@ Private Function BuildAnnual(ByRef package As CalculationPackage, _
     BuildAnnual = modCalcAnalytical.BuildAnnualSeries( _
         package.Drivers, package.Model.DriverCount, package.Model.DriverFxRates, _
         package.Model.Weights, inflation, package.Years, package.Annual, _
-        package.Magnitudes, detail)
+        package.Magnitudes, detail, subject)
 End Function
 
 Private Function BuildFingerprint(ByRef package As CalculationPackage, _
-                                  ByRef detail As String) As Boolean
+                                  ByRef detail As String, ByRef subject As String) As Boolean
     ' The accepted schema, through the accepted encoder. The separator is taken
     ' from the SAME formatter the encoder uses, so the two cannot disagree, and
     ' no Excel object is passed into modCalcFingerprint.
@@ -582,7 +582,7 @@ Private Function BuildFingerprint(ByRef package As CalculationPackage, _
         ReDim riskIds(0 To package.Model.DriverCount - 1)
         ReDim riskRecords(0 To package.Model.DriverCount - 1)
     End If
-    For index = 0 To package.Model.DriverCount - 1
+    For index = 0 To package.Model.DriverCount - 1: subject = package.Model.Drivers(index).PermanentId
         If Not DriverRecord(package, index, separator, record, detail) Then Exit Function
         If package.Model.Drivers(index).IsRisk Then
             riskIds(riskCount) = package.Model.Drivers(index).PermanentId
@@ -593,7 +593,7 @@ Private Function BuildFingerprint(ByRef package As CalculationPackage, _
             costRecords(costCount) = record
             costCount = costCount + 1
         End If
-    Next index
+    Next index: subject = vbNullString
 
     If Not modCalcFingerprint.CalcFpBuildFingerprint(header, 4, costIds, costRecords, _
                                                      costCount, riskIds, riskRecords, _

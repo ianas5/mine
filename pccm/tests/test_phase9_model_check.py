@@ -959,14 +959,12 @@ def test_46c_no_prose_is_parsed_anywhere() -> None:
     # resolved driver, never a fragment of a sentence.
     import re
 
-    for module in ("modCalcCheck", "modCalcResolve", "modCalcReport"):
-        for line in _code(module).splitlines():
-            match = re.match(r"\s*subject = (.+)$", line)
-            if match is None:
-                continue
-            source = match.group(1).strip()
-            assert source == "vbNullString" or source.endswith(".PermanentId"), (
-                f"{module} sets subject from something that is not a permanent id: {source}")
+    for module in ("modCalcCheck", "modCalcResolve", "modCalcReport",
+                   "modCalcAnalytical"):
+        try:
+            _assert_sources_are_permanent_ids(_code(module))
+        except AssertionError as failure:
+            raise AssertionError(f"{module}: {failure}") from None
 
 
 def test_46c1_every_subject_names_the_same_driver_the_message_does() -> None:
@@ -977,11 +975,12 @@ def test_46c1_every_subject_names_the_same_driver_the_message_does() -> None:
     import re
 
     expressions: dict[str, set[str]] = {}
-    for module in ("modCalcCheck", "modCalcResolve"):
+    for module in ("modCalcCheck", "modCalcResolve", "modCalcAnalytical",
+                   "modCalcReport"):
         code = _code(module)
         used = set(re.findall(r"([A-Za-z_][\w.()+ ]*?\.PermanentId)", code))
-        assigned = {m.group(1).strip() for m in
-                    re.finditer(r"^\s*subject = (.+\.PermanentId)\s*$", code, re.M)}
+        assigned = {source for source in _subject_sources(code)
+                    if source.endswith(".PermanentId")}
         assert assigned, f"{module} threads no subject at all"
         unknown = {a for a in assigned if a not in used}
         assert not unknown, (
@@ -1049,7 +1048,8 @@ def test_46c3_no_owner_keeps_a_last_refusal_cache() -> None:
     thing anybody remembers between calls."""
     import re
 
-    for module in ("modCalcCheck", "modCalcResolve", "modCalcReport", "modResultsState"):
+    for module in ("modCalcCheck", "modCalcResolve", "modCalcReport",
+                   "modCalcAnalytical", "modResultsState"):
         code = _code(module)
         assert not re.search(r"^\s*Static\b", code, re.M), f"{module} declares a Static"
         # MODULE LEVEL IS COLUMN ZERO AND ABOVE THE FIRST PROCEDURE. A `Dim`
@@ -1201,49 +1201,145 @@ REFUSAL_FAMILIES = (
      "CheckResolvedModel, same loop"),
     ("modCalcCheck", "profiling weight sum", True,
      "CheckResolvedModel, same loop"),
-    # NOT COVERED, AND THE REASON IS A SIZE CEILING RATHER THAN A DESIGN CHOICE.
+    # CLOSED AT P9-3. These four were reported at P9-2B as named non-coverage,
+    # because both modules were at their raw-line ceiling and no line could be
+    # spared. They are threaded now, and the ceilings did not move: every
+    # assignment rides on a statement that was already there.
     ("modCalcAnalytical", "per-driver conditioning magnitude (Contribute)",
-     True, "NOT THREADED - modCalcAnalytical is at its raw-line ceiling"),
+     True, "AccumulateTotals, from audits(index).PermanentId at both passes"),
+    ("modCalcAnalytical",
+     "per-driver-per-year annual conditioning magnitude (RecordAnnual)", True,
+     "BuildAnnualSeries, from drivers(...).PermanentId at the per-year pass"),
     ("modCalcAnalytical", "I5 profile-sum identity", True,
-     "NOT THREADED - modCalcAnalytical is at its raw-line ceiling"),
+     "Reconcile, from drivers(index).PermanentId at the I5 loop"),
     ("modCalcAnalytical", "measure totals, conditioning coefficient", False, ""),
+    ("modCalcAnalytical", "annual series, applied timeline", False, ""),
     ("modCalcReport", "inflation profile not in reference set", True,
-     "NOT THREADED - modCalcReport is at its raw-line ceiling"),
+     "BuildDriverFactors, from the id the loop has just copied"),
     ("modCalcReport", "Knom / Kpv factor build", True,
-     "NOT THREADED - modCalcReport is at its raw-line ceiling"),
+     "BuildDriverFactors, same loop"),
     ("modCalcReport", "driver audit build", True,
-     "NOT THREADED - modCalcReport is at its raw-line ceiling"),
+     "BuildAudits, from package.Drivers(index).PermanentId at the loop"),
     ("modCalcReport", "fingerprint record encoding", True,
-     "NOT THREADED - modCalcReport is at its raw-line ceiling"),
+     "BuildFingerprint, from package.Model.Drivers(index).PermanentId at the loop"),
     ("modCalcReport", "reconciliation identities, fingerprint construction", False, ""),
+    ("modCalcReport", "factor tables, discount factors", False, ""),
 )
 
-_THREADED = {"modCalcResolve", "modCalcCheck"}
+
+_THREADED = {"modCalcResolve", "modCalcCheck", "modCalcAnalytical",
+             "modCalcReport"}
 
 
-def test_46j_every_threaded_owner_really_threads_and_the_rest_are_named() -> None:
+def _subject_statements(text: str) -> list[str]:
+    """Every `subject = ...` statement in *text*, wherever it sits on its line.
+
+    P9-3 threads two modules that had no raw line to spare, so their assignments
+    ride on statements that were already there - `Next slot: subject =
+    vbNullString`. A scan anchored to the start of a line would see none of them
+    and would pass by seeing nothing, which is the worst way for a control to
+    be green.
+    """
+    found: list[str] = []
+    for line in text.splitlines():
+        for part in line.split(":"):
+            part = part.strip()
+            if part.startswith("subject = "):
+                found.append(part)
+    return found
+
+
+def test_46j_every_threaded_owner_really_threads_and_none_is_left_out() -> None:
     """THE COVERAGE TABLE IS CHECKED AGAINST THE SOURCE, not merely written.
 
     A module the table says threads must actually set a subject; a module it
     says does not must actually not - so the table cannot quietly become a
     description of what somebody hoped was true.
     """
-    for module in ("modCalcResolve", "modCalcCheck", "modCalcAnalytical"):
-        sets = [line for line in _code(module).splitlines()
-                if line.strip().startswith("subject = ")]
+    for module in ("modCalcResolve", "modCalcCheck", "modCalcAnalytical",
+                   "modCalcReport"):
+        sets = _subject_statements(_code(module))
         if module in _THREADED:
             assert sets, f"{module} is listed as threaded and threads nothing"
         else:
             assert not sets, (
                 f"{module} threads a subject; the coverage table says it does not")
-    unthreaded = {owner for owner, _f, specific, source in REFUSAL_FAMILIES
-                  if specific and source.startswith("NOT THREADED")}
-    assert unthreaded == {"modCalcAnalytical", "modCalcReport"}, sorted(unthreaded)
-    # AND THE REASON IS TRUE. Both are at the ceiling the size control enforces,
-    # which is why they are reported rather than patched.
-    for module in sorted(unthreaded):
-        raw = (SRC / f"{module}.bas").read_text(encoding="utf-8").splitlines()
-        assert len(raw) >= 1198, (module, len(raw))
+
+    # AND NOTHING IS STILL REPORTED AS UNCOVERED. P9-2B named two owners it
+    # could not reach; P9-3 reached them, so the table may no longer carry a
+    # single driver-specific family without a structured source. If a later
+    # phase adds one, this fails rather than letting the gap reappear quietly.
+    unsourced = [(owner, family) for owner, family, specific, source
+                 in REFUSAL_FAMILIES
+                 if specific and (source.startswith("NOT THREADED") or not source)]
+    assert not unsourced, (
+        f"a driver-specific refusal family has no structured subject: {unsourced}")
+
+    # AND EVERY OWNER THE TABLE NAMES IS ONE THAT EXISTS AND IS THREADED.
+    assert {owner for owner, _f, specific, _s in REFUSAL_FAMILIES
+            if specific} == _THREADED | {"modCalcResolve"}, sorted(
+        {owner for owner, _f, specific, _s in REFUSAL_FAMILIES if specific})
+
+
+@pytest.mark.parametrize("module,procedure,expression", [
+    ("modCalcAnalytical", "AccumulateTotals", "who"),
+    ("modCalcAnalytical", "BuildAnnualSeries",
+     "drivers(LBound(drivers) + order(slot)).PermanentId"),
+    ("modCalcAnalytical", "Reconcile", "drivers(index).PermanentId"),
+    ("modCalcReport", "BuildDriverFactors",
+     "package.Model.Drivers(index).PermanentId"),
+    ("modCalcReport", "BuildAudits", "package.Drivers(index).PermanentId"),
+    ("modCalcReport", "BuildFingerprint",
+     "package.Model.Drivers(index).PermanentId"),
+])
+def test_46v_each_remaining_owner_sets_the_id_its_own_loop_already_held(
+        module: str, procedure: str, expression: str) -> None:
+    """P9-3, ONE FAMILY AT A TIME. Each of the six procedures that reach a
+    driver-specific refusal assigns the permanent id the enclosing loop had in
+    hand - not a lookup, not a second traversal, not a reconstruction."""
+    body = _procedure(module, procedure)
+    assert f"subject = {expression}" in body, (module, procedure, expression)
+    # AND THE ID IS SET BEFORE ANY REFUSAL IN THAT PROCEDURE CAN FIRE, so a
+    # refusal never reports the previous driver.
+    statements = [part.strip() for line in body.splitlines()
+                  for part in line.split(":")]
+    first_set = next(i for i, s in enumerate(statements)
+                     if s.startswith("subject = ") and s != "subject = vbNullString")
+    # A REFUSAL IS EITHER A SENTENCE WRITTEN HERE OR A DELEGATE'S FALSE. In
+    # AccumulateTotals and BuildFingerprint the per-driver refusal is Contribute
+    # or DriverRecord returning False and this procedure leaving; the sentence is
+    # the callee's. Both shapes count, or the control would only see one of them.
+    refusals = [i for i, s in enumerate(statements)
+                if (s.startswith("detail = ") and s != "detail = vbNullString")
+                or "Exit Function" in s]
+    driver_refusals = [i for i in refusals if i > first_set]
+    assert driver_refusals, (
+        f"{module}.{procedure} sets a subject no refusal below it can use")
+
+
+@pytest.mark.parametrize("module,procedure", [
+    ("modCalcAnalytical", "AccumulateTotals"),
+    ("modCalcAnalytical", "BuildAnnualSeries"),
+    ("modCalcAnalytical", "Reconcile"),
+    ("modCalcReport", "BuildDriverFactors"),
+    ("modCalcReport", "BuildAudits"),
+    ("modCalcReport", "BuildFingerprint"),
+])
+def test_46w_each_remaining_owner_clears_before_its_model_wide_phase(
+        module: str, procedure: str) -> None:
+    """A measure total, a fingerprint construction, an annual series: none of
+    them is about one driver, and none may inherit the last id the per-driver
+    loop above them happened to leave behind."""
+    body = _procedure(module, procedure)
+    statements = [part.strip() for line in body.splitlines()
+                  for part in line.split(":")]
+    sets = [i for i, s in enumerate(statements)
+            if s.startswith("subject = ") and s != "subject = vbNullString"]
+    clears = [i for i, s in enumerate(statements) if s == "subject = vbNullString"]
+    assert sets, (module, procedure)
+    assert any(clear > max(sets) for clear in clears), (
+        f"{module}.{procedure} can leave a driver id set once its per-driver "
+        "phase is over")
 
 
 @pytest.mark.parametrize("driver", ["CL-0001", "RSK-0004"])
@@ -1325,15 +1421,55 @@ def test_46n_the_subject_reading_is_the_live_adapter() -> None:
 
 # --- the source mutations -------------------------------------------------
 def _subject_sources(text: str) -> list[str]:
-    import re
-
-    return [m.group(1).strip() for m in
-            re.finditer(r"^\s*subject = (.+)$", text, re.M)]
+    """The right-hand side of every subject assignment, compound lines included."""
+    return [statement[len("subject = "):].strip()
+            for statement in _subject_statements(text)]
 
 
 def _assert_sources_are_permanent_ids(text: str) -> None:
+    """Every subject is a permanent id, a clear, or a local that is only ever
+    one of those.
+
+    THE INDIRECTION IS ALLOWED AND CHECKED, NOT WAVED THROUGH. AccumulateTotals
+    already reads `who = audits(index).PermanentId` for the sentence its
+    delegate writes, and P9-3 hands that same local out rather than reading the
+    array a second time. So a bare local passes only if EVERY assignment to it
+    in the module ends in `.PermanentId`: one that is ever set from a currency,
+    a row number or a literal fails here exactly as a direct one would.
+    """
+    import re
+
     for source in _subject_sources(text):
-        assert source == "vbNullString" or source.endswith(".PermanentId"), source
+        if source == "vbNullString" or source.endswith(".PermanentId"):
+            continue
+        assert re.fullmatch(r"[A-Za-z_]\w*", source), (
+            f"subject is set from something that is not a permanent id: {source}")
+        binds = [statement[len(source) + 3:].strip()
+                 for line in text.splitlines() for statement in
+                 (part.strip() for part in line.split(":"))
+                 if statement.startswith(f"{source} = ")]
+        assert binds, f"subject is set from {source}, which is never assigned"
+        for bind in binds:
+            assert bind.endswith(".PermanentId"), (
+                f"subject is set from {source}, which is assigned {bind}")
+
+
+# EVERY THREADED OWNER, NOT JUST THE FIRST ONE. P9-2B proved the rule on
+# modCalcCheck; P9-3 adds four more procedures across two modules, and a rule
+# demonstrated on one of six is not a rule.
+_ID_SITES = [
+    ("modCalcCheck", "subject = model.Drivers(LBound(model.Drivers) + index).PermanentId",
+     "model.Drivers(LBound(model.Drivers) + index)"),
+    ("modCalcResolve", "subject = driver.PermanentId", "driver"),
+    ("modCalcAnalytical", "subject = drivers(index).PermanentId", "drivers(index)"),
+    ("modCalcAnalytical",
+     "subject = drivers(LBound(drivers) + order(slot)).PermanentId",
+     "drivers(LBound(drivers) + order(slot))"),
+    ("modCalcReport", "subject = package.Model.Drivers(index).PermanentId",
+     "package.Model.Drivers(index)"),
+    ("modCalcReport", "subject = package.Drivers(index).PermanentId",
+     "package.Drivers(index)"),
+]
 
 
 @pytest.mark.parametrize("replacement,label", [
@@ -1341,16 +1477,35 @@ def _assert_sources_are_permanent_ids(text: str) -> None:
     ("CStr(rowIndex)", "a worksheet row number"),
     ('"CL-0001"', "a hard-coded id"),
 ])
-def test_46o_mutation_the_subject_stops_being_a_permanent_id(replacement: str,
-                                                             label: str) -> None:
+@pytest.mark.parametrize("module,statement,owner", _ID_SITES,
+                         ids=[f"{m}:{o[:24]}" for m, _s, o in _ID_SITES])
+def test_46o_mutation_the_subject_stops_being_a_permanent_id(
+        module: str, statement: str, owner: str,
+        replacement: str, label: str) -> None:
     """A subject taken from anything but the driver's permanent id - its
     currency, its row number, a literal - reads plausibly and is wrong."""
-    text = _code("modCalcCheck")
+    text = _code(module)
+    assert statement in text, (module, statement)
     mutated = text.replace(
-        "subject = model.Drivers(LBound(model.Drivers) + index).PermanentId",
-        f"subject = model.Drivers(LBound(model.Drivers) + index){replacement}"
-        if replacement.startswith(".") else f"subject = {replacement}", 1)
+        statement,
+        f"subject = {owner}{replacement}" if replacement.startswith(".")
+        else f"subject = {replacement}", 1)
     assert mutated != text, label
+    with pytest.raises(AssertionError):
+        _assert_sources_are_permanent_ids(mutated)
+    _assert_sources_are_permanent_ids(text)
+
+
+def test_46o1_mutation_the_local_the_subject_borrows_stops_being_an_id() -> None:
+    """THE INDIRECTION CANNOT BE THE WAY ROUND THE RULE. AccumulateTotals hands
+    out `who`, the local its delegate's sentence is built from. If `who` were
+    ever assigned something that is not a permanent id, the subject would stop
+    being one without a single subject line changing."""
+    text = _code("modCalcAnalytical")
+    assert "subject = who" in text
+    mutated = text.replace("who = audits(index).PermanentId",
+                           "who = audits(index).Description", 1)
+    assert mutated != text
     with pytest.raises(AssertionError):
         _assert_sources_are_permanent_ids(mutated)
     _assert_sources_are_permanent_ids(text)
@@ -1445,6 +1600,48 @@ def test_46t_the_plumbing_reversal_hides_nothing() -> None:
             f"the reversal absorbed {label}; it would have hidden a real change")
         assert hashlib.sha256(restored.encode()).hexdigest() != \
             hashlib.sha256(baseline.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("module,semantic", [
+    ("modCalcAnalytical", ("an identity tolerance", "TOL_PROFILING_SUM_ABSOLUTE",
+                           "TOL_IDENTITY_RELATIVE_COEFFICIENT")),
+    ("modCalcAnalytical", ("an arithmetic expression", "10 + slot", "11 + slot")),
+    ("modCalcAnalytical", ("a Boolean outcome", "Reconcile = True", "Reconcile = False")),
+    ("modCalcAnalytical", ("a refusal message", "canonical driver order",
+                           "canonical order")),
+    ("modCalcReport", ("a refusal message",
+                       "the inflation profile is not in the resolved reference set",
+                       "the inflation profile is unknown")),
+    ("modCalcReport", ("a Boolean outcome", "BuildAudits = True", "BuildAudits = False")),
+    ("modCalcReport", ("a call the preparation makes", "CountCurrencyReferences package",
+                       "CountCurrencyReferences package.Model")),
+], ids=lambda v: v if isinstance(v, str) else v[0])
+def test_46t1_the_reversal_hides_nothing_in_the_two_owners_p9_3_reached(
+        module: str, semantic: tuple) -> None:
+    """THE SAME PROOF, FOR THE MODULES P9-3 TOUCHED. Their pins - the pre-Run-7
+    digest for modCalcAnalytical, the accepted reporter prefix for modCalcReport
+    - did not move because the reversal restores them. That claim is only worth
+    anything if the reversal cannot swallow a real change as well."""
+    import sys as _sys
+
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_subject_plumbing import reverse_subject_plumbing
+
+    label, before, after = semantic
+    text = (SRC / f"{module}.bas").read_text(encoding="utf-8")
+    baseline = subprocess.run(["git", "show", f"ad78988:pccm/src/vba/{module}.bas"],
+                              cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
+                              text=True).stdout
+    if module == "modCalcReport":
+        banner = ("' ==========================================================================\n"
+                  "' STEP 11 ADDITION - THE PHASE-6 PREPARATION BRIDGE\n")
+        text, baseline = text[:text.index(banner)], baseline[:baseline.index(banner)]
+    assert reverse_subject_plumbing(module, text) == baseline, (
+        f"the subject plumbing is not the only thing that changed in {module}")
+    mutated = text.replace(before, after, 1)
+    assert mutated != text, (module, label)
+    assert reverse_subject_plumbing(module, mutated) != baseline, (
+        f"the reversal absorbed {label} in {module}; it would have hidden a real change")
 
 
 def test_46u_the_reversal_refuses_to_run_on_text_it_does_not_recognise() -> None:
@@ -1705,38 +1902,35 @@ def test_45_the_adapter_invents_no_state_word() -> None:
 # proves, line by line, that no condition, no message, no Boolean and no
 # arithmetic moved - because if any of them had, the normalised line would not
 # match.
-# LONGEST FIRST, and applied in that order: stripping the short form first
-# leaves the remains of the long one behind, which is how the first draft of
-# this turned `detail = vbNullString: subject = vbNullString` into
-# `detail = vbNullString: = vbNullString` and failed its own sanity check.
-PHASE9_PLUMBING = tuple(sorted((
-    ": subject = vbNullString", "subject = vbNullString", "ByRef subject As String",
-    ", subject As String", "subject As String", ", subject", " subject", "subject",
-), key=len, reverse=True))
-
+# AND THE DEFINITION OF "PLUMBING" IS THE SHARED ONE. This control used to keep
+# its own token list, which meant two descriptions of the same rule and two
+# chances for one of them to drift. It now asks tests/vba_subject_plumbing.py -
+# the same function the byte-for-byte module reversals ask - so a form that
+# reverses cleanly there and a form that normalises cleanly here are the same
+# form, by construction.
 DECLARED_PHASE9_CORRECTIONS = {
     "pccm/src/vba/modResultsState.bas": "additive",
     "pccm/src/vba/modCalcReport.bas": "plumbing",
     "pccm/src/vba/modCalcCheck.bas": "plumbing",
     "pccm/src/vba/modCalcResolve.bas": "plumbing",
+    # P9-3 completes the coverage in the last owner that held a permanent id it
+    # was not handing out.
+    "pccm/src/vba/modCalcAnalytical.bas": "plumbing",
 }
 
 
 def _normalise(line: str) -> str:
-    """A line with every subject-plumbing token taken back out of it.
+    """A line with the subject plumbing taken back out of it.
 
-    Separators the plumbing brought with it go too - a trailing comma left by a
-    removed parameter, a stranded statement colon - so that a signature with the
-    parameter and one without normalise to the same text. Nothing else is
-    touched: the comparison would be worthless if it also tidied real code.
+    The rule is not restated here: reverse_line is the SAME definition the
+    module-wide byte reversals use, so a line that reverses to the accepted
+    bytes and a line that normalises to its undamaged self cannot disagree.
+    Whitespace is then collapsed, because a line that gained a parameter may
+    have been re-wrapped and the statement is what is being compared.
     """
-    text = line
-    for token in PHASE9_PLUMBING:
-        text = text.replace(token, "")
-    text = " ".join(text.split())
-    while text.endswith(",") or text.endswith(":"):
-        text = text[:-1].rstrip()
-    return text.replace(", )", ")").replace("( ", "(").replace(" )", ")").replace(",)", ")")
+    from vba_subject_plumbing import reverse_line
+
+    return " ".join((reverse_line(line) or "").split())
 
 
 def _logical(lines: list[str]) -> list[str]:

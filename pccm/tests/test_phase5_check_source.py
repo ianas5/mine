@@ -739,7 +739,14 @@ FROZEN_SHA256 = {
     # ANALYTICAL_UNCHANGED_BODIES_SHA256 in test_phase5_vba_source.py is what
     # proves the other thirty-one functions, including every arithmetic one,
     # did not move with it.
-    "modCalcAnalytical": "79c4f5f32e8a09db2d2300922c9e20ceacbefc44c2aa2e4be95c6bafeca92208",
+    # MOVED AGAIN AT P9-3, and still pinned. The Phase-9 structured refusal
+    # correction is completed here: AccumulateTotals, BuildAnnualSeries and
+    # Reconcile each carry a `subject` out-parameter and assign the permanent id
+    # their own loop already holds when they refuse about ONE driver. The
+    # PRE-RUN-7 digest above did NOT move - the reversal is taken before it - and
+    # no identity, tolerance, conditioning rule or arithmetic expression is
+    # touched, which is what the reversal proves rather than asserts.
+    "modCalcAnalytical": "8c1c3eb00c479285927ca7775ea04e523a30380e1d5fcfb1f1c8b83775b1b5f0",
     # Its CURRENT bytes, and they have now moved TWICE, both times under an
     # explicit authorisation recorded here:
     #   Step 7  - CalcFpNumberField made Public, nothing else.

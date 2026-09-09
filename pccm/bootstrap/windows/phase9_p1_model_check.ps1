@@ -1135,6 +1135,96 @@ try {
     }
 
     # -------------------------------------------------------------------
+    # SCENARIO F2 - A REFUSAL FROM AN OWNER THE ORDERING CHECK NEVER REACHES
+    # -------------------------------------------------------------------
+    # WHY A SECOND INVALID SCENARIO. Scenario F breaks the three-point ordering,
+    # which modCalcCheck refuses BEFORE any factor, audit or total is built, so
+    # it proves the Subject for exactly one owner. P9-3 threaded the owners
+    # DOWNSTREAM of that check, and a rule proved on one owner is not proved on
+    # the others.
+    #
+    # SO THIS ONE PASSES EVERY VALIDATION AND FAILS IN THE ARITHMETIC. Min, Most
+    # Likely and Max are set equal, so the ordering holds; the quantity stays
+    # strictly positive; the profile weights still sum to one. What cannot be
+    # represented is the PRODUCT, and the driver audit is where that is found -
+    # a P9-3 family in modCalcReport. The Subject must still be the driver this
+    # runner broke, and the sentence must not be the ordering one again.
+    Write-P9Line ''
+    Write-P9Line 'SCENARIO F2 - A REFUSAL RAISED AFTER VALIDATION PASSES'
+    Write-P9Line '-----------------------------------------------------'
+    $minColumnIndex = Get-P9RegisterColumnIndex -Register $costRegister -ColumnKey 'unit_cost_min'
+    $likelyColumnIndex = Get-P9RegisterColumnIndex -Register $costRegister -ColumnKey 'unit_cost_most_likely'
+    $quantityColumnIndex = Get-P9RegisterColumnIndex -Register $costRegister -ColumnKey 'quantity'
+    $reachable = (($minColumnIndex -ge 1) -and ($likelyColumnIndex -ge 1) -and
+                  ($maxColumnIndex -ge 1) -and ($quantityColumnIndex -ge 1))
+    $null = Add-P9Check 'the cost register projects the columns scenario F2 needs' `
+        $reachable `
+        ('min=' + [string]$minColumnIndex + ' likely=' + [string]$likelyColumnIndex +
+         ' max=' + [string]$maxColumnIndex + ' quantity=' + [string]$quantityColumnIndex) `
+        'PREREQUISITE'
+    if ($reachable) {
+        $brokenLine = @($model.cost_lines)[0]
+        $constantId2 = [string]$brokenLine.permanent_id
+        $restoreMin = [double]$brokenLine.min_value
+        $restoreLikely = [double]$brokenLine.most_likely
+        $restoreMax2 = [double]$brokenLine.max_value
+        $restoreQuantity = [double]$brokenLine.quantity
+        $huge = [double]1e+300
+        foreach ($columnIndex in @($minColumnIndex, $likelyColumnIndex, $maxColumnIndex,
+                                   $quantityColumnIndex)) {
+            Set-P9TableCell -Workbook $wb -SheetName ([string]$costRegister.sheet) `
+                -TableName ([string]$costRegister.table_name) -RowIndex 1 `
+                -ColumnIndex $columnIndex -Value $huge
+        }
+        Invoke-P9Recalculate -Excel $excel
+        $surfaceF2 = Read-P9Surface -Workbook $wb -Projection $projection
+        $null = Test-P9ReadingsAnswered -Surface $surfaceF2 -Projection $projection -Stage 'F-ARITHMETIC'
+        $shownF2 = @(Test-P9Reconciles -Surface $surfaceF2 -Projection $projection -Stage 'F-ARITHMETIC')
+        $liveReason2 = [string](Format-P9Cell $surfaceF2.Readings['calculation_refusal_detail'])
+        $liveSubject2 = [string](Format-P9Cell $surfaceF2.Readings['calculation_refusal_subject'])
+        Write-P9Line ('    live reason      : ' + $liveReason2)
+        Write-P9Line ('    live subject     : ' + $liveSubject2)
+        $null = Add-P9Check 'F2: the live calculation state reads INVALID' `
+            ([string](Format-P9Cell $surfaceF2.Readings['calculation_state']) -ceq 'INVALID') `
+            (Format-P9Cell $surfaceF2.Readings['calculation_state'])
+        $null = Add-P9Check 'F2: the root cause is counted exactly once' `
+            ([double]$surfaceF2.Summary['error_count'] -eq 1) `
+            ('errors=' + (Format-P9Cell $surfaceF2.Summary['error_count']))
+        $errorRows2 = @()
+        foreach ($row in $shownF2) {
+            if ([string]$row.severity -ceq [string]@($projection.vocabulary.severity_order)[0]) {
+                $errorRows2 += $row
+            }
+        }
+        $null = Add-P9Check 'F2: exactly one actionable ERROR row is displayed' `
+            ($errorRows2.Count -eq 1) ([string]$errorRows2.Count + ' row(s)')
+        if ($errorRows2.Count -eq 1) {
+            $null = Add-P9Check 'F2: the actionable ERROR Subject is the invalidated permanent id' `
+                ([string]$errorRows2[0].subject -ceq $constantId2) `
+                ('subject=' + (Format-P9Cell $errorRows2[0].subject) + ' expected ' + $constantId2)
+            $null = Add-P9Check 'F2: the live subject reading agrees with the displayed Subject' `
+                ($liveSubject2 -ceq [string]$errorRows2[0].subject) $liveSubject2
+            $null = Add-P9Check 'F2: the refusal comes from an owner past the ordering check' `
+                (-not ([string]$errorRows2[0].message -clike '*Min <= Most Likely <= Max*')) `
+                (Format-P9Cell $errorRows2[0].message)
+            $null = Add-P9Check 'F2: the live reason names the same driver' `
+                ([string]$errorRows2[0].message -clike ('*' + $constantId2 + '*')) `
+                ('looking for ' + $constantId2 + ' in: ' + (Format-P9Cell $errorRows2[0].message))
+        }
+        $restoreBy = @{}
+        $restoreBy[$minColumnIndex] = $restoreMin
+        $restoreBy[$likelyColumnIndex] = $restoreLikely
+        $restoreBy[$maxColumnIndex] = $restoreMax2
+        $restoreBy[$quantityColumnIndex] = $restoreQuantity
+        foreach ($columnIndex in @($restoreBy.Keys)) {
+            Set-P9TableCell -Workbook $wb -SheetName ([string]$costRegister.sheet) `
+                -TableName ([string]$costRegister.table_name) -RowIndex 1 `
+                -ColumnIndex $columnIndex -Value ([double]$restoreBy[$columnIndex])
+        }
+        Invoke-P9Recalculate -Excel $excel
+    }
+
+    # -------------------------------------------------------------------
     # THE ANCHOR - A STRUCTURAL FAULT RAISED AFTER THE WORKBOOK OPENED
     # -------------------------------------------------------------------
     # THE QUESTION LINUX CANNOT ANSWER. PCCM_StructuralReport is not volatile,

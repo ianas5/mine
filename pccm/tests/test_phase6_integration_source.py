@@ -760,7 +760,13 @@ REOPENED_CURRENT = {
     # different facts about two different trees, and a previous commit here
     # overwrote the historical one by taking the first regex match. test_23a is
     # what caught that; the two are edited by position now, never by pattern.
-    "modCalcReport": "362edd3a7367440c537ecff22624b34b7cdfded0b23364ce80029af23a1a2903",
+    # P9-3 re-pins it once more: BuildDriverFactors, BuildAudits, BuildAnnual and
+    # BuildFingerprint now carry the subject to the four remaining driver-specific
+    # refusal families, so an inflation-profile, Knom/Kpv, driver-audit or
+    # fingerprint-record refusal names its driver. Signatures, call sites and the
+    # assignments of an id each loop already had - reversing them restores the
+    # accepted reporter prefix to the digest it has always had.
+    "modCalcReport": "9a6636449fca750ad6d1925a7f08b229fb603f19452730d714dcb5ae6b6c6f7c",
     # P8-1 re-pins it: SimReportDerivedStatus joined the public surface. Three
     # code lines, one statement, returning the module's existing private
     # DeriveSimStatus(). The digest is repointed in the same commit as the change

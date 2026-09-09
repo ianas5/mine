@@ -537,7 +537,7 @@ End Function
 Public Function AccumulateTotals(ByRef audits() As DriverAudit, ByVal auditCount As Long, _
                                  ByRef totals As AnalyticalTotals, _
                                  ByRef magnitudes As ReconciliationMagnitudes, _
-                                 ByRef detail As String) As Boolean
+                                 ByRef detail As String, ByRef subject As String) As Boolean
     ' THE LOGICAL COUNT IS A PARAMETER, and the empty case is settled before any
     ' bound of `audits` is read. A model with no cost lines and no risks is
     ' valid, and VBA cannot represent a zero-element array: an allocated one
@@ -553,7 +553,7 @@ Public Function AccumulateTotals(ByRef audits() As DriverAudit, ByVal auditCount
     Dim eNomTerms() As Double, ePvTerms() As Double
     Dim costSlot As Long, riskSlot As Long
 
-    detail = vbNullString
+    detail = vbNullString: subject = vbNullString
     coefficient = TOL_IDENTITY_RELATIVE_COEFFICIENT
     If Not PrepareMagnitudeCoefficient(magnitudes, coefficient) Then
         detail = "conditioning magnitudes already carry a different coefficient"
@@ -591,7 +591,7 @@ Public Function AccumulateTotals(ByRef audits() As DriverAudit, ByVal auditCount
 
     For slot = 0 To count - 1
         index = LBound(audits) + order(slot)
-        who = audits(index).PermanentId
+        who = audits(index).PermanentId: subject = who
         If audits(index).IsRisk Then
             If Not Contribute(dNomTerms, riskSlot, audits(index).ExpectedRiskNominal, _
                               magnitudes.DNom, coefficient, "D nominal", who, detail) Then Exit Function
@@ -620,7 +620,7 @@ Public Function AccumulateTotals(ByRef audits() As DriverAudit, ByVal auditCount
     ' turn I2 into a tautology.
     For slot = 0 To count - 1
         index = LBound(audits) + order(slot)
-        who = audits(index).PermanentId
+        who = audits(index).PermanentId: subject = who
         If audits(index).IsRisk Then
             If Not Contribute(eNomTerms, slot, audits(index).ExpectedRiskNominal, _
                               magnitudes.ENom, coefficient, "E nominal", who, detail) Then Exit Function
@@ -632,7 +632,7 @@ Public Function AccumulateTotals(ByRef audits() As DriverAudit, ByVal auditCount
             If Not Contribute(ePvTerms, slot, audits(index).MeanBasisPv, _
                               magnitudes.EPv, coefficient, "E PV", who, detail) Then Exit Function
         End If
-    Next slot
+    Next slot: subject = vbNullString
 
     If Not SumMeasure(aNomTerms, costs, totals.ANom, "A nominal", detail) Then Exit Function
     If Not SumMeasure(aPvTerms, costs, totals.APv, "A PV", detail) Then Exit Function
@@ -752,7 +752,7 @@ Public Function BuildAnnualSeries(ByRef drivers() As DriverFactors, ByVal driver
                                   ByRef inflation() As Double, ByRef years() As YearFactors, _
                                   ByRef rows() As AnnualRow, _
                                   ByRef magnitudes As ReconciliationMagnitudes, _
-                                  ByRef detail As String) As Boolean
+                                  ByRef detail As String, ByRef subject As String) As Boolean
     ' `driverCount` is the logical driver count; see AccumulateTotals. With zero
     ' drivers the applied years still exist, so every year still gets a row -
     ' with its project index and calendar year and six zero series - and
@@ -764,7 +764,7 @@ Public Function BuildAnnualSeries(ByRef drivers() As DriverFactors, ByVal driver
     Dim nominal() As Double, present() As Double
     Dim hasNominal() As Boolean, hasPresent() As Boolean
 
-    detail = vbNullString
+    detail = vbNullString: subject = vbNullString
     coefficient = TOL_IDENTITY_RELATIVE_COEFFICIENT
     If Not PrepareMagnitudeCoefficient(magnitudes, coefficient) Then
         detail = "conditioning magnitudes already carry a different coefficient"
@@ -842,7 +842,7 @@ Public Function BuildAnnualSeries(ByRef drivers() As DriverFactors, ByVal driver
         ' aggregate can be 1 where the contributions that produced it were 1e16
         ' apart, and conditioning on the aggregate would report ordinary Double
         ' rounding as a bookkeeping mismatch.
-        For slot = 0 To count - 1
+        For slot = 0 To count - 1: subject = drivers(LBound(drivers) + order(slot)).PermanentId
             If Not RecordAnnual(factorsOf, slot, False, discount, nominal(slot), _
                                 hasNominal(slot), magnitudes, coefficient, _
                                 drivers(LBound(drivers) + order(slot)).IsRisk, False) Then
@@ -855,7 +855,7 @@ Public Function BuildAnnualSeries(ByRef drivers() As DriverFactors, ByVal driver
                 detail = "conditioning magnitude, PV, year " & CStr(rows(offset).CalendarYear)
                 Exit Function
             End If
-        Next slot
+        Next slot: subject = vbNullString
 
         If Not AnnualSeries(nominal, hasNominal, factorsOf, 0, costs, False, discount, _
                             rows(offset).BaseCostNominal) Then
@@ -1017,7 +1017,7 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
                           ByRef drivers() As DriverFactors, ByVal driverCount As Long, _
                           ByRef weights() As Double, _
                           ByRef magnitudes As ReconciliationMagnitudes, _
-                          ByRef checks() As IdentityCheck, ByRef detail As String) As Boolean
+                          ByRef checks() As IdentityCheck, ByRef detail As String, ByRef subject As String) As Boolean
     ' `driverCount` is the logical driver count; see AccumulateTotals. With zero
     ' drivers the ten non-I5 identities are still produced and still hold, no
     ' I5 profile check exists because there is no profile to check, and neither
@@ -1029,7 +1029,7 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
     Dim headline(0 To 5) As Double, annualScale(0 To 5) As Double, headScale(0 To 5) As Double
     Dim seriesValue() As Double
 
-    detail = vbNullString
+    detail = vbNullString: subject = vbNullString
     If magnitudes.RelativeCoefficient <> TOL_IDENTITY_RELATIVE_COEFFICIENT Then
         ' The scales would describe a different tolerance from the one asked
         ' for, which is a defect in the calculation and not a model refusal.
@@ -1125,7 +1125,7 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
         Exit Function
     End If
     For slot = 0 To count - 1
-        index = LBound(drivers) + order(slot)
+        index = LBound(drivers) + order(slot): subject = drivers(index).PermanentId
         ReDim series(0 To UBound(weights, 2) - LBound(weights, 2))
         For position = 0 To UBound(series)
             series(position) = weights(LBound(weights, 1) + order(slot), _
@@ -1144,7 +1144,7 @@ Public Function Reconcile(ByRef totals As AnalyticalTotals, ByRef rows() As Annu
         End If
         checks(10 + slot).Allowance = TOL_PROFILING_SUM_ABSOLUTE
         checks(10 + slot).Holds = Abs(checks(10 + slot).Difference) <= checks(10 + slot).Allowance
-    Next slot
+    Next slot: subject = vbNullString
     Reconcile = True
 End Function
 

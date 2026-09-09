@@ -216,9 +216,44 @@ DECLARED_PRODUCTION_CORRECTIONS = {
          '    detail = vbNullString',
          '    If Not modCalcResolve.ResolveModel(package.Model, detail) Then Exit Function',
          '    If Not modCalcCheck.CheckResolvedModel(package.Model, detail) Then Exit Function',
+         '    If Not BuildDriverFactors(package, detail) Then Exit Function',
+         '    If Not BuildAudits(package, detail) Then Exit Function',
+         '                                              detail) Then Exit Function',
+         '    If Not BuildAnnual(package, detail) Then Exit Function',
+         '                                       package.Magnitudes, package.Checks, detail) Then',
+         '    If Not BuildFingerprint(package, detail) Then Exit Function',
+         '                                    ByRef detail As String) As Boolean',
+         '    For index = 0 To package.Model.DriverCount - 1',
+         '    Next index',
+         '                             ByRef detail As String) As Boolean',
+         '        package.Magnitudes, detail)',
+         '                                  ByRef detail As String) As Boolean',
          '    CurrentStatus = DeriveStatus(package, PrepareCurrentCalculation(package, detail))',
          '    Dim status As String',
          '    If Not PrepareCurrentCalculation(package, detail) Then Exit Function'),
+    ),
+    "pccm/src/vba/modCalcAnalytical.bas": (
+        "P9-3: the last two owners name their driver too. AccumulateTotals, "
+        "BuildAnnualSeries and Reconcile each gain a `ByRef subject As "
+        "String` and assign the permanent id their OWN loop already holds "
+        "when they refuse about one driver - a conditioning magnitude, a "
+        "per-driver-per-year annual magnitude, an I5 profile sum - and clear "
+        "it again where the model-wide phase begins, so a measure total or a "
+        "coefficient failure still names nobody. The module is one line under "
+        "its accepted raw-line ceiling and did not move off it: every "
+        "assignment rides on a statement that was already there. No identity, "
+        "tolerance, conditioning rule, arithmetic expression or refusal "
+        "sentence is touched, which the mechanical reversal proves by "
+        "restoring the Phase-7 acceptance bytes exactly.",
+        ('                                 ByRef detail As String) As Boolean',
+         '    detail = vbNullString',
+         '        who = audits(index).PermanentId',
+         '    Next slot',
+         '                                  ByRef detail As String) As Boolean',
+         '        For slot = 0 To count - 1',
+         '        Next slot',
+         '                          ByRef checks() As IdentityCheck, ByRef detail As String) As Boolean',
+         '        index = LBound(drivers) + order(slot)'),
     ),
     "pccm/src/vba/modCalcResolve.bas": (
         "P9-2B: the refusal names its driver, structurally. Every removal below "
@@ -1479,7 +1514,8 @@ def _the_removals_are_only_the_subject_plumbing(since: str) -> None:
 
     from vba_subject_plumbing import reverse_subject_plumbing
 
-    for module in ("modCalcReport", "modCalcResolve", "modCalcCheck"):
+    for module in ("modCalcReport", "modCalcResolve", "modCalcCheck",
+                   "modCalcAnalytical"):
         path = f"pccm/src/vba/{module}.bas"
         _reason, removals = DECLARED_PRODUCTION_CORRECTIONS[path]
         if not removals:
@@ -1499,10 +1535,12 @@ def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None
     correction really is what it says it is."""
     _declared_production_changes(_git, P81_ACCEPTANCE)
     _declared_production_changes(_git, P82_ACCEPTANCE)
-    # THE EXACT SET, AND IT GREW BY ONE AT P9-2 AND BY TWO MORE AT P9-2B.
-    # Naming them keeps this as strict as it was: a SIXTH declaration still
-    # fails here, and so does a removal or a rename of any of these five.
+    # THE EXACT SET, AND IT GREW BY ONE AT P9-2, BY TWO MORE AT P9-2B AND BY
+    # ONE AT P9-3. Naming them keeps this as strict as it was: a SEVENTH
+    # declaration still fails here, and so does a removal or a rename of any of
+    # these six.
     assert set(DECLARED_PRODUCTION_CORRECTIONS) == {
+        "pccm/src/vba/modCalcAnalytical.bas",
         "pccm/src/vba/modCalcCheck.bas",
         "pccm/src/vba/modCalcReport.bas",
         "pccm/src/vba/modCalcResolve.bas",
