@@ -28,6 +28,7 @@ from pathlib import Path
 PCCM_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = PCCM_ROOT.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
+sys.path.insert(0, str(PCCM_ROOT / "tests"))
 
 import pytest  # noqa: E402
 import yaml  # noqa: E402
@@ -200,8 +201,63 @@ DECLARED_PRODUCTION_CORRECTIONS = {
         "its accepted raw-line ceiling is unchanged. P9-2B threads a structured "
         "subject through the same preparation, which is signatures and call "
         "sites only: reversing the plumbing restores the accepted reporter "
-        "prefix byte for byte, which is what says no rule rode along.",
-        (),
+        "prefix byte for byte, which is what says no rule rode along. THE "
+        "REMOVALS BELOW ARE THAT THREADING AND NOTHING ELSE: a signature, the "
+        "Dim lines the extra local sits on, the two owner calls it is handed "
+        "to, and the entry clear that now clears both. No condition, no "
+        "message, no Boolean and no arithmetic is among them, which the "
+        "mechanical reversal in tests/vba_subject_plumbing.py proves by "
+        "restoring the accepted reporter prefix exactly.",
+        ('    Dim package As CalculationPackage, detail As String',
+         '    prepared = PrepareCurrentCalculation(package, detail)',
+         '    If PrepareCurrentCalculation(package, detail) Then',
+         '    Dim detail As String, prepared As Boolean',
+         '                                           ByRef detail As String) As Boolean',
+         '    detail = vbNullString',
+         '    If Not modCalcResolve.ResolveModel(package.Model, detail) Then Exit Function',
+         '    If Not modCalcCheck.CheckResolvedModel(package.Model, detail) Then Exit Function',
+         '    CurrentStatus = DeriveStatus(package, PrepareCurrentCalculation(package, detail))',
+         '    Dim status As String',
+         '    If Not PrepareCurrentCalculation(package, detail) Then Exit Function'),
+    ),
+    "pccm/src/vba/modCalcResolve.bas": (
+        "P9-2B: the refusal names its driver, structurally. Every removal below "
+        "is a signature or a call site gaining one out-parameter beside the "
+        "`detail` it already carried - ByRef subject As String - so the "
+        "permanent id these owners ALREADY hold when they refuse reaches the "
+        "caller as a VALUE instead of being read back out of the sentence. Not "
+        "one condition, message, Boolean, constant or arithmetic expression is "
+        "among them, and that is proved rather than asserted: "
+        "tests/vba_subject_plumbing.py removes the plumbing mechanically and "
+        "this module must be the Phase-7 acceptance bytes again, to the byte. "
+        "The id is set where it becomes known, cleared on success so a later "
+        "model-wide refusal cannot inherit it, and left blank wherever no single "
+        "driver is at fault.",
+        ("Public Function ResolveModel(ByRef model As ResolvedModel, ByRef detail As String) As Boolean",
+         "    If Not ResolveDrivers(model.Drivers, model.DriverCount, detail) Then Exit Function",
+         "    If Not AttachDriverFx(model, detail) Then Exit Function",
+         "                                 model.Weights, detail) Then Exit Function",
+         "                               ByRef detail As String) As Boolean",
+         "    If Not ReadRegister(KIND_COST, drivers, driverCount, detail) Then Exit Function",
+         "    If Not ReadRegister(KIND_RISK, drivers, driverCount, detail) Then Exit Function",
+         "                              ByRef driverCount As Long, ByRef detail As String) As Boolean",
+         "            If Not ReadDriverRow(kind, table, rowIndex, drivers(slot), label, detail) Then",
+         "                               ByVal label As String, ByRef detail As String) As Boolean",
+         "                                      ByRef detail As String) As Boolean",
+         "Private Function AttachDriverFx(ByRef model As ResolvedModel, ByRef detail As String) As Boolean"),
+    ),
+    "pccm/src/vba/modCalcCheck.bas": (
+        "P9-2B: the same threading, and here it is ONE line. CheckResolvedModel "
+        "gains a ByRef subject beside its ByRef detail; the only removal is the "
+        "continuation line its signature sat on. Inside, the id it already holds "
+        "at the per-driver loop is assigned to that parameter and cleared again "
+        "before the success exit, so every ordering, Quantity, Probability and "
+        "profiling-sum refusal names its driver while a model-level one names "
+        "none. EVERY VALIDATION CONDITION, EVERY BOOLEAN AND EVERY MESSAGE IS "
+        "UNTOUCHED - the mechanical reversal restores the Phase-7 acceptance "
+        "bytes exactly, which is a stronger statement than a fresh digest would "
+        "have been.",
+        ("                                   ByRef detail As String) As Boolean",),
     ),
     "pccm/src/vba/modSimPostReport.bas": (
         "P8-3 Windows run 4: a risk publishes its RISK NAME. DriverNameOf read "
@@ -1407,16 +1463,49 @@ def test_93_the_declared_production_rule_refuses_each_undeclared_shape(
         _declared_production_changes(git, P82_ACCEPTANCE)
 
 
+def _the_removals_are_only_the_subject_plumbing(since: str) -> None:
+    """Reversing the plumbing must make each threaded module ADDITIVE again.
+
+    A declaration is permission to grow a module. P9-2B threads an
+    out-parameter, and a signature that gains one shows up in a diff as a
+    removal however mechanical it is - so the licence would otherwise have to
+    say "these lines may go" and take on trust that nothing else went with
+    them. It does not. The plumbing is removed mechanically from TODAY's bytes
+    and the result is diffed against the accepted ones: not one line may be
+    missing. A condition, a message or a Boolean that really was deleted does
+    not come back from that reversal, and fails here.
+    """
+    import difflib
+
+    from vba_subject_plumbing import reverse_subject_plumbing
+
+    for module in ("modCalcReport", "modCalcResolve", "modCalcCheck"):
+        path = f"pccm/src/vba/{module}.bas"
+        _reason, removals = DECLARED_PRODUCTION_CORRECTIONS[path]
+        if not removals:
+            continue
+        accepted = _git("show", f"{since}:{path}").splitlines()
+        restored = reverse_subject_plumbing(
+            module, (SRC / f"{module}.bas").read_text(encoding="utf-8")).splitlines()
+        lost = [line[1:] for line in difflib.unified_diff(accepted, restored, n=0)
+                if line.startswith("-") and not line.startswith("---")]
+        assert not lost, (
+            f"{path} is not additive once the subject plumbing is reversed, so "
+            f"its declared removals cover more than plumbing: {lost[:3]}")
+
+
 def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None:
     """SO THE SIX REFUSALS ABOVE ARE REFUSALS OF THE MUTATION. And each declared
     correction really is what it says it is."""
     _declared_production_changes(_git, P81_ACCEPTANCE)
     _declared_production_changes(_git, P82_ACCEPTANCE)
-    # THE EXACT SET, AND IT GREW BY ONE AT P9-2. Naming them keeps this as
-    # strict as it was: a FOURTH declaration still fails here, and so does a
-    # removal or a rename of any of these three.
+    # THE EXACT SET, AND IT GREW BY ONE AT P9-2 AND BY TWO MORE AT P9-2B.
+    # Naming them keeps this as strict as it was: a SIXTH declaration still
+    # fails here, and so does a removal or a rename of any of these five.
     assert set(DECLARED_PRODUCTION_CORRECTIONS) == {
+        "pccm/src/vba/modCalcCheck.bas",
         "pccm/src/vba/modCalcReport.bas",
+        "pccm/src/vba/modCalcResolve.bas",
         "pccm/src/vba/modResultsState.bas",
         "pccm/src/vba/modSimPostReport.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
     reason, removals = DECLARED_PRODUCTION_CORRECTIONS[
@@ -1427,11 +1516,20 @@ def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None
     # what it exposes, what it delegates to, and what it leaves alone.
     reason, removals = DECLARED_PRODUCTION_CORRECTIONS[
         "pccm/src/vba/modCalcReport.bas"]
-    assert removals == (), "the pure-derivation exposure is additive and stays so"
     assert "CalcReportDerivedStatus" in reason, reason
     assert "DeriveStatus" in reason and "PrepareCurrentCalculation" in reason, reason
     assert "PCCM_CalculationStatus" in reason and "WriteStatusBlock" in reason, (
         "the declaration does not say which entry point still persists")
+    # AND WHAT IT NOW REMOVES IS TIED TO THE REVERSAL, NOT TAKEN ON TRUST.
+    # P9-2 and P9-2A were additive and this said so with an empty tuple. P9-2B
+    # threads an out-parameter, and a signature that gains one is a removal in
+    # a diff however mechanical it is. So the licence is not loosened to "these
+    # eleven lines may go": every line it names must come BACK when the subject
+    # plumbing is mechanically reversed. A genuine deletion - a condition, a
+    # message, a Boolean - does not come back, and fails here exactly as an
+    # undeclared removal always did.
+    _the_removals_are_only_the_subject_plumbing(P81_ACCEPTANCE)
+    _the_removals_are_only_the_subject_plumbing(P82_ACCEPTANCE)
     # THE LABEL CORRECTION REMOVES EXACTLY ONE LINE, and names which.
     reason, removals = DECLARED_PRODUCTION_CORRECTIONS[
         "pccm/src/vba/modSimPostReport.bas"]
