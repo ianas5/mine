@@ -250,11 +250,19 @@ def test_11_the_active_bank_is_touched_during_candidate_publication() -> None:
 # 5. The Phase-5 bridge
 # ===========================================================================
 def test_12_the_bridge_calls_the_calculation_endpoint() -> None:
+    # RE-ANCHORED AT P9-2B, AND NOT RELAXED. The preparation this bridge reuses
+    # now carries a structured `subject` beside the `detail` it always carried,
+    # so the line this mutation is planted in front of reads differently. The
+    # MUTATION is the same one - the bridge calling the write endpoint before it
+    # projects - and the detector it must trip is still test_04. The anchor is
+    # kept exact rather than loosened to a substring: a detector planted at a
+    # line that no longer exists proves nothing, and one planted by a fuzzy match
+    # could land somewhere else entirely without anybody noticing.
     damaged = _swap(
         _CALC,
-        "    If Not PrepareCurrentCalculation(package, detail) Then Exit Function\n",
+        "    If Not PrepareCurrentCalculation(package, detail, subject) Then Exit Function\n",
         "    PCCM_Calculate\n"
-        "    If Not PrepareCurrentCalculation(package, detail) Then Exit Function\n")
+        "    If Not PrepareCurrentCalculation(package, detail, subject) Then Exit Function\n")
     _control("test_04", vba={CALC_BAS: damaged})
 
 
