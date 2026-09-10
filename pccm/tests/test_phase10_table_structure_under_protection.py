@@ -48,13 +48,14 @@ REPO_ROOT = PCCM_ROOT.parent
 SRC = PCCM_ROOT / "src" / "vba"
 BOOTSTRAP = PCCM_ROOT / "bootstrap" / "windows"
 SPEC = PCCM_ROOT / "spec"
+BUILD = PCCM_ROOT / "build"
 
 import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 PROBE = BOOTSTRAP / "phase10_protection_probe.ps1"
 BENCHMARK = BOOTSTRAP / "phase10_benchmark.ps1"
-ACCEPTED = "24015ef"
+ACCEPTED = "ad84ea6"
 
 # ---------------------------------------------------------------------------
 # THE INVENTORY
@@ -292,8 +293,10 @@ def test_21_the_probe_separates_the_two_capabilities() -> None:
     control case deliberately rather than as a side effect."""
     code = _probe_code()
     assert "CONTROL - CAN CODE WRITE A VALUE TO A LOCKED CELL?" in code
-    assert "Set-ProbeNamedValue -Workbook $wb -DefinedName $discountName" in code
-    assert "UserInterfaceOnly is honoured for code that writes VALUES" in code
+    assert "function Invoke-ProbeLockedCellControl" in code
+    assert "so UserInterfaceOnly IS honoured for code that writes VALUES to a" in code
+    assert "It is a SEPARATE capability" in code or \
+        "That is a SEPARATE capability from permission to perform" in code
 
 
 def test_22_the_probe_checks_protection_is_actually_in_force() -> None:
@@ -441,8 +444,8 @@ def test_44_the_failure_diagnostics_name_the_stage_and_the_endpoint() -> None:
                   "at line", "statement", "command"):
         assert f"'  {field}" in code or f"  {field}" in code, field
     stages = set(re.findall(r"Set-ProbeStage -Stage '(\w+)'", code))
-    assert stages == {"preflight", "setup", "protection", "control", "endpoint",
-                      "verdict"}, stages
+    assert stages == {"preflight", "setup", "protection", "resolve", "control",
+                      "endpoint", "verdict"}, stages
 
 
 def test_45_diagnostics_never_touch_the_workbook_or_the_verdict() -> None:
@@ -514,8 +517,14 @@ def test_54_the_three_failure_kinds_are_distinguished() -> None:
     three different facts."""
     code = _probe_code()
     assert "$outcome = 'REFUSED'" in code
-    assert "if (-not $announced)  { $outcome = 'RAISED' }" in code
+    assert "if (-not $invoked)    { $outcome = 'NOT INVOKED' }" in code
+    assert "elseif (-not $announced) { $outcome = 'RAISED' }" in code
     assert "elseif ($succeeded)   { $outcome = 'SUCCEEDED' }" in code
+    # AND AN ENDPOINT THAT WAS NEVER ENTERED IS NOT A PRODUCTION RESULT AT ALL.
+    assert "$invoked = $false" in code
+    assert "$invoked = $true" in code
+    assert code.count("$invoked = $true") == 1, (
+        "the invoked flag is set in more than one place")
 
 
 def test_55_the_watched_tables_come_from_the_manifest() -> None:
@@ -524,8 +533,12 @@ def test_55_the_watched_tables_come_from_the_manifest() -> None:
     code = _probe_code()
     assert "foreach ($register in @($Manifest.registers))" in code
     assert "foreach ($grid in @($Manifest.grids))" in code
-    for typed in ("tblCostLines", "tblRiskRegister", "tblCostProfiling", "tblInflation"):
-        assert typed not in code, f"the probe types the table name {typed}"
+    for typed in ("tblCostLines", "tblRiskRegister", "tblCostProfiling", "tblInflation",
+                  "'Cost Lines'", "'Risk Register'", "'Cost Profiling'"):
+        assert typed not in code, f"the probe types the identifier {typed}"
+    # AND THE TWO IDENTIFIERS ARE INDEPENDENT. Neither is derived from the other.
+    assert "$sheetName = [string]$entry.Sheet" in code
+    assert "$tableName = [string]$entry.Table" in code
 
 
 def test_55b_the_probe_never_reaches_around_the_commands() -> None:
@@ -552,9 +565,11 @@ def test_55b_the_probe_never_reaches_around_the_commands() -> None:
     assert deletes == ["Write-ProbeLine 'Benchmark Run 3 died on a ListRow.Delete() "
                        "with \"Table features'"], deletes
     # THE ONLY WRITES IT MAKES ARE THE FOUR DECLARED INPUT SCALARS.
-    assert code.count("Set-ProbeNamedValue -Workbook $wb") == 5, (
-        "the probe writes somewhere other than the four timeline inputs and the "
-        "locked-cell control")
+    assert code.count("Set-ProbeNamedValue -Workbook $wb") == 3, (
+        "the probe writes somewhere other than the three timeline inputs")
+    # AND THE ONLY OTHER WRITE IS THE CONTROL'S, to a cell it proved locked and
+    # restores exactly.
+    assert code.count("$cell.Value2 = ") == 2, "the control writes more than twice"
 
 
 def test_56_an_inconclusive_run_exits_non_zero() -> None:
@@ -568,8 +583,8 @@ def test_57_the_locked_cell_control_is_kept_and_kept_separate() -> None:
     mistaken for this one."""
     code = _probe_code()
     assert "CONTROL - CAN CODE WRITE A VALUE TO A LOCKED CELL?" in code
-    assert "UserInterfaceOnly is honoured for code that writes VALUES" in code
-    assert "That is a SEPARATE capability from permission to perform a ListObject" in code
+    assert "so UserInterfaceOnly IS honoured for code that writes VALUES to a" in code
+    assert "a ListObject structural operation, and it settles nothing about one." in code
     assert "$controlWorked" in code
     # THE CONTROL NEVER MOVES THE VERDICT. Bounded to the branch that decides
     # it, because the control's own summary is printed further down and finding
@@ -578,6 +593,199 @@ def test_57_the_locked_cell_control_is_kept_and_kept_separate() -> None:
     verdict_block = verdict_block[:verdict_block.index("$excel.Run('PCCM_AutomationEnd')")]
     assert "$controlWorked" not in verdict_block, "the control decides the question"
     assert "$controlDetail" not in verdict_block
+
+
+# ===========================================================================
+# C4. PROBE RUN 2 - THE LOOKUP AND THE CONTRADICTORY CONTROL
+# ===========================================================================
+# TWO DEFECTS, ONE RUN.
+#
+#   DISP_E_BADINDEX at `$ws = $sheets.Item($SheetName)`. Not a missing sheet:
+#   all five watched tab names and all five table names exist in the built
+#   workbook, and `test_60` proves it against the artifacts. Every shape read
+#   re-acquired `$Workbook.Worksheets` and released it again - dozens of times
+#   per run against one underlying collection - and the lookup eventually failed
+#   on a collection that had been released out from under it.
+#
+#   THE CONTROL REPORTED SUCCESS AND FAILURE AT ONCE. The write and the restore
+#   shared a try block; the write succeeded and printed, the restore threw, and
+#   the catch printed a refusal over the top. The target was also `inpDiscountRate`
+#   - an EDITABLE INPUT, Locked=False - so it was never a locked-cell control at
+#   all.
+
+_WORKBOOK = BUILD / "PCCM_stageA.xlsx"
+_MANIFEST_FILE = BUILD / "stage_b_manifest.json"
+
+
+@pytest.mark.skipif(not _WORKBOOK.is_file() or not _MANIFEST_FILE.is_file(),
+                    reason="Stage A has not been built into pccm/build")
+def test_60_every_watched_identifier_resolves_against_the_built_workbook() -> None:
+    """THE CONTROL THAT SETTLES "IS THE SHEET MISSING?" WITHOUT A WINDOWS RUN.
+
+    Both identifiers come from the manifest, independently, and both are looked
+    up in the workbook Stage A actually built. A tab name that drifted, a table
+    renamed, or a register moved to another sheet fails here rather than as a
+    DISP_E_BADINDEX an hour into a Windows run.
+    """
+    import json
+
+    import openpyxl
+
+    manifest = json.loads(_MANIFEST_FILE.read_text(encoding="utf-8"))
+    workbook = openpyxl.load_workbook(_WORKBOOK)
+    watched = ([(entry["key"], entry["sheet"], entry["table_name"])
+                for entry in manifest["registers"]] +
+               [(entry["key"], entry["sheet"], entry["table_name"])
+                for entry in manifest["grids"]])
+    assert len(watched) == 5, watched
+
+    missing: list[str] = []
+    for key, sheet, table in watched:
+        if sheet not in workbook.sheetnames:
+            missing.append(f"{key}: no worksheet named {sheet!r}")
+            continue
+        tables = getattr(workbook[sheet], "tables", {})
+        if table not in tables:
+            missing.append(f"{key}: {sheet!r} carries no table named {table!r}")
+    assert missing == [], missing
+
+
+def test_61_the_worksheets_collection_is_resolved_once_and_held() -> None:
+    """THE CHURN THAT PRODUCED DISP_E_BADINDEX IS GONE. One acquire, one
+    release, and every shape read works from the already-resolved objects."""
+    code = _probe_code()
+    assert "function Resolve-ProbeTargets" in code
+    assert "function Release-ProbeTargets" in code
+    assert code.count("$Workbook.Worksheets") == 2, (
+        "the probe acquires the Worksheets collection more than twice: once to "
+        "resolve the targets and once to read protection")
+    assert code.count(".Item($sheetName)") == 1, (
+        "a worksheet is still being looked up more than once")
+    assert "$lo = $Target.ListObject" in code, (
+        "the shape read still resolves its own ListObject")
+    assert "Release-ProbeTargets -Resolution $resolution" in code
+
+
+def test_62_an_unresolvable_sheet_or_table_is_a_probe_failure() -> None:
+    """REQUIRED CONTROL 4 OF THIS ROUND. INCONCLUSIVE, never BLOCKED - and never
+    a fallback to index 1."""
+    code = _probe_code()
+    assert "throw ('the workbook has no worksheet named '" in code
+    assert "throw ('worksheet ' + [char]39 + $sheetName + [char]39 + ' carries no table named '" in code
+    assert ".Item(1)" not in code, "the probe falls back to a positional index"
+    # THE THROW LANDS IN THE HANDLER THAT LEAVES THE VERDICT ALONE.
+    assert "A PROBE FAILURE IS NEVER A STATEMENT ABOUT PRODUCTION" in _probe()
+
+
+def test_63_the_codename_is_recorded_and_never_used_to_find_anything() -> None:
+    """REQUIRED CONTROL 3. Tab name and CodeName are different identifiers and
+    the probe does not let one stand in for the other."""
+    code = _probe_code()
+    assert "CodeName  = [string]$ws.CodeName" in code
+    assert ".Item($ws.CodeName)" not in code
+    assert "$sheets.Item($codeName)" not in code
+    # IT IS EVIDENCE, so it reaches the log beside the tab and the table.
+    assert "'  CodeName '" in code
+
+
+def test_64_the_endpoint_is_not_called_invoked_until_application_run() -> None:
+    """REQUIRED CONTROL 5. Probe Run 2 said "invoking the production entry
+    point" while it was still collecting pre-command evidence, and the endpoint
+    was never reached."""
+    code = _probe_code()
+    body = code.split("function Invoke-ProbeEndpoint")[1]
+    body = body[:body.index("\n}")]
+    assert "PREPARING TO TEST" in body
+    assert "ENDPOINT INVOKED: Application.Run has been entered" in body
+    # THE FLAG IS SET AFTER THE PREPARATION AND BEFORE THE CALL.
+    assert body.index("$shapesBefore = Get-ProbeAllShapes") < body.index("$invoked = $true")
+    assert body.index("$invoked = $true") < body.index("$Excel.Run($Endpoint)")
+    assert "Invoked           = $invoked" in body
+
+
+def test_65_the_evidence_order_is_the_declared_one() -> None:
+    """REQUIRED ORDER: resolve, protection-before, shape-before, mark, invoke,
+    announcement, shape-after, protection-after, classify."""
+    body = _probe_code().split("function Invoke-ProbeEndpoint")[1]
+    body = body[:body.index("\n}")]
+    order = ["$protectionBefore = Get-ProbeProtectionState",
+             "$shapesBefore = Get-ProbeAllShapes",
+             "$invoked = $true",
+             "$Excel.Run($Endpoint)",
+             "$result = [string]$Excel.Run('PCCM_AutomationResult')",
+             "$shapesAfter = Get-ProbeAllShapes",
+             "$protectionAfter = Get-ProbeProtectionState"]
+    positions = [body.index(step) for step in order]
+    assert positions == sorted(positions), list(zip(order, positions))
+
+
+def test_66_the_control_cannot_report_success_and_refusal_at_once() -> None:
+    """REQUIRED CONTROL 6. Probe Run 2 printed SUCCEEDED, then REFUSED, then
+    True - three contradictory lines out of one try block."""
+    code = _probe_code()
+    body = code.split("function Invoke-ProbeLockedCellControl")[1]
+    body = body[:body.index("\n}\n")]
+    # ONE RESULT PER RUN: every path returns, and every return names one word.
+    results = re.findall(r"Result = '(\w+)'", body)
+    assert set(results) == {"INCONCLUSIVE", "REFUSED", "SUCCEEDED"}, results
+    assert body.count("return [pscustomobject]@{") == len(results)
+    # THE WRITE AND THE RESTORE ARE IN SEPARATE TRY BLOCKS, so a cleanup failure
+    # can never be printed as a refusal of the write.
+    assert "try { $cell.Value2 = $probeText } catch { $writeRaised = (Format-Err $_) }" in body
+    assert "try { $cell.Value2 = $original } catch { $restoreRaised = (Format-Err $_) }" in body
+    # AND THE CALLER TAKES ONE ANSWER.
+    assert "$controlWorked = ([bool]($controlResult -eq 'SUCCEEDED'))" in code
+
+
+def test_67_the_control_proves_its_target_is_locked_before_it_writes() -> None:
+    """REQUIRED CONTROL 7. Probe Run 2 wrote to an EDITABLE INPUT, which proves
+    nothing about UserInterfaceOnly: a user can type in that cell."""
+    body = _probe_code().split("function Invoke-ProbeLockedCellControl")[1]
+    body = body[:body.index("\n}\n")]
+    assert "if (-not $target.Worksheet.ProtectContents) {" in body
+    assert "if (-not $cell.Locked) {" in body
+    assert body.index("if (-not $cell.Locked) {") < body.index("$cell.Value2 = $probeText")
+    assert "inpDiscountRate" not in _probe_code(), (
+        "the control still writes to an editable input")
+    assert "discount_rate" not in _probe_code()
+
+
+def test_68_the_original_value_is_restored_and_verified() -> None:
+    """REQUIRED CONTROL 8, and a blank original is refused rather than
+    'restored' - Probe Run 2's original was blank and that is what threw."""
+    body = _probe_code().split("function Invoke-ProbeLockedCellControl")[1]
+    body = body[:body.index("\n}\n")]
+    assert "$original = $cell.Value2" in body
+    assert "if ([string]::IsNullOrWhiteSpace([string]$original)) {" in body
+    assert "$restored = [string]$cell.Value2" in body
+    assert "if ($restored -ne [string]$original) {" in body
+    assert "the original value was restored and verified" in body
+
+
+def test_69_a_cleanup_failure_cannot_produce_a_successful_control() -> None:
+    """REQUIRED CONTROL 9. The capability answer and the cleanup answer are
+    separate facts, and a failed cleanup makes the control INCONCLUSIVE - never
+    'protection blocks value writes'."""
+    body = _probe_code().split("function Invoke-ProbeLockedCellControl")[1]
+    body = body[:body.index("\n}\n")]
+    cleanup = body[body.index("$restoreRaised = ''"):]
+    successes = re.findall(r"Result = '(\w+)'", cleanup)
+    assert "SUCCEEDED" in successes
+    assert successes.count("REFUSED") == 0, (
+        "a cleanup failure can be reported as a refusal of the write")
+    for detail in ("the original value could not be restored",
+                   "the restored value did not match the original",
+                   "protection was lost during the control"):
+        assert detail in cleanup, detail
+
+
+def test_70_an_untrustworthy_control_stops_the_probe() -> None:
+    """A PROBE THAT CANNOT RESTORE WHAT IT CHANGED HAS ESTABLISHED NOTHING, so
+    the production question is not asked over it."""
+    code = _probe_code()
+    assert "if ($controlResult -eq 'INCONCLUSIVE') {" in code
+    assert "THE PROBE STOPS HERE, INCONCLUSIVE: the control did not settle." in code
+    assert "The production question was not asked." in code
 
 
 # ===========================================================================

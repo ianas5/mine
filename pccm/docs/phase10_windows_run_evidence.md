@@ -182,3 +182,60 @@ operation is permitted. **FINE** now requires success **and** an observed shape
 change **and** protection in force on both sides of every command.
 
 ---
+
+## Protection probe Run 2 — INCONCLUSIVE
+
+**Probe commit:** `ad84ea6`
+
+Stage A 351/351. Stage-B bootstrap PASS. The workbook opened with **14 of 14
+sheets protected**, structure protected, and the protection owner reporting
+`True` — the first direct confirmation that the protection lifecycle survives a
+reopen. The probe reached the locked-cell control and then failed.
+
+**Status: INCONCLUSIVE. It does not prove production is blocked. It does not
+prove production is fine. `PCCM_ApplyTimeline` was never invoked.**
+
+### Two defects, one run
+
+**1. The control contradicted itself.** The transcript printed, in order:
+
+```
+a cell VALUE write on a protected sheet SUCCEEDED
+a cell VALUE write on a protected sheet was REFUSED: System.NullReferenceException
+UserInterfaceOnly permits code VALUE writes: True
+```
+
+The write and the **restore** shared one `try`. The write succeeded and printed;
+the restore threw; the `catch` printed a refusal over the top; `$controlWorked`
+had already been set `$true`, so the closing summary said `True`.
+
+The restore threw because the original value was **blank** — and the accepted
+`Set-NamedValue` has a `ClearContents` branch for exactly that case which this
+probe's copy had dropped. Worse, the target was `inpDiscountRate`, which is an
+**editable input** with `Locked = False`: it was never a locked-cell control at
+all, so it could not have proved anything about `UserInterfaceOnly` even had it
+worked.
+
+**2. `DISP_E_BADINDEX` at `$ws = $sheets.Item($SheetName)`.** Not a missing
+sheet: all five watched tab names and all five table names exist in the built
+workbook, and a control now proves that against the artifacts without Windows.
+Every shape read re-acquired `$Workbook.Worksheets` and released it again —
+dozens of times per run against one underlying collection — and the lookup
+eventually ran against a collection that had been released out from under it.
+
+**Corrected in this round.** Worksheets and ListObjects are resolved **once**
+and held for the session, with the tab name, CodeName and table name recorded as
+evidence; an unresolvable sheet or table throws rather than falling back to an
+index. The control now targets a cell it **proves** is `Locked = True` on a
+protected sheet, keeps the write and the cleanup in separate `try` blocks,
+verifies the restored value, and returns exactly one word — `SUCCEEDED`,
+`REFUSED` or `INCONCLUSIVE`. A cleanup failure is never rewritten as a refusal
+of the write, and an untrustworthy control stops the probe before the production
+question is asked.
+
+The endpoint path gained an `$invoked` flag set in the instant before
+`Application.Run` and nowhere else, so a probe-side failure can never be read as
+a production result — the log now distinguishes **PREPARING TO TEST** from
+**ENDPOINT INVOKED**.
+
+---

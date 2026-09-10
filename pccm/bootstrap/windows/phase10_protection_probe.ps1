@@ -249,41 +249,9 @@ function Measure-ProbeCollection {
     return $count
 }
 
-# THE SHAPE OF ONE TABLE, READ AND NEVER CHANGED. Rows and columns only, through
-# the ListObject's own counts - this is a read, not a structural operation.
-function Get-ProbeTableShape {
-    param($Workbook, [string]$SheetName, [string]$TableName)
-    $sheets = $null; $ws = $null; $los = $null; $lo = $null
-    try {
-        $sheets = $Workbook.Worksheets
-        $ws = $sheets.Item($SheetName)
-        $los = $ws.ListObjects
-        $lo = $los.Item($TableName)
-        $columns = 0; $rows = 0
-        $columnCollection = $null; $rowCollection = $null
-        $where = $SheetName + '!' + $TableName
-        try {
-            $columnCollection = $lo.ListColumns
-            $columns = Measure-ProbeCollection -Collection $columnCollection `
-                -Label 'ListColumn' -Where $where
-            $rowCollection = $lo.ListRows
-            $rows = Measure-ProbeCollection -Collection $rowCollection `
-                -Label 'ListRow' -Where $where
-        } finally {
-            if ($null -ne $rowCollection)    { Release-Transient $rowCollection    'ListRows';    $rowCollection = $null }
-            if ($null -ne $columnCollection) { Release-Transient $columnCollection 'ListColumns'; $columnCollection = $null }
-        }
-        return [pscustomobject]@{ Table = $TableName; Columns = $columns; Rows = $rows }
-    } finally {
-        if ($null -ne $lo)     { Release-Transient $lo     'ListObject';  $lo     = $null }
-        if ($null -ne $los)    { Release-Transient $los    'ListObjects'; $los    = $null }
-        if ($null -ne $ws)     { Release-Transient $ws     'Worksheet';   $ws     = $null }
-        if ($null -ne $sheets) { Release-Transient $sheets 'Worksheets';  $sheets = $null }
-    }
-}
-
 # EVERY TABLE THE STRUCTURAL COMMANDS RESHAPE, from the manifest rather than
-# from a list typed here.
+# from a list typed here. The tab name and the table name are two independent
+# fields of the same entry; neither is derived from the other.
 function Get-ProbeWatchedTables {
     param($Manifest)
     $watched = @()
@@ -304,22 +272,112 @@ function Get-ProbeWatchedTables {
     return ,@($watched)
 }
 
-function Get-ProbeAllShapes {
+# ===========================================================================
+# RESOLVE ONCE, HOLD FOR THE SESSION
+# ===========================================================================
+# PROBE RUN 2 ROOT CAUSE. Every shape read did this:
+#
+#     $sheets = $Workbook.Worksheets
+#     $ws = $sheets.Item($SheetName)
+#     ... finally { Release-Transient $sheets 'Worksheets' }
+#
+# `Workbook.Worksheets` hands back the SAME underlying collection every time, so
+# a run that read five tables around each of four endpoints acquired and
+# released that one object dozens of times. The third cycle came back unusable
+# and `Item('Cost Lines')` answered DISP_E_BADINDEX - not because the sheet was
+# missing (all five tab names and all five table names exist in the built
+# workbook and a control now proves it) but because the collection had been
+# released out from under the lookup.
+#
+# THE CHURN IS GONE. Every worksheet and every ListObject the probe watches is
+# resolved ONCE, held for the session, and released once at the end. Resolution
+# is also EVIDENCE: the tab name, the CodeName and the table name are recorded
+# for each target, so a later reader can see exactly what was measured.
+#
+# NEITHER IDENTIFIER IS INFERRED FROM THE OTHER. The tab name and the table name
+# both come from the manifest, independently. The CodeName is read from Excel
+# and is recorded only - it is never used to find anything.
+function Resolve-ProbeTargets {
     param($Workbook, $Watched)
-    $shapes = New-Object System.Collections.Specialized.OrderedDictionary
+    $sheets = $Workbook.Worksheets
+    $targets = New-Object System.Collections.ArrayList
     foreach ($entry in @($Watched)) {
-        $shape = Get-ProbeTableShape -Workbook $Workbook -SheetName $entry.Sheet -TableName $entry.Table
-        $shapes.Add([string]$entry.Key, $shape)
+        $sheetName = [string]$entry.Sheet
+        $tableName = [string]$entry.Table
+        $ws = $null
+        try {
+            $ws = $sheets.Item($sheetName)
+        } catch {
+            throw ('the workbook has no worksheet named ' + [char]39 + $sheetName + [char]39 +
+                   ' (asked for by the manifest entry ' + [string]$entry.Key + '): ' +
+                   (Format-Err $_))
+        }
+        $los = $null; $lo = $null
+        try {
+            $los = $ws.ListObjects
+            $lo = $los.Item($tableName)
+        } catch {
+            throw ('worksheet ' + [char]39 + $sheetName + [char]39 + ' carries no table named ' +
+                   [char]39 + $tableName + [char]39 + ': ' + (Format-Err $_))
+        }
+        $null = $targets.Add([pscustomobject]@{
+            Key       = [string]$entry.Key
+            Sheet     = $sheetName
+            CodeName  = [string]$ws.CodeName
+            Table     = $tableName
+            Worksheet = $ws
+            ListObject = $lo
+            ListObjects = $los
+        })
+    }
+    return [pscustomobject]@{ Sheets = $sheets; Targets = @($targets) }
+}
+
+function Release-ProbeTargets {
+    param($Resolution)
+    if ($null -eq $Resolution) { return }
+    foreach ($target in @($Resolution.Targets)) {
+        if ($null -ne $target.ListObject)  { Release-Transient $target.ListObject  'ListObject' }
+        if ($null -ne $target.ListObjects) { Release-Transient $target.ListObjects 'ListObjects' }
+        if ($null -ne $target.Worksheet)   { Release-Transient $target.Worksheet   'Worksheet' }
+    }
+    if ($null -ne $Resolution.Sheets) { Release-Transient $Resolution.Sheets 'Worksheets' }
+}
+
+# THE SHAPE OF ONE ALREADY-RESOLVED TABLE, READ AND NEVER CHANGED. Rows and
+# columns only, by enumeration - this is a read, not a structural operation.
+function Get-ProbeTableShape {
+    param($Target)
+    $where = [string]$Target.Sheet + '!' + [string]$Target.Table
+    $lo = $Target.ListObject
+    $columnCollection = $null; $rowCollection = $null
+    try {
+        $columnCollection = $lo.ListColumns
+        $columns = Measure-ProbeCollection -Collection $columnCollection `
+            -Label 'ListColumn' -Where $where
+        $rowCollection = $lo.ListRows
+        $rows = Measure-ProbeCollection -Collection $rowCollection `
+            -Label 'ListRow' -Where $where
+    } finally {
+        if ($null -ne $rowCollection)    { Release-Transient $rowCollection    'ListRows';    $rowCollection = $null }
+        if ($null -ne $columnCollection) { Release-Transient $columnCollection 'ListColumns'; $columnCollection = $null }
+    }
+    return [pscustomobject]@{ Table = [string]$Target.Table; Columns = $columns; Rows = $rows }
+}
+
+function Get-ProbeAllShapes {
+    param($Resolution)
+    $shapes = New-Object System.Collections.Specialized.OrderedDictionary
+    foreach ($target in @($Resolution.Targets)) {
+        $shapes.Add([string]$target.Key, (Get-ProbeTableShape -Target $target))
     }
     return $shapes
 }
 
-# WHAT ACTUALLY CHANGED. An announcement of success with no shape change is not
-# a structural operation having happened.
 function Get-ProbeShapeDelta {
-    param($Before, $After, $Watched)
+    param($Before, $After, $Resolution)
     $changes = @()
-    foreach ($entry in @($Watched)) {
+    foreach ($entry in @($Resolution.Targets)) {
         $key = [string]$entry.Key
         $b = $Before[$key]
         $a = $After[$key]
@@ -330,6 +388,105 @@ function Get-ProbeShapeDelta {
         }
     }
     return ,@($changes)
+}
+
+# ===========================================================================
+# THE LOCKED-CELL CONTROL
+# ===========================================================================
+# WHAT PROBE RUN 2 GOT WRONG, TWICE.
+#
+#   IT DID NOT USE A LOCKED CELL. It wrote to `inpDiscountRate`, which is an
+#   EDITABLE INPUT and is Locked=False by design. Writing there proves nothing
+#   about UserInterfaceOnly: a user could type in that cell.
+#
+#   IT REPORTED SUCCESS AND FAILURE AT ONCE. The write and the RESTORE sat in
+#   the same try. The write succeeded and printed SUCCEEDED; the restore threw -
+#   the original value was BLANK, and the accepted Set-NamedValue has a
+#   ClearContents branch for exactly that which this copy had dropped - and the
+#   catch then printed REFUSED. `$controlWorked` had already been set true, so
+#   the closing summary said True. Three contradictory lines from one try block.
+#
+# THE CAPABILITY AND THE CLEANUP ARE NOW SEPARATE FACTS, in separate try blocks.
+# A failed restore is NEVER rewritten as "protection blocks value writes": it
+# makes the control INCONCLUSIVE and says which step failed.
+#
+# THE TARGET IS PROVED LOCKED BEFORE ANYTHING IS WRITTEN. It is the header cell
+# of the first watched table - model-controlled, non-blank, and reached through
+# the ListObject the manifest named rather than through a typed address.
+function Invoke-ProbeLockedCellControl {
+    param($Workbook, $Resolution)
+    $lines = New-Object System.Collections.ArrayList
+    $target = @($Resolution.Targets)[0]
+    $where = [string]$target.Sheet + '!' + [string]$target.Table
+    $probeText = 'PCCM-PROBE'
+
+    $header = $null; $cell = $null
+    try {
+        $header = $target.ListObject.HeaderRowRange
+        $cell = $header.Cells(1, 1)
+
+        # 1. THE PRECONDITIONS, PROVED NOW rather than assumed from a projection.
+        if (-not $target.Worksheet.ProtectContents) {
+            $null = $lines.Add('INCONCLUSIVE: ' + [string]$target.Sheet + ' is not protected, so a write to it proves nothing')
+            return [pscustomobject]@{ Result = 'INCONCLUSIVE'; Detail = 'the control sheet was not protected'; Lines = @($lines) }
+        }
+        if (-not $cell.Locked) {
+            $null = $lines.Add('INCONCLUSIVE: the ' + $where + ' header cell is NOT locked, so writing to it says nothing about UserInterfaceOnly')
+            return [pscustomobject]@{ Result = 'INCONCLUSIVE'; Detail = 'the control cell was not locked'; Lines = @($lines) }
+        }
+        $original = $cell.Value2
+        if ([string]::IsNullOrWhiteSpace([string]$original)) {
+            $null = $lines.Add('INCONCLUSIVE: the ' + $where + ' header cell is blank, so an exact restoration could not be verified')
+            return [pscustomobject]@{ Result = 'INCONCLUSIVE'; Detail = 'the control cell was blank'; Lines = @($lines) }
+        }
+        $null = $lines.Add('target             : ' + $where + ' header cell, Locked=True, sheet protected')
+        $null = $lines.Add('original value     : ' + [char]39 + [string]$original + [char]39)
+
+        # 2. THE CAPABILITY, in its own try so nothing after it can rewrite the answer.
+        $writeRaised = ''
+        try { $cell.Value2 = $probeText } catch { $writeRaised = (Format-Err $_) }
+        if ($writeRaised -ne '') {
+            $null = $lines.Add('write capability   : REFUSED - ' + $writeRaised)
+            $null = $lines.Add('so protection is blocking code VALUE writes as well, which is a')
+            $null = $lines.Add('DIFFERENT and larger finding than the table-structure one.')
+            return [pscustomobject]@{ Result = 'REFUSED'; Detail = ('the write was refused: ' + $writeRaised); Lines = @($lines) }
+        }
+        $readBack = [string]$cell.Value2
+        if ($readBack -ne $probeText) {
+            $null = $lines.Add('write capability   : INCONCLUSIVE - the write raised nothing but the cell reads back ' + [char]39 + $readBack + [char]39)
+            return [pscustomobject]@{ Result = 'INCONCLUSIVE'; Detail = 'the written value did not read back'; Lines = @($lines) }
+        }
+        $null = $lines.Add('write capability   : SUCCEEDED - the value was written and read back')
+
+        # 3. THE CLEANUP, AS ITS OWN FACT. A failure here does not change the
+        #    capability answer; it makes the control untrustworthy, which is a
+        #    different thing and is reported as one.
+        $restoreRaised = ''
+        try { $cell.Value2 = $original } catch { $restoreRaised = (Format-Err $_) }
+        if ($restoreRaised -ne '') {
+            $null = $lines.Add('control cleanup    : FAILED - ' + $restoreRaised)
+            return [pscustomobject]@{ Result = 'INCONCLUSIVE'; Detail = 'the original value could not be restored'; Lines = @($lines) }
+        }
+        $restored = [string]$cell.Value2
+        if ($restored -ne [string]$original) {
+            $null = $lines.Add('control cleanup    : FAILED - the cell reads back ' + [char]39 + $restored + [char]39 + ' after restoration')
+            return [pscustomobject]@{ Result = 'INCONCLUSIVE'; Detail = 'the restored value did not match the original'; Lines = @($lines) }
+        }
+        $null = $lines.Add('control cleanup    : the original value was restored and verified')
+
+        # 4. AND PROTECTION SURVIVED THE WHOLE THING.
+        if (-not $target.Worksheet.ProtectContents) {
+            $null = $lines.Add('control cleanup    : FAILED - ' + [string]$target.Sheet + ' is no longer protected')
+            return [pscustomobject]@{ Result = 'INCONCLUSIVE'; Detail = 'protection was lost during the control'; Lines = @($lines) }
+        }
+        $null = $lines.Add('so UserInterfaceOnly IS honoured for code that writes VALUES to a')
+        $null = $lines.Add('locked cell. That is a SEPARATE capability from permission to perform')
+        $null = $lines.Add('a ListObject structural operation, and it settles nothing about one.')
+        return [pscustomobject]@{ Result = 'SUCCEEDED'; Detail = 'a value was written to a proved-locked cell and restored exactly'; Lines = @($lines) }
+    } finally {
+        if ($null -ne $cell)   { Release-Transient $cell   'Range'; $cell   = $null }
+        if ($null -ne $header) { Release-Transient $header 'Range'; $header = $null }
+    }
 }
 
 # ===========================================================================
@@ -345,36 +502,59 @@ function Get-ProbeShapeDelta {
 #   PROBE     this script failed around the call. Never a statement about
 #             production.
 function Invoke-ProbeEndpoint {
-    param($Excel, $Workbook, [string]$Endpoint, $Watched)
+    param($Excel, $Workbook, [string]$Endpoint, $Resolution)
 
-    Set-ProbeStage -Stage 'endpoint' -Action 'invoking the production entry point' -Endpoint $Endpoint
+    # THE EVIDENCE ORDER, AND THE FLAG THAT KEEPS IT HONEST.
+    #
+    # Probe Run 2 said "doing: invoking the production entry point" and named
+    # PCCM_ApplyTimeline while it was still collecting PRE-command evidence, and
+    # the endpoint was never reached. A probe-side worksheet lookup was one line
+    # away from being read as a production failure.
+    #
+    # $invoked is set in the instant before Application.Run and NEVER anywhere
+    # else. Until it is true, nothing about this endpoint is a statement about
+    # production - and the outcome carries the flag so a reader can see which it
+    # was without trusting a sentence.
+    $invoked = $false
 
+    Set-ProbeStage -Stage 'endpoint' -Action 'PREPARING TO TEST: reading protection before the command' -Endpoint $Endpoint
     $protectionBefore = Get-ProbeProtectionState -Workbook $Workbook -Where ('before ' + $Endpoint)
-    $shapesBefore = Get-ProbeAllShapes -Workbook $Workbook -Watched $Watched
+    Set-ProbeStage -Stage 'endpoint' -Action 'PREPARING TO TEST: reading table shapes before the command' -Endpoint $Endpoint
+    $shapesBefore = Get-ProbeAllShapes -Resolution $Resolution
 
     $raised = ''
     $result = ''
     try {
         $Excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+        Set-ProbeStage -Stage 'endpoint' -Action 'ENDPOINT INVOKED: Application.Run has been entered' -Endpoint $Endpoint
+        $invoked = $true
         $Excel.Run($Endpoint) | Out-Null
         $result = [string]$Excel.Run('PCCM_AutomationResult')
     } catch {
         $raised = (Format-Err $_)
     }
 
+    # THE DECLARED ORDER: the structural effect first, then protection last -
+    # protection-after is the closest reading to "did the command leave the
+    # workbook as it found it".
     Set-ProbeStage -Stage 'endpoint' -Action 'reading the structural effect back' -Endpoint $Endpoint
+    $shapesAfter = Get-ProbeAllShapes -Resolution $Resolution
+    Set-ProbeStage -Stage 'endpoint' -Action 'reading protection after the command' -Endpoint $Endpoint
     $protectionAfter = Get-ProbeProtectionState -Workbook $Workbook -Where ('after ' + $Endpoint)
-    $shapesAfter = Get-ProbeAllShapes -Workbook $Workbook -Watched $Watched
-    $changes = @(Get-ProbeShapeDelta -Before $shapesBefore -After $shapesAfter -Watched $Watched)
+    $changes = @(Get-ProbeShapeDelta -Before $shapesBefore -After $shapesAfter -Resolution $Resolution)
 
-    $announced = ([bool]($raised -eq ''))
+    # AN ENDPOINT THAT WAS NEVER ENTERED IS NOT A RESULT. It is a probe failure,
+    # and it is named as one.
+    $announced = ([bool](($raised -eq '') -and $invoked))
     $succeeded = ([bool]($announced -and ($result -like 'OK|*')))
     $outcome = 'REFUSED'
-    if (-not $announced)  { $outcome = 'RAISED' }
+    if (-not $invoked)    { $outcome = 'NOT INVOKED' }
+    elseif (-not $announced) { $outcome = 'RAISED' }
     elseif ($succeeded)   { $outcome = 'SUCCEEDED' }
 
     return [pscustomobject]@{
         Endpoint          = $Endpoint
+        Invoked           = $invoked
         Outcome           = $outcome
         Result            = $result
         Raised            = $raised
@@ -391,6 +571,7 @@ function Invoke-ProbeEndpoint {
 function Write-ProbeOutcome {
     param($Outcome, [string]$Expectation)
     Write-ProbeLine ('  ' + [string]$Outcome.Endpoint)
+    Write-ProbeLine ('    endpoint invoked   : ' + [string]$Outcome.Invoked)
     Write-ProbeLine ('    outcome            : ' + [string]$Outcome.Outcome)
     if ([string]$Outcome.Raised -ne '') {
         Write-ProbeLine ('    RAISED             : ' + [string]$Outcome.Raised)
@@ -498,6 +679,7 @@ Write-ProbeLine ''
 # ===========================================================================
 $preExisting = @(Get-PreExistingExcelPids)
 $excel = $null; $workbooks = $null; $wb = $null; $excelIdentity = $null; $rel = $null
+$resolution = $null
 
 # THE VERDICT STARTS INCONCLUSIVE AND IS ONLY EVER MOVED BY THE ANSWER ITSELF.
 # Every failure path leaves it where it is, so a probe that broke cannot say
@@ -532,6 +714,23 @@ try {
 
     $protectionInForce = ([bool](([int]$opened.Protected -eq [int]$opened.Total) -and
                                  ([int]$opened.Total -gt 0)))
+
+    # --- resolve every watched sheet and table, ONCE ----------------------
+    # A REQUIRED SHEET OR TABLE THAT CANNOT BE RESOLVED IS A PROBE FAILURE, and
+    # it throws here rather than being substituted with index 1 or skipped. The
+    # resolved identifiers are evidence, printed below.
+    Set-ProbeStage -Stage 'resolve' -Action 'resolving every watched worksheet and table'
+    $resolution = Resolve-ProbeTargets -Workbook $wb -Watched $watched
+    Write-ProbeLine 'RESOLVED TARGETS'
+    Write-ProbeLine '----------------'
+    foreach ($target in @($resolution.Targets)) {
+        Write-ProbeLine ('  ' + ([string]$target.Key).PadRight(16) + 'tab ' + [char]39 +
+                         [string]$target.Sheet + [char]39 + '  CodeName ' + [char]39 +
+                         [string]$target.CodeName + [char]39 + '  table ' + [char]39 +
+                         [string]$target.Table + [char]39)
+    }
+    Write-ProbeLine ''
+
     if (-not $protectionInForce) {
         Write-ProbeLine 'THE PROBE STOPS HERE, INCONCLUSIVE: the workbook did not come back'
         Write-ProbeLine 'protected, so nothing below would be a statement about protected'
@@ -544,22 +743,20 @@ try {
         Set-ProbeStage -Stage 'control' -Action 'writing a VALUE to a locked cell on a protected sheet'
         Write-ProbeLine 'CONTROL - CAN CODE WRITE A VALUE TO A LOCKED CELL?'
         Write-ProbeLine '--------------------------------------------------'
-        $discountName = [string]$inspection.inputs.discount_rate.defined_name
-        $original = Get-ProbeNamedValue -Workbook $wb -DefinedName $discountName
-        try {
-            Set-ProbeNamedValue -Workbook $wb -DefinedName $discountName -Value ([double]0.05)
-            $controlWorked = $true
-            $controlDetail = 'a cell VALUE write on a protected sheet SUCCEEDED'
-            Write-ProbeLine ('  ' + $controlDetail)
-            Write-ProbeLine '  so UserInterfaceOnly is honoured for code that writes VALUES.'
-            Set-ProbeNamedValue -Workbook $wb -DefinedName $discountName -Value $original
-        } catch {
-            $controlDetail = ('a cell VALUE write on a protected sheet was REFUSED: ' + (Format-Err $_))
-            Write-ProbeLine ('  ' + $controlDetail)
-            Write-ProbeLine '  so protection is blocking code writes as well, which is a DIFFERENT'
-            Write-ProbeLine '  and larger finding than the table-structure one.'
-        }
+        $control = Invoke-ProbeLockedCellControl -Workbook $wb -Resolution $resolution
+        $controlResult = [string]$control.Result
+        $controlDetail = [string]$control.Detail
+        $controlWorked = ([bool]($controlResult -eq 'SUCCEEDED'))
+        foreach ($line in @($control.Lines)) { Write-ProbeLine ('  ' + $line) }
         Write-ProbeLine ''
+        if ($controlResult -eq 'INCONCLUSIVE') {
+            # A PROBE THAT CANNOT RESTORE WHAT IT CHANGED HAS ESTABLISHED NOTHING.
+            # The production question is not asked over an untrustworthy instrument.
+            $verdictReason = ('the locked-cell control could not be trusted: ' + $controlDetail +
+                              '. The production question was not asked.')
+            Write-ProbeLine 'THE PROBE STOPS HERE, INCONCLUSIVE: the control did not settle.'
+            Write-ProbeLine ''
+        } else {
 
         # --- THE QUESTION: the real commands -------------------------------
         Write-ProbeLine 'THE QUESTION - CAN THE REAL COMMANDS DO THEIR STRUCTURAL WORK?'
@@ -578,27 +775,27 @@ try {
         Set-ProbeNamedValue -Workbook $wb -DefinedName ([string]$inspection.inputs.duration_years.defined_name) -Value ([double]3)
 
         $timeline = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
-            -Endpoint 'PCCM_ApplyTimeline' -Watched $watched
+            -Endpoint 'PCCM_ApplyTimeline' -Resolution $resolution
         $null = $outcomes.Add($timeline)
         Write-ProbeOutcome -Outcome $timeline -Expectation `
             ('ListColumns.Add on three grids. A fresh workbook has no year columns, so ' +
              'this fires for ANY timeline and is not capacity-dependent.')
 
         $addCost = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
-            -Endpoint 'PCCM_AddCostLine' -Watched $watched
+            -Endpoint 'PCCM_AddCostLine' -Resolution $resolution
         $null = $outcomes.Add($addCost)
         Write-ProbeOutcome -Outcome $addCost -Expectation `
             ('the register grows only past its reserved rows, but SyncRows runs on every ' +
              'add and reshapes the Cost Profiling grid.')
 
         $addRisk = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
-            -Endpoint 'PCCM_AddRisk' -Watched $watched
+            -Endpoint 'PCCM_AddRisk' -Resolution $resolution
         $null = $outcomes.Add($addRisk)
         Write-ProbeOutcome -Outcome $addRisk -Expectation `
             'the same path on the Risk Register and the Risk Profiling grid.'
 
         $calculate = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
-            -Endpoint 'PCCM_Calculate' -Watched $watched
+            -Endpoint 'PCCM_Calculate' -Resolution $resolution
         $null = $outcomes.Add($calculate)
         Write-ProbeOutcome -Outcome $calculate -Expectation `
             ('the _Calc tables are resized to the model on every Calculate. They are not ' +
@@ -631,6 +828,7 @@ try {
                               'changed shape, and every sheet was protected before and ' +
                               'after each one - so Benchmark Run 3 was a HARNESS defect only')
         }
+        }
     }
     $excel.Run('PCCM_AutomationEnd') | Out-Null
 } catch {
@@ -644,6 +842,10 @@ try {
     $verdictReason = ('the probe itself failed in stage ' + [string]$script:ProbeCursor.Stage +
                       ' while ' + [string]$script:ProbeCursor.Action)
 } finally {
+    # THE HELD TARGETS GO FIRST, leaf before parent, before the workbook closes.
+    try { Release-ProbeTargets -Resolution $resolution }
+    catch { Write-ProbeLine ('the resolved targets could not be released: ' + (Format-Err $_)) }
+    $resolution = $null
     $rel = New-ReleaseLedger 'phase-10 protection probe'
     try {
         if ($null -ne $wb) {

@@ -87,9 +87,9 @@ def test_02_reading_count_off_a_list_columns_collection_is_rejected() -> None:
     the worksheet one happened to be reached first."""
     _probe_mutation(
         "test_40",
-        "            $columns = Measure-ProbeCollection -Collection $columnCollection `\n"
-        "                -Label 'ListColumn' -Where $where",
-        "            $columns = [int]$columnCollection.Count")
+        "        $columns = Measure-ProbeCollection -Collection $columnCollection `\n"
+        "            -Label 'ListColumn' -Where $where",
+        "        $columns = [int]$columnCollection.Count")
 
 
 def test_03_indexing_a_com_collection_by_position_is_rejected() -> None:
@@ -208,8 +208,8 @@ def test_25_conflating_a_raise_with_a_refusal_is_rejected() -> None:
     """A PRODUCTION REFUSAL AND AN EXCEL RUNTIME FAILURE ARE DIFFERENT FACTS."""
     _probe_mutation(
         "test_54",
-        "    if (-not $announced)  { $outcome = 'RAISED' }",
-        "    if (-not $announced)  { $outcome = 'REFUSED' }")
+        "    elseif (-not $announced) { $outcome = 'RAISED' }",
+        "    elseif (-not $announced) { $outcome = 'REFUSED' }")
 
 
 def test_26_letting_the_locked_cell_control_decide_the_question_is_rejected() -> None:
@@ -249,7 +249,7 @@ def test_30_dropping_the_before_protection_read_is_rejected() -> None:
 def test_31_dropping_the_shape_comparison_is_rejected() -> None:
     _probe_mutation(
         "test_53",
-        "    $shapesAfter = Get-ProbeAllShapes -Workbook $Workbook -Watched $Watched",
+        "    $shapesAfter = Get-ProbeAllShapes -Resolution $Resolution",
         "    $shapesAfter = $shapesBefore")
 
 
@@ -266,8 +266,8 @@ def test_32_typing_the_watched_tables_into_the_probe_is_rejected() -> None:
 def test_33_skipping_a_required_endpoint_is_rejected() -> None:
     _probe_mutation(
         "test_20",
-        "            -Endpoint 'PCCM_Calculate' -Watched $watched",
-        "            -Endpoint 'PCCM_RunSimulation' -Watched $watched")
+        "            -Endpoint 'PCCM_Calculate' -Resolution $resolution",
+        "            -Endpoint 'PCCM_RunSimulation' -Resolution $resolution")
 
 
 def test_34_reaching_around_a_production_endpoint_is_rejected() -> None:
@@ -309,6 +309,126 @@ def test_37_timing_something_in_the_probe_is_rejected() -> None:
         "    $raised = ''\n    $result = ''",
         "    $raised = ''\n    $result = ''\n"
         "    $watch = [System.Diagnostics.Stopwatch]::StartNew()")
+
+
+# ===========================================================================
+# D. THE PROBE RUN 2 DEFECTS
+# ===========================================================================
+def test_40_restoring_the_per_read_worksheet_lookup_is_rejected() -> None:
+    """THE SHAPE THAT PRODUCED DISP_E_BADINDEX: acquire the Worksheets
+    collection inside the shape read, look a sheet up in it, release it, and do
+    it again five tables later."""
+    _probe_mutation(
+        "test_61",
+        "    $lo = $Target.ListObject",
+        "    $sheets = $Workbook.Worksheets\n"
+        "    $ws = $sheets.Item($sheetName)\n"
+        "    $lo = $Target.ListObject")
+
+
+def test_41_falling_back_to_a_positional_sheet_index_is_rejected() -> None:
+    """AN UNRESOLVABLE SHEET IS A PROBE FAILURE, never a substitution."""
+    _probe_mutation(
+        "test_62",
+        "            throw ('the workbook has no worksheet named ' + [char]39 + $sheetName + [char]39 +",
+        "            $ws = $sheets.Item(1)\n"
+        "            $null = ('the workbook has no worksheet named ' + [char]39 + $sheetName + [char]39 +")
+
+
+def test_42_swapping_the_sheet_and_table_identifiers_is_rejected() -> None:
+    """NEITHER IS DERIVED FROM THE OTHER, and neither stands in for the other."""
+    _probe_mutation(
+        "test_55",
+        "        $sheetName = [string]$entry.Sheet\n"
+        "        $tableName = [string]$entry.Table",
+        "        $sheetName = [string]$entry.Table\n"
+        "        $tableName = [string]$entry.Sheet")
+
+
+def test_43_using_the_codename_to_find_the_sheet_is_rejected() -> None:
+    """A CodeName IS NOT A TAB NAME. Conflating them is how a lookup starts
+    failing on a workbook whose tabs were renamed - or never starts working."""
+    _probe_mutation(
+        "test_63",
+        "            $ws = $sheets.Item($sheetName)",
+        "            $ws = $sheets.Item($ws.CodeName)")
+
+
+def test_44_claiming_the_endpoint_was_invoked_before_application_run_is_rejected() -> None:
+    """PROBE RUN 2 SAID "invoking the production entry point" while it was still
+    collecting pre-command evidence, and the endpoint was never reached."""
+    _probe_mutation(
+        "test_64",
+        "    $invoked = $false\n\n    Set-ProbeStage",
+        "    $invoked = $true\n\n    Set-ProbeStage")
+
+
+def test_45_marking_the_endpoint_invoked_in_two_places_is_rejected() -> None:
+    _probe_mutation(
+        "test_54",
+        "        $invoked = $true",
+        "        $invoked = $true\n        $invoked = $true")
+
+
+def test_46_reordering_the_endpoint_evidence_is_rejected() -> None:
+    _probe_mutation(
+        "test_65",
+        "    $shapesAfter = Get-ProbeAllShapes -Resolution $Resolution\n"
+        "    Set-ProbeStage -Stage 'endpoint' -Action 'reading protection after the command' -Endpoint $Endpoint\n"
+        "    $protectionAfter = Get-ProbeProtectionState -Workbook $Workbook -Where ('after ' + $Endpoint)",
+        "    $protectionAfter = Get-ProbeProtectionState -Workbook $Workbook -Where ('after ' + $Endpoint)\n"
+        "    $shapesAfter = Get-ProbeAllShapes -Resolution $Resolution")
+
+
+def test_47_putting_the_write_and_the_restore_back_in_one_try_is_rejected() -> None:
+    """THE EXACT SHAPE THAT PRINTED SUCCEEDED AND REFUSED IN ONE RUN."""
+    _probe_mutation(
+        "test_66",
+        "        try { $cell.Value2 = $original } catch { $restoreRaised = (Format-Err $_) }",
+        "        try { $cell.Value2 = $original } catch { $writeRaised = (Format-Err $_) }")
+
+
+def test_48_writing_to_a_cell_that_was_not_proved_locked_is_rejected() -> None:
+    """PROBE RUN 2's TARGET WAS AN EDITABLE INPUT. A user can type in that cell,
+    so writing to it says nothing about UserInterfaceOnly."""
+    _probe_mutation(
+        "test_67",
+        "        if (-not $cell.Locked) {",
+        "        if ($false) {")
+
+
+def test_49_skipping_the_restoration_check_is_rejected() -> None:
+    _probe_mutation(
+        "test_68",
+        "        if ($restored -ne [string]$original) {",
+        "        if ($false) {")
+
+
+def test_50_rewriting_a_cleanup_failure_as_a_refusal_is_rejected() -> None:
+    """A FAILED RESTORE IS NOT "protection blocks value writes". It is an
+    untrustworthy instrument, and it is reported as one."""
+    _probe_mutation(
+        "test_69",
+        "            return [pscustomobject]@{ Result = 'INCONCLUSIVE'; "
+        "Detail = 'the original value could not be restored'; Lines = @($lines) }",
+        "            return [pscustomobject]@{ Result = 'REFUSED'; "
+        "Detail = 'the original value could not be restored'; Lines = @($lines) }")
+
+
+def test_51_letting_an_untrustworthy_control_proceed_is_rejected() -> None:
+    _probe_mutation(
+        "test_70",
+        "        if ($controlResult -eq 'INCONCLUSIVE') {",
+        "        if ($false) {")
+
+
+def test_52_accepting_a_blank_control_original_is_rejected() -> None:
+    """A BLANK ORIGINAL IS WHAT THREW IN RUN 2, and it also makes 'restored
+    exactly' unverifiable."""
+    _probe_mutation(
+        "test_68",
+        "        if ([string]::IsNullOrWhiteSpace([string]$original)) {",
+        "        if ($false) {")
 
 
 if __name__ == "__main__":
