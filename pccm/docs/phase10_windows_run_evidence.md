@@ -135,3 +135,50 @@ question directly — whether the VBA caller is refused exactly as the COM calle
 was — in one command and about a minute.
 
 ---
+
+## Protection probe Run 1 — INCONCLUSIVE
+
+**Probe commit:** `24015ef`
+
+Stage A 351/351. Stage-B bootstrap PASS. The probe then raised before it asked
+its question.
+
+```
+System.Management.Automation.PropertyNotFoundException
+The property 'Count' cannot be found on this object.
+FullyQualifiedErrorId: PropertyNotFoundStrict
+Verdict emitted: INCONCLUSIVE - the probe session raised before it finished
+```
+
+Shutdown clean.
+
+**Status: INCONCLUSIVE. It does not prove production is blocked. It does not
+prove production is fine. It is not a baseline, not Gate-B, not acceptance
+evidence.**
+
+**Cause.** Six statements in that draft read `.Count`. Five were wrapped in
+`@()`, which guarantees an array before anything is read from it. One was not:
+
+```powershell
+for ($index = 1; $index -le $sheets.Count; $index++)
+```
+
+`$sheets` was whatever `$Workbook.Worksheets` handed back, and under
+`Set-StrictMode -Version 2.0` a member that is not there is terminating. It is
+the same class as Benchmark Run 1 — a member read off a value whose shape was
+not guaranteed by construction — in a file written before that lesson was turned
+into a control.
+
+**Corrected in this round.** The shape is gone rather than guarded: no COM
+collection is indexed by position or asked for its `.Count` anywhere in the
+probe. Collections are enumerated through `Measure-ProbeCollection`, an absent
+collection is a refusal rather than a zero, and the probe carries a stage cursor
+so the next failure names the stage, the endpoint, the line and the statement.
+
+The same round tightened the probe's evidence, because Run 1 also showed the
+first draft would have accepted too little: an endpoint that announced success
+without reshaping any table would have counted as proof that the structural
+operation is permitted. **FINE** now requires success **and** an observed shape
+change **and** protection in force on both sides of every command.
+
+---

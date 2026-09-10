@@ -54,7 +54,7 @@ import yaml  # noqa: E402
 
 PROBE = BOOTSTRAP / "phase10_protection_probe.ps1"
 BENCHMARK = BOOTSTRAP / "phase10_benchmark.ps1"
-ACCEPTED = "4ad035a"
+ACCEPTED = "24015ef"
 
 # ---------------------------------------------------------------------------
 # THE INVENTORY
@@ -301,10 +301,14 @@ def test_22_the_probe_checks_protection_is_actually_in_force() -> None:
     make every command below succeed for the wrong reason."""
     code = _probe_code()
     assert "function Get-ProbeProtectionState" in code
-    assert "$before = Get-ProbeProtectionState -Workbook $wb" in code
-    assert "$after = Get-ProbeProtectionState -Workbook $wb" in code
-    assert "THE PROBE IS INCONCLUSIVE: the workbook did not come back protected" in code
+    # ON OPENING, AND AGAIN ON BOTH SIDES OF EVERY ENDPOINT. Probe Run 1 checked
+    # only the opening and the very end; a command that released protection and
+    # put it back would have looked identical to one that never touched it.
+    assert "$opened = Get-ProbeProtectionState -Workbook $wb -Where 'as the workbook opened'" in code
+    assert code.count("Get-ProbeProtectionState -Workbook $Workbook -Where") == 2
+    assert "THE PROBE STOPS HERE, INCONCLUSIVE: the workbook did not come back" in code
     assert "ProtectionIsApplied" in code
+    assert "$protectionInForce = ([bool](([int]$opened.Protected -eq [int]$opened.Total) -and" in code
 
 
 def test_23_the_probe_measures_nothing_and_decides_nothing() -> None:
@@ -349,6 +353,231 @@ def test_26_the_probe_reports_a_verdict_in_both_directions() -> None:
     assert "PRODUCTION IS FINE UNDER PROTECTION" in code
     assert "PRODUCTION IS BLOCKED BY PROTECTION" in code
     assert "was a HARNESS defect only" in code
+
+
+# ===========================================================================
+# C2. PROBE RUN 1 - THE `.Count` DEFECT
+# ===========================================================================
+# WHAT HAPPENED. Probe Run 1 raised PropertyNotFoundStrict for 'Count' and died
+# before it asked its question. Six statements in that draft read `.Count`; five
+# were wrapped in `@()`, which guarantees an array before anything is read from
+# it, and one was not:
+#
+#     for ($index = 1; $index -le $sheets.Count; $index++)
+#
+# `$sheets` was whatever `$Workbook.Worksheets` handed back, and under
+# `Set-StrictMode -Version 2.0` a member that is not there is terminating.
+#
+# THE SHAPE IS GONE, NOT GUARDED. Collections are enumerated; no COM collection
+# is indexed by position or asked for its `.Count` anywhere in the file.
+
+# `.Count` read off something that is NOT the result of an `@(...)` - the shape
+# that ended Probe Run 1. An ArrayList always has Count, but the probe does not
+# rely on that either: the rule is uniform so a reader never has to judge.
+_BARE_COUNT = re.compile(r"(?<!\))\s*\.Count\b")
+
+
+def _bare_count_reads(code: str) -> list[str]:
+    found: list[str] = []
+    for match in re.finditer(r"\.Count\b", code):
+        before = code[max(0, match.start() - 80):match.start()].rstrip()
+        if before.endswith(")"):
+            continue
+        found.append(code[max(0, match.start() - 60):match.end()].splitlines()[-1].strip())
+    return found
+
+
+def test_40_no_count_is_read_off_an_unnormalised_operand() -> None:
+    """PROBE RUN 1's DEFECT, AS A SHAPE RATHER THAN A LINE NUMBER."""
+    offenders = _bare_count_reads(_probe_code())
+    assert offenders == [], f"a .Count is read off an unnormalised operand: {offenders}"
+    assert "$sheets.Count" not in _probe_code(), "the Probe Run 1 defect is back verbatim"
+    # AND THE DETECTOR IS NOT VACUOUS: the exact statement that failed is fed to
+    # it, and the normalised form it was replaced with is not flagged.
+    assert _bare_count_reads("for ($index = 1; $index -le $sheets.Count; $index++) {"), (
+        "the detector no longer detects the Probe Run 1 defect")
+    assert _bare_count_reads("if (@($names).Count -gt 0) {") == []
+
+
+def test_41_collections_are_enumerated_rather_than_indexed() -> None:
+    """NO POSITION, NO LENGTH. Both are properties of a shape the probe cannot
+    guarantee, and it needs neither."""
+    code = _probe_code()
+    assert "foreach ($sheet in @($sheets))" in code
+    assert "function Measure-ProbeCollection" in code
+    assert "foreach ($item in @($Collection))" in code
+    assert ".Item($index)" not in code, "a COM collection is still indexed by position"
+    assert "for ($index" not in code, "a positional loop over a COM collection remains"
+
+
+def test_42_an_absent_collection_refuses_rather_than_counting_zero() -> None:
+    """A FAKE ZERO WOULD BE A SHAPE CHANGE THE PROBE INVENTED, and shape change
+    is exactly what its verdict turns on."""
+    code = _probe_code()
+    assert "throw ($Where + ': expected a ' + $Label + ' collection and got nothing')" in code
+    assert "function Get-ProbeRequiredProperty" in code
+    assert "It is not defaulted." in code
+    assert "the workbook enumerated no worksheets" in code
+
+
+def test_43_strict_mode_stays_on_and_nothing_is_swallowed() -> None:
+    code = _probe_code()
+    assert "Set-StrictMode -Version 2.0" in code
+    assert code.count("Set-StrictMode") == 1
+    assert "Set-StrictMode -Off" not in code
+    assert "catch { }" not in code
+    assert "-ErrorAction Ignore" not in code
+    assert "-ErrorAction SilentlyContinue).Value" not in code
+
+
+def test_44_the_failure_diagnostics_name_the_stage_and_the_endpoint() -> None:
+    """PROBE RUN 1 REPORTED ONLY THE EXCEPTION. It could not say which of six
+    `.Count` reads it meant."""
+    code = _probe_code()
+    assert "$script:ProbeCursor" in code
+    assert "function Set-ProbeStage" in code
+    assert "function Format-ProbeFailure" in code
+    for field in ("stage", "doing", "endpoint", "detail", "exception", "message",
+                  "at line", "statement", "command"):
+        assert f"'  {field}" in code or f"  {field}" in code, field
+    stages = set(re.findall(r"Set-ProbeStage -Stage '(\w+)'", code))
+    assert stages == {"preflight", "setup", "protection", "control", "endpoint",
+                      "verdict"}, stages
+
+
+def test_45_diagnostics_never_touch_the_workbook_or_the_verdict() -> None:
+    """THE CURSOR IS WRITTEN AND READ, and does nothing else. A diagnostic that
+    changed the workbook would change the answer."""
+    cursor = _probe_code().split("function Set-ProbeStage")[1]
+    cursor = cursor[:cursor.index("\n}")]
+    for banned in ("$Workbook", "$Excel", "$wb", "$verdict"):
+        assert banned not in cursor, f"the cursor touches {banned}"
+    failure = _probe_code().split("function Format-ProbeFailure")[1]
+    failure = failure[:failure.index("\n}")]
+    for banned in ("$Workbook", "$Excel", "$wb", "$verdict ="):
+        assert banned not in failure, f"the failure formatter touches {banned}"
+
+
+# ===========================================================================
+# C3. VERDICT DISCIPLINE
+# ===========================================================================
+def test_50_the_verdict_starts_inconclusive_and_only_evidence_moves_it() -> None:
+    """A PROBE-INTERNAL ERROR IS NEVER A STATEMENT ABOUT PRODUCTION."""
+    code = _probe_code()
+    assert "$verdict = 'INCONCLUSIVE'" in code
+    assignments = re.findall(r"\$verdict = '([^']+)'", code)
+    assert assignments == ["INCONCLUSIVE", "PRODUCTION IS BLOCKED BY PROTECTION",
+                           "PRODUCTION IS FINE UNDER PROTECTION"], assignments
+    # THE CATCH LEAVES IT WHERE IT WAS: it writes a REASON, never the verdict.
+    assert "$verdictReason = ('the probe itself failed in stage " in code
+    assert "the probe did not reach its conclusion" in code
+    assert "A PROBE FAILURE IS NEVER A STATEMENT ABOUT PRODUCTION" in _probe()
+
+
+def test_51_blocked_requires_a_production_endpoint_that_did_not_succeed() -> None:
+    code = _probe_code()
+    assert "$notSucceeded = @(@($outcomes) | Where-Object { [string]$_.Outcome -ne 'SUCCEEDED' })" in code
+    assert "if (@($notSucceeded).Count -gt 0) {" in code
+    assert "$verdict = 'PRODUCTION IS BLOCKED BY PROTECTION'" in code
+
+
+def test_52_fine_requires_success_a_structural_effect_and_protection_throughout() -> None:
+    """AN ANNOUNCEMENT IS NOT ENOUGH. A command that said OK and reshaped nothing
+    has not shown that the structural operation is permitted."""
+    code = _probe_code()
+    assert "$structural = @(@($outcomes) | Where-Object { [bool]$_.StructuralEffect })" in code
+    assert "elseif (@($structural).Count -lt 1) {" in code
+    assert "no watched table ever " in code
+    assert "$lostProtection = @(@($outcomes) | Where-Object {" in code
+    assert "elseif (@($lostProtection).Count -gt 0) {" in code
+    # FINE is the LAST branch: it is reached only when every other reason to
+    # doubt has been ruled out.
+    assert code.index("$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'") >         code.index("elseif (@($lostProtection).Count -gt 0) {")
+
+
+def test_53_every_endpoint_records_protection_and_shape_on_both_sides() -> None:
+    """REQUIRED EVIDENCE. Announcement, outcome class, protection before and
+    after, and what actually changed."""
+    code = _probe_code()
+    for field in ("Endpoint", "Outcome", "Result", "Raised", "Changes",
+                  "ProtectedBefore", "ProtectedAfter", "TotalSheets",
+                  "ProtectionBefore", "ProtectionAfter", "StructuralEffect"):
+        assert f"{field}" in code, field
+    assert "$protectionBefore = Get-ProbeProtectionState -Workbook $Workbook -Where ('before ' + $Endpoint)" in code
+    assert "$protectionAfter = Get-ProbeProtectionState -Workbook $Workbook -Where ('after ' + $Endpoint)" in code
+    assert "$shapesBefore = Get-ProbeAllShapes" in code
+    assert "$shapesAfter = Get-ProbeAllShapes" in code
+
+
+def test_54_the_three_failure_kinds_are_distinguished() -> None:
+    """A PRODUCTION REFUSAL, AN EXCEL RUNTIME FAILURE AND A PROBE FAILURE are
+    three different facts."""
+    code = _probe_code()
+    assert "$outcome = 'REFUSED'" in code
+    assert "if (-not $announced)  { $outcome = 'RAISED' }" in code
+    assert "elseif ($succeeded)   { $outcome = 'SUCCEEDED' }" in code
+
+
+def test_55_the_watched_tables_come_from_the_manifest() -> None:
+    """NOT A LIST TYPED IN THE PROBE. A grid the manifest gained and the probe
+    did not would be a structural effect nobody looked for."""
+    code = _probe_code()
+    assert "foreach ($register in @($Manifest.registers))" in code
+    assert "foreach ($grid in @($Manifest.grids))" in code
+    for typed in ("tblCostLines", "tblRiskRegister", "tblCostProfiling", "tblInflation"):
+        assert typed not in code, f"the probe types the table name {typed}"
+
+
+def test_55b_the_probe_never_reaches_around_the_commands() -> None:
+    """NO BYPASS, AND NOT EVEN THE WORDS. A probe that released protection, or
+    performed the structural operation itself, would answer a question nobody
+    asked - and would answer it FINE every time."""
+    code = _probe_code()
+    # THE CALL FORMS, NOT THE LETTERS. "Unprotected" is a state the probe REPORTS
+    # and contains the word it must not CALL, so the ban is on the invocation.
+    # THE CALL FORM CARRIES A LEADING DOT. The probe NAMES these operations in
+    # the sentence that explains what each command does - "ListColumns.Add on
+    # three grids" - and naming one is the opposite of performing it. What is
+    # banned is `<object>.ListColumns.Add`, which is a call.
+    for banned in (".Unprotect(", ".Unprotect ", "'ProtectionRelease'",
+                   '"ProtectionRelease"', "'ProtectionApply'", ".Protect(",
+                   ".ListRows.Add", ".ListColumns.Add", "$victim.Delete()",
+                   ".Rows(1).Delete", ".EntireRow.Delete"):
+        assert banned not in code, f"the probe performs or releases: {banned}"
+    # AND IT READS THE TWO COLLECTIONS IT MEASURES, which is not a mutation.
+    assert "$lo.ListColumns" in code and "$lo.ListRows" in code
+    # THE ONE `.Delete()` IN THE FILE IS THE SENTENCE QUOTING RUN 3's FAILURE.
+    # A probe that quoted the defect and also performed it would be found here.
+    deletes = [line.strip() for line in code.splitlines() if ".Delete(" in line]
+    assert deletes == ["Write-ProbeLine 'Benchmark Run 3 died on a ListRow.Delete() "
+                       "with \"Table features'"], deletes
+    # THE ONLY WRITES IT MAKES ARE THE FOUR DECLARED INPUT SCALARS.
+    assert code.count("Set-ProbeNamedValue -Workbook $wb") == 5, (
+        "the probe writes somewhere other than the four timeline inputs and the "
+        "locked-cell control")
+
+
+def test_56_an_inconclusive_run_exits_non_zero() -> None:
+    code = _probe_code()
+    assert "if ($verdict -eq 'INCONCLUSIVE') { exit 2 }" in code
+    assert "exit 0" in code
+
+
+def test_57_the_locked_cell_control_is_kept_and_kept_separate() -> None:
+    """ITS PURPOSE IS TO PROVE THE OTHER CAPABILITY, and to be unable to be
+    mistaken for this one."""
+    code = _probe_code()
+    assert "CONTROL - CAN CODE WRITE A VALUE TO A LOCKED CELL?" in code
+    assert "UserInterfaceOnly is honoured for code that writes VALUES" in code
+    assert "That is a SEPARATE capability from permission to perform a ListObject" in code
+    assert "$controlWorked" in code
+    # THE CONTROL NEVER MOVES THE VERDICT. Bounded to the branch that decides
+    # it, because the control's own summary is printed further down and finding
+    # the variable there would prove nothing.
+    verdict_block = code.split("Set-ProbeStage -Stage 'verdict'")[1]
+    verdict_block = verdict_block[:verdict_block.index("$excel.Run('PCCM_AutomationEnd')")]
+    assert "$controlWorked" not in verdict_block, "the control decides the question"
+    assert "$controlDetail" not in verdict_block
 
 
 # ===========================================================================
