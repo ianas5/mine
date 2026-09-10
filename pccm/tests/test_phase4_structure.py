@@ -15,6 +15,7 @@ runtime creates them. Every assertion below is about that resting state.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 import zipfile
@@ -479,20 +480,57 @@ def test_35_phase_2_and_3_surfaces_are_intact() -> None:
 
 
 def test_36_version_file_matches_the_model_version() -> None:
-    """The repository's phase-version convention: `VERSION`, the manifest's
-    `model_version` and `BUILDER_VERSION` advance together, once per phase.
+    """`VERSION` is the repository's copy of the MODEL version, and nothing else.
 
-    The literal moved from `0.4.0` to `0.5.0` when Phase 5 Gate-A Step 3 put real
-    Phase-5 blocks in the generated workbook. What the test proves — that all
-    three agree and none drifts on its own — is unchanged, and `BUILDER_VERSION`
-    is now checked here too rather than only implied.
+    THIS CONTROL USED TO ASSERT ALL THREE VALUES EQUAL, and that was right while
+    the project advanced one phase at a time and every authority moved together
+    by convention. P10-3 settles the first production release and settles that
+    convention with it: the model design and the build tooling are INDEPENDENT
+    authorities, and a control that demanded they be equal would forbid the very
+    next builder-only change from happening on its own.
+
+    So what is proved here is what is actually true: `VERSION` restates the
+    manifest's `model_version` and must never drift from it. The builder's own
+    version has its own control below, which deliberately does not compare the
+    two.
     """
     version = (PCCM_ROOT / "VERSION").read_text(encoding="utf-8").strip()
     spec = load_spec(SPEC_PATH)
-    assert version == spec.model["model_version"] == BUILDER_VERSION == "0.5.0", (
-        f"VERSION={version}, model_version={spec.model['model_version']}, "
-        f"BUILDER_VERSION={BUILDER_VERSION}"
+    assert version == spec.model["model_version"] == "1.0.0", (
+        f"VERSION={version}, model_version={spec.model['model_version']}"
     )
+
+
+def test_36b_the_builder_version_is_its_own_authority() -> None:
+    """AND IT IS NOT COMPARED WITH THE MODEL VERSION. They agree today because
+    the first production release ships finished tooling alongside a finished
+    model; that is a coincidence of this release, not a rule.
+
+    What must hold is that `BUILDER_VERSION` is a real, single, non-empty
+    literal in the module that owns it - so that a build stamp naming it means
+    something - and that no code derives it from the model version or the model
+    version from it.
+    """
+    assert re.fullmatch(r"\d+\.\d+\.\d+", BUILDER_VERSION), BUILDER_VERSION
+    assert BUILDER_VERSION == "1.0.0", BUILDER_VERSION
+
+    builder = (PCCM_ROOT / "builder" / "pccm_builder" / "workbook_builder.py").read_text(
+        encoding="utf-8")
+    assert builder.count('BUILDER_VERSION = ') == 1, (
+        "the builder version is declared more than once")
+    assert 'BUILDER_VERSION = spec' not in builder, (
+        "the builder version is being derived from the manifest")
+    # AND THE MANIFEST DECLARES NO SUCH VALUE. A COMMENT may name it - the
+    # manifest explains beside `model_version` why the two versions are separate,
+    # and that explanation is worth having exactly there - but a manifest KEY
+    # carrying it would be a second owner, and the builder would then have two
+    # answers to choose between.
+    declarations = [
+        line for line in (SPEC_PATH).read_text(encoding="utf-8").splitlines()
+        if "BUILDER_VERSION" in line and not line.lstrip().startswith("#")
+    ]
+    assert declarations == [], (
+        f"the manifest declares the builder version: {declarations}")
 
 
 def test_37_the_applied_block_sits_clear_of_the_phase2_setup_area() -> None:

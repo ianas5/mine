@@ -47,6 +47,12 @@ class StyleBook:
                                   color=colors["state_message"])
         self.state_message_fill = PatternFill("solid", fgColor=colors["state_message_fill"])
         self.list_item = Font(name=family, size=sizes["value"], color=colors["value"])
+        # P10-3. THE METHODOLOGY SHEET'S TWO ADDITIONS. A defined term is a
+        # label that has to be found by eye down a column of prose, so it is the
+        # label font made bold - not a new size and not a new colour. The prose
+        # alignment wraps and hangs from the top so a paragraph in a wide column
+        # keeps its first line level with the term beside it.
+        self.term = Font(name=family, size=sizes["label"], bold=True, color=colors["label"])
 
         # --- Phase 2: input language -------------------------------------
         self.input_font = Font(name=family, size=sizes["value"], color=colors["value"])
@@ -74,6 +80,7 @@ class StyleBook:
         self.rule = Border(bottom=Side(style="thin", color=colors["rule"]))
         self.left = Alignment(horizontal="left", vertical="center")
         self.left_wrap = Alignment(horizontal="left", vertical="center", wrap_text=False)
+        self.prose = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
         layout = presentation["layout"]
         self.layout = Layout(

@@ -303,18 +303,34 @@ def test_60_the_release_is_1_0_0_and_the_authorities_stay_independent() -> None:
     assert "No version literal is duplicated." in flat
 
 
-def test_61_the_build_phase_finalisation_is_recorded_and_still_stale() -> None:
-    """THE ITEM, AND THE PROOF IT IS STILL AN ITEM. When implementation lands
-    this control's second half changes; until then the record must not claim a
-    correction it has not made."""
+def test_61_the_build_phase_finalisation_landed_as_the_record_said_it_would() -> None:
+    """THE ITEM, AND THE PROOF IT WAS CARRIED OUT. This control's second half was
+    written to change when implementation landed, and P10-3 landed it.
+
+    The record still describes the stale phase string as the thing to correct -
+    that is its account of the state it was written in, and rewriting it would be
+    a false rewrite of the project's history. What changes here is the other
+    side: the manifest must now carry the release-oriented value the record asked
+    for, and must no longer carry the stale one.
+
+    THE HYPHEN IS DELIBERATE. The record's `Release 1.0 - Production` is quoted
+    with an em dash in prose; `workbook.yaml` is ASCII throughout, and a build
+    stamp that renders differently depending on encoding is a poor stamp. The
+    control reads the words, and asserts the manifest is still ASCII, rather than
+    demanding one dash character in both places.
+    """
     flat = _flat()
     assert "Phase-10 metadata finalisation item and reopens no earlier phase" in flat
     assert "Release 1.0 — Production" in flat
+
     spec = (SPEC / "workbook.yaml").read_text(encoding="utf-8")
-    assert "Phase 5 - Calculation Workspace (Gate A: source)" in spec, (
-        "the build phase was corrected; the record's account of it is out of date")
-    assert 'model_version: "0.5.0"' in spec, (
-        "the model version moved before implementation was authorised")
+    assert 'build_phase: "Release 1.0 - Production"' in spec, (
+        "the release-oriented build phase the record asked for was not applied")
+    assert "Phase 5 - Calculation Workspace (Gate A: source)" not in spec, (
+        "the stale phase string is still the workbook's build stamp")
+    assert 'model_version: "1.0.0"' in spec, (
+        "the model version did not reach the release the record settled")
+    assert spec.isascii(), "the manifest gained a non-ASCII character"
 
 
 def test_62_the_source_revision_is_an_addition_not_an_existing_row() -> None:

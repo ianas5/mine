@@ -45,6 +45,7 @@ from pccm_builder import (  # noqa: E402
     emit_phase9_model_check,
     apply_protection,
     emit_protection_projection,
+    emit_methodology_projection,
     emit_reset_projection,
     resolve_unlocked,
     emit_phase8_dashboard,
@@ -213,6 +214,15 @@ def main(argv: list[str] | None = None) -> int:
           f"editable input cells preserved, "
           f"{len(reset['publications']['simulation']['cleared'])} simulation "
           f"publication groups cleared")
+
+    # P10-3. WHERE EVERY METHODOLOGY LINE LANDED, and the manifest wording that
+    # landed there - including the Build Metadata rows, which is how a later run
+    # confirms the workbook shows the versions the authorities actually hold.
+    methodology = emit_methodology_projection(
+        out_path.parent / "phase10_methodology_inspection.json", spec, metadata)
+    print(f"  method   : {len(methodology['sections'])} sections, "
+          f"{len(methodology['lines'])} written lines, "
+          f"{len(methodology['metadata'])} build metadata rows")
 
     artifacts = emit_stage_b(out_path.parent, spec, contract, drivers, structure)
     calc_artifacts = emit_calc_artifacts(out_path.parent, spec, calc)

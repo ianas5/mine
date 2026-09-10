@@ -1573,7 +1573,7 @@ def test_79_a_changed_case_version_is_detected() -> None:
 # ===========================================================================
 def test_80_the_model_version_is_a_constant_not_only_a_comment() -> None:
     owner = _spec().model["model_version"]
-    assert _string("SIM_MODEL_VERSION") == owner == "0.5.0"
+    assert _string("SIM_MODEL_VERSION") == owner == "1.0.0"
     assert "SIM_MODEL_VERSION" in _generated_module().constants
     assert _long("SIM_RNG_VERSION") == 1
 
@@ -1589,7 +1589,7 @@ def test_81_the_model_version_constant_follows_its_owner() -> None:
 
     rendered = render_sim_contract_module(altered, _sim(), _inputs())
     assert 'Public Const SIM_MODEL_VERSION As String = "9.9.9-test"' in rendered
-    assert 'Public Const SIM_MODEL_VERSION As String = "0.5.0"' not in rendered
+    assert 'Public Const SIM_MODEL_VERSION As String = "1.0.0"' not in rendered
 
     baseline = _module_text()
     moved = [

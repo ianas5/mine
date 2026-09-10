@@ -22,7 +22,11 @@ VALID_BLOCK_TYPES = ("section", "note")
 # surface is two authors, and whichever ran last would win in silence.
 _PLACEHOLDERS = re.compile(r"\{([a-z_]+)\}")
 
-VALID_BODIES = ("contract", "drivers", "structure", "model_check")
+# P10-3. "methodology" joins them on the same terms: the sheet's content is a
+# declared block in this manifest rather than a list of generic sections, so
+# exactly one author writes into those rows and the wording of every sentence
+# lives in the specification where a control can read it.
+VALID_BODIES = ("contract", "drivers", "structure", "model_check", "methodology")
 CODENAME_RE = re.compile(r"^sh[A-Z][A-Za-z0-9]*$")
 
 
@@ -60,6 +64,7 @@ class WorkbookSpec:
     source_path: Path
     phase6_shell: dict[str, Any] = field(default_factory=dict)
     phase9_shell: dict[str, Any] = field(default_factory=dict)
+    methodology: dict[str, Any] = field(default_factory=dict)
 
     @property
     def sheet_names(self) -> list[str]:
@@ -652,6 +657,8 @@ def load_spec(path: str | Path) -> WorkbookSpec:
 
     sheets = [_parse_sheet(entry, index, path) for index, entry in enumerate(raw_sheets)]
 
+    methodology = _parse_methodology(raw, sheets, path)
+
     _validate_unique(sheets, path)
     _validate_locked_order(sheets, workbook, path)
     _validate_active_sheet(sheets, workbook, path)
@@ -665,7 +672,148 @@ def load_spec(path: str | Path) -> WorkbookSpec:
         source_path=path,
         phase6_shell=shell,
         phase9_shell=phase9,
+        methodology=methodology,
     )
+
+
+# ---------------------------------------------------------------------------
+# P10-3 - THE METHODOLOGY BLOCK
+# ---------------------------------------------------------------------------
+# WORDING IS THE POINT HERE, which makes this the one block whose value is its
+# text rather than its geometry. So the validation below is deliberately narrow:
+# it proves the SHAPE a renderer must be able to walk, and it proves that no
+# string on the sheet can be read by Excel as a formula. It asserts nothing
+# about what any sentence says - that belongs to the controls, which read the
+# manifest directly, and a shape check that also policed meaning would be a
+# second and quieter authority over the same words.
+
+_METHODOLOGY_TEXT_KEYS = ("heading", "purpose", "note", "metadata_heading",
+                          "metadata_note", "closing")
+_SECTION_KEY_RE = re.compile(r"^M(\d+)$")
+# Excel reads a leading one of these as the start of a formula. Every string on
+# this sheet is prose, including the two that state an identity in symbols.
+_FORMULA_LEADERS = ("=", "+", "-", "@")
+
+
+def _methodology_text(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SpecError(f"{where}: must be a non-empty string, got {value!r}")
+    if value.lstrip()[:1] in _FORMULA_LEADERS:
+        raise SpecError(
+            f"{where}: {value[:40]!r} begins with {value.lstrip()[:1]!r}, which Excel "
+            "reads as a formula. Methodology text is presentation prose and must "
+            "never be evaluated."
+        )
+    return value
+
+
+def _parse_methodology_section(entry: Any, index: int, path: Path) -> dict[str, Any]:
+    where = f"{path}: methodology.sections[{index}]"
+    if not isinstance(entry, dict):
+        raise SpecError(f"{where}: each section must be a mapping")
+
+    key = _methodology_text(entry.get("key"), f"{where}: key")
+    if not _SECTION_KEY_RE.match(key):
+        raise SpecError(f"{where}: key {key!r} must be M<number>")
+    where = f"{path}: methodology section {key}"
+
+    section: dict[str, Any] = {
+        "key": key,
+        "title": _methodology_text(entry.get("title"), f"{where}: title"),
+        "summary": _methodology_text(entry.get("summary"), f"{where}: summary"),
+    }
+
+    paragraphs = entry.get("paragraphs")
+    if not isinstance(paragraphs, list) or not paragraphs:
+        raise SpecError(f"{where}: paragraphs must be a non-empty list")
+    section["paragraphs"] = [
+        _methodology_text(text, f"{where}: paragraphs[{position}]")
+        for position, text in enumerate(paragraphs)
+    ]
+
+    terms = entry.get("terms") or []
+    if not isinstance(terms, list):
+        raise SpecError(f"{where}: terms must be a list")
+    parsed_terms = []
+    for position, term in enumerate(terms):
+        at = f"{where}: terms[{position}]"
+        if not isinstance(term, dict):
+            raise SpecError(f"{at}: each term must be a mapping")
+        parsed_terms.append({
+            "term": _methodology_text(term.get("term"), f"{at}: term"),
+            "text": _methodology_text(term.get("text"), f"{at}: text"),
+        })
+    named = [term["term"] for term in parsed_terms]
+    if len(set(named)) != len(named):
+        raise SpecError(f"{where}: defines the same term twice: {sorted(named)}")
+    section["terms"] = parsed_terms
+
+    formula = entry.get("formula")
+    if formula is not None:
+        at = f"{where}: formula"
+        if not isinstance(formula, dict):
+            raise SpecError(f"{at}: must be a mapping")
+        section["formula"] = {
+            "caption": _methodology_text(formula.get("caption"), f"{at}: caption"),
+            "text": _methodology_text(formula.get("text"), f"{at}: text"),
+            "note": _methodology_text(formula.get("note"), f"{at}: note"),
+        }
+
+    if entry.get("closing") is not None:
+        section["closing"] = _methodology_text(entry["closing"], f"{where}: closing")
+
+    unknown = set(entry) - {"key", "title", "summary", "paragraphs", "terms",
+                            "formula", "closing"}
+    if unknown:
+        raise SpecError(f"{where}: unknown keys {sorted(unknown)}")
+    return section
+
+
+def _parse_methodology(raw: dict[str, Any], sheets: list[SheetSpec],
+                       path: Path) -> dict[str, Any]:
+    block = raw.get("methodology")
+    declared = [sheet.name for sheet in sheets if sheet.body == "methodology"]
+    if block is None:
+        if declared:
+            raise SpecError(
+                f"{path}: {declared[0]!r} declares body 'methodology' but the manifest "
+                "carries no methodology block"
+            )
+        return {}
+    if not isinstance(block, dict):
+        raise SpecError(f"{path}: methodology must be a mapping")
+    if len(declared) != 1:
+        raise SpecError(
+            f"{path}: the methodology block needs exactly one methodology-bodied "
+            f"sheet to render it, found {declared}"
+        )
+
+    parsed = {
+        key: _methodology_text(block.get(key), f"{path}: methodology.{key}")
+        for key in _METHODOLOGY_TEXT_KEYS
+    }
+
+    sections = block.get("sections")
+    if not isinstance(sections, list) or not sections:
+        raise SpecError(f"{path}: methodology.sections must be a non-empty list")
+    parsed["sections"] = [
+        _parse_methodology_section(entry, index, path)
+        for index, entry in enumerate(sections)
+    ]
+
+    keys = [section["key"] for section in parsed["sections"]]
+    expected = [f"M{number}" for number in range(1, len(keys) + 1)]
+    if keys != expected:
+        raise SpecError(
+            f"{path}: methodology sections must be numbered M1..M{len(keys)} in order.\n"
+            f"  declared: {keys}\n  expected: {expected}"
+        )
+
+    unknown = set(block) - set(_METHODOLOGY_TEXT_KEYS) - {"sections"}
+    if unknown:
+        raise SpecError(f"{path}: methodology declares unknown keys {sorted(unknown)}")
+    parsed["sheet"] = declared[0]
+    return parsed
 
 
 def _parse_sheet(entry: Any, index: int, path: Path) -> SheetSpec:

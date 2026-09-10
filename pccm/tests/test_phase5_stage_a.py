@@ -259,10 +259,23 @@ def test_a_malformed_calculation_contract_fails_the_build_with_exit_code_two() -
 
 
 def test_the_workbook_now_describes_itself_as_phase_five() -> None:
+    """RENAMED IN EFFECT, NOT IN NAME: the workbook no longer describes itself as
+    a phase at all.
+
+    P10-3 settled the first production release, and the build stamp became a
+    RELEASE string rather than a phase string. The Phase-5 claim this control was
+    written to hold - that the generated artifact stamps itself with the
+    manifest's own values and that `VERSION` agrees - is unchanged; what it reads
+    is the value those authorities now carry. The function name is left alone so
+    the history of this file stays legible.
+    """
     spec = _built()["spec"]
-    assert spec.model["model_version"] == "0.5.0"
-    assert "Phase 5" in spec.model["build_phase"], spec.model["build_phase"]
-    assert (PCCM_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "0.5.0"
+    assert spec.model["model_version"] == "1.0.0"
+    assert spec.model["build_phase"] == "Release 1.0 - Production", (
+        spec.model["build_phase"])
+    assert "Phase" not in spec.model["build_phase"], (
+        "the delivered artifact still stamps itself with a phase")
+    assert (PCCM_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "1.0.0"
 
 
 # ---------------------------------------------------------------------------
@@ -617,7 +630,7 @@ def test_the_corpus_metadata_and_tolerance_header_are_exact() -> None:
     assert document["schema_version"] == 1
     assert document["tolerances"] == LOCKED_TOLERANCES
     assert document["provenance"] == {
-        "model_version": "0.5.0",
+        "model_version": "1.0.0",
         "calc_contract_version": "1.0.0",
         "fingerprint_version": 1,
         "oracle": "builder/pccm_builder/calc_oracle.py",

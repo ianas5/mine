@@ -16,8 +16,18 @@ manifest_version: "1.3.0"
 model:
   name: "Probabilistic Cost & Contingency Model"
   short_name: "PCCM"
-  model_version: "0.5.0"
-  build_phase: "Phase 5 - Calculation Workspace (Gate A: source)"
+  # P10-3. FIRST PRODUCTION RELEASE. The model design reaches 1.0.0 here, and
+  # `BUILDER_VERSION` reaches it in the same round - a COINCIDENCE OF THIS
+  # RELEASE and nothing more. The two are independent authorities: a later
+  # builder-only change need not move this value, and a later model release need
+  # not mechanically equal the builder's. Nothing derives one from the other.
+  model_version: "1.0.0"
+  # And the phase string becomes a RELEASE string. It described where the build
+  # sat in the phase plan, which stopped being the useful thing to tell a reader
+  # once the phases closed. Written with an ASCII hyphen because this manifest is
+  # ASCII throughout and a stamp that renders differently per encoding is a poor
+  # stamp.
+  build_phase: "Release 1.0 - Production"
   reporting_currency: "SAR"      # locked model constant
 
 workbook:
@@ -1265,6 +1275,181 @@ phase6_shell:
         state_source: "sensitivity_availability"
         also_qualified_by: "simulation_state"
 
+# =============================================================================
+# P10-3. THE METHODOLOGY SHEET - EXPLANATORY CONTENT, DECLARED HERE
+# =============================================================================
+# WHAT THIS IS. The eleven sections a cost engineer or a reviewer needs in order
+# to read a PCCM answer: what the deterministic figure is, how uncertainty is
+# sampled, what a percentile means, what contingency is measured against, which
+# of the two annual objects they are looking at, and what the state words on
+# Model Check are telling them.
+#
+# WHAT IT IS NOT, AND THE DISTINCTION IS THE WHOLE POINT. It is PROSE. It drives
+# no formula, owns no rule, maintains no state and is read by nothing. Every
+# statement below describes an implemented contract; none of them IS one. If a
+# sentence here and the engine ever disagreed, the engine would be right and the
+# sentence would be a documentation defect - which is exactly why the controls
+# on this block assert its WORDING rather than deriving anything from it.
+#
+# THE AUDIENCE IS NEVER A DEVELOPER. No module name, no procedure name, no cell
+# address and no VBA appears in any string below. Formulas appear once, in M8,
+# because that identity is the one thing a reader cannot be told in words
+# without ambiguity - and it is presentation text in a cell, not a live formula.
+# =============================================================================
+methodology:
+  heading: "How PCCM Works"
+  purpose: "PCCM is a probabilistic cost model for a single project. It combines deterministic cost estimating, three-point estimating and Monte Carlo simulation to produce a total project cost distribution and a defensible contingency at a stated confidence level."
+  note: "This sheet explains the method. It calculates nothing, stores no state and is read by no formula: the model's answers are on Results, Sensitivity and the Dashboard, and its current condition is on Model Check."
+  metadata_heading: "Build Metadata"
+  metadata_note: "Recorded when this workbook was generated. None of these values is a computational input."
+  closing: "Every figure this workbook reports is derived from the inputs on Setup, Config, Cost Lines, Risk Register, Inflation and the two profiling grids. Nothing on this sheet overrides them."
+
+  sections:
+    # -----------------------------------------------------------------------
+    - key: "M1"
+      title: "Deterministic Cost Basis"
+      summary: "What the model costs before any uncertainty is sampled."
+      paragraphs:
+        - "The deterministic basis is what the project costs if every quantity and every rate is taken at its central value. It is the figure the contingency is later measured against, and it is built from the Cost Lines and Risk Register you enter - nothing else."
+        - "Both registers are treated the same way underneath: an amount is converted to the reporting currency, escalated to the year it falls in, and discounted if a present value is being reported. What differs is where the amount comes from."
+      terms:
+        - term: "Cost line"
+          text: "Quantity multiplied by unit cost. A cost line is work that is going to happen, so it carries no probability of occurrence - deterministically it is included in full."
+        - term: "Risk"
+          text: "Probability multiplied by severity. A risk carries no separate quantity: the severity IS the amount, and the probability is what decides whether it is incurred."
+        - term: "Reporting currency"
+          text: "SAR. Every amount is converted to it before anything is added together, so no total ever mixes two currencies."
+    # -----------------------------------------------------------------------
+    - key: "M2"
+      title: "Three-Point Estimating"
+      summary: "How an uncertain quantity, unit cost or severity is described."
+      paragraphs:
+        - "An uncertain input is entered as three numbers - a minimum, a most likely and a maximum - and a distribution family that says how the values between them are weighted. The three must be entered in order:"
+        - "Minimum <= Most Likely <= Maximum"
+        - "The model refuses an estimate that breaks that ordering rather than reinterpreting it."
+      terms:
+        - term: "Triangular"
+          text: "A straight-sided peak at the most likely value. Simple, and it puts real weight near the extremes."
+        - term: "PERT"
+          text: "A smooth curve that concentrates weight around the most likely value and thins the tails. The usual choice when the most likely figure is genuinely the best estimate."
+        - term: "Uniform"
+          text: "Every value between the minimum and the maximum is equally likely. The MOST LIKELY VALUE IS NOT USED by the Uniform sampling rule - it is still entered so the estimate can be re-typed as Triangular or PERT without re-entering it, but it does not affect a Uniform sample."
+        - term: "Central basis"
+          text: "Which single value represents the estimate deterministically - the most likely value, or the midpoint of the range. It is your choice per driver, and it changes the deterministic figure, never the sampled one."
+    # -----------------------------------------------------------------------
+    - key: "M3"
+      title: "Risk Expected Cost"
+      summary: "What a risk contributes before simulation."
+      paragraphs:
+        - "A risk's expected cost is its probability multiplied by its severity. A risk with a 30% chance of costing 1,000,000 contributes an expected 300,000 to the deterministic basis."
+        - "That is an average over many projects, not a prediction about this one. In any single simulated project the risk either happens at full severity or does not happen at all - which is exactly why the simulation is worth running: the expected value tells you nothing about the spread."
+    # -----------------------------------------------------------------------
+    - key: "M4"
+      title: "Currency, Escalation and Present Value"
+      summary: "Three adjustments, applied to every amount in the same order."
+      paragraphs:
+        - "All three rates are INPUTS. The model applies them; it never estimates, forecasts or derives one."
+      terms:
+        - term: "Currency"
+          text: "An amount entered in a foreign currency is converted to SAR at the rate you enter for that currency on Config. One rate per currency, used everywhere that currency appears."
+        - term: "Escalation"
+          text: "An amount is escalated from the price base year to the year the work actually falls in, using the annual rates of the inflation profile you assign to that driver. A driver spread over several years is escalated year by year, so later years carry more escalation than earlier ones."
+        - term: "Present value"
+          text: "Escalated amounts are discounted back to the price base at the discount rate on Setup. Nominal totals and present-value totals are reported side by side; neither is a conversion of the other after the fact - each is accumulated in its own right."
+    # -----------------------------------------------------------------------
+    - key: "M5"
+      title: "Cost and Risk Profiling"
+      summary: "When each amount falls, and the one thing profiling never does."
+      paragraphs:
+        - "Profiling DISTRIBUTES an amount across the project years. It does NOT scale, multiply or inflate the amount."
+        - "A driver's weights say what share of that driver's cost falls in each project year. Because they are shares of one amount, they must total 100% - a driver whose weights total 90% would be a driver whose cost had quietly been reduced by a tenth, and the model refuses it rather than accepting it."
+        - "Weights are anchored to the PROJECT YEAR INDEX, not to a calendar year. Moving the project start year relabels the columns and moves no weight; only changing the duration adds or removes columns, and only at the end."
+      terms:
+        - term: "Cost Profiling"
+          text: "One row per Cost Line, keyed by its Cost Line ID. Rows follow the Cost Lines register."
+        - term: "Risk Profiling"
+          text: "One row per risk, keyed by its Risk ID. Rows follow the Risk Register. It is a separate grid because risks and cost lines are separate registers with separate identifiers."
+    # -----------------------------------------------------------------------
+    - key: "M6"
+      title: "Monte Carlo Simulation"
+      summary: "Sampling the whole model many times to see the range of outcomes."
+      paragraphs:
+        - "One iteration draws a value for every uncertain input, decides which risks occur, and totals the project exactly as the deterministic path would. Running that many thousands of times produces a distribution of total project cost rather than a single number."
+        - "The iteration count is yours to set. More iterations give a steadier answer in the tails; they do not make the model more accurate about anything the inputs do not already say."
+      terms:
+        - term: "FIXED seed"
+          text: "You supply the seed. The same model and the same seed reproduce the same run exactly, iteration for iteration - which is what makes a result auditable and a difference between two runs attributable to the model rather than to chance."
+          
+        - term: "AUTO seed"
+          text: "The model chooses a seed that it has not used before. Each run is a genuinely independent sample, and an AUTO run is NOT reproducible: re-running it will give a similar distribution, not the same numbers. The seed it used is recorded with the result, so any AUTO run can be repeated afterwards by entering that seed as a FIXED one."
+    # -----------------------------------------------------------------------
+    - key: "M7"
+      title: "Percentiles and Contingency"
+      summary: "Reading the distribution, and what contingency is measured against."
+      paragraphs:
+        - "A percentile is read from the sorted simulated totals using the TYPE 7 method - the same definition Excel's PERCENTILE.INC uses. Where a percentile falls between two simulated outcomes it is interpolated between them rather than rounded to one."
+        - "P50 is the total that half the simulated projects came in under. P80 is the total that four out of five came in under - a common basis for a funded estimate."
+        - "Contingency at Px is the difference between the stochastic total at that confidence level and the deterministic basis:"
+        - "Contingency(Px) = Total(Px) - Deterministic basis"
+        - "Contingency is therefore a MEASUREMENT, not a cost element. Nothing in the model adds it, allocates it or profiles it; it is what the distribution says you would need above the deterministic figure to be confident at that level, and it moves whenever either of those two numbers does."
+    # -----------------------------------------------------------------------
+    - key: "M8"
+      title: "Annual Results - Two Different Objects"
+      summary: "The distinction that is most often got wrong. Read this before reading any annual figure."
+      paragraphs:
+        - "The model reports two different annual things. They answer different questions and they do not add up the same way. Every annual figure in this workbook is labelled as one or the other."
+      terms:
+        - term: "1. Annual percentile ladder"
+          text: "Each project year is percentiled INDEPENDENTLY, across the iterations, from that year's own distribution. The P50 of year 3 is the middle outcome for year 3 alone. Adding a per-year P50 across the years does NOT give the reported total P50, and such a set of year figures is NOT a profile of any single project: each year's number comes from a different iteration. Use it to see how uncertain each individual year is."
+        - term: "2. Selected-Px annual profile"
+          text: "The annual spend of the project that produced the reported total at your selected confidence level. Because a reported Px generally falls between two simulated outcomes, the profile blends the annual vectors of those same two outcomes, using the SAME interpolation the total used. It DOES sum to the selected total Px, subject only to floating-point round-off. Use it as a cash-flow profile."
+      formula:
+        caption: "If the total at Px is interpolated between the sorted simulated outcomes lo and hi with fraction f, then for each project year:"
+        text: "Profile_Px(year) = (1 - f) x AnnualVector_lo(year) + f x AnnualVector_hi(year)"
+        note: "When f = 0 the reported Px lands exactly on one simulated outcome, and the profile is that single project's annual vector. Because the blend is the same one the total used, summing the profile over the years returns the selected total Px."
+    # -----------------------------------------------------------------------
+    - key: "M9"
+      title: "Sensitivity"
+      summary: "Which drivers the total is most sensitive to."
+      paragraphs:
+        - "For each driver, the model compares its own sampled contribution against the simulated total, iteration by iteration, using SPEARMAN RANK CORRELATION. Rank correlation asks whether the two move together in ORDER, so it is unaffected by scale and by the shape of either distribution."
+        - "The result is a correlation coefficient, rho, between -1 and +1."
+        - "This is ASSOCIATION, not causation, and it is association within THIS model as you have built it. A driver ranks highly because its uncertainty moves the total in these simulations; widening or narrowing any estimate will change the ranking."
+      terms:
+        - term: "Sign"
+          text: "Direction. A positive rho means the total tends to be high when that driver is high; a negative rho means the opposite."
+        - term: "Magnitude"
+          text: "Strength. A rho near +1 or -1 means the total tracks that driver closely; a rho near zero means it barely responds to it."
+        - term: "Ranking"
+          text: "Drivers are ranked by the ABSOLUTE value of rho, so a strongly negative driver ranks alongside an equally strong positive one. The Tornado chart shows the highest-ranked drivers in that order."
+    # -----------------------------------------------------------------------
+    - key: "M10"
+      title: "Drivers with No Variance"
+      summary: "Why some drivers show no correlation rather than a zero one."
+      paragraphs:
+        - "A driver has no variance when it takes the same value in every iteration - a fixed quantity, or a three-point estimate whose minimum, most likely and maximum are equal."
+        - "Rank correlation is UNDEFINED for such a driver: there is no variation to correlate with anything. The model reports it as n/a - no variance, and it is NOT reported as rho = 0. Those are different statements. A rho of zero says the model looked and found no relationship; n/a says there was nothing to look at."
+        - "A zero-variance driver stays visible in the Sensitivity table as a diagnostic row, so you can see that it was considered. It is EXCLUDED from the Tornado ranking and from the tornado's input altogether - a bar of zero length beside the ranked drivers would look like a measured result."
+    # -----------------------------------------------------------------------
+    - key: "M11"
+      title: "Model and Publication States"
+      summary: "What the state words mean, and the difference between a condition and a record."
+      paragraphs:
+        - "Model Check reports the model's condition LIVE - it is recomputed from the inputs as they stand right now. Results and the Dashboard report what was last PUBLISHED - a record of a run that happened, with the identity of the model it was run against."
+        - "That distinction is why a workbook can hold a perfectly good published result and still tell you the model has moved on. Neither reading is wrong; they answer different questions."
+      terms:
+        - term: "CURRENT"
+          text: "The published result was produced from the model exactly as it stands now."
+        - term: "STALE"
+          text: "A result was published, but an input has changed since. The result is still readable and still true of the model it was run against - it is simply no longer a statement about the model in front of you."
+          
+        - term: "INVALID"
+          text: "The model as it stands cannot be calculated - an input is missing, out of range or inconsistent. Model Check names what and, where it can, which driver."
+          
+        - term: "NOT CALCULATED"
+          text: "The model is valid but nothing has been published yet. Press Calculate."
+      closing: "REFUSED is not a fifth state. It is the outcome of one attempt - the model declined to act and changed nothing - and it is reported by the command that refused, alongside the reason. The state words above describe the workbook; REFUSED describes something that was tried."
+
 sheets:
 
   - name: "Dashboard"
@@ -1466,20 +1651,16 @@ sheets:
     purpose: "In-workbook documentation of the calculation methodology and assumptions."
     show_gridlines: false
     title: "Methodology"
-    subtitle: "In-workbook documentation - written progressively as each phase lands"
+    subtitle: "How PCCM works - a concise in-workbook reference"
     freeze_panes: "A6"
-    column_widths: { A: 3, B: 34, C: 2, D: 26, E: 3, F: 62 }
-    blocks:
-      - type: section
-        title: "Model Description"
-        note: "PCCM is a probabilistic cost model for a single project. It combines deterministic cost estimating, three-point estimating and Monte Carlo simulation to produce a total project cost distribution and a defensible contingency at a stated confidence level."
-      - type: section
-        title: "Build Metadata"
-        note: "Recorded at build time. None of these values is a computational input."
-        metadata: true
-      - type: section
-        title: "Methodology Sections"
-        note: "Reserved for escalation, FX, profiling, discounting, distributions, percentile method, contingency definitions, sensitivity method and stated limitations."
+    # P10-3. THE COLUMNS ARE A READING MEASURE, not a table. A section tag hangs
+    # in B and the prose runs in D, which is wide enough for a paragraph and
+    # narrow enough to be read: the eye loses a line past roughly a hundred
+    # characters, and the old 26-wide value column made every sentence a
+    # four-line wrap. B still has to hold the widest Build Metadata label
+    # outright, because that block puts a value beside it.
+    column_widths: { A: 3, B: 28, C: 2, D: 104 }
+    body: "methodology"
 
   - name: "_Calc"
     codename: "shCalc"

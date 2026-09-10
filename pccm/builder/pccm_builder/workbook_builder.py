@@ -42,11 +42,16 @@ from .structure_render import (
     render_grid,
     render_identity,
 )
+from .methodology import render_methodology
 from .phase9_model_check import ModelCheckPlan
 from .styling import StyleBook
 from .validation import apply_validation
 
-BUILDER_VERSION = "0.5.0"
+# P10-3. THE BUILD TOOLING'S OWN VERSION, and it is its own. It reaches 1.0.0
+# with the first production release because the tooling that produces that
+# release is finished, not because the model version says 1.0.0 - the two are
+# separate authorities that happen to agree this once. Neither reads the other.
+BUILDER_VERSION = "1.0.0"
 DEFAULT_SHEET_TITLE = "Sheet"
 TIMESTAMP_ENV_VAR = "PCCM_BUILD_TIMESTAMP"
 
@@ -159,6 +164,13 @@ def build_workbook(
                 render_config(worksheet, contract, styles)
         elif sheet_spec.body == "drivers":
             render_register(worksheet, drivers.register_for_sheet(sheet_spec.name), styles)
+        elif sheet_spec.body == "methodology":
+            # P10-3. The reference sheet, written from the manifest's declared
+            # `methodology` block. It is a body rather than a list of generic
+            # sections for the reason every other body is one: a placeholder
+            # block beside a rendered surface would be two authors over the same
+            # rows, and whichever ran last would win in silence.
+            render_methodology(worksheet, spec, styles, metadata)
         elif sheet_spec.body == "structure":
             grid = structure.grid_for_sheet(sheet_spec.name)
             if grid is not None:
