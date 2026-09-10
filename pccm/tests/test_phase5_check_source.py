@@ -882,7 +882,7 @@ def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
     # P10-2B joins it by name, as everything before it did. modReset is the
     # Reset Results owner; it holds no geometry and no state word, and it is
     # named here rather than admitted by a loosened comparison.
-    phase10 = {"modProtection", "modReset"}
+    phase10 = {"modProtection", "modReset", "modRepair"}
     assert on_disk == (
         set(FROZEN_SHA256) | {CHECKER, "modCalcReport"}
         | PHASE6_HANDWRITTEN | PHASE7_HANDWRITTEN | PHASE8_HANDWRITTEN | phase10

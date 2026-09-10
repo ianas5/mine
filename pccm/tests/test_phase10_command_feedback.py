@@ -304,12 +304,20 @@ def test_12_no_button_binding_moved_in_this_batch() -> None:
         assert after, f"{shape} was removed"
         for field in ("key", "sheet", "shape_name", "caption", "entry_point"):
             assert after[field] == definition[field], f"{shape} was rebound"
-    assert set(now) - set(was) == {"btnPCCMResetResults"}, sorted(set(now) - set(was))
+    # P10-2C ADDS THE SIXTH AND LAST COMMAND to the same delta.
+    assert set(now) - set(was) == {"btnPCCMResetResults", "btnPCCMRepairProfiling"}, \
+        sorted(set(now) - set(was))
     assert {k: v for k, v in now["btnPCCMResetResults"].items()
             if k != "anchor_cell"} == {
         "key": "reset_results", "sheet": "Setup",
         "shape_name": "btnPCCMResetResults", "caption": "Reset Results",
         "entry_point": "PCCM_ResetResults",
+    }
+    assert {k: v for k, v in now["btnPCCMRepairProfiling"].items()
+            if k != "anchor_cell"} == {
+        "key": "repair_profiling", "sheet": "Setup",
+        "shape_name": "btnPCCMRepairProfiling", "caption": "Repair Profiling",
+        "entry_point": "PCCM_RepairProfiling",
     }
     block = current["commands"]["block"]
     column, first = str(block["button_column"]), int(block["first_button_row"])
@@ -319,17 +327,17 @@ def test_12_no_button_binding_moved_in_this_batch() -> None:
     assert [b["anchor_cell"] for b in commands] == [
         f"{column}{first + pitch * i}" for i in range(len(commands))]
     assert commands[0]["entry_point"] == "PCCM_ApplyTimeline"
-    assert commands[-1]["entry_point"] == "PCCM_ResetResults"
+    assert commands[-1]["entry_point"] == "PCCM_RepairProfiling"
 
     assert (set(current["vba"]["entry_points"]) - set(accepted["vba"]["entry_points"])
-            == {"PCCM_ResetResults"})
+            == {"PCCM_ResetResults", "PCCM_RepairProfiling"})
     assert not set(accepted["vba"]["entry_points"]) - set(current["vba"]["entry_points"])
 
     was_modules = by_key(accepted, ("vba", "modules"), "name")
     now_modules = by_key(current, ("vba", "modules"), "name")
     for name, module in was_modules.items():
         assert now_modules.get(name) == module, f"the {name} declaration moved"
-    assert set(now_modules) - set(was_modules) == {"modReset"}
+    assert set(now_modules) - set(was_modules) == {"modReset", "modRepair"}
 
     # AND THE PROTECTION POLICY IS UNTOUCHED BY ALL OF IT.
     assert current["protection"] == accepted["protection"]
@@ -343,7 +351,7 @@ def test_12_no_button_binding_moved_in_this_batch() -> None:
     # THE NOTE NAMES BOTH ADDITIONS: P10-2B's Reset Results, and P10-UX's
     # ordering - the timeline is applied first, which is why it leads the block.
     note = current["commands"]["block"]["note"]
-    assert "Reset Results" in note
+    assert "Reset Results" in note and "Repair Profiling" in note
     assert "Apply / Update Timeline" in note and "first" in note
 
 
@@ -357,16 +365,29 @@ def test_13_protection_and_the_open_handler_are_untouched() -> None:
         assert current == accepted, f"{path} moved; protection is accepted at {ACCEPTED}"
 
 
-def test_14_repair_profiling_has_not_started() -> None:
+def test_14_the_command_surface_is_the_one_the_contract_authorises() -> None:
     """THE SCOPE FENCE, checked rather than promised.
 
-    CORRECTED AT P10-2B. Reset Results has landed under its own authorisation
-    and is no longer behind this fence; Repair Profiling is, and the fence is
-    kept rather than deleted so that the NEXT step cannot start early either.
+    CORRECTED AT P10-2B, AND AGAIN AT P10-2C. This began as "Reset and Repair
+    have not started" and both have now landed under their own authorisations.
+    The fence is kept rather than deleted, and it is now the strongest form it
+    can take: the 6ab8f6a contract authorises SIX commands and they are named
+    here, so a SEVENTH - or a module for one - fails.
     """
-    assert not (SRC / "modRepair.bas").exists(), "modRepair belongs to a later step"
     structure = (SPEC / "structure_contract.yaml").read_text(encoding="utf-8")
-    assert "PCCM_RepairProfiling" not in structure, "Repair belongs to a later step"
+    authorised = ("PCCM_Calculate", "PCCM_RunSimulation", "PCCM_RunSensitivity",
+                  "PCCM_RunAnnualStochastic", "PCCM_ResetResults",
+                  "PCCM_RepairProfiling")
+    import yaml
+    definitions = yaml.safe_load(structure)["buttons"]["definitions"]
+    commands = [b["entry_point"] for b in definitions if b["sheet"] == "Setup"]
+    assert commands[1:] == list(authorised), commands
+    assert commands[0] == "PCCM_ApplyTimeline"
+    # AND EVERY PHASE-10 MODULE IS ONE OF THE THREE THAT WERE AUTHORISED.
+    phase10 = {"modProtection.bas", "modReset.bas", "modRepair.bas"}
+    for name in phase10:
+        assert (SRC / name).is_file(), name
+    assert not (SRC / "modMethodology.bas").exists(), "Methodology work has not started"
 
 
 if __name__ == "__main__":  # pragma: no cover

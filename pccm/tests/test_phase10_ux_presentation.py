@@ -444,7 +444,12 @@ def test_10_every_other_button_keeps_its_binding() -> None:
         stdout=subprocess.PIPE).stdout.decode())["buttons"]["definitions"]
     was = {str(b["shape_name"]): b for b in accepted}
     now = {b.shape_name: b for b in _structure().buttons}
-    assert set(was) == set(now), sorted(set(was) ^ set(now))
+    # P10-2C ADDED THE SIXTH COMMAND AFTER THIS BATCH, and it is named rather
+    # than admitted by a loosened comparison: every button the UX batch was
+    # accepted with must still be here, bound exactly as it was, and the only
+    # thing that may have appeared since is Repair Profiling.
+    assert set(was) - set(now) == set(), sorted(set(was) - set(now))
+    assert set(now) - set(was) <= {"btnPCCMRepairProfiling"}, sorted(set(now) - set(was))
     for shape, before in was.items():
         after = now[shape]
         assert (after.sheet, after.caption, after.entry_point) == (

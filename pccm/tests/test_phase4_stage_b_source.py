@@ -273,7 +273,7 @@ PHASE4_RAW_LINE_LIMIT = 900
 PHASE8_VBA_MODULES = ("modResultsState",)
 
 # P10-2A. The protection owner, and the whole of Phase 10 so far.
-PHASE10_VBA_MODULES = ("modProtection", "modReset")
+PHASE10_VBA_MODULES = ("modProtection", "modReset", "modRepair")
 
 PHASE7_VBA_MODULES = (
     "modSimSensitivity",
@@ -549,8 +549,10 @@ def test_10_the_five_phase4_buttons_and_the_four_phase10_commands() -> None:
         ("Setup", "Run Annual Cash Flow"),
         # P10-2B. The fifth of the six the 6ab8f6a contract authorises, and the
         # first of them that is NEW code rather than an existing endpoint given a
-        # shape. The sixth, Repair Profiling, is not here and must not be.
+        # shape. P10-2C adds the sixth and last, so this set is now the whole of
+        # what that contract authorises: a SEVENTH still fails here.
         ("Setup", "Reset Results"),
+        ("Setup", "Repair Profiling"),
     }, f"an undeclared button appeared: {sorted(others)}"
 
 

@@ -597,7 +597,7 @@ def test_the_real_structure_contract_loads_and_agrees_with_the_others() -> None:
         "btnPCCMApplyTimeline", "btnPCCMAddCostLine", "btnPCCMDeleteCostLine",
         "btnPCCMAddRisk", "btnPCCMDeleteRisk",
         "btnPCCMCalculate", "btnPCCMRunSimulation", "btnPCCMRunSensitivity",
-        "btnPCCMRunAnnual", "btnPCCMResetResults",
+        "btnPCCMRunAnnual", "btnPCCMResetResults", "btnPCCMRepairProfiling",
     ], [b.shape_name for b in structure.buttons]
     validate_structure_against(
         structure, load_contract(CONTRACT_PATH), load_driver_contract(DRIVERS_PATH)

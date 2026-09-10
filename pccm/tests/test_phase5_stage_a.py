@@ -1998,6 +1998,8 @@ def test_the_stage_b_manifest_carries_the_implemented_modules_and_nothing_later(
         "PCCM_AddRisk", "PCCM_DeleteRisk",
         "PCCM_Calculate", "PCCM_RunSimulation", "PCCM_RunSensitivity",
         "PCCM_RunAnnualStochastic", "PCCM_ResetResults",
+        # P10-2C. The sixth and last command the 6ab8f6a contract authorises.
+        "PCCM_RepairProfiling",
     }, f"the bound button set changed: {sorted(bound)}"
     for accessor in ("PCCM_CalculationStatus", "PCCM_CalculationFingerprint",
                      "PCCM_CurrentInputFingerprint", "PCCM_CalculationAttemptResult",

@@ -292,7 +292,7 @@ PHASE5_INVENTORY = {
 }
 """The fifteen modules Phase 5 closed with. Frozen by name, not by count."""
 
-PHASE10_INVENTORY = {"modProtection", "modReset"}
+PHASE10_INVENTORY = {"modProtection", "modReset", "modRepair"}
 """P10-2A's protection owner and P10-2B's Reset Results owner, named on the same
 terms Phases 6, 7 and 8 were: naming them here relaxes nothing about Phase 5, and
 a sixteenth Phase-5 module still cannot appear."""
@@ -425,9 +425,13 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
     # endpoint, owned by modReset, and it is not the reporter's: subtracting it
     # here keeps this an EXACT statement about Phase 5 rather than letting the
     # equality below become "contains at least".
-    phase10 = {"PCCM_ResetResults"}
-    assert set(modules["modReset"].public_procedures) == phase10, sorted(
+    phase10 = {"PCCM_ResetResults", "PCCM_RepairProfiling"}
+    assert set(modules["modReset"].public_procedures) == {"PCCM_ResetResults"}, sorted(
         modules["modReset"].public_procedures)
+    # P10-2C. THE RECOVERY COMMAND, AND IT IS ONE PROCEDURE. modRepair exposes no
+    # accessor, no clear and no helper: everything it needs already has an owner.
+    assert set(modules["modRepair"].public_procedures) == {"PCCM_RepairProfiling"}, \
+        sorted(modules["modRepair"].public_procedures)
     for name in phase10:
         assert name not in _reporter().public_procedures, name
     found = ({p for m in modules.values() for p in m.public_procedures

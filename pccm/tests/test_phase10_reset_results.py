@@ -669,12 +669,13 @@ def test_31_the_button_lands_on_the_next_anchor_and_moves_none_of_the_nine() -> 
                 and int(b.anchor_cell[len(column):]) >= first]
     anchors = [b.anchor_cell for b in commands]
     assert anchors == [f"{column}{first + pitch * i}" for i in range(len(commands))]
-    assert len(structure.buttons) == 10, len(structure.buttons)
-    # LAST IN THE BLOCK, wherever the block starts. A destructive command that
+    assert len(structure.buttons) == 11, len(structure.buttons)
+    # SIXTH IN THE BLOCK, wherever the block starts. A destructive command that
     # crept up among the run commands would be a different mistake, and the
-    # index below is what refuses it.
-    assert commands[-1].shape_name == SHAPE
-    assert buttons_at(structure, f"{column}{first + pitch * (len(commands) - 1)}") == SHAPE
+    # index below is what refuses it. P10-2C put Repair Profiling after it, so
+    # "last" is no longer the claim; the POSITION is.
+    assert commands[5].shape_name == SHAPE
+    assert buttons_at(structure, f"{column}{first + pitch * 5}") == SHAPE
 
 
 def buttons_at(structure, anchor: str) -> str:
@@ -684,12 +685,21 @@ def buttons_at(structure, anchor: str) -> str:
     raise AssertionError(f"no button at {anchor}")
 
 
-def test_32_repair_profiling_has_not_started() -> None:
-    """§9 and the batch fence: the sixth command belongs to a later step."""
-    assert not (SRC / "modRepair.bas").exists()
-    structure = (SPEC / "structure_contract.yaml").read_text(encoding="utf-8")
-    assert "PCCM_RepairProfiling" not in structure
-    assert "Repair" not in _reset().raw
+def test_32_reset_results_and_repair_profiling_stay_separate_commands() -> None:
+    """§9. RESTATED AT P10-2C, WHERE THE SIXTH COMMAND LANDED.
+
+    This was the fence that kept Repair Profiling out. It has since been
+    authorised, so the claim worth keeping is the one the fence was protecting:
+    these are two commands, not one, and neither reaches into the other's work.
+    Reset Results clears published ANSWERS and keeps every input; Repair
+    Profiling restores the STRUCTURE of two input grids and keeps every weight.
+    """
+    assert (SRC / "modRepair.bas").is_file()
+    assert "Repair" not in _reset().code, "modReset reaches into the repair command"
+    repair = (SRC / "modRepair.bas").read_text(encoding="utf-8")
+    assert "modReset" not in repair, "modRepair reaches into the reset command"
+    for owner, _clear, _restore in OWNERS:
+        assert owner not in repair, f"modRepair names the publication owner {owner}"
 
 
 # ===========================================================================

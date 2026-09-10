@@ -109,20 +109,18 @@ def test_02a_this_batch_is_the_one_the_contract_authorises() -> None:
     """AND THE SEPARATE HALF: what exists now is what 6ab8f6a authorised, and
     only that. Reset and Repair are LATER steps; finding either here would mean
     a batch ran ahead of its authorisation."""
-    # ADVANCED AT P10-2B, AND NOT WEAKENED. The record authorises SIX commands
-    # and they arrive one step at a time; the fence moves with the steps that
-    # have actually been authorised rather than being deleted once one of them
-    # lands. Reset Results is command five and is here; Repair Profiling is
-    # command six and must not be.
-    assert not (SRC / "modRepair.bas").exists(), "modRepair belongs to a later step"
+    # ADVANCED AT P10-2B AND COMPLETED AT P10-2C. The record authorises SIX
+    # commands and they arrived one step at a time; the fence moved with the
+    # steps that were actually authorised rather than being deleted once one of
+    # them landed. All six are now bound, which is the whole of what 6ab8f6a
+    # permits - so a SEVENTH is what this now refuses.
     structure = (SPEC / "structure_contract.yaml").read_text(encoding="utf-8")
-    assert "PCCM_RepairProfiling" not in structure, "Repair belongs to a later step"
-    # THE FIVE BOUND SO FAR ARE THE FIVE THE RECORD NAMES, in its order.
-    assert structure.count("entry_point:") == 10, (
-        "the button table is not the five Phase-4 buttons plus the five "
-        "operational commands authorised so far")
+    assert structure.count("entry_point:") == 11, (
+        "the button table is not the five Phase-4 buttons plus the six "
+        "operational commands the contract authorises")
     for command in ("PCCM_Calculate", "PCCM_RunSimulation", "PCCM_RunSensitivity",
-                    "PCCM_RunAnnualStochastic", "PCCM_ResetResults"):
+                    "PCCM_RunAnnualStochastic", "PCCM_ResetResults",
+                    "PCCM_RepairProfiling"):
         assert f'entry_point: "{command}"' in structure, command
     for authorised in ("modProtection.bas", "ThisWorkbook.vba"):
         assert (SRC / authorised).is_file(), f"{authorised} is authorised and absent"

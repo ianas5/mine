@@ -391,7 +391,7 @@ PHASE8_MODULES = ("modResultsState",)
 # P10-2A, NAMED ON THE SAME TERMS PHASES 6, 7 AND 8 WERE. modProtection is
 # hardening, not numerics: naming it here relaxes nothing about Phase 5, and a
 # further Phase-5 module still cannot appear.
-PHASE10_MODULES = ("modProtection", "modReset")
+PHASE10_MODULES = ("modProtection", "modReset", "modRepair")
 """Phase-7 hand-written source modules, named on the same terms as Phase 6's.
 
 The equality below is about PHASE 5: a further Phase-5 module still cannot

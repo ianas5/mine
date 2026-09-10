@@ -406,7 +406,7 @@ commands:
     section: "Model Commands"
     section_row: 56
     note_row: 57
-    note: "Run the model from here, in this order. Apply / Update Timeline generates the project-year columns on Inflation and both profiling grids and must be done first. Then each command is a separate operation: Calculate produces the deterministic model, Run Simulation produces a distribution from it, and Sensitivity and Annual Cash Flow analyse a completed simulation without producing a new one. Reset Results clears every published result and leaves every input untouched."
+    note: "Run the model from here, in this order. Apply / Update Timeline generates the project-year columns on Inflation and both profiling grids and must be done first. Then each command is a separate operation: Calculate produces the deterministic model, Run Simulation produces a distribution from it, and Sensitivity and Annual Cash Flow analyse a completed simulation without producing a new one. Reset Results clears every published result and leaves every input untouched. Repair Profiling rebuilds the structure of the two profiling grids when it has drifted, and never changes a weight it can attribute to a driver."
     label_column: "B"
     button_column: "E"
     first_button_row: 59
@@ -615,6 +615,26 @@ buttons:
       entry_point: "PCCM_ResetResults"
       anchor_cell: "E69"
 
+    # -------------------------------------------------------------------------
+    # THE SIXTH AND LAST COMMAND THE 6ab8f6a CONTRACT AUTHORISES - P10-2C.
+    #
+    # WHY IT IS LAST IN THE BLOCK. The block reads in the order a user works:
+    # apply a timeline, calculate, simulate, analyse, and - when something has to
+    # be undone - reset or repair. Repair Profiling is the one command a healthy
+    # workbook never needs, so it sits at the end where it is found when it is
+    # looked for rather than met on the way to Calculate.
+    #
+    # IT IS NOT A SECOND RESET. Reset Results clears published ANSWERS and keeps
+    # every input; Repair Profiling restores the STRUCTURE of two generated grids
+    # and keeps every weight in them. Neither can do the other's job, and neither
+    # touches what the other owns.
+    - key: "repair_profiling"
+      sheet: "Setup"
+      shape_name: "btnPCCMRepairProfiling"
+      caption: "Repair Profiling"
+      entry_point: "PCCM_RepairProfiling"
+      anchor_cell: "E71"
+
 # -----------------------------------------------------------------------------
 # VBA module inventory.
 #
@@ -741,6 +761,9 @@ vba:
     - name: "modReset"
       generated: false
       responsibility: "The Phase-10 Reset Results owner: confirms the destructive change, asks each publication owner to clear what it wrote, and restores every one of them if any step fails. Holds no bank address, no stamp row, no table name and no fingerprint layout; it names four owners and the order they are asked in, and nothing else."
+    - name: "modRepair"
+      generated: false
+      responsibility: "The Phase-10 Repair Profiling owner: decides whether the two profiling grids are structurally reconstructable, refuses every case whose semantic intent is ambiguous, and otherwise asks modProfiling to rebuild the year columns and the rows. Holds no grid address, no register column, no id pattern and no structural rule; it partitions the accepted checker's own fault keys and calls the accepted profiling owner."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.
@@ -766,6 +789,11 @@ vba:
     # command that could be driven without a confirmation is not a command any
     # integrator should be handed.
     - "PCCM_ResetResults"
+    # P10-2C. Repair Profiling, on the same terms. It is a recovery command whose
+    # whole contract is that a human decided the grids were wrong; an integrator
+    # calling it on a schedule would be rebuilding a structure nobody had looked
+    # at.
+    - "PCCM_RepairProfiling"
 
   # Public PCCM_ procedures that are NOT buttons. They exist so the Windows
   # functional harness can drive a confirmation path and an injected failure without
