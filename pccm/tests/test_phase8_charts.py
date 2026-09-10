@@ -232,6 +232,10 @@ DECLARED_PRODUCTION_CORRECTIONS = {
          '    Dim status As String',
          '    If Not PrepareCurrentCalculation(package, detail) Then Exit Function'),
     ),
+    # P10-2B APPENDS the Reset Results clear of the calculation publication to
+    # the same module: CalcReportClearPublication, CalcReportRestorePublication
+    # and the private block list they walk. Purely additive, which is why the
+    # removal licence above is unchanged.
     "pccm/src/vba/modCalcAnalytical.bas": (
         "P9-3: the last two owners name their driver too. AccumulateTotals, "
         "BuildAnnualSeries and Reconcile each gain a `ByRef subject As "
@@ -304,8 +308,46 @@ DECLARED_PRODUCTION_CORRECTIONS = {
         "true. The cost-line branch is untouched and was always right: a cost "
         "line has no name column and its description is its required label. No "
         "driver id, rank, signed rho, absolute rho, direction, status, ordering, "
-        "fingerprint or replay mathematics is touched.",
+        "fingerprint or replay mathematics is touched. P10-2B APPENDS the Reset "
+        "Results clear and its undo: SimPostReportClearPublication and "
+        "SimPostReportRestorePublication, plus the private block list they walk. "
+        "Reset Results holds no geometry, so the owner of the sensitivity "
+        "publication is the one that clears it. Purely additive; ClearRecords, "
+        "Publish, FillRecord and every reading helper are byte-identical.",
         ("    column = COL_RISK_REGISTER_DESCRIPTION",),
+    ),
+    # DISCLOSED AT THE UX BATCH, AND IT IS A PROCESS MISS RATHER THAN A CODE ONE.
+    # These two entries should have landed WITH P10-2B (a7c2222). That batch ran
+    # this suite and it passed - because `git diff ..HEAD` cannot see an
+    # uncommitted working tree, and the additions were not committed until the
+    # suite had already run. The control was right and was asked the question one
+    # commit too early. The lesson is the one this file already records about
+    # modResultsState: a round has to prove itself against the tree it is about
+    # to commit, not the one it started from.
+    "pccm/src/vba/modSimReport.bas": (
+        "P10-2B: the Reset Results clear of the simulation publication. Appends "
+        "SimReportClearPublication and SimReportRestorePublication, plus the "
+        "private list of publication blocks they walk and the bounded capture "
+        "behind it. modReset holds no bank, column or row of _SimData, so the "
+        "owner that writes the publication is the one that clears it, and the "
+        "clear is written through the same SnapshotRange, SummaryRange, "
+        "ContingencyRange and IterationRange the publication writes through. The "
+        "record range deliberately starts one row BELOW the final commit range, "
+        "so the run-id counter, the AUTO nonce and its pending marker are out of "
+        "reach. Purely additive: no run, kernel, statistic, fingerprint, digest, "
+        "bank selection, commit or state derivation is touched.",
+        (),
+    ),
+    "pccm/src/vba/modSimAnnualStore.bas": (
+        "P10-2B: the Reset Results clear of the annual publication. Appends "
+        "SimAnnualStoreClearPublication and SimAnnualStoreRestorePublication, "
+        "plus the private list of publication blocks they walk. Written in the "
+        "same terms SimAnnualStorePublish uses - both banks' identity stamps and "
+        "both blocks over the contracted height - so the height a reset covers "
+        "and the height a run covers cannot drift apart. Purely additive: no "
+        "flatten, no year axis, no selector resolution, no identity match and no "
+        "state derivation is touched.",
+        (),
     ),
 }
 
@@ -595,20 +637,41 @@ def test_20_the_cumulative_series_is_a_running_sum_of_the_published_profile() ->
 
 
 def test_21_the_annual_series_is_bounded_by_the_stamped_year_count() -> None:
-    """NO POST-WINDOW ZERO YEARS. Every row past the stamped count returns NA(),
-    which every chart type declines to plot. `""` would be drawn as zero - a
-    fabricated year of a project costing nothing - which is the exact reason
-    this bridge exists rather than the chart reading the table."""
-    for key in ("project_index", "calendar_year", "annual_nominal",
-                "cumulative_nominal", "cumulative_pv"):
+    """NO POST-WINDOW ZERO YEARS. Every VALUE past the stamped count returns
+    NA(), which every chart type declines to plot. `""` would be drawn as zero -
+    a fabricated year of a project costing nothing - which is the exact reason
+    this bridge exists rather than the chart reading the table.
+
+    SPLIT AT UX-001, AND THE CLAIM ABOVE IS UNWEAKENED. `calendar_year` is not a
+    value: it is the CATEGORY the s-curve and the cash-flow chart label their
+    axes with, and NA() in a category cell draws the literal text "#N/A" on the
+    axis - two hundred of them on an empty Dashboard, which is what a human
+    reviewing the real workbook saw. A blank category draws no label. It draws
+    no POINT either, because the point comes from the value column beside it and
+    that column still returns NA(). Every value column below is asserted exactly
+    as before; the category is asserted to be blank, and asserted NOT to be zero.
+    """
+    values = ("project_index", "annual_nominal", "cumulative_nominal",
+              "cumulative_pv")
+    categories = ("calendar_year",)
+    for key in values + categories:
         formulas = _block_formulas("annual", key)
         assert len(formulas) == _projection()["bridge"]["annual"]["row_count"]
         for offset, formula in enumerate(formulas):
             assert formula.startswith("=IF("), formula
-            assert ",NA()," in formula, (key, offset, formula)
+            if key in categories:
+                assert ',"",' in formula, (key, offset, formula)
+                assert "NA()" not in formula, (key, offset, formula)
+                # AND IT IS A LABEL THAT IS ABSENT, NOT A NUMBER THAT IS ZERO.
+                assert ",0," not in formula, (key, offset, formula)
+            else:
+                assert ",NA()," in formula, (key, offset, formula)
+                assert ',"",' not in formula, (key, offset, formula)
             assert _annual_guard(offset + 1) in formula, (key, offset)
-            assert '""' not in formula, (
-                f"{key} row {offset} can return a blank a chart would plot as zero")
+            if key not in categories:
+                assert '""' not in formula, (
+                    f"{key} row {offset} can return a blank a chart would plot "
+                    "as zero")
 
 
 def test_22_the_s_curve_plots_the_cumulative_series_against_calendar_year() -> None:
@@ -688,8 +751,16 @@ def test_33_an_unpublished_or_degenerate_run_fabricates_no_bin() -> None:
             assert f"${nominal}${stamp['iterations_run']}" in formula
         else:
             assert ",NA())" in formula or ",NA()," in formula, index
-    for formula in _block_formulas("distribution", "lower"):
+    # AND THE EDGES. `upper` is a value and keeps NA(); `lower` is the
+    # histogram's CATEGORY and is blank when absent, for the reason UX-001 split
+    # the annual series on: NA() in a category cell draws "#N/A" twenty times
+    # across the axis of an empty chart. No bar is drawn either way - the count
+    # column above is what draws bars, and it still returns NA().
+    for formula in _block_formulas("distribution", "upper"):
         assert formula.startswith(f'=IF({published}="",NA(),')
+    for formula in _block_formulas("distribution", "lower"):
+        assert formula.startswith(f'=IF({published}="","",')
+        assert "NA()" not in formula, formula
 
 
 def test_34_the_histogram_plots_the_count_against_the_lower_edge() -> None:
@@ -780,9 +851,20 @@ def test_52_absent_drivers_are_not_drawn_as_zero_length_bars() -> None:
     """FEWER ELIGIBLE DRIVERS THAN N MUST DRAW FEWER BARS. N-k bars of nothing
     sitting on the axis look measured, and zero-variance drivers are excluded by
     the accepted contract precisely so they are not shown as uncorrelated."""
-    for formula in _block_formulas("drivers", "driver_name") + _block_formulas("drivers", "rho"):
+    # RHO IS THE BAR. An absent one is NA() and always was: a blank there is
+    # charted as zero, which is the fabricated "uncorrelated driver" this control
+    # exists to refuse.
+    for formula in _block_formulas("drivers", "rho"):
         assert '="",NA()' in formula.replace(" ", ""), formula
         assert ',""' not in formula, "an absent driver becomes a blank a chart plots as zero"
+    # THE DRIVER NAME IS THE CATEGORY, AND UX-001 MADE IT BLANK WHEN ABSENT.
+    # Nothing about the bar changed - rho above is untouched - and the tornado
+    # still draws k bars for k eligible drivers. What went away is ten rows of
+    # "#N/A" down the category axis of an unpublished chart.
+    for formula in _block_formulas("drivers", "driver_name"):
+        assert '="","",' in formula.replace(" ", ""), formula
+        assert "NA()" not in formula, formula
+        assert ",0," not in formula, "an absent driver became a plotted zero"
 
 
 def test_53_an_unavailable_ranking_is_stated_rather_than_drawn_empty() -> None:
@@ -1535,17 +1617,26 @@ def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None
     correction really is what it says it is."""
     _declared_production_changes(_git, P81_ACCEPTANCE)
     _declared_production_changes(_git, P82_ACCEPTANCE)
-    # THE EXACT SET, AND IT GREW BY ONE AT P9-2, BY TWO MORE AT P9-2B AND BY
-    # ONE AT P9-3. Naming them keeps this as strict as it was: a SEVENTH
-    # declaration still fails here, and so does a removal or a rename of any of
-    # these six.
+    # THE EXACT SET, AND IT GREW BY ONE AT P9-2, BY TWO MORE AT P9-2B, BY ONE AT
+    # P9-3 AND BY TWO AT P10-2B. Naming them keeps this as strict as it was: a
+    # NINTH declaration still fails here, and so does a removal or a rename of
+    # any of these eight.
     assert set(DECLARED_PRODUCTION_CORRECTIONS) == {
         "pccm/src/vba/modCalcAnalytical.bas",
         "pccm/src/vba/modCalcCheck.bas",
         "pccm/src/vba/modCalcReport.bas",
         "pccm/src/vba/modCalcResolve.bas",
         "pccm/src/vba/modResultsState.bas",
-        "pccm/src/vba/modSimPostReport.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
+        "pccm/src/vba/modSimAnnualStore.bas",
+        "pccm/src/vba/modSimPostReport.bas",
+        "pccm/src/vba/modSimReport.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
+    # AND THE TWO P10-2B ENTRIES ARE ADDITIVE, which is the whole claim a reset
+    # clear is allowed to make about a publication owner.
+    for path in ("pccm/src/vba/modSimReport.bas",
+                 "pccm/src/vba/modSimAnnualStore.bas"):
+        reason, removals = DECLARED_PRODUCTION_CORRECTIONS[path]
+        assert removals == (), path
+        assert "Reset Results" in reason, path
     reason, removals = DECLARED_PRODUCTION_CORRECTIONS[
         "pccm/src/vba/modResultsState.bas"]
     assert LIVE_ADAPTER in reason and PURE_OWNER in reason, reason

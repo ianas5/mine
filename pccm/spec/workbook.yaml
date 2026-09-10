@@ -54,6 +54,11 @@ presentation:
     label: 10
     value: 10
     note: 9
+    # UX-003. THE STATE MESSAGE IS NOT A NOTE. A grid whose year columns do not
+    # exist yet has one thing to tell the user and it is an instruction, not a
+    # footnote; at note size and note colour a human reviewing the workbook read
+    # straight past it and asked where the percentages go.
+    state_message: 11
   colors:
     title: "1F2933"
     subtitle: "5A6673"
@@ -70,11 +75,17 @@ presentation:
     locked_text: "3E4C59"
     header_fill: "E2E6EB"     # table header
     not_applicable_fill: "E9EBEE"   # presentation only: cell not applicable for this row
+    # UX-003. Readable and calm rather than alarming: this is a "do this next"
+    # line, not an error. It states no new fact - the formula behind it reads the
+    # applied-timeline owner exactly as it did before.
+    state_message: "8A5A00"
+    state_message_fill: "FFF4D6"
   row_heights:
     title: 24
     subtitle: 15
     spacer: 8
     section: 18
+    state_message: 22
     default: 15
   table_style: "TableStyleLight1"
   layout:
@@ -1024,6 +1035,43 @@ phase6_shell:
       year: "0"
       rho: "0.000"
       text: "General"
+      # UX-001. THE AXIS FORMAT, AND IT CHANGES NO VALUE. Excel's scaling commas
+      # divide what is DISPLAYED, never what is stored, so a 1.2 billion total
+      # reads "1,200M" on the axis and stays 1,200,000,000 in the cell the axis
+      # reads. Three conditional sections rather than one fixed scale, because a
+      # single ,, would print every figure of a half-million-riyal project as
+      # "0M" - a compact format that lies about the order of magnitude is worse
+      # than a wide one that does not fit.
+      money_axis: '[>=1000000]#,##0,,"M";[>=1000]#,##0,"k";#,##0'
+
+    # -----------------------------------------------------------------
+    # UX-001. HOW THE AXES ARE DRAWN. Presentation only: not one of these
+    # settings touches a source range, a series identity or a state word.
+    # -----------------------------------------------------------------
+    axis_presentation:
+      # Smaller than the sheet body on purpose. A category axis fits more labels
+      # before Excel starts dropping them, which is the whole point: the
+      # requirement is that a long timeline must not have to omit labels merely
+      # because the font is large.
+      label_font_size: 900
+      # THE CATEGORY LABELS GO TO THE LOW END OF THE VALUE AXIS AND STAY THERE.
+      # This is the tornado's correction and it is not cosmetic: rho is signed,
+      # so the value axis crosses at zero in the MIDDLE of the plot, and Excel's
+      # default puts each driver's name next to that crossing - on top of the
+      # bars, clipped by them, and moving as the data changes. "low" pins every
+      # name to the left edge, which is where a tornado's labels belong and is
+      # the horizontal room the requirement asks for.
+      category_label_position: "low"
+      # An absent point is a gap, never a plotted zero. NA() already declines to
+      # plot; this says the same thing to the chart for anything Excel would
+      # otherwise interpolate across.
+      display_blanks_as: "gap"
+      # DELIBERATELY NOT SET: a tick-label interval. A build-time skip would have
+      # to be chosen against the 200-column ceiling and would then hide four
+      # labels in five on a ten-year project, which is a worse chart than the one
+      # it fixes. Excel's automatic interval reads the rendered width at open
+      # time and is the only thing that can know; enlarging the plot and shrinking
+      # the label font is how this batch makes that automatic choice a good one.
     # -----------------------------------------------------------------
     # THE BRIDGE, ON RESULTS, BELOW EVERYTHING THE EARLIER STEPS OWN
     # -----------------------------------------------------------------
@@ -1041,7 +1089,13 @@ phase6_shell:
         note: "The published annual profile, bounded by the stamped year count, plus its running total. NA() past the last stamped year and whenever no annual result is produced."
         columns:
           - {key: "project_index", header: "Project Year", column: "B", source: "annual", field: "project_index", format: "year"}
-          - {key: "calendar_year", header: "Calendar Year", column: "D", source: "annual", field: "calendar_year", format: "year"}
+          # UX-001. BLANK WHEN ABSENT, NOT NA(). This column is a chart's
+          # CATEGORY - a label - and Excel prints #N/A on the axis for every one
+          # of the 200 rows before anything is published. A blank label draws
+          # nothing. The VALUE columns below keep NA() unchanged, which is what
+          # keeps "no result" from becoming a plotted zero: nothing here
+          # fabricates a point, it stops fabricating a caption for one.
+          - {key: "calendar_year", header: "Calendar Year", column: "D", source: "annual", field: "calendar_year", format: "year", absent: "blank"}
           - {key: "annual_nominal", header: "Annual Nominal", column: "F", source: "annual", field: "nominal", format: "money"}
           - {key: "cumulative_nominal", header: "Cumulative Nominal", column: "H", source: "cumulative", field: "nominal", format: "money"}
           - {key: "cumulative_pv", header: "Cumulative PV", column: "J", source: "cumulative", field: "pv", format: "money"}
@@ -1059,7 +1113,9 @@ phase6_shell:
         # readability for a question nobody asked at this altitude.
         measure: "nominal"
         columns:
-          - {key: "lower", header: "Bin Lower", column: "B", format: "money"}
+          # UX-001. The histogram's category, blank when absent. `upper` beside
+          # it is not a category and keeps NA().
+          - {key: "lower", header: "Bin Lower", column: "B", format: "money", absent: "blank"}
           - {key: "upper", header: "Bin Upper", column: "D", format: "money"}
           - {key: "count", header: "Iterations", column: "F", format: "year"}
       drivers:
@@ -1071,7 +1127,11 @@ phase6_shell:
         heading: "Top Drivers"
         note: "The first rows of the accepted Sensitivity ranking, in the order that sheet publishes them. This block selects a window; it does not rank, re-sort or sign anything."
         columns:
-          - {key: "driver_name", header: "Driver", column: "B", source: "driver_name", format: "text"}
+          # UX-001. The tornado's category, blank when absent - which covers both
+          # cases the guard behind it distinguishes: no publication at all, and a
+          # row that is not part of the ranked population. Neither draws a bar,
+          # and now neither draws a #N/A either.
+          - {key: "driver_name", header: "Driver", column: "B", source: "driver_name", format: "text", absent: "blank"}
           - {key: "rho", header: "Rho", column: "D", source: "rho", format: "rho"}
       status:
         heading_row: 528
@@ -1096,11 +1156,21 @@ phase6_shell:
     # more than one series, has no major gridlines on the category axis, and
     # carries its title once - on the chart, not repeated in a cell above it.
     charts:
+      # UX-001. GEOMETRY, ENLARGED. The accepted size was 9.6 x 7.2 cm, which a
+      # human reviewing the real workbook found cramped while EMPTY - before any
+      # of the 200 year labels, 20 bin edges or 10 driver names that populate it
+      # exist. Every chart is now 16.0 x 11.5 cm: two and a half times the plot
+      # area. The 2x2 stays, the columns move from B/F to B/H so the wider plots
+      # do not meet, and the rows move from 65/85 to 65/89 so the taller ones do
+      # not either. The Dashboard now scrolls further, which the requirement
+      # prefers to a grid that fits and cannot be read.
       - key: "s_curve"
         kind: "line"
         anchor: "B65"
-        width: 9.6
-        height: 7.2
+        width: 16.0
+        height: 11.5
+        value_axis_format: "money_axis"
+        category_axis_format: "year"
         title: "Cumulative Cost"
         source: "annual"
         categories: "calendar_year"
@@ -1110,9 +1180,11 @@ phase6_shell:
         state_source: "profile_state"
       - key: "histogram"
         kind: "column"
-        anchor: "F65"
-        width: 9.6
-        height: 7.2
+        anchor: "H65"
+        width: 16.0
+        height: 11.5
+        value_axis_format: "year"
+        category_axis_format: "money_axis"
         title: "Total Cost Distribution"
         source: "distribution"
         categories: "lower"
@@ -1124,9 +1196,11 @@ phase6_shell:
         state_source: "simulation_state"
       - key: "annual_cash_flow"
         kind: "column"
-        anchor: "B85"
-        width: 9.6
-        height: 7.2
+        anchor: "B89"
+        width: 16.0
+        height: 11.5
+        value_axis_format: "money_axis"
+        category_axis_format: "year"
         title: "Annual Cash Flow"
         source: "annual"
         categories: "calendar_year"
@@ -1135,9 +1209,15 @@ phase6_shell:
         state_source: "profile_state"
       - key: "tornado"
         kind: "bar"
-        anchor: "F85"
-        width: 9.6
-        height: 7.2
+      # AND THE TORNADO IS WIDER STILL. Its categories are driver DESCRIPTIONS,
+      # not years or numbers, and they are the one axis on this Dashboard whose
+      # labels are sentences. It is the bottom-right plot, so the extra 4 cm
+      # extends into empty columns and disturbs none of the other three.
+        anchor: "H89"
+        width: 20.0
+        height: 11.5
+        value_axis_format: "rho"
+        category_axis_format: "text"
         title: "Top Drivers by Rank Correlation"
         source: "drivers"
         categories: "driver_name"

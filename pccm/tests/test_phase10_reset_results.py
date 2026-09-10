@@ -650,7 +650,16 @@ def test_30_the_command_is_declared_bound_and_reachable() -> None:
 
 
 def test_31_the_button_lands_on_the_next_anchor_and_moves_none_of_the_nine() -> None:
-    """§9. "Do not alter the existing nine buttons already accepted." """
+    """§9. "Do not alter the existing nine buttons already accepted."
+
+    RESTATED AT P10-UX. The block now LEADS with Apply / Update Timeline, which
+    the visual review moved out of the Applied Timeline block it was drawn over,
+    so every command sits one pitch lower than it did. Nothing about Reset
+    Results changed: it is still the last command in the block, still on the
+    declared column at the declared pitch, still bound to the same endpoint. The
+    claim is now made by POSITION IN THE BLOCK rather than by a row number,
+    which is what it always meant.
+    """
     structure = _structure()
     block = structure.commands["block"]
     column = str(block["button_column"])
@@ -661,7 +670,11 @@ def test_31_the_button_lands_on_the_next_anchor_and_moves_none_of_the_nine() -> 
     anchors = [b.anchor_cell for b in commands]
     assert anchors == [f"{column}{first + pitch * i}" for i in range(len(commands))]
     assert len(structure.buttons) == 10, len(structure.buttons)
-    assert buttons_at(structure, f"{column}{first + pitch * 4}") == SHAPE
+    # LAST IN THE BLOCK, wherever the block starts. A destructive command that
+    # crept up among the run commands would be a different mistake, and the
+    # index below is what refuses it.
+    assert commands[-1].shape_name == SHAPE
+    assert buttons_at(structure, f"{column}{first + pitch * (len(commands) - 1)}") == SHAPE
 
 
 def buttons_at(structure, anchor: str) -> str:

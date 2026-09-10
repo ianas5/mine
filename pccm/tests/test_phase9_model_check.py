@@ -2348,16 +2348,75 @@ def test_67_the_evaluation_source_is_on_the_sheet_and_not_hidden() -> None:
         workbook.close()
 
 
+# THE PRESENTATION KEYS THE P10-UX BATCH IS ALLOWED TO HAVE MOVED, and nothing
+# else. Named per level so a range, a source, a state word or a row cannot hide
+# among them.
+UX_CHART_KEYS = {"anchor", "width", "height",
+                 "value_axis_format", "category_axis_format"}
+
+
 def test_68_the_accepted_phase_6_to_8_geometry_did_not_move() -> None:
     """PHASE 9 MAY ADD A BLOCK; it may not move a byte of a surface an accepted
-    Windows run was produced against."""
+    Windows run was produced against.
+
+    RESTATED AT P10-UX, AND THE CLAIM IS THE SAME ONE. A human opened the real
+    workbook for the first time and found the Dashboard charts too small to read
+    and rows of #N/A down their axes. Correcting that moves chart GEOMETRY and
+    AXIS PRESENTATION, which is exactly what this control was never about: it
+    exists to stop a source range, a series, a row, a state word or a bridge
+    address moving under an accepted Windows run. So the comparison is now
+    field-for-field with the presentation keys NAMED, and every other byte of
+    the accepted shell - including every range in it - is still required to be
+    identical.
+    """
     accepted = subprocess.run(["git", "show", "32e441e:pccm/spec/workbook.yaml"],
                               cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
                               text=True).stdout
     before = yaml.safe_load(accepted)
     now = _manifest()
-    assert before["phase6_shell"] == now["phase6_shell"], (
-        "the accepted Phase-6/7/8 shell changed in this step")
+    was, current = before["phase6_shell"], now["phase6_shell"]
+    assert set(was) == set(current), sorted(set(was) ^ set(current))
+    for key in was:
+        if key != "charts":
+            assert was[key] == current[key], f"the accepted {key} block moved"
+
+    was_charts, now_charts = dict(was["charts"]), dict(current["charts"])
+    # THE NEW TOP-LEVEL KEY IS NAMED AND IS PRESENTATION ONLY.
+    assert set(now_charts) - set(was_charts) == {"axis_presentation"}
+    assert set(now_charts["axis_presentation"]) == {
+        "label_font_size", "category_label_position", "display_blanks_as"}
+    # ONE NEW NUMBER FORMAT, AND EVERY ACCEPTED ONE UNCHANGED.
+    assert set(now_charts["number_formats"]) - set(was_charts["number_formats"]) == {
+        "money_axis"}
+    for name, code in was_charts["number_formats"].items():
+        assert now_charts["number_formats"][name] == code, name
+    # EVERY CHART: same key, kind, source, categories, series and state
+    # qualifiers. Only the named presentation keys may differ.
+    was_by_key = {c["key"]: c for c in was_charts["charts"]}
+    now_by_key = {c["key"]: c for c in now_charts["charts"]}
+    assert set(was_by_key) == set(now_by_key)
+    for key, chart in was_by_key.items():
+        after = now_by_key[key]
+        assert set(after) - set(chart) <= UX_CHART_KEYS, key
+        for field in set(chart) - UX_CHART_KEYS:
+            assert chart[field] == after[field], (key, field)
+    # AND THE BRIDGE: same rows, same columns, same letters, same formats. The
+    # only new key is `absent`, and only on a column a chart uses as its
+    # CATEGORY - which is a label, not a point.
+    categories = {c["categories"] for c in was_charts["charts"]}
+    for name in ("annual", "distribution", "drivers"):
+        was_block, now_block = was_charts["bridge"][name], now_charts["bridge"][name]
+        assert set(was_block) == set(now_block), name
+        for field in set(was_block) - {"columns"}:
+            assert was_block[field] == now_block[field], (name, field)
+        for before_col, after_col in zip(was_block["columns"], now_block["columns"]):
+            extra = set(after_col) - set(before_col)
+            assert extra <= {"absent"}, (name, extra)
+            if extra:
+                assert after_col["key"] in categories, (name, after_col["key"])
+                assert after_col["absent"] == "blank", after_col
+            for field in before_col:
+                assert before_col[field] == after_col[field], (name, field)
     assert "phase9_shell" not in before
     assert before["workbook"]["locked_sheet_order"] == now["workbook"]["locked_sheet_order"]
 

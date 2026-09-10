@@ -927,7 +927,7 @@ def _validate_state(contract: StructureContract, path: Path) -> None:
                     f"name {name!r}"
                 )
 
-    for message_key in ("not_applied", "inflation_empty_span"):
+    for message_key in ("not_applied", "inflation_not_applied", "inflation_empty_span"):
         if message_key not in contract.state_messages:
             raise StructureContractError(f"{path}: state_messages.{message_key} is required")
     for formula_key in ("profiling_formula", "inflation_formula"):
@@ -941,8 +941,12 @@ def _validate_state(contract: StructureContract, path: Path) -> None:
             f"{path}: the profiling state formula does not emit the declared "
             "state_messages.not_applied text"
         )
+    # UX-003. THE INFLATION FORMULA EMITS THE INFLATION SENTENCE. The two grids
+    # answer the same question about different columns, so they get different
+    # words; what neither of them gets is a second authority, and both still
+    # read nmYearCount_Applied and nothing else.
     inflation_formula = contract.state_messages["inflation_formula"]
-    for message_key in ("not_applied", "inflation_empty_span"):
+    for message_key in ("inflation_not_applied", "inflation_empty_span"):
         if contract.state_messages[message_key] not in inflation_formula:
             raise StructureContractError(
                 f"{path}: the inflation state formula does not emit the declared "

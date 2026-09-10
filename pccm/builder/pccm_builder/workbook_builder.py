@@ -1093,6 +1093,25 @@ def _excel_number(value: float) -> str:
 # NA() is the value every chart type declines to plot.
 
 
+# UX-001. WHAT AN ABSENT CELL EMITS, PER COLUMN.
+#
+# A chart wants two different things from an absent cell depending on what the
+# cell IS, and the accepted bridge emitted one answer for both:
+#
+#   a VALUE that is absent must be NA(), because "" is charted as zero and a run
+#   of zeros is a confident picture of a project costing nothing. Unchanged.
+#
+#   a CATEGORY that is absent must be BLANK, because a category is a LABEL and
+#   NA() draws the literal text "#N/A" on the axis - two hundred times over on
+#   an empty Dashboard. A blank label draws nothing at all.
+#
+# The distinction is declared per column in the manifest and read here. It
+# fabricates no point and converts nothing to zero: the value columns beside
+# every one of these are untouched.
+def _absent(column: dict[str, Any]) -> str:
+    return '""' if str(column.get("absent", "na")) == "blank" else "NA()"
+
+
 def _chart_bridge_annual(block: dict[str, Any], results: dict[str, Any],
                          raw: dict[str, Any],
                          window: int) -> list[tuple[int, str, str]]:
@@ -1113,16 +1132,17 @@ def _chart_bridge_annual(block: dict[str, Any], results: dict[str, Any],
         guard = f'OR({state}="{at.not_produced}",{year}>{years})'
         for column in block["columns"]:
             key = str(column["key"])
+            absent = _absent(column)
             if str(column["source"]) == "annual":
                 cell = f"${display[str(column['field'])]}${source_row}"
-                formula = f"=IF({guard},NA(),{cell})"
+                formula = f"=IF({guard},{absent},{cell})"
             else:
                 # THE ONE SERIES THIS STEP ADDS: a running total of the
                 # published profile, bounded at this row. Display arithmetic
                 # over cells already on the sheet, not a second allocation.
                 column_letter = display[str(column["field"])]
                 span = f"${column_letter}${first}:${column_letter}${source_row}"
-                formula = f"=IF({guard},NA(),SUM({span}))"
+                formula = f"=IF({guard},{absent},SUM({span}))"
             out.append((int(block["first_row"]) + offset, str(column["column"]), formula))
     return out
 
@@ -1175,6 +1195,7 @@ def _chart_bridge_distribution(block: dict[str, Any], results: dict[str, Any],
     labels = sorted(ranges)
     count = int(block["bin_count"])
     columns = {str(column["key"]): str(column["column"]) for column in block["columns"]}
+    absent = {str(column["key"]): _absent(column) for column in block["columns"]}
     out: list[tuple[int, str, str]] = []
     for index in range(count):
         row = int(block["first_row"]) + index
@@ -1184,9 +1205,9 @@ def _chart_bridge_distribution(block: dict[str, Any], results: dict[str, Any],
         blank = f'{published}=""'
         degenerate = f"{maximum}<={minimum}"
         out.append((row, columns["lower"],
-                    f"=IF({blank},NA(),IF({degenerate},{minimum},{lower}))"))
+                    f"=IF({blank},{absent['lower']},IF({degenerate},{minimum},{lower}))"))
         out.append((row, columns["upper"],
-                    f"=IF({blank},NA(),IF({degenerate},{maximum},{upper}))"))
+                    f"=IF({blank},{absent['upper']},IF({degenerate},{maximum},{upper}))"))
         # THE LAST BIN CLOSES. Everything below it is half-open.
         comparison = "<=" if index == count - 1 else "<"
         tally = (f'IF({active}="{labels[0]}",'
@@ -1198,7 +1219,7 @@ def _chart_bridge_distribution(block: dict[str, Any], results: dict[str, Any],
         # bin that is, is known here rather than asked of Excel.
         whole = iterations if index == 0 else "NA()"
         out.append((row, columns["count"],
-                    f"=IF({blank},NA(),IF({degenerate},{whole},{tally}))"))
+                    f"=IF({blank},{absent['count']},IF({degenerate},{whole},{tally}))"))
     return out
 
 
@@ -1278,8 +1299,9 @@ def _chart_bridge_drivers(block: dict[str, Any],
             # AND A ROW THAT IS NOT RANKED IS NOT A CATEGORY. The second guard
             # is the eligibility one and it comes first: a diagnostic row is
             # absent from the chart entirely, not present with an empty bar.
+            gone = _absent(column)
             out.append((row, str(column["column"]),
-                        f'=IF({eligible}="",NA(),IF({source}="",NA(),{source}))'))
+                        f'=IF({eligible}="",{gone},IF({source}="",{gone},{source}))'))
     return out
 
 
@@ -1421,11 +1443,31 @@ def _chart_ranges(charts: dict[str, Any], window: int) -> dict[str, dict[str, An
     return out
 
 
+# UX-001. THE AXIS LABEL FONT, BUILT ONCE FROM THE DECLARED SIZE.
+#
+# openpyxl has no "set the axis label size" property: a text run's size lives in
+# the DrawingML rich-text body that hangs off the axis, so it has to be
+# constructed. It is built here rather than at each call site so all eight axes
+# on the Dashboard carry the one declared size.
+def _axis_label_text(size: int):
+    from openpyxl.chart.text import RichText
+    from openpyxl.drawing.text import (CharacterProperties, Paragraph,
+                                       ParagraphProperties, RichTextProperties)
+
+    properties = CharacterProperties(sz=int(size))
+    return RichText(bodyPr=RichTextProperties(),
+                    p=[Paragraph(pPr=ParagraphProperties(defRPr=properties),
+                                 endParaRPr=properties)])
+
+
 def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
                              window: int) -> None:
     from openpyxl.chart import BarChart, LineChart, Series
 
     ranges = _chart_ranges(charts, window)
+    formats = charts["number_formats"]
+    axes = charts["axis_presentation"]
+    label_text = _axis_label_text(axes["label_font_size"])
     for spec in charts["charts"]:
         block = ranges[str(spec["source"])]
         sheet = block["sheet"]
@@ -1474,6 +1516,25 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
         chart.y_axis.title = None
         chart.x_axis.delete = False
         chart.y_axis.delete = False
+
+        # UX-001. THE AXES, FROM THE MANIFEST. In openpyxl `x_axis` is the
+        # CATEGORY axis and `y_axis` the VALUE axis for every chart type here -
+        # including the horizontal bar, where Excel draws them the other way
+        # round on screen. So the tornado's driver names are x_axis, which is
+        # what makes the label position below the tornado's correction.
+        chart.x_axis.numFmt = str(formats[str(spec["category_axis_format"])])
+        chart.y_axis.numFmt = str(formats[str(spec["value_axis_format"])])
+        chart.x_axis.txPr = _axis_label_text(axes["label_font_size"])
+        chart.y_axis.txPr = _axis_label_text(axes["label_font_size"])
+        # PINNED TO THE LOW END OF THE VALUE AXIS. On the tornado the value axis
+        # crosses at zero, in the middle of the plot, and the default puts every
+        # driver name there - over the bars and clipped by them. This puts them
+        # at the edge, which is both where a reader looks for them and the only
+        # place they have room to be long.
+        chart.x_axis.tickLblPos = str(axes["category_label_position"])
+        # An absent point is a gap. NA() already declines to plot; this says so
+        # for anything Excel would otherwise close over.
+        chart.dispBlanksAs = str(axes["display_blanks_as"])
         worksheet.add_chart(chart, str(spec["anchor"]))
 
 

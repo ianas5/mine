@@ -586,7 +586,19 @@ def test_the_real_structure_contract_loads_and_agrees_with_the_others() -> None:
     structure = load_structure_contract(STRUCTURE_PATH)
     assert len(structure.all_grids) == 3
     assert len(structure.counters) == 2
-    assert len(structure.buttons) == 5
+    # DISCLOSED AT THE UX BATCH. This has been RED on the branch since P10-2A
+    # (21a2774) bound the four operational commands, and neither that batch nor
+    # P10-2B ran this file. The count is not the claim worth keeping - a count
+    # cannot say which buttons - so it is replaced by the set, by name, in the
+    # order the contract declares them: the five Phase-4 structural buttons and
+    # the five Phase-10 command buttons authorised by the 6ab8f6a contract. A
+    # sixth Phase-10 command, or a renamed Phase-4 one, still fails here.
+    assert [b.shape_name for b in structure.buttons] == [
+        "btnPCCMApplyTimeline", "btnPCCMAddCostLine", "btnPCCMDeleteCostLine",
+        "btnPCCMAddRisk", "btnPCCMDeleteRisk",
+        "btnPCCMCalculate", "btnPCCMRunSimulation", "btnPCCMRunSensitivity",
+        "btnPCCMRunAnnual", "btnPCCMResetResults",
+    ], [b.shape_name for b in structure.buttons]
     validate_structure_against(
         structure, load_contract(CONTRACT_PATH), load_driver_contract(DRIVERS_PATH)
     )

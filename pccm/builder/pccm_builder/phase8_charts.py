@@ -41,7 +41,11 @@ INSPECTION_FILENAME = "phase8_charts_inspection.json"
 ALLOWED_KEYS = ("schema_version", "purpose", "provenance", "bridge_sheet",
                 "chart_sheet", "sensitivity_sheet", "sensitivity_endpoint",
                 "sensitivity_source", "zero_variance_status", "bridge", "charts",
-                "number_formats")
+                "number_formats",
+                # UX-001. How the axes are drawn, so a later visual review can
+                # check the presentation without opening Excel. Presentation
+                # only: no range, no identity, no state word.
+                "axis_presentation")
 
 # THE CHART TYPES THIS PROJECT PERMITS. Two dimensions, three shapes. A third
 # dimension carries no data here and distorts the comparison a chart exists to
@@ -84,9 +88,15 @@ def _bridge_blocks(charts: dict[str, Any], window: int) -> dict[str, Any]:
             "first_row": first,
             "last_row": first + counts[name] - 1,
             "row_count": counts[name],
+            # UX-001. `absent` says what this column emits when there is nothing
+            # to plot: NA() for a value, "" for a category. Carried per column
+            # rather than per chart, because it is the COLUMN that decides -
+            # `lower` is the histogram's category and `upper`, beside it, is not.
             "columns": [{"key": str(column["key"]), "header": str(column["header"]),
                          "column": str(column["column"]),
                          "format": str(column["format"]),
+                         "absent": ('""' if str(column.get("absent", "na")) == "blank"
+                                    else "NA()"),
                          "range": (f"{sheet}!${column['column']}${first}"
                                    f":${column['column']}${first + counts[name] - 1}")}
                         for column in block["columns"]],
@@ -124,6 +134,10 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
     # only the four blocks inside it.
     blocks["heading_row"] = int(bridge["heading_row"])
     blocks["note_row"] = int(bridge["note_row"])
+    # UX-001. HOW THE AXES ARE DRAWN, CARRIED SO A LATER VISUAL REVIEW CAN CHECK
+    # IT WITHOUT OPENING EXCEL. Presentation only: not one of these touches a
+    # source range, a series identity or a state word.
+    axes = dict(charts["axis_presentation"])
     projected = []
     for chart in charts["charts"]:
         source = str(chart["source"])
@@ -160,7 +174,21 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
             # WHAT THE CHART DOES WHEN THERE IS NOTHING TO PLOT. Not a promise
             # about pixels: a statement about the value the bridge supplies, and
             # NA() is the value every chart type declines to draw.
+            #
+            # SPLIT AT UX-001, BECAUSE A SERIES AND AN AXIS WANT DIFFERENT
+            # THINGS. A VALUE that is absent is still NA(): a blank there is
+            # charted as zero, and a run of zeros is a confident picture of a
+            # project costing nothing. A CATEGORY that is absent is now blank,
+            # because a category is a LABEL and NA() prints "#N/A" on the axis -
+            # which is what a human reviewing the real workbook saw two hundred
+            # times over on an empty Dashboard. No point is fabricated either
+            # way: the series column beside every blank category still says NA().
             "no_data_value": "NA()",
+            "no_data_category": str(columns[str(chart["categories"])]["absent"]),
+            "value_axis_format": str(
+                charts["number_formats"][str(chart["value_axis_format"])]),
+            "category_axis_format": str(
+                charts["number_formats"][str(chart["category_axis_format"])]),
             "legend": len(chart["series"]) > 1,
         })
 
@@ -249,6 +277,7 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
         "zero_variance_status": zero_variance_status,
         "bridge": blocks,
         "charts": projected,
+        "axis_presentation": axes,
         "number_formats": {str(k): str(v)
                            for k, v in charts["number_formats"].items()},
         # THE HISTOGRAM'S BINNING RULE, CARRIED RATHER THAN RESTATED. A runner
@@ -312,6 +341,18 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
             raise ValueError(
                 f"{INSPECTION_FILENAME}: chart {key!r} declares a legend that does not "
                 "match its series count")
+        # UX-001. AN ABSENT VALUE IS NEVER A ZERO AND NEVER A BLANK. The
+        # category may be blank - it is a label - but the series must be NA(),
+        # and a projection that said otherwise would be describing a chart that
+        # draws a project costing nothing.
+        if chart["no_data_value"] != "NA()":
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: chart {key!r} says an absent VALUE is "
+                f"{chart['no_data_value']}; a chart plots that as zero")
+        if chart["no_data_category"] not in ('""', "NA()"):
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: chart {key!r} says an absent CATEGORY is "
+                f"{chart['no_data_category']}")
 
     for name, block in inspection["bridge"].items():
         if not isinstance(block, dict):

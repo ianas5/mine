@@ -24,6 +24,13 @@ from openpyxl.worksheet.worksheet import Worksheet
 from .structure_loader import Grid, StructureContract
 from .styling import StyleBook
 
+# UX-003. HOW MANY COLUMNS THE STATE MESSAGE IS HIGHLIGHTED ACROSS. The sentence
+# is written into one cell and overflows to its right, so the highlight has to
+# follow it; six columns covers the longest declared message at the label
+# column's width on every grid, and painting a fill over an empty cell claims
+# nothing about that cell.
+_STATE_MESSAGE_SPAN = 6
+
 
 def render_command_block(
     worksheet: Worksheet, structure: StructureContract, styles: StyleBook
@@ -120,8 +127,19 @@ def render_grid(
 
     # A formula, so the message clears itself the moment a timeline is applied and
     # returns if the applied state is ever cleared. Nothing maintains it at runtime.
+    #
+    # UX-003. RENDERED AS AN INSTRUCTION, NOT A FOOTNOTE. The formula, the cell
+    # and the owner behind it are unchanged; what changed is that a user meets it
+    # instead of reading past it. The fill is painted on the row's visible span
+    # rather than on B alone, because the sentence overflows B and a one-cell
+    # highlight behind a five-cell sentence looks like a mistake.
     key = "inflation_formula" if grid.kind == "inflation" else "profiling_formula"
-    _write(worksheet, f"B{grid.state_message_row}", structure.state_messages[key], styles.note)
+    message = _write(worksheet, f"B{grid.state_message_row}",
+                     structure.state_messages[key], styles.state_message)
+    worksheet.row_dimensions[grid.state_message_row].height = styles.row_height("state_message")
+    for offset in range(_STATE_MESSAGE_SPAN):
+        worksheet.cell(row=grid.state_message_row,
+                       column=message.column + offset).fill = styles.state_message_fill
 
     for index, column in enumerate(grid.fixed_columns):
         letter = grid.column_letter(index)
@@ -152,10 +170,11 @@ def render_grid(
         worksheet.freeze_panes = grid.freeze_panes
 
 
-def _write(worksheet: Worksheet, address: str, value, font) -> None:
+def _write(worksheet: Worksheet, address: str, value, font):
     cell = worksheet[address]
     cell.value = value
     cell.font = font
+    return cell
 
 
 def _row_of(cell: str) -> int:

@@ -54,7 +54,12 @@ COMMANDS = (
 )
 
 PHASE4_BUTTONS = (
-    ("Setup", "btnPCCMApplyTimeline", "PCCM_ApplyTimeline", "Apply / Update Timeline", "E43"),
+    # UX-002. THE ANCHOR MOVED AND NOTHING ELSE DID. E43 is the "Applied
+    # Timeline" section heading row and E is that block's NOTE column, so the
+    # button was drawn on top of the heading and across the explanatory text. It
+    # now leads the Setup command block. Sheet, shape, entry point and caption
+    # are unchanged, which is the half of this control that is about bindings.
+    ("Setup", "btnPCCMApplyTimeline", "PCCM_ApplyTimeline", "Apply / Update Timeline", "E59"),
     ("Cost Lines", "btnPCCMAddCostLine", "PCCM_AddCostLine", "Add Cost Line", "N6"),
     ("Cost Lines", "btnPCCMDeleteCostLine", "PCCM_DeleteCostLine", "Delete Cost Line", "N9"),
     ("Risk Register", "btnPCCMAddRisk", "PCCM_AddRisk", "Add Risk", "O6"),
@@ -328,10 +333,18 @@ def test_13_the_command_anchors_are_inside_the_declared_block() -> None:
     first = int(block["first_button_row"])
     pitch = int(block["button_row_pitch"])
     column = str(block["button_column"])
-    expected = [f"{column}{first + pitch * i}" for i in range(len(COMMANDS))]
+    # UX-002. THE BLOCK LEADS WITH APPLY / UPDATE TIMELINE, so the four
+    # operational commands start one pitch down. The claim is unchanged and is
+    # still exact: every command anchor is on the declared column, at the
+    # declared pitch, with no gap and no collision. What moved is the OFFSET,
+    # and it moved because a command was inserted ahead of them rather than
+    # because an anchor drifted.
+    lead = 1
+    expected = [f"{column}{first + pitch * (lead + i)}" for i in range(len(COMMANDS))]
     anchors = [b.anchor_cell for b in structure.buttons
                if b.shape_name in {s for _c, _e, s in COMMANDS}]
     assert anchors == expected, f"the command anchors drifted: {anchors}"
+    assert structure.button_for("PCCM_ApplyTimeline").anchor_cell == f"{column}{first}"
     # BELOW EVERYTHING THAT EXISTS. The applied-timeline block ends at row 54 and
     # the heading is at 56, so no declared cell is under a shape.
     assert int(block["section_row"]) > 54

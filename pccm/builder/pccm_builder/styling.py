@@ -39,6 +39,13 @@ class StyleBook:
         self.value = Font(name=family, size=sizes["value"], color=colors["value"])
         self.value_locked = Font(name=family, size=sizes["value"], bold=True, color=colors["value"])
         self.note = Font(name=family, size=sizes["note"], italic=True, color=colors["note"])
+        # UX-003. The structural state message above a grid, which is an
+        # instruction rather than a footnote and is styled as one. It carries no
+        # state of its own: the formula in the cell is the applied-timeline
+        # owner's, unchanged.
+        self.state_message = Font(name=family, size=sizes["state_message"], bold=True,
+                                  color=colors["state_message"])
+        self.state_message_fill = PatternFill("solid", fgColor=colors["state_message_fill"])
         self.list_item = Font(name=family, size=sizes["value"], color=colors["value"])
 
         # --- Phase 2: input language -------------------------------------

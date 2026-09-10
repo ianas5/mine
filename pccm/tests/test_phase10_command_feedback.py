@@ -289,16 +289,37 @@ def test_12_no_button_binding_moved_in_this_batch() -> None:
             node = node[step]
         return {item[key]: item for item in node}
 
+    # CORRECTED AT P10-UX, AND THE BINDING HALF IS UNWEAKENED. A human opened
+    # the workbook and found Apply / Update Timeline drawn across the paragraph
+    # explaining the Applied Timeline block; it now leads the command block, so
+    # every command anchor moved down one pitch. What a rebinding batch must not
+    # do is change what a button RUNS, and that is what is compared field for
+    # field below. The anchors are compared as a SHAPE - the declared column, the
+    # declared pitch, no gaps - which is a stronger statement than the row
+    # numbers were, because it also refuses a collision and a stray button.
     was = by_key(accepted, ("buttons", "definitions"), "shape_name")
     now = by_key(current, ("buttons", "definitions"), "shape_name")
     for shape, definition in was.items():
-        assert now.get(shape) == definition, f"{shape} was rebound or moved"
+        after = dict(now.get(shape) or {})
+        assert after, f"{shape} was removed"
+        for field in ("key", "sheet", "shape_name", "caption", "entry_point"):
+            assert after[field] == definition[field], f"{shape} was rebound"
     assert set(now) - set(was) == {"btnPCCMResetResults"}, sorted(set(now) - set(was))
-    assert now["btnPCCMResetResults"] == {
+    assert {k: v for k, v in now["btnPCCMResetResults"].items()
+            if k != "anchor_cell"} == {
         "key": "reset_results", "sheet": "Setup",
         "shape_name": "btnPCCMResetResults", "caption": "Reset Results",
-        "entry_point": "PCCM_ResetResults", "anchor_cell": "E67",
+        "entry_point": "PCCM_ResetResults",
     }
+    block = current["commands"]["block"]
+    column, first = str(block["button_column"]), int(block["first_button_row"])
+    pitch = int(block["button_row_pitch"])
+    commands = [b for b in current["buttons"]["definitions"]
+                if b["sheet"] == block["sheet"]]
+    assert [b["anchor_cell"] for b in commands] == [
+        f"{column}{first + pitch * i}" for i in range(len(commands))]
+    assert commands[0]["entry_point"] == "PCCM_ApplyTimeline"
+    assert commands[-1]["entry_point"] == "PCCM_ResetResults"
 
     assert (set(current["vba"]["entry_points"]) - set(accepted["vba"]["entry_points"])
             == {"PCCM_ResetResults"})
@@ -319,7 +340,11 @@ def test_12_no_button_binding_moved_in_this_batch() -> None:
     block_was = dict(accepted["commands"]["block"])
     assert block_now.pop("note") != block_was.pop("note")
     assert block_now == block_was, "the command block moved"
-    assert "Reset Results" in current["commands"]["block"]["note"]
+    # THE NOTE NAMES BOTH ADDITIONS: P10-2B's Reset Results, and P10-UX's
+    # ordering - the timeline is applied first, which is why it leads the block.
+    note = current["commands"]["block"]["note"]
+    assert "Reset Results" in note
+    assert "Apply / Update Timeline" in note and "first" in note
 
 
 def test_13_protection_and_the_open_handler_are_untouched() -> None:

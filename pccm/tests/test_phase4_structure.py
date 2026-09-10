@@ -283,7 +283,17 @@ def test_18_every_grid_shows_the_timeline_not_yet_applied_message() -> None:
             f"{grid.sheet} state message is {cell.value!r}; a formula clears itself once "
             "a timeline is applied, with no macro maintaining it"
         )
-        assert "Timeline not yet applied" in cell.value
+        # UX-003. THE TWO GRIDS ANSWER THE SAME QUESTION ABOUT DIFFERENT
+        # COLUMNS, so they no longer use the same words. The profiling grids
+        # generate PROJECT-YEAR columns; Inflation generates INFLATION-YEAR
+        # columns, and a human reviewing the real workbook asked where the
+        # percentages go because the sentence there stated a fact rather than
+        # giving an instruction. Both are still ONE formula over
+        # nmYearCount_Applied - the applied-timeline owner - and this asserts the
+        # declared text of each rather than a phrase they happen to share.
+        key = ("inflation_not_applied" if grid.kind == "inflation"
+               else "not_applied")
+        assert structure.state_messages[key] in cell.value, (grid.sheet, key)
 
 
 def test_19_the_inflation_message_covers_the_legitimate_empty_span() -> None:
