@@ -797,8 +797,13 @@ def test_65_historical_records_still_record_their_own_versions() -> None:
 def test_66_no_historical_document_was_touched_at_all() -> None:
     """AND NOT ONE BYTE OF THEM MOVED. The control above names three; this one
     refuses a change to any document in the repository's record of the past."""
-    changed = [line for line in _git("diff", "--name-only", ACCEPTED, "--",
+    # MODIFIED OR DELETED, NOT ADDED. The claim is that the record of the past
+    # is not rewritten; a NEW record of a new event is how the project moves
+    # forward, and forbidding one would make the control an obstacle rather than
+    # a guard. `--name-status` separates the two.
+    touched = [line for line in _git("diff", "--name-status", ACCEPTED, "--",
                                      "pccm/docs").splitlines() if line.strip()]
+    changed = [line for line in touched if not line.startswith("A\t")]
     assert changed == [], f"historical records changed: {changed}"
 
 

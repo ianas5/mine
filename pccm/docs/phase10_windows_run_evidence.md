@@ -1,0 +1,137 @@
+# Phase 10 — Windows run evidence
+
+**What this file is.** A record of what happened on the target machine, run by
+run, kept because a run that produced no number still produced information and
+because three of the first three runs failed for three different reasons.
+
+**What it is not.** It is not a baseline, not an acceptance record and not a
+Gate-B result. Nothing here may be quoted as performance evidence.
+
+The target machine, for every run below: Windows 11 Pro · Excel 16.0 build
+23026, 64-bit · Ryzen 7 7800X3D · 31.2 GB RAM · repository under
+`C:\Users\pcd\OneDrive\Desktop\PCCM-GateB\mine`.
+
+---
+
+## Run 1 — PERF-SMALL — ABORTED IN SETUP
+
+**Harness commit:** `4e1f109`
+
+Stage A 351/351. Stage-B bootstrap PASS (68.440 s). Aborted during the
+environment capture, before any timed operation.
+
+```
+System.Management.Automation.PropertyNotFoundException
+The property 'Value' cannot be found on this object.
+FullyQualifiedErrorId: PropertyNotFoundStrict
+```
+
+**Cause.** `(Get-Item Env:OneDriveCommercial -ErrorAction SilentlyContinue).Value`.
+The variable does not exist on a machine with a consumer OneDrive and no work
+account, so the pipeline emitted nothing, the parenthesised expression was
+`$null`, and `$null.Value` under `Set-StrictMode -Version 2.0` is a terminating
+error rather than a quiet `$null`.
+
+**Corrected in `6e87fda`** — normalise with `@()`, validate the property, then
+read it. The same round added the stage cursor, so a later failure names the
+stage it was in, and the baseline-status machinery, so an aborted run cannot
+look like evidence.
+
+**Status: 0 valid warm medians. NOT a baseline.**
+
+---
+
+## Run 2 — PERF-SMALL — ABORTED IN SETUP
+
+**Harness commit:** `6e87fda`
+
+Stage A 351/351. Stage-B bootstrap PASS (68.350 s). Passed the release-identity
+preflight, the bootstrap, the workbook open, and aborted in the environment
+inventory.
+
+```
+stage      : setup
+doing      : capturing the environment inventory
+exception  : System.Management.Automation.PropertyNotFoundException
+message    : The property 'builder_version' cannot be found on this object.
+at line    : 724
+statement  : $record.Add('builder_version', [string]$Manifest.builder_version)
+```
+
+**Cause.** `stage_b_manifest.json` is a projection of the model side of the
+specification. It has never carried `builder_version` and cannot: Phase 10 Step 3
+settled that the model version and the builder version are independent
+authorities. The harness asked the wrong artifact.
+
+**Corrected in `4ad035a`** — `BUILDER_VERSION` is projected into
+`build/phase10_benchmark_plan.json` as `release_identity`, with the name of the
+authority beside each of the three values, and the runner refuses a plan that
+cannot identify its release before anything is built.
+
+**Status: 0 valid warm medians. NOT a baseline.**
+
+---
+
+## Run 3 — PERF-SMALL — ABORTED BUILDING THE SCENARIO
+
+**Harness commit:** `4ad035a`
+
+Stage A 351/351. Stage-B bootstrap PASS. Passed the release-identity preflight,
+the bootstrap, the workbook open and the environment inventory. Aborted while
+constructing the scenario through the accepted production endpoints.
+
+```
+stage     : scenario
+doing     : building the PERF-SMALL fixture through the accepted production endpoints
+scenario  : PERF-SMALL
+exception : System.Runtime.InteropServices.COMException
+message   : Table features aren't available because the sheet is protected.
+at line   : 313
+valid warm medians : 0 of 11 planned runs
+```
+
+Session shut down cleanly.
+
+**Status: 0 of 11 valid warm medians. NOT a baseline, NOT a partial baseline,
+NOT a performance sample.**
+
+### What Run 3 established, and it is not only about the harness
+
+Line 313 is `$victim.Delete()` in `Remove-TableRow` — the harness deleting a
+`ListRow` from `tblFXRates` through COM. So the immediate call was the
+harness's.
+
+But the run also established something the harness cannot be blamed for. Before
+it died, the fixture had already written four Setup scalars to locked cells on
+protected sheets, and those writes SUCCEEDED. So on this machine, with this
+build:
+
+| Operation on a protected sheet | Result |
+|---|---|
+| code writes a VALUE to a locked cell | **works** — `UserInterfaceOnly:=True` is honoured |
+| code performs a LISTOBJECT STRUCTURAL operation | **refused** |
+
+Those are different capabilities, and the delivered workbook needs both. The
+audit of `pccm/src/vba` — pinned in
+`tests/test_phase10_table_structure_under_protection.py` — finds fifteen
+ListObject structural operations across five modules, reached by seven of the
+user commands, two of them unconditionally:
+
+- `PCCM_ApplyTimeline` adds year `ListColumns` to three grids. A fresh workbook
+  has none, so this fires for **any** timeline.
+- `PCCM_Calculate` resizes the five `_Calc` tables to the model on **every**
+  run.
+
+Those are the first two buttons a user presses. `modWorkbook.RestoreTable`,
+which is `PCCM_Calculate`'s transactional rollback, is structural too — so a
+command that failed part-way under protection could not be undone either.
+
+**This is therefore not concluded as a harness defect.** It is very probably a
+production protection defect, and the correction it implies edits accepted
+modules and contradicts an accepted contract sentence. That correction is not
+being made on a reading of the documentation:
+`bootstrap/windows/phase10_protection_probe.ps1` asks Excel the remaining
+question directly — whether the VBA caller is refused exactly as the COM caller
+was — in one command and about a minute.
+
+---

@@ -689,7 +689,12 @@ def test_56_no_accepted_windows_harness_changed() -> None:
     changed = {Path(line).name for line in
                _git("diff", "--name-only", ACCEPTED, "--", "pccm/bootstrap").splitlines()
                if line.strip()}
-    assert changed <= {"phase10_benchmark.ps1"}, sorted(changed)
+    # W3. DECLARED, NOT EXEMPTED. The protection probe is a NEW file added by a
+    # later batch to ask Excel one question; it is not an accepted harness and it
+    # changes none. What this control still refuses is unchanged: an edit to any
+    # of the Gate-B or Phase-7/8/9 scenario harnesses, which the benchmark
+    # carries its own copy of the COM primitives specifically to avoid.
+    assert changed <= {"phase10_benchmark.ps1", "phase10_protection_probe.ps1"}, sorted(changed)
 
 
 def test_57_the_copied_primitives_are_verbatim() -> None:
