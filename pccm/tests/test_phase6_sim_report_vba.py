@@ -175,12 +175,16 @@ def test_03_the_endpoint_construct_is_scoped_to_this_module_and_no_other() -> No
     scoped = [(r.construct, tuple(r.allowed_in))
               for r in structure.forbidden_construct_rules if r.is_scoped]
     assert scoped == [("MRG32k3a", ("modSimRng",)),
-                      ("RunSimulation", ("modSimReport",))], scoped
+                      ("RunSimulation", ("modSimReport", "modConstants"))], scoped
     endpoint = next(r for r in structure.forbidden_construct_rules
                     if r.construct == "RunSimulation")
-    assert endpoint.allowed_in == ("modSimReport",)
+    # TWO OWNERS NOW, BOTH NAMED. The module that RUNS the simulation, and the
+    # GENERATED constants module that merely spells its macro name for a shape
+    # to point at. Still not a wildcard, and still refused everywhere else.
+    assert endpoint.allowed_in == ("modSimReport", "modConstants")
     assert "*" not in endpoint.allowed_in
     assert endpoint.forbidden_in("modSimReport") is False
+    assert endpoint.forbidden_in("modConstants") is False
     for other in ("modCalcReport", "modSimEngine", "modSimRng", "modSimStats",
                   "modSimFingerprint", "modAppState"):
         assert endpoint.forbidden_in(other) is True, other
@@ -221,11 +225,23 @@ def test_04_the_public_surface_is_exactly_the_seven_settled_procedures() -> None
         assert f"Public Function {accessor}() As String" in _module().raw, accessor
 
 
-def test_05_no_button_binds_to_the_endpoint() -> None:
+def test_05_the_only_run_button_is_the_one_phase_10_declared() -> None:
+    """RESTATED AT P10-2A, AND THE PHASE-6 CLAIM IS UNCHANGED.
+
+    `user_facing_run_button_in_phase_6` is still FALSE and still asserted: Phase
+    6 shipped no button, and that is a fact about Phase 6 which nothing later
+    can alter. What changed is Phase 10, which gave the endpoint a Setup button
+    under the contract at 6ab8f6a - so the live claim becomes WHICH button
+    exists, and exactly one may.
+    """
     spec = load_spec(SPEC / "workbook.yaml")
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
-    for button in getattr(structure, "buttons", []):
-        assert "Simulation" not in getattr(button, "entry_point", ""), button
+    simulation = [b for b in getattr(structure, "buttons", [])
+                  if "Simulation" in getattr(b, "entry_point", "")]
+    assert [b.entry_point for b in simulation] == ["PCCM_RunSimulation"], simulation
+    assert simulation[0].sheet == "Setup"
+    assert simulation[0].caption == "Run Simulation"
+    # THE PHASE-6 CONTRACT STILL SAYS PHASE 6 HAD NONE.
     assert _sim().raw["command_surface"]["user_facing_run_button_in_phase_6"] is False
     assert "PCCM_RunSimulation" not in json.dumps(
         [s.name for s in spec.sheets])
