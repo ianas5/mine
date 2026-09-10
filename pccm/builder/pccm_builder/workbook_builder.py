@@ -36,7 +36,12 @@ from .calc_loader import CalcContract
 # structural contract declares the four resulting procedure names.
 RESULTS_STATE_PREFIX = "PCCM_Results"
 from .calc_render import render_calc_workspace
-from .structure_render import render_applied_timeline, render_grid, render_identity
+from .structure_render import (
+    render_applied_timeline,
+    render_command_block,
+    render_grid,
+    render_identity,
+)
 from .phase9_model_check import ModelCheckPlan
 from .styling import StyleBook
 from .validation import apply_validation
@@ -147,6 +152,9 @@ def build_workbook(
                 # inputs and the FX table, the structure contract appends the applied
                 # timeline below them. The loaders prove the two areas cannot overlap.
                 render_applied_timeline(worksheet, structure, styles)
+                # P10-2A. And below it, the command block the four operational
+                # buttons anchor into.
+                render_command_block(worksheet, structure, styles)
             else:
                 render_config(worksheet, contract, styles)
         elif sheet_spec.body == "drivers":

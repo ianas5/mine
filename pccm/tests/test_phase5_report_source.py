@@ -281,7 +281,7 @@ def test_02_the_phase_5_inventory_is_complete_and_nothing_of_phase_5_moved() -> 
     # Everything beyond the Phase-5 fifteen is Phase-6 and is named, so a
     # module cannot appear here unremarked.
     assert set(names) - PHASE5_INVENTORY == (
-        PHASE6_INVENTORY | PHASE7_INVENTORY | PHASE8_INVENTORY)
+        PHASE6_INVENTORY | PHASE7_INVENTORY | PHASE8_INVENTORY | PHASE10_INVENTORY)
 
 
 PHASE5_INVENTORY = {
@@ -291,6 +291,11 @@ PHASE5_INVENTORY = {
     "modCalcCheck", "modCalcReport",
 }
 """The fifteen modules Phase 5 closed with. Frozen by name, not by count."""
+
+PHASE10_INVENTORY = {"modProtection"}
+"""P10-2A. The protection owner, named on the same terms Phases 6, 7 and 8 were:
+naming it here relaxes nothing about Phase 5, and a sixteenth Phase-5 module
+still cannot appear."""
 
 PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
                     "modSimStats", "modSimFingerprint", "modSimNonce",
@@ -427,16 +432,36 @@ def test_06_the_endpoints_are_declared_in_the_contract_and_bound_to_no_button() 
     declared = set(manifest["vba"]["api_procedures"])
     assert declared == PCCM_ENDPOINTS
     bound = {b["entry_point"] for b in manifest["buttons"]}
-    assert len(manifest["buttons"]) == 5, "the workbook must still have five buttons"
-    assert not (bound & PCCM_ENDPOINTS), f"an endpoint is bound to a button: {bound}"
+    # RESTATED AT P10-2A. At Phase 5 this said "no endpoint is bound to a
+    # button", and that was right then: a Calculate button before a
+    # Windows-proved Calculate would be a command nobody had run. Phase 10
+    # authorises exactly one of these six as a command, so the claim becomes
+    # WHICH - and the five READ ACCESSORS must still never be buttons, because a
+    # status or a fingerprint is something a cell asks for, not something a user
+    # presses. That half is unchanged and is what this now checks exactly.
+    assert bound & PCCM_ENDPOINTS == {"PCCM_Calculate"}, (
+        f"an unauthorised endpoint is bound to a button: {sorted(bound & PCCM_ENDPOINTS)}")
     assert set(manifest["vba"]["entry_points"]) == bound
 
 
-def test_07_no_calculate_button_exists_anywhere() -> None:
+def test_07_the_calculate_button_is_the_one_phase_10_declared() -> None:
+    """RESTATED AT P10-2A, AND STILL EXACT.
+
+    This used to forbid a Calculate button anywhere, which was the Phase-5
+    boundary. Deleting it now would retire the claim entirely; what it becomes
+    instead is that there is EXACTLY ONE, on Setup, with the declared shape name
+    and caption. A second Calculate button, or one somewhere else, still fails.
+    """
     manifest = emitted_manifest()
-    for button in manifest["buttons"]:
-        assert button["entry_point"] != "PCCM_Calculate"
-        assert "Calculate" not in button["shape_name"]
+    calculate = [b for b in manifest["buttons"] if b["entry_point"] == "PCCM_Calculate"]
+    assert len(calculate) == 1, f"expected one Calculate button, found {len(calculate)}"
+    assert calculate[0]["sheet"] == "Setup"
+    assert calculate[0]["shape_name"] == "btnPCCMCalculate"
+    assert calculate[0]["caption"] == "Calculate"
+    # AND NO OTHER BUTTON CARRIES THE WORD, so a second one cannot hide behind a
+    # different entry point.
+    named = [b["shape_name"] for b in manifest["buttons"] if "Calculate" in b["shape_name"]]
+    assert named == ["btnPCCMCalculate"], named
 
 
 def test_08_the_only_other_public_names_are_the_failpoint_stages() -> None:
@@ -1799,9 +1824,17 @@ def test_nc_16_a_calculate_button_is_caught() -> None:
          "width": 150.0, "height": 28.0}
     ]
     bound = {b["entry_point"] for b in planted}
-    assert len(planted) == 6 and "PCCM_Calculate" in bound, (
-        "the planted button must be visible to the sweep"
-    )
+    # RELATIVE, NOT ABSOLUTE. This counted to six, which was the button total
+    # plus one at Phase 5. The claim is that PLANTING ONE IS VISIBLE, and that
+    # is what it now says - so the control survives every legitimate change to
+    # how many buttons the workbook has.
+    assert len(planted) == len(manifest["buttons"]) + 1, (
+        "the planted button must be visible to the sweep")
+    assert "PCCM_Calculate" in bound
+    # AND THE SWEEP WOULD SEE A SECOND ONE. test_07 requires exactly one
+    # Calculate button; the planted list has two, which is the shape of the
+    # mistake this negative control exists for.
+    assert len([b for b in planted if b["entry_point"] == "PCCM_Calculate"]) == 2
 
 
 def test_nc_17_a_seventh_endpoint_is_caught() -> None:

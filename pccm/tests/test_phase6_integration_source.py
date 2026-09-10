@@ -565,16 +565,29 @@ def test_17_the_two_public_surfaces_are_exactly_the_accepted_ones() -> None:
     expected = (phase4 | set(PHASE5_ENDPOINTS) | set(PHASE6_PUBLIC) | phase7
                 | phase8 | phase9)
     assert found == expected, sorted(found ^ expected)
-    assert not (phase4 & set(PHASE6_PUBLIC)), "a Phase-6 name entered the Phase-4 surface"
+    # P10-2A. `phase4` is the ENTRY-POINT list, and Phase 10 put four operational
+    # endpoints into it because a delivered workbook must let a user press them.
+    # The claim this control makes is that no Phase-6 name reached the Phase-4
+    # SURFACE - the structural commands and harness helpers - and that is
+    # unchanged. The one overlap is PCCM_RunSimulation, which is a Phase-6
+    # endpoint that now also has a button: it did not enter Phase 4's surface,
+    # Phase 4's list grew a Phase-10 command. Naming it keeps the rule exact.
+    assert (phase4 & set(PHASE6_PUBLIC)) == {"PCCM_RunSimulation"}, (
+        f"a Phase-6 name entered the Phase-4 surface: "
+        f"{sorted(phase4 & set(PHASE6_PUBLIC))}")
     # The reporter that owns Phase 5 gained exactly one non-endpoint Public name.
     # TWO NON-ENDPOINT PUBLIC NAMES, NAMED RATHER THAN COUNTED, so a third
     # still fails: the Step-11 preparation bridge, and P9-2's read-only
     # exposure of the module's own status derivation.
     extra = set(modules["modCalcReport"].public_procedures) - set(PHASE5_ENDPOINTS)
     assert extra == {BRIDGE, "CalcReportDerivedStatus"}, sorted(extra)
-    # NO PHASE-6 BUTTON.
-    for endpoint in PHASE6_PUBLIC:
-        assert endpoint not in set(structure.entry_points), endpoint
+    # ONE PHASE-6 BUTTON, AND IT IS THE ONE PHASE 10 DECLARED. This read "no
+    # Phase-6 button", which was right while the simulation had no user-facing
+    # command. P10-2A binds PCCM_RunSimulation and nothing else from this set -
+    # a run is something a user asks for; a fingerprint, a digest or an attempt
+    # result is something a cell reads.
+    bound = set(structure.entry_points) & set(PHASE6_PUBLIC)
+    assert bound == {"PCCM_RunSimulation"}, f"an unauthorised Phase-6 button: {sorted(bound)}"
 
 
 def test_18_no_invented_phase6_accessor_exists() -> None:
@@ -600,21 +613,32 @@ def test_19_the_scoped_constructs_live_only_in_their_owners() -> None:
     modules = _modules()
     scoped = [(rule.construct, tuple(rule.allowed_in))
               for rule in structure.forbidden_construct_rules if rule.is_scoped]
+    # P10-2A. The RunSimulation grant names TWO modules now: the owner, and the
+    # GENERATED constants module, where every entry point is emitted as an
+    # ENTRY_ string constant because Phase 10 gave the endpoint a button. A
+    # macro name is not simulation code, and the grant is still a named list
+    # rather than a wildcard.
     assert scoped == [("MRG32k3a", ("modSimRng",)),
-                      ("RunSimulation", (REPORT,))], scoped
+                      ("RunSimulation", (REPORT, "modConstants"))], scoped
     for construct, owners in scoped:
-        assert len(owners) == 1, construct
-        owner = owners[0]
         assert "*" not in owners, construct
-        assert contains_construct([modules[owner]], construct), (
-            f"the grant is vacuous: {owner} does not contain {construct}"
-        )
-        others = [module for name, module in modules.items() if name != owner]
+        # NON-VACUITY IS ASKED OF THE OWNERS THIS SWEEP CAN SEE. `modules` is
+        # the HAND-WRITTEN inventory; modConstants is generated and is not in
+        # it, so the grant to it is proved where the generated module is read -
+        # test_15a in test_phase4_stage_b_source.py - rather than pretended to
+        # be proved here.
+        for owner in owners:
+            if owner not in modules:
+                continue
+            assert contains_construct([modules[owner]], construct), (
+                f"the grant is vacuous: {owner} does not contain {construct}"
+            )
+        others = [module for name, module in modules.items() if name not in owners]
         assert not contains_construct(others, construct), construct
         rule = next(r for r in structure.forbidden_construct_rules
                     if r.construct == construct)
         for name in modules:
-            assert rule.forbidden_in(name) == (name != owner), (construct, name)
+            assert rule.forbidden_in(name) == (name not in owners), (construct, name)
 
 
 def test_20_percentile_is_in_no_executable_module() -> None:
@@ -657,7 +681,7 @@ def test_22_the_manifest_is_the_module_inventory_authority() -> None:
     rules = {entry["construct"]: entry["allowed_in"]
              for entry in manifest["vba"]["forbidden_construct_rules"]}
     assert rules["MRG32k3a"] == ["modSimRng"]
-    assert rules["RunSimulation"] == [REPORT]
+    assert rules["RunSimulation"] == [REPORT, "modConstants"]  # P10-2A
     assert rules["Percentile"] == []
     assert set(rules) == set(manifest["vba"]["forbidden_constructs"]), (
         "a flattened entry has no structured rule behind it"

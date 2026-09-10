@@ -262,6 +262,47 @@ try {
     if ($missingModules.Count -gt 0) { throw ("VBA module(s) missing after import: " + ($missingModules -join ', ')) }
     Add-Step 'Import every manifest-declared VBA module' 'PASS' (($manifest.vba.modules | ForEach-Object { $_.name }) -join ', ')
 
+    # --- 5b. the ThisWorkbook document module -------------------------------
+    # IT CANNOT BE IMPORTED. Excel creates ThisWorkbook with the workbook, so
+    # there is no component to replace - only one to write into. The existing
+    # code is cleared first so a re-run leaves exactly one copy of the handler
+    # rather than appending a second Workbook_Open beside it, which VBA would
+    # accept at import time and refuse at compile time.
+    $docModule = $manifest.vba.document_module
+    if ($null -ne $docModule) {
+        $docFile = Join-Path $srcDir ([string]$docModule.file)
+        if (-not (Test-Path -LiteralPath $docFile)) {
+            throw ("The document module source is missing: " + $docFile)
+        }
+        $docText = Get-Content -LiteralPath $docFile -Raw
+        $docComp = $null; $codeModule = $null
+        try {
+            $docComp = $vbcomps.Item([string]$docModule.component)
+            $codeModule = $docComp.CodeModule
+            if ([int]$codeModule.CountOfLines -gt 0) {
+                $codeModule.DeleteLines(1, [int]$codeModule.CountOfLines)
+            }
+            $codeModule.AddFromString($docText)
+            # READ BACK, exactly as the buttons read back their OnAction. A
+            # component that silently kept its old text would leave a workbook
+            # that opens unprotected and says nothing.
+            $written = [string]$codeModule.Lines(1, [int]$codeModule.CountOfLines)
+            foreach ($event in @($docModule.events)) {
+                if ($written -notlike ('*' + [string]$event + '*')) {
+                    throw ("The document module was written but does not contain " + [string]$event + '.')
+                }
+            }
+            if ($written -notlike ('*' + [string]$docModule.delegates_to + '*')) {
+                throw ("The document module does not delegate to " + [string]$docModule.delegates_to + '.')
+            }
+        } finally {
+            if ($null -ne $codeModule) { Release-Transient $codeModule 'CodeModule';   $codeModule = $null }
+            if ($null -ne $docComp)    { Release-Transient $docComp    'VBComponent(doc)'; $docComp = $null }
+        }
+        Add-Step 'Write the ThisWorkbook document module' 'PASS' `
+            ([string]$docModule.component + ': ' + (@($docModule.events) -join ', '))
+    }
+
     # --- 6. buttons ---------------------------------------------------------
     foreach ($button in $manifest.buttons) {
         $ws = $null; $shapes = $null; $shp = $null; $anchor = $null; $tf = $null; $tr = $null; $existing = $null
@@ -302,7 +343,55 @@ try {
     }
     Add-Step 'Create the Phase-4 command buttons' 'PASS' (($manifest.buttons | ForEach-Object { $_.shape_name }) -join ', ')
 
-    # --- 7. save ------------------------------------------------------------
+    # --- 7. protection ------------------------------------------------------
+    # LAST, AND THAT ORDER IS THE POINT. Every step above writes cells, shapes,
+    # code names and VBA components; protecting before them would have to
+    # unprotect again for each one, and the workbook would spend the build in a
+    # state no control could describe. The locked/unlocked state of each CELL is
+    # already in the file - Stage A resolved it from the contracts that declare
+    # which inputs are editable - so this applies the ACTION and decides nothing.
+    #
+    # NO PASSWORD ARGUMENT ANYWHERE. Not an empty string, not a variable.
+    $protection = $manifest.protection
+    if ($null -ne $protection) {
+        if (-not $protection.passwordless) {
+            throw 'The manifest asks for protection with a password. This build has none and will not invent one.'
+        }
+        $protectFails = @()
+        foreach ($sheetName in @($protection.sheets)) {
+            $pws = $null
+            try {
+                $pws = $worksheets.Item([string]$sheetName)
+                if ($pws.ProtectContents) { $pws.Unprotect() }
+                # Worksheet.Protect(Password, DrawingObjects, Contents,
+                # Scenarios, UserInterfaceOnly, ...). [Type]::Missing is how a
+                # COM call says "no password" - $null would be marshalled as an
+                # empty one, which is a password.
+                $pws.Protect([Type]::Missing, $true, $true, $false, $true) | Out-Null
+                if (-not $pws.ProtectContents) {
+                    $protectFails += ([string]$sheetName + ': protection did not take')
+                }
+            } catch {
+                $protectFails += ([string]$sheetName + ': ' + (Format-Err $_))
+            } finally {
+                if ($null -ne $pws) { Release-Transient $pws 'Worksheet(protect)'; $pws = $null }
+            }
+        }
+        if ($protectFails.Count -gt 0) {
+            throw ('Sheet protection failed: ' + ($protectFails -join '; '))
+        }
+        if ($protection.protect_structure -and (-not $wb.ProtectStructure)) {
+            $wb.Protect([Type]::Missing, $true, $false)
+        }
+        if ($protection.protect_structure -and (-not $wb.ProtectStructure)) {
+            throw 'Workbook structure protection did not take.'
+        }
+        Add-Step 'Apply passwordless protection' 'PASS' `
+            ([string]@($protection.sheets).Count + ' sheet(s); structure=' +
+             [string]$wb.ProtectStructure + '; UserInterfaceOnly=True')
+    }
+
+    # --- 8. save ------------------------------------------------------------
     $wb.Save()
     Add-Step 'Save the Stage-B workbook' 'PASS' $stageBPath
     $buildOk = $true

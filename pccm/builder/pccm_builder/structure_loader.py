@@ -284,6 +284,13 @@ class StructureContract:
     forbidden_construct_rules: list[ForbiddenConstruct]
     structural_checks: list[dict[str, str]]
     source_path: Path
+    # P10-2A. Declared as raw mappings on purpose. The protection policy is a
+    # set of RULES that name other contracts, and the resolver in protection.py
+    # is the one place allowed to interpret them; giving them a typed shape here
+    # would put half the interpretation in the loader and half in the resolver.
+    commands: dict[str, Any]
+    protection: dict[str, Any]
+    document_module: dict[str, Any]
 
     # --- convenience -------------------------------------------------------
     @property
@@ -460,6 +467,11 @@ def load_structure_contract(path: str | Path) -> StructureContract:
         # Phase 5 still loads; the static tests are what require them to be
         # declared once they exist.
         api_procedures=[str(e) for e in raw_vba.get("api_procedures", [])],
+        # OPTIONAL SO AN EARLIER CONTRACT STILL LOADS, exactly as the Phase-5
+        # endpoints are. The static controls are what require them to exist.
+        commands=dict(raw.get("commands", {})),
+        protection=dict(raw.get("protection", {})),
+        document_module=dict(raw_vba.get("document_module", {})),
         forbidden_constructs=[
             _forbidden_construct_text(c, i, f"{where}: vba")
             for i, c in enumerate(_req(raw_vba, "forbidden_constructs", f"{where}: vba"))

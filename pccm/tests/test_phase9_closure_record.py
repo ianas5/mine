@@ -35,6 +35,9 @@ import pytest  # noqa: E402
 CONTRACT = "dd082c9"
 LINEAGE = "c52e732"
 WINDOWS_TREE = "8ccadd0"
+
+# THE COMMIT THIS RECORD IS ABOUT - the Phase-9 closure settlement itself.
+CLOSURE_COMMIT = "f7e08dd"
 PREREQUISITES = 7
 RESULTS = 121
 
@@ -100,7 +103,13 @@ def test_02_phase_10_is_not_started_and_says_so() -> None:
     text = _text()
     assert "Phase 10 is not started by this record." in text
     assert "**Phase 10 has not started.**" in text
-    listing = _git("ls-tree", "-r", "--name-only", "HEAD", "pccm/").split()
+    # CONVERTED AT P10-2A, NOT LOOSENED. This asked TODAY's tree, which was
+    # the same mistake the Phase-8 record had to be corrected out of: Phase 10
+    # legitimately starting would falsify a statement about Phase 9 that never
+    # stopped being true. The record says Phase 10 is not started BY IT, so the
+    # question is asked of THIS RECORD'S OWN COMMIT. A Phase-10 file smuggled
+    # into the closure commit still fails, and now it fails forever.
+    listing = _git("ls-tree", "-r", "--name-only", CLOSURE_COMMIT, "pccm/").split()
     for pattern in ("phase10", "phase_10"):
         found = [name for name in listing
                  if pattern in name.rsplit("/", 1)[-1].lower()

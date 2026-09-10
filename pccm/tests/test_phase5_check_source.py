@@ -876,11 +876,16 @@ def test_44a_the_inventory_is_exactly_the_frozen_set_plus_the_checker() -> None:
     named on the right-hand side rather than allowed in by a loosened comparison.
     """
     on_disk = set(_modules())
+    # P10-2A joins the right-hand side by name, exactly as Phases 6, 7 and 8 did.
+    # The Phase-5 half of this equality is unchanged and a further Phase-5 module
+    # still cannot appear.
+    phase10 = {"modProtection"}
     assert on_disk == (
         set(FROZEN_SHA256) | {CHECKER, "modCalcReport"}
-        | PHASE6_HANDWRITTEN | PHASE7_HANDWRITTEN | PHASE8_HANDWRITTEN
+        | PHASE6_HANDWRITTEN | PHASE7_HANDWRITTEN | PHASE8_HANDWRITTEN | phase10
     ), f"unexpected hand-written module inventory: {sorted(on_disk)}"
-    assert on_disk - PHASE6_HANDWRITTEN - PHASE7_HANDWRITTEN - PHASE8_HANDWRITTEN == (
+    assert (on_disk - PHASE6_HANDWRITTEN - PHASE7_HANDWRITTEN
+            - PHASE8_HANDWRITTEN - phase10) == (
         set(FROZEN_SHA256) | {CHECKER, "modCalcReport"})
 
 

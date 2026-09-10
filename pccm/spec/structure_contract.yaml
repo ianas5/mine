@@ -378,6 +378,107 @@ state_messages:
 # bootstrap and the functional harness read these definitions from the generated
 # constants module rather than restating them.
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# THE SETUP COMMAND BLOCK - P10-2A.
+#
+# The four operational buttons need somewhere to be, and four unlabelled
+# rectangles floating under the last row of a sheet is not somewhere. This
+# declares one section below the applied-timeline block that the builder renders
+# and the buttons anchor into, so the heading and the shapes cannot drift apart:
+# both are resolved from these rows.
+#
+# IT ADDS ROWS BELOW EVERYTHING THAT EXISTS. The applied-timeline block ends at
+# row 54 and nothing on Setup is addressed past it, so no existing cell moves.
+# -----------------------------------------------------------------------------
+commands:
+  block:
+    sheet: "Setup"
+    section: "Model Commands"
+    section_row: 56
+    note_row: 57
+    note: "Run the model from here. Each command is a separate operation: Calculate produces the deterministic model, Run Simulation produces a distribution from it, and Sensitivity and Annual Cash Flow analyse a completed simulation without producing a new one."
+    label_column: "B"
+    button_column: "E"
+    first_button_row: 59
+    button_row_pitch: 2
+
+# -----------------------------------------------------------------------------
+# PROTECTION - P10-2A.
+#
+# ONE POLICY, DECLARED ONCE, DERIVED EVERYWHERE. The unlocked areas are NOT
+# spelled out here as ranges. They are RULES that name the contract which
+# already owns the answer - `editable: true` on an input, on a register column,
+# on a config table; the year columns of a grid - so the protected surface
+# cannot disagree with the schema it protects. Adding an editable column
+# anywhere unlocks it here automatically, and forgetting to update a range list
+# is not a failure mode this design has.
+#
+# PASSWORDLESS, AND THAT IS A DECISION RATHER THAN AN OMISSION. This stops a
+# user overwriting a formula by accident. It is not a security control, it is
+# not described as one, and a password kept in source would be worse than none.
+#
+# EVERY SHEET IS PROTECTED. What differs between them is only what is unlocked,
+# and for most sheets the answer is nothing.
+# -----------------------------------------------------------------------------
+protection:
+  passwordless: true
+  user_interface_only: true
+  protect_structure: true
+  protect_windows: false
+
+  # WHAT A RULE MEANS. Each names an owning contract and the property in it that
+  # already decides. The builder resolves them; nothing else may.
+  rules:
+    editable_inputs: "input_contract.inputs where editable is true -> that input's cell"
+    editable_input_table: "input_contract.tables[key] where editable is true -> the body rows below any locked_seed_rows"
+    editable_config_tables: "input_contract.config_tables where editable is true -> the body rows below any locked_seed_rows"
+    editable_register_columns: "driver_contract.registers[sheet] columns where editable is true -> those columns over the reserved body rows"
+    grid_year_columns: "structure_contract.grids[key] -> the year columns over the reserved body rows; fixed_columns stay locked"
+
+  sheets:
+    - sheet: "Setup"
+      unlock:
+        - rule: "editable_inputs"
+        - rule: "editable_input_table"
+          key: "fx_rates"
+    - sheet: "Config"
+      unlock:
+        - rule: "editable_config_tables"
+    - sheet: "Cost Lines"
+      unlock:
+        - rule: "editable_register_columns"
+    - sheet: "Risk Register"
+      unlock:
+        - rule: "editable_register_columns"
+    - sheet: "Inflation"
+      unlock:
+        - rule: "grid_year_columns"
+          key: "inflation"
+    - sheet: "Cost Profiling"
+      unlock:
+        - rule: "grid_year_columns"
+          key: "cost_profiling"
+    - sheet: "Risk Profiling"
+      unlock:
+        - rule: "grid_year_columns"
+          key: "risk_profiling"
+    # NOTHING IS UNLOCKED ON THESE. An output is a reading, a reference sheet is
+    # documentation, and a machine sheet is not for hands at all.
+    - sheet: "Dashboard"
+      unlock: []
+    - sheet: "Model Check"
+      unlock: []
+    - sheet: "Results"
+      unlock: []
+    - sheet: "Sensitivity"
+      unlock: []
+    - sheet: "Methodology"
+      unlock: []
+    - sheet: "_Calc"
+      unlock: []
+    - sheet: "_SimData"
+      unlock: []
+
 buttons:
   shape_prefix: "btnPCCM"
   width: 150
@@ -419,6 +520,53 @@ buttons:
       entry_point: "PCCM_DeleteRisk"
       anchor_cell: "O9"
 
+    # -------------------------------------------------------------------------
+    # THE PHASE-10 OPERATIONAL COMMANDS.
+    #
+    # WHY THEY ARE BUTTONS NOW AND WERE NOT BEFORE. Every one of these four
+    # endpoints already existed and has always been driven through
+    # Application.Run by an acceptance harness. That is an ACCEPTANCE
+    # arrangement: a delivered workbook whose user must open the Macro dialog to
+    # calculate is not delivered. The Phase-10 contract at 6ab8f6a authorises
+    # exactly these four bindings.
+    #
+    # A BUTTON CHANGES NOTHING BUT REACHABILITY. Sensitivity and the annual step
+    # remain EXPLICIT SEPARATE OPERATIONS - neither runs as part of a
+    # simulation, for the accepted Phase-7 reason that a successful run must
+    # stay successful when a later analysis of it fails. Binding an existing
+    # endpoint to a shape reopens no contract.
+    #
+    # THE CAPTION IS THE USER'S WORD AND THE ENTRY POINT IS THE CODE'S. They are
+    # deliberately allowed to differ: "Run Annual Cash Flow" is what the operator
+    # is doing; PCCM_RunAnnualStochastic is what the module is called.
+    - key: "calculate"
+      sheet: "Setup"
+      shape_name: "btnPCCMCalculate"
+      caption: "Calculate"
+      entry_point: "PCCM_Calculate"
+      anchor_cell: "E59"
+
+    - key: "run_simulation"
+      sheet: "Setup"
+      shape_name: "btnPCCMRunSimulation"
+      caption: "Run Simulation"
+      entry_point: "PCCM_RunSimulation"
+      anchor_cell: "E61"
+
+    - key: "run_sensitivity"
+      sheet: "Setup"
+      shape_name: "btnPCCMRunSensitivity"
+      caption: "Run Sensitivity"
+      entry_point: "PCCM_RunSensitivity"
+      anchor_cell: "E63"
+
+    - key: "run_annual"
+      sheet: "Setup"
+      shape_name: "btnPCCMRunAnnual"
+      caption: "Run Annual Cash Flow"
+      entry_point: "PCCM_RunAnnualStochastic"
+      anchor_cell: "E65"
+
 # -----------------------------------------------------------------------------
 # VBA module inventory.
 #
@@ -428,6 +576,17 @@ buttons:
 # fails the Linux inventory test.
 # -----------------------------------------------------------------------------
 vba:
+  # THE ONE DOCUMENT MODULE, DECLARED APART FROM THE INVENTORY BELOW. Excel
+  # creates ThisWorkbook with the workbook and it cannot be imported like a
+  # standard module: the bootstrap writes this text into the component that
+  # already exists. Its extension is deliberately not .bas, because the module
+  # inventory globs .bas and this is not a module in that inventory.
+  document_module:
+    component: "ThisWorkbook"
+    file: "ThisWorkbook.vba"
+    events: ["Workbook_Open"]
+    delegates_to: "modProtection"
+
   source_dir: "src/vba"
   generated_dir: "build/vba"
   generated_module: "modConstants"
@@ -522,6 +681,16 @@ vba:
       generated: false
       responsibility: "The pure Phase-7 sensitivity mathematics: mid-ranks with average ranks for ties, Spearman as Pearson over two already-ranked series, the undefined zero-variance status, and the ordering of finished driver results by absolute rho with a permanent-id tie-break. No driver replay, no RNG or component stream, no workbook access, no _SimData, no run identity, no state and no presentation."
 
+    # PHASE 10. The protection owner, and it is deliberately the smallest module
+    # in the project. It holds no policy: which cells a user may type in is
+    # already decided by the contracts that declare them, and the builder writes
+    # that decision into the workbook. This applies one uniform action - protect
+    # every sheet with UserInterfaceOnly, protect the structure - so there is
+    # nothing here that can drift from the schema it protects.
+    - name: "modProtection"
+      generated: false
+      responsibility: "The Phase-10 protection owner: applies and releases passwordless sheet and structure protection with UserInterfaceOnly:=True, and reports whether it is in force. Holds no range list, no sheet list and no password; the locked/unlocked state of every cell is written into the workbook by the builder from the contracts that already declare it."
+
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.
   entry_points:
@@ -530,6 +699,17 @@ vba:
     - "PCCM_DeleteCostLine"
     - "PCCM_AddRisk"
     - "PCCM_DeleteRisk"
+    # P10-2A. The four operational commands. They appear BOTH here and in the
+    # api_procedures lists below, and that is correct rather than duplication:
+    # `entry_points` answers "what does a button bind to", the api lists answer
+    # "what may an integrator call", and from Phase 10 these four are both. The
+    # accounting test unions every list, so a name in two of them is counted
+    # once; the loader separately requires buttons and entry_points to agree
+    # exactly, which is what stops a button appearing without a declaration.
+    - "PCCM_Calculate"
+    - "PCCM_RunSimulation"
+    - "PCCM_RunSensitivity"
+    - "PCCM_RunAnnualStochastic"
 
   # Public PCCM_ procedures that are NOT buttons. They exist so the Windows
   # functional harness can drive a confirmation path and an injected failure without
@@ -545,11 +725,16 @@ vba:
     - "PCCM_DeleteCostLineById"
     - "PCCM_DeleteRiskById"
 
-  # The Phase-5 calculation automation/API surface. These are NOT buttons and NOT
-  # harness helpers: they are the externally callable endpoints a later Windows
-  # harness drives through Application.Run, and the two read accessors an
-  # integrator may call. Declaring them here is what keeps the orphan-macro test
-  # meaningful now that PCCM_ procedures exist outside Phase 4.
+  # The Phase-5 calculation automation/API surface: the externally callable
+  # endpoints an acceptance harness drives through Application.Run, and the read
+  # accessors an integrator may call. Declaring them here is what keeps the
+  # orphan-macro test meaningful now that PCCM_ procedures exist outside Phase 4.
+  #
+  # CORRECTED AT P10-2A. This list used to open "These are NOT buttons". That was
+  # true of every phase up to 9 and is no longer true of PCCM_Calculate, which is
+  # now bound to a Setup button under the Phase-10 contract. Being callable by an
+  # integrator and being reachable by a user are different questions, and this
+  # list answers only the first.
   api_procedures:
     - "PCCM_Calculate"
     - "PCCM_CalculationStatus"
@@ -566,19 +751,27 @@ vba:
   # it here accounts for it - the orphan-macro test still sees it - without
   # borrowing an evidence claim that belongs to another phase's harness.
   #
-  # Sensitivity is deliberately not a button and not part of a run: a successful
-  # simulation must stay successful even if the analysis of it later fails, and
-  # at full N the analysis can cost about as much as the run it explains.
+  # Sensitivity is deliberately not part of a run: a successful simulation must
+  # stay successful even if the analysis of it later fails, and at full N the
+  # analysis can cost about as much as the run it explains.
+  #
+  # CORRECTED AT P10-2A. This used to read "not a button and not part of a run".
+  # The SEMANTIC half - not part of a run - is the accepted Phase-7 decision and
+  # is unchanged. The delivery half is not: PCCM_RunSensitivity is now bound to
+  # its own Setup button, which is what makes it an explicit separate operation
+  # the user can choose rather than one they cannot reach.
   phase7_api_procedures:
     - "PCCM_RunSensitivity"
     # P7-6. The annual endpoint and the four Phase-8 handoff accessors. Same
     # accounting, same reason: this is Phase-7 code that no Windows run has
     # executed, and it must not appear to carry Phase-5 harness evidence.
     #
-    # The annual step is deliberately not a button and not part of a run, for
-    # the reasons sensitivity is not: a successful simulation must stay
-    # successful if the annual decomposition of it later fails, and the user
-    # must be able to repeat it without producing a new stochastic result.
+    # The annual step is deliberately not part of a run, for the reasons
+    # sensitivity is not: a successful simulation must stay successful if the
+    # annual decomposition of it later fails, and the user must be able to
+    # repeat it without producing a new stochastic result. CORRECTED AT P10-2A
+    # in the same way and for the same reason: it has its own button now, and
+    # its own button is precisely what "separate operation" means to a user.
     - "PCCM_RunAnnualStochastic"
     - "PCCM_AnnualDistributionState"
     - "PCCM_AnnualProfileState"
@@ -670,6 +863,12 @@ vba:
     - construct: "RunSimulation"
       allowed_in:
         - "modSimReport"
+        # P10-2A. The GENERATED constants module joins the grant, because every
+        # entry point is emitted there as an ENTRY_ string constant and Phase 10
+        # binds PCCM_RunSimulation to a Setup button. What modConstants holds is
+        # a macro NAME for a shape to point at - no draw, no percentile, no call
+        # - and the grant stays a named pair rather than becoming a wildcard.
+        - "modConstants"
     - "FinalReleaseComObject"
 
 # -----------------------------------------------------------------------------

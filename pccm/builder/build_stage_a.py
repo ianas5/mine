@@ -43,6 +43,9 @@ from pccm_builder import (  # noqa: E402
     emit_phase7_acceptance,
     emit_phase8_charts,
     emit_phase9_model_check,
+    apply_protection,
+    emit_protection_projection,
+    resolve_unlocked,
     emit_phase8_dashboard,
     emit_phase8_results,
     emit_sim_gate_b_artifacts,
@@ -184,8 +187,19 @@ def main(argv: list[str] | None = None) -> int:
     except ContractError as error:
         print(f"CROSS-CONTRACT ERROR: {error}", file=sys.stderr)
         return 2
+    # P10-2A. PROTECTION IS MARKED BEFORE THE FILE IS SAVED, because the
+    # locked/unlocked state of a cell is part of the cell. The policy is
+    # resolved from the contracts that already declare which inputs are
+    # editable; nothing here spells a range.
+    unlocked = resolve_unlocked(structure, contract, drivers)
+    apply_protection(workbook, unlocked)
     workbook.save(out_path)
     workbook.close()
+    protection = emit_protection_projection(
+        out_path.parent / "phase10_protection_inspection.json", structure, unlocked)
+    print(f"  protection: {len(protection['sheets'])} sheets, "
+          f"{sum(s['unlocked_count'] for s in protection['sheets'])} unlocked cells, "
+          f"passwordless={protection['passwordless']}")
 
     artifacts = emit_stage_b(out_path.parent, spec, contract, drivers, structure)
     calc_artifacts = emit_calc_artifacts(out_path.parent, spec, calc)

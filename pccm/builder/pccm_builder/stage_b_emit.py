@@ -355,10 +355,16 @@ def build_manifest(
                 for m in structure.vba_modules
             ],
             "entry_points": list(structure.entry_points),
-            # The calculation endpoints a later harness drives through
-            # Application.Run. Deliberately NOT entry_points: nothing binds them
-            # to a button, and the manifest is where the harness learns the
-            # difference.
+            # P10-2A. The one document module. It is declared apart from
+            # `modules` because Excel creates ThisWorkbook with the workbook and
+            # it cannot be imported: the bootstrap writes this text into the
+            # component that already exists.
+            "document_module": dict(structure.document_module),
+            # The calculation endpoints a harness drives through
+            # Application.Run. Four of them are ALSO entry_points from Phase 10 -
+            # a procedure can be both callable by an integrator and reachable by
+            # a user - and the manifest carries both lists so a consumer can tell
+            # which question it is asking.
             "api_procedures": list(structure.api_procedures),
             # THE FLATTENED LIST IS DISPLAY ONLY, once a scoped rule exists.
             # It cannot represent `allowed_in`, so a consumer that enforced from
@@ -462,6 +468,18 @@ def build_manifest(
                 if column.validation is not None
             ]
             for register in drivers.all_registers
+        },
+        # P10-2A. The protection policy the bootstrap applies. The RESOLVED
+        # ranges are not here: they are in the workbook itself as the
+        # locked/unlocked state of each cell, and in
+        # phase10_protection_inspection.json for the acceptance run. This is the
+        # ACTION - protect every sheet, with these flags, without a password.
+        "protection": {
+            "passwordless": bool(structure.protection["passwordless"]),
+            "user_interface_only": bool(structure.protection["user_interface_only"]),
+            "protect_structure": bool(structure.protection["protect_structure"]),
+            "protect_windows": bool(structure.protection["protect_windows"]),
+            "sheets": [str(s["sheet"]) for s in structure.protection["sheets"]],
         },
         "structural_checks": [dict(c) for c in structure.structural_checks],
     }

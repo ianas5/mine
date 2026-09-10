@@ -272,6 +272,9 @@ PHASE4_RAW_LINE_LIMIT = 900
 # phase's modules - a further Phase-8 module cannot arrive unremarked.
 PHASE8_VBA_MODULES = ("modResultsState",)
 
+# P10-2A. The protection owner, and the whole of Phase 10 so far.
+PHASE10_VBA_MODULES = ("modProtection",)
+
 PHASE7_VBA_MODULES = (
     "modSimSensitivity",
     "modSimPostReport",
@@ -353,7 +356,7 @@ def test_05_no_module_is_a_dumping_ground() -> None:
     by_name = {m.name: m for m in _handwritten_modules()}
     assert set(by_name) == (
         set(PHASE4_VBA_MODULES) | set(PHASE5_VBA_MODULES) | set(PHASE6_VBA_MODULES)
-        | set(PHASE7_VBA_MODULES) | set(PHASE8_VBA_MODULES)
+        | set(PHASE7_VBA_MODULES) | set(PHASE8_VBA_MODULES) | set(PHASE10_VBA_MODULES)
     ), (
         "the hand-written module inventory changed; the size limits below are "
         "assigned per module and must be assigned for the new one too"
@@ -493,7 +496,7 @@ def test_09_each_entry_point_is_bound_to_exactly_one_button() -> None:
     assert len(set(bound)) == len(bound)
 
 
-def test_10_the_five_required_buttons_are_declared_on_the_right_sheets() -> None:
+def test_10_the_five_phase4_buttons_and_the_four_phase10_commands() -> None:
     structure = _specs()[3]
     placement = {(b.sheet, b.caption) for b in structure.buttons}
     for required in (
@@ -504,7 +507,23 @@ def test_10_the_five_required_buttons_are_declared_on_the_right_sheets() -> None
         ("Risk Register", "Delete Risk"),
     ):
         assert required in placement, f"missing button {required}"
-    assert len(structure.buttons) == 5, "no simulation button belongs in Phase 4"
+    # THE PHASE-4 SET IS STILL EXACTLY THOSE FIVE, and that is what this control
+    # is about. It used to say so by counting every button in the contract,
+    # which stopped being the same statement the moment Phase 10 added its own.
+    # Naming keeps it exact: a sixth Phase-4 button still fails here.
+    phase4 = {(sheet, caption) for sheet, caption in placement
+              if sheet in ("Cost Lines", "Risk Register")
+              or caption == "Apply / Update Timeline"}
+    assert len(phase4) == 5, f"the Phase-4 button set changed: {sorted(phase4)}"
+    # AND THE PHASE-10 COMMANDS ARE THE ONLY OTHERS, declared under the contract
+    # at 6ab8f6a. No button may appear without one of these two authorities.
+    others = placement - phase4
+    assert others == {
+        ("Setup", "Calculate"),
+        ("Setup", "Run Simulation"),
+        ("Setup", "Run Sensitivity"),
+        ("Setup", "Run Annual Cash Flow"),
+    }, f"an undeclared button appeared: {sorted(others)}"
 
 
 # ===========================================================================
@@ -647,25 +666,31 @@ def test_15a_the_scoped_grants_are_real_and_are_the_only_ones() -> None:
     # owner: a scoped rule before its owner leaves the construct legal in a
     # module that does not exist, and an owner before the rule leaves it illegal
     # in the module that must contain it.
+    # TWO GRANTS STILL, and the second names two modules from P10-2A. Each was
+    # landed in the SAME commit that introduced its owner: a scoped rule before
+    # its owner leaves the construct legal in a module that does not exist, and
+    # an owner before the rule leaves it illegal in the module that must
+    # contain it.
     assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
         ("MRG32k3a", ("modSimRng",)),
-        ("RunSimulation", ("modSimReport",)),
+        ("RunSimulation", ("modSimReport", "modConstants")),
     ], scoped
 
     modules = {m.name: m for m in _all_modules()}
-    for construct, owner in (("MRG32k3a", "modSimRng"),
-                             ("RunSimulation", "modSimReport")):
-        assert contains_construct([modules[owner]], construct), (
-            f"the scoped grant is vacuous: {owner} does not contain "
-            f"{construct} in executable code"
-        )
-        others = [m for name, m in modules.items() if name != owner]
+    for construct, owners in (("MRG32k3a", ("modSimRng",)),
+                              ("RunSimulation", ("modSimReport", "modConstants"))):
+        for owner in owners:
+            assert contains_construct([modules[owner]], construct), (
+                f"the scoped grant is vacuous: {owner} does not contain "
+                f"{construct} in executable code"
+            )
+        others = [m for name, m in modules.items() if name not in owners]
         assert not contains_construct(others, construct), construct
         rule = [r for r in structure.forbidden_construct_rules
                 if r.construct == construct]
         assert len(rule) == 1 and rule[0].is_scoped
         for name in modules:
-            assert rule[0].forbidden_in(name) == (name != owner), (construct, name)
+            assert rule[0].forbidden_in(name) == (name not in owners), (construct, name)
 
 
 def test_16_no_input_worksheet_change_automation_exists() -> None:
@@ -699,10 +724,24 @@ def test_17_no_calculation_or_simulation_code_leaked_in() -> None:
     # BOTH SCOPED CONSTRUCTS ARE ENFORCED PER MODULE, which is a stronger
     # statement than a blanket ban, not a weaker one: each must appear in its
     # owner and in nothing else. test_15 and test_15a carry that.
-    for construct, owner in (("MRG32k3a", "modSimRng"),
-                             ("RunSimulation", "modSimReport")):
-        outside_owner = [m for m in everywhere if m.name != owner]
+    # P10-2A WIDENS ONE OWNER BY NAME, AND ONLY THIS ONE. `RunSimulation` now
+    # also appears in modConstants, because Phase 10 binds PCCM_RunSimulation to
+    # a Setup button and every entry point is emitted there as an ENTRY_ string
+    # constant. That is a MACRO NAME a shape points at, not simulation code: the
+    # constant carries no draw, no percentile and no call. Naming modConstants
+    # here keeps the rule exact - a third module still fails, and MRG32k3a is
+    # untouched and still has exactly one owner.
+    for construct, owners in (("MRG32k3a", {"modSimRng"}),
+                              ("RunSimulation", {"modSimReport", "modConstants"})):
+        outside_owner = [m for m in everywhere if m.name not in owners]
         assert not contains_construct(outside_owner, construct), construct
+    # AND WHAT modConstants IS ALLOWED TO CARRY IS A DECLARATION, NOT CODE.
+    constants = [m for m in everywhere if m.name == "modConstants"]
+    if constants:
+        body = constants[0].code
+        for banned in ("Rnd(", "Randomize", "WorksheetFunction.", "Application.Run"):
+            assert banned not in body, (
+                f"modConstants carries {banned}; it declares names, it does not act")
     phase4 = [m for m in everywhere
               if m.name not in PHASE5_VBA_MODULES and m.name not in PHASE6_VBA_MODULES]
     for construct in ("ExpectedValue", "DiscountFactor", "EscalationFactor"):

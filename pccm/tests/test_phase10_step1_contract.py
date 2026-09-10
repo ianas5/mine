@@ -23,6 +23,7 @@ Runs standalone or under pytest.
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -61,22 +62,64 @@ def test_01_the_record_declares_the_contract_settled() -> None:
     assert "Phases 7, 8 and 9 are not reopened." in text
 
 
-def test_02_implementation_really_has_not_started() -> None:
-    """THE CLAIM IS CHECKED, NOT TAKEN. A contract record that had grown an
-    implementation beside it would still read exactly like this one."""
-    forbidden = []
+# THE CONTRACT COMMIT ITSELF. Every claim this record makes about "the tree" is
+# a claim about THIS tree, and is asked of it rather than of whatever the
+# working directory holds while a later step is being built.
+CONTRACT_COMMIT = "6ab8f6a"
+
+
+def _git(*args: str) -> str:
+    return subprocess.run(["git", *args], cwd=REPO_ROOT, check=True,
+                          stdout=subprocess.PIPE, text=True).stdout
+
+
+def test_02_implementation_had_not_started_when_the_contract_was_settled() -> None:
+    """CONVERTED AT P10-2A, NOT DELETED, AND NOT LOOSENED.
+
+    As first written this scanned TODAY's tree, which was right for exactly as
+    long as nothing had been implemented - and it went red the moment P10-2A
+    landed the protection owner it authorises. Deleting it would retire the
+    claim; relaxing it to "some Phase-10 files may exist" would retire it more
+    quietly.
+
+    SO IT ASKS THE COMMIT INSTEAD, the way the Phase-8 closure record was
+    corrected. The record says implementation was not started BY IT; the check
+    is that the CONTRACT COMMIT'S OWN TREE carried none. That is the claim the
+    sentence actually makes, it is immune to everything committed afterwards,
+    and it is stricter in the way that matters: an implementation file smuggled
+    into the contract commit still fails, and now it fails forever rather than
+    only until implementation legitimately began.
+    """
+    listing = _git("ls-tree", "-r", "--name-only", CONTRACT_COMMIT, "pccm/").split()
     for name in ("modReset.bas", "modRepair.bas", "modProtection.bas",
-                 "ThisWorkbook.cls", "ThisWorkbook.bas"):
-        if (SRC / name).exists():
-            forbidden.append(name)
-    assert not forbidden, f"Phase-10 VBA already exists: {forbidden}"
-    structure = (SPEC / "structure_contract.yaml").read_text(encoding="utf-8")
-    for endpoint in ("PCCM_ResetResults", "PCCM_RepairProfiling"):
-        assert endpoint not in structure, (
-            f"{endpoint} is already declared; implementation has started")
-    # AND THE SIX BUTTONS ARE STILL THE FIVE PHASE-4 ONES.
+                 "ThisWorkbook.vba", "ThisWorkbook.cls", "ThisWorkbook.bas",
+                 "protection.py"):
+        assert not [p for p in listing if p.endswith("/" + name)], (
+            f"the contract commit {CONTRACT_COMMIT} already carried {name}")
+    structure = _git("show", f"{CONTRACT_COMMIT}:pccm/spec/structure_contract.yaml")
+    for endpoint in ("PCCM_ResetResults", "PCCM_RepairProfiling", "PCCM_Calculate\""):
+        assert endpoint not in structure or "entry_point" not in structure.split(
+            endpoint)[0][-40:], (
+            f"{endpoint} was already bound at {CONTRACT_COMMIT}")
     assert structure.count("entry_point:") == 5, (
-        "the button table has moved before implementation was authorised")
+        f"the button table had already moved at {CONTRACT_COMMIT}")
+
+
+def test_02a_this_batch_is_the_one_the_contract_authorises() -> None:
+    """AND THE SEPARATE HALF: what exists now is what 6ab8f6a authorised, and
+    only that. Reset and Repair are LATER steps; finding either here would mean
+    a batch ran ahead of its authorisation."""
+    for later in ("modReset.bas", "modRepair.bas"):
+        assert not (SRC / later).exists(), f"{later} belongs to a later Phase-10 step"
+    structure = (SPEC / "structure_contract.yaml").read_text(encoding="utf-8")
+    for later in ("PCCM_ResetResults", "PCCM_RepairProfiling"):
+        assert later not in structure, f"{later} belongs to a later Phase-10 step"
+    # THE FOUR THIS BATCH BINDS ARE THE FOUR THE RECORD NAMES.
+    assert structure.count("entry_point:") == 9, (
+        "the button table is not the five Phase-4 buttons plus the four "
+        "operational commands the contract authorises")
+    for authorised in ("modProtection.bas", "ThisWorkbook.vba"):
+        assert (SRC / authorised).is_file(), f"{authorised} is authorised and absent"
 
 
 # ===========================================================================

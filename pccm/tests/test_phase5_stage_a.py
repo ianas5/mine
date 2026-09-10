@@ -1975,13 +1975,30 @@ def test_the_stage_b_manifest_carries_the_implemented_modules_and_nothing_later(
                      "modCalcFingerprint", "modCalcResolve", "modCalcCheck",
                      "modCalcReport"):
         assert expected in text, f"{expected} is missing from the Stage-B manifest"
-    # The Phase-5 module set is complete, so the remaining boundary is that the
-    # six endpoints are declared as API procedures and NONE of them is bound to
-    # a button.
+    # THE BOUNDARY THIS CONTROL WAS WRITTEN FOR, RESTATED FOR THE PHASE IT IS IN.
+    # At Phase 5 it read "none of the calculation endpoints is bound to a
+    # button", and that was the right statement then: a Calculate button before
+    # a Windows-proved Calculate would have been a command nobody had run. It is
+    # not the right statement now. The Phase-10 contract at 6ab8f6a authorises
+    # exactly four bindings, and a delivered workbook whose user must open the
+    # Macro dialog to calculate is not delivered.
+    #
+    # SO IT NAMES THEM. The Phase-5 read accessors must STILL never be buttons -
+    # a status or a fingerprint is something a cell asks for, not something a
+    # user presses - and that half of the original claim is unchanged and is
+    # what this now checks exactly.
     manifest = json.loads(path.read_text(encoding="utf-8"))
     bound = {b["entry_point"] for b in manifest["buttons"]}
-    assert len(bound) == 5, f"the workbook must still have exactly five buttons: {bound}"
-    assert "PCCM_Calculate" not in bound, "a Calculate button was created"
+    assert bound == {
+        "PCCM_ApplyTimeline", "PCCM_AddCostLine", "PCCM_DeleteCostLine",
+        "PCCM_AddRisk", "PCCM_DeleteRisk",
+        "PCCM_Calculate", "PCCM_RunSimulation", "PCCM_RunSensitivity",
+        "PCCM_RunAnnualStochastic",
+    }, f"the bound button set changed: {sorted(bound)}"
+    for accessor in ("PCCM_CalculationStatus", "PCCM_CalculationFingerprint",
+                     "PCCM_CurrentInputFingerprint", "PCCM_CalculationAttemptResult",
+                     "PCCM_CalculationAttemptDetail"):
+        assert accessor not in bound, f"{accessor} is a reading, not a command"
     assert "PCCM_Calculate" in text, "the calculation endpoint is not declared"
 
 

@@ -25,6 +25,31 @@ from .structure_loader import Grid, StructureContract
 from .styling import StyleBook
 
 
+def render_command_block(
+    worksheet: Worksheet, structure: StructureContract, styles: StyleBook
+) -> None:
+    """Append the Setup command section the operational buttons anchor into.
+
+    WHY THE SECTION EXISTS AT ALL. The buttons could be anchored at bare cells
+    and would work. Four unlabelled rounded rectangles under the last row of a
+    sheet is not a delivered command surface, and a user who cannot tell Run
+    Sensitivity from Run Annual Cash Flow by looking has not been given one.
+
+    IT WRITES NO BUTTON. Shapes are the bootstrap's job, through the declared
+    button architecture. This writes the heading and the note they sit beside,
+    from the same declaration the anchors are resolved against, so the label and
+    the shapes cannot drift apart.
+    """
+    block = structure.commands.get("block")
+    if not block:
+        return
+    label_column = block["label_column"]
+    _write(worksheet, f"{label_column}{block['section_row']}", block["section"], styles.section)
+    worksheet.row_dimensions[block["section_row"]].height = styles.row_height("section")
+    if block.get("note_row"):
+        _write(worksheet, f"{label_column}{block['note_row']}", block["note"], styles.note)
+
+
 def render_applied_timeline(
     worksheet: Worksheet, structure: StructureContract, styles: StyleBook
 ) -> None:
