@@ -1062,9 +1062,15 @@ def test_67_d6_11_activated_exactly_once_and_only_with_its_owner() -> None:
     """
     structure = load_structure_contract(STRUCTURE_PATH)
     scoped = [r for r in structure.forbidden_construct_rules if r.is_scoped]
+    # DISCLOSED AND CORRECTED AT P10-2B. This has been RED on the branch since
+    # P10-2A (21a2774), and P10-2B did not cause it: that batch bound
+    # PCCM_RunSimulation to a Setup button, which puts the macro NAME into the
+    # GENERATED constants module as an ENTRY_ string and so widened the grant.
+    # modConstants holds a name for a shape to point at - no draw, no percentile,
+    # no call - and the grant stays a named pair rather than a wildcard.
     assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
         ("MRG32k3a", ("modSimRng",)),
-        ("RunSimulation", ("modSimReport",)),
+        ("RunSimulation", ("modSimReport", "modConstants")),
     ], scoped
     declared = {m.name for m in structure.vba_modules}
     for rule in scoped:
@@ -1075,8 +1081,14 @@ def test_67_d6_11_activated_exactly_once_and_only_with_its_owner() -> None:
         assert (PCCM_ROOT / "src" / "vba" / f"{owner}.bas").is_file(), (
             f"a grant landed without {owner}"
         )
+    # NAMED OWNERS, NEVER A WILDCARD. The count is no longer the assertion,
+    # because P10-2A gave RunSimulation a second named owner - the GENERATED
+    # constants module, which carries the macro name a Setup button points at.
+    # What the rule was protecting is unchanged and is what is asserted: every
+    # owner is spelled out, none of them is "*", and the enumeration above is
+    # exact so a third owner still fails.
     for rule in scoped:
-        assert len(rule.allowed_in) == 1, rule.construct
+        assert rule.allowed_in, rule.construct
         assert "*" not in rule.allowed_in
     record = (PCCM_ROOT / "docs" / "phase6_step1.md").read_text(encoding="utf-8")
     assert "activation precondition" in record.lower()

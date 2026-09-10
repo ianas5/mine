@@ -292,10 +292,10 @@ PHASE5_INVENTORY = {
 }
 """The fifteen modules Phase 5 closed with. Frozen by name, not by count."""
 
-PHASE10_INVENTORY = {"modProtection"}
-"""P10-2A. The protection owner, named on the same terms Phases 6, 7 and 8 were:
-naming it here relaxes nothing about Phase 5, and a sixteenth Phase-5 module
-still cannot appear."""
+PHASE10_INVENTORY = {"modProtection", "modReset"}
+"""P10-2A's protection owner and P10-2B's Reset Results owner, named on the same
+terms Phases 6, 7 and 8 were: naming them here relaxes nothing about Phase 5, and
+a sixteenth Phase-5 module still cannot appear."""
 
 PHASE6_INVENTORY = {"modSimContract", "modSimRng", "modSimSample", "modSimEngine",
                     "modSimStats", "modSimFingerprint", "modSimNonce",
@@ -354,9 +354,16 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
     # That is why it is named beside the surface rather than inside it, and why
     # this file's endpoint count is untouched by it.
     read_only = {"SimReportDerivedStatus"}
-    assert set(modules["modSimReport"].public_procedures) == phase6 | read_only, (
+    # P10-2B adds TWO more non-endpoint procedures to modSimReport, and they are
+    # named here for the same reason: Reset Results must be able to clear the
+    # simulation publication without knowing where it lives, so the owner that
+    # does know exposes a clear and the restore that undoes it. Neither carries a
+    # PCCM_ prefix, neither is reachable from a cell or a button, and the Phase-5
+    # and Phase-6 surfaces above are untouched by them.
+    reset = {"SimReportClearPublication", "SimReportRestorePublication"}
+    assert set(modules["modSimReport"].public_procedures) == phase6 | read_only | reset, (
         sorted(modules["modSimReport"].public_procedures))
-    assert not any(name.startswith("PCCM_") for name in read_only), read_only
+    assert not any(name.startswith("PCCM_") for name in read_only | reset), read_only
     for name in phase6:
         assert name not in _reporter().public_procedures, name
     # THE PHASE-7 SURFACE is named on the same terms as Phase 6's, so this stays
@@ -398,7 +405,11 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
         modules["modResultsState"].public_procedures)
     for name in phase8 | phase9:
         assert name not in _reporter().public_procedures, name
+    # P10-2B adds the reset clear and its undo here too, and for the same
+    # reason: Reset Results holds no geometry, so the owner of the sensitivity
+    # publication is the one that clears it. Neither is an endpoint.
     assert set(modules["modSimPostReport"].public_procedures) == {
+        "SimPostReportClearPublication", "SimPostReportRestorePublication",
         "PCCM_RunSensitivity"}, sorted(modules["modSimPostReport"].public_procedures)
     assert set(modules["modSimAnnualRun"].public_procedures) == {
         "PCCM_RunAnnualStochastic"}, sorted(
@@ -410,8 +421,18 @@ def test_04_exactly_six_phase_5_endpoints_exist() -> None:
         modules["modSimAnnualStore"].public_procedures)
     for name in phase7:
         assert name not in _reporter().public_procedures, name
+    # THE PHASE-10 SURFACE, named on exactly the terms Phases 6 to 9 were. One
+    # endpoint, owned by modReset, and it is not the reporter's: subtracting it
+    # here keeps this an EXACT statement about Phase 5 rather than letting the
+    # equality below become "contains at least".
+    phase10 = {"PCCM_ResetResults"}
+    assert set(modules["modReset"].public_procedures) == phase10, sorted(
+        modules["modReset"].public_procedures)
+    for name in phase10:
+        assert name not in _reporter().public_procedures, name
     found = ({p for m in modules.values() for p in m.public_procedures
-              if p.startswith("PCCM_")} - phase4 - phase6 - phase7 - phase8 - phase9)
+              if p.startswith("PCCM_")}
+             - phase4 - phase6 - phase7 - phase8 - phase9 - phase10)
     assert found == PCCM_ENDPOINTS, (
         f"unexpected: {sorted(found - PCCM_ENDPOINTS)}; missing: "
         f"{sorted(PCCM_ENDPOINTS - found)}"
@@ -482,8 +503,15 @@ def test_08_the_only_other_public_names_are_the_failpoint_stages() -> None:
     #                                 asking for C19:C20 to be rewritten, which
     #                                 Excel forbids a cell to do.
     #
-    # NAMED, NOT COUNTED, so a third still fails here.
-    expected = {"CalcPrepareSimulationInputs", "CalcReportDerivedStatus"}
+    #   CalcReportClearPublication    P10-2B, with its restore. Reset Results
+    #   CalcReportRestorePublication   clears every publication in the workbook
+    #                                  and holds no geometry of its own, so the
+    #                                  owner of the calculation store exposes the
+    #                                  clear and the undo that pairs with it.
+    #
+    # NAMED, NOT COUNTED, so a fifth still fails here.
+    expected = {"CalcPrepareSimulationInputs", "CalcReportDerivedStatus",
+                "CalcReportClearPublication", "CalcReportRestorePublication"}
     assert extra == expected, (
         f"unexpected Public procedure(s): {sorted(extra - expected)}"
     )
@@ -678,6 +706,8 @@ def test_20_no_generic_error_suppression() -> None:
         "TransactionFailed",    # the rollback envelope over the mutating region
         "RollbackFailed",       # the restore itself failing
         "BookkeepingFailed",    # the calc_state record failing after the outcome
+        "ClearFailed",          # P10-2B: the reset clear of this store raising
+        "RestoreFailed",        # P10-2B: the undo of that clear raising
     }, f"an unreviewed error handler exists: {sorted(handlers)}"
     # Armed and landed in the SAME procedure. A handler whose label lives
     # elsewhere is not a handler; VBA would refuse it, and a text sweep that never

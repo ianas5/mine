@@ -37,6 +37,8 @@ sys.path.insert(0, str(PCCM_ROOT / "tests"))
 
 import pytest  # noqa: E402
 
+from vba_reset_plumbing import strip_reset_addition  # noqa: E402
+
 # THE COMMIT THIS BATCH MAY NOT MOVE. P10-2A is accepted; a feedback batch that
 # edited an endpoint's logic or a button's binding would be a different batch.
 ACCEPTED = "21a2774"
@@ -222,13 +224,21 @@ def test_09_no_endpoint_owner_changed_since_the_accepted_batch(module: str) -> N
     fingerprints, RNG, publication, state derivation or attempt history. Rather
     than list those and hope, the four owners are required to be byte-identical
     to the accepted P10-2A tree.
+
+    CORRECTED AT P10-2B, AND NOT LOOSENED. Three of these four owners have since
+    gained a narrow Reset Results clear/restore pair, appended as one declared
+    block each. The requirement is no weaker: the block is taken back OUT
+    mechanically and the accepted bytes must come back exactly, so anything that
+    rode along above it still fails here. modSimAnnualRun gained nothing, and the
+    same reversal leaves it untouched - which is why one control still covers all
+    four rather than three plus an exception.
     """
-    current = (SRC / f"{module}.bas").read_bytes()
+    current = (SRC / f"{module}.bas").read_bytes().decode("utf-8")
     accepted = subprocess.run(
         ["git", "show", f"{ACCEPTED}:pccm/src/vba/{module}.bas"],
-        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout
-    assert current == accepted, (
-        f"{module}.bas moved; a feedback batch may not edit an endpoint owner")
+        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+    assert strip_reset_addition(current) == accepted, (
+        f"{module}.bas moved outside the declared P10-2B reset block")
 
 
 def test_10_the_reporting_owner_did_not_change_either() -> None:
@@ -257,14 +267,59 @@ def test_11_msgbox_lives_in_exactly_one_module() -> None:
 # ===========================================================================
 def test_12_no_button_binding_moved_in_this_batch() -> None:
     """G. A feedback batch that quietly rebound a button would be changing what
-    the user runs, not how they are told about it."""
-    current = (SPEC / "structure_contract.yaml").read_bytes()
-    accepted = subprocess.run(
+    the user runs, not how they are told about it.
+
+    CORRECTED AT P10-2B. The contract has since gained the Reset Results button,
+    its entry point and its module, so it is no longer byte-identical to the
+    accepted tree. The claim is unchanged and is now made where it can still be
+    made exactly: every accepted button, entry point and module is compared
+    field for field against P10-2A, and the DELTA is named. A rebinding, a moved
+    anchor, a renamed shape or a second undeclared addition all still fail.
+    """
+    import yaml
+
+    current = yaml.safe_load((SPEC / "structure_contract.yaml").read_text(encoding="utf-8"))
+    accepted = yaml.safe_load(subprocess.run(
         ["git", "show", f"{ACCEPTED}:pccm/spec/structure_contract.yaml"],
-        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout
-    assert current == accepted, (
-        "the structure contract moved; button bindings and protection are "
-        "accepted at " + ACCEPTED)
+        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8"))
+
+    def by_key(doc, path, key):
+        node = doc
+        for step in path:
+            node = node[step]
+        return {item[key]: item for item in node}
+
+    was = by_key(accepted, ("buttons", "definitions"), "shape_name")
+    now = by_key(current, ("buttons", "definitions"), "shape_name")
+    for shape, definition in was.items():
+        assert now.get(shape) == definition, f"{shape} was rebound or moved"
+    assert set(now) - set(was) == {"btnPCCMResetResults"}, sorted(set(now) - set(was))
+    assert now["btnPCCMResetResults"] == {
+        "key": "reset_results", "sheet": "Setup",
+        "shape_name": "btnPCCMResetResults", "caption": "Reset Results",
+        "entry_point": "PCCM_ResetResults", "anchor_cell": "E67",
+    }
+
+    assert (set(current["vba"]["entry_points"]) - set(accepted["vba"]["entry_points"])
+            == {"PCCM_ResetResults"})
+    assert not set(accepted["vba"]["entry_points"]) - set(current["vba"]["entry_points"])
+
+    was_modules = by_key(accepted, ("vba", "modules"), "name")
+    now_modules = by_key(current, ("vba", "modules"), "name")
+    for name, module in was_modules.items():
+        assert now_modules.get(name) == module, f"the {name} declaration moved"
+    assert set(now_modules) - set(was_modules) == {"modReset"}
+
+    # AND THE PROTECTION POLICY IS UNTOUCHED BY ALL OF IT.
+    assert current["protection"] == accepted["protection"]
+
+    # THE COMMAND BLOCK KEEPS ITS GEOMETRY. Only the user-facing note changed,
+    # and it changed to describe the button that was added to the block.
+    block_now = dict(current["commands"]["block"])
+    block_was = dict(accepted["commands"]["block"])
+    assert block_now.pop("note") != block_was.pop("note")
+    assert block_now == block_was, "the command block moved"
+    assert "Reset Results" in current["commands"]["block"]["note"]
 
 
 def test_13_protection_and_the_open_handler_are_untouched() -> None:
@@ -277,13 +332,16 @@ def test_13_protection_and_the_open_handler_are_untouched() -> None:
         assert current == accepted, f"{path} moved; protection is accepted at {ACCEPTED}"
 
 
-def test_14_reset_and_repair_have_not_started() -> None:
-    """THE SCOPE FENCE FOR THIS BATCH, checked rather than promised."""
-    for later in ("modReset.bas", "modRepair.bas"):
-        assert not (SRC / later).exists(), f"{later} belongs to a later step"
+def test_14_repair_profiling_has_not_started() -> None:
+    """THE SCOPE FENCE, checked rather than promised.
+
+    CORRECTED AT P10-2B. Reset Results has landed under its own authorisation
+    and is no longer behind this fence; Repair Profiling is, and the fence is
+    kept rather than deleted so that the NEXT step cannot start early either.
+    """
+    assert not (SRC / "modRepair.bas").exists(), "modRepair belongs to a later step"
     structure = (SPEC / "structure_contract.yaml").read_text(encoding="utf-8")
-    for later in ("PCCM_ResetResults", "PCCM_RepairProfiling"):
-        assert later not in structure, f"{later} belongs to a later step"
+    assert "PCCM_RepairProfiling" not in structure, "Repair belongs to a later step"
 
 
 if __name__ == "__main__":  # pragma: no cover

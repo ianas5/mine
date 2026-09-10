@@ -775,3 +775,119 @@ Private Function SnapshotLong(ByVal bank As String, ByVal row As Long, _
     value = modWorkbook.SafeLong(measured)
     SnapshotLong = True
 End Function
+
+' ==========================================================================
+' P10-2B. THE RESET CLEAR - THE ANNUAL PUBLICATION
+' ==========================================================================
+' RESET RESULTS DECIDES *WHETHER*; THIS MODULE DECIDES *WHERE*. modReset names
+' no bank, no stamp row and no block column. PublicationBlocks below is the
+' whole answer, and it is written in the same terms SimAnnualStorePublish uses:
+' the identity stamps of both banks, and both blocks over the contracted height.
+' The distribution ladders and the selected-Px profile live in the same block and
+' go together, because they are one publication of one run.
+'
+' THE MARKER GOES BLANK FIRST AND COMES BACK LAST, exactly as a publication does
+' it, so an interruption at either end leaves the block unreadable rather than
+' half-true.
+'
+' NO STATE WORD IS CHOSEN HERE. PCCM_AnnualDistributionState reads NOT PRODUCED
+' from the absence of a PUBLISHED marker; clearing the marker is what produces
+' that answer, and nothing writes the words.
+' ==========================================================================
+Public Function SimAnnualStoreClearPublication(ByRef undo As Variant, _
+                                               ByRef detail As String) As Boolean
+    Dim addresses As Variant, captured As Variant
+    Dim index As Long
+    Dim failure As String
+
+    On Error GoTo ClearFailed
+    addresses = PublicationBlocks()
+    ReDim captured(LBound(addresses) To UBound(addresses))
+    For index = LBound(addresses) To UBound(addresses)
+        captured(index) = CapturedBlock(CStr(addresses(index)))
+    Next index
+    undo = captured
+    StampCell(SIM_BANK_A, SIM_ANNUAL_STAMP_ROW_PUBLISHED).Value2 = vbNullString
+    StampCell(SIM_BANK_B, SIM_ANNUAL_STAMP_ROW_PUBLISHED).Value2 = vbNullString
+    For index = LBound(addresses) To UBound(addresses)
+        AnnualSheet().Range(CStr(addresses(index))).ClearContents
+    Next index
+    On Error GoTo 0
+
+    SimAnnualStoreClearPublication = True
+    Exit Function
+
+ClearFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "reset: the annual publication could not be cleared: " & failure
+End Function
+
+Public Function SimAnnualStoreRestorePublication(ByRef undo As Variant, _
+                                                 ByRef detail As String) As Boolean
+    Dim index As Long
+    Dim failure As String
+
+    If IsEmpty(undo) Then
+        SimAnnualStoreRestorePublication = True
+        Exit Function
+    End If
+
+    On Error GoTo RestoreFailed
+    ' THE BLOCKS BEFORE THE STAMPS, so the PUBLISHED marker is the last thing to
+    ' come back and a restore interrupted part way is still unpublished rather
+    ' than published over an incomplete block.
+    For index = UBound(undo) To LBound(undo) Step -1
+        RestoredBlock undo(index)
+    Next index
+    On Error GoTo 0
+
+    SimAnnualStoreRestorePublication = True
+    Exit Function
+
+RestoreFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "reset: the annual publication could not be restored: " & failure
+End Function
+
+' THE EXACT CLEAR SCOPE, IN ONE PLACE. Stamps first and blocks second, because
+' the restore walks it backwards and the PUBLISHED marker must be last back.
+Private Function PublicationBlocks() As Variant
+    PublicationBlocks = Array( _
+        StampAddress(SIM_BANK_A), StampAddress(SIM_BANK_B), _
+        BlockAddress(SIM_BANK_A), BlockAddress(SIM_BANK_B))
+End Function
+
+' The stamp block resolved from its first and last contracted rows. Excel joins
+' the two cells, so this module does no row arithmetic and cannot disagree with
+' the contract about how tall the block is.
+Private Function StampAddress(ByVal bank As String) As String
+    StampAddress = AnnualSheet().Range( _
+        StampCell(bank, SIM_ANNUAL_STAMP_ROW_RUN_ID), _
+        StampCell(bank, SIM_ANNUAL_STAMP_ROW_PUBLISHED)).Address(False, False)
+End Function
+
+' The same rectangle the publication clears before it writes, in the same terms.
+Private Function BlockAddress(ByVal bank As String) As String
+    BlockAddress = FirstColumn(bank) & CStr(SIM_ANNUAL_FIRST_ROW) & ":" & _
+                   LastColumn(bank) & _
+                   CStr(SIM_ANNUAL_FIRST_ROW + LIMIT_MAX_YEAR_COLUMNS - 1)
+End Function
+
+' ONLY WHAT IS THERE. UsedRange is a RECTANGLE, so a block inside the occupied
+' area is captured whole and only a block running past the last used row is
+' trimmed - which is the honest bound, because restoring blank over blank
+' restores nothing.
+Private Function CapturedBlock(ByVal address As String) As Variant
+    Dim block As Range
+    Set block = Application.Intersect(AnnualSheet().Range(address), _
+                                      AnnualSheet().UsedRange)
+    If block Is Nothing Then Exit Function
+    CapturedBlock = Array(block.Address(False, False), block.Value2)
+End Function
+
+Private Sub RestoredBlock(ByRef carried As Variant)
+    If IsEmpty(carried) Then Exit Sub
+    AnnualSheet().Range(CStr(carried(0))).Value2 = carried(1)
+End Sub

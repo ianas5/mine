@@ -555,3 +555,113 @@ Private Function StampCell(ByVal bank As String, ByVal row As Long) As Range
     End If
     Set StampCell = SimSheet().Range(column & CStr(row))
 End Function
+
+' ==========================================================================
+' P10-2B. THE RESET CLEAR - THE SENSITIVITY PUBLICATION
+' ==========================================================================
+' RESET RESULTS DECIDES *WHETHER*; THIS MODULE DECIDES *WHERE*. modReset names
+' no bank, no stamp row and no record column. PublicationBlocks below is the
+' whole answer, and it is written in the same terms Publish and ClearRecords use:
+' the identity stamps of both banks and the ranked records beneath them, over the
+' same contracted height a publication clears before it writes.
+'
+' THE MARKER GOES BLANK FIRST AND COMES BACK LAST, exactly as Publish does it.
+'
+' NO STATE WORD IS CHOSEN HERE. The Sensitivity availability line reads the
+' PUBLISHED marker and the selector; clearing them is what makes it say the table
+' is not produced, and this writes no sentence of its own.
+' ==========================================================================
+Public Function SimPostReportClearPublication(ByRef undo As Variant, _
+                                              ByRef detail As String) As Boolean
+    Dim addresses As Variant, captured As Variant
+    Dim index As Long
+    Dim failure As String
+
+    On Error GoTo ClearFailed
+    addresses = PublicationBlocks()
+    ReDim captured(LBound(addresses) To UBound(addresses))
+    For index = LBound(addresses) To UBound(addresses)
+        captured(index) = CapturedBlock(CStr(addresses(index)))
+    Next index
+    undo = captured
+    StampCell(SIM_BANK_A, SIM_SENSITIVITY_STAMP_ROW_PUBLISHED).Value2 = vbNullString
+    StampCell(SIM_BANK_B, SIM_SENSITIVITY_STAMP_ROW_PUBLISHED).Value2 = vbNullString
+    For index = LBound(addresses) To UBound(addresses)
+        SimSheet().Range(CStr(addresses(index))).ClearContents
+    Next index
+    On Error GoTo 0
+
+    SimPostReportClearPublication = True
+    Exit Function
+
+ClearFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "reset: the sensitivity publication could not be cleared: " & failure
+End Function
+
+Public Function SimPostReportRestorePublication(ByRef undo As Variant, _
+                                                ByRef detail As String) As Boolean
+    Dim index As Long
+    Dim failure As String
+
+    If IsEmpty(undo) Then
+        SimPostReportRestorePublication = True
+        Exit Function
+    End If
+
+    On Error GoTo RestoreFailed
+    ' THE RECORDS BEFORE THE STAMPS, so the PUBLISHED marker is the last thing to
+    ' come back and a restore interrupted part way is still unpublished.
+    For index = UBound(undo) To LBound(undo) Step -1
+        RestoredBlock undo(index)
+    Next index
+    On Error GoTo 0
+
+    SimPostReportRestorePublication = True
+    Exit Function
+
+RestoreFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "reset: the sensitivity publication could not be restored: " & failure
+End Function
+
+' THE EXACT CLEAR SCOPE, IN ONE PLACE. Stamps first and records second, because
+' the restore walks it backwards and the PUBLISHED marker must be last back.
+Private Function PublicationBlocks() As Variant
+    PublicationBlocks = Array( _
+        StampAddress(SIM_BANK_A), StampAddress(SIM_BANK_B), _
+        RecordAddress(SIM_BANK_A), RecordAddress(SIM_BANK_B))
+End Function
+
+Private Function StampAddress(ByVal bank As String) As String
+    StampAddress = SimSheet().Range( _
+        StampCell(bank, SIM_SENSITIVITY_STAMP_ROW_RUN_ID), _
+        StampCell(bank, SIM_SENSITIVITY_STAMP_ROW_PUBLISHED)).Address(False, False)
+End Function
+
+' THE SAME HEIGHT ClearRecords COVERS, and for the same reason: a later model can
+' have fewer drivers than the bank already holds, so the surplus rows are part of
+' what a reset must remove.
+Private Function RecordAddress(ByVal bank As String) As String
+    RecordAddress = SensitivityFirstColumn(bank) & CStr(SIM_SENSITIVITY_FIRST_ROW) & _
+                    ":" & SensitivityLastColumn(bank) & _
+                    CStr(SIM_SENSITIVITY_FIRST_ROW + SIM_MAX_ITERATIONS - 1)
+End Function
+
+' ONLY WHAT IS THERE. UsedRange is a RECTANGLE, so a block inside the occupied
+' area is captured whole and only a block running past the last used row is
+' trimmed - which is the honest bound, because restoring blank over blank
+' restores nothing.
+Private Function CapturedBlock(ByVal address As String) As Variant
+    Dim block As Range
+    Set block = Application.Intersect(SimSheet().Range(address), SimSheet().UsedRange)
+    If block Is Nothing Then Exit Function
+    CapturedBlock = Array(block.Address(False, False), block.Value2)
+End Function
+
+Private Sub RestoredBlock(ByRef carried As Variant)
+    If IsEmpty(carried) Then Exit Sub
+    SimSheet().Range(CStr(carried(0))).Value2 = carried(1)
+End Sub

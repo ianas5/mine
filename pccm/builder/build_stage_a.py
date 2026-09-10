@@ -45,6 +45,7 @@ from pccm_builder import (  # noqa: E402
     emit_phase9_model_check,
     apply_protection,
     emit_protection_projection,
+    emit_reset_projection,
     resolve_unlocked,
     emit_phase8_dashboard,
     emit_phase8_results,
@@ -200,6 +201,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  protection: {len(protection['sheets'])} sheets, "
           f"{sum(s['unlocked_count'] for s in protection['sheets'])} unlocked cells, "
           f"passwordless={protection['passwordless']}")
+
+    # P10-2B. WHERE A LATER WINDOWS RUN MUST LOOK to prove that Reset Results
+    # cleared every publication and changed no input and no identity. Addresses
+    # only: no expected value, no reset, and nothing here runs anything.
+    reset = emit_reset_projection(
+        out_path.parent / "phase10_reset_inspection.json",
+        structure, contract, drivers, calc, sim)
+    print(f"  reset    : "
+          f"{sum(len(block['cells']) for block in reset['preserved']['editable_inputs'])} "
+          f"editable input cells preserved, "
+          f"{len(reset['publications']['simulation']['cleared'])} simulation "
+          f"publication groups cleared")
 
     artifacts = emit_stage_b(out_path.parent, spec, contract, drivers, structure)
     calc_artifacts = emit_calc_artifacts(out_path.parent, spec, calc)

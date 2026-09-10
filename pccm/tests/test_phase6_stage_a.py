@@ -459,12 +459,23 @@ def test_21_the_generated_module_needs_no_d6_11_exception() -> None:
     that owns the construct. `modSimContract` is not an owner of anything: it
     is a constants projection and would fail the guard if it named the
     algorithm, which is why the family name was deliberately left out of it.
+
+    DISCLOSED AND CORRECTED AT P10-2B. This control has been RED on the branch
+    since P10-2A (21a2774), and P10-2B did not cause it. That batch bound
+    PCCM_RunSimulation to a Setup button, which put the macro NAME into the
+    GENERATED constants module as an ENTRY_ string, and so widened the
+    RunSimulation grant to ("modSimReport", "modConstants"). The grant is
+    correct - modConstants holds a name for a shape to point at, not a call -
+    and the control was simply never re-run in the batch that moved it. THE
+    CLAIM THIS TEST MAKES IS UNCHANGED: the exceptions are enumerated exactly,
+    and the assertion below that modSimContract holds none of them - which is
+    what this test is actually about - is untouched.
     """
     structure = _structure()
     scoped = [rule for rule in structure.forbidden_construct_rules if rule.is_scoped]
     assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
         ("MRG32k3a", ("modSimRng",)),
-        ("RunSimulation", ("modSimReport",)),
+        ("RunSimulation", ("modSimReport", "modConstants")),
     ], scoped
     for rule in scoped:
         assert SIM_MODULE_NAME not in rule.allowed_in, (

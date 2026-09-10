@@ -1207,3 +1207,130 @@ Private Function StatusRange() As String
     StatusRange = SIM_SHARED_VALUE_COLUMN & CStr(SIM_IDENTITY_ROW_SIMULATION_STATUS) & _
                   ":" & SIM_SHARED_VALUE_COLUMN & CStr(SIM_IDENTITY_ROW_STATUS_EVALUATED_AT)
 End Function
+
+' ==========================================================================
+' P10-2B. THE RESET CLEAR - THE SIMULATION PUBLICATION
+' ==========================================================================
+' RESET RESULTS DECIDES *WHETHER*; THIS MODULE DECIDES *WHERE*. modReset names
+' no bank, no column and no row of _SimData. PublicationBlocks below is the
+' whole answer, and every entry in it is built by the SAME range function the
+' publication writes through - so the height a reset covers and the height a run
+' covers cannot drift apart.
+'
+' WHAT IT MUST NOT TOUCH, AND WHY THE RECORD RANGE IS D23:D30 RATHER THAN
+' D22:D30. The final commit writes D22:D30 in one assignment, and D22 is the
+' LAST RUN ID counter. Row 21 above it is the NEXT AUTO NONCE, and F21 beside it
+' is the pending-nonce marker. Those three are the anti-replay guarantee: a
+' discarded run must never be re-creatable by a future one, so the reset clears
+' the publication that sits between them and leaves every counter where the last
+' run left it.
+'
+' THE ITERATION BANKS ARE CLEARED TO THE CONTRACT CEILING AND CAPTURED TO WHAT
+' IS THERE. A failed run leaves a half-written candidate bank behind on purpose,
+' so clearing only as far as the last SUCCESSFUL run reached would leave those
+' rows standing; capturing a million rows to put back blanks would be a backup
+' of the sheet rather than of this command's work.
+'
+' NO STATE WORD IS CHOSEN HERE. D28:D29 is the LAST EVALUATED reading and is
+' cleared to blank; SimReportDerivedStatus is what every live consumer asks, and
+' it derives. The one word written is SIM_ATTEMPT_NONE into D23, which is the
+' ATTEMPT axis and is the value sim_contract.yaml declares that field is built
+' with.
+' ==========================================================================
+Public Function SimReportClearPublication(ByRef undo As Variant, _
+                                          ByRef detail As String) As Boolean
+    Dim addresses As Variant, captured As Variant
+    Dim index As Long
+    Dim failure As String
+
+    On Error GoTo ClearFailed
+    addresses = PublicationBlocks()
+    ReDim captured(LBound(addresses) To UBound(addresses))
+    For index = LBound(addresses) To UBound(addresses)
+        captured(index) = CapturedBlock(CStr(addresses(index)))
+    Next index
+    ' THE CARRIER IS HANDED OVER BEFORE THE FIRST MUTATION. A capture that fails
+    ' has changed nothing and leaves it empty; a clear that fails half way must
+    ' find it filled, or the rollback would have nothing to work from.
+    undo = captured
+    For index = LBound(addresses) To UBound(addresses)
+        SimSheet.Range(CStr(addresses(index))).ClearContents
+    Next index
+    SharedCell(SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT).Value2 = SIM_ATTEMPT_NONE
+    On Error GoTo 0
+
+    SimReportClearPublication = True
+    Exit Function
+
+ClearFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "reset: the simulation publication could not be cleared: " & failure
+End Function
+
+Public Function SimReportRestorePublication(ByRef undo As Variant, _
+                                            ByRef detail As String) As Boolean
+    Dim index As Long
+    Dim failure As String
+
+    If IsEmpty(undo) Then
+        SimReportRestorePublication = True
+        Exit Function
+    End If
+
+    On Error GoTo RestoreFailed
+    ' D23:D30 COMES BACK WHOLE, WHICH PUTS THE ATTEMPT HISTORY BACK TOO. A
+    ' rollback that restored the banks and left "NONE" standing in D23 would have
+    ' erased the record of a real earlier attempt.
+    For index = LBound(undo) To UBound(undo)
+        RestoredBlock undo(index)
+    Next index
+    On Error GoTo 0
+
+    SimReportRestorePublication = True
+    Exit Function
+
+RestoreFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "reset: the simulation publication could not be restored: " & failure
+End Function
+
+' THE EXACT CLEAR SCOPE, IN ONE PLACE AND IN THE PUBLICATION'S OWN TERMS. Both
+' banks of every group, because clearing only the bank the selector names would
+' leave a complete published distribution the next successful run would make
+' visible again.
+Private Function PublicationBlocks() As Variant
+    PublicationBlocks = Array( _
+        SnapshotRange(SIM_BANK_A), SnapshotRange(SIM_BANK_B), _
+        SummaryRange(SIM_BANK_A), SummaryRange(SIM_BANK_B), _
+        ContingencyRange(SIM_BANK_A), ContingencyRange(SIM_BANK_B), _
+        IterationRange(SIM_BANK_A, 0, SIM_MAX_ITERATIONS), _
+        IterationRange(SIM_BANK_B, 0, SIM_MAX_ITERATIONS), _
+        PublicationRecordRange())
+End Function
+
+' D23:D30 - the attempt record, the derived reading and the publication
+' selector. It deliberately starts one row BELOW the final commit range, so the
+' run-id counter that shares that block cannot be caught by a reset.
+Private Function PublicationRecordRange() As String
+    PublicationRecordRange = _
+        SIM_SHARED_VALUE_COLUMN & CStr(SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT) & ":" & _
+        SIM_SHARED_VALUE_COLUMN & CStr(SIM_IDENTITY_ROW_ACTIVE_BANK)
+End Function
+
+' ONLY WHAT IS THERE. UsedRange is a RECTANGLE, so a block inside the occupied
+' area is captured whole and only a block running past the last used row is
+' trimmed - which is the honest bound, because restoring blank over blank
+' restores nothing.
+Private Function CapturedBlock(ByVal address As String) As Variant
+    Dim block As Range
+    Set block = Application.Intersect(SimSheet.Range(address), SimSheet.UsedRange)
+    If block Is Nothing Then Exit Function
+    CapturedBlock = Array(block.Address(False, False), block.Value2)
+End Function
+
+Private Sub RestoredBlock(ByRef carried As Variant)
+    If IsEmpty(carried) Then Exit Sub
+    SimSheet.Range(CStr(carried(0))).Value2 = carried(1)
+End Sub

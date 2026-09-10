@@ -91,6 +91,11 @@ PHASE6_PUBLIC = [
     "PCCM_SimulationStatus",
 ]
 PHASE8_READ_ONLY_ADDITION = "SimReportDerivedStatus"
+PHASE10_RESET_ADDITIONS = ["SimReportClearPublication", "SimReportRestorePublication"]
+"""P10-2B. Reset Results clears every publication in the workbook and holds no
+geometry of its own, so the owner of the simulation publication exposes the clear
+and the restore that undoes it. Neither is an endpoint: no PCCM_ prefix, no cell
+and no button reaches either by name."""
 
 _CACHE: dict[str, object] = {}
 
@@ -204,7 +209,8 @@ def test_04_the_public_surface_is_exactly_the_seven_settled_procedures() -> None
     procedure that appeared without being named here would be a new entry point
     nobody authorised."""
     assert sorted(_module().public_procedures) == sorted(
-        PHASE6_PUBLIC + [PHASE8_READ_ONLY_ADDITION])
+        PHASE6_PUBLIC + [PHASE8_READ_ONLY_ADDITION] + PHASE10_RESET_ADDITIONS)
+    assert not any(name.startswith("PCCM_") for name in PHASE10_RESET_ADDITIONS)
     # AND THE ADDITION IS A DELEGATION, NOT AN ENDPOINT. No PCCM_ prefix, so no
     # cell and no button can reach it by name; one statement, and that statement
     # is the accepted derivation.
@@ -319,13 +325,21 @@ def test_08_the_accepted_reporter_prefix_is_byte_identical() -> None:
         ACCEPTED_REPORTER_SHA256), "an accepted line of modCalcReport moved"
     added = re.findall(r"^(?:Public|Private) (?:Function|Sub) (\w+)",
                        text[text.index(STEP11_REPORTER_BANNER):], re.M)
-    # TWO NOW, IN ORDER, AND NAMED. P9-2 appended CalcReportDerivedStatus after
-    # the bridge - the module's existing private DeriveStatus exposed under its
-    # own name, so a worksheet cell can ask for the calculation state without
-    # also asking for C19:C20 to be rewritten. The prefix hash above is what
-    # proves the accepted region did not move; this names what came after it, so
-    # a THIRD addition still fails here.
-    assert added == ["CalcPrepareSimulationInputs", "CalcReportDerivedStatus"], added
+    # SEVEN NOW, IN ORDER, AND EVERY ONE NAMED. P9-2 appended
+    # CalcReportDerivedStatus after the bridge - the module's existing private
+    # DeriveStatus exposed under its own name, so a worksheet cell can ask for
+    # the calculation state without also asking for C19:C20 to be rewritten.
+    # P10-2B appended the Reset Results clear, its undo, and the four private
+    # helpers between them: the block list that IS the clear scope, the table
+    # body address it is built from, the bounded capture and the restore.
+    #
+    # THE PREFIX HASH ABOVE IS UNCHANGED AND IS WHAT MATTERS. It proves the
+    # accepted region did not move; this list names what came after it, so an
+    # EIGHTH addition still fails here.
+    assert added == ["CalcPrepareSimulationInputs", "CalcReportDerivedStatus",
+                     "CalcReportClearPublication", "CalcReportRestorePublication",
+                     "PublicationBlocks", "BodyAddress",
+                     "CapturedBlock", "RestoredBlock"], added
 
 
 def test_09_the_bridge_is_internal_and_reuses_the_accepted_preparation() -> None:
@@ -684,11 +698,28 @@ def test_33_only_the_final_commit_writes_the_run_id_or_the_active_bank() -> None
     writers = [name for name in _module().procedures
                if "Range(SIM_FINAL_COMMIT_RANGE).Value2 =" in _procedure(name)]
     assert writers == ["FinalCommit"], writers
-    # AND THE SELECTOR ROW IS NAMED IN ONE PROCEDURE, WHICH READS IT. The bank
-    # becomes active as the ninth field of the committed block or not at all.
+    # AND THE SELECTOR ROW IS NAMED IN TWO PROCEDURES, NEITHER OF WHICH MAKES A
+    # BANK ACTIVE. The claim is unchanged: a bank becomes active as the ninth
+    # field of the committed block or not at all.
+    #
+    #   ReadActiveBank          reads it.
+    #   PublicationRecordRange  P10-2B. It is the LOWER bound of the range Reset
+    #                           Results clears and restores, and the selector is
+    #                           its UPPER bound. Reset only ever blanks the
+    #                           selector or puts back the value it captured, so
+    #                           no bank is ever activated by it.
     owners = [name for name in _module().procedures
               if "SIM_IDENTITY_ROW_ACTIVE_BANK" in _procedure(name)]
-    assert owners == ["ReadActiveBank"], owners
+    assert owners == ["ReadActiveBank", "PublicationRecordRange"], owners
+    # AND THE COUNTER ONE ROW ABOVE IT IS OUTSIDE THAT RANGE. This is the whole
+    # reason the reset range starts at the attempt row rather than at the commit
+    # range: D22 carries the run-id counter, and a reset that renumbered it would
+    # let a discarded run be re-created by a future one.
+    record = _procedure("PublicationRecordRange")
+    assert "SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT" in record
+    assert "SIM_IDENTITY_ROW_LAST_RUN_ID" not in record
+    assert "SIM_IDENTITY_ROW_NEXT_AUTO_NONCE" not in record
+    assert "SIM_FINAL_COMMIT_RANGE" not in record
 
 
 def test_34_the_attempt_block_is_the_shared_rows_and_the_status_is_derived() -> None:
@@ -2061,7 +2092,9 @@ def test_44g_no_blanket_error_suppression_was_introduced() -> None:
     handlers = set(re.findall(r"On Error GoTo (\w+)", code))
     assert handlers == {"0", "InvocationFailed", "NormalCleanupFailed", "CleanupFailed",
                         "CandidateFailed", "CommitFailed",
-                        "RestoreFailed", "CaptureFailed"}, sorted(handlers)
+                        "RestoreFailed", "CaptureFailed",
+                        # P10-2B: the reset clear of this store, and its undo.
+                        "ClearFailed"}, sorted(handlers)
     # The nonce module carries its own, and no blanket suppressor either.
     nonce_handlers = set(re.findall(r"On Error GoTo (\w+)", _nonce_code()))
     assert nonce_handlers == {"0", "AllocationFailed", "MarkerFailed", "StepRaised",

@@ -509,10 +509,21 @@ def test_09_no_iteration_level_annual_value_is_persisted() -> None:
         assert "YearCount" in span or "LIMIT_MAX_YEAR_COLUMNS" in span, (
             f"a written range is bounded by neither the answer nor the "
             f"structural maximum: {span}")
-    # And nothing outside the publication writes a cell at all.
+    # And nothing outside the publication and the P10-2B reset writes a cell.
+    #
+    # THE COUNTS MOVE, THE CLAIM DOES NOT. Reset Results clears the annual
+    # publication through this owner, so the module carries ONE more
+    # ClearContents - the loop that walks its declared publication list. What
+    # must still be true, and is asserted directly below, is that not one of
+    # those blocks is sized by an iteration count and that the only thing written
+    # from a `block` is the publication itself.
     store = _code(STORE_BAS)
-    assert store.count(".ClearContents") == 1
+    assert store.count(".ClearContents") == 2
     assert store.count(".Value2 = block") == 1
+    reset = store[store.index("Public Function SimAnnualStoreClearPublication"):]
+    assert "Iterations" not in reset, "a reset range is sized by the iteration count"
+    for bound in ("LIMIT_MAX_YEAR_COLUMNS", "SIM_ANNUAL_STAMP_ROW_PUBLISHED"):
+        assert bound in reset, bound
 
 
 # ===========================================================================

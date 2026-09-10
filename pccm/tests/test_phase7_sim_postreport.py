@@ -468,8 +468,14 @@ def test_27_the_module_and_endpoint_are_declared() -> None:
     assert entry.generated is False
     for phrase in ("CURRENT-run precondition", "published last", "owns no RNG"):
         assert phrase in entry.responsibility, phrase
-    assert _module().public_procedures == ["PCCM_RunSensitivity"], (
-        _module().public_procedures)
+    # P10-2B ADDS THE RESET CLEAR AND ITS UNDO, AND NOTHING ELSE. Reset Results
+    # holds no geometry, so the owner of the sensitivity publication is the one
+    # that clears it. Neither addition is an endpoint - no PCCM_ prefix, no cell
+    # and no button reaches either - and the single endpoint above is unchanged.
+    assert _module().public_procedures == [
+        "PCCM_RunSensitivity",
+        "SimPostReportClearPublication", "SimPostReportRestorePublication",
+    ], _module().public_procedures
 
 
 def test_28_the_sensitivity_kernel_and_the_engine_stay_where_they_are() -> None:

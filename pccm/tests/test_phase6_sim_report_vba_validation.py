@@ -908,7 +908,15 @@ def test_74_a_failed_restoration_claims_the_publication_is_safe() -> None:
 
 
 def test_75_the_restore_itself_has_no_handler() -> None:
-    damaged = _swap(_REPORT, "    On Error GoTo RestoreFailed\n", "")
+    # ANCHORED ON THE STATEMENT IT GUARDS, not on the arming line alone. P10-2B
+    # gave this module a second RestoreFailed - the undo of the Reset Results
+    # clear - so the bare line matches twice and the mutation would never have
+    # been planted. A control that plants nothing passes for the wrong reason.
+    damaged = _swap(
+        _REPORT,
+        "    On Error GoTo RestoreFailed\n"
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous\n",
+        "    SimSheet.Range(SIM_FINAL_COMMIT_RANGE).Value2 = previous\n")
     _control("test_44e", report=damaged)
 
 

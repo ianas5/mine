@@ -1196,3 +1196,118 @@ Public Function CalcReportDerivedStatus(ByRef detail As String, ByRef subject As
     Dim package As CalculationPackage
     CalcReportDerivedStatus = DeriveStatus(package, PrepareCurrentCalculation(package, detail, subject))
 End Function
+
+' ==========================================================================
+' P10-2B. THE RESET CLEAR - THE CALCULATION PUBLICATION
+' ==========================================================================
+' RESET RESULTS DECIDES *WHETHER*; THIS MODULE DECIDES *WHERE*. modReset names
+' no table, no range and no row of the calculation store. PublicationBlocks
+' below is the whole answer, and it is built from the same constants
+' WriteAnalytical and WriteSuccessCommit write through: the five analytical
+' bodies, the totals block and C13:C20. Nothing else on _Calc is written by a
+' calculation, so nothing else is a calculation publication.
+'
+' THE CAPTURE IS BOUNDED BY WHAT IS ACTUALLY THERE, and the clear is not. See
+' CapturedBlock: the two are deliberately different, and the difference is
+' exactly the blank cells that restoring would not restore anything to.
+'
+' NO STATE WORD IS CHOSEN HERE. C19:C20 is the LAST EVALUATED reading and is
+' cleared to the blank a newly built workbook carries; every live consumer asks
+' CalcReportDerivedStatus, which derives from the current inputs. The one word
+' written is CALC_ATTEMPT_NONE into C17, which is not a state: it is the ATTEMPT
+' axis, and "NONE" is the value calc_contract.yaml declares that field is built
+' with.
+' ==========================================================================
+Public Function CalcReportClearPublication(ByRef undo As Variant, _
+                                           ByRef detail As String) As Boolean
+    Dim addresses As Variant, captured As Variant
+    Dim index As Long
+    Dim failure As String
+
+    On Error GoTo ClearFailed
+    addresses = PublicationBlocks()
+    ReDim captured(LBound(addresses) To UBound(addresses))
+    For index = LBound(addresses) To UBound(addresses)
+        captured(index) = CapturedBlock(CStr(addresses(index)))
+    Next index
+    ' THE CARRIER IS HANDED OVER BEFORE THE FIRST MUTATION. A capture that fails
+    ' has changed nothing and leaves it empty; a clear that fails half way must
+    ' find it filled, or the rollback would have nothing to work from.
+    undo = captured
+    For index = LBound(addresses) To UBound(addresses)
+        CalcSheet.Range(CStr(addresses(index))).ClearContents
+    Next index
+    StateCell(CALC_STATE_ROW_LAST_ATTEMPT_RESULT).Value2 = CALC_ATTEMPT_NONE
+    On Error GoTo 0
+
+    CalcReportClearPublication = True
+    Exit Function
+
+ClearFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "reset: the calculation publication could not be cleared: " & failure
+End Function
+
+Public Function CalcReportRestorePublication(ByRef undo As Variant, _
+                                             ByRef detail As String) As Boolean
+    Dim index As Long
+    Dim failure As String
+
+    ' AN OWNER THAT NEVER CLEARED RESTORES NOTHING. The orchestrator asks every
+    ' owner on the failure path rather than remembering which ones it reached, so
+    ' "nothing was captured" has to be an answer rather than an error.
+    If IsEmpty(undo) Then
+        CalcReportRestorePublication = True
+        Exit Function
+    End If
+
+    On Error GoTo RestoreFailed
+    ' C13:C20 COMES BACK WHOLE, WHICH PUTS THE ATTEMPT HISTORY BACK TOO. A
+    ' rollback that restored the analytical blocks and left "NONE" standing in
+    ' C17 would have erased the record of a real earlier attempt.
+    For index = LBound(undo) To UBound(undo)
+        RestoredBlock undo(index)
+    Next index
+    On Error GoTo 0
+
+    CalcReportRestorePublication = True
+    Exit Function
+
+RestoreFailed:
+    failure = Err.Description
+    On Error GoTo 0
+    detail = "reset: the calculation publication could not be restored: " & failure
+End Function
+
+' THE EXACT CLEAR SCOPE, IN ONE PLACE. The table bodies are asked for by address
+' rather than resized: the forward path owns the row count, and a reset that
+' changed the shape as well as the contents would have a shape to put back.
+Private Function PublicationBlocks() As Variant
+    PublicationBlocks = Array( _
+        BodyAddress(TBL_CALC_YEARS), BodyAddress(TBL_CALC_INFLATION_FACTORS), _
+        BodyAddress(TBL_CALC_FX), BodyAddress(TBL_CALC_DRIVERS), _
+        BodyAddress(TBL_CALC_ANNUAL), _
+        CALC_TOTALS_VALUE_RANGE, CALC_STATE_VALUE_RANGE)
+End Function
+
+Private Function BodyAddress(ByVal tableName As String) As String
+    BodyAddress = modWorkbook.Lo(CALC_SHEET, tableName) _
+                             .DataBodyRange.Address(False, False)
+End Function
+
+' ONLY WHAT IS THERE. UsedRange is a RECTANGLE, so a block inside the occupied
+' area is captured whole and only a block running past the last used row is
+' trimmed - which is the honest bound, because restoring blank over blank
+' restores nothing.
+Private Function CapturedBlock(ByVal address As String) As Variant
+    Dim block As Range
+    Set block = Application.Intersect(CalcSheet.Range(address), CalcSheet.UsedRange)
+    If block Is Nothing Then Exit Function
+    CapturedBlock = Array(block.Address(False, False), block.Value2)
+End Function
+
+Private Sub RestoredBlock(ByRef carried As Variant)
+    If IsEmpty(carried) Then Exit Sub
+    CalcSheet.Range(CStr(carried(0))).Value2 = carried(1)
+End Sub

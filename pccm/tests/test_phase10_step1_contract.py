@@ -109,15 +109,21 @@ def test_02a_this_batch_is_the_one_the_contract_authorises() -> None:
     """AND THE SEPARATE HALF: what exists now is what 6ab8f6a authorised, and
     only that. Reset and Repair are LATER steps; finding either here would mean
     a batch ran ahead of its authorisation."""
-    for later in ("modReset.bas", "modRepair.bas"):
-        assert not (SRC / later).exists(), f"{later} belongs to a later Phase-10 step"
+    # ADVANCED AT P10-2B, AND NOT WEAKENED. The record authorises SIX commands
+    # and they arrive one step at a time; the fence moves with the steps that
+    # have actually been authorised rather than being deleted once one of them
+    # lands. Reset Results is command five and is here; Repair Profiling is
+    # command six and must not be.
+    assert not (SRC / "modRepair.bas").exists(), "modRepair belongs to a later step"
     structure = (SPEC / "structure_contract.yaml").read_text(encoding="utf-8")
-    for later in ("PCCM_ResetResults", "PCCM_RepairProfiling"):
-        assert later not in structure, f"{later} belongs to a later Phase-10 step"
-    # THE FOUR THIS BATCH BINDS ARE THE FOUR THE RECORD NAMES.
-    assert structure.count("entry_point:") == 9, (
-        "the button table is not the five Phase-4 buttons plus the four "
-        "operational commands the contract authorises")
+    assert "PCCM_RepairProfiling" not in structure, "Repair belongs to a later step"
+    # THE FIVE BOUND SO FAR ARE THE FIVE THE RECORD NAMES, in its order.
+    assert structure.count("entry_point:") == 10, (
+        "the button table is not the five Phase-4 buttons plus the five "
+        "operational commands authorised so far")
+    for command in ("PCCM_Calculate", "PCCM_RunSimulation", "PCCM_RunSensitivity",
+                    "PCCM_RunAnnualStochastic", "PCCM_ResetResults"):
+        assert f'entry_point: "{command}"' in structure, command
     for authorised in ("modProtection.bas", "ThisWorkbook.vba"):
         assert (SRC / authorised).is_file(), f"{authorised} is authorised and absent"
 

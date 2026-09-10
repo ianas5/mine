@@ -396,7 +396,7 @@ commands:
     section: "Model Commands"
     section_row: 56
     note_row: 57
-    note: "Run the model from here. Each command is a separate operation: Calculate produces the deterministic model, Run Simulation produces a distribution from it, and Sensitivity and Annual Cash Flow analyse a completed simulation without producing a new one."
+    note: "Run the model from here. Each command is a separate operation: Calculate produces the deterministic model, Run Simulation produces a distribution from it, and Sensitivity and Annual Cash Flow analyse a completed simulation without producing a new one. Reset Results clears every published result and leaves every input untouched."
     label_column: "B"
     button_column: "E"
     first_button_row: 59
@@ -567,6 +567,26 @@ buttons:
       entry_point: "PCCM_RunAnnualStochastic"
       anchor_cell: "E65"
 
+    # -------------------------------------------------------------------------
+    # THE PHASE-10 DESTRUCTIVE COMMAND - P10-2B.
+    #
+    # THE FIFTH OF THE SIX COMMANDS THE 6ab8f6a CONTRACT AUTHORISES, and the
+    # first of them that is NEW rather than an existing endpoint given a shape.
+    # It clears every published result and touches no input and no identity
+    # counter; the module that owns it holds no geometry of its own and asks the
+    # four publication owners to clear what each of them wrote.
+    #
+    # IT DOES NOT MOVE THE FOUR ABOVE. The block's pitch is two rows, so it
+    # lands on the next free anchor and every accepted binding stays where it
+    # was. The sixth command, Repair Profiling, is NOT declared here: it belongs
+    # to a later step and a button for it would be a button bound to nothing.
+    - key: "reset_results"
+      sheet: "Setup"
+      shape_name: "btnPCCMResetResults"
+      caption: "Reset Results"
+      entry_point: "PCCM_ResetResults"
+      anchor_cell: "E67"
+
 # -----------------------------------------------------------------------------
 # VBA module inventory.
 #
@@ -690,6 +710,9 @@ vba:
     - name: "modProtection"
       generated: false
       responsibility: "The Phase-10 protection owner: applies and releases passwordless sheet and structure protection with UserInterfaceOnly:=True, and reports whether it is in force. Holds no range list, no sheet list and no password; the locked/unlocked state of every cell is written into the workbook by the builder from the contracts that already declare it."
+    - name: "modReset"
+      generated: false
+      responsibility: "The Phase-10 Reset Results owner: confirms the destructive change, asks each publication owner to clear what it wrote, and restores every one of them if any step fails. Holds no bank address, no stamp row, no table name and no fingerprint layout; it names four owners and the order they are asked in, and nothing else."
 
   # Public procedures the buttons bind to. Every one must exist in the source and be
   # referenced by exactly one button definition.
@@ -710,6 +733,11 @@ vba:
     - "PCCM_RunSimulation"
     - "PCCM_RunSensitivity"
     - "PCCM_RunAnnualStochastic"
+    # P10-2B. Reset Results is a button and nothing else: it is not an
+    # integrator API, so it appears here and in no api list. A destructive
+    # command that could be driven without a confirmation is not a command any
+    # integrator should be handed.
+    - "PCCM_ResetResults"
 
   # Public PCCM_ procedures that are NOT buttons. They exist so the Windows
   # functional harness can drive a confirmation path and an injected failure without

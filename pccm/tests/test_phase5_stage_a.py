@@ -1989,11 +1989,15 @@ def test_the_stage_b_manifest_carries_the_implemented_modules_and_nothing_later(
     # what this now checks exactly.
     manifest = json.loads(path.read_text(encoding="utf-8"))
     bound = {b["entry_point"] for b in manifest["buttons"]}
+    # P10-2B ADDS THE FIFTH OPERATIONAL COMMAND, and it is named here rather
+    # than admitted by a loosened comparison. Reset Results is the first of the
+    # six that is NEW code rather than an existing endpoint given a shape; the
+    # sixth, Repair Profiling, belongs to a later step and would fail here.
     assert bound == {
         "PCCM_ApplyTimeline", "PCCM_AddCostLine", "PCCM_DeleteCostLine",
         "PCCM_AddRisk", "PCCM_DeleteRisk",
         "PCCM_Calculate", "PCCM_RunSimulation", "PCCM_RunSensitivity",
-        "PCCM_RunAnnualStochastic",
+        "PCCM_RunAnnualStochastic", "PCCM_ResetResults",
     }, f"the bound button set changed: {sorted(bound)}"
     for accessor in ("PCCM_CalculationStatus", "PCCM_CalculationFingerprint",
                      "PCCM_CurrentInputFingerprint", "PCCM_CalculationAttemptResult",

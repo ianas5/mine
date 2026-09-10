@@ -341,6 +341,11 @@ SIM_REPORT_CALLERS = {
     # P8-3. The worksheet-safe presentation adapter, and the only module on this
     # list that Excel calls from a cell.
     "modResultsState": {"SimReportDerivedStatus"},
+    # P10-2B. The Reset Results orchestrator, and it reaches modSimReport for
+    # exactly two things: clear your publication, and put it back. It asks for no
+    # fingerprint, no digest and no status - a reset derives nothing - and it
+    # cannot start a run, which is the one thing no declaration buys.
+    "modReset": {"SimReportClearPublication", "SimReportRestorePublication"},
 }
 
 # THE FINGERPRINT IS CONSTRUCTED IN ONE MODULE AND FRAMED IN ONE OTHER. Nobody
