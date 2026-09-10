@@ -194,13 +194,75 @@ def test_14_each_type_gets_its_own_assignment_site() -> None:
 # ===========================================================================
 # C. THE TIMELINE INPUTS
 # ===========================================================================
-def test_20_the_three_inputs_are_declared_and_are_the_minimum() -> None:
-    """REQUIRED CONTROL 6. PCCM_ApplyTimeline reads a timeline triple; the probe
-    sets that triple and nothing else."""
-    declared = re.findall(r"@\{ Key = '(\w+)';\s+Value = \[double\](\S+) \}", _probe_code())
-    assert declared == [("base_year", "2026"), ("project_start_year", "2027"),
-                        ("duration_years", "3")], declared
-    assert "discount_rate" not in _probe_code(), "the probe sets more than the command needs"
+def test_20_the_declared_inputs_are_the_minimum_each_command_needs() -> None:
+    """REQUIRED CONTROL 6, WIDENED BY ONE ON WINDOWS EVIDENCE.
+
+    Run 6 invoked PCCM_Calculate and it refused for a NON-protection reason:
+    "Discount Rate: the value is blank. A blank is not zero." That is
+    modCalcResolve.NumericNamedCell doing exactly what it should. The discount
+    rate is an ordinary required Setup input, so the probe now supplies it.
+
+    IT IS STILL THE MINIMUM. Every entry names the endpoint that reads it, and
+    nothing is set for a command that does not. With zero drivers no currency and
+    no inflation profile is referenced, so FX and the deliberately-blank
+    inflation grid are never resolved and neither is seeded.
+    """
+    declared = re.findall(
+        r"@\{ Key = '(\w+)';\s+Value = \[double\](\S+);\s+Endpoint = '(\w+)' \}",
+        _probe_code())
+    assert declared == [
+        ("base_year", "2026", "PCCM_ApplyTimeline"),
+        ("project_start_year", "2027", "PCCM_ApplyTimeline"),
+        ("duration_years", "3", "PCCM_ApplyTimeline"),
+        ("discount_rate", "0.05", "PCCM_Calculate"),
+    ], declared
+    # AND NOTHING BEYOND THEM. A driver field, an FX rate or an inflation rate
+    # would be the probe manufacturing business data.
+    code = _probe_code()
+    for banned in ("fx_rates", "inflation", "reporting_currency", "project_name",
+                   "selected_confidence_level"):
+        assert banned not in code, f"the probe seeds {banned}, which no command it runs needs"
+
+
+def test_20a_the_discount_rate_is_supplied_as_a_real_number() -> None:
+    """NOT HARD-CODED AROUND THE VALIDATION. modCalcResolve.IsRealNumber tests
+    the VarType and refuses a numeric-looking STRING on purpose, so the value has
+    to arrive as a genuine Double through the accepted setter."""
+    code = _probe_code()
+    assert "@{ Key = 'discount_rate';      Value = [double]0.05" in code
+    setter = _function("Set-ProbeDeclaredInputs", code)
+    assert "-Value ([double]$entry.Value)" in setter
+    assert "Set-NamedValue -Workbook $Workbook" in setter
+    # AND THE VALUE IS THE ACCEPTED FIXTURE'S, not a new one.
+    timing = _src("timing", TIMING_SCENARIOS)
+    assert "discount_rate = 0.05" in timing, (
+        "the accepted fixture no longer declares the rate this reuses")
+
+
+def test_20b_calculate_runs_where_its_prerequisites_are_satisfiable() -> None:
+    """THE ORDERING IS THE FIXTURE. AddDriver writes a permanent ID, and
+    ReadRegister reads every row whose id column is non-blank - so after an Add
+    the register holds an identified driver with every other field empty and
+    Calculate refuses on it. An empty driver set is valid by the contract's own
+    wording, so Calculate runs BEFORE the Add commands and needs no invented
+    business data."""
+    code = _probe_code()
+    # THE INVOCATIONS, not the stage labels. `-Endpoint 'PCCM_Calculate'` also
+    # appears on Set-ProbeStage lines, so anchoring on it alone would find a
+    # Calculate that is only being NAMED - and a mutation that deleted the call
+    # outright would still satisfy the ordering.
+    for endpoint in ("PCCM_ApplyTimeline", "PCCM_Calculate", "PCCM_AddCostLine",
+                     "PCCM_AddRisk"):
+        assert code.count(f"-Endpoint '{endpoint}' -Resolution $resolution") == 1, endpoint
+    calculate = code.index("-Endpoint 'PCCM_Calculate' -Resolution $resolution")
+    add_cost = code.index("-Endpoint 'PCCM_AddCostLine' -Resolution $resolution")
+    add_risk = code.index("-Endpoint 'PCCM_AddRisk' -Resolution $resolution")
+    timeline = code.index("-Endpoint 'PCCM_ApplyTimeline' -Resolution")
+    assert timeline < calculate < add_cost < add_risk, (
+        "Calculate no longer runs between ApplyTimeline and the Add commands")
+    assert "An empty driver set is valid" in _probe() or \
+        "AN EMPTY DRIVER SET IS VALID" in _probe()
+    assert "AddDriver WRITES A PERMANENT ID" in _probe()
 
 
 def test_21_the_values_are_the_accepted_gate_b_shape() -> None:
@@ -246,9 +308,123 @@ def test_23_the_inspection_names_and_the_names_production_reads_are_the_same_cel
 def test_24_the_inputs_are_written_as_double_at_the_call_site_too() -> None:
     """REQUIRED CONTROL 2. Belt and braces: the declaration is [double], the
     parameter is passed [double], and the helper casts [double] again."""
-    setter = _function("Set-ProbeTimelineInputs", _probe_code())
+    setter = _function("Set-ProbeDeclaredInputs", _probe_code())
     assert "-Value ([double]$entry.Value)" in setter
     assert "Set-NamedValue -Workbook $Workbook" in setter
+
+
+# ===========================================================================
+# C2. CALCULATE IS JUDGED BY THE TABLES, NOT BY THE ANNOUNCEMENT
+# ===========================================================================
+def test_25_the_calc_tables_are_watched_around_calculate() -> None:
+    """WINDOWS RUN 6 EXPOSED THIS PROBE'S OWN WEAK SPOT. It said the _Calc tables
+    "are not watched above, so judge this one by its announcement" - while the
+    probe's entire argument is that an announcement of success is not proof that
+    a structural operation happened."""
+    code = _probe_code()
+    assert "function Get-ProbeCalcTables" in code
+    assert "function Get-ProbeCalcShapes" in code
+    assert "$calcBefore = @(Get-ProbeCalcShapes" in code
+    assert "$calcAfter = @(Get-ProbeCalcShapes" in code
+    before_at = code.index("$calcBefore = @(Get-ProbeCalcShapes")
+    run_at = code.index("-Endpoint 'PCCM_Calculate' -Resolution $resolution")
+    after_at = code.index("$calcAfter = @(Get-ProbeCalcShapes")
+    assert before_at < run_at < after_at, "the shapes are not read either side of the call"
+    assert "judge this one by its announcement" not in code, "the old wording is back"
+
+
+def test_26_the_calc_table_authority_is_the_inspection() -> None:
+    """NO LITERALS. The sheet, every table name and every row rule come from the
+    same Gate-B inspection the rest of the probe reads."""
+    code = _probe_code()
+    calc = _inspection()["calc"]
+    assert f"'{calc['sheet']}'" not in code, "the _Calc sheet name is hard-coded"
+    for spec in calc["tables"].values():
+        assert f"'{spec['table_name']}'" not in code, f"{spec['table_name']} is hard-coded"
+    body = _function("Get-ProbeCalcTables", code)
+    assert "-Name 'calc'" in body and "-Name 'sheet'" in body
+    assert "-Name 'table_name'" in body and "-Name 'row_rule'" in body
+
+
+def test_27_the_proof_is_predictive_not_merely_a_difference() -> None:
+    """"SOMETHING CHANGED" IS NOT EVIDENCE OF THE CONTRACTED WORK. calc_years and
+    calc_annual carry the row rule "one row per applied project year", so a
+    Calculate that really ran ResizeBody leaves them holding exactly the applied
+    duration - which only ResizeBody can produce."""
+    code = _probe_code()
+    body = _function("Get-ProbePerYearCalcTables", code)
+    assert "[string]$entry.RowRule -eq 'one row per applied project year'" in body
+    # THE RULE IS REALLY THE INSPECTION'S, and really names two tables.
+    per_year = [name for name, spec in _inspection()["calc"]["tables"].items()
+                if spec["row_rule"] == "one row per applied project year"]
+    assert sorted(per_year) == ["calc_annual", "calc_years"], per_year
+    assert "-ne $duration" in code
+    assert "one per applied project year" in code
+
+
+def test_28_a_refused_calculate_is_required_to_change_nothing() -> None:
+    """AND IS NOT FAILED FOR IT. Demanding a resize from a command that refused
+    would turn an honest refusal into a manufactured failure - which is the same
+    mistake as calling any refusal a protection block."""
+    code = _probe_code()
+    assert "if ([string]$calculate.Outcome -eq 'SUCCEEDED') {" in code
+    assert "A refusal is entitled to leave the tables alone." in code
+    proof = code[code.index("$calcStructuralProof = 'NOT ESTABLISHED'"):]
+    proof = proof[: proof.index("$addCost = Invoke-ProbeEndpoint")]
+    for state in ("'OBSERVED'", "'CONTRADICTED'", "'NOT ESTABLISHED'"):
+        assert state in proof, state
+
+
+def test_29_an_announcement_the_shapes_contradict_cannot_reach_fine() -> None:
+    """REQUIRED: no false PASS from the announcement alone."""
+    code = _probe_code()
+    assert "} elseif ($calcStructuralProof -eq 'CONTRADICTED') {" in code
+    branch = code[code.index("} elseif ($calcStructuralProof -eq 'CONTRADICTED') {"):]
+    branch = branch[: branch.index("} else {")]
+    assert "$verdict = " not in branch, "the contradicted branch sets a verdict"
+    assert "$verdictReason = " in branch
+    assert branch.index("did not take") < len(branch)
+    # AND IT IS WEIGHED BEFORE FINE.
+    assert code.index("$calcStructuralProof -eq 'CONTRADICTED'") < \
+        code.index("$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'")
+
+
+def test_2a_blocked_semantics_are_untouched() -> None:
+    """REQUIRED: no weakening of BLOCKED. It still needs Excel's own sentence
+    from an endpoint that was actually invoked."""
+    code = _probe_code()
+    assert ("$protectionBlocked = @(@($outcomes) | Where-Object "
+            "{ Test-ProbeProtectionBlocked -Outcome $_ })") in code
+    body = _function("Test-ProbeProtectionBlocked", code)
+    assert "if (-not [bool]$Outcome.Invoked) { return $false }" in body
+    assert "table features aren't available because the sheet is protected" in body.lower()
+    gate = [line.strip() for line in code.splitlines()
+            if "$protectionBlocked).Count -gt 0" in line]
+    assert gate == ["if (@($protectionBlocked).Count -gt 0) {"], gate
+
+
+def test_2b_the_add_commands_do_not_overclaim() -> None:
+    """RUN 6: both SUCCEEDED with protection intact and NO watched shape change,
+    which is correct for a fresh workbook - Stage A reserves 25 register rows so
+    ListRows.Add never fires. Endpoint functionality under protection WAS
+    observed; capacity expansion was NOT, and the probe says so."""
+    source = _probe()
+    assert "settles endpoint functionality under protection, NOT capacity expansion" in source
+    assert "25 reserved rows" in source
+    assert "does not settle" in source
+    assert "no shape change on a fresh workbook is expected" in source
+
+
+def test_2c_the_probe_never_releases_workbook_structure_protection() -> None:
+    """RUN 6 SETTLED THE OPEN QUESTION: ApplyTimeline SUCCEEDED with structure
+    protection True throughout, so ListColumns.Add on these tables does not need
+    it released. The probe must not start releasing it either."""
+    code = _probe_code()
+    for banned in ("ThisWorkbook.Unprotect", ".Unprotect(", ".Unprotect ",
+                   "ProtectStructure = ", "ProtectionRelease"):
+        assert banned not in code, f"the probe releases protection: {banned}"
+    # AND IT STILL READS THE STRUCTURE FLAG AS EVIDENCE.
+    assert "Structure   = [bool]$Workbook.ProtectStructure" in code
 
 
 # ===========================================================================
@@ -256,14 +432,14 @@ def test_24_the_inputs_are_written_as_double_at_the_call_site_too() -> None:
 # ===========================================================================
 def test_30_every_input_is_read_back_before_the_endpoint() -> None:
     """REQUIRED CONTROL 6."""
-    check = _function("Test-ProbeTimelineInputs", _probe_code())
+    check = _function("Test-ProbeDeclaredInputs", _probe_code())
     assert "foreach ($entry in @($Inputs))" in check
     assert "Get-ProbeNamedValue -Workbook $Workbook -DefinedName $name" in check
 
 
 def test_31_the_readback_checks_the_type_and_checks_it_first() -> None:
     """REQUIRED CONTROL 2. A value-only check passes a stringified number."""
-    check = _function("Test-ProbeTimelineInputs", _probe_code())
+    check = _function("Test-ProbeDeclaredInputs", _probe_code())
     type_at = check.index("$actual -isnot [double]")
     value_at = check.index("[double]$actual -ne $expected")
     assert type_at < value_at, "the value is compared before the type"
@@ -287,10 +463,15 @@ def test_32_the_reader_does_not_stringify() -> None:
 def test_33_a_precondition_failure_stops_before_the_endpoint() -> None:
     """REQUIRED CONTROL 7."""
     code = _probe_code()
-    problems_at = code.index("$inputProblems = @(Test-ProbeTimelineInputs")
-    throw_at = code.index("was NOT invoked: ", problems_at)
+    problems_at = code.index("$inputProblems = @(Test-ProbeDeclaredInputs")
+    throw_at = code.index("was invoked: ", problems_at)
     invoke_at = code.index("$timeline = Invoke-ProbeEndpoint", problems_at)
     assert problems_at < throw_at < invoke_at, "the readback does not gate the endpoint"
+    # AND IT GATES EVERY ENDPOINT, not only the first: the throw sits above all
+    # four Invoke-ProbeEndpoint calls, so a failed precondition means NONE ran.
+    for endpoint in ("PCCM_ApplyTimeline' -Resolution", "PCCM_Calculate' -Resolution",
+                     "PCCM_AddCostLine' -Resolution", "PCCM_AddRisk' -Resolution"):
+        assert throw_at < code.index(endpoint, problems_at), endpoint
     assert "if (@($inputProblems).Count -gt 0) {" in code
 
 

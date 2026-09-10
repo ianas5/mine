@@ -280,9 +280,19 @@ def test_20_the_probe_runs_the_real_entry_points() -> None:
     """IT PRESSES BUTTONS. A probe that reached around the commands would answer
     a question nobody asked."""
     code = _probe_code()
+    # THE INVOCATION, NOT THE LABEL. `-Endpoint 'PCCM_Calculate'` also appears on
+    # the Set-ProbeStage lines that bracket the _Calc shape reads, so the bare
+    # substring is satisfied by a Calculate that is only being NAMED. A mutation
+    # that swapped the real call for PCCM_RunSimulation walked straight through
+    # this until it was anchored on the Invoke-ProbeEndpoint argument list.
     for endpoint in ("PCCM_ApplyTimeline", "PCCM_AddCostLine", "PCCM_AddRisk",
                      "PCCM_Calculate"):
-        assert f"-Endpoint '{endpoint}'" in code, endpoint
+        assert code.count(f"-Endpoint '{endpoint}' -Resolution $resolution") == 1, endpoint
+    # AND NO OTHER ENDPOINT IS INVOKED. Simulation, sensitivity, the annual step
+    # and Reset are not structural and are not this probe's question.
+    invoked = set(re.findall(r"-Endpoint '(\w+)' -Resolution \$resolution", code))
+    assert invoked == {"PCCM_ApplyTimeline", "PCCM_AddCostLine", "PCCM_AddRisk",
+                       "PCCM_Calculate"}, sorted(invoked)
     assert "$Excel.Run($Endpoint)" in code
     assert "PCCM_AutomationResult" in code
 
@@ -640,8 +650,15 @@ def test_55b_the_probe_never_reaches_around_the_commands() -> None:
     assert code.count("Set-ProbeCellExact -Cell $cell") == 2, (
         "the control writes to its cell more than twice")
     # THE THREE TIMELINE INPUTS ARE DECLARED, ONCE, AND DRIVE THAT ONE CALL.
+    # FOUR NOW, AND THE FOURTH IS DECLARED. Windows Run 6 invoked PCCM_Calculate
+    # and it refused for a NON-protection reason - "Discount Rate: the value is
+    # blank. A blank is not zero." - which is production validating correctly.
+    # The discount rate is an ordinary Setup input that modCalcResolve requires,
+    # so the probe supplies it the way a user does. The set is still exactly the
+    # minimum: nothing here is needed by a command that does not read it.
     declared = re.findall(r"@\{ Key = '(\w+)';\s+Value = \[double\]", code)
-    assert declared == ["base_year", "project_start_year", "duration_years"], declared
+    assert declared == ["base_year", "project_start_year", "duration_years",
+                        "discount_rate"], declared
     # AND NO RAW Value2 ASSIGNMENT SURVIVES OUTSIDE THE TWO HELPERS. This is the
     # control that would catch a third write added straight to the COM object.
     setter = code.split("function Set-NamedValue")[1]
@@ -846,9 +863,17 @@ def test_67_the_control_proves_its_target_is_locked_before_it_writes() -> None:
     assert "if (-not $target.Worksheet.ProtectContents) {" in body
     assert "if (-not $cell.Locked) {" in body
     assert body.index("if (-not $cell.Locked) {") < body.index("-Value $probeText")
+    # THE BAN IS ON THE CONTROL, NOT ON THE FILE. Probe Run 2 wrote its
+    # locked-cell control to inpDiscountRate, which is Locked=False by design and
+    # proves nothing about UserInterfaceOnly. The discount rate is now a DECLARED
+    # Calculate prerequisite written elsewhere - as an ordinary editable Setup
+    # input, which is exactly what it is - so the ban is stated where it belongs.
     assert "inpDiscountRate" not in _probe_code(), (
-        "the control still writes to an editable input")
-    assert "discount_rate" not in _probe_code()
+        "a defined name is hard-coded; it belongs in the inspection")
+    assert "discount_rate" not in body, (
+        "the locked-cell control still writes to an editable input")
+    for banned in ("Set-NamedValue", "Set-ProbeDeclaredInputs"):
+        assert banned not in body, f"the control writes through {banned}"
 
 
 def test_68_the_original_value_is_restored_and_verified() -> None:

@@ -495,6 +495,63 @@ def test_50_the_windows_evidence_is_recorded_accurately() -> None:
     assert "Original assumption" in text or "original assumption" in text
 
 
+def test_52_the_run_6_windows_evidence_is_recorded_accurately() -> None:
+    """THE RUN THAT EXERCISED THE RECONCILIATION, recorded with both halves.
+
+    ApplyTimeline SUCCEEDED and did real structural work with protection intact,
+    and Calculate refused for a NON-protection reason. Recording only the first
+    would be an acceptance claim this run does not support.
+    """
+    text = EVIDENCE.read_text(encoding="utf-8")
+    # THE SUCCESS, AND THE ACTUAL SHAPE CHANGE - ALL THREE GRIDS. Two of them
+    # moved 25×2 → 25×5, so requiring the string once is satisfied by either one
+    # alone; a mutation that deleted one walked through this until it was counted.
+    assert text.count("25×2 → 25×5") == 2, (
+        "both profiling grids' observed structural effect must be recorded")
+    assert "10×1 → 10×4" in text, "the inflation grid's structural effect is missing"
+    assert "invoked and SUCCEEDED" in text
+    # THE STRUCTURE FLAG STAYED TRUE - the open question this run settled.
+    assert "ProtectStructure = True` throughout" in text
+    assert "structure = **True**" in text
+    # A-E PROVEN, AND THE VERDICT STILL INCONCLUSIVE.
+    assert "PROVEN" in text and "INCONCLUSIVE" in text
+    # THE REFUSAL, QUOTED, AND NAMED AS NOT ABOUT PROTECTION.
+    assert "Discount Rate: the value is blank. A blank is not zero." in text
+    assert "non-protection" in text
+    # AND THE ORDERING CAVEAT IS NOT QUIETLY DROPPED.
+    assert "python3" in text and "Stage A" in text
+    assert "not ideal acceptance evidence" in text or \
+        "not** ideal acceptance evidence" in text
+    # WHAT IT DID NOT ESTABLISH IS STATED AS PLAINLY AS WHAT IT DID.
+    assert "capacity expansion was not" in text.lower()
+
+
+def test_53_the_runtime_evidence_for_keeping_structure_protected_is_recorded() -> None:
+    """RUN 6 TURNED AN INFERENCE INTO EVIDENCE. The reconciliation batch left
+    workbook-structure protection applied on a reading of Excel's 1004 wording;
+    this run proved ListColumns.Add does not need it released. The envelope is
+    not widened, and the reason is on the record rather than in a commit
+    message."""
+    text = EVIDENCE.read_text(encoding="utf-8")
+    assert "privilege envelope is not widened" in text.lower() or \
+        "not widened" in text.lower()
+    assert "ListColumns.Add" in text
+    # AND THE CODE STILL REFUSES TO RELEASE IT.
+    begin = _procedure("modProtection.bas", "ProtectionBeginStructural")
+    assert "ThisWorkbook.Unprotect" not in begin
+
+
+def test_54_production_vba_is_byte_identical_to_the_reconciliation() -> None:
+    """THIS ROUND IS SOURCE/STATIC AND PROBE-ONLY. Windows exercised 0946cf6, so
+    a production edit here would mean the evidence above describes code that no
+    longer exists."""
+    changed = [line for line in subprocess.run(
+        ["git", "diff", "--name-only", "0946cf6", "--", "pccm/src", "pccm/spec"],
+        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout.splitlines()
+        if line.strip()]
+    assert changed == [], f"production changed after the run that exercised it: {changed}"
+
+
 def test_51_the_owner_records_what_was_disproved_and_what_was_not() -> None:
     text = _src("modProtection.bas")
     assert "6ab8f6a" in text, "the historical authority is not cited"

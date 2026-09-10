@@ -655,3 +655,99 @@ The fix is **unverified on Windows**. No Windows execution was performed in the
 reconciliation batch.
 
 ---
+
+## Protection probe Run 6 — the reconciliation works; verdict still INCONCLUSIVE
+
+First Windows run against `0946cf6`, the structural-window reconciliation.
+Git fast-forwarded `58b2394 → 0946cf6`.
+
+**Ordering caveat, recorded because it matters.** The first Stage-A command used
+`python3`, which does not exist on this Windows host, and failed. The probe was
+then run **before** Stage A was rebuilt with `python`. The successful fresh
+Stage-A build (`351 passed, 0 failed`) came **after** this probe. This run is
+therefore **not** ideal acceptance evidence and is not treated as such.
+
+### What the run established
+
+| Observation | Result |
+|---|---|
+| Workbook opened | 14/14 sheets protected, structure = True |
+| UserInterfaceOnly locked-cell VALUE write control | SUCCEEDED |
+| `PCCM_ApplyTimeline` | **invoked and SUCCEEDED** |
+| — structural effect | `tblCostProfiling` 25×2 → 25×5; `tblRiskProfiling` 25×2 → 25×5; `tblInflation` 10×1 → 10×4 |
+| Protection after the endpoint | 14/14 sheets protected, structure = **True** |
+| `PCCM_AddCostLine`, `PCCM_AddRisk` | both SUCCEEDED, protection fully applied |
+| — watched shape change | **none** |
+| `PCCM_Calculate` | invoked, **REFUSED** — `FAIL\|Calculate\|Discount Rate: the value is blank. A blank is not zero.` |
+| — protection during/after | fully applied; no 1004, no protection refusal |
+| Structural initialisation A–E | **PROVEN** |
+| Final verdict | **INCONCLUSIVE** — 1 of 4 endpoints did not succeed |
+
+### The open question this settles
+
+The reconciliation batch released **worksheet** protection only and deliberately
+left **workbook-structure** protection applied, on the reading that Excel's 1004
+named the *sheet*. That was an inference, and it is now **runtime evidence**:
+
+> `ListColumns.Add` on `tblCostProfiling`, `tblRiskProfiling` and `tblInflation`
+> succeeded with `ThisWorkbook.ProtectStructure = True` throughout.
+
+**The privilege envelope is not widened.** Workbook-structure protection stays
+applied inside the structural window, and a control refuses a window that
+releases it.
+
+### Why the verdict is still INCONCLUSIVE, and why that is correct
+
+`PCCM_Calculate` refused for a **non-protection** reason. The corrected verdict
+logic did exactly what the previous batch built it to do: it did **not** call
+that a protection block, and named it as refused-for-other-reasons. Protection
+never entered the picture.
+
+### What Run 6 did NOT establish
+
+* **`ListRows.Add` capacity expansion.** Add Cost Line and Add Risk succeeded
+  with protection intact, and correctly produced no watched shape change: Stage A
+  reserves 25 register rows, so an Add writes an id into a reserved row and
+  `ListRows.Add` never fires. **Endpoint functionality under protection was
+  observed; capacity expansion was not.** This probe does not claim otherwise.
+* **The `_Calc` resize path.** `PCCM_Calculate` never reached it.
+
+### Corrected in this round (source only — no Windows)
+
+**The refusal was production being right.** `modCalcResolve.ResolveAppliedTimeline`
+requires `NM_INPUT_DISCOUNT_RATE` through `NumericNamedCell`, which refuses a
+blank by design and refuses a numeric-looking *string* too, because
+`IsRealNumber` tests the VarType rather than parsing. So the probe now supplies
+it as a real `Double` through the accepted `Set-NamedValue`, at the value the
+accepted Phase-7 fixture already declares (`discount_rate = 0.05`). Nothing is
+hard-coded around the validation.
+
+**Calculate now runs immediately after ApplyTimeline, before the Add commands.**
+`AddDriver` writes a permanent ID, and `ReadRegister` reads every row whose id
+column is non-blank — so after an Add the register holds one identified driver
+with every other field empty, and Calculate refuses on it. Filling those fields
+would mean the probe manufacturing a cost line. An empty driver set is valid in
+the contract's own words, and with zero drivers no currency and no inflation
+profile is *referenced*, so FX and the deliberately-blank inflation grid are
+never resolved. The applied timeline and the discount rate are the whole
+prerequisite — and this is the user's own first Calculate.
+
+**Calculate is no longer judged by its announcement.** The probe said the `_Calc`
+tables "are not watched above, so judge this one by its announcement", which
+contradicts its own central argument. The five `_Calc` tables are now read before
+and after, from `calc.sheet` and `calc.tables[*].table_name` in the Gate-B
+inspection. The check is **predictive, not merely a difference**:
+`calc_years` and `calc_annual` carry the row rule *"one row per applied project
+year"*, and Stage A builds every `_Calc` table with one body row — so a
+3-year timeline must leave them at exactly 3 rows, which only `ResizeBody` can
+produce. A Calculate that announces success without that shape yields
+`CONTRADICTED` and **cannot reach FINE**. A Calculate that *refused* is required
+to change nothing and is not failed for it.
+
+### Still owed
+
+A Windows run in which Stage A is rebuilt **first**, and in which
+`PCCM_Calculate` reaches its `_Calc` resize. The reconciliation itself remains
+**unverified for the Calculate path**.
+
+---

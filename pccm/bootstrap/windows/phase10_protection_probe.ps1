@@ -231,6 +231,101 @@ function Test-ProbeExactValue {
 }
 
 # ===========================================================================
+# THE _Calc PUBLICATION TABLES: WATCHING WHAT CALCULATE ACTUALLY RESHAPES
+# ===========================================================================
+# WINDOWS RUN 6 EXPOSED A WEAKNESS IN THIS PROBE'S OWN PRINCIPLE. The five
+# watched tables are the registers and the grids, so Calculate was judged "by
+# its announcement" - and this probe's whole argument is that an announcement of
+# success is not proof that a structural operation happened. It is the argument
+# that made Benchmark Run 3 a harness defect rather than a production one.
+#
+# SO THE _Calc TABLES ARE WATCHED TOO, for Calculate only. modCalcReport's
+# ResizeBody adds and deletes ListRows on all five of them, which is the
+# structural work protection would have blocked.
+#
+# THE AUTHORITY IS THE INSPECTION, NOT A LITERAL. calc.sheet and
+# calc.tables[*].table_name come from the same Gate-B inspection everything else
+# here reads, and calc.tables[*].row_rule states what each table's row count
+# means - "one row per applied project year" for calc_years and calc_annual.
+# That rule is what makes the observation predictive rather than merely
+# different: with the applied duration at 3 they must end at 3 rows.
+function Get-ProbeCalcTables {
+    param($Inspection)
+    $calc = Get-ProbeRequiredProperty -InputObject $Inspection -Name 'calc' `
+        -Where 'the Gate-B inspection'
+    $sheet = Get-ProbeScalarString -InputObject $calc -Name 'sheet' `
+        -Where 'the Gate-B inspection calc block'
+    $tables = Get-ProbeRequiredProperty -InputObject $calc -Name 'tables' `
+        -Where 'the Gate-B inspection calc block'
+    $out = @()
+    foreach ($property in @($tables.PSObject.Properties)) {
+        $spec = $property.Value
+        $out += [pscustomobject]@{
+            Key      = [string]$property.Name
+            Sheet    = $sheet
+            Table    = (Get-ProbeScalarString -InputObject $spec -Name 'table_name' `
+                            -Where ('the ' + [string]$property.Name + ' calc table'))
+            RowRule  = (Get-ProbeScalarString -InputObject $spec -Name 'row_rule' `
+                            -Where ('the ' + [string]$property.Name + ' calc table'))
+        }
+    }
+    return $out
+}
+
+# One row-count reading per _Calc table. Read through the ALREADY-RESOLVED
+# worksheet, exactly as the watched targets are, so no second Worksheets
+# acquisition appears in this script.
+function Get-ProbeCalcShapes {
+    param($Worksheet, $CalcTables)
+    $los = $null
+    $shapes = @()
+    try {
+        $los = $Worksheet.ListObjects
+        foreach ($entry in @($CalcTables)) {
+            $lo = $null
+            try {
+                $lo = $los.Item([string]$entry.Table)
+                $rows = $null; $cols = $null
+                try {
+                    $rows = $lo.ListRows
+                    $cols = $lo.ListColumns
+                    $shapes += [pscustomobject]@{
+                        Key  = [string]$entry.Key
+                        Table = [string]$entry.Table
+                        Rows = (Measure-ProbeCollection -Collection $rows -Label 'ListRow' `
+                                    -Where ([string]$entry.Table))
+                        Cols = (Measure-ProbeCollection -Collection $cols -Label 'ListColumn' `
+                                    -Where ([string]$entry.Table))
+                    }
+                } finally {
+                    if ($null -ne $cols) { Release-Transient $cols 'ListColumns'; $cols = $null }
+                    if ($null -ne $rows) { Release-Transient $rows 'ListRows';    $rows = $null }
+                }
+            } finally {
+                if ($null -ne $lo) { Release-Transient $lo 'ListObject'; $lo = $null }
+            }
+        }
+    } finally {
+        if ($null -ne $los) { Release-Transient $los 'ListObjects'; $los = $null }
+    }
+    return $shapes
+}
+
+# The tables whose row rule is "one row per applied project year". After a
+# successful Calculate they must hold exactly the applied duration, and that is
+# a stronger claim than "something changed": only ResizeBody can produce it.
+function Get-ProbePerYearCalcTables {
+    param($CalcTables)
+    $out = @()
+    foreach ($entry in @($CalcTables)) {
+        if ([string]$entry.RowRule -eq 'one row per applied project year') {
+            $out += [string]$entry.Table
+        }
+    }
+    return $out
+}
+
+# ===========================================================================
 # IS THIS REFUSAL ACTUALLY ABOUT PROTECTION?
 # ===========================================================================
 # RUN 5 IS WHY THIS EXISTS. It produced the real answer - PCCM_ApplyTimeline was
@@ -289,14 +384,32 @@ function Test-ProbeProtectionBlocked {
 # so a value written as text is not "nearly right": the command REFUSES, and a
 # refusal has no way to distinguish itself from protection blocking the work.
 # Stringifying here would manufacture the very verdict the probe exists to test.
-function Get-ProbeTimelineInputs {
+# WHAT WINDOWS RUN 6 ADDED TO THIS LIST, and why it is not a workaround.
+#
+#   FAIL|Calculate|Discount Rate: the value is blank. A blank is not zero.
+#
+# That is production refusing correctly. modCalcResolve.ResolveAppliedTimeline
+# requires NM_INPUT_DISCOUNT_RATE through NumericNamedCell, which refuses a
+# blank BY DESIGN - "a blank is an unmade assumption, not zero" - and refuses a
+# numeric-looking STRING too, because IsRealNumber tests the VarType rather than
+# parsing. So the fix is to supply the input the way a user supplies it: a real
+# number in the accepted Setup cell, through the accepted setter that casts
+# [double]. Nothing is hard-coded around the validation and nothing is relaxed.
+#
+# THE VALUE IS THE ACCEPTED FIXTURE'S. phase7_timing_scenarios.ps1 declares
+# discount_rate = 0.05 beside the same timeline triple; this reuses that
+# declaration rather than inventing a second one.
+function Get-ProbeDeclaredInputs {
     param($Inspection)
     $inputs = Get-ProbeRequiredProperty -InputObject $Inspection -Name 'inputs' `
         -Where 'the Gate-B inspection'
+    # Endpoint says WHICH command needs the value, so a transcript can show that
+    # the discount rate is a Calculate prerequisite and not a timeline one.
     $wanted = @(
-        @{ Key = 'base_year';          Value = [double]2026 },
-        @{ Key = 'project_start_year'; Value = [double]2027 },
-        @{ Key = 'duration_years';     Value = [double]3 }
+        @{ Key = 'base_year';          Value = [double]2026; Endpoint = 'PCCM_ApplyTimeline' },
+        @{ Key = 'project_start_year'; Value = [double]2027; Endpoint = 'PCCM_ApplyTimeline' },
+        @{ Key = 'duration_years';     Value = [double]3;    Endpoint = 'PCCM_ApplyTimeline' },
+        @{ Key = 'discount_rate';      Value = [double]0.05; Endpoint = 'PCCM_Calculate' }
     )
     $out = @()
     foreach ($entry in $wanted) {
@@ -305,6 +418,7 @@ function Get-ProbeTimelineInputs {
             -Where 'the Gate-B inspection inputs'
         $out += [pscustomobject]@{
             Key         = $key
+            Endpoint    = [string]$entry.Endpoint
             DefinedName = (Get-ProbeScalarString -InputObject $spec -Name 'defined_name' `
                                -Where ('the ' + $key + ' input'))
             Value       = [double]$entry.Value
@@ -315,7 +429,7 @@ function Get-ProbeTimelineInputs {
     return $out
 }
 
-function Set-ProbeTimelineInputs {
+function Set-ProbeDeclaredInputs {
     param($Workbook, $Inputs)
     foreach ($entry in @($Inputs)) {
         Set-NamedValue -Workbook $Workbook -DefinedName ([string]$entry.DefinedName) `
@@ -327,7 +441,7 @@ function Set-ProbeTimelineInputs {
 # strings; an empty result means every input landed with the right value AND the
 # right type. A setter or readback failure is PROBE INSTRUMENTATION failure - it
 # is never a statement about the production endpoint, which has not run.
-function Test-ProbeTimelineInputs {
+function Test-ProbeDeclaredInputs {
     param($Workbook, $Inputs)
     $problems = @()
     foreach ($entry in @($Inputs)) {
@@ -1069,30 +1183,31 @@ try {
         # stage 'endpoint' was one careless reading away from implying that
         # PCCM_ApplyTimeline had run. It had not.
         Set-ProbeStage -Stage 'endpoint' `
-            -Action 'SETTING ENDPOINT PRECONDITIONS: writing the timeline inputs (production NOT invoked)' `
+            -Action 'SETTING ENDPOINT PRECONDITIONS: writing the declared inputs (production NOT invoked)' `
             -Endpoint 'PCCM_ApplyTimeline'
-        $timelineInputs = @(Get-ProbeTimelineInputs -Inspection $inspection)
-        Set-ProbeTimelineInputs -Workbook $wb -Inputs $timelineInputs
+        $declaredInputs = @(Get-ProbeDeclaredInputs -Inspection $inspection)
+        Set-ProbeDeclaredInputs -Workbook $wb -Inputs $declaredInputs
 
         Set-ProbeStage -Stage 'endpoint' `
-            -Action 'VERIFYING ENDPOINT PRECONDITIONS: reading the timeline inputs back (production NOT invoked)' `
+            -Action 'VERIFYING ENDPOINT PRECONDITIONS: reading the declared inputs back (production NOT invoked)' `
             -Endpoint 'PCCM_ApplyTimeline'
-        $inputProblems = @(Test-ProbeTimelineInputs -Workbook $wb -Inputs $timelineInputs)
+        $inputProblems = @(Test-ProbeDeclaredInputs -Workbook $wb -Inputs $declaredInputs)
 
-        Write-ProbeLine 'Endpoint preconditions - the timeline inputs, written and read back:'
-        foreach ($entry in $timelineInputs) {
+        Write-ProbeLine 'Endpoint preconditions - the declared inputs, written and read back:'
+        foreach ($entry in $declaredInputs) {
             Write-ProbeLine ('  ' + [string]$entry.Key + '  ' + [string]$entry.DefinedName +
-                             ' = ' + [string]$entry.Value + '  (written as System.Double)')
+                             ' = ' + [string]$entry.Value + '  (System.Double, for ' +
+                             [string]$entry.Endpoint + ')')
         }
         if (@($inputProblems).Count -gt 0) {
             foreach ($problem in $inputProblems) { Write-ProbeLine ('  PROBLEM: ' + $problem) }
             # PROBE INSTRUMENTATION FAILURE. The outer catch leaves the verdict
-            # INCONCLUSIVE and names the stage, and PCCM_ApplyTimeline is NOT
-            # INVOKED - $invoked is only ever set beside Application.Run.
-            throw ('the timeline inputs could not be established, so the production endpoint ' +
-                   'was NOT invoked: ' + ($inputProblems -join '; '))
+            # INCONCLUSIVE and names the stage, and no endpoint is INVOKED -
+            # $invoked is only ever set beside Application.Run.
+            throw ('the declared inputs could not be established, so no production endpoint ' +
+                   'was invoked: ' + ($inputProblems -join '; '))
         }
-        Write-ProbeLine '  all three read back as System.Double with the expected values'
+        Write-ProbeLine '  all read back as System.Double with the expected values'
         Write-ProbeLine ''
 
         $timeline = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
@@ -1102,25 +1217,142 @@ try {
             ('ListColumns.Add on three grids. A fresh workbook has no year columns, so ' +
              'this fires for ANY timeline and is not capacity-dependent.')
 
+        # --- CALCULATE, AND IT RUNS HERE FOR A REASON ----------------------
+        # BEFORE THE ADD COMMANDS, because that is the only ordering in which
+        # Calculate's own prerequisites are legitimately satisfiable without
+        # inventing business data.
+        #
+        # AddDriver WRITES A PERMANENT ID into the row it adds. modCalcResolve's
+        # ReadRegister reads every row whose id column is non-blank, so after an
+        # Add the register holds one identified driver with every other field
+        # empty - and Calculate then refuses on a blank required field. Filling
+        # those fields would mean the probe manufacturing a cost line, which is
+        # a fixture this batch is not authorised to invent.
+        #
+        # AN EMPTY DRIVER SET IS VALID, AND THAT IS THE CONTRACT'S OWN WORDING:
+        # "A workbook with no Cost Lines and no Risks resolves to zero drivers
+        # and an empty reference set; no minimum-driver rule is invented here."
+        # With zero drivers no currency and no inflation profile is REFERENCED,
+        # so ResolveFxRates and ResolveInflationRates have nothing to resolve and
+        # the deliberately-blank inflation grid is never read. The applied
+        # timeline and the discount rate are therefore the whole prerequisite.
+        #
+        # THIS IS ALSO THE USER'S OWN FIRST CALCULATE: apply a timeline, press
+        # Calculate. It is not a contrived state.
+        Set-ProbeStage -Stage 'endpoint' `
+            -Action 'PREPARING TO TEST: reading the _Calc table shapes before Calculate' `
+            -Endpoint 'PCCM_Calculate'
+        $calcTables = @(Get-ProbeCalcTables -Inspection $inspection)
+        $perYearTables = @(Get-ProbePerYearCalcTables -CalcTables $calcTables)
+        $calcSheet = $null
+        $calcBefore = @()
+        $calcAfter = @()
+        try {
+            $calcSheet = $resolution.Sheets.Item([string]@($calcTables)[0].Sheet)
+            $calcBefore = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $calcTables)
+
+            $calculate = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
+                -Endpoint 'PCCM_Calculate' -Resolution $resolution
+            $null = $outcomes.Add($calculate)
+
+            Set-ProbeStage -Stage 'endpoint' `
+                -Action 'reading the _Calc table shapes after Calculate' -Endpoint 'PCCM_Calculate'
+            $calcAfter = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $calcTables)
+        } finally {
+            if ($null -ne $calcSheet) { Release-Transient $calcSheet 'Worksheet(_Calc)'; $calcSheet = $null }
+        }
+
+        Write-ProbeOutcome -Outcome $calculate -Expectation `
+            ('ResizeBody adds and deletes ListRows on all five _Calc tables. Judged by the ' +
+             'TABLE SHAPES below, not by the announcement.')
+
+        # THE OBSERVATION, AND WHAT IT PROVES. calc_years and calc_annual carry
+        # the row rule "one row per applied project year", so a Calculate that
+        # really ran ResizeBody leaves them holding exactly the applied duration.
+        # Stage A builds every one of these tables with a single body row, so
+        # with a 3-year timeline that is an observable 1 -> 3.
+        Write-ProbeLine '  _Calc table shapes, before -> after:'
+        $calcChanged = @()
+        foreach ($before in @($calcBefore)) {
+            $after = @(@($calcAfter) | Where-Object { [string]$_.Key -eq [string]$before.Key })
+            if (@($after).Count -ne 1) {
+                Write-ProbeLine ('    ' + [string]$before.Table + ': NOT READ BACK')
+                continue
+            }
+            $now = @($after)[0]
+            $line = ('    ' + [string]$before.Table + ': ' +
+                     [string]$before.Rows + 'x' + [string]$before.Cols + ' -> ' +
+                     [string]$now.Rows + 'x' + [string]$now.Cols)
+            if (([int]$before.Rows -ne [int]$now.Rows) -or ([int]$before.Cols -ne [int]$now.Cols)) {
+                $calcChanged += [string]$before.Table
+                $line = $line + '   CHANGED'
+            }
+            Write-ProbeLine $line
+        }
+
+        # THE PREDICTIVE CHECK, not merely "something moved". Only run when
+        # Calculate actually SUCCEEDED: a refusal is entitled to leave the tables
+        # alone, and demanding a resize from a refused command would turn an
+        # honest refusal into a manufactured failure.
+        $calcStructuralProof = 'NOT ESTABLISHED'
+        if ([string]$calculate.Outcome -eq 'SUCCEEDED') {
+            $duration = 0
+            foreach ($entry in @($declaredInputs)) {
+                if ([string]$entry.Key -eq 'duration_years') { $duration = [int]$entry.Value }
+            }
+            $wrong = @()
+            foreach ($table in @($perYearTables)) {
+                $row = @(@($calcAfter) | Where-Object { [string]$_.Table -eq [string]$table })
+                if (@($row).Count -ne 1) { $wrong += ($table + ': not read back'); continue }
+                if ([int]@($row)[0].Rows -ne $duration) {
+                    $wrong += ($table + ': ' + [string]@($row)[0].Rows + ' rows, expected ' +
+                               [string]$duration + ' (one per applied project year)')
+                }
+            }
+            if ((@($wrong).Count -eq 0) -and (@($perYearTables).Count -gt 0) -and
+                (@($calcChanged).Count -gt 0)) {
+                $calcStructuralProof = 'OBSERVED'
+                Write-ProbeLine ('  so ResizeBody really ran: ' +
+                                 (@($perYearTables) -join ', ') + ' each hold ' +
+                                 [string]$duration + ' rows, one per applied project year, ' +
+                                 'and ' + [string]@($calcChanged).Count + ' table(s) changed shape.')
+            } else {
+                $calcStructuralProof = 'CONTRADICTED'
+                Write-ProbeLine '  BUT Calculate announced success WITHOUT the contracted shape:'
+                foreach ($problem in @($wrong)) { Write-ProbeLine ('    ' + $problem) }
+                if (@($calcChanged).Count -eq 0) {
+                    Write-ProbeLine '    no _Calc table changed shape at all'
+                }
+            }
+        } else {
+            Write-ProbeLine ('  Calculate did not succeed, so no shape is required of it. ' +
+                             'A refusal is entitled to leave the tables alone.')
+        }
+        Write-ProbeLine ''
+
+        # --- THE ADD COMMANDS, AND WHAT THEY DO NOT SETTLE -----------------
+        # RUN 6 OBSERVED BOTH SUCCEEDING WITH PROTECTION INTACT AND NO WATCHED
+        # SHAPE CHANGE, and that is exactly right for a fresh workbook: Stage A
+        # reserves 25 register rows, so an Add writes an id into a reserved row
+        # and ListRows.Add never fires. Endpoint FUNCTIONALITY under protection
+        # was observed; a ListRows.Add CAPACITY EXPANSION was not exercised, and
+        # this probe does not claim it was.
         $addCost = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
             -Endpoint 'PCCM_AddCostLine' -Resolution $resolution
         $null = $outcomes.Add($addCost)
         Write-ProbeOutcome -Outcome $addCost -Expectation `
-            ('the register grows only past its reserved rows, but SyncRows runs on every ' +
-             'add and reshapes the Cost Profiling grid.')
+            ('SyncRows runs on every add and can reshape the Cost Profiling grid. The ' +
+             'register itself grows only PAST its 25 reserved rows, so on a fresh workbook ' +
+             'ListRows.Add does not fire and NO shape change is the correct observation - ' +
+             'it settles endpoint functionality under protection, NOT capacity expansion.')
 
         $addRisk = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
             -Endpoint 'PCCM_AddRisk' -Resolution $resolution
         $null = $outcomes.Add($addRisk)
         Write-ProbeOutcome -Outcome $addRisk -Expectation `
-            'the same path on the Risk Register and the Risk Profiling grid.'
-
-        $calculate = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
-            -Endpoint 'PCCM_Calculate' -Resolution $resolution
-        $null = $outcomes.Add($calculate)
-        Write-ProbeOutcome -Outcome $calculate -Expectation `
-            ('the _Calc tables are resized to the model on every Calculate. They are not ' +
-             'watched above, so judge this one by its announcement.')
+            ('the same path on the Risk Register and the Risk Profiling grid, and the same ' +
+             'reading: no shape change on a fresh workbook is expected, and does not settle ' +
+             'ListRows.Add capacity expansion either.')
 
         # --- THE VERDICT ---------------------------------------------------
         # BLOCKED and FINE are the only two conclusions, and each needs its own
@@ -1169,6 +1401,15 @@ try {
             $verdictReason = ('the commands succeeded but protection was not in force after ' +
                               [string]@($lostProtection).Count + ' of them, so they were not ' +
                               'a test of protected behaviour')
+        } elseif ($calcStructuralProof -eq 'CONTRADICTED') {
+            # THE PROBE'S OWN PRINCIPLE, APPLIED TO ITSELF. An announcement of
+            # success is not proof of a structural operation - that argument is
+            # what made Benchmark Run 3 a harness defect - so a Calculate that
+            # announced success while the _Calc tables did not take the shape
+            # their row rule contracts cannot carry the run to FINE.
+            $verdictReason = ('Calculate announced success but the _Calc tables did not take ' +
+                              'the shape their row rule contracts, so the structural work was ' +
+                              'not observed and the question is not settled')
         } else {
             $verdict = 'PRODUCTION IS FINE UNDER PROTECTION'
             $verdictReason = ('every production endpoint succeeded, the tables actually ' +
@@ -1219,6 +1460,10 @@ try {
             Write-ProbeLine ('  STRUCTURAL INITIALISATION: NOT PROVEN - ' +
                              ((@($unmet) | ForEach-Object { [string]$_.Key }) -join ', ') + ' not met.')
         }
+        Write-ProbeLine ('  CALCULATE STRUCTURAL EVIDENCE: ' + $calcStructuralProof +
+                         '  (OBSERVED = the _Calc per-project-year tables hold the applied ' +
+                         'duration; CONTRADICTED = it announced success without them; ' +
+                         'NOT ESTABLISHED = Calculate did not succeed, which requires no shape)')
         Write-ProbeLine 'This is NOT final acceptance and NOT a benchmark baseline.'
         Write-ProbeLine ''
         }

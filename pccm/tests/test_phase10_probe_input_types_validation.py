@@ -146,8 +146,8 @@ def test_12_coercing_an_unsupported_type_instead_of_refusing_is_rejected() -> No
 def test_20_changing_the_declared_timeline_values_is_rejected() -> None:
     """NOT A SECOND FIXTURE CONTRACT. The triple is the accepted one."""
     _mutate("test_2",
-            "@{ Key = 'project_start_year'; Value = [double]2027 }",
-            "@{ Key = 'project_start_year'; Value = [double]2030 }")
+            "@{ Key = 'project_start_year'; Value = [double]2027; Endpoint = 'PCCM_ApplyTimeline' }",
+            "@{ Key = 'project_start_year'; Value = [double]2030; Endpoint = 'PCCM_ApplyTimeline' }")
 
 
 def test_21_hard_coding_a_defined_name_is_rejected() -> None:
@@ -160,14 +160,118 @@ def test_21_hard_coding_a_defined_name_is_rejected() -> None:
 def test_22_setting_more_than_the_command_needs_is_rejected() -> None:
     """THE PROBE IS NOT A FIXTURE BUILDER."""
     _mutate("test_20",
-            "        @{ Key = 'duration_years';     Value = [double]3 }",
-            "        @{ Key = 'duration_years';     Value = [double]3 },\n"
-            "        @{ Key = 'discount_rate';      Value = [double]0.05 }")
+            "        @{ Key = 'discount_rate';      Value = [double]0.05; Endpoint = 'PCCM_Calculate' }",
+            "        @{ Key = 'discount_rate';      Value = [double]0.05; Endpoint = 'PCCM_Calculate' },\n"
+            "        @{ Key = 'reporting_currency'; Value = [double]1;    Endpoint = 'PCCM_Calculate' }")
+
+
+# ===========================================================================
+# C2. THE CALCULATE STRUCTURAL EVIDENCE
+# ===========================================================================
+def test_23_going_back_to_judging_calculate_by_its_announcement_is_rejected() -> None:
+    """THE RUN-6 WEAKNESS, put back."""
+    _mutate("test_25",
+            "            $calcBefore = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $calcTables)",
+            "            $calcBefore = @()")
+
+
+def test_23a_reading_the_shapes_only_after_the_call_is_rejected() -> None:
+    _mutate("test_25",
+            "            $calcAfter = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $calcTables)",
+            "            $calcAfter = @($calcBefore)")
+
+
+def test_23b_hard_coding_a_calc_table_name_is_rejected() -> None:
+    _mutate("test_26",
+            "            Table    = (Get-ProbeScalarString -InputObject $spec -Name 'table_name' `\n"
+            "                            -Where ('the ' + [string]$property.Name + ' calc table'))",
+            "            Table    = 'tblCalcYears'")
+
+
+def test_23c_accepting_any_difference_as_proof_is_rejected() -> None:
+    """"SOMETHING CHANGED" IS NOT EVIDENCE OF THE CONTRACTED WORK."""
+    _mutate("test_27",
+            "                if ([int]@($row)[0].Rows -ne $duration) {",
+            "                if ($false) {")
+
+
+def test_23d_dropping_the_row_rule_selection_is_rejected() -> None:
+    _mutate("test_27",
+            "        if ([string]$entry.RowRule -eq 'one row per applied project year') {",
+            "        if ($true) {")
+
+
+def test_23e_failing_a_refused_calculate_for_not_resizing_is_rejected() -> None:
+    """A REFUSAL IS ENTITLED TO LEAVE THE TABLES ALONE."""
+    _mutate("test_28",
+            "        if ([string]$calculate.Outcome -eq 'SUCCEEDED') {",
+            "        if ($true) {")
+
+
+def test_23f_letting_a_contradicted_announcement_reach_fine_is_rejected() -> None:
+    """NO FALSE PASS FROM THE ANNOUNCEMENT ALONE."""
+    _mutate("test_29",
+            "        } elseif ($calcStructuralProof -eq 'CONTRADICTED') {",
+            "        } elseif ($false) {")
+
+
+def test_23g_setting_a_verdict_from_the_contradicted_branch_is_rejected() -> None:
+    _mutate("test_29",
+            "            $verdictReason = ('Calculate announced success but the _Calc tables did not take ' +",
+            "            $verdict = 'PRODUCTION IS FINE UNDER PROTECTION'\n"
+            "            $verdictReason = ('Calculate announced success but the _Calc tables did not take ' +")
+
+
+def test_23h_weakening_the_blocked_signature_is_rejected() -> None:
+    """NO WEAKENING OF BLOCKED SEMANTICS."""
+    _mutate("test_2a",
+            "    if (-not [bool]$Outcome.Invoked) { return $false }",
+            "    if ($false) { return $false }")
+
+
+def test_23i_overclaiming_the_add_commands_is_rejected() -> None:
+    _mutate("test_2b",
+            "settles endpoint functionality under protection, NOT capacity expansion",
+            "settles ListRows.Add capacity expansion under protection")
+
+
+def test_23j_releasing_workbook_structure_from_the_probe_is_rejected() -> None:
+    """RUN 6 PROVED IT IS NOT NEEDED: ApplyTimeline SUCCEEDED with structure
+    protection True throughout."""
+    _mutate("test_2c",
+            "            $calcSheet = $resolution.Sheets.Item([string]@($calcTables)[0].Sheet)",
+            "            $wb.Unprotect()\n"
+            "            $calcSheet = $resolution.Sheets.Item([string]@($calcTables)[0].Sheet)")
 
 
 # ===========================================================================
 # D. READBACK AND INVOCATION DISCIPLINE
 # ===========================================================================
+def test_22a_dropping_the_discount_rate_prerequisite_is_rejected() -> None:
+    """THE EXACT STATE RUN 6 REACHED: Calculate invoked and refused with
+    "Discount Rate: the value is blank. A blank is not zero." """
+    _mutate("test_20",
+            "        @{ Key = 'discount_rate';      Value = [double]0.05; Endpoint = 'PCCM_Calculate' }\n",
+            "")
+
+
+def test_22b_stringifying_the_discount_rate_is_rejected() -> None:
+    """modCalcResolve.IsRealNumber tests the VarType, so text would refuse."""
+    _mutate("test_20",
+            "@{ Key = 'discount_rate';      Value = [double]0.05; Endpoint = 'PCCM_Calculate' }",
+            "@{ Key = 'discount_rate';      Value = '0.05'; Endpoint = 'PCCM_Calculate' }")
+
+
+def test_22c_running_calculate_after_the_add_commands_is_rejected() -> None:
+    """AN ADDED DRIVER CARRIES A PERMANENT ID AND NO OTHER FIELD, so Calculate
+    would refuse on it and the probe would learn nothing about the _Calc resize."""
+    _mutate("test_20b",
+            "        $calculate = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `\n"
+            "                -Endpoint 'PCCM_Calculate' -Resolution $resolution\n"
+            "            $null = $outcomes.Add($calculate)\n",
+            "")
+
+
 def test_30_removing_the_readback_is_rejected() -> None:
     """REQUIRED CONTROL 6."""
     _mutate("test_3",
@@ -221,7 +325,7 @@ def test_35_restoring_the_run_4_stage_wording_is_rejected() -> None:
     """SECTION 9. 'setting the timeline inputs' under stage 'endpoint' is what a
     reader could mistake for production having run."""
     _mutate("test_35",
-            "            -Action 'SETTING ENDPOINT PRECONDITIONS: writing the timeline inputs (production NOT invoked)' `",
+            "            -Action 'SETTING ENDPOINT PRECONDITIONS: writing the declared inputs (production NOT invoked)' `",
             "            -Action 'setting the timeline inputs' `")
 
 

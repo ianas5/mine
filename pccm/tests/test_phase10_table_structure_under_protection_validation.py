@@ -266,8 +266,8 @@ def test_32_typing_the_watched_tables_into_the_probe_is_rejected() -> None:
 def test_33_skipping_a_required_endpoint_is_rejected() -> None:
     _probe_mutation(
         "test_20",
-        "            -Endpoint 'PCCM_Calculate' -Resolution $resolution",
-        "            -Endpoint 'PCCM_RunSimulation' -Resolution $resolution")
+        "                -Endpoint 'PCCM_Calculate' -Resolution $resolution",
+        "                -Endpoint 'PCCM_RunSimulation' -Resolution $resolution")
 
 
 def test_34_reaching_around_a_production_endpoint_is_rejected() -> None:

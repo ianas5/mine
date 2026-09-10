@@ -74,6 +74,23 @@ def _mutate(module: str, expected: str, before: str, after: str) -> None:
     assert any(name.startswith(expected) for name in refused), (expected, refused)
 
 
+def _mutate_evidence(expected: str, before: str, after: str) -> None:
+    """Damage the run-evidence record, and prove the anchor still matched."""
+    path = PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md"
+    original = path.read_text(encoding="utf-8")
+    damaged = original.replace(before, after, 1)
+    if damaged == original:
+        raise RuntimeError(
+            f"the mutation changed nothing: {before[:70]!r} is no longer in the evidence")
+    try:
+        path.write_text(damaged, encoding="utf-8")
+        refused = _run_battery()
+    finally:
+        path.write_text(original, encoding="utf-8")
+    assert refused, "the mutation survived the whole conformance battery"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
 # ===========================================================================
 # A. NOT REPROTECTING
 # ===========================================================================
@@ -329,6 +346,28 @@ def test_45_a_public_unprotect_command_is_rejected() -> None:
             "    If Not ProtectionRelease(d) Then d = d\n"
             "End Sub\n\n"
             "Public Function ProtectionRelease(ByRef detail As String) As Boolean")
+
+
+def test_47_dropping_the_run_6_structural_effect_is_rejected() -> None:
+    """AN ACCEPTANCE CLAIM WITHOUT THE OBSERVED SHAPES."""
+    _mutate_evidence("test_52", "25×2 → 25×5", "a shape change")
+
+
+def test_48_dropping_the_run_6_ordering_caveat_is_rejected() -> None:
+    """THE PROBE RAN BEFORE THE FRESH STAGE-A BUILD, and saying so is the
+    difference between evidence and an acceptance claim."""
+    _mutate_evidence("test_52", "not** ideal acceptance evidence", "good evidence")
+
+
+def test_49_rewriting_the_calculate_refusal_as_protection_is_rejected() -> None:
+    _mutate_evidence("test_52",
+                     "Discount Rate: the value is blank. A blank is not zero.",
+                     "the sheet is protected.")
+
+
+def test_50_dropping_the_structure_protected_evidence_is_rejected() -> None:
+    _mutate_evidence("test_53", "privilege envelope is not widened",
+                     "envelope may be revisited")
 
 
 def test_46_deleting_the_recorded_evidence_is_rejected() -> None:

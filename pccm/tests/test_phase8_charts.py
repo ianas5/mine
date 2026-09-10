@@ -161,6 +161,38 @@ def _git(*args: str) -> str:
 # could say "this file may grow"; this one says "this file may grow, and may
 # lose exactly this line".
 DECLARED_PRODUCTION_CORRECTIONS = {
+    # P10-RP: THE RUNTIME PROTECTION RECONCILIATION. Windows disproved the
+    # accepted Phase-10 assumption that UserInterfaceOnly:=True permits ListObject
+    # structural mutation on a protected sheet - PCCM_ApplyTimeline was invoked
+    # and refused with "Error 1004: Table features aren't available because the
+    # sheet is protected" - so modProtection gained a depth-safe structural
+    # window and modAppState gained the envelope that opens and closes it. A
+    # later Windows run then exercised the fix: ApplyTimeline SUCCEEDED, moved
+    # three grids, and left protection 14/14 with structure still True.
+    "pccm/src/vba/modAppState.bas": (
+        "P10-RP: adds the Structural field to AppStateSnapshot, initialises it in "
+        "CaptureAppState, adds BeginStructuralOperation beside the unchanged "
+        "BeginOperation, and closes the window in FinishOperation on every exit "
+        "path. Wholly additive: OperationResult, Announce, ReportResult, the "
+        "MsgBox behaviour, the automation hooks and every application-state "
+        "restore procedure are untouched.",
+        (),
+    ),
+    "pccm/src/vba/modTimeline.bas": (
+        "P10-RP: PCCM_ApplyTimeline declares itself structural. Its forward work "
+        "adds project-year ListColumns to both profiling grids and the inflation "
+        "grid, and its rollback rebuilds all three - all of which a protected "
+        "sheet refuses. The ONE removed line is the envelope call it replaces.",
+        ("    modAppState.BeginOperation",),
+    ),
+    "pccm/src/vba/modDrivers.bas": (
+        "P10-RP: Add and Delete Cost Line / Risk declare themselves structural. "
+        "They add and delete register ListRows past the reserved block, SyncRows "
+        "reshapes the profiling grid on every one of them, and the rollback "
+        "rebuilds both tables. The ONE removed line is the envelope call it "
+        "replaces.",
+        ("    modAppState.BeginOperation",),
+    ),
     "pccm/src/vba/modResultsState.bas": (
         "P8-3 pre-Windows correction: adds the thin volatile adapter "
         "PCCM_ResultsSimulationState, delegating to the accepted pure evaluator "
@@ -208,7 +240,12 @@ DECLARED_PRODUCTION_CORRECTIONS = {
         "message, no Boolean and no arithmetic is among them, which the "
         "mechanical reversal in tests/vba_subject_plumbing.py proves by "
         "restoring the accepted reporter prefix exactly.",
-        ('    Dim package As CalculationPackage, detail As String',
+        (
+            # P10-RP: PCCM_Calculate declares itself structural - ResizeBody adds
+            # and deletes _Calc ListRows and the rollback rebuilds five tables,
+            # which a protected sheet refuses. The removed line is the envelope
+            # call it replaces.
+            "    modAppState.BeginOperation",'    Dim package As CalculationPackage, detail As String',
          '    prepared = PrepareCurrentCalculation(package, detail)',
          '    If PrepareCurrentCalculation(package, detail) Then',
          '    Dim detail As String, prepared As Boolean',
@@ -1634,12 +1671,15 @@ def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None
     # NINTH declaration still fails here, and so does a removal or a rename of
     # any of these eight.
     assert set(DECLARED_PRODUCTION_CORRECTIONS) == {
+        "pccm/src/vba/modAppState.bas",
         "pccm/src/vba/modCalcAnalytical.bas",
         "pccm/src/vba/modCalcCheck.bas",
         "pccm/src/vba/modCalcReport.bas",
         "pccm/src/vba/modCalcResolve.bas",
+        "pccm/src/vba/modDrivers.bas",
         "pccm/src/vba/modResultsState.bas",
         "pccm/src/vba/modSimAnnualStore.bas",
+        "pccm/src/vba/modTimeline.bas",
         "pccm/src/vba/modSimPostReport.bas",
         "pccm/src/vba/modSimReport.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
     # AND THE TWO P10-2B ENTRIES ARE ADDITIVE, which is the whole claim a reset
