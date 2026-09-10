@@ -252,6 +252,12 @@ ENVIRONMENT_FIELDS: tuple[str, ...] = (
     "excel_version",
     "excel_build",
     "excel_bitness",
+    # W1. The IMAGE PATH THE BITNESS WAS DERIVED FROM. The first draft recorded
+    # the PowerShell host's bitness under `excel_bitness`, which would have been
+    # wrong evidence in the one field a reader uses to say which Excel build was
+    # exercised. The path is carried so the derivation is auditable rather than
+    # asserted.
+    "excel_executable_path",
     "excel_calculation_mode",
     "other_workbooks_open",
     "workbook_path",

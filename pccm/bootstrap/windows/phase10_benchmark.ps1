@@ -338,6 +338,103 @@ function Get-IdColumnValues {
 
 
 # ===========================================================================
+# WHERE THE RUN HAD GOT TO
+# ===========================================================================
+# W1 DIAGNOSTIC ROOT. Windows Run 1 reached the outer handler and said only
+# "The property 'Value' cannot be found on this object." It did not say which
+# stage it was in, which is the one thing that would have located it in a
+# thousand-line script from a console transcript.
+#
+# So the run carries a CURSOR. It is set at stage boundaries and at each timed
+# execution, and it is READ ONLY BY THE FAILURE PATH - never inside a measured
+# interval, and never by a successful run, so it can change nothing about a
+# timing. The whole cursor costs four string assignments per operation.
+$script:BenchmarkCursor = [pscustomobject]@{
+    Stage      = 'startup'
+    Action     = 'loading the harness'
+    Scenario   = ''
+    Operation  = ''
+    Iterations = ''
+    Phase      = ''
+}
+
+function Set-BenchmarkStage {
+    param([string]$Stage, [string]$Action = '')
+    $script:BenchmarkCursor.Stage = $Stage
+    $script:BenchmarkCursor.Action = $Action
+}
+
+function Set-BenchmarkOperationContext {
+    param([string]$Scenario = '', [string]$Operation = '', $Iterations = $null,
+          [string]$Phase = '')
+    $script:BenchmarkCursor.Scenario = $Scenario
+    $script:BenchmarkCursor.Operation = $Operation
+    $script:BenchmarkCursor.Iterations = $(if ($null -eq $Iterations) { 'n/a' }
+                                           else { [string]$Iterations })
+    $script:BenchmarkCursor.Phase = $Phase
+}
+
+# WHAT FAILED, WHERE, AND WHAT THE RUN WAS DOING AT THE TIME. Structured, so the
+# same facts reach the console, the log and the JSON artifact rather than only
+# the first of the three.
+function New-BenchmarkFailureRecord {
+    param($ErrorRecord, [string]$Fallback = '')
+    $cursor = $script:BenchmarkCursor
+    $record = New-Object System.Collections.Specialized.OrderedDictionary
+    $record.Add('stage', [string]$cursor.Stage)
+    $record.Add('action', [string]$cursor.Action)
+    $record.Add('scenario', [string]$cursor.Scenario)
+    $record.Add('operation', [string]$cursor.Operation)
+    $record.Add('iterations', [string]$cursor.Iterations)
+    $record.Add('execution_phase', [string]$cursor.Phase)
+    if ($null -eq $ErrorRecord) {
+        $record.Add('exception_type', '')
+        $record.Add('message', $Fallback)
+        $record.Add('script_line_number', 0)
+        $record.Add('script_line', '')
+        $record.Add('command', '')
+        return $record
+    }
+    $exception = Get-BenchmarkProperty -InputObject $ErrorRecord -Name 'Exception'
+    $invocation = Get-BenchmarkProperty -InputObject $ErrorRecord -Name 'InvocationInfo'
+    $record.Add('exception_type',
+                $(if ($null -eq $exception) { Get-BenchmarkUnavailable }
+                  else { $exception.GetType().FullName }))
+    $record.Add('message', [string](Format-BenchmarkFact (
+        Get-BenchmarkProperty -InputObject $exception -Name 'Message')))
+    $record.Add('script_line_number', [int](Format-BenchmarkNumber (
+        Get-BenchmarkProperty -InputObject $invocation -Name 'ScriptLineNumber')))
+    $line = [string](Get-BenchmarkProperty -InputObject $invocation -Name 'Line')
+    $record.Add('script_line', $line.Trim())
+    $record.Add('command', [string](Format-BenchmarkFact (
+        Get-BenchmarkProperty -InputObject $invocation -Name 'MyCommand')))
+    return $record
+}
+
+function Format-BenchmarkNumber {
+    param($Value)
+    if ($null -eq $Value) { return 0 }
+    return [int]$Value
+}
+
+function Format-BenchmarkFailure {
+    param($Record)
+    $lines = @('  stage                : ' + [string]$Record['stage'],
+               '  doing                : ' + [string]$Record['action'],
+               '  scenario             : ' + [string]$Record['scenario'],
+               '  operation            : ' + [string]$Record['operation'],
+               '  iterations           : ' + [string]$Record['iterations'],
+               '  execution phase      : ' + [string]$Record['execution_phase'],
+               '  exception            : ' + [string]$Record['exception_type'],
+               '  message              : ' + [string]$Record['message'],
+               '  at line              : ' + [string]$Record['script_line_number'],
+               '  statement            : ' + [string]$Record['script_line'],
+               '  command              : ' + [string]$Record['command'])
+    return ($lines -join "`r`n")
+}
+
+
+# ===========================================================================
 # THE REPORT SINK
 # ===========================================================================
 $script:BenchmarkLines = New-Object System.Collections.ArrayList
@@ -353,7 +450,14 @@ function Write-BenchmarkLine {
         try {
             Set-Content -LiteralPath $script:BenchmarkTextPath `
                 -Value ($script:BenchmarkLines -join "`r`n") -Encoding UTF8
-        } catch { }
+        } catch {
+            # THE CONSOLE LINE ALREADY WENT OUT. Losing the write-through means
+            # the log file is behind, which is worth saying once - and it must
+            # not recurse back into this function.
+            $script:BenchmarkTextPath = ''
+            Write-Host ('  (the run log could not be written through: ' +
+                        $_.Exception.Message + ')') -ForegroundColor DarkYellow
+        }
     }
 }
 
@@ -411,11 +515,70 @@ function Get-BenchmarkSourceRevision {
 # not ask, rather than the machine did not say.
 function Get-BenchmarkUnavailable { return 'unavailable' }
 
+# W1 ROOT CAUSE, AND THE ONE PLACE A PROPERTY IS NOW READ OFF SOMETHING THAT
+# MIGHT NOT BE THERE.
+#
+# Windows Run 1 aborted here, before a single operation was timed:
+#
+#     $value = [string](Get-Item -LiteralPath ('Env:' + $name) `
+#                       -ErrorAction SilentlyContinue).Value
+#
+# `Get-Item Env:OneDriveCommercial` on a machine with a CONSUMER OneDrive and no
+# work account writes a suppressed ItemNotFoundException and EMITS NOTHING. A
+# pipeline that emitted nothing is $null in an expression, and under
+# `Set-StrictMode -Version 2.0` `$null.Value` is not a quiet $null - it is a
+# terminating PropertyNotFoundException with FullyQualifiedErrorId
+# PropertyNotFoundStrict. The harness asked an optional environment variable for
+# a property before establishing that the variable existed.
+#
+# NORMALISE, VALIDATE, THEN USE. `@()` turns "emitted nothing" into an empty
+# array rather than $null, and the property is read only from an object that is
+# proved to carry it. $null here is the ABSENCE OF A FACT and never a substitute
+# for one: every caller either records it as unavailable or refuses.
+function Get-BenchmarkProperty {
+    param($InputObject, [string]$Name)
+    if ($null -eq $InputObject) { return $null }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+# A property that MUST be there. Absent is a refusal with the shape named, never
+# a default - a benchmark that proceeded on a substituted value would measure a
+# scenario nobody asked for.
+function Get-BenchmarkRequiredProperty {
+    param($InputObject, [string]$Name, [string]$Where)
+    if ($null -eq $InputObject) {
+        throw ($Where + ": expected an object carrying '" + $Name + "' and got nothing")
+    }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        throw ($Where + ": the object is a " + $InputObject.GetType().FullName +
+               " and carries no '" + $Name + "' property. It is not defaulted.")
+    }
+    return $property.Value
+}
+
+# A FACT THE MACHINE ANSWERED, OR THE WORD FOR "IT DID NOT". Never an empty
+# string and never a silently omitted key: a missing field must always mean the
+# harness did not ask.
+function Format-BenchmarkFact {
+    param($Value)
+    if ($null -eq $Value) { return (Get-BenchmarkUnavailable) }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return (Get-BenchmarkUnavailable) }
+    return $text
+}
+
 function Get-BenchmarkOneDriveRoots {
     $roots = @()
     foreach ($name in @('OneDrive', 'OneDriveCommercial', 'OneDriveConsumer')) {
-        $value = [string](Get-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue).Value
-        if (-not [string]::IsNullOrWhiteSpace($value)) { $roots += $value }
+        # AN ABSENT VARIABLE CONTRIBUTES NOTHING, and that is a fact about the
+        # machine rather than a hole in the record.
+        foreach ($item in @(Get-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue)) {
+            $value = [string](Get-BenchmarkProperty -InputObject $item -Name 'Value')
+            if (-not [string]::IsNullOrWhiteSpace($value)) { $roots += $value }
+        }
     }
     return ,@($roots | Select-Object -Unique)
 }
@@ -439,68 +602,108 @@ function Get-BenchmarkLocationType {
     try {
         $qualifier = [System.IO.Path]::GetPathRoot($full)
         if ($full.StartsWith('\\')) { return 'synced' }
-        $drive = Get-CimInstance -ClassName Win32_LogicalDisk `
-            -Filter ("DeviceID='" + $qualifier.TrimEnd('\') + "'") -ErrorAction SilentlyContinue
-        if ($null -ne $drive -and [int]$drive.DriveType -eq 4) { return 'synced' }
-    } catch { }
+        foreach ($drive in @(Get-CimInstance -ClassName Win32_LogicalDisk `
+                -Filter ("DeviceID='" + $qualifier.TrimEnd('\') + "'") -ErrorAction SilentlyContinue)) {
+            $type = Get-BenchmarkProperty -InputObject $drive -Name 'DriveType'
+            if (($null -ne $type) -and ([int]$type -eq 4)) { return 'synced' }
+        }
+    } catch {
+        # UNCLASSIFIABLE IS NOT LOCAL. Returning 'local' after a failed lookup
+        # would state the very thing the contract asked never to be assumed - a
+        # synced repository silently recorded as an unsynchronised path.
+        return 'unknown'
+    }
     return 'local'
 }
 
+# EXCEL'S BITNESS IS EXCEL'S, NOT POWERSHELL'S.
+#
+# The first draft recorded `[System.Environment]::Is64BitProcess`, which is the
+# bitness of the POWERSHELL HOST. A 64-bit host automating a 32-bit Excel would
+# have been recorded as 64-bit Excel - wrong evidence in the one field a reader
+# would use to say which build was exercised. Windows Run 1 never reached this
+# line, so no evidence is invalidated by correcting it.
+#
+# The answer is derived from the EXCEL PROCESS'S OWN IMAGE PATH, and the path is
+# recorded beside the word so the derivation is auditable rather than asserted.
+function Get-BenchmarkExcelImage {
+    param($Identity)
+    $path = ''
+    $processId = [int](Get-BenchmarkProperty -InputObject $Identity -Name 'ProcessId')
+    if ($processId -gt 0) {
+        foreach ($process in @(Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+            $candidate = [string](Get-BenchmarkProperty -InputObject $process -Name 'Path')
+            if (-not [string]::IsNullOrWhiteSpace($candidate)) { $path = $candidate }
+        }
+    }
+    $bitness = Get-BenchmarkUnavailable
+    if (-not [string]::IsNullOrWhiteSpace($path)) {
+        $bitness = $(if ($path -match '(?i)\\Program Files \(x86\)\\') { '32-bit' } else { '64-bit' })
+        $bitness = $bitness + ' (derived from the Excel image path)'
+    }
+    return [pscustomobject]@{ Path = $path; Bitness = $bitness }
+}
+
 function Get-BenchmarkEnvironment {
-    param($Excel, [string]$WorkbookPath, [string]$RepositoryPath,
+    param($Excel, $Identity, [string]$WorkbookPath, [string]$RepositoryPath,
           $Manifest, [string]$HarnessVersion, [int]$SchemaVersion, $Revision)
     $unknown = Get-BenchmarkUnavailable
     $roots = @(Get-BenchmarkOneDriveRoots)
 
+    # NORMALISED THE SAME WAY THE ONEDRIVE ROOTS ARE. A CIM query that matches
+    # nothing emits nothing, and `@()` turns that into an empty collection
+    # instead of a $null whose properties StrictMode refuses to read.
     $os = $null; $cpu = $null; $computer = $null
-    try { $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue } catch { }
-    try { $cpu = @(Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue)[0] } catch { }
-    try { $computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue } catch { }
+    foreach ($item in @(Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue)) { $os = $item }
+    foreach ($item in @(Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue)) { if ($null -eq $cpu) { $cpu = $item } }
+    foreach ($item in @(Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue)) { $computer = $item }
 
     $ram = $unknown
-    if ($null -ne $computer -and $null -ne $computer.TotalPhysicalMemory) {
-        $ram = [string]('{0:N1}' -f ([double]$computer.TotalPhysicalMemory / 1GB))
-    }
+    $memory = Get-BenchmarkProperty -InputObject $computer -Name 'TotalPhysicalMemory'
+    if ($null -ne $memory) { $ram = [string]('{0:N1}' -f ([double]$memory / 1GB)) }
 
-    $excelVersion = $unknown; $excelBuild = $unknown; $excelBitness = $unknown
+    $image = Get-BenchmarkExcelImage -Identity $Identity
+    $excelVersion = $unknown; $excelBuild = $unknown
+    $excelBitness = [string]$image.Bitness
+    $excelPath = $(if ([string]::IsNullOrWhiteSpace($image.Path)) { $unknown } else { [string]$image.Path })
     $calcMode = $unknown; $otherBooks = $unknown
     if ($null -ne $Excel) {
-        try { $excelVersion = [string]$Excel.Version } catch { }
-        try { $excelBuild = [string]$Excel.Build } catch { }
-        try { $excelBitness = [string]$Excel.OperatingSystem } catch { }
-        try {
-            # Excel reports its own bitness through the process, not through the
-            # Application object; both are recorded because neither alone is
-            # enough to say which build is installed.
-            $excelBitness = [string]([System.Environment]::Is64BitProcess)
-            $excelBitness = $(if ([System.Environment]::Is64BitProcess) { '64-bit host process' }
-                              else { '32-bit host process' })
-        } catch { }
-        try { $calcMode = [string]$Excel.Calculation } catch { }
-        try { $otherBooks = [string]($Excel.Workbooks.Count) } catch { }
+        # THESE FOUR ARE COM CALLS, NOT PROPERTY LOOKUPS ON A POWERSHELL OBJECT.
+        # A COM member that an Excel build does not implement raises rather than
+        # returning $null, and there is nothing to normalise first - so each is
+        # asked on its own and a failure records 'unavailable' for that one field
+        # and no other. Nothing here can swallow a failure of the benchmark
+        # itself: the whole block runs before any operation is timed and cannot
+        # affect a sample.
+        try { $excelVersion = [string]$Excel.Version } catch { $excelVersion = $unknown }
+        try { $excelBuild = [string]$Excel.Build } catch { $excelBuild = $unknown }
+        try { $calcMode = [string]$Excel.Calculation } catch { $calcMode = $unknown }
+        try { $otherBooks = [string]($Excel.Workbooks.Count) } catch { $otherBooks = $unknown }
     }
 
     $branch = $unknown
     try {
         $named = [string](& git -C $repoRoot rev-parse --abbrev-ref HEAD 2>$null)
         if (-not [string]::IsNullOrWhiteSpace($named)) { $branch = $named.Trim() }
-    } catch { }
+    } catch {
+        $branch = $unknown
+    }
 
     $record = New-Object System.Collections.Specialized.OrderedDictionary
     $record.Add('captured_at_utc', ((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')))
     $record.Add('host_name', [string]$env:COMPUTERNAME)
     $record.Add('powershell_version', [string]$PSVersionTable.PSVersion)
-    $record.Add('windows_edition', $(if ($null -ne $os) { [string]$os.Caption } else { $unknown }))
-    $record.Add('windows_version', $(if ($null -ne $os) { [string]$os.Version } else { $unknown }))
-    $record.Add('windows_build', $(if ($null -ne $os) { [string]$os.BuildNumber } else { $unknown }))
-    $record.Add('cpu_model', $(if ($null -ne $cpu) { [string]$cpu.Name } else { $unknown }))
+    $record.Add('windows_edition', (Format-BenchmarkFact (Get-BenchmarkProperty -InputObject $os -Name 'Caption')))
+    $record.Add('windows_version', (Format-BenchmarkFact (Get-BenchmarkProperty -InputObject $os -Name 'Version')))
+    $record.Add('windows_build', (Format-BenchmarkFact (Get-BenchmarkProperty -InputObject $os -Name 'BuildNumber')))
+    $record.Add('cpu_model', (Format-BenchmarkFact (Get-BenchmarkProperty -InputObject $cpu -Name 'Name')))
     $record.Add('logical_processors',
-                $(if ($null -ne $cpu -and $null -ne $cpu.NumberOfLogicalProcessors) {
-                    [string]$cpu.NumberOfLogicalProcessors } else { $unknown }))
+                (Format-BenchmarkFact (Get-BenchmarkProperty -InputObject $cpu -Name 'NumberOfLogicalProcessors')))
     $record.Add('installed_ram_gb', $ram)
     $record.Add('excel_version', $excelVersion)
     $record.Add('excel_build', $excelBuild)
     $record.Add('excel_bitness', $excelBitness)
+    $record.Add('excel_executable_path', $excelPath)
     $record.Add('excel_calculation_mode', $calcMode)
     $record.Add('other_workbooks_open', $otherBooks)
     $record.Add('workbook_path', $WorkbookPath)
@@ -823,6 +1026,7 @@ Write-Host 'This run RECORDS a baseline. It does not judge one: there is no' -Fo
 Write-Host 'absolute pass mark before the target machine has been observed.' -ForegroundColor Yellow
 Write-Host ''
 
+Set-BenchmarkStage -Stage 'preflight' -Action 'reading the benchmark plan and the contract projections'
 $planPath       = Join-Path $BuildDir 'phase10_benchmark_plan.json'
 $manifestPath   = Join-Path $BuildDir 'stage_b_manifest.json'
 $inspectPath    = Join-Path $BuildDir 'phase5_gate_b_inspection.json'
@@ -899,6 +1103,7 @@ if ($plannedRuns.Count -eq 0) {
 
 # FAIL CLOSED ON AN UNATTRIBUTABLE WORKBOOK. A measurement nobody can attribute
 # to a revision is not evidence. The accepted Phase-7 check, unchanged.
+Set-BenchmarkStage -Stage 'preflight' -Action 'attributing the workbook to a source revision'
 $revision = $null
 try {
     $revision = Get-BenchmarkSourceRevision -RepoRoot $repoRoot
@@ -930,6 +1135,7 @@ $null = New-Item -ItemType Directory -Path $tempRoot -Force
 if ([string]::IsNullOrWhiteSpace($OutDir)) { $OutDir = $tempRoot }
 $null = New-Item -ItemType Directory -Path $OutDir -Force -ErrorAction SilentlyContinue
 
+Set-BenchmarkStage -Stage 'setup' -Action 'copying the build and running the Stage-B bootstrap'
 $bootstrapWatch = [System.Diagnostics.Stopwatch]::StartNew()
 Copy-Item -LiteralPath (Join-Path $BuildDir ([string]$manifest.stage_a_filename)) -Destination $tempRoot
 Copy-Item -LiteralPath $manifestPath   -Destination $tempRoot
@@ -1031,8 +1237,10 @@ $setupTimings = New-Object System.Collections.Specialized.OrderedDictionary
 $setupTimings.Add('stage_b_bootstrap_ms', [double]$bootstrapWatch.Elapsed.TotalMilliseconds)
 $sessionWatch = [System.Diagnostics.Stopwatch]::StartNew()
 $abandoned = ''
+$failure = $null
 
 try {
+    Set-BenchmarkStage -Stage 'setup' -Action 'starting an owned Excel instance'
     $startupWatch = [System.Diagnostics.Stopwatch]::StartNew()
     $excel = New-Object -ComObject Excel.Application
     $excelIdentity = Get-ExcelIdentity -ExcelApp $excel -PreExistingPids $preExisting
@@ -1041,6 +1249,7 @@ try {
     $excel.AskToUpdateLinks = $false
     $startupWatch.Stop()
 
+    Set-BenchmarkStage -Stage 'setup' -Action 'opening the benchmark workbook'
     $openWatch = [System.Diagnostics.Stopwatch]::StartNew()
     $workbooks = $excel.Workbooks
     $wb = $workbooks.Open($stageBPath)
@@ -1052,8 +1261,9 @@ try {
     $setupTimings.Add('excel_startup_ms', [double]$startupWatch.Elapsed.TotalMilliseconds)
     $setupTimings.Add('workbook_open_ms', [double]$openWatch.Elapsed.TotalMilliseconds)
 
-    $environment = Get-BenchmarkEnvironment -Excel $excel -WorkbookPath $stageBPath `
-        -RepositoryPath $repoRoot -Manifest $manifest `
+    Set-BenchmarkStage -Stage 'setup' -Action 'capturing the environment inventory'
+    $environment = Get-BenchmarkEnvironment -Excel $excel -Identity $excelIdentity `
+        -WorkbookPath $stageBPath -RepositoryPath $repoRoot -Manifest $manifest `
         -HarnessVersion ([string]$plan.harness_version) `
         -SchemaVersion ([int]$plan.schema_version) -Revision $revision
 
@@ -1075,6 +1285,7 @@ try {
         if ([string]$register.key -eq 'risk_register') { $riskRegister = $register }
     }
 
+    Set-BenchmarkStage -Stage 'setup' -Action 'opening the automation envelope and capturing the FX seed'
     $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
     $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $inspection
 
@@ -1084,6 +1295,8 @@ try {
     # and it is expensive exactly once.
     Write-BenchmarkLine ('BUILDING ' + $Scenario)
     Write-BenchmarkLine ('-' * (9 + $Scenario.Length))
+    Set-BenchmarkStage -Stage 'scenario' -Action ('building the ' + $Scenario + ' fixture through the accepted production endpoints')
+    Set-BenchmarkOperationContext -Scenario $Scenario
     $model = New-BenchmarkModel -ScenarioSpec $scenarioSpec
     $fixtureWatch = [System.Diagnostics.Stopwatch]::StartNew()
     $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `
@@ -1096,6 +1309,7 @@ try {
 
     # THE DIMENSIONS ARE READ BACK OUT OF THE WORKBOOK, not taken from the model.
     # What is timed is what the workbook holds.
+    Set-BenchmarkStage -Stage 'scenario' -Action 'reading the built dimensions back out of the workbook'
     $costIds = @(Get-IdColumnValues -Workbook $wb -Info $costRegister)
     $riskIds = @(Get-IdColumnValues -Workbook $wb -Info $riskRegister)
     $actual.Add('cost_lines', [int]$costIds.Count)
@@ -1138,6 +1352,7 @@ try {
             # SETTING THE CONTROL IS SETUP. It is outside every clock, and the
             # value is read back so the run records what the workbook was asked
             # for rather than what this script intended.
+            Set-BenchmarkStage -Stage 'measurement' -Action ('setting the iteration control to ' + [string]$iterations + ' and re-establishing the deterministic basis')
             Set-NamedValue -Workbook $wb `
                 -DefinedName ([string]$simInspection.controls.monte_carlo_iterations.defined_name) `
                 -Value ([double]$iterations)
@@ -1153,6 +1368,13 @@ try {
         $total = [int]$run.cold_runs + [int]$run.warm_runs
         for ($index = 0; $index -lt $total; $index++) {
             $phase = $(if ($index -lt [int]$run.cold_runs) { 'cold' } else { 'warm' })
+            # THE CURSOR IS SET HERE, OUTSIDE THE CLOCK, and read only if
+            # something throws. `Invoke-BenchmarkExecution` starts its stopwatch
+            # after this returns, so no diagnostic work is ever inside a
+            # measured interval.
+            Set-BenchmarkStage -Stage 'measurement' -Action ('executing ' + [string]$operation.label)
+            Set-BenchmarkOperationContext -Scenario $Scenario -Operation ([string]$operation.key) `
+                -Iterations $iterations -Phase $phase
             $execution = Invoke-BenchmarkExecution -Excel $excel -Workbook $wb `
                 -SimInspection $simInspection -Operation $operation `
                 -RequestedIterations $iterations -Phase $phase
@@ -1208,10 +1430,19 @@ try {
 
     $excel.Run('PCCM_AutomationEnd') | Out-Null
 } catch {
-    if ([string]::IsNullOrWhiteSpace($abandoned)) { $abandoned = (Format-Err $_) }
+    # WHAT FAILED, WHERE, AND WHAT THE RUN WAS DOING. Windows Run 1 reached this
+    # handler and reported one sentence; it now reports the cursor, the
+    # exception type, the failing statement and its line.
+    $failure = New-BenchmarkFailureRecord -ErrorRecord $_ -Fallback $abandoned
+    $abandoned = [string]$failure['message']
     Write-BenchmarkLine ''
-    Write-BenchmarkLine ('THE BENCHMARK SESSION RAISED: ' + $abandoned)
-    Write-BenchmarkLine 'Whatever was measured before this point is above and is still valid.'
+    Write-BenchmarkLine 'THE BENCHMARK SESSION RAISED'
+    Write-BenchmarkLine '----------------------------'
+    Write-BenchmarkLine (Format-BenchmarkFailure $failure)
+    Write-BenchmarkLine ''
+    Write-BenchmarkLine 'Any operation that produced three valid warm samples before this'
+    Write-BenchmarkLine 'point is above and is still a valid measurement. THIS RUN IS NOT A'
+    Write-BenchmarkLine 'BASELINE: a baseline is the whole declared matrix for a scenario.'
 } finally {
     # --- shutdown, the accepted path, leaf before parent --------------------
     $rel = New-ReleaseLedger 'phase-10 benchmark instance'
@@ -1271,10 +1502,51 @@ $shutdownRecord.Add('transient_release_failures', @(Get-TransientFailures))
 $shutdownRecord.Add('workbook_saved', $false)
 
 if ($null -eq $environment) {
-    $environment = Get-BenchmarkEnvironment -Excel $null -WorkbookPath $stageBPath `
-        -RepositoryPath $repoRoot -Manifest $manifest `
+    $environment = Get-BenchmarkEnvironment -Excel $null -Identity $excelIdentity `
+        -WorkbookPath $stageBPath -RepositoryPath $repoRoot -Manifest $manifest `
         -HarnessVersion ([string]$plan.harness_version) `
         -SchemaVersion ([int]$plan.schema_version) -Revision $revision
+}
+
+# ===========================================================================
+# WAS THIS A BASELINE?
+# ===========================================================================
+# W1 SETTLED THIS BY FAILING. Windows Run 1 aborted in setup, produced no timed
+# operation at all, and the only thing it timed was a 68.4 s Stage-B bootstrap -
+# which is SETUP and is not a user-operation figure under any reading. A run
+# like that must not be able to look like evidence, so the artifact says what it
+# was in a field, the summary says it in a sentence, and the process says it in
+# an exit code.
+#
+# THREE OUTCOMES, AND THEY ARE DIFFERENT THINGS:
+#
+#   BASELINE RECORDED  every run the plan declares for this scenario completed
+#                      with a cold sample and three valid warm samples. This is
+#                      the only outcome that is a baseline.
+#
+#   SCOPED RUN         the operator narrowed the run with -Iterations or
+#                      -Operations. Everything asked for succeeded; it is
+#                      complete evidence for what was asked and is NOT the
+#                      scenario's baseline.
+#
+#   ABORTED            something failed, refused, or produced fewer than three
+#                      valid warm samples. Not a baseline, not a partial median,
+#                      and not a successful benchmark.
+$plannedCount = @($plannedRuns).Count
+$completed = @($results | Where-Object { [bool]$_['valid'] -and ($null -ne $_['warm_median_ms']) })
+$runComplete = ([bool](([string]::IsNullOrWhiteSpace($abandoned)) -and
+                       (@($completed).Count -eq $plannedCount) -and ($plannedCount -gt 0)))
+# `@($null).Count` IS 1, NOT 0. An unsupplied [int[]] parameter is $null, and
+# wrapping $null in @() produces a one-element array holding $null - so a plain
+# count would have marked every full run as scoped.
+$scoped = ([bool]((($null -ne $Iterations) -and (@($Iterations).Count -gt 0)) -or
+                  (($null -ne $Operations) -and (@($Operations).Count -gt 0))))
+$baselineEstablished = ([bool]($runComplete -and (-not $scoped)))
+$baselineStatus = 'ABORTED BEFORE A COMPLETE BASELINE - this run is NOT a baseline, NOT a partial warm median, and NOT a successful benchmark'
+if ($runComplete) {
+    $baselineStatus = $(if ($scoped) {
+        'SCOPED RUN COMPLETE - complete evidence for what was asked, but NOT the scenario baseline'
+    } else { 'BASELINE RECORDED' })
 }
 
 $report = New-Object System.Collections.Specialized.OrderedDictionary
@@ -1282,6 +1554,12 @@ $report.Add('schema_version', [int]$plan.schema_version)
 $report.Add('baseline_id', [string]$plan.baseline_id)
 $report.Add('harness_version', [string]$plan.harness_version)
 $report.Add('kind', 'pccm-phase10-performance-baseline')
+$report.Add('baseline_status', $baselineStatus)
+$report.Add('baseline_established', $baselineEstablished)
+$report.Add('run_complete', $runComplete)
+$report.Add('scoped', $scoped)
+$report.Add('runs_planned', $plannedCount)
+$report.Add('runs_with_a_valid_warm_median', @($completed).Count)
 $report.Add('judgement', ('NONE. This artifact records measurements. No absolute pass ' +
                           'or fail is contracted before a baseline exists.'))
 $report.Add('generated_at_utc', ((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')))
@@ -1290,7 +1568,9 @@ $report.Add('scenario', $scenarioSpec)
 $report.Add('scenario_actual', $actual)
 $report.Add('setup_ms', $setupTimings)
 $report.Add('setup_note', ('setup is reported so it can be seen to have been paid. ' +
-                           'None of it is inside any operation elapsed time.'))
+                           'None of it is inside any operation elapsed time, and none of ' +
+                           'it is a user-operation performance figure: a Stage-B bootstrap ' +
+                           'time is evidence about a build, never a baseline.'))
 $report.Add('timing', $plan.timing)
 $report.Add('correctness_gates', $plan.correctness_gates)
 $report.Add('regression_policy', $plan.regression_policy)
@@ -1298,6 +1578,7 @@ $report.Add('historical_context', $plan.historical_context)
 $report.Add('forbidden', $plan.forbidden)
 $report.Add('results', @($results))
 $report.Add('abandoned', $abandoned)
+$report.Add('failure', $failure)
 $report.Add('shutdown', $shutdownRecord)
 $report.Add('session_wall_clock_ms', [double]$sessionWatch.Elapsed.TotalMilliseconds)
 
@@ -1308,12 +1589,17 @@ $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $jsonPath -Encodin
 $md = New-Object System.Collections.ArrayList
 $null = $md.Add('# PCCM performance baseline - ' + $Scenario)
 $null = $md.Add('')
+$null = $md.Add('**Status: ' + $baselineStatus + '**')
+$null = $md.Add('')
 $null = $md.Add('**This records. It does not judge.** No absolute pass or fail is')
 $null = $md.Add('contracted before a baseline exists on the target machine.')
 $null = $md.Add('')
 $null = $md.Add('| | |')
 $null = $md.Add('|---|---|')
 $null = $md.Add('| Baseline id | `' + [string]$plan.baseline_id + '` |')
+$null = $md.Add('| Baseline established | ' + $(if ($baselineEstablished) { 'yes' } else { '**no**' }) + ' |')
+$null = $md.Add('| Runs with a valid warm median | ' + [string]@($completed).Count +
+                ' of ' + [string]$plannedCount + ' planned |')
 $null = $md.Add('| Scenario | ' + $Scenario + ' - ' + [string]$scenarioSpec.title + ' |')
 $null = $md.Add('| Drivers | ' + [string]$actual['drivers'] + ' (' +
                 [string]$actual['cost_lines'] + ' Cost Lines + ' + [string]$actual['risks'] + ' Risks) |')
@@ -1360,6 +1646,17 @@ $null = $md.Add('Setup, excluded from every figure above: Stage-B bootstrap ' +
                     ', scenario fixture ' +
                     ('{0:N1} s' -f ([double]$setupTimings['scenario_fixture_ms'] / 1000.0)) } else { '' }) + '.')
 $null = $md.Add('')
+if (-not $baselineEstablished) {
+    $null = $md.Add('> This run did **not** establish the ' + $Scenario + ' baseline, so')
+    $null = $md.Add('> nothing in it may be quoted as one and nothing may be compared')
+    $null = $md.Add('> against it under the policy below.')
+    if ($null -ne $failure) {
+        $null = $md.Add('>')
+        $null = $md.Add('> It stopped in stage **' + [string]$failure['stage'] + '** while ' +
+                        [string]$failure['action'] + ': `' + [string]$failure['message'] + '`')
+    }
+    $null = $md.Add('')
+}
 $null = $md.Add('## How a later run is compared with this one')
 $null = $md.Add('')
 foreach ($rule in @($plan.regression_policy.rules)) { $null = $md.Add('- ' + [string]$rule) }
@@ -1395,6 +1692,10 @@ foreach ($row in $results) {
 Write-BenchmarkLine ''
 Write-BenchmarkLine ('  whole session        : ' + (Format-BenchmarkSeconds $sessionWatch.Elapsed.TotalMilliseconds))
 Write-BenchmarkLine ''
+Write-BenchmarkLine ('  BASELINE STATUS      : ' + $baselineStatus)
+Write-BenchmarkLine ('  valid warm medians   : ' + [string]@($completed).Count +
+                     ' of ' + [string]$plannedCount + ' planned run(s)')
+Write-BenchmarkLine ''
 Write-BenchmarkLine 'NO CONCLUSION IS DRAWN HERE. These numbers are the first delivery'
 Write-BenchmarkLine 'baseline; whether any of them is acceptable is a decision taken'
 Write-BenchmarkLine 'against this evidence, not inside this file.'
@@ -1407,7 +1708,22 @@ if ($KeepArtifacts) {
     Write-Host ''
     Write-Host ('Working copy kept in ' + $tempRoot) -ForegroundColor Yellow
 } elseif ($OutDir -ne $tempRoot) {
-    try { Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    try { Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    catch { Write-Host ('  (the working copy could not be removed: ' + $tempRoot + ')') -ForegroundColor DarkYellow }
 }
 Write-Host ''
 Write-Host ('Benchmark artifacts in ' + $OutDir) -ForegroundColor Yellow
+
+# AND THE PROCESS SAYS IT TOO. A run that produced no complete measurement must
+# not exit 0: a caller, a scheduled task or a transcript reader would otherwise
+# record an abort as a success.
+if (-not $runComplete) {
+    Write-Host ''
+    Write-Host $baselineStatus -ForegroundColor Red
+    exit 1
+}
+if (-not $baselineEstablished) {
+    Write-Host ''
+    Write-Host $baselineStatus -ForegroundColor Yellow
+}
+exit 0

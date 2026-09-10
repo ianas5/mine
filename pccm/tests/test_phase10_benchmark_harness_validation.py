@@ -361,7 +361,8 @@ def test_35_a_declared_field_the_runner_never_populates_is_rejected() -> None:
 def test_36_a_runner_that_omits_a_declared_field_is_rejected() -> None:
     _runner_mutation(
         "test_24",
-        "    $record.Add('cpu_model', $(if ($null -ne $cpu) { [string]$cpu.Name } else { $unknown }))",
+        "    $record.Add('cpu_model', (Format-BenchmarkFact "
+        "(Get-BenchmarkProperty -InputObject $cpu -Name 'Name')))",
         "")
 
 
@@ -671,6 +672,182 @@ def test_88_drifting_from_the_accepted_com_primitives_is_rejected() -> None:
         "test_57",
         "function Get-IdColumnValues {",
         "function Get-IdColumnValues {\n    # drifted\n")
+
+
+# ===========================================================================
+# I. THE WINDOWS RUN 1 DEFECT
+# ===========================================================================
+def test_90_restoring_the_windows_run_1_value_assumption_is_rejected() -> None:
+    """THE EXACT STATEMENT THAT ABORTED WINDOWS RUN 1, put back.
+
+    `Get-Item Env:OneDriveCommercial -ErrorAction SilentlyContinue` emits
+    nothing on a machine with no work account; the parenthesised pipeline is
+    then $null, and `$null.Value` under StrictMode 2.0 is a terminating
+    PropertyNotFoundException. This is the mutation the round exists to catch.
+    """
+    _runner_mutation(
+        "test_90",
+        "        foreach ($item in @(Get-Item -LiteralPath ('Env:' + $name) "
+        "-ErrorAction SilentlyContinue)) {\n"
+        "            $value = [string](Get-BenchmarkProperty -InputObject $item -Name 'Value')\n"
+        "            if (-not [string]::IsNullOrWhiteSpace($value)) { $roots += $value }\n"
+        "        }",
+        "        $value = [string](Get-Item -LiteralPath ('Env:' + $name) "
+        "-ErrorAction SilentlyContinue).Value\n"
+        "        if (-not [string]::IsNullOrWhiteSpace($value)) { $roots += $value }")
+
+
+def test_91_reading_a_cim_property_off_an_unnormalised_query_is_rejected() -> None:
+    """THE SAME DEFECT, ONE CLASS WIDER. A CIM query that matches nothing is an
+    empty pipeline exactly as an absent environment variable is."""
+    _runner_mutation(
+        "test_91",
+        "    foreach ($item in @(Get-CimInstance -ClassName Win32_ComputerSystem "
+        "-ErrorAction SilentlyContinue)) { $computer = $item }",
+        "    $computer = (Get-CimInstance -ClassName Win32_ComputerSystem "
+        "-ErrorAction SilentlyContinue)")
+
+
+def test_92_removing_the_property_guard_is_rejected() -> None:
+    _runner_mutation(
+        "test_91",
+        "    $property = $InputObject.PSObject.Properties[$Name]\n"
+        "    if ($null -eq $property) { return $null }\n"
+        "    return $property.Value",
+        "    return $InputObject.$Name")
+
+
+def test_93_turning_strict_mode_off_is_rejected() -> None:
+    """THE FIX IS NOT TO STOP CHECKING. StrictMode is what turned a silent $null
+    into a loud failure; without it the environment record would have carried
+    empty strings and nobody would have known the machine was never asked."""
+    _runner_mutation(
+        "test_93",
+        "Set-StrictMode -Version 2.0",
+        "Set-StrictMode -Off")
+
+
+def test_94_defaulting_a_missing_fact_is_rejected() -> None:
+    """A FAKE DEFAULT IS WORSE THAN AN ABSENT FIELD, because it reads as an
+    answer the machine gave."""
+    _runner_mutation(
+        "test_94",
+        "    if ($null -eq $Value) { return (Get-BenchmarkUnavailable) }",
+        "    if ($null -eq $Value) { return '' }")
+
+
+def test_95_swallowing_a_failure_silently_is_rejected() -> None:
+    _runner_mutation(
+        "test_94",
+        "    } catch {\n"
+        "        # UNCLASSIFIABLE IS NOT LOCAL.",
+        "    } catch { }\n"
+        "    if ($false) {\n"
+        "        # UNCLASSIFIABLE IS NOT LOCAL.")
+
+
+def test_96_classifying_an_unreadable_path_as_local_is_rejected() -> None:
+    """THE CONTRACT ASKED THAT A SYNCED REPOSITORY NEVER BE SILENTLY RECORDED AS
+    AN UNSYNCHRONISED PATH, and a failed drive lookup falling through to 'local'
+    would do exactly that."""
+    _runner_mutation(
+        "test_22",
+        "        return 'unknown'\n"
+        "    }\n"
+        "    return 'local'",
+        "        return 'local'\n"
+        "    }\n"
+        "    return 'local'")
+
+
+def test_97_dropping_the_stage_cursor_is_rejected() -> None:
+    """WITHOUT IT, THE NEXT FAILURE SAYS ONLY WHAT THE EXCEPTION SAYS - which is
+    what made Windows Run 1 take a round trip to diagnose."""
+    _runner_mutation(
+        "test_95",
+        "function New-BenchmarkFailureRecord {",
+        "function Build-BenchmarkFailureNote {")
+
+
+def test_98_failing_to_set_the_cursor_in_setup_is_rejected() -> None:
+    _runner_mutation(
+        "test_96",
+        "    Set-BenchmarkStage -Stage 'setup' -Action 'capturing the environment inventory'",
+        "")
+
+
+def test_99_moving_diagnostics_inside_the_clock_is_rejected() -> None:
+    """THE CURSOR MUST COST A TIMING NOTHING."""
+    _runner_mutation(
+        "test_97",
+        "        $watch = [System.Diagnostics.Stopwatch]::StartNew()\n"
+        "        $Excel.Run([string]$Operation.endpoint) | Out-Null",
+        "        $watch = [System.Diagnostics.Stopwatch]::StartNew()\n"
+        "        Set-BenchmarkStage -Stage 'measurement' -Action 'running'\n"
+        "        $Excel.Run([string]$Operation.endpoint) | Out-Null")
+
+
+def test_100_letting_an_aborted_run_look_like_a_baseline_is_rejected() -> None:
+    """WINDOWS RUN 1 PRODUCED NO TIMED OPERATION AT ALL. A run like it must not
+    be able to look like evidence."""
+    _runner_mutation(
+        "test_98",
+        "$runComplete = ([bool](([string]::IsNullOrWhiteSpace($abandoned)) -and\n"
+        "                       (@($completed).Count -eq $plannedCount) -and ($plannedCount -gt 0)))",
+        "$runComplete = $true")
+
+
+def test_101_exiting_zero_after_an_abort_is_rejected() -> None:
+    """A CALLER, A SCHEDULED TASK OR A TRANSCRIPT READER would otherwise record
+    an abort as a success."""
+    _runner_mutation(
+        "test_98",
+        "if (-not $runComplete) {\n"
+        "    Write-Host ''\n"
+        "    Write-Host $baselineStatus -ForegroundColor Red\n"
+        "    exit 1\n"
+        "}",
+        "if ($false) {\n"
+        "    Write-Host ''\n"
+        "}")
+
+
+def test_102_counting_an_unsupplied_parameter_as_a_scope_is_rejected() -> None:
+    """`@($null).Count` IS 1. Without the null check every full run would have
+    been reported as a scoped one, and no run could ever be a baseline."""
+    _runner_mutation(
+        "test_99",
+        "$scoped = ([bool]((($null -ne $Iterations) -and (@($Iterations).Count -gt 0)) -or\n"
+        "                  (($null -ne $Operations) -and (@($Operations).Count -gt 0))))",
+        "$scoped = ([bool]((@($Iterations).Count -gt 0) -or (@($Operations).Count -gt 0)))")
+
+
+def test_103_recording_the_hosts_bitness_as_excels_is_rejected() -> None:
+    """A 64-BIT HOST AUTOMATING A 32-BIT EXCEL would have been recorded as
+    64-bit Excel, in the one field a reader uses to say which build was
+    exercised."""
+    _runner_mutation(
+        "test_101",
+        "    $image = Get-BenchmarkExcelImage -Identity $Identity",
+        "    $image = [pscustomobject]@{ Path = ''; "
+        "Bitness = [string][System.Environment]::Is64BitProcess }")
+
+
+def test_104_a_powershell_7_only_construct_is_rejected() -> None:
+    """THE TARGET IS WINDOWS POWERSHELL 5.1, where none of this parses."""
+    _runner_mutation(
+        "test_92",
+        "    if ($null -eq $InputObject) { return $null }",
+        "    if ($null -eq $InputObject) { return $InputObject?.Value }")
+
+
+def test_105_treating_the_bootstrap_time_as_a_measurement_is_rejected() -> None:
+    """WINDOWS RUN 1'S ONLY NUMBER WAS A 68.4 s STAGE-B BOOTSTRAP, and it is
+    setup under every reading."""
+    _runner_mutation(
+        "test_100",
+        "'time is evidence about a build, never a baseline.'))",
+        "'time is the run\'s first performance figure.'))")
 
 
 if __name__ == "__main__":

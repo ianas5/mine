@@ -387,6 +387,17 @@ def test_22_the_workbook_path_and_what_kind_of_place_it_is_are_captured() -> Non
     assert "OneDriveCommercial" in code and "OneDriveConsumer" in code
     assert "'onedrive'" in code and "'synced'" in code
     assert "-RepositoryPath $repoRoot" in code
+    # AND A PATH THE HARNESS COULD NOT CLASSIFY IS 'unknown', NEVER 'local'.
+    # Falling through to 'local' after a failed drive lookup would state the one
+    # thing the contract asked never to be assumed: a synced repository silently
+    # recorded as an unsynchronised path.
+    classifier = code.split("function Get-BenchmarkLocationType")[1]
+    classifier = classifier[:classifier.index("\nfunction ")]
+    failure_branch = classifier.rsplit("} catch {", 1)[1]
+    failure_branch = failure_branch[:failure_branch.index("\n    }")]
+    assert "return 'unknown'" in failure_branch, failure_branch
+    assert "return 'local'" not in failure_branch, failure_branch
+    assert "'unknown'" in _plan()["location_types"] or "unknown" in _plan()["location_types"]
     # AND NO CLAIM IS MADE ABOUT WHAT ANY OF IT DOES. The harness records where
     # the file is; it does not theorise about sync overhead.
     assert "slower" not in _runner().lower()
@@ -866,6 +877,253 @@ def test_82_the_build_emits_it_beside_the_other_projections() -> None:
     driver = (BUILDER / "build_stage_a.py").read_text(encoding="utf-8")
     assert "emit_benchmark_plan(out_path.parent / \"phase10_benchmark_plan.json\")" in driver
     assert "It measures nothing" in driver
+
+
+# ===========================================================================
+# J. WINDOWS RUN 1 - THE DEFECT THAT ABORTED IT
+# ===========================================================================
+# WHAT HAPPENED. On PowerShell 5.1, on a machine with a consumer OneDrive and no
+# work account, `Get-Item Env:OneDriveCommercial -ErrorAction SilentlyContinue`
+# emitted NOTHING. The parenthesised pipeline was therefore $null, and under
+# `Set-StrictMode -Version 2.0` reading `.Value` off $null is a terminating
+# PropertyNotFoundException (FullyQualifiedErrorId PropertyNotFoundStrict), not
+# a quiet $null. The run died in the environment capture, before a single
+# operation was timed.
+#
+# WHY THE EXISTING CONTROLS DID NOT CATCH IT. Every one of them reads the
+# runner as TEXT. Text controls can prove what a script says; they cannot prove
+# what a cmdlet returns on a machine this repository never sees. So the controls
+# below assert the PROPERTY THEY CAN: that no property is read off a value that
+# a pipeline might not have produced, anywhere in the harness.
+
+# The shapes a PowerShell 5.1 pipeline can hand back where the harness reads a
+# property: nothing at all, one object, or several. Only the first is fatal, and
+# it is the only one that never occurs on the developer's machine.
+_PIPELINE_SHAPES = ("no output at all (an absent Env: entry, an unmatched CIM query)",
+                    "exactly one object",
+                    "a collection")
+
+
+def test_90_no_property_is_read_off_an_unguarded_pipeline_result() -> None:
+    """THE W1 DEFECT, AS A PROPERTY RATHER THAN AS A LINE NUMBER.
+
+    `(<pipeline>).Property` is the shape that killed Windows Run 1: it reads a
+    member off whatever the pipeline produced, and "nothing" is one of the
+    things a pipeline produces. Under StrictMode 2.0 that is a terminating
+    error, so the harness may not contain the shape at all.
+    """
+    # NAMED, NOT COUNTED. `Get-Date` with no arguments cannot emit nothing - it
+    # is not a LOOKUP, it is a value - so a method call on it is not the defect
+    # class. Every other command member-read has to be justified here or the
+    # control refuses it, which is what makes a new one a decision rather than
+    # an oversight.
+    allowed = ("Get-Date",)
+    offenders = [entry for entry in _command_member_reads(_code())
+                 if not entry.startswith(allowed)]
+    assert offenders == [], (
+        "a member is read directly off a command's output, which is $null when "
+        f"the command emits nothing: {offenders}")
+    assert "-ErrorAction SilentlyContinue).Value" not in _code(), (
+        "the Windows Run 1 defect is back verbatim")
+    # AND THE DETECTOR IS NOT VACUOUS. The exact statement that aborted Windows
+    # Run 1 is fed to it here, so a control that stopped detecting anything
+    # fails rather than passing over a clean file.
+    w1 = ("        $value = [string](Get-Item -LiteralPath ('Env:' + $name) "
+          "-ErrorAction SilentlyContinue).Value")
+    assert _command_member_reads(w1), "the detector no longer detects the W1 defect"
+    assert _command_member_reads("@(Get-Item -LiteralPath 'Env:X').Count") == [], (
+        "the detector flags the normalised form the fix introduced")
+
+
+# Verb-Noun is how PowerShell spells a command, and a command is the only thing
+# in an expression that can legitimately produce NOTHING. A member read off a
+# string, a cast or a method result cannot be $null-shaped; a member read off
+# `(Get-Something ...)` can, and that is the whole defect class.
+_COMMAND = re.compile(r"^\s*[&]?\s*(?:Get|Set|New|Select|Where|ForEach|Measure|Sort|"
+                      r"Import|Export|Test|Start|Stop|Wait|Copy|Remove|Join|Split|"
+                      r"Convert|ConvertTo|ConvertFrom|Out|Write|Add|Invoke)-")
+
+
+def _command_member_reads(code: str) -> list[str]:
+    """Every `(<command ...>).<member>` in the source, by the member read."""
+    found: list[str] = []
+    for match in re.finditer(r"\)\s*\.(\w+)", code):
+        # Walk back to the matching open parenthesis so a nested expression is
+        # attributed to the expression it actually closes.
+        depth, index = 0, match.start()
+        while index >= 0:
+            if code[index] == ")":
+                depth += 1
+            elif code[index] == "(":
+                depth -= 1
+                if depth == 0:
+                    break
+            index -= 1
+        if index < 0:
+            continue
+        # `@(<command>).<member>` IS THE FIX, NOT THE DEFECT. The array
+        # subexpression turns "emitted nothing" into an empty collection before
+        # anything is read off it, which is exactly the normalisation this round
+        # introduced. Only a BARE `(<command>).<member>` is the W1 shape.
+        if index > 0 and code[index - 1] == "@":
+            continue
+        inner = code[index + 1:match.start()]
+        if _COMMAND.match(inner):
+            found.append(f"{inner.strip()[:48]}....{match.group(1)}")
+    return found
+
+
+def test_91_the_environment_provider_is_normalised_before_it_is_read() -> None:
+    """NORMALISE, VALIDATE, THEN USE. `@()` turns "emitted nothing" into an
+    empty collection, and the loop body then runs zero times instead of reading
+    a member off $null."""
+    code = _code()
+    assert ("foreach ($item in @(Get-Item -LiteralPath ('Env:' + $name) "
+            "-ErrorAction SilentlyContinue)) {") in code
+    assert "function Get-BenchmarkProperty" in code
+    assert "$property = $InputObject.PSObject.Properties[$Name]" in code
+    assert "if ($null -eq $property) { return $null }" in code
+    # AND THE CIM QUERIES ARE NORMALISED THE SAME WAY, for the same reason: a
+    # query that matches nothing is an empty pipeline, not a $null object.
+    for cls in ("Win32_OperatingSystem", "Win32_Processor", "Win32_ComputerSystem",
+                "Win32_LogicalDisk"):
+        assert f"@(Get-CimInstance -ClassName {cls}" in code, cls
+
+
+def test_92_the_access_path_is_powershell_5_1_compatible() -> None:
+    """THE TARGET IS WINDOWS POWERSHELL 5.1, and the syntax that would have made
+    this a one-liner does not exist there."""
+    code = _code()
+    for later_only in ("??", "?.", "-AsHashtable", "ForEach-Object -Parallel",
+                       "$PSStyle", "-AsByteStream", "System.Text.Json",
+                       "using namespace", "&&", "||"):
+        assert later_only not in code, f"{later_only} is not Windows PowerShell 5.1"
+    # `PSObject.Properties[...]` and `@(...)` are both 5.1, and so is every
+    # cmdlet the harness calls.
+    assert "PSObject.Properties[" in code
+    assert "Get-CimInstance" in code
+
+
+def test_93_strict_mode_stays_on() -> None:
+    """THE FIX IS NOT TO STOP CHECKING. StrictMode is what turned a silent $null
+    into a loud failure, and turning it off would have hidden the defect rather
+    than removed it - the environment record would have carried empty strings
+    and nobody would have known the machine was never asked."""
+    code = _code()
+    assert "Set-StrictMode -Version 2.0" in code
+    assert "Set-StrictMode -Off" not in code
+    assert code.count("Set-StrictMode") == 1
+    assert "$ErrorActionPreference = 'Stop'" in code
+
+
+def test_94_a_missing_property_refuses_rather_than_defaulting() -> None:
+    """NO FAKE DEFAULT. An absent optional fact is recorded as unavailable - a
+    truthful statement about the machine - and a required one throws with the
+    shape named."""
+    code = _code()
+    assert "function Get-BenchmarkRequiredProperty" in code
+    assert "It is not defaulted." in code
+    assert "function Format-BenchmarkFact" in code
+    assert "if ($null -eq $Value) { return (Get-BenchmarkUnavailable) }" in code
+    # AND NOTHING IS SWALLOWED WHOLESALE. Every catch in the harness either
+    # records a named field as unavailable or is the outer handler that reports
+    # the failure; none of them continues as if nothing happened.
+    assert "On Error Resume Next" not in code
+    assert "-ErrorAction Ignore" not in code
+    assert "catch { }" not in code, "a bare swallowing catch is back"
+
+
+def test_95_the_failure_diagnostics_name_the_stage() -> None:
+    """REQUIRED CONTROL 8 OF THIS ROUND. Windows Run 1 reached the outer handler
+    and said only what the exception said. It now says where it was."""
+    code = _code()
+    assert "$script:BenchmarkCursor" in code
+    assert "function Set-BenchmarkStage" in code
+    assert "function Set-BenchmarkOperationContext" in code
+    assert "function New-BenchmarkFailureRecord" in code
+    for field in ("stage", "action", "scenario", "operation", "iterations",
+                  "execution_phase", "exception_type", "message",
+                  "script_line_number", "script_line", "command"):
+        assert f"$record.Add('{field}'" in code, field
+    assert "$report.Add('failure', $failure)" in code
+    assert "Format-BenchmarkFailure $failure" in code
+
+
+def test_96_every_setup_stage_sets_the_cursor() -> None:
+    """SO NO STAGE CAN FAIL ANONYMOUSLY. The stages between the bootstrap and
+    the first timed call are exactly where Windows Run 1 died."""
+    code = _code()
+    stages = re.findall(r"Set-BenchmarkStage -Stage '(\w+)'", code)
+    assert set(stages) == {"preflight", "setup", "scenario", "measurement"}, stages
+    assert stages.count("setup") >= 4, stages
+    for action in ("capturing the environment inventory",
+                   "opening the benchmark workbook",
+                   "starting an owned Excel instance",
+                   "running the Stage-B bootstrap"):
+        assert action in code, action
+
+
+def test_97_no_diagnostic_work_happens_inside_a_measured_interval() -> None:
+    """THE CURSOR COSTS NOTHING A TIMING CAN SEE. It is set before the call and
+    read only by the failure path; `test_15` proves the interval still holds one
+    statement, and this proves the diagnostics are not that statement."""
+    body = _code().split("function Invoke-BenchmarkExecution")[1]
+    body = body[:body.index("$evidence = ")]
+    for banned in ("Set-BenchmarkStage", "Set-BenchmarkOperationContext",
+                   "New-BenchmarkFailureRecord", "Write-BenchmarkLine"):
+        assert banned not in body, f"{banned} runs inside a timed execution"
+
+
+def test_98_a_setup_failure_cannot_become_a_valid_sample() -> None:
+    """REQUIRED CONTROL 5 OF THIS ROUND. Windows Run 1 produced no timed
+    operation at all; a run like it must not be able to look like evidence."""
+    code = _code()
+    assert "$runComplete = ([bool](([string]::IsNullOrWhiteSpace($abandoned)) -and" in code
+    assert "@($completed).Count -eq $plannedCount" in code
+    assert "$baselineEstablished = ([bool]($runComplete -and (-not $scoped)))" in code
+    assert "$report.Add('baseline_established', $baselineEstablished)" in code
+    assert "ABORTED BEFORE A COMPLETE BASELINE" in code
+    assert "NOT a partial warm median" in code
+    # AND THE PROCESS SAYS SO TOO.
+    assert "if (-not $runComplete) {" in code
+    assert "exit 1" in code
+
+
+def test_99_a_completed_run_is_only_a_baseline_when_it_was_not_narrowed() -> None:
+    """A -Operations calculate RUN IS COMPLETE FOR WHAT IT ASKED and is not the
+    scenario's baseline. The two are different claims and the artifact makes
+    both."""
+    code = _code()
+    assert "SCOPED RUN COMPLETE" in code
+    assert "NOT the scenario baseline" in code
+    # `@($null).Count` is 1, so an unsupplied parameter must be null-checked
+    # first or every full run would be reported as scoped.
+    assert "($null -ne $Iterations) -and (@($Iterations).Count -gt 0)" in code
+
+
+def test_100_the_bootstrap_time_is_never_a_user_operation_figure() -> None:
+    """REQUIRED CONTROL 7 OF THIS ROUND. Windows Run 1's only number was a
+    68.4 s Stage-B bootstrap, and it is setup under every reading."""
+    code = _code()
+    assert "$setupTimings.Add('stage_b_bootstrap_ms'" in code
+    assert "a Stage-B bootstrap " in code and "never a baseline" in code
+    assert "stage_b_bootstrap_ms" not in code.split("$row.Add('cold_ms'")[1][:400]
+    assert "Stage-B bootstrap" in _plan()["timing"]["excluded_from_elapsed"]
+
+
+def test_101_the_excel_bitness_is_excels_and_not_the_hosts() -> None:
+    """CORRECTED IN THE SAME ROUND, AND NO EVIDENCE IS INVALIDATED because
+    Windows Run 1 never reached the line. `Is64BitProcess` is the POWERSHELL
+    host's bitness; a 64-bit host automating a 32-bit Excel would have been
+    recorded as 64-bit Excel, in the one field a reader uses to say which build
+    was exercised."""
+    code = _code()
+    assert "Is64BitProcess" not in code, "the host's bitness is back"
+    assert "function Get-BenchmarkExcelImage" in code
+    assert "Get-Process -Id $processId" in code
+    assert "derived from the Excel image path" in code
+    assert "excel_executable_path" in _plan()["environment_fields"]
+    assert "$record.Add('excel_executable_path', $excelPath)" in code
 
 
 if __name__ == "__main__":
