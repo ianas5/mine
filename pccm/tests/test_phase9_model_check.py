@@ -2352,7 +2352,11 @@ def test_67_the_evaluation_source_is_on_the_sheet_and_not_hidden() -> None:
 # else. Named per level so a range, a source, a state word or a row cannot hide
 # among them.
 UX_CHART_KEYS = {"anchor", "width", "height",
-                 "value_axis_format", "category_axis_format"}
+                 "value_axis_format", "category_axis_format",
+                 # UX-004. The tornado's internal plot-area allocation, which is
+                 # how it keeps its category-label room now that all four charts
+                 # are the same outer size.
+                 "plot_area"}
 
 
 def test_68_the_accepted_phase_6_to_8_geometry_did_not_move() -> None:

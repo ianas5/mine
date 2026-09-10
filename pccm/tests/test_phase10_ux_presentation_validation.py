@@ -212,10 +212,48 @@ def test_08_the_tornado_labels_are_unpinned_from_the_low_end() -> None:
     _control("test_05", projection=damaged)
 
 
-def test_09_the_tornado_loses_its_extra_category_room() -> None:
+def test_09_the_tornado_loses_its_internal_category_room() -> None:
+    """RE-AIMED AT UX-004. The room used to be outer width and is now the
+    declared plot-area allocation, so that is where the regression lives: a
+    tornado left on Excel's automatic layout clips its driver names."""
     damaged = _projection()
-    damaged["charts"][-1]["width_cm"] = damaged["charts"][0]["width_cm"]
-    _control("test_05", projection=damaged)
+    damaged["charts"][-1]["plot_area"] = None
+    damaged["charts"][-1]["category_label_room_cm"] = None
+    _control("test_15", projection=damaged)
+
+
+def test_09a_the_tornado_keeps_its_allocation_but_it_is_too_small() -> None:
+    """A third of the chart is the claim. A tenth is Excel's default wearing a
+    declaration, and would clip exactly what this exists to show."""
+    damaged = _projection()
+    damaged["charts"][-1]["plot_area"] = {"x": 0.10, "y": 0.16, "w": 0.86, "h": 0.74}
+    damaged["charts"][-1]["category_label_room_cm"] = round(
+        0.10 * damaged["charts"][-1]["width_cm"], 2)
+    _control("test_15", projection=damaged)
+
+
+def test_09b_the_label_room_is_taken_until_no_plot_is_left() -> None:
+    """The opposite mistake, and it is still a defect: an axis of names beside
+    a plot too narrow to compare anything in."""
+    damaged = _projection()
+    damaged["charts"][-1]["plot_area"] = {"x": 0.62, "y": 0.16, "w": 0.34, "h": 0.74}
+    damaged["charts"][-1]["category_label_room_cm"] = round(
+        0.62 * damaged["charts"][-1]["width_cm"], 2)
+    _control("test_15", projection=damaged)
+
+
+def test_09c_one_chart_is_a_different_size_from_the_other_three() -> None:
+    """THE UX-004 REGRESSION ITSELF: the imbalance a human saw in real Excel."""
+    damaged = _projection()
+    damaged["charts"][-1]["width_cm"] = damaged["charts"][0]["width_cm"] + 2.0
+    _control("test_14", projection=damaged)
+
+
+def test_09d_the_heights_drift_apart() -> None:
+    """Same claim on the other axis, and it is not covered by the width one."""
+    damaged = _projection()
+    damaged["charts"][1]["height_cm"] = damaged["charts"][0]["height_cm"] + 1.0
+    _control("test_14", projection=damaged)
 
 
 def test_10_the_compact_format_becomes_a_single_fixed_scale() -> None:

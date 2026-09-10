@@ -1488,6 +1488,23 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
         chart.height = float(spec["height"])
         chart.width = float(spec["width"])
 
+        # UX-004. THE PLOT AREA INSIDE THE CHART, WHERE ONE IS DECLARED.
+        #
+        # Every chart is the same size now, so a category axis whose labels are
+        # sentences cannot buy room by being wider than its neighbours. It buys
+        # it here instead: an edge-anchored manual layout reserves a stated
+        # fraction of the chart for the labels and gives the plot the rest.
+        # Excel's automatic layout is otherwise left alone, because for a numeric
+        # axis it is right and a fixed answer would stop tracking the data.
+        if spec.get("plot_area"):
+            from openpyxl.chart.layout import Layout, ManualLayout
+
+            area = spec["plot_area"]
+            chart.layout = Layout(manualLayout=ManualLayout(
+                xMode="edge", yMode="edge",
+                x=float(area["x"]), y=float(area["y"]),
+                w=float(area["w"]), h=float(area["h"])))
+
         # THE RANGE IS SPELLED WITH ITS SHEET, always. An openpyxl Reference
         # built without a worksheet resolves against the chart's OWN sheet -
         # the Dashboard - which holds none of this data, so every range below

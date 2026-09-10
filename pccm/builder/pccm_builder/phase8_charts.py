@@ -185,6 +185,15 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
             # way: the series column beside every blank category still says NA().
             "no_data_value": "NA()",
             "no_data_category": str(columns[str(chart["categories"])]["absent"]),
+            # UX-004. THE INTERNAL ALLOCATION, AND WHAT IT BUYS IN CENTIMETRES.
+            # The fractions are what the file carries; the centimetre figure is
+            # what a reviewer actually cares about, and deriving it here means a
+            # control never has to multiply two numbers out of two places.
+            "plot_area": ({str(k): float(v) for k, v in chart["plot_area"].items()}
+                          if chart.get("plot_area") else None),
+            "category_label_room_cm": (
+                round(float(chart["plot_area"]["x"]) * float(chart["width"]), 2)
+                if chart.get("plot_area") else None),
             "value_axis_format": str(
                 charts["number_formats"][str(chart["value_axis_format"])]),
             "category_axis_format": str(
@@ -353,6 +362,26 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
             raise ValueError(
                 f"{INSPECTION_FILENAME}: chart {key!r} says an absent CATEGORY is "
                 f"{chart['no_data_category']}")
+        # UX-004. A DECLARED PLOT AREA MUST FIT INSIDE ITS CHART. Fractions that
+        # ran past the edge would put the plot - or the labels it makes room for
+        # - outside the chart, which Excel renders by silently clipping.
+        area = chart["plot_area"]
+        if area is not None:
+            if set(area) != {"x", "y", "w", "h"}:
+                raise ValueError(
+                    f"{INSPECTION_FILENAME}: chart {key!r} declares a plot area "
+                    f"with {sorted(area)}")
+            for name, value in area.items():
+                if not 0.0 < value < 1.0:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} plot area {name} is "
+                        f"{value}, which is not a fraction of the chart")
+            for start, extent in (("x", "w"), ("y", "h")):
+                if area[start] + area[extent] > 1.0:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} plot area runs past "
+                        f"the chart edge ({start}+{extent} = "
+                        f"{area[start] + area[extent]})")
 
     for name, block in inspection["bridge"].items():
         if not isinstance(block, dict):

@@ -231,16 +231,23 @@ def test_04_an_absent_category_is_blank_and_an_absent_value_is_still_na() -> Non
 def test_05_the_tornado_has_the_most_category_room_and_its_labels_are_pinned() -> None:
     """5. TWO SEPARATE THINGS, AND THE SECOND MATTERS MORE.
 
-    Width buys room. But rho is SIGNED, so the tornado's value axis crosses at
-    zero in the MIDDLE of the plot, and Excel's default puts each driver's name
-    beside that crossing - over the bars, clipped by them, and moving as the
-    data changes. Pinning the category labels to the low end is what actually
-    gives a long driver description somewhere to be.
+    Rho is SIGNED, so the tornado's value axis crosses at zero in the MIDDLE of
+    the plot, and Excel's default puts each driver's name beside that crossing -
+    over the bars, clipped by them, and moving as the data changes. Pinning the
+    category labels to the low end is what actually gives a long driver
+    description somewhere to be.
+
+    RESTATED AT UX-004. This used to say the tornado is WIDER than its
+    neighbours, which is how UX-001 bought that room and is what made the
+    Dashboard look unbalanced in real Excel. The room is the same claim; where
+    it comes from is not. It is now an INTERNAL allocation, asserted in
+    centimetres, and the outer width is required to match the other three
+    exactly - which test_14 is what states.
     """
     tornado = _by_key()["tornado"]
     assert tornado["kind"] == "bar", "a tornado is a horizontal bar chart"
     others = [chart["width_cm"] for key, chart in _by_key().items() if key != "tornado"]
-    assert tornado["width_cm"] > max(others), (tornado["width_cm"], others)
+    assert tornado["width_cm"] == max(others), (tornado["width_cm"], others)
     assert _projection()["axis_presentation"]["category_label_position"] == "low"
     # AND IT REACHES THE WORKBOOK. openpyxl calls the CATEGORY axis `x_axis` for
     # every chart type here, including the horizontal bar Excel draws the other
@@ -297,8 +304,8 @@ def test_06_the_axes_carry_a_compact_format_and_a_smaller_label_font() -> None:
 
 
 def test_07_the_enlarged_charts_do_not_overlap_and_stay_inside_the_region() -> None:
-    """1. Bigger is only better if they still fit beside each other. The 2x2
-    stays: two columns, two rows, and no plot reaching into its neighbour."""
+    """3 and 4. Bigger is only better if they still fit beside each other. The
+    2x2 stays: two columns, two rows, and no plot reaching into its neighbour."""
     region = _shell()["dashboard"]["chart_region"]
     placed = []
     for chart in _projection()["charts"]:
@@ -520,6 +527,116 @@ def test_13_no_second_state_owner_or_macro_status_arrived_with_it() -> None:
     # nothing derives from it and nothing compares against it.
     assert message not in (SPEC / "sim_contract.yaml").read_text(encoding="utf-8")
     assert message not in (SPEC / "calc_contract.yaml").read_text(encoding="utf-8")
+
+
+# ===========================================================================
+# UX-004. ONE GEOMETRY FOR ALL FOUR
+# ===========================================================================
+def test_14_all_four_charts_have_identical_outer_dimensions() -> None:
+    """1 and 2. THE CORRECTION ITSELF, and it is a single equality.
+
+    UX-001 gave the tornado 20.0 cm against its neighbours' 16.0 to buy its
+    driver names horizontal room. In real Excel that did not read as one chart
+    with longer labels; it read as one chart being disproportionately large. The
+    room did not have to come from outer width, and now it does not.
+
+    ASSERTED AS A SET OF ONE, not as a tolerance. Two charts that differ by a
+    millimetre are still visibly unequal on a rendered dashboard, and there is
+    no reason for any of these four to differ at all.
+    """
+    widths = {chart["width_cm"] for chart in _projection()["charts"]}
+    heights = {chart["height_cm"] for chart in _projection()["charts"]}
+    assert len(widths) == 1, sorted(widths)
+    assert len(heights) == 1, sorted(heights)
+    # AND IT IS THE GEOMETRY THE WORKBOOK ACTUALLY CARRIES, not only the one the
+    # manifest declares. The projection and the drawing are written by the same
+    # build and have to agree.
+    extents = {(round(chart.anchor.ext.cx / 360000, 2),
+                round(chart.anchor.ext.cy / 360000, 2))
+               for chart in _workbook()["Dashboard"]._charts}
+    assert len(extents) == 1, sorted(extents)
+    assert extents == {(widths.pop(), heights.pop())}, extents
+
+
+def test_15_the_tornado_buys_its_label_room_inside_the_chart() -> None:
+    """5. MEANINGFUL INTERNAL HORIZONTAL ROOM, stated in centimetres.
+
+    Excel's automatic layout gives a category axis roughly a sixth of the chart
+    and clips whatever does not fit - about 3 cm of driver name at this size.
+    The manual allocation reserves the leftmost third, which is more absolute
+    room than the 20 cm chart had, on a chart 2 cm narrower.
+
+    AND ONLY THIS CHART DECLARES ONE. The other three plot years, bin edges and
+    money against numeric axes, where the automatic layout is right and a fixed
+    fraction would be an answer that stops tracking the data.
+    """
+    tornado = _by_key()["tornado"]
+    area = tornado["plot_area"]
+    assert area is not None, "the tornado has no declared plot area"
+    assert set(area) == {"x", "y", "w", "h"}, sorted(area)
+    # A THIRD OF THE CHART, AND AT LEAST AS MUCH AS EXCEL'S DEFAULT WOULD CLIP
+    # AT. The fraction and the centimetres are both asserted: the fraction is
+    # what the file carries, the centimetres are what a reader sees.
+    assert area["x"] >= 0.30, area["x"]
+    assert tornado["category_label_room_cm"] == round(area["x"] * tornado["width_cm"], 2)
+    assert tornado["category_label_room_cm"] >= 5.0, tornado["category_label_room_cm"]
+    # THE PLOT STILL GETS THE MAJORITY OF THE CHART. Label room taken so far it
+    # left no plot would be a different defect, not a fix.
+    assert area["w"] >= 0.55, area["w"]
+    assert area["x"] + area["w"] <= 1.0
+    assert area["y"] + area["h"] <= 1.0
+    for key in CHART_KEYS:
+        if key != "tornado":
+            assert _by_key()[key]["plot_area"] is None, key
+            assert _by_key()[key]["category_label_room_cm"] is None, key
+
+
+def test_16_the_declared_plot_area_reaches_the_chart_part() -> None:
+    """5. A layout openpyxl accepted and did not write would be an allocation
+    that exists only in the projection. Exactly one chart part carries a manual
+    layout, and it carries the declared fractions."""
+    area = _by_key()["tornado"]["plot_area"]
+    manual = [part for part in _chart_parts() if "<manualLayout>" in part]
+    assert len(manual) == 1, f"{len(manual)} charts carry a manual plot area"
+    part = manual[0]
+    assert "Top Drivers by Rank Correlation" in part
+    # EDGE-ANCHORED, or the fractions mean something else entirely: `edge` reads
+    # them as a position in the chart, `factor` as an offset from where Excel
+    # would have put it.
+    assert '<xMode val="edge"' in part and '<yMode val="edge"' in part
+    for name, value in area.items():
+        assert f'<{name} val="{value}"' in part, (name, value)
+
+
+def test_17_the_balanced_geometry_left_every_source_identity_alone() -> None:
+    """6. UX-004 IS A SIZE CHANGE AND AN INTERNAL LAYOUT, NOTHING ELSE.
+
+    Compared against the accepted UX batch rather than against the P8 tree, so
+    this states what THIS correction did: no series, category, source block,
+    state qualifier, title, axis format or no-data rule moved, and the bridge
+    is untouched.
+    """
+    import subprocess
+    accepted = yaml.safe_load(subprocess.run(
+        ["git", "show", "0cf1b2d:pccm/spec/workbook.yaml"],
+        cwd=PCCM_ROOT.parent, check=True,
+        stdout=subprocess.PIPE).stdout.decode())["phase6_shell"]["charts"]
+    was = {str(chart["key"]): chart for chart in accepted["charts"]}
+    now = {str(chart["key"]): chart for chart in _charts()["charts"]}
+    assert set(was) == set(now)
+    # ONLY THESE THREE KEYS MAY DIFFER, and `plot_area` is the only new one.
+    allowed = {"anchor", "width", "plot_area"}
+    for key, before in was.items():
+        after = now[key]
+        assert set(after) - set(before) <= allowed, (key, set(after) - set(before))
+        for field in set(before) - allowed:
+            assert before[field] == after[field], (key, field)
+    assert accepted["bridge"] == _charts()["bridge"], "the chart bridge moved"
+    assert accepted["number_formats"] == _charts()["number_formats"]
+    assert accepted["axis_presentation"] == _charts()["axis_presentation"]
+    # AND THE HEIGHT DID NOT MOVE EITHER, which is why it is not in `allowed`.
+    for key, before in was.items():
+        assert before["height"] == now[key]["height"], key
 
 
 if __name__ == "__main__":  # pragma: no cover

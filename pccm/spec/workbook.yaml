@@ -1159,15 +1159,28 @@ phase6_shell:
       # UX-001. GEOMETRY, ENLARGED. The accepted size was 9.6 x 7.2 cm, which a
       # human reviewing the real workbook found cramped while EMPTY - before any
       # of the 200 year labels, 20 bin edges or 10 driver names that populate it
-      # exist. Every chart is now 16.0 x 11.5 cm: two and a half times the plot
-      # area. The 2x2 stays, the columns move from B/F to B/H so the wider plots
-      # do not meet, and the rows move from 65/85 to 65/89 so the taller ones do
-      # not either. The Dashboard now scrolls further, which the requirement
-      # prefers to a grid that fits and cannot be read.
+      # exist. The 2x2 stays and the rows move from 65/85 to 65/89 so the taller
+      # plots do not meet. The Dashboard now scrolls further, which the
+      # requirement prefers to a grid that fits and cannot be read.
+      #
+      # UX-004. AND ALL FOUR ARE NOW THE SAME SIZE: 18.0 x 11.5 cm, which is
+      # 2.7 times the reviewed plot area. UX-001 gave the tornado 20.0 cm to buy
+      # its driver names horizontal room, and in real Excel that read as one
+      # chart being disproportionately large rather than as one chart having
+      # longer labels. The room did not go away - it moved INSIDE the tornado,
+      # into its declared plot-area allocation, where it costs no outer width.
+      #
+      # WHY THE RIGHT COLUMN IS I AND NOT H. The Dashboard's own declared column
+      # widths put H's left edge at 17.6 cm, so an 18.0 cm plot anchored at B
+      # would run 1.1 cm into it. I is the next column start, at 21.8 cm, which
+      # leaves a 3.1 cm horizontal gutter against a 1.2 cm vertical one. That is
+      # the one geometry this grid does not have: the column edges admit a tight
+      # gutter at 16.0 or at 20.0 and nothing in between, and 18.0 is the size
+      # the correction asks for.
       - key: "s_curve"
         kind: "line"
         anchor: "B65"
-        width: 16.0
+        width: 18.0
         height: 11.5
         value_axis_format: "money_axis"
         category_axis_format: "year"
@@ -1180,8 +1193,8 @@ phase6_shell:
         state_source: "profile_state"
       - key: "histogram"
         kind: "column"
-        anchor: "H65"
-        width: 16.0
+        anchor: "I65"
+        width: 18.0
         height: 11.5
         value_axis_format: "year"
         category_axis_format: "money_axis"
@@ -1197,7 +1210,7 @@ phase6_shell:
       - key: "annual_cash_flow"
         kind: "column"
         anchor: "B89"
-        width: 16.0
+        width: 18.0
         height: 11.5
         value_axis_format: "money_axis"
         category_axis_format: "year"
@@ -1209,15 +1222,34 @@ phase6_shell:
         state_source: "profile_state"
       - key: "tornado"
         kind: "bar"
-      # AND THE TORNADO IS WIDER STILL. Its categories are driver DESCRIPTIONS,
-      # not years or numbers, and they are the one axis on this Dashboard whose
-      # labels are sentences. It is the bottom-right plot, so the extra 4 cm
-      # extends into empty columns and disturbs none of the other three.
-        anchor: "H89"
-        width: 20.0
+      # UX-004. THE TORNADO IS THE SAME SIZE AS THE OTHER THREE, and buys its
+      # label room INSIDE the chart instead of outside it.
+      #
+      # ITS CATEGORIES ARE DRIVER DESCRIPTIONS - not years, not numbers - and
+      # they are the one axis on this Dashboard whose labels are sentences.
+      # Excel's automatic plot-area layout gives a category axis roughly a
+      # sixth of the chart and clips whatever does not fit, which at 18.0 cm is
+      # about 3 cm of name. The manual allocation below reserves the leftmost
+      # 34% - 6.1 cm - for the names and gives the bars the remaining 62%.
+      #
+      # WHY IT IS DECLARED ONLY HERE. The other three plot years, bin edges and
+      # money against numeric axes, where Excel's automatic layout is right and
+      # a manual one would be a fixed answer to a question that changes with the
+      # data. This is the single axis whose labels are text of unbounded length,
+      # so it is the single chart that needs its allocation stated.
+        anchor: "I89"
+        width: 18.0
         height: 11.5
         value_axis_format: "rho"
         category_axis_format: "text"
+        # Fractions of the CHART area, edge-anchored: the plot starts 34% in and
+        # is 62% wide, leaving 4% right margin; it starts 16% down, below the
+        # title, and is 74% tall, leaving 10% for the value-axis numbers.
+        plot_area:
+          x: 0.34
+          y: 0.16
+          w: 0.62
+          h: 0.74
         title: "Top Drivers by Rank Correlation"
         source: "drivers"
         categories: "driver_name"
