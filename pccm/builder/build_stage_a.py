@@ -45,6 +45,7 @@ from pccm_builder import (  # noqa: E402
     emit_phase9_model_check,
     apply_protection,
     emit_protection_projection,
+    emit_benchmark_plan,
     emit_methodology_projection,
     emit_reset_projection,
     resolve_unlocked,
@@ -223,6 +224,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  method   : {len(methodology['sections'])} sections, "
           f"{len(methodology['lines'])} written lines, "
           f"{len(methodology['metadata'])} build metadata rows")
+
+    # P10-4A. THE PERFORMANCE BENCHMARK PLAN, and the Windows runner reads this
+    # rather than declaring a matrix of its own. It measures nothing: it is what
+    # to run, at what sizes, how many times, and how a later run is compared.
+    benchmark = emit_benchmark_plan(out_path.parent / "phase10_benchmark_plan.json")
+    print(f"  benchmark: {len(benchmark['scenarios'])} scenarios, "
+          f"{len(benchmark['runs'])} timed runs, "
+          f"{benchmark['timing']['cold_runs']} cold + "
+          f"{benchmark['timing']['warm_runs']} warm each")
 
     artifacts = emit_stage_b(out_path.parent, spec, contract, drivers, structure)
     calc_artifacts = emit_calc_artifacts(out_path.parent, spec, calc)

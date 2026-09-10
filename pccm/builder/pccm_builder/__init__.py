@@ -64,6 +64,13 @@ from .reset import (
 # P10-3. The Methodology sheet: where every explanatory line lands, and the
 # manifest wording that lands there. Layout only - it owns no sentence.
 from .methodology import emit_methodology_projection, plan_methodology
+# P10-4A. The performance benchmark plan: what is measured, at what sizes, how
+# many times, and the policy a later run is compared under. It measures nothing.
+from .benchmark import (
+    BENCHMARK_SCHEMA_VERSION,
+    build_benchmark_plan,
+    emit_benchmark_plan,
+)
 from .phase8_dashboard import emit_phase8_dashboard
 from .phase8_results import emit_phase8_results
 from .sim_emit import emit_sim_artifacts, emit_sim_gate_b_artifacts
@@ -187,6 +194,9 @@ __all__ = [
     "resolve_publications",
     "emit_methodology_projection",  # build_stage_a.py, P10-3
     "plan_methodology",
+    "emit_benchmark_plan",       # build_stage_a.py, P10-4A
+    "build_benchmark_plan",
+    "BENCHMARK_SCHEMA_VERSION",
     "ModelCheckPlan",         # the one Model Check layout authority
     "emit_phase8_dashboard",  # build_stage_a.py, Phase 8 Dashboard projection
     "emit_phase8_results",    # build_stage_a.py, Phase 8 Results projection

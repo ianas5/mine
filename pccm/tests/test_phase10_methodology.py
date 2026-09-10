@@ -856,6 +856,15 @@ def test_71_no_implementation_owner_in_the_builder_changed() -> None:
         # P10-3's own additions and the two files that dispatch to them.
         "methodology.py", "spec_loader.py", "workbook_builder.py", "styling.py",
         "__init__.py", "build_stage_a.py",
+        # P10-4A. DECLARED, NOT EXEMPTED. The performance benchmark plan is a
+        # later batch's addition to the same tree, and this control is measured
+        # from P10-2C rather than from a moving head - so a file added after
+        # P10-3 has to be NAMED here or the control would forbid the project
+        # from continuing. What the control still refuses is unchanged: an edit
+        # to any calculation, simulation, fingerprint, state or profiling owner.
+        # `benchmark.py` is none of those - it emits a list of what to measure
+        # and computes nothing - and its own battery proves that separately.
+        "benchmark.py",
     }
     forbidden = sorted(changed - allowed)
     assert forbidden == [], f"implementation modules changed: {forbidden}"
