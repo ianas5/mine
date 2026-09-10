@@ -1577,7 +1577,18 @@ def test_62_a_measured_zero_is_not_an_undefined_one() -> None:
 
 
 def test_63_the_zero_variance_driver_is_not_a_category_and_not_a_bar() -> None:
-    """NEITHER ITS VALUE NOR ITS IDENTITY reaches the chart."""
+    """NEITHER ITS VALUE NOR ITS IDENTITY reaches the chart.
+
+    RECONCILED WITH UX-001 (0cf1b2d), AND NOT WEAKENED. This control was written
+    when every absent bridge cell emitted NA(), and it asserted that shape for
+    the category as well as the bar. The accepted UX contract now emits a BLANK
+    label for an absent category, because NA() prints the literal "#N/A" down
+    the axis - ten times over on an unpublished tornado.
+
+    The claim is unchanged: beyond the ranked population there is no driver
+    identity and no bar. What changed is only what "no identity" is spelled as,
+    and both spellings are asserted here so neither can turn into the other.
+    """
     rows = _tornado_rows()
     absent = {"Constant impact"}
     for row in rows:
@@ -1586,8 +1597,10 @@ def test_63_the_zero_variance_driver_is_not_a_category_and_not_a_bar() -> None:
     ranked = [d for d in ZERO_VARIANCE_FIXTURE
               if d["status"] != ZERO_VARIANCE_STATUS]
     for row in rows[len(ranked):]:
-        assert row["driver_name"] is _Book.NA, (
+        assert row["driver_name"] == "", (
             "a row beyond the ranked population carries a category")
+        assert row["driver_name"] is not _Book.NA, (
+            "the category axis is back to printing #N/A")
         assert row["rho"] is _Book.NA, (
             "a row beyond the ranked population carries a value")
 
@@ -1600,10 +1613,19 @@ def test_64_fewer_eligible_drivers_yield_fewer_categories_and_no_filler() -> Non
     plotted = [r for r in rows if r["rho"] is not _Book.NA]
     assert len(plotted) == len(ranked), (
         f"{len(plotted)} categories for {len(ranked)} eligible drivers")
-    # NO FILLER OF ANY KIND, and in particular not a zero or a blank.
+    # NO FILLER OF ANY KIND, and in particular NOT A ZERO. A bar of zero length
+    # beside measured ones reads as "measured, and uncorrelated", which is the
+    # fabrication this control exists to refuse.
+    #
+    # UX-001 (0cf1b2d) SPLIT THE TWO ABSENCES, and this control was written
+    # before it: the bar is still NA(), and the LABEL is now blank rather than
+    # "#N/A". A blank label draws nothing at all, so the count of drawn bars is
+    # unchanged - which is the thing that was actually being protected.
     for row in rows[len(ranked):]:
-        assert row["rho"] is _Book.NA and row["driver_name"] is _Book.NA
-        assert row["rho"] != 0 and row["driver_name"] != ""
+        assert row["rho"] is _Book.NA, "an unranked row carries a bar"
+        assert row["rho"] != 0, "an unranked row became a zero-length bar"
+        assert row["driver_name"] == "", "an unranked row carries a label"
+        assert row["driver_name"] != 0, "a label became a number"
     # AND THE WINDOW IS STILL AT MOST TEN.
     from pccm_builder.spec_loader import load_spec
     drivers = load_spec(SPEC / "workbook.yaml").phase6_shell["charts"]["bridge"]["drivers"]
@@ -1654,11 +1676,19 @@ def test_66_the_bridge_gates_on_rank_and_not_on_a_blank_rho() -> None:
     first = int(drivers["first_row"])
     sheet = charts["sensitivity_sheet"]
     for index in range(int(drivers["top_n"])):
-        gate = f'IF({sheet}!${columns["rank"]}${int(_shell()["first_row"]) + index}="",NA(),'
+        cell = f'{sheet}!${columns["rank"]}${int(_shell()["first_row"]) + index}'
         for column in drivers["columns"]:
+            # RECONCILED WITH UX-001 (0cf1b2d). The gate is the same cell it
+            # always was - rank, the field the publication writes the exclusion
+            # into - and every field is still gated on it. What the gate EMITS
+            # now depends on whether the field is the category or the bar.
+            gate = f'IF({cell}="",{_absent_token(column)},'
             formula = results[f"{column['column']}{first + index}"].value
             assert formula.startswith("=" + gate), (
                 f"{column['key']} row {index + 1} is not gated on rank: {formula}")
+            assert f'{sheet}!${columns["rho"]}$' not in formula.split(",")[0], (
+                f"{column['key']} row {index + 1} gates on the blank rho rather "
+                f"than on the rank: {formula}")
     # AND THE ELIGIBILITY FIELD IS NOT ITSELF PLOTTED.
     assert "rank" not in {str(c["source"]) for c in drivers["columns"]}
 
@@ -1707,6 +1737,44 @@ def _bridge_rows(mutate=None) -> list[tuple[int, str, str]]:
         charts["bridge"]["drivers"], _shell())
 
 
+# UX-001 (0cf1b2d). WHAT AN ABSENT BRIDGE CELL EMITS, AND WHY IT DEPENDS ON WHAT
+# THE CELL IS.
+#
+# The accepted bridge emitted NA() for every absent cell. A human opening the
+# workbook found that right for a VALUE and wrong for a CATEGORY: Excel plots ""
+# as zero, so an absent value must stay NA(); Excel prints the literal text
+# "#N/A" down a category axis, so an absent LABEL must be blank. UX-001 split
+# the two, and the controls below were written before it.
+#
+# THE CATEGORY IS NOT NAMED HERE, IT IS DERIVED. A column is a category because
+# a chart uses it as its category axis - which is the same derivation the
+# accepted UX control makes - so this cannot drift from the chart it describes.
+
+
+def _tornado_category_key() -> str:
+    from pccm_builder.spec_loader import load_spec
+
+    charts = load_spec(SPEC / "workbook.yaml").phase6_shell["charts"]
+    tornado = next(chart for chart in charts["charts"] if chart["key"] == "tornado")
+    return str(tornado["categories"])
+
+
+def _absent_token(column: dict) -> str:
+    """What this column must emit when the row is not part of the ranking.
+
+    AND THE MANIFEST MUST AGREE. The marker the builder reads is checked against
+    the classification here, so a manifest that blanked the bar - or put #N/A
+    back on the axis - fails rather than being described.
+    """
+    category = str(column["key"]) == _tornado_category_key()
+    expected = '""' if category else "NA()"
+    declared = '""' if str(column.get("absent", "na")) == "blank" else "NA()"
+    assert declared == expected, (
+        f"{column['key']} is declared absent as {declared} but it is "
+        f"{'a category' if category else 'a plotted value'}, which must be {expected}")
+    return expected
+
+
 def _tornado_input_rules(rows: list[tuple[int, str, str]]) -> None:
     """The tornado plots the ranked population, in the sheet's own order."""
     from pccm_builder.spec_loader import load_spec
@@ -1719,14 +1787,19 @@ def _tornado_input_rules(rows: list[tuple[int, str, str]]) -> None:
     assert top_n <= 10, f"the tornado window grew to {top_n}"
     assert len(rows) == top_n * len(drivers["columns"]), (
         f"{len(rows)} cells for {top_n} rows of {len(drivers['columns'])} fields")
-    by_row: dict[int, list[str]] = {}
-    for row, _column, formula in rows:
-        by_row.setdefault(row, []).append(formula)
+    by_row: dict[int, list[tuple[str, str]]] = {}
+    for row, column, formula in rows:
+        by_row.setdefault(row, []).append((str(column), formula))
+    by_column = {str(column["column"]): column for column in drivers["columns"]}
     for index, row in enumerate(sorted(by_row)):
         gate = f'{sheet}!${columns["rank"]}${first_source + index}'
-        for formula in by_row[row]:
-            # EVERY FIELD IS GATED, the category as much as the value.
-            assert formula.startswith(f'=IF({gate}="",NA(),'), (
+        for column_letter, formula in by_row[row]:
+            absent = _absent_token(by_column[column_letter])
+            # EVERY FIELD IS GATED, the category as much as the value. WHAT the
+            # gate emits differs by field - a missing label is blank, a missing
+            # point is NA() - but THAT it is gated, and gated on the same
+            # eligibility cell, is the claim this control was written to make.
+            assert formula.startswith(f'=IF({gate}="",{absent},'), (
                 f"row {index + 1} is not gated on the ranked position: {formula}")
             # AND THE ROW IT READS IS THE POSITIONAL ONE - no re-sort, no
             # compaction, no ABS ordering.
@@ -1736,8 +1809,22 @@ def _tornado_input_rules(rows: list[tuple[int, str, str]]) -> None:
                            "INDEX(", "MATCH(", "AGGREGATE("):
                 assert banned not in formula, (
                     f"the bridge re-derives the order: {banned}")
-            # NO FILLER. An excluded row is absent, never a zero or a blank.
-            assert ',NA(),' in formula and ',0)' not in formula, formula
+            # NO FILLER. An excluded row is ABSENT - never a zero, and never
+            # the wrong kind of absence for what the cell is.
+            assert f',{absent},' in formula, formula
+            assert ',0)' not in formula and ',0,' not in formula, (
+                f"an excluded row was coerced to zero: {formula}")
+            if absent == "NA()":
+                # A PLOTTED VALUE IS NEVER BLANKED. "" is charted as zero, which
+                # is the fabricated measurement this whole block exists to
+                # refuse.
+                assert ',"",' not in formula, (
+                    f"an absent value became a blank a chart plots as zero: {formula}")
+            else:
+                # AND A CATEGORY NEVER CARRIES #N/A, which Excel prints as text
+                # down the axis.
+                assert "NA()" not in formula, (
+                    f"an absent category still prints #N/A on the axis: {formula}")
     # THE ELIGIBILITY FIELD IS NOT PLOTTED.
     assert "rank" not in {str(c["source"]) for c in drivers["columns"]}
 
@@ -1746,8 +1833,8 @@ def _tornado_input_rules(rows: list[tuple[int, str, str]]) -> None:
     # THE DEFECT ITSELF: the first N SHEET rows again.
     ("the tornado takes the first N sheet rows again",
      lambda src: src.replace(
-         "                        f'=IF({eligible}=\"\",NA(),IF({source}=\"\",NA(),{source}))'))",
-         "                        f'=IF({source}=\"\",NA(),{source})'))", 1)),
+         "                        f'=IF({eligible}=\"\",{gone},IF({source}=\"\",{gone},{source}))'))",
+         "                        f'=IF({source}=\"\",{gone},{source})'))", 1)),
     # ELIGIBILITY INFERRED FROM THE BLANK RHO - the consequence read instead of
     # the cause, and a weaker second statement of the contract's rule.
     ("eligibility is inferred from a blank rho",
@@ -1761,18 +1848,18 @@ def _tornado_input_rules(rows: list[tuple[int, str, str]]) -> None:
          "            source = f\"{sheet}!${columns[str(column['source'])]}${source_row}\"\n"
          "            if str(column['source']) != 'rho':\n"
          "                out.append((row, str(column['column']),\n"
-         "                            f'=IF({source}=\"\",NA(),{source})'))\n"
+         "                            f'=IF({source}=\"\",{_absent(column)},{source})'))\n"
          "                continue", 1)),
     # THE EXCLUDED ROW COERCED TO SOMETHING RATHER THAN ABSENT.
     ("an excluded row is coerced to zero",
      lambda src: src.replace(
-         "                        f'=IF({eligible}=\"\",NA(),IF({source}=\"\",NA(),{source}))'))",
-         "                        f'=IF({eligible}=\"\",0,IF({source}=\"\",NA(),{source}))'))", 1)),
+         "                        f'=IF({eligible}=\"\",{gone},IF({source}=\"\",{gone},{source}))'))",
+         "                        f'=IF({eligible}=\"\",0,IF({source}=\"\",{gone},{source}))'))", 1)),
     # A MEASURED ZERO EXCLUDED - the opposite error, and just as wrong.
     ("a measured zero is excluded with the undefined ones",
      lambda src: src.replace(
-         "                        f'=IF({eligible}=\"\",NA(),IF({source}=\"\",NA(),{source}))'))",
-         "                        f'=IF({source}=0,NA(),IF({source}=\"\",NA(),{source}))'))", 1)),
+         "                        f'=IF({eligible}=\"\",{gone},IF({source}=\"\",{gone},{source}))'))",
+         "                        f'=IF({source}=0,{gone},IF({source}=\"\",{gone},{source}))'))", 1)),
     # THE ORDER RE-DERIVED IN RESULTS.
     ("the bridge re-ranks in Results",
      lambda src: src.replace(
