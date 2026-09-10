@@ -751,3 +751,94 @@ A Windows run in which Stage A is rebuilt **first**, and in which
 **unverified for the Calculate path**.
 
 ---
+
+## Protection probe Run 7 — PRODUCTION IS FINE UNDER PROTECTION (for the ADD direction)
+
+First run with Stage A rebuilt **before** the probe, against `5b14a81`.
+
+```
+Stage A: 351 passed, 0 failed
+```
+
+### What Run 7 observed
+
+| Observation | Result |
+|---|---|
+| Workbook opened | 14/14 sheets protected, `ProtectStructure = True` |
+| `PCCM_ApplyTimeline` | **SUCCEEDED** |
+| — structural effect | `tblCostProfiling` 25×2 → 25×5; `tblRiskProfiling` 25×2 → 25×5; `tblInflation` 10×1 → 10×4 |
+| `PCCM_Calculate` | **SUCCEEDED** |
+| — `_Calc` structural evidence | **OBSERVED** — `tblCalcYears` 1×3 → 3×3; `tblCalcAnnual` 1×8 → 3×8 |
+| `PCCM_AddCostLine`, `PCCM_AddRisk` | SUCCEEDED; correctly no shape change (reserved capacity remained) |
+| Protection after every endpoint | fully restored |
+| Probe verdict | `PRODUCTION IS FINE UNDER PROTECTION` |
+
+This is strong evidence and it is retained exactly as recorded.
+
+### What Run 7 proved — and what it did NOT
+
+**Proved, under the production structural window:**
+
+* `ListColumns.Add` — three grids gained project-year columns.
+* `ListRows.Add` / `ResizeBody` growth — the per-project-year `_Calc` tables grew
+  from one body row to three.
+* Protection restored after every endpoint, with workbook structure protection
+  never released.
+
+**Not proved:**
+
+* **`ListRows.Delete`.** Benchmark Run 3 died specifically on a
+  `ListRow.Delete()` with *"Table features aren't available because the sheet is
+  protected"*. Every round in Run 7 moved in the **ADD** direction. No successful
+  add says anything about a delete.
+* `ListColumns.Delete` — likewise never exercised.
+
+**Therefore the broad conclusion that the Benchmark Run 3 defect was a "HARNESS
+defect only" remains PENDING exact delete-path runtime evidence.** Run 7's
+`PRODUCTION IS FINE UNDER PROTECTION` was reported honestly against the criteria
+that existed at the time; those criteria did not yet require the delete
+direction. This is recorded as a coverage gap in the criteria, not as an error in
+the run.
+
+### Added in this round (source only — no Windows)
+
+A deterministic **shrink round** now follows the successful 3-year round:
+
+1. `inpDurationYears` is set to a genuine `Double` **1** through the same
+   accepted `Set-NamedValue`, read back and type-checked exactly as every other
+   input. `1` is inside the accepted bound (`modTimeline.ReadTriple` requires
+   `1 ≤ d ≤ LIMIT_MAX_YEAR_COLUMNS`), so this is a valid timeline, not a value
+   chosen to force a failure.
+2. `PCCM_ApplyTimeline` is invoked again. Every grid that **gained** columns in
+   the growth round must **lose** them — expectation derived from what was
+   actually observed growing, so a partial shrink is refused. This drives
+   `modProfiling.SetYearColumns` and `modInflation.SetYearColumns` down their
+   `ListColumns(...).Delete` loops.
+3. `PCCM_Calculate` is invoked again through the same round helper. The per-year
+   `_Calc` tables must end at the shrunk duration **and must have lost rows to
+   get there** — accepting 3 → 3 would call an unchanged table delete evidence.
+   This is `ResizeBody`'s `ListRows(...).Delete` loop: the call Benchmark Run 3
+   died on.
+
+Protection is now checked **before and after every endpoint**, with
+`ProtectStructure` read as a boolean rather than inside a sentence.
+
+`PRODUCTION IS FINE UNDER PROTECTION` now requires **all four** classes:
+
+```
+LISTCOLUMN ADD    : OBSERVED
+LISTCOLUMN DELETE : OBSERVED
+LISTROW GROWTH    : OBSERVED
+LISTROW DELETE    : OBSERVED
+```
+
+If the second `ApplyTimeline` or the second `Calculate` refuses, errors,
+announces success without the contracted shape, or leaves protection wrong, the
+verdict is **not** FINE.
+
+### Still owed
+
+**The delete path is unproved on Windows.** Nothing in this round is runtime
+evidence; production VBA is byte-identical to `0946cf6`.
+
+---

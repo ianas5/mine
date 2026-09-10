@@ -115,6 +115,19 @@ def _all_modules() -> list[str]:
     return sorted(p.name for p in SRC.glob("*.bas"))
 
 
+def _evidence_section(heading: str) -> str:
+    """One run's section of the evidence record, from its heading to the next.
+
+    The document is append-only history, so a document-wide check drifts into
+    finding a LATER run's numbers and calling them an earlier run's.
+    """
+    text = EVIDENCE.read_text(encoding="utf-8")
+    start = text.index(heading)
+    tail = text[start + len(heading):]
+    cut = tail.find("\n## ")
+    return heading + (tail if cut == -1 else tail[:cut])
+
+
 # ===========================================================================
 # A. ONE OWNER, STILL
 # ===========================================================================
@@ -502,7 +515,10 @@ def test_52_the_run_6_windows_evidence_is_recorded_accurately() -> None:
     and Calculate refused for a NON-protection reason. Recording only the first
     would be an acceptance claim this run does not support.
     """
-    text = EVIDENCE.read_text(encoding="utf-8")
+    # SCOPED TO ITS OWN SECTION. The record now carries a later run that observed
+    # the same shapes, so a document-wide count would be satisfied by the wrong
+    # run's numbers.
+    text = _evidence_section("## Protection probe Run 6")
     # THE SUCCESS, AND THE ACTUAL SHAPE CHANGE - ALL THREE GRIDS. Two of them
     # moved 25×2 → 25×5, so requiring the string once is satisfied by either one
     # alone; a mutation that deleted one walked through this until it was counted.
@@ -524,6 +540,43 @@ def test_52_the_run_6_windows_evidence_is_recorded_accurately() -> None:
         "not** ideal acceptance evidence" in text
     # WHAT IT DID NOT ESTABLISH IS STATED AS PLAINLY AS WHAT IT DID.
     assert "capacity expansion was not" in text.lower()
+
+
+def test_52a_run_7_is_recorded_with_its_coverage_gap_stated() -> None:
+    """RUN 7 REPORTED "PRODUCTION IS FINE UNDER PROTECTION", and that was honest
+    against the criteria of the day. It proved the ADD direction only.
+
+    Benchmark Run 3 died on a ListRow.Delete(), so the broad "HARNESS defect
+    only" conclusion is PENDING delete-path evidence - and the record has to say
+    so, or the next reader takes Run 7 for a closure it is not.
+    """
+    text = _evidence_section("## Protection probe Run 7")
+    # WHAT IT PROVED.
+    assert "1×3 → 3×3" in text and "1×8 → 3×8" in text
+    assert "351 passed, 0 failed" in text
+    assert "PRODUCTION IS FINE UNDER PROTECTION" in text
+    # AND WHAT IT DID NOT, said as plainly.
+    assert "Not proved" in text
+    assert "ListRows.Delete" in text
+    assert "ListColumns.Delete" in text
+    assert "remains PENDING exact delete-path runtime evidence" in text
+    assert '"HARNESS' in text and "defect only" in text
+    # THE GAP IS A GAP IN THE CRITERIA, NOT AN ERROR IN THE RUN.
+    # THE SENTENCE SPANS A LINE BREAK IN THE RECORD, so it is matched in pieces.
+    assert "coverage gap in the criteria" in text and "not as an error in" in text
+    # AND THIS ROUND CLAIMS NO RUNTIME EVIDENCE OF ITS OWN.
+    assert "The delete path is unproved on Windows" in text
+
+
+def test_52b_the_delete_coverage_is_not_claimed_before_windows_proves_it() -> None:
+    """THE RECORD MUST NOT SAY THE DELETE PATH IS SETTLED. Nothing in this round
+    is runtime evidence; it is a probe that can now ask the question."""
+    text = EVIDENCE.read_text(encoding="utf-8")
+    for overclaim in ("ListRows.Delete: OBSERVED on Windows",
+                      "the delete path is proved",
+                      "delete-path runtime evidence obtained",
+                      "Benchmark Run 3 was a HARNESS defect only"):
+        assert overclaim not in text, f"the record claims delete coverage it does not have: {overclaim}"
 
 
 def test_53_the_runtime_evidence_for_keeping_structure_protected_is_recorded() -> None:

@@ -171,14 +171,14 @@ def test_22_setting_more_than_the_command_needs_is_rejected() -> None:
 def test_23_going_back_to_judging_calculate_by_its_announcement_is_rejected() -> None:
     """THE RUN-6 WEAKNESS, put back."""
     _mutate("test_25",
-            "            $calcBefore = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $calcTables)",
-            "            $calcBefore = @()")
+            "        $before = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $CalcTables)",
+            "        $before = @()")
 
 
 def test_23a_reading_the_shapes_only_after_the_call_is_rejected() -> None:
     _mutate("test_25",
-            "            $calcAfter = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $calcTables)",
-            "            $calcAfter = @($calcBefore)")
+            "        $after = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $CalcTables)",
+            "        $after = @($before)")
 
 
 def test_23b_hard_coding_a_calc_table_name_is_rejected() -> None:
@@ -191,8 +191,8 @@ def test_23b_hard_coding_a_calc_table_name_is_rejected() -> None:
 def test_23c_accepting_any_difference_as_proof_is_rejected() -> None:
     """"SOMETHING CHANGED" IS NOT EVIDENCE OF THE CONTRACTED WORK."""
     _mutate("test_27",
-            "                if ([int]@($row)[0].Rows -ne $duration) {",
-            "                if ($false) {")
+            "            if ([int]@($row)[0].Rows -ne $ExpectedRows) {",
+            "            if ($false) {")
 
 
 def test_23d_dropping_the_row_rule_selection_is_rejected() -> None:
@@ -204,14 +204,14 @@ def test_23d_dropping_the_row_rule_selection_is_rejected() -> None:
 def test_23e_failing_a_refused_calculate_for_not_resizing_is_rejected() -> None:
     """A REFUSAL IS ENTITLED TO LEAVE THE TABLES ALONE."""
     _mutate("test_28",
-            "        if ([string]$calculate.Outcome -eq 'SUCCEEDED') {",
-            "        if ($true) {")
+            "    if ([string]$outcome.Outcome -eq 'SUCCEEDED') {",
+            "    if ($true) {")
 
 
 def test_23f_letting_a_contradicted_announcement_reach_fine_is_rejected() -> None:
     """NO FALSE PASS FROM THE ANNOUNCEMENT ALONE."""
     _mutate("test_29",
-            "        } elseif ($calcStructuralProof -eq 'CONTRADICTED') {",
+            "        } elseif ($shrinkRound.Proof -ne 'OBSERVED') {",
             "        } elseif ($false) {")
 
 
@@ -239,9 +239,134 @@ def test_23j_releasing_workbook_structure_from_the_probe_is_rejected() -> None:
     """RUN 6 PROVED IT IS NOT NEEDED: ApplyTimeline SUCCEEDED with structure
     protection True throughout."""
     _mutate("test_2c",
-            "            $calcSheet = $resolution.Sheets.Item([string]@($calcTables)[0].Sheet)",
-            "            $wb.Unprotect()\n"
-            "            $calcSheet = $resolution.Sheets.Item([string]@($calcTables)[0].Sheet)")
+            "        $calcSheet = $Resolution.Sheets.Item([string]@($CalcTables)[0].Sheet)",
+            "        $Workbook.Unprotect()\n"
+            "        $calcSheet = $Resolution.Sheets.Item([string]@($CalcTables)[0].Sheet)")
+
+
+# ===========================================================================
+# C3. THE DELETE PATH
+# ===========================================================================
+def test_24_removing_the_second_apply_timeline_is_rejected() -> None:
+    """WITHOUT IT NOTHING EVER SHRINKS, and ListColumns.Delete is never run."""
+    _mutate("test_2f",
+            "        $shrinkTimeline = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `\n"
+            "            -Endpoint 'PCCM_ApplyTimeline' -Resolution $resolution\n",
+            "        $shrinkTimeline = $timeline\n")
+
+
+def test_24a_removing_the_second_calculate_is_rejected() -> None:
+    """WITHOUT IT ResizeBody NEVER DELETES A ListRow - the exact call Benchmark
+    Run 3 died on."""
+    _mutate("test_20b",
+            "        $shrinkRound = Invoke-ProbeCalculateRound -Excel $excel -Workbook $wb `\n"
+            "            -Resolution $resolution -CalcTables $calcTables -PerYearTables $perYearTables `\n"
+            "            -ExpectedRows $shrinkYears -Label 'shrink'\n",
+            "        $shrinkRound = $growRound\n")
+
+
+def test_24b_a_shrink_that_does_not_shrink_is_rejected() -> None:
+    """SAME DURATION BOTH ROUNDS: nothing is deleted and the round proves
+    nothing, however successfully it announces."""
+    _mutate("test_20",
+            "function Get-ProbeShrinkYears { return 1 }",
+            "function Get-ProbeShrinkYears { return 3 }")
+
+
+def test_24c_growing_instead_of_shrinking_is_rejected() -> None:
+    _mutate("test_20",
+            "function Get-ProbeShrinkYears { return 1 }",
+            "function Get-ProbeShrinkYears { return 5 }")
+
+
+def test_24d_accepting_any_column_change_as_delete_evidence_is_rejected() -> None:
+    """DIRECTION, NOT DIFFERENCE."""
+    _mutate("test_2g",
+            "        elseif ([int]$a.Columns -lt [int]$b.Columns) { $shrank += $key }",
+            "        elseif ([int]$a.Columns -ne [int]$b.Columns) { $shrank += $key }")
+
+
+def test_24e_accepting_a_partial_column_shrink_is_rejected() -> None:
+    """EVERY GRID THAT GREW MUST SHRINK."""
+    _mutate("test_2g",
+            "            if (@($shrinkDirection.Shrank) -notcontains $key) { $missedShrink += $key }",
+            "            if ($false) { $missedShrink += $key }")
+
+
+def test_24f_accepting_3_to_3_as_row_delete_evidence_is_rejected() -> None:
+    """LANDING ON THE RIGHT NUMBER IS NOT HAVING LOST ROWS TO GET THERE."""
+    _mutate("test_2h",
+            "        if ([int]$now.Rows -lt [int]$b.Rows) {",
+            "        if ([int]$now.Rows -le [int]$b.Rows) {")
+
+
+def test_24g_accepting_only_one_per_year_table_shrinking_is_rejected() -> None:
+    _mutate("test_2h",
+            "                if (@($shrinkRound.RowsDeleted) -notcontains [string]$table) {\n"
+            "                    $missedRowDelete += [string]$table\n"
+            "                }",
+            "                if ($false) {\n"
+            "                    $missedRowDelete += [string]$table\n"
+            "                }")
+
+
+def test_24h_announcement_only_shrink_success_is_rejected() -> None:
+    """THE SECOND CALCULATE MAY NOT PASS ON ITS ANNOUNCEMENT EITHER."""
+    _mutate("test_2h",
+            "            if (([string]$shrinkRound.Proof -eq 'OBSERVED') -and",
+            "            if (([string]$shrinkCalculate.Outcome -eq 'SUCCEEDED') -and")
+
+
+def test_24i_allowing_fine_without_delete_evidence_is_rejected() -> None:
+    """THE OVERREACH THIS ROUND EXISTS TO PREVENT."""
+    _mutate("test_2i",
+            "        } elseif (($columnDeleteProof -ne 'OBSERVED') -or ($rowDeleteProof -ne 'OBSERVED')) {",
+            "        } elseif ($false) {")
+
+
+def test_24j_dropping_a_delete_class_from_the_success_text_is_rejected() -> None:
+    _mutate("test_2j",
+            "            $verdictReason = ('LISTCOLUMN ADD: OBSERVED; LISTCOLUMN DELETE: OBSERVED; ' +",
+            "            $verdictReason = ('LISTCOLUMN ADD: OBSERVED; ' +")
+
+
+def test_24k_projecting_a_delete_class_onto_a_boolean_is_rejected() -> None:
+    _mutate("test_2j",
+            "        $columnDeleteProof = 'NOT ESTABLISHED'",
+            "        $columnDeleteProof = $false")
+
+
+def test_24l_omitting_the_protection_before_check_is_rejected() -> None:
+    _mutate("test_2k",
+            "            ([int]$_.ProtectedBefore -ne [int]$_.TotalSheets) -or",
+            "            ($false) -or")
+
+
+def test_24m_omitting_the_structure_check_is_rejected() -> None:
+    """RUN 7 PROVED STRUCTURE PROTECTION NEED NEVER BE RELEASED, so the probe
+    must be able to see that it was not."""
+    _mutate("test_2k",
+            "            (-not [bool]$_.StructureBefore) -or (-not [bool]$_.StructureAfter) })",
+            "            ($false) })")
+
+
+def test_24n_releasing_structure_protection_in_the_shrink_round_is_rejected() -> None:
+    _mutate("test_2c",
+            "        $shrinkTimeline = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `",
+            "        $wb.Unprotect()\n"
+            "        $shrinkTimeline = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `")
+
+
+def test_24o_letting_the_shrink_precondition_reach_the_endpoint_is_rejected() -> None:
+    _mutate("test_2e",
+            "        if (@($shrinkProblems).Count -gt 0) {",
+            "        if ($false) {")
+
+
+def test_24p_changing_something_other_than_the_duration_is_rejected() -> None:
+    _mutate("test_2d",
+            "        @{ Key = 'duration_years'; Value = [double](Get-ProbeShrinkYears); Endpoint = 'PCCM_ApplyTimeline' }",
+            "        @{ Key = 'discount_rate'; Value = [double](Get-ProbeShrinkYears); Endpoint = 'PCCM_ApplyTimeline' }")
 
 
 # ===========================================================================
@@ -266,9 +391,9 @@ def test_22c_running_calculate_after_the_add_commands_is_rejected() -> None:
     """AN ADDED DRIVER CARRIES A PERMANENT ID AND NO OTHER FIELD, so Calculate
     would refuse on it and the probe would learn nothing about the _Calc resize."""
     _mutate("test_20b",
-            "        $calculate = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `\n"
-            "                -Endpoint 'PCCM_Calculate' -Resolution $resolution\n"
-            "            $null = $outcomes.Add($calculate)\n",
+            "        $growRound = Invoke-ProbeCalculateRound -Excel $excel -Workbook $wb `\n"
+            "            -Resolution $resolution -CalcTables $calcTables -PerYearTables $perYearTables `\n"
+            "            -ExpectedRows $growYears -Label 'growth'\n",
             "")
 
 

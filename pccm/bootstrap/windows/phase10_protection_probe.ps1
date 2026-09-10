@@ -326,6 +326,134 @@ function Get-ProbePerYearCalcTables {
 }
 
 # ===========================================================================
+# WHICH WAY DID THE TABLE MOVE?
+# ===========================================================================
+# WHY DIRECTION AND NOT MERELY CHANGE. Windows Run 7 proved ListColumns.Add and
+# ListRows.Add under the production structural window. It did NOT prove
+# ListColumns.Delete or ListRows.Delete - and ListRow.Delete() is the exact call
+# Benchmark Run 3 died on:
+#
+#   "Table features aren't available because the sheet is protected"
+#     at a ListRow.Delete()
+#
+# So "the shape changed" is not enough for the delete path. A shrink round has
+# to observe columns and rows going DOWN, and a growth reading must never be
+# accepted as delete evidence.
+function Get-ProbeColumnDirection {
+    param($Before, $After, $Resolution)
+    $grew = @(); $shrank = @()
+    foreach ($entry in @($Resolution.Targets)) {
+        $key = [string]$entry.Key
+        $b = $Before[$key]
+        $a = $After[$key]
+        if ($null -eq $b -or $null -eq $a) { continue }
+        if ([int]$a.Columns -gt [int]$b.Columns) { $grew += $key }
+        elseif ([int]$a.Columns -lt [int]$b.Columns) { $shrank += $key }
+    }
+    return [pscustomobject]@{ Grew = @($grew); Shrank = @($shrank) }
+}
+
+# ===========================================================================
+# ONE CALCULATE ROUND, RUN TWICE
+# ===========================================================================
+# THE GROWTH ROUND AND THE SHRINK ROUND SHARE ONE IMPLEMENTATION. Two copies of
+# eighty lines of shape reading would drift, and the second copy is exactly
+# where a weaker check would appear.
+#
+# ExpectedRows is the applied duration for THIS round. calc_years and calc_annual
+# carry the row rule "one row per applied project year", and Stage A builds every
+# _Calc table with a single body row - so the growth round expects 3 and the
+# shrink round expects 1, and only ResizeBody can produce either.
+function Invoke-ProbeCalculateRound {
+    param($Excel, $Workbook, $Resolution, $CalcTables, $PerYearTables,
+          [int]$ExpectedRows, [string]$Label)
+    $lines = New-Object System.Collections.ArrayList
+    $calcSheet = $null
+    $before = @(); $after = @()
+    $outcome = $null
+    try {
+        Set-ProbeStage -Stage 'endpoint' `
+            -Action ('PREPARING TO TEST: reading the _Calc table shapes before Calculate (' +
+                     $Label + ')') -Endpoint 'PCCM_Calculate'
+        $calcSheet = $Resolution.Sheets.Item([string]@($CalcTables)[0].Sheet)
+        $before = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $CalcTables)
+
+        $outcome = Invoke-ProbeEndpoint -Excel $Excel -Workbook $Workbook `
+            -Endpoint 'PCCM_Calculate' -Resolution $Resolution
+
+        Set-ProbeStage -Stage 'endpoint' `
+            -Action ('reading the _Calc table shapes after Calculate (' + $Label + ')') `
+            -Endpoint 'PCCM_Calculate'
+        $after = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $CalcTables)
+    } finally {
+        if ($null -ne $calcSheet) { Release-Transient $calcSheet 'Worksheet(_Calc)'; $calcSheet = $null }
+    }
+
+    $changed = @(); $shrank = @()
+    foreach ($b in @($before)) {
+        $match = @(@($after) | Where-Object { [string]$_.Key -eq [string]$b.Key })
+        if (@($match).Count -ne 1) {
+            $null = $lines.Add('    ' + [string]$b.Table + ': NOT READ BACK')
+            continue
+        }
+        $now = @($match)[0]
+        $line = ('    ' + [string]$b.Table + ': ' + [string]$b.Rows + 'x' + [string]$b.Cols +
+                 ' -> ' + [string]$now.Rows + 'x' + [string]$now.Cols)
+        if (([int]$b.Rows -ne [int]$now.Rows) -or ([int]$b.Cols -ne [int]$now.Cols)) {
+            $changed += [string]$b.Table
+            $line = $line + '   CHANGED'
+        }
+        if ([int]$now.Rows -lt [int]$b.Rows) {
+            $shrank += [string]$b.Table
+            $line = $line + '   (rows DELETED)'
+        }
+        $null = $lines.Add($line)
+    }
+
+    # THE PREDICTIVE CHECK. Only demanded of a Calculate that SUCCEEDED: a
+    # refusal is entitled to leave the tables alone, and failing it for that
+    # would manufacture a failure - the same mistake as calling any refusal a
+    # protection block.
+    $proof = 'NOT ESTABLISHED'
+    if ([string]$outcome.Outcome -ne 'SUCCEEDED') {
+        $null = $lines.Add('    Calculate did not succeed, so no shape is required of it. ' +
+                           'A refusal is entitled to leave the tables alone.')
+    }
+    if ([string]$outcome.Outcome -eq 'SUCCEEDED') {
+        $wrong = @()
+        foreach ($table in @($PerYearTables)) {
+            $row = @(@($after) | Where-Object { [string]$_.Table -eq [string]$table })
+            if (@($row).Count -ne 1) { $wrong += ($table + ': not read back'); continue }
+            if ([int]@($row)[0].Rows -ne $ExpectedRows) {
+                $wrong += ($table + ': ' + [string]@($row)[0].Rows + ' rows, expected ' +
+                           [string]$ExpectedRows + ' (one per applied project year)')
+            }
+        }
+        if ((@($wrong).Count -eq 0) -and (@($PerYearTables).Count -gt 0) -and
+            (@($changed).Count -gt 0)) {
+            $proof = 'OBSERVED'
+        } else {
+            $proof = 'CONTRADICTED'
+            $null = $lines.Add('    BUT Calculate announced success WITHOUT the contracted shape:')
+            foreach ($problem in @($wrong)) { $null = $lines.Add('      ' + $problem) }
+            if (@($changed).Count -eq 0) {
+                $null = $lines.Add('      no _Calc table changed shape at all')
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Label        = $Label
+        Outcome      = $outcome
+        Expected     = $ExpectedRows
+        Changed      = @($changed)
+        RowsDeleted  = @($shrank)
+        Proof        = $proof
+        Lines        = @($lines)
+    }
+}
+
+# ===========================================================================
 # IS THIS REFUSAL ACTUALLY ABOUT PROTECTION?
 # ===========================================================================
 # RUN 5 IS WHY THIS EXISTS. It produced the real answer - PCCM_ApplyTimeline was
@@ -408,13 +536,41 @@ function Get-ProbeDeclaredInputs {
     $wanted = @(
         @{ Key = 'base_year';          Value = [double]2026; Endpoint = 'PCCM_ApplyTimeline' },
         @{ Key = 'project_start_year'; Value = [double]2027; Endpoint = 'PCCM_ApplyTimeline' },
-        @{ Key = 'duration_years';     Value = [double]3;    Endpoint = 'PCCM_ApplyTimeline' },
+        @{ Key = 'duration_years';     Value = [double](Get-ProbeGrowthYears); Endpoint = 'PCCM_ApplyTimeline' },
         @{ Key = 'discount_rate';      Value = [double]0.05; Endpoint = 'PCCM_Calculate' }
     )
+    return New-ProbeInputRecords -Inputs $inputs -Wanted $wanted
+}
+
+# THE TWO APPLIED DURATIONS THIS PROBE USES, DECLARED IN ONE PLACE. The growth
+# round applies 3 project years and the shrink round applies 1; every expectation
+# downstream is derived from these rather than restating a number.
+function Get-ProbeGrowthYears { return 3 }
+function Get-ProbeShrinkYears { return 1 }
+
+# THE SHRINK PRECONDITION. One input changes and it changes the same way every
+# other one did: a genuine Double through the accepted Set-NamedValue, read back
+# and type-checked before the endpoint is touched. 1 is inside the accepted bound
+# - modTimeline.ReadTriple requires 1 <= d <= LIMIT_MAX_YEAR_COLUMNS - so this is
+# a valid timeline, not a value chosen to force a failure.
+function Get-ProbeShrinkInputs {
+    param($Inspection)
+    $inputs = Get-ProbeRequiredProperty -InputObject $Inspection -Name 'inputs' `
+        -Where 'the Gate-B inspection'
+    $wanted = @(
+        @{ Key = 'duration_years'; Value = [double](Get-ProbeShrinkYears); Endpoint = 'PCCM_ApplyTimeline' }
+    )
+    return New-ProbeInputRecords -Inputs $inputs -Wanted $wanted
+}
+
+# ONE RECORD BUILDER FOR BOTH SETS. A second copy is where a missing scalar-shape
+# check or a missing [double] would appear.
+function New-ProbeInputRecords {
+    param($Inputs, $Wanted)
     $out = @()
-    foreach ($entry in $wanted) {
+    foreach ($entry in @($Wanted)) {
         $key = [string]$entry.Key
-        $spec = Get-ProbeRequiredProperty -InputObject $inputs -Name $key `
+        $spec = Get-ProbeRequiredProperty -InputObject $Inputs -Name $key `
             -Where 'the Gate-B inspection inputs'
         $out += [pscustomobject]@{
             Key         = $key
@@ -948,6 +1104,17 @@ function Invoke-ProbeEndpoint {
         ProtectionBefore  = (Format-ProbeProtection -State $protectionBefore)
         ProtectionAfter   = (Format-ProbeProtection -State $protectionAfter)
         StructuralEffect  = ([bool](@($changes).Count -gt 0))
+        # THE STRUCTURE FLAG AS A BOOLEAN, not only inside the formatted text.
+        # Windows Run 7 proved ListColumns.Add does not need workbook-structure
+        # protection released, so the verdict has to be able to CHECK that it
+        # stayed applied rather than read it in a sentence.
+        StructureBefore   = ([bool](Get-ProbeProperty -InputObject $protectionBefore -Name 'Structure'))
+        StructureAfter    = ([bool](Get-ProbeProperty -InputObject $protectionAfter  -Name 'Structure'))
+        # THE SHAPES THEMSELVES, so a caller can ask which DIRECTION a table
+        # moved. `Changes` is formatted text and parsing it back would be a
+        # second, worse reading of evidence the probe already holds.
+        ShapesBefore      = $shapesBefore
+        ShapesAfter       = $shapesAfter
     }
 }
 
@@ -1186,6 +1353,8 @@ try {
             -Action 'SETTING ENDPOINT PRECONDITIONS: writing the declared inputs (production NOT invoked)' `
             -Endpoint 'PCCM_ApplyTimeline'
         $declaredInputs = @(Get-ProbeDeclaredInputs -Inspection $inspection)
+        $growYears = [int](Get-ProbeGrowthYears)
+        $shrinkYears = [int](Get-ProbeShrinkYears)
         Set-ProbeDeclaredInputs -Workbook $wb -Inputs $declaredInputs
 
         Set-ProbeStage -Stage 'endpoint' `
@@ -1239,104 +1408,162 @@ try {
         #
         # THIS IS ALSO THE USER'S OWN FIRST CALCULATE: apply a timeline, press
         # Calculate. It is not a contrived state.
-        Set-ProbeStage -Stage 'endpoint' `
-            -Action 'PREPARING TO TEST: reading the _Calc table shapes before Calculate' `
-            -Endpoint 'PCCM_Calculate'
         $calcTables = @(Get-ProbeCalcTables -Inspection $inspection)
         $perYearTables = @(Get-ProbePerYearCalcTables -CalcTables $calcTables)
-        $calcSheet = $null
-        $calcBefore = @()
-        $calcAfter = @()
-        try {
-            $calcSheet = $resolution.Sheets.Item([string]@($calcTables)[0].Sheet)
-            $calcBefore = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $calcTables)
 
-            $calculate = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
-                -Endpoint 'PCCM_Calculate' -Resolution $resolution
-            $null = $outcomes.Add($calculate)
-
-            Set-ProbeStage -Stage 'endpoint' `
-                -Action 'reading the _Calc table shapes after Calculate' -Endpoint 'PCCM_Calculate'
-            $calcAfter = @(Get-ProbeCalcShapes -Worksheet $calcSheet -CalcTables $calcTables)
-        } finally {
-            if ($null -ne $calcSheet) { Release-Transient $calcSheet 'Worksheet(_Calc)'; $calcSheet = $null }
-        }
-
+        $growRound = Invoke-ProbeCalculateRound -Excel $excel -Workbook $wb `
+            -Resolution $resolution -CalcTables $calcTables -PerYearTables $perYearTables `
+            -ExpectedRows $growYears -Label 'growth'
+        $calculate = $growRound.Outcome
+        $null = $outcomes.Add($calculate)
         Write-ProbeOutcome -Outcome $calculate -Expectation `
-            ('ResizeBody adds and deletes ListRows on all five _Calc tables. Judged by the ' +
-             'TABLE SHAPES below, not by the announcement.')
+            ('ResizeBody adds ListRows on the _Calc tables. Judged by the TABLE SHAPES ' +
+             'below, not by the announcement.')
+        Write-ProbeLine ('  _Calc table shapes, before -> after (' + [string]$growRound.Label + '):')
+        foreach ($line in @($growRound.Lines)) { Write-ProbeLine $line }
+        Write-ProbeLine ('  growth evidence: ' + [string]$growRound.Proof)
+        Write-ProbeLine ''
 
-        # THE OBSERVATION, AND WHAT IT PROVES. calc_years and calc_annual carry
-        # the row rule "one row per applied project year", so a Calculate that
-        # really ran ResizeBody leaves them holding exactly the applied duration.
-        # Stage A builds every one of these tables with a single body row, so
-        # with a 3-year timeline that is an observable 1 -> 3.
-        Write-ProbeLine '  _Calc table shapes, before -> after:'
-        $calcChanged = @()
-        foreach ($before in @($calcBefore)) {
-            $after = @(@($calcAfter) | Where-Object { [string]$_.Key -eq [string]$before.Key })
-            if (@($after).Count -ne 1) {
-                Write-ProbeLine ('    ' + [string]$before.Table + ': NOT READ BACK')
-                continue
+        # --- THE SHRINK ROUND: THE DELETE PATH -----------------------------
+        # WHY THIS ROUND EXISTS. Benchmark Run 3 died on a ListRow.Delete() with
+        # "Table features aren't available because the sheet is protected". Every
+        # successful round above proves the ADD direction: ListColumns.Add on the
+        # grids, ListRows.Add in ResizeBody. Neither proves the DELETE direction,
+        # and the delete is the call that actually failed.
+        #
+        # ONE INPUT CHANGES, AND IT CHANGES THE SAME WAY EVERY OTHER INPUT DID:
+        # a genuine Double through the accepted Set-NamedValue, read back and
+        # type-checked before the endpoint is touched. Duration 1 is inside the
+        # accepted bound (modTimeline requires 1 <= d <= LIMIT_MAX_YEAR_COLUMNS).
+        #
+        # WHAT IT MUST PRODUCE. Shrinking from 3 project years to 1 drives
+        # modProfiling.SetYearColumns and modInflation.SetYearColumns down their
+        # `ListColumns(...).Delete` loops on all three grids, and then
+        # ResizeBody down its `ListRows(...).Delete` loop on the per-year _Calc
+        # tables. Both are the production structural window's delete path.
+        Set-ProbeStage -Stage 'endpoint' `
+            -Action ('SETTING ENDPOINT PRECONDITIONS: shrinking the applied duration to ' +
+                     [string]$shrinkYears + ' (production NOT invoked)') `
+            -Endpoint 'PCCM_ApplyTimeline'
+        $shrinkInputs = @(Get-ProbeShrinkInputs -Inspection $inspection)
+        Set-ProbeDeclaredInputs -Workbook $wb -Inputs $shrinkInputs
+
+        Set-ProbeStage -Stage 'endpoint' `
+            -Action 'VERIFYING ENDPOINT PRECONDITIONS: reading the shrink input back (production NOT invoked)' `
+            -Endpoint 'PCCM_ApplyTimeline'
+        $shrinkProblems = @(Test-ProbeDeclaredInputs -Workbook $wb -Inputs $shrinkInputs)
+        Write-ProbeLine 'SHRINK ROUND - the delete path Benchmark Run 3 died on'
+        Write-ProbeLine '------------------------------------------------------'
+        foreach ($entry in $shrinkInputs) {
+            Write-ProbeLine ('  ' + [string]$entry.Key + '  ' + [string]$entry.DefinedName +
+                             ' = ' + [string]$entry.Value + '  (System.Double, for ' +
+                             [string]$entry.Endpoint + ')')
+        }
+        if (@($shrinkProblems).Count -gt 0) {
+            foreach ($problem in $shrinkProblems) { Write-ProbeLine ('  PROBLEM: ' + $problem) }
+            throw ('the shrink input could not be established, so the delete path was NOT ' +
+                   'exercised: ' + ($shrinkProblems -join '; '))
+        }
+        Write-ProbeLine '  read back as System.Double with the expected value'
+
+        $shrinkTimeline = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
+            -Endpoint 'PCCM_ApplyTimeline' -Resolution $resolution
+        $null = $outcomes.Add($shrinkTimeline)
+        Write-ProbeOutcome -Outcome $shrinkTimeline -Expectation `
+            ('ListColumns.Delete on all three grids. The year columns must come DOWN from ' +
+             'the ' + [string]$growYears + '-year state to the ' + [string]$shrinkYears +
+             '-year state; a shape that merely CHANGED is not delete evidence.')
+
+        $growDirection = Get-ProbeColumnDirection -Before $timeline.ShapesBefore `
+            -After $timeline.ShapesAfter -Resolution $resolution
+        $shrinkDirection = Get-ProbeColumnDirection -Before $shrinkTimeline.ShapesBefore `
+            -After $shrinkTimeline.ShapesAfter -Resolution $resolution
+        Write-ProbeLine ('  grids that GAINED columns on the ' + [string]$growYears +
+                         '-year apply : ' + ((@($growDirection.Grew) -join ', ')))
+        Write-ProbeLine ('  grids that LOST columns on the ' + [string]$shrinkYears +
+                         '-year apply  : ' + ((@($shrinkDirection.Shrank) -join ', ')))
+
+        # EVERY GRID THAT GREW MUST SHRINK. Deriving the expectation from what was
+        # actually observed growing keeps this predictive without a literal, and
+        # refuses a partial shrink that happened to touch one table.
+        $missedShrink = @()
+        foreach ($key in @($growDirection.Grew)) {
+            if (@($shrinkDirection.Shrank) -notcontains $key) { $missedShrink += $key }
+        }
+        $columnDeleteProof = 'NOT ESTABLISHED'
+        if ([string]$shrinkTimeline.Outcome -eq 'SUCCEEDED') {
+            if ((@($growDirection.Grew).Count -gt 0) -and (@($missedShrink).Count -eq 0)) {
+                $columnDeleteProof = 'OBSERVED'
+            } else {
+                $columnDeleteProof = 'CONTRADICTED'
+                if (@($missedShrink).Count -gt 0) {
+                    Write-ProbeLine ('  BUT these grids grew and did NOT shrink: ' +
+                                     ((@($missedShrink) -join ', ')))
+                }
+                if (@($growDirection.Grew).Count -eq 0) {
+                    Write-ProbeLine '  BUT no grid gained columns in the growth round, so there is nothing to have deleted'
+                }
             }
-            $now = @($after)[0]
-            $line = ('    ' + [string]$before.Table + ': ' +
-                     [string]$before.Rows + 'x' + [string]$before.Cols + ' -> ' +
-                     [string]$now.Rows + 'x' + [string]$now.Cols)
-            if (([int]$before.Rows -ne [int]$now.Rows) -or ([int]$before.Cols -ne [int]$now.Cols)) {
-                $calcChanged += [string]$before.Table
-                $line = $line + '   CHANGED'
+        }
+        Write-ProbeLine ('  ListColumns.Delete evidence: ' + $columnDeleteProof)
+        Write-ProbeLine ''
+
+        $shrinkRound = Invoke-ProbeCalculateRound -Excel $excel -Workbook $wb `
+            -Resolution $resolution -CalcTables $calcTables -PerYearTables $perYearTables `
+            -ExpectedRows $shrinkYears -Label 'shrink'
+        $shrinkCalculate = $shrinkRound.Outcome
+        $null = $outcomes.Add($shrinkCalculate)
+        Write-ProbeOutcome -Outcome $shrinkCalculate -Expectation `
+            ('ResizeBody DELETES ListRows down to the ' + [string]$shrinkYears +
+             '-year state. This is the ListRow.Delete() Benchmark Run 3 died on.')
+        Write-ProbeLine ('  _Calc table shapes, before -> after (' + [string]$shrinkRound.Label + '):')
+        foreach ($line in @($shrinkRound.Lines)) { Write-ProbeLine $line }
+
+        # THE PER-YEAR TABLES MUST HAVE LOST ROWS, not merely landed on the right
+        # number. Accepting 3 -> 3 would call an unchanged table delete evidence.
+        $rowDeleteProof = 'NOT ESTABLISHED'
+        if ([string]$shrinkCalculate.Outcome -eq 'SUCCEEDED') {
+            $missedRowDelete = @()
+            foreach ($table in @($perYearTables)) {
+                if (@($shrinkRound.RowsDeleted) -notcontains [string]$table) {
+                    $missedRowDelete += [string]$table
+                }
             }
-            Write-ProbeLine $line
+            if (([string]$shrinkRound.Proof -eq 'OBSERVED') -and
+                (@($perYearTables).Count -gt 0) -and (@($missedRowDelete).Count -eq 0)) {
+                $rowDeleteProof = 'OBSERVED'
+            } else {
+                $rowDeleteProof = 'CONTRADICTED'
+                if (@($missedRowDelete).Count -gt 0) {
+                    Write-ProbeLine ('  BUT these _Calc tables did not lose rows: ' +
+                                     ((@($missedRowDelete) -join ', ')))
+                }
+            }
+        }
+        Write-ProbeLine ('  ListRows.Delete evidence: ' + $rowDeleteProof)
+
+        # THE ADD DIRECTION, STATED AS ITS OWN CLASS rather than left implicit in
+        # "the shape changed". Run 7 established it; naming it keeps the four
+        # classes symmetrical so a future run cannot report three of them.
+        $columnAddProof = 'NOT ESTABLISHED'
+        if ([string]$timeline.Outcome -eq 'SUCCEEDED') {
+            if (@($growDirection.Grew).Count -gt 0) { $columnAddProof = 'OBSERVED' }
+            else { $columnAddProof = 'CONTRADICTED' }
         }
 
-        # THE PREDICTIVE CHECK, not merely "something moved". Only run when
-        # Calculate actually SUCCEEDED: a refusal is entitled to leave the tables
-        # alone, and demanding a resize from a refused command would turn an
-        # honest refusal into a manufactured failure.
+        # The two Calculate rounds summarised into the one word the criteria
+        # block reports. OBSERVED only when BOTH rounds took their contracted
+        # shape; a single CONTRADICTED round contradicts the whole claim.
         $calcStructuralProof = 'NOT ESTABLISHED'
-        if ([string]$calculate.Outcome -eq 'SUCCEEDED') {
-            $duration = 0
-            foreach ($entry in @($declaredInputs)) {
-                if ([string]$entry.Key -eq 'duration_years') { $duration = [int]$entry.Value }
-            }
-            $wrong = @()
-            foreach ($table in @($perYearTables)) {
-                $row = @(@($calcAfter) | Where-Object { [string]$_.Table -eq [string]$table })
-                if (@($row).Count -ne 1) { $wrong += ($table + ': not read back'); continue }
-                if ([int]@($row)[0].Rows -ne $duration) {
-                    $wrong += ($table + ': ' + [string]@($row)[0].Rows + ' rows, expected ' +
-                               [string]$duration + ' (one per applied project year)')
-                }
-            }
-            if ((@($wrong).Count -eq 0) -and (@($perYearTables).Count -gt 0) -and
-                (@($calcChanged).Count -gt 0)) {
-                $calcStructuralProof = 'OBSERVED'
-                Write-ProbeLine ('  so ResizeBody really ran: ' +
-                                 (@($perYearTables) -join ', ') + ' each hold ' +
-                                 [string]$duration + ' rows, one per applied project year, ' +
-                                 'and ' + [string]@($calcChanged).Count + ' table(s) changed shape.')
-            } else {
-                $calcStructuralProof = 'CONTRADICTED'
-                Write-ProbeLine '  BUT Calculate announced success WITHOUT the contracted shape:'
-                foreach ($problem in @($wrong)) { Write-ProbeLine ('    ' + $problem) }
-                if (@($calcChanged).Count -eq 0) {
-                    Write-ProbeLine '    no _Calc table changed shape at all'
-                }
-            }
-        } else {
-            Write-ProbeLine ('  Calculate did not succeed, so no shape is required of it. ' +
-                             'A refusal is entitled to leave the tables alone.')
+        if (([string]$growRound.Proof -eq 'OBSERVED') -and
+            ([string]$shrinkRound.Proof -eq 'OBSERVED')) {
+            $calcStructuralProof = 'OBSERVED'
+        } elseif (([string]$growRound.Proof -eq 'CONTRADICTED') -or
+                  ([string]$shrinkRound.Proof -eq 'CONTRADICTED')) {
+            $calcStructuralProof = 'CONTRADICTED'
         }
         Write-ProbeLine ''
 
-        # --- THE ADD COMMANDS, AND WHAT THEY DO NOT SETTLE -----------------
-        # RUN 6 OBSERVED BOTH SUCCEEDING WITH PROTECTION INTACT AND NO WATCHED
-        # SHAPE CHANGE, and that is exactly right for a fresh workbook: Stage A
-        # reserves 25 register rows, so an Add writes an id into a reserved row
-        # and ListRows.Add never fires. Endpoint FUNCTIONALITY under protection
-        # was observed; a ListRows.Add CAPACITY EXPANSION was not exercised, and
-        # this probe does not claim it was.
         $addCost = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
             -Endpoint 'PCCM_AddCostLine' -Resolution $resolution
         $null = $outcomes.Add($addCost)
@@ -1360,7 +1587,9 @@ try {
         Set-ProbeStage -Stage 'verdict' -Action 'weighing the outcomes'
         $notSucceeded = @(@($outcomes) | Where-Object { [string]$_.Outcome -ne 'SUCCEEDED' })
         $lostProtection = @(@($outcomes) | Where-Object {
-            [int]$_.ProtectedAfter -ne [int]$_.TotalSheets })
+            ([int]$_.ProtectedAfter -ne [int]$_.TotalSheets) -or
+            ([int]$_.ProtectedBefore -ne [int]$_.TotalSheets) -or
+            (-not [bool]$_.StructureBefore) -or (-not [bool]$_.StructureAfter) })
         $structural = @(@($outcomes) | Where-Object { [bool]$_.StructuralEffect })
         # BLOCKED IS DECIDED BY THIS LIST AND NOT BY $notSucceeded. A refusal
         # only counts when Excel itself said the sheet's protection is what
@@ -1401,10 +1630,22 @@ try {
             $verdictReason = ('the commands succeeded but protection was not in force after ' +
                               [string]@($lostProtection).Count + ' of them, so they were not ' +
                               'a test of protected behaviour')
-        } elseif ($calcStructuralProof -eq 'CONTRADICTED') {
+        } elseif (($columnDeleteProof -ne 'OBSERVED') -or ($rowDeleteProof -ne 'OBSERVED')) {
+            # THE DELETE PATH IS THE ONE BENCHMARK RUN 3 DIED ON. Every ADD
+            # direction succeeding says nothing about ListColumns.Delete or
+            # ListRow.Delete, and calling that run a harness defect on ADD
+            # evidence alone is precisely the overreach this branch refuses.
+            $verdictReason = ('the ADD direction was observed but the DELETE direction was ' +
+                              'not: ListColumns.Delete is ' + $columnDeleteProof +
+                              ' and ListRows.Delete is ' + $rowDeleteProof +
+                              '. Benchmark Run 3 died on a ListRow.Delete(), so the question ' +
+                              'is not settled without it')
+        } elseif ($growRound.Proof -ne 'OBSERVED') {
+            $verdictReason = ('the growth round did not observe its contracted _Calc shape (' +
+                              [string]$growRound.Proof + '), so the ADD direction is not settled')
+        } elseif ($shrinkRound.Proof -ne 'OBSERVED') {
             # THE PROBE'S OWN PRINCIPLE, APPLIED TO ITSELF. An announcement of
-            # success is not proof of a structural operation - that argument is
-            # what made Benchmark Run 3 a harness defect - so a Calculate that
+            # success is not proof of a structural operation, so a Calculate that
             # announced success while the _Calc tables did not take the shape
             # their row rule contracts cannot carry the run to FINE.
             $verdictReason = ('Calculate announced success but the _Calc tables did not take ' +
@@ -1412,7 +1653,8 @@ try {
                               'not observed and the question is not settled')
         } else {
             $verdict = 'PRODUCTION IS FINE UNDER PROTECTION'
-            $verdictReason = ('every production endpoint succeeded, the tables actually ' +
+            $verdictReason = ('LISTCOLUMN ADD: OBSERVED; LISTCOLUMN DELETE: OBSERVED; ' +
+                              'LISTROW GROWTH: OBSERVED; LISTROW DELETE: OBSERVED. ' +
                               'changed shape, and every sheet was protected before and ' +
                               'after each one - so Benchmark Run 3 was a HARNESS defect only')
         }
@@ -1460,6 +1702,13 @@ try {
             Write-ProbeLine ('  STRUCTURAL INITIALISATION: NOT PROVEN - ' +
                              ((@($unmet) | ForEach-Object { [string]$_.Key }) -join ', ') + ' not met.')
         }
+        Write-ProbeLine ''
+        Write-ProbeLine 'STRUCTURAL EVIDENCE BY CLASS'
+        Write-ProbeLine '----------------------------'
+        Write-ProbeLine ('  LISTCOLUMN ADD    : ' + $columnAddProof)
+        Write-ProbeLine ('  LISTCOLUMN DELETE : ' + $columnDeleteProof)
+        Write-ProbeLine ('  LISTROW GROWTH    : ' + [string]$growRound.Proof)
+        Write-ProbeLine ('  LISTROW DELETE    : ' + $rowDeleteProof)
         Write-ProbeLine ('  CALCULATE STRUCTURAL EVIDENCE: ' + $calcStructuralProof +
                          '  (OBSERVED = the _Calc per-project-year tables hold the applied ' +
                          'duration; CONTRADICTED = it announced success without them; ' +

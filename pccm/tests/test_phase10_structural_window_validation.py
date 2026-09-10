@@ -370,6 +370,37 @@ def test_50_dropping_the_structure_protected_evidence_is_rejected() -> None:
                      "envelope may be revisited")
 
 
+def test_51_claiming_delete_coverage_before_windows_proves_it_is_rejected() -> None:
+    """THE OVERREACH THIS WHOLE ROUND EXISTS TO PREVENT. Nothing here is runtime
+    evidence for the delete path; it is a probe that can now ask the question."""
+    _mutate_evidence("test_52b",
+                     "**The delete path is unproved on Windows.**",
+                     "The delete path is proved and Benchmark Run 3 was a HARNESS defect only.")
+
+
+def test_52_dropping_the_run_7_coverage_gap_is_rejected() -> None:
+    """WITHOUT IT, RUN 7 READS AS A CLOSURE IT IS NOT."""
+    _mutate_evidence("test_52a",
+                     "remains PENDING exact delete-path runtime evidence",
+                     "is settled")
+
+
+def test_53_dropping_what_run_7_did_not_prove_is_rejected() -> None:
+    _mutate_evidence("test_52a", "**Not proved:**", "**Also observed:**")
+
+
+def test_54_rewriting_run_7_as_an_error_rather_than_a_gap_is_rejected() -> None:
+    """RUN 7 WAS HONEST AGAINST THE CRITERIA OF ITS DAY. The gap is in the
+    criteria, and saying otherwise rewrites a run's history."""
+    _mutate_evidence("test_52a",
+                     "coverage gap in the criteria",
+                     "mistake by the probe")
+
+
+def test_55_dropping_the_run_7_observed_calc_shapes_is_rejected() -> None:
+    _mutate_evidence("test_52a", "1×8 → 3×8", "a larger table")
+
+
 def test_46_deleting_the_recorded_evidence_is_rejected() -> None:
     """REQUIRED CONTROL 24. A reconciliation whose reason is not recorded is one
     the next rewrite undoes."""

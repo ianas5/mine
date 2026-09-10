@@ -285,14 +285,30 @@ def test_20_the_probe_runs_the_real_entry_points() -> None:
     # substring is satisfied by a Calculate that is only being NAMED. A mutation
     # that swapped the real call for PCCM_RunSimulation walked straight through
     # this until it was anchored on the Invoke-ProbeEndpoint argument list.
-    for endpoint in ("PCCM_ApplyTimeline", "PCCM_AddCostLine", "PCCM_AddRisk",
-                     "PCCM_Calculate"):
+    # TWICE FOR THE TWO THAT RUN TWICE. The delete path needs a second
+    # ApplyTimeline (shrink the applied duration) and a second Calculate (let
+    # ResizeBody delete the _Calc rows), so the growth round alone can no longer
+    # satisfy this.
+    # APPLYTIMELINE TWICE, AND CALCULATE THROUGH ITS ROUND HELPER TWICE. The
+    # delete path needs a second ApplyTimeline (shrink the applied duration) and
+    # a second Calculate (let ResizeBody delete the _Calc rows), so the growth
+    # round alone can no longer satisfy this.
+    assert code.count("-Endpoint 'PCCM_ApplyTimeline' -Resolution $resolution") == 2, (
+        "ApplyTimeline is not invoked for both the growth and the shrink round")
+    for endpoint in ("PCCM_AddCostLine", "PCCM_AddRisk"):
         assert code.count(f"-Endpoint '{endpoint}' -Resolution $resolution") == 1, endpoint
+    # Calculate runs through ONE helper so the two rounds cannot drift apart,
+    # and that helper is invoked exactly twice with the two round labels.
+    assert code.count("-Endpoint 'PCCM_Calculate' -Resolution $Resolution") == 1, (
+        "Calculate is invoked outside its round helper")
+    assert code.count("Invoke-ProbeCalculateRound -Excel $excel") == 2, (
+        "Calculate does not run for both the growth and the shrink round")
+    assert "-Label 'growth'" in code and "-Label 'shrink'" in code
     # AND NO OTHER ENDPOINT IS INVOKED. Simulation, sensitivity, the annual step
     # and Reset are not structural and are not this probe's question.
-    invoked = set(re.findall(r"-Endpoint '(\w+)' -Resolution \$resolution", code))
-    assert invoked == {"PCCM_ApplyTimeline", "PCCM_AddCostLine", "PCCM_AddRisk",
-                       "PCCM_Calculate"}, sorted(invoked)
+    invoked = set(re.findall(r"-Endpoint '(\w+)' -Resolution \$[Rr]esolution", code))
+    assert invoked == {"PCCM_ApplyTimeline", "PCCM_Calculate", "PCCM_AddCostLine",
+                       "PCCM_AddRisk"}, sorted(invoked)
     assert "$Excel.Run($Endpoint)" in code
     assert "PCCM_AutomationResult" in code
 
@@ -638,15 +654,25 @@ def test_55b_the_probe_never_reaches_around_the_commands() -> None:
     assert "$lo.ListColumns" in code and "$lo.ListRows" in code
     # THE ONE `.Delete()` IN THE FILE IS THE SENTENCE QUOTING RUN 3's FAILURE.
     # A probe that quoted the defect and also performed it would be found here.
-    deletes = [line.strip() for line in code.splitlines() if ".Delete(" in line]
-    assert deletes == ["Write-ProbeLine 'Benchmark Run 3 died on a ListRow.Delete() "
-                       "with \"Table features'"], deletes
+    # NAMING THE DELETE IS NOT PERFORMING ONE. The probe quotes the exact call
+    # Benchmark Run 3 died on, and the shrink round's expectations say which
+    # delete each endpoint must be seen doing - all of it prose. What is banned
+    # is a delete this script CALLS, so the rule is stated over the syntax: a
+    # `.Delete(` may only appear inside a string.
+    for line in code.splitlines():
+        if ".Delete(" not in line:
+            continue
+        stripped = line.strip()
+        assert (stripped.startswith("Write-ProbeLine") or
+                ("'" in stripped.split(".Delete(")[0]) or
+                ('"' in stripped.split(".Delete(")[0])), (
+            f"the probe performs a delete rather than naming one: {stripped}")
     # EVERY WRITE GOES THROUGH ONE OF TWO AUDITED HELPERS, and the raw COM
     # assignment sites exist ONLY inside them. Run 4 replaced the probe's own
     # reimplemented setter with the accepted Set-NamedValue, so this states the
     # rule where it now lives rather than counting one call form.
     assert code.count("Set-NamedValue -Workbook $Workbook") == 1, (
-        "the named-value write happens somewhere other than Set-ProbeTimelineInputs")
+        "the named-value write happens somewhere other than Set-ProbeDeclaredInputs")
     assert code.count("Set-ProbeCellExact -Cell $cell") == 2, (
         "the control writes to its cell more than twice")
     # THE THREE TIMELINE INPUTS ARE DECLARED, ONCE, AND DRIVE THAT ONE CALL.
@@ -656,9 +682,13 @@ def test_55b_the_probe_never_reaches_around_the_commands() -> None:
     # The discount rate is an ordinary Setup input that modCalcResolve requires,
     # so the probe supplies it the way a user does. The set is still exactly the
     # minimum: nothing here is needed by a command that does not read it.
+    # FIVE DECLARATIONS OVER FOUR INPUTS: duration_years appears twice because
+    # the shrink round re-applies it at a smaller value, which is the whole
+    # mechanism that drives ListColumns.Delete and ListRows.Delete.
     declared = re.findall(r"@\{ Key = '(\w+)';\s+Value = \[double\]", code)
     assert declared == ["base_year", "project_start_year", "duration_years",
-                        "discount_rate"], declared
+                        "discount_rate", "duration_years"], declared
+    assert declared[-1] == "duration_years", "the shrink round changes something else"
     # AND NO RAW Value2 ASSIGNMENT SURVIVES OUTSIDE THE TWO HELPERS. This is the
     # control that would catch a third write added straight to the COM object.
     setter = code.split("function Set-NamedValue")[1]

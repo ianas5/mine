@@ -213,9 +213,16 @@ def test_20_the_declared_inputs_are_the_minimum_each_command_needs() -> None:
     assert declared == [
         ("base_year", "2026", "PCCM_ApplyTimeline"),
         ("project_start_year", "2027", "PCCM_ApplyTimeline"),
-        ("duration_years", "3", "PCCM_ApplyTimeline"),
+        ("duration_years", "(Get-ProbeGrowthYears)", "PCCM_ApplyTimeline"),
         ("discount_rate", "0.05", "PCCM_Calculate"),
+        ("duration_years", "(Get-ProbeShrinkYears)", "PCCM_ApplyTimeline"),
     ], declared
+    # THE TWO DURATIONS LIVE IN ONE PLACE, and they must actually differ - a
+    # shrink round that re-applied the same duration would delete nothing.
+    code = _probe_code()
+    grow = int(re.search(r"function Get-ProbeGrowthYears \{ return (\d+) \}", code).group(1))
+    shrink = int(re.search(r"function Get-ProbeShrinkYears \{ return (\d+) \}", code).group(1))
+    assert grow > shrink >= 1, (grow, shrink)
     # AND NOTHING BEYOND THEM. A driver field, an FX rate or an inflation rate
     # would be the probe manufacturing business data.
     code = _probe_code()
@@ -251,10 +258,18 @@ def test_20b_calculate_runs_where_its_prerequisites_are_satisfiable() -> None:
     # appears on Set-ProbeStage lines, so anchoring on it alone would find a
     # Calculate that is only being NAMED - and a mutation that deleted the call
     # outright would still satisfy the ordering.
-    for endpoint in ("PCCM_ApplyTimeline", "PCCM_Calculate", "PCCM_AddCostLine",
-                     "PCCM_AddRisk"):
+    assert code.count("-Endpoint 'PCCM_ApplyTimeline' -Resolution $resolution") == 2
+    for endpoint in ("PCCM_AddCostLine", "PCCM_AddRisk"):
         assert code.count(f"-Endpoint '{endpoint}' -Resolution $resolution") == 1, endpoint
-    calculate = code.index("-Endpoint 'PCCM_Calculate' -Resolution $resolution")
+    # BOTH ROUNDS, and both between the timeline applies and the Add commands.
+    # Counting matters: with only the shrink round left, an ordering check still
+    # finds a Calculate in the right place and a mutation that deleted the growth
+    # round walked straight through.
+    assert code.count("Invoke-ProbeCalculateRound -Excel $excel") == 2, (
+        "Calculate does not run for both the growth and the shrink round")
+    assert "-ExpectedRows $growYears -Label 'growth'" in code
+    assert "-ExpectedRows $shrinkYears -Label 'shrink'" in code
+    calculate = code.index("Invoke-ProbeCalculateRound -Excel $excel")
     add_cost = code.index("-Endpoint 'PCCM_AddCostLine' -Resolution $resolution")
     add_risk = code.index("-Endpoint 'PCCM_AddRisk' -Resolution $resolution")
     timeline = code.index("-Endpoint 'PCCM_ApplyTimeline' -Resolution")
@@ -324,11 +339,13 @@ def test_25_the_calc_tables_are_watched_around_calculate() -> None:
     code = _probe_code()
     assert "function Get-ProbeCalcTables" in code
     assert "function Get-ProbeCalcShapes" in code
-    assert "$calcBefore = @(Get-ProbeCalcShapes" in code
-    assert "$calcAfter = @(Get-ProbeCalcShapes" in code
-    before_at = code.index("$calcBefore = @(Get-ProbeCalcShapes")
-    run_at = code.index("-Endpoint 'PCCM_Calculate' -Resolution $resolution")
-    after_at = code.index("$calcAfter = @(Get-ProbeCalcShapes")
+    # INSIDE THE ROUND HELPER, which both rounds share so neither can drift.
+    body = _function("Invoke-ProbeCalculateRound", code)
+    assert "$before = @(Get-ProbeCalcShapes" in body
+    assert "$after = @(Get-ProbeCalcShapes" in body
+    before_at = body.index("$before = @(Get-ProbeCalcShapes")
+    run_at = body.index("-Endpoint 'PCCM_Calculate' -Resolution $Resolution")
+    after_at = body.index("$after = @(Get-ProbeCalcShapes")
     assert before_at < run_at < after_at, "the shapes are not read either side of the call"
     assert "judge this one by its announcement" not in code, "the old wording is back"
 
@@ -358,7 +375,7 @@ def test_27_the_proof_is_predictive_not_merely_a_difference() -> None:
     per_year = [name for name, spec in _inspection()["calc"]["tables"].items()
                 if spec["row_rule"] == "one row per applied project year"]
     assert sorted(per_year) == ["calc_annual", "calc_years"], per_year
-    assert "-ne $duration" in code
+    assert "-ne $ExpectedRows" in code
     assert "one per applied project year" in code
 
 
@@ -367,26 +384,28 @@ def test_28_a_refused_calculate_is_required_to_change_nothing() -> None:
     would turn an honest refusal into a manufactured failure - which is the same
     mistake as calling any refusal a protection block."""
     code = _probe_code()
-    assert "if ([string]$calculate.Outcome -eq 'SUCCEEDED') {" in code
-    assert "A refusal is entitled to leave the tables alone." in code
-    proof = code[code.index("$calcStructuralProof = 'NOT ESTABLISHED'"):]
-    proof = proof[: proof.index("$addCost = Invoke-ProbeEndpoint")]
+    body = _function("Invoke-ProbeCalculateRound", code)
+    assert "if ([string]$outcome.Outcome -eq 'SUCCEEDED') {" in body
+    assert "a refusal is entitled to leave the tables alone" in _probe().lower()
     for state in ("'OBSERVED'", "'CONTRADICTED'", "'NOT ESTABLISHED'"):
-        assert state in proof, state
+        assert state in body, state
+    # AND THE SAME RULE GATES BOTH DELETE CLASSES.
+    assert "if ([string]$shrinkTimeline.Outcome -eq 'SUCCEEDED') {" in code
+    assert "if ([string]$shrinkCalculate.Outcome -eq 'SUCCEEDED') {" in code
 
 
 def test_29_an_announcement_the_shapes_contradict_cannot_reach_fine() -> None:
     """REQUIRED: no false PASS from the announcement alone."""
     code = _probe_code()
-    assert "} elseif ($calcStructuralProof -eq 'CONTRADICTED') {" in code
-    branch = code[code.index("} elseif ($calcStructuralProof -eq 'CONTRADICTED') {"):]
+    assert "} elseif ($shrinkRound.Proof -ne 'OBSERVED') {" in code
+    branch = code[code.index("} elseif ($shrinkRound.Proof -ne 'OBSERVED') {"):]
     branch = branch[: branch.index("} else {")]
     assert "$verdict = " not in branch, "the contradicted branch sets a verdict"
     assert "$verdictReason = " in branch
-    assert branch.index("did not take") < len(branch)
-    # AND IT IS WEIGHED BEFORE FINE.
-    assert code.index("$calcStructuralProof -eq 'CONTRADICTED'") < \
-        code.index("$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'")
+    # AND BOTH ROUNDS ARE WEIGHED BEFORE FINE.
+    fine = code.index("$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'")
+    assert code.index("$growRound.Proof -ne 'OBSERVED'") < fine
+    assert code.index("$shrinkRound.Proof -ne 'OBSERVED'") < fine
 
 
 def test_2a_blocked_semantics_are_untouched() -> None:
@@ -425,6 +444,135 @@ def test_2c_the_probe_never_releases_workbook_structure_protection() -> None:
         assert banned not in code, f"the probe releases protection: {banned}"
     # AND IT STILL READS THE STRUCTURE FLAG AS EVIDENCE.
     assert "Structure   = [bool]$Workbook.ProtectStructure" in code
+
+
+# ===========================================================================
+# C3. THE DELETE PATH - THE CALL BENCHMARK RUN 3 ACTUALLY DIED ON
+# ===========================================================================
+# WINDOWS RUN 7 PROVED THE ADD DIRECTION AND ONLY THE ADD DIRECTION.
+# ApplyTimeline grew three grids, Calculate grew tblCalcYears 1x3 -> 3x3 and
+# tblCalcAnnual 1x8 -> 3x8, and protection was restored after every endpoint. But
+# Benchmark Run 3 died on a ListRow.Delete(), and no successful ADD says anything
+# about a DELETE. These controls pin the shrink round that closes that gap.
+def test_2d_the_shrink_round_exists_and_changes_only_the_duration() -> None:
+    code = _probe_code()
+    assert "function Get-ProbeShrinkInputs" in code
+    assert "$shrinkInputs = @(Get-ProbeShrinkInputs -Inspection $inspection)" in code
+    assert "Set-ProbeDeclaredInputs -Workbook $wb -Inputs $shrinkInputs" in code
+    body = _function("Get-ProbeShrinkInputs", code)
+    keys = re.findall(r"@\{ Key = '(\w+)';", body)
+    assert keys == ["duration_years"], (
+        "the shrink round changes something other than the applied duration")
+    # THE NAME STILL COMES FROM THE INSPECTION, never a literal.
+    assert "inpDurationYears" not in code
+
+
+def test_2e_the_shrink_input_is_read_back_and_type_checked() -> None:
+    """THE SAME GATE AS EVERY OTHER INPUT. A shrink duration that did not land is
+    probe instrumentation failure, never a production result."""
+    code = _probe_code()
+    assert "$shrinkProblems = @(Test-ProbeDeclaredInputs -Workbook $wb -Inputs $shrinkInputs)" in code
+    assert "if (@($shrinkProblems).Count -gt 0) {" in code
+    assert "the delete path was NOT" in code
+    check = _function("Test-ProbeDeclaredInputs", code)
+    assert "$actual -isnot [double]" in check
+
+
+def test_2f_the_second_apply_timeline_is_invoked() -> None:
+    """REMOVING IT WOULD LEAVE THE DELETE PATH UNEXERCISED."""
+    code = _probe_code()
+    assert code.count("-Endpoint 'PCCM_ApplyTimeline' -Resolution $resolution") == 2
+    assert "$shrinkTimeline = Invoke-ProbeEndpoint" in code
+    first = code.index("$timeline = Invoke-ProbeEndpoint")
+    second = code.index("$shrinkTimeline = Invoke-ProbeEndpoint")
+    assert first < second
+    # AND THE SHRINK INPUT IS WRITTEN BETWEEN THEM.
+    assert first < code.index("$shrinkInputs = @(Get-ProbeShrinkInputs") < second
+
+
+def test_2g_column_delete_needs_the_columns_to_have_gone_down() -> None:
+    """DIRECTION, NOT DIFFERENCE. A grid that merely CHANGED shape is not
+    evidence of ListColumns.Delete, and a growth reading must never be accepted
+    as a delete."""
+    code = _probe_code()
+    body = _function("Get-ProbeColumnDirection", code)
+    assert "if ([int]$a.Columns -gt [int]$b.Columns) { $grew += $key }" in body
+    assert "elseif ([int]$a.Columns -lt [int]$b.Columns) { $shrank += $key }" in body
+    # EVERY GRID THAT GREW MUST SHRINK - derived from what was observed, so a
+    # partial shrink that happened to touch one table is refused.
+    assert "foreach ($key in @($growDirection.Grew)) {" in code
+    assert "if (@($shrinkDirection.Shrank) -notcontains $key) { $missedShrink += $key }" in code
+    assert "if ((@($growDirection.Grew).Count -gt 0) -and (@($missedShrink).Count -eq 0)) {" in code
+
+
+def test_2h_row_delete_needs_the_rows_to_have_gone_down() -> None:
+    """ACCEPTING 3 -> 3 WOULD CALL AN UNCHANGED TABLE DELETE EVIDENCE. Landing on
+    the right number is not the same as having lost rows to get there."""
+    code = _probe_code()
+    body = _function("Invoke-ProbeCalculateRound", code)
+    assert "if ([int]$now.Rows -lt [int]$b.Rows) {" in body
+    assert "$shrank += [string]$b.Table" in body
+    assert "RowsDeleted  = @($shrank)" in body
+    # AND EVERY PER-YEAR TABLE MUST BE IN THAT LIST, not just one of them.
+    assert "foreach ($table in @($perYearTables)) {" in code
+    assert "if (@($shrinkRound.RowsDeleted) -notcontains [string]$table) {" in code
+    assert "(@($missedRowDelete).Count -eq 0)" in code
+    # AND THE GATE RESTS ON THE SHAPE PROOF, NOT ON THE ANNOUNCEMENT. The
+    # endpoint outcome only decides whether a proof is DEMANDED; what makes it
+    # OBSERVED is the round's own contracted shape.
+    assert "if (([string]$shrinkRound.Proof -eq 'OBSERVED') -and" in code, (
+        "row-delete evidence is granted on something other than the shape proof")
+    gate = code[code.index("$rowDeleteProof = 'NOT ESTABLISHED'"):]
+    gate = gate[: gate.index("$columnAddProof")]
+    assert "$shrinkCalculate.Outcome -eq 'SUCCEEDED'" in gate, (
+        "the proof is demanded of a Calculate that did not succeed")
+    assert gate.count("$shrinkCalculate.Outcome") == 1, (
+        "the announcement is consulted more than once; it decides only whether "
+        "a proof is required")
+
+
+def test_2i_the_delete_proofs_gate_the_fine_verdict() -> None:
+    """FINE REQUIRES BOTH DIRECTIONS. Calling Benchmark Run 3 a harness defect on
+    ADD evidence alone is exactly the overreach this refuses."""
+    code = _probe_code()
+    gate = "} elseif (($columnDeleteProof -ne 'OBSERVED') -or ($rowDeleteProof -ne 'OBSERVED')) {"
+    assert gate in code
+    branch = code[code.index(gate):]
+    branch = branch[: branch.index("} elseif", 1)]
+    assert "$verdict = " not in branch, "the missing-delete branch sets a verdict"
+    assert "$verdictReason = " in branch
+    assert code.index(gate) < code.index("$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'")
+    assert "Benchmark Run 3 died on a ListRow.Delete()" in code
+
+
+def test_2j_the_four_evidence_classes_are_named_and_reported() -> None:
+    """THE SEMANTICS ARE PINNED, and the success text distinguishes them."""
+    code = _probe_code()
+    for label in ("LISTCOLUMN ADD", "LISTCOLUMN DELETE", "LISTROW GROWTH", "LISTROW DELETE"):
+        assert label in code, label
+    fine = code[code.index("$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'"):]
+    fine = fine[: fine.index("}")]
+    for label in ("LISTCOLUMN ADD: OBSERVED", "LISTCOLUMN DELETE: OBSERVED",
+                  "LISTROW GROWTH: OBSERVED", "LISTROW DELETE: OBSERVED"):
+        assert label in fine, label
+    # EACH CLASS IS A WORD WITH THREE STATES, never a boolean.
+    for variable in ("$columnAddProof", "$columnDeleteProof", "$rowDeleteProof"):
+        assert f"{variable} = 'NOT ESTABLISHED'" in code, variable
+        assert f"{variable} = 'OBSERVED'" in code, variable
+        assert f"{variable} = 'CONTRADICTED'" in code, variable
+
+
+def test_2k_protection_is_required_before_and_after_every_endpoint() -> None:
+    """AND WORKBOOK STRUCTURE IS CHECKED AS A BOOLEAN, not read in a sentence."""
+    code = _probe_code()
+    assert "([int]$_.ProtectedAfter -ne [int]$_.TotalSheets) -or" in code
+    assert "([int]$_.ProtectedBefore -ne [int]$_.TotalSheets) -or" in code
+    assert "(-not [bool]$_.StructureBefore) -or (-not [bool]$_.StructureAfter)" in code
+    assert "StructureBefore   = ([bool](Get-ProbeProperty -InputObject $protectionBefore" in code
+    assert "StructureAfter    = ([bool](Get-ProbeProperty -InputObject $protectionAfter" in code
+    # AND A LOST-PROTECTION READING STILL BLOCKS FINE.
+    assert code.index("$lostProtection") < \
+        code.index("$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'")
 
 
 # ===========================================================================
@@ -467,11 +615,19 @@ def test_33_a_precondition_failure_stops_before_the_endpoint() -> None:
     throw_at = code.index("was invoked: ", problems_at)
     invoke_at = code.index("$timeline = Invoke-ProbeEndpoint", problems_at)
     assert problems_at < throw_at < invoke_at, "the readback does not gate the endpoint"
-    # AND IT GATES EVERY ENDPOINT, not only the first: the throw sits above all
-    # four Invoke-ProbeEndpoint calls, so a failed precondition means NONE ran.
-    for endpoint in ("PCCM_ApplyTimeline' -Resolution", "PCCM_Calculate' -Resolution",
-                     "PCCM_AddCostLine' -Resolution", "PCCM_AddRisk' -Resolution"):
-        assert throw_at < code.index(endpoint, problems_at), endpoint
+    # AND IT GATES EVERY ENDPOINT, not only the first: the throw sits above every
+    # invocation, so a failed precondition means NONE ran.
+    for marker in ("PCCM_ApplyTimeline' -Resolution", "Invoke-ProbeCalculateRound",
+                   "PCCM_AddCostLine' -Resolution", "PCCM_AddRisk' -Resolution"):
+        assert throw_at < code.index(marker, problems_at), marker
+    # THE SHRINK ROUND HAS ITS OWN GATE, and it is not allowed to be softer: a
+    # shrink input that did not land means the delete path was not exercised.
+    shrink_at = code.index("$shrinkProblems = @(Test-ProbeDeclaredInputs")
+    shrink_throw = code.index("the delete path was NOT", shrink_at)
+    shrink_invoke = code.index("$shrinkTimeline = Invoke-ProbeEndpoint", shrink_at)
+    assert shrink_at < shrink_throw < shrink_invoke, (
+        "the shrink readback does not gate the shrink endpoint")
+    assert "if (@($shrinkProblems).Count -gt 0) {" in code
     assert "if (@($inputProblems).Count -gt 0) {" in code
 
 
@@ -493,7 +649,9 @@ def test_35_preparing_and_invoking_are_worded_differently() -> None:
     code = _probe_code()
     assert "SETTING ENDPOINT PRECONDITIONS" in code
     assert "VERIFYING ENDPOINT PRECONDITIONS" in code
-    assert code.count("production NOT invoked") == 2
+    # FOUR NOW: the growth round's two precondition boundaries and the shrink
+    # round's two. Every one of them says production has not run.
+    assert code.count("production NOT invoked") == 4
     assert "-Action 'setting the timeline inputs'" not in code, (
         "the Run-4 wording, which sat under stage 'endpoint', is back")
 
