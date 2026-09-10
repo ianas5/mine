@@ -346,7 +346,12 @@ Public Sub PCCM_ApplyTimeline()
 
     ' From here a failure CAN leave a partial change, so the rollback handler takes over.
     On Error GoTo Failure
-    modAppState.BeginOperation
+    ' STRUCTURAL, AND IT SAYS SO. Apply / Update Timeline adds the project-year ListColumns to both profiling
+    ' grids and the inflation grid, and its rollback rebuilds all three tables.
+    ' Windows proved a protected sheet refuses all of that with Error 1004, so
+    ' this command opens the protection window that FinishOperation closes on
+    ' every exit path - including after the rollback below.
+    modAppState.BeginStructuralOperation snapshot
 
     ' --- 4. snapshot exactly the blocks this operation may modify ------------
     appliedBase = modWorkbook.ReadValue(NM_APPLIED_BASE_YEAR)

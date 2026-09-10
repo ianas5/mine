@@ -200,7 +200,7 @@ def test_23_calling_it_fine_after_protection_was_lost_is_rejected() -> None:
 def test_24_calling_it_blocked_without_a_failed_endpoint_is_rejected() -> None:
     _probe_mutation(
         "test_51",
-        "        if (@($notSucceeded).Count -gt 0) {",
+        "        if (@($protectionBlocked).Count -gt 0) {",
         "        if ($true) {")
 
 
@@ -217,8 +217,8 @@ def test_26_letting_the_locked_cell_control_decide_the_question_is_rejected() ->
     this one."""
     _probe_mutation(
         "test_57",
-        "        if (@($notSucceeded).Count -gt 0) {",
-        "        if ($controlWorked -and (@($notSucceeded).Count -gt 0)) {")
+        "        if (@($protectionBlocked).Count -gt 0) {",
+        "        if ($controlWorked -and (@($protectionBlocked).Count -gt 0)) {")
 
 
 def test_27_dropping_the_locked_cell_control_is_rejected() -> None:
@@ -528,8 +528,8 @@ def test_71_letting_the_control_state_decide_the_verdict_is_rejected() -> None:
     """THE REPORTING CORRECTION MUST NOT ALTER THE VERDICT LOGIC."""
     _probe_mutation(
         "test_86",
-        "        if (@($notSucceeded).Count -gt 0) {",
-        "        if (($controlResult -eq 'REFUSED') -or (@($notSucceeded).Count -gt 0)) {")
+        "        if (@($protectionBlocked).Count -gt 0) {",
+        "        if (($controlResult -eq 'REFUSED') -or (@($protectionBlocked).Count -gt 0)) {")
 
 
 def test_72_skipping_the_resolved_set_recheck_is_rejected() -> None:

@@ -1603,8 +1603,20 @@ def _the_removals_are_only_the_subject_plumbing(since: str) -> None:
         if not removals:
             continue
         accepted = _git("show", f"{since}:{path}").splitlines()
+        # P10-RP COMES OFF FIRST. modCalcReport now declares PCCM_Calculate
+        # structural - Windows proved a protected sheet refuses the _Calc
+        # ListRow resize with Error 1004 - and that IS a replacement rather than
+        # an addition, which is exactly what this control is right to refuse.
+        # Reversing it restores the line it replaced, so the module is additive
+        # again and the claim this control makes is unweakened.
+        import sys as _sys
+        _sys.path.insert(0, str(SRC.parent.parent / "tests"))
+        from vba_structural_window import strip_structural_window
         restored = reverse_subject_plumbing(
-            module, (SRC / f"{module}.bas").read_text(encoding="utf-8")).splitlines()
+            module,
+            strip_structural_window(
+                f"{module}.bas",
+                (SRC / f"{module}.bas").read_bytes().decode("utf-8"))).splitlines()
         lost = [line[1:] for line in difflib.unified_diff(accepted, restored, n=0)
                 if line.startswith("-") and not line.startswith("---")]
         assert not lost, (

@@ -319,8 +319,16 @@ def test_08_the_accepted_reporter_prefix_is_byte_identical() -> None:
     # The accepted digest does not move: taking the plumbing back out has to
     # restore the accepted bytes exactly, which is a stronger statement than a
     # new number would have been.
-    accepted = reverse_subject_plumbing(
-        "modCalcReport", text[: text.index(STEP11_REPORTER_BANNER)])
+    # P10-RP COMES OFF FIRST, being the newest: PCCM_Calculate now declares
+    # itself structural because ResizeBody adds and deletes _Calc ListRows and
+    # its rollback rebuilds five tables, which Windows proved a protected sheet
+    # refuses. The accepted digest still does not move.
+    import sys as _sys
+    _sys.path.insert(0, str(CALC_REPORT_BAS.parent.parent.parent / "tests"))
+    from vba_structural_window import strip_structural_window
+    prefix = strip_structural_window(
+        "modCalcReport.bas", text[: text.index(STEP11_REPORTER_BANNER)])
+    accepted = reverse_subject_plumbing("modCalcReport", prefix)
     assert hashlib.sha256(accepted.encode("utf-8")).hexdigest() == (
         ACCEPTED_REPORTER_SHA256), "an accepted line of modCalcReport moved"
     added = re.findall(r"^(?:Public|Private) (?:Function|Sub) (\w+)",

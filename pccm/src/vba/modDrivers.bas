@@ -497,7 +497,13 @@ Public Sub RunDriverOperation(ByVal Kind As String, ByVal IsAdd As Boolean, _
     End If
 
     On Error GoTo Failure
-    modAppState.BeginOperation
+    ' STRUCTURAL, AND IT SAYS SO. Add and Delete Cost Line / Risk add and delete register ListRows past the
+    ' reserved block, SyncRows reshapes the profiling grid on every one of them,
+    ' and the rollback rebuilds both tables.
+    ' Windows proved a protected sheet refuses all of that with Error 1004, so
+    ' this command opens the protection window that FinishOperation closes on
+    ' every exit path - including after the rollback below.
+    modAppState.BeginStructuralOperation snapshot
 
     registerBefore = modWorkbook.SnapshotTable(RegisterTable(Kind))
     profilingBefore = modWorkbook.SnapshotTable(modProfiling.ProfilingTable(Kind))

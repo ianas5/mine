@@ -1625,10 +1625,15 @@ def test_46t1_the_reversal_hides_nothing_in_the_two_owners_p9_3_reached(
     import sys as _sys
 
     _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_structural_window import strip_structural_window
     from vba_subject_plumbing import reverse_subject_plumbing
 
     label, before, after = semantic
-    text = (SRC / f"{module}.bas").read_text(encoding="utf-8")
+    # P10-RP COMES OFF FIRST, being the newest. modCalcReport now declares
+    # PCCM_Calculate structural; taking that back out must leave exactly the text
+    # the subject-plumbing reversal already reproduces.
+    text = strip_structural_window(
+        f"{module}.bas", (SRC / f"{module}.bas").read_text(encoding="utf-8"))
     baseline = subprocess.run(["git", "show", f"ad78988:pccm/src/vba/{module}.bas"],
                               cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
                               text=True).stdout
@@ -1969,17 +1974,57 @@ def test_46_every_production_change_is_declared_and_is_only_plumbing() -> None:
 
     phase8 = {"pccm/src/vba/modSimAnnualStore.bas", "pccm/src/vba/modSimPostReport.bas",
               "pccm/src/vba/modSimReport.bas"}
+    # P10-RP. DECLARED, NOT EXEMPTED, AND EACH ONE REVERSIBLE. Windows disproved
+    # the Phase-10 assumption that UserInterfaceOnly:=True permits ListObject
+    # structural mutation on a protected sheet - PCCM_ApplyTimeline was invoked
+    # and refused with Error 1004 - so these six gained the structural window
+    # under their own authorisation. They are named here, and the control below
+    # proves each one reverses to the tree it started from.
+    from vba_structural_window import (DECLARED_STRUCTURAL_WINDOW_CHANGES,
+                                       ACCEPTED_BEFORE_RECONCILIATION,
+                                       strip_structural_window)
+    phase10_rp = {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}
     undeclared = [p for p in modified
-                  if p not in DECLARED_PHASE9_CORRECTIONS and p not in phase8]
+                  if p not in DECLARED_PHASE9_CORRECTIONS and p not in phase8
+                  and p not in phase10_rp]
     assert not undeclared, f"production changed without being declared: {undeclared}"
 
+    # AND THE DECLARATION IS PROVED, not taken on trust: reversing the
+    # reconciliation reproduces the accepted bytes for every one of the six.
+    for name in DECLARED_STRUCTURAL_WINDOW_CHANGES:
+        current = (SRC / name).read_bytes().decode("utf-8")
+        accepted = subprocess.run(
+            ["git", "show", f"{ACCEPTED_BEFORE_RECONCILIATION}:pccm/src/vba/{name}"],
+            cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+        assert strip_structural_window(name, current) == accepted, (
+            f"{name} moved outside the declared P10-RP structural window")
+
     for path, kind in DECLARED_PHASE9_CORRECTIONS.items():
-        diff = subprocess.run(["git", "diff", head, "--", path], cwd=REPO_ROOT,
-                              check=True, stdout=subprocess.PIPE, text=True).stdout
-        removed = [line[1:] for line in diff.splitlines()
-                   if line.startswith("-") and not line.startswith("---")]
-        inserted = [line[1:] for line in diff.splitlines()
-                    if line.startswith("+") and not line.startswith("+++")]
+        name = Path(path).name
+        if path in phase10_rp:
+            # P10-RP IS NOT PLUMBING AND IS NOT PRETENDING TO BE. It replaces a
+            # BeginOperation call with BeginStructuralOperation, which is a real
+            # semantic change and would rightly fail the rule below. So the rule
+            # is applied to the REVERSED text: everything else in the file must
+            # still be plumbing-only, and the reconciliation itself is pinned by
+            # the exact reversal asserted above rather than waved through here.
+            import difflib
+            before = subprocess.run(["git", "show", f"{head}:{path}"], cwd=REPO_ROOT,
+                                    check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+            after = strip_structural_window(name, (SRC / name).read_bytes().decode("utf-8"))
+            removed, inserted = [], []
+            for line in difflib.unified_diff(before.splitlines(), after.splitlines(), n=0):
+                if line.startswith("-") and not line.startswith("---"):
+                    removed.append(line[1:])
+                elif line.startswith("+") and not line.startswith("+++"):
+                    inserted.append(line[1:])
+        else:
+            diff = subprocess.run(["git", "diff", head, "--", path], cwd=REPO_ROOT,
+                                  check=True, stdout=subprocess.PIPE, text=True).stdout
+            removed = [line[1:] for line in diff.splitlines()
+                       if line.startswith("-") and not line.startswith("---")]
+            inserted = [line[1:] for line in diff.splitlines()
+                        if line.startswith("+") and not line.startswith("+++")]
         if kind == "additive":
             assert not removed, f"{path} is declared additive and removes {len(removed)} line(s)"
             continue

@@ -826,9 +826,17 @@ def test_44_the_accepted_modules_were_not_modified() -> None:
     import hashlib
 
     for name, digest in FROZEN_SHA256.items():
+        # P10-RP. modAppState gained the structural protection envelope Windows
+        # forced. The reversal takes it back out and the ACCEPTED DIGEST must
+        # still come back, so the freeze is unweakened.
+        import sys as _sys
+        _sys.path.insert(0, str(SRC_VBA.parent.parent / "tests"))
+        from vba_structural_window import strip_structural_window
         raw = (_accepted_fingerprint_source().encode("utf-8")
                if name == "modCalcFingerprint"
-               else (SRC_VBA / f"{name}.bas").read_bytes())
+               else strip_structural_window(
+                   f"{name}.bas",
+                   (SRC_VBA / f"{name}.bas").read_bytes().decode("utf-8")).encode("utf-8"))
         actual = hashlib.sha256(raw).hexdigest()
         assert actual == digest, (
             f"{name}.bas is not the bytes it is pinned to. Step 6 added a module "

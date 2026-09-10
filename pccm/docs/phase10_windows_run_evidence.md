@@ -552,3 +552,106 @@ The first structural production endpoint has still never been invoked. Nothing
 here changes production, and no Windows execution was performed in this batch.
 
 ---
+
+## Protection probe Run 5 — BLOCKED BY PROTECTION
+
+Stage A 351/351. Stage-B bootstrap PASS. Stage-B reopened verification PASS —
+14 CodeNames, 32 modules, 11 buttons, 0 transient COM rejections, clean
+shutdown. The probe reached the real production endpoint for the first time.
+
+### Original assumption — kept, not rewritten
+
+The accepted Phase-10 contract (**`6ab8f6a`**) held that `UserInterfaceOnly:=True`
+would let every accepted command go on writing exactly as it did before
+protection existed, so no command would ever need to unprotect anything. That
+was a reasonable reading of what `UserInterfaceOnly` means, it was recorded
+honestly, and it turned out to be wrong about one specific capability. **It
+remains historical evidence and is not being rewritten.**
+
+### Windows evidence
+
+Workbook state before invocation: 14/14 worksheets protected, workbook structure
+protected = True, `modProtection` reports protection applied,
+`UserInterfaceOnly=True`.
+
+**The locked-cell control — CONFIRMED.** Target `Cost Lines!tblCostLines` header,
+`Locked=True`, sheet protected. Code-driven temporary VALUE write succeeded;
+readback succeeded; original exact value restored; restoration verified;
+protection remained applied.
+
+**The endpoint — REFUSED.**
+
+```
+PCCM_ApplyTimeline    endpoint invoked: TRUE    outcome: REFUSED
+
+FAIL|Error 1004: Table features aren't available because the sheet is
+protected.|The applied timeline, both profiling grids and the inflation grid
+have been restored to their state from before this operation, including row
+count, column count, number formats and column widths. No partial change
+remains.
+
+protection before : 14/14 sheets protected; structure=True
+protection after  : 14/14 sheets protected; structure=True
+structural effect : NONE
+```
+
+The failing path needs `ListColumns.Add` on both profiling grids and the
+inflation grid, which a fresh workbook always requires.
+
+### What this establishes
+
+`UserInterfaceOnly=True` separates two capabilities:
+
+| Capability | Verdict |
+|---|---|
+| ordinary code-driven cell VALUE writes | **PERMITTED** |
+| Excel ListObject STRUCTURAL mutation while the worksheet is protected | **NOT PERMITTED** |
+
+The transactional rollback also worked exactly as designed: the command refused,
+restored all three grids, and left protection intact. That is production
+behaving correctly under a capability it did not have.
+
+### Reconciliation
+
+Retain protection at rest and `UserInterfaceOnly` for value writes. Permit only
+the sole protection owner to open a temporary, depth-safe **worksheet**-protection
+window for declared structural commands, restoring the full accepted protection
+state before the operation returns.
+
+The obsolete absolute rule
+
+> Do NOT call `Unprotect`
+
+is replaced by
+
+> Only `modProtection` may temporarily release worksheet protection inside the
+> contracted structural-operation envelope, and it must restore the full accepted
+> protection state before the operation returns.
+
+**Workbook structure protection is not released.** The 1004 named the *sheet*,
+and workbook-structure protection governs adding, deleting and renaming
+worksheets rather than table columns. Releasing it would be wider than any
+evidence asks for. If a future Windows run proves a specific need, that is its
+own reconciliation.
+
+### The verdict wording this run also corrected
+
+Run 5 summarised its own result as "2 of 4 production endpoints did not
+succeed". The second was `PCCM_Calculate` refusing because the applied timeline
+was still pending — a business prerequisite that would refuse on a completely
+unprotected workbook too. **BLOCKED now requires evidence attributable to the
+protected structural operation**: Excel's own "table features aren't available
+because the sheet is protected", from an endpoint that was actually invoked. A
+validation refusal, a missing input, stale state or an unmet structural
+prerequisite cannot produce BLOCKED, and endpoints refused for other reasons are
+named as *not counted*.
+
+This run stays **BLOCKED** because `PCCM_ApplyTimeline` supplies exactly that
+evidence.
+
+### Still owed
+
+The fix is **unverified on Windows**. No Windows execution was performed in the
+reconciliation batch.
+
+---

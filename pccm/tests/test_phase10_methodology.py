@@ -847,6 +847,22 @@ def test_70_no_vba_source_changed_since_the_accepted_tree() -> None:
     it."""
     changed = [line for line in _git("diff", "--name-only", ACCEPTED, "--",
                                      "pccm/src").splitlines() if line.strip()]
+    # P10-RP. The runtime protection reconciliation is a LATER batch with its own
+    # authorisation, and this control's claim - that the methodology batch
+    # touched no engine line - still holds. It is now proved by reversal: taking
+    # the declared structural window back out reproduces the accepted bytes.
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_structural_window import (DECLARED_STRUCTURAL_WINDOW_CHANGES,
+                                       strip_structural_window)
+    declared = {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}
+    for path in sorted(set(changed) & declared):
+        name = path.rsplit("/", 1)[1]
+        current = strip_structural_window(
+            name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
+        accepted = _git("show", f"{ACCEPTED}:{path}")
+        assert current.replace("\r\n", "\n") == accepted.replace("\r\n", "\n"), path
+    changed = [path for path in changed if path not in declared]
     assert changed == [], f"VBA source changed: {changed}"
 
 

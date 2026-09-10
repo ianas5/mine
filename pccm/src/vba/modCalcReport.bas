@@ -118,7 +118,10 @@ Public Sub PCCM_Calculate()
     On Error GoTo InvocationFailed
     state = modAppState.CaptureAppState()
     stateCaptured = True
-    modAppState.BeginOperation
+    ' STRUCTURAL: ResizeBody adds and deletes _Calc ListRows and the rollback
+    ' rebuilds five tables, all of which a protected sheet refuses with 1004.
+    ' FinishOperation closes the window on every path, rollback included.
+    modAppState.BeginStructuralOperation state
     result = RunCalculation(committed)
     On Error GoTo 0
 

@@ -41,6 +41,7 @@ PCCM_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PCCM_ROOT / "builder"))
 sys.path.insert(0, str(PCCM_ROOT / "tests"))
 
+from vba_structural_window import strip_structural_window  # noqa: E402
 from vba_subject_plumbing import reverse_subject_plumbing  # noqa: E402
 
 from pccm_builder.vba_source import (  # noqa: E402
@@ -434,7 +435,15 @@ def test_02_step_4_added_exactly_three_modules_and_no_fourth() -> None:
 def test_03_no_phase4_vba_source_file_changed() -> None:
     """Byte-for-byte, against the digests recorded when Step 3 was accepted."""
     for name, digest in PHASE4_SHA256.items():
-        actual = hashlib.sha256((SRC_VBA / f"{name}.bas").read_bytes()).hexdigest()
+        # P10-RP. Some of these modules gained the runtime protection
+        # reconciliation Windows forced: modAppState the structural envelope,
+        # modTimeline and modDrivers their declaration that they are structural.
+        # The reversal takes it back out and the ACCEPTED DIGEST must still come
+        # back, so the freeze is unweakened - a line that rode along changes the
+        # bytes and fails here exactly as it always did.
+        raw = strip_structural_window(f"{name}.bas",
+                                      (SRC_VBA / f"{name}.bas").read_bytes().decode("utf-8"))
+        actual = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         assert actual == digest, f"{name}.bas changed; Phase-4 VBA is frozen"
 
 
@@ -3041,6 +3050,10 @@ def test_86b_every_run_7_rename_is_spelling_and_nothing_else() -> None:
         # still compare equal to the base text and stay on the must-not-move
         # list. Listing them as authorised instead would have retired that
         # guarantee; the reversal keeps it, exactly as P7-5's addition is kept.
+        # P10-RP FIRST: it is the newest change, so it comes off before the
+        # older plumbing reversal, and PCCM_Calculate then compares equal to the
+        # base text and stays on the must-not-move list.
+        source = strip_structural_window(f"{module}.bas", source)
         source = reverse_subject_plumbing(module, source)
         lines = source.split("\n")
         for procedure, old, new in jobs:

@@ -38,6 +38,7 @@ sys.path.insert(0, str(PCCM_ROOT / "tests"))
 import pytest  # noqa: E402
 
 from vba_reset_plumbing import strip_reset_addition  # noqa: E402
+from vba_structural_window import strip_structural_window  # noqa: E402
 
 # THE COMMIT THIS BATCH MAY NOT MOVE. P10-2A is accepted; a feedback batch that
 # edited an endpoint's logic or a button's binding would be a different batch.
@@ -237,17 +238,29 @@ def test_09_no_endpoint_owner_changed_since_the_accepted_batch(module: str) -> N
     accepted = subprocess.run(
         ["git", "show", f"{ACCEPTED}:pccm/src/vba/{module}.bas"],
         cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
-    assert strip_reset_addition(current) == accepted, (
-        f"{module}.bas moved outside the declared P10-2B reset block")
+    # P10-RP. modCalcReport now declares PCCM_Calculate structural, because
+    # ResizeBody adds and deletes _Calc ListRows and its rollback rebuilds five
+    # tables - all of which a protected sheet refuses. Two reversals, both
+    # mechanical, and the accepted bytes must still come back.
+    reversed_ = strip_structural_window(f"{module}.bas", current)
+    assert strip_reset_addition(reversed_) == accepted, (
+        f"{module}.bas moved outside the declared P10-2B reset block and the "
+        f"declared P10-RP structural window")
 
 
 def test_10_the_reporting_owner_did_not_change_either() -> None:
     """E. modAppState is shared by every Phase-4 structural command. Changing
     Announce or ReportResult to suit four endpoints would change all of them."""
-    current = (SRC / "modAppState.bas").read_bytes()
+    current = (SRC / "modAppState.bas").read_bytes().decode("utf-8")
     accepted = subprocess.run(["git", "show", f"{ACCEPTED}:pccm/src/vba/modAppState.bas"],
-                              cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout
-    assert current == accepted, "modAppState.bas moved"
+                              cwd=REPO_ROOT, check=True,
+                              stdout=subprocess.PIPE).stdout.decode("utf-8")
+    # P10-RP, AUTHORISED NARROWLY AND STILL REVERSED. modAppState gained
+    # BeginStructuralOperation and the window close in FinishOperation, and
+    # nothing else: Announce, ReportResult, OperationResult, the automation hooks
+    # and the application-state restoration all come back byte-identical.
+    assert strip_structural_window("modAppState.bas", current) == accepted, (
+        "modAppState.bas moved outside the declared P10-RP structural window")
 
 
 def test_11_msgbox_lives_in_exactly_one_module() -> None:
@@ -359,10 +372,17 @@ def test_13_protection_and_the_open_handler_are_untouched() -> None:
     """AND THE REST OF P10-2A WITH THEM."""
     for path in ("src/vba/modProtection.bas", "src/vba/ThisWorkbook.vba",
                  "builder/pccm_builder/protection.py"):
-        current = (PCCM_ROOT / path).read_bytes()
+        current = (PCCM_ROOT / path).read_bytes().decode("utf-8")
         accepted = subprocess.run(["git", "show", f"{ACCEPTED}:pccm/{path}"],
-                                  cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout
-        assert current == accepted, f"{path} moved; protection is accepted at {ACCEPTED}"
+                                  cwd=REPO_ROOT, check=True,
+                                  stdout=subprocess.PIPE).stdout.decode("utf-8")
+        # P10-RP. modProtection is the ONE module the reconciliation authorises
+        # to gain a release path, and the reversal proves it gained nothing else.
+        # ThisWorkbook.vba and the builder's protection policy are untouched, and
+        # the same reversal leaves those two alone - which is why one control
+        # still covers all three rather than two plus an exception.
+        assert strip_structural_window(Path(path).name, current) == accepted, (
+            f"{path} moved outside the declared P10-RP structural window")
 
 
 def test_14_the_command_surface_is_the_one_the_contract_authorises() -> None:

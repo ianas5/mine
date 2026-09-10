@@ -231,6 +231,45 @@ function Test-ProbeExactValue {
 }
 
 # ===========================================================================
+# IS THIS REFUSAL ACTUALLY ABOUT PROTECTION?
+# ===========================================================================
+# RUN 5 IS WHY THIS EXISTS. It produced the real answer - PCCM_ApplyTimeline was
+# invoked and refused with
+#
+#   Error 1004: Table features aren't available because the sheet is protected.
+#
+# and that IS protection blocking a structural operation. But the same run also
+# summarised "2 of 4 production endpoints did not succeed", and the second one
+# was PCCM_Calculate refusing because the applied timeline was still pending.
+# That is a business prerequisite, not protection, and counting it made the
+# verdict look better-evidenced than it was.
+#
+# SO BLOCKED NEEDS EVIDENCE ATTRIBUTABLE TO THE PROTECTED OPERATION, and a
+# generic refusal is not it. A validation refusal, a missing input, stale state
+# or an unmet structural prerequisite must never produce BLOCKED - each of those
+# would still be refused on a completely unprotected workbook.
+#
+# THE SIGNATURE IS EXCEL'S OWN, matched on BOTH halves. '1004' alone is a very
+# common Excel error number and appears in refusals that have nothing to do with
+# protection; the protection wording alone could appear in a sentence the probe
+# or the workbook wrote ABOUT protection. Both, together, in an announcement from
+# an endpoint that was actually invoked, is the evidence.
+function Test-ProbeProtectionBlocked {
+    param($Outcome)
+    # NOT INVOKED IS NOT A RESULT. An endpoint the probe never entered says
+    # nothing about production at all, protection included.
+    if (-not [bool]$Outcome.Invoked) { return $false }
+    if ([string]$Outcome.Outcome -eq 'SUCCEEDED') { return $false }
+
+    $text = ([string]$Outcome.Result + ' ' + [string]$Outcome.Raised)
+    if (-not ($text -match '1004')) { return $false }
+    if (-not ($text -match '(?i)protect')) { return $false }
+    # AND EXCEL'S OWN SENTENCE, not merely the two tokens in one string. This is
+    # the wording Run 5 recorded, and it names the capability at issue.
+    return [bool]($text -match "(?i)table features aren't available because the sheet is protected")
+}
+
+# ===========================================================================
 # THE ENDPOINT PRECONDITIONS: the timeline inputs
 # ===========================================================================
 # NOT A SECOND FIXTURE CONTRACT. The values are the accepted Gate-B/Phase-7
@@ -1091,11 +1130,37 @@ try {
         $lostProtection = @(@($outcomes) | Where-Object {
             [int]$_.ProtectedAfter -ne [int]$_.TotalSheets })
         $structural = @(@($outcomes) | Where-Object { [bool]$_.StructuralEffect })
+        # BLOCKED IS DECIDED BY THIS LIST AND NOT BY $notSucceeded. A refusal
+        # only counts when Excel itself said the sheet's protection is what
+        # stopped a table operation.
+        $protectionBlocked = @(@($outcomes) | Where-Object { Test-ProbeProtectionBlocked -Outcome $_ })
+        $refusedForOtherReasons = @(@($outcomes) | Where-Object {
+            ([string]$_.Outcome -ne 'SUCCEEDED') -and (-not (Test-ProbeProtectionBlocked -Outcome $_)) })
 
-        if (@($notSucceeded).Count -gt 0) {
+        if (@($protectionBlocked).Count -gt 0) {
             $verdict = 'PRODUCTION IS BLOCKED BY PROTECTION'
+            $verdictReason = ([string]@($protectionBlocked).Count + ' of ' + [string]@($outcomes).Count +
+                              ' production endpoints were refused by Excel with ' +
+                              [char]34 + 'table features aren' + [char]39 +
+                              't available because the sheet is protected' + [char]34 + ': ' +
+                              ((@($protectionBlocked) | ForEach-Object { [string]$_.Endpoint }) -join ', '))
+            if (@($refusedForOtherReasons).Count -gt 0) {
+                # NAMED, AND NAMED AS NOT COUNTING. Run 5's PCCM_Calculate refused
+                # because the applied timeline was pending; recording it silently
+                # among the blocked ones is what made that verdict too broad.
+                $verdictReason = ($verdictReason + '. Also refused, but NOT for protection reasons ' +
+                                  'and NOT counted here: ' +
+                                  ((@($refusedForOtherReasons) | ForEach-Object { [string]$_.Endpoint }) -join ', '))
+            }
+        } elseif (@($notSucceeded).Count -gt 0) {
+            # REFUSED, BUT NOT BY PROTECTION. That is a real result and it is
+            # reported - it is simply not an answer to THIS question.
             $verdictReason = ([string]@($notSucceeded).Count + ' of ' + [string]@($outcomes).Count +
-                              ' production endpoints did not succeed while every sheet was protected')
+                              ' production endpoints did not succeed, but none of them was ' +
+                              'refused for a protection reason, so protection is not what ' +
+                              'stopped them and the question is not settled: ' +
+                              ((@($notSucceeded) | ForEach-Object {
+                                  [string]$_.Endpoint + ' (' + [string]$_.Outcome + ')' }) -join ', '))
         } elseif (@($structural).Count -lt 1) {
             $verdictReason = ('every endpoint announced success but no watched table ever ' +
                               'changed shape, so the structural effect was not observed and ' +
@@ -1110,6 +1175,52 @@ try {
                               'changed shape, and every sheet was protected before and ' +
                               'after each one - so Benchmark Run 3 was a HARNESS defect only')
         }
+
+        # --- WHAT THE POST-FIX RUN HAS TO ESTABLISH ------------------------
+        # SEPARATED FROM THE VERDICT ON PURPOSE. The reconciliation's own
+        # acceptance question is narrower than "is production fine": it is
+        # whether protection stopped blocking STRUCTURAL INITIALISATION. Making
+        # that a fourth verdict word would invite it to be read as acceptance,
+        # and PCCM_Calculate refusing for want of business inputs is not a
+        # protection result either way. So the five criteria are reported as
+        # themselves, each from evidence this run actually holds.
+        Set-ProbeStage -Stage 'verdict' -Action 'reporting the structural-initialisation criteria'
+        $timelineOutcome = @(@($outcomes) | Where-Object { [string]$_.Endpoint -eq 'PCCM_ApplyTimeline' })
+        $driverOutcomes = @(@($outcomes) | Where-Object {
+            ([string]$_.Endpoint -eq 'PCCM_AddCostLine') -or ([string]$_.Endpoint -eq 'PCCM_AddRisk') })
+        $criteria = New-Object System.Collections.ArrayList
+        $null = $criteria.Add([pscustomobject]@{ Key = 'A'; Text = 'the workbook opened protected'
+            Met = ([bool]$protectionInForce) })
+        $null = $criteria.Add([pscustomobject]@{ Key = 'B'; Text = 'a locked-cell code VALUE write is still permitted'
+            Met = ([bool]($controlResult -eq 'SUCCEEDED')) })
+        $null = $criteria.Add([pscustomobject]@{ Key = 'C'; Text = 'PCCM_ApplyTimeline SUCCEEDED, created year columns, and left protection applied'
+            Met = ([bool]((@($timelineOutcome).Count -eq 1) -and
+                          ([string]@($timelineOutcome)[0].Outcome -eq 'SUCCEEDED') -and
+                          [bool]@($timelineOutcome)[0].StructuralEffect -and
+                          ([int]@($timelineOutcome)[0].ProtectedAfter -eq [int]@($timelineOutcome)[0].TotalSheets))) })
+        $null = $criteria.Add([pscustomobject]@{ Key = 'D'; Text = 'Add Cost Line and Add Risk remain functional'
+            Met = ([bool]((@($driverOutcomes).Count -eq 2) -and
+                          (@(@($driverOutcomes) | Where-Object { [string]$_.Outcome -ne 'SUCCEEDED' }).Count -eq 0))) })
+        $null = $criteria.Add([pscustomobject]@{ Key = 'E'; Text = 'no endpoint left a worksheet unprotected'
+            Met = ([bool](@($lostProtection).Count -eq 0)) })
+
+        Write-ProbeLine ''
+        Write-ProbeLine 'STRUCTURAL-INITIALISATION CRITERIA'
+        Write-ProbeLine '----------------------------------'
+        foreach ($criterion in @($criteria)) {
+            $mark = 'NOT MET'
+            if ([bool]$criterion.Met) { $mark = 'MET    ' }
+            Write-ProbeLine ('  ' + [string]$criterion.Key + '. ' + $mark + '  ' + [string]$criterion.Text)
+        }
+        $unmet = @(@($criteria) | Where-Object { -not [bool]$_.Met })
+        if (@($unmet).Count -eq 0) {
+            Write-ProbeLine '  STRUCTURAL INITIALISATION: PROVEN on this run.'
+        } else {
+            Write-ProbeLine ('  STRUCTURAL INITIALISATION: NOT PROVEN - ' +
+                             ((@($unmet) | ForEach-Object { [string]$_.Key }) -join ', ') + ' not met.')
+        }
+        Write-ProbeLine 'This is NOT final acceptance and NOT a benchmark baseline.'
+        Write-ProbeLine ''
         }
     }
     $excel.Run('PCCM_AutomationEnd') | Out-Null

@@ -346,10 +346,25 @@ def test_41_run_4_evidence_is_separable_from_the_verdict() -> None:
 
 def test_42_no_production_vba_or_spec_changed() -> None:
     """REQUIRED CONTROL 13."""
+    # P10-RP. Production moved in the LATER runtime-protection reconciliation,
+    # which is a different batch with its own authorisation. What this control
+    # claims - that the Run-4 probe correction changed no production - still
+    # holds, and is now proved by reversal rather than by an empty diff.
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_structural_window import (DECLARED_STRUCTURAL_WINDOW_CHANGES,
+                                       strip_structural_window)
+    declared = {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}
     changed = [line for line in
                _git("diff", "--name-only", ACCEPTED, "--",
                     "pccm/src", "pccm/spec", "pccm/builder").splitlines() if line.strip()]
-    assert not changed, changed
+    for path in sorted(set(changed) & declared):
+        name = Path(path).name
+        current = strip_structural_window(
+            name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
+        accepted = _git("show", f"{ACCEPTED}:{path}")
+        assert current.replace("\r\n", "\n") == accepted.replace("\r\n", "\n"), path
+    assert [p for p in changed if p not in declared] == [], changed
 
 
 def test_43_strict_mode_is_still_on() -> None:

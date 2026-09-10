@@ -446,6 +446,14 @@ def test_44_the_failure_diagnostics_name_the_stage_and_the_endpoint() -> None:
     stages = set(re.findall(r"Set-ProbeStage -Stage '(\w+)'", code))
     assert stages == {"preflight", "setup", "protection", "resolve", "control",
                       "endpoint", "verdict"}, stages
+    # THE ACTIONS TOO, NOT ONLY THE STAGE WORDS. Two boundaries now carry the
+    # 'verdict' stage - weighing and reporting - so a set of stage names is
+    # satisfied by either one alone, and dropping the other went unnoticed until
+    # a mutation said so. Each boundary is named.
+    actions = set(re.findall(r"Set-ProbeStage -Stage '\w+' `?\s*-Action '([^']+)'", code))
+    for required in ("weighing the outcomes",
+                     "reporting the structural-initialisation criteria"):
+        assert required in actions, f"the '{required}' stage boundary is gone"
 
 
 def test_45_diagnostics_never_touch_the_workbook_or_the_verdict() -> None:
@@ -477,11 +485,70 @@ def test_50_the_verdict_starts_inconclusive_and_only_evidence_moves_it() -> None
     assert "A PROBE FAILURE IS NEVER A STATEMENT ABOUT PRODUCTION" in _probe()
 
 
-def test_51_blocked_requires_a_production_endpoint_that_did_not_succeed() -> None:
+def test_51_blocked_requires_protection_specific_evidence() -> None:
+    """CORRECTED AFTER RUN 5, AND NARROWED WHILE IT MOVED.
+
+    Run 5 produced the real answer - PCCM_ApplyTimeline invoked and refused with
+    "Error 1004: Table features aren't available because the sheet is protected"
+    - and then summarised it as "2 of 4 production endpoints did not succeed".
+    The second one was PCCM_Calculate refusing because the applied timeline was
+    pending: a business prerequisite that would refuse on a wholly unprotected
+    workbook too. Counting it made the verdict look better-evidenced than it was.
+
+    So BLOCKED is now gated on evidence attributable to the protected structural
+    operation, and a bare refusal cannot reach it.
+    """
     code = _probe_code()
-    assert "$notSucceeded = @(@($outcomes) | Where-Object { [string]$_.Outcome -ne 'SUCCEEDED' })" in code
-    assert "if (@($notSucceeded).Count -gt 0) {" in code
-    assert "$verdict = 'PRODUCTION IS BLOCKED BY PROTECTION'" in code
+    assert ("$protectionBlocked = @(@($outcomes) | Where-Object "
+            "{ Test-ProbeProtectionBlocked -Outcome $_ })") in code
+    # THE GATE ITSELF, anchored at the start of its line. `elseif (...)` contains
+    # `if (...)` as a substring, and pinning the bare substring is how this
+    # control went vacuous the moment the branch moved.
+    gate = [line.strip() for line in code.splitlines()
+            if "$protectionBlocked).Count -gt 0" in line]
+    assert gate == ["if (@($protectionBlocked).Count -gt 0) {"], gate
+    blocked_at = code.index("$verdict = 'PRODUCTION IS BLOCKED BY PROTECTION'")
+    gate_at = code.index("if (@($protectionBlocked).Count -gt 0) {")
+    assert gate_at < blocked_at, "BLOCKED is set outside the protection-specific gate"
+    assert code.count("$verdict = 'PRODUCTION IS BLOCKED BY PROTECTION'") == 1
+
+
+def test_51a_a_generic_refusal_cannot_reach_blocked() -> None:
+    """REQUIRED CONTROL 23. A refusal that is not about protection is reported as
+    a real result and is explicitly NOT counted."""
+    code = _probe_code()
+    assert "} elseif (@($notSucceeded).Count -gt 0) {" in code
+    section = code[code.index("} elseif (@($notSucceeded).Count -gt 0) {"):]
+    # FROM PAST ITS OWN OPENING LINE, or the slice ends where it starts and the
+    # whole control becomes a check on an empty string.
+    section = section[: section.index("} elseif", 1)]
+    # THE VERDICT, NOT THE REASON. `$verdictReason` contains `$verdict`, and the
+    # branch is SUPPOSED to write a reason - it is the verdict itself that must
+    # stay where it started.
+    assert "$verdict = " not in section, (
+        "the not-a-protection-refusal branch sets a verdict; it must leave it INCONCLUSIVE")
+    assert "$verdictReason = " in section, "the branch reports nothing at all"
+    assert "none of them was" in section and "protection reason" in section
+    # AND THE ONES THAT DID NOT COUNT ARE NAMED, not silently dropped.
+    assert "$refusedForOtherReasons" in code
+    assert "NOT counted here" in _probe()
+
+
+def test_51b_the_protection_signature_is_excel_s_own_sentence() -> None:
+    """REQUIRED CONTROL 22. Not the error number alone - 1004 is the most common
+    Excel error there is - and not the word 'protect' alone, which the probe and
+    the workbook both use in prose about protection."""
+    body = _probe_code().split("function Test-ProbeProtectionBlocked")[1]
+    body = body[: body.index("\n}\n")]
+    assert "if (-not [bool]$Outcome.Invoked) { return $false }" in body, (
+        "an endpoint that was never invoked could be called protection-blocked")
+    assert "if ([string]$Outcome.Outcome -eq 'SUCCEEDED') { return $false }" in body
+    assert "1004" in body
+    assert "(?i)protect" in body
+    assert "table features aren't available because the sheet is protected" in body.lower()
+    # THE VALIDATION-REFUSAL FAMILIES ARE NOT IN THE SIGNATURE.
+    for banned in ("REFUSED", "pending", "stale", "prerequisite"):
+        assert banned not in body, f"the signature matches on {banned}"
 
 
 def test_52_fine_requires_success_a_structural_effect_and_protection_throughout() -> None:
@@ -592,6 +659,21 @@ def test_56_an_inconclusive_run_exits_non_zero() -> None:
     assert "exit 0" in code
 
 
+# THE REGION THAT DECIDES THE VERDICT, as opposed to the one that reports the
+# structural-initialisation criteria afterwards. The two are deliberately
+# separate: criterion B names the locked-cell control's result because reporting
+# it is exactly what that block is for, while the deciding branch must never see
+# it. A slice that ran to the end of the run would conflate them.
+_CRITERIA_STAGE = "-Action 'reporting the structural-initialisation criteria'"
+
+
+def _verdict_decision_block(code: str) -> str:
+    start = code.index("Set-ProbeStage -Stage 'verdict'")
+    end = code.index(_CRITERIA_STAGE)
+    assert start < end, "the criteria are reported before the verdict is weighed"
+    return code[start:end]
+
+
 def test_57_the_locked_cell_control_is_kept_and_kept_separate() -> None:
     """ITS PURPOSE IS TO PROVE THE OTHER CAPABILITY, and to be unable to be
     mistaken for this one."""
@@ -603,8 +685,11 @@ def test_57_the_locked_cell_control_is_kept_and_kept_separate() -> None:
     # THE CONTROL NEVER MOVES THE VERDICT. Bounded to the branch that decides
     # it, because the control's own summary is printed further down and finding
     # the variable there would prove nothing.
-    verdict_block = code.split("Set-ProbeStage -Stage 'verdict'")[1]
-    verdict_block = verdict_block[:verdict_block.index("$excel.Run('PCCM_AutomationEnd')")]
+    # THE DECIDING REGION ONLY. There are now two 'verdict' stages: the one that
+    # weighs the outcomes, and the one that REPORTS the structural-initialisation
+    # criteria. Criterion B legitimately names the control's result - reporting
+    # it is the point - so the slice stops where deciding stops.
+    verdict_block = _verdict_decision_block(code)
     assert "$controlWorked" not in verdict_block, "the control decides the question"
     assert "$controlDetail" not in verdict_block
 
@@ -951,8 +1036,7 @@ def test_85_the_control_has_four_explicit_states() -> None:
 def test_86_the_control_state_does_not_reach_the_verdict_branch() -> None:
     """REQUIRED: the reporting correction must not alter the verdict logic."""
     code = _probe_code()
-    verdict = code.split("Set-ProbeStage -Stage 'verdict'")[1]
-    verdict = verdict[:verdict.index("$excel.Run('PCCM_AutomationEnd')")]
+    verdict = _verdict_decision_block(code)
     assert "$controlResult" not in verdict
     assert "$controlDetail" not in verdict
 
@@ -966,6 +1050,25 @@ def test_30_no_production_source_changed() -> None:
     Windows evidence exists to prevent."""
     changed = [line for line in _git("diff", "--name-only", ACCEPTED, "--",
                                      "pccm/src", "pccm/spec").splitlines() if line.strip()]
+    # P10-RP. PRODUCTION HAS NOW MOVED, UNDER ITS OWN AUTHORISATION, and this
+    # control says so rather than being deleted. The probe's classification was
+    # established BEFORE the code moved - that is the claim, and it still holds:
+    # PCCM_ApplyTimeline was invoked on Windows and refused with Error 1004
+    # before one line of production changed. What changed afterwards is the
+    # declared structural window, and the reversal proves it is the only thing.
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_structural_window import (DECLARED_STRUCTURAL_WINDOW_CHANGES,
+                                       strip_structural_window)
+    declared = {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}
+    for path in sorted(set(changed) & declared):
+        name = Path(path).name
+        current = strip_structural_window(
+            name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
+        accepted = _git("show", f"{ACCEPTED}:{path}")
+        assert current.replace("\r\n", "\n") == accepted.replace("\r\n", "\n"), (
+            f"{path} moved outside the declared P10-RP structural window")
+    changed = [path for path in changed if path not in declared]
     assert changed == [], f"production source changed: {changed}"
 
 

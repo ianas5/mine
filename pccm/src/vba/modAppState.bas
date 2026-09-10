@@ -19,6 +19,12 @@ Option Explicit
 
 Public Type AppStateSnapshot
     Captured        As Boolean
+    ' PHASE-10 RUNTIME RECONCILIATION. True only when THIS operation opened the
+    ' structural protection window. It rides in the snapshot rather than in a
+    ' module-level counter here so that open and close are paired per operation
+    ' by the same value: FinishOperation cannot close a window this operation did
+    ' not open, and cannot close one twice. modProtection still owns the depth.
+    Structural      As Boolean
     ScreenUpdating  As Boolean
     EnableEvents    As Boolean
     DisplayAlerts   As Boolean
@@ -64,6 +70,7 @@ Public gAutomationLastResult      As String
 ' ---------------------------------------------------------------------------
 Public Function CaptureAppState() As AppStateSnapshot
     Dim s As AppStateSnapshot
+    s.Structural = False
     s.ScreenUpdating = Application.ScreenUpdating
     s.EnableEvents = Application.EnableEvents
     s.DisplayAlerts = Application.DisplayAlerts
@@ -77,11 +84,44 @@ End Function
 ' suppressed because structural runtime must not trigger anything: PCCM installs
 ' no input Worksheet_Change handler, and this guarantees that stays true even if
 ' a workbook picks one up from elsewhere.
+'
+' THIS OPENS NO PROTECTION WINDOW, and that is the point. A command that does not
+' perform ListObject structural work has no business leaving worksheets
+' unprotected - least of all a stochastic run that holds the workbook for
+' minutes. Those commands keep calling this, unchanged.
 Public Sub BeginOperation()
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     Application.DisplayAlerts = False
     Application.Calculation = xlCalculationManual
+End Sub
+
+' THE STRUCTURAL ENVELOPE, AND THE ONLY WAY TO ASK FOR ONE.
+'
+' Windows proved that UserInterfaceOnly:=True does NOT permit ListObject
+' structural mutation on a protected sheet: PCCM_ApplyTimeline was invoked and
+' refused with "Error 1004: Table features aren't available because the sheet is
+' protected." A command whose forward work OR whose transactional rollback can
+' add or delete a ListRow or a ListColumn calls this instead of BeginOperation.
+'
+' IT IS A DECLARATION, NOT A CONVENIENCE. Each of the seven structural commands
+' names itself here by calling this; the four non-structural ones are visibly
+' still on BeginOperation. There is no default and no flag to forget.
+'
+' A FAILED OPEN RAISES rather than returning. Every caller already has an error
+' handler that rolls back and routes through FinishOperation, and attempting
+' structural work through a window that did not open would produce the very 1004
+' this exists to prevent - reported as a mysterious command failure.
+Public Sub BeginStructuralOperation(ByRef Snapshot As AppStateSnapshot)
+    BeginOperation
+
+    Dim detail As String
+    If Not modProtection.ProtectionBeginStructural(detail) Then
+        Err.Raise vbObjectError + 5010, "modAppState.BeginStructuralOperation", _
+                  "The structural protection window could not be opened, so no " & _
+                  "structural work was attempted: " & detail
+    End If
+    Snapshot.Structural = True
 End Sub
 
 ' Restores every captured property and REPORTS whether all of them succeeded.
@@ -176,6 +216,27 @@ End Function
 Public Function FinishOperation(ByRef Snapshot As AppStateSnapshot) As String
     Dim problems As String
     Dim recalcProblem As String
+
+    ' THE WINDOW CLOSES FIRST, AND ON EVERY PATH THAT REACHES HERE - success,
+    ' refusal, validation error, runtime error, injected failure, and after a
+    ' rollback. Every command's rollback runs BEFORE its cleanup, so the window is
+    ' still open while RestoreTable rebuilds a table, which is the one ordering
+    ' that must not be got wrong.
+    '
+    ' THE FLAG IS CLEARED BEFORE THE CLOSE IS ATTEMPTED, so a path that reached
+    ' cleanup twice cannot decrement modProtection's depth twice.
+    If Snapshot.Structural Then
+        Snapshot.Structural = False
+        Dim protectionProblem As String
+        If Not modProtection.ProtectionEndStructural(protectionProblem) Then
+            ' A DELIVERY FAILURE, NOT A FOOTNOTE. This lands in the same string
+            ' every caller already treats as an unsafe-cleanup failure, so a
+            ' command whose protection could not be restored can no longer be
+            ' announced as an ordinary success.
+            problems = problems & "  PROTECTION WAS NOT RESTORED: " & _
+                       protectionProblem & vbCrLf
+        End If
+    End If
 
     recalcProblem = RecalculateStructuralState()
     If Len(recalcProblem) > 0 Then

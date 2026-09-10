@@ -668,11 +668,46 @@ def test_53_no_timing_code_was_added_to_production_vba() -> None:
             assert banned not in source, f"{path.name} carries {banned}"
 
 
+def _production_changed_since(commit: str) -> list[str]:
+    """Production paths that changed since `commit`, EXCLUDING the declared
+    P10-RP structural window - and only after proving each of those reverses to
+    that same commit's bytes exactly.
+
+    P10-RP. Windows disproved the accepted Phase-10 assumption that
+    UserInterfaceOnly:=True permits ListObject structural mutation on a protected
+    sheet: PCCM_ApplyTimeline was invoked and refused with Error 1004. Six
+    production modules gained the structural window under their own
+    authorisation, LATER than the harness batches these controls belong to.
+    Deleting the controls would lose the claim they exist to make; naming the six
+    and proving the reversal keeps it, and keeps it in the stronger form - the
+    tree these harness batches measured is still exactly recoverable.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_structural_window import (DECLARED_STRUCTURAL_WINDOW_CHANGES,
+                                       strip_structural_window)
+
+    declared = {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}
+    changed = [line for line in _git("diff", "--name-only", commit, "--",
+                                     "pccm/src", "pccm/spec").splitlines() if line.strip()]
+    for path in sorted(set(changed) & declared):
+        name = Path(path).name
+        # LINE ENDINGS NORMALISED ON BOTH SIDES. modCalcReport.bas is CRLF on
+        # disk and _git returns text, so one side arrives translated. This
+        # control is about CONTENT; the line-ending convention has its own
+        # control (test_phase9_model_check test_46_2) and keeps it.
+        current = (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8")
+        current = strip_structural_window(name, current).replace("\r\n", "\n")
+        accepted = _git("show", f"{commit}:{path}").replace("\r\n", "\n")
+        assert current == accepted, (
+            f"{path} moved outside the declared P10-RP structural window")
+    return [path for path in changed if path not in declared]
+
+
 def test_54_no_production_source_changed_since_the_accepted_tree() -> None:
     """REQUIRED CONTROL 17. This batch adds a way to measure the release. It
     does not change one line of what it measures."""
-    changed = [line for line in _git("diff", "--name-only", ACCEPTED, "--",
-                                     "pccm/src", "pccm/spec").splitlines() if line.strip()]
+    changed = _production_changed_since(ACCEPTED)
     assert changed == [], f"production source changed: {changed}"
 
 
@@ -1421,8 +1456,7 @@ def test_117_the_environment_still_records_the_three_separately() -> None:
 
 def test_118_no_production_source_changed_since_the_w1_correction() -> None:
     """REQUIRED CONTROL 11 OF THIS ROUND. This is a harness batch."""
-    changed = [line for line in _git("diff", "--name-only", "6e87fda", "--",
-                                     "pccm/src", "pccm/spec").splitlines() if line.strip()]
+    changed = _production_changed_since("6e87fda")
     assert changed == [], f"production source changed: {changed}"
 
 

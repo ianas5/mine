@@ -1236,13 +1236,22 @@ def test_48_application_state_is_captured_and_restored() -> None:
     """
     module = _reporter()
     body = _body(module, "PCCM_Calculate")
-    for stage in ("modAppState.CaptureAppState()", "modAppState.BeginOperation",
+    # P10-RP. Calculate now opens the STRUCTURAL envelope: ResizeBody adds and
+    # deletes _Calc ListRows and the rollback rebuilds five tables, and Windows
+    # proved a protected sheet refuses all of it with Error 1004.
+    # BeginStructuralOperation calls BeginOperation and then opens the window, so
+    # everything this control is about - capture, quieten, restore however the
+    # endpoint returns - is unchanged.
+    for stage in ("modAppState.CaptureAppState()", "modAppState.BeginStructuralOperation",
                   "modAppState.FinishOperation(state)"):
         assert stage in body, f"{stage} is missing"
     statements = _statements(module, "PCCM_Calculate")
     armed = statements.index("On Error GoTo InvocationFailed")
     capture = next(i for i, s in enumerate(statements) if "CaptureAppState()" in s)
-    begin = next(i for i, s in enumerate(statements) if "BeginOperation" in s)
+    # P10-RP: the call is BeginStructuralOperation now, which contains
+    # "BeginOperation" only as a substring of a DIFFERENT identifier - the
+    # statement scanner sees the real one.
+    begin = next(i for i, s in enumerate(statements) if "BeginStructuralOperation" in s)
     run = next(i for i, s in enumerate(statements) if "RunCalculation(committed)" in s)
     finish = next(i for i, s in enumerate(statements) if "FinishOperation" in s)
     assert armed < capture < begin < run < finish, (
@@ -1296,6 +1305,13 @@ def test_50_no_simulation_code_exists() -> None:
 
 def test_51_the_accepted_modules_were_not_modified() -> None:
     import hashlib
+    import sys as _sys
+
+    # P10-RP. modAppState gained the structural protection envelope Windows
+    # forced. The reversal takes it back out and the ACCEPTED DIGEST must still
+    # come back, so this freeze is unweakened by the reconciliation.
+    _sys.path.insert(0, str(SRC_VBA.parent.parent / "tests"))
+    from vba_structural_window import strip_structural_window
 
     frozen = {
         # MOVED AT P9-2B, and still pinned. The Phase-9 structured refusal
@@ -1357,7 +1373,9 @@ def test_51_the_accepted_modules_were_not_modified() -> None:
     for name, digest in frozen.items():
         raw = (_accepted_fingerprint_source().encode("utf-8")
                if name == "modCalcFingerprint"
-               else (SRC_VBA / f"{name}.bas").read_bytes())
+               else strip_structural_window(
+                   f"{name}.bas",
+                   (SRC_VBA / f"{name}.bas").read_bytes().decode("utf-8")).encode("utf-8"))
         actual = hashlib.sha256(raw).hexdigest()
         assert actual == digest, f"{name}.bas changed; Step 7 adds a module and edits none"
 

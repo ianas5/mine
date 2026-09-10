@@ -111,7 +111,12 @@ Public Sub PCCM_RepairProfiling()
     On Error GoTo InvocationFailed
     state = modAppState.CaptureAppState()
     stateCaptured = True
-    modAppState.BeginOperation
+    ' STRUCTURAL, AND IT SAYS SO. Repair Profiling rewrites the project-year ListColumns and re-syncs the
+    ' profiling rows, and its rollback rebuilds both grids.
+    ' Windows proved a protected sheet refuses all of that with Error 1004, so
+    ' this command opens the protection window that FinishOperation closes on
+    ' every exit path - including after the rollback below.
+    modAppState.BeginStructuralOperation state
     result = RepairProfiling()
     On Error GoTo 0
 
