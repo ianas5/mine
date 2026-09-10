@@ -165,19 +165,154 @@ function Get-ProbeNamedValue {
     }
 }
 
-function Set-ProbeNamedValue {
+# WHAT ENDED PROTECTION PROBE RUN 4, and it was this function's own doing.
+#
+#     System.InvalidCastException: Unable to cast object of type 'System.Double'
+#     to type 'System.String'.
+#       at phase10_protection_probe.ps1:175   source: $range.Value2 = $Value
+#
+# The probe had reimplemented the accepted Set-NamedValue and, in reimplementing
+# it, dropped BOTH of the things that make it work: the [double] cast at the
+# assignment and the ClearContents branch for a null. (The dropped ClearContents
+# branch is already on the record above - it is what made Run 2 contradict
+# itself.) A polymorphic `$range.Value2 = $Value` with no cast is exactly the
+# shape Phase-5 Runtime Run 4 already proved defective, at
+# phase5_gate_b_scenarios.ps1:922, with the same exception and the same type
+# pair: PowerShell binds a COM property setter per call site, so one line that
+# is asked to carry more than one CLR type cannot.
+#
+# THE FIX IS NOT A NEW SETTER. It is the accepted one, copied VERBATIM - the
+# same thing phase10_benchmark.ps1 does, and proved a verbatim copy by control
+# rather than asserted to be one. These harnesses are scripts, not modules;
+# copying the primitive and pinning the copy is how this repository shares it.
+function Set-NamedValue {
     param($Workbook, [string]$DefinedName, $Value)
-    $names = $null; $nm = $null; $range = $null
+    $names = $null; $nm = $null; $rng = $null
     try {
         $names = $Workbook.Names
         $nm = $names.Item($DefinedName)
-        $range = $nm.RefersToRange
-        $range.Value2 = $Value
+        $rng = $nm.RefersToRange
+        if ($null -eq $Value) { $null = $rng.ClearContents() } else { $rng.Value2 = [double]$Value }
     } finally {
-        if ($null -ne $range) { Release-Transient $range 'Range'; $range = $null }
-        if ($null -ne $nm)    { Release-Transient $nm    'Name';  $nm    = $null }
-        if ($null -ne $names) { Release-Transient $names 'Names'; $names = $null }
+        if ($null -ne $rng)   { Release-Transient $rng   'Range(name)'; $rng   = $null }
+        if ($null -ne $nm)    { Release-Transient $nm    'Name';        $nm    = $null }
+        if ($null -ne $names) { Release-Transient $names 'Names';       $names = $null }
     }
+}
+
+# ONE COM ASSIGNMENT SITE PER CLR TYPE, for the cell writes that are not named
+# ranges. The cast on each branch is a no-op whose only job is to give that
+# branch its OWN bound call site; a single line serving two types is the Run-4
+# defect. An unsupported type is refused BY NAME rather than coerced, because
+# coercing it is how a Double becomes the string '2026' and the workbook then
+# refuses a timeline for a reason that has nothing to do with protection.
+function Set-ProbeCellExact {
+    param($Cell, $Value)
+    if ($null -eq $Value)        { $null = $Cell.ClearContents() }
+    elseif ($Value -is [string]) { $Cell.Value2 = [string]$Value }
+    elseif ($Value -is [double]) { $Cell.Value2 = [double]$Value }
+    elseif ($Value -is [bool])   { $Cell.Value2 = [bool]$Value }
+    else {
+        throw ('the captured cell value is a ' + $Value.GetType().FullName +
+               ', which this probe will not write back by coercion')
+    }
+}
+
+# EXACT MEANS THE TYPE TOO. [string]2026 -ceq [string]'2026' is true, so a
+# stringified numeric would pass a text comparison while being the wrong thing
+# in the cell. This is the accepted Test-Phase5ExactValue rule: CLR type
+# identity first, then value.
+function Test-ProbeExactValue {
+    param($Actual, $Expected)
+    if ($null -eq $Expected) { return ($null -eq $Actual) }
+    if ($null -eq $Actual)   { return $false }
+    if ($Actual.GetType().FullName -cne $Expected.GetType().FullName) { return $false }
+    return ([string]$Actual -ceq [string]$Expected)
+}
+
+# ===========================================================================
+# THE ENDPOINT PRECONDITIONS: the timeline inputs
+# ===========================================================================
+# NOT A SECOND FIXTURE CONTRACT. The values are the accepted Gate-B/Phase-7
+# shape, and the reason they are valid is already on the record at
+# phase7_timing_scenarios.ps1:465 - "base_year 2026 with start_year 2027 is the
+# accepted shape: the generated inflation columns begin at BaseYear + 1, so
+# 2027..2029 are exactly the three project years". The defined names come from
+# the same Gate-B inspection the accepted fixture reads, never from a literal.
+#
+# THE MINIMUM, AND ONLY THE MINIMUM. PCCM_ApplyTimeline reads a timeline triple;
+# the accepted fixture also sets discount_rate, which this command does not
+# need. Setting more than the command requires would widen the probe into a
+# fixture builder.
+#
+# ALL THREE ARE INTEGER INPUTS and are written as System.Double. modTimeline's
+# ReadTriple gates every one of them through TryReadDouble and then d = Int(d),
+# so a value written as text is not "nearly right": the command REFUSES, and a
+# refusal has no way to distinguish itself from protection blocking the work.
+# Stringifying here would manufacture the very verdict the probe exists to test.
+function Get-ProbeTimelineInputs {
+    param($Inspection)
+    $inputs = Get-ProbeRequiredProperty -InputObject $Inspection -Name 'inputs' `
+        -Where 'the Gate-B inspection'
+    $wanted = @(
+        @{ Key = 'base_year';          Value = [double]2026 },
+        @{ Key = 'project_start_year'; Value = [double]2027 },
+        @{ Key = 'duration_years';     Value = [double]3 }
+    )
+    $out = @()
+    foreach ($entry in $wanted) {
+        $key = [string]$entry.Key
+        $spec = Get-ProbeRequiredProperty -InputObject $inputs -Name $key `
+            -Where 'the Gate-B inspection inputs'
+        $out += [pscustomobject]@{
+            Key         = $key
+            DefinedName = (Get-ProbeScalarString -InputObject $spec -Name 'defined_name' `
+                               -Where ('the ' + $key + ' input'))
+            Value       = [double]$entry.Value
+        }
+    }
+    # NO UNARY COMMA - the caller's @() keeps a short result an array without
+    # double-wrapping it. That is the Run-3 rule and it still applies here.
+    return $out
+}
+
+function Set-ProbeTimelineInputs {
+    param($Workbook, $Inputs)
+    foreach ($entry in @($Inputs)) {
+        Set-NamedValue -Workbook $Workbook -DefinedName ([string]$entry.DefinedName) `
+            -Value ([double]$entry.Value)
+    }
+}
+
+# READ BACK BEFORE THE ENDPOINT IS TOUCHED. Returns the problems as plain
+# strings; an empty result means every input landed with the right value AND the
+# right type. A setter or readback failure is PROBE INSTRUMENTATION failure - it
+# is never a statement about the production endpoint, which has not run.
+function Test-ProbeTimelineInputs {
+    param($Workbook, $Inputs)
+    $problems = @()
+    foreach ($entry in @($Inputs)) {
+        $name = [string]$entry.DefinedName
+        $expected = [double]$entry.Value
+        $actual = Get-ProbeNamedValue -Workbook $Workbook -DefinedName $name
+        if ($null -eq $actual) {
+            $problems += ($name + ': reads back blank, so the write did not land')
+            continue
+        }
+        # TYPE FIRST, for the reason above: a numeric input that came back as
+        # text would pass any value-only comparison and then be refused by the
+        # command for a reason the probe would misread as protection.
+        if ($actual -isnot [double]) {
+            $problems += ($name + ': reads back as ' + $actual.GetType().FullName +
+                          ', not System.Double - the numeric input was stringified')
+            continue
+        }
+        if ([double]$actual -ne $expected) {
+            $problems += ($name + ': reads back ' + [string]$actual +
+                          ', expected ' + [string]$expected)
+        }
+    }
+    return $problems
 }
 
 # IS THE WORKBOOK ACTUALLY PROTECTED RIGHT NOW? Asked of the sheets themselves,
@@ -534,16 +669,16 @@ function Invoke-ProbeLockedCellControl {
 
         # 2. THE CAPABILITY, in its own try so nothing after it can rewrite the answer.
         $writeRaised = ''
-        try { $cell.Value2 = $probeText } catch { $writeRaised = (Format-Err $_) }
+        try { Set-ProbeCellExact -Cell $cell -Value $probeText } catch { $writeRaised = (Format-Err $_) }
         if ($writeRaised -ne '') {
             $null = $lines.Add('write capability   : REFUSED - ' + $writeRaised)
             $null = $lines.Add('so protection is blocking code VALUE writes as well, which is a')
             $null = $lines.Add('DIFFERENT and larger finding than the table-structure one.')
             return [pscustomobject]@{ Result = 'REFUSED'; Detail = ('the write was refused: ' + $writeRaised); Lines = @($lines) }
         }
-        $readBack = [string]$cell.Value2
-        if ($readBack -ne $probeText) {
-            $null = $lines.Add('write capability   : INCONCLUSIVE - the write raised nothing but the cell reads back ' + [char]39 + $readBack + [char]39)
+        $readBack = $cell.Value2
+        if (-not (Test-ProbeExactValue -Actual $readBack -Expected $probeText)) {
+            $null = $lines.Add('write capability   : INCONCLUSIVE - the write raised nothing but the cell reads back ' + [char]39 + [string]$readBack + [char]39)
             return [pscustomobject]@{ Result = 'INCONCLUSIVE'; Detail = 'the written value did not read back'; Lines = @($lines) }
         }
         $null = $lines.Add('write capability   : SUCCEEDED - the value was written and read back')
@@ -552,14 +687,19 @@ function Invoke-ProbeLockedCellControl {
         #    capability answer; it makes the control untrustworthy, which is a
         #    different thing and is reported as one.
         $restoreRaised = ''
-        try { $cell.Value2 = $original } catch { $restoreRaised = (Format-Err $_) }
+        # SAME CLASS AS THE RUN-4 DEFECT. $original is whatever the header cell
+        # actually held, so this site is polymorphic by nature: a String today, a
+        # Double the moment a watched table's first header cell is numeric. It
+        # gets the per-type dispatch for the same reason the named-value setter
+        # does, before another Windows run finds it.
+        try { Set-ProbeCellExact -Cell $cell -Value $original } catch { $restoreRaised = (Format-Err $_) }
         if ($restoreRaised -ne '') {
             $null = $lines.Add('control cleanup    : FAILED - ' + $restoreRaised)
             return [pscustomobject]@{ Result = 'INCONCLUSIVE'; Detail = 'the original value could not be restored'; Lines = @($lines) }
         }
-        $restored = [string]$cell.Value2
-        if ($restored -ne [string]$original) {
-            $null = $lines.Add('control cleanup    : FAILED - the cell reads back ' + [char]39 + $restored + [char]39 + ' after restoration')
+        $restored = $cell.Value2
+        if (-not (Test-ProbeExactValue -Actual $restored -Expected $original)) {
+            $null = $lines.Add('control cleanup    : FAILED - the cell reads back ' + [char]39 + [string]$restored + [char]39 + ' after restoration')
             return [pscustomobject]@{ Result = 'INCONCLUSIVE'; Detail = 'the restored value did not match the original'; Lines = @($lines) }
         }
         $null = $lines.Add('control cleanup    : the original value was restored and verified')
@@ -884,10 +1024,37 @@ try {
         # Apply Timeline is FIRST because it is unconditionally structural: a
         # fresh workbook has no year columns, so any timeline adds ListColumns to
         # three grids. It is also the first button a real user presses.
-        Set-ProbeStage -Stage 'endpoint' -Action 'setting the timeline inputs' -Endpoint 'PCCM_ApplyTimeline'
-        Set-ProbeNamedValue -Workbook $wb -DefinedName ([string]$inspection.inputs.base_year.defined_name) -Value ([double]2026)
-        Set-ProbeNamedValue -Workbook $wb -DefinedName ([string]$inspection.inputs.project_start_year.defined_name) -Value ([double]2027)
-        Set-ProbeNamedValue -Workbook $wb -DefinedName ([string]$inspection.inputs.duration_years.defined_name) -Value ([double]3)
+        # SETTING PRECONDITIONS IS NOT INVOKING THE ENDPOINT, and the stage wording
+        # now says so in its own words. Run 4 died here, in fixture preparation,
+        # and a transcript that called this "setting the timeline inputs" under
+        # stage 'endpoint' was one careless reading away from implying that
+        # PCCM_ApplyTimeline had run. It had not.
+        Set-ProbeStage -Stage 'endpoint' `
+            -Action 'SETTING ENDPOINT PRECONDITIONS: writing the timeline inputs (production NOT invoked)' `
+            -Endpoint 'PCCM_ApplyTimeline'
+        $timelineInputs = @(Get-ProbeTimelineInputs -Inspection $inspection)
+        Set-ProbeTimelineInputs -Workbook $wb -Inputs $timelineInputs
+
+        Set-ProbeStage -Stage 'endpoint' `
+            -Action 'VERIFYING ENDPOINT PRECONDITIONS: reading the timeline inputs back (production NOT invoked)' `
+            -Endpoint 'PCCM_ApplyTimeline'
+        $inputProblems = @(Test-ProbeTimelineInputs -Workbook $wb -Inputs $timelineInputs)
+
+        Write-ProbeLine 'Endpoint preconditions - the timeline inputs, written and read back:'
+        foreach ($entry in $timelineInputs) {
+            Write-ProbeLine ('  ' + [string]$entry.Key + '  ' + [string]$entry.DefinedName +
+                             ' = ' + [string]$entry.Value + '  (written as System.Double)')
+        }
+        if (@($inputProblems).Count -gt 0) {
+            foreach ($problem in $inputProblems) { Write-ProbeLine ('  PROBLEM: ' + $problem) }
+            # PROBE INSTRUMENTATION FAILURE. The outer catch leaves the verdict
+            # INCONCLUSIVE and names the stage, and PCCM_ApplyTimeline is NOT
+            # INVOKED - $invoked is only ever set beside Application.Run.
+            throw ('the timeline inputs could not be established, so the production endpoint ' +
+                   'was NOT invoked: ' + ($inputProblems -join '; '))
+        }
+        Write-ProbeLine '  all three read back as System.Double with the expected values'
+        Write-ProbeLine ''
 
         $timeline = Invoke-ProbeEndpoint -Excel $excel -Workbook $wb `
             -Endpoint 'PCCM_ApplyTimeline' -Resolution $resolution

@@ -564,12 +564,26 @@ def test_55b_the_probe_never_reaches_around_the_commands() -> None:
     deletes = [line.strip() for line in code.splitlines() if ".Delete(" in line]
     assert deletes == ["Write-ProbeLine 'Benchmark Run 3 died on a ListRow.Delete() "
                        "with \"Table features'"], deletes
-    # THE ONLY WRITES IT MAKES ARE THE FOUR DECLARED INPUT SCALARS.
-    assert code.count("Set-ProbeNamedValue -Workbook $wb") == 3, (
-        "the probe writes somewhere other than the three timeline inputs")
-    # AND THE ONLY OTHER WRITE IS THE CONTROL'S, to a cell it proved locked and
-    # restores exactly.
-    assert code.count("$cell.Value2 = ") == 2, "the control writes more than twice"
+    # EVERY WRITE GOES THROUGH ONE OF TWO AUDITED HELPERS, and the raw COM
+    # assignment sites exist ONLY inside them. Run 4 replaced the probe's own
+    # reimplemented setter with the accepted Set-NamedValue, so this states the
+    # rule where it now lives rather than counting one call form.
+    assert code.count("Set-NamedValue -Workbook $Workbook") == 1, (
+        "the named-value write happens somewhere other than Set-ProbeTimelineInputs")
+    assert code.count("Set-ProbeCellExact -Cell $cell") == 2, (
+        "the control writes to its cell more than twice")
+    # THE THREE TIMELINE INPUTS ARE DECLARED, ONCE, AND DRIVE THAT ONE CALL.
+    declared = re.findall(r"@\{ Key = '(\w+)';\s+Value = \[double\]", code)
+    assert declared == ["base_year", "project_start_year", "duration_years"], declared
+    # AND NO RAW Value2 ASSIGNMENT SURVIVES OUTSIDE THE TWO HELPERS. This is the
+    # control that would catch a third write added straight to the COM object.
+    setter = code.split("function Set-NamedValue")[1]
+    setter = setter[: setter.index("\n}\n")]
+    exact = code.split("function Set-ProbeCellExact")[1]
+    exact = exact[: exact.index("\n}\n")]
+    inside = setter.count(".Value2 = ") + exact.count(".Value2 = ")
+    assert code.count(".Value2 = ") == inside == 4, (
+        f"a Value2 assignment lives outside the two helpers: {code.count('.Value2 = ')} vs {inside}")
 
 
 def test_56_an_inconclusive_run_exits_non_zero() -> None:
@@ -731,8 +745,8 @@ def test_66_the_control_cannot_report_success_and_refusal_at_once() -> None:
     assert body.count("return [pscustomobject]@{") == len(results)
     # THE WRITE AND THE RESTORE ARE IN SEPARATE TRY BLOCKS, so a cleanup failure
     # can never be printed as a refusal of the write.
-    assert "try { $cell.Value2 = $probeText } catch { $writeRaised = (Format-Err $_) }" in body
-    assert "try { $cell.Value2 = $original } catch { $restoreRaised = (Format-Err $_) }" in body
+    assert "try { Set-ProbeCellExact -Cell $cell -Value $probeText } catch { $writeRaised = (Format-Err $_) }" in body
+    assert "try { Set-ProbeCellExact -Cell $cell -Value $original } catch { $restoreRaised = (Format-Err $_) }" in body
     # AND THE CALLER TAKES ONE ANSWER, as a WORD rather than a boolean.
     assert "$controlResult = [string]$control.Result" in code
     assert "$controlWorked" not in code, (
@@ -746,7 +760,7 @@ def test_67_the_control_proves_its_target_is_locked_before_it_writes() -> None:
     body = body[:body.index("\n}\n")]
     assert "if (-not $target.Worksheet.ProtectContents) {" in body
     assert "if (-not $cell.Locked) {" in body
-    assert body.index("if (-not $cell.Locked) {") < body.index("$cell.Value2 = $probeText")
+    assert body.index("if (-not $cell.Locked) {") < body.index("-Value $probeText")
     assert "inpDiscountRate" not in _probe_code(), (
         "the control still writes to an editable input")
     assert "discount_rate" not in _probe_code()
@@ -759,9 +773,19 @@ def test_68_the_original_value_is_restored_and_verified() -> None:
     body = body[:body.index("\n}\n")]
     assert "$original = $cell.Value2" in body
     assert "if ([string]::IsNullOrWhiteSpace([string]$original)) {" in body
-    assert "$restored = [string]$cell.Value2" in body
-    assert "if ($restored -ne [string]$original) {" in body
+    # THE READ IS NO LONGER STRINGIFIED, AND NEITHER IS THE COMPARISON. A
+    # [string] comparison accepts a Double 2026 restored as the text '2026',
+    # which is a different cell content wearing the same characters. The rule is
+    # the accepted Test-Phase5ExactValue one: CLR type identity first.
+    assert "$restored = $cell.Value2" in body
+    assert "[string]$cell.Value2" not in body, "the control stringifies a captured value again"
+    assert "if (-not (Test-ProbeExactValue -Actual $restored -Expected $original)) {" in body
     assert "the original value was restored and verified" in body
+    comparator = _probe_code().split("function Test-ProbeExactValue")[1]
+    comparator = comparator[: comparator.index("\n}\n")]
+    assert "$Actual.GetType().FullName -cne $Expected.GetType().FullName" in comparator, (
+        "the comparator does not establish exact CLR type identity first")
+    assert "[string]$Actual -ceq [string]$Expected" in comparator
 
 
 def test_69_a_cleanup_failure_cannot_produce_a_successful_control() -> None:

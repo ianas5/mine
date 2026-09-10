@@ -386,8 +386,8 @@ def test_47_putting_the_write_and_the_restore_back_in_one_try_is_rejected() -> N
     """THE EXACT SHAPE THAT PRINTED SUCCEEDED AND REFUSED IN ONE RUN."""
     _probe_mutation(
         "test_66",
-        "        try { $cell.Value2 = $original } catch { $restoreRaised = (Format-Err $_) }",
-        "        try { $cell.Value2 = $original } catch { $writeRaised = (Format-Err $_) }")
+        "        try { Set-ProbeCellExact -Cell $cell -Value $original } catch { $restoreRaised = (Format-Err $_) }",
+        "        try { Set-ProbeCellExact -Cell $cell -Value $original } catch { $writeRaised = (Format-Err $_) }")
 
 
 def test_48_writing_to_a_cell_that_was_not_proved_locked_is_rejected() -> None:
@@ -402,7 +402,7 @@ def test_48_writing_to_a_cell_that_was_not_proved_locked_is_rejected() -> None:
 def test_49_skipping_the_restoration_check_is_rejected() -> None:
     _probe_mutation(
         "test_68",
-        "        if ($restored -ne [string]$original) {",
+        "        if (-not (Test-ProbeExactValue -Actual $restored -Expected $original)) {",
         "        if ($false) {")
 
 

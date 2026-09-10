@@ -438,3 +438,117 @@ A clean Windows Stage-B run. Until one exists, this correction is **unverified
 on Windows**: no Windows execution was performed in this batch.
 
 ---
+
+## Protection probe Run 4 — INCONCLUSIVE, but not empty
+
+Stage A 351/351. Stage-B bootstrap PASS. Stage-B reopened verification PASS —
+14 CodeNames, 32 modules, 11 buttons, **0 transient COM rejections**, clean
+shutdown. The bounded read retry added for the previous batch was not needed on
+this run and reported so; that is the outcome it is designed to make visible.
+
+The probe then got further than any run before it.
+
+### CONFIRMED: UserInterfaceOnly permits code VALUE writes to a locked cell
+
+The workbook opened with 14/14 worksheets protected and workbook structure
+protected, and `modProtection` reported protection applied. The locked-cell
+control ran to completion for the first time:
+
+| Fact | Observed |
+|---|---|
+| Target | `Cost Lines!tblCostLines` header cell |
+| Precondition | `Locked=True`, worksheet protected |
+| Temporary value write | **SUCCEEDED** |
+| Value readback | **SUCCEEDED** |
+| Original restored | exactly |
+| Restoration readback | **SUCCEEDED** |
+| Protection after | still applied |
+
+**This is valid Windows evidence and is retained.** It establishes that
+`UserInterfaceOnly=True` does permit code-driven VALUE writes to a locked cell
+while worksheet protection is active.
+
+It says nothing whatever about ListObject structural operations. Permission to
+write a value and permission to add a column are different permissions, and the
+probe exists to separate them.
+
+### UNRESOLVED: ListObject structural-operation behaviour
+
+`PCCM_ApplyTimeline` was **NOT INVOKED**. `$invoked` is set only in the instant
+before `Application.Run`, and the run never reached it.
+
+### FINAL VERDICT: INCONCLUSIVE
+
+### What failed, and it was the probe's own instrumentation
+
+```
+stage     : endpoint
+doing     : setting the timeline inputs
+endpoint  : PCCM_ApplyTimeline
+exception : System.InvalidCastException
+message   : Unable to cast object of type 'System.Double' to type 'System.String'.
+at line   : 175
+statement : $range.Value2 = $Value
+```
+
+`Set-ProbeNamedValue`, called three times with `[double]` values for
+`inpBaseYear` / `inpProjectStartYear` / `inpDurationYears` — three single,
+unlocked, `0`-formatted cells on `Setup` (C12, C11, C10).
+
+### Root cause: a diagnosis this repository already owns
+
+**PowerShell binds a COM property setter per call site.** A single polymorphic
+`$x.Value2 = $Value` line cannot carry more than one CLR type. This is not
+inferred from the exception text — Phase-5 Runtime Run 4 hit the identical
+exception with the identical type pair at `phase5_gate_b_scenarios.ps1:922`, and
+the settlement is recorded there and in `Set-Phase5TypedCell`: one COM
+assignment site per type, each with its own cast, "a no-op that exists only to
+give the branch its own bound call site".
+
+The probe had **reimplemented** the accepted `Set-NamedValue` and dropped both
+things that make it work:
+
+| | accepted `Set-NamedValue` | probe's copy |
+|---|---|---|
+| numeric write | `$rng.Value2 = [double]$Value` | `$range.Value2 = $Value` |
+| null/blank | `$rng.ClearContents()` | *(absent)* |
+
+The missing `ClearContents` branch was already on the record — it is what made
+Run 2 print SUCCEEDED and REFUSED from one try block. The same reimplementation
+carried a second defect nobody had looked for.
+
+### What is NOT the fix
+
+Casting the value to `[string]` would satisfy the COM binder and then be refused
+by production: `modTimeline.ReadTriple` gates every element of the triple
+through `TryReadDouble` and then `d = Int(d)`. A text `"2026"` produces a
+**REFUSED** endpoint — and a refusal has no way to distinguish itself from
+protection blocking the work. Stringifying would have manufactured the very
+verdict the probe exists to test.
+
+### Corrected in this round
+
+* The probe now carries a **verbatim copy** of the accepted `Set-NamedValue`,
+  proved verbatim by control — the same arrangement `phase10_benchmark.ps1` uses.
+* Cell writes that are not named ranges go through `Set-ProbeCellExact`: one
+  assignment site per CLR type, an unsupported type refused **by name**.
+* The locked-cell control's restore was the **same class of latent defect** — a
+  polymorphic write-back of a captured value, correct today only because the
+  header happens to be text. It now dispatches on the captured type.
+* The restoration check no longer compares `[string]` forms.
+  `Test-ProbeExactValue` establishes CLR type identity first, so a `Double`
+  restored as the text `'2026'` is caught.
+* Every timeline input is **read back and type-checked before** the endpoint is
+  touched. A setter or readback failure stops the run as probe instrumentation
+  failure; the endpoint is not entered.
+* The stage wording now separates `SETTING ENDPOINT PRECONDITIONS` and
+  `VERIFYING ENDPOINT PRECONDITIONS` from `ENDPOINT INVOKED`, both carrying
+  `production NOT invoked`, so no future transcript can imply production ran
+  while fixture preparation was still going.
+
+### Still owed
+
+The first structural production endpoint has still never been invoked. Nothing
+here changes production, and no Windows execution was performed in this batch.
+
+---
