@@ -269,7 +269,87 @@ function Get-ProbeWatchedTables {
             Table = [string]$grid.table_name
         }
     }
-    return ,@($watched)
+    # NO UNARY COMMA. `return ,@($x)` emits ONE pipeline item that IS the array,
+    # and a caller writing `@(f)` then wraps it AGAIN - `@()` collects pipeline
+    # items, it does not flatten a nested array. That double wrap is what turned
+    # five records into one, and `[string]` on its array-valued properties is
+    # what produced 'Cost Lines Risk Register Cost Profiling ...'.
+    #
+    # Emitting the records normally gives the caller five pipeline items, and the
+    # caller's `@()` keeps a zero- or one-record result an array.
+    return $watched
+}
+
+# ===========================================================================
+# THE SHAPE OF A WATCHED RECORD, PROVED BEFORE IT IS USED
+# ===========================================================================
+# PROBE RUN 3 ROOT CAUSE, AS A RULE RATHER THAN A LINE. Five records collapsed
+# into one whose Key, Sheet and Table were each five-element arrays, and
+# `[string]` on an array joins it with spaces - so the probe asked Excel for a
+# worksheet named 'Cost Lines Risk Register Cost Profiling Risk Profiling
+# Inflation' and got DISP_E_BADINDEX. The coercion HID the shape defect: it
+# turned a structural error into a plausible-looking name.
+#
+# SO THE SHAPE IS CHECKED BEFORE ANY COERCION. `[string]` is never allowed to be
+# the thing that discovers a property is a collection.
+function Get-ProbeScalarString {
+    param($InputObject, [string]$Name, [string]$Where)
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        throw ($Where + ": the record carries no '" + $Name + "' property")
+    }
+    $value = $property.Value
+    if ($null -eq $value) {
+        throw ($Where + ": '" + $Name + "' is null")
+    }
+    # THE ARRAY TEST COMES FIRST, BEFORE ANY CAST. A property holding five values
+    # must refuse as probe-invalid, not quietly become five words.
+    if ($value -is [System.Array] -or $value -is [System.Collections.IEnumerable] -and
+        $value -isnot [string]) {
+        throw ($Where + ": '" + $Name + "' holds a collection of " +
+               [string](@($value).Count) + ' values where one was expected. The ' +
+               'watched records have been collapsed into an aggregate.')
+    }
+    if ($value -isnot [string]) {
+        throw ($Where + ": '" + $Name + "' is a " + $value.GetType().FullName +
+               ' where a string was expected')
+    }
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw ($Where + ": '" + $Name + "' is blank")
+    }
+    return [string]$value
+}
+
+# FIVE DISTINCT RECORDS, OR THE PROBE STOPS. Checked against the manifest's own
+# count so the number is never a literal in this file.
+function Assert-ProbeWatchedShape {
+    param($Watched, $Manifest)
+    $records = @($Watched)
+    $expected = (@($Manifest.registers).Count + @($Manifest.grids).Count)
+    if (@($records).Count -ne $expected) {
+        throw ('the probe holds ' + [string]@($records).Count + ' watched record(s) where the ' +
+               'manifest declares ' + [string]$expected + '. The records have been ' +
+               'collapsed, dropped or double-wrapped.')
+    }
+    $keys = @(); $pairs = @()
+    $index = 0
+    foreach ($record in $records) {
+        $index++
+        $where = 'watched record ' + [string]$index
+        if ($record -is [System.Array]) {
+            throw ($where + ' is an array of ' + [string](@($record).Count) +
+                   ' items, not a record. The collection boundary collapsed.')
+        }
+        $key = Get-ProbeScalarString -InputObject $record -Name 'Key' -Where $where
+        $sheet = Get-ProbeScalarString -InputObject $record -Name 'Sheet' -Where $where
+        $table = Get-ProbeScalarString -InputObject $record -Name 'Table' -Where $where
+        if ($keys -contains $key) { throw ($where + ": the key '" + $key + "' is not unique") }
+        $keys += $key
+        $pair = $sheet + '!' + $table
+        if ($pairs -contains $pair) { throw ($where + ': ' + $pair + ' is not unique') }
+        $pairs += $pair
+    }
+    return @($records).Count
 }
 
 # ===========================================================================
@@ -301,15 +381,20 @@ function Resolve-ProbeTargets {
     param($Workbook, $Watched)
     $sheets = $Workbook.Worksheets
     $targets = New-Object System.Collections.ArrayList
+    $index = 0
     foreach ($entry in @($Watched)) {
-        $sheetName = [string]$entry.Sheet
-        $tableName = [string]$entry.Table
+        $index++
+        $where = 'watched record ' + [string]$index
+        # SCALAR PROVED, THEN CONVERTED. Never the other way round.
+        $sheetName = Get-ProbeScalarString -InputObject $entry -Name 'Sheet' -Where $where
+        $tableName = Get-ProbeScalarString -InputObject $entry -Name 'Table' -Where $where
         $ws = $null
         try {
             $ws = $sheets.Item($sheetName)
         } catch {
             throw ('the workbook has no worksheet named ' + [char]39 + $sheetName + [char]39 +
-                   ' (asked for by the manifest entry ' + [string]$entry.Key + '): ' +
+                   ' (asked for by the manifest entry ' +
+                   (Get-ProbeScalarString -InputObject $entry -Name 'Key' -Where $where) + '): ' +
                    (Format-Err $_))
         }
         $los = $null; $lo = $null
@@ -321,7 +406,7 @@ function Resolve-ProbeTargets {
                    [char]39 + $tableName + [char]39 + ': ' + (Format-Err $_))
         }
         $null = $targets.Add([pscustomobject]@{
-            Key       = [string]$entry.Key
+            Key       = (Get-ProbeScalarString -InputObject $entry -Name 'Key' -Where $where)
             Sheet     = $sheetName
             CodeName  = [string]$ws.CodeName
             Table     = $tableName
@@ -387,7 +472,12 @@ function Get-ProbeShapeDelta {
                          ' -> ' + [string]$a.Rows + 'x' + [string]$a.Columns)
         }
     }
-    return ,@($changes)
+    # SAME REASON, AND THIS ONE WAS WORSE THAN AN ABORT. Double-wrapped, an
+    # EMPTY change list arrived at the caller as a one-element array, so
+    # `StructuralEffect` would have been true for every endpoint - and the probe
+    # could have reached PRODUCTION IS FINE having observed no shape change at
+    # all. A wrong conclusion is more dangerous than a failed run.
+    return $changes
 }
 
 # ===========================================================================
@@ -634,6 +724,18 @@ foreach ($required in @($manifestPath, $inspectPath)) {
 $manifest   = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $inspection = Get-Content -LiteralPath $inspectPath  -Raw | ConvertFrom-Json
 $watched = @(Get-ProbeWatchedTables -Manifest $manifest)
+# THE COLLECTION BOUNDARY IS PROVED HERE, before Excel is started and before any
+# identifier is coerced to a string. Probe Run 3 asked Excel for a worksheet
+# whose name was five names joined by spaces; nothing between the manifest and
+# the lookup had checked the shape.
+try {
+    $null = Assert-ProbeWatchedShape -Watched $watched -Manifest $manifest
+} catch {
+    Write-Host ''
+    Write-Host 'REFUSED, BEFORE EXCEL WAS STARTED.' -ForegroundColor Red
+    Write-Host ('the watched target records are malformed: ' + (Format-Err $_)) -ForegroundColor Red
+    exit 2
+}
 
 Set-ProbeStage -Stage 'setup' -Action 'copying the build and running the Stage-B bootstrap'
 $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
@@ -669,9 +771,13 @@ Write-ProbeLine 'This asks whether the real commands can do their contracted wor
 Write-ProbeLine 'the protected workbook - and checks that the shape actually changed,'
 Write-ProbeLine 'because an announcement of success is not a structural operation.'
 Write-ProbeLine ''
-Write-ProbeLine 'TABLES WATCHED FOR A STRUCTURAL EFFECT'
+Write-ProbeLine ('TABLES WATCHED FOR A STRUCTURAL EFFECT (' + [string]@($watched).Count + ' records)')
 foreach ($entry in @($watched)) {
-    Write-ProbeLine ('  ' + ([string]$entry.Key).PadRight(16) + [string]$entry.Sheet + '!' + [string]$entry.Table)
+    # ONE BLOCK PER RECORD. A single line per collection is how five records
+    # printed as one in Run 3 and nobody noticed until Excel refused the name.
+    Write-ProbeLine ('  ' + [string]$entry.Key + ':')
+    Write-ProbeLine ('    tab   = ' + [string]$entry.Sheet)
+    Write-ProbeLine ('    table = ' + [string]$entry.Table)
 }
 Write-ProbeLine ''
 # ===========================================================================
@@ -687,8 +793,14 @@ $resolution = $null
 $verdict = 'INCONCLUSIVE'
 $verdictReason = 'the probe did not reach its conclusion'
 $outcomes = New-Object System.Collections.ArrayList
-$controlWorked = $false
-$controlDetail = 'not attempted'
+# FOUR STATES, AND 'NOT ATTEMPTED' IS ONE OF THEM.
+#
+# Probe Run 3 printed "UserInterfaceOnly permits code VALUE writes: False" after
+# failing before the control ever ran. False reads as "blocking was observed",
+# which is a claim about Excel that nothing had tested. A capability that was
+# never exercised is NOT KNOWN, and the boolean is emitted only when it is.
+$controlResult = 'NOT ATTEMPTED'
+$controlDetail = 'the probe did not reach the locked-cell control'
 
 try {
     Set-ProbeStage -Stage 'setup' -Action 'starting an owned Excel instance'
@@ -721,13 +833,17 @@ try {
     # resolved identifiers are evidence, printed below.
     Set-ProbeStage -Stage 'resolve' -Action 'resolving every watched worksheet and table'
     $resolution = Resolve-ProbeTargets -Workbook $wb -Watched $watched
+    # AND THE RESOLVED SET IS THE SAME SIZE AS THE DECLARED ONE. A resolution
+    # that lost or merged a target would otherwise be measured happily.
+    $null = Assert-ProbeWatchedShape -Watched $resolution.Targets -Manifest $manifest
     Write-ProbeLine 'RESOLVED TARGETS'
     Write-ProbeLine '----------------'
+    Write-ProbeLine ('  ' + [string]@($resolution.Targets).Count + ' targets resolved')
     foreach ($target in @($resolution.Targets)) {
-        Write-ProbeLine ('  ' + ([string]$target.Key).PadRight(16) + 'tab ' + [char]39 +
-                         [string]$target.Sheet + [char]39 + '  CodeName ' + [char]39 +
-                         [string]$target.CodeName + [char]39 + '  table ' + [char]39 +
-                         [string]$target.Table + [char]39)
+        Write-ProbeLine ('  ' + [string]$target.Key + ':')
+        Write-ProbeLine ('    tab      = ' + [string]$target.Sheet)
+        Write-ProbeLine ('    codename = ' + [string]$target.CodeName)
+        Write-ProbeLine ('    table    = ' + [string]$target.Table)
     }
     Write-ProbeLine ''
 
@@ -746,7 +862,6 @@ try {
         $control = Invoke-ProbeLockedCellControl -Workbook $wb -Resolution $resolution
         $controlResult = [string]$control.Result
         $controlDetail = [string]$control.Detail
-        $controlWorked = ([bool]($controlResult -eq 'SUCCEEDED'))
         foreach ($line in @($control.Lines)) { Write-ProbeLine ('  ' + $line) }
         Write-ProbeLine ''
         if ($controlResult -eq 'INCONCLUSIVE') {
@@ -884,9 +999,18 @@ try {
 Write-ProbeLine ''
 Write-ProbeLine 'CONTROL'
 Write-ProbeLine '-------'
-Write-ProbeLine ('  ' + $controlDetail)
-Write-ProbeLine ('  UserInterfaceOnly permits code VALUE writes: ' + [string]$controlWorked)
-Write-ProbeLine '  That is a SEPARATE capability from permission to perform a ListObject'
+Write-ProbeLine ('  status : ' + $controlResult)
+Write-ProbeLine ('  detail : ' + $controlDetail)
+if ($controlResult -eq 'SUCCEEDED') {
+    Write-ProbeLine '  UserInterfaceOnly code-value-write capability: CONFIRMED'
+} elseif ($controlResult -eq 'REFUSED') {
+    Write-ProbeLine '  UserInterfaceOnly code-value-write capability: REFUSED BY EXCEL'
+} else {
+    # NOT ATTEMPTED and INCONCLUSIVE are both "nothing was learned", and neither
+    # is written as a boolean. There is no False to be misread.
+    Write-ProbeLine '  UserInterfaceOnly code-value-write capability: NOT TESTED'
+}
+Write-ProbeLine '  It is a SEPARATE capability from permission to perform a ListObject'
 Write-ProbeLine '  structural operation, and it settles nothing about one.'
 Write-ProbeLine ''
 Write-ProbeLine 'VERDICT'

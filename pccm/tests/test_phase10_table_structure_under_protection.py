@@ -55,7 +55,7 @@ import yaml  # noqa: E402
 
 PROBE = BOOTSTRAP / "phase10_protection_probe.ps1"
 BENCHMARK = BOOTSTRAP / "phase10_benchmark.ps1"
-ACCEPTED = "ad84ea6"
+ACCEPTED = "a0a4dc5"
 
 # ---------------------------------------------------------------------------
 # THE INVENTORY
@@ -537,8 +537,8 @@ def test_55_the_watched_tables_come_from_the_manifest() -> None:
                   "'Cost Lines'", "'Risk Register'", "'Cost Profiling'"):
         assert typed not in code, f"the probe types the identifier {typed}"
     # AND THE TWO IDENTIFIERS ARE INDEPENDENT. Neither is derived from the other.
-    assert "$sheetName = [string]$entry.Sheet" in code
-    assert "$tableName = [string]$entry.Table" in code
+    assert "-InputObject $entry -Name 'Sheet' -Where $where" in code
+    assert "-InputObject $entry -Name 'Table' -Where $where" in code
 
 
 def test_55b_the_probe_never_reaches_around_the_commands() -> None:
@@ -585,7 +585,7 @@ def test_57_the_locked_cell_control_is_kept_and_kept_separate() -> None:
     assert "CONTROL - CAN CODE WRITE A VALUE TO A LOCKED CELL?" in code
     assert "so UserInterfaceOnly IS honoured for code that writes VALUES to a" in code
     assert "a ListObject structural operation, and it settles nothing about one." in code
-    assert "$controlWorked" in code
+    assert "$controlResult = 'NOT ATTEMPTED'" in code
     # THE CONTROL NEVER MOVES THE VERDICT. Bounded to the branch that decides
     # it, because the control's own summary is printed further down and finding
     # the variable there would prove nothing.
@@ -684,8 +684,8 @@ def test_63_the_codename_is_recorded_and_never_used_to_find_anything() -> None:
     assert "CodeName  = [string]$ws.CodeName" in code
     assert ".Item($ws.CodeName)" not in code
     assert "$sheets.Item($codeName)" not in code
-    # IT IS EVIDENCE, so it reaches the log beside the tab and the table.
-    assert "'  CodeName '" in code
+    # IT IS EVIDENCE, so it reaches the log in the target's own block.
+    assert "'    codename = '" in code
 
 
 def test_64_the_endpoint_is_not_called_invoked_until_application_run() -> None:
@@ -733,8 +733,10 @@ def test_66_the_control_cannot_report_success_and_refusal_at_once() -> None:
     # can never be printed as a refusal of the write.
     assert "try { $cell.Value2 = $probeText } catch { $writeRaised = (Format-Err $_) }" in body
     assert "try { $cell.Value2 = $original } catch { $restoreRaised = (Format-Err $_) }" in body
-    # AND THE CALLER TAKES ONE ANSWER.
-    assert "$controlWorked = ([bool]($controlResult -eq 'SUCCEEDED'))" in code
+    # AND THE CALLER TAKES ONE ANSWER, as a WORD rather than a boolean.
+    assert "$controlResult = [string]$control.Result" in code
+    assert "$controlWorked" not in code, (
+        "a boolean projection of the control is back; NOT ATTEMPTED has no False")
 
 
 def test_67_the_control_proves_its_target_is_locked_before_it_writes() -> None:
@@ -786,6 +788,149 @@ def test_70_an_untrustworthy_control_stops_the_probe() -> None:
     assert "if ($controlResult -eq 'INCONCLUSIVE') {" in code
     assert "THE PROBE STOPS HERE, INCONCLUSIVE: the control did not settle." in code
     assert "The production question was not asked." in code
+
+
+# ===========================================================================
+# C5. PROBE RUN 3 - FIVE RECORDS THAT BECAME ONE
+# ===========================================================================
+# WHAT HAPPENED. `Get-ProbeWatchedTables` ended with `return ,@($watched)`. The
+# unary comma makes the function emit ONE pipeline item that IS the array - and
+# the caller wrote `@(Get-ProbeWatchedTables ...)`, which COLLECTS pipeline
+# items rather than flattening nested arrays, so the five records arrived
+# double-wrapped. `foreach ($entry in @($Watched))` then bound `$entry` to the
+# inner array, `$entry.Sheet` became MEMBER ENUMERATION over five records, and
+# `[string]` joined the result with spaces. The probe asked Excel for a
+# worksheet named 'Cost Lines Risk Register Cost Profiling Risk Profiling
+# Inflation'.
+#
+# THE COERCION IS WHAT HID IT. `[string]` turned a structural error into a
+# plausible-looking name, and the only symptom was DISP_E_BADINDEX.
+#
+# AND IT EXPLAINS RUN 2 TOO. That run died on the same lookup with the same
+# HRESULT; the earlier diagnosis blamed COM release churn. The joined name was
+# already the cause - Run 2's message simply did not carry it.
+#
+# THE SECOND INSTANCE WAS WORSE THAN AN ABORT. `Get-ProbeShapeDelta` used the
+# same idiom, so an EMPTY change list arrived as a one-element array and
+# `StructuralEffect` would have been true for every endpoint. The probe could
+# have reached PRODUCTION IS FINE having observed no shape change at all.
+
+_MULTI_RECORD_PRODUCERS = ("Get-ProbeWatchedTables", "Get-ProbeShapeDelta")
+
+
+def test_80_no_multi_record_helper_wraps_its_result_in_a_unary_comma() -> None:
+    """THE EXACT IDIOM THAT COLLAPSED THE RECORDS, banned where it collapses.
+
+    `return ,@($x)` is correct only when the caller does NOT wrap in `@()`.
+    Every caller here does, so the producers emit their records normally and the
+    caller's `@()` keeps a zero- or one-record result an array.
+    """
+    code = _probe_code()
+    assert "return ,@(" not in code, "a helper still returns a comma-wrapped array"
+    for producer in _MULTI_RECORD_PRODUCERS:
+        body = code.split(f"function {producer} {{")[1]
+        body = body[:body.index("\n}")]
+        returns = re.findall(r"return (.+)", body)
+        assert returns and all(not value.strip().startswith(",") for value in returns), (
+            producer, returns)
+
+
+def test_81_the_watched_shape_is_proved_before_excel_is_started() -> None:
+    """REQUIRED CONTROLS 1, 6 AND 12. Five records, each with scalar fields,
+    unique keys and unique pairs - checked at the boundary, not discovered by a
+    COM lookup an hour later."""
+    code = _probe_code()
+    assert "function Assert-ProbeWatchedShape" in code
+    assert "$null = Assert-ProbeWatchedShape -Watched $watched -Manifest $manifest" in code
+    assert "REFUSED, BEFORE EXCEL WAS STARTED." in code
+    # THE COUNT COMES FROM THE MANIFEST, never a literal five in this file.
+    assert "$expected = (@($Manifest.registers).Count + @($Manifest.grids).Count)" in code
+    assert "-ne 5" not in code and "-eq 5" not in code, "the record count is hard-coded"
+    # UNIQUENESS, BOTH WAYS, AND EACH ASSERTED SEPARATELY - one check covering
+    # for the other is how a dropped guard passes.
+    assert "if ($keys -contains $key) { throw ($where + \": the key '\" + $key + " in code
+    assert "if ($pairs -contains $pair) { throw ($where + ': ' + $pair + ' is not unique') }" in code
+    assert "$pair = $sheet + '!' + $table" in code
+    # AND THE RESOLVED SET IS RE-CHECKED, so a resolution that merged a target
+    # cannot be measured happily.
+    assert "Assert-ProbeWatchedShape -Watched $resolution.Targets" in code
+
+
+def test_82_scalar_shape_is_proved_before_any_string_coercion() -> None:
+    """REQUIRED CONTROL 3 OF THIS ROUND. `[string]` must never be the thing that
+    discovers a property holds five values."""
+    code = _probe_code()
+    body = code.split("function Get-ProbeScalarString {")[1]
+    body = body[:body.index("\n}")]
+    # THE ARRAY TEST COMES BEFORE THE CAST.
+    assert body.index("$value -is [System.Array]") < body.index("return [string]$value")
+    assert "holds a collection of " in body
+    assert "have been collapsed into an aggregate" in body
+    # AND THE RESOLVER USES IT INSTEAD OF A BARE CAST.
+    resolver = code.split("function Resolve-ProbeTargets {")[1]
+    resolver = resolver[:resolver.index("\n}")]
+    assert "[string]$entry.Sheet" not in resolver
+    assert "[string]$entry.Table" not in resolver
+    assert "[string]$entry.Key" not in resolver
+    assert resolver.count("Get-ProbeScalarString") >= 3
+    # AND EACH NAME IS USED FOR ITS OWN LOOKUP. Swapping them would resolve a
+    # table name as a worksheet and produce exactly the error Run 3 reported.
+    assert ("$sheetName = Get-ProbeScalarString -InputObject $entry -Name 'Sheet' "
+            "-Where $where") in resolver
+    assert ("$tableName = Get-ProbeScalarString -InputObject $entry -Name 'Table' "
+            "-Where $where") in resolver
+    assert "$ws = $sheets.Item($sheetName)" in resolver
+    assert "$lo = $los.Item($tableName)" in resolver
+
+
+def test_83_a_record_that_is_itself_an_array_is_refused() -> None:
+    """THE COLLAPSE, NAMED. `$entry` bound to the inner array is exactly what
+    happened, and it now refuses instead of member-enumerating."""
+    body = _probe_code().split("function Assert-ProbeWatchedShape {")[1]
+    body = body[:body.index("\n}")]
+    assert "if ($record -is [System.Array]) {" in body
+    assert "The collection boundary collapsed." in body
+
+
+def test_84_every_watched_record_is_printed_in_its_own_block() -> None:
+    """REQUIRED CONTROL 4 OF THIS ROUND. Five records printed as one line is how
+    the collapse went unnoticed until Excel refused the name."""
+    code = _probe_code()
+    assert "Write-ProbeLine ('    tab   = ' + [string]$entry.Sheet)" in code
+    assert "Write-ProbeLine ('    table = ' + [string]$entry.Table)" in code
+    assert "Write-ProbeLine ('    tab      = ' + [string]$target.Sheet)" in code
+    assert "Write-ProbeLine ('    codename = ' + [string]$target.CodeName)" in code
+    assert "Write-ProbeLine ('    table    = ' + [string]$target.Table)" in code
+    # AND THE COUNT IS SHOWN, so a collapse is visible in the log itself.
+    assert "' targets resolved'" in code
+    assert "' records)')" in code
+
+
+def test_85_the_control_has_four_explicit_states() -> None:
+    """REQUIRED CONTROLS 14 AND 15. Probe Run 3 printed "UserInterfaceOnly
+    permits code VALUE writes: False" after failing before the control ever ran.
+    False reads as "blocking was observed", which nothing had tested."""
+    code = _probe_code()
+    assert "$controlResult = 'NOT ATTEMPTED'" in code
+    assert "UserInterfaceOnly code-value-write capability: NOT TESTED" in code
+    assert "UserInterfaceOnly code-value-write capability: CONFIRMED" in code
+    assert "UserInterfaceOnly code-value-write capability: REFUSED BY EXCEL" in code
+    # NO BOOLEAN PROJECTION AT ALL, so there is no False to be misread.
+    assert "permits code VALUE writes: ' + [string]" not in code
+    assert "$controlWorked" not in code
+    body = code.split("function Invoke-ProbeLockedCellControl")[1]
+    body = body[:body.index("\n}\n")]
+    states = set(re.findall(r"Result = '([A-Z ]+)'", body)) | {"NOT ATTEMPTED"}
+    assert states == {"SUCCEEDED", "REFUSED", "INCONCLUSIVE", "NOT ATTEMPTED"}, states
+
+
+def test_86_the_control_state_does_not_reach_the_verdict_branch() -> None:
+    """REQUIRED: the reporting correction must not alter the verdict logic."""
+    code = _probe_code()
+    verdict = code.split("Set-ProbeStage -Stage 'verdict'")[1]
+    verdict = verdict[:verdict.index("$excel.Run('PCCM_AutomationEnd')")]
+    assert "$controlResult" not in verdict
+    assert "$controlDetail" not in verdict
 
 
 # ===========================================================================

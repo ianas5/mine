@@ -239,3 +239,74 @@ a production result — the log now distinguishes **PREPARING TO TEST** from
 **ENDPOINT INVOKED**.
 
 ---
+
+## Protection probe Run 3 — INCONCLUSIVE
+
+**Probe commit:** `a0a4dc5`
+
+Stage A 351/351. Stage-B bootstrap PASS. Workbook opened with 14 of 14 sheets
+protected, structure protected, owner reporting `True`. The probe then failed
+resolving its watched targets.
+
+```
+stage     : resolve
+doing     : resolving every watched worksheet and table
+endpoint  : (none)
+exception : System.Management.Automation.RuntimeException
+message   : the workbook has no worksheet named
+            'Cost Lines Risk Register Cost Profiling Risk Profiling Inflation'
+            (asked for by the manifest entry
+            cost_lines risk_register cost_profiling risk_profiling inflation)
+underlying: System.Runtime.InteropServices.COMException: Invalid index. (DISP_E_BADINDEX)
+at line   : 311
+```
+
+**Status: INCONCLUSIVE. `PCCM_ApplyTimeline` was NOT invoked** — the failure was
+in target resolution, before any endpoint. It does not prove BLOCKED and does
+not prove FINE.
+
+### Root cause: five records became one
+
+`Get-ProbeWatchedTables` ended with `return ,@($watched)`. The unary comma makes
+the function emit **one** pipeline item that *is* the array — and the caller
+wrote `@(Get-ProbeWatchedTables ...)`, which **collects pipeline items rather
+than flattening nested arrays**. The five records arrived double-wrapped.
+`foreach ($entry in @($Watched))` then bound `$entry` to the inner array,
+`$entry.Sheet` became **member enumeration** over five records, and `[string]`
+joined the result with spaces.
+
+The coercion is what hid it: `[string]` turned a structural error into a
+plausible-looking worksheet name, and the only symptom was `DISP_E_BADINDEX`.
+
+**This also re-explains Run 2.** That run died on the same lookup with the same
+HRESULT, and the earlier diagnosis blamed COM release churn. The joined name was
+already the cause; Run 2's message simply did not carry the name. The Run-2
+"resolve once" change was a genuine robustness improvement but did not address
+this, which is why Run 3 failed at the same wall.
+
+### The second instance would have been worse than an abort
+
+`Get-ProbeShapeDelta` used the same idiom with the same `@()` at its call site.
+Double-wrapped, an **empty** change list arrives as a one-element array, so
+`StructuralEffect` would have been true for every endpoint — and the probe could
+have reached **PRODUCTION IS FINE** having observed no shape change at all. A
+wrong conclusion is more dangerous than a failed run.
+
+### Corrected in this round
+
+Both producers emit their records normally; the callers' `@()` keeps a zero- or
+one-record result an array. The collection boundary is now proved **before Excel
+is started**: five records (counted from the manifest, never a literal), each
+with scalar `Key`/`Sheet`/`Table` validated **before** any `[string]` cast,
+unique keys and unique sheet/table pairs, and a record that is itself an array
+refused by name. Each target prints in its own block with tab, CodeName and
+table on separate lines, with the record count shown.
+
+The locked-cell control gained a fourth state. Run 3 printed
+`UserInterfaceOnly permits code VALUE writes: False` after failing before the
+control ran — `False` reads as "blocking was observed", which nothing had
+tested. The states are now `SUCCEEDED` / `REFUSED` / `INCONCLUSIVE` /
+`NOT ATTEMPTED`, there is no boolean projection at all, and an untested
+capability prints **NOT TESTED**. This does not touch the verdict logic.
+
+---

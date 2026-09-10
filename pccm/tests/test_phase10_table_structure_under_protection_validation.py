@@ -336,13 +336,15 @@ def test_41_falling_back_to_a_positional_sheet_index_is_rejected() -> None:
 
 
 def test_42_swapping_the_sheet_and_table_identifiers_is_rejected() -> None:
-    """NEITHER IS DERIVED FROM THE OTHER, and neither stands in for the other."""
+    """NEITHER IS DERIVED FROM THE OTHER, and neither stands in for the other.
+    Swapping them resolves a table name as a worksheet, which produces exactly
+    the DISP_E_BADINDEX Run 3 reported."""
     _probe_mutation(
-        "test_55",
-        "        $sheetName = [string]$entry.Sheet\n"
-        "        $tableName = [string]$entry.Table",
-        "        $sheetName = [string]$entry.Table\n"
-        "        $tableName = [string]$entry.Sheet")
+        "test_82",
+        "        $sheetName = Get-ProbeScalarString -InputObject $entry -Name 'Sheet' -Where $where\n"
+        "        $tableName = Get-ProbeScalarString -InputObject $entry -Name 'Table' -Where $where",
+        "        $sheetName = Get-ProbeScalarString -InputObject $entry -Name 'Table' -Where $where\n"
+        "        $tableName = Get-ProbeScalarString -InputObject $entry -Name 'Sheet' -Where $where")
 
 
 def test_43_using_the_codename_to_find_the_sheet_is_rejected() -> None:
@@ -429,6 +431,112 @@ def test_52_accepting_a_blank_control_original_is_rejected() -> None:
         "test_68",
         "        if ([string]::IsNullOrWhiteSpace([string]$original)) {",
         "        if ($false) {")
+
+
+# ===========================================================================
+# E. THE PROBE RUN 3 COLLAPSE
+# ===========================================================================
+def test_60_restoring_the_unary_comma_producer_is_rejected() -> None:
+    """THE EXACT IDIOM THAT COLLAPSED FIVE RECORDS INTO ONE."""
+    _probe_mutation(
+        "test_80",
+        "    return $watched\n}",
+        "    return ,@($watched)\n}")
+
+
+def test_61_the_same_idiom_in_the_shape_delta_is_rejected() -> None:
+    """THE INSTANCE THAT WOULD HAVE BEEN WORSE THAN AN ABORT: an empty change
+    list arriving as a one-element array makes StructuralEffect true for every
+    endpoint, and FINE reachable with no shape change at all."""
+    _probe_mutation(
+        "test_80",
+        "    return $changes\n}",
+        "    return ,@($changes)\n}")
+
+
+def test_62_dropping_the_watched_shape_assertion_is_rejected() -> None:
+    _probe_mutation(
+        "test_81",
+        "    $null = Assert-ProbeWatchedShape -Watched $watched -Manifest $manifest",
+        "    $null = $watched")
+
+
+def test_63_hard_coding_the_record_count_is_rejected() -> None:
+    """THE COUNT IS THE MANIFEST'S. A literal five would stop being true the day
+    a grid was added, and would stop being a check at all."""
+    _probe_mutation(
+        "test_81",
+        "    $expected = (@($Manifest.registers).Count + @($Manifest.grids).Count)",
+        "    $expected = 5")
+
+
+def test_64_string_coercion_hiding_an_array_is_rejected() -> None:
+    """`[string]` MUST NEVER BE THE THING THAT DISCOVERS a property holds five
+    values: it turns a structural error into a plausible-looking name."""
+    _probe_mutation(
+        "test_82",
+        "        $sheetName = Get-ProbeScalarString -InputObject $entry -Name 'Sheet' -Where $where",
+        "        $sheetName = [string]$entry.Sheet")
+
+
+def test_65_casting_before_the_array_test_is_rejected() -> None:
+    _probe_mutation(
+        "test_82",
+        "    if ($value -is [System.Array] -or $value -is [System.Collections.IEnumerable] -and",
+        "    if ($false -and $value -is [System.Collections.IEnumerable] -and")
+
+
+def test_66_accepting_a_record_that_is_itself_an_array_is_rejected() -> None:
+    _probe_mutation(
+        "test_83",
+        "        if ($record -is [System.Array]) {",
+        "        if ($false) {")
+
+
+def test_67_dropping_the_uniqueness_checks_is_rejected() -> None:
+    _probe_mutation(
+        "test_81",
+        "        if ($keys -contains $key) { throw ($where + \": the key '\" + $key + \"' is not unique\") }",
+        "        if ($false) { }")
+
+
+def test_68_printing_the_records_as_one_line_is_rejected() -> None:
+    """FIVE RECORDS PRINTED AS ONE LINE is how the collapse went unnoticed."""
+    _probe_mutation(
+        "test_84",
+        "    Write-ProbeLine ('    tab   = ' + [string]$entry.Sheet)",
+        "    Write-ProbeLine ('    tab   = ' + [string]$entry.Sheet + [string]$entry.Table)")
+
+
+def test_69_reporting_a_not_attempted_control_as_false_is_rejected() -> None:
+    """RUN 3 PRINTED "permits code VALUE writes: False" after failing before the
+    control ran. False reads as "blocking was observed", which nothing tested."""
+    _probe_mutation(
+        "test_85",
+        "    Write-ProbeLine '  UserInterfaceOnly code-value-write capability: NOT TESTED'",
+        "    Write-ProbeLine ('  UserInterfaceOnly permits code VALUE writes: ' + [string]$false)")
+
+
+def test_70_starting_the_control_state_at_a_conclusion_is_rejected() -> None:
+    _probe_mutation(
+        "test_85",
+        "$controlResult = 'NOT ATTEMPTED'",
+        "$controlResult = 'REFUSED'")
+
+
+def test_71_letting_the_control_state_decide_the_verdict_is_rejected() -> None:
+    """THE REPORTING CORRECTION MUST NOT ALTER THE VERDICT LOGIC."""
+    _probe_mutation(
+        "test_86",
+        "        if (@($notSucceeded).Count -gt 0) {",
+        "        if (($controlResult -eq 'REFUSED') -or (@($notSucceeded).Count -gt 0)) {")
+
+
+def test_72_skipping_the_resolved_set_recheck_is_rejected() -> None:
+    _probe_mutation(
+        "test_81",
+        "    $null = Assert-ProbeWatchedShape -Watched $resolution.Targets -Manifest $manifest",
+        "    $null = $resolution")
 
 
 if __name__ == "__main__":
