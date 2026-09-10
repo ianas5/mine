@@ -683,18 +683,82 @@ def test_55_no_builder_owner_changed_except_the_new_plan_and_its_wiring() -> Non
     assert changed <= {"benchmark.py", "__init__.py", "build_stage_a.py"}, sorted(changed)
 
 
+# W3/W4. DECLARED, NOT EXEMPTED. Each name here was added because a batch had a
+# reason a reviewer accepted, and the reason is written beside it. A file that is
+# not on this list still cannot change.
+CHANGED_BY_DECLARATION = {
+    # W3. The protection probe is a NEW file added by a later batch to ask Excel
+    # one question. It is not an accepted harness and it changes none.
+    "phase10_protection_probe.ps1",
+    # The benchmark harness this suite is about.
+    "phase10_benchmark.ps1",
+    # W4. Stage-B verification was failing BEFORE the probe could run: Excel
+    # refused an incoming COM read with RPC_E_CALL_REJECTED on the first sheet of
+    # the reopened workbook, twice in a row. com_lifecycle.ps1 gained the bounded
+    # read-boundary retry that settles it, and build_stage_b.ps1's verification
+    # block now reads through that helper. Neither is a scenario harness.
+    "com_lifecycle.ps1",
+    "build_stage_b.ps1",
+}
+
+# The scenario harnesses this control exists to protect. Named, so the control
+# says what it defends rather than only what it forbids.
+FROZEN_HARNESSES = (
+    "phase4_functional_test.ps1",
+    "phase5_gate_b_scenarios.ps1",
+    "phase6_gate_b_scenarios.ps1",
+    "phase7_acceptance_scenarios.ps1",
+    "phase7_timing_scenarios.ps1",
+    "phase7_w1_smoke.ps1",
+    "phase7_w2_many_drivers.ps1",
+    "phase7_w3_long_years.ps1",
+    "phase7_w4_base_simulation.ps1",
+    "phase7_w5_annual_success.ps1",
+    "phase7_w6_selector_move.ps1",
+    "phase7_w7_bank_cycle.ps1",
+    "phase7_w8_refusal.ps1",
+    "phase8_p1_results_surface.ps1",
+    "phase8_p2_dashboard_surface.ps1",
+    "phase8_p3_chart_surface.ps1",
+    "phase8_pz_zero_variance.ps1",
+    "phase9_p1_model_check.ps1",
+)
+
+
 def test_56_no_accepted_windows_harness_changed() -> None:
-    """THE ACCEPTED HARNESSES ARE LEFT ALONE. The benchmark carries its own copy
-    of the COM primitives precisely so none of them had to be edited."""
+    """THE ACCEPTED SCENARIO HARNESSES ARE LEFT ALONE. The benchmark carries its
+    own copy of the COM primitives precisely so none of them had to be edited."""
     changed = {Path(line).name for line in
                _git("diff", "--name-only", ACCEPTED, "--", "pccm/bootstrap").splitlines()
                if line.strip()}
-    # W3. DECLARED, NOT EXEMPTED. The protection probe is a NEW file added by a
-    # later batch to ask Excel one question; it is not an accepted harness and it
-    # changes none. What this control still refuses is unchanged: an edit to any
-    # of the Gate-B or Phase-7/8/9 scenario harnesses, which the benchmark
-    # carries its own copy of the COM primitives specifically to avoid.
-    assert changed <= {"phase10_benchmark.ps1", "phase10_protection_probe.ps1"}, sorted(changed)
+    assert changed <= CHANGED_BY_DECLARATION, sorted(changed - CHANGED_BY_DECLARATION)
+
+
+def test_56a_every_frozen_scenario_harness_is_byte_identical() -> None:
+    """SAID POSITIVELY, NOT BY SUBTRACTION.
+
+    test_56 widened twice by declaration, and a set that only ever grows stops
+    defending anything the day someone adds one more name to it. This states the
+    thing that must remain true directly: every scenario harness is unchanged
+    since the accepted commit. Widening the declaration above cannot weaken this.
+    """
+    for name in FROZEN_HARNESSES:
+        assert (BOOTSTRAP / name).is_file(), f"{name} is named as frozen but is not on disk"
+        diff = _git("diff", "--name-only", ACCEPTED, "--", f"pccm/bootstrap/windows/{name}")
+        assert not diff.strip(), f"{name} changed since {ACCEPTED}"
+
+
+def test_56b_the_declaration_and_the_freeze_do_not_overlap() -> None:
+    """A NAME CANNOT BE ON BOTH LISTS. If a scenario harness were quietly added to
+    the declaration, test_56a would still fail -- but only after it had already
+    been edited. This refuses the declaration itself."""
+    overlap = CHANGED_BY_DECLARATION & set(FROZEN_HARNESSES)
+    assert not overlap, sorted(overlap)
+    # And the freeze must cover every scenario harness actually on disk, so a new
+    # one cannot be added and silently left unprotected.
+    on_disk = {p.name for p in BOOTSTRAP.glob("*.ps1")}
+    unaccounted = on_disk - set(FROZEN_HARNESSES) - CHANGED_BY_DECLARATION
+    assert not unaccounted, sorted(unaccounted)
 
 
 def test_57_the_copied_primitives_are_verbatim() -> None:

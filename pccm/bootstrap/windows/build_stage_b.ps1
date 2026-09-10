@@ -458,17 +458,38 @@ if ($buildOk) {
 
         $problems = @()
 
-        if ([int]$wb2.FileFormat -ne [int]$manifest.xlsm_file_format) {
-            $problems += ("FileFormat is {0}, expected {1}" -f [int]$wb2.FileFormat, $manifest.xlsm_file_format)
+        # EVERY READ IN THIS BLOCK GOES THROUGH Invoke-ComRetryRead, and that is
+        # the whole change. The reopened workbook has just run Workbook_Open -
+        # the first VBA this bootstrap ever executes - and twice in a row Excel
+        # refused an incoming call here with RPC_E_CALL_REJECTED. A refused call
+        # never ran, so reissuing it is safe; the helper reissues nothing else.
+        #
+        # NOTHING IS VERIFIED LESS. The same 14 CodeNames, the same 32 modules
+        # and the same 11 buttons are read from the same reopened instance, which
+        # still opens exactly as it will for a person: macros enabled, events on,
+        # protection applied by Workbook_Open, nothing suppressed to make the
+        # verification easier. Only the delivery of each read is retried.
+        #
+        # The BUILD block above is deliberately NOT wrapped. Its calls write -
+        # SaveAs, Import, AddShape, Protect, Save - and a write that Excel may or
+        # may not have accepted is not something to reissue on a guess.
+        $ff = [int](Invoke-ComRetryRead -Target $wb2 -Member 'FileFormat' `
+                        -Description 'the reopened workbook FileFormat').Value
+        if ($ff -ne [int]$manifest.xlsm_file_format) {
+            $problems += ("FileFormat is {0}, expected {1}" -f $ff, $manifest.xlsm_file_format)
         }
 
-        $worksheets2 = $wb2.Worksheets
+        $worksheets2 = (Invoke-ComRetryRead -Target $wb2 -Member 'Worksheets' `
+                            -Description 'the reopened workbook Worksheets collection').Value
         foreach ($sheet in $manifest.sheets) {
             $ws = $null
             try {
-                $ws = $worksheets2.Item($sheet.name)
-                if ([string]$ws.CodeName -ne $sheet.codename) {
-                    $problems += ("{0}: CodeName persisted as '{1}', expected '{2}'" -f $sheet.name, [string]$ws.CodeName, $sheet.codename)
+                $ws = (Invoke-ComRetryRead -Target $worksheets2 -Member 'Item' -Key ([string]$sheet.name) `
+                           -Description ("Worksheets.Item('" + [string]$sheet.name + "')")).Value
+                $codeName = [string](Invoke-ComRetryRead -Target $ws -Member 'CodeName' `
+                                         -Description ([string]$sheet.name + '.CodeName')).Value
+                if ($codeName -ne $sheet.codename) {
+                    $problems += ("{0}: CodeName persisted as '{1}', expected '{2}'" -f $sheet.name, $codeName, $sheet.codename)
                 }
             } catch {
                 $problems += ("{0}: {1}" -f $sheet.name, (Format-Err $_))
@@ -477,12 +498,23 @@ if ($buildOk) {
             }
         }
 
-        $vbproj2 = $wb2.VBProject
-        $vbcomps2 = $vbproj2.VBComponents
+        $vbproj2 = (Invoke-ComRetryRead -Target $wb2 -Member 'VBProject' `
+                        -Description 'the reopened workbook VBProject').Value
+        $vbcomps2 = (Invoke-ComRetryRead -Target $vbproj2 -Member 'VBComponents' `
+                         -Description 'the reopened VBComponents collection').Value
+        # Read ONCE, not once per iteration. The old loop condition re-read .Count
+        # on every pass - fourteen-odd unguarded COM reads where one suffices.
+        $compCount = [int](Invoke-ComRetryRead -Target $vbcomps2 -Member 'Count' `
+                               -Description 'VBComponents.Count').Value
         $persisted = @()
-        for ($i = 1; $i -le $vbcomps2.Count; $i++) {
+        for ($i = 1; $i -le $compCount; $i++) {
             $c = $null
-            try { $c = $vbcomps2.Item($i); $persisted += [string]$c.Name }
+            try {
+                $c = (Invoke-ComRetryRead -Target $vbcomps2 -Member 'Item' -Key $i `
+                          -Description ('VBComponents.Item(' + [string]$i + ')')).Value
+                $persisted += [string](Invoke-ComRetryRead -Target $c -Member 'Name' `
+                                           -Description ('VBComponents.Item(' + [string]$i + ').Name')).Value
+            }
             finally { if ($null -ne $c) { Release-Transient $c 'VBComponent2(enum)'; $c = $null } }
         }
         foreach ($m in $manifest.vba.modules) {
@@ -492,10 +524,14 @@ if ($buildOk) {
         foreach ($button in $manifest.buttons) {
             $ws = $null; $shapes = $null; $shp = $null
             try {
-                $ws = $worksheets2.Item($button.sheet)
-                $shapes = $ws.Shapes
-                $shp = $shapes.Item($button.shape_name)
-                $onAction = [string]$shp.OnAction
+                $ws = (Invoke-ComRetryRead -Target $worksheets2 -Member 'Item' -Key ([string]$button.sheet) `
+                           -Description ("Worksheets.Item('" + [string]$button.sheet + "') for " + [string]$button.shape_name)).Value
+                $shapes = (Invoke-ComRetryRead -Target $ws -Member 'Shapes' `
+                               -Description ([string]$button.sheet + '.Shapes')).Value
+                $shp = (Invoke-ComRetryRead -Target $shapes -Member 'Item' -Key ([string]$button.shape_name) `
+                            -Description ("Shapes.Item('" + [string]$button.shape_name + "')")).Value
+                $onAction = [string](Invoke-ComRetryRead -Target $shp -Member 'OnAction' `
+                                         -Description ([string]$button.shape_name + '.OnAction')).Value
                 if ($onAction -notlike ('*' + $button.entry_point + '*')) {
                     $problems += ("{0}: OnAction persisted as '{1}', expected '{2}'" -f $button.shape_name, $onAction, $button.entry_point)
                 }
@@ -515,6 +551,19 @@ if ($buildOk) {
         }
     } catch {
         Add-Step 'Verify the reopened .xlsm' 'FAIL' (Format-Err $_)
+    }
+
+    # REPORTED WHETHER OR NOT ANY READ WAS REFUSED, and reported as its own step
+    # so a retried run can never look like an untroubled one. This step describes
+    # what happened; it decides nothing. A verification that failed above stays
+    # failed, and an exhausted retry appears here AND as that failure.
+    $retryLines = @(Get-ComRetryLedger)
+    if ($retryLines.Count -eq 0) {
+        Add-Step 'Transient COM rejections' 'PASS' 'no verification read was refused; 0 ms waited'
+    } else {
+        Add-Step 'Transient COM rejections' 'PASS' `
+            ("{0} read(s) were refused and reissued; {1} ms waited in total" -f $retryLines.Count, (Get-ComRetryWaitTotal))
+        foreach ($line in $retryLines) { Add-Note ('COM read: ' + $line) }
     }
 
     $rel2 = New-ReleaseLedger 'verification instance'

@@ -24,6 +24,10 @@
 #   * No script here changes macro security, Trusted Locations, the registry or
 #     any organisational policy, and none terminates an Excel process it did not
 #     create and cannot positively identify.
+#   * A REFUSED call may be reissued; a FAILED one may not. Only the two OLE
+#     message-filter HRESULTs - the ones whose contract is that the call never
+#     ran - are retried, only at the read boundary, and only within bounds that
+#     are reported. There is no general "retry COM automation" behaviour here.
 # ===========================================================================
 
 Set-StrictMode -Version 2.0
@@ -130,6 +134,197 @@ function Format-ReleaseLedger {
     $null = $out.Add(("      emergency required : {0}" -f $Ledger.EmergencyRequired))
     return ($out -join "`r`n")
 }
+
+# ---------------------------------------------------------------------------
+# Transient COM rejection: a bounded retry at the READ boundary
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS. Stage-B verification failed twice, identically, on the FIRST
+# per-sheet read of the reopened .xlsm:
+#
+#     [FAIL] Verify the reopened .xlsm
+#            Dashboard: System.Runtime.InteropServices.COMException:
+#            Call was rejected by callee. (0x80010001 RPC_E_CALL_REJECTED)
+#
+# The build had completed, the workbook had been saved, and the reopen itself
+# succeeded. 'Dashboard' is sheets[0] of the manifest, so this is the first
+# iteration of the CodeName loop - and the 13 sheets after it, all 32 modules
+# and all 11 buttons then verified. The workbook was never in question. The
+# call was refused.
+#
+# WHAT IS RETRIED, AND WHY THE SET CANNOT BE WIDER. RPC_E_CALL_REJECTED and
+# RPC_E_SERVERCALL_RETRYLATER are the two results an OLE message filter returns
+# when the server declines to accept an incoming call. Their contract is that
+# the call was NOT delivered: it did not run, nothing executed, no state moved.
+# THAT is what makes issuing it again safe, and it is the entire justification.
+# A COMException from a call Excel accepted describes something that actually
+# happened; repeating it would be guessing, so 'retry a COMException' is exactly
+# the generalisation this must not make.
+#
+# VBA_E_IGNORE (0x800AC472) is deliberately NOT in the set. It comes from a
+# different mechanism - Excel sitting in a UI or modal state - and a run parked
+# behind a dialog should fail and say so rather than spin out its budget.
+#
+# WHAT THIS HELPER CANNOT DO, BY CONSTRUCTION. It takes an object and a member
+# NAME. It reads a property, or it calls .Item(key). There is no scriptblock
+# parameter, so no write, no Open, no SaveAs, no Import, no Protect and no Run
+# can be expressed through it at all. The read-only guarantee is the shape of
+# the API rather than a rule a future edit has to remember.
+#
+# AND IT ASSIGNS, NEVER EMITS. The value can be an Excel COLLECTION object
+# (Worksheets, Shapes, VBComponents). Writing one of those to a PowerShell
+# pipeline makes PowerShell enumerate it into its members - the Phase-10 Run-3
+# record collapse in a new costume. So the read is an ASSIGNMENT, and the caller
+# gets a record whose .Value is untouched.
+
+# HRESULT -> name. Keyed by the SIGNED int32 the CLR reports as ErrorCode.
+$script:ComRetryableHResults = @{
+    -2147418111 = 'RPC_E_CALL_REJECTED (0x80010001)'
+    -2147417846 = 'RPC_E_SERVERCALL_RETRYLATER (0x8001010A)'
+}
+
+# Plain diagnostic data only - labels, integers and strings. Never a COM RCW.
+$script:comRetryLedger  = New-Object System.Collections.ArrayList
+$script:comRetryWaitMs  = 0
+
+# Returns the retryable rejection's NAME, or '' when the error is anything else.
+# '' is the answer that means "do not retry this", so every path that cannot
+# positively identify a rejection returns it.
+function Get-ComRejectionName {
+    param($ErrorRecord)
+    if ($null -eq $ErrorRecord) { return '' }
+    $ex = $null
+    try { $ex = $ErrorRecord.Exception } catch { return '' }
+    # PowerShell surfaces a COM failure bare in some paths and wrapped in a
+    # MethodInvocationException in others, so the chain is walked - to a BOUNDED
+    # depth, because a cyclic InnerException chain would otherwise hang here.
+    for ($depth = 0; $depth -lt 5; $depth++) {
+        if ($null -eq $ex) { return '' }
+        if ($ex -is [System.Runtime.InteropServices.COMException]) {
+            $code  = 0
+            $known = $false
+            try { $code = [int]$ex.ErrorCode; $known = $true } catch { $known = $false }
+            if ($known -and $script:ComRetryableHResults.ContainsKey($code)) {
+                return [string]$script:ComRetryableHResults[$code]
+            }
+        }
+        $next = $null
+        try { $next = $ex.InnerException } catch { $next = $null }
+        $ex = $next
+    }
+    return ''
+}
+
+# Reads ONE member of ONE COM object, retrying only a refused call.
+#
+#   -Member <name>            read that property
+#   -Member Item -Key <k>     call .Item(k)
+#
+# Bounds: at most $MaxAttempts attempts, each delay at most $MaxDelayMs, and the
+# TOTAL time spent waiting never exceeds $TotalBudgetMs. When the bounds run out
+# the ORIGINAL error is rethrown, unchanged, and the caller fails exactly as it
+# would have before this helper existed.
+function Invoke-ComRetryRead {
+    param(
+        $Target,
+        [string]$Member,
+        $Key,
+        [string]$Description,
+        [int]$MaxAttempts   = 12,
+        [int]$FirstDelayMs  = 250,
+        [int]$MaxDelayMs    = 2000,
+        [int]$TotalBudgetMs = 15000
+    )
+    if ([string]::IsNullOrWhiteSpace($Description)) {
+        throw 'Invoke-ComRetryRead: every retried read must name the action it is retrying.'
+    }
+    if ($null -eq $Target) {
+        throw ('Invoke-ComRetryRead: no target object for ' + $Description + '.')
+    }
+    if ([string]::IsNullOrWhiteSpace($Member)) {
+        throw ('Invoke-ComRetryRead: no member name for ' + $Description + '.')
+    }
+    $useItem = $PSBoundParameters.ContainsKey('Key')
+    if ($useItem -and $Member -ne 'Item') {
+        throw ('Invoke-ComRetryRead: a key may only be passed to Item, not to ' + $Member + '.')
+    }
+    if ($MaxAttempts -lt 1) { throw 'Invoke-ComRetryRead: MaxAttempts must be at least 1.' }
+    if ($TotalBudgetMs -lt 0) { throw 'Invoke-ComRetryRead: TotalBudgetMs may not be negative.' }
+
+    $value      = $null
+    $attempts   = 0
+    $waitedMs   = 0
+    $rejections = New-Object System.Collections.ArrayList
+    $delay      = $FirstDelayMs
+
+    # THE BOUND IS IN THE HEAD. A loop whose only exits are a break and a throw
+    # is bounded in fact and unbounded to a reader, and on a Windows machine a
+    # harness that hangs is worse than one that fails: it holds an Excel process
+    # open and produces no transcript at all.
+    $answered = $false
+    while ($attempts -lt $MaxAttempts) {
+        $attempts = $attempts + 1
+        try {
+            # ASSIGNMENT, not pipeline output. See the note above.
+            if ($useItem) { $value = $Target.Item($Key) } else { $value = $Target.$Member }
+            $answered = $true
+            break
+        } catch {
+            $name = Get-ComRejectionName $_
+            if ([string]::IsNullOrWhiteSpace($name)) {
+                # Not a refused call. Excel accepted this one and it failed, so it
+                # is a real result and it is rethrown untouched.
+                throw
+            }
+            $null = $rejections.Add($name)
+            $reason = ''
+            if ($attempts -ge $MaxAttempts) {
+                $reason = ('attempt limit of ' + [string]$MaxAttempts + ' reached')
+            } elseif (($waitedMs + $delay) -gt $TotalBudgetMs) {
+                $reason = ('retry budget of ' + [string]$TotalBudgetMs + ' ms would be exceeded')
+            }
+            if ($reason -ne '') {
+                $null = $script:comRetryLedger.Add(
+                    ('EXHAUSTED  ' + $Description + ' :: ' + [string]$attempts + ' attempt(s), ' +
+                     [string]$waitedMs + ' ms waited, ' + $reason + '; rejections: ' +
+                     (($rejections | Select-Object -Unique) -join ', ')))
+                $script:comRetryWaitMs = $script:comRetryWaitMs + $waitedMs
+                throw
+            }
+            Start-Sleep -Milliseconds $delay
+            $waitedMs = $waitedMs + $delay
+            $delay = [Math]::Min(($delay + $FirstDelayMs), $MaxDelayMs)
+        }
+    }
+
+    # UNREACHABLE WHILE THE CATCH THROWS ON EXHAUSTION, and it still throws rather
+    # than falling through to a record with a $null .Value. An edit that changes
+    # the head bound must not be able to turn "never answered" into an answer.
+    if (-not $answered) {
+        throw ('Invoke-ComRetryRead: ' + $Description + ' was never answered after ' +
+               [string]$attempts + ' attempt(s).')
+    }
+
+    if ($attempts -gt 1) {
+        $null = $script:comRetryLedger.Add(
+            ('RETRIED    ' + $Description + ' :: answered on attempt ' + [string]$attempts +
+             ' after ' + [string]$waitedMs + ' ms; rejections: ' +
+             (($rejections | Select-Object -Unique) -join ', ')))
+        $script:comRetryWaitMs = $script:comRetryWaitMs + $waitedMs
+    }
+
+    # ONE pipeline item: a record. The bare value is never emitted, so a COM
+    # collection cannot be enumerated on its way back to the caller.
+    return [pscustomobject]@{
+        Description = $Description
+        Value       = $value
+        Attempts    = $attempts
+        WaitedMs    = $waitedMs
+        Rejections  = (($rejections | Select-Object -Unique) -join ', ')
+    }
+}
+
+function Get-ComRetryLedger    { return @($script:comRetryLedger) }
+function Get-ComRetryWaitTotal { return [int]$script:comRetryWaitMs }
 
 # ---------------------------------------------------------------------------
 # Process identity

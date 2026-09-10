@@ -310,3 +310,131 @@ tested. The states are now `SUCCEEDED` / `REFUSED` / `INCONCLUSIVE` /
 capability prints **NOT TESTED**. This does not touch the verdict logic.
 
 ---
+
+## Stage-B verification attempts 1 and 2 — PROBE NOT STARTED
+
+**These are not probe runs.** The protection probe did not execute, produced no
+verdict, and produced no evidence about whether protection blocks production
+table operations. They are prerequisite failures, recorded so the count of probe
+attempts stays honest: the probe still stands at Run 3, INCONCLUSIVE.
+
+They are **not** a baseline, **not** Gate-B evidence and **not** acceptance
+evidence.
+
+### What both attempts reported
+
+The Stage-B **build** completed on both:
+
+```
+  [PASS] Apply the locked worksheet CodeNames      14 sheets
+  [PASS] Import every manifest-declared VBA module 32 modules
+  [PASS] Write the ThisWorkbook document module    ThisWorkbook: Workbook_Open
+  [PASS] Create the Phase-4 command buttons        11 buttons
+  [PASS] Apply passwordless protection             14 sheet(s); structure=True; UserInterfaceOnly=True
+  [PASS] Save the Stage-B workbook
+  [PASS] Build instance closed naturally
+```
+
+The Stage-B **verification** then failed, identically, both times:
+
+```
+  [FAIL] Verify the reopened .xlsm
+         Dashboard: System.Runtime.InteropServices.COMException:
+         Call was rejected by callee. (0x80010001 RPC_E_CALL_REJECTED)
+```
+
+### The exact statement, established from source rather than the HRESULT
+
+`build_stage_b.ps1` section 8 formats a per-sheet problem as
+`("{0}: {1}" -f $sheet.name, (Format-Err $_))` and a per-button problem as
+`("{0}: {1}" -f $button.shape_name, ...)`. `Dashboard` is `sheets[0]` of
+`stage_b_manifest.json` and matches **no** button `shape_name` — every button is
+`btnPCCM*`. So the failing statement is the **first iteration of the CodeName
+loop**: `$worksheets2.Item($sheet.name)` or the `[string]$ws.CodeName` that
+follows it.
+
+The sequence that reached it, and what each step proves:
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `New-Object -ComObject Excel.Application` | succeeded |
+| 2 | `$excel2.Visible/DisplayAlerts/AskToUpdateLinks = $false` | succeeded |
+| 3 | `$excel2.Workbooks` | succeeded |
+| 4 | `$workbooks2.Open($stageBPath)` | **returned** — a throw here would have been reported by the outer catch, with no `Dashboard:` prefix |
+| 5 | `[int]$wb2.FileFormat` | succeeded — no problem was recorded for it |
+| 6 | `$wb2.Worksheets` | succeeded |
+| 7 | `$worksheets2.Item('Dashboard')` / `.CodeName` | **RPC_E_CALL_REJECTED** |
+| 8+ | sheets 2–14, 32 modules, 11 buttons | **all verified** — `$problems` joined to exactly one entry |
+
+### Classification: A, with a structural gap that is B-flavoured
+
+**D — workbook or Dashboard defect: ruled out.** A missing sheet raises
+`DISP_E_BADINDEX`, a wrong CodeName is reported as a mismatch, and neither is an
+RPC rejection. The other thirteen sheets, all thirty-two modules and all eleven
+buttons verified from the same instance moments later.
+
+**C — production `Workbook_Open` defect: not supported.** `Workbook_Open` runs
+inside `Workbooks.Open`, which returned. Everything it is responsible for —
+protection across fourteen sheets and workbook structure — had already been
+applied by the build and verified there. Nothing it produced failed to verify.
+The reopened instance *is* the first place this bootstrap ever executes VBA, so
+the correlation is real, but a correlation is not the defect and no evidence
+here makes it one.
+
+**B — verifier COM-lifecycle defect: ruled out as the cause.** The failing read
+is the **first** iteration, before any `Release-Transient` in that loop has run,
+so release churn cannot explain it. (This is the diagnosis that was wrong in
+probe Run 2, and the sequence refutes it here rather than repeating it.)
+
+**A — transient COM busy: what the evidence supports.** RPC_E_CALL_REJECTED is
+an OLE message-filter result. Its contract is that the call was **not
+delivered**: it did not run and no state changed. One call was refused; the
+thirty-odd that followed were answered.
+
+What is *not* claimed: **why** Excel was busy at call 7 and not at calls 5 and 6.
+That would need instrumentation this batch has not run, and neither the fix nor
+the classification depends on it.
+
+The B-flavoured gap that made a refused call fatal: **no Windows harness in this
+repository had any retry or readiness handling at any COM boundary.** A single
+message-filter rejection anywhere in verification became a hard FAIL of a step
+that had verified everything else correctly.
+
+### What was changed, and what deliberately was not
+
+`com_lifecycle.ps1` gained `Invoke-ComRetryRead`: it reads **one member of one
+COM object** — a property, or `.Item(key)` — and reissues the call **only** when
+the error is RPC_E_CALL_REJECTED or RPC_E_SERVERCALL_RETRYLATER, the two results
+whose contract is that nothing ran. At most 12 attempts, each delay capped at
+2000 ms, total wait capped at 15000 ms. On exhaustion the **original** exception
+is rethrown and the step fails exactly as it did before. There is no scriptblock
+parameter, so no write, `Open`, `SaveAs`, `Import`, `Protect` or `Run` can be
+expressed through it at all.
+
+`build_stage_b.ps1` section 8 now performs every read through it. The build
+block is deliberately **not** wrapped: its calls write, and a write Excel may or
+may not have accepted is not something to reissue on a guess.
+
+Not done, and why:
+
+* **No readiness barrier.** The evidence refutes it: calls 5 and 6 were answered,
+  so a barrier before the loop would have passed and call 7 would still have been
+  refused. A barrier here would imply a guarantee it does not provide.
+* **No blind sleep**, anywhere — a control refuses `Start-Sleep` in the bootstrap.
+* **No production change.** `modProtection`, `modAppState`, the structural
+  commands and `phase10_protection_probe.ps1` are untouched. The probe question
+  is still open and still frozen.
+* **Nothing suppressed.** Events stay enabled, `Workbook_Open` still runs,
+  protection still applies. The verification instance opens the workbook exactly
+  as it will open for a person.
+
+`Add-Step 'Transient COM rejections'` reports the outcome on **every** run —
+including `0 ms waited` when nothing was refused — so a retried run and an
+untroubled one can never be mistaken for each other.
+
+### Still owed
+
+A clean Windows Stage-B run. Until one exists, this correction is **unverified
+on Windows**: no Windows execution was performed in this batch.
+
+---
