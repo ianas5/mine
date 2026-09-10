@@ -228,11 +228,14 @@ def main(argv: list[str] | None = None) -> int:
     # P10-4A. THE PERFORMANCE BENCHMARK PLAN, and the Windows runner reads this
     # rather than declaring a matrix of its own. It measures nothing: it is what
     # to run, at what sizes, how many times, and how a later run is compared.
-    benchmark = emit_benchmark_plan(out_path.parent / "phase10_benchmark_plan.json")
+    benchmark = emit_benchmark_plan(out_path.parent / "phase10_benchmark_plan.json", spec)
     print(f"  benchmark: {len(benchmark['scenarios'])} scenarios, "
           f"{len(benchmark['runs'])} timed runs, "
           f"{benchmark['timing']['cold_runs']} cold + "
           f"{benchmark['timing']['warm_runs']} warm each")
+    print(f"  release  : model {benchmark['release_identity']['model_version']}, "
+          f"builder {benchmark['release_identity']['builder_version']}, "
+          f"{benchmark['release_identity']['build_phase']}")
 
     artifacts = emit_stage_b(out_path.parent, spec, contract, drivers, structure)
     calc_artifacts = emit_calc_artifacts(out_path.parent, spec, calc)

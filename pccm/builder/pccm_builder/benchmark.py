@@ -29,11 +29,25 @@ import math
 from pathlib import Path
 from typing import Any
 
+# W2. THE BUILDER VERSION IS IMPORTED FROM ITS OWNER, NEVER RESTATED.
+#
+# Windows Run 2 died because the runner asked `stage_b_manifest.json` for a
+# `builder_version` it has never carried. It could not carry one: P10-3 settled
+# that the model version and the builder version are INDEPENDENT authorities,
+# and the manifest is a projection of the MODEL side only.
+#
+# So the benchmark plan projects it, from the single owner, by import. This file
+# holds no version literal of its own - if it did, the project would have two
+# builder versions the day one of them moved.
+from .workbook_builder import BUILDER_VERSION
+
 __all__ = [
     "BENCHMARK_SCHEMA_VERSION",
     "HARNESS_VERSION",
     "BASELINE_ID",
+    "RELEASE_IDENTITY_AUTHORITIES",
     "build_benchmark_plan",
+    "build_release_identity",
     "cost_line_count",
     "emit_benchmark_plan",
 ]
@@ -303,6 +317,45 @@ CORRECTNESS_GATES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# RELEASE IDENTITY - THREE VALUES, THREE OWNERS
+# ---------------------------------------------------------------------------
+# WHICH FILE ANSWERS FOR WHICH VALUE, written down beside the value itself so
+# the artifact a Windows run produces is auditable without this source.
+#
+# THE THREE ARE INDEPENDENT AND STAY INDEPENDENT. They all read 1.0.0 for this
+# release, which is a coincidence of this release; nothing below derives one
+# from another, and the projection carries them separately precisely so a later
+# builder-only change moves exactly one of them.
+RELEASE_IDENTITY_AUTHORITIES = {
+    "model_version": "spec/workbook.yaml: model.model_version",
+    "builder_version": "builder/pccm_builder/workbook_builder.py: BUILDER_VERSION",
+    "build_phase": "spec/workbook.yaml: model.build_phase",
+}
+
+
+def build_release_identity(spec: Any) -> dict[str, Any]:
+    """The release identity a benchmark result must carry, and where each came from.
+
+    REQUIRED, NEVER OPTIONAL. A timing whose release identity is missing cannot
+    be compared with anything later, so an absent or blank value is refused here
+    rather than emitted as a hole for the Windows runner to discover.
+    """
+    values = {
+        "model_version": str(spec.model["model_version"]),
+        "builder_version": str(BUILDER_VERSION),
+        "build_phase": str(spec.model["build_phase"]),
+    }
+    for key, value in values.items():
+        if not value.strip():
+            raise ValueError(
+                f"{key} is blank; its authority is {RELEASE_IDENTITY_AUTHORITIES[key]} "
+                "and a benchmark result may not carry an unidentified release")
+    identity: dict[str, Any] = dict(values)
+    identity["authorities"] = dict(RELEASE_IDENTITY_AUTHORITIES)
+    return identity
+
+
 def cost_line_count(drivers: int) -> int:
     """The accepted 60/40 split: 20 -> 12/8, 100 -> 60/40, 300 -> 180/120."""
     return int(math.ceil(float(drivers) * COST_LINE_SHARE))
@@ -361,8 +414,13 @@ def _runs(scenario: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def build_benchmark_plan() -> dict[str, Any]:
-    """The whole plan, expanded, with every rule it was built under."""
+def build_benchmark_plan(spec: Any) -> dict[str, Any]:
+    """The whole plan, expanded, with every rule it was built under.
+
+    `spec` is the loaded workbook manifest. It is REQUIRED rather than optional
+    so that a plan can never be emitted without the release identity a result
+    has to carry - the shape is the same every time it is built.
+    """
     scenarios = [_scenario(entry) for entry in SCENARIOS]
     runs: list[dict[str, Any]] = []
     for scenario in scenarios:
@@ -380,6 +438,10 @@ def build_benchmark_plan() -> dict[str, Any]:
         "baseline_id": BASELINE_ID,
         "purpose": ("the first delivery-oriented performance baseline. It records; "
                     "it does not judge."),
+        # THE THREE RELEASE VALUES, PROJECTED FROM THEIR OWN OWNERS. The Windows
+        # runner reads these; it parses no Python and asks no manifest for a
+        # property that manifest does not own.
+        "release_identity": build_release_identity(spec),
         "cost_line_share": COST_LINE_SHARE,
         "scenarios": scenarios,
         "operations": [
@@ -410,6 +472,13 @@ def build_benchmark_plan() -> dict[str, Any]:
 
 def _assert_plan_is_coherent(plan: dict[str, Any]) -> None:
     """The plan proves its own rules before anyone is asked to execute it."""
+    identity = plan["release_identity"]
+    for key in RELEASE_IDENTITY_AUTHORITIES:
+        if not str(identity.get(key, "")).strip():
+            raise ValueError(f"the plan carries no {key}")
+    if identity["authorities"] != RELEASE_IDENTITY_AUTHORITIES:
+        raise ValueError("the plan renamed a release-identity authority")
+
     forbidden = {(entry["scenario"], int(entry["iterations"]))
                  for entry in plan["forbidden"]}
     for run in plan["runs"]:
@@ -433,7 +502,7 @@ def _assert_plan_is_coherent(plan: dict[str, Any]) -> None:
                 raise ValueError(f"{key} carries an iteration count")
 
 
-def emit_benchmark_plan(path: Path) -> dict[str, Any]:
-    plan = build_benchmark_plan()
+def emit_benchmark_plan(path: Path, spec: Any) -> dict[str, Any]:
+    plan = build_benchmark_plan(spec)
     path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     return plan

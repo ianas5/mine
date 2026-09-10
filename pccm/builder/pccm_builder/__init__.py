@@ -68,7 +68,9 @@ from .methodology import emit_methodology_projection, plan_methodology
 # many times, and the policy a later run is compared under. It measures nothing.
 from .benchmark import (
     BENCHMARK_SCHEMA_VERSION,
+    RELEASE_IDENTITY_AUTHORITIES,
     build_benchmark_plan,
+    build_release_identity,
     emit_benchmark_plan,
 )
 from .phase8_dashboard import emit_phase8_dashboard
@@ -197,6 +199,8 @@ __all__ = [
     "emit_benchmark_plan",       # build_stage_a.py, P10-4A
     "build_benchmark_plan",
     "BENCHMARK_SCHEMA_VERSION",
+    "build_release_identity",
+    "RELEASE_IDENTITY_AUTHORITIES",
     "ModelCheckPlan",         # the one Model Check layout authority
     "emit_phase8_dashboard",  # build_stage_a.py, Phase 8 Dashboard projection
     "emit_phase8_results",    # build_stage_a.py, Phase 8 Results projection

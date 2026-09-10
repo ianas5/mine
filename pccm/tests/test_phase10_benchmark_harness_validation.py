@@ -850,5 +850,146 @@ def test_105_treating_the_bootstrap_time_as_a_measurement_is_rejected() -> None:
         "'time is the run\'s first performance figure.'))")
 
 
+# ===========================================================================
+# J. THE WINDOWS RUN 2 DEFECT - THE WRONG AUTHORITY
+# ===========================================================================
+def test_110_restoring_the_manifest_builder_version_read_is_rejected() -> None:
+    """THE EXACT STATEMENT THAT ABORTED WINDOWS RUN 2, put back.
+
+    `stage_b_manifest.json` is a projection of the MODEL side of the
+    specification and has never carried a builder version - it cannot, because
+    the two are independent authorities. Reading it is a terminating
+    PropertyNotFoundException under StrictMode 2.0.
+    """
+    _runner_mutation(
+        "test_23",
+        "    $record.Add('builder_version', [string](Get-BenchmarkRequiredProperty `\n"
+        "        -InputObject $ReleaseIdentity -Name 'builder_version' `\n"
+        "        -Where 'the benchmark plan release identity'))",
+        "    $record.Add('builder_version', [string]$Manifest.builder_version)")
+
+
+def test_111_restoring_the_manifest_build_phase_read_is_rejected() -> None:
+    """THE SAME DEFECT ON THE NEXT LINE. Windows Run 2 never reached it because
+    the builder version threw first; it would have thrown next."""
+    _runner_mutation(
+        "test_23",
+        "    $record.Add('build_phase', [string](Get-BenchmarkRequiredProperty `\n"
+        "        -InputObject $ReleaseIdentity -Name 'build_phase' `\n"
+        "        -Where 'the benchmark plan release identity'))",
+        "    $record.Add('build_phase', [string]$Manifest.build_phase)")
+
+
+def test_112_deriving_the_builder_version_from_the_model_version_is_rejected() -> None:
+    """THE COLLAPSE P10-3 FORBIDS. They read the same value for this release,
+    so a line that made one read the other would pass every value comparison in
+    the project - until the first builder-only change."""
+    def mutate(plan: dict) -> None:
+        plan["release_identity"]["builder_version"] = plan["release_identity"]["model_version"]
+        plan["release_identity"]["authorities"]["builder_version"] = (
+            "spec/workbook.yaml: model.model_version")
+
+    _plan_mutation("test_114", mutate)
+
+
+def test_113_a_second_builder_version_authority_in_the_manifest_is_rejected() -> None:
+    """ADDING IT TO workbook.yaml WOULD SATISFY POWERSHELL and destroy the
+    settlement: the builder would then have two answers and no rule for
+    choosing."""
+    original = conformance._MEMO.get("manifest_text")
+    damaged = (conformance.SPEC / "workbook.yaml").read_text(encoding="utf-8").replace(
+        '  model_version: "1.0.0"', '  model_version: "1.0.0"\n  builder_version: "1.0.0"', 1)
+    restore = _install({"manifest_text": damaged})
+    try:
+        # `test_114` reads the manifest through the module's own accessor, so the
+        # damaged copy is what it sees.
+        refused = _run_battery()
+    finally:
+        restore()
+        if original is not None:
+            conformance._MEMO["manifest_text"] = original
+    assert any(name.startswith("test_114") for name in refused), refused
+
+
+def test_114_hard_coding_the_builder_version_in_powershell_is_rejected() -> None:
+    """A SECOND LITERAL IS A SECOND AUTHORITY the day one of them moves."""
+    _runner_mutation(
+        "test_113",
+        "    $record.Add('builder_version', [string](Get-BenchmarkRequiredProperty `\n"
+        "        -InputObject $ReleaseIdentity -Name 'builder_version' `\n"
+        "        -Where 'the benchmark plan release identity'))",
+        "    $record.Add('builder_version', '1.0.0')")
+
+
+def test_115_silently_defaulting_a_missing_builder_version_is_rejected() -> None:
+    """REQUIRED RELEASE IDENTITY MAY NOT BE 'unavailable'. An optional
+    environment fact may; a value a later comparison depends on may not."""
+    _runner_mutation(
+        "test_116",
+        "    $record.Add('builder_version', [string](Get-BenchmarkRequiredProperty `\n"
+        "        -InputObject $ReleaseIdentity -Name 'builder_version' `\n"
+        "        -Where 'the benchmark plan release identity'))",
+        "    $record.Add('builder_version', (Format-BenchmarkFact "
+        "(Get-BenchmarkProperty -InputObject $ReleaseIdentity -Name 'builder_version')))")
+
+
+def test_116_dropping_the_preflight_release_check_is_rejected() -> None:
+    """W2 SPENT SIXTY-EIGHT SECONDS building a workbook it could not attribute.
+    The check belongs before the bootstrap, not in the middle of setup."""
+    _runner_mutation(
+        "test_115",
+        "if ($releaseProblems.Count -gt 0) {",
+        "if ($false) {")
+
+
+def test_117_moving_the_release_check_after_the_bootstrap_is_rejected() -> None:
+    _runner_mutation(
+        "test_115",
+        "    Write-Host 'REFUSED, BEFORE ANYTHING WAS BUILT OR MEASURED.' -ForegroundColor Red",
+        "    Write-Host 'refused' -ForegroundColor Red")
+
+
+def test_118_a_plan_with_no_release_identity_is_rejected() -> None:
+    def mutate(plan: dict) -> None:
+        plan.pop("release_identity")
+
+    _plan_mutation("test_112", mutate)
+
+
+def test_119_a_blank_release_value_is_rejected() -> None:
+    def mutate(plan: dict) -> None:
+        plan["release_identity"]["builder_version"] = ""
+
+    _plan_mutation("test_112", mutate)
+
+
+def test_120_renaming_an_authority_in_the_projection_is_rejected() -> None:
+    """THE ARTIFACT SAYS WHICH FILE ANSWERS FOR EACH VALUE, and that label is
+    what makes the independence auditable without this source."""
+    def mutate(plan: dict) -> None:
+        plan["release_identity"]["authorities"]["builder_version"] = "somewhere"
+
+    _plan_mutation("test_112", mutate)
+
+
+def test_121_the_runner_reading_python_source_is_rejected() -> None:
+    """THE RUNNER CONSUMES A GENERATED PROJECTION. Parsing `workbook_builder.py`
+    from PowerShell would make the harness a second reader of an authority it
+    has no business interpreting."""
+    _runner_mutation(
+        "test_112",
+        "$plan          = Get-Content -LiteralPath $planPath       -Raw | ConvertFrom-Json",
+        "$plan          = Get-Content -LiteralPath $planPath       -Raw | ConvertFrom-Json\n"
+        "$builderSource = Get-Content -LiteralPath (Join-Path $pccmRoot "
+        "'builder/pccm_builder/workbook_builder.py') -Raw")
+
+
+def test_122_dropping_the_projection_from_the_artifact_is_rejected() -> None:
+    _runner_mutation(
+        "test_117",
+        "$report.Add('release_identity', $releaseIdentity)",
+        "$report.Add('release_identity', 'see the plan')")
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

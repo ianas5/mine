@@ -72,9 +72,12 @@ import yaml  # noqa: E402
 
 from pccm_builder.benchmark import (  # noqa: E402
     BENCHMARK_SCHEMA_VERSION,
+    RELEASE_IDENTITY_AUTHORITIES,
     build_benchmark_plan,
     cost_line_count,
 )
+from pccm_builder.spec_loader import load_spec  # noqa: E402
+from pccm_builder.workbook_builder import BUILDER_VERSION  # noqa: E402
 
 RUNNER = BOOTSTRAP / "phase10_benchmark.ps1"
 TIMING = BOOTSTRAP / "phase7_timing_scenarios.ps1"
@@ -95,10 +98,22 @@ CONTRACT_DIMENSIONS = {"Small": (20, 10), "Medium": (100, 25), "Large": (300, 40
 _MEMO: dict = {}
 
 
+def _spec():
+    if "spec" not in _MEMO:
+        _MEMO["spec"] = load_spec(SPEC / "workbook.yaml")
+    return _MEMO["spec"]
+
+
 def _plan() -> dict:
     if "plan" not in _MEMO:
-        _MEMO["plan"] = build_benchmark_plan()
+        _MEMO["plan"] = build_benchmark_plan(_spec())
     return _MEMO["plan"]
+
+
+def _manifest_text() -> str:
+    if "manifest_text" not in _MEMO:
+        _MEMO["manifest_text"] = (SPEC / "workbook.yaml").read_text(encoding="utf-8")
+    return _MEMO["manifest_text"]
 
 
 def _runner() -> str:
@@ -405,7 +420,17 @@ def test_22_the_workbook_path_and_what_kind_of_place_it_is_are_captured() -> Non
 
 
 def test_23_the_commit_and_the_release_metadata_are_captured() -> None:
-    """REQUIRED CONTROL 11."""
+    """REQUIRED CONTROL 11.
+
+    THIS CONTROL WAS PART OF THE W2 DEFECT. It used to assert
+    `"$Manifest.builder_version" in code` - it quoted the implementation's own
+    expression back at itself, so it could only ever prove the runner was
+    self-consistent. Nothing checked that expression against the SHAPE OF THE
+    ARTIFACT it reads, and the manifest has never carried a builder version.
+
+    What it asserts now is the authority path, and `test_110` checks every
+    property the runner dereferences against the real emitted JSON.
+    """
     fields = _plan()["environment_fields"]
     for field in ("git_branch", "git_commit", "git_worktree_clean",
                   "model_version", "builder_version", "build_phase",
@@ -413,9 +438,10 @@ def test_23_the_commit_and_the_release_metadata_are_captured() -> None:
         assert field in fields, field
     code = _code()
     assert "rev-parse --abbrev-ref HEAD" in code
-    assert "$Manifest.model_version" in code
-    assert "$Manifest.builder_version" in code
-    assert "$Manifest.build_phase" in code
+    assert "$Manifest.builder_version" not in code, "the W2 defect is back"
+    assert "$Manifest.build_phase" not in code, "the W2 defect's twin is back"
+    for field in ("model_version", "builder_version", "build_phase"):
+        assert (f"-InputObject $ReleaseIdentity -Name '{field}'") in code, field
 
 
 def test_24_every_declared_environment_field_is_actually_populated() -> None:
@@ -875,7 +901,8 @@ def test_81_the_runner_reads_the_plan_and_declares_no_matrix() -> None:
 
 def test_82_the_build_emits_it_beside_the_other_projections() -> None:
     driver = (BUILDER / "build_stage_a.py").read_text(encoding="utf-8")
-    assert "emit_benchmark_plan(out_path.parent / \"phase10_benchmark_plan.json\")" in driver
+    assert ('emit_benchmark_plan(out_path.parent / "phase10_benchmark_plan.json", spec)'
+            in driver), "the plan is emitted without the spec that carries the release"
     assert "It measures nothing" in driver
 
 
@@ -1124,6 +1151,228 @@ def test_101_the_excel_bitness_is_excels_and_not_the_hosts() -> None:
     assert "derived from the Excel image path" in code
     assert "excel_executable_path" in _plan()["environment_fields"]
     assert "$record.Add('excel_executable_path', $excelPath)" in code
+
+
+# ===========================================================================
+# K. WINDOWS RUN 2 - THE AUTHORITY THAT WAS NEVER THERE
+# ===========================================================================
+# WHAT HAPPENED. The runner asked `stage_b_manifest.json` for `builder_version`.
+# That manifest is a projection of the MODEL side of the specification and has
+# never carried a builder version - it cannot, because P10-3 settled that the
+# model version and the builder version are INDEPENDENT authorities and the
+# manifest answers for only one of them. Under StrictMode 2.0 reading a property
+# that is not there is a terminating PropertyNotFoundException.
+#
+# THE FIX IS A PROJECTION, NOT A PATCH:
+#
+#     BUILDER_VERSION (workbook_builder.py)
+#       -> imported by builder/pccm_builder/benchmark.py
+#       -> release_identity in build/phase10_benchmark_plan.json
+#       -> the PowerShell runner
+#       -> environment.builder_version
+#
+# and the two values that come from the manifest's own side travel the same way,
+# each labelled with the file that answers for it.
+
+_MANIFEST_FILE = BUILD / "stage_b_manifest.json"
+
+
+def test_110_every_property_the_runner_reads_exists_on_the_artifact() -> None:
+    """THE CONTROL THAT WOULD HAVE CAUGHT W2, AND CATCHES THE WHOLE CLASS.
+
+    Text controls can prove what a script says. This one takes every property
+    the runner dereferences on a loaded JSON artifact and looks it up in the
+    ARTIFACT THAT STAGE A ACTUALLY EMITS - so a property that does not exist
+    fails here rather than sixty-eight seconds into a Windows run.
+    """
+    documents = {
+        "$plan": PLAN_FILE,
+        "$manifest": _MANIFEST_FILE,
+        "$simInspection": BUILD / "phase6_gate_b_inspection.json",
+        "$inspection": BUILD / "phase5_gate_b_inspection.json",
+    }
+    missing: list[str] = []
+    for variable, path in documents.items():
+        if not path.is_file():
+            pytest.skip(f"{path.name} has not been built")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        for expression in sorted(set(re.findall(
+                rf"{re.escape(variable)}((?:\.[A-Za-z_][A-Za-z0-9_]*)+)", _code()))):
+            node = document
+            for part in expression.lstrip(".").split("."):
+                if isinstance(node, dict) and part in node:
+                    node = node[part]
+                    continue
+                missing.append(f"{variable}{expression}")
+                break
+    assert missing == [], (
+        "the runner reads properties that the emitted artifacts do not carry, which "
+        f"is a terminating error under StrictMode: {missing}")
+
+    # AND THE SCAN IS NOT VACUOUS. The first draft of this control carried a
+    # regex that matched nothing at all and passed on every file it was given -
+    # which is the same failure as the one it was written to catch, one level
+    # up. So it proves it found real reads, and proves it would have found the
+    # W2 defect.
+    reads = re.findall(r"\$plan((?:\.[A-Za-z_][A-Za-z0-9_]*)+)", _code())
+    assert len(reads) >= 20, f"the property scan found almost nothing: {reads}"
+    for expected in (".schema_version", ".release_identity", ".timing.cold_runs",
+                     ".regression_policy.rules"):
+        assert expected in reads, expected
+    manifest = json.loads(_MANIFEST_FILE.read_text(encoding="utf-8"))
+    assert "builder_version" not in manifest, (
+        "the scan would no longer catch the W2 defect, because the manifest now "
+        "carries the property that was missing")
+
+
+def test_111_the_manifest_is_not_asked_for_a_builder_version() -> None:
+    """REQUIRED CONTROL 1 OF THIS ROUND, and it is checked against the emitted
+    artifact rather than against a memory of what it contains."""
+    if not _MANIFEST_FILE.is_file():
+        pytest.skip("the Stage-B manifest has not been built")
+    manifest = json.loads(_MANIFEST_FILE.read_text(encoding="utf-8"))
+    assert "builder_version" not in manifest, (
+        "the Stage-B manifest grew a builder version; the model side of the "
+        "specification does not answer for the build tooling")
+    assert "build_phase" not in manifest
+    assert manifest["model_version"] == _spec().model["model_version"]
+    assert "$Manifest.builder_version" not in _code()
+    assert "$Manifest.build_phase" not in _code()
+
+
+def test_112_the_builder_version_reaches_powershell_by_projection() -> None:
+    """REQUIRED CONTROLS 2 AND 3. The runner consumes a generated artifact; it
+    parses no Python and reads no source text."""
+    identity = _plan()["release_identity"]
+    assert identity["builder_version"] == BUILDER_VERSION
+    assert identity["authorities"]["builder_version"] == (
+        "builder/pccm_builder/workbook_builder.py: BUILDER_VERSION")
+
+    benchmark = (BUILDER / "pccm_builder" / "benchmark.py").read_text(encoding="utf-8")
+    assert "from .workbook_builder import BUILDER_VERSION" in benchmark, (
+        "the plan no longer imports the builder version from its owner")
+    assert '"builder_version": str(BUILDER_VERSION)' in benchmark
+
+    code = _code()
+    assert "workbook_builder.py" not in code, "the runner is reading Python source"
+    assert "Select-String" not in code and "Get-Content" in code
+    assert "$plan.release_identity" in code
+
+
+def test_113_no_version_literal_is_restated_anywhere_downstream() -> None:
+    """REQUIRED CONTROL 4. A second literal is a second authority the day one of
+    them moves."""
+    code = _code()
+    for literal in ("1.0.0", "'1.0'", '"1.0"'):
+        assert literal not in code, f"the runner restates a version: {literal}"
+    benchmark = (BUILDER / "pccm_builder" / "benchmark.py").read_text(encoding="utf-8")
+    assert 'BUILDER_VERSION = ' not in benchmark, (
+        "the benchmark plan declares a builder version of its own")
+    # THE HARNESS HAS A VERSION OF ITS OWN, and that is a fourth independent
+    # thing rather than a restatement: it says which runner produced a result.
+    # Every OTHER dotted literal in the module would be a copy of somebody
+    # else's authority, so there are none.
+    literals = [line.strip() for line in benchmark.splitlines()
+                if re.search(r'=\s*"\d+\.\d+\.\d+"', line)]
+    assert literals == ['HARNESS_VERSION = "1.0.0"'], literals
+    assert '"builder_version": str(BUILDER_VERSION)' in benchmark
+
+
+def test_114_the_three_release_values_stay_independent() -> None:
+    """REQUIRED CONTROLS 5 AND 6. They all read 1.0.0 for this release, which is
+    a coincidence of this release. Nothing derives one from another."""
+    identity = _plan()["release_identity"]
+    assert identity["model_version"] == _spec().model["model_version"]
+    assert identity["builder_version"] == BUILDER_VERSION
+    assert identity["build_phase"] == _spec().model["build_phase"]
+    assert identity["authorities"] == RELEASE_IDENTITY_AUTHORITIES
+    assert len(set(identity["authorities"].values())) == 3, identity["authorities"]
+
+    benchmark = (BUILDER / "pccm_builder" / "benchmark.py").read_text(encoding="utf-8")
+    for derived in ('"builder_version": str(spec', '"builder_version": values["model_version"]',
+                    'builder_version = model_version'):
+        assert derived not in benchmark, f"the builder version is derived: {derived}"
+
+    # AND THE MANIFEST IS NOT GIVEN A SECOND BUILDER-VERSION AUTHORITY.
+    declarations = [line for line in _manifest_text().splitlines()
+                    if ("builder_version" in line or "BUILDER_VERSION" in line)
+                    and not line.lstrip().startswith("#")]
+    assert declarations == [], declarations
+
+
+def test_115_a_plan_without_a_release_identity_is_refused_before_timing() -> None:
+    """REQUIRED CONTROL 7, and the refusal happens BEFORE the bootstrap - W2
+    spent sixty-eight seconds building a workbook it could not attribute."""
+    code = _code()
+    assert "$releaseIdentity = $null" in code
+    assert "if ($null -eq $releaseIdentity) {" in code
+    # THE GUARD, NOT ONLY ITS MESSAGE. A refusal sentence inside a branch that
+    # can never be entered is a comment with a Write-Host in front of it.
+    assert "if ($releaseProblems.Count -gt 0) {" in code
+    assert "$releaseProblems += ('  ' + $field + ' is missing from the plan projection" in code
+    assert "REFUSED, BEFORE ANYTHING WAS BUILT OR MEASURED." in code
+    assert "is missing from the plan projection; its " in code
+    assert "authority is " in code
+    # THE CHECK IS AHEAD OF THE BOOTSTRAP IN THE FILE, so it cannot be reached
+    # after the expensive part has already run.
+    assert code.index("REFUSED, BEFORE ANYTHING WAS BUILT OR MEASURED.") <         code.index("$bootstrapWatch = [System.Diagnostics.Stopwatch]::StartNew()")
+
+
+def test_116_a_missing_release_value_is_never_substituted() -> None:
+    """REQUIRED CONTROL 7's other half. An optional environment fact may be
+    'unavailable'; a release identity may not - not an empty string, not
+    'unknown', not a default."""
+    code = _code()
+    for field in ("model_version", "builder_version", "build_phase"):
+        assert ("Get-BenchmarkRequiredProperty `\n        -InputObject $ReleaseIdentity "
+                f"-Name '{field}'") in code, field
+    # NONE OF THE THREE GOES THROUGH THE OPTIONAL PATH.
+    optional = code.split("$record.Add('model_version'")[1]
+    optional = optional[:optional.index("$record.Add('harness_version'")]
+    assert "Format-BenchmarkFact" not in optional, (
+        "a release value can be recorded as unavailable")
+    assert "Get-BenchmarkUnavailable" not in optional
+    # AND THE BUILDER'S OWN PROJECTION REFUSES A BLANK BEFORE IT IS EMITTED.
+    benchmark = (BUILDER / "pccm_builder" / "benchmark.py").read_text(encoding="utf-8")
+    assert "a benchmark result may not carry an unidentified release" in benchmark
+
+
+def test_117_the_environment_still_records_the_three_separately() -> None:
+    """REQUIRED CONTROL 9. One projection, three values, three owners - never
+    one value repeated three times."""
+    for field in ("model_version", "builder_version", "build_phase"):
+        assert field in _plan()["environment_fields"], field
+    code = _code()
+    assert code.count("$record.Add('model_version'") == 1
+    assert code.count("$record.Add('builder_version'") == 1
+    assert code.count("$record.Add('build_phase'") == 1
+    assert "$report.Add('release_identity', $releaseIdentity)" in code, (
+        "the artifact does not carry the projection it was built from")
+
+
+def test_118_no_production_source_changed_since_the_w1_correction() -> None:
+    """REQUIRED CONTROL 11 OF THIS ROUND. This is a harness batch."""
+    changed = [line for line in _git("diff", "--name-only", "6e87fda", "--",
+                                     "pccm/src", "pccm/spec").splitlines() if line.strip()]
+    assert changed == [], f"production source changed: {changed}"
+
+
+def test_119_the_matrix_and_the_endpoints_did_not_move() -> None:
+    """REQUIRED CONTROL 10. A metadata correction may not change what is
+    measured, at what sizes, or how many times."""
+    accepted = json.loads(_git("show", "6e87fda:pccm/build/phase10_benchmark_plan.json")
+                          ) if False else None
+    plan = _plan()
+    assert [(entry["id"], entry["drivers"], entry["years"], tuple(entry["iterations"]))
+            for entry in plan["scenarios"]] == [
+        ("PERF-SMALL", 20, 10, (10_000, 50_000, 100_000)),
+        ("PERF-MEDIUM", 100, 25, (10_000, 50_000, 100_000)),
+        ("PERF-LARGE", 300, 40, (10_000, 50_000))]
+    assert len(plan["runs"]) == 30
+    assert plan["timing"]["cold_runs"] == 1 and plan["timing"]["warm_runs"] == 3
+    assert [entry["endpoint"] for entry in plan["operations"] if entry["kind"] == "command"] == [
+        "PCCM_Calculate", "PCCM_RunSimulation", "PCCM_RunSensitivity",
+        "PCCM_RunAnnualStochastic"]
 
 
 if __name__ == "__main__":

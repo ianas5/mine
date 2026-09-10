@@ -646,7 +646,7 @@ function Get-BenchmarkExcelImage {
 
 function Get-BenchmarkEnvironment {
     param($Excel, $Identity, [string]$WorkbookPath, [string]$RepositoryPath,
-          $Manifest, [string]$HarnessVersion, [int]$SchemaVersion, $Revision)
+          $ReleaseIdentity, [string]$HarnessVersion, [int]$SchemaVersion, $Revision)
     $unknown = Get-BenchmarkUnavailable
     $roots = @(Get-BenchmarkOneDriveRoots)
 
@@ -720,9 +720,33 @@ function Get-BenchmarkEnvironment {
     $record.Add('git_branch', $branch)
     $record.Add('git_commit', [string]$Revision.Head)
     $record.Add('git_worktree_clean', ([bool](@($Revision.Dirty).Count -eq 0)))
-    $record.Add('model_version', [string]$Manifest.model_version)
-    $record.Add('builder_version', [string]$Manifest.builder_version)
-    $record.Add('build_phase', [string]$Manifest.build_phase)
+    # W2 ROOT CAUSE, CORRECTED AT THE AUTHORITY RATHER THAN AT THE LINE.
+    #
+    # These three used to be read off `stage_b_manifest.json`, which carries
+    # `model_version` and has NEVER carried the other two. It cannot: P10-3
+    # settled that the model version and the builder version are INDEPENDENT
+    # authorities, and that manifest is a projection of the MODEL side alone.
+    # `$Manifest.builder_version` was therefore a property that never existed,
+    # and under StrictMode 2.0 reading it is a terminating
+    # PropertyNotFoundException - which is exactly where Windows Run 2 died.
+    #
+    # All three now come from `release_identity` in the generated benchmark
+    # plan, where each is projected from its OWN owner and carries the name of
+    # that owner beside it. The runner parses no Python and infers nothing.
+    #
+    # AND THEY ARE REQUIRED. A release identity is not an optional environment
+    # fact: a timing nobody can attribute to a release cannot be compared with
+    # anything later, so an absent value throws with the authority named instead
+    # of being recorded as 'unavailable'.
+    $record.Add('model_version', [string](Get-BenchmarkRequiredProperty `
+        -InputObject $ReleaseIdentity -Name 'model_version' `
+        -Where 'the benchmark plan release identity'))
+    $record.Add('builder_version', [string](Get-BenchmarkRequiredProperty `
+        -InputObject $ReleaseIdentity -Name 'builder_version' `
+        -Where 'the benchmark plan release identity'))
+    $record.Add('build_phase', [string](Get-BenchmarkRequiredProperty `
+        -InputObject $ReleaseIdentity -Name 'build_phase' `
+        -Where 'the benchmark plan release identity'))
     $record.Add('harness_version', $HarnessVersion)
     $record.Add('schema_version', $SchemaVersion)
     return $record
@@ -1050,6 +1074,46 @@ if ([int]$plan.schema_version -ne $script:BenchmarkSupportedSchema) {
     exit 1
 }
 
+# THE RELEASE IDENTITY, CHECKED BEFORE ANYTHING IS SPENT.
+#
+# W2 DIED SIXTY-EIGHT SECONDS INTO A RUN because a release value was missing and
+# nothing had looked for it until the environment capture. It is checked here,
+# before the bootstrap and before Excel is started, and a plan that cannot
+# identify the release it measures is REFUSED rather than measured.
+#
+# NO SUBSTITUTE IS ACCEPTED. Not an empty string, not 'unknown', not a default
+# 1.0.0: a timing nobody can attribute to a release is not evidence, and the
+# refusal names the authority the projection was supposed to come from.
+$releaseIdentity = $null
+foreach ($candidate in @($plan.release_identity)) { $releaseIdentity = $candidate }
+if ($null -eq $releaseIdentity) {
+    Write-Host ('the benchmark plan carries no release_identity block. Rebuild it: ' +
+                'python3 pccm/builder/build_stage_a.py') -ForegroundColor Red
+    exit 1
+}
+$releaseProblems = @()
+foreach ($field in @('model_version', 'builder_version', 'build_phase')) {
+    $value = [string](Get-BenchmarkProperty -InputObject $releaseIdentity -Name $field)
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $authority = [string](Get-BenchmarkProperty `
+            -InputObject (Get-BenchmarkProperty -InputObject $releaseIdentity -Name 'authorities') `
+            -Name $field)
+        if ([string]::IsNullOrWhiteSpace($authority)) { $authority = 'its declared owner' }
+        $releaseProblems += ('  ' + $field + ' is missing from the plan projection; its ' +
+                             'authority is ' + $authority)
+    }
+}
+if ($releaseProblems.Count -gt 0) {
+    Write-Host 'REFUSED, BEFORE ANYTHING WAS BUILT OR MEASURED.' -ForegroundColor Red
+    Write-Host ''
+    Write-Host ('The benchmark plan does not identify the release it would measure, and a ' +
+                'timing nobody can attribute to a release is not evidence:') -ForegroundColor Red
+    foreach ($line in $releaseProblems) { Write-Host $line -ForegroundColor Red }
+    Write-Host ''
+    Write-Host 'Rebuild the plan: python3 pccm/builder/build_stage_a.py' -ForegroundColor Red
+    exit 1
+}
+
 # THE SCENARIO IS THE PLAN'S, NOT THIS FILE'S. Sizes, split, years and iteration
 # counts are read; none of them is declared here.
 $scenarioSpec = $null
@@ -1169,6 +1233,14 @@ Write-BenchmarkLine ''
 Write-BenchmarkLine ('baseline id            : ' + [string]$plan.baseline_id)
 Write-BenchmarkLine ('plan schema            : ' + [string]$plan.schema_version)
 Write-BenchmarkLine ('harness version        : ' + [string]$plan.harness_version)
+Write-BenchmarkLine 'release identity, each value from its own authority:'
+foreach ($field in @('model_version', 'builder_version', 'build_phase')) {
+    Write-BenchmarkLine ('  ' + $field.PadRight(20) + ' : ' +
+                         [string](Get-BenchmarkProperty -InputObject $releaseIdentity -Name $field) +
+                         '   [' + [string](Get-BenchmarkProperty `
+                             -InputObject (Get-BenchmarkProperty -InputObject $releaseIdentity `
+                                 -Name 'authorities') -Name $field) + ']')
+}
 Write-BenchmarkLine ('scenario               : ' + $Scenario + ' - ' + [string]$scenarioSpec.title)
 Write-BenchmarkLine ('  drivers              : ' + [string]$scenarioSpec.drivers +
                      ' (' + [string]$scenarioSpec.cost_lines + ' Cost Lines + ' +
@@ -1263,7 +1335,7 @@ try {
 
     Set-BenchmarkStage -Stage 'setup' -Action 'capturing the environment inventory'
     $environment = Get-BenchmarkEnvironment -Excel $excel -Identity $excelIdentity `
-        -WorkbookPath $stageBPath -RepositoryPath $repoRoot -Manifest $manifest `
+        -WorkbookPath $stageBPath -RepositoryPath $repoRoot -ReleaseIdentity $releaseIdentity `
         -HarnessVersion ([string]$plan.harness_version) `
         -SchemaVersion ([int]$plan.schema_version) -Revision $revision
 
@@ -1503,7 +1575,7 @@ $shutdownRecord.Add('workbook_saved', $false)
 
 if ($null -eq $environment) {
     $environment = Get-BenchmarkEnvironment -Excel $null -Identity $excelIdentity `
-        -WorkbookPath $stageBPath -RepositoryPath $repoRoot -Manifest $manifest `
+        -WorkbookPath $stageBPath -RepositoryPath $repoRoot -ReleaseIdentity $releaseIdentity `
         -HarnessVersion ([string]$plan.harness_version) `
         -SchemaVersion ([int]$plan.schema_version) -Revision $revision
 }
@@ -1563,6 +1635,7 @@ $report.Add('runs_with_a_valid_warm_median', @($completed).Count)
 $report.Add('judgement', ('NONE. This artifact records measurements. No absolute pass ' +
                           'or fail is contracted before a baseline exists.'))
 $report.Add('generated_at_utc', ((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')))
+$report.Add('release_identity', $releaseIdentity)
 $report.Add('environment', $environment)
 $report.Add('scenario', $scenarioSpec)
 $report.Add('scenario_actual', $actual)
