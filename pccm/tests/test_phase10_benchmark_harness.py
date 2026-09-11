@@ -84,6 +84,7 @@ TIMING = BOOTSTRAP / "phase7_timing_scenarios.ps1"
 LIFECYCLE = BOOTSTRAP / "com_lifecycle.ps1"
 PLAN_FILE = BUILD / "phase10_benchmark_plan.json"
 RECORD = DOCS / "phase10_step1_contract.md"
+RUN_EVIDENCE = DOCS / "phase10_windows_run_evidence.md"
 
 # The accepted tree this batch is measured against. Step 3 closed at e3f83e2;
 # a benchmark harness may not change one line of what it benchmarks.
@@ -796,21 +797,57 @@ def test_56b_the_declaration_and_the_freeze_do_not_overlap() -> None:
     assert not unaccounted, sorted(unaccounted)
 
 
+# THE TWO PRIMITIVES THAT DELIBERATELY ARE NOT VERBATIM ANY MORE, and the
+# sentence in the runner that has to justify each one.
+#
+# DECLARED, NOT EXCUSED. Before the protected workbook existed, "all ten copies
+# are verbatim" was true and the control said so. It is no longer true, and the
+# honest repair is to NAME the two departures and keep the other eight held to
+# the letter - not to loosen the comparison until everything passes. A primitive
+# that drifts without appearing here still fails, which is the property the
+# original control had and this one keeps.
+DECLARED_PRIMITIVE_DEPARTURES = {
+    # Grew the table through `ListRows.Add`, refused on a protected sheet.
+    # Searches the contract's reserved blank rows instead.
+    "Add-BlankTableRow": "A BLANK ROW IS FOUND, NOT MADE.",
+    # Deleted a ListRow through COM - the exact call Benchmark Run 3 died on.
+    # Now refuses; the fixture resets by content instead.
+    "Remove-TableRow": "`Remove-TableRow` REFUSES. IT NO LONGER DELETES.",
+}
+
+
 def test_57_the_copied_primitives_are_verbatim() -> None:
     """AND THE COPY IS PROVED TO BE ONE. A drifted copy would be a second, worse
     implementation of the same COM access, and the drift would show up as a
-    benchmark that behaved differently from every accepted scenario."""
+    benchmark that behaved differently from every accepted scenario.
+
+    TWO OF THE TEN NO LONGER ARE, BY DECLARATION. Both performed a ListObject
+    structural mutation, which worksheet protection refuses to a COM caller, and
+    both are listed above with the sentence in the runner that justifies them.
+    Everything else is still held byte for byte."""
     accepted = TIMING.read_text(encoding="utf-8")
     runner = _runner()
     start = accepted.index("function Write-RowObject")
-    end = accepted.index("# Phase-7 sensitivity block") if False else accepted.index(
-        "$script:Phase7SensitivityGeometry")
+    end = accepted.index("$script:Phase7SensitivityGeometry")
     block = accepted[start:end]
     functions = re.findall(r"^function ([\w-]+) \{", block, re.M)
     assert len(functions) == 10, functions
+    # THE DECLARED LIST IS NOT ALLOWED TO NAME SOMETHING THAT WAS NEVER COPIED,
+    # which is how a declaration turns into a place to hide an unrelated edit.
+    assert set(DECLARED_PRIMITIVE_DEPARTURES) <= set(functions), (
+        DECLARED_PRIMITIVE_DEPARTURES, functions)
     for name in functions:
         body = re.search(rf"^function {re.escape(name)} \{{.*?^}}", block, re.S | re.M)
         assert body, name
+        if name in DECLARED_PRIMITIVE_DEPARTURES:
+            # IT REALLY DID DEPART - a declaration for a primitive that is still
+            # verbatim is a stale exemption, and stale exemptions are how the
+            # next drift gets through.
+            assert body.group(0) not in runner, (
+                f"{name} is declared as departed but is still the accepted copy")
+            assert DECLARED_PRIMITIVE_DEPARTURES[name] in runner, (
+                f"{name} departed without the sentence that justifies it")
+            continue
         assert body.group(0) in runner, f"{name} drifted from the accepted copy"
 
 
@@ -1476,6 +1513,359 @@ def test_119_the_matrix_and_the_endpoints_did_not_move() -> None:
     assert [entry["endpoint"] for entry in plan["operations"] if entry["kind"] == "command"] == [
         "PCCM_Calculate", "PCCM_RunSimulation", "PCCM_RunSensitivity",
         "PCCM_RunAnnualStochastic"]
+
+
+# ===========================================================================
+# K. THE FIXTURE ON A PROTECTED WORKBOOK
+# ===========================================================================
+# Benchmark Run 3 aborted on a COM `ListRow.Delete` against `tblFXRates`:
+# "Table features aren't available because the sheet is protected." Protection
+# is a Phase-10 addition and every harness here predates it. The runtime
+# reconciliation proved the split - code VALUE writes are permitted under
+# UserInterfaceOnly, ListObject STRUCTURAL mutation is refused - and production
+# reaches the second only through modProtection's window, which a PowerShell COM
+# caller never enters.
+#
+# These controls hold the correction to what it claims: reset by CONTENT, no
+# structural mutation, nothing weakened, nothing about protection reopened.
+GATE_B = BOOTSTRAP / "phase5_gate_b_scenarios.ps1"
+
+
+def _function(source: str, name: str) -> str:
+    """One PowerShell function, from its header to the line that closes it.
+
+    Column-zero `}` ends it, which is this tree's layout for every runner.
+    """
+    lines = source.splitlines()
+    start = next(i for i, line in enumerate(lines)
+                 if line.startswith(f"function {name} "))
+    end = next(j for j in range(start + 1, len(lines)) if lines[j] == "}")
+    return "\n".join(lines[start:end + 1])
+
+
+def _fx_reset() -> str:
+    return _function(_code(), "Reset-Phase5FxTable")
+
+
+def test_130_the_fixture_performs_no_listobject_structural_mutation() -> None:
+    """THE CALL FORMS, NOT THE WORDS. The runner NAMES `$victim.Delete()` in the
+    paragraph explaining why it no longer carries one, and naming it is the
+    opposite of performing it - so the ban is read off `_code`, which is the
+    runner with its comments removed.
+
+    Every one of these is refused to a COM caller on a protected sheet, and the
+    only legitimate way to reach one is a production endpoint."""
+    code = _code()
+    for banned in (".Delete()", ".ListRows.Add", ".ListColumns.Add",
+                   ".ListColumns.Delete", ".EntireRow.Delete", ".Resize("):
+        assert banned not in code, f"the benchmark performs a structural mutation: {banned}"
+    # THE PRIMITIVE STILL EXISTS AND HAS NO CAPABILITY LEFT. Deleting the
+    # definition outright was the first attempt and it was wrong: two functions
+    # in the dot-sourced Gate-B file name `Remove-TableRow`, and a name a
+    # reachable file can call must resolve - that is the exact shape that killed
+    # Phase-9 Windows run 1. So the name resolves and the body refuses.
+    remover = _function(_code(), "Remove-TableRow")
+    assert "throw (" in remover, "the row-delete primitive no longer refuses"
+    assert "$RowIndex" in remover and "+ $TableName +" in remover, (
+        "the refusal does not say what was attempted")
+    assert "production endpoint may perform one" in remover
+    # IT CANNOT BE MISTAKEN FOR A WORKING HELPER: no COM object is even fetched.
+    for reached in ("$Workbook.Worksheets", "ListObjects", "ListRows"):
+        assert reached not in remover, f"the refusal still touches COM: {reached}"
+    # THE QUOTED CALL SURVIVES ONLY AS PROSE, so the record of what failed is
+    # not lost to the fix.
+    assert "$victim.Delete()" in _runner()
+
+
+def test_131_the_fx_reset_clears_every_row_below_the_seed_and_proves_it() -> None:
+    """STALE VALUES CANNOT SURVIVE. The accepted reset deleted every row below
+    the seed; this one blanks every row below the seed. Anything short of EVERY
+    row leaves a previous scenario's rate in a table production resolves by
+    content, and the measurement is then of a model nobody wrote.
+
+    The read-back is what makes it a proof rather than an intention, and it
+    requires $null: ClearContents leaves Value2 $null, while an empty string is
+    not a genuine blank and production would read that row as populated."""
+    reset = _fx_reset()
+    # THE WRITE LOOP REACHES THE LAST PHYSICAL ROW, not a fixed number of them.
+    assert "for ($row = $seedRows + 1; $row -le $rows; $row++) {" in reset, (
+        "the reset no longer blanks every row below the seed")
+    # TWICE, AND COUNTED. The write loop and the read-back loop each walk every
+    # column, and an `in` check would be satisfied by either one of them alone -
+    # so a reset that blanked only the Currency column and still checked both
+    # would pass. A row with no currency and a surviving rate is not blank.
+    assert reset.count(
+        "for ($column = 1; $column -le $columns.Count; $column++) {") == 2, (
+        "the reset no longer blanks, or no longer proves it blanked, every column")
+    assert "-Value $null" in reset, "the reset no longer clears"
+    # AND `Set-TableCell` WITH $null REALLY IS ClearContents, so the control is
+    # not resting on the parameter name.
+    setter = _function(_code(), "Set-TableCell")
+    assert "if ($null -eq $Value) {" in setter
+    assert "$cell.ClearContents()" in setter
+
+    # THE READ-BACK LOOP HAS THE SAME REACH AS THE WRITE LOOP, over the body it
+    # actually read, and refuses on anything that is not $null.
+    assert "for ($row = $seedRows + 1; $row -le $body.Count; $row++) {" in reset, (
+        "the reset no longer proves the blanking took")
+    assert "if ($null -ne $body[$row - 1][$column - 1]) {" in reset, (
+        "the blank check accepts something that is not a genuine blank")
+    assert "the FX reset did not clear row " in reset
+    # AND IT NAMES THE CANDIDATE CAUSE rather than inviting a retry.
+    assert "must be reported, not retried" in _runner()
+
+
+def test_132_the_seed_restoration_is_the_accepted_one_unchanged() -> None:
+    """ONE HALF OF THE RESET CHANGED, AND ONLY ONE. The seed restoration is a
+    settled control over a defective build - the captured value is written back
+    AS ITSELF so a text seed stays text and is exposed by production rather than
+    repaired here - and a correction to the blanking has no business touching
+    it. Both statements and the strict comparison are required verbatim against
+    the accepted harness, so a drift in either is a failure here."""
+    accepted = _function(GATE_B.read_text(encoding="utf-8"), "Reset-Phase5FxTable")
+    reset = _fx_reset()
+    for fragment in (
+            "Set-Phase5TypedCell -Workbook $Workbook -SheetName $fx.sheet "
+            "-TableName $fx.table_name `\n        -RowIndex 1 -ColumnIndex 1 "
+            "-Value $Seed.Currency",
+            "Set-Phase5TypedCell -Workbook $Workbook -SheetName $fx.sheet "
+            "-TableName $fx.table_name `\n        -RowIndex 1 -ColumnIndex 2 "
+            "-Value $Seed.Rate",
+            "if ((-not (Test-Phase5ExactValue -Actual $body[0][0] -Expected "
+            "$Seed.Currency)) -or `",
+            "(-not (Test-Phase5ExactValue -Actual $body[0][1] -Expected $Seed.Rate)))"):
+        assert fragment in accepted, f"the anchor moved in the accepted harness: {fragment[:50]}"
+        assert fragment in reset, f"the seed restoration was altered: {fragment[:50]}"
+
+
+def test_133_the_reset_never_touches_a_header_or_the_schema() -> None:
+    """BLANKING A BODY IS NOT REWRITING A TABLE. The fixture's job is the values
+    below the seed; a reset that reached the header row, the column collection or
+    the table's name would be changing the contract's shape under a measurement,
+    and the resulting numbers would describe a workbook the specification never
+    declared.
+
+    `Set-TableCell` indexes DataBodyRange, so the header is out of its reach by
+    construction - what is banned is new code that reaches past it."""
+    reset = _fx_reset()
+    for banned in ("HeaderRowRange", "ListColumns", ".Name =", "ListObjects.Add",
+                   "TableStyle", ".Unlist(", "Validation"):
+        assert banned not in reset, f"the FX reset reaches the schema: {banned}"
+    # THE BLANKING STARTS BELOW THE SEED. Starting at row 1 would blank the
+    # reporting-currency identity between the capture and its restoration.
+    assert "$row = $seedRows + 1" in reset
+    assert "$row = 1;" not in reset
+    # AND THE SINGLE-SEED ASSUMPTION THE ROW-1 ARITHMETIC RESTS ON IS REFUSED
+    # RATHER THAN ASSUMED, so a contract change cannot drift past it silently.
+    assert "if ($seedRows -ne 1) {" in reset
+    # THE CELL WRITER IS THE ACCEPTED ONE, which cannot address a header.
+    body_reader = _function(_code(), "Set-TableCell")
+    assert "$body = $lo.DataBodyRange" in body_reader
+
+
+def test_134_a_blank_row_is_found_and_a_missing_one_is_refused_by_name() -> None:
+    """THE RESERVED ROWS ARE WHY THIS WORKS. `tblFXRates` is built `data_rows: 12`
+    with one seeded row and `tblInflationProfiles` `data_rows: 10` with none, so
+    the fixture writes into rows the workbook already has.
+
+    AND WHEN IT CANNOT, IT SAYS SO. A table with no blank row left genuinely
+    needs a structural add; the add is genuinely refused; and the caller is told
+    which table and what its capacity was, instead of meeting a bare 1004 from
+    inside Excel. Nothing is relaxed - a fixture that cannot be built is a
+    fixture that is not measured."""
+    adder = _function(_code(), "Add-BlankTableRow")
+    assert "$rows.Add()" not in adder, "the adder grows the table again"
+    assert "Get-TableBody" in adder, "the adder no longer searches what is there"
+    assert "return [int]$row" in adder
+    # TWO REFUSALS, BOTH NAMING THE TABLE AND BOTH SAYING WHY.
+    assert adder.count("throw (") == 2, adder
+    assert adder.count("+ $TableName +") == 2
+    assert adder.count("ListObject structural operation") == 2
+    assert "only a production endpoint may perform one" in adder
+    # THE CONTRACT REALLY DOES RESERVE THE ROWS THIS RESTS ON.
+    contract = (SPEC / "input_contract.yaml").read_text(encoding="utf-8")
+    fx = contract[contract.index("  fx_rates:"):]
+    assert "data_rows: 12" in fx[:fx.index("seed_rows:")]
+    assert 'table_name: "tblInflationProfiles"' in contract
+
+
+def test_135_the_accepted_gate_b_harness_is_not_edited() -> None:
+    """THE CORRECTION IS SCOPED BY MECHANISM, NOT BY PROMISE. Gate B was accepted
+    on these bytes and Phases 4, 7, 8 and 9 all dot-source them. The benchmark
+    overrides the helpers in its OWN process instead, which is only sound if the
+    accepted file really is untouched - so that is checked rather than asserted."""
+    changed = [line for line in _git(
+        "diff", "--name-only", ACCEPTED, "--",
+        "pccm/bootstrap/windows/phase5_gate_b_scenarios.ps1",
+        "pccm/bootstrap/windows/phase6_gate_b_scenarios.ps1").splitlines() if line.strip()]
+    assert changed == [], f"an accepted Gate-B harness was edited: {changed}"
+
+
+def test_136_the_overrides_are_defined_after_the_dot_source_that_they_override() -> None:
+    """THE WHOLE MECHANISM IS ORDER. PowerShell resolves a function name at CALL
+    time and the last definition wins, so an override placed above the
+    dot-source would be silently replaced by the accepted one and the runner
+    would go back to deleting rows - with every control above still passing,
+    because the source would still contain the override.
+
+    The accepted file USES these helpers and DEFINES none of them, which is what
+    makes overriding them safe; that is checked too."""
+    runner = _runner()
+    dot_source = runner.index(". (Join-Path $scriptDir 'phase5_gate_b_scenarios.ps1')")
+    for name in ("Reset-Phase5FxTable", "Add-BlankTableRow", "Set-TableCell",
+                 "Get-TableBody"):
+        assert runner.index(f"function {name} ") > dot_source, (
+            f"{name} is defined before the dot-source that would overwrite it")
+    gate_b = GATE_B.read_text(encoding="utf-8")
+    for name in ("Add-BlankTableRow", "Set-TableCell", "Get-TableBody",
+                 "Get-TableRowCount"):
+        assert f"function {name} " not in gate_b, (
+            f"the accepted harness now defines {name}; overriding it is no longer local")
+    # `Reset-Phase5FxTable` IS THE ONE THE ACCEPTED FILE DOES DEFINE, which is
+    # exactly why the benchmark's copy has to come after the dot-source.
+    assert "function Reset-Phase5FxTable {" in gate_b
+
+
+def test_137_the_correction_introduces_no_release_of_protection() -> None:
+    """THE BOUNDARY STAYS CLOSED. The reconciliation settled that only
+    modProtection may release worksheet protection, inside production's own
+    structural window. A harness that reached for that window - or for Excel's
+    Unprotect directly - would reopen an architecture that was closed on Windows
+    evidence, for a measurement."""
+    code = _code()
+    for banned in (".Unprotect", "ProtectionRelease", "ProtectionBeginStructural",
+                   ".Protect(", "Protect Structure", "ProtectStructure ="):
+        assert banned not in code, f"the benchmark reaches for protection: {banned}"
+    # AND NO PRODUCTION FILE MOVED FOR THIS.
+    changed = [line for line in _git(
+        "diff", "--name-only", "0119bee", "--",
+        "pccm/src", "pccm/spec", "pccm/builder").splitlines() if line.strip()]
+    assert changed == [], f"production changed for a harness correction: {changed}"
+
+
+def test_138_the_fixture_build_is_still_outside_every_measured_interval() -> None:
+    """A CORRECTION TO SETUP MUST NOT MOVE THE CLOCK. The reset became a longer
+    sequence of cell writes than a delete loop was, and the one way that could
+    corrupt a baseline is by happening inside a timed region. It does not: the
+    fixture is built between its own stopwatch and the operation clocks start
+    later, and the reset is reached only from the fixture."""
+    code = _code()
+    fixture = code[code.index("$fixtureWatch = [System.Diagnostics.Stopwatch]::StartNew()"):]
+    fixture = fixture[:fixture.index("$fixtureWatch.Stop()")]
+    assert "Set-Phase5Fixture" in fixture
+    assert "setup_timings" not in fixture.lower() or True
+    # THE FIXTURE STOPWATCH FEEDS SETUP, NEVER A SAMPLE.
+    assert "$setupTimings.Add('scenario_fixture_ms'," in code
+    # AND THE RESET IS REACHED ONLY FROM THE FIXTURE TREE - the benchmark defines
+    # it and never calls it itself, so it cannot appear between an operation
+    # clock's start and stop. The name also occurs inside the row-delete
+    # refusal's message, which is text and not a call, so the rule is stated over
+    # INVOCATIONS: a line whose first token is the name.
+    invocations = [line for line in code.splitlines()
+                   if line.strip().startswith("Reset-Phase5FxTable ")]
+    assert invocations == [], (
+        f"the reset is invoked by the benchmark itself: {invocations}")
+    assert code.count("function Reset-Phase5FxTable {") == 1
+
+
+def test_139_the_semantic_proof_is_recorded_with_the_consumers_it_rests_on() -> None:
+    """THE CLAIM IS "PRODUCTION CANNOT TELL", and a claim like that is worth only
+    the audit behind it. The record names every property a consumer could have
+    depended on and says, for each, whether it does - including the one where
+    deletion was the damaging operation rather than the safe one.
+
+    It also states what is still inferred rather than observed, which is the
+    difference between an honest settlement and a quiet assumption."""
+    text = RUN_EVIDENCE.read_text(encoding="utf-8")
+    section = text[text.index("## Benchmark fixture under protection"):]
+    for consumer in ("ListRows.Count", "DataBodyRange", "physical table row count",
+                     "row position", "blank body rows", "validation",
+                     "structural fingerprint"):
+        assert consumer in section, f"the consumer audit does not cover {consumer}"
+    assert "MatchingFxRows" in section and "RawCellText" in section
+    assert "IsEmpty" in section
+    # THE FOUR SITES, EACH WITH A DISPOSITION.
+    for site in ("Reset-Phase5FxTable", "Invoke-Phase5FixtureSteps",
+                 "Set-Phase5InflationProfileMaster", "Clear-Phase5UserRows",
+                 "Invoke-Phase5Mutation"):
+        assert site in section, f"the structural site audit omits {site}"
+    # AND THE HONEST LIMIT.
+    assert "not yet been observed" in section
+    assert "inference from the proved split, not an observation" in section
+    # NO WINDOWS WAS CLAIMED FOR THIS ROUND.
+    assert "No Windows was executed for" in section
+
+
+RESOLUTION_AUDIT = PCCM_ROOT / "tests" / "powershell_command_resolution_audit.ps1"
+PWSH = "/opt/pwsh/pwsh"
+
+# THE ONE NAME THIS RUNNER DELIBERATELY REDEFINES over the accepted Gate-B file.
+BENCHMARK_DECLARED_OVERRIDES = ("Reset-Phase5FxTable",)
+
+
+def _resolution_audit(path: Path, *declared: str) -> subprocess.CompletedProcess:
+    command = [PWSH, "-NoProfile", "-File", str(RESOLUTION_AUDIT), "-Path", str(path)]
+    if declared:
+        command += ["-DeclaredOverride", ",".join(declared)]
+    return subprocess.run(command, capture_output=True, text=True, timeout=300)
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_144_every_command_the_benchmark_can_reach_still_resolves() -> None:
+    """THE CLASS THAT ENDED PHASE-9 WINDOWS RUN 1, and the reason
+    `Remove-TableRow` is a refusal rather than a deletion.
+
+    The audit walks the runner AND every file it dot-sources, so a name only the
+    Gate-B file calls is still a name that must resolve. Removing the definition
+    passed every text control in this file and failed here."""
+    done = _resolution_audit(RUNNER, *BENCHMARK_DECLARED_OVERRIDES)
+    assert done.returncode == 0, done.stdout.strip() + done.stderr.strip()
+    assert done.stdout.startswith("CLEAN"), done.stdout
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_145_the_override_declaration_is_required_and_is_not_a_blanket() -> None:
+    """A DECLARATION NOBODY CHECKS IS AN EXEMPTION. Without it the duplicate is
+    still reported, so the runner cannot quietly acquire a second override; and a
+    declared name that overrides nothing is itself a finding, so the list cannot
+    become a place to park exemptions that stopped being true."""
+    undeclared = _resolution_audit(RUNNER)
+    assert undeclared.returncode == 1, undeclared.stdout
+    assert "DUPLICATE reset-phase5fxtable" in undeclared.stdout, undeclared.stdout
+
+    stale = _resolution_audit(RUNNER, *BENCHMARK_DECLARED_OVERRIDES, "Get-TableBody")
+    assert stale.returncode == 1, stale.stdout
+    assert "DECLARED-OVERRIDE get-tablebody overrides nothing" in stale.stdout, stale.stdout
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_146_an_override_that_would_not_win_is_refused(tmp_path: Path) -> None:
+    """THE DECLARATION CHECKS ORDER, WHICH IS THE WHOLE MECHANISM. An override
+    placed above the dot-source is overwritten by the accepted definition: the
+    runner silently runs the behaviour it meant to replace, with its corrected
+    source still sitting in the file and every text control here still passing.
+
+    Written beside the real runner because the audit resolves dot-sourced files
+    relative to the script's own directory."""
+    with RUNNER.open(encoding="utf-8", newline="") as handle:
+        source = handle.read()
+    start = source.index("function Reset-Phase5FxTable {")
+    end = source.index("\r\n}\r\n", start) + 5
+    block = source[start:end]
+    assert "Set-Phase5TypedCell" in block, "the override block anchor moved"
+    marker = ". (Join-Path $scriptDir 'phase5_gate_b_scenarios.ps1')"
+    moved = (source[:start] + source[end:]).replace(marker, block + "\r\n" + marker, 1)
+    assert moved != source
+
+    scratch = BOOTSTRAP / "__benchmark_override_order_tmp.ps1"
+    with scratch.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(moved)
+    try:
+        done = _resolution_audit(scratch, *BENCHMARK_DECLARED_OVERRIDES)
+    finally:
+        scratch.unlink()
+    assert done.returncode == 1, done.stdout
+    assert "does not win" in done.stdout, done.stdout
 
 
 if __name__ == "__main__":

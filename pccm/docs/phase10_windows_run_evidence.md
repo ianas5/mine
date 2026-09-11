@@ -1104,3 +1104,140 @@ the same 1004**. That is recorded here as the open item it is, not as a surprise
 for the next run to rediscover.
 
 ---
+## Benchmark fixture under protection — SETTLED IN SOURCE — NO WINDOWS
+
+Settles the open item recorded immediately above. **No Windows was executed for
+this round**; the section above stays exactly as it was written, because it was
+true of the tree it described.
+
+### The failing path, traced
+
+```
+Set-Phase5Fixture                    phase5_gate_b_scenarios.ps1:1834
+  Invoke-Phase5FixtureSteps                                  :1869
+    step C  Reset-Phase5FxTable                              :1651
+              Remove-TableRow  ->  $victim.Delete()   phase10_benchmark.ps1:313
+```
+
+`tblFXRates` is built by the input contract as `data_rows: 12` with one seeded
+row, so `Get-TableRowCount` returns **12** and the accepted reset's
+`for ($row = $rows; $row -gt 1; $row--)` loop issued **eleven** `ListRow.Delete`
+calls. The first one is the 1004. Every row it was deleting was already blank.
+
+### What the fixture actually requires afterwards
+
+Two things, and only two:
+
+1. row 1 **is** the captured locked seed — value for value and type for type;
+2. every row below row 1 carries **no currency and no rate**.
+
+### Physical deletion is not required — proved in production's source
+
+`modCalcResolve` is the only production consumer of `tblFXRates`.
+
+| Could depend on physical deletion | Does it? | Where |
+|---|---|---|
+| `ListRows.Count` | **No** | never read |
+| `DataBodyRange` dimensions | **No** | never read as a value |
+| physical table row count | **No** | `BodyRowCount` is a loop bound in `MatchingFxRows` only |
+| row position / index | **No** | `firstMatch` only fetches that row's own rate |
+| presence/absence of blank body rows | **No** | `RawCellText` exits `False` on `IsEmpty`, so a blank row is never a match candidate |
+| formulas / validation on retained rows | **Yes — and deletion DESTROYED them** | the reserved rows carry `lstCurrencies` and decimal-greater-than-zero validation |
+| structural fingerprint / shape invariant | **No** | the invariant is "the reporting currency appears exactly once", which blank rows cannot affect |
+
+A blanked row is therefore indistinguishable from an absent one to every
+production reader. It is also the shape production already runs against: Stage A
+delivers eleven blank FX rows, and every accepted Phase-4 through Phase-9 run
+resolved FX over exactly that.
+
+**The deletion was the operation doing damage.** It removed validated rows from a
+table the input contract declares as `data_rows: 12`, quietly shrinking the
+delivered shape. Blanking leaves the contract's validation where the contract
+put it.
+
+### Every structural fixture site found, and its disposition
+
+| # | Site | Call | Fired in Run 3? | Disposition |
+|---|---|---|---|---|
+| 1 | `Reset-Phase5FxTable`, the `rows -lt 1` guard | `ListRows.Add` | No — the table has 12 rows | gone; the override refuses with a named diagnosis |
+| 2 | `Reset-Phase5FxTable`, the delete loop | `ListRow.Delete` ×11 | **Yes — this is the abort** | replaced by `ClearContents` below the seed |
+| 3 | `Invoke-Phase5FixtureSteps` step C, the FX append | `ListRows.Add` ×1 | No — Run 3 died first | **would have been the next abort**; now a reserved-row search |
+| 4 | `Set-Phase5InflationProfileMaster`, the capacity guard | `ListRows.Add` | No — 2 profiles ≤ `data_rows: 10` | latent; now refuses with a named diagnosis instead of a bare 1004 |
+
+`Clear-Phase5UserRows` also calls `Remove-TableRow`, and the `fx_remove` arm of
+`Invoke-Phase5Mutation` does too. Neither is reachable at runtime: the first has
+no caller anywhere in the tree, and the second belongs to the Gate-B scenarios
+the benchmark never executes.
+
+### The correction's own first attempt was wrong, and the audit caught it
+
+`Remove-TableRow` was deleted outright. That passed every text control — nothing
+in the benchmark calls it — and
+`tests/powershell_command_resolution_audit.ps1` refused it:
+
+```
+UNRESOLVED Remove-TableRow
+```
+
+The audit is an AST closure over the runner **and every file it dot-sources**, so
+the two callers above are exactly the reason the name must still resolve. This is
+the defect class that ended Phase-9 Windows run 1 — `The term 'Write-RowObject'
+is not recognized`, raised from inside a dot-sourced file — and deleting the
+definition recreated it.
+
+So the name resolves and the **capability** is gone: `Remove-TableRow` now throws,
+naming the row, the table and why a COM caller cannot delete it. It fetches no
+COM object at all, so it cannot be mistaken for a working helper, and there is no
+empty body for a later edit to fill back in.
+
+The same audit reported the override itself:
+
+```
+DUPLICATE reset-phase5fxtable defined at phase10_benchmark.ps1, phase5_gate_b_scenarios.ps1
+```
+
+That rule — *a name defined twice is a finding, because the reader cannot tell
+which one runs* — was true of every runner in this tree until one needed to change
+a helper without editing the accepted file that defines it. It is not loosened.
+The audit gained a `-DeclaredOverride` parameter, and the declaration is
+**checked**: the name must be defined exactly twice, once in the runner and once
+in a dot-sourced file, and the runner's definition must sit **after** the
+dot-source that loads the other — which is the only thing that makes it the
+definition that wins. A declared name that overrides nothing is itself a finding,
+and every caller that does not pass the parameter keeps the original behaviour
+exactly. Nothing checked load order before; this is strictly stronger than the
+rule it relaxes.
+
+No `ListColumns.Add`, `ListColumns.Delete` or `Resize` appears anywhere in the
+benchmark's fixture or setup code.
+
+### Why the correction is in `phase10_benchmark.ps1` only
+
+`Reset-Phase5FxTable` lives in `phase5_gate_b_scenarios.ps1`, an accepted harness
+whose bytes are not changed for the sake of a measurement. That file **uses**
+`Remove-TableRow`, `Add-BlankTableRow`, `Set-TableCell` and `Get-TableBody` and
+**defines** none of them — every standalone runner carries its own copies — and
+PowerShell resolves a function name at call time. The benchmark's definitions
+follow its dot-source, so they are the ones the accepted fixture tree reaches
+**in the benchmark process only**. No other runner changes and no accepted
+evidence is disturbed.
+
+### The protection boundary is untouched
+
+No `ProtectionRelease`, no maintenance window, no `Unprotect` from PowerShell, no
+change to `Workbook_Open`, and no production VBA change. `git diff --name-only`
+against `0119bee` over `src`, `spec` and `builder` is empty.
+
+### What is inferred rather than observed, stated plainly
+
+`ClearContents` on a locked cell of a protected sheet has **not yet been observed
+on Windows**. It is in the same capability class as the value write that Run 3
+and Run 10 both proved `UserInterfaceOnly` permits, and it is not a ListObject
+structural operation, which is the one capability proved refused — but that is an
+inference from the proved split, not an observation.
+
+The run does not have to be trusted on it. The reset reads every blanked cell
+back and **requires `$null`**, and its refusal names protection as a candidate
+cause. The PERF-SMALL baseline run is therefore the first observation either way:
+it clears and proceeds, or it stops with a sentence saying which cell refused.
+

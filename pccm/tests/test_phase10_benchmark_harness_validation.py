@@ -51,9 +51,29 @@ import pytest  # noqa: E402
 import test_phase10_benchmark_harness as conformance  # noqa: E402
 
 
+# CONTROLS THIS BATTERY DOES NOT RERUN, and exactly why each one.
+#
+# NOT AN EXEMPTION FROM BEING CHECKED. Each of these audits the runner ON DISK
+# through a PowerShell subprocess, so a damaged copy held in memory is invisible
+# to it - it would pass every mutation below while proving nothing, and it would
+# cost three process launches on each of a hundred-odd reruns. The property they
+# hold is instead mutated once, directly, by
+# `test_144_deleting_a_definition_a_dot_sourced_file_calls_is_rejected`.
+FILESYSTEM_CONTROLS = (
+    "test_144_every_command_the_benchmark_can_reach_still_resolves",
+    "test_145_the_override_declaration_is_required_and_is_not_a_blanket",
+    "test_146_an_override_that_would_not_win_is_refused",
+)
+
+
 def _tests() -> list[str]:
-    names = sorted(name for name in dir(conformance) if name.startswith("test_"))
+    names = sorted(name for name in dir(conformance)
+                   if name.startswith("test_") and name not in FILESYSTEM_CONTROLS)
     assert len(names) >= 50, names
+    # THE SKIP LIST IS NOT ALLOWED TO NAME SOMETHING THAT NO LONGER EXISTS - a
+    # renamed control would otherwise drop silently out of every mutation here.
+    for skipped in FILESYSTEM_CONTROLS:
+        assert hasattr(conformance, skipped), skipped
     return names
 
 
@@ -92,6 +112,24 @@ def _plan_mutation(expected: str, mutate) -> None:
     plan = copy.deepcopy(conformance._plan())
     mutate(plan)
     _detects(expected, plan=plan)
+
+
+def _detects_source(expected: str, damaged: str) -> None:
+    """Run the battery against a whole damaged runner source.
+
+    For mutations that MOVE code rather than rewrite it - where a
+    before/after replacement cannot express the change.
+    """
+    assert damaged != conformance._runner(), "the mutation changed nothing"
+    restore = _install({"runner": damaged})
+    try:
+        conformance._MEMO.pop("code", None)
+        refused = _run_battery()
+    finally:
+        restore()
+        conformance._MEMO.pop("code", None)
+    assert refused, "the mutation survived the whole conformance battery"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
 
 
 def _runner_mutation(expected: str, before: str, after: str) -> None:
@@ -989,6 +1027,214 @@ def test_122_dropping_the_projection_from_the_artifact_is_rejected() -> None:
         "test_117",
         "$report.Add('release_identity', $releaseIdentity)",
         "$report.Add('release_identity', 'see the plan')")
+
+
+# ===========================================================================
+# L. THE FIXTURE ON A PROTECTED WORKBOOK
+# ===========================================================================
+# Every mutation here is a plausible way to "simplify" the correction back into
+# the defect Benchmark Run 3 died on, or to make the reset look right while it
+# leaves a previous scenario's rates in the table.
+def test_130_reintroducing_the_direct_listrow_delete_is_rejected() -> None:
+    """THE EXACT CALL BENCHMARK RUN 3 DIED ON, put back into the reset."""
+    _runner_mutation(
+        "test_130",
+        "    for ($row = $seedRows + 1; $row -le $rows; $row++) {\n"
+        "        for ($column = 1; $column -le $columns.Count; $column++) {",
+        "    for ($row = $rows; $row -gt $seedRows; $row--) {\n"
+        "        $lo.ListRows.Item($row).Delete()\n"
+        "    }\n"
+        "    for ($row = $seedRows + 1; $row -le $rows; $row++) {\n"
+        "        for ($column = 1; $column -le $columns.Count; $column++) {")
+
+
+def test_131_restoring_the_structural_row_delete_primitive_is_rejected() -> None:
+    """A HELPER NOBODY CALLS IS STILL A HELPER SOMEBODY WILL. The primitive was
+    removed rather than stubbed precisely so it cannot come back as a body
+    filled into a shell that was left waiting."""
+    _runner_mutation(
+        "test_130",
+        "function Get-IdColumnValues {",
+        "function Remove-TableRow {\n"
+        "    param($Workbook, [string]$TableName, [int]$RowIndex)\n"
+        "    $Workbook.Worksheets.Item(1).ListObjects.Item($TableName)"
+        ".ListRows.Item($RowIndex).Delete()\n"
+        "}\n\n"
+        "function Get-IdColumnValues {")
+
+
+def test_132_growing_the_table_instead_of_using_a_reserved_row_is_rejected() -> None:
+    """THE ADD IS REFUSED ON A PROTECTED SHEET, and putting it back turns the
+    next abort - the FX append at step C, which Run 3 never reached - into the
+    first one."""
+    _runner_mutation(
+        "test_130",
+        "    $body = @(Get-TableBody -Workbook $Workbook -SheetName $SheetName "
+        "-TableName $TableName)",
+        "    $lo = $Workbook.Worksheets.Item($SheetName).ListObjects.Item($TableName)\n"
+        "    $null = $lo.ListRows.Add()\n"
+        "    $body = @(Get-TableBody -Workbook $Workbook -SheetName $SheetName "
+        "-TableName $TableName)")
+
+
+def test_133_clearing_only_the_first_row_below_the_seed_is_rejected() -> None:
+    """CLEARING TOO LITTLE IS THE QUIET FAILURE. Row 2 is the only row the
+    benchmark's own model writes, so a reset that stops there looks correct on
+    every run of this scenario - and carries any other row straight into a
+    measurement, where production resolves it as a real rate."""
+    _runner_mutation(
+        "test_131",
+        "    for ($row = $seedRows + 1; $row -le $rows; $row++) {\n"
+        "        for ($column = 1; $column -le $columns.Count; $column++) {",
+        "    for ($row = $seedRows + 1; $row -le $seedRows + 1; $row++) {\n"
+        "        for ($column = 1; $column -le $columns.Count; $column++) {")
+
+
+def test_134_clearing_only_the_currency_column_is_rejected() -> None:
+    """A ROW WITH NO CURRENCY AND A SURVIVING RATE is not a blank row. It is
+    invisible to `MatchingFxRows` today and visible to anything that reads the
+    column, and half a reset is not a reset."""
+    _runner_mutation(
+        "test_131",
+        "        for ($column = 1; $column -le $columns.Count; $column++) {\n"
+        "            Set-TableCell -Workbook $Workbook -SheetName $fx.sheet "
+        "-TableName $fx.table_name `",
+        "        for ($column = 1; $column -le 1; $column++) {\n"
+        "            Set-TableCell -Workbook $Workbook -SheetName $fx.sheet "
+        "-TableName $fx.table_name `")
+
+
+def test_135_accepting_an_empty_string_as_a_genuine_blank_is_rejected() -> None:
+    """ClearContents LEAVES Value2 $null. A check that also accepts the empty
+    string would pass on a cell production reads as POPULATED, because
+    `RawCellText` exits on IsEmpty and an empty string is not empty."""
+    _runner_mutation(
+        "test_131",
+        "            if ($null -ne $body[$row - 1][$column - 1]) {",
+        "            if (([string]$body[$row - 1][$column - 1]) -ne '') {")
+
+
+def test_136_dropping_the_proof_that_the_blanking_took_is_rejected() -> None:
+    """A BLANKING NOBODY CHECKED IS AN INTENTION. It is also the one place this
+    correction could discover that ClearContents behaves differently under
+    protection than the value write does - which has not been observed yet."""
+    _runner_mutation(
+        "test_131",
+        "    for ($row = $seedRows + 1; $row -le $body.Count; $row++) {",
+        "    for ($row = $seedRows + 1; $row -le $seedRows; $row++) {")
+
+
+def test_137_clearing_the_table_header_is_rejected() -> None:
+    """BLANKING A BODY IS NOT REWRITING A TABLE. A reset that reached the header
+    row would change the contract's shape under a measurement, and the numbers
+    would describe a workbook the specification never declared."""
+    _runner_mutation(
+        "test_133",
+        "    $columns = @(Get-TableColumnNames -Workbook $Workbook -SheetName $fx.sheet `",
+        "    $Workbook.Worksheets.Item($fx.sheet).ListObjects.Item($fx.table_name)"
+        ".HeaderRowRange.ClearContents()\n"
+        "    $columns = @(Get-TableColumnNames -Workbook $Workbook -SheetName $fx.sheet `")
+
+
+def test_138_blanking_the_locked_seed_row_as_well_is_rejected() -> None:
+    """THE SEED IS RESTORED FROM A CAPTURE, NOT REBUILT. Blanking row 1 on the
+    way past would work by accident today and would destroy the very row the
+    capture exists to preserve if the restoration ever moved."""
+    _runner_mutation(
+        "test_133",
+        "    for ($row = $seedRows + 1; $row -le $rows; $row++) {\n"
+        "        for ($column = 1; $column -le $columns.Count; $column++) {",
+        "    for ($row = 1; $row -le $rows; $row++) {\n"
+        "        for ($column = 1; $column -le $columns.Count; $column++) {")
+
+
+def test_139_altering_the_accepted_seed_restoration_is_rejected() -> None:
+    """ONE HALF OF THE RESET CHANGED, AND ONLY ONE. Casting the captured rate
+    would repair a defective text seed into agreement with the contract, which
+    is exactly what the capture rule forbids - and a correction to the blanking
+    is no occasion to do it."""
+    _runner_mutation(
+        "test_132",
+        "        -RowIndex 1 -ColumnIndex 2 -Value $Seed.Rate",
+        "        -RowIndex 1 -ColumnIndex 2 -Value ([double]$Seed.Rate)")
+
+
+def test_140_refusing_without_naming_the_table_is_rejected() -> None:
+    """A REFUSAL THAT DOES NOT SAY WHICH TABLE sends the next run back to the
+    bare 1004 this correction exists to replace."""
+    _runner_mutation(
+        "test_134",
+        "        throw ('the benchmark fixture needs a blank row in ' + $TableName + ' on ' +\n"
+        "               $SheetName + ', and the table has no body row at all. Creating one is a ' +",
+        "        throw ('the benchmark fixture needs a blank row, ' +\n"
+        "               'and the table has no body row at all. Creating one is a ' +")
+
+
+def test_141_reaching_for_a_protection_release_from_the_harness_is_rejected() -> None:
+    """THE BOUNDARY STAYS CLOSED. Option 2 was explicitly NOT authorised, and a
+    harness that opened production's structural window for itself would reopen an
+    architecture closed on Windows evidence - for a measurement."""
+    _runner_mutation(
+        "test_137",
+        "    $columns = @(Get-TableColumnNames -Workbook $Workbook -SheetName $fx.sheet `",
+        "    $null = $Excel.Run('PCCM_ProtectionRelease')\n"
+        "    $columns = @(Get-TableColumnNames -Workbook $Workbook -SheetName $fx.sheet `")
+
+
+def test_142_defining_the_override_above_the_dot_source_is_rejected() -> None:
+    """THE WHOLE MECHANISM IS ORDER. An override above the dot-source is
+    overwritten by the accepted definition and the runner silently goes back to
+    deleting rows - with the corrected source still sitting in the file, and
+    every source-reading control above still passing."""
+    original = conformance._runner()
+    marker = ". (Join-Path $scriptDir 'phase5_gate_b_scenarios.ps1')"
+    start = original.index("function Reset-Phase5FxTable {")
+    end = original.index("\n}", start) + 3
+    moved = original[:start] + original[end:]
+    moved = moved.replace(marker, original[start:end] + "\n" + marker, 1)
+    _detects_source("test_136", moved)
+
+
+def test_143_measuring_the_fixture_build_as_a_sample_is_rejected() -> None:
+    """A CORRECTION TO SETUP MUST NOT MOVE THE CLOCK. The reset is a longer
+    sequence of cell writes than a delete loop was, and the one way that could
+    corrupt a baseline is by being timed."""
+    _runner_mutation(
+        "test_138",
+        "    $setupTimings.Add('scenario_fixture_ms', "
+        "[double]$fixtureWatch.Elapsed.TotalMilliseconds)",
+        "    $sampleMs = [double]$fixtureWatch.Elapsed.TotalMilliseconds")
+
+
+def test_144_deleting_a_definition_a_dot_sourced_file_calls_is_rejected() -> None:
+    """THE DEFECT THAT KILLED PHASE-9 WINDOWS RUN 1, recreated deliberately.
+
+    Deleting `Remove-TableRow` outright was the first attempt at this correction
+    and it passed every text control in the conformance module: nothing in the
+    benchmark calls it. Two functions in the DOT-SOURCED Gate-B file do, and a
+    name a reachable file can call must resolve.
+
+    Driven through a real file because the audit is a cross-file AST closure and
+    has nothing to read in an in-memory copy. Run once rather than on every
+    mutation above, which is what the skip list pays for."""
+    with conformance.RUNNER.open(encoding="utf-8", newline="") as handle:
+        source = handle.read()
+    start = source.index("function Remove-TableRow {")
+    end = source.index("\r\n}\r\n", start) + 5
+    damaged = source[:start] + source[end:]
+    assert "function Remove-TableRow {" not in damaged
+    assert damaged != source
+
+    scratch = conformance.BOOTSTRAP / "__benchmark_missing_definition_tmp.ps1"
+    with scratch.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(damaged)
+    try:
+        done = conformance._resolution_audit(
+            scratch, *conformance.BENCHMARK_DECLARED_OVERRIDES)
+    finally:
+        scratch.unlink()
+    assert done.returncode == 1, done.stdout
+    assert "UNRESOLVED Remove-TableRow" in done.stdout, done.stdout
 
 
 if __name__ == "__main__":

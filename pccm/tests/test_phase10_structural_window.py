@@ -713,12 +713,13 @@ def test_52l_the_open_harness_consequence_is_recorded_not_left_to_be_rediscovere
     assert "phase10_benchmark.ps1:313" in text
     assert "does not help it" in text
     assert "would abort at the same line" in text
-    # AND THE CALL REALLY IS STILL THERE.
-    benchmark = (PCCM_ROOT / "bootstrap" / "windows" / "phase10_benchmark.ps1").read_text(
-        encoding="utf-8")
-    assert "$victim.Delete()" in benchmark, (
-        "the harness delete was removed; this record is now stale")
-    assert "function Remove-TableRow" in benchmark
+    # AND THE SETTLEMENT THAT SUPERSEDES IT IS RECORDED SEPARATELY, so the open
+    # item above stays readable as the history it is. Editing the Run 10 section
+    # to pretend the consequence never existed is the rewrite this control
+    # refuses; a later section saying how it was settled is not.
+    settled = _evidence_section("## Benchmark fixture under protection")
+    assert "Settles the open item recorded immediately above" in settled
+    assert "stays exactly as it was written" in settled
 
 
 def test_53_the_runtime_evidence_for_keeping_structure_protected_is_recorded() -> None:

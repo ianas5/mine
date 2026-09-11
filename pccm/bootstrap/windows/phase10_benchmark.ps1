@@ -279,45 +279,219 @@ function Get-TableRowCount {
     return @(Get-TableBody -Workbook $Workbook -SheetName $SheetName -TableName $TableName).Count
 }
 
+# ===========================================================================
+# THE FIXTURE ON A PROTECTED WORKBOOK
+# ===========================================================================
+# WHAT CHANGED HERE, AND WHY IT IS HERE RATHER THAN IN THE ACCEPTED HARNESS.
+#
+# Benchmark Run 3 aborted on a COM `ListRow.Delete` against `tblFXRates` with
+# "Table features aren't available because the sheet is protected." Protection
+# is a Phase-10 addition - `build_stage_b.ps1` applies it and `Workbook_Open`
+# re-applies it - and every harness in this tree was written against the
+# workbook as it stood BEFORE that.
+#
+# The runtime protection reconciliation settled the capability split from
+# Windows evidence rather than from assumption:
+#
+#   code writes a VALUE to a locked cell             PERMITTED (UserInterfaceOnly)
+#   code performs a LISTOBJECT STRUCTURAL operation  REFUSED
+#
+# Production reaches the second capability through
+# `modAppState.BeginStructuralOperation`, which opens `modProtection`'s
+# structural window from inside VBA. A PowerShell COM caller never enters that
+# window and is not given one: the protection boundary is closed, and a
+# measurement is not a reason to reopen it.
+#
+# So the benchmark fixture resets WITHOUT structural mutation. It can, because
+# the accepted tables are built carrying RESERVED BLANK BODY ROWS -
+# `tblFXRates` is `data_rows: 12` with a single seeded row, and
+# `tblInflationProfiles` is `data_rows: 10` with none - and because production
+# reads those tables by CONTENT and never by shape. The proof is beside
+# `Reset-Phase5FxTable` below.
+#
+# THE ACCEPTED HARNESS IS NOT EDITED. `phase5_gate_b_scenarios.ps1` stays
+# byte-identical to what Gate B was accepted on. It USES these helpers and does
+# not DEFINE them, and PowerShell resolves a function name at CALL time, so the
+# definitions below - which follow the dot-source at the top of this file - are
+# the ones its fixture tree reaches IN THIS PROCESS ONLY. No other runner is
+# affected and no accepted evidence is disturbed.
+
+# A BLANK ROW IS FOUND, NOT MADE. The accepted tables ship with reserved blank
+# body rows and the fixture fills them from the top, so "make a blank row
+# available" is a SEARCH over what is already there. The returned index is the
+# first wholly blank body row, which is the row the fixture tree then writes.
+#
+# IT REFUSES RATHER THAN GROWING. A table with no blank row left genuinely needs
+# a structural add; that add is genuinely refused under protection; and the
+# caller is told exactly that - naming the table and its capacity - instead of
+# meeting a bare 1004 with no context. Nothing here relaxes a requirement: a
+# fixture that cannot be built is a fixture that does not get measured.
 function Add-BlankTableRow {
     param($Workbook, [string]$SheetName, [string]$TableName)
-    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $rows = $null; $added = $null
-    try {
-        $localWorksheets = $Workbook.Worksheets
-        $ws = $localWorksheets.Item($SheetName)
-        $los = $ws.ListObjects
-        $lo = $los.Item($TableName)
-        $rows = $lo.ListRows
-        $added = $rows.Add()
-        return [int]$added.Index
-    } finally {
-        if ($null -ne $added)           { Release-Transient $added           'ListRow';     $added           = $null }
-        if ($null -ne $rows)            { Release-Transient $rows            'ListRows';    $rows            = $null }
-        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
-        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
-        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
-        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    $body = @(Get-TableBody -Workbook $Workbook -SheetName $SheetName -TableName $TableName)
+    if ($body.Count -lt 1) {
+        throw ('the benchmark fixture needs a blank row in ' + $TableName + ' on ' +
+               $SheetName + ', and the table has no body row at all. Creating one is a ' +
+               'ListObject structural operation, which worksheet protection refuses to a ' +
+               'COM caller; only a production endpoint may perform one.')
     }
+    for ($row = 1; $row -le $body.Count; $row++) {
+        $blank = $true
+        foreach ($value in @($body[$row - 1])) {
+            if ([string]$value -ne '') { $blank = $false; break }
+        }
+        if ($blank) { return [int]$row }
+    }
+    throw ('the benchmark fixture needs a blank row in ' + $TableName + ' on ' + $SheetName +
+           ', and all ' + [string]$body.Count + ' reserved body rows are populated. Growing ' +
+           'the table is a ListObject structural operation, which worksheet protection ' +
+           'refuses to a COM caller; only a production endpoint may perform one.')
 }
 
+# `Remove-TableRow` REFUSES. IT NO LONGER DELETES.
+#
+# Its `$victim.Delete()` is the exact line Benchmark Run 3 died on, and nothing
+# in the benchmark's fixture path needs it: `Reset-Phase5FxTable` below resets by
+# CONTENT. The two callers that remain in the dot-sourced Gate-B file are
+# unreachable from here - `Clear-Phase5UserRows`, which has no caller anywhere in
+# the tree, and the `fx_remove` arm of `Invoke-Phase5Mutation`, which belongs to
+# the Gate-B scenarios this runner never executes.
+#
+# IT IS NOT DELETED FROM THE FILE, and the reason is a defect this project has
+# already paid for. Phase-9 Windows run 1 died on
+# `The term 'Write-RowObject' is not recognized` - a function in a DOT-SOURCED
+# file calling a name the runner did not define. Removing this definition
+# recreates that exact shape: `phase5_gate_b_scenarios.ps1` names
+# `Remove-TableRow` in two places, and a name a reachable file can call must
+# resolve. `tests/powershell_command_resolution_audit.ps1` reports it, which is
+# how this was found rather than discovered on Windows.
+#
+# So the name resolves and the CAPABILITY is gone. A caller that appears in
+# future is told what it tried to do and why it cannot, at the call site, which
+# is a far better diagnosis than a 1004 from inside Excel - and there is no body
+# here for a later edit to quietly fill back in.
 function Remove-TableRow {
     param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowIndex)
-    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $rows = $null; $victim = $null
-    try {
-        $localWorksheets = $Workbook.Worksheets
-        $ws = $localWorksheets.Item($SheetName)
-        $los = $ws.ListObjects
-        $lo = $los.Item($TableName)
-        $rows = $lo.ListRows
-        $victim = $rows.Item($RowIndex)
-        $victim.Delete()
-    } finally {
-        if ($null -ne $victim)          { Release-Transient $victim          'ListRow';     $victim          = $null }
-        if ($null -ne $rows)            { Release-Transient $rows            'ListRows';    $rows            = $null }
-        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
-        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
-        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
-        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    throw ('the benchmark tried to delete row ' + [string]$RowIndex + ' of ' + $TableName +
+           ' on ' + $SheetName + '. Deleting a ListRow is a ListObject structural ' +
+           'operation, which worksheet protection refuses to a COM caller; only a ' +
+           'production endpoint may perform one. The benchmark fixture resets by ' +
+           'content instead - see Reset-Phase5FxTable below - so reaching this is a ' +
+           'path that was never meant to run, not a protection problem to work around.')
+}
+
+# THE FX RESET, BY CONTENT.
+#
+# The accepted reset deleted every body row below the seed and then rewrote row
+# 1 from the capture. Deleting was never what the fixture NEEDED - it was how
+# the harness spelled "nothing below the seed survives" - and on the protected
+# workbook it is refused. What the fixture requires afterwards is exactly two
+# things:
+#
+#   row 1                 IS the captured locked seed, value for value and type
+#                         for type
+#   every row below it    carries no currency and no rate
+#
+# AND PRODUCTION CANNOT TELL A BLANKED ROW FROM AN ABSENT ONE. That is the whole
+# claim, and it is proved in production's own source rather than assumed:
+#
+#   modCalcResolve.MatchingFxRows walks `1 To modWorkbook.BodyRowCount(table)`
+#   and counts the rows whose Currency cell EQUALS the key it was handed.
+#   modCalcResolve.RawCellText - the reader it counts through - exits False on
+#   `IsEmpty`, so a blank row is never a candidate and can never be a match.
+#   The row count is a loop bound and nothing else, and the row index is used
+#   only to fetch the matched row's own rate. No production path reads
+#   `tblFXRates`'s ListRows.Count, its DataBodyRange dimensions or a row
+#   position AS A VALUE, and the reporting-currency invariant is "appears
+#   exactly once", which rows carrying nothing cannot affect.
+#
+# It is also the shape production already runs against: Stage A builds
+# `tblFXRates` with twelve body rows of which eleven are blank, and every
+# accepted Phase-4 through Phase-9 run resolved FX over exactly that.
+#
+# DELETING WAS THE OPERATION THAT DID DAMAGE. Those eleven reserved rows carry
+# the input contract's data validation - `lstCurrencies` on Currency, decimal
+# greater than zero on the rate - so deleting them removed validated rows from a
+# table the contract declares as `data_rows: 12`, and the accepted reset was
+# quietly shrinking the delivered shape. Blanking leaves the validation where
+# the contract put it.
+#
+# THE SEED RESTORATION IS UNCHANGED from the accepted reset: the same typed
+# writer, the same strict comparator, the same refusal to decide what the value
+# ought to be.
+function Reset-Phase5FxTable {
+    param($Workbook, $Inspection, $Seed)
+    $fx = $Inspection.input_tables.fx_rates
+    $seedRows = [int]$fx.locked_seed_rows
+    # The row-1 arithmetic below is only correct for a single seed row.
+    # `Save-Phase5LockedFxSeed` already refuses anything else; this refuses it
+    # again here rather than letting a contract change drift silently past.
+    if ($seedRows -ne 1) {
+        throw ('the FX table declares ' + [string]$seedRows + ' locked seed rows; the ' +
+               'benchmark fixture reset assumes exactly one')
+    }
+    $columns = @(Get-TableColumnNames -Workbook $Workbook -SheetName $fx.sheet `
+        -TableName $fx.table_name)
+    $rows = Get-TableRowCount -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
+    if ($rows -lt ($seedRows + 1)) {
+        throw ('the FX table carries ' + [string]$rows + ' body row(s), so there is no row ' +
+               'below the locked seed for the fixture to write a rate into. Adding one is a ' +
+               'ListObject structural operation, which worksheet protection refuses to a ' +
+               'COM caller; only a production endpoint may perform one.')
+    }
+
+    # Everything below the seed is BLANKED, whatever it is - the same reach as
+    # the accepted delete loop, by a different mechanism. `Set-TableCell` with
+    # $null is ClearContents, which makes a GENUINE blank: an empty string would
+    # leave `IsEmpty` False and production would see a populated row.
+    for ($row = $seedRows + 1; $row -le $rows; $row++) {
+        for ($column = 1; $column -le $columns.Count; $column++) {
+            Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+                -RowIndex $row -ColumnIndex $column -Value $null
+        }
+    }
+
+    # Row 1 is REWRITTEN from the capture. It is not trusted to still be the seed.
+    #
+    # THE CAPTURED VALUE IS WRITTEN BACK AS ITSELF. No [double], no [string], no
+    # decision about what the value ought to be: Set-Phase5TypedCell assigns
+    # Value2 directly, so a numeric seed stays numeric and a defective text seed
+    # stays text and is exposed by the production calculation rather than being
+    # quietly corrected here.
+    Set-Phase5TypedCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+        -RowIndex 1 -ColumnIndex 1 -Value $Seed.Currency
+    Set-Phase5TypedCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+        -RowIndex 1 -ColumnIndex 2 -Value $Seed.Rate
+
+    # ONE TYPED READ-BACK PROVES BOTH HALVES. A restoration nobody checked is an
+    # assumption, and a blanking nobody checked is a fixture that may be carrying
+    # the previous scenario's rates into a measurement.
+    $body = @(Get-Phase5TypedTableBody -Workbook $Workbook -SheetName $fx.sheet `
+        -TableName $fx.table_name)
+    if ((-not (Test-Phase5ExactValue -Actual $body[0][0] -Expected $Seed.Currency)) -or `
+        (-not (Test-Phase5ExactValue -Actual $body[0][1] -Expected $Seed.Rate))) {
+        throw ("the locked FX seed did not restore: row 1 is " +
+               (Format-Phase5Typed $body[0][0]) + " / " + (Format-Phase5Typed $body[0][1]) +
+               ", captured " + (Format-Phase5Typed $Seed.Currency) + " / " +
+               (Format-Phase5Typed $Seed.Rate))
+    }
+    # STRICTLY $null, not "empty-looking". ClearContents leaves Value2 $null; a
+    # cell holding the empty string is NOT a genuine blank and production would
+    # read it as populated.
+    for ($row = $seedRows + 1; $row -le $body.Count; $row++) {
+        for ($column = 1; $column -le $columns.Count; $column++) {
+            if ($null -ne $body[$row - 1][$column - 1]) {
+                throw ("the FX reset did not clear row " + [string]$row + " column " +
+                       [string]$column + ": it still holds " +
+                       (Format-Phase5Typed $body[$row - 1][$column - 1]) +
+                       ". Stale fixture data below the locked seed would be resolved by " +
+                       "production as a real rate, so the measurement would not be of the " +
+                       "model this run claims to build. ClearContents on a locked cell is " +
+                       "the same capability as the value write UserInterfaceOnly permits, " +
+                       "so a cell that refused to clear is new protection behaviour and " +
+                       "must be reported, not retried.")
+            }
+        }
     }
 }
 
