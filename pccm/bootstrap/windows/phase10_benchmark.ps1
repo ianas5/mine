@@ -495,6 +495,177 @@ function Reset-Phase5FxTable {
     }
 }
 
+# ===========================================================================
+# THE FIXTURE MAINTENANCE WINDOW
+# ===========================================================================
+# WHAT THE WINDOWS RUN AT 7077608 SETTLED. The content-based reset is correct
+# and it is still refused, because the refusal is not about deletion:
+#
+#   statement : $null = $cell.ClearContents()
+#   message   : The cell or chart you're trying to change is on a protected
+#               sheet. To make a change, unprotect the sheet.
+#
+# An external COM caller cannot clear a cell on a protected sheet. A VALUE write
+# from the same caller CAN - Benchmark Run 3 wrote four Setup scalars that way
+# and they succeeded - so `Value2 =` and `ClearContents` are different
+# capabilities to an out-of-process client, and only the second one needs help.
+#
+# THE WINDOW IS PRODUCTION'S OWN, NOT A SECOND ONE. `modProtection` already owns
+# a depth-counted structural window that releases WORKSHEET protection only and
+# never touches workbook structure. Nothing here re-implements it: there is no
+# `.Unprotect` in this runner, and a control refuses one.
+#
+# WHY A SHIM. `ProtectionBeginStructural` and `ProtectionEndStructural` both take
+# `ByRef detail As String`. Every procedure any accepted harness in this tree has
+# ever reached through `Application.Run` - production and Gate-B diagnostic alike
+# - takes ByVal parameters or none, so there is no precedent for marshalling a
+# ByRef out-parameter across that boundary and no reason to discover its failure
+# mode on Windows, on the one call whose failure has to abort the run.
+# `phase10_fixture_window.bas` owns the String inside VBA and returns a String,
+# which is the shape that is proven. It is imported into the DISPOSABLE copy
+# exactly as `phase5_gate_b_diagnostics.bas` has been since Phase 5, and it is
+# never declared in the manifest.
+#
+# SETUP ONLY, AND PROVABLY SO. The window opens immediately before
+# `Set-Phase5Fixture` and closes immediately after it, inside the fixture
+# stopwatch, whose figure the runner already reports as setup and uses in no
+# measurement. It is closed - and the closure verified - before the first timed
+# operation exists. A close that fails throws, and a throw here reaches the
+# abandon path, so no sample can be recorded from a workbook whose protection
+# was not restored.
+$script:FixtureWindowModule = 'modPhase10FixtureWindow'
+$script:FixtureWindowSource = 'phase10_fixture_window.bas'
+
+function Import-BenchmarkFixtureWindow {
+    param($Excel, $Workbook, $Manifest, [string]$ScriptDir)
+    $source = Join-Path $ScriptDir $script:FixtureWindowSource
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw ('the fixture-window shim ' + $source + ' is missing, so the benchmark ' +
+               'cannot open the accepted protection window')
+    }
+    # IT IS NOT PRODUCTION, AND THAT IS CHECKED RATHER THAN SAID. A module the
+    # manifest declares would be a production module, and importing one over the
+    # built project would be replacing production at runtime.
+    $declared = @($Manifest.vba.modules | ForEach-Object { [string]$_.name })
+    if ($declared -contains $script:FixtureWindowModule) {
+        throw ('the manifest declares ' + $script:FixtureWindowModule + ' as a production ' +
+               'module; the benchmark will not import a test module over production')
+    }
+    $project = $null; $components = $null; $imported = $null
+    try {
+        $project = $Workbook.VBProject
+        $components = $project.VBComponents
+        $imported = $components.Import($source)
+        $name = [string]$imported.Name
+        if ($name -ne $script:FixtureWindowModule) {
+            throw ('the fixture-window shim imported as ' + $name + ', not ' +
+                   $script:FixtureWindowModule)
+        }
+    } finally {
+        if ($null -ne $imported)   { Release-Transient $imported   'VBComponent(shim)'; $imported   = $null }
+        if ($null -ne $components) { Release-Transient $components 'VBComponents';      $components = $null }
+        if ($null -ne $project)    { Release-Transient $project    'VBProject';         $project    = $null }
+    }
+    # AND IT ANSWERS. An import that reported success and a project that will not
+    # call it are different things.
+    $ping = [string]$Excel.Run('P10FW_Ping')
+    if ($ping -ne ('OK|' + $script:FixtureWindowModule)) {
+        throw ('the fixture-window shim imported but does not answer: ' + $ping)
+    }
+}
+
+# THE STATE, PARSED FROM ONE STRING. Read in VBA and returned as text, because
+# probe Run 8 proved `Worksheet.ProtectContents` across COM can be a terminating
+# PropertyNotFoundException on an object PowerShell has no type information for.
+function Get-BenchmarkProtectionState {
+    param($Excel)
+    $raw = [string]$Excel.Run('P10FW_State')
+    if ($raw -notlike 'OK|*') {
+        throw ('the workbook could not report its protection state: ' + $raw)
+    }
+    $state = @{}
+    foreach ($field in $raw.Substring(3).Split([char]124)) {
+        $pair = $field.Split([char]61)
+        if ($pair.Count -eq 2) { $state[$pair[0]] = $pair[1] }
+    }
+    foreach ($required in @('applied', 'depth', 'structure', 'sheets', 'protected')) {
+        if (-not $state.ContainsKey($required)) {
+            throw ('the protection state is missing ' + $required + ': ' + $raw)
+        }
+    }
+    return [pscustomobject]@{
+        Applied   = ([string]$state['applied'] -eq 'True')
+        Depth     = [int]$state['depth']
+        Structure = ([string]$state['structure'] -eq 'True')
+        Sheets    = [int]$state['sheets']
+        Protected = [int]$state['protected']
+        Raw       = $raw
+    }
+}
+
+# THE FULL ACCEPTED STATE, AGAINST THE DECLARED ONE. The sheet count comes from
+# `stage_b_manifest.json`'s protection projection, never from a literal here, so
+# a contract that gained a worksheet is a contract change rather than a silent
+# pass at the old number.
+function Assert-BenchmarkProtectionApplied {
+    param($Excel, $Manifest, [string]$Stage)
+    $expected = @($Manifest.protection.sheets).Count
+    $state = Get-BenchmarkProtectionState -Excel $Excel
+    $problems = @()
+    if (-not $state.Applied)                { $problems += 'the workbook does not report itself protected' }
+    if (-not $state.Structure)              { $problems += 'workbook structure protection is not applied' }
+    if ($state.Sheets -ne $expected)        { $problems += ('the workbook holds ' + [string]$state.Sheets +
+                                                            ' worksheets where the manifest declares ' +
+                                                            [string]$expected) }
+    if ($state.Protected -ne $expected)     { $problems += ([string]$state.Protected + ' of ' +
+                                                            [string]$expected + ' worksheets are protected') }
+    if ($state.Depth -ne 0)                 { $problems += ('the structural window is still open at depth ' +
+                                                            [string]$state.Depth) }
+    if ($problems.Count -gt 0) {
+        throw ('protection is not in the accepted state ' + $Stage + ': ' +
+               ($problems -join '; ') + '. Reported: ' + $state.Raw)
+    }
+    return $state
+}
+
+function Open-BenchmarkFixtureWindow {
+    param($Excel, $Manifest)
+    # THE STATE BEFORE IS PROVED FIRST. Opening a window over a workbook that was
+    # already unprotected would close onto a state nobody established.
+    $null = Assert-BenchmarkProtectionApplied -Excel $Excel -Manifest $Manifest `
+        -Stage 'before the fixture maintenance window was opened'
+    $reply = [string]$Excel.Run('P10FW_Begin')
+    if ($reply -notlike 'OK|*') {
+        throw ('the fixture maintenance window could not be opened: ' + $reply)
+    }
+    $state = Get-BenchmarkProtectionState -Excel $Excel
+    if ($state.Depth -ne 1) {
+        throw ('the fixture maintenance window opened to depth ' + [string]$state.Depth +
+               ', not 1. The benchmark opens exactly one outer window and closes it.')
+    }
+    # STRUCTURE PROTECTION IS NOT PART OF THE WINDOW AND MUST NOT MOVE.
+    if (-not $state.Structure) {
+        throw ('opening the fixture maintenance window released workbook structure ' +
+               'protection, which it must never do. Reported: ' + $state.Raw)
+    }
+    return $state
+}
+
+function Close-BenchmarkFixtureWindow {
+    param($Excel, $Manifest)
+    $reply = [string]$Excel.Run('P10FW_End')
+    if ($reply -notlike 'OK|*') {
+        throw ('the fixture maintenance window could not be closed and protection was ' +
+               'not restored: ' + $reply + '. No measurement may be taken from this ' +
+               'workbook.')
+    }
+    # AND THE OWNER'S WORD IS NOT THE END OF IT. `ProtectionEndStructural` already
+    # requires `ProtectionIsApplied` before reporting success; this asks the
+    # workbook again, independently, and counts the sheets.
+    return (Assert-BenchmarkProtectionApplied -Excel $Excel -Manifest $Manifest `
+        -Stage 'after the fixture maintenance window was closed')
+}
+
 function Get-IdColumnValues {
     param($Workbook, $Info)
     $out = @()
@@ -1535,6 +1706,15 @@ try {
     $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
     $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $inspection
 
+    Set-BenchmarkStage -Stage 'setup' -Action 'importing the fixture-window shim into the disposable project'
+    Import-BenchmarkFixtureWindow -Excel $excel -Workbook $wb -Manifest $manifest -ScriptDir $scriptDir
+    $protectionBefore = Assert-BenchmarkProtectionApplied -Excel $excel -Manifest $manifest `
+        -Stage 'as the workbook was opened'
+    Write-BenchmarkLine 'PROTECTION'
+    Write-BenchmarkLine '----------'
+    Write-BenchmarkLine ('  as opened            : ' + $protectionBefore.Raw)
+    Write-BenchmarkLine ''
+
     # --- THE SCENARIO, THROUGH THE ACCEPTED FIXTURE ------------------------
     # SETUP. Timed, reported, and part of no measurement. At three hundred
     # drivers over forty project years this is the expensive part of the run,
@@ -1545,13 +1725,30 @@ try {
     Set-BenchmarkOperationContext -Scenario $Scenario
     $model = New-BenchmarkModel -ScenarioSpec $scenarioSpec
     $fixtureWatch = [System.Diagnostics.Stopwatch]::StartNew()
-    $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `
-        -Inspection $inspection -Model $model
+    # THE WINDOW SPANS THE FIXTURE AND NOTHING ELSE.
+    #
+    # `finally` rather than a straight line, because the one outcome that must be
+    # impossible is a fixture that raised and left the workbook unprotected. If
+    # the fixture throws, the window still closes; if the close then fails too,
+    # its failure is the one that reaches the abandon path, because an
+    # unprotected workbook is the worse fact.
+    $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest
+    try {
+        $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `
+            -Inspection $inspection -Model $model
+    } finally {
+        $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest
+    }
+    # OUTSIDE THE WINDOW ON PURPOSE. This is a VALUE write to a named cell, which
+    # Benchmark Run 3 proved an external COM caller can make on a protected
+    # sheet, so it does not need the window and does not get it.
     Set-NamedValue -Workbook $wb `
         -DefinedName ([string]$simInspection.controls.random_seed.defined_name) `
         -Value ([double](Get-BenchmarkSeed))
     $fixtureWatch.Stop()
     $setupTimings.Add('scenario_fixture_ms', [double]$fixtureWatch.Elapsed.TotalMilliseconds)
+    Write-BenchmarkLine ('  after the fixture    : ' + $protectionAfter.Raw +
+                         '   [window closed and verified before any timed run]')
 
     # THE DIMENSIONS ARE READ BACK OUT OF THE WORKBOOK, not taken from the model.
     # What is timed is what the workbook holds.

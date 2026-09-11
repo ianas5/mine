@@ -1241,3 +1241,175 @@ back and **requires `$null`**, and its refusal names protection as a candidate
 cause. The PERF-SMALL baseline run is therefore the first observation either way:
 it clears and proceeds, or it stops with a sentence saying which cell refused.
 
+## Benchmark Run 4 — PERF-SMALL — ABORTED BUILDING THE SCENARIO
+
+**Harness commit:** `7077608`
+
+Stage A 351 passed, 0 failed. Stage-B bootstrap succeeded and protection was
+applied: 14 sheets, `ProtectStructure = True`, `UserInterfaceOnly = True`. The
+run passed the preflight, the bootstrap, the workbook open and the environment
+inventory, then aborted while constructing the fixture — before any timed run.
+
+```
+stage     : scenario
+doing     : building the PERF-SMALL fixture through the accepted production endpoints
+scenario  : PERF-SMALL
+exception : System.Runtime.InteropServices.COMException
+message   : The cell or chart you're trying to change is on a protected sheet.
+            To make a change, unprotect the sheet.
+statement : $null = $cell.ClearContents()
+
+BASELINE STATUS    : ABORTED BEFORE A COMPLETE BASELINE
+valid warm medians : 0 of 11 planned run(s)
+```
+
+Shutdown and COM release were clean.
+
+**Status: 0 of 11 valid warm medians. NOT a baseline, NOT a partial baseline,
+NOT a performance sample.**
+
+### What this run established
+
+**External COM `ClearContents` under worksheet protection is RUNTIME-REFUTED.**
+The settlement at `7077608` recorded honestly that this had not been observed and
+that it was an inference from the proved capability split. The inference was
+wrong, the reset's own read-back is what turned it into a named statement rather
+than a silent stall, and the correction it was part of — reset by content, no
+structural deletion — is unaffected and stays.
+
+**No production defect is established.** The failing call was the harness's, from
+an out-of-process PowerShell COM client. Production VBA was not reached.
+
+**It does not contradict the Runtime Protection Reconciliation.** That evidence
+was VBA executing *inside* the workbook, where `UserInterfaceOnly:=True` means
+what it says. This is an external automation client, and the capability split for
+such a client is finer than the one recorded for VBA:
+
+| External COM caller, protected sheet | Result | Evidence |
+|---|---|---|
+| `Range.Value2 = <value>` on a locked cell | **permitted** | Benchmark Run 3 — four Setup scalars written and read back |
+| `Range.ClearContents()` | **refused** | Benchmark Run 4, above |
+| `ListRow.Delete` / `ListRows.Add` | **refused** | Benchmark Run 3; probe Runs 5–10 |
+
+Those three lines are now all runtime facts. None of them is inferred.
+
+---
+
+## Benchmark fixture maintenance window — SETTLED IN SOURCE — NO WINDOWS
+
+Settles Benchmark Run 4. **No Windows was executed for this round.**
+
+### The call path
+
+```
+phase10_benchmark.ps1   Open-BenchmarkFixtureWindow
+                          $excel.Run('P10FW_Begin')
+phase10_fixture_window.bas   P10FW_Begin
+                               modProtection.ProtectionBeginStructural(detail)
+   ... Set-Phase5Fixture ...
+phase10_benchmark.ps1   Close-BenchmarkFixtureWindow
+                          $excel.Run('P10FW_End')
+phase10_fixture_window.bas   P10FW_End
+                               modProtection.ProtectionEndStructural(detail)
+                          Assert-BenchmarkProtectionApplied
+                            $excel.Run('P10FW_State')
+```
+
+### Why a shim, and why it is not a new production API
+
+`modProtection`'s two mutators are `Public Function` in a standard module and are
+reachable by name, but both take `ByRef detail As String`. **Every** procedure any
+accepted harness in this tree has ever invoked through `Application.Run` —
+production `PCCM_*` and Gate-B `GBD_*` alike — takes `ByVal` parameters or none.
+There is no precedent here for marshalling a `ByRef` out-parameter across that
+boundary, and the failure mode would be a lost or mangled diagnostic on the one
+call whose failure must abort the run.
+
+`bootstrap/windows/phase10_fixture_window.bas` owns the `String` inside VBA and
+returns a `String`, which is the shape that is proven. It is **harness-owned**: it
+lives beside `phase5_gate_b_diagnostics.bas`, which Gate B has imported into the
+disposable workbook by this same mechanism since Phase 5; it is never declared in
+`stage_b_manifest.json`, and the runner refuses to import it if it ever is. It
+holds no protection policy — no `.Protect`, no `.Unprotect`, no branch of its own
+on protection state. It forwards, and it reports.
+
+It adds **no new machine dependency**: `build_stage_b.ps1`, which this runner
+already invokes on every run, reaches `$wb.VBProject` to build the workbook at
+all.
+
+### Workbook structure protection is never released
+
+`ProtectionRelease` — the maintenance path — is the **only** procedure in
+production that calls `ThisWorkbook.Unprotect`, and a control pins that count at
+one. Neither the runner nor the shim names it in code. `ProtectionBeginStructural`
+releases worksheet protection only, and the runner refuses outright if
+`ProtectStructure` is not `True` on either side of the window.
+
+### The writes that need the window, and the ones that do not
+
+| Fixture step | Write | Needs the window |
+|---|---|---|
+| A | `PCCM_DeleteCostLineById` / `PCCM_DeleteRiskById` | production endpoints — they open their own |
+| A, B | `Set-NamedValue` — counters, timeline, discount rate | **no** — `Value2 =`, permitted (Run 3) |
+| C | `Set-TableCell -Value $null` → `ClearContents` on `tblFXRates` | **YES — this is the Run 4 abort** |
+| C | `Set-Phase5TypedCell` — the locked FX seed row | `Value2 =`, but inside the same span |
+| C | `Set-TableCell` — the appended FX row | `Value2 =`, but inside the same span |
+| D | `Set-TableCell -Value $null` → `ClearContents` on `tblInflationProfiles` | **YES — the next abort** |
+| E, F | `PCCM_ApplyTimeline`, `PCCM_AddCostLine`, `PCCM_AddRisk` | production endpoints, nested inside |
+| G | `Write-Phase5InflationRates`, `Write-Phase5Weights` | `Value2 =`, inside the same span |
+| — | the random seed, after the fixture | **no — deliberately left outside** |
+
+The window spans `Set-Phase5Fixture` and nothing else. It cannot be narrowed
+further without editing `phase5_gate_b_scenarios.ps1`, whose steps interleave
+`ClearContents` with production endpoint calls, and that file is not edited.
+
+### Setup only, and provably outside every measurement
+
+The window opens immediately before `Set-Phase5Fixture` and closes immediately
+after it, inside the fixture stopwatch — whose figure the runner already reports
+as setup and uses in no measurement. It is closed, and the closure verified,
+before the run loop exists. Controls read the ORDER off positions in the source
+rather than off a comment promising it.
+
+The close sits in a `finally`, so a fixture that raises still closes the window;
+if the close then fails too, its failure is the one reported, because an
+unprotected workbook is the worse fact.
+
+### What is verified, and the one thing that cannot be
+
+Before opening and after closing: the workbook reports itself protected
+(`modProtection.ProtectionIsApplied` — production's own single fact), every
+worksheet is protected, `ProtectStructure` is `True`, the structural depth is `0`,
+and the worksheet count matches `stage_b_manifest.json`'s protection projection —
+read from the projection, never from the literal 14.
+
+The state is read **inside VBA** and returned as one string. Probe Run 8 failed
+reading `Worksheet.ProtectContents` across COM: PowerShell had no type information
+for the object and StrictMode turned a missing member into a terminating
+`PropertyNotFoundException`. In VBA the property binds at compile time and that
+class is gone.
+
+**`UserInterfaceOnly` cannot be read back.** Excel exposes no property for it — it
+is a write-only argument to `Worksheet.Protect`. It is therefore established by
+CONSTRUCTION, not by inspection: the outermost close routes through
+`modProtection.ProtectionApply`, the same single function `Workbook_Open` uses,
+which unprotects and re-protects every sheet with `UserInterfaceOnly:=True`, and
+`ProtectionEndStructural` then requires `ProtectionIsApplied` before reporting
+success. That is the accepted architecture's own definition of restored, and this
+record says plainly that it is a construction argument rather than a read-back.
+
+### Any failure aborts before timing
+
+Every refusal is a `throw`, and a throw inside the measurement session sets
+`$abandoned`, which forces `$runComplete` false, which makes the status ABORTED
+and the exit code 1. No benchmark result can be recorded from a workbook whose
+protection was not restored and verified.
+
+### Nothing about what is measured changed
+
+Scenario identity, driver counts, project years, the iteration matrix, cold/warm
+counts, the timing boundaries and the baseline policy are untouched. The
+content-based FX reset stays and the structural `ListRow.Delete` stays gone — a
+mutation that restores it under the open window, where it would now succeed, is
+caught.
+

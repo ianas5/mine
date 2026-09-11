@@ -1796,6 +1796,352 @@ def test_139_the_semantic_proof_is_recorded_with_the_consumers_it_rests_on() -> 
     assert "No Windows was executed for" in section
 
 
+SHIM = BOOTSTRAP / "phase10_fixture_window.bas"
+SHIM_MODULE = "modPhase10FixtureWindow"
+
+# THE PRODUCTION OWNER. Read here, never edited - these controls prove the
+# harness USES it rather than replacing it.
+PROTECTION_OWNER = PCCM_ROOT / "src" / "vba" / "modProtection.bas"
+
+
+def _shim() -> str:
+    if "shim" not in _MEMO:
+        _MEMO["shim"] = SHIM.read_text(encoding="utf-8")
+    return _MEMO["shim"]
+
+
+def _shim_code() -> str:
+    """The shim with its comment lines removed.
+
+    SAME RULE AS `_code`, AND FOR THE SAME REASON. The shim's header explains
+    precisely which protection calls it must never make, and it has to name them
+    to do that. A ban satisfied by the paragraph explaining the ban is no ban, so
+    everything that asserts what the shim DOES reads this.
+    """
+    if "shim_code" not in _MEMO:
+        _MEMO["shim_code"] = "\n".join(
+            line for line in _shim().splitlines() if not line.strip().startswith("'"))
+    return _MEMO["shim_code"]
+
+
+def _manifest_json() -> dict:
+    if "manifest_json" not in _MEMO:
+        _MEMO["manifest_json"] = json.loads(
+            (BUILD / "stage_b_manifest.json").read_text(encoding="utf-8"))
+    return _MEMO["manifest_json"]
+
+
+# ===========================================================================
+# L. THE FIXTURE MAINTENANCE WINDOW
+# ===========================================================================
+# PERF-SMALL at 7077608 aborted before any timed run, on `$cell.ClearContents()`,
+# with "The cell or chart you're trying to change is on a protected sheet." An
+# external COM caller cannot clear a cell on a protected sheet - though Run 3
+# proved it CAN write a value to one - so the fixture needs worksheet protection
+# released around its writes, and around nothing else.
+def test_150_the_window_is_productions_own_and_the_harness_holds_no_policy() -> None:
+    """ONE OWNER, STILL. The correction would be worthless if it bought the
+    fixture a window by writing a second protection implementation in PowerShell:
+    two authorities disagree the first time one of them is not reached.
+
+    So the runner contains no Protect/Unprotect of any kind, and the shim
+    contains none either - it forwards to `modProtection` and returns what the
+    owner said."""
+    code = _code()
+    for banned in (".Unprotect", ".Protect(", "Protect Structure", "ProtectStructure =",
+                   "UserInterfaceOnly:="):
+        assert banned not in code, f"the runner implements protection itself: {banned}"
+    # THE RUNNER MAY NAME THE FLAG IN PROSE - it explains what the close restores -
+    # but it may not set one.
+    assert "UserInterfaceOnly" in _runner()
+    shim = _shim_code()
+    for banned in (".Unprotect", ".Protect ", ".Protect(", "UserInterfaceOnly:="):
+        assert banned not in shim, f"the shim implements protection itself: {banned}"
+    for forwarded in ("modProtection.ProtectionBeginStructural(detail)",
+                      "modProtection.ProtectionEndStructural(detail)",
+                      "modProtection.ProtectionIsApplied()",
+                      "modProtection.ProtectionStructuralDepth()"):
+        assert forwarded in shim, f"the shim does not forward to {forwarded}"
+    # AND THE SHIM DECIDES NOTHING. Every executable line is a forward, a read or
+    # the string it returns: no branch of its own on protection state, and no
+    # loop over worksheets except the one that COUNTS them for the diagnostic.
+    assert "If modProtection.ProtectionBeginStructural(detail) Then" in shim
+    assert "If modProtection.ProtectionEndStructural(detail) Then" in shim
+
+
+def test_151_workbook_structure_protection_is_never_released() -> None:
+    """THE ENVELOPE IS NOT WIDENED. `ProtectionRelease` is the MAINTENANCE path
+    and it alone calls `ThisWorkbook.Unprotect`; the structural window never
+    touches the structure flag. Nothing in this harness may reach the first one,
+    and the runner refuses a state where the flag moved."""
+    owner = PROTECTION_OWNER.read_text(encoding="utf-8")
+    # THE READING THIS RESTS ON, PROVED IN THE OWNER RATHER THAN ASSUMED.
+    assert owner.count("ThisWorkbook.Unprotect") == 1, (
+        "production gained another workbook-structure release")
+    release = owner[owner.index("Public Function ProtectionRelease"):]
+    assert "ThisWorkbook.Unprotect" in release, "the one release moved out of ProtectionRelease"
+    begin = owner[owner.index("Public Function ProtectionBeginStructural"):
+                  owner.index("Public Function ProtectionEndStructural")]
+    assert "ThisWorkbook.Unprotect" not in begin, "the structural window now releases structure"
+
+    # THE CALL, NOT THE WORD. Both files NAME `ProtectionRelease` in the paragraph
+    # that explains why they must never call it, and naming it is the opposite of
+    # calling it - so the ban is stated over the code with comments removed.
+    for text, where in ((_code(), "the runner"), (_shim_code(), "the shim")):
+        assert "ProtectionRelease" not in text, f"{where} reaches the maintenance release path"
+    # AND THE EXPLANATION IS STILL THERE TO BE READ.
+    assert "ProtectionRelease" in _shim(), "the shim no longer says why it must not release"
+    # AND THE RUNNER REFUSES A RUN WHERE THE FLAG MOVED, on both sides.
+    opener = _function(_code(), "Open-BenchmarkFixtureWindow")
+    assert "if (-not $state.Structure) {" in opener
+    assert "released workbook structure" in opener
+    assert "if (-not $state.Structure)" in _function(_code(), "Assert-BenchmarkProtectionApplied")
+
+
+def test_152_the_window_opens_before_the_fixture_and_closes_before_any_timed_run() -> None:
+    """ORDER IS THE WHOLE SAFETY PROPERTY. Opened after the first protected write
+    is no window at all; left open into the run loop means every timed operation
+    is measured on an unprotected workbook, which is not the delivered product.
+
+    Read off positions in the runner, because a comment promising an order is not
+    the order."""
+    code = _code()
+    opened = code.index("Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")
+    fixture = code.index("$null = Set-Phase5Fixture -Excel $excel")
+    closed = code.index("Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")
+    loop = code.index("foreach ($run in $plannedRuns) {")
+    assert opened < fixture < closed < loop, (opened, fixture, closed, loop)
+    # THE FIXTURE STOPWATCH BOUNDS BOTH, so the window's cost is reported as the
+    # setup it is rather than disappearing.
+    started = code.index("$fixtureWatch = [System.Diagnostics.Stopwatch]::StartNew()")
+    stopped = code.index("$fixtureWatch.Stop()")
+    assert started < opened and closed < stopped
+    assert "$setupTimings.Add('scenario_fixture_ms'," in code
+    # AND OPENING MEANS OPENING ONTO A PROVED STATE. A window opened over a
+    # workbook that was already unprotected closes onto a state nobody
+    # established, and the run would then report a restoration it never made.
+    opener = _function(code, "Open-BenchmarkFixtureWindow")
+    assert "Assert-BenchmarkProtectionApplied" in opener, (
+        "the window opens without first proving the accepted protection state")
+    assert "before the fixture maintenance window was opened" in opener
+    # THE OPEN IS PROVED TO HAVE TAKEN, at the one depth this runner uses.
+    assert "if ($state.Depth -ne 1) {" in opener
+
+
+def test_153_a_fixture_that_raises_still_closes_the_window() -> None:
+    """THE ONE OUTCOME THAT MUST BE IMPOSSIBLE is a raised fixture that leaves the
+    workbook unprotected and a later run recording numbers from it. The close is
+    in a `finally`, so it happens on the throwing path too - and a close that
+    fails there raises in turn, which is right: an unprotected workbook is the
+    worse fact and should be the reported one."""
+    code = _code()
+    region = code[code.index("$null = Open-BenchmarkFixtureWindow"):
+                  code.index("$fixtureWatch.Stop()")]
+    assert "    try {" in region and "} finally {" in region, region
+    body = region[region.index("try {"):region.index("} finally {")]
+    trailer = region[region.index("} finally {"):]
+    assert "Set-Phase5Fixture" in body, "the fixture is not inside the guarded region"
+    assert "Close-BenchmarkFixtureWindow" in trailer, "the close is not in the finally"
+    assert "Close-BenchmarkFixtureWindow" not in body
+
+
+def test_154_the_close_is_verified_against_the_declared_sheet_count() -> None:
+    """"IT SAID OK" IS NOT RESTORATION. `ProtectionEndStructural` already requires
+    `ProtectionIsApplied` before reporting success; the harness asks the workbook
+    again, independently, and counts the sheets - against the manifest's own
+    protection projection rather than a literal, so a contract that gained a
+    worksheet is a contract change and not a silent pass at the old number."""
+    closer = _function(_code(), "Close-BenchmarkFixtureWindow")
+    assert "Assert-BenchmarkProtectionApplied" in closer
+    assert "notlike 'OK|*'" in closer
+    assert "No measurement may be taken from this" in closer
+
+    guard = _function(_code(), "Assert-BenchmarkProtectionApplied")
+    assert "@($Manifest.protection.sheets).Count" in guard, (
+        "the sheet count is not read from the declared projection")
+    assert "14" not in guard, "the sheet count is hard-coded"
+    for required in ("$state.Applied", "$state.Structure", "$state.Sheets",
+                     "$state.Protected", "$state.Depth"):
+        assert required in guard, f"the verification does not check {required}"
+    protection = _manifest_json()["protection"]
+    assert len(protection["sheets"]) == 14, protection["sheets"]
+    assert protection["protect_structure"] is True
+    assert protection["user_interface_only"] is True
+
+
+def test_155_a_failed_open_or_close_reaches_the_abandon_path() -> None:
+    """AN ABORT IS NOT A SLOW RUN. Every refusal here is a `throw`, and a throw
+    inside the measurement session sets `$abandoned`, which forces `$runComplete`
+    false, which makes the status ABORTED and the exit code 1. A protection
+    failure therefore cannot be reported as a baseline."""
+    code = _code()
+    for name in ("Open-BenchmarkFixtureWindow", "Close-BenchmarkFixtureWindow",
+                 "Assert-BenchmarkProtectionApplied", "Import-BenchmarkFixtureWindow",
+                 "Get-BenchmarkProtectionState"):
+        assert "throw (" in _function(code, name), f"{name} has no refusal"
+    assert "$abandoned = [string]$failure['message']" in code
+    assert "$runComplete = ([bool](([string]::IsNullOrWhiteSpace($abandoned)) -and" in code
+    assert "if (-not $runComplete) {" in code and "exit 1" in code
+
+
+def test_156_the_shim_is_test_only_and_never_production() -> None:
+    """A MODULE IMPORTED OVER PRODUCTION WOULD BE PRODUCTION. It lives in
+    `bootstrap/windows` beside the Gate-B diagnostics module that has used this
+    same mechanism since Phase 5, it is imported into the DISPOSABLE copy, and the
+    runner refuses to import it if the manifest ever declares it."""
+    assert SHIM.parent.name == "windows" and SHIM.parent.parent.name == "bootstrap"
+    assert not (PCCM_ROOT / "src" / "vba" / "phase10_fixture_window.bas").exists()
+    declared = [str(entry["name"]) for entry in _manifest_json()["vba"]["modules"]]
+    assert SHIM_MODULE not in declared, "the shim is declared as a production module"
+    assert SHIM_MODULE not in _manifest_text()
+
+    importer = _function(_code(), "Import-BenchmarkFixtureWindow")
+    assert "$declared -contains $script:FixtureWindowModule" in importer
+    assert "will not import a test module over production" in importer
+    # THE IMPORT IS PROVED TO HAVE WORKED, not assumed from a lack of exception.
+    assert "$Excel.Run('P10FW_Ping')" in importer
+    assert "imported but does not answer" in importer
+    # AND IT ADDS NO NEW MACHINE DEPENDENCY: the Stage-B bootstrap this runner
+    # already invokes reaches VBProject too, so a host that could not import
+    # could not have produced the workbook in the first place.
+    assert "$wb.VBProject" in (BOOTSTRAP / "build_stage_b.ps1").read_text(encoding="utf-8")
+
+
+def test_157_the_protection_state_is_read_in_vba_not_across_com() -> None:
+    """PROBE RUN 8, NOT REPEATED. Reading `Worksheet.ProtectContents` across COM
+    raised a terminating PropertyNotFoundException on an object PowerShell had no
+    type information for. Inside VBA the property binds at compile time, so the
+    whole class is gone - and the harness parses one string instead."""
+    code = _code()
+    assert "ProtectContents" not in code, "the runner reads ProtectContents across COM again"
+    assert "ProtectContents" in _shim(), "the shim no longer reads the sheets it counts"
+    reader = _function(code, "Get-BenchmarkProtectionState")
+    assert "$Excel.Run('P10FW_State')" in reader
+    assert "the protection state is missing" in reader
+    for required in ("'applied'", "'depth'", "'structure'", "'sheets'", "'protected'"):
+        assert required in reader, required
+
+
+def test_158_the_window_wraps_the_fixture_and_no_other_setup() -> None:
+    """MINIMAL, AND THAT IS CHECKED. The seed write after the fixture is a VALUE
+    write to a named cell, which Run 3 proved an external COM caller can make on a
+    protected sheet - so it stays outside. So do the Stage-B bootstrap, the
+    workbook open, the environment inventory and the dimension read-back."""
+    code = _code()
+    region = code[code.index("$null = Open-BenchmarkFixtureWindow"):
+                  code.index("$protectionAfter = Close-BenchmarkFixtureWindow")]
+    assert "Set-Phase5Fixture" in region
+    for outside in ("Set-NamedValue", "Get-IdColumnValues", "build_stage_b",
+                    "Get-BenchmarkEnvironment", "Invoke-BenchmarkOperation"):
+        assert outside not in region, f"{outside} was wrapped and does not need the window"
+    assert code.count("Open-BenchmarkFixtureWindow -Excel") == 1
+    assert code.count("Close-BenchmarkFixtureWindow -Excel") == 1
+
+
+def test_159_the_window_did_not_move_the_fixture_or_the_matrix() -> None:
+    """A PROTECTION CORRECTION IS NO OCCASION TO CHANGE WHAT IS MEASURED. The
+    content-based reset stays, the structural delete stays gone, and the scenario
+    identity, dimensions, iteration matrix and cold/warm counts are untouched."""
+    reset = _fx_reset()
+    assert "-Value $null" in reset and ".Delete()" not in reset
+    assert "for ($row = $seedRows + 1; $row -le $rows; $row++) {" in reset
+    code = _code()
+    assert ".ListRows.Add" not in code and ".Delete()" not in code
+
+    sizes = {entry["title"]: (entry["drivers"], entry["years"])
+             for entry in _plan()["scenarios"]}
+    assert sizes == CONTRACT_DIMENSIONS, sizes
+    assert _scenario("PERF-SMALL")["iterations"] == [10000, 50000, 100000]
+    assert [entry["id"] for entry in _plan()["scenarios"]] == [
+        "PERF-SMALL", "PERF-MEDIUM", "PERF-LARGE"]
+
+
+def _run_evidence_section(heading: str) -> str:
+    """One section of the append-only Windows record, heading to next heading."""
+    text = RUN_EVIDENCE.read_text(encoding="utf-8")
+    start = text.index(heading)
+    tail = text[start + len(heading):]
+    cut = tail.find("\n## ")
+    return heading + (tail if cut == -1 else tail[:cut])
+
+
+def test_160_benchmark_run_4_is_recorded_exactly_as_it_happened() -> None:
+    """THE RUN THAT REFUTED THE INFERENCE. It has to be on the record with its
+    own numbers, because the settlement it overturned is on the record with
+    its."""
+    section = _run_evidence_section("## Benchmark Run 4")
+    for fact in ("7077608", "351 passed, 0 failed", "Stage-B bootstrap succeeded",
+                 "$null = $cell.ClearContents()",
+                 "The cell or chart you're trying to change is on a protected sheet",
+                 "ABORTED BEFORE A COMPLETE BASELINE",
+                 "0 of 11 planned run(s)",
+                 "Shutdown and COM release were clean"):
+        assert fact in section, f"the Run 4 record omits: {fact}"
+    assert "RUNTIME-REFUTED" in section
+    assert "No production defect is established" in section
+    # AND IT IS NOT DRESSED UP AS A PARTIAL RESULT. The wording is Run 3's, which
+    # settled how an aborted benchmark is described, so the two records refuse the
+    # same three readings in the same words.
+    for overclaim in ("NOT a baseline", "NOT a partial baseline",
+                      "NOT a performance sample"):
+        assert overclaim in section, overclaim
+    run3 = _run_evidence_section("## Run 3 — PERF-SMALL")
+    for overclaim in ("NOT a baseline", "NOT a partial baseline",
+                      "NOT a performance sample"):
+        assert overclaim in run3, f"the precedent wording moved: {overclaim}"
+
+
+def test_161_the_capability_split_for_an_external_caller_is_recorded_as_facts() -> None:
+    """THREE LINES, ALL OBSERVED, NONE INFERRED. An external COM client can write
+    a value to a locked cell and cannot clear one - that is finer than the split
+    recorded for VBA inside the workbook, and writing it down is the difference
+    between a settled fact and a guess that happens to be right so far."""
+    section = _run_evidence_section("## Benchmark Run 4")
+    assert "Range.Value2" in section and "Range.ClearContents()" in section
+    assert "ListRow.Delete" in section
+    assert "permitted" in section and "refused" in section
+    assert "None of them is inferred" in section
+    # THE RECONCILIATION IS NOT CONTRADICTED, AND THE DISTINCTION IS NAMED.
+    assert "does not contradict the Runtime Protection Reconciliation" in section
+    assert "inside" in section and "external automation client" in section
+
+
+def test_162_the_superseded_inference_is_left_standing_as_history() -> None:
+    """NO FALSE REWRITE. The settlement at 7077608 said plainly that ClearContents
+    under protection had not been observed and that its permission was an
+    inference. That sentence was true of what was known; editing it out now would
+    be rewriting the project's own record of how it learned this."""
+    earlier = _run_evidence_section("## Benchmark fixture under protection —")
+    assert "not yet been observed" in earlier, (
+        "the earlier honest limitation was edited away")
+    assert "inference from the proved split, not an observation" in earlier
+    # AND THE NEW SECTION SAYS THE INFERENCE WAS WRONG, rather than pretending the
+    # old one had always agreed.
+    section = _run_evidence_section("## Benchmark Run 4")
+    assert "The inference was" in section and "wrong" in section
+
+
+def test_163_the_window_record_carries_its_path_its_writes_and_its_limit() -> None:
+    """A MAINTENANCE WINDOW IS THE KIND OF THING THAT GETS WIDENED LATER. The
+    record names the exact call path, every fixture write that needs it, the one
+    that deliberately does not, and the single property that is established by
+    construction because Excel exposes no way to read it."""
+    section = _run_evidence_section("## Benchmark fixture maintenance window")
+    for step in ("P10FW_Begin", "P10FW_End", "P10FW_State",
+                 "ProtectionBeginStructural", "ProtectionEndStructural"):
+        assert step in section, f"the call path omits {step}"
+    assert "ByRef" in section and "no precedent" in section
+    assert "ThisWorkbook.Unprotect" in section
+    assert "structure protection is never released" in section.lower()
+    # THE WRITE AUDIT, INCLUDING THE ONE LEFT OUTSIDE.
+    assert "tblFXRates" in section and "tblInflationProfiles" in section
+    assert "deliberately left outside" in section
+    # AND THE HONEST LIMIT, AGAIN NAMED RATHER THAN GLOSSED.
+    assert "cannot be read back" in section
+    assert "construction argument rather than a read-back" in section
+    assert "No Windows was executed for" in section
+
+
 RESOLUTION_AUDIT = PCCM_ROOT / "tests" / "powershell_command_resolution_audit.ps1"
 PWSH = "/opt/pwsh/pwsh"
 

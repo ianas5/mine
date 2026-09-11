@@ -1206,6 +1206,238 @@ def test_143_measuring_the_fixture_build_as_a_sample_is_rejected() -> None:
         "    $sampleMs = [double]$fixtureWatch.Elapsed.TotalMilliseconds")
 
 
+# ===========================================================================
+# M. THE FIXTURE MAINTENANCE WINDOW
+# ===========================================================================
+# Every mutation here is a plausible way to make the window look right while it
+# leaves the workbook unprotected under a measurement, or hands the fixture a
+# second protection authority.
+def _shim_mutation(expected: str, before: str, after: str) -> None:
+    """Damage the VBA shim's SOURCE, and prove the anchor still matched."""
+    original = conformance._shim()
+    damaged = original.replace(before, after, 1)
+    if damaged == original:
+        raise RuntimeError(
+            f"the mutation changed nothing: {before[:60]!r} is no longer in the shim")
+    restore = _install({"shim": damaged})
+    try:
+        conformance._MEMO.pop("shim_code", None)
+        refused = _run_battery()
+    finally:
+        restore()
+        conformance._MEMO.pop("shim_code", None)
+    assert refused, "the mutation survived the whole conformance battery"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+def test_150_unprotecting_from_powershell_instead_of_the_owner_is_rejected() -> None:
+    """A SECOND PROTECTION AUTHORITY. Two of them disagree the first time one is
+    not reached, which is precisely the state the single-owner rule exists to
+    prevent - and it would also skip the depth counter production relies on."""
+    _runner_mutation(
+        "test_150",
+        "    $reply = [string]$Excel.Run('P10FW_Begin')",
+        "    foreach ($ws in $Excel.ActiveWorkbook.Worksheets) { $ws.Unprotect() }\n"
+        "    $reply = [string]$Excel.Run('P10FW_Begin')")
+
+
+def test_151_reaching_the_maintenance_release_path_is_rejected() -> None:
+    """`ProtectionRelease` RELEASES WORKBOOK STRUCTURE - `ThisWorkbook.Unprotect`.
+    The structural window never touches it, no evidence asks for it, and a
+    benchmark is not the place to widen the envelope."""
+    _shim_mutation(
+        "test_151",
+        "    If modProtection.ProtectionBeginStructural(detail) Then",
+        "    If modProtection.ProtectionRelease(detail) Then")
+
+
+def test_152_letting_the_structure_flag_move_is_rejected() -> None:
+    """STRUCTURE PROTECTION MUST BE TRUE ON BOTH SIDES OF THE WINDOW. A run that
+    stopped checking would not notice the one change this correction promised
+    never to make."""
+    _runner_mutation(
+        "test_151",
+        "    if (-not $state.Structure) {\n"
+        "        throw ('opening the fixture maintenance window released workbook structure ' +",
+        "    if ($false) {\n"
+        "        throw ('opening the fixture maintenance window released workbook structure ' +")
+
+
+def test_153_closing_the_window_after_the_timed_runs_is_rejected() -> None:
+    """EVERY TIMED OPERATION WOULD THEN BE MEASURED ON AN UNPROTECTED WORKBOOK,
+    which is not the product that ships. The numbers would be real and would
+    describe something nobody delivers.
+
+    MOVED BY LINE, NOT BY TEXT. The close sits inside a `finally` whose exact
+    indentation a reformat could change; matching the statement rather than the
+    block is what makes this mutation survive an edit to its surroundings - and a
+    mutation that silently added a SECOND close instead of moving the first would
+    prove nothing at all."""
+    original = conformance._runner()
+    lines = original.split("\n")
+    call = "Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest"
+    held = [line for line in lines if call in line]
+    assert len(held) == 1, held
+    kept = [line for line in lines if call not in line]
+    assert len(kept) == len(lines) - 1
+
+    after_loop = "    $excel.Run('PCCM_AutomationEnd') | Out-Null"
+    assert kept.count(after_loop) == 1, kept.count(after_loop)
+    moved = []
+    for line in kept:
+        if line == after_loop:
+            moved.append("    $protectionAfter = Close-BenchmarkFixtureWindow "
+                         "-Excel $excel -Manifest $manifest")
+        moved.append(line)
+    damaged = "\n".join(moved)
+    assert damaged.count(call) == 1, "the close was duplicated rather than moved"
+    _detects_source("test_152", damaged)
+
+
+def test_154_dropping_the_finally_that_closes_on_a_raise_is_rejected() -> None:
+    """A FIXTURE THAT RAISES WOULD LEAVE THE WORKBOOK UNPROTECTED, and the next
+    thing to touch it would be a timed run."""
+    _runner_mutation(
+        "test_153",
+        "    try {\n"
+        "        $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `\n"
+        "            -Inspection $inspection -Model $model\n"
+        "    } finally {\n"
+        "        $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest\n"
+        "    }",
+        "    $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `\n"
+        "        -Inspection $inspection -Model $model\n"
+        "    $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")
+
+
+def test_155_trusting_the_owners_ok_without_re_verifying_is_rejected() -> None:
+    """"IT SAID OK" IS NOT RESTORATION. The independent count is the only thing
+    that would catch a sheet that came back unprotected while the owner still
+    reported success."""
+    _runner_mutation(
+        "test_154",
+        "    return (Assert-BenchmarkProtectionApplied -Excel $Excel -Manifest $Manifest `\n"
+        "        -Stage 'after the fixture maintenance window was closed')",
+        "    return (Get-BenchmarkProtectionState -Excel $Excel)")
+
+
+def test_156_hard_coding_the_sheet_count_is_rejected() -> None:
+    """THE COUNT COMES FROM THE MANIFEST'S PROTECTION PROJECTION. A literal would
+    keep passing at fourteen after the contract declared a fifteenth sheet, and
+    the unprotected one would be the new one."""
+    _runner_mutation(
+        "test_154",
+        "    $expected = @($Manifest.protection.sheets).Count",
+        "    $expected = 14")
+
+
+def test_157_continuing_after_a_failed_close_is_rejected() -> None:
+    """A PROTECTION FAILURE MUST ABORT BEFORE TIMING. Warning and carrying on
+    would publish a baseline taken from a workbook whose protection nobody
+    restored."""
+    _runner_mutation(
+        "test_155",
+        "        throw ('the fixture maintenance window could not be closed and protection was ' +",
+        "        Write-Host ('the fixture maintenance window could not be closed: ' + $reply)\n"
+        "        return (Get-BenchmarkProtectionState -Excel $Excel)\n"
+        "        $unreachable = ('the fixture maintenance window could not be closed: ' +")
+
+
+def test_158_skipping_the_pre_open_protection_check_is_rejected() -> None:
+    """OPENING A WINDOW OVER AN ALREADY-UNPROTECTED WORKBOOK would close onto a
+    state nobody established, and the run would report a restoration it never
+    performed."""
+    _runner_mutation(
+        "test_152",
+        "    $null = Assert-BenchmarkProtectionApplied -Excel $Excel -Manifest $Manifest `\n"
+        "        -Stage 'before the fixture maintenance window was opened'",
+        "    $null = Get-BenchmarkProtectionState -Excel $Excel")
+
+
+def test_159_importing_the_shim_over_a_declared_production_module_is_rejected() -> None:
+    """A MODULE THE MANIFEST DECLARES IS PRODUCTION, and importing one at runtime
+    would be replacing production rather than adding a test surface."""
+    _runner_mutation(
+        "test_156",
+        "    if ($declared -contains $script:FixtureWindowModule) {",
+        "    if ($false) {")
+
+
+def test_160_assuming_the_import_worked_is_rejected() -> None:
+    """AN IMPORT THAT RAISED NOTHING AND A PROJECT THAT WILL CALL IT are different
+    things - Gate-B run 7 met a project that answered one call while an unreached
+    procedure still held a declaration the parser rejected."""
+    _runner_mutation(
+        "test_156",
+        "    $ping = [string]$Excel.Run('P10FW_Ping')",
+        "    $ping = 'OK|' + $script:FixtureWindowModule")
+
+
+def test_161_reading_protectcontents_across_com_again_is_rejected() -> None:
+    """PROBE RUN 8'S DEFECT, PUT BACK. `Worksheet.ProtectContents` on an object
+    PowerShell has no type information for is a terminating
+    PropertyNotFoundException under StrictMode 2.0."""
+    _runner_mutation(
+        "test_157",
+        "    $raw = [string]$Excel.Run('P10FW_State')",
+        "    $raw = [string]$Excel.ActiveWorkbook.Worksheets.Item(1).ProtectContents")
+
+
+def test_162_defaulting_a_missing_protection_field_is_rejected() -> None:
+    """A MISSING FIELD IS NOT A FALSE ONE. Defaulting `protected` would let a
+    state string that never carried the count read as a full house."""
+    _runner_mutation(
+        "test_157",
+        "        if (-not $state.ContainsKey($required)) {\n"
+        "            throw ('the protection state is missing ' + $required + ': ' + $raw)\n"
+        "        }",
+        "        if (-not $state.ContainsKey($required)) { $state[$required] = 'True' }")
+
+
+def test_163_wrapping_the_whole_run_in_the_window_is_rejected() -> None:
+    """THE WINDOW IS SETUP ONLY. Widening it to cover work that does not need it -
+    here the seed write, which Run 3 proved an external COM caller can make on a
+    protected sheet - is how a maintenance window becomes an unprotected run."""
+    _runner_mutation(
+        "test_158",
+        "    } finally {\n"
+        "        $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest\n"
+        "    }",
+        "        Set-NamedValue -Workbook $wb -DefinedName 'nmSeed' -Value ([double]1)\n"
+        "    } finally {\n"
+        "        $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest\n"
+        "    }")
+
+
+def test_164_restoring_the_structural_delete_under_the_window_is_rejected() -> None:
+    """THE WINDOW IS NOT A LICENCE TO GO BACK. With protection released the old
+    `ListRow.Delete` would now SUCCEED - and would silently resume destroying the
+    contract's reserved, validated rows."""
+    _runner_mutation(
+        "test_130",
+        "    for ($row = $seedRows + 1; $row -le $rows; $row++) {\n"
+        "        for ($column = 1; $column -le $columns.Count; $column++) {",
+        "    for ($row = $rows; $row -gt $seedRows; $row--) {\n"
+        "        $lo.ListRows.Item($row).Delete()\n"
+        "    }\n"
+        "    for ($row = $seedRows + 1; $row -le $rows; $row++) {\n"
+        "        for ($column = 1; $column -le $columns.Count; $column++) {")
+
+
+def test_165_the_shim_deciding_instead_of_forwarding_is_rejected() -> None:
+    """A SHIM THAT REPORTED SUCCESS ON ITS OWN AUTHORITY would hide exactly the
+    failure the harness exists to abort on."""
+    _shim_mutation(
+        "test_150",
+        "    If modProtection.ProtectionEndStructural(detail) Then\n"
+        "        P10FW_End = \"OK|depth=\" & CStr(modProtection.ProtectionStructuralDepth())\n"
+        "    Else\n"
+        "        P10FW_End = \"FAIL|\" & detail\n"
+        "    End If",
+        "    detail = detail\n"
+        "    P10FW_End = \"OK|depth=0\"")
+
+
 def test_144_deleting_a_definition_a_dot_sourced_file_calls_is_rejected() -> None:
     """THE DEFECT THAT KILLED PHASE-9 WINDOWS RUN 1, recreated deliberately.
 
