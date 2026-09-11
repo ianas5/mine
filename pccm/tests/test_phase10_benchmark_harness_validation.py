@@ -63,7 +63,72 @@ FILESYSTEM_CONTROLS = (
     "test_144_every_command_the_benchmark_can_reach_still_resolves",
     "test_145_the_override_declaration_is_required_and_is_not_a_blanket",
     "test_146_an_override_that_would_not_win_is_refused",
+    # The EXECUTED control-flow proof. It lifts the real functions out of the
+    # runner ON DISK through a PowerShell subprocess, so an in-memory damaged
+    # copy is invisible to it and it would pass every mutation below while
+    # proving nothing. It is mutated instead by `_flow_mutation`, which writes a
+    # damaged runner to disk and points the harness at that.
+    "test_170_the_window_opens_transactionally_on_every_failure_path",
+    "test_171_a_failed_begin_compensates_nothing",
+    "test_172_every_post_open_failure_attempts_exactly_one_close",
+    "test_173_a_failed_rollback_is_reported_beside_the_failure_that_caused_it",
+    "test_174_a_successful_open_closes_nothing_itself",
+    "test_175_no_timed_work_follows_any_window_failure",
 )
+
+# The control-flow controls, which `_flow_mutation` reruns against damaged rows.
+FLOW_CONTROLS = (
+    "test_170_the_window_opens_transactionally_on_every_failure_path",
+    "test_171_a_failed_begin_compensates_nothing",
+    "test_172_every_post_open_failure_attempts_exactly_one_close",
+    "test_173_a_failed_rollback_is_reported_beside_the_failure_that_caused_it",
+    "test_174_a_successful_open_closes_nothing_itself",
+    "test_175_no_timed_work_follows_any_window_failure",
+    # Source-side, so it runs here too: a rewrite that kept the observed
+    # behaviour but reintroduced the shape is still a failure.
+    "test_176_the_rollback_is_the_only_close_inside_open_and_cannot_raise",
+)
+
+
+def _flow_mutation(expected: str, before: str, after: str) -> None:
+    """Damage the runner ON DISK, re-run the executed control-flow harness
+    against the damaged copy, and require a named control-flow check to refuse.
+
+    THE COUNTS ARE THE PROOF. "Exactly one compensating close, and only on the
+    failing paths" cannot be mutated in memory, because the harness is an AST
+    lift over a real file. So the damaged runner is written beside the real one -
+    the harness resolves dot-sourced paths relative to the script directory - run
+    once, and removed.
+    """
+    with conformance.RUNNER.open(encoding="utf-8", newline="") as handle:
+        source = handle.read()
+    damaged = source.replace(before.replace("\n", "\r\n"), after.replace("\n", "\r\n"), 1)
+    if damaged == source:
+        raise RuntimeError(
+            f"the mutation changed nothing: {before[:60]!r} is no longer in the runner")
+
+    scratch = conformance.BOOTSTRAP / "__flow_mutation_tmp.ps1"
+    with scratch.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(damaged)
+    try:
+        rows = conformance._flow_rows(scratch)
+    finally:
+        scratch.unlink()
+
+    restore = _install({"flow": rows, "runner": damaged.replace("\r\n", "\n")})
+    refused = []
+    try:
+        conformance._MEMO.pop("code", None)
+        for name in FLOW_CONTROLS:
+            try:
+                getattr(conformance, name)()
+            except BaseException:  # noqa: BLE001 - any refusal counts
+                refused.append(name)
+    finally:
+        restore()
+        conformance._MEMO.pop("code", None)
+    assert refused, "the mutation survived every control-flow check"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
 
 
 def _tests() -> list[str]:
@@ -1257,10 +1322,10 @@ def test_152_letting_the_structure_flag_move_is_rejected() -> None:
     never to make."""
     _runner_mutation(
         "test_151",
-        "    if (-not $state.Structure) {\n"
-        "        throw ('opening the fixture maintenance window released workbook structure ' +",
-        "    if ($false) {\n"
-        "        throw ('opening the fixture maintenance window released workbook structure ' +")
+        "        if (-not $state.Structure) {\n"
+        "            throw ('opening the fixture maintenance window released WORKBOOK STRUCTURE ' +",
+        "        if ($false) {\n"
+        "            throw ('opening the fixture maintenance window released WORKBOOK STRUCTURE ' +")
 
 
 def test_153_closing_the_window_after_the_timed_runs_is_rejected() -> None:
@@ -1436,6 +1501,176 @@ def test_165_the_shim_deciding_instead_of_forwarding_is_rejected() -> None:
         "    End If",
         "    detail = detail\n"
         "    P10FW_End = \"OK|depth=0\"")
+
+
+# ===========================================================================
+# N. THE TRANSACTIONAL OPEN
+# ===========================================================================
+# Each of these damages the runner ON DISK and re-runs the EXECUTED control-flow
+# harness against the damaged copy, so what refuses is a macro call COUNT rather
+# than a text match. A mutation that leaves the source looking right and changes
+# what PowerShell actually does is caught here and nowhere else.
+def test_170_dropping_the_compensating_close_is_rejected() -> None:
+    """THE GAP THIS ROUND CLOSED, REOPENED. `P10FW_Begin` succeeds, a post-open
+    check refuses, and nothing closes what was opened: the error escapes to the
+    abandon path leaving a half-open window behind."""
+    _flow_mutation(
+        "test_172",
+        "    } catch {\n"
+        "        $original = [string]$_.Exception.Message\n"
+        "        $recovery = Invoke-BenchmarkWindowRollback -Excel $Excel\n"
+        "        throw ($original + ' The window was open when this failed, so a compensating ' +\n"
+        "               'close was attempted: ' + $recovery)\n"
+        "    }",
+        "    } catch {\n"
+        "        throw ([string]$_.Exception.Message)\n"
+        "    }")
+
+
+def test_171_compensating_a_failed_begin_is_rejected() -> None:
+    """NOTHING WAS OPENED, SO NOTHING IS OWED. Moving the Begin inside the guarded
+    region makes a refused open decrement a depth nobody raised, which
+    `ProtectionEndStructural` reports as a close without an open."""
+    _flow_mutation(
+        "test_171",
+        "    $reply = [string]$Excel.Run('P10FW_Begin')\n"
+        "    if ($reply -notlike 'OK|*') {\n"
+        "        throw ('the fixture maintenance window could not be opened: ' + $reply)\n"
+        "    }\n",
+        "    try {\n"
+        "    $reply = [string]$Excel.Run('P10FW_Begin')\n"
+        "    if ($reply -notlike 'OK|*') {\n"
+        "        throw ('the fixture maintenance window could not be opened: ' + $reply)\n"
+        "    }\n"
+        "    } catch {\n"
+        "        $null = Invoke-BenchmarkWindowRollback -Excel $Excel\n"
+        "        throw ([string]$_.Exception.Message)\n"
+        "    }\n")
+
+
+def test_172_closing_inside_a_successful_open_is_rejected() -> None:
+    """A DOUBLE-DECREMENT. Both the open and the caller's finally would close the
+    same window, taking modProtection's depth to -1 - and the second close would
+    re-apply protection over a fixture that had not been built yet."""
+    _flow_mutation(
+        "test_174",
+        "        return $state\n"
+        "    } catch {",
+        "        $null = Invoke-BenchmarkWindowRollback -Excel $Excel\n"
+        "        return $state\n"
+        "    } catch {")
+
+
+def test_173_compensating_in_a_finally_instead_of_a_catch_is_rejected() -> None:
+    """A `finally` RUNS ON THE SUCCESS PATH TOO, so it closes a window the caller
+    is still expecting to hold - and if it threw, its exception would REPLACE the
+    original failure, losing the diagnosis the rollback exists to accompany."""
+    _flow_mutation(
+        "test_17",
+        "    } catch {\n"
+        "        $original = [string]$_.Exception.Message\n"
+        "        $recovery = Invoke-BenchmarkWindowRollback -Excel $Excel\n"
+        "        throw ($original + ' The window was open when this failed, so a compensating ' +\n"
+        "               'close was attempted: ' + $recovery)\n"
+        "    }",
+        "    } finally {\n"
+        "        $null = Invoke-BenchmarkWindowRollback -Excel $Excel\n"
+        "    }")
+
+
+def test_174_losing_the_original_failure_behind_the_rollback_is_rejected() -> None:
+    """THE ROLLBACK IS NOT THE NEWS. Reporting only that the window was closed
+    would hide WHY it had to be, and the run would abort with a sentence that
+    explains nothing."""
+    _flow_mutation(
+        "test_17",
+        "        throw ($original + ' The window was open when this failed, so a compensating ' +\n"
+        "               'close was attempted: ' + $recovery)",
+        "        throw ('the fixture maintenance window was rolled back: ' + $recovery)")
+
+
+def test_175_a_rollback_that_can_raise_is_rejected() -> None:
+    """IT IS CALLED FROM A CATCH THAT IS ABOUT TO RETHROW. A rollback that threw
+    would destroy the composed diagnosis and replace it with its own."""
+    _flow_mutation(
+        "test_17",
+        "        if ($reply -notlike 'OK|*') {\n"
+        "            return ('IT REFUSED, so worksheet protection is NOT restored and this ' +\n"
+        "                    'workbook must not be measured - ' + $reply)\n"
+        "        }",
+        "        if ($reply -notlike 'OK|*') {\n"
+        "            throw ('the compensating close refused: ' + $reply)\n"
+        "        }")
+
+
+def test_176_swallowing_a_raised_rollback_is_rejected() -> None:
+    """A ROLLBACK THAT RAISED AND REPORTED SUCCESS is the worst of both: the
+    workbook is unprotected and the transcript says it is fine."""
+    _flow_mutation(
+        "test_173",
+        "        return ('IT RAISED, so worksheet protection is NOT restored and this workbook ' +\n"
+        "                'must not be measured - ' + [string]$_.Exception.Message)",
+        "        return 'it succeeded and protection is restored - recovered'")
+
+
+def test_177_attempting_the_compensating_close_twice_is_rejected() -> None:
+    """EXACTLY ONE. A second attempt over a window the first one already closed
+    decrements modProtection's depth below zero, which it reports as a close
+    without an open - and the retry would look like a fix."""
+    _flow_mutation(
+        "test_172",
+        "        $recovery = Invoke-BenchmarkWindowRollback -Excel $Excel\n",
+        "        $recovery = Invoke-BenchmarkWindowRollback -Excel $Excel\n"
+        "        $recovery = $recovery + '; retried: ' + "
+        "(Invoke-BenchmarkWindowRollback -Excel $Excel)\n")
+
+
+def test_178_swallowing_a_post_open_failure_and_proceeding_is_rejected() -> None:
+    """A CLOSED WINDOW AND A CONTINUING RUN. The fixture would then be built
+    against a protected workbook, and the caller's finally would close a window
+    that was already closed."""
+    _flow_mutation(
+        "test_17",
+        "        throw ($original + ' The window was open when this failed, so a compensating ' +\n"
+        "               'close was attempted: ' + $recovery)",
+        "        Write-Host ($original + ' rolled back: ' + $recovery)\n"
+        "        return (Get-BenchmarkProtectionState -Excel $Excel)")
+
+
+def test_179_a_flow_harness_that_tests_a_copy_is_rejected() -> None:
+    """A HARNESS THAT TESTED A REIMPLEMENTATION WOULD PROVE NOTHING. It lifts the
+    real functions out of the shipping file by AST; a definition of its own would
+    make every count above a statement about the harness."""
+    original = conformance.FLOW_HARNESS.read_text(encoding="utf-8")
+    # AFTER THE LIFT, NOT BEFORE IT. A definition above the loop is simply
+    # overwritten by the real one it lifts, which would make this mutation a
+    # no-op that proves the opposite of what it claims.
+    anchor = "# --- THE CALLER'S OWN try/finally, LIFTED FROM THE RUNNER"
+    assert anchor in original
+    damaged = original.replace(
+        anchor,
+        "function Open-BenchmarkFixtureWindow { param($Excel, $Manifest) return 'ok' }\n"
+        + anchor, 1)
+    assert damaged != original, "the flow-harness anchor moved"
+    scratch = conformance.PCCM_ROOT / "tests" / "__flow_harness_tmp.ps1"
+    with scratch.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(damaged)
+    saved = conformance.FLOW_HARNESS
+    refused = []
+    try:
+        conformance.FLOW_HARNESS = scratch
+        conformance._MEMO.pop("flow", None)
+        for name in FLOW_CONTROLS:
+            try:
+                getattr(conformance, name)()
+            except BaseException:  # noqa: BLE001 - any refusal counts
+                refused.append(name)
+    finally:
+        conformance.FLOW_HARNESS = saved
+        conformance._MEMO.pop("flow", None)
+        scratch.unlink()
+    assert refused, "a reimplemented function in the flow harness survived"
+    assert any(name.startswith("test_17") for name in refused), refused
 
 
 def test_144_deleting_a_definition_a_dot_sourced_file_calls_is_rejected() -> None:

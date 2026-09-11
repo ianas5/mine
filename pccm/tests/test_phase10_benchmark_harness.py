@@ -735,6 +735,17 @@ CHANGED_BY_DECLARATION = {
     # block now reads through that helper. Neither is a scenario harness.
     "com_lifecycle.ps1",
     "build_stage_b.ps1",
+    # W5. PERF-SMALL aborted on `ClearContents` under worksheet protection, so the
+    # benchmark needs production's own structural window around its fixture
+    # writes - and `modProtection`'s two mutators take `ByRef detail As String`,
+    # which `Application.Run` has no precedent in this tree for carrying. This is
+    # the harness-owned VBA shim that owns the String and forwards to the accepted
+    # authority. It is imported into the DISPOSABLE workbook exactly as
+    # `phase5_gate_b_diagnostics.bas` has been since Phase 5, it is never declared
+    # in the manifest, and it holds no protection policy of its own.
+    #
+    # IT IS A NEW FILE, NOT AN EDIT. No accepted harness changed for it.
+    "phase10_fixture_window.bas",
 }
 
 # The scenario harnesses this control exists to protect. Named, so the control
@@ -1894,7 +1905,9 @@ def test_151_workbook_structure_protection_is_never_released() -> None:
     # AND THE RUNNER REFUSES A RUN WHERE THE FLAG MOVED, on both sides.
     opener = _function(_code(), "Open-BenchmarkFixtureWindow")
     assert "if (-not $state.Structure) {" in opener
-    assert "released workbook structure" in opener
+    assert "released WORKBOOK STRUCTURE" in opener, (
+        "the refusal no longer distinguishes the workbook structure flag from "
+        "worksheet protection, which is the distinction the whole window rests on")
     assert "if (-not $state.Structure)" in _function(_code(), "Assert-BenchmarkProtectionApplied")
 
 
@@ -2154,6 +2167,271 @@ def _resolution_audit(path: Path, *declared: str) -> subprocess.CompletedProcess
     if declared:
         command += ["-DeclaredOverride", ",".join(declared)]
     return subprocess.run(command, capture_output=True, text=True, timeout=300)
+
+
+def test_164_the_partial_open_gap_and_its_closure_are_recorded() -> None:
+    """THE ROUND THAT FOUND IT ALSO CLOSED IT, and both halves belong on the
+    record: the property that already held, and the adjacent one that did not.
+
+    The terminology correction is here too. An earlier return called one route
+    "structure released", meaning ThisWorkbook.ProtectStructure - the record says
+    which flag that is and proves no path can move it."""
+    raw = _run_evidence_section("## Fixture window: the partial-open gap")
+    # WRAPPED PROSE IS STILL THE SENTENCE. The record is hard-wrapped, so a clause
+    # that must be present can straddle a newline; every phrase below is checked
+    # against the section with its whitespace collapsed.
+    section = " ".join(raw.split())
+    assert "No Windows was executed" in section
+    # THE CONTRACT, ALL FOUR ROWS.
+    for clause in ("Begin refuses", "nothing is owed", "exactly ONE compensating End",
+                   "closed nothing", "closes exactly once"):
+        assert clause in section, f"the contract omits: {clause}"
+    # WHY A CATCH AND NOT A FINALLY.
+    assert "would REPLACE the original exception" in section
+    assert "cannot be decremented twice" in section
+    # THE EXECUTED PROOF, WITH ITS COUNTS.
+    assert "phase10_fixture_window_flow.ps1" in section
+    assert "Excel is never started" in section
+    assert "asserting a belief about the language" in section
+    # THE TERMINOLOGY CORRECTION AND ITS PROOF.
+    assert "modProtection.bas:245" in section
+    assert "ProtectionRelease" in section
+    assert "No new defect" in section
+    # AND THAT PROOF IS TRUE OF PRODUCTION RIGHT NOW.
+    owner = PROTECTION_OWNER.read_text(encoding="utf-8")
+    lines = owner.splitlines()
+    hits = [i + 1 for i, line in enumerate(lines) if "ThisWorkbook.Unprotect" in line]
+    assert hits == [245], f"the one workbook-structure release moved: {hits}"
+
+
+FLOW_HARNESS = PCCM_ROOT / "tests" / "phase10_fixture_window_flow.ps1"
+
+# WHAT EACH SCENARIO MUST DO. The macro sequence is the whole proof: "exactly
+# one compensating End" is a count, and a count cannot be read off source text.
+#
+#   calls  - the Application.Run macros, in order
+#   timed  - 1 only when control reached the stand-in for the run loop
+FLOW_EXPECTED = {
+    # Nothing was opened, so nothing is owed. An End here would decrement a
+    # depth nobody raised.
+    "begin-refuses": (
+        ["P10FW_State", "P10FW_Begin"], 0),
+    # Opened, then this function's own checks refused. One compensating End.
+    "post-open-depth-wrong": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End"], 0),
+    "post-open-state-read-refuses": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End"], 0),
+    "post-open-state-read-raises": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End"], 0),
+    "post-open-structure-false": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End"], 0),
+    # The rollback itself failing does not buy a second attempt.
+    "post-open-fails-and-rollback-refuses": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End"], 0),
+    "post-open-fails-and-rollback-raises": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End"], 0),
+    # A successful open closes NOTHING itself; the caller's finally does it once.
+    "open-succeeds-fixture-succeeds": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End", "P10FW_State"], 1),
+    "open-succeeds-fixture-throws": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End", "P10FW_State"], 0),
+    "open-succeeds-close-refuses": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End"], 0),
+    "open-succeeds-close-leaves-depth-open": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End", "P10FW_State"], 0),
+}
+
+
+def _flow_rows(runner: Path) -> dict:
+    """Run the control-flow harness against one runner and parse its output.
+
+    Takes the runner as an argument so the mutation battery can point it at a
+    damaged copy on disk - the harness is an AST lift over a real file, so a
+    damaged copy is the only way to mutate what it observes.
+    """
+    done = subprocess.run(
+        [PWSH, "-NoProfile", "-File", str(FLOW_HARNESS), "-Runner", str(runner)],
+        capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout + done.stderr
+    rows = {}
+    for line in done.stdout.splitlines():
+        assert not line.startswith(("PARSE|", "MISSING|")), line
+        # ONLY TAGGED LINES. A runner under mutation may write to the host, and an
+        # untagged line parsed as a result would turn a caught mutation into an
+        # unreadable one.
+        if not line.startswith("FLOW|"):
+            continue
+        name, calls, outcome, timed, message = line[len("FLOW|"):].split("|", 4)
+        rows[name] = {
+            "calls": [c for c in calls.split(",") if c],
+            "outcome": outcome,
+            "timed": int(timed.split("=")[1]),
+            "message": message,
+        }
+    return rows
+
+
+def _flow() -> dict:
+    if "flow" not in _MEMO:
+        _MEMO["flow"] = _flow_rows(RUNNER)
+    return _MEMO["flow"]
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_170_the_window_opens_transactionally_on_every_failure_path() -> None:
+    """EXECUTED, NOT READ. Every other control here asserts what the runner SAYS.
+    "Exactly one compensating P10FW_End, and only on the failing paths" is a
+    COUNT of what PowerShell does with a try/catch when a `return` is taken and
+    when a post-open assertion throws - asserting that from source would be
+    asserting a belief about the language.
+
+    So the harness lifts the real functions and the caller's own try/finally out
+    of the runner by AST and runs them against a fake that records every macro.
+    Excel is never started."""
+    flow = _flow()
+    assert set(flow) == set(FLOW_EXPECTED), (sorted(flow), sorted(FLOW_EXPECTED))
+    for name, (calls, timed) in FLOW_EXPECTED.items():
+        assert flow[name]["calls"] == calls, (name, flow[name]["calls"], calls)
+        assert flow[name]["timed"] == timed, (name, flow[name]["timed"], timed)
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_171_a_failed_begin_compensates_nothing() -> None:
+    """NOTHING WAS OPENED, SO NOTHING IS OWED. A compensating close here would
+    decrement a depth nobody raised, and `ProtectionEndStructural` reports
+    exactly that as "closed more often than it was opened"."""
+    row = _flow()["begin-refuses"]
+    assert "P10FW_End" not in row["calls"], row["calls"]
+    assert row["outcome"] == "THREW"
+    assert "could not be opened" in row["message"]
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_172_every_post_open_failure_attempts_exactly_one_close() -> None:
+    """THE GAP THIS ROUND CLOSED. `P10FW_Begin` succeeds, a post-open check then
+    refuses, and before the correction nothing closed what had been opened -
+    the error escaped to the abandon path leaving a half-open window behind."""
+    flow = _flow()
+    for name in ("post-open-depth-wrong", "post-open-state-read-refuses",
+                 "post-open-state-read-raises", "post-open-structure-false"):
+        row = flow[name]
+        assert row["calls"].count("P10FW_End") == 1, (name, row["calls"])
+        assert row["outcome"] == "THREW", name
+        assert row["timed"] == 0, name
+        # THE ORIGINAL FAILURE SURVIVES THE ROLLBACK, and the rollback says it took.
+        assert "The window was open when this failed" in row["message"], name
+        assert "it succeeded and protection is restored" in row["message"], name
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_173_a_failed_rollback_is_reported_beside_the_failure_that_caused_it() -> None:
+    """BOTH FACTS, IN ONE SENTENCE. A `finally` that threw would REPLACE the
+    original exception with the rollback's, losing the diagnosis the rollback
+    exists to accompany - which is why the compensation is a `catch`.
+
+    A REFUSAL AND A RAISE ARE REPORTED DIFFERENTLY, because "the workbook says it
+    could not restore protection" and "the call never arrived" are different
+    facts about the machine."""
+    flow = _flow()
+    refused = flow["post-open-fails-and-rollback-refuses"]
+    assert refused["calls"].count("P10FW_End") == 1, refused["calls"]
+    assert "opened to depth 2" in refused["message"], "the original failure was lost"
+    assert "IT REFUSED" in refused["message"]
+    assert "must not be measured" in refused["message"]
+    assert refused["timed"] == 0
+
+    raised = flow["post-open-fails-and-rollback-raises"]
+    assert raised["calls"].count("P10FW_End") == 1, raised["calls"]
+    assert "opened to depth 2" in raised["message"], "the original failure was lost"
+    assert "IT RAISED" in raised["message"]
+    assert raised["timed"] == 0
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_174_a_successful_open_closes_nothing_itself() -> None:
+    """NO DOUBLE-DECREMENT. `return` inside a `try` does not enter its `catch`, so
+    a successful open hands the window to the caller untouched and the caller's
+    `finally` performs the one normal close. Both closing would take
+    modProtection's depth to -1, which it reports as a close without an open."""
+    flow = _flow()
+    ok = flow["open-succeeds-fixture-succeeds"]
+    assert ok["calls"].count("P10FW_End") == 1, ok["calls"]
+    assert ok["outcome"] == "RETURNED"
+    assert ok["timed"] == 1
+    # THE ONE End IS THE CALLER'S: it comes after the open's own verification read
+    # and is followed by the post-close verification read.
+    assert ok["calls"] == ["P10FW_State", "P10FW_Begin", "P10FW_State",
+                           "P10FW_End", "P10FW_State"]
+
+    raised = flow["open-succeeds-fixture-throws"]
+    assert raised["calls"].count("P10FW_End") == 1, raised["calls"]
+    assert raised["timed"] == 0
+    # AND THE FIXTURE'S OWN FAILURE IS WHAT IS REPORTED, not the close's success.
+    assert raised["message"].strip() == "THE FIXTURE RAISED", raised["message"]
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_175_no_timed_work_follows_any_window_failure() -> None:
+    """THE POINT OF ALL OF IT. Whatever failed - the open, a post-open check, the
+    rollback, the close, or the post-close verification - control never reaches
+    the run loop, so no sample can be taken from a workbook whose protection is
+    not known to be restored."""
+    flow = _flow()
+    for name, row in flow.items():
+        if name == "open-succeeds-fixture-succeeds":
+            assert row["timed"] == 1, name
+        else:
+            assert row["timed"] == 0, (name, row)
+            assert row["outcome"] == "THREW", name
+    # INCLUDING A CLOSE THAT REPORTED SUCCESS WHILE THE DEPTH STAYED OPEN.
+    stuck = flow["open-succeeds-close-leaves-depth-open"]
+    assert "still open at depth 1" in stuck["message"], stuck["message"]
+
+
+def test_176_the_rollback_is_the_only_close_inside_open_and_cannot_raise() -> None:
+    """THE SOURCE SIDE OF THE SAME PROPERTY, so a rewrite that kept the behaviour
+    the harness samples but reintroduced the shape cannot pass quietly.
+
+    The rollback returns text on every path - it is called from a catch that is
+    about to rethrow, and a rollback that threw would destroy the diagnosis."""
+    opener = _function(_code(), "Open-BenchmarkFixtureWindow")
+    assert opener.count("P10FW_End") == 0, (
+        "the open closes the window itself instead of delegating to the rollback")
+    assert opener.count("Invoke-BenchmarkWindowRollback") == 1, opener
+    assert "} catch {" in opener and "} finally {" not in opener, (
+        "the compensation is a finally, which would replace the original exception")
+    # THE BEGIN IS OUTSIDE THE GUARDED REGION, so a refused open compensates nothing.
+    guarded = opener[opener.index("    try {"):]
+    assert "P10FW_Begin" not in guarded, "a failed Begin would now be compensated"
+
+    rollback = _function(_code(), "Invoke-BenchmarkWindowRollback")
+    assert rollback.count("P10FW_End") == 1, rollback
+    assert "throw" not in rollback, "the rollback can raise out of a catch block"
+    assert rollback.count("return (") == 3, "a path through the rollback reports nothing"
+    # NOT A CATCH-AND-IGNORE: the failing branch becomes text, and says so.
+    assert "IT REFUSED" in rollback and "IT RAISED" in rollback
+    assert "must not be measured" in rollback
+
+
+def test_177_the_flow_harness_reads_the_real_runner_and_starts_no_excel() -> None:
+    """A HARNESS THAT TESTED A COPY WOULD PROVE NOTHING. It lifts the functions
+    and the caller region out of the shipping file by AST and by anchored text,
+    so a rename or a reformat of either is a failure here rather than a silently
+    stale test."""
+    harness = FLOW_HARNESS.read_text(encoding="utf-8")
+    for lifted in ("Get-BenchmarkProtectionState", "Assert-BenchmarkProtectionApplied",
+                   "Open-BenchmarkFixtureWindow", "Invoke-BenchmarkWindowRollback",
+                   "Close-BenchmarkFixtureWindow"):
+        assert lifted in harness, lifted
+    assert "FunctionDefinitionAst" in harness and "Invoke-Expression" in harness
+    # RESULT LINES ARE TAGGED, so stray host output from a damaged runner cannot
+    # be read as a scenario result.
+    assert "'FLOW|'" in harness
+    # NO EXCEL, ANYWHERE.
+    for banned in ("New-Object -ComObject", "Excel.Application", "Workbooks"):
+        assert banned not in harness, f"the flow harness starts Excel: {banned}"
+    # AND IT IS TEST-ONLY: it is not reachable from the runner.
+    assert "phase10_fixture_window_flow" not in _runner()
 
 
 @pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")

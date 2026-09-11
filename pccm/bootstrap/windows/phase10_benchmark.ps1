@@ -628,27 +628,90 @@ function Assert-BenchmarkProtectionApplied {
     return $state
 }
 
+# OPENING IS A TRANSACTION, AND IT OWNS ITS OWN ROLLBACK.
+#
+# THE GAP THIS CLOSES. `P10FW_Begin` can succeed - the window is open, every
+# worksheet released - and one of this function's OWN post-open checks can then
+# throw. The caller has not reached its try/finally yet, so nothing would close
+# what was opened, and the error would escape to the abandon path leaving a
+# half-open window behind. `modProtection` names that outcome the worst one there
+# is, and it is not made acceptable by the workbook being disposable: the
+# contract is that once Begin succeeds, exactly one compensating End is attempted
+# before the failure escapes.
+#
+# A `catch`, NOT A `finally`. A finally that threw would REPLACE the original
+# exception, and the reason the window is being rolled back is the thing worth
+# reporting. The catch composes both into one sentence instead: what failed, and
+# whether the rollback took.
+#
+# AND ROLLBACK RUNS ONLY ON FAILURE. `return` inside a `try` does not enter its
+# `catch`, so a successful open closes nothing and hands the open window to the
+# caller, whose try/finally performs the one normal close. There is no path on
+# which both this function and the caller close the same window, so the depth
+# cannot be decremented twice.
 function Open-BenchmarkFixtureWindow {
     param($Excel, $Manifest)
     # THE STATE BEFORE IS PROVED FIRST. Opening a window over a workbook that was
     # already unprotected would close onto a state nobody established.
+    #
+    # NOTHING IS OWED YET. Every failure above the Begin below leaves the workbook
+    # exactly as it was found, so there is nothing to compensate and no End is
+    # called - a compensating close here would decrement a depth nobody raised.
     $null = Assert-BenchmarkProtectionApplied -Excel $Excel -Manifest $Manifest `
         -Stage 'before the fixture maintenance window was opened'
     $reply = [string]$Excel.Run('P10FW_Begin')
     if ($reply -notlike 'OK|*') {
         throw ('the fixture maintenance window could not be opened: ' + $reply)
     }
-    $state = Get-BenchmarkProtectionState -Excel $Excel
-    if ($state.Depth -ne 1) {
-        throw ('the fixture maintenance window opened to depth ' + [string]$state.Depth +
-               ', not 1. The benchmark opens exactly one outer window and closes it.')
+
+    # FROM HERE THE WINDOW IS OPEN AND EVERY FAILURE MUST COMPENSATE.
+    try {
+        $state = Get-BenchmarkProtectionState -Excel $Excel
+        if ($state.Depth -ne 1) {
+            throw ('the fixture maintenance window opened to depth ' + [string]$state.Depth +
+                   ', not 1. The benchmark opens exactly one outer window and closes it.')
+        }
+        # WORKBOOK STRUCTURE PROTECTION IS NOT PART OF THE WINDOW AND MUST NOT
+        # MOVE. `Structure` is `ThisWorkbook.ProtectStructure`, not worksheet
+        # protection - the window releases worksheets and nothing else, and the
+        # only `ThisWorkbook.Unprotect` in production lives in the maintenance
+        # path this harness never calls.
+        if (-not $state.Structure) {
+            throw ('opening the fixture maintenance window released WORKBOOK STRUCTURE ' +
+                   'protection, which it must never do. Reported: ' + $state.Raw)
+        }
+        return $state
+    } catch {
+        $original = [string]$_.Exception.Message
+        $recovery = Invoke-BenchmarkWindowRollback -Excel $Excel
+        throw ($original + ' The window was open when this failed, so a compensating ' +
+               'close was attempted: ' + $recovery)
     }
-    # STRUCTURE PROTECTION IS NOT PART OF THE WINDOW AND MUST NOT MOVE.
-    if (-not $state.Structure) {
-        throw ('opening the fixture maintenance window released workbook structure ' +
-               'protection, which it must never do. Reported: ' + $state.Raw)
+}
+
+# THE ROLLBACK ITSELF, WHICH MUST NOT RAISE.
+#
+# It is called from a catch block that is about to rethrow, and a rollback that
+# threw would destroy the diagnosis it exists to accompany. So it reports in a
+# sentence instead - and it reports a REFUSAL and a RAISE differently, because
+# "the workbook says it could not restore protection" and "the call never
+# arrived" are different facts about the machine.
+#
+# NOT A CATCH-AND-IGNORE. Nothing here is swallowed: every outcome becomes text
+# that the caller concatenates into the exception it throws.
+function Invoke-BenchmarkWindowRollback {
+    param($Excel)
+    try {
+        $reply = [string]$Excel.Run('P10FW_End')
+        if ($reply -notlike 'OK|*') {
+            return ('IT REFUSED, so worksheet protection is NOT restored and this ' +
+                    'workbook must not be measured - ' + $reply)
+        }
+        return ('it succeeded and protection is restored - ' + $reply)
+    } catch {
+        return ('IT RAISED, so worksheet protection is NOT restored and this workbook ' +
+                'must not be measured - ' + [string]$_.Exception.Message)
     }
-    return $state
 }
 
 function Close-BenchmarkFixtureWindow {

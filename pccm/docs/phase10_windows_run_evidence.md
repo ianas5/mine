@@ -1413,3 +1413,91 @@ content-based FX reset stays and the structural `ListRow.Delete` stays gone — 
 mutation that restores it under the open window, where it would now succeed, is
 caught.
 
+## Fixture window: the partial-open gap — SETTLED IN SOURCE — NO WINDOWS
+
+Found while proving the exception-safety property that was asked for before the
+PERF-SMALL run, and closed in the same round. **No Windows was executed.**
+
+### What was asked, and what held
+
+*If `Open-BenchmarkFixtureWindow` succeeds and `Set-Phase5Fixture` throws at any
+point, is `P10FW_End` guaranteed to be attempted before the error reaches the
+outer abort path?* **Yes**, and it was already true: the close is in a `finally`
+inner to the session `try`, so PowerShell unwinds it first. Shutdown is never
+relied on — and could not help anyway, since it closes the workbook without
+saving rather than restoring anything.
+
+### The adjacent gap that did not hold
+
+`Open-BenchmarkFixtureWindow` could run `P10FW_Begin` successfully and then throw
+in its OWN post-open checks — before the caller had entered its `try`/`finally`.
+Nothing closed what had been opened. `modProtection` names that outcome the worst
+one there is, and a disposable workbook does not make it acceptable.
+
+Three routes existed: the depth read-back not returning 1, the protection-state
+read refusing or raising, and the `ProtectStructure` assertion failing.
+
+### The contract now
+
+```
+Begin refuses          -> nothing was opened, nothing is owed, no End is called
+Begin succeeds, then
+  a post-open check
+  fails                -> exactly ONE compensating End, then the original failure
+                          is rethrown WITH whether the rollback took
+Open returns           -> the window is open, verified, depth exactly 1, and this
+                          function has closed nothing
+Fixture succeeds/fails -> the caller's finally closes exactly once
+```
+
+A `catch`, not a `finally`: a `finally` would run on the success path too and
+close a window the caller still expects to hold, and one that threw would REPLACE
+the original exception with the rollback's. `return` inside a `try` does not
+enter its `catch`, so there is no path on which both this function and the caller
+close the same window. The depth cannot be decremented twice.
+
+`Invoke-BenchmarkWindowRollback` cannot raise — it is called from a catch that is
+about to rethrow. It returns a sentence instead, and distinguishes a REFUSAL from
+a RAISE, because "the workbook says it could not restore protection" and "the
+call never arrived" are different facts about the machine. Nothing is swallowed:
+every outcome becomes text in the exception that is thrown.
+
+### Proved by execution, not by reading
+
+`tests/phase10_fixture_window_flow.ps1` lifts the real functions — and the
+caller's own `try`/`finally` — out of `phase10_benchmark.ps1` by AST and by
+anchored text, and runs them against a fake that records every
+`Application.Run`. Excel is never started. "Exactly one compensating close" is a
+COUNT of what PowerShell does; asserting it from source would be asserting a
+belief about the language.
+
+| Scenario | macros | `P10FW_End` | timed |
+|---|---|---|---|
+| Begin refuses | State, Begin | **0** | 0 |
+| post-open depth ≠ 1 | State, Begin, State, End | **1** | 0 |
+| post-open state read refuses | State, Begin, State, End | **1** | 0 |
+| post-open state read raises | State, Begin, State, End | **1** | 0 |
+| post-open `ProtectStructure` false | State, Begin, State, End | **1** | 0 |
+| post-open fails, rollback refuses | State, Begin, State, End | **1** | 0 |
+| post-open fails, rollback raises | State, Begin, State, End | **1** | 0 |
+| open ok, fixture ok | State, Begin, State, End, State | **1** | **1** |
+| open ok, fixture throws | State, Begin, State, End, State | **1** | 0 |
+| open ok, close refuses | State, Begin, State, End | **1** | 0 |
+| open ok, close leaves depth 1 | State, Begin, State, End, State | **1** | 0 |
+
+Timed work follows exactly one row. On the two rollback-failure rows the thrown
+message carries both the original failure and `IT REFUSED` / `IT RAISED`.
+
+### Terminology, corrected
+
+An earlier return described one of these routes as "structure released". That was
+`ThisWorkbook.ProtectStructure` becoming False — **workbook structure**
+protection, not worksheet protection. The window releases worksheets and only
+worksheets.
+
+**No path can make `ProtectStructure` False.** Production contains exactly one
+`ThisWorkbook.Unprotect`, at `modProtection.bas:245`, inside `ProtectionRelease`
+— the maintenance path, which neither the runner nor the shim calls.
+`ProtectionBeginStructural` contains none. The assertion is belt-and-braces
+against a future production change, not a live route. **No new defect.**
+
