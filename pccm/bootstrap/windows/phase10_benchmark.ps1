@@ -1056,7 +1056,11 @@ function Get-BenchmarkEnvironment {
     param($Excel, $Identity, [string]$WorkbookPath, [string]$RepositoryPath,
           $ReleaseIdentity, [string]$HarnessVersion, [int]$SchemaVersion, $Revision)
     $unknown = Get-BenchmarkUnavailable
-    $roots = @(Get-BenchmarkOneDriveRoots)
+    # ASSIGNED, NOT RE-WRAPPED - the same two-place contract as the problem
+    # list. Double-wrapped, every OneDrive root became one nested array, so a
+    # workbook under OneDrive was recorded as a LOCAL location and the roots
+    # field held a list containing a list.
+    $roots = Get-BenchmarkOneDriveRoots
 
     # NORMALISED THE SAME WAY THE ONEDRIVE ROOTS ARE. A CIM query that matches
     # nothing emits nothing, and `@()` turns that into an empty collection
@@ -1379,6 +1383,37 @@ function Get-BenchmarkEvidence {
 # THE GATES. A sample that fails one is not a slow sample or a fast sample - it
 # is not a sample. It is excluded from every statistic and reported with its
 # reason.
+# THE SHAPE IS CHECKED, NOT TRUSTED.
+#
+# The pairing above is a two-place contract - a comma in the helper and no `@()`
+# at the call site - and a contract spread over two places is one an edit can
+# half-keep. This refuses the half-kept version AT THE CALL, by name, instead of
+# letting it reappear as every sample being invalid for an unreadable reason.
+#
+# IT THROWS. A malformed problem list is a defect in this harness, not a fact
+# about the workbook, so it must not be recorded as an invalid sample - that
+# would be the harness marking its own bug as the model's. It also does not
+# flatten: flattening would hide the defect and keep the run going.
+function Assert-BenchmarkProblemList {
+    param($Problems, [string]$Where)
+    if ($null -eq $Problems) {
+        throw ('the sample validator returned nothing for ' + $Where +
+               '; it must return a list, empty when the sample is good')
+    }
+    foreach ($problem in $Problems) {
+        if ($problem -is [System.Array]) {
+            throw ('the sample validator returned a NESTED list for ' + $Where +
+                   ': an element is a ' + $problem.GetType().FullName + '. A caller ' +
+                   'wrapped `return ,@(...)` in `@()` again, which makes every sample ' +
+                   'invalid for an unreadable reason. Assign the result; do not re-wrap it.')
+        }
+        if ($problem -isnot [string]) {
+            throw ('the sample validator returned a ' + $problem.GetType().FullName +
+                   ' for ' + $Where + ' where every problem must be a string')
+        }
+    }
+}
+
 function Test-BenchmarkSample {
     param($Operation, $Evidence, $RequestedIterations)
     $problems = @()
@@ -1435,8 +1470,22 @@ function Invoke-BenchmarkExecution {
     $evidence = Get-BenchmarkEvidence -Excel $Excel -Workbook $Workbook `
         -SimInspection $SimInspection -OperationKey ([string]$Operation.key) `
         -AutomationResult $result
-    $problems = @(Test-BenchmarkSample -Operation $Operation -Evidence $evidence `
-        -RequestedIterations $RequestedIterations)
+    # ASSIGNED, NOT RE-WRAPPED.
+    #
+    # `Test-BenchmarkSample` ends `return ,@($problems)`. The leading comma hands
+    # back ONE object that IS the array, which is what keeps an EMPTY result from
+    # being enumerated into nothing by the pipeline. Wrapping that one object in
+    # `@()` again collects it into a NEW one-element array whose single element
+    # is the real list.
+    #
+    # `@()` COLLECTS PIPELINE ITEMS; IT DOES NOT FLATTEN A NESTED ARRAY. So the
+    # count was 1 whatever the sample actually found: every execution was marked
+    # INVALID, and `-join` rendered the inner array as its type name. That is the
+    # whole of `INVALID: System.Object[]` - Calculate and the recalculation had
+    # executed correctly and had no problems at all.
+    $problems = Test-BenchmarkSample -Operation $Operation -Evidence $evidence `
+        -RequestedIterations $RequestedIterations
+    Assert-BenchmarkProblemList -Problems $problems -Where ([string]$Operation.key)
 
     return [pscustomobject]@{
         Phase      = $Phase
@@ -1846,26 +1895,44 @@ try {
     $currentIterations = $null
     foreach ($run in $plannedRuns) {
         $operation = $operationByKey[[string]$run.operation]
-        $iterations = $null
-        if ($null -ne $run.iterations) { $iterations = [int]$run.iterations }
+        # NAMED SO IT CANNOT BE THE PARAMETER.
+        #
+        # This used to be `$iterations`, and PowerShell variable names are
+        # CASE-INSENSITIVE: that IS the script parameter `[int[]]$Iterations`. A
+        # typed parameter keeps its type constraint for the whole life of the
+        # variable, so every assignment to it is coerced back to `[int[]]` -
+        # `$iterations = [int]$run.iterations` stored the one-element array
+        # `@(10000)`, not the integer.
+        #
+        # `[string]` OF A ONE-ELEMENT ARRAY IS THE ELEMENT, which is why the
+        # banner read "Run Simulation @ 10000 iterations" and looked right, and
+        # `[double]` of the same array raised
+        # "Cannot convert the System.Int32[] value ... to type System.Double" at
+        # the iteration-control write.
+        #
+        # The plan carries a SCALAR here - `runs[].iterations` is 10000, not
+        # [10000] - so nothing needed selecting out of an array. The shape defect
+        # was the name.
+        $runIterations = $null
+        if ($null -ne $run.iterations) { $runIterations = [int]$run.iterations }
 
         $label = [string]$operation.label
-        if ($null -ne $iterations) { $label = $label + '  @ ' + [string]$iterations + ' iterations' }
+        if ($null -ne $runIterations) { $label = $label + '  @ ' + [string]$runIterations + ' iterations' }
         Write-BenchmarkLine ($label)
         Write-BenchmarkLine ('-' * $label.Length)
 
-        if (($null -ne $iterations) -and ($iterations -ne $currentIterations)) {
+        if (($null -ne $runIterations) -and ($runIterations -ne $currentIterations)) {
             # SETTING THE CONTROL IS SETUP. It is outside every clock, and the
             # value is read back so the run records what the workbook was asked
             # for rather than what this script intended.
-            Set-BenchmarkStage -Stage 'measurement' -Action ('setting the iteration control to ' + [string]$iterations + ' and re-establishing the deterministic basis')
+            Set-BenchmarkStage -Stage 'measurement' -Action ('setting the iteration control to ' + [string]$runIterations + ' and re-establishing the deterministic basis')
             Set-NamedValue -Workbook $wb `
                 -DefinedName ([string]$simInspection.controls.monte_carlo_iterations.defined_name) `
-                -Value ([double]$iterations)
+                -Value ([double]$runIterations)
             $null = Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_Calculate' `
-                -Stage ('re-establishing the deterministic basis for ' + [string]$iterations +
+                -Stage ('re-establishing the deterministic basis for ' + [string]$runIterations +
                         ' iterations')
-            $currentIterations = $iterations
+            $currentIterations = $runIterations
         }
         $iterationsSet = [string](Get-NamedValue -Workbook $wb `
             -DefinedName ([string]$simInspection.controls.monte_carlo_iterations.defined_name))
@@ -1880,10 +1947,10 @@ try {
             # measured interval.
             Set-BenchmarkStage -Stage 'measurement' -Action ('executing ' + [string]$operation.label)
             Set-BenchmarkOperationContext -Scenario $Scenario -Operation ([string]$operation.key) `
-                -Iterations $iterations -Phase $phase
+                -Iterations $runIterations -Phase $phase
             $execution = Invoke-BenchmarkExecution -Excel $excel -Workbook $wb `
                 -SimInspection $simInspection -Operation $operation `
-                -RequestedIterations $iterations -Phase $phase
+                -RequestedIterations $runIterations -Phase $phase
             $null = $samples.Add($execution)
             $marker = $(if ($execution.Valid) { '' } else { '   INVALID: ' + (($execution.Problems) -join '; ') })
             Write-BenchmarkLine ('  ' + $phase.PadRight(5) +
@@ -1916,7 +1983,7 @@ try {
         $row.Add('operation_label', [string]$operation.label)
         $row.Add('kind', [string]$operation.kind)
         $row.Add('endpoint', [string]$operation.endpoint)
-        $row.Add('iterations_requested', $iterations)
+        $row.Add('iterations_requested', $runIterations)
         $row.Add('iterations_control', $iterationsSet)
         $row.Add('valid', $valid)
         $row.Add('cold_ms', [double]$cold.ElapsedMs)

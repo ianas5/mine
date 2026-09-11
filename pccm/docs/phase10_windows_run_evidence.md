@@ -1501,3 +1501,187 @@ worksheets.
 `ProtectionBeginStructural` contains none. The assertion is belt-and-braces
 against a future production change, not a live route. **No new defect.**
 
+## Benchmark Run 5 — PERF-SMALL — REACHED THE TIMED SECTION — ABORTED
+
+**Harness commit:** `ce5951f`
+
+Stage A 351 passed, 0 failed. Stage-B bootstrap succeeded. **The fixture
+maintenance window worked**, and this is the run that proves it:
+
+```
+PROTECTION
+  as opened         : applied=True|depth=0|structure=True|sheets=14|protected=14
+  after the fixture : applied=True|depth=0|structure=True|sheets=14|protected=14
+                      [window closed and verified before any timed run]
+
+Cost Lines in book  : 12   (plan: 12)
+Risks in book       : 8    (plan: 8)
+project years       : 10
+```
+
+The window opened, the fixture was built through it, it closed, protection was
+restored and depth was verified `0` — all before the first timed operation.
+**Workbook structure protection stayed applied throughout.** The fixture-window
+architecture is RUNTIME PROVEN and is not to be reopened.
+
+The run then reached the timed section for the first time in the project and lost
+it to two harness shape defects.
+
+```
+Calculate
+  cold  0.707 s   INVALID: System.Object[]
+  warm  0.412 s   INVALID: System.Object[]
+  warm  0.444 s   INVALID: System.Object[]
+  warm  0.464 s   INVALID: System.Object[]
+  WARM MEDIAN : NOT COMPUTED
+
+Workbook recalculation
+  cold  0.290 s   INVALID: System.Object[]
+  warm  0.299 s   INVALID: System.Object[]
+  warm  0.297 s   INVALID: System.Object[]
+  warm  0.311 s   INVALID: System.Object[]
+  WARM MEDIAN : NOT COMPUTED
+
+Run Simulation  @ 10000 iterations
+  stage     : measurement
+  doing     : setting the iteration control to 10000 and re-establishing the
+              deterministic basis
+  exception : Cannot convert the "System.Int32[]" value of type "System.Int32[]"
+              to type "System.Double".
+
+BASELINE STATUS    : ABORTED BEFORE A COMPLETE BASELINE
+valid warm medians : 0 of 11 planned run(s)
+```
+
+Shutdown and COM release were clean.
+
+**Status: 0 of 11 valid warm medians. NOT a baseline, NOT a partial baseline, NOT
+a performance sample.** Calculate and the workbook recalculation DID execute —
+those eight elapsed times are real — but no sample was accepted, so none of them
+is a measurement of record.
+
+**No production defect is established.** Both defects are PowerShell shape
+defects in the harness. Production VBA was invoked and answered correctly
+throughout.
+
+---
+
+## The two shape defects — SETTLED IN SOURCE — NO WINDOWS
+
+**No Windows was executed for this round.** The two defects are independent and
+have different root causes; neither is a symptom of the other.
+
+### Defect 1 — `INVALID: System.Object[]`: a double-wrapped problem list
+
+`Test-BenchmarkSample` ends `return ,@($problems)`. The leading comma hands back
+**one object that IS the array** — which is what stops an EMPTY result being
+enumerated into nothing by the pipeline. The caller then wrote
+`$problems = @(Test-BenchmarkSample ...)`.
+
+**`@()` collects pipeline items; it does NOT flatten a nested array.** So it
+collected that one object into a new one-element array whose single element was
+the real list:
+
+```
+caller @() : Count=1  Valid=False  join=System.Object[]
+assigned   : Count=0  Valid=True   join=
+```
+
+Therefore `$problems.Count` was **1 whatever the sample found**,
+`Valid = ($problems.Count -eq 0)` was **always False**, and
+`($execution.Problems) -join '; '` rendered the inner array as its type name.
+Calculate and the recalculation had no problems at all — the validator found
+nothing and the shape said otherwise.
+
+This is the same defect class the project recorded at Gate-B Run 3: *`@()`
+collects pipeline items; it does not flatten nested arrays.*
+
+**The same pairing existed at one other site**, latent:
+`$roots = @(Get-BenchmarkOneDriveRoots)`. Double-wrapped, every OneDrive root
+became one nested array, so a workbook under OneDrive was recorded as a LOCAL
+location and the roots field held a list containing a list. Corrected with it.
+`New-BenchmarkWeights` returns `,@(...)` too and was already assigned directly —
+correct, and left alone.
+
+**The correction is the shape, not the strictness.** The caller assigns; and
+because a contract spread over two places is one an edit can half-keep — it was
+half-kept twice — `Assert-BenchmarkProblemList` now refuses a nested or
+non-string element AT THE CALL, by name. It **throws** rather than flattening: a
+malformed problem list is a defect in the harness, not a fact about the workbook,
+so recording it as an invalid sample would be the harness marking its own bug as
+the model's.
+
+### Defect 2 — `System.Int32[]` in the iteration control: the loop variable was the parameter
+
+The run loop used `$iterations`. **PowerShell variable names are
+case-insensitive, so that IS the script parameter `[int[]]$Iterations`** — and a
+typed parameter keeps its type constraint for the whole life of the variable, so
+every assignment to it is coerced back to `[int[]]`:
+
+```
+assigned 10000 -> type System.Int32[]  value [10000]
+[string] gives : 10000
+[double] gives : Cannot convert the "System.Int32[]" value of type
+                 "System.Int32[]" to type "System.Double".
+```
+
+That is why the banner read `Run Simulation @ 10000 iterations` and looked
+perfectly right — `[string]` of a one-element array is the element — and only the
+`[double]` cast at the iteration-control write raised.
+
+**The plan carries a scalar.** `runs[].iterations` is `10000`, not `[10000]`, and
+`$declaredIterations` (the whole list) was never involved. Nothing needed
+selecting out of an array, so no `[0]` was added: the shape defect was the NAME.
+The loop local is now `$runIterations`, which no parameter can constrain.
+
+**Generalised, not just fixed.** A control now reads the param block out of the
+runner and refuses any assignment anywhere to a name the block declares with a
+type. The three `[string]` path parameters are defaulted in place on purpose and
+are named in that control rather than excluded by a pattern.
+
+### Proved by execution
+
+`tests/phase10_run_shape_flow.ps1` lifts the runner's **own param block** and the
+loop's **own selection lines** by AST, composes them into a script, and runs it
+once per planned PERF-SMALL run — because the param block is the defect's other
+half, and a probe that declared its own `[int[]]$Iterations` would be testing its
+own guess. It also lifts `Test-BenchmarkSample` and `Assert-BenchmarkProblemList`
+and drives them over scripted evidence. Excel is never started.
+
+| planned run | CLR type | value | `[double]` |
+|---|---|---|---|
+| calculate | `<null>` | n/a | n/a |
+| recalculation | `<null>` | n/a | n/a |
+| simulation / sensitivity / annual × 10000 | `System.Int32` | 10000 | 10000 |
+| simulation / sensitivity / annual × 50000 | `System.Int32` | 50000 | 50000 |
+| simulation / sensitivity / annual × 100000 | `System.Int32` | 100000 | 100000 |
+| with `-Iterations 10000` actually supplied | `System.Int32` | 10000 | 10000 |
+
+Nine iteration-dependent runs, each exactly one integer; two carrying none;
+eleven in total.
+
+| sample case | count | valid | shape guard |
+|---|---|---|---|
+| clean command | 0 | **True** | accepted |
+| clean recalculation | 0 | **True** | accepted |
+| endpoint refusal | 1 | False | accepted |
+| malformed announcement | 1 | False | accepted |
+| missing published iterations | 1 | False | accepted |
+| wrong published iterations | 1 | False | accepted |
+| correct published iterations | 0 | **True** | accepted |
+| annual state not CURRENT | 1 | False | accepted |
+| three problems at once | 3 | False | accepted |
+| **the defect, recreated** | 1 | False | **REFUSED by name** |
+
+Validity stayed strict: every refusal still refuses. The two rows that are now
+`valid=True` are the state that was previously impossible.
+
+### What did not change
+
+Scenario identity, driver counts, project years, the iteration matrix, cold = 1,
+warm = 3, eleven planned runs, the median gate (a median exists only when EVERY
+warm sample was valid, and the count comes from the plan), the timing boundaries,
+and the baseline policy. The fixture window and its shim are byte-identical to
+`ce5951f` — the run that proved them — and a control compares each of its six
+functions against that commit.
+

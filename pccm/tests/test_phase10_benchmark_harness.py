@@ -2204,6 +2204,372 @@ def test_164_the_partial_open_gap_and_its_closure_are_recorded() -> None:
     assert hits == [245], f"the one workbook-structure release moved: {hits}"
 
 
+def test_188_benchmark_run_5_is_recorded_exactly_as_it_happened() -> None:
+    """THE RUN THAT PROVED THE WINDOW AND LOST THE BASELINE. Both halves belong on
+    the record: the protection evidence that closes the window question, and the
+    eight real elapsed times that are nevertheless not measurements because no
+    sample was accepted."""
+    raw = _run_evidence_section("## Benchmark Run 5")
+    section = " ".join(raw.split())
+    for fact in ("ce5951f", "351 passed, 0 failed", "Stage-B bootstrap succeeded",
+                 "applied=True|depth=0|structure=True|sheets=14|protected=14",
+                 "INVALID: System.Object[]", "System.Int32[]",
+                 "ABORTED BEFORE A COMPLETE BASELINE", "0 of 11 planned run(s)",
+                 "Shutdown and COM release were clean"):
+        assert fact in section, f"the Run 5 record omits: {fact}"
+    # THE WINDOW EVIDENCE IS STATED AS THE PROOF IT IS.
+    assert "RUNTIME PROVEN" in section
+    assert "structure protection stayed applied throughout" in section
+    assert "before the first timed operation" in section
+    # AND THE RUN IS NOT DRESSED UP. Real elapsed times, no measurements.
+    for overclaim in ("NOT a baseline", "NOT a partial baseline",
+                      "NOT a performance sample"):
+        assert overclaim in section, overclaim
+    assert "none of them is a measurement of record" in section
+    assert "No production defect is established" in section
+
+
+def test_189_both_shape_root_causes_are_recorded_as_separate_defects() -> None:
+    """TWO DEFECTS, TWO CAUSES. One is a pipeline-array contract, the other a
+    variable-name collision with a typed parameter. Recording them as one thing
+    would lose the general lesson in each - and both lessons are the kind that
+    recur."""
+    raw = _run_evidence_section("## The two shape defects")
+    section = " ".join(raw.split())
+    assert "No Windows was executed" in section
+    assert "independent and have different root causes" in section
+
+    # DEFECT 1: the mechanism, its evidence, its second site, and the repair.
+    assert "return ,@($problems)" in section
+    assert "does NOT flatten a nested array" in section
+    assert "Count=1 Valid=False join=System.Object[]" in section
+    assert "Get-BenchmarkOneDriveRoots" in section
+    assert "New-BenchmarkWeights" in section
+    assert "throws" in section and "rather than flattening" in section
+
+    # DEFECT 2: case-insensitivity, the constraint, why the banner looked right.
+    assert "case-insensitive" in section
+    assert "[int[]]$Iterations" in section
+    assert "keeps its type constraint" in section
+    assert "`[string]` of a one-element array is the element" in section
+    # AND THAT NO ELEMENT WAS SELECTED, because the plan never held a list.
+    assert "runs[].iterations` is `10000`, not `[10000]`" in section
+    assert "the shape defect was the NAME" in section
+
+    # THE EXECUTED PROOF AND ITS TABLES.
+    assert "phase10_run_shape_flow.ps1" in section
+    assert "Excel is never started" in section
+    assert "REFUSED by name" in section
+    # AND WHAT WAS DELIBERATELY LEFT ALONE.
+    assert "byte-identical to `ce5951f`" in section
+
+
+SHAPE_HARNESS = PCCM_ROOT / "tests" / "phase10_run_shape_flow.ps1"
+
+# WHAT EVERY PLANNED PERF-SMALL RUN MUST PRODUCE from the run loop's own
+# iteration selection, executed under the runner's own param block.
+#   label -> (CLR type, value, what [double] gives)
+SHAPE_ITER_EXPECTED = {
+    "plan-calculate-none": ("<null>", "n/a", "n/a"),
+    "plan-recalculation-none": ("<null>", "n/a", "n/a"),
+    "plan-simulation-10000": ("System.Int32", "10000", "10000"),
+    "plan-sensitivity-10000": ("System.Int32", "10000", "10000"),
+    "plan-annual-10000": ("System.Int32", "10000", "10000"),
+    "plan-simulation-50000": ("System.Int32", "50000", "50000"),
+    "plan-sensitivity-50000": ("System.Int32", "50000", "50000"),
+    "plan-annual-50000": ("System.Int32", "50000", "50000"),
+    "plan-simulation-100000": ("System.Int32", "100000", "100000"),
+    "plan-sensitivity-100000": ("System.Int32", "100000", "100000"),
+    "plan-annual-100000": ("System.Int32", "100000", "100000"),
+    # The parameter really supplied, which is the state its [int[]] constraint
+    # was written for and the one a scoped run uses.
+    "parameter-supplied-10000": ("System.Int32", "10000", "10000"),
+}
+
+# WHAT THE SAMPLE VALIDATOR MUST SAY. count, valid, whether the shape guard
+# accepted the list.
+SHAPE_SAMPLE_EXPECTED = {
+    "clean-command": (0, True, True),
+    "clean-recalculation": (0, True, True),
+    "endpoint-refusal": (1, False, True),
+    "malformed-announcement": (1, False, True),
+    "missing-published-iterations": (1, False, True),
+    "wrong-published-iterations": (1, False, True),
+    "right-published-iterations": (0, True, True),
+    "annual-state-wrong": (1, False, True),
+    "two-problems-at-once": (3, False, True),
+    # THE DEFECT ITSELF. It still reproduces exactly - and the guard refuses it.
+    "double-wrapped": (1, False, False),
+}
+
+
+def _shape_rows(runner: Path) -> dict:
+    """Run the shape harness against one runner and parse its tagged lines."""
+    done = subprocess.run(
+        [PWSH, "-NoProfile", "-File", str(SHAPE_HARNESS), "-Runner", str(runner),
+         "-Plan", str(PLAN_FILE)],
+        capture_output=True, text=True, timeout=600)
+    assert done.returncode == 0, done.stdout + done.stderr
+    rows = {"iter": {}, "sample": {}, "unmet": []}
+    for line in done.stdout.splitlines():
+        if line.startswith(("PARSE|", "MISSING|")):
+            # THE HARNESS COULD NOT FIND WHAT IT LIFTS. That is a refusal the
+            # named controls below must report, not an error in this reader: an
+            # anchor that moved means the thing being proved is no longer there.
+            rows["unmet"].append(line)
+            continue
+        if line.startswith("ITER|"):
+            label, kind, shown, as_double, banner = line[len("ITER|"):].split("|", 4)
+            rows["iter"][label] = (kind, shown, as_double, banner)
+        elif line.startswith("SAMPLE|"):
+            parts = line[len("SAMPLE|"):].split("|", 5)
+            name, count, valid, guard = parts[0], parts[1], parts[2], parts[3]
+            rows["sample"][name] = {
+                "count": int(count.split("=")[1]),
+                "valid": valid.split("=")[1] == "True",
+                "guard": guard.split("=", 1)[1],
+                # THE MESSAGE CAN CONTAIN PIPES - a refusal reads
+                # "FAIL|Calculate|..." - so the tail is rejoined and only the
+                # field name is stripped.
+                "rendered": "|".join(parts[4:])[len("rendered="):],
+            }
+    return rows
+
+
+def _shape() -> dict:
+    if "shape" not in _MEMO:
+        _MEMO["shape"] = _shape_rows(RUNNER)
+    return _MEMO["shape"]
+
+
+# ===========================================================================
+# O. THE TWO SHAPE DEFECTS THE FIRST TIMED RUN FOUND
+# ===========================================================================
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_180_every_planned_run_selects_exactly_one_integer_iteration_count() -> None:
+    """A CLR TYPE, NOT A CLAIM ABOUT ONE. The run loop's `$iterations` WAS the
+    script parameter `[int[]]$Iterations` - PowerShell variable names are
+    case-insensitive, and a typed parameter keeps its constraint for the whole
+    life of the variable, so every assignment was coerced back to `[int[]]`.
+    `[string]` of a one-element array is still the element, which is why the
+    banner read correctly and only `[double]` raised.
+
+    So this executes the runner's OWN param block and the loop's OWN selection
+    lines, once per planned PERF-SMALL run, and reports what came out."""
+    shape = _shape()
+    assert shape["unmet"] == [], (
+        f"the shape harness could not lift what it proves: {shape['unmet']}")
+    rows = shape["iter"]
+    assert set(rows) == set(SHAPE_ITER_EXPECTED), (sorted(rows), sorted(SHAPE_ITER_EXPECTED))
+    for label, (kind, shown, as_double) in SHAPE_ITER_EXPECTED.items():
+        got = rows[label]
+        assert got[0] == kind, (label, got)
+        assert got[1] == shown, (label, got)
+        # `[double]` IS THE CAST THAT RAISED ON WINDOWS, so it is the one checked.
+        assert got[2] == as_double, (label, got)
+        assert "RAISED" not in got[2], (label, got)
+    # NINE ITERATION-DEPENDENT RUNS, EACH A SINGLE INTEGER, and two that carry
+    # none - which is the accepted eleven.
+    scalars = [k for k, v in rows.items() if v[0] == "System.Int32" and k.startswith("plan-")]
+    nulls = [k for k, v in rows.items() if v[0] == "<null>"]
+    assert len(scalars) == 9, scalars
+    assert len(nulls) == 2, nulls
+    assert len(scalars) + len(nulls) == 11
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_181_the_sample_validator_returns_a_flat_list_and_stays_strict() -> None:
+    """THE DEFECT WAS THE SHAPE, NOT THE STRICTNESS. `return ,@($problems)` paired
+    with `@(Test-BenchmarkSample ...)` gave a one-element array whose element was
+    the real list: count 1 whatever the sample found, so `Valid` was False on
+    every execution and `-join` rendered the inner array as `System.Object[]`.
+    Calculate and the recalculation had executed correctly and had no problems.
+
+    Loosening the check would have been the wrong repair. Every refusal still
+    refuses, and the count is now the number of problems."""
+    shape = _shape()
+    assert shape["unmet"] == [], (
+        f"the shape harness could not lift what it proves: {shape['unmet']}")
+    rows = shape["sample"]
+    assert set(rows) == set(SHAPE_SAMPLE_EXPECTED), (sorted(rows), sorted(SHAPE_SAMPLE_EXPECTED))
+    for name, (count, valid, accepted) in SHAPE_SAMPLE_EXPECTED.items():
+        got = rows[name]
+        assert got["count"] == count, (name, got)
+        assert got["valid"] == valid, (name, got)
+        assert (got["guard"] == "ACCEPTED") == accepted, (name, got)
+    # A CLEAN SAMPLE IS VALID AND RENDERS NOTHING - the state that was impossible.
+    assert rows["clean-command"]["rendered"] == ""
+    assert rows["clean-recalculation"]["rendered"] == ""
+    # AND NOTHING IS SILENTLY STRINGIFIED: three problems render as three.
+    assert rows["two-problems-at-once"]["rendered"].count(";") == 2
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_182_a_re_wrapped_list_still_breaks_and_the_guard_refuses_it() -> None:
+    """THE PROOF THAT THE GUARD IS NOT DECORATIVE. The harness recreates the exact
+    defect - `@()` applied to the call, not to an assigned variable, because
+    wrapping an array is a no-op - and it still produces `count=1`,
+    `valid=False`, `System.Object[]`. The guard refuses it by name, so the next
+    edit that half-keeps the two-place contract aborts the run instead of
+    invalidating every sample for an unreadable reason."""
+    row = _shape()["sample"]["double-wrapped"]
+    assert row["count"] == 1 and row["valid"] is False
+    assert row["rendered"] == "System.Object[]", row["rendered"]
+    assert row["guard"].startswith("REFUSED:"), row["guard"]
+    assert "NESTED list" in row["guard"]
+    assert "do not re-wrap it" in row["guard"]
+    # AND IT REFUSES RATHER THAN FLATTENING. A guard that repaired the shape would
+    # hide the defect and keep the run going.
+    guard = _function(_code(), "Assert-BenchmarkProblemList")
+    assert "throw (" in guard
+    # STATEMENT POSITION AGAIN. The refusal's own wording says the validator "must
+    # return a list", and saying so is not returning one. What is banned is a
+    # `return` STATEMENT - a guard that handed back a value would be repairing the
+    # shape - and any reassignment of the list it was given.
+    for line in guard.splitlines():
+        stripped = line.strip()
+        assert not stripped.startswith("return"), (
+            f"the shape guard returns a value instead of refusing: {stripped}")
+        assert "$Problems =" not in stripped, (
+            f"the shape guard rewrites the list it was given: {stripped}")
+    assert "-join" not in guard, "the shape guard flattens instead of refusing"
+
+
+def test_183_the_two_place_array_contract_is_kept_at_both_of_its_sites() -> None:
+    """A CONTRACT SPREAD OVER TWO PLACES IS ONE AN EDIT CAN HALF-KEEP, and this
+    one was half-kept twice. A helper that returns `,@(...)` hands back ONE object
+    that IS the array; the caller must ASSIGN it, never wrap it again.
+
+    Both sites are named, so a third one cannot be added without appearing here."""
+    code = _code()
+    # STATEMENT POSITION, NOT THE LETTERS. The shape guard's refusal QUOTES the
+    # defective pairing in its message, and quoting it is the opposite of writing
+    # it - so a line only counts when the token starts a statement.
+    commas = [line.strip() for line in code.splitlines()
+              if line.strip().startswith("return ,@(") or "{ return ,@(" in line]
+    assert len(commas) == 4, commas
+    quoted = [line.strip() for line in code.splitlines()
+              if "return ,@(" in line and line.strip() not in commas]
+    assert len(quoted) == 1, quoted
+    assert "do not re-wrap" in _function(code, "Assert-BenchmarkProblemList")
+    # AND THE GUARD IS CALLED, not merely defined. A guard nobody invokes is the
+    # same as no guard, and its presence in the file would read as protection.
+    execution = _function(code, "Invoke-BenchmarkExecution")
+    assert "Assert-BenchmarkProblemList -Problems $problems" in execution, (
+        "the shape guard is never invoked on the problem list it exists to check")
+    # IMMEDIATELY AFTER THE CALL, before the sample object is built from it.
+    assert (execution.index("Assert-BenchmarkProblemList")
+            < execution.index("Valid      =")), (
+        "the sample is built before its problem list is checked")
+    # EVERY comma-returning helper, and how its result is taken.
+    for helper, expected in (("Test-BenchmarkSample", "$problems = Test-BenchmarkSample"),
+                             ("Get-BenchmarkOneDriveRoots", "$roots = Get-BenchmarkOneDriveRoots"),
+                             ("New-BenchmarkWeights", "(New-BenchmarkWeights -Years")):
+        assert f"return ,@(" in _function(code, helper) or helper == "New-BenchmarkWeights", helper
+        assert expected in code, f"{helper}'s result is not taken by assignment: {expected}"
+        assert f"@({helper}" not in code, f"{helper}'s result is re-wrapped in @()"
+
+
+def test_184_no_local_reuses_a_typed_script_parameter_name() -> None:
+    """THE GENERAL FORM OF THE ITERATION DEFECT. PowerShell variable names are
+    case-insensitive and a typed parameter keeps its constraint for the whole life
+    of the variable, so a local that reuses a parameter's name is silently coerced
+    to that parameter's type on every assignment. `[int[]]` and `[string[]]` are
+    the dangerous ones: they turn a scalar into a one-element array that prints
+    correctly and casts wrongly.
+
+    So no assignment anywhere may target a name the param block declares - and
+    the param block is read out of the runner rather than restated."""
+    runner = _runner()
+    block = runner[runner.index("param("):runner.index("\nSet-StrictMode")]
+    declared = {}
+    # THE TYPE CAN NEST ITS BRACKETS - `[int[]]`, `[string[]]` - so the pattern
+    # must span them. A character class that stopped at the first `]` read every
+    # array parameter as untyped, which is exactly the declaration that caused
+    # the defect.
+    for match in re.finditer(r"(\[[\w.\[\]]+\]\s*)?\$(\w+)\s*[,)=]", block):
+        declared[match.group(2).lower()] = (match.group(1) or "").strip()
+    assert {"scenario", "iterations", "operations"} <= set(declared), sorted(declared)
+    assert declared["iterations"] == "[int[]]", declared["iterations"]
+
+    body = runner[runner.index("\nSet-StrictMode"):]
+    offenders = []
+    for match in re.finditer(r"^\s*\$(\w+)\s*=[^=]", body, re.M):
+        name = match.group(1).lower()
+        if name in declared and declared[name]:
+            offenders.append(match.group(0).strip())
+    # THE THREE PATH PARAMETERS ARE DEFAULTED IN PLACE ON PURPOSE - same [string]
+    # type, so no coercion can change a shape - and they are named here rather
+    # than excluded by a pattern.
+    allowed = ("$BuildDir =", "$WorkDir =", "$OutDir =")
+    unexpected = [o for o in offenders if not o.startswith(allowed)]
+    assert unexpected == [], (
+        f"a local reuses a typed script parameter's name, so every assignment to "
+        f"it is coerced to that type: {unexpected}")
+
+
+def test_185_the_shape_harness_reads_the_real_runner_and_starts_no_excel() -> None:
+    """IT LIFTS THE PARAM BLOCK TOO, which is the defect's other half. A probe
+    that declared its own `[int[]]$Iterations` would be testing its own guess
+    about what the runner declares."""
+    harness = SHAPE_HARNESS.read_text(encoding="utf-8")
+    assert "$ast.ParamBlock.Extent.Text" in harness, "the param block is not lifted"
+    assert "FunctionDefinitionAst" in harness and "Invoke-Expression" in harness
+    assert "'ITER|'" in harness and "'SAMPLE|'" in harness
+    for banned in ("New-Object -ComObject", "Excel.Application", "Workbooks"):
+        assert banned not in harness, f"the shape harness starts Excel: {banned}"
+    # AND IT IS TEST-ONLY.
+    assert "phase10_run_shape_flow" not in _runner()
+
+
+def test_186_the_median_still_needs_three_valid_warm_samples() -> None:
+    """THE CONTRACT THE SHAPE DEFECT WAS HIDING. With every sample invalid the
+    median was never computed and the gate was never exercised. It is unchanged:
+    a median exists only when EVERY warm sample was valid, and the count comes
+    from the plan rather than from a literal."""
+    code = _code()
+    assert "if ($validWarm.Count -eq [int]$run.warm_runs) {" in code
+    assert "$valid = ([bool](($cold.Valid) -and ($validWarm.Count -eq [int]$run.warm_runs)))" in code
+    # INVALID SAMPLES ARE EXCLUDED FROM THE MEDIAN, not counted toward it.
+    assert "$validWarm = @($warm | Where-Object { $_.Valid })" in code
+    assert "Get-BenchmarkMedian -Values @($validWarm" in code
+    # AND THE PLAN STILL SAYS ONE COLD AND THREE WARM, ELEVEN TIMES.
+    runs = [r for r in _plan()["runs"] if r["scenario"] == "PERF-SMALL"]
+    assert len(runs) == 11, len(runs)
+    assert {r["cold_runs"] for r in runs} == {1}
+    assert {r["warm_runs"] for r in runs} == {3}
+
+
+def test_187_the_fixture_window_is_byte_identical_to_the_run_that_proved_it() -> None:
+    """THE WINDOW IS RUNTIME PROVEN AND IS NOT REOPENED. Windows at ce5951f opened
+    it, built the fixture, closed it and verified depth 0 before timing. These two
+    shape defects are in the run loop, which is downstream of all of it."""
+    for name in ("Open-BenchmarkFixtureWindow", "Close-BenchmarkFixtureWindow",
+                 "Invoke-BenchmarkWindowRollback", "Assert-BenchmarkProtectionApplied",
+                 "Get-BenchmarkProtectionState", "Import-BenchmarkFixtureWindow"):
+        current = _function(_code(), name)
+        accepted = _function(_code_at("ce5951f"), name)
+        assert current == accepted, f"{name} changed after the run that proved it"
+    # THE SHIM TOO, BYTE FOR BYTE.
+    assert not _git("diff", "--name-only", "ce5951f", "--",
+                    "pccm/bootstrap/windows/phase10_fixture_window.bas").strip()
+    # AND THE WINDOW STILL SPANS THE FIXTURE AND NOTHING ELSE.
+    code = _code()
+    assert code.count("Open-BenchmarkFixtureWindow -Excel") == 1
+    assert code.count("Close-BenchmarkFixtureWindow -Excel") == 1
+
+
+def _code_at(commit: str) -> str:
+    """The runner as it stood at one commit, comments removed like `_code`."""
+    key = ("code_at", commit)
+    if key not in _MEMO:
+        text = _git("show", f"{commit}:pccm/bootstrap/windows/phase10_benchmark.ps1")
+        text = re.sub(r"<#.*?#>", "", text, flags=re.S)
+        _MEMO[key] = "\n".join(
+            line for line in text.splitlines() if not line.strip().startswith("#"))
+    return _MEMO[key]
+
+
 FLOW_HARNESS = PCCM_ROOT / "tests" / "phase10_fixture_window_flow.ps1"
 
 # WHAT EACH SCENARIO MUST DO. The macro sequence is the whole proof: "exactly

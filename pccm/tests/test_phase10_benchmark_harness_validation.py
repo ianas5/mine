@@ -74,6 +74,12 @@ FILESYSTEM_CONTROLS = (
     "test_173_a_failed_rollback_is_reported_beside_the_failure_that_caused_it",
     "test_174_a_successful_open_closes_nothing_itself",
     "test_175_no_timed_work_follows_any_window_failure",
+    # The EXECUTED shape proof, for the same reason: it reads the runner on disk
+    # through a subprocess. Mutated by `_shape_mutation` below.
+    "test_180_every_planned_run_selects_exactly_one_integer_iteration_count",
+    "test_181_the_sample_validator_returns_a_flat_list_and_stays_strict",
+    "test_182_a_re_wrapped_list_still_breaks_and_the_guard_refuses_it",
+    "test_185_the_shape_harness_reads_the_real_runner_and_starts_no_excel",
 )
 
 # The control-flow controls, which `_flow_mutation` reruns against damaged rows.
@@ -1671,6 +1677,181 @@ def test_179_a_flow_harness_that_tests_a_copy_is_rejected() -> None:
         scratch.unlink()
     assert refused, "a reimplemented function in the flow harness survived"
     assert any(name.startswith("test_17") for name in refused), refused
+
+
+# ===========================================================================
+# O. THE TWO SHAPE DEFECTS
+# ===========================================================================
+# The shape controls read the runner ON DISK through a PowerShell subprocess, so
+# they are excluded from the generic battery above and mutated here instead - by
+# writing a damaged runner to disk and re-running the harness against it. A CLR
+# type and a problem COUNT cannot be mutated in memory.
+SHAPE_CONTROLS = (
+    "test_180_every_planned_run_selects_exactly_one_integer_iteration_count",
+    "test_181_the_sample_validator_returns_a_flat_list_and_stays_strict",
+    "test_182_a_re_wrapped_list_still_breaks_and_the_guard_refuses_it",
+    # Source-side, so they run here too.
+    "test_183_the_two_place_array_contract_is_kept_at_both_of_its_sites",
+    "test_184_no_local_reuses_a_typed_script_parameter_name",
+    "test_186_the_median_still_needs_three_valid_warm_samples",
+    "test_187_the_fixture_window_is_byte_identical_to_the_run_that_proved_it",
+)
+
+
+def _shape_mutation(expected: str, before: str, after: str) -> None:
+    """Damage the runner ON DISK and re-run the executed shape harness on it."""
+    with conformance.RUNNER.open(encoding="utf-8", newline="") as handle:
+        source = handle.read()
+    damaged = source.replace(before.replace("\n", "\r\n"), after.replace("\n", "\r\n"), 1)
+    if damaged == source:
+        raise RuntimeError(
+            f"the mutation changed nothing: {before[:60]!r} is no longer in the runner")
+
+    scratch = conformance.BOOTSTRAP / "__shape_mutation_tmp.ps1"
+    with scratch.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(damaged)
+    try:
+        rows = conformance._shape_rows(scratch)
+    finally:
+        scratch.unlink()
+
+    restore = _install({"shape": rows, "runner": damaged.replace("\r\n", "\n")})
+    refused = []
+    try:
+        conformance._MEMO.pop("code", None)
+        for name in SHAPE_CONTROLS:
+            try:
+                getattr(conformance, name)()
+            except BaseException:  # noqa: BLE001 - any refusal counts
+                refused.append(name)
+    finally:
+        restore()
+        conformance._MEMO.pop("code", None)
+    assert refused, "the mutation survived every shape check"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+def test_180_re_wrapping_the_problem_list_is_rejected() -> None:
+    """THE EXACT DEFECT THE FIRST TIMED RUN DIED ON. `@()` applied to a helper that
+    already returns `,@(...)` collects ONE object into a new one-element array, so
+    the count is 1 whatever the sample found: every execution INVALID, rendered as
+    `System.Object[]`."""
+    _shape_mutation(
+        "test_18",
+        "    $problems = Test-BenchmarkSample -Operation $Operation -Evidence $evidence `\n"
+        "        -RequestedIterations $RequestedIterations",
+        "    $problems = @(Test-BenchmarkSample -Operation $Operation -Evidence $evidence `\n"
+        "        -RequestedIterations $RequestedIterations)")
+
+
+def test_181_dropping_the_shape_guard_is_rejected() -> None:
+    """THE TWO-PLACE CONTRACT NEEDS A CHECK AT THE CALL. Without it the next edit
+    that half-keeps it reappears as every sample being invalid for an unreadable
+    reason, which is a week of confusion rather than an abort."""
+    _shape_mutation(
+        "test_18",
+        "    Assert-BenchmarkProblemList -Problems $problems -Where ([string]$Operation.key)\n",
+        "")
+
+
+def test_182_flattening_a_malformed_list_instead_of_refusing_is_rejected() -> None:
+    """REPAIRING THE SHAPE HIDES THE DEFECT. A guard that flattened would let a
+    re-wrapped list through, and the run would go on measuring with a validator
+    nobody could trust."""
+    _shape_mutation(
+        "test_18",
+        "        if ($problem -is [System.Array]) {\n"
+        "            throw ('the sample validator returned a NESTED list for ' + $Where +",
+        "        if ($problem -is [System.Array]) {\n"
+        "            $problem = ($problem -join '; ')\n"
+        "            $unreachable = ('the sample validator returned a NESTED list for ' + $Where +")
+
+
+def test_183_dropping_the_comma_from_the_helper_is_rejected() -> None:
+    """THE COMMA IS WHY AN EMPTY RESULT SURVIVES. `return @($problems)` on an empty
+    list emits NOTHING to the pipeline, so the caller's direct assignment gets
+    $null - and a $null problem list is not an empty one."""
+    _shape_mutation(
+        "test_18",
+        "    return ,@($problems)\n}",
+        "    return @($problems)\n}")
+
+
+def test_184_restoring_the_parameter_name_collision_is_rejected() -> None:
+    """THE EXACT DEFECT THAT ABORTED THE SIMULATION SETUP. `$iterations` IS the
+    script parameter `[int[]]$Iterations` - names are case-insensitive - so every
+    assignment is coerced back to `[int[]]`, and `[double]` of a one-element array
+    raises while `[string]` of it still looks right."""
+    _shape_mutation(
+        "test_180",
+        "        $runIterations = $null\n"
+        "        if ($null -ne $run.iterations) { $runIterations = [int]$run.iterations }",
+        "        $iterations = $null\n"
+        "        if ($null -ne $run.iterations) { $iterations = [int]$run.iterations }\n"
+        "        $runIterations = $iterations")
+
+
+def test_185_selecting_an_element_out_of_the_iteration_count_is_rejected() -> None:
+    """THE PATCH THAT WOULD HAVE HIDDEN IT. `[double]$iterations[0]` makes the
+    symptom go away and leaves the shape wrong, so the value would still be an
+    array everywhere else - and on a plan that ever carried a list it would
+    silently measure only the first count."""
+    _shape_mutation(
+        "test_180",
+        "        $runIterations = $null\n"
+        "        if ($null -ne $run.iterations) { $runIterations = [int]$run.iterations }",
+        "        $iterations = $null\n"
+        "        if ($null -ne $run.iterations) { $iterations = [int]$run.iterations }\n"
+        "        $runIterations = $iterations[0]")
+
+
+def test_186_taking_the_whole_iteration_array_into_the_control_is_rejected() -> None:
+    """THE FULL DECLARED LIST WHERE ONE COUNT BELONGS. `$declaredIterations` is
+    every count the scenario declares; writing it to the control would ask the
+    workbook for three numbers at once."""
+    _shape_mutation(
+        "test_180",
+        "        if ($null -ne $run.iterations) { $runIterations = [int]$run.iterations }",
+        "        if ($null -ne $run.iterations) { $runIterations = $declaredIterations }")
+
+
+def test_187_counting_invalid_samples_toward_the_median_is_rejected() -> None:
+    """A MEDIAN OF TWO GOOD RUNS AND A REFUSAL is not a measurement of anything,
+    and the shape defect meant this gate was never reached on Windows."""
+    _runner_mutation(
+        "test_186",
+        "        $validWarm = @($warm | Where-Object { $_.Valid })",
+        "        $validWarm = @($warm)")
+
+
+def test_188_computing_a_median_from_fewer_than_three_warm_samples_is_rejected() -> None:
+    """THE COUNT COMES FROM THE PLAN, and the median exists only when every warm
+    sample was valid."""
+    _runner_mutation(
+        "test_186",
+        "        if ($validWarm.Count -eq [int]$run.warm_runs) {",
+        "        if ($validWarm.Count -ge 1) {")
+
+
+def test_189_touching_the_runtime_proven_fixture_window_is_rejected() -> None:
+    """THE WINDOW IS RUNTIME PROVEN AND IS NOT REOPENED. These two defects are in
+    the run loop, downstream of it; a shape correction that edited the window
+    would put a proven architecture back in doubt."""
+    _runner_mutation(
+        "test_187",
+        "    $null = Assert-BenchmarkProtectionApplied -Excel $Excel -Manifest $Manifest `\n"
+        "        -Stage 'before the fixture maintenance window was opened'",
+        "    $null = Get-BenchmarkProtectionState -Excel $Excel")
+
+
+def test_190_re_wrapping_the_onedrive_roots_is_rejected() -> None:
+    """THE SAME PAIRING AT ITS OTHER SITE. Double-wrapped, every OneDrive root
+    became one nested array: a workbook under OneDrive was recorded as LOCAL and
+    the roots field held a list containing a list."""
+    _runner_mutation(
+        "test_183",
+        "    $roots = Get-BenchmarkOneDriveRoots",
+        "    $roots = @(Get-BenchmarkOneDriveRoots)")
 
 
 def test_144_deleting_a_definition_a_dot_sourced_file_calls_is_rejected() -> None:
