@@ -442,8 +442,11 @@ def test_2c_the_probe_never_releases_workbook_structure_protection() -> None:
     for banned in ("ThisWorkbook.Unprotect", ".Unprotect(", ".Unprotect ",
                    "ProtectStructure = ", "ProtectionRelease"):
         assert banned not in code, f"the probe releases protection: {banned}"
-    # AND IT STILL READS THE STRUCTURE FLAG AS EVIDENCE.
-    assert "Structure   = [bool]$Workbook.ProtectStructure" in code
+    # AND IT STILL READS THE STRUCTURE FLAG AS EVIDENCE - the real Excel
+    # property, now through the accepted retry boundary rather than bare. It is
+    # not a proxy, not a cached value and not an assumption.
+    assert "-Target $Workbook -Member 'ProtectStructure'" in code
+    assert "Structure   = [bool](Invoke-ComRetryRead" in code
 
 
 # ===========================================================================
@@ -573,6 +576,131 @@ def test_2k_protection_is_required_before_and_after_every_endpoint() -> None:
     # AND A LOST-PROTECTION READING STILL BLOCKS FINE.
     assert code.index("$lostProtection") < \
         code.index("$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'")
+
+
+# ===========================================================================
+# C4. THE PROTECTION READER - WHAT ENDED WINDOWS RUN 8
+# ===========================================================================
+# Run 8 died three statements after Workbooks.Open, before the locked-cell
+# control and before every production endpoint:
+#
+#   System.Management.Automation.PropertyNotFoundException
+#   The property 'ProtectContents' cannot be found on this object.
+#     at  if ($sheet.ProtectContents) { ... }
+#
+# The function was BYTE-IDENTICAL to the one Run 7 executed successfully, so the
+# delete-path work did not introduce it. It is a latent defect in the reader.
+def test_2l_the_protection_reader_proves_its_object_is_a_worksheet() -> None:
+    """A BARE DEREFERENCE TURNS "no type information" INTO A SENTENCE NAMING A
+    PROPERTY, which is why one Windows run could not diagnose it."""
+    code = _probe_code()
+    assert "function Assert-ProbeWorksheet" in code
+    reader = _function("Get-ProbeProtectionState", code)
+    assert "Assert-ProbeWorksheet -Candidate $sheet -Where $Where -Index $index" in reader
+    # NOTHING SITS BETWEEN THE COLLECTION AND THE LOOP VARIABLE. A projection
+    # into the foreach head would hand the reader objects that are not
+    # Worksheets at all - which is the shape Run 8's failure looked like - and
+    # an assertion placed after it would simply refuse every item.
+    heads = [line.strip() for line in reader.splitlines()
+             if line.strip().startswith("foreach (")]
+    assert heads == ["foreach ($sheet in @($sheets)) {"], heads
+    assert "$sheets = (Invoke-ComRetryRead -Target $Workbook -Member 'Worksheets'" in reader
+    # THE ASSERTION COMES BEFORE ANY PROPERTY IS READ OFF THE ITEM.
+    assert reader.index("Assert-ProbeWorksheet") < reader.index("-Member 'Name'")
+    assert reader.index("Assert-ProbeWorksheet") < reader.index("-Member 'ProtectContents'")
+
+
+def test_2m_the_membership_test_is_not_a_dereference() -> None:
+    """READING .PSObject IS ALWAYS SAFE; reading a member that is not there is
+    what StrictMode turns terminating. The check cannot be the crash."""
+    body = _function("Assert-ProbeWorksheet", _probe_code())
+    assert "$Candidate.PSObject.Properties['ProtectContents']" in body
+    assert "$Candidate.PSObject.Properties['Name']" in body
+    assert "if ($hasProtect -and $hasName) { return }" in body
+    # AND IT NEVER DEREFERENCES THE PROPERTY IT IS TESTING FOR.
+    assert "$Candidate.ProtectContents" not in body
+
+
+def test_2n_a_non_worksheet_fails_explicitly_with_its_type() -> None:
+    """REQUIRED: fail explicitly with diagnostic evidence including its actual
+    PowerShell/.NET/COM type and the stage in which it occurred."""
+    body = _function("Assert-ProbeWorksheet", _probe_code())
+    assert "throw (" in body
+    for fact in ("$Candidate.GetType().FullName", "$Candidate.PSObject.TypeNames",
+                 "Marshal]::IsComObject($Candidate)", "$Candidate.PSObject.Properties).Count"):
+        assert fact in body, f"the diagnosis omits {fact}"
+    for label in (".NET type: ", "PSTypeNames: ", "IsComObject: ", "properties visible: "):
+        assert label in body, label
+    # THE STAGE AND THE ITEM ARE NAMED.
+    assert "$Where + ': item ' + [string]$Index" in body
+    # AND THE MESSAGE EXPLAINS WHAT THE EXCEPTION ACTUALLY MEANS.
+    assert "exposes NO properties" in body
+
+
+def test_2o_the_reader_never_assumes_a_protection_state() -> None:
+    """REQUIRED: no assuming protected=true, no defaulting a missing property,
+    no counting names only, no text matching, no swallowed exception."""
+    reader = _function("Get-ProbeProtectionState", _probe_code())
+    assert "-Member 'ProtectContents'" in reader, "the real property is no longer read"
+    for banned in ("$true }", "-eq 'Protected'", "-match", "-like",
+                   "catch { }", "SilentlyContinue"):
+        assert banned not in reader, f"the reader weakens the check with {banned}"
+    # BOTH BRANCHES COME FROM THE PROPERTY, and neither is a default.
+    assert "if ($isProtected) { $protectedNames += $sheetName }" in reader
+    assert "else              { $unprotectedNames += $sheetName }" in reader
+    # AND A WORKBOOK THAT ENUMERATED NOTHING IS STILL REFUSED.
+    assert "the workbook enumerated no worksheets" in reader
+
+
+def test_2p_nothing_in_the_reader_swallows_a_property_not_found() -> None:
+    """PropertyNotFoundException MUST STILL BE FATAL. Catching it is how a
+    protection state nobody read becomes a protection state somebody reported."""
+    code = _probe_code()
+    # THE NAME MAY BE EXPLAINED, NEVER CAUGHT OR TESTED FOR. The diagnosis says
+    # what the exception means; what is banned is a handler or a comparison that
+    # would let the probe carry on past one.
+    for banned in ("catch [System.Management.Automation.PropertyNotFoundException]",
+                   "-is [System.Management.Automation.PropertyNotFoundException]",
+                   "PropertyNotFoundException'", 'PropertyNotFoundException"'):
+        assert banned not in code, f"the probe handles the exception rather than preventing it: {banned}"
+    reader = _function("Get-ProbeProtectionState", code)
+    assert "catch" not in reader.replace("catch { $hasProtect", ""), (
+        "the protection reader catches something")
+    # THE DIAGNOSTIC BUILDER'S CATCHES RECORD WHY, they do not discard.
+    body = _function("Assert-ProbeWorksheet", code)
+    for empty in ("catch { }", "catch {}"):
+        assert empty not in body, "a diagnostic read is swallowed"
+    assert body.count("'unreadable: ' + (Format-Err $_)") == 4
+
+
+def test_2q_the_reader_reads_through_the_accepted_retry_boundary() -> None:
+    """THE SAME BOUNDARY STAGE-B VERIFICATION ALREADY USES. Excel had just run
+    Workbook_Open across 14 sheets, and a refused first call is a condition this
+    machine has already produced once."""
+    reader = _function("Get-ProbeProtectionState", _probe_code())
+    for member in ("Worksheets", "Name", "ProtectContents"):
+        assert f"-Member '{member}'" in reader, member
+    assert reader.count("Invoke-ComRetryRead") >= 3
+    # AND THE HELPER IS THE ACCEPTED ONE, not a local reimplementation.
+    lifecycle = (PCCM_ROOT / "bootstrap" / "windows" / "com_lifecycle.ps1").read_text(encoding="utf-8")
+    assert "function Invoke-ComRetryRead" in lifecycle
+    assert "function Invoke-ComRetryRead" not in _probe_code(), (
+        "the probe reimplements the accepted retry helper")
+
+
+def test_2r_a_failed_protection_read_cannot_reach_a_verdict() -> None:
+    """RUN 8 GOT THIS RIGHT AND IT MUST STAY RIGHT: the probe reported
+    INCONCLUSIVE, the control NOT ATTEMPTED, and no endpoint was claimed."""
+    code = _probe_code()
+    # The reader throws; the outer handler leaves the verdict where it started.
+    assert "$verdict = 'INCONCLUSIVE'" in code
+    assert "the probe itself failed in stage" in code
+    handler = code[code.index("the probe itself failed in stage"):]
+    handler = handler[: handler.index("Write-ProbeLine")] if "Write-ProbeLine" in handler else handler
+    assert "$verdict = 'PRODUCTION" not in handler
+    # AND THE CONTROL STAYS NOT ATTEMPTED.
+    assert "$controlResult = 'NOT ATTEMPTED'" in code
+    assert "$controlDetail = 'the probe did not reach the locked-cell control'" in code
 
 
 # ===========================================================================

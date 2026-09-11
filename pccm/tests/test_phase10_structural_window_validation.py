@@ -401,6 +401,34 @@ def test_55_dropping_the_run_7_observed_calc_shapes_is_rejected() -> None:
     _mutate_evidence("test_52a", "1×8 → 3×8", "a larger table")
 
 
+def test_56_rewriting_run_8_as_a_production_failure_is_rejected() -> None:
+    """NO ENDPOINT RAN. Calling it a production failure puts a defect on the
+    record that no run established."""
+    _mutate_evidence("test_52c", "**This is not a production failure.**",
+                     "This is a production failure.")
+
+
+def test_57_claiming_delete_evidence_from_run_8_is_rejected() -> None:
+    _mutate_evidence("test_52e", "Nothing here bears on",
+                     "This confirms")
+
+
+def test_58_presenting_the_com_inference_as_proof_is_rejected() -> None:
+    """PROBE RUN 2's LESSON: a plausible mechanism asserted as a settled cause."""
+    _mutate_evidence("test_52d", "INFERRED, AND LABELLED AS SUCH",
+                     "ALSO PROVED FROM SOURCE")
+
+
+def test_59_dropping_the_byte_identical_finding_is_rejected() -> None:
+    """IT IS WHAT CLEARS THE DELETE-PATH WORK."""
+    _mutate_evidence("test_52d", "The delete-path work did not introduce this",
+                     "The cause is unclear")
+
+
+def test_60_marking_the_reconciliation_closed_is_rejected() -> None:
+    _mutate_evidence("test_52c", "remains **OPEN**", "is now CLOSED")
+
+
 def test_46_deleting_the_recorded_evidence_is_rejected() -> None:
     """REQUIRED CONTROL 24. A reconciliation whose reason is not recorded is one
     the next rewrite undoes."""

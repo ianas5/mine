@@ -579,6 +579,50 @@ def test_52b_the_delete_coverage_is_not_claimed_before_windows_proves_it() -> No
         assert overclaim not in text, f"the record claims delete coverage it does not have: {overclaim}"
 
 
+def test_52c_run_8_is_recorded_as_a_probe_regression_not_a_production_failure() -> None:
+    """RUN 8 ENDED BEFORE ANY ENDPOINT RAN. Recording it as anything else would
+    put a production defect on the record that no run established."""
+    text = _evidence_section("## Protection probe Run 8")
+    # WHAT SUCCEEDED, INCLUDING THE ORDERING THAT WAS RIGHT THIS TIME.
+    assert "351 passed, 0 failed" in text
+    assert "rebuilt BEFORE the probe" in text
+    assert "Stage-B bootstrap completed" in text
+    # THE EXACT FAILURE.
+    assert "PropertyNotFoundException" in text
+    assert "The property 'ProtectContents' cannot be found on this object." in text
+    assert "NOT ATTEMPTED" in text and "INCONCLUSIVE" in text
+    assert "Shutdown was clean." in text
+    # AND WHAT IT DOES NOT ESTABLISH.
+    assert "not a production failure" in text
+    assert "No production defect is established" in text
+    assert "No delete-path evidence was obtained" in text
+    assert "remains **OPEN**" in text
+    # RUN 7 IS NOT REWRITTEN.
+    assert "Run 7 remains valid" in text
+
+
+def test_52d_the_run_8_root_cause_separates_proof_from_inference() -> None:
+    """THE BYTE-IDENTICAL FINDING IS PROOF; THE COM MECHANISM IS NOT. Labelling
+    one as the other is how a plausible story becomes a settled cause - which is
+    exactly what went wrong at probe Run 2."""
+    text = _evidence_section("## Protection probe Run 8")
+    assert "PROVED FROM SOURCE" in text
+    assert "byte-identical" in text
+    assert "INFERRED, AND LABELLED AS SUCH" in text
+    assert "cannot be proved from Linux" in text
+    assert "The delete-path work did not introduce this" in text
+
+
+def test_52e_run_8_claims_no_delete_evidence() -> None:
+    """REQUIRED: no claiming delete coverage from a run that reached no
+    endpoint."""
+    text = _evidence_section("## Protection probe Run 8")
+    for overclaim in ("LISTROW DELETE    : OBSERVED", "delete path is proved",
+                      "ListRows.Delete: OBSERVED"):
+        assert overclaim not in text, overclaim
+    assert "Nothing here bears on" in text
+
+
 def test_53_the_runtime_evidence_for_keeping_structure_protected_is_recorded() -> None:
     """RUN 6 TURNED AN INFERENCE INTO EVIDENCE. The reconciliation batch left
     workbook-structure protection applied on a reading of Excel's 1004 wording;

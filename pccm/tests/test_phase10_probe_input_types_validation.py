@@ -370,6 +370,105 @@ def test_24p_changing_something_other_than_the_duration_is_rejected() -> None:
 
 
 # ===========================================================================
+# C4. THE PROTECTION READER
+# ===========================================================================
+def test_25_restoring_the_run_8_bare_dereference_is_rejected() -> None:
+    """THE EXACT STATEMENT THAT ENDED WINDOWS RUN 8."""
+    _mutate("test_2l",
+            "                Assert-ProbeWorksheet -Candidate $sheet -Where $Where -Index $index\n",
+            "")
+
+
+def test_25a_asserting_after_the_first_property_read_is_rejected() -> None:
+    _mutate("test_2l",
+            "                Assert-ProbeWorksheet -Candidate $sheet -Where $Where -Index $index\n"
+            "                $sheetName = [string](Invoke-ComRetryRead -Target $sheet -Member 'Name' `",
+            "                $sheetName = [string](Invoke-ComRetryRead -Target $sheet -Member 'Name' `")
+
+
+def test_25b_replacing_the_worksheet_with_a_record_is_rejected() -> None:
+    """THE SHAPE THE FAILURE LOOKED LIKE: something in the loop that is not a
+    Worksheet. The assertion must refuse it BY NAME rather than crash on it."""
+    _mutate("test_2l",
+            "        foreach ($sheet in @($sheets)) {",
+            "        foreach ($sheet in @(@($sheets) | ForEach-Object { [pscustomobject]@{ Sheet = $_ } })) {")
+
+
+def test_25c_making_the_membership_test_a_dereference_is_rejected() -> None:
+    """A CHECK THAT CRASHES ON THE THING IT CHECKS FOR IS NOT A CHECK."""
+    _mutate("test_2m",
+            "    try { $hasProtect = ($null -ne $Candidate.PSObject.Properties['ProtectContents']) }",
+            "    try { $hasProtect = ($null -ne $Candidate.ProtectContents) }")
+
+
+def test_25d_dropping_the_type_diagnosis_is_rejected() -> None:
+    """WITHOUT IT THE NEXT RUN IS AS BLIND AS RUN 8."""
+    _mutate("test_2n",
+            "           '. A COM object PowerShell has no type information for exposes NO properties, ' +\n"
+            "           'which is what PropertyNotFoundException means here.')",
+            "           '.')")
+
+
+def test_25e_dropping_the_com_facts_from_the_diagnosis_is_rejected() -> None:
+    _mutate("test_2n",
+            "    try { $isCom = [string][System.Runtime.InteropServices.Marshal]::IsComObject($Candidate) }\n"
+            "    catch { $isCom = 'unreadable: ' + (Format-Err $_) }",
+            "    $isCom = 'not checked'")
+
+
+def test_25f_removing_the_real_protectcontents_read_is_rejected() -> None:
+    """REQUIRED: no weaker proxy for the property."""
+    _mutate("test_2o",
+            "                $isProtected = [bool](Invoke-ComRetryRead -Target $sheet -Member 'ProtectContents' `\n"
+            "                                          -Description ($Where + ': ' + $sheetName + '.ProtectContents')).Value",
+            "                $isProtected = $true")
+
+
+def test_25g_assuming_protection_when_the_property_is_absent_is_rejected() -> None:
+    _mutate("test_2m",
+            "    if ($hasProtect -and $hasName) { return }",
+            "    if ($true) { return }")
+
+
+def test_25h_swallowing_a_diagnostic_read_is_rejected() -> None:
+    _mutate("test_2p",
+            "    catch { $typeName = 'unreadable: ' + (Format-Err $_) }",
+            "    catch { $typeName = 'unavailable' }")
+
+
+def test_25i_catching_the_property_not_found_is_rejected() -> None:
+    """A CAUGHT PropertyNotFoundException IS A PROTECTION STATE NOBODY READ."""
+    _mutate("test_2p",
+            "            try {\n"
+            "                Assert-ProbeWorksheet -Candidate $sheet -Where $Where -Index $index",
+            "            try {\n"
+            '                if ($false) { throw "PropertyNotFoundException" }\n'
+            "                Assert-ProbeWorksheet -Candidate $sheet -Where $Where -Index $index")
+
+
+def test_25j_dropping_the_retry_boundary_from_the_reader_is_rejected() -> None:
+    _mutate("test_2q",
+            "        $sheets = (Invoke-ComRetryRead -Target $Workbook -Member 'Worksheets' `\n"
+            "                       -Description ($Where + ': Workbook.Worksheets')).Value",
+            "        $sheets = $Workbook.Worksheets")
+
+
+def test_25k_reading_the_structure_flag_bare_is_rejected() -> None:
+    _mutate("test_2c",
+            "        Structure   = [bool](Invoke-ComRetryRead -Target $Workbook -Member 'ProtectStructure' `\n"
+            "                                  -Description ($Where + ': Workbook.ProtectStructure')).Value",
+            "        Structure   = $true")
+
+
+def test_25l_letting_a_failed_protection_read_reach_a_verdict_is_rejected() -> None:
+    """RUN 8 GOT THIS RIGHT: INCONCLUSIVE, control NOT ATTEMPTED, no endpoint
+    claimed."""
+    _mutate("test_2r",
+            "$controlResult = 'NOT ATTEMPTED'",
+            "$controlResult = 'SUCCEEDED'")
+
+
+# ===========================================================================
 # D. READBACK AND INVOCATION DISCIPLINE
 # ===========================================================================
 def test_22a_dropping_the_discount_rate_prerequisite_is_rejected() -> None:

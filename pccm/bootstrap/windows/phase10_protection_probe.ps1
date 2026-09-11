@@ -624,18 +624,106 @@ function Test-ProbeDeclaredInputs {
     return $problems
 }
 
-# IS THE WORKBOOK ACTUALLY PROTECTED RIGHT NOW? Asked of the sheets themselves,
-# at the moment it matters, by ENUMERATION - there is no index and no `.Count`.
+# WHAT ENDED WINDOWS RUN 8, and it ended before any production endpoint ran.
+#
+#   stage     : protection
+#   doing     : reading the protection state as the workbook opened
+#   exception : System.Management.Automation.PropertyNotFoundException
+#   message   : The property 'ProtectContents' cannot be found on this object.
+#   statement : if ($sheet.ProtectContents) { ... }
+#
+# THIS FUNCTION IS BYTE-IDENTICAL TO THE ONE WINDOWS RUN 7 EXECUTED SUCCESSFULLY.
+# `git diff 5b14a81 c8e2d02` over this file touches Get-ProbeCalcShapes' release
+# label and the new shrink-round helpers and NOTHING here, and nothing that runs
+# before it changed either: Run 8 failed on the FIRST call, three statements
+# after Workbooks.Open. So the delete-path work did not introduce this. It is a
+# LATENT defect in this reader that Run 8 exposed, and it is corrected here.
+#
+# WHAT THE EXCEPTION MEANS, AND WHY IT IS NOT "the sheet is missing a property".
+# PropertyNotFoundException is PowerShell's, not Excel's. A COM object for which
+# PowerShell could not obtain type information exposes NO properties at all, and
+# every access on it reports exactly this. Excel had just run Workbook_Open ->
+# modProtection.ProtectionApply across 14 sheets, and the accepted Stage-B
+# verification already PROVED on this machine that the first inbound calls into a
+# freshly-opened instance can be refused (RPC_E_CALL_REJECTED). A refused
+# IDispatch::GetTypeInfo is the shape that produces this exception. That last
+# step is INFERENCE, not proof, and the correction below is built so the next run
+# settles it either way rather than repeating an undiagnosable failure.
+#
+# TWO CORRECTIONS, AND NEITHER WEAKENS THE CHECK:
+#
+#   1. THE READS GO THROUGH THE ACCEPTED RETRY BOUNDARY. com_lifecycle's
+#      Invoke-ComRetryRead reissues ONLY the two OLE message-filter HRESULTs,
+#      whose contract is that the call never ran. If a refused call is what broke
+#      Run 8, that is now survived. If it is not, the helper rethrows untouched.
+#   2. EVERY ENUMERATED ITEM IS PROVED TO BE A WORKSHEET FIRST. A bare
+#      dereference turns "this object has no type information" into a sentence
+#      naming a property, which is why one Windows run could not diagnose it.
+#
+# STILL BY ENUMERATION - there is no index and no `.Count`. That is the Probe
+# Run 1 settlement and it is not being reopened.
+function Assert-ProbeWorksheet {
+    param($Candidate, [string]$Where, [int]$Index)
+    if ($null -eq $Candidate) {
+        throw ($Where + ': item ' + [string]$Index + ' of the Worksheets collection is null, ' +
+               'so no protection state could be read from it.')
+    }
+    # A MEMBERSHIP TEST, NOT A DEREFERENCE. Reading .PSObject is always safe;
+    # reading a member that is not there is what StrictMode turns terminating.
+    $hasProtect = $false; $hasName = $false
+    try { $hasProtect = ($null -ne $Candidate.PSObject.Properties['ProtectContents']) }
+    catch { $hasProtect = $false }
+    try { $hasName = ($null -ne $Candidate.PSObject.Properties['Name']) }
+    catch { $hasName = $false }
+    if ($hasProtect -and $hasName) { return }
+
+    # THE DIAGNOSIS RUN 8 COULD NOT PRODUCE. Enough to settle it in ONE run, and
+    # nothing about unrelated COM internals.
+    #
+    # NOTHING IS SWALLOWED HERE EITHER. Each of these reads can itself fail on an
+    # object this broken, and a catch that discarded the reason would leave the
+    # next run as blind as this one - so every catch RECORDS why the fact could
+    # not be obtained.
+    $typeName = 'unavailable'
+    try { $typeName = [string]$Candidate.GetType().FullName }
+    catch { $typeName = 'unreadable: ' + (Format-Err $_) }
+    $typeNames = 'unavailable'
+    try { $typeNames = ((@($Candidate.PSObject.TypeNames)) -join ', ') }
+    catch { $typeNames = 'unreadable: ' + (Format-Err $_) }
+    $isCom = 'unavailable'
+    try { $isCom = [string][System.Runtime.InteropServices.Marshal]::IsComObject($Candidate) }
+    catch { $isCom = 'unreadable: ' + (Format-Err $_) }
+    $memberCount = 'unavailable'
+    try { $memberCount = [string](@($Candidate.PSObject.Properties).Count) }
+    catch { $memberCount = 'unreadable: ' + (Format-Err $_) }
+    throw ($Where + ': item ' + [string]$Index + ' of the Worksheets collection does not ' +
+           'expose the Worksheet protection properties, so its protection state cannot be ' +
+           'read. .NET type: ' + $typeName + '; PSTypeNames: ' + $typeNames +
+           '; IsComObject: ' + $isCom + '; properties visible: ' + $memberCount +
+           '; exposes ProtectContents: ' + [string]$hasProtect +
+           '; exposes Name: ' + [string]$hasName +
+           '. A COM object PowerShell has no type information for exposes NO properties, ' +
+           'which is what PropertyNotFoundException means here.')
+}
+
 function Get-ProbeProtectionState {
     param($Workbook, [string]$Where)
     $sheets = $null
     $protectedNames = @(); $unprotectedNames = @()
     try {
-        $sheets = $Workbook.Worksheets
+        $sheets = (Invoke-ComRetryRead -Target $Workbook -Member 'Worksheets' `
+                       -Description ($Where + ': Workbook.Worksheets')).Value
+        $index = 0
         foreach ($sheet in @($sheets)) {
+            $index = $index + 1
             try {
-                if ($sheet.ProtectContents) { $protectedNames += [string]$sheet.Name }
-                else                        { $unprotectedNames += [string]$sheet.Name }
+                Assert-ProbeWorksheet -Candidate $sheet -Where $Where -Index $index
+                $sheetName = [string](Invoke-ComRetryRead -Target $sheet -Member 'Name' `
+                                          -Description ($Where + ': Worksheet ' + [string]$index + '.Name')).Value
+                $isProtected = [bool](Invoke-ComRetryRead -Target $sheet -Member 'ProtectContents' `
+                                          -Description ($Where + ': ' + $sheetName + '.ProtectContents')).Value
+                if ($isProtected) { $protectedNames += $sheetName }
+                else              { $unprotectedNames += $sheetName }
             } finally {
                 if ($null -ne $sheet) { Release-Transient $sheet 'Worksheet' }
             }
@@ -654,7 +742,8 @@ function Get-ProbeProtectionState {
         Protected   = @($protectedNames).Count
         Total       = (@($protectedNames).Count + @($unprotectedNames).Count)
         Unprotected = @($unprotectedNames)
-        Structure   = [bool]$Workbook.ProtectStructure
+        Structure   = [bool](Invoke-ComRetryRead -Target $Workbook -Member 'ProtectStructure' `
+                                  -Description ($Where + ': Workbook.ProtectStructure')).Value
     }
 }
 

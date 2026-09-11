@@ -842,3 +842,108 @@ verdict is **not** FINE.
 evidence; production VBA is byte-identical to `0946cf6`.
 
 ---
+
+## Protection probe Run 8 — PROBE REGRESSION, INCONCLUSIVE, no endpoint reached
+
+Windows executed against `c8e2d02`. **This is not a production failure.** The run
+ended before any production endpoint was exercised.
+
+### What succeeded
+
+```
+Stage A (rebuilt BEFORE the probe): 351 passed, 0 failed
+```
+
+Stage-B bootstrap completed: 14 worksheets, 32 VBA modules, protection applied,
+workbook `structure=True`, `UserInterfaceOnly=True`, persistence verification
+passed, both Excel instances shut down naturally, transient COM releases clean.
+
+### What failed
+
+```
+stage     : protection
+doing     : reading the protection state as the workbook opened
+exception : System.Management.Automation.PropertyNotFoundException
+message   : The property 'ProtectContents' cannot be found on this object.
+            Verify that the property exists.
+statement : if ($sheet.ProtectContents) {
+                $protectedNames += [string]$sheet.Name
+            }
+at line   : 637
+```
+
+```
+CONTROL : NOT ATTEMPTED
+          UserInterfaceOnly code-value-write capability: NOT TESTED
+VERDICT : INCONCLUSIVE
+          the probe itself failed in stage protection while reading the
+          protection state as the workbook opened
+```
+
+Shutdown was clean.
+
+### What this run establishes, and what it does not
+
+* **No production defect is established.** No endpoint was invoked.
+* **No delete-path evidence was obtained.** Nothing here bears on
+  `ListColumns.Delete` or `ListRows.Delete`.
+* **Run 7 remains valid** for exactly what it already proved.
+* **The protection architecture is untouched** and remains supported by Run 7.
+* Runtime Protection Reconciliation remains **OPEN**.
+
+### Root cause — and what is proved versus inferred
+
+**PROVED FROM SOURCE.** `Get-ProbeProtectionState` is **byte-identical** between
+`5b14a81` (Run 7, succeeded) and `c8e2d02` (Run 8, failed):
+`git diff 5b14a81 c8e2d02` over the probe touches only `Get-ProbeCalcShapes`'
+release label and the new shrink-round helpers. Nothing that executes before it
+changed either — Run 8 failed on the **first** call, three statements after
+`Workbooks.Open`. `$sheet` is bound in exactly three places in the file, the
+other two are function-local to helpers that run later, and PowerShell function
+locals do not leak. **The delete-path work did not introduce this.** It is a
+latent defect in the reader that Run 8 exposed.
+
+**INFERRED, AND LABELLED AS SUCH.** `PropertyNotFoundException` is PowerShell's,
+not Excel's. A COM object for which PowerShell could not obtain type information
+exposes **no properties at all**, and every access on it reports exactly this
+message. Excel had just run `Workbook_Open` → `modProtection.ProtectionApply`
+across 14 sheets, and the accepted Stage-B verification already **proved on this
+machine** that the first inbound calls into a freshly-opened instance can be
+refused (`RPC_E_CALL_REJECTED`). A refused `IDispatch::GetTypeInfo` is the shape
+that produces this exception. That last step cannot be proved from Linux, so the
+correction is built to settle it either way rather than repeat an undiagnosable
+failure.
+
+### Corrected in this round (source only — no Windows)
+
+1. **Every enumerated item is proved to be a Worksheet before any property is
+   read**, by a membership test on `.PSObject.Properties` — which is always safe,
+   unlike the dereference that crashed. A non-Worksheet now fails **explicitly**
+   with its .NET type, its PSTypeNames, whether it is a COM object, how many
+   properties it exposes, the item index and the stage. One run will diagnose it.
+2. **The reads go through the accepted `Invoke-ComRetryRead` boundary** in
+   `com_lifecycle.ps1` — the same one Stage-B verification uses. It reissues only
+   the two OLE message-filter HRESULTs, whose contract is that the call never
+   ran. If a refused call is what broke Run 8, that is now survived; if it is
+   not, the helper rethrows untouched.
+
+Nothing is weakened: `ProtectContents` is still read per worksheet,
+`ProtectStructure` is still read per workbook, both from the real Excel
+properties, and a workbook that enumerates no worksheets is still refused.
+`PropertyNotFoundException` is still fatal — it is never caught, never tested
+for, and never defaulted.
+
+### The delete-path design is unchanged
+
+The shrink round added at `c8e2d02` stands. The next run must still exercise
+timeline growth → `ListColumns.Add`, Calculate growth → `ListRows.Add`, duration
+3 → 1, timeline shrink → `ListColumns.Delete`, Calculate shrink →
+`ListRows.Delete`, and `PRODUCTION IS FINE UNDER PROTECTION` still requires all
+four evidence classes.
+
+### Still owed
+
+Everything Run 8 was meant to obtain. Production VBA is byte-identical to
+`c8e2d02`, `5b14a81` and `0946cf6`.
+
+---

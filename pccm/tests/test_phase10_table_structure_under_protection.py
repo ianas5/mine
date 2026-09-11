@@ -802,9 +802,17 @@ def test_61_the_worksheets_collection_is_resolved_once_and_held() -> None:
     code = _probe_code()
     assert "function Resolve-ProbeTargets" in code
     assert "function Release-ProbeTargets" in code
-    assert code.count("$Workbook.Worksheets") == 2, (
-        "the probe acquires the Worksheets collection more than twice: once to "
+    # TWO ACQUISITIONS STILL, AND STILL ONLY TWO. Run 8 died on the protection
+    # reader's bare `$Workbook.Worksheets`, so that one now goes through the
+    # accepted com_lifecycle retry boundary - which is a different SPELLING of
+    # the same single acquisition, not an extra one.
+    acquisitions = (code.count("$Workbook.Worksheets") +
+                    code.count("-Target $Workbook -Member 'Worksheets'"))
+    assert acquisitions == 2, (
+        f"the probe acquires the Worksheets collection {acquisitions} times: once to "
         "resolve the targets and once to read protection")
+    assert code.count("$Workbook.Worksheets") == 1, (
+        "the protection reader dereferences the collection without the retry boundary")
     assert code.count(".Item($sheetName)") == 1, (
         "a worksheet is still being looked up more than once")
     assert "$lo = $Target.ListObject" in code, (

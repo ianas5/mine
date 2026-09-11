@@ -75,9 +75,12 @@ def test_01_restoring_the_count_over_a_com_collection_is_rejected() -> None:
     """THE EXACT SHAPE THAT ENDED PROBE RUN 1, put back."""
     _probe_mutation(
         "test_40",
-        "        $sheets = $Workbook.Worksheets\n"
-        "        foreach ($sheet in @($sheets)) {",
-        "        $sheets = $Workbook.Worksheets\n"
+        # THE ACQUISITION MOVED TO THE RETRY BOUNDARY AFTER RUN 8; the defect
+        # this puts back is unchanged - a .Count read off the COM collection and
+        # a positional index instead of enumeration.
+        "        $index = 0\n"
+        "        foreach ($sheet in @($sheets)) {\n"
+        "            $index = $index + 1",
         "        for ($index = 1; $index -le $sheets.Count; $index++) {\n"
         "            $sheet = $sheets.Item($index)")
 
