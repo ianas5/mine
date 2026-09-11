@@ -947,3 +947,93 @@ Everything Run 8 was meant to obtain. Production VBA is byte-identical to
 `c8e2d02`, `5b14a81` and `0946cf6`.
 
 ---
+
+## Protection probe Run 9 — all four classes OBSERVED; predicate defect, not a production defect
+
+Windows executed against `04fcf82`. **The runtime evidence is valid and the
+acceptance predicate was defective.** Those are two different things and are
+recorded as two different things.
+
+### Runtime production evidence — VALID
+
+| Class | Evidence |
+|---|---|
+| **LISTCOLUMN ADD** | first `PCCM_ApplyTimeline`: `cost_profiling` 25×2 → 25×5, `risk_profiling` 25×2 → 25×5, `inflation` 10×1 → 10×4 |
+| **LISTROW GROWTH** | first `PCCM_Calculate`: `tblCalcYears` 1×3 → 3×3, `tblCalcAnnual` 1×8 → 3×8 |
+| **LISTCOLUMN DELETE** | shrink `PCCM_ApplyTimeline`, duration 3 → 1: `cost_profiling` 25×5 → 25×3, `risk_profiling` 25×5 → 25×3, `inflation` 10×4 → 10×2 |
+| **LISTROW DELETE** | second `PCCM_Calculate`: `tblCalcYears` 3×3 → 1×3, `tblCalcAnnual` 3×8 → 1×8 |
+
+Protection was **14 of 14 sheets protected with `ProtectStructure = True` before
+and after every invoked endpoint**. No protection 1004 occurred. The locked-cell
+`UserInterfaceOnly` control succeeded. Shutdown and COM release were clean.
+
+**This directly exercises the same `ListRows.Delete` class that Benchmark Run 3
+failed on.** The substantive runtime question is settled: the accepted production
+structural window supports the required Add **and** Delete operations while
+workbook structure remains protected.
+
+### Acceptance / reporting predicate — DEFECTIVE
+
+The same report printed, and this is recorded exactly as it was printed:
+
+```
+C. NOT MET  PCCM_ApplyTimeline SUCCEEDED, created year columns, and left protection applied
+STRUCTURAL INITIALISATION: NOT PROVEN - C not met.
+...
+LISTCOLUMN ADD    : OBSERVED
+LISTCOLUMN DELETE : OBSERVED
+LISTROW GROWTH    : OBSERVED
+LISTROW DELETE    : OBSERVED
+PRODUCTION IS FINE UNDER PROTECTION
+```
+
+**Criterion C did print NOT MET, and this record does not pretend otherwise.**
+
+### Root cause — proved from source
+
+Criterion C selected its round by **endpoint name**:
+
+```powershell
+$timelineOutcome = @($outcomes | Where-Object { $_.Endpoint -eq 'PCCM_ApplyTimeline' })
+Met = ((@($timelineOutcome).Count -eq 1) -and ...)
+```
+
+The `-eq 1` was a correctness guard written when exactly one `ApplyTimeline`
+existed. The shrink round added a **second** outcome carrying the same endpoint
+name, the count became **2**, and C went false on a run whose growth apply had
+succeeded, grown all three grids and left protection applied.
+
+**It was never reading post-shrink workbook state.** `$outcomes` is append-only
+and each record is an immutable snapshot taken around its own endpoint. The
+*selector* simply stopped being unique. The predicate was also computed **after**
+the verdict, so it could not gate it — which is why NOT PROVEN and FINE could
+appear in one report.
+
+### Corrected in this round (source only — no Windows)
+
+* Every criterion binds to **the recorded round itself** (`$timeline`,
+  `$addCost`, `$addRisk`) rather than filtering the outcome list by a name that
+  is no longer unique. A third round cannot silently falsify a criterion again.
+* Criterion C is explicitly *the FIRST (growth) `PCCM_ApplyTimeline`*, and now
+  checks protection on **both** sides including the structure flag.
+* The shrink round keeps its own separate representation as **LISTCOLUMN
+  DELETE**; neither side is weakened by the other.
+* The criteria are computed **before** the verdict and **gate** it:
+  `PRODUCTION IS FINE UNDER PROTECTION` is unreachable unless A–E are all MET,
+  all four classes are OBSERVED, and every protection-before/after snapshot is
+  valid. A run can no longer print NOT PROVEN and FINE together.
+* One computation, one report — the printed criteria are the ones the verdict
+  used.
+
+The locked-cell control now reaches the verdict through criterion B, **by
+declaration**. It can only ever *block* FINE; it can never grant one and can
+never produce BLOCKED.
+
+### Production conclusion
+
+**The protection architecture is not reopened.** Run 9's runtime evidence
+supports the accepted contract, production VBA is byte-identical to `04fcf82`,
+`c8e2d02`, `5b14a81` and `0946cf6`, and no privilege-envelope expansion was made:
+workbook structure protection is still never released.
+
+---

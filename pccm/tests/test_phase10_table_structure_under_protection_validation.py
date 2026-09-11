@@ -527,6 +527,20 @@ def test_70_starting_the_control_state_at_a_conclusion_is_rejected() -> None:
         "$controlResult = 'REFUSED'")
 
 
+def test_26i_a_criterion_assigning_the_verdict_is_rejected() -> None:
+    _probe_mutation("test_86",
+            "        $null = $criteria.Add([pscustomobject]@{ Key = 'A'; Text = 'the workbook opened protected'",
+            "        $verdict = 'PRODUCTION IS FINE UNDER PROTECTION'\n"
+            "        $null = $criteria.Add([pscustomobject]@{ Key = 'A'; Text = 'the workbook opened protected'")
+
+
+def test_26j_letting_the_control_grant_fine_is_rejected() -> None:
+    """THE CONTROL MAY BLOCK FINE. IT MAY NEVER GRANT ONE."""
+    _probe_mutation("test_86",
+            "        } elseif ($structuralInitialisation -ne 'PROVEN') {",
+            "        } elseif (($structuralInitialisation -ne 'PROVEN') -and ($controlResult -ne 'SUCCEEDED')) {")
+
+
 def test_71_letting_the_control_state_decide_the_verdict_is_rejected() -> None:
     """THE REPORTING CORRECTION MUST NOT ALTER THE VERDICT LOGIC."""
     _probe_mutation(

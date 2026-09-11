@@ -429,6 +429,31 @@ def test_60_marking_the_reconciliation_closed_is_rejected() -> None:
     _mutate_evidence("test_52c", "remains **OPEN**", "is now CLOSED")
 
 
+def test_61_rewriting_run_9_to_say_c_printed_met_is_rejected() -> None:
+    """THE HISTORICAL OUTPUT STANDS."""
+    _mutate_evidence("test_52g", "C. NOT MET", "C. MET    ")
+
+
+def test_62_removing_the_listrow_delete_evidence_is_rejected() -> None:
+    _mutate_evidence("test_52f", "3×3 → 1×3", "unchanged")
+
+
+def test_63_collapsing_the_evidence_and_the_predicate_is_rejected() -> None:
+    _mutate_evidence("test_52f", "Acceptance / reporting predicate — DEFECTIVE",
+                     "Everything was fine")
+
+
+def test_64_blaming_mutable_state_for_the_run_9_defect_is_rejected() -> None:
+    """A WRONG ROOT CAUSE IS HOW THE SAME DEFECT COMES BACK SOMEWHERE ELSE."""
+    _mutate_evidence("test_52h", "never reading post-shrink workbook state",
+                     "reading the workbook after the shrink")
+
+
+def test_65_reopening_the_protection_architecture_is_rejected() -> None:
+    _mutate_evidence("test_52i", "protection architecture is not reopened",
+                     "protection architecture must be reopened")
+
+
 def test_46_deleting_the_recorded_evidence_is_rejected() -> None:
     """REQUIRED CONTROL 24. A reconciliation whose reason is not recorded is one
     the next rewrite undoes."""

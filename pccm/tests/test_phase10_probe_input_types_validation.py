@@ -469,6 +469,78 @@ def test_25l_letting_a_failed_protection_read_reach_a_verdict_is_rejected() -> N
 
 
 # ===========================================================================
+# C5. THE ACCEPTANCE PREDICATES
+# ===========================================================================
+def test_26_restoring_the_name_filtered_criterion_is_rejected() -> None:
+    """THE EXACT DEFECT THAT MADE RUN 9 CONTRADICT ITSELF."""
+    _mutate("test_2s",
+            "            Met = ([bool](([string]$timeline.Outcome -eq 'SUCCEEDED') -and",
+            "            Met = ([bool]((@(@($outcomes) | Where-Object { [string]$_.Endpoint -eq 'PCCM_ApplyTimeline' }).Count -eq 1) -and\n"
+            "                          ([string]$timeline.Outcome -eq 'SUCCEEDED') -and")
+
+
+def test_26a_reading_the_shrink_round_into_criterion_c_is_rejected() -> None:
+    """C DESCRIBES THE GROWTH ROUND. Folding the later round in is how a
+    completed round's verdict becomes mutable."""
+    _mutate("test_2s",
+            "                          [bool]$timeline.StructuralEffect -and",
+            "                          [bool]$shrinkTimeline.StructuralEffect -and")
+
+
+def test_26b_dropping_a_protection_side_from_criterion_c_is_rejected() -> None:
+    _mutate("test_2t",
+            "                          ([int]$timeline.ProtectedBefore -eq [int]$timeline.TotalSheets) -and",
+            "")
+
+
+def test_26c_dropping_the_structure_flag_from_criterion_c_is_rejected() -> None:
+    _mutate("test_2t",
+            "                          [bool]$timeline.StructureBefore -and [bool]$timeline.StructureAfter)) })",
+            "                          $true)) })")
+
+
+def test_26d_computing_the_criteria_after_the_verdict_is_rejected() -> None:
+    """THE ORDERING THAT MADE THE CONTRADICTION POSSIBLE."""
+    _mutate("test_2v",
+            "        $criteria = New-Object System.Collections.ArrayList",
+            "        $criteriaDeferred = New-Object System.Collections.ArrayList")
+
+
+def test_26e_allowing_fine_while_a_criterion_is_unmet_is_rejected() -> None:
+    """NOT PROVEN AND FINE IN ONE REPORT."""
+    _mutate("test_2w",
+            "        } elseif ($structuralInitialisation -ne 'PROVEN') {",
+            "        } elseif ($false) {")
+
+
+def test_26f_setting_a_verdict_from_the_not_proven_branch_is_rejected() -> None:
+    _mutate("test_2w",
+            "            $verdictReason = ('the structural evidence was observed but the acceptance ' +",
+            "            $verdict = 'PRODUCTION IS FINE UNDER PROTECTION'\n"
+            "            $verdictReason = ('the structural evidence was observed but the acceptance ' +")
+
+
+def test_26g_letting_the_criteria_substitute_for_the_evidence_classes_is_rejected() -> None:
+    _mutate("test_2x",
+            "        } elseif (($columnDeleteProof -ne 'OBSERVED') -or ($rowDeleteProof -ne 'OBSERVED')) {",
+            "        } elseif ($false) {")
+
+
+def test_26h_recomputing_the_criteria_for_the_report_is_rejected() -> None:
+    """ONE COMPUTATION, ONE REPORT."""
+    _mutate("test_2y",
+            "        foreach ($criterion in @($criteria)) {",
+            "        $criteria = New-Object System.Collections.ArrayList\n"
+            "        foreach ($criterion in @($criteria)) {")
+
+
+def test_26k_dropping_the_criteria_from_the_fine_text_is_rejected() -> None:
+    _mutate("test_2w",
+            "                              'STRUCTURAL INITIALISATION: PROVEN. ' +",
+            "")
+
+
+# ===========================================================================
 # D. READBACK AND INVOCATION DISCIPLINE
 # ===========================================================================
 def test_22a_dropping_the_discount_rate_prerequisite_is_rejected() -> None:

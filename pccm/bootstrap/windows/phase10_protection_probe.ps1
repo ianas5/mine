@@ -1679,6 +1679,46 @@ try {
             ([int]$_.ProtectedAfter -ne [int]$_.TotalSheets) -or
             ([int]$_.ProtectedBefore -ne [int]$_.TotalSheets) -or
             (-not [bool]$_.StructureBefore) -or (-not [bool]$_.StructureAfter) })
+
+        # --- THE CRITERIA, COMPUTED BEFORE THE VERDICT USES THEM ------------
+        # WHAT MADE CRITERION C FALSE ON A RUN THAT PROVED EVERYTHING.
+        #
+        # C used to select its round by ENDPOINT NAME:
+        #
+        #   $timelineOutcome = @($outcomes | Where { $_.Endpoint -eq 'PCCM_ApplyTimeline' })
+        #   Met = ((@($timelineOutcome).Count -eq 1) -and ...)
+        #
+        # The `-eq 1` was a correctness guard written when exactly one
+        # ApplyTimeline existed. The shrink round added a SECOND outcome carrying
+        # the same endpoint name, so the count became 2 and C went false on a run
+        # whose growth ApplyTimeline had succeeded, grown all three grids and left
+        # protection applied. Nothing about the workbook's later state was ever
+        # read - $outcomes is append-only and each record is immutable - the
+        # SELECTOR simply stopped being unique.
+        #
+        # SO EACH CRITERION NOW BINDS TO THE RECORDED ROUND ITSELF. $timeline is
+        # the growth apply and nothing else can become it; $shrinkTimeline is
+        # separately represented as LISTCOLUMN DELETE and is not folded in here.
+        # Adding a third round cannot silently falsify a criterion again.
+        $criteria = New-Object System.Collections.ArrayList
+        $null = $criteria.Add([pscustomobject]@{ Key = 'A'; Text = 'the workbook opened protected'
+            Met = ([bool]$protectionInForce) })
+        $null = $criteria.Add([pscustomobject]@{ Key = 'B'; Text = 'a locked-cell code VALUE write is still permitted'
+            Met = ([bool]($controlResult -eq 'SUCCEEDED')) })
+        $null = $criteria.Add([pscustomobject]@{ Key = 'C'; Text = 'the FIRST (growth) PCCM_ApplyTimeline SUCCEEDED, created year columns, and left protection applied'
+            Met = ([bool](([string]$timeline.Outcome -eq 'SUCCEEDED') -and
+                          [bool]$timeline.StructuralEffect -and
+                          ([int]$timeline.ProtectedBefore -eq [int]$timeline.TotalSheets) -and
+                          ([int]$timeline.ProtectedAfter -eq [int]$timeline.TotalSheets) -and
+                          [bool]$timeline.StructureBefore -and [bool]$timeline.StructureAfter)) })
+        $null = $criteria.Add([pscustomobject]@{ Key = 'D'; Text = 'Add Cost Line and Add Risk remain functional'
+            Met = ([bool](([string]$addCost.Outcome -eq 'SUCCEEDED') -and
+                          ([string]$addRisk.Outcome -eq 'SUCCEEDED'))) })
+        $null = $criteria.Add([pscustomobject]@{ Key = 'E'; Text = 'no endpoint left a worksheet unprotected'
+            Met = ([bool](@($lostProtection).Count -eq 0)) })
+        $unmet = @(@($criteria) | Where-Object { -not [bool]$_.Met })
+        $structuralInitialisation = 'NOT PROVEN'
+        if (@($unmet).Count -eq 0) { $structuralInitialisation = 'PROVEN' }
         $structural = @(@($outcomes) | Where-Object { [bool]$_.StructuralEffect })
         # BLOCKED IS DECIDED BY THIS LIST AND NOT BY $notSucceeded. A refusal
         # only counts when Excel itself said the sheet's protection is what
@@ -1740,10 +1780,26 @@ try {
             $verdictReason = ('Calculate announced success but the _Calc tables did not take ' +
                               'the shape their row rule contracts, so the structural work was ' +
                               'not observed and the question is not settled')
+        } elseif ($structuralInitialisation -ne 'PROVEN') {
+            # SELF-CONSISTENCY, PINNED. A run must never be able to print
+            # STRUCTURAL INITIALISATION: NOT PROVEN and PRODUCTION IS FINE UNDER
+            # PROTECTION in the same report. That contradiction is exactly what
+            # the criterion-C selector defect produced, and the report was right
+            # to be distrusted for it even though the runtime evidence was sound.
+            #
+            # THE CRITERIA CAN ONLY BLOCK FINE, NEVER GRANT IT. Everything above
+            # still has to hold on its own evidence first; this adds a
+            # requirement, it does not substitute for one.
+            $verdictReason = ('the structural evidence was observed but the acceptance ' +
+                              'criteria were not all met, so this run is not a self-consistent ' +
+                              'closure: ' +
+                              ((@($unmet) | ForEach-Object {
+                                  [string]$_.Key + ' (' + [string]$_.Text + ')' }) -join '; '))
         } else {
             $verdict = 'PRODUCTION IS FINE UNDER PROTECTION'
             $verdictReason = ('LISTCOLUMN ADD: OBSERVED; LISTCOLUMN DELETE: OBSERVED; ' +
-                              'LISTROW GROWTH: OBSERVED; LISTROW DELETE: OBSERVED. ' +
+                              'LISTROW GROWTH: OBSERVED; LISTROW DELETE: OBSERVED; ' +
+                              'STRUCTURAL INITIALISATION: PROVEN. ' +
                               'changed shape, and every sheet was protected before and ' +
                               'after each one - so Benchmark Run 3 was a HARNESS defect only')
         }
@@ -1757,25 +1813,6 @@ try {
         # protection result either way. So the five criteria are reported as
         # themselves, each from evidence this run actually holds.
         Set-ProbeStage -Stage 'verdict' -Action 'reporting the structural-initialisation criteria'
-        $timelineOutcome = @(@($outcomes) | Where-Object { [string]$_.Endpoint -eq 'PCCM_ApplyTimeline' })
-        $driverOutcomes = @(@($outcomes) | Where-Object {
-            ([string]$_.Endpoint -eq 'PCCM_AddCostLine') -or ([string]$_.Endpoint -eq 'PCCM_AddRisk') })
-        $criteria = New-Object System.Collections.ArrayList
-        $null = $criteria.Add([pscustomobject]@{ Key = 'A'; Text = 'the workbook opened protected'
-            Met = ([bool]$protectionInForce) })
-        $null = $criteria.Add([pscustomobject]@{ Key = 'B'; Text = 'a locked-cell code VALUE write is still permitted'
-            Met = ([bool]($controlResult -eq 'SUCCEEDED')) })
-        $null = $criteria.Add([pscustomobject]@{ Key = 'C'; Text = 'PCCM_ApplyTimeline SUCCEEDED, created year columns, and left protection applied'
-            Met = ([bool]((@($timelineOutcome).Count -eq 1) -and
-                          ([string]@($timelineOutcome)[0].Outcome -eq 'SUCCEEDED') -and
-                          [bool]@($timelineOutcome)[0].StructuralEffect -and
-                          ([int]@($timelineOutcome)[0].ProtectedAfter -eq [int]@($timelineOutcome)[0].TotalSheets))) })
-        $null = $criteria.Add([pscustomobject]@{ Key = 'D'; Text = 'Add Cost Line and Add Risk remain functional'
-            Met = ([bool]((@($driverOutcomes).Count -eq 2) -and
-                          (@(@($driverOutcomes) | Where-Object { [string]$_.Outcome -ne 'SUCCEEDED' }).Count -eq 0))) })
-        $null = $criteria.Add([pscustomobject]@{ Key = 'E'; Text = 'no endpoint left a worksheet unprotected'
-            Met = ([bool](@($lostProtection).Count -eq 0)) })
-
         Write-ProbeLine ''
         Write-ProbeLine 'STRUCTURAL-INITIALISATION CRITERIA'
         Write-ProbeLine '----------------------------------'
@@ -1784,13 +1821,13 @@ try {
             if ([bool]$criterion.Met) { $mark = 'MET    ' }
             Write-ProbeLine ('  ' + [string]$criterion.Key + '. ' + $mark + '  ' + [string]$criterion.Text)
         }
-        $unmet = @(@($criteria) | Where-Object { -not [bool]$_.Met })
-        if (@($unmet).Count -eq 0) {
+        if ($structuralInitialisation -eq 'PROVEN') {
             Write-ProbeLine '  STRUCTURAL INITIALISATION: PROVEN on this run.'
         } else {
             Write-ProbeLine ('  STRUCTURAL INITIALISATION: NOT PROVEN - ' +
                              ((@($unmet) | ForEach-Object { [string]$_.Key }) -join ', ') + ' not met.')
         }
+        Write-ProbeLine 'This is NOT final acceptance and NOT a benchmark baseline.'
         Write-ProbeLine ''
         Write-ProbeLine 'STRUCTURAL EVIDENCE BY CLASS'
         Write-ProbeLine '----------------------------'

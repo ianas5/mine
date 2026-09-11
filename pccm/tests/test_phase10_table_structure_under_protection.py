@@ -739,6 +739,9 @@ def test_57_the_locked_cell_control_is_kept_and_kept_separate() -> None:
     verdict_block = _verdict_decision_block(code)
     assert "$controlWorked" not in verdict_block, "the control decides the question"
     assert "$controlDetail" not in verdict_block
+    # P10-EP: the control's WORD now reaches the verdict as criterion B, and only
+    # there - test_86 pins that it can block FINE and can never grant it.
+    assert verdict_block.count("$controlResult") == 1
 
 
 # ===========================================================================
@@ -1096,12 +1099,38 @@ def test_85_the_control_has_four_explicit_states() -> None:
     assert states == {"SUCCEEDED", "REFUSED", "INCONCLUSIVE", "NOT ATTEMPTED"}, states
 
 
-def test_86_the_control_state_does_not_reach_the_verdict_branch() -> None:
-    """REQUIRED: the reporting correction must not alter the verdict logic."""
+def test_86_the_control_state_can_only_block_the_verdict_never_decide_it() -> None:
+    """MOVED BY DECLARATION, AND NARROWED WHILE IT MOVED.
+
+    This began as "the control state must not reach the verdict branch at all",
+    which was right while the verdict rested purely on structural evidence. The
+    evidence-predicate reconciliation now requires FINE to be impossible unless
+    every acceptance criterion is MET - and criterion B IS the locked-cell
+    control. So the control reaches the verdict deliberately and visibly, through
+    a declared criterion.
+
+    WHAT THE ORIGINAL RULE PROTECTED IS UNCHANGED, AND IS NOW STATED POSITIVELY:
+    the control can only ever BLOCK a FINE verdict. It can never grant one, and
+    it can never produce BLOCKED - the question it has nothing to say about.
+    """
     code = _probe_code()
     verdict = _verdict_decision_block(code)
-    assert "$controlResult" not in verdict
-    assert "$controlDetail" not in verdict
+    # IT APPEARS EXACTLY ONCE, AND ONLY AS CRITERION B.
+    assert verdict.count("$controlResult") == 1, (
+        "the control state is consulted somewhere other than criterion B")
+    criterion_b = [line.strip() for line in verdict.splitlines() if "$controlResult" in line]
+    assert criterion_b == ["Met = ([bool]($controlResult -eq 'SUCCEEDED')) })"], criterion_b
+    assert "$controlDetail" not in verdict, "the control's prose reaches the verdict"
+    # AND IT IS NOWHERE NEAR EITHER CONCLUSION.
+    for conclusion in ("$verdict = 'PRODUCTION IS BLOCKED BY PROTECTION'",
+                       "$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'"):
+        branch = verdict[verdict.index(conclusion):]
+        branch = branch[: branch.index("\n        }")]
+        assert "$controlResult" not in branch, conclusion
+    # NO CRITERION SETS A VERDICT. They gate one; they never write one.
+    criteria = verdict[verdict.index("$criteria = New-Object"):]
+    criteria = criteria[: criteria.index("$unmet = ")]
+    assert "$verdict" not in criteria, "a criterion assigns the verdict"
 
 
 # ===========================================================================

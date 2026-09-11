@@ -623,6 +623,56 @@ def test_52e_run_8_claims_no_delete_evidence() -> None:
     assert "Nothing here bears on" in text
 
 
+def test_52f_run_9_separates_valid_evidence_from_a_defective_predicate() -> None:
+    """TWO DIFFERENT THINGS, RECORDED AS TWO DIFFERENT THINGS. The four classes
+    were genuinely OBSERVED; the acceptance predicate was wrong. Collapsing them
+    either way would misstate the run."""
+    text = _evidence_section("## Protection probe Run 9")
+    assert "Runtime production evidence — VALID" in text
+    assert "Acceptance / reporting predicate — DEFECTIVE" in text
+    # THE FOUR CLASSES, WITH THE OBSERVED SHAPES.
+    for shape in ("25×2 → 25×5", "10×1 → 10×4", "25×5 → 25×3", "10×4 → 10×2",
+                  "1×3 → 3×3", "1×8 → 3×8", "3×3 → 1×3", "3×8 → 1×8"):
+        assert shape in text, shape
+    # THE DELETE CLASS IS NAMED AS THE ONE BENCHMARK RUN 3 FAILED ON.
+    assert "same `ListRows.Delete` class that Benchmark Run 3" in text
+    # PROTECTION HELD THROUGHOUT.
+    assert "before and after every invoked endpoint" in " ".join(text.split())
+    assert "No protection 1004 occurred" in text
+
+
+def test_52g_the_run_9_record_does_not_pretend_c_printed_met() -> None:
+    """REQUIRED: do not rewrite the historical output."""
+    text = _evidence_section("## Protection probe Run 9")
+    assert "C. NOT MET" in text
+    assert "STRUCTURAL INITIALISATION: NOT PROVEN - C not met." in text
+    assert "did print NOT MET, and this record does not pretend otherwise" in text
+
+
+def test_52h_the_run_9_root_cause_is_the_selector_not_mutable_state() -> None:
+    """AND THE RECORD SAYS WHICH. "It read the workbook after the shrink" is a
+    plausible story that happens to be wrong, and a wrong root cause is how the
+    same defect comes back somewhere else."""
+    text = _evidence_section("## Protection probe Run 9")
+    assert "selected its round by **endpoint name**" in text
+    assert "never reading post-shrink workbook state" in text
+    assert "append-only" in text and "immutable" in text
+    assert "computed **after**" in text
+
+
+def test_52i_run_9_does_not_reopen_the_protection_architecture() -> None:
+    """REQUIRED: a reporting defect is not a reason to widen the envelope."""
+    text = _evidence_section("## Protection probe Run 9")
+    assert "protection architecture is not reopened" in text.lower()
+    assert "no privilege-envelope expansion" in text.lower()
+    assert "structure protection is still never released" in text
+    # AND PRODUCTION REALLY IS UNCHANGED.
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", "04fcf82", "--", "pccm/src", "pccm/spec"],
+        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout
+    assert not changed.strip(), f"production changed: {changed}"
+
+
 def test_53_the_runtime_evidence_for_keeping_structure_protected_is_recorded() -> None:
     """RUN 6 TURNED AN INFERENCE INTO EVIDENCE. The reconciliation batch left
     workbook-structure protection applied on a reading of Excel's 1004 wording;

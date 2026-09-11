@@ -704,6 +704,152 @@ def test_2r_a_failed_protection_read_cannot_reach_a_verdict() -> None:
 
 
 # ===========================================================================
+# C5. THE ACCEPTANCE PREDICATES - THE RUN 9 CONTRADICTION
+# ===========================================================================
+# Windows Run 9 proved all four structural classes and then printed, in the same
+# report:
+#
+#   C. NOT MET   PCCM_ApplyTimeline SUCCEEDED, created year columns, ...
+#   STRUCTURAL INITIALISATION: NOT PROVEN - C not met.
+#   ...
+#   PRODUCTION IS FINE UNDER PROTECTION
+#
+# The runtime evidence was sound; the acceptance predicate was not.
+def test_2s_each_criterion_binds_to_its_own_recorded_round() -> None:
+    """THE ROOT CAUSE, REFUSED BY SHAPE. Criterion C used to select its round by
+    ENDPOINT NAME and require exactly one match. The shrink round added a second
+    outcome carrying the same name, so the count became 2 and C went false on a
+    run whose growth apply had succeeded. A selector that is not unique is not a
+    selector."""
+    code = _probe_code()
+    verdict = code[code.index("$criteria = New-Object"):]
+    verdict = verdict[: verdict.index("$unmet = ")]
+    # NO NAME-FILTERING OF THE OUTCOME LIST INSIDE THE CRITERIA.
+    for banned in ("$_.Endpoint -eq", "$outcomes | Where-Object", "$timelineOutcome",
+                   "$driverOutcomes"):
+        assert banned not in verdict, (
+            f"a criterion selects its round by filtering rather than by identity: {banned}")
+    # EACH ONE NAMES THE ROUND IT IS ABOUT.
+    assert "$timeline.Outcome" in verdict and "$timeline.StructuralEffect" in verdict
+    assert "$addCost.Outcome" in verdict and "$addRisk.Outcome" in verdict
+    # AND THE SHRINK ROUND IS NOT FOLDED INTO ANY OF THEM.
+    assert "$shrinkTimeline" not in verdict, (
+        "the shrink round is being read as part of an initialisation criterion")
+    assert "$shrinkRound" not in verdict
+
+
+def test_2t_criterion_c_is_the_first_growth_apply_and_says_so() -> None:
+    code = _probe_code()
+    assert "Key = 'C'; Text = 'the FIRST (growth) PCCM_ApplyTimeline SUCCEEDED" in code
+    # AND IT CHECKS PROTECTION BOTH SIDES, INCLUDING STRUCTURE.
+    verdict = code[code.index("Key = 'C';"):]
+    verdict = verdict[: verdict.index("Key = 'D';")]
+    for fact in ("$timeline.Outcome -eq 'SUCCEEDED'", "$timeline.StructuralEffect",
+                 "$timeline.ProtectedBefore", "$timeline.ProtectedAfter",
+                 "$timeline.StructureBefore", "$timeline.StructureAfter"):
+        assert fact in verdict, f"criterion C no longer checks {fact}"
+
+
+def test_2u_the_shrink_round_keeps_its_own_separate_representation() -> None:
+    """LISTCOLUMN DELETE IS WHERE THE SHRINK EVIDENCE LIVES, and neither side is
+    weakened by the other."""
+    code = _probe_code()
+    assert "$columnDeleteProof" in code and "$rowDeleteProof" in code
+    assert "$shrinkTimeline.ShapesBefore" in code and "$shrinkTimeline.ShapesAfter" in code
+    assert "LISTCOLUMN DELETE" in code
+
+
+def test_2v_the_criteria_are_computed_before_the_verdict_uses_them() -> None:
+    code = _probe_code()
+    built = code.index("$criteria = New-Object")
+    decided = code.index("if (@($protectionBlocked).Count -gt 0) {")
+    assert built < decided, "the criteria are computed after the verdict is decided"
+    assert "$structuralInitialisation = 'NOT PROVEN'" in code
+    assert "if (@($unmet).Count -eq 0) { $structuralInitialisation = 'PROVEN' }" in code
+
+
+def test_2w_fine_is_impossible_unless_every_criterion_is_met() -> None:
+    """REQUIRED: a run must never print NOT PROVEN and FINE together."""
+    code = _probe_code()
+    gate = "} elseif ($structuralInitialisation -ne 'PROVEN') {"
+    assert gate in code
+    fine = code.index("$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'")
+    assert code.index(gate) < fine, "FINE is reachable without the criteria"
+    branch = code[code.index(gate):]
+    branch = branch[: branch.index("} else {")]
+    assert "$verdict = " not in branch, "the not-proven branch sets a verdict"
+    assert "not a self-consistent" in branch
+    # AND THE FINE TEXT RECORDS THE CRITERIA TOO, so the artifact is readable.
+    assert "STRUCTURAL INITIALISATION: PROVEN. " in code
+
+
+def test_2x_fine_still_requires_all_four_evidence_classes() -> None:
+    """THE CRITERIA ADD A REQUIREMENT; THEY DO NOT SUBSTITUTE FOR ONE."""
+    code = _probe_code()
+    fine = code.index("$verdict = 'PRODUCTION IS FINE UNDER PROTECTION'")
+    for gate in ("} elseif (($columnDeleteProof -ne 'OBSERVED') -or ($rowDeleteProof -ne 'OBSERVED')) {",
+                 "} elseif ($growRound.Proof -ne 'OBSERVED') {",
+                 "} elseif ($shrinkRound.Proof -ne 'OBSERVED') {",
+                 "} elseif ($structuralInitialisation -ne 'PROVEN') {"):
+        assert gate in code, gate
+        assert code.index(gate) < fine, gate
+    # AND PROTECTION BOTH SIDES OF EVERY ENDPOINT STILL GATES IT.
+    assert code.index("$lostProtection = @(") < fine
+
+
+def test_2y_the_reporting_block_prints_what_the_verdict_used() -> None:
+    """ONE COMPUTATION, ONE REPORT. The contradiction was possible because the
+    criteria the report printed were computed where the verdict could not see
+    them; recomputing them for printing would reintroduce exactly that."""
+    code = _probe_code()
+    report = code[code.index("-Action 'reporting the structural-initialisation criteria'"):]
+    report = report[: report.index("STRUCTURAL EVIDENCE BY CLASS")]
+    assert "$criteria = New-Object" not in report, "the report recomputes the criteria"
+    assert "foreach ($criterion in @($criteria)) {" in report
+    assert "if ($structuralInitialisation -eq 'PROVEN') {" in report
+    assert code.count("$criteria = New-Object") == 1
+
+
+def test_2z_the_predicate_correction_touched_nothing_that_drives_excel() -> None:
+    """WHY RUN 9's EVIDENCE STANDS WITHOUT A RERUN.
+
+    Every line this round changed sits AFTER the last endpoint invocation, in the
+    verdict and reporting region. The sequence of Excel calls - which endpoints
+    run, in what order, with what inputs, and which shapes and protection
+    snapshots are read around them - is byte-identical to the revision Windows
+    executed. So Run 9's runtime evidence describes exactly the code that is here
+    now, and a rerun would produce a self-consistent REPORT rather than new
+    evidence.
+    """
+    import subprocess as _sp
+
+    executed = "04fcf82"
+    diff = _sp.run(["git", "diff", executed, "--",
+                    "pccm/bootstrap/windows/phase10_protection_probe.ps1"],
+                   cwd=PCCM_ROOT.parent, check=True, stdout=_sp.PIPE, text=True).stdout
+    hunks = [int(m.group(1)) for m in re.finditer(r"^@@ -\d+(?:,\d+)? \+(\d+)", diff, re.M)]
+    assert hunks, "nothing changed since the executed revision, so this control is stale"
+
+    lines = _probe().splitlines()
+    last_excel = max(i for i, line in enumerate(lines, 1)
+                     if ("Invoke-ProbeEndpoint" in line
+                         or "Invoke-ProbeCalculateRound -Excel" in line))
+    assert min(hunks) > last_excel, (
+        f"a line at or before the last Excel interaction (line {last_excel}) changed: "
+        f"earliest changed line is {min(hunks)}")
+    # AND NOTHING THAT TOUCHES EXCEL APPEARS IN THE DIFF AT ALL.
+    changed = [line[1:] for line in diff.splitlines()
+               if line[:1] in "+-" and not line.startswith(("+++", "---"))]
+    executable = [line for line in changed
+                  if line.strip() and not line.strip().startswith("#")]
+    for line in executable:
+        for driver in ("$excel.", "$wb.", "Invoke-ProbeEndpoint", "Set-NamedValue",
+                       "Get-ProbeAllShapes", "Get-ProbeCalcShapes",
+                       "Get-ProbeProtectionState", ".Run("):
+            assert driver not in line, f"the correction changes an Excel-driving line: {line.strip()}"
+
+
+# ===========================================================================
 # D. READBACK BEFORE INVOCATION
 # ===========================================================================
 def test_30_every_input_is_read_back_before_the_endpoint() -> None:
