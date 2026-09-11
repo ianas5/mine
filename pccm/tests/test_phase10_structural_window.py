@@ -673,6 +673,54 @@ def test_52i_run_9_does_not_reopen_the_protection_architecture() -> None:
     assert not changed.strip(), f"production changed: {changed}"
 
 
+def test_52j_the_closure_artifact_is_recorded_with_its_six_conclusions() -> None:
+    """THE RECONCILIATION IS CLOSED, AND THE RECORD SAYS WHAT THAT MEANS."""
+    text = _evidence_section("## Protection probe Run 10")
+    assert "ACCEPTED AND CLOSED" in text
+    assert "STRUCTURAL INITIALISATION: PROVEN" in text
+    assert "PRODUCTION IS FINE UNDER PROTECTION" in text
+    for observed in ("LISTCOLUMN ADD    : OBSERVED", "LISTCOLUMN DELETE : OBSERVED",
+                     "LISTROW GROWTH    : OBSERVED", "LISTROW DELETE    : OBSERVED"):
+        assert observed in text, observed
+    for criterion in ("A. MET", "B. MET", "C. MET", "D. MET", "E. MET"):
+        assert criterion in text, criterion
+    # THE SIX CONCLUSIONS, INCLUDING THE ONE THAT LIMITS THEM.
+    assert "not to be reopened" in text
+    assert "No further Windows protection probe is required" in text
+    assert "closes ONLY the Runtime Protection Reconciliation" in text
+    assert "does not close\nPhase 10" in text or "does not close" in text
+
+
+def test_52k_the_closure_does_not_claim_phase_10_is_closed() -> None:
+    """A RECONCILIATION IS NOT AN ACCEPTANCE. Reading one as the other is how a
+    project ships on evidence it never gathered."""
+    text = _evidence_section("## Protection probe Run 10")
+    for overclaim in ("Phase 10 is complete", "PHASE 10 ACCEPTED",
+                      "final project acceptance is", "benchmark baseline established"):
+        assert overclaim not in text, overclaim
+    assert "does not establish a benchmark baseline" in " ".join(text.split())
+    assert "is not final project acceptance" in " ".join(text.split())
+
+
+def test_52l_the_open_harness_consequence_is_recorded_not_left_to_be_rediscovered() -> None:
+    """CLASSIFICATION 4 IS PRECISE AND HAS A CONSEQUENCE. The harness's own COM
+    ListRow.Delete is still there, and the production structural window cannot
+    help a PowerShell caller - so the next benchmark run would abort at the same
+    line. Recording it is the difference between a known open item and a
+    surprise."""
+    text = _evidence_section("## Protection probe Run 10")
+    assert "does NOT resolve" in text
+    assert "phase10_benchmark.ps1:313" in text
+    assert "does not help it" in text
+    assert "would abort at the same line" in text
+    # AND THE CALL REALLY IS STILL THERE.
+    benchmark = (PCCM_ROOT / "bootstrap" / "windows" / "phase10_benchmark.ps1").read_text(
+        encoding="utf-8")
+    assert "$victim.Delete()" in benchmark, (
+        "the harness delete was removed; this record is now stale")
+    assert "function Remove-TableRow" in benchmark
+
+
 def test_53_the_runtime_evidence_for_keeping_structure_protected_is_recorded() -> None:
     """RUN 6 TURNED AN INFERENCE INTO EVIDENCE. The reconciliation batch left
     workbook-structure protection applied on a reading of Excel's 1004 wording;

@@ -454,6 +454,22 @@ def test_65_reopening_the_protection_architecture_is_rejected() -> None:
                      "protection architecture must be reopened")
 
 
+def test_66_claiming_the_closure_closes_phase_10_is_rejected() -> None:
+    """A RECONCILIATION IS NOT AN ACCEPTANCE."""
+    _mutate_evidence("test_52k", "does not establish a benchmark baseline",
+                     "establishes a benchmark baseline")
+
+
+def test_67_dropping_the_open_harness_consequence_is_rejected() -> None:
+    """WITHOUT IT, BENCHMARK RUN 4 REDISCOVERS THE SAME 1004."""
+    _mutate_evidence("test_52l", "would abort at the same line",
+                     "should now run cleanly")
+
+
+def test_68_dropping_the_do_not_reopen_conclusion_is_rejected() -> None:
+    _mutate_evidence("test_52j", "not to be reopened", "open to revision")
+
+
 def test_46_deleting_the_recorded_evidence_is_rejected() -> None:
     """REQUIRED CONTROL 24. A reconciliation whose reason is not recorded is one
     the next rewrite undoes."""

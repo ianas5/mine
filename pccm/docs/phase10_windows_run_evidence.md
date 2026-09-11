@@ -1037,3 +1037,70 @@ supports the accepted contract, production VBA is byte-identical to `04fcf82`,
 workbook structure protection is still never released.
 
 ---
+
+## Protection probe Run 10 — CLOSURE ARTIFACT — RECONCILIATION ACCEPTED AND CLOSED
+
+Windows executed against **`0119bee`**. This is the self-consistent closure
+artifact the predicate reconciliation was built to produce.
+
+```
+Stage A: 351 passed, 0 failed
+Workbook opened: 14/14 worksheets protected, ProtectStructure = True
+Locked-cell UserInterfaceOnly control: SUCCEEDED
+
+Growth PCCM_ApplyTimeline : SUCCEEDED   ListColumns.Add on all three grids
+Growth PCCM_Calculate     : SUCCEEDED   tblCalcYears 1 -> 3, tblCalcAnnual 1 -> 3
+Shrink PCCM_ApplyTimeline : SUCCEEDED   duration 3 -> 1, all three grids lost columns
+Shrink PCCM_Calculate     : SUCCEEDED   tblCalcYears 3 -> 1, tblCalcAnnual 3 -> 1
+
+Protection fully restored after every endpoint.
+
+A. MET   B. MET   C. MET   D. MET   E. MET
+STRUCTURAL INITIALISATION: PROVEN
+
+LISTCOLUMN ADD    : OBSERVED
+LISTCOLUMN DELETE : OBSERVED
+LISTROW GROWTH    : OBSERVED
+LISTROW DELETE    : OBSERVED
+
+PRODUCTION IS FINE UNDER PROTECTION
+```
+
+Shutdown and COM release were clean.
+
+### RUNTIME PROTECTION RECONCILIATION — ACCEPTED AND CLOSED
+
+1. The accepted protection architecture is **settled**.
+2. Worksheet protection may be temporarily released **only** inside the
+   contracted production structural-operation window.
+3. Workbook **structure** protection remains applied throughout.
+4. Benchmark Run 3's `ListRow.Delete` failure is classified as a **HARNESS
+   defect**, not a production defect — the failing call was the harness's own
+   COM `$victim.Delete()` in `Remove-TableRow`, not a production endpoint.
+5. This architecture is **not to be reopened or redesigned** without genuinely
+   new runtime evidence.
+6. **No further Windows protection probe is required.**
+
+**This closes ONLY the Runtime Protection Reconciliation.** It does not close
+Phase 10, does not establish a benchmark baseline, and is not final project
+acceptance.
+
+### What this closure does NOT resolve — the harness consequence
+
+Classification 4 is precise, and it has a consequence that is still open.
+
+`phase10_benchmark.ps1:313` still performs `$victim.Delete()` — a direct COM
+`ListRow.Delete` on `tblFXRates`, reached from `Set-Phase5Fixture` →
+`Reset-Phase5FxTable` → `Remove-TableRow` while building the PERF-SMALL fixture.
+
+**The production structural window does not help it.** That window is opened by
+`modAppState.BeginStructuralOperation` from inside production VBA; a PowerShell
+COM caller never enters it. Every accepted Windows harness was written against a
+Stage-B workbook that had no protection — protection is a Phase-10 addition
+applied by `build_stage_b.ps1` step 7 and re-applied by `Workbook_Open`.
+
+So a Benchmark Run 4 against the current tree **would abort at the same line with
+the same 1004**. That is recorded here as the open item it is, not as a surprise
+for the next run to rediscover.
+
+---
