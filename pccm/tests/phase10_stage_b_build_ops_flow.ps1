@@ -48,6 +48,10 @@
       SAVENOTE|<case>|<diagnostic line>
       SAVESTATE|<case>|<state>|<detail>
       SAVEPATH|<case>|<are the two paths the same>
+      READ|<case>|<outcome>|<value or refusal>|<CLR type>|lines=<n>
+      TELEMETRY|<case>|...
+      SUBOPS|<n>|<comma-separated sub-operation vocabulary>
+      STEP|<case>|<label>|<outcome>
     Exit 0 always.
 #>
 param(
@@ -78,7 +82,8 @@ if ($errors -and $errors.Count -gt 0) {
 # which the uninitialised-scope audit cannot see, so it is given an empty value
 # first: a lift that silently produced nothing then prints OPS|0 and fails a
 # control rather than reading an undefined script variable.
-$script:StageBBuildOps = @()
+$script:StageBBuildOps    = @()
+$script:StageBBuildSubOps = @()
 
 # Section D's stub records what the wrapper handed it. Declared HERE rather than
 # beside the stub, because a script-scope variable first assigned after the first
@@ -89,15 +94,19 @@ $script:StubArgs  = ''
 # The vocabulary is an assignment at the top of the script, not a function, so it
 # is lifted by its own statement rather than by function name.
 $vocabText = ''
+$subVocabText = ''
 foreach ($assign in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
-    if ($assign.Left.Extent.Text -eq '$script:StageBBuildOps') { $vocabText = $assign.Extent.Text }
+    if ($assign.Left.Extent.Text -eq '$script:StageBBuildOps')    { $vocabText = $assign.Extent.Text }
+    if ($assign.Left.Extent.Text -eq '$script:StageBBuildSubOps') { $subVocabText = $assign.Extent.Text }
 }
-if ($vocabText -eq '') {
-    Write-Output 'MISSING|$script:StageBBuildOps is not defined in build_stage_b.ps1'
+if ($vocabText -eq '' -or $subVocabText -eq '') {
+    Write-Output 'MISSING|the build operation vocabularies are not defined in build_stage_b.ps1'
     exit 0
 }
 Invoke-Expression $vocabText
+Invoke-Expression $subVocabText
 $script:StageBBuildOp         = '<before the first labelled operation>'
+$script:StageBBuildSubOp      = ''
 $script:StageBBuildRejections = New-Object System.Collections.ArrayList
 
 # Add-Note is lifted too, because the SaveAs settlement REPORTS through it and
@@ -105,8 +114,10 @@ $script:StageBBuildRejections = New-Object System.Collections.ArrayList
 $notes = New-Object System.Collections.ArrayList
 
 foreach ($name in @('Add-Note', 'Set-StageBBuildOp', 'Get-StageBBuildOp',
-                    'Get-StageBBuildRejections', 'Get-StageBComHResult',
-                    'New-StageBRejectionLine', 'Invoke-StageBBuildRead',
+                    'Set-StageBBuildStep', 'Get-StageBBuildStep', 'Get-StageBBuildLabel',
+                    'Get-StageBBuildRejections', 'Add-StageBReadRejection',
+                    'Get-StageBScalarInt', 'Get-StageBNonEmptyString',
+                    'Get-StageBComHResult', 'New-StageBRejectionLine',
                     'Get-StageBComparablePath', 'Get-StageBSaveAsPostcondition',
                     'Invoke-StageBSaveAs', 'New-StageBSaveAsResult')) {
     $body = $null
@@ -196,6 +207,18 @@ public class PccmFakeComTarget {
     }
     public object Item(object key) { Maybe(); return "the item"; }
     public object Quiet { get { Maybe(); return "answered"; } }
+    // Value shapes a real read can answer with. None of these throws: what is
+    // being observed here is whether the VALUE survives the read path, which is
+    // what run 5 proved it did not.
+    public object Fmt51     { get { return 51; } }
+    public object Fmt52     { get { return 52; } }
+    public object FmtText   { get { return "52"; } }
+    public object FullName  { get { return "/b/PCCM_stageA.xlsx"; } }
+    public object Blank     { get { return "   "; } }
+    public object Nothing   { get { return null; } }
+    public object Pair      { get { return new object[] { 51, 52 }; } }
+    public object NotNumber { get { return "xlsm"; } }
+    public object Child     { get { return new PccmFakeComTarget(); } }
 }
 '@
 $fake = New-Object PccmFakeComTarget
@@ -376,56 +399,133 @@ Write-Output ('SAVEPATH|different|' + [string]((Get-StageBComparablePath $tgtPat
 Remove-Item -LiteralPath $saveRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---------------------------------------------------------------------------
-# D. THE WRAPPER'S OWN LOGIC, AGAINST A STUBBED HELPER
+# D. THE READ PATH THE BUILD NOW USES, AND THE VALUE SURVIVING IT
 # ---------------------------------------------------------------------------
-# LAST, AND DELIBERATELY SO. PowerShell resolves a function name at CALL time and
-# the last definition wins, so this stub replaces the accepted helper for the rest
-# of the process. Section C above has already exercised the real one.
-function Invoke-ComRetryRead {
-    param($Target, [string]$Member, $Key, [string]$Description,
-          [int]$MaxAttempts = 12, [int]$FirstDelayMs = 250,
-          [int]$MaxDelayMs = 2000, [int]$TotalBudgetMs = 15000)
-    # WHAT THE LABEL WAS WHEN THE CALL ARRIVED. If the wrapper set it after
-    # forwarding, a rejected read would carry the PREVIOUS operation's name.
-    $script:StubLabel = Get-StageBBuildOp
-    $script:StubArgs  = 'member=' + $Member + '|key=' + [string]$PSBoundParameters.ContainsKey('Key') +
-                        '|desc=' + $Description
-    if ($null -eq $Target) { throw 'stub: no target' }
-    if ([string]$Target.Mode -eq 'raise') {
-        throw (New-Object System.Runtime.InteropServices.COMException 'Call was rejected by callee.', -2147418111)
+# RUN 5's FAILURE WAS A VALUE THAT DID NOT ARRIVE. So this drives the form the
+# build now uses - the accepted helper called DIRECTLY - and checks that the
+# answer comes back intact for every shape a real read produces, that the
+# out-of-band telemetry can neither pollute nor consume it, and that the
+# validators refuse the answers that are not answers.
+#
+# ITS OWN TARGET. $fake was rebound to the workbook fake by the SaveAs section
+# above, so reusing it here read FullName off the wrong type while every other
+# property came back "cannot be found" - a section that tested nothing it claimed.
+$reader = New-Object PccmFakeComTarget
+foreach ($c in @(
+    @{ n='int-51';    m='Fmt51';     kind='int' },
+    @{ n='int-52';     m='Fmt52';     kind='int' },
+    @{ n='int-as-text'; m='FmtText';  kind='int' },
+    @{ n='fullname';   m='FullName';  kind='string' },
+    @{ n='object';     m='Child';     kind='object' },
+    @{ n='nothing';    m='Nothing';   kind='int' },
+    @{ n='blank';      m='Blank';     kind='string' },
+    @{ n='two-values'; m='Pair';      kind='int' },
+    @{ n='not-number'; m='NotNumber'; kind='int' })) {
+    [PccmFakeComTarget]::Calls = 0
+    [PccmFakeComTarget]::Fails = 0
+    $null = Set-StageBBuildOp 'saveas.xlsm'
+    Set-StageBBuildStep 'saveas.presave.fileformat'
+    $script:StageBBuildRejections.Clear()
+    $outcome = 'ok'; $shown = '<none>'; $type = '<none>'
+    try {
+        $read = Invoke-ComRetryRead -Target $reader -Member ([string]$c.m) `
+                    -Description ('the fake ' + [string]$c.m)
+        Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $read
+        if ($c.kind -eq 'int') {
+            $value = Get-StageBScalarInt -Value $read.Value -What ('the fake ' + [string]$c.m)
+            $shown = [string]$value
+            $type = $value.GetType().Name
+        } elseif ($c.kind -eq 'string') {
+            $value = Get-StageBNonEmptyString -Value $read.Value -What ('the fake ' + [string]$c.m)
+            $shown = [string]$value
+            $type = $value.GetType().Name
+        } else {
+            if ($null -eq $read.Value) { throw 'the object read answered with nothing' }
+            $value = $read.Value
+            $shown = 'an object'
+            $type = $value.GetType().Name
+        }
+    } catch {
+        $outcome = 'REFUSED'
+        $shown = [string]$_.Exception.Message
     }
-    $answer = 'the forwarded value'
-    if ([string]$Target.Mode -eq 'null') { $answer = $null }
-    return [pscustomobject]@{
-        Description = $Description
-        Value       = $answer
-        Attempts    = [int]$Target.Attempts
-        WaitedMs    = [int]$Target.WaitedMs
-        Rejections  = [string]$Target.Rejections
-    }
+    Write-Output ('READ|' + $c.n + '|' + $outcome + '|' + $shown + '|' + $type + '|lines=' +
+                  [string]@(Get-StageBBuildRejections).Count)
 }
 
-foreach ($c in @(
-    @{ case = 'answered-first-attempt'; mode = 'ok';    attempts = 1; waited = 0;    rej = '' },
-    @{ case = 'answered-on-third';      mode = 'ok';    attempts = 3; waited = 750;  rej = 'RPC_E_CALL_REJECTED (0x80010001)' },
-    @{ case = 'answered-on-twelfth';    mode = 'ok';    attempts = 12; waited = 15000; rej = 'RPC_E_CALL_REJECTED (0x80010001), RPC_E_SERVERCALL_RETRYLATER (0x8001010A)' },
-    @{ case = 'exhausted';              mode = 'raise'; attempts = 0; waited = 0;    rej = '' },
-    @{ case = 'answered-with-nothing';  mode = 'null';  attempts = 1; waited = 0;    rej = '' })) {
-    $script:StageBBuildRejections.Clear()
-    $null = Set-StageBBuildOp 'workbook.save'
-    $script:StubLabel = '<never forwarded>'
-    $target = [pscustomobject]@{ Mode = $c.mode; Attempts = $c.attempts; WaitedMs = $c.waited; Rejections = $c.rej }
-    $outcome = 'answered'; $value = ''
-    try {
-        $record = Invoke-StageBBuildRead -Target $target -Member 'VBProject' `
-            -Operation 'vbproject.acquire' -Description 'the Stage-B workbook VBProject'
-        $value = [string]$record.Value
-    } catch { $outcome = 'RAISED' }
-    $lines = @(Get-StageBBuildRejections)
-    Write-Output ('WRAP|' + $c.case + '|' + $script:StubLabel + '|' + [string]$c.attempts + '|' +
-                  [string]$lines.Count + '|' + $outcome + '|' + ($lines -join ' ;; ') +
-                  '|label-after=' + (Get-StageBBuildOp) + '|value=' + $value)
+# THE TELEMETRY RECORDS AND RETURNS NOTHING. Assigning from it must yield $null,
+# and calling it must leave the value it was told about untouched.
+[PccmFakeComTarget]::Calls = 0; [PccmFakeComTarget]::Fails = 0
+$read = Invoke-ComRetryRead -Target $reader -Member 'Fmt51' -Description 'the fake Fmt51'
+$before = [string]$read.Value
+$probe = Add-StageBReadRejection -Operation 'saveas.presave.fileformat' -Record $read
+$after = [string]$read.Value
+Write-Output ('TELEMETRY|emits|' + $(if ($null -eq $probe) { 'nothing' } else { 'SOMETHING: ' + [string]$probe }) +
+              '|value-before=' + $before + '|value-after=' + $after +
+              '|lines=' + [string]@(Get-StageBBuildRejections).Count)
+
+# THE SAME PROBE ON THE BRANCH THAT ACTUALLY RECORDS. The quiet path returns early,
+# so a probe that only exercises it never reaches the statement that could emit.
+$script:StageBBuildRejections.Clear()
+$fabricated = [pscustomobject]@{ Attempts = 3; WaitedMs = 750
+                                 Rejections = 'RPC_E_CALL_REJECTED (0x80010001)' }
+$probe2 = Add-StageBReadRejection -Operation 'saveas.presave.fileformat' -Record $fabricated
+Write-Output ('TELEMETRY|emits-when-recording|' +
+              $(if ($null -eq $probe2) { 'nothing' } else { 'SOMETHING: ' + [string]$probe2 }) +
+              '|lines=' + [string]@(Get-StageBBuildRejections).Count)
+
+# AND IT DOES RECORD when a read really was reissued - through the METHOD path,
+# because that is the one whose exception this host propagates.
+$script:StageBBuildRejections.Clear()
+[PccmFakeComTarget]::Calls = 0
+[PccmFakeComTarget]::Fails = 2
+[PccmFakeComTarget]::Code = -2147418111
+[PccmFakeComTarget]::PlainError = $false
+$null = Set-StageBBuildOp 'saveas.xlsm'
+Set-StageBBuildStep 'saveas.presave.fileformat'
+$outcome = 'ok'; $shown = '<none>'
+try {
+    $read = Invoke-ComRetryRead -Target $reader -Member 'Item' -Key 1 `
+                -Description 'the fake Item' -MaxAttempts 12 -FirstDelayMs 1 `
+                -MaxDelayMs 1 -TotalBudgetMs 15000
+    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $read
+    $shown = [string]$read.Value + '|attempts=' + [string]$read.Attempts
+} catch { $outcome = 'REFUSED'; $shown = [string]$_.Exception.Message }
+Write-Output ('TELEMETRY|retry-then-value|' + $outcome + '|' + $shown + '|' +
+              ((@(Get-StageBBuildRejections)) -join ' ;; '))
+
+# AN EXHAUSTED READ STILL THROWS, and the telemetry never sees a value to record.
+$script:StageBBuildRejections.Clear()
+[PccmFakeComTarget]::Calls = 0
+[PccmFakeComTarget]::Fails = 99
+$outcome = 'ok'; $hex = '<none>'
+try {
+    $read = Invoke-ComRetryRead -Target $reader -Member 'Item' -Key 1 `
+                -Description 'an always-refused fake Item' -MaxAttempts 3 -FirstDelayMs 1 `
+                -MaxDelayMs 1 -TotalBudgetMs 100
+    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $read
+} catch { $outcome = 'REFUSED'; $hex = Get-StageBComHResult $_ }
+Write-Output ('TELEMETRY|exhausted|' + $outcome + '|' + $hex + '|lines=' +
+              [string]@(Get-StageBBuildRejections).Count + '|calls=' +
+              [string][PccmFakeComTarget]::Calls)
+
+# --- the sub-operation vocabulary and the label it produces -----------------
+Write-Output ('SUBOPS|' + [string]@($script:StageBBuildSubOps).Count + '|' +
+              (@($script:StageBBuildSubOps) -join ','))
+foreach ($step in @($script:StageBBuildSubOps)) {
+    $null = Set-StageBBuildOp 'saveas.xlsm'
+    $outcome = 'accepted'
+    try { Set-StageBBuildStep $step } catch { $outcome = 'REFUSED' }
+    Write-Output ('STEP|' + $step + '|' + (Get-StageBBuildLabel) + '|' + $outcome)
 }
-Write-Output ('WRAP|forwarded-arguments|' + $script:StubArgs)
+$null = Set-StageBBuildOp 'saveas.xlsm'
+$outcome = 'accepted'
+try { Set-StageBBuildStep 'saveas.presave.format' } catch { $outcome = 'REFUSED' }
+Write-Output ('STEP|typo|' + (Get-StageBBuildLabel) + '|' + $outcome)
+# A NEW TOP-LEVEL OPERATION CLEARS THE STEP: a stale sub-operation would name a
+# step that already finished.
+Set-StageBBuildStep 'saveas.call'
+$null = Set-StageBBuildOp 'vbcomponents.import'
+Write-Output ('STEP|cleared|' + (Get-StageBBuildLabel) + '|' + (Get-StageBBuildStep) + '|ok')
 
 exit 0

@@ -2474,3 +2474,156 @@ bootstrap is the SaveAs backoff, reachable only after a postcondition **proved**
 the save did not happen. No retry on the module import, the `ThisWorkbook` write,
 button creation, protection or the final `Save`. No retry on any property SET.
 `Invoke-ComRetryRead` byte-identical. Two bundles, two Excel sessions.
+
+---
+
+## Equivalence run 5 — INVALID / NOT EVALUATED — THE PRE-SAVE READ ANSWERED WITH NOTHING
+
+**Harness commit:** `cc9cf8d`. Windows PowerShell 5.1. Stage A immediately before
+the run: 351 passed, 0 failed.
+
+### What run 5 did
+
+```
+[PASS] Read Stage-A build outputs
+[PASS] Open an owned Excel instance
+[PASS] Open the Stage-A workbook
+[FAIL] Stage-B build
+       operation=saveas.xlsm;
+       System.Management.Automation.RuntimeException:
+       Invoke-StageBBuildRead: the Stage-A workbook FileFormat before SaveAs
+       answered with nothing at saveas.xlsm.
+       The read was not refused and it was not answered.
+COMREJECT|build|none|attempts=0|waited=0
+```
+
+Endpoints completed. Shutdown was clean — `Workbook.Close=True`,
+`Application.Quit=True`, natural PID exit, no emergency cleanup.
+
+```
+FAIL|Bulk|BOOTSTRAP
+EQUIV|<not evaluated>|invalid
+```
+
+**`SaveAs` itself was NOT executed.** The failure was in the **pre-save FileFormat
+observation**, before the call, and **no RPC rejection occurred** — `attempts=0`. No
+Bulk fixture was built and no comparison ran, so this record
+**must not be read as a fixture DIFFER**,
+and it is **not** another SaveAs rejection. It is
+**INVALID / NOT EVALUATED**, and **Bulk remains NOT authorised**.
+
+It therefore tests none of: SaveAs recovery, Bulk fixture construction, the
+reserved-row correction, semantic equivalence, `CALCEQUIV`.
+
+### Root cause, narrowed by source elimination
+
+The read went through `Invoke-StageBBuildRead`, a wrapper that took the COM object
+and the member name and forwarded both to the accepted helper. `attempts=0` is what
+makes the rest diagnosable — the retry loop answered on its **first** try, so the
+reissue path, the rejection ledger and the backoff are all excluded. The single
+`$value = $Target.$Member` in the accepted helper returned `$null` **without
+raising**.
+
+| candidate | verdict |
+|---|---|
+| telemetry polluting the return | **excluded** — the only emission was `return $record`; both side effects were `$null =`-suppressed |
+| telemetry consuming the value | **excluded** — the branch was gated on `Attempts -gt 1`, and `attempts=0` proves it never ran |
+| type coercion | **excluded** — the `[int]` cast was *outside* the wrapper and never reached |
+| null/empty classification | **excluded as the cause** — it is the *report*; `$record.Value` was genuinely `$null`, because `$value` has exactly one assignment |
+| wrapper output handling | **excluded for pollution**; the wrapper returned the helper's own object |
+| dynamic member access through the extra hop | **the only surviving difference on the value path** |
+
+**Why dynamic member access answered with nothing through that extra hop is NOT
+established, and nothing here theorises about it.** The earlier PowerShell 7
+observation about .NET property getters was explicitly *not* Windows evidence and
+is not offered as one.
+
+**What IS established is which form has worked.** The reopen verification reads
+`FileFormat`, `Worksheets`, `VBProject`, `VBComponents`, `CodeName`, `Count`,
+`Item`, `Shapes`, `OnAction` and `Name` through the accepted helper called
+**directly**, and has done so on Windows in every accepted run. `Invoke-StageBBuildRead`
+had **never once returned a value on Windows** — in runs 3 and 4 the SaveAs was
+refused before any wrapped read ran, and run 5 is its first and only execution.
+
+### The correction: the unproven layer is removed, not repaired
+
+Every build read is now the proven form verbatim:
+
+```powershell
+Set-StageBBuildStep 'saveas.presave.fileformat'
+$preFormat = Invoke-ComRetryRead -Target $wb -Member 'FileFormat' `
+                 -Description 'the Stage-A workbook FileFormat before SaveAs'
+Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $preFormat
+$sourceFormat = Get-StageBScalarInt -Value $preFormat.Value `
+                    -What 'the Stage-A workbook FileFormat before SaveAs'
+```
+
+The label is set **before** the call, the telemetry is recorded **after** it, and
+both are separate statements — neither is in the expression that produces the
+value, so neither can pollute or consume it. A COM object is taken straight off
+`$read.Value` with no further parameter binding. **No third read mechanism was
+invented**, and `Invoke-ComRetryRead` is byte-identical.
+
+### Validation is at the consumer, by type, never by truthiness
+
+`if (-not $value)` would refuse a legitimate `0`, which is a real value elsewhere
+in the object model. So `FileFormat` requires a **scalar integer-compatible**
+answer and `FullName` a **non-empty string**; a `$null`, an array, a blank string
+and a non-numeric string are each refused with their own message.
+
+### The pre-save observation contract
+
+Before `SaveAs` is attempted the build reads the original `FullName` and
+`FileFormat` and confirms the target is absent, then **requires the baseline to be
+internally consistent**: the workbook must be bound to the Stage-A path, and the
+target must not already exist. If either fails, **the save is not attempted** —
+because `bound to source and target absent` cannot mean what NOT EXECUTED needs it
+to mean without it. Run 5 is what an unchecked baseline looks like: `[int]$null`
+would have become `0`, and every later NOT-EXECUTED verdict would have been wrong.
+
+```
+SAVEAS|baseline|fullname=ok|format=51|target-absent=True
+```
+
+### Precise sub-operation diagnostics
+
+`saveas.xlsm` remains the region's name; the failure line now carries the exact
+step:
+
+```
+saveas.presave.fullname   saveas.presave.fileformat   saveas.presave.target
+saveas.call
+saveas.post.fullname      saveas.post.fileformat      saveas.post.target
+```
+
+```
+COMFAIL|build|saveas.presave.fileformat|hresult=none|…
+```
+
+A misspelt step is refused where it is written, and a new top-level operation
+clears the step so a stale one cannot name a finished phase.
+
+### The SaveAs settlement is unchanged
+
+COMPLETED = bound to target **and** format 52 **and** target exists. NOT EXECUTED
+= bound to source **and** the original source format **and** target absent.
+AMBIGUOUS = everything else, never retried, never cleaned up. A retryable rejected
+`SaveAs` may be reissued **only** after NOT EXECUTED is observed.
+
+### Executed, not asserted
+
+The harness drives the real read path: `51` and `52` come back as `Int32`, `"52"`
+coerces to `52`, a `FullName` string survives as `String`, an object-valued read
+survives as an object, and `$null`, a blank string, two values and `"xlsm"` are
+each refused. The telemetry recorder emits **nothing** and leaves the value
+unchanged (`51` before, `51` after); a read reissued twice returns its value with
+`attempts=3` and records exactly one line naming `saveas.presave.fileformat`; an
+exhausted read rethrows the original `0x80010001` and records nothing. Excel is
+never started.
+
+### Still not known
+
+**Why Excel refuses the second-session `SaveAs` remains unknown**, and nothing here
+claims lifecycle overlap, an Excel readiness race, OneDrive, file locking, modal
+state or message-filter timing. Run 5 did not reach the save at all, so it adds no
+evidence either way.

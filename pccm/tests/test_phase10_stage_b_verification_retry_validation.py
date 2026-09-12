@@ -616,15 +616,22 @@ def test_89_opening_the_vocabulary_to_any_string_is_refused() -> None:
         "    if ($false) {")
 
 
-def test_90_setting_the_label_after_forwarding_the_read_is_refused() -> None:
-    """A READ REFUSED ON ITS FIRST ATTEMPT WOULD CARRY THE PREVIOUS OPERATION'S
-    NAME - a diagnostic that is confidently wrong, which is worse than none."""
+def test_90_setting_the_label_after_the_read_is_refused() -> None:
+    """A READ REFUSED ON ITS FIRST ATTEMPT WOULD CARRY THE PREVIOUS STEP'S NAME - a
+    diagnostic that is confidently wrong, which is worse than none.
+
+    RE-ANCHORED. The wrapper this used to damage is gone: run 5 proved it returned
+    no value on Windows. The property is unchanged and now lives at the read itself,
+    so the mutation moves the label to AFTER the call it is supposed to name.
+    """
     _mutate_on_disk(
         "build", "test_69",
-        "    $null = Set-StageBBuildOp $Operation\n"
-        "    $record = Invoke-ComRetryRead -Target $Target -Member $Member -Description $Description",
-        "    $record = Invoke-ComRetryRead -Target $Target -Member $Member -Description $Description\n"
-        "    $null = Set-StageBBuildOp $Operation")
+        "    Set-StageBBuildStep 'saveas.presave.fileformat'\n"
+        "    $preFormat = Invoke-ComRetryRead -Target $wb -Member 'FileFormat' `\n"
+        "                     -Description 'the Stage-A workbook FileFormat before SaveAs'",
+        "    $preFormat = Invoke-ComRetryRead -Target $wb -Member 'FileFormat' `\n"
+        "                     -Description 'the Stage-A workbook FileFormat before SaveAs'\n"
+        "    Set-StageBBuildStep 'saveas.presave.fileformat'")
 
 
 def test_91_suppressing_the_clean_run_line_is_refused() -> None:
@@ -926,6 +933,225 @@ def test_118_speculating_about_the_root_cause_in_the_record_is_refused() -> None
         "**We know WHERE the rejection occurs. We do not know WHY Excel rejects the\n"
         "second-session `SaveAs`.**",
         "**The cause is a lifecycle overlap between the two Excel sessions.**")
+
+
+# ===========================================================================
+# I. THE READ THAT ANSWERED WITH NOTHING
+# ===========================================================================
+# RUN 5 FAILED IN THE PRE-SAVE OBSERVATION AND CALLED ITSELF saveas.xlsm. Every way
+# of losing a value, polluting it, accepting its absence, or mislabelling where it
+# happened is fed in here.
+def test_119_suppressing_the_returned_fileformat_is_refused() -> None:
+    """RUN 5's DEFECT, PLANTED. A read whose value never arrives must fail at the
+    operation it happened at - not three statements later on a garbage baseline."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    $sourceFormat = Get-StageBScalarInt -Value $preFormat.Value `\n"
+        "                        -What 'the Stage-A workbook FileFormat before SaveAs'",
+        "    $sourceFormat = Get-StageBScalarInt -Value $null `\n"
+        "                        -What 'the Stage-A workbook FileFormat before SaveAs'")
+
+
+def test_120_emitting_telemetry_before_the_value_is_refused() -> None:
+    """ASSIGN, NEVER EMIT. A recorder that writes to the output stream puts its line
+    in front of the value, and the caller reads the line as the answer."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    $null = $script:StageBBuildRejections.Add(\n",
+        "    Write-Output ('COMREJECT|build|' + $Operation)\n"
+        "    $null = $script:StageBBuildRejections.Add(\n")
+
+
+def test_121_emitting_telemetry_after_the_value_is_refused() -> None:
+    """THE SAME DEFECT FROM THE OTHER SIDE: a trailing emission makes the return an
+    ARRAY, and `.Value` on an array is not the value."""
+    _mutate_on_disk(
+        "build", "test_",
+        "function Add-StageBReadRejection {\n"
+        "    param([string]$Operation, $Record)\n"
+        "    if ($null -eq $Record) { return }",
+        "function Add-StageBReadRejection {\n"
+        "    param([string]$Operation, $Record)\n"
+        "    $Operation\n"
+        "    if ($null -eq $Record) { return }")
+
+
+def test_122_treating_a_null_answer_as_a_value_is_refused() -> None:
+    """A READ THAT NEITHER RAISED NOR ANSWERED IS NOT AN ANSWER. [int]$null is 0,
+    and 0 as a source FileFormat makes every NOT-EXECUTED verdict wrong."""
+    _mutate_on_disk(
+        "build", "test_82",
+        "    if ($null -eq $Value) {\n"
+        "        throw ($What + ' answered with nothing. The read was not refused and it was ' +\n"
+        "               'not answered.')\n"
+        "    }\n"
+        "    if ($Value -is [System.Array]) {\n"
+        "        throw ($What + ' answered with ' + [string]@($Value).Count + ' values where one ' +\n"
+        "               'scalar was required.')\n"
+        "    }",
+        "    if ($null -eq $Value) { return 0 }")
+
+
+def test_123_using_truthiness_instead_of_a_null_test_is_refused() -> None:
+    """`if (-not $value)` REFUSES A LEGITIMATE ZERO. FileFormat is numeric and 0 is a
+    real value elsewhere in the object model, so the test is for absence and type,
+    never for truth."""
+    _mutate_on_disk(
+        "build", "test_82",
+        "function Get-StageBScalarInt {\n"
+        "    param($Value, [string]$What)\n"
+        "    if ($null -eq $Value) {",
+        "function Get-StageBScalarInt {\n"
+        "    param($Value, [string]$What)\n"
+        "    if (-not $Value) { throw ($What + ' answered nothing useful.') }\n"
+        "    if ($null -eq $Value) {")
+
+
+def test_124_accepting_a_non_scalar_fileformat_is_refused() -> None:
+    """TWO VALUES IS NOT ONE. An array answer compared against $SourceFormat would
+    be neither equal nor unequal in a way anyone can reason about."""
+    _mutate_on_disk(
+        "build", "test_82",
+        "    if ($Value -is [System.Array]) {\n"
+        "        throw ($What + ' answered with ' + [string]@($Value).Count + ' values where one ' +\n"
+        "               'scalar was required.')\n"
+        "    }\n"
+        "    $text = ([string]$Value).Trim()",
+        "    $text = ([string]$Value).Trim()")
+
+
+def test_125_accepting_an_empty_fullname_is_refused() -> None:
+    """AN EMPTY PATH COMPARES EQUAL TO NOTHING, so boundToSource and boundToTarget
+    would both be false and every state would read as AMBIGUOUS."""
+    _mutate_on_disk(
+        "build", "test_82",
+        "    if ([string]::IsNullOrWhiteSpace($text)) {\n"
+        "        throw ($What + ' answered an empty string.')\n"
+        "    }",
+        "    if ($false) {\n"
+        "        throw ($What + ' answered an empty string.')\n"
+        "    }")
+
+
+def test_126_saving_without_a_consistent_baseline_is_refused() -> None:
+    """NOT EXECUTED CANNOT BE RECOGNISED WITHOUT A BASELINE. If the workbook is not
+    the Stage-A file, 'bound to source' means nothing."""
+    _mutate_on_disk(
+        "build", "test_99",
+        "    if ($preSeen -ne (Get-StageBComparablePath $stageAPath)) {",
+        "    if ($false) {")
+
+
+def test_127_saving_over_an_existing_target_is_refused() -> None:
+    """IF THE TARGET IS ALREADY THERE, 'the file exists' afterwards proves nothing -
+    which is the whole basis of the COMPLETED verdict."""
+    _mutate_on_disk(
+        "build", "test_99",
+        "    if (Test-Path -LiteralPath $stageBPath) {\n"
+        "        throw ('SAVEAS BASELINE: ' + $stageBPath + ' is present before the save, so ' +",
+        "    if ($true -and $false) {\n"
+        "        throw ('SAVEAS BASELINE: ' + $stageBPath + ' is present before the save, so ' +")
+
+
+def test_128_labelling_a_pre_save_read_as_the_save_is_refused() -> None:
+    """RUN 5's REPORTING DEFECT. A failed observation reported as saveas.call reads
+    as though the save had been attempted, and the next batch would chase the wrong
+    thing."""
+    _mutate_on_disk(
+        "build", "test_10",
+        "    Set-StageBBuildStep 'saveas.presave.fileformat'\n"
+        "    $preFormat = Invoke-ComRetryRead",
+        "    Set-StageBBuildStep 'saveas.call'\n"
+        "    $preFormat = Invoke-ComRetryRead")
+
+
+def test_129_reporting_the_region_instead_of_the_step_is_refused() -> None:
+    """THE COARSE LABEL IS WHAT RUN 5 PRINTED."""
+    _mutate_on_disk(
+        "build", "test_62",
+        "    $failedOp = Get-StageBBuildLabel",
+        "    $failedOp = Get-StageBBuildOp")
+
+
+def test_130_letting_a_stale_sub_operation_survive_is_refused() -> None:
+    """A SUB-OPERATION THAT ALREADY FINISHED WOULD NAME THE NEXT FAILURE."""
+    _mutate_on_disk(
+        "build", "test_107",
+        "    $script:StageBBuildOp = $Operation\n"
+        "    # A NEW TOP-LEVEL OPERATION CLEARS THE SUB-OPERATION. A stale one would name a\n"
+        "    # step that finished for a failure somewhere else entirely.\n"
+        "    $script:StageBBuildSubOp = ''",
+        "    $script:StageBBuildOp = $Operation")
+
+
+def test_131_opening_the_sub_operation_vocabulary_is_refused() -> None:
+    """A CLOSED VOCABULARY IS WHAT MAKES A LABEL TRACEABLE."""
+    _mutate_on_disk(
+        "build", "test_107",
+        "    if ($script:StageBBuildSubOps -notcontains $Step) {",
+        "    if ($false) {")
+
+
+def test_132_bringing_the_read_wrapper_back_is_refused() -> None:
+    """IT PRODUCED NO ANSWER ON WINDOWS. Reinstating an intermediate reader puts the
+    unproven hop back between the COM object and the member access."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    $preFormat = Invoke-ComRetryRead -Target $wb -Member 'FileFormat' `\n"
+        "                     -Description 'the Stage-A workbook FileFormat before SaveAs'\n"
+        "    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $preFormat\n"
+        "    $sourceFormat = Get-StageBScalarInt -Value $preFormat.Value `\n"
+        "                        -What 'the Stage-A workbook FileFormat before SaveAs'",
+        "    function Invoke-StageBBuildRead {\n"
+        "        param($Target, [string]$Member, [string]$Description)\n"
+        "        return Invoke-ComRetryRead -Target $Target -Member $Member -Description $Description\n"
+        "    }\n"
+        "    $sourceFormat = [int](Invoke-StageBBuildRead -Target $wb -Member 'FileFormat' `\n"
+        "                              -Description 'the Stage-A workbook FileFormat before SaveAs').Value")
+
+
+def test_133_taking_the_value_inside_the_read_expression_is_refused() -> None:
+    """THE PROVEN SHAPE CAPTURES THE RECORD FIRST. Collapsing it back into one
+    expression is the form that produced no answer, and it also loses the
+    out-of-band telemetry."""
+    _mutate_on_disk(
+        "build", "test_105",
+        "    $wsRead = Invoke-ComRetryRead -Target $wb -Member 'Worksheets' `\n"
+        "                  -Description 'the Stage-B workbook Worksheets collection'\n"
+        "    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $wsRead\n"
+        "    if ($null -eq $wsRead.Value) {\n"
+        "        throw 'the Stage-B workbook Worksheets collection answered with nothing.'\n"
+        "    }\n"
+        "    $worksheets = $wsRead.Value",
+        "    $worksheets = (Invoke-ComRetryRead -Target $wb -Member 'Worksheets' `\n"
+        "                       -Description 'the Stage-B workbook Worksheets collection').Value")
+
+
+def test_134_weakening_the_three_state_settlement_is_refused() -> None:
+    """SEMANTIC FREEZE. This batch fixed a read; the classification it feeds must be
+    exactly the accepted one."""
+    _mutate_on_disk(
+        "build", "test_111",
+        "    } elseif ($boundToSource -and ($format -eq $SourceFormat) -and (-not $targetExists)) {",
+        "    } elseif ($boundToSource) {")
+
+
+def test_135_recording_run_5_as_a_saveas_rejection_is_refused() -> None:
+    """IT WAS NOT ONE. SaveAs was never called, and a record that says otherwise
+    would send the next batch after a rejection that did not happen."""
+    _mutate_on_disk(
+        "evidence", "test_109",
+        "**`SaveAs` itself was NOT executed.**",
+        "**`SaveAs` was refused again.**")
+
+
+def test_136_dropping_the_run_5_verdict_is_refused() -> None:
+    """A RECORD THAT LET RUN 5 READ AS A RESULT WOULD LICENCE A BULK BASELINE ON
+    EVIDENCE THAT DOES NOT EXIST."""
+    _mutate_on_disk(
+        "evidence", "test_109",
+        "and it is **not** another SaveAs rejection. It is\n**INVALID / NOT EVALUATED**",
+        "and it is a partial result. It is\n**a fixture difference**")
 
 
 if __name__ == "__main__":

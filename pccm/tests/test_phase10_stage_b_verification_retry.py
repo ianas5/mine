@@ -82,9 +82,22 @@ DECLARED_BUILD_READS = {
 # non-idempotent call happened. Declared separately so the precedent rule that
 # governs the four build reads above is not quietly widened to mean anything.
 DECLARED_POSTCONDITION_READS = {
-    "FullName": "saveas.xlsm",
-    "FileFormat": "saveas.xlsm",
+    "FullName": "saveas.presave.fullname",
+    "FileFormat": "saveas.presave.fileformat",
 }
+
+# The closed SUB-operation vocabulary. Run 5 reported a failed PRE-SAVE read as
+# operation=saveas.xlsm, which reads as though the save had been attempted; it had
+# not. Restated here so a sub-operation quietly dropped fails a control.
+BUILD_SUB_OPS = (
+    "saveas.presave.fullname",
+    "saveas.presave.fileformat",
+    "saveas.presave.target",
+    "saveas.call",
+    "saveas.post.fullname",
+    "saveas.post.fileformat",
+    "saveas.post.target",
+)
 
 # The build-only functions that carry the SaveAs settlement. Named, so a retry
 # hidden in one of them is inside what the controls look at rather than above it.
@@ -253,7 +266,8 @@ def _flow() -> dict:
         assert done.returncode == 0, done.stdout + done.stderr
         rows: dict = {"ops": [], "label": {}, "hres": {}, "line": {}, "retry": {},
                       "ledger": {}, "wrap": {}, "host": (), "unmet": [],
-                      "save": {}, "savenote": {}, "savestate": {}, "savepath": {}}
+                      "save": {}, "savenote": {}, "savestate": {}, "savepath": {},
+                      "read": {}, "telemetry": {}, "subops": [], "step": {}}
         for raw in done.stdout.splitlines():
             if raw.startswith(("PARSE|", "MISSING|")):
                 rows["unmet"].append(raw)
@@ -281,6 +295,30 @@ def _flow() -> dict:
             elif raw.startswith("HOST|"):
                 prop, method = raw[len("HOST|"):].split("|", 1)
                 rows["host"] = (prop, method)
+            elif raw.startswith("READ|"):
+                case, outcome, detail, kind, lines = raw[len("READ|"):].split("|", 4)
+                rows["read"][case] = {"outcome": outcome, "value": detail,
+                                      "detail": detail, "type": kind,
+                                      "lines": int(lines.split("=", 1)[1])}
+            elif raw.startswith("TELEMETRY|"):
+                case, rest = raw[len("TELEMETRY|"):].split("|", 1)
+                row = {"detail": rest, "outcome": "", "lines": -1, "calls": -1}
+                first = rest.split("|", 1)[0]
+                if first in ("ok", "REFUSED"):
+                    row["outcome"] = first
+                for part in rest.split("|"):
+                    if part.startswith("lines="):
+                        row["lines"] = int(part.split("=", 1)[1])
+                    elif part.startswith("calls="):
+                        row["calls"] = int(part.split("=", 1)[1])
+                rows["telemetry"][case] = row
+            elif raw.startswith("SUBOPS|"):
+                count, joined = raw[len("SUBOPS|"):].split("|", 1)
+                rows["subops"] = joined.split(",")
+                assert int(count) == len(rows["subops"]), raw
+            elif raw.startswith("STEP|"):
+                parts = raw[len("STEP|"):].split("|")
+                rows["step"][parts[0]] = parts[1:]
             elif raw.startswith("SAVE|"):
                 case, calls, attempts, waited, fmt, outcome, state = \
                     raw[len("SAVE|"):].split("|", 6)
@@ -619,68 +657,55 @@ def test_32_the_failing_read_itself_is_covered() -> None:
 
 
 def test_33_the_build_block_retries_only_its_declared_property_gets() -> None:
-    """DECLARED, NOT LOOSENED - AND THE OLD FORM HAD BECOME A FALSE REASSURANCE.
+    """DECLARED, NOT LOOSENED - AND RESTATED TWICE NOW, EACH TIME BY A WINDOWS RUN.
 
-    This control used to read `"Invoke-ComRetryRead" not in _build_block()`. The
-    build block now reissues four reads, and that assertion STILL PASSED, because
-    the calls go through `Invoke-StageBBuildRead` and the only literal
-    `Invoke-ComRetryRead` sits in the wrapper ABOVE where the block slice starts.
-    A control that passes over the thing it forbids is worse than no control, so
-    it is restated as the property it was always meant to hold:
+    It began as `"Invoke-ComRetryRead" not in _build_block()`. That became a false
+    reassurance when reads went through a wrapper the slice could not see. Run 5
+    then proved the wrapper itself was the defect - its one execution on Windows
+    produced no answer - so the wrapper is gone and every read is the form the
+    reopen verification has executed on Windows: the accepted helper, called
+    directly. What this control asserts is unchanged:
 
-      * the block may retry ONLY the four DECLARED members, each a plain property
-        get, each already reissued by the accepted reopen verification;
-      * each declared read must carry the operation label its member belongs to;
-      * NO write may be retried by ANY path - both helper names are checked.
+      * only DECLARED members are reissued, each a plain property get;
+      * each read carries the operation label its member belongs to;
+      * no write is reissued by any path;
+      * and there is NO read wrapper to hide a read behind again.
     """
-    # THE BLOCK AND THE BUILD-ONLY HELPERS, because a retry defined above the
-    # slice is still a retry the build performs. The previous form of this control
-    # missed exactly that, and the SaveAs settlement moved reads out of the block.
     code = _build_code()
     scope = _joined(_build_block()) + "\n" + "\n".join(
-        _joined(_ps_function(code, name)) for name in
-        (("Invoke-StageBBuildRead",) + SAVEAS_HELPERS))
-    block = scope
+        _joined(_ps_function(code, name)) for name in SAVEAS_HELPERS)
     allowed = dict(DECLARED_BUILD_READS)
     allowed.update(DECLARED_POSTCONDITION_READS)
-    # -Target IS ON EVERY CALL AND ON NO DEFINITION, so `function Invoke-...` and
-    # the param block are not mistaken for retried reads.
-    calls = [line for line in
-             re.findall(r"Invoke-(?:ComRetryRead|StageBBuildRead)\b[^\n]*", block)
+    calls = [line for line in re.findall(r"Invoke-ComRetryRead\b[^\n]*", scope)
              if "-Target " in line]
-    assert calls, "the build block retries nothing at all, so nothing is declared"
+    assert calls, "the build performs no retried read at all"
     for call in calls:
-        if "-Target $Target -Member $Member" in call:
-            continue  # the wrapper's own single forwarding line
-        assert "Invoke-StageBBuildRead" in call, (
-            f"the build block calls the general helper directly: {call}")
         member = re.search(r"-Member '(\w+)'", call)
         assert member, call
         name = member.group(1)
-        assert name in allowed, (
-            f"{name} is retried in the build block but is not a declared read")
-        expected = allowed[name]
-        assert f"-Operation '{expected}'" in call, (
-            f"the {name} read does not carry the {expected} label: {call}")
+        assert name in allowed, f"{name} is reissued but is not a declared read"
         for banned in NEVER_RETRIED:
             assert f"-Member '{banned}'" not in call, f"{banned} is retried: {call}"
-    # EVERY DECLARED READ MUST ACTUALLY BE THERE. A declaration for a read that no
-    # longer exists is a stale exemption, and it would let a later edit drop the
-    # retry without a single control noticing.
-    for member, label in allowed.items():
-        assert f"-Member '{member}'" in block, f"the declared read {member} is gone"
-        assert f"-Operation '{label}'" in block, f"the declared label {label} is gone"
-    # AND THE REOPEN PATH IS WHY EACH ONE IS ALLOWED. If verification stops
-    # reissuing a member, the build has no precedent left for reissuing it either.
+    # EVERY DECLARED READ MUST ACTUALLY BE THERE - a declaration for a read that no
+    # longer exists is a stale exemption.
+    for member in allowed:
+        assert f"-Member '{member}'" in scope, f"the declared read {member} is gone"
+    # AND THE REOPEN PATH IS WHY EACH BUILD READ IS ALLOWED.
     verify = _joined(_verify_block())
     for member in DECLARED_BUILD_READS:
         assert f"-Member '{member}'" in verify, (
             f"{member} is retried in the build with no precedent in verification")
+    # THE WRAPPER IS GONE, AND STAYS GONE. Run 5 is the reason.
+    assert "function Invoke-StageBBuildRead" not in code, (
+        "the read wrapper is back; run 5 is what it does on Windows")
+    assert _strip(_build()).count("Invoke-StageBBuildRead") == 0
+
 
 
 # The complete set of members the retry helper is allowed to name. Read-only,
 # every one of them, and NAMED -- a proximity check around the write call sites
 # lets a retried write slip past simply by sitting on its own line.
+#
 # FullName was added when SaveAs gained a postcondition: proving whether a refused
 # save happened means asking the workbook which file it is now bound to. It is a
 # property get like every other name here, and it moves nothing.
@@ -929,14 +954,21 @@ def test_61_the_vocabulary_is_closed_and_a_typo_cannot_become_a_label() -> None:
 
 
 def test_62_the_build_failure_names_the_operation_that_was_in_flight() -> None:
-    """REQUIRED CONTROL, AND THE WHOLE POINT. The catch reports the label, not just
-    the region, and it emits one classified line beside it."""
+    """REQUIRED CONTROL, AND RUN 5 SHARPENED IT. The catch reports the PRECISE label
+    - the sub-operation when one is in flight - because run 5 reported a failed
+    pre-save READ as operation=saveas.xlsm, which reads as though the save had been
+    attempted. It had not been."""
     code = _build_code()
     at = code.index("Add-Step 'Stage-B build' 'FAIL'")
-    region = code[at - 200 : at + 700]
-    assert "$failedOp = Get-StageBBuildOp" in region, region
+    region = code[at - 300 : at + 700]
+    assert "$failedOp = Get-StageBBuildLabel" in region, region
     assert "'operation=' + $failedOp" in region, region
     assert "New-StageBRejectionLine -Operation $failedOp -ErrorRecord $_" in region, region
+    # AND THE LABEL PREFERS THE SUB-OPERATION.
+    label = _ps_function(code, "Get-StageBBuildLabel")
+    assert "if ($script:StageBBuildSubOp -ne '') { return [string]$script:StageBBuildSubOp }" in label
+    assert "return [string]$script:StageBBuildOp" in label
+
 
 
 def test_63_a_refused_call_and_an_accepted_one_are_never_reported_alike() -> None:
@@ -1031,57 +1063,107 @@ def test_68_an_exhausted_retry_rethrows_the_original_failure() -> None:
     assert hexcode == "0x80010001", f"the original rejection was replaced: {hexcode}"
     assert "COMException" in kind or "MethodInvocation" in kind, kind
     assert any(line.startswith("EXHAUSTED") for line in flow["ledger"]["always-refused"])
-    # The wrapper does not intercept it either, and the label survives.
-    wrap = flow["wrap"]["exhausted"]
-    assert wrap["outcome"] == "RAISED", wrap
-    assert wrap["lines"] == 0, "an exhausted read was reported as answered"
-    assert wrap["label_after"] == "vbproject.acquire", wrap
+    # AND THE BUILD'S OWN READ PATH DOES NOT INTERCEPT IT EITHER: the original
+    # HRESULT escapes, and the out-of-band telemetry records nothing, because there
+    # was no answer to record.
+    row = flow["telemetry"]["exhausted"]
+    assert row["outcome"] == "REFUSED", row
+    assert "0x80010001" in row["detail"], row
+    assert row["lines"] == 0, "an exhausted read was reported as answered"
+    assert row["calls"] == 3, row
+
 
 
 def test_69_the_operation_label_is_set_before_the_call_is_forwarded() -> None:
-    """EXECUTED. If the wrapper set the label AFTER forwarding, a read refused on
-    its first attempt would carry the PREVIOUS operation's name - and the one
-    thing this batch exists to produce is the RIGHT name."""
-    flow = _flow()
-    for case in ("answered-first-attempt", "answered-on-third", "exhausted",
-                 "answered-with-nothing"):
-        wrap = flow["wrap"][case]
-        assert wrap["label_at_forward"] == "vbproject.acquire", (case, wrap)
+    """THE LABEL IS SET BEFORE THE READ, NOT AFTER IT. A read refused on its first
+    attempt would otherwise carry the PREVIOUS step's name - a diagnostic that is
+    confidently wrong, which is worse than none. Checked in source at every read,
+    and observed on the reissued one."""
+    code = _build_code()
+    scope = _joined(_build_block()) + "\n" + "\n".join(
+        _joined(_ps_function(code, name)) for name in SAVEAS_HELPERS)
+    # IMMEDIATELY BEFORE, NOT MERELY NEARBY. A six-line window passed when the label
+    # was moved to AFTER its read, because the PREVIOUS read's label was still in
+    # the window - so the check is now the nearest preceding statement.
+    lines = [line for line in scope.splitlines()
+             if line.strip() and not line.strip().startswith("#")]
+    for index, line in enumerate(lines):
+        if "Invoke-ComRetryRead" not in line or "-Target " not in line:
+            continue
+        assert index > 0, line
+        previous = lines[index - 1].strip()
+        assert previous.startswith(("Set-StageBBuildStep ", "Set-StageBBuildOp ")), (
+            f"this read does not set its label immediately before it:\n"
+            f"  {previous}\n  {line.strip()}")
+    # EXECUTED: the reissued read's telemetry line carries the SUB-operation.
+    row = _flow()["telemetry"]["retry-then-value"]
+    assert "saveas.presave.fileformat" in row["detail"], row
+
 
 
 def test_70_a_reissued_read_is_named_and_a_quiet_one_is_not_invented() -> None:
     """EXECUTED. One concise line per read that actually had to be reissued,
-    carrying the operation, the attempts and the wait; NO line when the read
+    carrying the sub-operation, the attempts and the wait; NO line when the read
     answered first time. A diagnostic that fires either way says nothing."""
     flow = _flow()
-    assert flow["wrap"]["answered-first-attempt"]["lines"] == 0
-    third = flow["wrap"]["answered-on-third"]
-    assert third["lines"] == 1, third
-    assert third["recorded"].startswith("COMREJECT|build|vbproject.acquire|"), third
-    assert "attempts=3" in third["recorded"] and "waited=750" in third["recorded"], third
-    assert "RPC_E_CALL_REJECTED" in third["recorded"], third
+    for case in ("int-51", "int-52", "fullname", "object"):
+        assert flow["read"][case]["lines"] == 0, (case, flow["read"][case])
+    row = flow["telemetry"]["retry-then-value"]
+    assert row["outcome"] == "ok", row
+    assert "the item" in row["detail"] and "attempts=3" in row["detail"], row
+    assert "COMREJECT|build|saveas.presave.fileformat|attempts=3" in row["detail"], row
+    assert "RPC_E_CALL_REJECTED" in row["detail"], row
 
 
-def test_71_the_wrapper_can_express_no_write_and_not_even_an_item_lookup() -> None:
-    """THE GUARANTEE IS THE SHAPE OF THE API, and it is NARROWER than the helper
-    it forwards to: no scriptblock, and no -Key either, so a plain property get is
-    the only thing that fits through it."""
-    body = _ps_function(_build_code(), "Invoke-StageBBuildRead")
+
+def test_71_there_is_no_read_wrapper_left_to_hide_a_read_behind() -> None:
+    """DECLARED, AND RUN 5 IS THE DECLARATION. This used to prove the read wrapper
+    could express no write. The wrapper is gone - its single Windows execution
+    returned no value - so what must now hold is stronger: the build has exactly
+    ONE read mechanism, the accepted helper, and the thing that replaced the
+    wrapper's telemetry cannot read, write, or return anything at all.
+    """
+    code = _build_code()
+    assert "function Invoke-StageBBuildRead" not in code
+    # ONE MECHANISM. No second reader was invented to take its place.
+    for banned in ("function Invoke-StageBRead", "function Get-StageBProperty",
+                   "function Read-StageB", "function Invoke-StageBComRead"):
+        assert banned not in code, f"a second read mechanism appeared: {banned}"
+    # THE TELEMETRY RECORDER TOUCHES NO COM AND RETURNS NOTHING.
+    body = _ps_function(code, "Add-StageBReadRejection")
     params = body[body.index("param(") : body.index(")", body.index("param("))]
-    for banned in ("ScriptBlock", "scriptblock", "$Action", "$Script", "$Body",
-                   "$Key", "$Arguments", "$Value"):
-        assert banned not in params, f"the wrapper takes {banned}"
-    assert "$Target" in params and "$Member" in params
-    assert "$Operation" in params and "$Description" in params
-    # It forwards those three and nothing else.
-    forward = [line for line in _joined(body).splitlines() if "Invoke-ComRetryRead" in line]
-    assert len(forward) == 1, forward
-    assert "-Key" not in forward[0], forward[0]
+    for banned in ("ScriptBlock", "$Member", "$Target", "$Key", "$Action"):
+        assert banned not in params, f"the telemetry recorder takes {banned}"
+    assert "Invoke-ComRetryRead" not in body, "the telemetry recorder performs a read"
+    # AND IT WRITES TO NO STREAM. A Write-Output inside it lands in the CALLER's
+    # output, which is how a recorder becomes part of a value.
+    for banned in ("Write-Output", "Write-Host", "Write-Information", "echo "):
+        assert banned not in body, f"the telemetry recorder emits through {banned}"
+    # ITS OWN SUPPRESSED LEDGER Add IS NOT A COM CALL, so the ban is applied to the
+    # body with that one statement removed - naming it rather than exempting the
+    # whole check.
+    ledger = [line for line in body.splitlines()
+              if "$script:StageBBuildRejections.Add(" in line]
+    assert len(ledger) == 1, ledger
+    rest = body.replace(ledger[0], "")
     for banned in NEVER_RETRIED:
-        assert f"'{banned}'" not in forward[0], forward[0]
-    # EXECUTED: the forwarded call really carried no key.
-    assert "key=False" in _flow()["wrap"]["forwarded-arguments"], \
-        _flow()["wrap"]["forwarded-arguments"]
+        assert f".{banned}(" not in rest, f"the telemetry recorder calls {banned}"
+    # Its only exits are BARE returns and a suppressed Add.
+    assert body.count("{ return }") == 2, body
+    assert "$null = $script:StageBBuildRejections.Add(" in body
+    assert not re.search(r"return\s+[^}\s]", body), "the telemetry recorder returns a value"
+    # EXECUTED: assigning from it yields nothing, and the value it was told about
+    # is unchanged afterwards.
+    flow = _flow()
+    row = flow["telemetry"]["emits"]
+    assert row["detail"].startswith("nothing"), row
+    assert "value-before=51" in row["detail"] and "value-after=51" in row["detail"], row
+    # AND ON THE BRANCH THAT ACTUALLY RECORDS. The quiet path returns early, so a
+    # probe that only exercises it never reaches the statement that could emit.
+    recorded = flow["telemetry"]["emits-when-recording"]
+    assert recorded["detail"].startswith("nothing"), recorded
+    assert "lines=1" in recorded["detail"], recorded
+
 
 
 def test_72_the_accepted_helper_itself_was_not_broadened() -> None:
@@ -1147,28 +1229,30 @@ def test_74_every_other_structural_mutation_is_also_left_alone() -> None:
 
 
 def test_75_no_blanket_sleep_and_no_readiness_gate_was_added() -> None:
-    """NOT AUTHORISED IN THIS BATCH, AND REFUSED HERE RATHER THAN REMEMBERED. We do
-    not yet know that workbook readiness is the failing condition, and a poll
-    inserted before the evidence exists could make the symptom disappear without
-    ever proving its cause."""
+    """NOT AUTHORISED IN ANY BATCH SO FAR, AND REFUSED HERE RATHER THAN REMEMBERED.
+    We still do not know WHY Excel refuses the second-session SaveAs, and a poll
+    inserted before that evidence exists could make the symptom disappear without
+    proving its cause."""
     code = _build_code()
-    # THE ONLY SLEEP IS THE POSTCONDITION-GATED SaveAs BACKOFF - see test_14, which
-    # states that rule where it lives. Nothing else may wait for anything.
     outside = code.replace(_ps_function(code, "Invoke-StageBSaveAs"), "")
     assert "Start-Sleep" not in outside, "the bootstrap sleeps outside the SaveAs retry"
     for banned in ("Wait-ExcelReady", "Test-ExcelReady", "Wait-WorkbookReady",
                    "readiness", "-Member 'Ready'", "Start-Process", "Get-Random"):
         assert banned not in code, f"a readiness mechanism appeared: {banned}"
-    # THE STRUCTURAL CHECK, NOT A WORD LIST. A post-Open readiness poll would live
-    # between the Open and the save, and there is nothing there but the source
-    # FileFormat read the NOT-EXECUTED proof needs.
+    # THE STRUCTURAL CHECK, NOT A WORD LIST. Between the Open and the save there is
+    # the pre-save OBSERVATION and nothing else - no wait, no loop, no poll.
     joined = _joined(_build_block())
     span = joined[joined.index("$wb = $workbooks.Open($stageAPath)")
                   : joined.index("$saveAs = Invoke-StageBSaveAs")]
     for banned in ("Start-Sleep", "while", "do {", "for (", "-Member 'Worksheets'",
-                   "-Member 'VBProject'"):
+                   "-Member 'VBProject'", "-Member 'VBComponents'"):
         assert banned not in span, f"something was inserted after the Open: {span!r}"
-    assert span.count("Invoke-StageBBuildRead") == 1, span
+    # Exactly the two baseline reads, each labelled.
+    assert span.count("Invoke-ComRetryRead") == 2, span
+    assert "-Member 'FullName'" in span and "-Member 'FileFormat'" in span
+    assert "Set-StageBBuildStep 'saveas.presave.fullname'" in span
+    assert "Set-StageBBuildStep 'saveas.presave.fileformat'" in span
+
 
 
 def test_76_no_inter_pass_drain_was_added_to_the_equivalence_gate() -> None:
@@ -1258,20 +1342,35 @@ def test_81_a_diagnostic_never_replaces_the_failure_it_describes() -> None:
 
 
 def test_82_nothing_is_answered_with_nothing() -> None:
-    """THIS HOST DISCARDS AN EXCEPTION THROWN BY A PROPERTY GETTER - observed, not
-    assumed, and printed by the harness as its HOST line. A read that neither
-    raised nor answered must still name the operation it happened at, rather than
-    surfacing three statements later as a null reference nobody can trace."""
+    """RUN 5 IS THIS CONTROL'S SUBJECT NOW. A read that neither raised nor answered
+    must fail at the operation it happened at, and the validation is at the
+    CONSUMER with the expected type - not a truthiness test, which would reject a
+    legitimate zero."""
     flow = _flow()
-    prop, method = flow["host"]
-    assert prop == "swallowed", prop
-    assert method.startswith("raised"), method
-    body = _ps_function(_build_code(), "Invoke-StageBBuildRead")
-    assert "if ($null -eq $record.Value) {" in body
-    assert "answered with nothing at " in body
-    wrap = flow["wrap"]["answered-with-nothing"]
-    assert wrap["outcome"] == "RAISED", wrap
-    assert wrap["label_after"] == "vbproject.acquire", wrap
+    # EXECUTED, ONE CASE PER WAY OF NOT ANSWERING.
+    assert flow["read"]["nothing"]["outcome"] == "REFUSED"
+    assert "answered with nothing" in flow["read"]["nothing"]["detail"]
+    assert flow["read"]["blank"]["outcome"] == "REFUSED"
+    assert "empty string" in flow["read"]["blank"]["detail"]
+    assert flow["read"]["two-values"]["outcome"] == "REFUSED"
+    assert "2 values" in flow["read"]["two-values"]["detail"]
+    assert flow["read"]["not-number"]["outcome"] == "REFUSED"
+    assert "not an integer" in flow["read"]["not-number"]["detail"]
+    # AND A REAL ANSWER SURVIVES, EXACTLY, INCLUDING ITS TYPE.
+    assert flow["read"]["int-51"]["value"] == "51"
+    assert flow["read"]["int-51"]["type"] == "Int32"
+    assert flow["read"]["int-52"]["value"] == "52"
+    assert flow["read"]["int-as-text"]["value"] == "52"
+    assert flow["read"]["fullname"]["type"] == "String"
+    assert flow["read"]["object"]["outcome"] == "ok"
+    # NO TRUTHINESS. `if (-not $value)` would refuse a legitimate 0.
+    for name in ("Get-StageBScalarInt", "Get-StageBNonEmptyString"):
+        body = _ps_function(_build_code(), name)
+        assert "if (-not $Value)" not in body, f"{name} uses truthiness"
+        assert "if ($null -eq $Value) {" in body, body
+        assert "$Value -is [System.Array]" in body, body
+    assert "^-?[0-9]+$" in _ps_function(_build_code(), "Get-StageBScalarInt")
+
 
 
 def test_83_the_snapshot_and_the_reserved_row_correction_are_untouched() -> None:
@@ -1554,20 +1653,44 @@ def test_98_a_path_is_compared_as_a_path_and_not_as_a_string() -> None:
     assert "DirectorySeparatorChar" in norm
 
 
-def test_99_the_source_format_is_read_before_the_save_and_not_assumed() -> None:
-    """'NOTHING MOVED' IS ONLY PROVABLE AGAINST WHAT THE WORKBOOK WAS. The .xlsx
-    format is not restated here; it is read, and it is read BEFORE the call."""
+def test_99_the_baseline_is_observed_before_the_save_and_proved_consistent() -> None:
+    """'NOTHING MOVED' IS ONLY PROVABLE AGAINST WHAT THE WORKBOOK WAS, so the
+    baseline is READ - never assumed - and it is checked before anything is saved.
+    Run 5 is what an unchecked baseline looks like: the read answered with nothing
+    and the run had no business attempting a save at all."""
     joined = _joined(_build_block())
+    assert "-Description 'the Stage-A workbook FullName before SaveAs'" in joined
     assert "-Description 'the Stage-A workbook FileFormat before SaveAs'" in joined
-    read_at = joined.index("$sourceFormat = [int](Invoke-StageBBuildRead")
+    name_at = joined.index("$preName = Invoke-ComRetryRead")
+    fmt_at = joined.index("$preFormat = Invoke-ComRetryRead")
     call_at = joined.index("$saveAs = Invoke-StageBSaveAs")
-    assert read_at < call_at, "the source format is read after the save"
+    assert name_at < fmt_at < call_at, "the baseline is read after the save"
     assert "-SourceFormat $sourceFormat" in joined
-    # AND THE TARGET FORMAT STILL COMES FROM THE MANIFEST.
+    assert "-SourceFullName $sourceFullName" in joined
+    # AND THE BASELINE MUST BE CONSISTENT OR THE SAVE IS NOT ATTEMPTED.
+    assert "SAVEAS BASELINE: the workbook is bound to " in joined
+    assert "so NOT EXECUTED could not be recognised. The save was not attempted." in joined
+    assert "is present before the save, so " in joined
+    # UNIQUELY ANCHORED, AND THE CONDITION RATHER THAN THE MESSAGE. The string
+    # `if (Test-Path -LiteralPath $stageBPath) {` also opens the stale-target
+    # deletion, so checking it alone passed over a DISABLED baseline refusal - the
+    # mutation battery caught this control doing exactly that. Each refusal is now
+    # matched as its own condition-plus-throw pair, inside the pre-save region.
+    region = joined[joined.index("Set-StageBBuildStep 'saveas.presave.fullname'") : call_at]
+    for condition, message in (
+            ("if ($preSeen -ne (Get-StageBComparablePath $stageAPath)) {",
+             "SAVEAS BASELINE: the workbook is bound to "),
+            ("if (Test-Path -LiteralPath $stageBPath) {",
+             "SAVEAS BASELINE: ' + $stageBPath + ' is present before the save")):
+        assert condition in region, f"the refusal condition is gone: {condition}"
+        assert message in region, f"the refusal message is gone: {message}"
+        assert region.index(condition) < region.index(message), (condition, message)
+    # THE TARGET FORMAT STILL COMES FROM THE MANIFEST, and the checker holds no
+    # literal format of its own.
     assert "-TargetFormat ([int]$manifest.xlsm_file_format)" in joined
-    assert "51" not in _ps_function(_build_code(), "Get-StageBSaveAsPostcondition"), \
-        "the source format is hard-coded in the checker"
+    assert "51" not in _ps_function(_build_code(), "Get-StageBSaveAsPostcondition")
     assert _manifest()["xlsm_file_format"] == 52
+
 
 
 def test_100_the_build_still_deletes_the_target_before_saving() -> None:
@@ -1683,6 +1806,188 @@ def test_104_the_diagnostic_no_longer_asserts_a_contract_as_a_fact() -> None:
     assert "INVALID / NOT EVALUATED" in section
     assert "must not be read as a fixture DIFFER" in section
     assert "why" in section.lower()
+
+
+# ===========================================================================
+# I. RUN 5: THE READ THAT ANSWERED WITH NOTHING
+# ===========================================================================
+# THE PRE-SAVE OBSERVATION FAILED, AND REPORTED ITSELF AS THE SAVE. Run 5:
+#
+#     operation=saveas.xlsm; Invoke-StageBBuildRead: the Stage-A workbook
+#     FileFormat before SaveAs answered with nothing at saveas.xlsm.
+#     COMREJECT|build|none|attempts=0|waited=0
+#
+# SaveAs was never attempted. Two things had to change: the label had to name the
+# sub-operation, and the read had to use the form Windows has actually executed.
+def test_105_every_build_read_uses_the_windows_proven_form() -> None:
+    """THE COMPARATOR IS THE REOPEN VERIFICATION, which has read FileFormat,
+    Worksheets, VBProject, VBComponents, CodeName, Count, Item, Shapes, OnAction
+    and Name successfully on Windows across every accepted run - through the
+    accepted helper, called DIRECTLY. Every build read is now that same shape, and
+    no intermediate reader stands between the COM object and the member access."""
+    code = _build_code()
+    scope = _joined(_build_block()) + "\n" + "\n".join(
+        _joined(_ps_function(code, name)) for name in SAVEAS_HELPERS)
+    reads = [line for line in re.findall(r"[^\n]*Invoke-ComRetryRead\b[^\n]*", scope)
+             if "-Target " in line]
+    assert len(reads) >= 6, reads
+    for line in reads:
+        # THE PROVEN SHAPE: the record is captured, then its .Value is taken in a
+        # separate statement or by a validator - never through another function.
+        assert re.search(r"\$\w+ = Invoke-ComRetryRead ", line), line
+        assert ".Value" not in line, (
+            f"the value is taken in the same expression as the read: {line}")
+    # AND THE VERIFICATION BLOCK IS UNTOUCHED - it is the comparator, so it may not
+    # be quietly changed to match whatever the build now does.
+    assert _verify_block() == _ps_verify_at("cc9cf8d"), (
+        "the Windows-proven verification block changed")
+
+
+def _ps_verify_at(commit: str) -> str:
+    """The verification block as it stood at a commit, through the same slicer."""
+    code = _strip(_at(commit, "pccm/bootstrap/windows/build_stage_b.ps1"))
+    start = code.index("$excel2 = $null; $workbooks2 = $null")
+    end = code.index("$rel2 = New-ReleaseLedger 'verification instance'")
+    return code[start:end]
+
+
+def test_106_the_value_is_never_produced_by_an_expression_that_also_reports() -> None:
+    """ASSIGN, NEVER EMIT - AND THE INVERSE. The read is one statement; the
+    telemetry is another; the validation is a third. A value cannot be polluted by
+    a report that is not in its expression, and it cannot be lost to one either."""
+    code = _build_code()
+    scope = _joined(_build_block()) + "\n" + "\n".join(
+        _joined(_ps_function(code, name)) for name in SAVEAS_HELPERS)
+    for line in scope.splitlines():
+        if "Add-StageBReadRejection" not in line:
+            continue
+        stripped = line.strip()
+        assert stripped.startswith("Add-StageBReadRejection"), (
+            f"the telemetry is part of another expression: {line}")
+        assert "=" not in stripped.split("-Operation")[0], line
+    # EVERY read's record is consumed by a validator or a null check, never
+    # discarded: a read whose answer nobody looks at is run 5 waiting to happen.
+    for record in re.findall(r"\$(\w*[Rr]ead|preName|preFormat|nameRead|formatRead) = Invoke-ComRetryRead", scope):
+        assert f"${record}.Value" in scope, f"${record} is read and never examined"
+
+
+def test_107_the_sub_operation_vocabulary_is_closed_and_complete() -> None:
+    """EXECUTED. Seven sub-operations, each accepted; a misspelling REFUSED and the
+    label left at the top-level operation; and a new top-level operation clears the
+    step, because a stale one would name a step that already finished."""
+    flow = _flow()
+    assert not flow["unmet"], flow["unmet"]
+    assert tuple(flow["subops"]) == BUILD_SUB_OPS, flow["subops"]
+    for step in BUILD_SUB_OPS:
+        label, outcome = flow["step"][step]
+        assert outcome == "accepted", (step, outcome)
+        assert label == step, (step, label)
+    label, outcome = flow["step"]["typo"]
+    assert outcome == "REFUSED", flow["step"]["typo"]
+    assert label == "saveas.xlsm", "a refused sub-operation became the label"
+    cleared = flow["step"]["cleared"]
+    assert cleared[0] == "vbcomponents.import", cleared
+    assert cleared[1] == "", "a stale sub-operation survived a new operation"
+
+
+def test_108_every_sub_operation_maps_to_a_real_call_site() -> None:
+    """A VOCABULARY ENTRY WITH NO CALL SITE CAN NEVER APPEAR IN A DIAGNOSTIC."""
+    code = _build_code()
+    scope = _joined(_build_block()) + "\n" + "\n".join(
+        _joined(_ps_function(code, name)) for name in SAVEAS_HELPERS)
+    for step in BUILD_SUB_OPS:
+        assert f"Set-StageBBuildStep '{step}'" in scope, f"{step} is never set"
+    used = set(re.findall(r"Set-StageBBuildStep '([^']+)'", scope))
+    assert used == set(BUILD_SUB_OPS), sorted(set(BUILD_SUB_OPS) ^ used)
+
+
+def test_109_a_failed_observation_is_not_reported_as_a_failed_save() -> None:
+    """RUN 5's ACTUAL DEFECT. The pre-save read reported operation=saveas.xlsm,
+    which reads as though the save had been attempted. The label now distinguishes
+    the observation from the call."""
+    code = _build_code()
+    # The presave reads set presave labels; the call sets saveas.call.
+    joined = _joined(_build_block())
+    fmt_at = joined.index("$preFormat = Invoke-ComRetryRead")
+    assert joined.index("Set-StageBBuildStep 'saveas.presave.fileformat'") < fmt_at
+    saveas = _joined(_ps_function(code, "Invoke-StageBSaveAs"))
+    call_at = saveas.index(".SaveAs(")
+    assert saveas.index("Set-StageBBuildStep 'saveas.call'") < call_at
+    # And the record says so.
+    text = _evidence()
+    at = text.index("## Equivalence run 5")
+    after = text.find("\n## ", at + 10)
+    section = text[at:] if after == -1 else text[at:after]
+    # BACKTICKS AND BOLD ARE MARKUP, NOT MEANING. The claim is checked with the
+    # markup removed so a record cannot fail a control for emphasising the right
+    # sentence - nor pass one by dropping it.
+    plain = section.replace("`", "").replace("**", "")
+    assert "SaveAs itself was NOT executed" in plain, plain[:400]
+    assert "saveas.presave.fileformat" in section
+    assert "no rpc rejection occurred" in plain.lower(), plain[:600]
+    assert "attempts=0" in plain
+    assert "INVALID / NOT EVALUATED" in section
+    assert "must not be read as a fixture DIFFER" in section
+    # STATED POSITIVELY, because a blanket ban on the words caught the record's own
+    # DISCLAIMER - it has to name what it is refusing to be read as. These two
+    # sentences together are the property, and the mutation battery removes each.
+    assert "not another SaveAs rejection" in plain, plain[:600]
+    assert "INVALID / NOT EVALUATED" in plain
+    assert "Bulk remains NOT authorised" in plain
+
+
+def test_110_the_baseline_gates_the_save() -> None:
+    """REQUIRED CONTROL 13. Without a trustworthy baseline, NOT EXECUTED cannot be
+    recognised - so a save is not attempted at all. Run 5 would have carried
+    [int]$null = 0 into that classification and called it the source format."""
+    joined = _joined(_build_block())
+    call_at = joined.index("$saveAs = Invoke-StageBSaveAs")
+    head = joined[:call_at]
+    # The two reads, the two validators and the two consistency refusals all
+    # precede the save.
+    for required in ("Get-StageBNonEmptyString -Value $preName.Value",
+                     "Get-StageBScalarInt -Value $preFormat.Value",
+                     "SAVEAS BASELINE:",
+                     "Add-Note ('SAVEAS|baseline|"):
+        assert required in head, f"{required} does not precede the save"
+    # A validator that threw means the save is unreachable: they are in the same
+    # straight-line region, with no try/catch swallowing them.
+    region = head[head.index("Set-StageBBuildStep 'saveas.presave.fullname'"):]
+    assert "catch" not in region, f"a baseline failure can be swallowed: {region!r}"
+
+
+def test_111_the_three_state_settlement_is_unchanged_in_substance() -> None:
+    """SEMANTIC FREEZE. This batch fixed a read. The classification it feeds must be
+    exactly the accepted one."""
+    checker = _ps_function(_build_code(), "Get-StageBSaveAsPostcondition")
+    assert "$boundToTarget -and ($format -eq $TargetFormat) -and $targetExists" in checker
+    assert "$boundToSource -and ($format -eq $SourceFormat) -and (-not $targetExists)" in checker
+    assert "$state = 'ambiguous'" in checker
+    assert checker.index("$state = 'ambiguous'") < checker.index("$state = 'completed'")
+    saveas = _ps_function(_build_code(), "Invoke-StageBSaveAs")
+    assert "if ($state.State -eq 'completed') {" in saveas
+    assert "if ($state.State -ne 'not-executed') {" in saveas
+    assert "SAVEAS AMBIGUOUS after " in saveas
+    assert saveas.count(".SaveAs(") == 1
+
+
+def test_112_the_freezes_this_batch_may_not_touch() -> None:
+    """REQUIRED CONTROLS 17-20, against the Windows-tested revision."""
+    done = subprocess.run(["git", "diff", "--name-only", "cc9cf8d", "--", "pccm/src/vba"],
+                          cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
+    assert done.stdout.strip() == "", done.stdout
+    assert BENCHMARK_PS1.read_text(encoding="utf-8") == \
+        _at("cc9cf8d", "pccm/bootstrap/windows/phase10_benchmark.ps1")
+    assert _lifecycle() == _at("cc9cf8d", "pccm/bootstrap/windows/com_lifecycle.ps1")
+    assert _gate() == _at("cc9cf8d", "pccm/tests/phase10_fixture_equivalence.ps1")
+    for name in ("Set-BenchmarkRegisterRowCount", "New-BenchmarkRegisterBlock",
+                 "Get-BenchmarkPermanentId", "Set-BenchmarkBulkFixture"):
+        now = _ps_function(BENCHMARK_PS1.read_text(encoding="utf-8"), name)
+        then = _ps_function(_at("cc9cf8d", "pccm/bootstrap/windows/phase10_benchmark.ps1"), name)
+        assert now == then, f"{name} changed"
+    assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
+        _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
+                     "Get-EquivalenceSnapshot")
 
 
 if __name__ == "__main__":

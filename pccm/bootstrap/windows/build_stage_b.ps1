@@ -116,6 +116,22 @@ $script:StageBBuildOps = @(
 $script:StageBBuildOp         = '<before the first labelled operation>'
 $script:StageBBuildRejections = New-Object System.Collections.ArrayList
 
+# SUB-OPERATIONS, BECAUSE 'saveas.xlsm' WAS TOO COARSE AND A WINDOWS RUN PROVED IT.
+# Run 5 failed in the PRE-SAVE FileFormat observation and reported itself as
+# operation=saveas.xlsm, which reads as though the save had been attempted. It had
+# not. A failed pre- or post-condition READ and a failed SaveAs are different
+# findings, and the label has to say which.
+$script:StageBBuildSubOps = @(
+    'saveas.presave.fullname'
+    'saveas.presave.fileformat'
+    'saveas.presave.target'
+    'saveas.call'
+    'saveas.post.fullname'
+    'saveas.post.fileformat'
+    'saveas.post.target'
+)
+$script:StageBBuildSubOp = ''
+
 function Set-StageBBuildOp {
     param([string]$Operation)
     if ($script:StageBBuildOps -notcontains $Operation) {
@@ -123,9 +139,31 @@ function Set-StageBBuildOp {
                'operation vocabulary (' + ($script:StageBBuildOps -join ', ') + ').')
     }
     $script:StageBBuildOp = $Operation
+    # A NEW TOP-LEVEL OPERATION CLEARS THE SUB-OPERATION. A stale one would name a
+    # step that finished for a failure somewhere else entirely.
+    $script:StageBBuildSubOp = ''
 }
 
 function Get-StageBBuildOp { return [string]$script:StageBBuildOp }
+
+function Set-StageBBuildStep {
+    param([string]$Step)
+    if ($script:StageBBuildSubOps -notcontains $Step) {
+        throw ('Set-StageBBuildStep: ' + $Step + ' is not in the closed Stage-B build ' +
+               'sub-operation vocabulary (' + ($script:StageBBuildSubOps -join ', ') + ').')
+    }
+    $script:StageBBuildSubOp = $Step
+}
+
+function Get-StageBBuildStep { return [string]$script:StageBBuildSubOp }
+
+# THE LABEL A DIAGNOSTIC ACTUALLY PRINTS: the sub-operation when one is in flight,
+# the top-level operation otherwise. 'saveas.xlsm' stays as the region's name; it
+# is no longer what a failed read reports itself as.
+function Get-StageBBuildLabel {
+    if ($script:StageBBuildSubOp -ne '') { return [string]$script:StageBBuildSubOp }
+    return [string]$script:StageBBuildOp
+}
 
 function Get-StageBBuildRejections { return @($script:StageBBuildRejections) }
 
@@ -169,34 +207,90 @@ function New-StageBRejectionLine {
             '|the call was refused before it ran')
 }
 
-# BUILD-ONLY, READ-ONLY, AND NARROWER THAN THE HELPER IT FORWARDS TO. It takes an
-# object and a MEMBER NAME and hands both to the accepted Invoke-ComRetryRead
-# unchanged: same two retryable HRESULTs, same three bounds, same original error
-# rethrown on exhaustion. There is no scriptblock parameter and no -Key either,
-# so the only thing expressible through this is a plain PROPERTY GET - not a
-# write, not an Open, not a SaveAs, not even an Item lookup. All it adds is the
-# operation label and one concise line when a read actually had to be reissued.
-function Invoke-StageBBuildRead {
-    param($Target, [string]$Member, [string]$Operation, [string]$Description)
-    $null = Set-StageBBuildOp $Operation
-    $record = Invoke-ComRetryRead -Target $Target -Member $Member -Description $Description
-    if ([int]$record.Attempts -gt 1) {
-        $null = $script:StageBBuildRejections.Add(
-            ('COMREJECT|build|' + $Operation + '|attempts=' + [string]$record.Attempts +
-             '|waited=' + [string]$record.WaitedMs + '|' + [string]$record.Rejections +
-             '|answered'))
+# ===========================================================================
+# THE READ FORM IS THE ONE WINDOWS HAS ALREADY EXECUTED
+# ===========================================================================
+# RUN 5 KILLED A WRAPPER THAT HAD NEVER RUN. `Invoke-StageBBuildRead` took the COM
+# object and the member name and forwarded both to the accepted helper. On Windows
+# it produced:
+#
+#     operation=saveas.xlsm; Invoke-StageBBuildRead: the Stage-A workbook
+#     FileFormat before SaveAs answered with nothing at saveas.xlsm.
+#
+# with COMREJECT|build|none|attempts=0|waited=0 beside it. That telemetry line is
+# what makes this diagnosable: attempts=0 means the retry loop answered on its
+# FIRST try and no read was ever reissued, so the reissue path, the rejection
+# ledger and the backoff are all excluded - the single `$value = $Target.$Member`
+# in the accepted helper returned $null without raising.
+#
+# WHAT IS RULED OUT, FROM SOURCE. The wrapper could not have polluted the return:
+# its only emission was `return $record`, and both side effects were suppressed
+# with `$null =`. It could not have consumed the value: the telemetry branch was
+# gated on Attempts -gt 1, which attempts=0 proves did not run. Type coercion is
+# excluded because the [int] cast sat OUTSIDE the wrapper and was never reached,
+# and the null classification is the REPORT rather than the cause - $record.Value
+# was genuinely $null, because $value has exactly one assignment in the helper.
+#
+# WHAT IS NOT CLAIMED. Why dynamic member access answered with nothing through
+# that extra hop is NOT established, and nothing here theorises about it. What IS
+# established is which form has worked: the reopen verification reads FileFormat,
+# Worksheets, VBProject, VBComponents, CodeName, Count, Item, Shapes, OnAction and
+# Name through `Invoke-ComRetryRead` called DIRECTLY, and has done so on Windows
+# across every accepted run. The wrapper had never once returned a value there.
+#
+# SO THE UNPROVEN LAYER IS REMOVED RATHER THAN REPAIRED. Every build read now uses
+# the proven form verbatim. The operation label is set before the call and the
+# reissue telemetry is recorded AFTER it, both out of band - neither is in the
+# expression that produces the value, so neither can pollute or consume it.
+
+# OUT OF BAND, AND A STATEMENT RATHER THAN AN EXPRESSION. It records and returns
+# nothing, so it cannot appear in a value's own expression even by accident.
+function Add-StageBReadRejection {
+    param([string]$Operation, $Record)
+    if ($null -eq $Record) { return }
+    if ([int]$Record.Attempts -le 1) { return }
+    $null = $script:StageBBuildRejections.Add(
+        ('COMREJECT|build|' + $Operation + '|attempts=' + [string]$Record.Attempts +
+         '|waited=' + [string]$Record.WaitedMs + '|' + [string]$Record.Rejections +
+         '|answered'))
+}
+
+# TYPE VALIDATION AT THE CONSUMER, NOT TRUTHINESS. `if (-not $value)` would reject
+# a legitimate 0, and for a workbook property 0 is a real value elsewhere in the
+# object model. These take the ALREADY-EXTRACTED primitive - never a COM object -
+# so nothing about a COM member lookup is repeated here.
+function Get-StageBScalarInt {
+    param($Value, [string]$What)
+    if ($null -eq $Value) {
+        throw ($What + ' answered with nothing. The read was not refused and it was ' +
+               'not answered.')
     }
-    # NOTHING IS NOT AN ANSWER. A PowerShell host can DISCARD an exception thrown
-    # by a property getter and hand back $null instead of raising - proved on this
-    # repository's own harness host. If Excel's adapter ever behaves that way, the
-    # operation that was refused must still be the one that gets named here,
-    # rather than surfacing three statements later as a null-reference on an
-    # object nobody can trace back to a call.
-    if ($null -eq $record.Value) {
-        throw ('Invoke-StageBBuildRead: ' + $Description + ' answered with nothing at ' +
-               $Operation + '. The read was not refused and it was not answered.')
+    if ($Value -is [System.Array]) {
+        throw ($What + ' answered with ' + [string]@($Value).Count + ' values where one ' +
+               'scalar was required.')
     }
-    return $record
+    $text = ([string]$Value).Trim()
+    if ($text -notmatch '^-?[0-9]+$') {
+        throw ($What + ' answered ' + $text + ', which is not an integer.')
+    }
+    return [int]$text
+}
+
+function Get-StageBNonEmptyString {
+    param($Value, [string]$What)
+    if ($null -eq $Value) {
+        throw ($What + ' answered with nothing. The read was not refused and it was ' +
+               'not answered.')
+    }
+    if ($Value -is [System.Array]) {
+        throw ($What + ' answered with ' + [string]@($Value).Count + ' values where one ' +
+               'string was required.')
+    }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw ($What + ' answered an empty string.')
+    }
+    return $text
 }
 
 # ===========================================================================
@@ -254,9 +348,10 @@ function Get-StageBComparablePath {
 }
 
 # READ-ONLY, AND IT DECIDES NOTHING BY ITSELF. It reports what is observable and
-# which of the three states that adds up to. Both COM reads go through the
-# accepted read-only helper, so a postcondition inspection that is itself refused
-# is reissued rather than being mistaken for a finding.
+# which of the three states that adds up to. Both COM reads use the form the reopen
+# verification has executed on Windows - the accepted helper, called directly - so
+# an inspection that is itself refused is reissued rather than mistaken for a
+# finding, and each carries its own sub-operation label.
 function Get-StageBSaveAsPostcondition {
     param($Workbook, [string]$SourcePath, [string]$TargetPath,
           [int]$TargetFormat, [int]$SourceFormat)
@@ -264,17 +359,25 @@ function Get-StageBSaveAsPostcondition {
     $format    = 0
     $readError = ''
     try {
-        $fullName = [string](Invoke-StageBBuildRead -Target $Workbook -Member 'FullName' `
-                        -Operation 'saveas.xlsm' `
-                        -Description 'the workbook FullName after SaveAs').Value
-        $format = [int](Invoke-StageBBuildRead -Target $Workbook -Member 'FileFormat' `
-                      -Operation 'saveas.xlsm' `
-                      -Description 'the workbook FileFormat after SaveAs').Value
+        Set-StageBBuildStep 'saveas.post.fullname'
+        $nameRead = Invoke-ComRetryRead -Target $Workbook -Member 'FullName' `
+                        -Description 'the workbook FullName after SaveAs'
+        Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $nameRead
+        $fullName = Get-StageBNonEmptyString -Value $nameRead.Value `
+                        -What 'the workbook FullName after SaveAs'
+
+        Set-StageBBuildStep 'saveas.post.fileformat'
+        $formatRead = Invoke-ComRetryRead -Target $Workbook -Member 'FileFormat' `
+                          -Description 'the workbook FileFormat after SaveAs'
+        Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $formatRead
+        $format = Get-StageBScalarInt -Value $formatRead.Value `
+                      -What 'the workbook FileFormat after SaveAs'
     } catch {
         # A READ THAT COULD NOT BE ANSWERED IS NOT EVIDENCE OF ANYTHING. It makes
         # the state ambiguous, which is the state that never retries.
         $readError = Format-Err $_
     }
+    Set-StageBBuildStep 'saveas.post.target'
     $seen          = Get-StageBComparablePath $fullName
     $boundToTarget = ($seen -ne '') -and ($seen -eq (Get-StageBComparablePath $TargetPath))
     $boundToSource = ($seen -ne '') -and ($seen -eq (Get-StageBComparablePath $SourcePath))
@@ -318,6 +421,7 @@ function Get-StageBSaveAsPostcondition {
 function Invoke-StageBSaveAs {
     param($Workbook, [string]$SourcePath, [string]$TargetPath,
           [int]$TargetFormat, [int]$SourceFormat,
+          [string]$SourceFullName,
           [int]$MaxAttempts   = 12,
           [int]$FirstDelayMs  = 250,
           [int]$MaxDelayMs    = 2000,
@@ -336,6 +440,9 @@ function Invoke-StageBSaveAs {
         $attempt = $attempt + 1
         $refused = ''
         try {
+            # THE CALL'S OWN LABEL. A failure from here IS the save; a failure from
+            # an observation is not, and run 5 could not tell the two apart.
+            Set-StageBBuildStep 'saveas.call'
             $Workbook.SaveAs($TargetPath, $TargetFormat)
         } catch {
             $refused = Get-ComRejectionName $_
@@ -505,16 +612,49 @@ try {
 
     # --- 3. save as .xlsm --------------------------------------------------
     if (Test-Path -LiteralPath $stageBPath) { Remove-Item -LiteralPath $stageBPath -Force }
-    # THE SOURCE FORMAT IS READ FIRST, and it is not a detail. 'Nothing moved' can
-    # only be proved against what the workbook was BEFORE the call, and hard-coding
-    # the .xlsx format here would be this script restating a contract it is
-    # supposed to read.
+    # THE BASELINE IS OBSERVED FIRST, AND IN THE PROVEN SHAPE. 'Nothing moved' can
+    # only be proved against what the workbook WAS, so a NOT-EXECUTED verdict is
+    # worth nothing without a trustworthy baseline - and run 5 is what a baseline
+    # nobody checked looks like. Both reads use the accepted helper directly, on
+    # $wb, one hop from the member access, exactly as the reopen verification does.
     Set-StageBBuildOp 'saveas.xlsm'
-    $sourceFormat = [int](Invoke-StageBBuildRead -Target $wb -Member 'FileFormat' `
-                              -Operation 'saveas.xlsm' `
-                              -Description 'the Stage-A workbook FileFormat before SaveAs').Value
+
+    Set-StageBBuildStep 'saveas.presave.fullname'
+    $preName = Invoke-ComRetryRead -Target $wb -Member 'FullName' `
+                   -Description 'the Stage-A workbook FullName before SaveAs'
+    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $preName
+    $sourceFullName = Get-StageBNonEmptyString -Value $preName.Value `
+                          -What 'the Stage-A workbook FullName before SaveAs'
+
+    Set-StageBBuildStep 'saveas.presave.fileformat'
+    $preFormat = Invoke-ComRetryRead -Target $wb -Member 'FileFormat' `
+                     -Description 'the Stage-A workbook FileFormat before SaveAs'
+    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $preFormat
+    $sourceFormat = Get-StageBScalarInt -Value $preFormat.Value `
+                        -What 'the Stage-A workbook FileFormat before SaveAs'
+
+    # AND THE BASELINE MUST BE INTERNALLY CONSISTENT BEFORE ANYTHING IS SAVED. If
+    # the workbook is not the Stage-A file, or the target is already there, then
+    # 'bound to source and target absent' cannot mean what the classification needs
+    # it to mean - so the save is not attempted at all.
+    Set-StageBBuildStep 'saveas.presave.target'
+    $preSeen = Get-StageBComparablePath $sourceFullName
+    if ($preSeen -ne (Get-StageBComparablePath $stageAPath)) {
+        throw ('SAVEAS BASELINE: the workbook is bound to ' + $sourceFullName +
+               ' and not to the Stage-A path ' + $stageAPath +
+               ', so NOT EXECUTED could not be recognised. The save was not attempted.')
+    }
+    if (Test-Path -LiteralPath $stageBPath) {
+        throw ('SAVEAS BASELINE: ' + $stageBPath + ' is present before the save, so ' +
+               'the target existing afterwards would prove nothing. The save was ' +
+               'not attempted.')
+    }
+    Add-Note ('SAVEAS|baseline|fullname=ok|format=' + [string]$sourceFormat +
+              '|target-absent=True')
+
     $saveAs = Invoke-StageBSaveAs -Workbook $wb -SourcePath $stageAPath -TargetPath $stageBPath `
-                  -TargetFormat ([int]$manifest.xlsm_file_format) -SourceFormat $sourceFormat
+                  -TargetFormat ([int]$manifest.xlsm_file_format) -SourceFormat $sourceFormat `
+                  -SourceFullName $sourceFullName
     $actualFormat = [int]$saveAs.FileFormat
     if ($actualFormat -ne [int]$manifest.xlsm_file_format) {
         throw ("SaveAs produced FileFormat {0}, expected {1}." -f $actualFormat, $manifest.xlsm_file_format)
@@ -529,13 +669,26 @@ try {
     # members on exactly these classes of object, so opting the BUILD's copies in
     # adds no new judgement - it applies one already accepted, at the reads that
     # sit closest to the workbook opening.
-    $worksheets = (Invoke-StageBBuildRead -Target $wb -Member 'Worksheets' `
-                       -Operation 'worksheets.acquire' `
-                       -Description 'the Stage-B workbook Worksheets collection').Value
+    # A COM OBJECT IS TAKEN STRAIGHT OFF THE RECORD, NOT THROUGH ANOTHER FUNCTION.
+    # The acquired collection is assigned from $read.Value with no further parameter
+    # binding, so the value path is the proven one end to end.
+    Set-StageBBuildOp 'worksheets.acquire'
+    $wsRead = Invoke-ComRetryRead -Target $wb -Member 'Worksheets' `
+                  -Description 'the Stage-B workbook Worksheets collection'
+    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $wsRead
+    if ($null -eq $wsRead.Value) {
+        throw 'the Stage-B workbook Worksheets collection answered with nothing.'
+    }
+    $worksheets = $wsRead.Value
     try {
-        $vbproj = (Invoke-StageBBuildRead -Target $wb -Member 'VBProject' `
-                       -Operation 'vbproject.acquire' `
-                       -Description 'the Stage-B workbook VBProject').Value
+        Set-StageBBuildOp 'vbproject.acquire'
+        $vbpRead = Invoke-ComRetryRead -Target $wb -Member 'VBProject' `
+                       -Description 'the Stage-B workbook VBProject'
+        Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $vbpRead
+        if ($null -eq $vbpRead.Value) {
+            throw 'the Stage-B workbook VBProject answered with nothing.'
+        }
+        $vbproj = $vbpRead.Value
     } catch {
         # STILL REACHED. A Trust Center refusal is not a message-filter rejection,
         # so the helper rethrows it on the first attempt and this guidance path is
@@ -546,9 +699,14 @@ try {
         }
         throw
     }
-    $vbcomps = (Invoke-StageBBuildRead -Target $vbproj -Member 'VBComponents' `
-                    -Operation 'vbcomponents.acquire' `
-                    -Description 'the Stage-B VBComponents collection').Value
+    Set-StageBBuildOp 'vbcomponents.acquire'
+    $vbcRead = Invoke-ComRetryRead -Target $vbproj -Member 'VBComponents' `
+                   -Description 'the Stage-B VBComponents collection'
+    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $vbcRead
+    if ($null -eq $vbcRead.Value) {
+        throw 'the Stage-B VBComponents collection answered with nothing.'
+    }
+    $vbcomps = $vbcRead.Value
 
     Set-StageBBuildOp 'codename.write'
     $codeNameFails = @()
@@ -767,7 +925,9 @@ try {
 } catch {
     # THE OPERATION, NOT THE REGION. This is the line that four runs could not
     # answer, and the reason the exact rejected call is still unknown.
-    $failedOp = Get-StageBBuildOp
+    # THE PRECISE LABEL. Run 5 reported operation=saveas.xlsm for a failure in the
+    # pre-save observation, which reads as though the save had been attempted.
+    $failedOp = Get-StageBBuildLabel
     Add-Step 'Stage-B build' 'FAIL' ('operation=' + $failedOp + '; ' + (Format-Err $_))
     # A DIAGNOSTIC MAY NOT REPLACE THE FAILURE IT DESCRIBES. If classifying the
     # error throws, the build failure above still stands and is still reported.
