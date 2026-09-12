@@ -2297,6 +2297,305 @@ def test_189_both_shape_root_causes_are_recorded_as_separate_defects() -> None:
     assert "byte-identical to `ce5951f`" in section
 
 
+RESERVED_HARNESS = PCCM_ROOT / "tests" / "phase10_reserved_rows_flow.ps1"
+
+# THE CONTRACTED RESERVED CAPACITY of every benchmark-populated table, and the
+# rule each follows. Read from the contracts, restated here only so a control can
+# compare two independent statements of it.
+RESERVED_CAPACITY = {
+    "tblCostLines": 25,
+    "tblRiskRegister": 25,
+    "tblCostProfiling": 25,
+    "tblRiskProfiling": 25,
+    "tblInflation": 10,
+}
+
+# capacity, needed -> (physical rows afterwards, ListRows.Add calls)
+RESERVED_EXPECTED = {
+    "small-cost-12-into-25": (25, 12, 25, 0),
+    "small-risk-8-into-25": (25, 8, 25, 0),
+    "exactly-at-capacity": (25, 25, 25, 0),
+    "one-past-capacity": (25, 26, 26, 1),
+    "medium-cost-60-into-25": (25, 60, 60, 35),
+    "large-cost-180-into-25": (25, 180, 180, 155),
+    "large-risk-120-into-25": (25, 120, 120, 95),
+}
+
+
+def _reserved_rows() -> dict:
+    """Run the reserved-rows harness and group its tagged lines."""
+    if "reserved" not in _MEMO:
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-File", str(RESERVED_HARNESS), "-Runner", str(RUNNER)],
+            capture_output=True, text=True, timeout=300)
+        assert done.returncode == 0, done.stdout + done.stderr
+        rows = {"rows": {}, "block": {}, "blank": {}, "unmet": []}
+        for line in done.stdout.splitlines():
+            if line.startswith(("PARSE|", "MISSING|")):
+                rows["unmet"].append(line)
+            elif line.startswith("ROWS|"):
+                case, capacity, needed, returned, adds, outcome = line[len("ROWS|"):].split("|", 5)
+                rows["rows"][case] = (int(capacity), int(needed), returned, int(adds), outcome)
+            elif line.startswith("BLOCK|"):
+                n, r, c, first, last, counter, beyond = line[len("BLOCK|"):].split("|", 6)
+                rows["block"][int(n)] = (int(r), int(c), first, last, counter, int(beyond))
+            elif line.startswith("BLANK|"):
+                n, blank, populated = line[len("BLANK|"):].split("|", 2)
+                rows["blank"][int(n)] = (int(blank), int(populated))
+        _MEMO["reserved"] = rows
+    return _MEMO["reserved"]
+
+
+# ===========================================================================
+# R. RESERVED CAPACITY IS NOT SEMANTIC COUNT
+# ===========================================================================
+# Equivalence run 2's Bulk pass raised "tblCostLines already holds 25 body rows
+# where the fixture needs 12". Stage A builds the register with reserved_rows: 25,
+# and twelve Cost Lines in twelve of them is the state production reaches.
+def test_250_productions_own_rule_is_grow_only_when_capacity_runs_out() -> None:
+    """READ OUT OF PRODUCTION, NOT ASSUMED. `modDrivers.AddDriver` takes a blank
+    RESERVED row and grows the table only when there is none - and its own comment
+    says reserved rows were "only ever initial capacity, never a business
+    maximum".
+
+    All five benchmark-populated tables follow it: `modProfiling.SyncRows` and
+    `modInflation.SyncProfileRows` grow only when the write row passes the body
+    count, and then CLEAR the tail rather than delete it. No production path
+    shrinks a body."""
+    drivers = (PCCM_ROOT / "src" / "vba" / "modDrivers.bas").read_text(encoding="utf-8")
+    add = drivers[drivers.index("Public Function AddDriver"):]
+    add = add[:add.index("\nPublic ", 1)] if "\nPublic " in add[1:] else add
+    assert "targetRow = FirstFreeRow(Kind, orphanRow)" in add
+    assert "If targetRow = 0 Then" in add, "the grow is no longer conditional"
+    assert "register.ListRows.Add" in add
+    assert "never a business maximum" in add
+    # THE GROW IS INSIDE THE CONDITIONAL, not before it.
+    assert add.index("If targetRow = 0 Then") < add.index("register.ListRows.Add")
+
+    profiling = (PCCM_ROOT / "src" / "vba" / "modProfiling.bas").read_text(encoding="utf-8")
+    assert "If writeRow > modWorkbook.BodyRowCount(target) Then" in profiling
+    assert "target.ListRows.Add" in profiling
+    assert "' Clear the tail: rows below the last identified driver hold no profile." in profiling
+    inflation = (PCCM_ROOT / "src" / "vba" / "modInflation.bas").read_text(encoding="utf-8")
+    assert "If writeRow > modWorkbook.BodyRowCount(target) Then target.ListRows.Add" in inflation
+    # NOTHING IN THE SYNC PATHS DELETES A BODY ROW.
+    for text, name in ((profiling, "modProfiling"), (inflation, "modInflation")):
+        sync = text[text.index("SyncRows") if "SyncRows" in text else 0:]
+        assert "ListRows(" not in sync.split("Public Sub RemoveRow")[0] or name == "modProfiling"
+
+    # AND THE CONTRACTED CAPACITIES ARE WHAT THIS RESTS ON.
+    driver_contract = (SPEC / "driver_contract.yaml").read_text(encoding="utf-8")
+    structure = (SPEC / "structure_contract.yaml").read_text(encoding="utf-8")
+    for table, capacity in RESERVED_CAPACITY.items():
+        source = driver_contract if table in ("tblCostLines", "tblRiskRegister") else structure
+        index = source.index(table)
+        window = source[index:index + 1500]
+        assert f"reserved_rows: {capacity}" in window, (table, capacity)
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_251_reserved_capacity_is_kept_and_growth_happens_only_when_needed() -> None:
+    """EXECUTED, because "how many rows does this end up with and how many Adds did
+    it take" is a COUNT. Twelve drivers into a twenty-five row table must leave
+    twenty-five rows and make ZERO Adds; a hundred and eighty must grow to exactly
+    a hundred and eighty."""
+    rows = _reserved_rows()
+    assert rows["unmet"] == [], rows["unmet"]
+    assert set(rows["rows"]) == set(RESERVED_EXPECTED), (sorted(rows["rows"]))
+    for case, (capacity, needed, physical, adds) in RESERVED_EXPECTED.items():
+        got = rows["rows"][case]
+        assert got[0] == capacity and got[1] == needed, (case, got)
+        assert got[2] == str(physical), (case, "physical rows", got)
+        assert got[3] == adds, (case, "ListRows.Add calls", got)
+        assert got[4] == "returned", (case, got)
+    # THE TWO SMALL CASES ARE THE ONES RUN 2 DIED ON, and they now make no Add.
+    assert rows["rows"]["small-cost-12-into-25"][3] == 0
+    assert rows["rows"]["small-risk-8-into-25"][3] == 0
+    # AND GROWTH IS EXACT: 180 needed from 25 is 155 Adds, not 180.
+    assert rows["rows"]["large-cost-180-into-25"][3] == 155
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_252_identifiers_stop_at_the_semantic_count_and_the_counter_matches() -> None:
+    """THE BLOCK COVERS EXACTLY THE SEMANTIC ROWS. Twelve drivers means twelve
+    rows, CL-001 to CL-012, no CL-013, and a counter of 12 - which is what
+    `modDrivers.AllocateId` leaves after twelve Adds."""
+    rows = _reserved_rows()
+    for count, first, last in ((12, "CL-001", "CL-012"), (8, "CL-001", "CL-008"),
+                               (180, "CL-001", "CL-180")):
+        assert count in rows["block"], count
+        r, c, got_first, got_last, counter, beyond = rows["block"][count]
+        assert r == count, (count, "block rows", r)
+        # THE COLUMN COUNT IS THE REGISTER'S, from the manifest.
+        declared = next(entry for entry in _manifest_json()["registers"]
+                        if entry["key"] == "cost_lines")
+        assert c == len(declared["columns"]), (count, "block columns", c)
+        assert got_first == first and got_last == last, (count, got_first, got_last)
+        assert counter == str(float(count)) or counter == str(count), (count, counter)
+        assert beyond == 0, (count, "identifiers past the semantic count", beyond)
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_253_columns_no_driver_fills_are_genuinely_blank() -> None:
+    """`category` AND `uom` ARE BLANK IN THE ENDPOINT-BUILT REGISTER TOO, because
+    `Write-Phase5Driver` never writes them. Writing '' instead of $null would make
+    them populated, and production would read a row nobody keyed as an orphan."""
+    rows = _reserved_rows()
+    for count in (12, 8, 180):
+        blank, populated = rows["blank"][count]
+        assert populated == 0, (count, "populated cells in unfilled columns", populated)
+        assert blank == count * 2, (count, blank)
+    # AND THE ACCEPTED WRITER REALLY DOES SKIP THEM.
+    writer = _function((BOOTSTRAP / "phase5_gate_b_scenarios.ps1").read_text(encoding="utf-8"),
+                       "Write-Phase5Driver")
+    for skipped in ("'category'", "'uom'", "'risk_owner'"):
+        assert skipped not in writer, (
+            f"the accepted writer now fills {skipped}, so the bulk block must too")
+
+
+def test_254_the_grower_takes_a_floor_and_never_shrinks() -> None:
+    """THE SOURCE SIDE OF THE SAME PROPERTY, so a rewrite that kept the counts the
+    harness samples but reintroduced the shape cannot pass quietly. The parameter
+    is named for what it is, the early return is on `-ge`, and there is no delete
+    and no resize."""
+    grower = _function(_code(), "Set-BenchmarkRegisterRowCount")
+    assert "[int]$MinimumRows" in grower, "the parameter still reads as a target"
+    assert "if ($current -ge $MinimumRows) { return $current }" in grower, (
+        "reserved capacity that already suffices is not left alone")
+    # THE OLD PARAMETER, not the letters. `Set-BenchmarkRegisterRowCount` and
+    # `Get-TableRowCount` both contain "RowCount" and always did; what must be gone
+    # is the `$RowCount` parameter that carried the target-count reading.
+    assert "$RowCount" not in grower, "the old target-count parameter survives"
+    for banned in (".Delete", "Resize", "$current -gt"):
+        assert banned not in grower, f"the grower shrinks or resizes: {banned}"
+    # THE CALL SITE PASSES THE DRIVER COUNT AS A FLOOR.
+    orchestrator = _function(_code(), "Set-BenchmarkBulkFixture")
+    assert "-MinimumRows @($pair.drivers).Count" in orchestrator
+    assert "$physical -lt @($pair.drivers).Count" in orchestrator, (
+        "the builder does not check it got at least the rows it must populate")
+
+
+def test_255_the_reserved_suffix_is_proved_blank_before_production_syncs() -> None:
+    """A VALUE IN A RESERVED ROW IS AN ORPHAN. `modDrivers.AddDriver` refuses to
+    mutate over a row that has data and no permanent identifier, so a fixture that
+    left one would poison every later production command - and `ApplyTimeline` is
+    about to synchronise both grids from that register."""
+    orchestrator = _function(_code(), "Set-BenchmarkBulkFixture")
+    assert "is a reserved row below the" in orchestrator
+    assert "for ($row = $expected.Count; $row -lt $body.Count; $row++) {" in orchestrator, (
+        "the reserved suffix is not read back")
+    # THE CONDITION, NOT THE MESSAGE. An `if ($false)` in front of the same throw
+    # leaves the sentence in the file and the check gone.
+    assert "if ([string]$value -ne '') {" in orchestrator, (
+        "the reserved-suffix check no longer tests anything")
+    assert "populated unkeyed row is the orphan" in orchestrator
+    # BEFORE THE SYNC, not after it.
+    checked = orchestrator.index("is a reserved row below the")
+    applied = orchestrator.index("PCCM_ApplyTimeline")
+    assert checked < applied, "the suffix is checked after production synchronised from it"
+    # AND PRODUCTION REALLY DOES REFUSE AN ORPHAN.
+    drivers = (PCCM_ROOT / "src" / "vba" / "modDrivers.bas").read_text(encoding="utf-8")
+    assert "already contains data but has " in drivers
+    assert "no permanent identifier" in drivers
+
+
+def test_256_profiling_geometry_is_still_productions_alone() -> None:
+    """THE GRIDS KEEP THEIR RESERVED SUFFIX TOO, and that is production's business.
+    The builder writes weights into the rows `SyncRows` created, reading the order
+    back rather than assuming it, and never touches a grid's row count."""
+    weights = _function(_code(), "New-BenchmarkWeightBlock")
+    for banned in ("ListRows", "ListColumns", "Set-BenchmarkRegisterRowCount", ".Delete"):
+        assert banned not in weights, f"the weight block changes grid geometry: {banned}"
+    assert "Get-TableBody" in weights
+    # THE KEYED ROWS ARE COUNTED, NOT THE PHYSICAL ONES - a grid with a blank
+    # reserved suffix must still match the driver count.
+    assert "if ([string]::IsNullOrWhiteSpace($key)) { continue }" in weights, (
+        "blank reserved grid rows are counted as keyed rows")
+    assert "$rows.Count -ne $drivers.Count" in weights
+    orchestrator = _function(_code(), "Set-BenchmarkBulkFixture")
+    assert "Set-BenchmarkRegisterRowCount" in orchestrator
+    assert orchestrator.count("Set-BenchmarkRegisterRowCount") == 1, (
+        "the builder resizes something other than the registers")
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_257_the_snapshot_compares_the_reserved_suffix_not_just_the_first_n_rows() -> None:
+    """IF ENDPOINTS HAS 25 PHYSICAL ROWS AND BULK HAS 12, THAT MUST BE A REAL
+    DIFFER. The register body comparison reads `Get-TableBody`, which returns every
+    PHYSICAL row with blanks as empty strings - so a missing reserved suffix
+    changes the compared string and is caught.
+
+    The snapshot is not weakened to ignore reserved rows, and is byte-identical to
+    what 99cb472 shipped."""
+    harness = _equiv_harness()
+    snapshot = _function(harness, "Get-EquivalenceSnapshot")
+    assert "Get-TableBody" in snapshot
+    for narrowing in ("Select-Object -First", "$drivers.Count", "IsNullOrWhiteSpace",
+                      "where the key is not blank"):
+        assert narrowing not in snapshot, (
+            f"the snapshot narrows the body comparison: {narrowing}")
+    # THE PROPERTY, NOT A LIST OF WAYS TO BREAK IT. Every row the reader returned
+    # is appended UNCONDITIONALLY: a filter on the key column would drop exactly
+    # the reserved suffix whose absence must be a difference.
+    for line in snapshot.splitlines():
+        if "$lines +=" in line:
+            assert line.strip().startswith("$lines +="), (
+                f"a body row is appended conditionally: {line.strip()}")
+    # THE READER RETURNS EVERY PHYSICAL ROW.
+    reader = _function(_code(), "Get-TableBody")
+    assert "$rowCount = [int]$rowsObj.Count" in reader
+    assert "for ($r = 1; $r -le $rowCount; $r++) {" in reader
+    assert "if ($null -eq $v) { $line += '' }" in reader
+    # AND IT HAS NOT MOVED SINCE THE GATE WAS ACCEPTED.
+    accepted = _git("show", "99cb472:pccm/tests/phase10_fixture_equivalence.ps1")
+    assert snapshot == _function(accepted, "Get-EquivalenceSnapshot"), (
+        "the snapshot changed while the reserved-row rule was being corrected")
+
+
+def test_258_equivalence_run_2_is_recorded_as_invalid_not_as_a_difference() -> None:
+    """WHAT RUN 2 PROVED AND WHAT IT DID NOT. The bundle correction worked and the
+    vocabulary worked; the Bulk fixture never built, so there is no equivalence
+    result of any kind - and the record must not read as one."""
+    section = " ".join(_run_evidence_section("## Equivalence run 2").split())
+    for proven in ("BUNDLE|identical|5 artifact(s)",
+                   "PASS|Endpoints|COMPLETED",
+                   "EQUIV|<not evaluated>|invalid"):
+        assert proven in section, f"the run-2 record omits what it proved: {proven}"
+    for fact in ("d1af4e1", "already holds 25 body rows", "INVALID",
+                 "No semantic mismatch"):
+        assert fact in section, f"the run-2 record omits: {fact}"
+    assert "must not be read as a fixture DIFFER" in section, section
+    # AND BULK IS STILL NOT AUTHORISED.
+    assert "[string]$FixtureMode = 'Endpoints'" in _runner()
+
+
+def test_259_the_reserved_rows_harness_tests_the_shipping_builder() -> None:
+    """IT LIFTS THE REAL FUNCTIONS BY AST. A harness that reimplemented the grower
+    would have reported the right counts for the wrong code."""
+    harness = RESERVED_HARNESS.read_text(encoding="utf-8")
+    assert "FunctionDefinitionAst" in harness and "Invoke-Expression" in harness
+    assert "'Set-BenchmarkRegisterRowCount', 'Get-BenchmarkPermanentId'" in harness
+    for banned in ("New-Object -ComObject", "Excel.Application", "Workbooks.Open"):
+        assert banned not in _ps_code(harness), f"the harness starts Excel: {banned}"
+    assert "phase10_reserved_rows_flow" not in _runner()
+
+
+def test_260_production_is_byte_identical_and_the_timed_path_did_not_move() -> None:
+    """A RESERVED-ROW FIX TOUCHES NO PRODUCTION, NO TIMING AND NO SNAPSHOT."""
+    for commit in ("d1af4e1", "99cb472", "f3b3a33"):
+        assert _production_changed_since(commit) == [], commit
+    accepted = _code_at("d1af4e1")
+    for name in ("Invoke-BenchmarkExecution", "Test-BenchmarkSample",
+                 "Assert-BenchmarkProblemList", "Open-BenchmarkFixtureWindow",
+                 "Close-BenchmarkFixtureWindow", "Invoke-BenchmarkWindowRollback",
+                 "Set-BenchmarkRangeBlock", "New-BenchmarkWeightBlock",
+                 "Get-BenchmarkPermanentId", "New-BenchmarkRegisterBlock"):
+        assert _function(_code(), name) == _function(accepted, name), (
+            f"{name} changed while the reserved-row rule was being corrected")
+    plan = _plan()
+    assert len([r for r in plan["runs"] if r["scenario"] == "PERF-LARGE"]) == 8
+
+
 BUNDLE_HARNESS = PCCM_ROOT / "tests" / "phase10_bundle_flow.ps1"
 
 # WHAT build_stage_b.ps1 RESOLVES AGAINST THE SUPPLIED -BuildDir, and therefore
@@ -2581,10 +2880,19 @@ def test_222_production_is_byte_identical_to_the_accepted_revision() -> None:
     for commit in ("99cb472", "f3b3a33", "ce5951f"):
         changed = _production_changed_since(commit)
         assert changed == [], (commit, changed)
-    # THE BULK BUILDER AND THE TIMED PATH ARE UNTOUCHED BY THIS ROUND.
+    # THE BULK BUILDER AND THE TIMED PATH ARE UNTOUCHED BY THIS ROUND, with one
+    # DECLARED exception: equivalence run 2 proved `Set-BenchmarkRegisterRowCount`
+    # confused reserved capacity with semantic count, and correcting that is the
+    # whole of the reserved-row round. Everything else must still match.
+    declared = ("Set-BenchmarkRegisterRowCount", "Set-BenchmarkBulkFixture")
     accepted = _code_at("99cb472")
     for name in BULK_FUNCTIONS + ("Invoke-BenchmarkExecution", "Test-BenchmarkSample",
                                   "Assert-BenchmarkProblemList"):
+        if name in declared:
+            # A DECLARATION FOR SOMETHING THAT DID NOT CHANGE IS A STALE EXEMPTION.
+            assert _function(_code(), name) != _function(accepted, name), (
+                f"{name} is declared as corrected but is unchanged since 99cb472")
+            continue
         assert _function(_code(), name) == _function(accepted, name), (
             f"{name} changed while the equivalence setup was being corrected")
 
@@ -2791,13 +3099,17 @@ def test_195_growing_a_register_is_bounded_proved_and_never_destructive() -> Non
     whole production operation per row, and the result is PROVED: a grow that
     silently did nothing would leave the block write landing outside the table.
 
-    It never deletes. Shrinking a register here would be the destructive path this
-    project removed from the FX reset."""
+    IT NEVER DELETES AND NEVER SHRINKS. Equivalence run 2 proved that the second
+    half of that had been written as a REFUSAL - the grower treated its argument as
+    the row count the table should end up with and raised when reserved capacity
+    exceeded it. The rule is now a floor; the property that nothing is deleted is
+    unchanged, and test_254 holds the floor itself."""
     grower = _bulk_functions()["Set-BenchmarkRegisterRowCount"]
     assert "$rows.Add()" in grower
     assert ".Delete" not in grower, "the register grower deletes rows"
-    assert "$current -gt $RowCount" in grower and "never deletes rows" in grower
-    assert "$after -ne $RowCount" in grower, "the grow is not proved to have taken"
+    assert "if ($current -ge $MinimumRows) { return $current }" in grower, (
+        "reserved capacity that already suffices is not left alone")
+    assert "$after -ne $MinimumRows" in grower, "the grow is not proved to have taken"
     # AND THE BUILDER RUNS INSIDE THE WINDOW, which is what makes the add legal.
     code = _code()
     opened = code.index("Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")

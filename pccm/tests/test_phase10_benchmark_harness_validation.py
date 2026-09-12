@@ -86,6 +86,13 @@ FILESYSTEM_CONTROLS = (
     "test_212_the_two_bundles_are_isolated_and_proved_identical",
     "test_213_a_missing_required_artifact_refuses_before_excel",
     "test_214_no_stale_stage_b_workbook_travels_into_a_bundle",
+    # The EXECUTED reserved-row proof, same reason: a subprocess over the runner on
+    # disk. Mutated by `_reserved_mutation` below.
+    "test_251_reserved_capacity_is_kept_and_growth_happens_only_when_needed",
+    "test_252_identifiers_stop_at_the_semantic_count_and_the_counter_matches",
+    "test_253_columns_no_driver_fills_are_genuinely_blank",
+    "test_257_the_snapshot_compares_the_reserved_suffix_not_just_the_first_n_rows",
+    "test_259_the_reserved_rows_harness_tests_the_shipping_builder",
 )
 
 # The control-flow controls, which `_flow_mutation` reruns against damaged rows.
@@ -2021,12 +2028,16 @@ def test_200_deleting_register_rows_in_the_fixture_is_rejected() -> None:
     """THE DESTRUCTIVE PATH THIS PROJECT ALREADY REMOVED ONCE. Shrinking a register
     would delete the contract's reserved, validated rows - and the builder runs
     against a fresh workbook where it can never be needed."""
+    # A REAL DELETE, not the old refusal - restoring that is test_250's subject
+    # now. This is the destructive path the control exists to forbid.
     _runner_mutation(
         "test_195",
-        "    if ($current -gt $RowCount) {\n"
-        "        throw ($TableName + ' already holds ' + [string]$current + ' body rows where the ' +",
-        "    if ($false) {\n"
-        "        $unreachable = ($TableName + ' already holds ' + [string]$current + ' rows ' +")
+        "    if ($current -ge $MinimumRows) { return $current }",
+        "    if ($current -gt $MinimumRows) {\n"
+        "        $lo = $Workbook.Worksheets.Item($SheetName).ListObjects.Item($TableName)\n"
+        "        for ($i = $current; $i -gt $MinimumRows; $i--) { $lo.ListRows.Item($i).Delete() }\n"
+        "    }\n"
+        "    if ($current -ge $MinimumRows) { return $current }")
 
 
 def test_201_not_proving_the_register_grew_is_rejected() -> None:
@@ -2034,7 +2045,7 @@ def test_201_not_proving_the_register_grew_is_rejected() -> None:
     the table, and Excel would not complain."""
     _runner_mutation(
         "test_195",
-        "    if ($after -ne $RowCount) {",
+        "    if ($after -ne $MinimumRows) {",
         "    if ($false) {")
 
 
@@ -2170,6 +2181,9 @@ BUNDLE_CONTROLS = (
     "test_217_calc_and_calcequiv_cannot_be_emitted_without_two_calculations",
     "test_218_nothing_is_built_when_the_starting_states_disagree",
     "test_219_the_equivalence_field_set_is_unchanged",
+    # Reads the gate's snapshot too, so a gate mutation must exercise it: it is
+    # the control that says the reserved suffix stays in the comparison.
+    "test_257_the_snapshot_compares_the_reserved_suffix_not_just_the_first_n_rows",
 )
 
 
@@ -2347,6 +2361,191 @@ def test_243_softening_the_run_1_record_is_rejected() -> None:
         "test_220",
         "**No semantic equivalence claim may be made from it.**",
         "The comparison was inconclusive.")
+
+
+# ===========================================================================
+# R. RESERVED CAPACITY vs SEMANTIC COUNT
+# ===========================================================================
+# Each of these damages the runner ON DISK and re-runs the EXECUTED reserved-rows
+# harness against it, because "how many rows and how many Adds" is a count.
+RESERVED_CONTROLS = (
+    "test_250_productions_own_rule_is_grow_only_when_capacity_runs_out",
+    "test_251_reserved_capacity_is_kept_and_growth_happens_only_when_needed",
+    "test_252_identifiers_stop_at_the_semantic_count_and_the_counter_matches",
+    "test_253_columns_no_driver_fills_are_genuinely_blank",
+    "test_254_the_grower_takes_a_floor_and_never_shrinks",
+    "test_255_the_reserved_suffix_is_proved_blank_before_production_syncs",
+    "test_256_profiling_geometry_is_still_productions_alone",
+    "test_257_the_snapshot_compares_the_reserved_suffix_not_just_the_first_n_rows",
+    "test_195_growing_a_register_is_bounded_proved_and_never_destructive",
+)
+
+
+def _reserved_mutation(expected: str, before: str, after: str) -> None:
+    """Damage the runner ON DISK and re-run the executed reserved-rows harness."""
+    path = conformance.RUNNER
+    with path.open(encoding="utf-8", newline="") as handle:
+        original = handle.read()
+    damaged = original.replace(before.replace("\n", "\r\n"), after.replace("\n", "\r\n"), 1)
+    if damaged == original:
+        raise RuntimeError(
+            f"the mutation changed nothing: {before[:60]!r} is no longer in the runner")
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(damaged)
+    refused = []
+    try:
+        conformance._MEMO.pop("runner", None)
+        conformance._MEMO.pop("code", None)
+        conformance._MEMO.pop("reserved", None)
+        for name in RESERVED_CONTROLS:
+            try:
+                getattr(conformance, name)()
+            except BaseException:  # noqa: BLE001 - any refusal counts
+                refused.append(name)
+    finally:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(original)
+        conformance._MEMO.pop("runner", None)
+        conformance._MEMO.pop("code", None)
+        conformance._MEMO.pop("reserved", None)
+    assert refused, "the mutation survived every reserved-row check"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+def test_250_shrinking_the_register_to_the_driver_count_is_rejected() -> None:
+    """THE DEFECT EQUIVALENCE RUN 2 DIED ON, in its other form. Deleting down to
+    twelve rows would delete rows production would have kept blank, and the two
+    fixtures would differ physically - which the snapshot compares and rightly
+    reports."""
+    _reserved_mutation(
+        "test_25",
+        "    if ($current -ge $MinimumRows) { return $current }",
+        "    if ($current -gt $MinimumRows) {\n"
+        "        throw ($TableName + ' holds ' + [string]$current + ' rows, not ' +\n"
+        "               [string]$MinimumRows)\n"
+        "    }\n"
+        "    if ($current -eq $MinimumRows) { return $current }")
+
+
+def test_251_growing_past_the_semantic_count_is_rejected() -> None:
+    """EXACTLY THE SHORTFALL. Overshooting would leave rows production never
+    created, and the physical counts would diverge from the reference."""
+    _reserved_mutation(
+        "test_251",
+        "        for ($i = $current; $i -lt $MinimumRows; $i++) {",
+        "        for ($i = $current; $i -le $MinimumRows; $i++) {")
+
+
+def test_252_growing_when_capacity_already_suffices_is_rejected() -> None:
+    """TWELVE DRIVERS INTO TWENTY-FIVE RESERVED ROWS MUST MAKE ZERO ADDS. Growing
+    anyway is a structural mutation nobody needed, and it would put thirteen extra
+    rows on the register."""
+    _reserved_mutation(
+        "test_251",
+        "    if ($current -ge $MinimumRows) { return $current }",
+        "    if ($current -ge $MinimumRows) { $MinimumRows = $current + 1 }")
+
+
+def test_253_issuing_an_identifier_past_the_semantic_count_is_rejected() -> None:
+    """CL-013 IN A TWELVE-DRIVER SMALL FIXTURE. Production issues identifiers in
+    sequence and stops; a thirteenth would disagree with the counter and with the
+    model."""
+    _reserved_mutation(
+        "test_252",
+        "    $block = New-Object 'object[,]' $drivers.Count, $columns.Count\n"
+        "    $ids = @()\n"
+        "    for ($index = 0; $index -lt $drivers.Count; $index++) {",
+        "    $block = New-Object 'object[,]' $drivers.Count, $columns.Count\n"
+        "    $ids = @(Get-BenchmarkPermanentId -Counter $Counter -Sequence ($drivers.Count + 1))\n"
+        "    for ($index = 0; $index -lt $drivers.Count; $index++) {")
+
+
+def test_254_leaving_the_counter_short_of_the_semantic_count_is_rejected() -> None:
+    """THE COUNTER IS PRODUCTION'S RECORD OF EVERY IDENTIFIER EVER ISSUED. Short of
+    N it disagrees with the rows present, and modDrivers.HighestIssued exists to
+    catch that."""
+    _reserved_mutation(
+        "test_252",
+        "        CounterValue = [double]$drivers.Count",
+        "        CounterValue = [double]($drivers.Count - 1)")
+
+
+def test_255_populating_a_column_no_driver_fills_is_rejected() -> None:
+    """`category` AND `uom` ARE BLANK IN THE ENDPOINT-BUILT REGISTER. Writing ''
+    there makes them populated, and the two bodies then differ in every row."""
+    _reserved_mutation(
+        "test_253",
+        "            else { $block[$index, $c] = $null }",
+        "            else { $block[$index, $c] = '' }")
+
+
+def test_256_populating_a_reserved_row_is_rejected() -> None:
+    """A VALUE IN A ROW PRODUCTION NEVER KEYED IS AN ORPHAN, and AddDriver refuses
+    to mutate over one - so a fixture that left one would poison every later
+    production command."""
+    _reserved_mutation(
+        "test_255",
+        "        for ($row = $expected.Count; $row -lt $body.Count; $row++) {",
+        "        for ($row = $body.Count; $row -lt $body.Count; $row++) {")
+
+
+def test_257_dropping_the_reserved_suffix_check_is_rejected() -> None:
+    """PRODUCTION IS ABOUT TO SYNCHRONISE BOTH GRIDS FROM THAT REGISTER. An orphan
+    below the semantic rows would be carried into the grids, and everything
+    downstream would agree with itself."""
+    _reserved_mutation(
+        "test_255",
+        "                if ([string]$value -ne '') {",
+        "                if ($false) {")
+
+
+def test_258_resizing_a_profiling_grid_from_the_builder_is_rejected() -> None:
+    """THE GRIDS ARE PRODUCTION'S. SyncRows owns their row count, and a builder
+    that resized one would be reimplementing it."""
+    _reserved_mutation(
+        "test_256",
+        "        $block = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `",
+        "        $null = Set-BenchmarkRegisterRowCount -Workbook $Workbook `\n"
+        "            -SheetName $grid.sheet -TableName $grid.table_name `\n"
+        "            -MinimumRows @($pair.drivers).Count\n"
+        "        $block = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `")
+
+
+def test_259_counting_blank_grid_rows_as_keyed_rows_is_rejected() -> None:
+    """A GRID WITH A BLANK RESERVED SUFFIX MUST STILL MATCH THE DRIVER COUNT.
+    Counting the blanks would make a twelve-driver fixture look like twenty-five
+    and the weight block would refuse for the wrong reason."""
+    _reserved_mutation(
+        "test_256",
+        "        if ([string]::IsNullOrWhiteSpace($key)) { continue }",
+        "        if ($false) { continue }")
+
+
+def test_260_weakening_the_snapshot_to_ignore_reserved_rows_is_rejected() -> None:
+    """IF ENDPOINTS HAS 25 PHYSICAL ROWS AND BULK HAS 12, THAT MUST BE A REAL
+    DIFFER. Narrowing the body comparison to the first N rows would hide exactly
+    the defect run 2 surfaced."""
+    _gate_mutation(
+        "test_257",
+        "        $lines = @()\n"
+        "        foreach ($row in @(Get-TableBody -Workbook $Workbook -SheetName $register.sheet `\n"
+        "                -TableName $register.table_name)) {\n"
+        "            $lines += ((@($row) -join '|'))\n"
+        "        }",
+        "        $lines = @()\n"
+        "        foreach ($row in @(Get-TableBody -Workbook $Workbook -SheetName $register.sheet `\n"
+        "                -TableName $register.table_name)) {\n"
+        "            if ([string]$row[0] -ne '') { $lines += ((@($row) -join '|')) }\n"
+        "        }")
+
+
+def test_261_softening_the_run_2_record_is_rejected() -> None:
+    """RUN 2 WAS INVALID, NOT A DIFFERENCE. A record that let it read as a semantic
+    result would licence a Bulk baseline on evidence that does not exist."""
+    _record_mutation(
+        "test_258",
+        "**must not be read as a fixture DIFFER**",
+        "may be read as a fixture difference")
 
 
 def test_144_deleting_a_definition_a_dot_sourced_file_calls_is_rejected() -> None:

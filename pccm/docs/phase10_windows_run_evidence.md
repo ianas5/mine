@@ -2025,3 +2025,146 @@ gate was built to compare is still compared. Production, the bulk builder, the
 timed path, the timing semantics and the iteration matrix are untouched, and
 `-FixtureMode` still defaults to `Endpoints`.
 
+## Equivalence run 2 — INVALID — THE BULK FIXTURE DID NOT BUILD
+
+**Harness commit:** `d1af4e1`. Windows PowerShell 5.1. Stage A immediately before
+the run: 351 passed, 0 failed.
+
+### What run 2 proved
+
+The bundle correction worked. Both disposable starting bundles held the same five
+files and every SHA-256 matched:
+
+```
+BUNDLE|identical|5 artifact(s)
+  stage_b_manifest.json
+  PCCM_stageA.xlsx
+  vba/modCalcContract.bas
+  vba/modConstants.bas
+  vba/modSimContract.bas
+```
+
+The Endpoints pass completed:
+
+```
+PASS|Endpoints|COMPLETED|fixture built and PCCM_Calculate ran
+```
+
+Its Stage-B bootstrap was clean — 14 CodeNames, 32 modules, 11 buttons,
+protection applied, verification clean, natural COM shutdown. The Bulk pass also
+bootstrapped cleanly.
+
+**The result vocabulary worked.** The gate refused to draw a conclusion:
+
+```
+FAIL|Bulk|RAISED|tblCostLines already holds 25 body rows where the fixture
+                 needs 12. This builder never deletes rows; it runs against a
+                 fresh disposable workbook.
+EQUIV|<not evaluated>|invalid|comparison was not executed: only the Endpoints
+                              pass completed
+```
+
+### What run 2 did NOT prove
+
+Bulk fixture construction; fixture semantic equivalence; calculation equivalence;
+Bulk authorisation. **No semantic mismatch has been demonstrated.** This
+**must not be read as a fixture DIFFER** — no comparison ran.
+
+```
+Equivalence run 2: INVALID / NOT EVALUATED
+```
+
+---
+
+## Reserved capacity is not semantic count
+
+### The root cause
+
+`Set-BenchmarkRegisterRowCount` took its argument as the number of body rows the
+table should **end up with**, and refused when the table already held more. Stage
+A builds `tblCostLines` with `reserved_rows: 25` — twenty-five blank body rows —
+and twelve Cost Lines occupying twelve of them is not an error. It is the state
+production reaches.
+
+**Production's own rule**, `modDrivers.AddDriver`:
+
+```vba
+targetRow = FirstFreeRow(Kind, orphanRow)   ' a blank RESERVED row
+If targetRow = 0 Then                       ' only when none is left
+    register.ListRows.Add                   ' ...is the table grown
+```
+
+with its own comment beside it: *"Reserved rows were only ever initial capacity,
+never a business maximum."*
+
+### All five tables, audited
+
+| table | Stage-A physical body rows | blank suffix permitted after the last semantic row | when production grows it |
+|---|---|---|---|
+| `tblCostLines` | 25 (`reserved_rows`) | **yes** — `FirstFreeRow` fills reserved rows | `AddDriver`, only when `targetRow = 0` |
+| `tblRiskRegister` | 25 | **yes** — same code path, `Kind` switched | same |
+| `tblCostProfiling` | 25 | **yes** — `SyncRows` **clears** the tail, never deletes | `SyncRows`, only when `writeRow > BodyRowCount(target)` |
+| `tblRiskProfiling` | 25 | **yes** — same | same |
+| `tblInflation` | 10 | **yes** — `SyncProfileRows` clears the tail | `SyncProfileRows`, only when `writeRow > BodyRowCount(target)` |
+
+**No production path shrinks a body.** The two grids and the inflation grid are
+production's alone: the builder writes weights into the rows `SyncRows` created
+and never touches a grid's row count.
+
+### The corrected algorithm
+
+```
+target physical rows = max(existing reserved capacity, semantic driver count)
+```
+
+* capacity already sufficient → **nothing is done**, and the blank suffix stays
+  exactly as Stage A built it;
+* capacity insufficient → grow by **exactly** the shortfall, inside the accepted
+  fixture window, and never shrink afterwards;
+* the register block covers **exactly** the semantic rows, so identifiers stop at
+  N and the counter is N;
+* the reserved suffix is **read back and proved blank** before `ApplyTimeline`
+  synchronises the grids from that register — a populated unkeyed row is the
+  orphan `AddDriver` refuses to mutate over.
+
+### Executed, not asserted from source
+
+`tests/phase10_reserved_rows_flow.ps1` lifts the grower and the block builder by
+AST and drives them against a fake whose `ListRows.Add()` is counted. Excel is
+never started.
+
+| case | capacity | semantic | physical after | `ListRows.Add` calls |
+|---|---|---|---|---|
+| SMALL Cost Lines | 25 | 12 | **25** | **0** |
+| SMALL Risks | 25 | 8 | **25** | **0** |
+| exactly at capacity | 25 | 25 | 25 | 0 |
+| one past capacity | 25 | 26 | 26 | **1** |
+| MEDIUM Cost Lines | 25 | 60 | 60 | 35 |
+| **LARGE Cost Lines** | 25 | 180 | **180** | **155** |
+| **LARGE Risks** | 25 | 120 | **120** | **95** |
+
+| drivers | block rows × cols | first ID | last ID | counter | IDs past N |
+|---|---|---|---|---|---|
+| 12 | 12 × 11 | CL-001 | CL-012 | 12 | **0** |
+| 8 | 8 × 11 | CL-001 | CL-008 | 8 | **0** |
+| 180 | 180 × 11 | CL-001 | CL-180 | 180 | **0** |
+
+`category` and `uom` are `$null` in every row — blank in the endpoint-built
+register too, because `Write-Phase5Driver` never writes them.
+
+### PERF-SMALL expected state, and PERF-LARGE growth
+
+SMALL: 12 semantic Cost Lines and 8 Risks, **physical body row count 25 in both
+registers**, rows 13–25 and 9–25 blank, counters 12 and 8. LARGE: 180 and 120
+semantic rows, physical 180 and 120 with **no** reserved suffix (capacity is
+exhausted), counters 180 and 120, and **no** production Add commands — one
+`ListRows.Add` per shortfall row instead.
+
+### The snapshot was not weakened
+
+`Get-EquivalenceSnapshot` is **byte-identical to `99cb472`**. Register bodies are
+compared through `Get-TableBody`, which returns every **physical** row with blanks
+as empty strings — so if Endpoints had 25 physical rows and Bulk had 12, that
+would be a real `differ`. The correction makes Bulk match physically as well as
+semantically rather than teaching the comparison to ignore the difference.
+

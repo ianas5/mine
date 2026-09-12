@@ -621,27 +621,44 @@ function Set-BenchmarkRangeBlock {
     }
 }
 
-# GROW THE REGISTER ONCE, NOT ONCE PER DRIVER.
+# ENSURE CAPACITY. NEVER SHRINK TO THE DRIVER COUNT.
 #
-# `ListRows.Add()` IS a ListObject structural operation, so this is only legal
-# inside the fixture maintenance window - which is exactly where the builder
-# runs. It is one COM call per row rather than a whole production operation per
-# row: three hundred calls, not three hundred snapshot-sync-validate-reprotect
-# cycles.
+# WHAT EQUIVALENCE RUN 2 GOT WRONG. This took its argument as the number of body
+# rows the table should END UP with, and refused when the table already held more:
 #
-# A TABLE THAT IS ALREADY LARGE ENOUGH IS LEFT ALONE, and one that is too large
-# is REFUSED rather than shrunk: deleting rows here would be the destructive
-# path this project removed from the FX reset, and the benchmark builds into a
-# fresh disposable workbook where it cannot arise.
+#   FAIL|Bulk|RAISED|tblCostLines already holds 25 body rows where the fixture
+#   needs 12. This builder never deletes rows...
+#
+# PHYSICAL CAPACITY IS NOT SEMANTIC COUNT. Stage A builds `tblCostLines` with
+# `reserved_rows: 25` - twenty-five blank body rows - and twelve Cost Lines
+# occupying twelve of them is not an error, it is the state production reaches.
+#
+# PRODUCTION'S OWN RULE, from modDrivers.AddDriver:
+#
+#   targetRow = FirstFreeRow(Kind, orphanRow)      a blank RESERVED row
+#   If targetRow = 0 Then                          only when none is left
+#       register.ListRows.Add                      ...is the table grown
+#
+# and the comment beside it: "Reserved rows were only ever initial capacity,
+# never a business maximum." So twelve Adds into a twenty-five row table leave
+# twenty-five physical rows with a thirteen-row blank suffix, and a hundred and
+# eighty Adds grow it to a hundred and eighty with no suffix at all.
+#
+# ALL FIVE BENCHMARK-POPULATED TABLES FOLLOW THAT RULE, checked in source rather
+# than assumed: modProfiling.SyncRows and modInflation.SyncProfileRows both grow
+# only when `writeRow > BodyRowCount(target)` and then CLEAR the tail rather than
+# delete it. No production path shrinks a body.
+#
+# So the target is `max(existing capacity, semantic count)`, the suffix is left
+# exactly as Stage A built it, and nothing is ever deleted.
 function Set-BenchmarkRegisterRowCount {
-    param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowCount)
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$MinimumRows)
     $current = Get-TableRowCount -Workbook $Workbook -SheetName $SheetName -TableName $TableName
-    if ($current -gt $RowCount) {
-        throw ($TableName + ' already holds ' + [string]$current + ' body rows where the ' +
-               'fixture needs ' + [string]$RowCount + '. This builder never deletes rows; ' +
-               'it runs against a fresh disposable workbook.')
-    }
-    if ($current -eq $RowCount) { return $RowCount }
+    # RESERVED CAPACITY IS ENOUGH, AND IS LEFT ALONE. Shrinking to the driver count
+    # would delete rows production would have kept blank, and the two fixtures
+    # would then differ physically - which the equivalence snapshot compares, and
+    # rightly reports as a difference.
+    if ($current -ge $MinimumRows) { return $current }
     $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $rows = $null
     try {
         $localWorksheets = $Workbook.Worksheets
@@ -649,7 +666,7 @@ function Set-BenchmarkRegisterRowCount {
         $los = $ws.ListObjects
         $lo = $los.Item($TableName)
         $rows = $lo.ListRows
-        for ($i = $current; $i -lt $RowCount; $i++) {
+        for ($i = $current; $i -lt $MinimumRows; $i++) {
             $added = $null
             try { $added = $rows.Add() }
             finally { if ($null -ne $added) { Release-Transient $added 'ListRow'; $added = $null } }
@@ -662,12 +679,13 @@ function Set-BenchmarkRegisterRowCount {
         if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
     }
     # PROVED, NOT ASSUMED. A grow that silently did nothing would leave the bulk
-    # write landing outside the table.
+    # write landing outside the table. Exactly the requested minimum, not more: a
+    # table that overshot would carry rows production never created.
     $after = Get-TableRowCount -Workbook $Workbook -SheetName $SheetName -TableName $TableName
-    if ($after -ne $RowCount) {
-        throw ($TableName + ' holds ' + [string]$after + ' body rows after growing it to ' +
-               [string]$RowCount + '. ListRows.Add is a structural operation and is only ' +
-               'permitted inside the fixture maintenance window.')
+    if ($after -ne $MinimumRows) {
+        throw ($TableName + ' holds ' + [string]$after + ' body rows after growing it to at ' +
+               'least ' + [string]$MinimumRows + '. ListRows.Add is a structural operation ' +
+               'and is only permitted inside the fixture maintenance window.')
     }
     return $after
 }
@@ -908,8 +926,16 @@ function Set-BenchmarkBulkFixture {
         $counter = $counterByRegister[$pair.key]
         $prepared = New-BenchmarkRegisterBlock -Register $register -Counter $counter `
             -Drivers $pair.drivers -IsRisk ([bool]$pair.risk)
-        $null = Set-BenchmarkRegisterRowCount -Workbook $Workbook -SheetName $register.sheet `
-            -TableName $register.table_name -RowCount @($pair.drivers).Count
+        # THE DRIVER COUNT IS A FLOOR, NOT A TARGET. Stage A's reserved capacity
+        # stands when it is already enough, exactly as it does after N production
+        # Adds, and the blank suffix is left where the contract put it.
+        $physical = Set-BenchmarkRegisterRowCount -Workbook $Workbook -SheetName $register.sheet `
+            -TableName $register.table_name -MinimumRows @($pair.drivers).Count
+        if ($physical -lt @($pair.drivers).Count) {
+            throw ([string]$register.table_name + ' holds ' + [string]$physical +
+                   ' body rows, fewer than the ' + [string]@($pair.drivers).Count +
+                   ' the fixture must populate')
+        }
         Set-BenchmarkRangeBlock -Workbook $Workbook -SheetName $register.sheet `
             -TableName $register.table_name -FirstRow 1 -FirstColumn 1 -Block $prepared.Block `
             -Description ([string]$register.table_name)
@@ -937,6 +963,23 @@ function Set-BenchmarkBulkFixture {
             if ([string]$ids[$i] -cne [string]$expected[$i]) {
                 throw ([string]$register.table_name + ' row ' + [string]($i + 1) + ' carries ' +
                        [string]$ids[$i] + ' where the fixture wrote ' + [string]$expected[$i])
+            }
+        }
+        # AND THE RESERVED SUFFIX IS STILL BLANK. The block write covers exactly the
+        # semantic rows; anything below them must be as Stage A left it, because a
+        # value there is a row production never keyed - which modDrivers.AddDriver
+        # reports as an orphan and refuses to mutate over.
+        $body = @(Get-TableBody -Workbook $Workbook -SheetName $register.sheet `
+            -TableName $register.table_name)
+        for ($row = $expected.Count; $row -lt $body.Count; $row++) {
+            foreach ($value in @($body[$row])) {
+                if ([string]$value -ne '') {
+                    throw ([string]$register.table_name + ' row ' + [string]($row + 1) +
+                           ' is a reserved row below the ' + [string]$expected.Count +
+                           ' semantic drivers and carries ' + [char]39 + [string]$value +
+                           [char]39 + '. Production leaves reserved rows blank, and a ' +
+                           'populated unkeyed row is the orphan it refuses to mutate over.')
+                }
             }
         }
     }
