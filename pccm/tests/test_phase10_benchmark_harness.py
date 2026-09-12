@@ -2681,8 +2681,30 @@ def test_210_the_bundle_contract_is_derived_from_the_bootstrap() -> None:
     # THE TWO FROM THE REPOSITORY, which is why they are not in the bundle.
     assert "$srcDir  = Join-Path $pccmRoot $manifest.vba.source_dir" in bootstrap
     assert "$docFile = Join-Path $srcDir ([string]$docModule.file)" in bootstrap
-    # AND NOTHING ELSE: no inspection projection is read from either.
-    assert "inspection" not in bootstrap.lower(), (
+    # AND NOTHING ELSE IS RESOLVED AGAINST THE BuildDir. This used to grep the RAW
+    # bootstrap for the word "inspection", and the SaveAs settlement batch wrote
+    # "postcondition inspection" in a comment - so the control failed over prose
+    # while the property it defends was untouched. It now states the property, on
+    # the comment-stripped source, which is strictly stronger than the word was:
+    # every BuildDir-relative path the bootstrap builds is accounted for below, so
+    # nothing it READS can be missing from the bundle.
+    code = _ps_code(bootstrap)
+    resolved = re.findall(r"Join-Path \$BuildDir[^\r\n]*", code)
+    # FOUR, and the fourth is the reason the count is worth stating: three INPUTS
+    # the bundle must carry, and the OUTPUT the bundle must refuse to find already
+    # present. A fifth would be something read from the BuildDir that no bundle
+    # copies, which is the run-1 failure in a new costume.
+    assert len(resolved) == 4, resolved
+    inputs = [line for line in resolved if "$manifest.stage_b_filename" not in line]
+    outputs = [line for line in resolved if "$manifest.stage_b_filename" in line]
+    assert len(outputs) == 1, outputs
+    assert len(inputs) == 3, inputs
+    for line in inputs:
+        assert ("'stage_b_manifest.json'" in line
+                or "$manifest.stage_a_filename" in line
+                or "$manifest.vba.generated_dir" in line), line
+    # And no Gate-B inspection projection is read in CODE, from anywhere.
+    assert "inspection" not in code.lower(), (
         "the bootstrap now reads an inspection, so the bundle contract is incomplete")
     # THE OUTPUT IS NOT AN INPUT.
     assert "$stageBPath = Join-Path $BuildDir $manifest.stage_b_filename" in bootstrap
