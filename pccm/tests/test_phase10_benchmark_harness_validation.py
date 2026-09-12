@@ -2149,10 +2149,13 @@ def test_210_a_gate_that_judges_its_own_evidence_is_rejected() -> None:
 def test_211_claiming_the_gate_passed_while_it_is_unrun_is_rejected() -> None:
     """THE RECORD MAY SAY OUTSTANDING OR IT MAY SAY ALL-MATCHED. It may not say
     neither, and it may not report a difference and still read as passing."""
+    # RESTATED once the gate had run: the section now states the accepted result,
+    # and a record that reported a difference while still reading as passing is
+    # what test_201 refuses.
     _record_mutation(
         "test_201",
-        "**NOT YET RUN.** It is a Windows verification",
-        "**PASSED.** It is a Windows verification")
+        "**EVERY FIELD FAMILY MATCHED** and `CALCEQUIV|match`; no field\ndiffered.",
+        "most field families matched and `CALCEQUIV|match`; one field\ndiffer.")
 
 
 def test_212_softening_the_aborted_large_record_is_rejected() -> None:

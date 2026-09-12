@@ -3690,6 +3690,52 @@ def test_306_the_pass_returns_one_record_and_the_comparison_reads_its_state() ->
         < main.index("('PASS|' + $mode + '|COMPLETED|")
 
 
+# ===========================================================================
+# W. PERF-LARGE ON THE AUTHORISED BULK PATH
+# ===========================================================================
+def test_307_perf_large_is_ready_on_the_authorised_bulk_path() -> None:
+    """THE PRE-RUN CHECK, FROM SOURCE. Large is 180 + 120 drivers over 40 years;
+    the runner accepts -FixtureMode Bulk and builds through Set-BenchmarkBulkFixture
+    (one production ApplyTimeline, no per-driver Add); the plan schedules eight
+    Large runs at 10,000 and 50,000 and forbids 100,000; the record states the
+    gate as accepted; and no production or timed-path change is needed."""
+    large = _scenario("PERF-LARGE")
+    assert (large["cost_lines"], large["risks"], large["years"]) == (180, 120, 40)
+    runs = [(r["operation"], r["iterations"]) for r in _plan()["runs"] if r["scenario"] == "PERF-LARGE"]
+    assert runs == [("calculate", None), ("recalculation", None),
+                    ("simulation", 10_000), ("sensitivity", 10_000), ("annual", 10_000),
+                    ("simulation", 50_000), ("sensitivity", 50_000), ("annual", 50_000)], runs
+    assert all(r["cold_runs"] == 1 and r["warm_runs"] == 3 for r in _plan()["runs"] if r["scenario"] == "PERF-LARGE")
+    assert any(rule["scenario"] == "PERF-LARGE" and rule["iterations"] == 100_000 for rule in _plan()["forbidden"])
+    code = _code()
+    assert "[ValidateSet('Endpoints', 'Bulk')]" in code and "[string]$FixtureMode = 'Endpoints'" in code
+    assert "if ($FixtureMode -eq 'Bulk') {" in code
+    bulk = code[code.index("if ($FixtureMode -eq 'Bulk') {"):]
+    assert "Set-BenchmarkBulkFixture -Excel $excel -Workbook $wb -Manifest $manifest" in bulk[: bulk.index("} else {")]
+    orchestrator = _bulk_functions()["Set-BenchmarkBulkFixture"]
+    assert re.findall(r"-Operation '([A-Za-z_]+)'", orchestrator) == ["PCCM_ApplyTimeline"]
+    for absent in ("PCCM_AddCostLine", "PCCM_AddRisk", "Invoke-Phase5AddDriverAndRequireSuccess"):
+        assert absent not in orchestrator, absent
+    rows = _bulk_rows()
+    assert rows["grow"]["PERF-LARGE"] == {"tblCostLines": 155, "tblRiskRegister": 95}
+    assert rows["rank"]["PERF-LARGE"]["tblCostProfiling"] == (2, 180, 40)
+    assert rows["rank"]["PERF-LARGE"]["tblRiskProfiling"] == (2, 120, 40)
+    # THE FIXTURE IS SETUP: inside the fixture stopwatch, before the timed loop.
+    assert code.index("$fixtureWatch = [System.Diagnostics.Stopwatch]::StartNew()") \
+        < code.index("Set-BenchmarkBulkFixture -Excel $excel") < code.index("$fixtureWatch.Stop()") \
+        < code.index("foreach ($run in $plannedRuns) {")
+    section = " ".join(_run_evidence_section("## The fixture equivalence gate").split())
+    assert "RUN AND ACCEPTED at `8caffb0`" in section and "AUTHORISED for performance benchmark" in section
+    accepted = " ".join(_run_evidence_section("## Equivalence run 13").split())
+    for fact in ("8caffb0", "351 passed, 0 failed",
+                 "10E06F40BD856D15823F419381BC309F08A19F7726E490DF6242D0E3A0B09483",
+                 "COPIES|identical", "READY|Endpoints|attempt=1|waited=0", "READY|Bulk|attempt=1|waited=0",
+                 "EQUIV|cost_profiling.body|match", "EQUIV|risk_profiling.body|match",
+                 "2DA8A0F6092AEA4B", "CALCEQUIV|match", "CLOSED / ACCEPTED", "-FixtureMode Bulk"):
+        assert fact in accepted, fact
+    assert _production_changed_since("8caffb0") == []
+
+
 # Every rectangular fixture block, and the geometry each must have. Restated here so
 # a builder that quietly changes shape fails a control rather than Excel.
 RANK_EXPECTED = {

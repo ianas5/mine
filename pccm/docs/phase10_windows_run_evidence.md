@@ -1854,8 +1854,12 @@ eight planned runs.
 
 ## The fixture equivalence gate
 
-**NOT YET RUN.** It is a Windows verification and no Windows was executed for
-this batch.
+**RUN AND ACCEPTED at `8caffb0`** — see *Equivalence run 13 — ACCEPTED* at the end
+of this record. **EVERY FIELD FAMILY MATCHED** and `CALCEQUIV|match`; no field
+differed. The Bulk fixture is **AUTHORISED for performance benchmark
+construction** and the gate is **CLOSED / ACCEPTED**. The paragraphs below
+describe the gate as first specified (two Stage-A bundles); its single-baseline
+form and runs 1–12 are recorded in their own sections and are not rewritten.
 
 `tests/phase10_fixture_equivalence.ps1` builds PERF-SMALL **both ways**, in two
 Excel sessions over two disposable copies of the same Stage-A build, captures a
@@ -1891,6 +1895,10 @@ Two things, and both are what the gate is for:
 2. **A rectangular `Range.Value2 = object[,]` block write** into a ListObject body
    on a protected sheet inside the window. Same class as the value writes Run 3
    proved permitted, but as a block rather than a cell.
+
+**Both were proven on Windows at `8caffb0`:** the Bulk pass completed, grew both
+registers by `ListRows.Add`, wrote all four blocks, and reached the same state and
+fingerprint as the Endpoints pass.
 
 ## Equivalence run 1 — INVALID — NO COMPARISON WAS EXECUTED
 
@@ -3438,3 +3446,70 @@ return statement, proves the pass emits nothing else, drives the real snapshot f
 its real field set (28), and runs the real comparison block over two such
 records: every field iterated, `CALCEQUIV` evaluated after the last `EQUIV`, in
 both the identical and the differing case.
+
+## Equivalence run 13 — ACCEPTED — BULK FIXTURE AUTHORISED
+
+**Harness commit:** `8caffb0`. Windows PowerShell 5.1. Stage A immediately before:
+**351 passed, 0 failed**.
+
+```
+BASELINE|StageB|verified|sha256=10E06F40BD856D15823F419381BC309F08A19F7726E490DF6242D0E3A0B09483
+COPY|Endpoints|sha256=10E06F40BD856D15823F419381BC309F08A19F7726E490DF6242D0E3A0B09483
+COPY|Bulk|sha256=10E06F40BD856D15823F419381BC309F08A19F7726E490DF6242D0E3A0B09483
+COPIES|identical
+READY|Endpoints|attempt=1|waited=0
+PASS|Endpoints|COMPLETED|fixture built and PCCM_Calculate ran
+READY|Bulk|attempt=1|waited=0
+PASS|Bulk|COMPLETED|fixture built and PCCM_Calculate ran
+```
+
+The canonical Stage-B build and its reopen verification passed once; the
+Endpoints and Bulk copies carried the identical SHA-256; the readiness barrier
+passed on attempt 1 with 0 ms waited in both passes; both fixtures completed.
+
+**EVERY EQUIV FIELD MATCHED**: cost-line identifiers and order; risk identifiers
+and order; both counters; both register bodies; the FX table; the Config profile
+master; the applied timeline names; the Cost Profiling, Risk Profiling and
+inflation headers and bodies; `nmStructuralState`; `PCCM_StructuralReport`;
+`PCCM_CurrentInputFingerprint`; `PCCM_CurrentSimulationRequestFingerprint`;
+`PCCM_ModelCheckCalculationState`. Including the two fields run 10 had found
+different:
+
+```
+EQUIV|cost_profiling.body|match
+EQUIV|risk_profiling.body|match
+```
+
+Both real production calculations committed as CURRENT with the identical
+fingerprint:
+
+```
+CALC|Endpoints|OK|Calculation committed.|CURRENT|2DA8A0F6092AEA4B
+CALC|Bulk|OK|Calculation committed.|CURRENT|2DA8A0F6092AEA4B
+CALCEQUIV|match|the production calculation fingerprint is identical
+```
+
+### Decision
+
+**BULK FIXTURE EQUIVALENCE = CLOSED / ACCEPTED.** The Bulk fixture is
+**AUTHORISED for performance benchmark construction**. The equivalence harness is
+not reopened unless future evidence shows a genuine semantic defect. The default
+`-FixtureMode` stays `Endpoints` — the method the accepted SMALL and MEDIUM
+baselines were built by — and PERF-LARGE is run with `-FixtureMode Bulk`, which the
+artifact records as `fixture_mode`.
+
+### PERF-LARGE, from the current harness
+
+Contract: PERF-LARGE = 180 Cost Lines + 120 Risks = 300 drivers, 40 project years,
+iterations 10,000 and 50,000 (100,000 is forbidden for Large by the plan and the
+runner refuses it). Setup, all outside the timed region: Stage-B bootstrap; Excel
+start; workbook open; `PCCM_AutomationBegin`; FX seed; shim import; protection
+read; fixture window open; the Bulk fixture — inputs, FX, profile master, both
+register blocks with `ListRows.Add` growth 25 → 180 and 25 → 120, counters,
+readback, **one** real `PCCM_ApplyTimeline` (year columns, profiling rows, inflation
+rows, ValidateStructure), inflation rates, both weight blocks, final coherence;
+window close; seed write. Then the timed matrix, in plan order, one cold run and
+three warm runs each, median of the warm three: Calculate; workbook recalculation
+(`Application.CalculateFull`); Simulation @ 10,000; Sensitivity @ 10,000; Annual
+@ 10,000; Simulation @ 50,000; Sensitivity @ 50,000; Annual @ 50,000 — eight runs,
+thirty-two timed executions.
