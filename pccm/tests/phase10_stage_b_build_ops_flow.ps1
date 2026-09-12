@@ -54,6 +54,8 @@
       STEP|<case>|<label>|<outcome>
       READY|<case>|<outcome>|<attempts>|<waited>|<format>|<reads>|<sleeps>|<detail>
       READYNOTE|<case>|<diagnostic line>
+      VERIFY|<case>|<outcome>|<attempts>|<waited>|<what came back>|<reads>
+      VERIFYNOTE|<case>|<diagnostic line>
     Exit 0 always.
 #>
 param(
@@ -96,6 +98,11 @@ $script:ReadyStubIndex  = 0
 $script:ReadyStubReads  = 0
 $script:ReadyStubPath   = ''
 
+# Section V's scripted stand-in, declared here for the same reason.
+$script:VerifyScript = @()
+$script:VerifyIndex  = 0
+$script:VerifyObject = $null
+
 # Section D's stub records what the wrapper handed it. Declared HERE rather than
 # beside the stub, because a script-scope variable first assigned after the first
 # helper call is the defect the uninitialised-scope audit exists to catch.
@@ -130,6 +137,7 @@ foreach ($name in @('Add-Note', 'Set-StageBBuildOp', 'Get-StageBBuildOp',
                     'Get-StageBScalarInt', 'Get-StageBNonEmptyString',
                     'Get-StageBComHResult', 'New-StageBRejectionLine',
                     'Get-StageBComparablePath', 'Wait-StageBWorkbookReady',
+                    'Get-StageBVerificationObject',
                     'Get-StageBSaveAsPostcondition',
                     'Invoke-StageBSaveAs', 'New-StageBSaveAsResult')) {
     $body = $null
@@ -695,5 +703,91 @@ foreach ($c in @(
 }
 
 Remove-Item -LiteralPath $readyRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+# ---------------------------------------------------------------------------
+# V. THE REOPENED VERIFICATION ACQUISITION
+# ---------------------------------------------------------------------------
+# WINDOWS BUILT THE WORKBOOK AND THEN FAILED EVERY CHECK with 'no target object for
+# Worksheets.Item(...)', beside 'no verification read was refused' and a ledger
+# reading 'Worksheets2 | SKIPPED | reference was already null'. One unguarded
+# assignment took a $null Value as an acquisition.
+#
+# The acquisition is driven through a scripted stand-in for the accepted helper -
+# LAST in the file, so every section above has run against the real one - because
+# what the gate depends on is the helper's CONTRACT, and a property getter cannot
+# raise on this host anyway.
+function Invoke-ComRetryRead {
+    param($Target, [string]$Member, $Key, [string]$Description,
+          [int]$MaxAttempts = 12, [int]$FirstDelayMs = 250,
+          [int]$MaxDelayMs = 2000, [int]$TotalBudgetMs = 15000)
+    $step = 'object'
+    if ($script:VerifyIndex -lt @($script:VerifyScript).Count) {
+        $step = [string]$script:VerifyScript[$script:VerifyIndex]
+    }
+    $script:VerifyIndex = $script:VerifyIndex + 1
+    if ($step -eq 'refused') {
+        throw (New-Object System.Runtime.InteropServices.COMException 'Call was rejected by callee.', -2147418111)
+    }
+    if ($step -eq 'accepted-error') {
+        throw (New-Object System.Runtime.InteropServices.COMException 'Exception from HRESULT: 0x800A03EC', -2146827284)
+    }
+    if ($step -eq 'null') {
+        return [pscustomobject]@{ Description = $Description; Value = $null
+                                  Attempts = 1; WaitedMs = 0; Rejections = '' }
+    }
+    if ($step -eq 'scalar') {
+        return [pscustomobject]@{ Description = $Description; Value = 51
+                                  Attempts = 1; WaitedMs = 0; Rejections = '' }
+    }
+    if ($step -eq 'text') {
+        return [pscustomobject]@{ Description = $Description; Value = 'Sheet1'
+                                  Attempts = 1; WaitedMs = 0; Rejections = '' }
+    }
+    return [pscustomobject]@{ Description = $Description; Value = $script:VerifyObject
+                              Attempts = 1; WaitedMs = 0; Rejections = '' }
+}
+
+# A GENUINELY ENUMERABLE OBJECT, so 'the collection survived' is observable rather
+# than assumed: if the acquisition emitted it, three members would arrive instead of
+# one collection.
+$collection = New-Object System.Collections.ArrayList
+$null = $collection.Add('Dashboard')
+$null = $collection.Add('Inputs')
+$null = $collection.Add('Results')
+$script:VerifyObject = $collection
+
+foreach ($c in @(
+    @{ n='object-first';        script=@('object');                     a=12; d=1; b=15000 },
+    @{ n='null-then-object';    script=@('null', 'null', 'object');     a=12; d=1; b=15000 },
+    @{ n='refused-then-object'; script=@('refused', 'object');          a=12; d=1; b=15000 },
+    @{ n='real-error-aborts';   script=@('accepted-error');             a=12; d=1; b=15000 },
+    @{ n='scalar-aborts';       script=@('scalar');                     a=12; d=1; b=15000 },
+    @{ n='text-aborts';         script=@('text');                       a=12; d=1; b=15000 },
+    @{ n='attempt-exhausted';   script=@('null','null','null','null');  a=3;  d=1; b=15000 },
+    @{ n='budget-exhausted';    script=@();                             a=50; d=2; b=5 })) {
+    $notes.Clear()
+    $script:VerifyScript = @($c.script)
+    $script:VerifyIndex  = 0
+    if ($c.n -eq 'budget-exhausted') { $script:VerifyScript = @('null') * 60 }
+    $outcome = 'READY'; $attempts = -1; $waited = -1; $shown = ''
+    try {
+        $r = Get-StageBVerificationObject -Target $collection -Member 'Worksheets' `
+                 -What 'the reopened workbook Worksheets collection' `
+                 -MaxAttempts ([int]$c.a) -FirstDelayMs ([int]$c.d) `
+                 -MaxDelayMs ([int]$c.d) -TotalBudgetMs ([int]$c.b)
+        $attempts = [int]$r.Attempts
+        $waited = [int]$r.WaitedMs
+        # THE COLLECTION ITSELF, not its members: three items still, one object.
+        $shown = $r.Value.GetType().Name + ':' + [string]$r.Value.Count
+    } catch {
+        $outcome = 'ABORTED'
+        $shown = [string]$_.Exception.Message
+        $hex = Get-StageBComHResult $_
+        if ($hex -ne '') { $shown = $hex + ' ' + $shown }
+    }
+    Write-Output ('VERIFY|' + $c.n + '|' + $outcome + '|' + [string]$attempts + '|' +
+                  [string]$waited + '|' + $shown + '|reads=' + [string]$script:VerifyIndex)
+    foreach ($line in @($notes)) { Write-Output ('VERIFYNOTE|' + $c.n + '|' + $line) }
+}
 
 exit 0

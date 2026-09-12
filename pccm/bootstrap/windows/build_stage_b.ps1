@@ -450,6 +450,98 @@ function Wait-StageBWorkbookReady {
 }
 
 # ===========================================================================
+# A REOPENED COLLECTION THAT IS $null IS NOT AN ACQUISITION
+# ===========================================================================
+# THE BUILD PATH LEARNED THIS AND THE VERIFICATION PATH DID NOT. Windows built the
+# Endpoints workbook completely - SaveAs, 14 CodeNames, 32 modules, ThisWorkbook, 11
+# buttons, protection, final Save, clean shutdown - and then failed EVERY sheet and
+# button check with:
+#
+#     Invoke-ComRetryRead: no target object for Worksheets.Item(...)
+#
+# beside 'no verification read was refused; 0 ms waited' and a shutdown ledger
+# reading 'Worksheets2 | SKIPPED | reference was already null'.
+#
+# THE CAUSE IS ONE UNGUARDED ASSIGNMENT. `$worksheets2 = (Invoke-ComRetryRead ...).Value`
+# takes whatever the helper read. To the helper a $null Value is a SUCCESS - it read
+# the member and that is what came back - so the acquisition 'succeeded' with nothing
+# in it, and the first Item() call on $null raised instead. The reopened workbook was
+# never in question: Workbook2, VBProject2 and VBComponents2 all released cleanly.
+#
+# SAME CLASS AS THE POST-OPEN GAP, DIFFERENT PLACE. So the same rule applies where it
+# actually manifests: an OBJECT acquisition needs a real object, and no answer means
+# not ready yet.
+#
+# AND IT RETURNS A RECORD, NEVER THE OBJECT. Worksheets is a COLLECTION; writing one
+# to the output stream makes PowerShell enumerate it into its members, which is the
+# Phase-10 Run-3 record collapse and exactly the defect that flattened the profiling
+# matrix in this same run. A collection is never the thing a function emits.
+function Get-StageBVerificationObject {
+    param($Target, [string]$Member, [string]$What,
+          [int]$MaxAttempts   = 12,
+          [int]$FirstDelayMs  = 250,
+          [int]$MaxDelayMs    = 2000,
+          [int]$TotalBudgetMs = 15000)
+    if ($null -eq $Target) { throw ('Get-StageBVerificationObject: no target for ' + $What + '.') }
+    if ([string]::IsNullOrWhiteSpace($Member)) {
+        throw 'Get-StageBVerificationObject: no member name.'
+    }
+    if ($MaxAttempts -lt 1) { throw 'Get-StageBVerificationObject: MaxAttempts must be at least 1.' }
+    if ($TotalBudgetMs -lt 0) { throw 'Get-StageBVerificationObject: TotalBudgetMs may not be negative.' }
+
+    $attempt  = 0
+    $waitedMs = 0
+    $delay    = $FirstDelayMs
+    $acquired = $null
+
+    while ($attempt -lt $MaxAttempts) {
+        $attempt = $attempt + 1
+        $value = $null
+        try {
+            $read = Invoke-ComRetryRead -Target $Target -Member $Member -Description $What
+            Add-StageBReadRejection -Operation $Member -Record $read
+            $value = $read.Value
+        } catch {
+            # A REFUSAL THE HELPER COULD NOT RESOLVE INSIDE ITS OWN BOUNDS IS 'NOT
+            # READY YET'. Anything else Excel accepted and failed, and that aborts.
+            if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }
+            $value = $null
+        }
+        if ($null -ne $value) {
+            # A REAL OBJECT, NOT MERELY SOMETHING NON-NULL. A scalar here would be a
+            # wrong answer rather than a slow one, and retrying it would spend the
+            # budget on a question already answered.
+            if (($value -is [string]) -or ($value -is [System.ValueType])) {
+                throw ($What + ' answered with a ' + $value.GetType().FullName +
+                       ' where a COM object was required. Waiting cannot change that.')
+            }
+            $acquired = $value
+            break
+        }
+        if ($attempt -ge $MaxAttempts) { break }
+        if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }
+        Start-Sleep -Milliseconds $delay
+        $waitedMs = $waitedMs + $delay
+        $delay = [Math]::Min(($delay + $FirstDelayMs), $MaxDelayMs)
+    }
+
+    if ($null -eq $acquired) {
+        Add-Note ('VERIFYREADY|' + $Member + '|exhausted|attempts=' + [string]$attempt +
+                  '|waited=' + [string]$waitedMs)
+        throw ($What + ' produced no target object after ' + [string]$attempt +
+               ' attempt(s) and ' + [string]$waitedMs + ' ms. It was not refused and it ' +
+               'was not answered.')
+    }
+    Add-Note ('VERIFYREADY|' + $Member + '|attempt=' + [string]$attempt + '|ready=True' +
+              '|waited=' + [string]$waitedMs)
+    return [pscustomobject]@{
+        Value    = $acquired
+        Attempts = $attempt
+        WaitedMs = $waitedMs
+    }
+}
+
+# ===========================================================================
 # SaveAs: A NON-IDEMPOTENT CALL SETTLED BY ITS POSTCONDITION, NOT BY A CONTRACT
 # ===========================================================================
 # WINDOWS NAMED IT. The labelled build reported, repeatably:
@@ -1191,8 +1283,8 @@ if ($buildOk) {
             $problems += ("FileFormat is {0}, expected {1}" -f $ff, $manifest.xlsm_file_format)
         }
 
-        $worksheets2 = (Invoke-ComRetryRead -Target $wb2 -Member 'Worksheets' `
-                            -Description 'the reopened workbook Worksheets collection').Value
+        $worksheets2 = (Get-StageBVerificationObject -Target $wb2 -Member 'Worksheets' `
+                            -What 'the reopened workbook Worksheets collection').Value
         foreach ($sheet in $manifest.sheets) {
             $ws = $null
             try {
@@ -1210,10 +1302,10 @@ if ($buildOk) {
             }
         }
 
-        $vbproj2 = (Invoke-ComRetryRead -Target $wb2 -Member 'VBProject' `
-                        -Description 'the reopened workbook VBProject').Value
-        $vbcomps2 = (Invoke-ComRetryRead -Target $vbproj2 -Member 'VBComponents' `
-                         -Description 'the reopened VBComponents collection').Value
+        $vbproj2 = (Get-StageBVerificationObject -Target $wb2 -Member 'VBProject' `
+                        -What 'the reopened workbook VBProject').Value
+        $vbcomps2 = (Get-StageBVerificationObject -Target $vbproj2 -Member 'VBComponents' `
+                         -What 'the reopened VBComponents collection').Value
         # Read ONCE, not once per iteration. The old loop condition re-read .Count
         # on every pass - fourteen-odd unguarded COM reads where one suffices.
         $compCount = [int](Invoke-ComRetryRead -Target $vbcomps2 -Member 'Count' `

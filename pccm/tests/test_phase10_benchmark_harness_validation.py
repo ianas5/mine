@@ -1962,12 +1962,14 @@ def test_194_reproducing_the_year_columns_in_the_fixture_is_rejected() -> None:
     """THE GRIDS' SHAPE IS PRODUCTION'S. A builder that added year columns itself
     would be reimplementing modProfiling.SetYearColumns, and the benchmark would
     stop testing that production can do it."""
+    # RE-ANCHORED: the weight builder now returns a record, because `return $block`
+    # emitted the matrix and the pipeline enumerated it into a rank-1 array.
     _runner_mutation(
         "test_192",
-        "        $block = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `",
+        "        $prepared = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `",
         "        $null = $Workbook.Worksheets.Item($grid.sheet).ListObjects.Item(\n"
         "            $grid.table_name).ListColumns.Add()\n"
-        "        $block = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `")
+        "        $prepared = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `")
 
 
 def test_195_hard_coding_the_identifier_format_is_rejected() -> None:
@@ -2502,13 +2504,14 @@ def test_257_dropping_the_reserved_suffix_check_is_rejected() -> None:
 def test_258_resizing_a_profiling_grid_from_the_builder_is_rejected() -> None:
     """THE GRIDS ARE PRODUCTION'S. SyncRows owns their row count, and a builder
     that resized one would be reimplementing it."""
+    # RE-ANCHORED for the same reason as test_194.
     _reserved_mutation(
         "test_256",
-        "        $block = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `",
+        "        $prepared = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `",
         "        $null = Set-BenchmarkRegisterRowCount -Workbook $Workbook `\n"
         "            -SheetName $grid.sheet -TableName $grid.table_name `\n"
         "            -MinimumRows @($pair.drivers).Count\n"
-        "        $block = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `")
+        "        $prepared = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `")
 
 
 def test_259_counting_blank_grid_rows_as_keyed_rows_is_rejected() -> None:
@@ -2577,6 +2580,143 @@ def test_144_deleting_a_definition_a_dot_sourced_file_calls_is_rejected() -> Non
         scratch.unlink()
     assert done.returncode == 1, done.stdout
     assert "UNRESOLVED Remove-TableRow" in done.stdout, done.stdout
+
+
+# ===========================================================================
+# S. THE RECTANGULAR FIXTURE BLOCKS
+# ===========================================================================
+# THE RANK CONTROLS RUN A HARNESS AGAINST THE FILE ON DISK, so an in-memory mutation
+# would never reach them. These write the runner, re-run the executed rank proof, and
+# restore it in a finally - the same shape the reserved-row battery uses.
+RANK_CONTROLS = (
+    "test_261_every_fixture_block_is_a_rank_two_array_of_the_right_shape",
+    "test_262_the_weight_block_record_reports_the_geometry_it_built",
+    "test_263_a_matrix_is_never_the_thing_a_function_emits",
+    "test_260_production_is_byte_identical_and_the_timed_path_did_not_move",
+)
+
+
+def _rank_mutation(expected: str, before: str, after: str) -> None:
+    """Damage the runner ON DISK and re-run the EXECUTED rank proof against it."""
+    path = conformance.RUNNER
+    with path.open(encoding="utf-8", newline="") as handle:
+        original = handle.read()
+    damaged = original.replace(before.replace("\n", "\r\n"), after.replace("\n", "\r\n"), 1)
+    if damaged == original:
+        raise RuntimeError(
+            f"the mutation changed nothing: {before[:70]!r} is no longer in the runner")
+    refused = []
+    try:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(damaged)
+        conformance._MEMO.pop("runner", None)
+        conformance._MEMO.pop("code", None)
+        conformance._MEMO_ANY.pop("rank", None)
+        for name in RANK_CONTROLS:
+            try:
+                getattr(conformance, name)()
+            except BaseException:  # noqa: BLE001 - any refusal counts
+                refused.append(name)
+    finally:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(original)
+        conformance._MEMO.pop("runner", None)
+        conformance._MEMO.pop("code", None)
+        conformance._MEMO_ANY.pop("rank", None)
+    assert refused, "the mutation survived every rank check"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+def test_262_flattening_the_profiling_block_is_refused() -> None:
+    """THE DEFECT WINDOWS FOUND, PLANTED. `return $block` on a rank-2 object[,] is
+    EMITTED, and the pipeline enumerates a multidimensional array into its elements -
+    so the caller's assignment gets an Object[] and Excel is handed a rank-1 array."""
+    _rank_mutation(
+        "test_26",
+        "    return [pscustomobject]@{\n"
+        "        Block   = $block\n"
+        "        Rows    = $rows.Count\n"
+        "        Columns = $Years\n"
+        "        Keys    = $rows\n"
+        "    }",
+        "    return $block")
+
+
+def test_263_returning_the_block_through_an_enumerating_form_is_refused() -> None:
+    """SAME DEFECT IN ANOTHER COSTUME. Write-Output enumerates exactly as return
+    does; the matrix must not be the thing the function emits by ANY route."""
+    _rank_mutation(
+        "test_26",
+        "    return [pscustomobject]@{\n"
+        "        Block   = $block\n"
+        "        Rows    = $rows.Count\n"
+        "        Columns = $Years\n"
+        "        Keys    = $rows\n"
+        "    }",
+        "    Write-Output $block")
+
+
+def test_264_transposing_the_block_dimensions_is_refused() -> None:
+    """ROWS x YEARS, NOT YEARS x ROWS. A transposed block is still a perfectly
+    rectangular array, so only its DIMENSIONS give it away - and it would write every
+    driver's weights down the wrong axis."""
+    _rank_mutation(
+        "test_26",
+        "    $block = New-Object 'object[,]' $rows.Count, $Years",
+        "    $block = New-Object 'object[,]' $Years, $rows.Count")
+
+
+def test_265_disabling_the_rank_guard_is_refused() -> None:
+    """THE GUARD IS WHAT CAUGHT THIS ON WINDOWS, before a flattened array reached
+    Excel and wrote something shaped like an answer."""
+    _rank_mutation(
+        "test_26",
+        "    if ($Block.Rank -ne 2) {",
+        "    if ($false) {")
+
+
+def test_266_weakening_the_destination_dimension_check_is_refused() -> None:
+    """Set-BenchmarkRangeBlock RESIZES THE ANCHOR TO THE BLOCK'S OWN DIMENSIONS, so a
+    block of the wrong shape writes a perfectly consistent rectangle in the wrong
+    place. The caller asserting what it ASKED for is what stops that."""
+    _rank_mutation(
+        "test_262",
+        "        if ([int]$prepared.Rows -ne @($pair.drivers).Count) {",
+        "        if ($false) {")
+
+
+def test_267_weakening_the_column_dimension_check_is_refused() -> None:
+    """THE OTHER AXIS. A block with the wrong number of year columns would write
+    weights into the wrong years without changing its rank."""
+    _rank_mutation(
+        "test_262",
+        "        if ([int]$prepared.Columns -ne $years) {",
+        "        if ($false) {")
+
+
+def test_268_weakening_the_register_geometry_check_is_refused() -> None:
+    """THE SAME PROOF ON THE BLOCK THAT NEVER COLLAPSED. It travels as a record
+    property and always has - the caller asserting it is what keeps that true rather
+    than lucky."""
+    _rank_mutation(
+        "test_262",
+        "        if ([int]$prepared.Block.GetLength(0) -ne @($pair.drivers).Count) {",
+        "        if ($false) {")
+
+
+def test_269_flattening_the_register_block_is_refused() -> None:
+    """THE REGISTER BUILDER IS THE PATTERN THE FIX COPIED. Emitting its matrix would
+    break the one path Windows has always written correctly."""
+    _rank_mutation(
+        "test_26",
+        "    return [pscustomobject]@{\n"
+        "        Block = $block\n"
+        "        Ids = $ids",
+        "    $null = $ids\n"
+        "    return $block\n"
+        "    $unreachable = [pscustomobject]@{\n"
+        "        Block = $block\n"
+        "        Ids = $ids")
 
 
 if __name__ == "__main__":

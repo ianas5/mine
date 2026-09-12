@@ -2754,3 +2754,155 @@ claim is made about a message-filter race, modal state, OneDrive, a file lock,
 lifecycle overlap, COM marshaling, or an Excel bug. The gate is a bounded
 observation of a condition Windows has now shown twice; it is not a theory about its
 cause.
+
+---
+
+## Equivalence run 7 — INVALID / NOT EVALUATED — TWO HARNESS DEFECTS
+
+**Harness commit:** `f006ea2`. Windows PowerShell 5.1. Stage A immediately before
+the run: 351 passed, 0 failed. Both starting bundles were built and proved
+**identical**.
+
+### What the two new settlements did
+
+The post-open readiness gate worked in **both** Stage-B builds:
+
+```
+Endpoints  READY|open|attempt=1|fullname=True|fileformat=51|waited=0
+Bulk       READY|open|attempt=1|fullname=True|fileformat=51|waited=0
+```
+
+`SaveAs` succeeded cleanly in **both**:
+
+```
+SAVEAS|attempt=1|success
+SAVEAS|verified|path=True|format=52|exists=True
+```
+
+and no build COM rejection occurred anywhere:
+
+```
+COMREJECT|build|none|attempts=0|waited=0
+```
+
+**The post-open and SaveAs problems did not recur.** Neither settlement is
+redesigned by this batch.
+
+### Defect A — the reopen verification acquired a null Worksheets collection
+
+The Endpoints Stage-B **build** completed in full: SaveAs, 14 CodeNames, all 32
+modules, the ThisWorkbook module, 11 buttons, protection applied, final `Save`, and
+the build instance closed naturally. Then the **reopen verification** failed every
+sheet and every button with:
+
+```
+Invoke-ComRetryRead: no target object for Worksheets.Item(...)
+```
+
+beside `no verification read was refused; 0 ms waited`, and a shutdown ledger
+reading `Worksheets2 | SKIPPED | reference was already null` while `Workbook2`,
+`VBProject2` and `VBComponents2` all released cleanly.
+
+**Cause, from source.** `$worksheets2 = (Invoke-ComRetryRead ... ).Value` took
+whatever the helper read. To the helper a `$null` Value is a **success** — it read
+the member and that is what came back — so the acquisition "succeeded" with nothing
+in it and the first `Item()` call raised instead. The build path gained a non-null
+guard in an earlier batch; **the verification path did not.**
+
+**This is a verification-path no-answer defect. It is not a build failure and not a
+production failure.**
+
+**Correction.** A narrowly-scoped acquisition rule: a reopened object is usable only
+when a **real object** comes back. `$null` means **not ready yet** and is retried
+under the accepted envelope — 12 attempts, 250 ms rising to 2000 ms, 15000 ms total,
+sleeping only after a no-answer or a refusal the helper could not resolve. A real
+but **non-object** answer aborts, because waiting cannot turn an `Int32` into a
+collection. A non-retryable exception aborts on the first observation. Applied to
+all three reopened acquisitions — `Worksheets`, `VBProject`, `VBComponents`; scalar
+reads and `Item` lookups are untouched.
+
+**And it returns a record, never the object.** `Worksheets` is a collection, and a
+collection written to the output stream is enumerated into its members — the Phase-10
+Run-3 record collapse, and the very same hazard as Defect B below.
+
+```
+VERIFYREADY|Worksheets|attempt=1|ready=True|waited=0
+VERIFYREADY|Worksheets|exhausted|attempts=12|waited=15000
+```
+
+### Defect B — the cost-profiling block lost its rectangular rank
+
+The Bulk Stage-B bootstrap completed **fully**, including its reopen verification —
+14 CodeNames, 32 modules, 11 buttons, clean COM lifecycle. Then Bulk fixture
+construction raised:
+
+```
+FAIL|Bulk|RAISED|the bulk write for tblCostProfiling was handed a rank-1 array;
+                 Excel accepts only a rectangular two-dimensional block
+```
+
+**Cause, from source.** `New-BenchmarkWeightBlock` ended with `return $block` on a
+rank-2 `object[,]`. A multidimensional array written to the PowerShell output stream
+is **enumerated into its elements** in row-major order, so the caller's assignment
+received an `Object[]` of rows × years scalars. `New-BenchmarkRegisterBlock` never
+had the defect because its matrix travels as a **property of a record**, which the
+pipeline cannot enumerate — which is why the registers always wrote correctly.
+
+`Set-BenchmarkRangeBlock`'s rank guard is what caught it **before** the write.
+
+**This is a harness fixture-shape defect. It is not a production failure and it is
+not a fixture DIFFER.**
+
+**Correction.** The weight builder hands the matrix back the way the register
+builder always has — as `.Block` on a record, alongside the `Rows`, `Columns` and
+`Keys` it built — and both callers now assert the geometry they asked for before the
+write. `return ,$block` would also work; a comma is one keystroke from being tidied
+away by someone who does not know what it is holding up.
+
+**The complete audit:** exactly two `object[,]` allocations and exactly two
+`Set-BenchmarkRangeBlock` callers exist in the runner — the two registers and the
+two profiling grids. The inflation grid is production's own via `SyncProfileRows`
+and is not block-written.
+
+### Executed, not asserted
+
+| block | CLR type | rank | dimensions |
+|---|---|---|---|
+| register SMALL cost lines | `System.Object[,]` | 2 | 12 × 11 |
+| register SMALL risks | `System.Object[,]` | 2 | 8 × 10 |
+| register LARGE cost lines | `System.Object[,]` | 2 | 180 × 11 |
+| weights SMALL cost profiling | `System.Object[,]` | 2 | 12 × 5 |
+| weights SMALL risk profiling | `System.Object[,]` | 2 | 8 × 5 |
+| weights LARGE cost profiling | `System.Object[,]` | 2 | 180 × 30 |
+| **bare `return` (the defect)** | **`System.Object[]`** | **1** | **12 elements from 3 × 4** |
+| **record property (the fix)** | `System.Object[,]` | 2 | 3 × 4 |
+
+The last two lines are the same matrix handed back two ways — the defect and the fix
+side by side, observed rather than claimed. The verification acquisition is proved
+the same way: an object answers on attempt 1 with zero wait and comes back as
+**one collection with three members**, a `$null` causes another bounded attempt, a
+refusal retries, and a scalar, a string, a real error, the attempt bound and the
+wait budget each abort. Excel is never started.
+
+### Overall status
+
+Endpoints never reached fixture execution, because Stage-B verification failed. Bulk
+completed Stage-B but its fixture construction failed before completion. Therefore:
+**no Endpoints snapshot, no Bulk snapshot, no semantic comparison, no CALCEQUIV.**
+
+```
+Equivalence run 7: INVALID / NOT EVALUATED
+```
+
+This record **must not be read as a fixture DIFFER**.
+**Bulk remains NOT authorised.**
+Both findings are **harness defects**; neither is a production failure and neither
+is a build failure.
+
+### Unchanged
+
+The readiness gate, the SaveAs three-state settlement, `Invoke-ComRetryRead`,
+`Set-BenchmarkRegisterRowCount`, `Get-BenchmarkPermanentId`,
+`New-BenchmarkRegisterBlock`, `Set-BenchmarkRangeBlock`, the equivalence gate,
+`Get-EquivalenceSnapshot`, the protection window, the timed path and production VBA.
+No inter-pass drain, no sleep between sessions, no merged sessions.

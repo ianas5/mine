@@ -97,6 +97,7 @@ CONTRACT_DIMENSIONS = {"Small": (20, 10), "Medium": (100, 25), "Large": (300, 40
 
 
 _MEMO: dict = {}
+_MEMO_ANY: dict = {}
 
 
 def _spec():
@@ -2604,12 +2605,131 @@ def test_260_production_is_byte_identical_and_the_timed_path_did_not_move() -> N
     for name in ("Invoke-BenchmarkExecution", "Test-BenchmarkSample",
                  "Assert-BenchmarkProblemList", "Open-BenchmarkFixtureWindow",
                  "Close-BenchmarkFixtureWindow", "Invoke-BenchmarkWindowRollback",
-                 "Set-BenchmarkRangeBlock", "New-BenchmarkWeightBlock",
+                 "Set-BenchmarkRangeBlock",
                  "Get-BenchmarkPermanentId", "New-BenchmarkRegisterBlock"):
         assert _function(_code(), name) == _function(accepted, name), (
             f"{name} changed while the reserved-row rule was being corrected")
+    # NEW-BENCHMARKWEIGHTBLOCK IS DECLARED, and the declaration is proved. Windows
+    # reported "the bulk write for tblCostProfiling was handed a rank-1 array": it
+    # ended with `return $block` on a rank-2 object[,], and a multidimensional array
+    # written to the pipeline is ENUMERATED into its elements. It now hands the
+    # matrix back as a record property, as the register builder always has.
+    assert _function(_code(), "New-BenchmarkWeightBlock") != \
+        _function(accepted, "New-BenchmarkWeightBlock"), (
+        "New-BenchmarkWeightBlock is declared as corrected but is unchanged")
+    assert "return [pscustomobject]@{" in _function(_code(), "New-BenchmarkWeightBlock")
+    assert "return $block" not in _function(_code(), "New-BenchmarkWeightBlock")
     plan = _plan()
     assert len([r for r in plan["runs"] if r["scenario"] == "PERF-LARGE"]) == 8
+
+
+RANK_HARNESS = PCCM_ROOT / "tests" / "phase10_block_rank_flow.ps1"
+
+# Every rectangular fixture block, and the geometry each must have. Restated here so
+# a builder that quietly changes shape fails a control rather than Excel.
+RANK_EXPECTED = {
+    "register SMALL cost lines": (12, 11),
+    "register SMALL risks": (8, 10),
+    "register LARGE cost lines": (180, 11),
+    "weights SMALL cost profiling": (12, 5),
+    "weights SMALL risk profiling": (8, 5),
+    "weights LARGE cost profiling": (180, 30),
+}
+
+
+def _rank_rows() -> dict:
+    """RUN the rank harness and group its tagged lines.
+
+    "What CLR type, what rank, what dimensions" is not a property of text. Windows
+    reported a rank-1 array where a rectangle was required, so the blocks are asked.
+    """
+    if "rank" not in _MEMO_ANY:
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-File", str(RANK_HARNESS), "-Runner", str(RUNNER)],
+            capture_output=True, text=True, timeout=300)
+        assert done.returncode == 0, done.stdout + done.stderr
+        rows: dict = {"rank": {}, "prop": {}, "unmet": []}
+        for raw in done.stdout.splitlines():
+            if raw.startswith(("PARSE|", "MISSING|")):
+                rows["unmet"].append(raw)
+            elif raw.startswith("RANK|"):
+                case, kind, rank, r, c, er, ec = raw[len("RANK|"):].split("|", 6)
+                rows["rank"][case] = {"type": kind, "rank": int(rank), "rows": int(r),
+                                      "cols": int(c), "expected": (int(er), int(ec))}
+            elif raw.startswith("PROP|"):
+                case, rest = raw[len("PROP|"):].split("|", 1)
+                rows["prop"][case] = rest
+        _MEMO_ANY["rank"] = rows
+    return _MEMO_ANY["rank"]
+
+
+# ===========================================================================
+# S. THE FIXTURE BLOCKS ARE RECTANGULAR
+# ===========================================================================
+# WINDOWS: "the bulk write for tblCostProfiling was handed a rank-1 array; Excel
+# accepts only a rectangular two-dimensional block". `New-BenchmarkWeightBlock` ended
+# with `return $block` on a rank-2 object[,] - and a multidimensional array written to
+# the output stream is ENUMERATED into its elements in row-major order, so the
+# caller's assignment received an Object[]. The register builder never had the defect
+# because its matrix travels as a record PROPERTY.
+def test_261_every_fixture_block_is_a_rank_two_array_of_the_right_shape() -> None:
+    """EXECUTED, AND EVERY CALLER OF THE SAME ABSTRACTION. Both registers, both
+    profiling grids, and one LARGE growth case."""
+    rows = _rank_rows()
+    assert not rows["unmet"], rows["unmet"]
+    assert set(rows["rank"]) >= set(RANK_EXPECTED), sorted(set(RANK_EXPECTED) - set(rows["rank"]))
+    for case, (expected_rows, expected_cols) in RANK_EXPECTED.items():
+        row = rows["rank"][case]
+        assert row["type"] == "System.Object[,]", (case, row)
+        assert row["rank"] == 2, (case, row)
+        assert (row["rows"], row["cols"]) == (expected_rows, expected_cols), (case, row)
+        assert row["expected"] == (expected_rows, expected_cols), (case, row)
+
+
+def test_262_the_weight_block_record_reports_the_geometry_it_built() -> None:
+    """THE CALLER ASSERTS WHAT IT ASKED FOR. Set-BenchmarkRangeBlock resizes the
+    anchor to the block's OWN dimensions, so a block of the wrong shape would write a
+    perfectly consistent rectangle in the wrong place."""
+    rows = _rank_rows()
+    for case, (r, c) in (("SMALL cost profiling", (12, 5)),
+                         ("SMALL risk profiling", (8, 5)),
+                         ("LARGE cost profiling", (180, 30))):
+        detail = rows["prop"][case]
+        assert f"rows={r}" in detail, (case, detail)
+        assert f"cols={c}" in detail, (case, detail)
+        assert f"keys={r}" in detail, (case, detail)
+    orchestrator = _function(_code(), "Set-BenchmarkBulkFixture")
+    assert "[int]$prepared.Rows -ne @($pair.drivers).Count" in orchestrator
+    assert "[int]$prepared.Columns -ne $years" in orchestrator
+    assert "-Block $prepared.Block" in orchestrator
+    assert "[int]$prepared.Block.GetLength(0) -ne @($pair.drivers).Count" in orchestrator
+    assert "[int]$prepared.Block.GetLength(1) -ne @($prepared.Columns).Count" in orchestrator
+
+
+def test_263_a_matrix_is_never_the_thing_a_function_emits() -> None:
+    """EXECUTED, AND THIS IS THE DEFECT AND THE FIX SIDE BY SIDE. Two functions,
+    identical but for how they hand the SAME matrix back: the bare return comes out
+    rank 1, the record property comes out rank 2. Not a claim about PowerShell - an
+    observation of it."""
+    rows = _rank_rows()
+    defect = rows["rank"]["bare return (the defect)"]
+    assert defect["rank"] == 1, f"the bare return no longer flattens: {defect}"
+    assert defect["type"] == "System.Object[]", defect
+    assert defect["rows"] == 12, f"3x4 did not flatten to 12 elements: {defect}"
+    fix = rows["rank"]["record property (the fix)"]
+    assert fix["rank"] == 2 and (fix["rows"], fix["cols"]) == (3, 4), fix
+    assert fix["type"] == "System.Object[,]", fix
+    # AND THE REAL BUILDERS USE THE FORM THAT SURVIVES.
+    for name in ("New-BenchmarkWeightBlock", "New-BenchmarkRegisterBlock"):
+        body = _function(_code(), name)
+        assert "return [pscustomobject]@{" in body, f"{name} does not return a record"
+        assert not re.search(r"return\s+\$block\s*$", body, re.M), (
+            f"{name} emits the matrix itself")
+    # THE GUARD THAT CAUGHT IT STAYS.
+    writer = _function(_code(), "Set-BenchmarkRangeBlock")
+    assert "if ($Block.Rank -ne 2) {" in writer
+    assert "Excel accepts only a rectangular " in writer
+    assert "if ($Block -isnot [System.Array]) {" in writer
 
 
 BUNDLE_HARNESS = PCCM_ROOT / "tests" / "phase10_bundle_flow.ps1"
@@ -2922,7 +3042,15 @@ def test_222_production_is_byte_identical_to_the_accepted_revision() -> None:
     # DECLARED exception: equivalence run 2 proved `Set-BenchmarkRegisterRowCount`
     # confused reserved capacity with semantic count, and correcting that is the
     # whole of the reserved-row round. Everything else must still match.
-    declared = ("Set-BenchmarkRegisterRowCount", "Set-BenchmarkBulkFixture")
+    # A SECOND DECLARED CORRECTION. Windows reported "the bulk write for
+    # tblCostProfiling was handed a rank-1 array": `New-BenchmarkWeightBlock` ended
+    # with `return $block` on a rank-2 object[,], and PowerShell ENUMERATES a
+    # multidimensional array into its elements - so the caller's assignment got an
+    # Object[]. It now hands the matrix back as a record PROPERTY, which is what the
+    # register builder has always done and why that block never collapsed. Its
+    # caller changed with it, to take `.Block` and prove the geometry.
+    declared = ("Set-BenchmarkRegisterRowCount", "Set-BenchmarkBulkFixture",
+                "New-BenchmarkWeightBlock")
     accepted = _code_at("99cb472")
     for name in BULK_FUNCTIONS + ("Invoke-BenchmarkExecution", "Test-BenchmarkSample",
                                   "Assert-BenchmarkProblemList"):

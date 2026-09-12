@@ -373,10 +373,12 @@ def test_53_suppressing_events_to_make_verification_easier_is_refused() -> None:
 
 
 def test_54_unprotecting_the_workbook_during_verification_is_refused() -> None:
+    # RE-ANCHORED: the three reopened object acquisitions now go through the
+    # acquisition rule, because one of them accepted a $null as success.
     _mutate("build", "test_42",
-            "        $worksheets2 = (Invoke-ComRetryRead -Target $wb2 -Member 'Worksheets' `",
+            "        $worksheets2 = (Get-StageBVerificationObject -Target $wb2 -Member 'Worksheets' `",
             "        $wb2.Unprotect()\n"
-            "        $worksheets2 = (Invoke-ComRetryRead -Target $wb2 -Member 'Worksheets' `")
+            "        $worksheets2 = (Get-StageBVerificationObject -Target $wb2 -Member 'Worksheets' `")
 
 
 def test_55_dropping_the_retry_report_is_refused() -> None:
@@ -1359,6 +1361,150 @@ def test_154_dropping_the_cross_run_comparison_is_refused() -> None:
         "evidence", "test_123",
         "So the evidence no longer supports a member-specific or wrapper-specific diagnosis.",
         "So the FullName read is unreliable.")
+
+
+# ===========================================================================
+# K. THE REOPENED VERIFICATION ACQUISITION
+# ===========================================================================
+# ONE UNGUARDED ASSIGNMENT TOOK A $null AS AN ACQUISITION, and a completely built
+# workbook failed every check. Every way of putting that back is fed in here.
+def test_155_accepting_a_null_worksheets_collection_is_refused() -> None:
+    """THE DEFECT, PLANTED. A $null Value is a SUCCESS to the read helper - it read
+    the member and that is what came back - so the acquisition must be the thing that
+    knows better."""
+    _mutate_on_disk(
+        "build", "test_12",
+        "        if ($null -ne $value) {",
+        "        if ($true) {")
+
+
+def test_156_returning_the_collection_instead_of_a_record_is_refused() -> None:
+    """WORKSHEETS IS ENUMERABLE. Writing it to the output stream enumerates it into
+    its members - the Phase-10 Run-3 record collapse, and the same defect that
+    flattened the profiling matrix in this very run."""
+    _mutate_on_disk(
+        "build", "test_124",
+        "    return [pscustomobject]@{\n"
+        "        Value    = $acquired\n"
+        "        Attempts = $attempt\n"
+        "        WaitedMs = $waitedMs\n"
+        "    }",
+        "    return $acquired")
+
+
+def test_157_removing_the_acquisition_attempt_bound_is_refused() -> None:
+    """AN UNBOUNDED POLL HOLDS AN EXCEL PROCESS OPEN and produces no transcript."""
+    _mutate_on_disk(
+        "build", "test_127",
+        "        if ($attempt -ge $MaxAttempts) { break }\n"
+        "        if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }\n"
+        "        Start-Sleep -Milliseconds $delay\n"
+        "        $waitedMs = $waitedMs + $delay\n"
+        "        $delay = [Math]::Min(($delay + $FirstDelayMs), $MaxDelayMs)\n"
+        "    }\n"
+        "\n"
+        "    if ($null -eq $acquired) {",
+        "        if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }\n"
+        "        Start-Sleep -Milliseconds $delay\n"
+        "        $waitedMs = $waitedMs + $delay\n"
+        "        $delay = [Math]::Min(($delay + $FirstDelayMs), $MaxDelayMs)\n"
+        "    }\n"
+        "\n"
+        "    if ($null -eq $acquired) {")
+
+
+def test_158_removing_the_acquisition_wait_bound_is_refused() -> None:
+    """THE OTHER BOUND, separately, because a small attempt limit would hide it."""
+    _mutate_on_disk(
+        "build", "test_127",
+        "        if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }\n"
+        "        Start-Sleep -Milliseconds $delay\n"
+        "        $waitedMs = $waitedMs + $delay\n"
+        "        $delay = [Math]::Min(($delay + $FirstDelayMs), $MaxDelayMs)\n"
+        "    }\n"
+        "\n"
+        "    if ($null -eq $acquired) {",
+        "        Start-Sleep -Milliseconds $delay\n"
+        "        $waitedMs = $waitedMs + $delay\n"
+        "        $delay = [Math]::Min(($delay + $FirstDelayMs), $MaxDelayMs)\n"
+        "    }\n"
+        "\n"
+        "    if ($null -eq $acquired) {")
+
+
+def test_159_an_unconditional_acquisition_sleep_is_refused() -> None:
+    """A DELAY BEFORE EVERY ACQUISITION IS THE BLANKET SLEEP this project has refused
+    from the first readiness run, and it would cost every clean run three waits."""
+    _mutate_on_disk(
+        "build", "test_",
+        "        $value = $null\n"
+        "        try {\n"
+        "            $read = Invoke-ComRetryRead -Target $Target -Member $Member -Description $What",
+        "        Start-Sleep -Milliseconds 500\n"
+        "        $value = $null\n"
+        "        try {\n"
+        "            $read = Invoke-ComRetryRead -Target $Target -Member $Member -Description $What")
+
+
+def test_160_retrying_a_non_retryable_verification_error_is_refused() -> None:
+    """AN HRESULT EXCEL ACCEPTED DESCRIBES SOMETHING THAT HAPPENED. Polling over it
+    hides a real failure behind fifteen seconds of waiting."""
+    _mutate_on_disk(
+        "build", "test_126",
+        "            if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }\n"
+        "            $value = $null\n"
+        "        }\n"
+        "        if ($null -ne $value) {",
+        "            $value = $null\n"
+        "        }\n"
+        "        if ($null -ne $value) {")
+
+
+def test_161_accepting_a_scalar_as_an_acquired_object_is_refused() -> None:
+    """A REAL BUT WRONG ANSWER IS NOT A SLOW ONE. An Int32 where a collection belongs
+    would fail on the next Item() call with nothing pointing back to here."""
+    _mutate_on_disk(
+        "build", "test_126",
+        "            if (($value -is [string]) -or ($value -is [System.ValueType])) {",
+        "            if ($false) {")
+
+
+def test_162_using_the_acquisition_rule_on_a_mutation_is_refused() -> None:
+    """IT IS A READ RULE. Nothing that changes the workbook may be reissued by it."""
+    _mutate_on_disk(
+        "build", "test_124",
+        "        $compCount = [int](Invoke-ComRetryRead -Target $vbcomps2 -Member 'Count' `",
+        "        $null = Get-StageBVerificationObject -Target $wb2 -Member 'Save' `\n"
+        "                    -What 'a mutation'\n"
+        "        $compCount = [int](Invoke-ComRetryRead -Target $vbcomps2 -Member 'Count' `")
+
+
+def test_163_moving_the_readiness_gate_or_saveas_settlement_is_refused() -> None:
+    """TWO HARNESS DEFECTS WERE CORRECTED. The settlements Windows has just proved
+    work are byte-identical, and a batch that touched one would say so here."""
+    _mutate_on_disk(
+        "build", "test_128",
+        "        if (($nameState -eq 'ok') -and ($formatState -eq 'ok')) { $ready = $true; break }",
+        "        if ($nameState -eq 'ok') { $ready = $true; break }")
+
+
+def test_164_recording_either_defect_as_production_is_refused() -> None:
+    """BOTH ARE HARNESS DEFECTS. A record that called either one a production failure
+    would send the next batch into the VBA."""
+    _mutate_on_disk(
+        "evidence", "test_129",
+        "**This is a verification-path no-answer defect. It is not a build failure and not a\nproduction failure.**",
+        "**This is a production failure in the workbook build.**")
+
+
+def test_165_recording_the_fixture_shape_defect_as_a_differ_is_refused() -> None:
+    """NO COMPARISON RAN. A record that let run 7 read as a semantic result would
+    licence a Bulk baseline on evidence that does not exist."""
+    _mutate_on_disk(
+        "evidence", "test_129",
+        "This record **must not be read as a fixture DIFFER**.\n"
+        "**Bulk remains NOT authorised.**",
+        "This record shows a fixture difference.")
 
 
 if __name__ == "__main__":

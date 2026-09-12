@@ -818,7 +818,24 @@ function New-BenchmarkWeightBlock {
             else { $block[$r, $c] = [double]$weights[$c] }
         }
     }
-    return $block
+    # A MATRIX IS NEVER THE THING A FUNCTION EMITS. `return $block` wrote the
+    # rank-2 object[,] to the output stream, and PowerShell ENUMERATES a
+    # multidimensional array into its elements in row-major order - so the caller's
+    # assignment received an Object[] of rows x years scalars and Excel was handed a
+    # rank-1 array. That is what Windows reported for tblCostProfiling, and
+    # Set-BenchmarkRangeBlock's rank guard is what caught it before the write.
+    #
+    # THE FIX IS THE PATTERN THE REGISTER BUILDER ALREADY USES. A matrix carried as a
+    # PROPERTY of a record cannot be enumerated on its way back: the pipeline emits
+    # one pscustomobject, and `.Block` is the same array object the loop filled.
+    # `return ,$block` would also work, but a comma is one keystroke from being
+    # tidied away by someone who does not know what it is holding up.
+    return [pscustomobject]@{
+        Block   = $block
+        Rows    = $rows.Count
+        Columns = $Years
+        Keys    = $rows
+    }
 }
 
 # THE BULK FIXTURE, STEP FOR STEP AGAINST THE ACCEPTED ONE.
@@ -936,6 +953,19 @@ function Set-BenchmarkBulkFixture {
                    ' body rows, fewer than the ' + [string]@($pair.drivers).Count +
                    ' the fixture must populate')
         }
+        # THE SAME GEOMETRY PROOF. This block never collapsed - it travels as a
+        # record property and always has - but the caller asserting what it asked for
+        # is what keeps that true rather than lucky.
+        if ([int]$prepared.Block.GetLength(0) -ne @($pair.drivers).Count) {
+            throw ([string]$register.table_name + ' block has ' +
+                   [string]$prepared.Block.GetLength(0) + ' rows where the fixture ' +
+                   'declares ' + [string]@($pair.drivers).Count)
+        }
+        if ([int]$prepared.Block.GetLength(1) -ne @($prepared.Columns).Count) {
+            throw ([string]$register.table_name + ' block has ' +
+                   [string]$prepared.Block.GetLength(1) + ' columns where the contract ' +
+                   'declares ' + [string]@($prepared.Columns).Count)
+        }
         Set-BenchmarkRangeBlock -Workbook $Workbook -SheetName $register.sheet `
             -TableName $register.table_name -FirstRow 1 -FirstColumn 1 -Block $prepared.Block `
             -Description ([string]$register.table_name)
@@ -1012,11 +1042,25 @@ function Set-BenchmarkBulkFixture {
         }
         $grid = $gridByKey[$pair.key]
         $fixed = @($grid.fixed_columns).Count
-        $block = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `
+        $prepared = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `
             -Drivers $pair.drivers -Years $years
+        # THE GEOMETRY IS PROVED AGAINST WHAT THIS CALLER ASKED FOR, not merely
+        # against whatever arrived. Set-BenchmarkRangeBlock resizes the anchor to the
+        # block's own dimensions, so a block of the wrong shape would write a
+        # perfectly consistent rectangle in the wrong place.
+        if ([int]$prepared.Rows -ne @($pair.drivers).Count) {
+            throw ('the weight block for ' + [string]$grid.table_name + ' has ' +
+                   [string]$prepared.Rows + ' rows where the fixture declares ' +
+                   [string]@($pair.drivers).Count)
+        }
+        if ([int]$prepared.Columns -ne $years) {
+            throw ('the weight block for ' + [string]$grid.table_name + ' has ' +
+                   [string]$prepared.Columns + ' columns where the model runs for ' +
+                   [string]$years + ' year(s)')
+        }
         Set-BenchmarkRangeBlock -Workbook $Workbook -SheetName $grid.sheet `
-            -TableName $grid.table_name -FirstRow 1 -FirstColumn ($fixed + 1) -Block $block `
-            -Description ([string]$grid.table_name)
+            -TableName $grid.table_name -FirstRow 1 -FirstColumn ($fixed + 1) `
+            -Block $prepared.Block -Description ([string]$grid.table_name)
     }
 
     # --- H. THE FIXTURE ENDS COHERENT ---------------------------------------

@@ -113,7 +113,39 @@ SAVEAS_HELPERS = (
 # Every build-only function that performs a COM read. The readiness gate joined this
 # list when Windows proved the post-open gap; a read hidden in a function that is not
 # here is a read no control looks at.
+# Build-only functions that read a NAMED member. The verification acquisition rule
+# is deliberately NOT here: its member comes from a parameter, so its callers are
+# where the names live, and test_124 is its subject.
 READ_SITE_FUNCTIONS = ("Wait-StageBWorkbookReady",) + SAVEAS_HELPERS
+
+# The bounded loops that may sleep, and the observation each one waits on. NAMED, so
+# a fourth cannot appear by widening a count.
+BOUNDED_WAITS = {
+    "Invoke-StageBSaveAs": "a postcondition proved the save did not happen",
+    "Wait-StageBWorkbookReady": "the opened workbook did not answer for itself",
+    "Get-StageBVerificationObject": "the reopened collection produced no object",
+}
+
+# phase10_benchmark.ps1 is no longer byte-frozen: Windows proved the profiling block
+# collapsed to rank 1 on its way out of its builder, because `return $block` on a
+# rank-2 object[,] is EMITTED and the pipeline enumerates a multidimensional array.
+# These are the functions that changed for it; every other function must still match,
+# and a declared name that did NOT change is a stale exemption.
+BENCHMARK_DECLARED_CHANGES = ("New-BenchmarkWeightBlock", "Set-BenchmarkBulkFixture")
+BENCHMARK_FROZEN_FUNCTIONS = ("Set-BenchmarkRegisterRowCount", "Get-BenchmarkPermanentId",
+                              "New-BenchmarkRegisterBlock", "Set-BenchmarkRangeBlock")
+
+
+def _assert_benchmark_freeze(commit: str) -> None:
+    """The runner's frozen functions, and the declared ones proved to have moved."""
+    now = BENCHMARK_PS1.read_text(encoding="utf-8")
+    then = _at(commit, "pccm/bootstrap/windows/phase10_benchmark.ps1")
+    for name in BENCHMARK_FROZEN_FUNCTIONS:
+        assert _ps_function(now, name) == _ps_function(then, name), (
+            f"{name} changed since {commit}")
+    for name in BENCHMARK_DECLARED_CHANGES:
+        assert _ps_function(now, name) != _ps_function(then, name), (
+            f"{name} is declared as corrected but is unchanged since {commit}")
 
 # Every non-idempotent build mutation. A retry around any of these would be a
 # guess about whether Excel accepted it, which is the one thing the refusal
@@ -275,7 +307,7 @@ def _flow() -> dict:
                       "ledger": {}, "wrap": {}, "host": (), "unmet": [],
                       "save": {}, "savenote": {}, "savestate": {}, "savepath": {},
                       "read": {}, "telemetry": {}, "subops": [], "step": {},
-                      "ready": {}, "readynote": {}}
+                      "ready": {}, "readynote": {}, "verify": {}, "verifynote": {}}
         for raw in done.stdout.splitlines():
             if raw.startswith(("PARSE|", "MISSING|")):
                 rows["unmet"].append(raw)
@@ -303,6 +335,20 @@ def _flow() -> dict:
             elif raw.startswith("HOST|"):
                 prop, method = raw[len("HOST|"):].split("|", 1)
                 rows["host"] = (prop, method)
+            elif raw.startswith("VERIFYNOTE|"):
+                case, line = raw[len("VERIFYNOTE|"):].split("|", 1)
+                rows["verifynote"].setdefault(case, []).append(line)
+            elif raw.startswith("VERIFY|"):
+                parts = raw[len("VERIFY|"):].split("|")
+                case, outcome, attempts, waited = parts[0], parts[1], parts[2], parts[3]
+                rest = "|".join(parts[4:])
+                reads = -1
+                for part in rest.split("|"):
+                    if part.startswith("reads="):
+                        reads = int(part.split("=", 1)[1])
+                rows["verify"][case] = {"outcome": outcome, "attempts": int(attempts),
+                                        "waited": int(waited), "detail": rest,
+                                        "reads": reads}
             elif raw.startswith("READY|"):
                 parts = raw[len("READY|"):].split("|")
                 case, outcome, attempts, waited, fmt = parts[0], parts[1], parts[2], parts[3], parts[4]
@@ -518,7 +564,12 @@ def test_14_the_only_sleep_in_either_script_is_inside_the_bounded_retry() -> Non
     # SUCCEED. The second one arrived when Windows proved the post-open readiness gap
     # twice over; it is declared rather than admitted by widening the count.
     build_sleeps = [m.start() for m in re.finditer(r"Start-Sleep", code)]
-    assert len(build_sleeps) == 2, f"the bootstrap sleeps in {len(build_sleeps)} places"
+    assert len(build_sleeps) == len(BOUNDED_WAITS), (
+        f"the bootstrap sleeps in {len(build_sleeps)} places, not {len(BOUNDED_WAITS)}")
+    # EACH NAMED LOOP OWNS EXACTLY ONE, so a new wait cannot arrive unnamed.
+    for name in BOUNDED_WAITS:
+        assert _ps_function(code, name).count("Start-Sleep") == 1, (
+            f"{name} does not own exactly one bounded backoff")
     assert saveas.count("Start-Sleep") == 1, "the SaveAs retry lost its backoff"
     assert ready.count("Start-Sleep") == 1, "the readiness gate lost its backoff"
     # THE SAVEAS SLEEP IS GATED ON THE POSTCONDITION, not merely on the refusal.
@@ -1284,10 +1335,14 @@ def test_75_the_only_wait_is_the_bounded_post_open_readiness_gate() -> None:
     observation did not answer.
     """
     code = _build_code()
-    outside = code.replace(_ps_function(code, "Invoke-StageBSaveAs"), "")
-    outside = outside.replace(_ps_function(code, "Wait-StageBWorkbookReady"), "")
+    outside = code
+    for name in BOUNDED_WAITS:
+        outside = outside.replace(_ps_function(code, name), "")
     assert "Start-Sleep" not in outside, (
-        "the bootstrap sleeps outside the SaveAs retry and the readiness gate")
+        "the bootstrap sleeps outside its three named bounded loops")
+    # AND EACH WAITS ONLY AFTER AN OBSERVATION FAILED, never unconditionally.
+    verify = _ps_function(code, "Get-StageBVerificationObject")
+    assert verify.index("if ($null -ne $value) {") < verify.index("Start-Sleep")
     for banned in ("Start-Process", "Get-Random", "Wait-Process", "WaitForExit"):
         assert banned not in code, f"an unbounded wait appeared: {banned}"
     # NOT A BROAD HEALTH PROBE. The gate observes exactly two members and nothing
@@ -1433,9 +1488,7 @@ def test_83_the_snapshot_and_the_reserved_row_correction_are_untouched() -> None
     snapshot_then = _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
                                  "Get-EquivalenceSnapshot")
     assert snapshot_now == snapshot_then, "Get-EquivalenceSnapshot moved"
-    assert BENCHMARK_PS1.read_text(encoding="utf-8") == \
-        _at("1e0edb2", "pccm/bootstrap/windows/phase10_benchmark.ps1"), \
-        "the benchmark runner changed in a batch that may not change it"
+    _assert_benchmark_freeze("1e0edb2")
 
 
 def test_84_production_vba_is_byte_identical() -> None:
@@ -1805,14 +1858,7 @@ def test_103_the_freezes_this_batch_may_not_touch() -> None:
     done = subprocess.run(["git", "diff", "--name-only", "3d34b26", "--", "pccm/src/vba"],
                           cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
     assert done.stdout.strip() == "", done.stdout
-    assert BENCHMARK_PS1.read_text(encoding="utf-8") == \
-        _at("3d34b26", "pccm/bootstrap/windows/phase10_benchmark.ps1"), \
-        "the benchmark runner changed"
-    for name in ("Set-BenchmarkRegisterRowCount", "New-BenchmarkRegisterBlock",
-                 "Get-BenchmarkPermanentId", "Set-BenchmarkBulkFixture"):
-        now = _ps_function(BENCHMARK_PS1.read_text(encoding="utf-8"), name)
-        then = _ps_function(_at("3d34b26", "pccm/bootstrap/windows/phase10_benchmark.ps1"), name)
-        assert now == then, f"{name} changed"
+    _assert_benchmark_freeze("3d34b26")
     assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
         _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
                      "Get-EquivalenceSnapshot"), "Get-EquivalenceSnapshot moved"
@@ -1893,10 +1939,24 @@ def test_105_every_build_read_uses_the_windows_proven_form() -> None:
         assert re.search(r"\$\w+ = Invoke-ComRetryRead ", line), line
         assert ".Value" not in line, (
             f"the value is taken in the same expression as the read: {line}")
-    # AND THE VERIFICATION BLOCK IS UNTOUCHED - it is the comparator, so it may not
-    # be quietly changed to match whatever the build now does.
-    assert _verify_block() == _ps_verify_at("cc9cf8d"), (
-        "the Windows-proven verification block changed")
+    # THE COMPARATOR MAY NOT BE QUIETLY CHANGED TO MATCH THE BUILD - but it has now
+    # changed for a reason of its own, DECLARED: three object acquisitions that
+    # accepted a $null as success go through the acquisition rule instead. What must
+    # still hold is that it reads the SAME members it always did, through the
+    # accepted helper or that rule, and nothing else moved.
+    now = _joined(_verify_block())
+    then = _joined(_ps_verify_at("cc9cf8d"))
+    assert set(re.findall(r"-Member '(\w+)'", now)) == \
+        set(re.findall(r"-Member '(\w+)'", then)), (
+        "the reopen verification reads a different set of members than it did")
+    for target, member in (("$wb2", "Worksheets"), ("$wb2", "VBProject"),
+                           ("$vbproj2", "VBComponents")):
+        assert f"-Target {target} -Member '{member}'" in now, f"{target}.{member} is gone"
+        assert f"Get-StageBVerificationObject -Target {target} -Member '{member}'" in now, (
+            f"{target}.{member} does not go through the acquisition rule")
+    # And every OTHER read in the block is still the accepted helper, untouched.
+    assert now.count("Invoke-ComRetryRead") == then.count("Invoke-ComRetryRead") - 3, (
+        now.count("Invoke-ComRetryRead"), then.count("Invoke-ComRetryRead"))
 
 
 def _ps_verify_at(commit: str) -> str:
@@ -2046,15 +2106,10 @@ def test_112_the_freezes_this_batch_may_not_touch() -> None:
     done = subprocess.run(["git", "diff", "--name-only", "cc9cf8d", "--", "pccm/src/vba"],
                           cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
     assert done.stdout.strip() == "", done.stdout
-    assert BENCHMARK_PS1.read_text(encoding="utf-8") == \
-        _at("cc9cf8d", "pccm/bootstrap/windows/phase10_benchmark.ps1")
+    _assert_benchmark_freeze("cc9cf8d")
     assert _lifecycle() == _at("cc9cf8d", "pccm/bootstrap/windows/com_lifecycle.ps1")
     assert _gate() == _at("cc9cf8d", "pccm/tests/phase10_fixture_equivalence.ps1")
-    for name in ("Set-BenchmarkRegisterRowCount", "New-BenchmarkRegisterBlock",
-                 "Get-BenchmarkPermanentId", "Set-BenchmarkBulkFixture"):
-        now = _ps_function(BENCHMARK_PS1.read_text(encoding="utf-8"), name)
-        then = _ps_function(_at("cc9cf8d", "pccm/bootstrap/windows/phase10_benchmark.ps1"), name)
-        assert now == then, f"{name} changed"
+    _assert_benchmark_freeze("cc9cf8d")
     assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
         _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
                      "Get-EquivalenceSnapshot")
@@ -2243,14 +2298,9 @@ def test_122_the_freezes_this_batch_may_not_touch() -> None:
                           cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
     assert done.stdout.strip() == "", done.stdout
     assert _lifecycle() == _at("c66e752", "pccm/bootstrap/windows/com_lifecycle.ps1")
-    assert BENCHMARK_PS1.read_text(encoding="utf-8") == \
-        _at("c66e752", "pccm/bootstrap/windows/phase10_benchmark.ps1")
+    _assert_benchmark_freeze("c66e752")
     assert _gate() == _at("c66e752", "pccm/tests/phase10_fixture_equivalence.ps1")
-    for name in ("Set-BenchmarkRegisterRowCount", "New-BenchmarkRegisterBlock",
-                 "Get-BenchmarkPermanentId", "Set-BenchmarkBulkFixture"):
-        now = _ps_function(BENCHMARK_PS1.read_text(encoding="utf-8"), name)
-        then = _ps_function(_at("c66e752", "pccm/bootstrap/windows/phase10_benchmark.ps1"), name)
-        assert now == then, f"{name} changed"
+    _assert_benchmark_freeze("c66e752")
     assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
         _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
                      "Get-EquivalenceSnapshot")
@@ -2298,6 +2348,150 @@ def test_123_the_cross_run_record_supports_the_gate_without_claiming_a_cause() -
         assert overclaim.lower() in disclaimed.lower(), \
             f"the record does not say {overclaim} is unproved"
     assert "bug" not in asserted.lower()
+
+
+# ===========================================================================
+# K. THE REOPENED VERIFICATION ACQUISITION
+# ===========================================================================
+# WINDOWS BUILT THE ENDPOINTS WORKBOOK COMPLETELY AND THEN FAILED EVERY CHECK with
+# 'no target object for Worksheets.Item(...)', beside 'no verification read was
+# refused' and 'Worksheets2 | SKIPPED | reference was already null'. One unguarded
+# assignment took a $null Value as an acquisition. This is not a build failure.
+def test_124_an_object_acquisition_requires_a_real_object() -> None:
+    """REQUIRED CONTROLS 1-2 AND 7-8. The rule has its own function, it is used at
+    every reopened OBJECT acquisition, and it retries nothing that mutates."""
+    code = _build_code()
+    body = _ps_function(code, "Get-StageBVerificationObject")
+    # NULL IS NOT AN ACQUISITION.
+    assert "if ($null -ne $value) {" in body
+    assert "if ($null -eq $acquired) {" in body
+    assert "produced no target object after " in body
+    # A REAL ERROR ABORTS; ONLY A REFUSAL THE HELPER COULD NOT RESOLVE IS A DELAY.
+    assert "if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }" in body
+    # AND IT RETURNS A RECORD, NEVER THE COLLECTION. Worksheets is enumerable, and a
+    # collection written to the output stream is enumerated into its members - the
+    # same defect that flattened the profiling matrix in this same run.
+    assert "return [pscustomobject]@{" in body
+    assert "Value    = $acquired" in body
+    assert not re.search(r"return\s+\$acquired", body), "the collection is emitted"
+    # IT READS AND NEVER WRITES.
+    for banned in NEVER_RETRIED:
+        assert f".{banned}(" not in body, f"the acquisition rule calls {banned}"
+    # EVERY REOPENED OBJECT ACQUISITION GOES THROUGH IT, and only declared members.
+    verify = _joined(_verify_block())
+    acquisitions = re.findall(r"Get-StageBVerificationObject[^\n]*", verify)
+    assert len(acquisitions) == 3, acquisitions
+    named = set()
+    for line in acquisitions:
+        member = re.search(r"-Member '(\w+)'", line)
+        assert member, line
+        named.add(member.group(1))
+    assert named == {"Worksheets", "VBProject", "VBComponents"}, sorted(named)
+    # SCALAR READS ARE LEFT ALONE: Count, CodeName, Name, OnAction, FileFormat and
+    # the Item lookups still go through the accepted helper directly.
+    for member in ("Count", "CodeName", "OnAction", "Name", "FileFormat", "Item"):
+        assert f"Get-StageBVerificationObject -Target " not in \
+            "".join(line for line in acquisitions if f"-Member '{member}'" in line), member
+
+
+def test_125_a_null_acquisition_is_not_ready_and_a_real_object_proceeds() -> None:
+    """EXECUTED. An object answers on the first attempt with no wait; a $null answer
+    causes another bounded attempt; and the COLLECTION comes back as one object with
+    its members intact rather than enumerated into them."""
+    flow = _flow()
+    assert not flow["unmet"], flow["unmet"]
+    first = flow["verify"]["object-first"]
+    assert first["outcome"] == "READY", first
+    assert (first["attempts"], first["waited"], first["reads"]) == (1, 0, 1), first
+    assert "ArrayList:3" in first["detail"], (
+        f"the collection did not survive as one object: {first}")
+    later = flow["verify"]["null-then-object"]
+    assert (later["outcome"], later["attempts"], later["reads"]) == ("READY", 3, 3), later
+    assert later["waited"] > 0, "nothing was waited on between attempts"
+    assert "ArrayList:3" in later["detail"], later
+    assert "VERIFYREADY|Worksheets|attempt=1|ready=True|waited=0" in \
+        flow["verifynote"]["object-first"], flow["verifynote"]["object-first"]
+
+
+def test_126_a_refusal_retries_and_a_real_error_or_scalar_aborts() -> None:
+    """EXECUTED, REQUIRED CONTROLS 7 AND A4. A refusal the helper could not resolve is
+    a delay; an HRESULT Excel accepted is not; and a real but non-object answer is a
+    WRONG answer, which waiting cannot fix."""
+    flow = _flow()
+    refused = flow["verify"]["refused-then-object"]
+    assert (refused["outcome"], refused["attempts"]) == ("READY", 2), refused
+    real = flow["verify"]["real-error-aborts"]
+    assert real["outcome"] == "ABORTED" and real["reads"] == 1, real
+    assert "0x800a03ec" in real["detail"], real
+    for case, kind in (("scalar-aborts", "System.Int32"), ("text-aborts", "System.String")):
+        row = flow["verify"][case]
+        assert row["outcome"] == "ABORTED", (case, row)
+        assert row["reads"] == 1, f"{case} was polled over: {row}"
+        assert kind in row["detail"], (case, row)
+        assert "Waiting cannot change that" in row["detail"], row
+
+
+def test_127_the_acquisition_bounds_hold_and_it_never_sleeps_first() -> None:
+    """EXECUTED, REQUIRED CONTROLS 3-5. Three attempts allowed means three reads; a
+    five-millisecond budget ends it well before fifty; and the exhaustion line is on
+    the record."""
+    flow = _flow()
+    attempt = flow["verify"]["attempt-exhausted"]
+    assert attempt["outcome"] == "ABORTED" and attempt["reads"] == 3, attempt
+    assert any("exhausted|attempts=3" in line for line in
+               flow["verifynote"]["attempt-exhausted"]), flow["verifynote"]["attempt-exhausted"]
+    budget = flow["verify"]["budget-exhausted"]
+    assert budget["outcome"] == "ABORTED" and budget["reads"] < 50, budget
+    body = _ps_function(_build_code(), "Get-StageBVerificationObject")
+    heads = re.findall(r"while\s*\(([^)]*)\)\s*\{", body)
+    assert heads and all("-lt " in head for head in heads), heads
+    assert "while ($true)" not in body and "do {" not in body
+    sleep_at = body.index("Start-Sleep")
+    assert body.index("if ($attempt -ge $MaxAttempts) { break }") < sleep_at
+    assert body.index("if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }") < sleep_at
+
+
+def test_128_the_readiness_gate_and_saveas_settlement_did_not_move() -> None:
+    """REQUIRED CONTROLS 9-11. Two harness defects were corrected; the settlements
+    that Windows has just proved work are byte-identical."""
+    code = _build_code()
+    now = _build()
+    then = _at("f006ea2", "pccm/bootstrap/windows/build_stage_b.ps1")
+    for name in ("Wait-StageBWorkbookReady", "Invoke-StageBSaveAs",
+                 "Get-StageBSaveAsPostcondition", "Get-StageBComparablePath",
+                 "New-StageBSaveAsResult", "Get-StageBScalarInt",
+                 "Get-StageBNonEmptyString", "Add-StageBReadRejection"):
+        assert _ps_function(now, name) == _ps_function(then, name), f"{name} changed"
+    assert _lifecycle() == _at("f006ea2", "pccm/bootstrap/windows/com_lifecycle.ps1")
+    assert _gate() == _at("f006ea2", "pccm/tests/phase10_fixture_equivalence.ps1")
+    done = subprocess.run(["git", "diff", "--name-only", "f006ea2", "--", "pccm/src/vba"],
+                          cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
+    assert done.stdout.strip() == "", done.stdout
+    _assert_benchmark_freeze("f006ea2")
+    assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
+        _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
+                     "Get-EquivalenceSnapshot")
+
+
+def test_129_the_record_says_neither_defect_was_production() -> None:
+    """THE EVIDENCE RULE. Both are harness defects: one verification-path no-answer,
+    one fixture-shape. Neither is a build failure, neither is a fixture DIFFER."""
+    text = _evidence()
+    at = text.index("## Equivalence run 7")
+    after = text.find("\n## ", at + 10)
+    section = text[at:] if after == -1 else text[at:after]
+    plain = section.replace("`", "").replace("**", "")
+    for required in ("READY|open|attempt=1", "SAVEAS|attempt=1|success",
+                     "COMREJECT|build|none|attempts=0|waited=0",
+                     "no target object", "rank-1", "harness defect",
+                     "INVALID / NOT EVALUATED", "must not be read as a fixture DIFFER",
+                     "Bulk remains NOT authorised"):
+        assert required in plain, required
+    assert "not a production failure" in plain.lower()
+    assert "not a build failure" in plain.lower()
+    # BOTH BUNDLES IDENTICAL, AND BOTH SETTLEMENTS HELD.
+    assert "identical" in plain
+    assert "did not recur" in plain
 
 
 if __name__ == "__main__":
