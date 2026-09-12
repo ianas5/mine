@@ -3390,3 +3390,51 @@ build and verification passed; both copies are hash-identical to it; readiness
 passed in both passes; both fixtures completed; every `EQUIV` field is `match`;
 `CALCEQUIV|match`; the COM lifecycle is clean. Until then, **Bulk remains NOT
 authorised**.
+
+## Equivalence run 12 — INVALID / NOT EVALUATED — THE HARNESS CRASHED AT THE COMPARISON
+
+**Harness commit:** `0a6df69` (one Stage-B, two copies). Windows PowerShell 5.1.
+
+Under the single-baseline architecture, everything up to the comparison passed for
+the first time:
+
+```
+BASELINE|StageB|verified
+COPY|Endpoints|<same hash>
+COPY|Bulk|<same hash>
+COPIES|identical
+PASS|Endpoints|COMPLETED|fixture built and PCCM_Calculate ran
+PASS|Bulk|COMPLETED|fixture built and PCCM_Calculate ran
+```
+
+Then the harness raised, before any `EQUIV` line:
+
+```
+The property 'State' cannot be found on this object.
+    foreach ($field in @($reference.State.Keys)) {
+```
+
+**INVALID / NOT EVALUATED** — no comparison ran; **NOT a fixture DIFFER**; Bulk
+remains NOT authorised. Both fixtures completed and both real calculations ran.
+
+### Cause, from source
+
+`Invoke-EquivalencePass` wrote its `READY|…` line with `Write-Output` from inside
+the function. A PowerShell function's output stream *is* its return value, so the
+caller received a two-element array — the string and the result record — and
+`.State` is not a property of that array. The two `SHUTDOWN|…` catches in the
+pass's `finally` were the same trap, latent.
+
+### Correction
+
+The pass returns exactly one record; readiness (`Ready`) and any shutdown notes
+(`Shutdown`) travel in it, and the caller prints `READY|…` and any notes from the
+record before `PASS|…`. The caller also refuses a result that is not one record
+carrying `State`. `Get-EquivalenceSnapshot`, the comparison block, the readiness
+barrier, the canonical/copy architecture, the fixtures, the resync, production
+VBA, the Stage-B builder and the timed paths are unchanged.
+`tests/phase10_result_shape_flow.ps1` reads the record's keys from the pass's own
+return statement, proves the pass emits nothing else, drives the real snapshot for
+its real field set (28), and runs the real comparison block over two such
+records: every field iterated, `CALCEQUIV` evaluated after the last `EQUIV`, in
+both the identical and the differing case.

@@ -3500,7 +3500,10 @@ def test_300_readiness_runs_once_after_the_open_and_before_any_mutation() -> Non
                   "Import-BenchmarkFixtureWindow", "Open-BenchmarkFixtureWindow", "Set-Phase5Fixture",
                   "Set-BenchmarkBulkFixture", "Set-NamedValue", "$excel.Run('PCCM_Calculate')"):
         assert pass_fn.index(later) > at, later
-    assert "Write-Output ('READY|' + $Mode + '|attempt='" in pass_fn
+    # PRINTED BY THE CALLER, FROM THE RECORD - never from inside the pass, whose
+    # output stream is its one return value (run 12).
+    assert "Write-Output" not in pass_fn
+    assert "Write-Output ('READY|' + $mode + '|attempt=' + [string]$result.Ready.Attempt" in _gate_top_level()
 
 
 def test_301_the_readiness_barrier_is_read_only_and_bounded() -> None:
@@ -3615,6 +3618,76 @@ def test_305_the_record_states_the_simplification_and_retires_the_prefix_instrum
                      "Get-EquivalenceSnapshot"):
         assert required in plain, required
     assert "## Equivalence run 11" in RUN_EVIDENCE.read_text(encoding="utf-8")
+
+
+# ===========================================================================
+# V. THE PASS RESULT SHAPE - EQUIVALENCE RUN 12
+# ===========================================================================
+RESULT_SHAPE_HARNESS = PCCM_ROOT / "tests" / "phase10_result_shape_flow.ps1"
+
+
+def _result_shape_rows() -> dict:
+    if "result_shape" not in _MEMO_ANY:
+        done = subprocess.run([PWSH, "-NoProfile", "-File", str(RESULT_SHAPE_HARNESS), "-Gate", str(EQUIV_HARNESS)],
+                              capture_output=True, text=True, timeout=300)
+        assert done.returncode == 0, done.stdout + done.stderr
+        rows: dict = {"returns": [], "emits": None, "fields": None, "compare": {}, "unmet": []}
+        for raw in done.stdout.splitlines():
+            if raw.startswith(("PARSE|", "MISSING|")):
+                rows["unmet"].append(raw)
+            elif raw.startswith("RETURNS|"):
+                rows["returns"] = raw[len("RETURNS|"):].split(",")
+            elif raw.startswith("EMITS|"):
+                rows["emits"] = int(raw[len("EMITS|"):])
+            elif raw.startswith("FIELDS|"):
+                count, keys = raw[len("FIELDS|"):].split("|", 1)
+                rows["fields"] = (int(count), keys.split(","))
+            elif raw.startswith("COMPARE|"):
+                case, rest = raw[len("COMPARE|"):].split("|", 1)
+                # THE CALCEQUIV VALUE CARRIES ITS OWN '|' SEPARATORS: split only
+                # where a known key begins.
+                items = re.split(r"\|(?=(?:equiv|match|differ|calc|calcequiv|calcequiv-after-last-equiv|state-read)=)", rest)
+                rows["compare"][case] = dict(item.split("=", 1) for item in items)
+        assert rows["unmet"] == [], rows["unmet"]
+        _MEMO_ANY["result_shape"] = rows
+    return _MEMO_ANY["result_shape"]
+
+
+def test_306_the_pass_returns_one_record_and_the_comparison_reads_its_state() -> None:
+    """RUN 12: both passes completed and the comparison crashed on
+    `$reference.State` - the pass had written a READY line to its own output
+    stream, so the caller held an array. Executed: the record's keys, read from
+    the pass's own return statement, carry State; the pass emits nothing else;
+    the REAL snapshot's every field is iterated by the REAL comparison block; and
+    CALCEQUIV is evaluated after the last EQUIV line in both outcomes."""
+    rows = _result_shape_rows()
+    for key in ("Mode", "State", "Ready", "Shutdown", "CalcResult", "CalcStatus", "CalcFingerprint"):
+        assert key in rows["returns"], (key, rows["returns"])
+    assert rows["emits"] == 0, rows["emits"]
+    count, keys = rows["fields"]
+    # 28 = 2 register id lists + 2 counters + 2x(columns, body) + fx + profiles master
+    #    + 7 applied names + 3x(headers, body) + structural state + report
+    #    + 2 fingerprints + the model-check state, from the REAL snapshot function.
+    assert count == 28 and len(keys) == 28 and len(set(keys)) == 28, (count, keys)
+    for family in (".ids", ".body", ".headers", ".columns", "counter.", "applied.",
+                   "structural.state", "structural.report", "fingerprint.calculation_inputs",
+                   "fingerprint.simulation_request", "modelcheck.calculation_state"):
+        assert any(family in key for key in keys), family
+    assert "cost_profiling.body" in keys and "risk_profiling.body" in keys
+    same = rows["compare"]["identical"]
+    assert same["state-read"] == "True" and same["equiv"] == str(count) and same["match"] == str(count) \
+        and same["differ"] == "0" and same["calc"] == "2", same
+    assert same["calcequiv"].startswith("CALCEQUIV|match|") and same["calcequiv-after-last-equiv"] == "True", same
+    differ = rows["compare"]["one-field-and-fingerprint-differ"]
+    assert differ["state-read"] == "True" and differ["equiv"] == str(count) and differ["differ"] == "1" \
+        and differ["match"] == str(count - 1), differ
+    assert differ["calcequiv"].startswith("CALCEQUIV|differ|") and differ["calcequiv-after-last-equiv"] == "True", differ
+    # THE CALLER GUARDS THE SHAPE and prints readiness and shutdown notes from the record.
+    main = _gate_top_level()
+    assert "if (($result -isnot [pscustomobject]) -or ($null -eq $result.PSObject.Properties['State'])) {" in main
+    assert "foreach ($note in @($result.Shutdown)) { Write-Output $note }" in main
+    assert main.index("$result = Invoke-EquivalencePass") < main.index("$passes[$mode] = $result") \
+        < main.index("('PASS|' + $mode + '|COMPLETED|")
 
 
 # Every rectangular fixture block, and the geometry each must have. Restated here so

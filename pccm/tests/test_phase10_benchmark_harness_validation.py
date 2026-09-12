@@ -3086,7 +3086,7 @@ def test_294_dropping_the_coherence_proof_after_the_resync_is_refused() -> None:
 # U. ONE STAGE-B, TWO COPIES
 # ===========================================================================
 SIMPLE_CONTROLS = tuple(name for name in conformance.__dict__
-                        if name.startswith(tuple(f"test_{n}_" for n in range(297, 306)))) + (
+                        if name.startswith(tuple(f"test_{n}_" for n in range(297, 307)))) + (
     "test_211_both_bundles_receive_every_required_artifact",
     "test_212_the_two_bundles_are_isolated_and_proved_identical",
     "test_215_a_pass_that_did_not_complete_cannot_be_reported_as_PASS",
@@ -3113,7 +3113,7 @@ def _simple_mutation(key: str, expected: str, edits: list) -> None:
         with path.open("w", encoding="utf-8", newline="") as handle:
             handle.write(damaged)
         conformance._MEMO.clear()
-        for memo in ("bulk", "sync", "rank"):
+        for memo in ("bulk", "sync", "rank", "result_shape"):
             conformance._MEMO_ANY.pop(memo, None)
         for name in SIMPLE_CONTROLS:
             try:
@@ -3132,9 +3132,7 @@ def _simple_mutation(key: str, expected: str, edits: list) -> None:
 
 READY_CALL = (
     "        $ready = Wait-EquivalenceWorkbookReady -Workbook $wb -ExpectedPath $WorkbookPath `\n"
-    "            -KnownSheet ([string](@($Manifest.registers)[0].sheet))\n"
-    "        Write-Output ('READY|' + $Mode + '|attempt=' + [string]$ready.Attempt +\n"
-    "                      '|waited=' + [string]$ready.WaitedMs)\n")
+    "            -KnownSheet ([string](@($Manifest.registers)[0].sheet))\n")
 
 
 def test_295_bootstrapping_stage_b_twice_is_refused() -> None:
@@ -3195,3 +3193,11 @@ def test_303_narrowing_the_comparison_in_the_simplified_gate_is_refused() -> Non
     _simple_mutation("gate", "test_304", [
         ("        if ($left -ceq $right) {\n",
          "        if (($left -ceq $right) -or ($field -like '*profiling.body')) {\n")])
+
+
+def test_304_emitting_a_line_from_inside_the_pass_is_refused() -> None:
+    """RUN 12 EXACTLY. One Write-Output inside the pass turns its return value into
+    an array, and the comparison can no longer find State."""
+    _simple_mutation("gate", "test_306", [
+        (READY_CALL,
+         READY_CALL + "        Write-Output ('READY|' + $Mode + '|attempt=' + [string]$ready.Attempt)\n")])

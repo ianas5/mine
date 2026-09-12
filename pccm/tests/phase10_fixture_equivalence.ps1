@@ -459,6 +459,12 @@ function Invoke-EquivalencePass {
     $excel = $null; $workbooks = $null; $wb = $null
     $rel = New-ReleaseLedger ('equivalence ' + $Mode)
     $snapshot = $null; $calcStatus = ''; $calcFingerprint = ''; $calcResult = ''
+    # ASSIGN, NEVER EMIT. This function returns exactly ONE object. Run 12 crashed
+    # at the comparison because a READY line was written to the output stream
+    # from inside here, and the caller then held an array where it expected the
+    # result record. Readiness and any shutdown note travel IN the record.
+    $ready = $null
+    $shutdown = New-Object System.Collections.ArrayList
     try {
         $excel = New-Object -ComObject Excel.Application
         $excel.Visible = $false
@@ -470,8 +476,6 @@ function Invoke-EquivalencePass {
         # THE ONE SETTLEMENT, before anything is asked to change.
         $ready = Wait-EquivalenceWorkbookReady -Workbook $wb -ExpectedPath $WorkbookPath `
             -KnownSheet ([string](@($Manifest.registers)[0].sheet))
-        Write-Output ('READY|' + $Mode + '|attempt=' + [string]$ready.Attempt +
-                      '|waited=' + [string]$ready.WaitedMs)
 
         $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
         $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $Inspection
@@ -533,12 +537,12 @@ function Invoke-EquivalencePass {
     } finally {
         try {
             if ($null -ne $wb) { $wb.Close($false) | Out-Null }
-        } catch { Write-Output ('SHUTDOWN|' + $Mode + '|close raised: ' + $_.Exception.Message) }
+        } catch { $null = $shutdown.Add('SHUTDOWN|' + $Mode + '|close raised: ' + $_.Exception.Message) }
         Invoke-NamedRelease $rel $wb         'Workbook';   $wb         = $null
         Invoke-NamedRelease $rel $workbooks  'Workbooks';  $workbooks  = $null
         try {
             if ($null -ne $excel) { $excel.Quit() }
-        } catch { Write-Output ('SHUTDOWN|' + $Mode + '|quit raised: ' + $_.Exception.Message) }
+        } catch { $null = $shutdown.Add('SHUTDOWN|' + $Mode + '|quit raised: ' + $_.Exception.Message) }
         Invoke-NamedRelease $rel $excel      'Application'; $excel     = $null
         [System.GC]::Collect()
         [System.GC]::WaitForPendingFinalizers()
@@ -555,6 +559,8 @@ function Invoke-EquivalencePass {
     return [pscustomobject]@{
         Mode = $Mode
         State = $snapshot
+        Ready = $ready
+        Shutdown = @($shutdown)
         CalcResult = $calcResult
         CalcStatus = $calcStatus
         CalcFingerprint = $calcFingerprint
@@ -624,8 +630,17 @@ $passes = @{}
 if (-not $setupFailed) {
     foreach ($mode in @('Endpoints', 'Bulk')) {
         try {
-            $passes[$mode] = Invoke-EquivalencePass -Mode $mode -WorkbookPath ([string]$copies[$mode].Path) `
+            $result = Invoke-EquivalencePass -Mode $mode -WorkbookPath ([string]$copies[$mode].Path) `
                 -Manifest $manifest -Inspection $inspection -SimInspection $simInspection -Plan $plan
+            # ONE RECORD, WITH ITS STATE, or this pass is not comparable.
+            if (($result -isnot [pscustomobject]) -or ($null -eq $result.PSObject.Properties['State'])) {
+                throw ('RAISED: the ' + $mode + ' pass returned ' + [string]@($result).Count +
+                       ' object(s) instead of one result record')
+            }
+            foreach ($note in @($result.Shutdown)) { Write-Output $note }
+            Write-Output ('READY|' + $mode + '|attempt=' + [string]$result.Ready.Attempt +
+                          '|waited=' + [string]$result.Ready.WaitedMs)
+            $passes[$mode] = $result
             Write-Output ('PASS|' + $mode + '|COMPLETED|fixture built and PCCM_Calculate ran')
         } catch {
             # THE STAGE IS NAMED. A copy that could not be opened and a COM call that
