@@ -3048,3 +3048,151 @@ it.
 
 Excel is never started. Nothing is retried: every helper under a failing label is
 touched exactly once.
+
+## Equivalence run 10 — THE FIRST COMPLETED COMPARISON — A REAL DIFFER ON TWO TRACE CELLS
+
+**Harness commit:** `d90a186` (the Bulk operation labelling). Windows PowerShell 5.1.
+Stage A immediately before: 351 passed, 0 failed.
+
+### What happened, step for step
+
+For the first time, **both equivalence passes completed** and the comparison ran.
+
+```
+BUNDLE|identical|5 artifact(s)
+```
+
+**Endpoints:** readiness, `SaveAs`, the Stage-B build, the reopen verification,
+the fixture, and the real `PCCM_Calculate`:
+
+```
+PASS|Endpoints|COMPLETED|fixture built and PCCM_Calculate ran
+```
+
+**Bulk:** the second Excel session again needed one readiness poll — the gate
+absorbed it exactly as designed, and this architecture is not reopened:
+
+```
+READY|open|attempt=2|fullname=True|fileformat=51|waited=250
+PASS|Bulk|COMPLETED|fixture built and PCCM_Calculate ran
+```
+
+No Bulk RPC refusal occurred. No `BULKFAIL` line was emitted. The Bulk fixture
+completed, so the operation map of runs 8 and 9 was not exercised by a failure.
+
+### The comparison
+
+Every compared field matched **except two**:
+
+```
+EQUIV|cost_profiling.body|differ
+EQUIV|risk_profiling.body|differ
+```
+
+All headers matched. All weights matched. The reserved blank suffix matched. The
+only visible differences are the **Description cells of the FINAL semantic driver**
+in each profiling grid:
+
+| grid | row | Endpoints | Bulk |
+|---|---|---|---|
+| Cost Profiling | `CL-012` | *blank* | `GateB CL-012` |
+| Risk Profiling | `R-008` | *blank* | `GateB R-008` |
+
+Every prior semantic row (`CL-001`–`CL-011`, `R-001`–`R-007`) carries its expected
+description in **both** passes. The weight cells of every row, `CL-012` and `R-008`
+included, are identical in both passes.
+
+### The calculation
+
+Both real production calculations succeeded, and the fingerprints are identical:
+
+```
+CALC|Endpoints|OK|Calculation committed.|CURRENT|2DA8A0F6092AEA4B
+CALC|Bulk|OK|Calculation committed.|CURRENT|2DA8A0F6092AEA4B
+CALCEQUIV|match|the production calculation fingerprint is identical
+```
+
+### Verdict
+
+This run is a **REAL DIFFER**: a comparison that ran, on two passes that completed.
+It is not INVALID and not NOT EVALUATED. The deterministic calculation inputs and
+the calculation result state are equivalent; the remaining difference is confined
+to the final-row profiling Description. **The equivalence contract requires
+workbook-state equivalence, so equivalence is NOT yet accepted, the two differences
+are not waived on the strength of `CALCEQUIV|match`, and Bulk remains NOT
+authorised.**
+
+### The cause, from source — not from the pattern
+
+The Windows pattern (every row present except the last) suggested an
+order-dependent synchronisation. That was an inference. Source confirms it:
+
+1. `modDrivers.AddDriver` writes **only** the new permanent identifier, then runs
+   `modProfiling.SyncRows Kind` (`src/vba/modDrivers.bas`, `AddDriver`: the ID
+   write at `IdColumn(Kind)).Value = newId` precedes `modProfiling.SyncRows Kind`).
+2. `modProfiling.SyncRows` rewrites the grid in register order and copies the
+   register's trace column — `COL_COST_LINES_DESCRIPTION` / `COL_RISK_REGISTER_RISK_NAME`
+   — into grid column 2, preserving every weight by permanent ID
+   (`src/vba/modProfiling.bas`, `SyncRows`).
+3. The accepted Gate-B fixture (`Invoke-Phase5AddDriverAndRequireSuccess`) invokes
+   `PCCM_AddCostLine` / `PCCM_AddRisk`, proves the issued identifier, and **only
+   then** writes that driver's business fields, Description included
+   (`Write-Phase5Driver`). So the Description is written **after** the SyncRows that
+   ran inside its own Add.
+4. Driver N's trace is therefore refreshed by driver N+1's Add. The final driver's
+   Add is followed by no further Add, and steps G–H of the fixture
+   (`Write-Phase5InflationRates`, `Write-Phase5Weights`, the coherence report) run
+   no synchronisation. Nothing refreshes `CL-012` or `R-008`.
+5. The Bulk fixture writes every register row — Description included — as one
+   block **before** its single `PCCM_ApplyTimeline`, whose `SyncRows` then sees
+   every trace text. Its grids are fully synchronised.
+6. There is no `Worksheet_Change` handler in production; the applied trace is
+   copied at structural operations only. This is the accepted Phase-4 contract,
+   `docs/phase4.md`: *"Trace columns are refreshed, not live. Description and Risk
+   Name are copied into the profiling grids by synchronisation; editing the
+   register updates them at the next structural operation, not instantly."*
+
+This is a **fixture-order matter, not a production defect**: the interactive
+workflow is Add, then type — the same order the fixture uses — and the accepted
+contract says the trace follows at the next structural operation. The owners that
+refresh it are `modProfiling.SyncRows` through Add, Delete, Apply / Update Timeline
+and Repair Profiling. **No production change** is made or proposed for this.
+
+### The canonical state
+
+The profiling Description column is model-controlled trace metadata owned by
+`modProfiling.SyncRows`. The one production-reachable canonical state is the
+**fully synchronised** one: every user input entered, then the accepted structural
+operation completed. Bulk already reaches it. The Endpoints fixture is left exactly
+as accepted (`phase5_gate_b_scenarios.ps1` is not edited) and is now followed, in
+the runner and in the gate, by **one more `PCCM_ApplyTimeline`** — the accepted
+public structural command both fixtures already rely on — inside the fixture
+window, inside the setup stopwatch, before the timed loop, before the snapshot.
+With the entered timeline unchanged it deletes and adds no column, `SyncRows`
+preserves every weight by permanent ID, `SyncProfileRows` preserves every rate by
+profile and year, and the trace columns are copied from the now-complete
+registers. No description is written by any fixture; the Bulk final descriptions
+are not blanked to imitate the old artifact.
+
+### Executed, not asserted
+
+`tests/phase10_profiling_sync_flow.ps1` lifts the accepted fixture and the bulk
+builder by AST over an emulation of `AddDriver` and `SyncRows` written from the VBA.
+On PERF-SMALL: the accepted fixture alone leaves `CL-012` and `R-008` blank with
+every prior row present — the run-10 pattern, reproduced from source; with the
+resynchronisation all twelve and all eight descriptions are present; the corrected
+Endpoints grids are byte-identical to the Bulk grids in the snapshot's own
+rendering; every weight equals the model's in all three scenarios; the reserved
+suffix is 13 and 17 blank rows in all three; no fixture wrote a grid column below
+the first year column.
+
+### What the next run must show
+
+```
+EQUIV|cost_profiling.body|match
+EQUIV|risk_profiling.body|match
+CALCEQUIV|match
+```
+
+with every other `EQUIV` line `match`. Both are required; neither excuses the
+other. Until then, Bulk remains NOT authorised.

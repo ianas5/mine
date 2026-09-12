@@ -100,7 +100,7 @@ $wanted = @(
     'Get-BenchmarkPermanentId', 'New-BenchmarkRegisterBlock', 'New-BenchmarkWeightBlock',
     'Get-BulkOpVocabulary', 'Set-BulkOp', 'Get-BulkOp', 'Get-BulkComHResult',
     'Format-BulkFailureLine', 'Save-BulkFailure', 'New-BulkFailureLine', 'Reset-BulkOp',
-    'Set-BenchmarkBulkFixture',
+    'Set-BenchmarkBulkFixture', 'Invoke-BenchmarkEndpointsResync',
     'Import-BenchmarkFixtureWindow', 'Get-BenchmarkProtectionState',
     'Assert-BenchmarkProtectionApplied', 'Open-BenchmarkFixtureWindow',
     'Invoke-BenchmarkWindowRollback', 'Close-BenchmarkFixtureWindow',
@@ -426,6 +426,11 @@ function Invoke-EquivalencePass {
             } else {
                 $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $Manifest `
                     -Inspection $Inspection -Model $model
+                # THE SAME RESYNCHRONISATION THE RUNNER MAKES, lifted from it: the
+                # reference fixture ends with production's own SyncRows over the
+                # complete registers, so the trace column of the last driver is
+                # what production copies there, in both passes.
+                $null = Invoke-BenchmarkEndpointsResync -Excel $excel
             }
         } finally {
             if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.window.close' }

@@ -2952,6 +2952,464 @@ def test_276_the_record_names_no_bulk_operation_for_the_two_historical_runs() ->
         assert label not in head, f"the historical record names {label}"
 
 
+# ===========================================================================
+# S. THE LAST DRIVER'S TRACE COLUMN - EQUIVALENCE RUN 10
+# ===========================================================================
+# The first run in which both passes completed differed in exactly two fields:
+# the profiling Description of the LAST Cost Line (CL-012) and of the LAST Risk
+# (R-008) were blank after the Endpoints fixture and present after Bulk. Every
+# other row, every weight and both calculation fingerprints matched.
+#
+# THE CAUSE, FROM SOURCE. modDrivers.AddDriver writes the identifier and then runs
+# modProfiling.SyncRows, which copies the register's Description / Risk Name into
+# the grid's trace column; the accepted Gate-B fixture writes the Description only
+# AFTER the Add it proves. So driver N's trace is refreshed by driver N+1's Add and
+# the final driver's by nothing - docs/phase4.md: "Trace columns are refreshed,
+# not live". Bulk writes every register row first and applies the timeline once
+# afterwards. The correction is one more PCCM_ApplyTimeline after the Endpoints
+# fixture: production's own synchronisation, outside the timed region.
+SYNC_HARNESS = PCCM_ROOT / "tests" / "phase10_profiling_sync_flow.ps1"
+SMALL_COST_IDS = tuple(f"CL-{i:03d}" for i in range(1, 13))
+SMALL_RISK_IDS = tuple(f"R-{i:03d}" for i in range(1, 9))
+SYNC_SCENARIOS = ("endpoints-nosync", "endpoints", "bulk")
+COST_GRID, RISK_GRID = "tblCostProfiling", "tblRiskProfiling"
+RESYNC_CALL = "$null = Invoke-BenchmarkEndpointsResync -Excel $excel"
+
+
+def _sync_rows() -> dict:
+    """RUN the profiling-sync harness and group its tagged lines.
+
+    "When is the register Description written relative to the Add that
+    synchronised the grid", "does anything synchronise afterwards", and "do both
+    fixtures end with the same grids" are behaviour: observed, against the real
+    accepted fixture and the real bulk builder lifted by AST, over a production
+    emulation written from modDrivers.AddDriver and modProfiling.SyncRows.
+    """
+    if "sync" not in _MEMO_ANY:
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-File", str(SYNC_HARNESS), "-Runner", str(RUNNER),
+             "-GateB", str(GATE_B), "-BuildDir", str(PCCM_ROOT / "build")],
+            capture_output=True, text=True, timeout=300)
+        assert done.returncode == 0, done.stdout + done.stderr
+        rows: dict = {"ops": {}, "descwrite": {}, "desc": {}, "weights": {}, "model": {},
+                      "suffix": {}, "lowest": {}, "body": {}, "result": {}, "unmet": []}
+        for raw in done.stdout.splitlines():
+            if raw.startswith(("PARSE|", "MISSING|")):
+                rows["unmet"].append(raw)
+            elif raw.startswith("OPS|"):
+                scenario, joined = raw[len("OPS|"):].split("|", 1)
+                rows["ops"][scenario] = joined.split(",")
+            elif raw.startswith("DESCWRITE|"):
+                scenario, ident, after_add, synced = raw[len("DESCWRITE|"):].split("|", 3)
+                rows["descwrite"].setdefault(scenario, {})[ident] = (
+                    after_add == "write-after-add=True", synced == "synced-after-write=True")
+            elif raw.startswith("DESC|"):
+                scenario, table, row, ident, trace = raw[len("DESC|"):].split("|", 4)
+                rows["desc"].setdefault((scenario, table), []).append((int(row), ident, trace))
+            elif raw.startswith("WEIGHTS|"):
+                scenario, table, ident, cells = raw[len("WEIGHTS|"):].split("|", 3)
+                rows["weights"].setdefault((scenario, table), {})[ident] = cells
+            elif raw.startswith("MODELWEIGHTS|"):
+                table, ident, cells = raw[len("MODELWEIGHTS|"):].split("|", 2)
+                rows["model"].setdefault(table, {})[ident] = cells
+            elif raw.startswith("SUFFIX|"):
+                scenario, table, count, blank = raw[len("SUFFIX|"):].split("|", 3)
+                rows["suffix"][(scenario, table)] = (int(count), blank == "True")
+            elif raw.startswith("GRIDWRITES|"):
+                scenario, table, lowest, fixed = raw[len("GRIDWRITES|"):].split("|", 3)
+                rows["lowest"][(scenario, table)] = (int(lowest.split("=")[1]), int(fixed.split("=")[1]))
+            elif raw.startswith("BODY|"):
+                scenario, table, body = raw[len("BODY|"):].split("|", 2)
+                rows["body"][(scenario, table)] = body
+            elif raw.startswith("RESULT|"):
+                scenario, outcome, detail = raw[len("RESULT|"):].split("|", 2)
+                rows["result"][scenario] = (outcome, detail)
+        assert rows["unmet"] == [], rows["unmet"]
+        for scenario in SYNC_SCENARIOS:
+            assert rows["result"][scenario][0] == "completed", rows["result"][scenario]
+        _MEMO_ANY["sync"] = rows
+    return _MEMO_ANY["sync"]
+
+
+def _gate_b_code() -> str:
+    return _ps_code(GATE_B.read_text(encoding="utf-8"))
+
+
+def _vba(name: str) -> str:
+    return (PCCM_ROOT / "src" / "vba" / name).read_text(encoding="utf-8")
+
+
+def _at_commit(path: str, commit: str) -> str:
+    return _git("show", f"{commit}:pccm/{path}")
+
+
+def test_277_the_endpoint_fixture_order_is_explicit_in_source_and_executed() -> None:
+    """REQUIRED CONTROL 1. Step for step, in source and then as executed: the
+    timeline is applied BEFORE any driver exists, every Add is a production
+    command proved before that driver's data is written, and the Description is
+    written AFTER the Add - which is after the SyncRows inside it."""
+    steps = _function(_gate_b_code(), "Invoke-Phase5FixtureSteps")
+    order = ["Clear-Phase5Registers", "Set-NamedValue", "Reset-Phase5FxTable",
+             "Set-Phase5InflationProfileMaster", "-Operation 'PCCM_ApplyTimeline'",
+             "foreach ($line in @($Model.cost_lines))", "foreach ($risk in @($Model.risks))",
+             "Write-Phase5InflationRates", "Write-Phase5Weights"]
+    positions = [steps.index(item) for item in order]
+    assert positions == sorted(positions), list(zip(order, positions))
+    assert steps.rindex("Assert-Phase5StructurallyCoherent") > positions[-1]
+    assert steps.count("-Operation 'PCCM_ApplyTimeline'") == 1, "the accepted fixture applies once"
+    add = _function(_gate_b_code(), "Invoke-Phase5AddDriverAndRequireSuccess")
+    assert add.index("Invoke-Phase5ProductionOperation") < add.index("Write-Phase5Driver")
+    writer = _function(_gate_b_code(), "Write-Phase5Driver")
+    assert "& $set 'description'" in writer and "& $set 'risk_name'" in writer
+    # PRODUCTION'S SIDE: the identifier is written, THEN the grid is synchronised,
+    # and the synchronisation copies the register's trace column into column 2.
+    drivers = _vba("modDrivers.bas")
+    add_vba = drivers[drivers.index("Public Function AddDriver("):]
+    add_vba = add_vba[: add_vba.index("End Function")]
+    assert add_vba.index("IdColumn(Kind)).Value = newId") < add_vba.index("modProfiling.SyncRows Kind")
+    assert "Description" not in add_vba.replace("Err.Description", ""), "Add does not write a Description"
+    profiling = _vba("modProfiling.bas")
+    sync = profiling[profiling.index("Public Sub SyncRows("):]
+    sync = sync[: sync.index("End Sub")]
+    assert "traceCol = COL_COST_LINES_DESCRIPTION" in sync
+    assert "traceCol = COL_RISK_REGISTER_RISK_NAME" in sync
+    assert ("modWorkbook.CellIn(target, writeRow, 2).Value = _ "
+            "modWorkbook.TextOf(modWorkbook.CellIn(register, r, traceCol))") in " ".join(sync.split())
+    for name in sorted(path.name for path in (PCCM_ROOT / "src" / "vba").iterdir()):
+        assert "Sub Worksheet_Change" not in _vba(name), f"{name} synchronises on edit"
+    # THE RUNNER: fixture, then the resynchronisation, inside the window.
+    code = _code()
+    opened = code.index("Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")
+    fixture = code.index("$null = Set-Phase5Fixture -Excel $excel")
+    resync = code.index(RESYNC_CALL)
+    closed = code.index("Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")
+    assert opened < fixture < resync < closed, (opened, fixture, resync, closed)
+    # AS EXECUTED, on the real fixture: one Apply, twelve Adds, eight Adds, and
+    # then - only with the correction - one more Apply.
+    rows = _sync_rows()
+    expected = ["PCCM_ApplyTimeline"] + ["PCCM_AddCostLine"] * 12 + ["PCCM_AddRisk"] * 8
+    assert rows["ops"]["endpoints-nosync"] == expected, rows["ops"]["endpoints-nosync"]
+    assert rows["ops"]["endpoints"] == expected + ["PCCM_ApplyTimeline"], rows["ops"]["endpoints"]
+    for ident in SMALL_COST_IDS + SMALL_RISK_IDS:
+        assert rows["descwrite"]["endpoints"][ident][0] is True, f"{ident}: Description written before its Add"
+
+
+def test_278_the_bulk_fixture_order_is_explicit_in_source_and_executed() -> None:
+    """REQUIRED CONTROL 2. The register blocks - Description included - are
+    written BEFORE the one PCCM_ApplyTimeline, so production's SyncRows sees
+    every trace text; the grids are written after it, weights only."""
+    orchestrator = _bulk_functions()["Set-BenchmarkBulkFixture"]
+    order = ["New-BenchmarkRegisterBlock", "Set-BenchmarkRangeBlock",
+             "-Operation 'PCCM_ApplyTimeline'", "New-BenchmarkWeightBlock"]
+    positions = [orchestrator.index(item) for item in order]
+    assert positions == sorted(positions), list(zip(order, positions))
+    assert orchestrator.count("-Operation 'PCCM_ApplyTimeline'") == 1
+    block = _bulk_functions()["New-BenchmarkRegisterBlock"]
+    assert "$values['description'] = ('GateB ' + $issued)" in block
+    assert "$values['risk_name'] = ('GateB ' + $issued)" in block
+    assert BULK_OPS.index("bulk.cost.register.write") < BULK_OPS.index("bulk.timeline.apply") \
+        < BULK_OPS.index("bulk.costprofiling.write")
+    rows = _sync_rows()
+    assert rows["ops"]["bulk"] == ["PCCM_ApplyTimeline"], rows["ops"]["bulk"]
+    for ident in SMALL_COST_IDS + SMALL_RISK_IDS:
+        after_add, synced = rows["descwrite"]["bulk"][ident]
+        assert after_add is False and synced is True, (ident, after_add, synced)
+
+
+def test_279_the_final_cost_line_trace_is_refreshed_by_nothing_and_now_by_production() -> None:
+    """REQUIRED CONTROL 3, EXECUTED. Without the correction the real fixture leaves
+    CL-012's trace blank with CL-001..CL-011 present - the Windows pattern,
+    reproduced from source. With it, production copies all twelve."""
+    rows = _sync_rows()
+    nosync = rows["desc"][("endpoints-nosync", COST_GRID)]
+    assert [ident for _r, ident, _t in nosync] == list(SMALL_COST_IDS)
+    assert [trace for _r, _i, trace in nosync] == [f"GateB {i}" for i in SMALL_COST_IDS[:-1]] + [""], nosync
+    assert rows["descwrite"]["endpoints-nosync"]["CL-012"] == (True, False)
+    for ident in SMALL_COST_IDS[:-1]:
+        assert rows["descwrite"]["endpoints-nosync"][ident] == (True, True), ident
+    fixed = rows["desc"][("endpoints", COST_GRID)]
+    assert [trace for _r, _i, trace in fixed] == [f"GateB {i}" for i in SMALL_COST_IDS], fixed
+    assert rows["descwrite"]["endpoints"]["CL-012"] == (True, True)
+    # THE CORRECTION IS THE RUNNER'S, lifted by the harness, and it is production.
+    resync = _function(_code(), "Invoke-BenchmarkEndpointsResync")
+    assert resync.count("-Operation 'PCCM_ApplyTimeline'") == 1, resync
+    assert "'Invoke-BenchmarkEndpointsResync'" in SYNC_HARNESS.read_text(encoding="utf-8")
+
+
+def test_280_the_final_risk_trace_reaches_the_profiling_owner() -> None:
+    """REQUIRED CONTROL 4, EXECUTED. R-008, the same way."""
+    rows = _sync_rows()
+    nosync = rows["desc"][("endpoints-nosync", RISK_GRID)]
+    assert [ident for _r, ident, _t in nosync] == list(SMALL_RISK_IDS)
+    assert [trace for _r, _i, trace in nosync] == [f"GateB {i}" for i in SMALL_RISK_IDS[:-1]] + [""], nosync
+    assert rows["descwrite"]["endpoints-nosync"]["R-008"] == (True, False)
+    fixed = rows["desc"][("endpoints", RISK_GRID)]
+    assert [trace for _r, _i, trace in fixed] == [f"GateB {i}" for i in SMALL_RISK_IDS], fixed
+    assert rows["descwrite"]["endpoints"]["R-008"] == (True, True)
+    bulk = rows["desc"][("bulk", RISK_GRID)]
+    assert [trace for _r, _i, trace in bulk] == [f"GateB {i}" for i in SMALL_RISK_IDS], bulk
+
+
+def test_281_every_prior_row_is_unchanged_by_the_correction() -> None:
+    """REQUIRED CONTROL 5. Rows 1-11 and 1-7 are the same identifier, trace and
+    weights in all three scenarios; the correction touched only what was blank."""
+    rows = _sync_rows()
+    for table, idents in ((COST_GRID, SMALL_COST_IDS), (RISK_GRID, SMALL_RISK_IDS)):
+        prior = idents[:-1]
+        reference = rows["desc"][("endpoints-nosync", table)][: len(prior)]
+        for scenario in ("endpoints", "bulk"):
+            assert rows["desc"][(scenario, table)][: len(prior)] == reference, (scenario, table)
+            for ident in prior:
+                assert rows["weights"][(scenario, table)][ident] == \
+                    rows["weights"][("endpoints-nosync", table)][ident], (scenario, ident)
+        assert [ident for _r, ident, _t in reference] == list(prior)
+
+
+def test_282_the_profiling_weights_are_unchanged_and_equal_in_both_fixtures() -> None:
+    """REQUIRED CONTROL 6. Every weight cell of every driver is the model's, in all
+    three scenarios, and the corrected Endpoints grids are byte-for-byte the Bulk
+    grids in the snapshot's own rendering. The block builders did not move."""
+    rows = _sync_rows()
+    for table, idents in ((COST_GRID, SMALL_COST_IDS), (RISK_GRID, SMALL_RISK_IDS)):
+        for ident in idents:
+            model = rows["model"][table][ident]
+            for scenario in SYNC_SCENARIOS:
+                assert rows["weights"][(scenario, table)][ident] == model, (scenario, table, ident)
+        assert rows["body"][("endpoints", table)] == rows["body"][("bulk", table)], table
+        assert rows["body"][("endpoints-nosync", table)] != rows["body"][("bulk", table)], \
+            "the uncorrected fixture would have matched Bulk, so run 10 is not explained"
+    for name in ("New-BenchmarkWeightBlock", "New-BenchmarkRegisterBlock", "Set-BenchmarkRangeBlock",
+                 "Set-BenchmarkRegisterRowCount", "New-BenchmarkWeights", "New-BenchmarkDriver",
+                 "New-BenchmarkModel"):
+        assert _function(_code(), name) == _function(_code_at("d90a186"), name), f"{name} changed"
+    assert _git("diff", "--name-only", ACCEPTED, "--",
+                "pccm/bootstrap/windows/phase5_gate_b_scenarios.ps1").strip() == ""
+
+
+def test_283_the_reserved_blank_suffix_is_unchanged() -> None:
+    """REQUIRED CONTROL 7. Every row after the last keyed one is blank in every
+    column, and there are exactly reserved_rows minus the driver count of them -
+    read from the manifest, not a literal."""
+    rows = _sync_rows()
+    reserved = {grid["table_name"]: int(grid["reserved_rows"]) for grid in _manifest_json()["grids"]}
+    for table, idents in ((COST_GRID, SMALL_COST_IDS), (RISK_GRID, SMALL_RISK_IDS)):
+        for scenario in SYNC_SCENARIOS:
+            assert rows["suffix"][(scenario, table)] == (reserved[table] - len(idents), True), \
+                (scenario, table, rows["suffix"][(scenario, table)])
+
+
+def test_284_no_profiling_description_is_fabricated_by_any_fixture() -> None:
+    """REQUIRED CONTROL 8. The trace column is production's. The correction writes
+    nothing; the Endpoints branches contain the fixture and the resynchronisation
+    and nothing else; the Bulk builder writes grids from the first year column;
+    and as executed, the lowest grid column any fixture wrote is beyond the fixed
+    columns in every scenario."""
+    resync = _function(_code(), "Invoke-BenchmarkEndpointsResync")
+    for banned in ("Set-TableCell", "Set-BenchmarkRangeBlock", "Set-NamedValue", "GateB",
+                   "description", "risk_name", "Value2", "ListRows", "Add-BlankTableRow",
+                   "$Workbook", "Get-TableBody"):
+        assert banned not in resync, f"the resynchronisation touches data: {banned}"
+    assert resync.count("Invoke-Phase5ProductionOperation") == 1
+    assert resync.index("-Operation 'PCCM_ApplyTimeline'") < resync.index("Assert-Phase5StructurallyCoherent")
+    for label, source, fixture_call in (
+            ("runner", _code(), "$null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest"),
+            ("gate", _ps_code(_equiv_harness()), "$null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $Manifest")):
+        start = source.index(fixture_call)
+        branch = source[start: source.index("}", start)]
+        joined = " ".join(branch.replace("`\n", " ").split())
+        statements = [s.strip() for s in joined.split("$null = ") if s.strip()]
+        assert len(statements) == 2, (label, statements)
+        assert statements[0].startswith("Set-Phase5Fixture -Excel $excel"), (label, statements)
+        assert statements[1] == "Invoke-BenchmarkEndpointsResync -Excel $excel", (label, statements)
+    orchestrator = _bulk_functions()["Set-BenchmarkBulkFixture"]
+    assert "-TableName $grid.table_name -FirstRow 1 -FirstColumn ($fixed + 1)" in orchestrator
+    assert "Set-TableCell -Workbook $Workbook -SheetName $grid.sheet" not in orchestrator
+    rows = _sync_rows()
+    for (scenario, table), (lowest, fixed) in rows["lowest"].items():
+        assert lowest == fixed + 1, (scenario, table, lowest, fixed)
+
+
+def test_285_get_equivalence_snapshot_is_unchanged() -> None:
+    """REQUIRED CONTROL 9. Byte-identical to the two commits that defined it."""
+    now = _equiv_harness()
+    # 99cb472 is where the snapshot was written; the bundle contract came later.
+    frozen = {"99cb472": ("Get-EquivalenceSnapshot",),
+              "d90a186": ("Get-EquivalenceSnapshot", "New-EquivalenceBundle", "Get-BundleArtifacts",
+                          "Test-BundleIdentity")}
+    for commit, names in frozen.items():
+        then = _git("show", f"{commit}:pccm/tests/phase10_fixture_equivalence.ps1")
+        for name in names:
+            assert _function(now, name) == _function(then, name), f"{name} changed since {commit}"
+
+
+def test_286_the_description_column_is_still_inside_the_comparison() -> None:
+    """REQUIRED CONTROL 10. The grid bodies are every row, every column, joined;
+    nothing is skipped, filtered or projected, and the comparison loop compares
+    every field with no exclusion. The corrected Endpoints body carries the trace
+    text inside the very rendering the gate compares."""
+    snapshot = _function(_ps_code(_equiv_harness()), "Get-EquivalenceSnapshot")
+    grids = snapshot[snapshot.index("foreach ($key in @('cost_profiling', 'risk_profiling', 'inflation'))"):]
+    assert "$lines += ((@($row) -join '|'))" in grids
+    for banned in ("Select-Object", "-Skip", "[1..", "Where-Object", "-ne ''", "-notin", "-notcontains"):
+        assert banned not in snapshot, f"the snapshot narrows a table: {banned}"
+    gate = _ps_code(_equiv_harness())
+    compare = gate[gate.index("foreach ($field in @($reference.State.Keys))"):]
+    compare = compare[: compare.index("CALC|")]
+    assert "if ($left -ceq $right) {" in compare
+    for banned in ("-notin", "-ne 'cost_profiling", "-ne 'risk_profiling", "continue", "CalcFingerprint"):
+        assert banned not in compare, f"the comparison excludes or excuses: {banned}"
+    rows = _sync_rows()
+    assert "CL-012|GateB CL-012|" in rows["body"][("endpoints", COST_GRID)]
+    assert "R-008|GateB R-008|" in rows["body"][("endpoints", RISK_GRID)]
+    assert "CL-012||" in rows["body"][("endpoints-nosync", COST_GRID)]
+
+
+def test_287_the_readiness_gate_and_the_com_lifecycle_are_unchanged() -> None:
+    """REQUIRED CONTROL 11. build_stage_b.ps1 and com_lifecycle.ps1 are byte-identical
+    to the Windows-tested commit."""
+    for path in ("bootstrap/windows/build_stage_b.ps1", "bootstrap/windows/com_lifecycle.ps1"):
+        now = (PCCM_ROOT / path).read_text(encoding="utf-8")
+        assert now == _at_commit(path, "d90a186"), f"{path} changed"
+
+
+def test_288_the_saveas_settlement_is_unchanged() -> None:
+    """REQUIRED CONTROL 12. The settlement, the readiness gate and the verification
+    acquisition rule are the functions Windows proved."""
+    now = (BOOTSTRAP / "build_stage_b.ps1").read_text(encoding="utf-8")
+    then = _at_commit("bootstrap/windows/build_stage_b.ps1", "6672b75")
+    for name in ("Invoke-StageBSaveAs", "Get-StageBSaveAsPostcondition", "Wait-StageBWorkbookReady",
+                 "Get-StageBVerificationObject", "New-StageBSaveAsResult"):
+        assert _function(now, name) == _function(then, name), f"{name} changed"
+
+
+def test_289_the_window_and_protection_architecture_are_unchanged() -> None:
+    """REQUIRED CONTROL 13. The window functions did not move, and the
+    resynchronisation - a structural production command - runs INSIDE the window,
+    between the fixture and the close, in the runner and in the gate."""
+    for name in ("Import-BenchmarkFixtureWindow", "Get-BenchmarkProtectionState",
+                 "Assert-BenchmarkProtectionApplied", "Open-BenchmarkFixtureWindow",
+                 "Invoke-BenchmarkWindowRollback", "Close-BenchmarkFixtureWindow"):
+        assert _function(_code(), name) == _function(_code_at("d90a186"), name), f"{name} changed"
+    code = _code()
+    assert code.index("Open-BenchmarkFixtureWindow -Excel $excel") < code.index(RESYNC_CALL) \
+        < code.index("Close-BenchmarkFixtureWindow -Excel $excel")
+    gate = _ps_code(_equiv_harness())
+    assert gate.index("Open-BenchmarkFixtureWindow -Excel $excel") < gate.index(RESYNC_CALL) \
+        < gate.index("Close-BenchmarkFixtureWindow -Excel $excel")
+    assert code.count(RESYNC_CALL) == 1 and gate.count(RESYNC_CALL) == 1
+
+
+def test_290_the_rank_two_block_architecture_is_unchanged() -> None:
+    """REQUIRED CONTROL 14."""
+    for name in ("New-BenchmarkWeightBlock", "New-BenchmarkRegisterBlock", "Set-BenchmarkRangeBlock",
+                 "Set-BenchmarkRegisterRowCount", "Get-BenchmarkPermanentId"):
+        assert _function(_code(), name) == _function(_code_at("d90a186"), name), f"{name} changed"
+    rows = _bulk_rows()
+    assert rows["rank"]["PERF-SMALL"] == {"tblCostLines": (2, 12, 11), "tblRiskRegister": (2, 8, 12),
+                                          "tblCostProfiling": (2, 12, 10), "tblRiskProfiling": (2, 8, 10)}
+
+
+def test_291_the_timed_operations_are_unchanged_and_the_resync_is_setup() -> None:
+    """REQUIRED CONTROL 15. The timed path did not move, and the resynchronisation
+    is inside the fixture stopwatch and before the timed loop - never inside it."""
+    for name in ("Invoke-BenchmarkExecution", "Test-BenchmarkSample", "Get-BenchmarkMedian",
+                 "Assert-BenchmarkProblemList"):
+        assert _function(_code(), name) == _function(_code_at("d90a186"), name), f"{name} changed"
+    code = _code()
+    started = code.index("$fixtureWatch = [System.Diagnostics.Stopwatch]::StartNew()")
+    stopped = code.index("$fixtureWatch.Stop()")
+    loop = code.index("foreach ($run in $plannedRuns) {")
+    resync = code.index(RESYNC_CALL)
+    assert started < resync < stopped < loop, (started, resync, stopped, loop)
+    timed = code[loop:]
+    assert "Invoke-BenchmarkEndpointsResync" not in timed
+    assert "PCCM_ApplyTimeline" not in timed
+    assert "PCCM_ApplyTimeline" not in _function(code, "Invoke-BenchmarkExecution")
+
+
+def test_292_production_vba_is_unchanged() -> None:
+    """REQUIRED CONTROL 16. The cause is a fixture-order matter; production is
+    not touched for it."""
+    assert _production_changed_since("d90a186") == []
+    assert _git("diff", "--name-only", "d90a186", "--", "pccm/src/vba").strip() == ""
+
+
+def test_293_calcequiv_remains_an_independent_requirement() -> None:
+    """REQUIRED CONTROL 17. A matching calculation fingerprint does not excuse a
+    workbook-state difference: the EQUIV lines are decided field by field on the
+    snapshot alone, CALCEQUIV is decided on the fingerprints alone, and neither
+    reads the other."""
+    gate = _ps_code(_equiv_harness())
+    compare = gate[gate.index("foreach ($field in @($reference.State.Keys))"): gate.index("CALC|")]
+    assert "if ($left -ceq $right) {" in compare
+    assert "CalcFingerprint" not in compare and "CALCEQUIV" not in compare
+    verdict = gate[gate.index("if ($reference.CalcFingerprint -ceq $optimised.CalcFingerprint)"):]
+    verdict = verdict[: verdict.index("foreach ($mode in @($bundles.Keys))")]
+    assert "Write-Output 'CALCEQUIV|match|the production calculation fingerprint is identical'" in verdict
+    assert "CALCEQUIV|differ|endpoints=" in verdict
+    assert ".State" not in verdict and "EQUIV|" not in verdict.replace("CALCEQUIV|", "")
+    raw = _equiv_harness()
+    assert "CALCEQUIV|match / differ                only when both passes COMPLETED" in raw
+    plain = " ".join(_run_evidence_section("## Equivalence run 10").replace("`", "").replace("**", "").split())
+    assert "CALCEQUIV|match" in plain and "NOT yet accepted" in plain
+
+
+def test_294_the_record_states_run_10_as_the_first_completed_comparison_and_a_real_differ() -> None:
+    """REQUIRED REPORTING. Not INVALID / NOT EVALUATED: both passes completed, the
+    comparison ran, two fields differed, and the record says exactly which cells,
+    that the weights and fingerprints matched, and that Bulk is still not
+    authorised. The cause is stated from source, not inferred from the pattern."""
+    section = _run_evidence_section("## Equivalence run 10")
+    plain = " ".join(section.replace("`", "").replace("**", "").split())
+    for required in ("FIRST COMPLETED", "REAL DIFFER", "BUNDLE|identical|5 artifact(s)",
+                     "PASS|Endpoints|COMPLETED", "PASS|Bulk|COMPLETED",
+                     "READY|open|attempt=2|fullname=True|fileformat=51|waited=250",
+                     "EQUIV|cost_profiling.body|differ", "EQUIV|risk_profiling.body|differ",
+                     "CL-012", "R-008", "GateB CL-012", "GateB R-008", "weights matched",
+                     "2DA8A0F6092AEA4B", "CALCEQUIV|match", "NOT yet accepted",
+                     "Bulk remains NOT authorised", "modProfiling.SyncRows", "AddDriver",
+                     "refreshed, not live", "d90a186"):
+        assert required in plain, required
+    assert "INVALID / NOT EVALUATED" not in plain
+    assert "not a production defect" in plain
+    assert "No production change is made or proposed" in plain
+
+
+def test_295_the_resync_is_production_owned_bounded_and_value_preserving_by_source() -> None:
+    """THE CORRECTION'S LICENCE. One accepted structural command, no retry, no
+    sleep, no loop; and the VBA it runs preserves every weight by permanent ID
+    and every rate by profile and year when the entered timeline is unchanged."""
+    resync = _function(_code(), "Invoke-BenchmarkEndpointsResync")
+    assert resync.count("Invoke-Phase5ProductionOperation") == 1
+    for banned in ("Start-Sleep", "for (", "while (", "do {", "try", "Invoke-ComRetryRead", "Retry"):
+        assert banned not in resync, banned
+    assert "Trace columns are refreshed, not live" in (DOCS / "phase4.md").read_text(encoding="utf-8")
+    timeline = _vba("modTimeline.bas")
+    assert "modProfiling.SyncRows modProfiling.CostKind()" in timeline
+    assert "modProfiling.SyncRows modProfiling.RiskKind()" in timeline
+    assert "modInflation.SyncProfileRows" in timeline
+    profiling = _vba("modProfiling.bas")
+    assert "If held.Exists(driverId) Then" in profiling and "kept = held(driverId)" in profiling
+    assert "Do While target.ListColumns.Count > fixedCols + NewCount" in profiling
+    assert "Do While target.ListColumns.Count < fixedCols + NewCount" in profiling
+    inflation = _vba("modInflation.bas")
+    assert "If held.Exists(lookupKey) Then" in inflation
+    assert "slot.Value = held(lookupKey)" in inflation
+
+
+def test_296_the_gate_lifts_the_resync_and_makes_it_where_the_runner_does() -> None:
+    """ONE DEFINITION, TWO CALLERS. The gate does not restate the correction; it
+    lifts the runner's function by AST and calls it at the same point."""
+    raw = _equiv_harness()
+    assert "'Set-BenchmarkBulkFixture', 'Invoke-BenchmarkEndpointsResync'," in raw
+    assert "function Invoke-BenchmarkEndpointsResync" not in raw, "the gate restates the correction"
+    gate = _ps_code(raw)
+    fixture = gate.index("$null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $Manifest")
+    resync = gate.index(RESYNC_CALL)
+    between = gate[fixture:resync]
+    assert between.count("\n") == 2, between
+
+
 # Every rectangular fixture block, and the geometry each must have. Restated here so
 # a builder that quietly changes shape fails a control rather than Excel.
 RANK_EXPECTED = {
@@ -4165,6 +4623,9 @@ FLOW_EXPECTED = {
         ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End", "P10FW_State"], 1),
     "open-succeeds-fixture-throws": (
         ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End", "P10FW_State"], 0),
+    # The resynchronisation after the fixture (run 10) is inside the same guard.
+    "open-succeeds-resync-throws": (
+        ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End", "P10FW_State"], 0),
     "open-succeeds-close-refuses": (
         ["P10FW_State", "P10FW_Begin", "P10FW_State", "P10FW_End"], 0),
     "open-succeeds-close-leaves-depth-open": (
@@ -4298,6 +4759,12 @@ def test_174_a_successful_open_closes_nothing_itself() -> None:
     assert raised["timed"] == 0
     # AND THE FIXTURE'S OWN FAILURE IS WHAT IS REPORTED, not the close's success.
     assert raised["message"].strip() == "THE FIXTURE RAISED", raised["message"]
+    # THE RESYNCHRONISATION IS UNDER THE SAME GUARD: one close, no timed work, and
+    # its own failure is what is reported.
+    resync = flow["open-succeeds-resync-throws"]
+    assert resync["calls"].count("P10FW_End") == 1, resync["calls"]
+    assert resync["timed"] == 0
+    assert resync["message"].strip() == "THE RESYNCHRONISATION RAISED", resync["message"]
 
 
 @pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")

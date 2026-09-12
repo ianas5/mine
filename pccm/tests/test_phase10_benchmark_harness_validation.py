@@ -2910,3 +2910,177 @@ def test_281_a_verdict_style_pass_mark_still_cannot_hide_behind_the_declared_pre
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ===========================================================================
+# S. THE LAST DRIVER'S TRACE COLUMN - EQUIVALENCE RUN 10
+# ===========================================================================
+SYNC_CONTROLS = tuple(name for name in conformance.__dict__
+                      if name.startswith(tuple(f"test_{n}_" for n in range(277, 297)))) + (
+    "test_153_a_fixture_that_raises_still_closes_the_window",
+    "test_158_the_window_wraps_the_fixture_and_no_other_setup",
+    "test_191_the_bulk_fixture_publishes_nothing",
+    "test_275_the_window_the_settlements_and_the_blocks_did_not_move")
+
+
+def _sync_mutation(key: str, expected: str, edits: list) -> None:
+    """Damage the runner, the gate or the record ON DISK with one or more exact
+    text replacements, run the run-10 controls, restore. Every edit must change
+    something, or the mutation is a no-op and says so."""
+    path = _BULK_ON_DISK[key]
+    with path.open(encoding="utf-8", newline="") as handle:
+        original = handle.read()
+    crlf = "\r\n" in original
+    damaged = original
+    for before, after in edits:
+        before_nl = before.replace("\n", "\r\n") if crlf else before
+        after_nl = after.replace("\n", "\r\n") if crlf else after
+        step = damaged.replace(before_nl, after_nl, 1)
+        if step == damaged:
+            raise RuntimeError(f"the mutation changed nothing: {before[:70]!r} is no longer in {key}")
+        damaged = step
+    refused = []
+    try:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(damaged)
+        conformance._MEMO.clear()
+        for memo in ("sync", "bulk", "rank"):
+            conformance._MEMO_ANY.pop(memo, None)
+        for name in SYNC_CONTROLS:
+            try:
+                getattr(conformance, name)()
+            except BaseException:  # noqa: BLE001 - any refusal counts
+                refused.append(name)
+    finally:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(original)
+        conformance._MEMO.clear()
+        for memo in ("sync", "bulk", "rank"):
+            conformance._MEMO_ANY.pop(memo, None)
+    assert refused, "the mutation survived every run-10 control"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+RESYNC_INVOKE = (
+    "    $applied = Invoke-Phase5ProductionOperation -Excel $Excel `\n"
+    "        -Operation 'PCCM_ApplyTimeline' `\n"
+    "        -Stage 'the Endpoints resynchronisation, after the last driver was populated'\n")
+RESYNC_RETURN = (
+    "        -Stage 'after the Endpoints fixture was resynchronised through PCCM_ApplyTimeline'\n"
+    "    return $applied\n")
+RUNNER_RESYNC_CALL = (
+    "            # THE LAST DRIVER'S TRACE, REFRESHED BY PRODUCTION - see the function.\n"
+    "            $null = Invoke-BenchmarkEndpointsResync -Excel $excel\n")
+GATE_RESYNC_CALL = (
+    "                # THE SAME RESYNCHRONISATION THE RUNNER MAKES, lifted from it: the\n"
+    "                # reference fixture ends with production's own SyncRows over the\n"
+    "                # complete registers, so the trace column of the last driver is\n"
+    "                # what production copies there, in both passes.\n"
+    "                $null = Invoke-BenchmarkEndpointsResync -Excel $excel\n")
+SNAPSHOT_GRID_LINE = (
+    "                -TableName $grid.table_name)) {\n"
+    "            $lines += ((@($row) -join '|'))\n")
+
+
+def test_282_leaving_the_final_cost_line_trace_unsynchronised_is_refused() -> None:
+    """THE RUN-10 STATE, KEPT. A resynchronisation that applies nothing leaves
+    CL-012 exactly as Windows saw it, and the executed proof says so."""
+    _sync_mutation("runner", "test_279", [
+        (RESYNC_INVOKE, "    $applied = 'OK|resynchronisation skipped'\n")])
+
+
+def test_283_leaving_the_final_risk_trace_unsynchronised_is_refused() -> None:
+    """A PRODUCTION COMMAND THAT DOES NOT SYNCHRONISE. The structural report is a
+    real accepted endpoint and runs no SyncRows; R-008 stays blank."""
+    _sync_mutation("runner", "test_280", [
+        ("-Operation 'PCCM_ApplyTimeline' `\n        -Stage 'the Endpoints resynchronisation",
+         "-Operation 'PCCM_StructuralReport' `\n        -Stage 'the Endpoints resynchronisation")])
+
+
+def test_284_dropping_the_resynchronisation_from_the_runner_is_refused() -> None:
+    """THE FUNCTION WITHOUT ITS CALL. Defined and never made is the run-10 fixture."""
+    _sync_mutation("runner", "test_277", [(RUNNER_RESYNC_CALL, "")])
+
+
+def test_285_blanking_the_bulk_final_descriptions_by_hand_is_refused() -> None:
+    """THE FORBIDDEN SHORTCUT. Making Bulk imitate the old artifact by writing a
+    blank into the trace column is a fixture writing production's column."""
+    _sync_mutation("runner", "test_284", [
+        ("            -Block $prepared.Block -Description ([string]$grid.table_name)\n",
+         "            -Block $prepared.Block -Description ([string]$grid.table_name)\n"
+         "        Set-TableCell -Workbook $Workbook -SheetName $grid.sheet -TableName $grid.table_name `\n"
+         "            -RowIndex $prepared.Rows -ColumnIndex 2 -Value ''\n")])
+
+
+def test_286_excluding_the_description_column_from_equivalence_is_refused() -> None:
+    """NARROWING THE SNAPSHOT. Dropping column 2 would have turned run 10 into a
+    match without fixing anything."""
+    _sync_mutation("gate", "test_285", [
+        (SNAPSHOT_GRID_LINE,
+         "                -TableName $grid.table_name)) {\n"
+         "            $lines += (((@(@($row)[0]) + @(@($row) | Select-Object -Skip 2)) -join '|'))\n")])
+
+
+def test_287_comparing_only_the_semantic_weights_is_refused() -> None:
+    """THE OTHER NARROWING: keyed rows only, weights only."""
+    _sync_mutation("gate", "test_286", [
+        (SNAPSHOT_GRID_LINE,
+         "                -TableName $grid.table_name)) {\n"
+         "            if ([string]@($row)[0] -ne '') { $lines += ((@(@($row) | Select-Object -Skip 2) -join '|')) }\n")])
+
+
+def test_288_disturbing_a_weight_while_fixing_the_description_is_refused() -> None:
+    """A CORRECTION THAT TOUCHES DATA. One weight cell changed under cover of the
+    resynchronisation differs from the model and from Bulk."""
+    _sync_mutation("runner", "test_282", [
+        (RESYNC_RETURN,
+         "        -Stage 'after the Endpoints fixture was resynchronised through PCCM_ApplyTimeline'\n"
+         "    Set-TableCell -Workbook $null -SheetName 'Cost Profiling' -TableName 'tblCostProfiling' `\n"
+         "        -RowIndex 12 -ColumnIndex 3 -Value ([double]0.5)\n"
+         "    return $applied\n")])
+
+
+def test_289_altering_the_reserved_suffix_is_refused() -> None:
+    """ONE MORE BLANK ROW is a different grid."""
+    _sync_mutation("runner", "test_283", [
+        (RESYNC_RETURN,
+         "        -Stage 'after the Endpoints fixture was resynchronised through PCCM_ApplyTimeline'\n"
+         "    $null = Add-BlankTableRow -Workbook $null -SheetName 'Cost Profiling' -TableName 'tblCostProfiling'\n"
+         "    return $applied\n")])
+
+
+def test_290_moving_the_fix_into_timed_execution_is_refused() -> None:
+    """A STRUCTURAL OPERATION INSIDE THE TIMED LOOP would be measured as
+    production work and would run on every sample."""
+    _sync_mutation("runner", "test_291", [
+        (RUNNER_RESYNC_CALL, ""),
+        ("    foreach ($run in $plannedRuns) {\n",
+         "    foreach ($run in $plannedRuns) {\n"
+         "        $null = Invoke-BenchmarkEndpointsResync -Excel $excel\n")])
+
+
+def test_291_dropping_the_resynchronisation_from_the_gate_is_refused() -> None:
+    """THE GATE MUST BUILD THE REFERENCE THE RUNNER'S WAY."""
+    _sync_mutation("gate", "test_296", [(GATE_RESYNC_CALL, "")])
+
+
+def test_292_relabelling_run_10_as_not_evaluated_is_refused() -> None:
+    """A REAL DIFFER IS NOT AN INVALID RUN. Both passes completed and the
+    comparison ran; the record may not retreat to the label of runs 3-9."""
+    _sync_mutation("evidence", "test_294", [
+        ("A REAL DIFFER ON TWO TRACE CELLS", "INVALID / NOT EVALUATED")])
+
+
+def test_293_letting_a_matching_fingerprint_excuse_a_state_difference_is_refused() -> None:
+    """CALCEQUIV IS NOT A WAIVER."""
+    _sync_mutation("gate", "test_293", [
+        ("        if ($left -ceq $right) {\n",
+         "        if (($left -ceq $right) -or ($reference.CalcFingerprint -ceq $optimised.CalcFingerprint)) {\n")])
+
+
+def test_294_dropping_the_coherence_proof_after_the_resync_is_refused() -> None:
+    """THE FIXTURE ENDS COHERENT, STILL. A structural operation whose result is
+    not read by the structural checker could leave the window on a broken grid."""
+    _sync_mutation("runner", "test_284", [
+        ("    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `\n"
+         "        -Stage 'after the Endpoints fixture was resynchronised through PCCM_ApplyTimeline'\n", "")])

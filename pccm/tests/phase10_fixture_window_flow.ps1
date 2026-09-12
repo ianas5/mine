@@ -156,6 +156,13 @@ $scenarios = @(
        Begin = @('OK|depth=1'); End = @('OK|depth=0')
        State = @((New-State), (New-State -Depth 1), (New-State))
        RunCaller = $true; FixtureThrows = $true },
+    # THE RESYNCHRONISATION AFTER THE FIXTURE RAISES. It is a production call
+    # inside the same guarded region, so its failure closes the window once and
+    # reaches no timed work, exactly as the fixture's own failure does.
+    @{ Name = 'open-succeeds-resync-throws'
+       Begin = @('OK|depth=1'); End = @('OK|depth=0')
+       State = @((New-State), (New-State -Depth 1), (New-State))
+       RunCaller = $true; FixtureThrows = $false; ResyncThrows = $true },
     @{ Name = 'open-succeeds-close-refuses'
        Begin = @('OK|depth=1'); End = @('FAIL|protection was not restored')
        State = @((New-State), (New-State -Depth 1))
@@ -185,12 +192,21 @@ foreach ($scenario in $scenarios) {
     $scenarioSpec = [pscustomobject]@{ id = 'PERF-SMALL'; years = 10 }
     $protectionAfter = $null
     $script:FixtureThrows = [bool]$scenario.FixtureThrows
+    $script:ResyncThrows = ($scenario.ContainsKey('ResyncThrows') -and [bool]$scenario.ResyncThrows)
     $script:Timed = 0
 
     function Set-Phase5Fixture {
         param($Excel, $Workbook, $Manifest, $Inspection, $Model)
         if ($script:FixtureThrows) { throw 'THE FIXTURE RAISED' }
         return 'OK|fixture'
+    }
+    # The Endpoints branch follows the fixture with production's resynchronisation
+    # (equivalence run 10); a stand-in here, like the fixture, because these
+    # scenarios are about the window's exception flow.
+    function Invoke-BenchmarkEndpointsResync {
+        param($Excel)
+        if ($script:ResyncThrows) { throw 'THE RESYNCHRONISATION RAISED' }
+        return 'OK|resynchronised'
     }
 
     $outcome = 'RETURNED'

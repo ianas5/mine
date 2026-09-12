@@ -838,6 +838,41 @@ function New-BenchmarkWeightBlock {
     }
 }
 
+# ===========================================================================
+# THE ENDPOINTS FIXTURE ENDS RESYNCHRONISED, THROUGH PRODUCTION
+# ===========================================================================
+# Equivalence run 10 completed both passes for the first time and differed in
+# exactly two fields: the profiling Description of the LAST Cost Line and of the
+# LAST Risk were blank after the Endpoints fixture and present after Bulk.
+#
+# WHY, FROM SOURCE. modDrivers.AddDriver writes the new identifier and then runs
+# modProfiling.SyncRows, which copies the register's Description (Risk Name)
+# into the grid's trace column - and only then does the accepted Gate-B fixture
+# write that driver's Description (Write-Phase5Driver, after the Add it proves).
+# Driver N's trace is therefore refreshed by driver N+1's Add, and the final
+# driver's trace is refreshed by nothing: docs/phase4.md records trace columns
+# as "refreshed, not live". The Bulk fixture writes every register row first
+# and applies the timeline once afterwards, so its grids are fully synchronised.
+#
+# THE CORRECTION IS PRODUCTION'S OWN SYNCHRONISATION, NOT A WRITE. The Endpoints
+# fixture, unchanged (the accepted harness is not edited), is followed by one
+# more PCCM_ApplyTimeline - the accepted structural command both fixtures already
+# rely on. With the entered timeline unchanged it deletes and adds no column,
+# SyncRows preserves every weight by permanent ID and SyncProfileRows every rate
+# by profile and year (both hold the existing values and write them back), and
+# the trace columns are copied from the now-complete registers. No description
+# is written here, no weight is touched, and nothing runs inside a timed region:
+# this is setup, between the fixture and the window close.
+function Invoke-BenchmarkEndpointsResync {
+    param($Excel)
+    $applied = Invoke-Phase5ProductionOperation -Excel $Excel `
+        -Operation 'PCCM_ApplyTimeline' `
+        -Stage 'the Endpoints resynchronisation, after the last driver was populated'
+    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `
+        -Stage 'after the Endpoints fixture was resynchronised through PCCM_ApplyTimeline'
+    return $applied
+}
+
 # THE BULK FIXTURE, STEP FOR STEP AGAINST THE ACCEPTED ONE.
 #
 # The accepted `Invoke-Phase5FixtureSteps` runs A-H. This runs the same steps and
@@ -2592,6 +2627,8 @@ try {
         } else {
             $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `
                 -Inspection $inspection -Model $model
+            # THE LAST DRIVER'S TRACE, REFRESHED BY PRODUCTION - see the function.
+            $null = Invoke-BenchmarkEndpointsResync -Excel $excel
         }
     } finally {
         if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.window.close' }
