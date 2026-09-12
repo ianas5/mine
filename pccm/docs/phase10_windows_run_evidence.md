@@ -3196,3 +3196,124 @@ CALCEQUIV|match
 
 with every other `EQUIV` line `match`. Both are required; neither excuses the
 other. Until then, Bulk remains NOT authorised.
+
+## Equivalence run 11 — INVALID / NOT EVALUATED — REFUSED BEFORE THE FIRST BULK LABEL
+
+**Harness commit:** `1eb6395` (the profiling resynchronisation). Windows PowerShell
+5.1. Stage A immediately before: 351 passed, 0 failed.
+
+### What happened, step for step
+
+```
+BUNDLE|identical|5 artifact(s)
+```
+
+**Endpoints:** Stage-B completed; the fixture completed; the real `PCCM_Calculate`
+ran:
+
+```
+PASS|Endpoints|COMPLETED|fixture built and PCCM_Calculate ran
+```
+
+**Bulk Stage-B:** readiness PASS on attempt 1; `SaveAs` PASS on attempt 1; 14
+CodeNames, 32 modules and 11 buttons persisted; reopen verification PASS; clean COM
+lifecycle. Then the Bulk pass raised:
+
+```
+FAIL|Bulk|RAISED|Call was rejected by callee. HRESULT 0x80010001 RPC_E_CALL_REJECTED
+BULKFAIL|<before the first bulk operation>|hresult=0x80010001|RPC_E_CALL_REJECTED (0x80010001)
+```
+
+The rejected call was therefore **outside the labelled Bulk operation region**: the
+instrumentation in place **did not cover** it. No Bulk fixture completion, **no
+snapshot, no EQUIV, no CALCEQUIV**.
+
+### Verdict
+
+**INVALID / NOT EVALUATED.** This is **NOT a fixture DIFFER**: no comparison ran.
+It **does not invalidate** run 10, which completed both passes and proved the
+profiling-Description difference and its source cause; it means only that the
+`1eb6395` correction has not yet received a completed Windows equivalence run.
+**Bulk remains NOT authorised.**
+
+### Why the label could not name it — from source
+
+`Invoke-EquivalencePass` set its first label, `bulk.window.open`, immediately
+before `Open-BenchmarkFixtureWindow` — correctly for that call — but only there.
+Between the Stage-B bootstrap's return (`$bootstrapExit`, `Test-Path`) and that
+line, the pass makes nine Excel calls with no label in flight:
+
+| # | statement | what Excel is asked |
+|---|---|---|
+| 1 | `$excel = New-Object -ComObject Excel.Application` | start a new Excel instance |
+| 2 | `$excel.Visible = $false` | property set |
+| 3 | `$excel.DisplayAlerts = $false` | property set |
+| 4 | `$excel.AskToUpdateLinks = $false` | property set |
+| 5 | `$workbooks = $excel.Workbooks` | property get |
+| 6 | `$wb = $workbooks.Open($stageB)` | open the freshly built workbook |
+| 7 | `$excel.Run('PCCM_AutomationBegin', $true, '')` | production VBA |
+| 8 | `Save-Phase5LockedFxSeed` | `Worksheets`, `ListObjects`, `Value2` reads |
+| 9 | `Import-BenchmarkFixtureWindow` | `VBProject`, `VBComponents`, `Import`, `Name`, `Run('P10FW_Ping')` |
+
+The failure was raised in one of those nine — the diagnostic proves that much and
+no more. **It is not assigned to any call.** Nothing here claims the Excel start,
+the workbook open, the automation envelope, the seed read or the shim import;
+the next run's label will say which. No claim is made about readiness, timing,
+lifecycle overlap or any other cause.
+
+### The instrumentation, observational only
+
+Every one of those calls is now named from the closed vocabulary immediately before
+it runs, in the gate and in the runner (whose Bulk mode makes three further reads
+of its own: the Excel identity, the environment inventory and the protection
+state), and a catch around the prefix saves the label at the throw and rethrows,
+exactly as the builder's catch does. The window open is inside that guard in the
+gate. A refused property get can answer with nothing — Stage-B saw that on
+Windows — so the `Workbooks` acquisition is followed by a null guard under its own
+label, so that a swallowed refusal there is not reported one label later.
+`Reset-BulkOp` now runs before the prefix, so the sentinel
+`<before the first bulk operation>` can only name a failure that precedes the
+first instrumentable operation.
+
+| # | label | call | class |
+|---|---|---|---|
+| 1 | `bulk.preflight.excel.create` | `New-Object -ComObject Excel.Application` | A |
+| 2 | `bulk.preflight.excel.identity` (runner only) | `Get-ExcelIdentity` — `Hwnd` read | A |
+| 3 | `bulk.preflight.excel.visible` | `Visible = $false` | B |
+| 4 | `bulk.preflight.excel.displayalerts` | `DisplayAlerts = $false` | B |
+| 5 | `bulk.preflight.excel.asktoupdatelinks` | `AskToUpdateLinks = $false` | B |
+| 6 | `bulk.preflight.workbooks.acquire` | `Workbooks` get, then the null guard | A |
+| 7 | `bulk.preflight.workbook.open` | `Workbooks.Open` | **C** (a second Open is a second session state) |
+| 8 | `bulk.preflight.environment.read` (runner only) | `Version`, `Build`, `Calculation`, `Workbooks.Count` | A |
+| 9 | `bulk.preflight.automation.begin` | `Run('PCCM_AutomationBegin')` | D |
+| 10 | `bulk.preflight.fxseed.read` | `Worksheets`/`ListObjects`/`Value2` reads | A |
+| 11 | `bulk.preflight.window.import` | `VBProject`, `VBComponents.Import`, `Name`, `Run('P10FW_Ping')` | **C** + D |
+| 12 | `bulk.preflight.protection.read` (runner only) | `Run('P10FW_State')` | D |
+| 13 | `bulk.window.open` | `Run('P10FW_Begin')` and the state read | D |
+
+A property set that Excel silently refused would take effect nowhere and raise
+nothing; that case is not detectable by labelling alone and is recorded as such.
+
+**If the next run names a class-A operation**, a bounded read retry may later be
+considered. **If it names B, C or D**, the evidence is returned and nothing is
+retried. **No pre-authorisation exists.**
+
+### Executed, not asserted
+
+`tests/phase10_bulk_ops_flow.ps1` now cuts the gate's Bulk pass (from its
+`Reset-BulkOp` through the window close) and the runner's Bulk prefix (through its
+catch) out of the real files by their first and last statements and runs them over
+a fake Excel whose every property get, property set and `Run` records the label in
+flight and can be told to refuse there; `New-Object` itself is stood in for so the
+COM request returns the fake. A successful prefix meets the labels in order and
+hands over to `bulk.registers.assert-empty`. Refused at each of the ten gate prefix
+operations and each of the twelve runner prefix operations, `BULKFAIL` names that
+operation with its HRESULT, no label is touched after it, each is touched once, and
+the window is neither opened nor closed. The swallowed `Workbooks` get is named
+under `bulk.preflight.workbooks.acquire` with `hresult=none` and the message *the
+Workbooks collection read answered with nothing*.
+
+The `1eb6395` resynchronisation is byte-identical and still called once in each
+file, immediately after `Set-Phase5Fixture`, inside the window and before the timed
+loop. `Get-EquivalenceSnapshot`, the window functions, the block builders,
+`build_stage_b.ps1`, `com_lifecycle.ps1` and production VBA are byte-identical.

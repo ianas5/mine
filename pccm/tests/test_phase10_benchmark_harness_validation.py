@@ -3084,3 +3084,155 @@ def test_294_dropping_the_coherence_proof_after_the_resync_is_refused() -> None:
     _sync_mutation("runner", "test_284", [
         ("    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `\n"
          "        -Stage 'after the Endpoints fixture was resynchronised through PCCM_ApplyTimeline'\n", "")])
+
+
+# ===========================================================================
+# T. THE UNLABELLED PREFIX - EQUIVALENCE RUN 11
+# ===========================================================================
+PREFIX_CONTROLS = tuple(name for name in conformance.__dict__
+                        if name.startswith(tuple(f"test_{n}_" for n in range(297, 316)))) + (
+    "test_270_every_bulk_operation_is_labelled_and_the_vocabulary_is_closed",
+    "test_272_the_executed_order_matches_the_vocabulary_for_small_and_growth",
+    "test_273_a_failure_names_that_operation_and_no_later_one",
+    "test_274_nothing_is_retried_and_nothing_sleeps",
+    "test_153_a_fixture_that_raises_still_closes_the_window",
+    "test_158_the_window_wraps_the_fixture_and_no_other_setup",
+    "test_284_no_profiling_description_is_fabricated_by_any_fixture",
+    "test_289_the_window_and_protection_architecture_are_unchanged")
+
+
+def _prefix_mutation(key: str, expected: str, edits: list) -> None:
+    path = _BULK_ON_DISK[key]
+    with path.open(encoding="utf-8", newline="") as handle:
+        original = handle.read()
+    crlf = "\r\n" in original
+    damaged = original
+    for before, after in edits:
+        before_nl = before.replace("\n", "\r\n") if crlf else before
+        after_nl = after.replace("\n", "\r\n") if crlf else after
+        step = damaged.replace(before_nl, after_nl, 1)
+        if step == damaged:
+            raise RuntimeError(f"the mutation changed nothing: {before[:70]!r} is no longer in {key}")
+        damaged = step
+    refused = []
+    try:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(damaged)
+        conformance._MEMO.clear()
+        for memo in ("bulk", "sync", "rank"):
+            conformance._MEMO_ANY.pop(memo, None)
+        for name in PREFIX_CONTROLS:
+            try:
+                getattr(conformance, name)()
+            except BaseException:  # noqa: BLE001 - any refusal counts
+                refused.append(name)
+    finally:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(original)
+        conformance._MEMO.clear()
+        for memo in ("bulk", "sync", "rank"):
+            conformance._MEMO_ANY.pop(memo, None)
+    assert refused, "the mutation survived every prefix control"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+GATE_CREATE_LABEL = "            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.create' }\n"
+GATE_CREATE_CALL = "            $excel = New-Object -ComObject Excel.Application\n"
+GATE_PREFIX_CATCH = (
+    "        } catch {\n"
+    "            # SAVED AT THE THROW. The window's finally is not entered from here -\n"
+    "            # it was never opened - so nothing relabels; saved all the same, so the\n"
+    "            # outer catch never has to read a label after the fact.\n"
+    "            if ($Mode -eq 'Bulk') { Save-BulkFailure -ErrorRecord $_ }\n"
+    "            throw\n"
+    "        }\n")
+GATE_WINDOW_OPEN = (
+    "            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.window.open' }\n"
+    "            $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest\n")
+
+
+def test_295_omitting_the_label_before_the_first_prefix_call_is_refused() -> None:
+    """RUN 11 AGAIN. A failure in the Excel start would read the sentinel."""
+    _prefix_mutation("gate", "test_299", [(GATE_CREATE_LABEL, "")])
+
+
+def test_296_setting_the_label_after_the_call_is_refused() -> None:
+    """THE LABEL NAMES THE NEXT CALL, NOT THIS ONE."""
+    _prefix_mutation("gate", "test_300", [
+        (GATE_CREATE_LABEL + GATE_CREATE_CALL, GATE_CREATE_CALL + GATE_CREATE_LABEL)])
+
+
+def test_297_reporting_the_previous_operation_on_failure_is_refused() -> None:
+    """A MISSING LABEL CARRIES THE PREVIOUS ONE. A refused PCCM_AutomationBegin
+    would be reported as the workbook open."""
+    _prefix_mutation("gate", "test_302", [
+        ("            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.automation.begin' }\n", "")])
+
+
+def test_298_excluding_the_window_open_from_the_saving_catch_is_refused() -> None:
+    """THE OPEN IS A PRODUCTION CALL IN THE PREFIX. Moved outside the guard, its
+    failure is no longer saved at the throw."""
+    _prefix_mutation("gate", "test_301", [
+        (GATE_WINDOW_OPEN + GATE_PREFIX_CATCH,
+         GATE_PREFIX_CATCH + GATE_WINDOW_OPEN.replace("            ", "        "))])
+
+
+def test_299_a_blind_retry_around_the_workbook_open_is_refused() -> None:
+    """NO RETRY IS AUTHORISED, and Open is non-idempotent."""
+    _prefix_mutation("gate", "test_305", [
+        ("            $wb = $workbooks.Open($stageB)\n",
+         "            for ($attempt = 1; $attempt -le 3; $attempt++) {\n"
+         "                try { $wb = $workbooks.Open($stageB); break } catch { if ($attempt -eq 3) { throw } }\n"
+         "            }\n")])
+
+
+def test_300_a_sleep_in_the_prefix_is_refused() -> None:
+    _prefix_mutation("gate", "test_306", [
+        ("            $wb = $workbooks.Open($stageB)\n",
+         "            $wb = $workbooks.Open($stageB)\n            Start-Sleep -Milliseconds 250\n")])
+
+
+def test_301_swallowing_a_prefix_exception_is_refused() -> None:
+    """SAVE-AND-CONTINUE hands the builder a pass that never opened Excel."""
+    _prefix_mutation("gate", "test_301", [
+        ("            if ($Mode -eq 'Bulk') { Save-BulkFailure -ErrorRecord $_ }\n            throw\n",
+         "            if ($Mode -eq 'Bulk') { Save-BulkFailure -ErrorRecord $_ }\n")])
+
+
+def test_302_misclassifying_a_prefix_failure_as_a_builder_failure_is_refused() -> None:
+    """A CATCH THAT RELABELS. The saved operation must be the one active at the
+    throw, not the builder's first."""
+    _prefix_mutation("gate", "test_302", [
+        ("            if ($Mode -eq 'Bulk') { Save-BulkFailure -ErrorRecord $_ }\n            throw\n",
+         "            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.registers.assert-empty'; Save-BulkFailure -ErrorRecord $_ }\n"
+         "            throw\n")])
+
+
+def test_303_assigning_run_11_to_the_window_open_in_the_record_is_refused() -> None:
+    """THE RECORD MAY NOT GUESS. The diagnostic said only 'before the first label'."""
+    _prefix_mutation("evidence", "test_315", [
+        ("The failure was raised in one of those nine — the diagnostic proves that much and\nno more. **It is not assigned to any call.**",
+         "The failure was raised in one of those nine — the diagnostic proves that much and\nno more. Open-BenchmarkFixtureWindow was refused.")])
+
+
+def test_304_altering_the_resync_while_instrumenting_is_refused() -> None:
+    """THE 1eb6395 CORRECTION IS FROZEN."""
+    _prefix_mutation("runner", "test_310", [
+        ("        -Operation 'PCCM_ApplyTimeline' `\n        -Stage 'the Endpoints resynchronisation",
+         "        -Operation 'PCCM_StructuralReport' `\n        -Stage 'the Endpoints resynchronisation")])
+
+
+def test_305_dropping_the_reset_before_the_prefix_is_refused() -> None:
+    """A STALE LABEL FROM NOWHERE. Without the reset the sentinel contract is not
+    what the record says it is."""
+    _prefix_mutation("gate", "test_304", [
+        ("        if ($Mode -eq 'Bulk') { Reset-BulkOp }\n        try {\n",
+         "        try {\n")])
+
+
+def test_306_dropping_the_workbooks_null_guard_is_refused() -> None:
+    """A SWALLOWED GET WOULD BE REPORTED ONE LABEL LATER."""
+    _prefix_mutation("gate", "test_303", [
+        ("            if ($null -eq $workbooks) {\n"
+         "                throw 'RAISED: the Workbooks collection read answered with nothing'\n"
+         "            }\n", "")])

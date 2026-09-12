@@ -2660,7 +2660,28 @@ BULK_HARNESS = PCCM_ROOT / "tests" / "phase10_bulk_ops_flow.ps1"
 
 # The closed Bulk fixture vocabulary, in the order the fixture performs them.
 # Restated here so a label quietly dropped from the runner fails a control.
-BULK_OPS = (
+# THE PREFIX, added after run 11: everything Excel is asked between the Stage-B
+# bootstrap's return and the window open. The runner's Bulk mode has three reads
+# of its own (identity, environment, protection) that the gate does not make.
+BULK_PREFIX_OPS = (
+    "bulk.preflight.excel.create",
+    "bulk.preflight.excel.identity",
+    "bulk.preflight.excel.visible",
+    "bulk.preflight.excel.displayalerts",
+    "bulk.preflight.excel.asktoupdatelinks",
+    "bulk.preflight.workbooks.acquire",
+    "bulk.preflight.workbook.open",
+    "bulk.preflight.environment.read",
+    "bulk.preflight.automation.begin",
+    "bulk.preflight.fxseed.read",
+    "bulk.preflight.window.import",
+    "bulk.preflight.protection.read",
+)
+BULK_RUNNER_ONLY_PREFIX_OPS = ("bulk.preflight.excel.identity", "bulk.preflight.environment.read",
+                               "bulk.preflight.protection.read")
+BULK_GATE_PREFIX_OPS = tuple(op for op in BULK_PREFIX_OPS if op not in BULK_RUNNER_ONLY_PREFIX_OPS)
+# The fixture region: the window open, the builder's operations, the window close.
+BULK_FIXTURE_OPS = (
     "bulk.window.open",
     "bulk.registers.assert-empty",
     "bulk.inputs.write",
@@ -2684,6 +2705,7 @@ BULK_OPS = (
     "bulk.final.coherence",
     "bulk.window.close",
 )
+BULK_OPS = BULK_PREFIX_OPS + BULK_FIXTURE_OPS
 
 # The operations nothing may retry until Windows names the refused one. Every
 # structural mutation and every production endpoint the fixture reaches.
@@ -2731,6 +2753,19 @@ def _bulk_rows() -> dict:
             elif raw.startswith("RESULT|"):
                 scenario, outcome, detail = raw[len("RESULT|"):].split("|", 2)
                 rows["result"][scenario] = (outcome, detail)
+            elif raw.startswith("PREFIX|"):
+                which, joined, outcome = raw[len("PREFIX|"):].split("|", 2)
+                rows.setdefault("prefix", {})[which] = (joined.split(","), outcome)
+            elif raw.startswith("PREFIXFAIL|"):
+                which, at, rest = raw[len("PREFIXFAIL|"):].split("|", 2)
+                line, tail = rest.split("|after=", 1)
+                after, tail = tail.split("|touches=", 1)
+                touches, tail = tail.split("|opened=", 1)
+                opened, tail = tail.split("|closed=", 1)
+                closed, message = tail.split("|message=", 1)
+                rows.setdefault("prefixfail", {})[(which, at)] = {
+                    "line": line, "after": after, "touches": int(touches),
+                    "opened": opened == "True", "closed": closed == "True", "message": message}
             elif raw.startswith("FAILAT|"):
                 parts = raw[len("FAILAT|"):].split("|")
                 at, kind = parts[0], parts[1]
@@ -2762,8 +2797,9 @@ def test_270_every_bulk_operation_is_labelled_and_the_vocabulary_is_closed() -> 
         assert f"'{label}'" in vocab, f"{label} is not in the vocabulary"
     orchestrator = _function(code, "Set-BenchmarkBulkFixture")
     gate = _ps_code(EQUIV_HARNESS.read_text(encoding="utf-8"))
-    runner_bulk = code[code.index("if ($FixtureMode -eq 'Bulk') { Reset-BulkOp; Set-BulkOp 'bulk.window.open' }"):]
-    scope = orchestrator + "\n" + gate + "\n" + runner_bulk[:3000]
+    # THE RUNNER'S BULK SCOPE now starts at its Reset, ahead of the labelled prefix.
+    runner_bulk = code[code.index("if ($FixtureMode -eq 'Bulk') { Reset-BulkOp }"):]
+    scope = orchestrator + "\n" + gate + "\n" + runner_bulk[:6000]
     literal = set(re.findall(r"Set-BulkOp '([^']+)'", scope))
     # Composed labels: the register and grid fragments are closed maps.
     assert "$registerLabel = @{ cost_lines = 'cost'; risk_register = 'risk' }" in orchestrator
@@ -2779,6 +2815,8 @@ def test_270_every_bulk_operation_is_labelled_and_the_vocabulary_is_closed() -> 
                     "'bulk.' + $fragment + '.counter.write'", "'bulk.' + $fragment + '.acquire'",
                     "'bulk.' + $fragment + '.write'"):
         assert pattern in orchestrator, f"the composed label {pattern} is gone"
+    # EVERY label in the vocabulary is set somewhere real - prefix and fixture alike -
+    # and nothing outside the vocabulary is set anywhere in scope.
     assert (literal | composed) == set(BULK_OPS), sorted((literal | composed) ^ set(BULK_OPS))
     # THE VALIDATOR IS THE VOCABULARY, and nothing else assigns the label.
     setter = _function(code, "Set-BulkOp")
@@ -2831,7 +2869,7 @@ def test_272_the_executed_order_matches_the_vocabulary_for_small_and_growth() ->
     calls under bulk.<register>.register.grow and nowhere else."""
     rows = _bulk_rows()
     for scenario in ("PERF-SMALL", "PERF-LARGE"):
-        assert tuple(rows["order"][scenario]) == BULK_OPS, (scenario, rows["order"][scenario])
+        assert tuple(rows["order"][scenario]) == BULK_FIXTURE_OPS, (scenario, rows["order"][scenario])
         outcome, detail = rows["result"][scenario]
         assert outcome == "completed", (scenario, outcome, detail)
     assert rows["grow"]["PERF-SMALL"] == {"tblCostLines": 0, "tblRiskRegister": 0}
@@ -2872,10 +2910,18 @@ def test_273_a_failure_names_that_operation_and_no_later_one() -> None:
     # snapshot a half-built fixture. The harness mirrors this catch rather than
     # running it, so the rethrow is asserted in source - the mutation battery found
     # that gap.
-    inner = gate[gate.index("Save-BulkFailure -ErrorRecord $_") :]
-    inner = inner[: inner.index("}")]
-    statements = [line.strip() for line in inner.splitlines() if line.strip()]
-    assert statements == ["Save-BulkFailure -ErrorRecord $_", "throw"], statements
+    # TWO CATCHES SINCE RUN 11: the prefix catch (mode-guarded, because the pass
+    # body is shared with Endpoints) and the builder catch. Each saves and rethrows.
+    catches = [m.start() for m in re.finditer(r"\} catch \{", gate)]
+    bodies = []
+    for at in catches:
+        body = gate[at + len("} catch {"):]
+        body = body[: body.index("\n        }") if "Save-BulkFailure" in body[:400] and "$Mode" in body[:200] else body.index("}")]
+        bodies.append([line.strip() for line in body.splitlines() if line.strip()])
+    saving = [b for b in bodies if any("Save-BulkFailure -ErrorRecord $_" in s for s in b)]
+    assert len(saving) == 2, saving
+    assert saving[0] == ["if ($Mode -eq 'Bulk') { Save-BulkFailure -ErrorRecord $_ }", "throw"], saving[0]
+    assert saving[1] == ["Save-BulkFailure -ErrorRecord $_", "throw"], saving[1]
     assert "Write-Output (New-BulkFailureLine -ErrorRecord $_)" in gate
     assert gate.index("Write-Output ('FAIL|' + $mode + '|' + $stage + '|' + $detail)") < \
         gate.index("Write-Output (New-BulkFailureLine -ErrorRecord $_)"), "BULKFAIL replaces the FAIL line"
@@ -3408,6 +3454,382 @@ def test_296_the_gate_lifts_the_resync_and_makes_it_where_the_runner_does() -> N
     resync = gate.index(RESYNC_CALL)
     between = gate[fixture:resync]
     assert between.count("\n") == 2, between
+
+
+# ===========================================================================
+# T. THE UNLABELLED PREFIX - EQUIVALENCE RUN 11
+# ===========================================================================
+# Run 11 was refused in the Bulk pass before the first label. The first label was
+# set at the window open; between the bootstrap's return and that point the gate
+# starts Excel, sets three properties, acquires Workbooks, opens the workbook,
+# runs PCCM_AutomationBegin, reads the FX seed and imports the shim - nine Excel
+# calls with no name. Each is now named immediately before it runs; the runner's
+# Bulk mode names its own three extra reads the same way; and a catch saves the
+# label at the throw. Nothing is retried and nothing waits.
+GATE_PREFIX_STATEMENTS = (
+    "$excel = New-Object -ComObject Excel.Application",
+    "$excel.Visible = $false",
+    "$excel.DisplayAlerts = $false",
+    "$excel.AskToUpdateLinks = $false",
+    "$workbooks = $excel.Workbooks",
+    "$wb = $workbooks.Open($stageB)",
+    "$excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null",
+    "$null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $Inspection",
+    "Import-BenchmarkFixtureWindow -Excel $excel -Workbook $wb -Manifest $Manifest -ScriptDir $windows",
+    "$null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest",
+)
+GATE_PREFIX_LABELS = BULK_GATE_PREFIX_OPS + ("bulk.window.open",)
+RUNNER_PREFIX_STATEMENTS = (
+    "$excel = New-Object -ComObject Excel.Application",
+    "$excelIdentity = Get-ExcelIdentity -ExcelApp $excel -PreExistingPids $preExisting",
+    "$excel.Visible = $false",
+    "$excel.DisplayAlerts = $false",
+    "$excel.AskToUpdateLinks = $false",
+    "$workbooks = $excel.Workbooks",
+    "$wb = $workbooks.Open($stageBPath)",
+    "$environment = Get-BenchmarkEnvironment -Excel $excel -Identity $excelIdentity "
+    "-WorkbookPath $stageBPath -RepositoryPath $repoRoot -ReleaseIdentity $releaseIdentity "
+    "-HarnessVersion ([string]$plan.harness_version) -SchemaVersion ([int]$plan.schema_version) -Revision $revision",
+    "$excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null",
+    "$null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $inspection",
+    "Import-BenchmarkFixtureWindow -Excel $excel -Workbook $wb -Manifest $manifest -ScriptDir $scriptDir",
+    "$protectionBefore = Assert-BenchmarkProtectionApplied -Excel $excel -Manifest $manifest -Stage 'as the workbook was opened'",
+)
+PREFIX_TOUCHING = ("$excel", "$workbooks", "New-Object -ComObject", "Save-Phase5LockedFxSeed",
+                   "Import-BenchmarkFixtureWindow", "Get-ExcelIdentity", "Get-BenchmarkEnvironment",
+                   "Assert-BenchmarkProtectionApplied", "Open-BenchmarkFixtureWindow")
+GATE_RESET = "if ($Mode -eq 'Bulk') { Reset-BulkOp }"
+RUNNER_RESET = "if ($FixtureMode -eq 'Bulk') { Reset-BulkOp }"
+
+
+def _prefix_lines(source: str, reset: str) -> list[str]:
+    """The prefix region - from the Reset to its catch - comments stripped,
+    continuation lines joined, blank lines dropped, each line stripped."""
+    start = source.index(reset)
+    region = source[start: source.index("} catch {", start)]
+    region = re.sub(r"`\n\s*", " ", region)
+    return [" ".join(line.split()) for line in region.splitlines() if line.strip()]
+
+
+def _prefix_touching(lines: list[str]) -> list[str]:
+    out = []
+    for line in lines:
+        if "Set-BulkOp" in line or line.startswith(("throw", "if ($null -eq $workbooks)", "}", "try {")):
+            continue
+        if any(tok in line for tok in PREFIX_TOUCHING):
+            out.append(line)
+    return out
+
+
+def _prefix_catch(source: str, reset: str) -> list[str]:
+    start = source.index(reset)
+    at = source.index("} catch {", start)
+    body = source[at + len("} catch {"):]
+    body = body[: body.index("\n" + " " * (4 if reset == RUNNER_RESET else 8) + "}")]
+    return [line.strip() for line in body.splitlines() if line.strip()]
+
+
+def test_297_the_gate_prefix_is_enumerated_in_source_and_executed() -> None:
+    """REQUIRED CONTROL 1. From the bootstrap's return to the window open, the
+    Excel-touching statements of the gate's pass are exactly these ten, in this
+    order - and as executed over the lifted region, the labels are met in this
+    order and hand over to the builder's first label."""
+    gate = _ps_code(_equiv_harness())
+    assert gate.index("$bootstrapExit = $LASTEXITCODE") < gate.index(GATE_RESET)
+    touching = _prefix_touching(_prefix_lines(gate, GATE_RESET))
+    assert touching == list(GATE_PREFIX_STATEMENTS), touching
+    rows = _bulk_rows()
+    order, outcome = rows["prefix"]["gate"]
+    assert outcome == "completed", outcome
+    assert tuple(order) == GATE_PREFIX_LABELS + BULK_FIXTURE_OPS[1:], order
+
+
+def test_298_the_runner_prefix_is_enumerated_in_source_and_executed() -> None:
+    """REQUIRED CONTROL 1, THE RUNNER. Twelve statements, three of them the
+    runner's own reads; the window open stays outside the guard, where the
+    window-flow harness lifts it from."""
+    code = _code()
+    touching = _prefix_touching(_prefix_lines(code, RUNNER_RESET))
+    assert touching == list(RUNNER_PREFIX_STATEMENTS), touching
+    rows = _bulk_rows()
+    order, outcome = rows["prefix"]["runner"]
+    assert outcome == "completed", outcome
+    assert tuple(order) == BULK_PREFIX_OPS, order
+    after = code[code.index("} catch {", code.index(RUNNER_RESET)):]
+    assert after.index("Set-BulkOp 'bulk.window.open'") < after.index("$null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")
+
+
+def test_299_every_prefix_call_has_a_label_and_the_vocabulary_is_closed() -> None:
+    """REQUIRED CONTROL 2. Each statement's label, by position, in both files; the
+    vocabulary carries all thirty-four and Set-BulkOp still refuses anything else."""
+    for source, reset, statements, labels, guard in (
+            (_ps_code(_equiv_harness()), GATE_RESET, GATE_PREFIX_STATEMENTS, GATE_PREFIX_LABELS, "$Mode"),
+            (_code(), RUNNER_RESET, RUNNER_PREFIX_STATEMENTS, BULK_PREFIX_OPS, "$FixtureMode")):
+        lines = _prefix_lines(source, reset)
+        for statement, label in zip(statements, labels):
+            at = lines.index(statement)
+            assert lines[at - 1] == f"if ({guard} -eq 'Bulk') {{ Set-BulkOp '{label}' }}", (statement, lines[at - 1])
+    vocab = _function(_code(), "Get-BulkOpVocabulary")
+    for label in BULK_OPS:
+        assert f"'{label}'" in vocab, label
+    assert len(BULK_OPS) == 34 and len(set(BULK_OPS)) == 34
+    rows = _bulk_rows()
+    assert tuple(rows["ops"]) == BULK_OPS
+    assert rows["label"]["typo"][0] == "REFUSED"
+
+
+def test_300_the_prefix_label_is_set_immediately_before_the_call_it_names() -> None:
+    """REQUIRED CONTROL 3. The line before each Excel-touching statement IS its
+    label; no touching statement sits between a label and the statement it names;
+    and the Reset precedes the first label with nothing touching between."""
+    for source, reset in ((_ps_code(_equiv_harness()), GATE_RESET), (_code(), RUNNER_RESET)):
+        lines = _prefix_lines(source, reset)
+        assert lines[0] == reset
+        first_label = next(i for i, line in enumerate(lines) if "Set-BulkOp" in line)
+        assert not _prefix_touching(lines[:first_label]), lines[:first_label]
+        for i, line in enumerate(lines):
+            if line in _prefix_touching(lines):
+                assert "Set-BulkOp" in lines[i - 1], (line, lines[i - 1])
+
+
+def test_301_save_bulkfailure_observes_every_prefix_operation() -> None:
+    """REQUIRED CONTROL 4. The prefix try opens before the first label and closes
+    after the last guarded call; its catch saves the label at the throw and
+    rethrows, nothing else. Executed: every injected prefix failure produces a
+    BULKFAIL line naming that label."""
+    gate = _ps_code(_equiv_harness())
+    lines = _prefix_lines(gate, GATE_RESET)
+    assert lines[1] == "try {"
+    assert lines[-1] == "$null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest", lines[-1]
+    assert _prefix_catch(gate, GATE_RESET) == ["if ($Mode -eq 'Bulk') { Save-BulkFailure -ErrorRecord $_ }", "throw"]
+    code = _code()
+    lines = _prefix_lines(code, RUNNER_RESET)
+    assert lines[1] == "try {"
+    assert lines[-1].startswith("$protectionBefore = Assert-BenchmarkProtectionApplied"), lines[-1]
+    assert _prefix_catch(code, RUNNER_RESET) == [
+        "if ($FixtureMode -eq 'Bulk') {", "Save-BulkFailure -ErrorRecord $_",
+        "Write-BenchmarkLine ('  ' + (New-BulkFailureLine -ErrorRecord $_))", "}", "throw"]
+    rows = _bulk_rows()
+    for which, labels in (("gate", GATE_PREFIX_LABELS), ("runner", BULK_PREFIX_OPS)):
+        for label in labels:
+            row = rows["prefixfail"][(which, label)]
+            assert row["line"].startswith(f"BULKFAIL|{label}|"), (which, label, row)
+
+
+def test_302_a_prefix_failure_at_n_reports_n_and_nothing_later_runs() -> None:
+    """REQUIRED CONTROL 5. Not the previous label, not a later one; one touch; no
+    label after it."""
+    rows = _bulk_rows()
+    cases = [(w, l) for w, ls in (("gate", GATE_PREFIX_LABELS), ("runner", BULK_PREFIX_OPS)) for l in ls]
+    assert len(cases) == 22
+    for which, label in cases:
+        row = rows["prefixfail"][(which, label)]
+        assert row["line"].split("|")[1] == label, (which, label, row)
+        assert row["after"] == "", (which, label, row)
+        assert row["touches"] == 1, (which, label, row)
+
+
+def test_303_the_hresult_is_preserved_and_a_swallowed_get_is_named_under_its_own_label() -> None:
+    """REQUIRED CONTROL 6. The refusal's HRESULT travels into the line. The one
+    exception is deliberate: a refused property GET can answer with nothing (the
+    host swallows it - Stage-B saw that on Windows), and the Workbooks read is then
+    refused by the null guard under ITS label, not the next one's."""
+    rows = _bulk_rows()
+    for (which, label), row in rows["prefixfail"].items():
+        if label == "bulk.preflight.workbooks.acquire":
+            assert row["line"] == f"BULKFAIL|{label}|hresult=none|not a refused call", row
+            assert "the Workbooks collection read answered with nothing" in row["message"], row
+        else:
+            assert row["line"] == f"BULKFAIL|{label}|hresult=0x80010001|RPC_E_CALL_REJECTED (0x80010001)", row
+    for source in (_ps_code(_equiv_harness()), _code()):
+        guard = source.index("if ($null -eq $workbooks) {")
+        assert source.rindex("Set-BulkOp 'bulk.preflight.workbooks.acquire'", 0, guard) > \
+            source.rindex("$workbooks = $excel.Workbooks", 0, guard) - 200
+        assert guard < source.index("Set-BulkOp 'bulk.preflight.workbook.open'")
+
+
+def test_304_the_sentinel_cannot_name_a_labelled_prefix_failure() -> None:
+    """REQUIRED CONTROL 7. '<before the first bulk operation>' appears in no executed
+    prefix failure; in source it lives only where the label is initialised or
+    reset, and the Reset precedes the first label with nothing between."""
+    rows = _bulk_rows()
+    for row in rows["prefixfail"].values():
+        assert "<before the first bulk operation>" not in row["line"], row
+    code = _code()
+    sites = [line.strip() for line in code.splitlines() if "<before the first bulk operation>" in line]
+    assert all(("$script:BulkOp = " in s) or ("return '" in s) for s in sites), sites
+    gate = _ps_code(_equiv_harness())
+    assert "<before the first bulk operation>" not in gate.replace("hresult=unclassified", "")
+    for source, reset in ((gate, GATE_RESET), (code, RUNNER_RESET)):
+        lines = _prefix_lines(source, reset)
+        assert lines[0] == reset and lines[1] == "try {"
+        first = next(line for line in lines if "Set-BulkOp" in line)
+        assert "Set-BulkOp 'bulk.preflight.excel.create'" in first, first
+
+
+def test_305_nothing_in_the_prefix_is_retried() -> None:
+    """REQUIRED CONTROL 8."""
+    for source, reset in ((_ps_code(_equiv_harness()), GATE_RESET), (_code(), RUNNER_RESET)):
+        region = "\n".join(_prefix_lines(source, reset))
+        for banned in ("Invoke-ComRetryRead", "for (", "while (", "do {", "Retry", "attempt", "foreach ($try"):
+            assert banned not in region, banned
+    rows = _bulk_rows()
+    assert all(row["touches"] == 1 for row in rows["prefixfail"].values())
+
+
+def test_306_nothing_in_the_prefix_sleeps() -> None:
+    """REQUIRED CONTROL 9."""
+    assert "Start-Sleep" not in _ps_code(_equiv_harness())
+    for source, reset in ((_ps_code(_equiv_harness()), GATE_RESET), (_code(), RUNNER_RESET)):
+        region = "\n".join(_prefix_lines(source, reset))
+        assert "Start-Sleep" not in region and "Sleep(" not in region and "Wait" not in region
+    harness = _ps_code(BULK_HARNESS.read_text(encoding="utf-8"))
+    assert "Start-Sleep" not in harness
+
+
+def test_307_no_inter_pass_drain_was_added() -> None:
+    """REQUIRED CONTROL 10. Between the two passes the gate does nothing but run
+    the next pass: no sleep, no process wait, no PID quiet period."""
+    gate = _ps_code(_equiv_harness())
+    loop = gate[gate.index("foreach ($mode in @('Endpoints', 'Bulk')) {", gate.index("$passes = @{}")):]
+    loop = loop[: loop.index("$completed = @($passes.Keys)")]
+    for banned in ("Start-Sleep", "Get-Process", "WaitFor", "drain", "quiet"):
+        assert banned not in loop, banned
+    assert "Get-Process" not in gate
+
+
+def test_308_fixture_window_ownership_is_unchanged() -> None:
+    """REQUIRED CONTROL 11. The window functions are byte-identical; the window is
+    still opened after the prefix and closed by the builder's finally; and in the
+    runner the open stays where the window-flow harness lifts it from."""
+    for name in ("Import-BenchmarkFixtureWindow", "Get-BenchmarkProtectionState",
+                 "Assert-BenchmarkProtectionApplied", "Open-BenchmarkFixtureWindow",
+                 "Invoke-BenchmarkWindowRollback", "Close-BenchmarkFixtureWindow"):
+        assert _function(_code(), name) == _function(_code_at("1eb6395"), name), f"{name} changed"
+    code = _code()
+    window = code[code.index("$null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest"):]
+    window = window[: window.index("$fixtureWatch.Stop()")]
+    then = _code_at("1eb6395")
+    then_window = then[then.index("$null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest"):]
+    then_window = then_window[: then_window.index("$fixtureWatch.Stop()")]
+    assert window == then_window, "the runner's window region moved"
+    gate = _ps_code(_equiv_harness())
+    tail = gate[gate.index("$null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest"):]
+    assert "} finally {\n            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.window.close' }\n            $null = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest\n        }" in tail
+
+
+def test_309_cleanup_semantics_are_unchanged() -> None:
+    """REQUIRED CONTROL 12. The gate's outer finally is byte-identical; executed, a
+    prefix failure neither opens nor closes the window, and a builder failure
+    still closes it."""
+    now = _equiv_harness()
+    then = _git("show", "1eb6395:pccm/tests/phase10_fixture_equivalence.ps1")
+    def outer_finally(text: str) -> str:
+        start = text.index("    } finally {\n        try {\n            if ($null -ne $wb) { $wb.Close($false) | Out-Null }")
+        return text[start: text.index("[System.GC]::WaitForPendingFinalizers()", start)]
+    assert outer_finally(now) == outer_finally(then)
+    rows = _bulk_rows()
+    for row in rows["prefixfail"].values():
+        assert row["opened"] is False and row["closed"] is False, row
+    for row in rows["failat"].values():
+        assert row["closed"] is True, row
+
+
+def test_310_the_1eb6395_resync_is_unchanged_and_still_called_where_it_was() -> None:
+    """REQUIRED CONTROL 13. Frozen function, frozen call sites: once in the runner,
+    once in the gate, immediately after Set-Phase5Fixture, inside the window."""
+    assert _function(_code(), "Invoke-BenchmarkEndpointsResync") == \
+        _function(_code_at("1eb6395"), "Invoke-BenchmarkEndpointsResync")
+    for label, source, fixture_call in (
+            ("runner", _code(), "$null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest"),
+            ("gate", _ps_code(_equiv_harness()), "$null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $Manifest")):
+        assert source.count(RESYNC_CALL) == 1, label
+        start = source.index(fixture_call)
+        branch = source[start: source.index("}", start)]
+        statements = [s.strip() for s in " ".join(branch.replace("`\n", " ").split()).split("$null = ") if s.strip()]
+        assert statements[1] == "Invoke-BenchmarkEndpointsResync -Excel $excel", (label, statements)
+        assert source.index("Open-BenchmarkFixtureWindow -Excel $excel") < source.index(RESYNC_CALL) \
+            < source.index("Close-BenchmarkFixtureWindow -Excel $excel"), label
+
+
+def test_311_the_resync_remains_outside_the_timed_loop() -> None:
+    """REQUIRED CONTROL 14."""
+    code = _code()
+    assert code.index(RESYNC_CALL) < code.index("$fixtureWatch.Stop()") < code.index("foreach ($run in $plannedRuns) {")
+    assert "Invoke-BenchmarkEndpointsResync" not in code[code.index("foreach ($run in $plannedRuns) {"):]
+    for name in ("Invoke-BenchmarkExecution", "Test-BenchmarkSample", "Get-BenchmarkMedian"):
+        assert _function(code, name) == _function(_code_at("1eb6395"), name), name
+
+
+def test_312_the_readiness_gate_saveas_settlement_and_verification_are_unchanged() -> None:
+    """REQUIRED CONTROLS 15-17. build_stage_b.ps1 and com_lifecycle.ps1 are
+    byte-identical to the Windows-tested commit."""
+    for path in ("bootstrap/windows/build_stage_b.ps1", "bootstrap/windows/com_lifecycle.ps1"):
+        assert (PCCM_ROOT / path).read_text(encoding="utf-8") == _at_commit(path, "1eb6395"), path
+    now = (BOOTSTRAP / "build_stage_b.ps1").read_text(encoding="utf-8")
+    for name in ("Wait-StageBWorkbookReady", "Invoke-StageBSaveAs", "Get-StageBSaveAsPostcondition",
+                 "Get-StageBVerificationObject"):
+        assert _function(now, name) == _function(_at_commit("bootstrap/windows/build_stage_b.ps1", "6672b75"), name), name
+
+
+def test_313_the_rank_two_and_reserved_row_paths_are_unchanged() -> None:
+    """REQUIRED CONTROLS 18-19."""
+    for name in ("New-BenchmarkWeightBlock", "New-BenchmarkRegisterBlock", "Set-BenchmarkRangeBlock",
+                 "Set-BenchmarkRegisterRowCount", "Get-BenchmarkPermanentId", "Set-BenchmarkBulkFixture"):
+        assert _function(_code(), name) == _function(_code_at("1eb6395"), name), f"{name} changed"
+    rows = _bulk_rows()
+    assert rows["rank"]["PERF-SMALL"] == {"tblCostLines": (2, 12, 11), "tblRiskRegister": (2, 8, 12),
+                                          "tblCostProfiling": (2, 12, 10), "tblRiskProfiling": (2, 8, 10)}
+    assert rows["grow"]["PERF-LARGE"] == {"tblCostLines": 155, "tblRiskRegister": 95}
+
+
+def test_314_the_snapshot_and_production_are_unchanged() -> None:
+    """REQUIRED CONTROLS 20-21."""
+    now = _equiv_harness()
+    then = _git("show", "1eb6395:pccm/tests/phase10_fixture_equivalence.ps1")
+    for name in ("Get-EquivalenceSnapshot", "New-EquivalenceBundle", "Get-BundleArtifacts", "Test-BundleIdentity"):
+        assert _function(now, name) == _function(then, name), name
+    assert _production_changed_since("1eb6395") == []
+    assert _git("diff", "--name-only", "1eb6395", "--", "pccm/src/vba").strip() == ""
+    assert _git("diff", "--name-only", ACCEPTED, "--",
+                "pccm/bootstrap/windows/phase5_gate_b_scenarios.ps1").strip() == ""
+
+
+def test_315_the_record_states_run_11_as_invalid_and_assigns_it_to_no_call() -> None:
+    """REQUIRED REPORTING. Both Stage-B builds completed, the Endpoints pass
+    completed, the Bulk pass raised before its first label, nothing was compared;
+    the record says exactly that and names no call as the cause."""
+    section = _run_evidence_section("## Equivalence run 11")
+    plain = " ".join(section.replace("`", "").replace("**", "").split())
+    for required in ("INVALID / NOT EVALUATED", "BUNDLE|identical|5 artifact(s)",
+                     "PASS|Endpoints|COMPLETED|fixture built and PCCM_Calculate ran",
+                     "BULKFAIL|<before the first bulk operation>|hresult=0x80010001|RPC_E_CALL_REJECTED (0x80010001)",
+                     "did not cover", "no snapshot", "no EQUIV", "no CALCEQUIV",
+                     "NOT a fixture DIFFER", "Bulk remains NOT authorised", "1eb6395",
+                     "does not invalidate", "not assigned to any call"):
+        assert required in plain, required
+    head, _sep, _tail = plain.partition("### The instrumentation, observational only")
+    assert _sep, "the record has no instrumentation section"
+    # NO PREFIX LABEL IS ASSERTED AS THE CAUSE. bulk.window.open may appear only as
+    # the label that WAS set, never as the refused call.
+    for label in BULK_PREFIX_OPS:
+        assert label not in head, f"the historical record names {label}"
+    for phrase in ("refused at bulk.window.open", "bulk.window.open was refused",
+                   "refused in bulk.window.open", "was bulk.window.open"):
+        assert phrase not in head, phrase
+    assert "first label, bulk.window.open, immediately before Open-BenchmarkFixtureWindow" in head
+    for helper in ("Open-BenchmarkFixtureWindow", "Import-BenchmarkFixtureWindow", "Save-Phase5LockedFxSeed",
+                   "Workbooks.Open", "PCCM_AutomationBegin"):
+        assert f"refused {helper}" not in head and f"{helper} was refused" not in head, helper
+    # THE PREFIX MAP IS CLASSIFIED, read with markup collapsed (the C rows are bold).
+    for klass in ("| A |", "| B |", "| C ", "| D |"):
+        assert klass in plain, klass
+    assert "No pre-authorisation exists" in plain
+    assert "## Equivalence run 10" in _equiv_evidence_text()
+
+
+def _equiv_evidence_text() -> str:
+    return RUN_EVIDENCE.read_text(encoding="utf-8")
 
 
 # Every rectangular fixture block, and the geometry each must have. Restated here so

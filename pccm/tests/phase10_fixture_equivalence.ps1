@@ -387,31 +387,63 @@ function Invoke-EquivalencePass {
     $rel = New-ReleaseLedger ('equivalence ' + $Mode)
     $snapshot = $null; $calcStatus = ''; $calcFingerprint = ''; $calcResult = ''
     try {
-        $excel = New-Object -ComObject Excel.Application
-        $excel.Visible = $false
-        $excel.DisplayAlerts = $false
-        $excel.AskToUpdateLinks = $false
-        $workbooks = $excel.Workbooks
-        $wb = $workbooks.Open($stageB)
+        # THE PREFIX IS LABELLED TOO. Run 11 raised RPC_E_CALL_REJECTED in the Bulk
+        # pass and the diagnostic read '<before the first bulk operation>': the
+        # first label was set at the window open, and the nine Excel calls between
+        # the bootstrap's return and that point - starting Excel, three property
+        # sets, Workbooks, Open, PCCM_AutomationBegin, the FX seed read and the
+        # shim import - ran unlabelled. Each is now named immediately before it
+        # runs, and the catch below saves the label at the throw, exactly as the
+        # builder's catch does. Nothing is retried and nothing waits.
+        if ($Mode -eq 'Bulk') { Reset-BulkOp }
+        try {
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.create' }
+            $excel = New-Object -ComObject Excel.Application
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.visible' }
+            $excel.Visible = $false
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.displayalerts' }
+            $excel.DisplayAlerts = $false
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.asktoupdatelinks' }
+            $excel.AskToUpdateLinks = $false
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.workbooks.acquire' }
+            $workbooks = $excel.Workbooks
+            # A REFUSED PROPERTY GET CAN ANSWER WITH NOTHING - Stage-B saw exactly
+            # that on Windows - and the next statement would then fail under the
+            # next label. Named here, under its own.
+            if ($null -eq $workbooks) {
+                throw 'RAISED: the Workbooks collection read answered with nothing'
+            }
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.workbook.open' }
+            $wb = $workbooks.Open($stageB)
 
-        $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
-        $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $Inspection
-        Import-BenchmarkFixtureWindow -Excel $excel -Workbook $wb -Manifest $Manifest `
-            -ScriptDir $windows
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.automation.begin' }
+            $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.fxseed.read' }
+            $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $Inspection
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.window.import' }
+            Import-BenchmarkFixtureWindow -Excel $excel -Workbook $wb -Manifest $Manifest `
+                -ScriptDir $windows
 
-        $scenarioSpec = $null
-        foreach ($entry in @($Plan.scenarios)) {
-            if ([string]$entry.id -eq 'PERF-SMALL') { $scenarioSpec = $entry }
+            $scenarioSpec = $null
+            foreach ($entry in @($Plan.scenarios)) {
+                if ([string]$entry.id -eq 'PERF-SMALL') { $scenarioSpec = $entry }
+            }
+            if ($null -eq $scenarioSpec) { throw 'the plan declares no PERF-SMALL scenario' }
+            $model = New-BenchmarkModel -ScenarioSpec $scenarioSpec
+
+            # THE SAME WINDOW BOTH PASSES USE. Neither builder gets a privilege the
+            # other does not.
+            # THE WINDOW IS LABELLED FOR THE BULK BUILDER, so a refusal in P10FW_Begin
+            # or P10FW_End is named as that and not as the first or last fixture step.
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.window.open' }
+            $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest
+        } catch {
+            # SAVED AT THE THROW. The window's finally is not entered from here -
+            # it was never opened - so nothing relabels; saved all the same, so the
+            # outer catch never has to read a label after the fact.
+            if ($Mode -eq 'Bulk') { Save-BulkFailure -ErrorRecord $_ }
+            throw
         }
-        if ($null -eq $scenarioSpec) { throw 'the plan declares no PERF-SMALL scenario' }
-        $model = New-BenchmarkModel -ScenarioSpec $scenarioSpec
-
-        # THE SAME WINDOW BOTH PASSES USE. Neither builder gets a privilege the
-        # other does not.
-        # THE WINDOW IS LABELLED FOR THE BULK BUILDER, so a refusal in P10FW_Begin
-        # or P10FW_End is named as that and not as the first or last fixture step.
-        if ($Mode -eq 'Bulk') { Reset-BulkOp; Set-BulkOp 'bulk.window.open' }
-        $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest
         try {
             if ($Mode -eq 'Bulk') {
                 try {
