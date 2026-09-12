@@ -17,11 +17,15 @@
     ValidateStructure.
 
     THAT IS ONLY LEGITIMATE IF THE TWO PATHS END IN THE SAME WORKBOOK. This
-    builds PERF-SMALL BOTH WAYS, in two separate Excel sessions over two
-    disposable copies of the same Stage-A build, captures a full state snapshot
+    runs the Stage-B bootstrap ONCE - build, SaveAs, modules, buttons, protection
+    and the reopen verification, exactly as it ships - takes that verified .xlsm
+    as the canonical baseline, makes two plain filesystem copies of it and proves
+    all three SHA-256 digests equal, then builds PERF-SMALL BOTH WAYS in two
+    separate Excel sessions over those copies, captures a full state snapshot
     from each, and compares them field for field - then runs the REAL
     `PCCM_Calculate` on both and compares production's own status and
-    fingerprint.
+    fingerprint. The only COM settlement in either pass is one bounded, read-only
+    readiness barrier after the open and before anything is asked to change.
 
     IT TESTS THE SHIPPING BUILDER. Every function it needs is lifted out of
     `bootstrap/windows/phase10_benchmark.ps1` BY AST - its real bytes, not a
@@ -36,20 +40,24 @@
     The benchmark runner to lift the builder from. Defaults to the shipping one.
 
 .NOTES
-    Two Excel sessions, two Stage-B bootstraps, two disposable workbooks. Neither
-    workbook is ever saved. Shutdown is the accepted com_lifecycle path.
+    Two Excel sessions, ONE Stage-B bootstrap, two disposable copies of its
+    verified workbook. Neither copy is ever saved. Shutdown is the accepted
+    com_lifecycle path.
 
     THE VOCABULARY IS UNAMBIGUOUS, because run 1 printed `PASS|Endpoints|RAISED`
     for a pass that never produced a workbook, and a reader could take that for a
     pass. PASS is now reserved for a pass that COMPLETED:
 
-      BUNDLE|<mode>|<relative path>|<sha256>   one required artifact, as copied
-      BUNDLE|identical                         the two starting bundles agree
-      BUNDLE|differ|<detail>                   they do not - nothing is built
+      BUNDLE|Baseline|<relative path>|<sha256> one required Stage-A artifact, as copied
+      BASELINE|StageB|verified|sha256=<hash>   the one Stage-B build, bootstrap-verified
+      COPY|<mode>|sha256=<hash>                one filesystem copy of it
+      COPIES|identical                         canonical == Endpoints copy == Bulk copy
+      COPIES|differ|<detail>                   they do not - nothing is opened
+      READY|<mode>|attempt=N|waited=X          the read-only readiness barrier passed
       PASS|<mode>|COMPLETED|<detail>           this pass built and calculated
-      FAIL|<mode>|SETUP|<detail>               the bundle could not be prepared
-      FAIL|<mode>|BOOTSTRAP|<detail>           Stage-B did not produce a workbook
-      FAIL|<mode>|RAISED|<detail>              anything after Excel started
+      FAIL|Baseline|SETUP|<detail>             the bundle or the copies could not be prepared
+      FAIL|Baseline|BOOTSTRAP|<detail>         Stage-B did not produce a verified workbook
+      FAIL|<mode>|RAISED|<detail>              anything after that pass's Excel started
       EQUIV|<family>|match|<detail>            a real comparison, equal
       EQUIV|<family>|differ|<detail>           a real comparison, unequal
       EQUIV|<not evaluated>|invalid|<detail>   NO comparison happened
@@ -240,37 +248,122 @@ function New-EquivalenceBundle {
 # identical - which is exactly why it is worth proving rather than assuming. A
 # difference here would mean the two passes were never comparable and every
 # EQUIV line afterwards would be measuring the wrong thing.
-function Test-BundleIdentity {
-    param($Left, $Right)
+# ===========================================================================
+# ONE BASELINE, TWO COPIES
+# ===========================================================================
+# Runs 3 to 11 spent their failures inside a second Stage-B bootstrap, a second
+# SaveAs, a second module import and a second reopen verification - none of which
+# is the question. The question is whether two FIXTURE paths reach the same state
+# from the same start, so the start is now one verified workbook, copied twice,
+# with the three digests proved equal before either copy is opened.
+function Get-WorkbookDigest {
+    param([string]$Path)
+    return [string](Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+}
+
+function Copy-EquivalenceWorkbook {
+    param([string]$Source, [string]$Root, [string]$Mode)
+    $target = Join-Path $Root ('PCCM_equiv_' + $Mode.ToLower() + '.xlsm')
+    if (Test-Path -LiteralPath $target) {
+        throw ('the ' + $Mode + ' copy ' + $target + ' already exists')
+    }
+    Copy-Item -LiteralPath $Source -Destination $target
+    if (-not (Test-Path -LiteralPath $target)) {
+        throw ('the ' + $Mode + ' copy did not arrive at ' + $target)
+    }
+    return [pscustomobject]@{
+        Mode   = $Mode
+        Path   = $target
+        Digest = (Get-WorkbookDigest -Path $target)
+    }
+}
+
+function Test-CopyIdentity {
+    param([string]$Canonical, $Copies)
     $problems = @()
-    $leftKeys = @($Left.Digests.Keys)
-    $rightKeys = @($Right.Digests.Keys)
-    foreach ($key in $leftKeys) {
-        if (-not $Right.Digests.Contains($key)) {
-            $problems += ($key + ' is only in the ' + $Left.Mode + ' bundle')
-            continue
+    if ([string]::IsNullOrWhiteSpace($Canonical)) { $problems += 'the canonical workbook has no digest' }
+    if (@($Copies).Count -ne 2) { $problems += ('expected two copies, found ' + [string]@($Copies).Count) }
+    $paths = @()
+    foreach ($copy in @($Copies)) {
+        if ([string]$copy.Digest -cne $Canonical) {
+            $problems += ('the ' + [string]$copy.Mode + ' copy differs: canonical=' + $Canonical +
+                          ' copy=' + [string]$copy.Digest)
         }
-        if ([string]$Left.Digests[$key] -cne [string]$Right.Digests[$key]) {
-            $problems += ($key + ' differs: ' + $Left.Mode + '=' +
-                          [string]$Left.Digests[$key] + ' ' + $Right.Mode + '=' +
-                          [string]$Right.Digests[$key])
-        }
+        if ($paths -contains [string]$copy.Path) { $problems += ('two copies share the path ' + [string]$copy.Path) }
+        $paths += [string]$copy.Path
     }
-    foreach ($key in $rightKeys) {
-        if (-not $Left.Digests.Contains($key)) {
-            $problems += ($key + ' is only in the ' + $Right.Mode + ' bundle')
-        }
-    }
-    if ($leftKeys.Count -lt 1) { $problems += 'the bundles are empty' }
     return $problems
 }
 
 # ===========================================================================
-# THE STATE SNAPSHOT
+# THE READINESS BARRIER - READ-ONLY, BOUNDED, ONCE PER PASS
 # ===========================================================================
-# EVERY FIELD FAMILY THE AUTHORISATION NAMES, read out of the live workbook and
-# rendered as text so two of them can be compared exactly. Nothing here is
-# computed: each entry is what the workbook says.
+# The Stage-B bootstrap proved on Windows that a freshly opened workbook can
+# answer a read with nothing for a moment. This is the one settlement each pass
+# is allowed: after Workbooks.Open and before PCCM_AutomationBegin, the shim
+# import, the window and any write, it reads FullName (which must be THIS copy),
+# Worksheets, and one known worksheet. Every read goes through the accepted
+# Invoke-ComRetryRead envelope for refusals; an answer of nothing waits 250 ms,
+# doubling to 2000 ms, at most 12 attempts and 15000 ms in all; a real answer that
+# is the wrong workbook aborts at once, because waiting cannot change which
+# workbook this is. Nothing here writes, runs a macro or retries a mutation.
+function Get-EquivalenceComparablePath {
+    param([string]$Path)
+    $full = $Path
+    try { $full = [System.IO.Path]::GetFullPath($Path) } catch { $full = $Path }
+    return $full.TrimEnd([char]92, [char]47).ToLowerInvariant()
+}
+
+function Wait-EquivalenceWorkbookReady {
+    param($Workbook, [string]$ExpectedPath, [string]$KnownSheet,
+          [int]$MaxAttempts = 12, [int]$FirstDelayMs = 250,
+          [int]$MaxDelayMs = 2000, [int]$TotalBudgetMs = 15000)
+    if ($null -eq $Workbook) { throw 'READY: no workbook to wait for.' }
+    if ([string]::IsNullOrWhiteSpace($ExpectedPath)) { throw 'READY: no expected path.' }
+    if ([string]::IsNullOrWhiteSpace($KnownSheet)) { throw 'READY: no known worksheet to acquire.' }
+    $attempt = 0
+    $waitedMs = 0
+    $delay = $FirstDelayMs
+    while ($true) {
+        $attempt = $attempt + 1
+        $missing = ''
+        $nameRead = Invoke-ComRetryRead -Target $Workbook -Member 'FullName' `
+            -Description 'the opened workbook FullName'
+        $name = $nameRead.Value
+        if (($null -eq $name) -or [string]::IsNullOrWhiteSpace([string]$name)) {
+            $missing = 'FullName answered with nothing'
+        } elseif ((Get-EquivalenceComparablePath ([string]$name)) -ne
+                  (Get-EquivalenceComparablePath $ExpectedPath)) {
+            throw ('READY: the opened workbook is bound to ' + [string]$name + ' and not to ' +
+                   $ExpectedPath + '. Waiting cannot change which workbook this is.')
+        }
+        if ($missing -eq '') {
+            $sheetsRead = Invoke-ComRetryRead -Target $Workbook -Member 'Worksheets' `
+                -Description 'the opened workbook Worksheets'
+            if ($null -eq $sheetsRead.Value) {
+                $missing = 'Worksheets answered with nothing'
+            } else {
+                $sheetRead = Invoke-ComRetryRead -Target $sheetsRead.Value -Member 'Item' -Key $KnownSheet `
+                    -Description ('the worksheet ' + $KnownSheet)
+                if ($null -eq $sheetRead.Value) {
+                    $missing = ('Worksheets.Item(' + $KnownSheet + ') answered with nothing')
+                }
+            }
+        }
+        if ($missing -eq '') {
+            return [pscustomobject]@{ Attempt = $attempt; WaitedMs = $waitedMs; FullName = [string]$name }
+        }
+        if (($attempt -ge $MaxAttempts) -or (($waitedMs + $delay) -gt $TotalBudgetMs)) {
+            throw ('READY: the opened workbook was not ready after ' + [string]$attempt +
+                   ' attempt(s) and ' + [string]$waitedMs + ' ms: ' + $missing)
+        }
+        # ONLY AFTER AN OBSERVED NO-ANSWER, never unconditionally.
+        Start-Sleep -Milliseconds $delay
+        $waitedMs = $waitedMs + $delay
+        $delay = [Math]::Min($delay * 2, $MaxDelayMs)
+    }
+}
+
 function Get-EquivalenceSnapshot {
     param($Excel, $Workbook, $Manifest, $Inspection, $SimInspection)
     $state = New-Object System.Collections.Specialized.OrderedDictionary
@@ -359,91 +452,45 @@ function Get-EquivalenceSnapshot {
 # ONE PASS: BOOTSTRAP, BUILD ONE WAY, SNAPSHOT, CALCULATE, SHUT DOWN
 # ===========================================================================
 function Invoke-EquivalencePass {
-    param($Bundle, $Manifest, $Inspection, $SimInspection, $Plan)
-    $Mode = [string]$Bundle.Mode
-    $tempRoot = [string]$Bundle.Root
-
-    # THE BOOTSTRAP RUNS AGAINST THIS PASS'S OWN BUNDLE and nothing shared.
-    $bootstrap = Join-Path $windows 'build_stage_b.ps1'
-    & $bootstrap -BuildDir $tempRoot -Force | Out-Null
-    # THE EXIT CODE, NOT ONLY THE FILE. A build that saved the .xlsm and was then
-    # refused at a later operation leaves the workbook on disk WITHOUT its modules,
-    # its buttons or its protection - and Test-Path alone would let this pass open
-    # it and report a fixture result against a half-built workbook. The bootstrap
-    # names the failing operation in its own transcript above.
-    $bootstrapExit = $LASTEXITCODE
-    $stageB = [string]$Bundle.StageB
-    if ($bootstrapExit -ne 0) {
-        throw ('BOOTSTRAP: the Stage-B bootstrap for the ' + $Mode + ' pass exited ' +
-               [string]$bootstrapExit + '; its transcript above names the failing operation. ' +
-               'A workbook may exist and be half-built, so this pass is not run.')
+    param([string]$Mode, [string]$WorkbookPath, $Manifest, $Inspection, $SimInspection, $Plan)
+    if (-not (Test-Path -LiteralPath $WorkbookPath)) {
+        throw ('RAISED: the ' + $Mode + ' copy is not at ' + $WorkbookPath)
     }
-    if (-not (Test-Path -LiteralPath $stageB)) {
-        throw ('BOOTSTRAP: the Stage-B bootstrap produced no workbook for the ' + $Mode +
-               ' pass at ' + $stageB)
-    }
-
     $excel = $null; $workbooks = $null; $wb = $null
     $rel = New-ReleaseLedger ('equivalence ' + $Mode)
     $snapshot = $null; $calcStatus = ''; $calcFingerprint = ''; $calcResult = ''
     try {
-        # THE PREFIX IS LABELLED TOO. Run 11 raised RPC_E_CALL_REJECTED in the Bulk
-        # pass and the diagnostic read '<before the first bulk operation>': the
-        # first label was set at the window open, and the nine Excel calls between
-        # the bootstrap's return and that point - starting Excel, three property
-        # sets, Workbooks, Open, PCCM_AutomationBegin, the FX seed read and the
-        # shim import - ran unlabelled. Each is now named immediately before it
-        # runs, and the catch below saves the label at the throw, exactly as the
-        # builder's catch does. Nothing is retried and nothing waits.
-        if ($Mode -eq 'Bulk') { Reset-BulkOp }
-        try {
-            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.create' }
-            $excel = New-Object -ComObject Excel.Application
-            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.visible' }
-            $excel.Visible = $false
-            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.displayalerts' }
-            $excel.DisplayAlerts = $false
-            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.asktoupdatelinks' }
-            $excel.AskToUpdateLinks = $false
-            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.workbooks.acquire' }
-            $workbooks = $excel.Workbooks
-            # A REFUSED PROPERTY GET CAN ANSWER WITH NOTHING - Stage-B saw exactly
-            # that on Windows - and the next statement would then fail under the
-            # next label. Named here, under its own.
-            if ($null -eq $workbooks) {
-                throw 'RAISED: the Workbooks collection read answered with nothing'
-            }
-            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.workbook.open' }
-            $wb = $workbooks.Open($stageB)
+        $excel = New-Object -ComObject Excel.Application
+        $excel.Visible = $false
+        $excel.DisplayAlerts = $false
+        $excel.AskToUpdateLinks = $false
+        $workbooks = $excel.Workbooks
+        $wb = $workbooks.Open($WorkbookPath)
 
-            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.automation.begin' }
-            $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
-            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.fxseed.read' }
-            $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $Inspection
-            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.window.import' }
-            Import-BenchmarkFixtureWindow -Excel $excel -Workbook $wb -Manifest $Manifest `
-                -ScriptDir $windows
+        # THE ONE SETTLEMENT, before anything is asked to change.
+        $ready = Wait-EquivalenceWorkbookReady -Workbook $wb -ExpectedPath $WorkbookPath `
+            -KnownSheet ([string](@($Manifest.registers)[0].sheet))
+        Write-Output ('READY|' + $Mode + '|attempt=' + [string]$ready.Attempt +
+                      '|waited=' + [string]$ready.WaitedMs)
 
-            $scenarioSpec = $null
-            foreach ($entry in @($Plan.scenarios)) {
-                if ([string]$entry.id -eq 'PERF-SMALL') { $scenarioSpec = $entry }
-            }
-            if ($null -eq $scenarioSpec) { throw 'the plan declares no PERF-SMALL scenario' }
-            $model = New-BenchmarkModel -ScenarioSpec $scenarioSpec
+        $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+        $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $Inspection
+        Import-BenchmarkFixtureWindow -Excel $excel -Workbook $wb -Manifest $Manifest `
+            -ScriptDir $windows
 
-            # THE SAME WINDOW BOTH PASSES USE. Neither builder gets a privilege the
-            # other does not.
-            # THE WINDOW IS LABELLED FOR THE BULK BUILDER, so a refusal in P10FW_Begin
-            # or P10FW_End is named as that and not as the first or last fixture step.
-            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.window.open' }
-            $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest
-        } catch {
-            # SAVED AT THE THROW. The window's finally is not entered from here -
-            # it was never opened - so nothing relabels; saved all the same, so the
-            # outer catch never has to read a label after the fact.
-            if ($Mode -eq 'Bulk') { Save-BulkFailure -ErrorRecord $_ }
-            throw
+        $scenarioSpec = $null
+        foreach ($entry in @($Plan.scenarios)) {
+            if ([string]$entry.id -eq 'PERF-SMALL') { $scenarioSpec = $entry }
         }
+        if ($null -eq $scenarioSpec) { throw 'the plan declares no PERF-SMALL scenario' }
+        $model = New-BenchmarkModel -ScenarioSpec $scenarioSpec
+
+        # THE SAME WINDOW BOTH PASSES USE. Neither builder gets a privilege the
+        # other does not.
+        # THE WINDOW IS LABELLED FOR THE BULK BUILDER, so a refusal in P10FW_Begin
+        # or P10FW_End is named as that and not as the first or last fixture step.
+        if ($Mode -eq 'Bulk') { Reset-BulkOp; Set-BulkOp 'bulk.window.open' }
+        $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest
         try {
             if ($Mode -eq 'Bulk') {
                 try {
@@ -515,64 +562,82 @@ function Invoke-EquivalencePass {
 }
 
 # ===========================================================================
-# THE TWO PASSES, AND THE COMPARISON
+# ONE STAGE-B, TWO COPIES, TWO PASSES, AND THE COMPARISON
 # ===========================================================================
 $manifest      = Get-Content -LiteralPath (Join-Path $BuildDir 'stage_b_manifest.json') -Raw | ConvertFrom-Json
 $inspection    = Get-Content -LiteralPath (Join-Path $BuildDir 'phase5_gate_b_inspection.json') -Raw | ConvertFrom-Json
 $simInspection = Get-Content -LiteralPath (Join-Path $BuildDir 'phase6_gate_b_inspection.json') -Raw | ConvertFrom-Json
 $plan          = Get-Content -LiteralPath (Join-Path $BuildDir 'phase10_benchmark_plan.json') -Raw | ConvertFrom-Json
 
-# --- BOTH STARTING BUNDLES, BEFORE EITHER IS BUILT --------------------------
 $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss-fff')
-$bundles = @{}
+$bundle = $null
+$copies = @{}
 $setupFailed = $false
-foreach ($mode in @('Endpoints', 'Bulk')) {
-    try {
-        $bundles[$mode] = New-EquivalenceBundle -Mode $mode -Manifest $manifest -Stamp $stamp
-        foreach ($relative in @($bundles[$mode].Digests.Keys)) {
-            Write-Output ('BUNDLE|' + $mode + '|' + $relative + '|' +
-                          [string]$bundles[$mode].Digests[$relative])
-        }
-    } catch {
-        $setupFailed = $true
-        Write-Output ('FAIL|' + $mode + '|SETUP|' + (($_.Exception.Message) -replace '\s+', ' '))
+try {
+    # --- THE ONE STARTING BUNDLE, AND THE ONE STAGE-B BUILD ------------------
+    $bundle = New-EquivalenceBundle -Mode 'Baseline' -Manifest $manifest -Stamp $stamp
+    foreach ($relative in @($bundle.Digests.Keys)) {
+        Write-Output ('BUNDLE|Baseline|' + $relative + '|' + [string]$bundle.Digests[$relative])
     }
-}
+    # THE BOOTSTRAP RUNS ONCE, exactly as it ships: build, SaveAs, modules, buttons,
+    # protection, the reopen verification, and its own Excel shutdown.
+    $bootstrap = Join-Path $windows 'build_stage_b.ps1'
+    & $bootstrap -BuildDir ([string]$bundle.Root) -Force | Out-Null
+    # THE EXIT CODE, NOT ONLY THE FILE. A build that saved the .xlsm and was then
+    # refused at a later operation leaves the workbook on disk WITHOUT its modules,
+    # its buttons or its protection - and Test-Path alone would let the passes open
+    # it and report fixture results against a half-built workbook.
+    $bootstrapExit = $LASTEXITCODE
+    $stageB = [string]$bundle.StageB
+    if ($bootstrapExit -ne 0) {
+        throw ('BOOTSTRAP: the Stage-B bootstrap exited ' + [string]$bootstrapExit +
+               '; its transcript above names the failing operation. A workbook may exist ' +
+               'and be half-built, so nothing is copied and no pass is run.')
+    }
+    if (-not (Test-Path -LiteralPath $stageB)) {
+        throw ('BOOTSTRAP: the Stage-B bootstrap produced no workbook at ' + $stageB)
+    }
+    $canonical = Get-WorkbookDigest -Path $stageB
+    Write-Output ('BASELINE|StageB|verified|sha256=' + $canonical)
 
-if (-not $setupFailed) {
-    $problems = @(Test-BundleIdentity -Left $bundles['Endpoints'] -Right $bundles['Bulk'])
+    # --- TWO PLAIN COPIES, PROVED IDENTICAL BEFORE EITHER IS OPENED ----------
+    foreach ($mode in @('Endpoints', 'Bulk')) {
+        $copies[$mode] = Copy-EquivalenceWorkbook -Source $stageB -Root ([string]$bundle.Root) -Mode $mode
+        Write-Output ('COPY|' + $mode + '|sha256=' + [string]$copies[$mode].Digest)
+    }
+    $problems = @(Test-CopyIdentity -Canonical $canonical -Copies @($copies['Endpoints'], $copies['Bulk']))
     if ($problems.Count -gt 0) {
         $setupFailed = $true
-        Write-Output ('BUNDLE|differ|' + ($problems -join '; '))
+        Write-Output ('COPIES|differ|' + ($problems -join '; '))
     } else {
-        Write-Output ('BUNDLE|identical|' +
-                      [string]@($bundles['Endpoints'].Digests.Keys).Count + ' artifact(s)')
+        Write-Output 'COPIES|identical'
     }
+} catch {
+    $setupFailed = $true
+    $detail = ($_.Exception.Message) -replace '\s+', ' '
+    $stage = 'SETUP'
+    if ($detail -like 'BOOTSTRAP:*') { $stage = 'BOOTSTRAP'; $detail = $detail.Substring(10).Trim() }
+    Write-Output ('FAIL|Baseline|' + $stage + '|' + $detail)
 }
 
-# --- THE TWO PASSES ---------------------------------------------------------
-# NOTHING IS BUILT IF THE STARTING STATES DID NOT AGREE. Refusing here is the
-# whole point of proving identity before Excel is started.
 $passes = @{}
 if (-not $setupFailed) {
     foreach ($mode in @('Endpoints', 'Bulk')) {
         try {
-            $passes[$mode] = Invoke-EquivalencePass -Bundle $bundles[$mode] -Manifest $manifest `
-                -Inspection $inspection -SimInspection $simInspection -Plan $plan
+            $passes[$mode] = Invoke-EquivalencePass -Mode $mode -WorkbookPath ([string]$copies[$mode].Path) `
+                -Manifest $manifest -Inspection $inspection -SimInspection $simInspection -Plan $plan
             Write-Output ('PASS|' + $mode + '|COMPLETED|fixture built and PCCM_Calculate ran')
         } catch {
-            # THE STAGE IS NAMED. A bootstrap that produced no workbook and a COM
-            # call that raised inside Excel are different facts, and run 1 proved
-            # that collapsing them into one word costs a round.
+            # THE STAGE IS NAMED. A copy that could not be opened and a COM call that
+            # raised inside Excel are different facts.
             $detail = ($_.Exception.Message) -replace '\s+', ' '
             $stage = 'RAISED'
             if ($detail -like 'BOOTSTRAP:*') { $stage = 'BOOTSTRAP'; $detail = $detail.Substring(10).Trim() }
             elseif ($detail -like 'RAISED:*') { $detail = $detail.Substring(7).Trim() }
             Write-Output ('FAIL|' + $mode + '|' + $stage + '|' + $detail)
-            # THE EXACT BULK OPERATION, SEPARATELY. Two runs printed the line above
-            # and nothing else, and the correction that follows depends on which
-            # call it was. Printed AFTER the FAIL line and never in place of it; a
-            # classifier that itself threw would still leave the failure recorded.
+            # THE EXACT BULK OPERATION, SEPARATELY. Printed AFTER the FAIL line and
+            # never in place of it; a classifier that itself threw would still
+            # leave the failure recorded.
             if (($mode -eq 'Bulk') -and ($stage -eq 'RAISED')) {
                 try   { Write-Output (New-BulkFailureLine -ErrorRecord $_) }
                 catch { Write-Output ('BULKFAIL|' + (Get-BulkOp) + '|hresult=unclassified|the error could not be classified') }
@@ -581,10 +646,6 @@ if (-not $setupFailed) {
     }
 }
 
-# --- THE COMPARISON, WHICH ONLY SPEAKS IF IT HAPPENED -----------------------
-# `differ` IS RESERVED FOR A REAL COMPARISON. Run 1 printed it after a setup
-# failure, which reads as "the two fixtures are not equivalent" and was not what
-# happened at all.
 $completed = @($passes.Keys)
 if ($completed.Count -ne 2) {
     $why = 'no pass completed'
@@ -628,7 +689,7 @@ if ($completed.Count -ne 2) {
 # Removed last, and only the ones that were created. A bundle whose pass failed
 # is removed too: it is disposable by construction and the diagnosis is in the
 # FAIL line, not in the directory.
-foreach ($mode in @($bundles.Keys)) {
-    Remove-Item -LiteralPath ([string]$bundles[$mode].Root) -Recurse -Force -ErrorAction SilentlyContinue
+if ($null -ne $bundle) {
+    Remove-Item -LiteralPath ([string]$bundle.Root) -Recurse -Force -ErrorAction SilentlyContinue
 }
 exit 0

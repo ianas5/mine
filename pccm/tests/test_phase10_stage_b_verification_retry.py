@@ -141,8 +141,10 @@ BENCHMARK_FROZEN_FUNCTIONS = ("Set-BenchmarkRegisterRowCount", "Get-BenchmarkPer
 # identical is everything that decides anything - the snapshot, the bundle contract
 # and identity proof, and the pass's own COM lifecycle - and the changed function
 # must actually have changed.
+# Test-BundleIdentity was REMOVED with the single-baseline architecture (one
+# Stage-B, two copies); the copies are compared by Test-CopyIdentity instead.
 GATE_FROZEN_FUNCTIONS = ("Get-EquivalenceSnapshot", "New-EquivalenceBundle",
-                         "Get-BundleArtifacts", "Test-BundleIdentity")
+                         "Get-BundleArtifacts")
 GATE_DECLARED_CHANGES = ("Invoke-EquivalencePass",)
 
 
@@ -1388,7 +1390,10 @@ def test_76_no_inter_pass_drain_was_added_to_the_equivalence_gate() -> None:
     observed runs, so nothing links the second-pass failure to a lifecycle
     overlap. A pause between the passes would be a remedy for a cause nobody has
     demonstrated - and it would hide the one we are trying to find."""
+    # THE ONE DECLARED SLEEP is inside the read-only readiness barrier of the
+    # single-baseline gate, after an observed no-answer; the gate outside it has none.
     gate = _gate()
+    gate = gate.replace(_ps_function(gate, "Wait-EquivalenceWorkbookReady"), "")
     for banned in ("Start-Sleep", "Get-Process", "Stop-Process", "Wait-Process",
                    "WaitForExit", "Wait-ExcelExit", "drain", "quiet period",
                    "System.Threading.Thread]::Sleep"):
@@ -1401,13 +1406,18 @@ def test_77_the_two_passes_are_still_two_bundles_and_two_excel_sessions() -> Non
     still starts its own Excel."""
     gate = _gate()
     then = _at("1e0edb2", "pccm/tests/phase10_fixture_equivalence.ps1")
-    for name in ("Get-BundleArtifacts", "New-EquivalenceBundle", "Test-BundleIdentity"):
+    for name in ("Get-BundleArtifacts", "New-EquivalenceBundle"):
         assert _ps_function(gate, name) == _ps_function(then, name), \
             f"{name} changed in a batch that may not change it"
+    # RESTATED with the single-baseline architecture: each pass still starts its
+    # own Excel, but over a filesystem copy of ONE bootstrap-verified workbook -
+    # the bootstrap runs once, at top level, never inside a pass.
+    assert "function Test-BundleIdentity" not in gate
     pass_fn = _ps_function(gate, "Invoke-EquivalencePass")
     assert "New-Object -ComObject Excel.Application" in pass_fn
-    assert "$tempRoot = [string]$Bundle.Root" in pass_fn
-    assert "& $bootstrap -BuildDir $tempRoot -Force" in pass_fn
+    assert "$wb = $workbooks.Open($WorkbookPath)" in pass_fn
+    assert "$bootstrap" not in pass_fn
+    assert gate.count("& $bootstrap -BuildDir ([string]$bundle.Root) -Force") == 1
 
 
 def test_78_the_gate_refuses_a_bootstrap_that_did_not_succeed() -> None:
@@ -1417,12 +1427,16 @@ def test_78_the_gate_refuses_a_bootstrap_that_did_not_succeed() -> None:
     would have opened it and reported a fixture result against a half-built
     workbook. The exit code is now checked, in the vocabulary the gate already
     has."""
-    pass_fn = _ps_function(_gate(), "Invoke-EquivalencePass")
+    # RESTATED with the single-baseline architecture: the bootstrap runs ONCE at
+    # the gate's top level, never inside a pass, and the same checks guard it there.
+    gate = _gate()
+    assert "$bootstrap" not in _ps_function(gate, "Invoke-EquivalencePass")
+    pass_fn = gate[gate.index("$bundle = New-EquivalenceBundle -Mode 'Baseline'"):]
     assert "$bootstrapExit = $LASTEXITCODE" in pass_fn
     exitcheck = pass_fn.index("if ($bootstrapExit -ne 0) {")
     pathcheck = pass_fn.index("if (-not (Test-Path -LiteralPath $stageB)) {")
     assert exitcheck < pathcheck, "the file check runs before the exit-code check"
-    assert "BOOTSTRAP: the Stage-B bootstrap for the ' + $Mode + ' pass exited " in pass_fn
+    assert "BOOTSTRAP: the Stage-B bootstrap exited ' + [string]$bootstrapExit" in pass_fn
     # THE EXISTING VOCABULARY, NOT A NEW ONE.
     assert pass_fn.count("BOOTSTRAP:") >= 2
     assert "half-built" in pass_fn
@@ -1858,7 +1872,11 @@ def test_102_the_gate_still_refuses_a_half_built_workbook() -> None:
     """REQUIRED CONTROL 25, AND MORE IMPORTANT NOW THAN WHEN IT WAS ADDED. An
     ambiguous save can leave a target file on disk while Stage-B exits nonzero, and
     target-file existence must never read as a successful bootstrap."""
-    pass_fn = _ps_function(_gate(), "Invoke-EquivalencePass")
+    # RESTATED with the single-baseline architecture: the one bootstrap and its
+    # checks sit at the gate's top level, ahead of both passes.
+    gate = _gate()
+    assert "$bootstrap" not in _ps_function(gate, "Invoke-EquivalencePass")
+    pass_fn = gate[gate.index("$bundle = New-EquivalenceBundle -Mode 'Baseline'"):]
     assert "$bootstrapExit = $LASTEXITCODE" in pass_fn
     assert pass_fn.index("if ($bootstrapExit -ne 0) {") < \
         pass_fn.index("if (-not (Test-Path -LiteralPath $stageB)) {")
@@ -2297,7 +2315,10 @@ def test_120_the_observed_format_feeds_the_saveas_baseline() -> None:
 def test_121_no_inter_pass_drain_and_no_generic_mutation_retry() -> None:
     """REQUIRED CONTROLS 17 AND 22, STILL FORBIDDEN. The gap is handled where it
     manifests, not by spacing the sessions out."""
+    # THE ONE DECLARED SLEEP is inside the read-only readiness barrier of the
+    # single-baseline gate, after an observed no-answer; the gate outside it has none.
     gate_file = _gate()
+    gate_file = gate_file.replace(_ps_function(gate_file, "Wait-EquivalenceWorkbookReady"), "")
     for banned in ("Start-Sleep", "Get-Process", "Stop-Process", "Wait-Process",
                    "WaitForExit", "Wait-ExcelExit", "drain", "quiet period"):
         assert banned not in gate_file, f"the equivalence gate waits between passes: {banned}"

@@ -3317,3 +3317,76 @@ The `1eb6395` resynchronisation is byte-identical and still called once in each
 file, immediately after `Set-Phase5Fixture`, inside the window and before the timed
 loop. `Get-EquivalenceSnapshot`, the window functions, the block builders,
 `build_stage_b.ps1`, `com_lifecycle.ps1` and production VBA are byte-identical.
+
+## Architecture simplification after run 11 — ONE Stage-B, TWO COPIES
+
+**Not a Windows run.** This records a change of harness architecture made after
+run 11, so the sections above remain accurate about what earlier runs executed
+and this one is accurate about what the next run will execute.
+
+### What changed
+
+Runs 3 to 11 spent every failure inside work that was never the semantic
+question: a second Stage-B bootstrap, a second `SaveAs`, a second module import,
+a second protection pass, a second reopen verification, and finally the Excel
+calls a second pass makes before its first fixture step. The question is only:
+*starting from the exact same verified Stage-B workbook image, do the Endpoints
+fixture and the Bulk fixture reach the same workbook state and the same
+production calculation fingerprint?* That needs one Stage-B, not two.
+
+`tests/phase10_fixture_equivalence.ps1` now:
+
+1. prepares **ONE** starting bundle from the Stage-A build and runs the Stage-B
+   bootstrap **once**, exactly as it ships — build, `SaveAs`, modules, buttons,
+   protection, its own reopen verification, its own Excel shutdown;
+2. takes that verified `.xlsm` as the canonical baseline and prints its SHA-256
+   (`BASELINE|StageB|verified|sha256=…`);
+3. makes **two filesystem copies**, `PCCM_equiv_endpoints.xlsm` and
+   `PCCM_equiv_bulk.xlsm`, prints each SHA-256, and requires
+   canonical == Endpoints copy == Bulk copy before any Excel is started
+   (`COPIES|identical`, or `COPIES|differ|…` and nothing is opened);
+4. opens each copy in its own clean Excel instance and, **after the open and
+   before anything is asked to change** — before `PCCM_AutomationBegin`, the seed
+   read, the shim import, the window, the fixture and the calculation — runs one
+   bounded **read-only readiness barrier** (`READY|<mode>|attempt=N|waited=X`):
+   `FullName` must be this copy, `Worksheets` must answer, one known worksheet
+   must be acquirable; every read goes through the accepted `Invoke-ComRetryRead`
+   envelope; an answer of nothing waits 250 ms doubling to 2000 ms, at most 12
+   attempts and 15000 ms; a real answer naming the wrong workbook aborts at once;
+5. runs the existing Endpoints fixture plus the `1eb6395`
+   `Invoke-BenchmarkEndpointsResync`, or the existing Bulk fixture; the real
+   `PCCM_Calculate`; the unchanged `Get-EquivalenceSnapshot`;
+6. compares with the existing contract, every EQUIV field and `CALCEQUIV`
+   independently required.
+
+**No mutation is retried** anywhere: no property set, write, `ListRows.Add`,
+import, `Application.Run`, window, protection, `Calculate` or `ApplyTimeline` is
+wrapped in a loop or a sleep; there is no inter-pass drain and no process spacing.
+If a mutation is refused after readiness succeeded, that is reported and stops
+the run; no further instrumentation subsystem is built.
+
+### What was retired
+
+The `24e1a14` **prefix instrumentation is retired**: the twelve `bulk.preflight.*`
+labels, the prefix try/catch in the gate and the runner, the `Workbooks` null
+guard, the lifted-region harness section and their controls and mutations are
+removed. The runner is byte-identical to `1eb6395` again. The single-baseline
+gate has no duplicated prefix to name; the readiness barrier is the settlement.
+The Bulk builder's 22 operation labels and the `BULKFAIL` line stay, because a
+refused builder step is exactly what PERF-LARGE would need named.
+`Test-BundleIdentity` (two bundles) is replaced by `Test-CopyIdentity` (three
+digests). `Get-EquivalenceSnapshot`, `New-EquivalenceBundle`,
+`Get-BundleArtifacts`, the window functions, the block builders,
+`Invoke-BenchmarkEndpointsResync` and its two call sites, production VBA,
+`build_stage_b.ps1` and `com_lifecycle.ps1` are byte-identical.
+
+Run 11's section above records the prefix instrumentation as it stood at
+`24e1a14`; that is history and is not rewritten.
+
+### Acceptance
+
+ONE successful run closes Bulk fixture equivalence if: the canonical Stage-B
+build and verification passed; both copies are hash-identical to it; readiness
+passed in both passes; both fixtures completed; every `EQUIV` field is `match`;
+`CALCEQUIV|match`; the COM lifecycle is clean. Until then, **Bulk remains NOT
+authorised**.

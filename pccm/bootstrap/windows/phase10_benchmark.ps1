@@ -921,21 +921,6 @@ function Invoke-BenchmarkEndpointsResync {
 # would not travel with it. Get-BulkOp therefore tolerates never having been set.
 function Get-BulkOpVocabulary {
     return @(
-        # THE PREFIX: everything Excel is asked between the Stage-B bootstrap's
-        # return and the window open. Run 11 was refused somewhere in here and the
-        # diagnostic could only say '<before the first bulk operation>'.
-        'bulk.preflight.excel.create'
-        'bulk.preflight.excel.identity'
-        'bulk.preflight.excel.visible'
-        'bulk.preflight.excel.displayalerts'
-        'bulk.preflight.excel.asktoupdatelinks'
-        'bulk.preflight.workbooks.acquire'
-        'bulk.preflight.workbook.open'
-        'bulk.preflight.environment.read'
-        'bulk.preflight.automation.begin'
-        'bulk.preflight.fxseed.read'
-        'bulk.preflight.window.import'
-        'bulk.preflight.protection.read'
         'bulk.window.open'
         'bulk.registers.assert-empty'
         'bulk.inputs.write'
@@ -2546,91 +2531,59 @@ $abandoned = ''
 $failure = $null
 
 try {
-    # THE PREFIX IS LABELLED TOO. Run 11 was refused in the equivalence gate's Bulk
-    # pass before its first label; the runner's Bulk mode has the same prefix, with
-    # three more reads of its own, and names each Excel call the same way. The
-    # catch saves the label at the throw and rethrows; the window open below is
-    # labelled as before and stays outside this guard, where the window-flow
-    # harness lifts it from.
-    if ($FixtureMode -eq 'Bulk') { Reset-BulkOp }
-    try {
-        Set-BenchmarkStage -Stage 'setup' -Action 'starting an owned Excel instance'
-        $startupWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.create' }
-        $excel = New-Object -ComObject Excel.Application
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.identity' }
-        $excelIdentity = Get-ExcelIdentity -ExcelApp $excel -PreExistingPids $preExisting
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.visible' }
-        $excel.Visible = $false
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.displayalerts' }
-        $excel.DisplayAlerts = $false
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.excel.asktoupdatelinks' }
-        $excel.AskToUpdateLinks = $false
-        $startupWatch.Stop()
+    Set-BenchmarkStage -Stage 'setup' -Action 'starting an owned Excel instance'
+    $startupWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $excel = New-Object -ComObject Excel.Application
+    $excelIdentity = Get-ExcelIdentity -ExcelApp $excel -PreExistingPids $preExisting
+    $excel.Visible = $false
+    $excel.DisplayAlerts = $false
+    $excel.AskToUpdateLinks = $false
+    $startupWatch.Stop()
 
-        Set-BenchmarkStage -Stage 'setup' -Action 'opening the benchmark workbook'
-        $openWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.workbooks.acquire' }
-        $workbooks = $excel.Workbooks
-        # A REFUSED PROPERTY GET CAN ANSWER WITH NOTHING - Stage-B saw exactly that
-        # on Windows - and the next statement would then fail under the next label.
-        if ($null -eq $workbooks) {
-            throw 'the Workbooks collection read answered with nothing'
+    Set-BenchmarkStage -Stage 'setup' -Action 'opening the benchmark workbook'
+    $openWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $workbooks = $excel.Workbooks
+    $wb = $workbooks.Open($stageBPath)
+    $openWatch.Stop()
+
+    # EXCEL STARTUP AND WORKBOOK OPEN ARE RECORDED AND EXCLUDED. They are here so
+    # a reader can see they were paid, and nowhere near an operation's elapsed
+    # time. "Cold" never means either of them.
+    $setupTimings.Add('excel_startup_ms', [double]$startupWatch.Elapsed.TotalMilliseconds)
+    $setupTimings.Add('workbook_open_ms', [double]$openWatch.Elapsed.TotalMilliseconds)
+
+    Set-BenchmarkStage -Stage 'setup' -Action 'capturing the environment inventory'
+    $environment = Get-BenchmarkEnvironment -Excel $excel -Identity $excelIdentity `
+        -WorkbookPath $stageBPath -RepositoryPath $repoRoot -ReleaseIdentity $releaseIdentity `
+        -HarnessVersion ([string]$plan.harness_version) `
+        -SchemaVersion ([int]$plan.schema_version) -Revision $revision
+
+    Write-BenchmarkLine 'ENVIRONMENT'
+    Write-BenchmarkLine '-----------'
+    foreach ($field in @($plan.environment_fields)) {
+        $value = $environment[[string]$field]
+        if ($value -is [System.Array]) { $value = (@($value) -join '; ') }
+        if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+            $value = '(none)'
         }
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.workbook.open' }
-        $wb = $workbooks.Open($stageBPath)
-        $openWatch.Stop()
-
-        # EXCEL STARTUP AND WORKBOOK OPEN ARE RECORDED AND EXCLUDED. They are here so
-        # a reader can see they were paid, and nowhere near an operation's elapsed
-        # time. "Cold" never means either of them.
-        $setupTimings.Add('excel_startup_ms', [double]$startupWatch.Elapsed.TotalMilliseconds)
-        $setupTimings.Add('workbook_open_ms', [double]$openWatch.Elapsed.TotalMilliseconds)
-
-        Set-BenchmarkStage -Stage 'setup' -Action 'capturing the environment inventory'
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.environment.read' }
-        $environment = Get-BenchmarkEnvironment -Excel $excel -Identity $excelIdentity `
-            -WorkbookPath $stageBPath -RepositoryPath $repoRoot -ReleaseIdentity $releaseIdentity `
-            -HarnessVersion ([string]$plan.harness_version) `
-            -SchemaVersion ([int]$plan.schema_version) -Revision $revision
-
-        Write-BenchmarkLine 'ENVIRONMENT'
-        Write-BenchmarkLine '-----------'
-        foreach ($field in @($plan.environment_fields)) {
-            $value = $environment[[string]$field]
-            if ($value -is [System.Array]) { $value = (@($value) -join '; ') }
-            if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
-                $value = '(none)'
-            }
-            Write-BenchmarkLine ('  ' + ([string]$field).PadRight(26) + ' : ' + [string]$value)
-        }
-        Write-BenchmarkLine ''
-
-        $costRegister = $null; $riskRegister = $null
-        foreach ($register in @($manifest.registers)) {
-            if ([string]$register.key -eq 'cost_lines')    { $costRegister = $register }
-            if ([string]$register.key -eq 'risk_register') { $riskRegister = $register }
-        }
-
-        Set-BenchmarkStage -Stage 'setup' -Action 'opening the automation envelope and capturing the FX seed'
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.automation.begin' }
-        $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.fxseed.read' }
-        $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $inspection
-
-        Set-BenchmarkStage -Stage 'setup' -Action 'importing the fixture-window shim into the disposable project'
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.window.import' }
-        Import-BenchmarkFixtureWindow -Excel $excel -Workbook $wb -Manifest $manifest -ScriptDir $scriptDir
-        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.preflight.protection.read' }
-        $protectionBefore = Assert-BenchmarkProtectionApplied -Excel $excel -Manifest $manifest `
-            -Stage 'as the workbook was opened'
-    } catch {
-        if ($FixtureMode -eq 'Bulk') {
-            Save-BulkFailure -ErrorRecord $_
-            Write-BenchmarkLine ('  ' + (New-BulkFailureLine -ErrorRecord $_))
-        }
-        throw
+        Write-BenchmarkLine ('  ' + ([string]$field).PadRight(26) + ' : ' + [string]$value)
     }
+    Write-BenchmarkLine ''
+
+    $costRegister = $null; $riskRegister = $null
+    foreach ($register in @($manifest.registers)) {
+        if ([string]$register.key -eq 'cost_lines')    { $costRegister = $register }
+        if ([string]$register.key -eq 'risk_register') { $riskRegister = $register }
+    }
+
+    Set-BenchmarkStage -Stage 'setup' -Action 'opening the automation envelope and capturing the FX seed'
+    $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+    $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $inspection
+
+    Set-BenchmarkStage -Stage 'setup' -Action 'importing the fixture-window shim into the disposable project'
+    Import-BenchmarkFixtureWindow -Excel $excel -Workbook $wb -Manifest $manifest -ScriptDir $scriptDir
+    $protectionBefore = Assert-BenchmarkProtectionApplied -Excel $excel -Manifest $manifest `
+        -Stage 'as the workbook was opened'
     Write-BenchmarkLine 'PROTECTION'
     Write-BenchmarkLine '----------'
     Write-BenchmarkLine ('  as opened            : ' + $protectionBefore.Raw)
@@ -2655,7 +2608,7 @@ try {
     # unprotected workbook is the worse fact.
     # THE WINDOW IS LABELLED ONLY FOR THE BULK BUILDER. Endpoints is the accepted
     # baseline and carries no diagnostic vocabulary of its own.
-    if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.window.open' }
+    if ($FixtureMode -eq 'Bulk') { Reset-BulkOp; Set-BulkOp 'bulk.window.open' }
     $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest
     try {
         # WHICH BUILDER, RECORDED IN THE ARTIFACT. Two fixture methods that reach

@@ -10,11 +10,13 @@
     Every source-reading control passed; the defect was file plumbing, and file
     plumbing is behaviour.
 
-    So this RUNS it. It lifts `Get-BundleArtifacts`, `New-EquivalenceBundle` and
-    `Test-BundleIdentity` out of `tests/phase10_fixture_equivalence.ps1` BY AST -
-    their real bytes, not a copy - and drives them against a FAKE repository build
-    directory holding exactly the artifacts the contract names. Excel is never
-    started and no workbook is opened: this is about which files arrive where.
+    So this RUNS it. It lifts `Get-BundleArtifacts`, `New-EquivalenceBundle`,
+    `Copy-EquivalenceWorkbook`, `Test-CopyIdentity` and the read-only readiness
+    barrier `Wait-EquivalenceWorkbookReady` out of `tests/phase10_fixture_equivalence.ps1`
+    BY AST - their real bytes, not a copy - and drives them against a FAKE
+    repository build directory holding exactly the artifacts the contract names, a
+    fake canonical workbook, and a fake workbook object whose reads are scripted.
+    Excel is never started and no workbook is opened.
 
     IT ASSERTS NOTHING. It prints tagged lines and
     `tests/test_phase10_benchmark_harness.py` decides.
@@ -22,10 +24,12 @@
 .NOTES
     Prints:
       ARTIFACT|<kind>|<name>              one entry of the derived contract
-      BUNDLE|<mode>|<relative path>       one file that arrived, per bundle
-      ROOTS|<isolated|shared>             whether the two bundles are separate
-      IDENTITY|<identical|differ>|<why>   the starting-state comparison
-      DAMAGED|<differ|identical>|<why>    the same comparison after one edit
+      BUNDLE|Baseline|<relative path>     one file that arrived in the one bundle
+      COPY|<mode>|<path>                  one filesystem copy of the canonical workbook
+      IDENTITY|<identical|differ>|<why>   canonical digest against both copies
+      DAMAGED|<differ|identical>|<why>    the same comparison after one copy is edited
+      READY|<case>|<ok|refused>|<detail>  the readiness barrier over a scripted workbook
+      READYREADS|<case>|<members touched> what the barrier asked of the workbook
       REFUSE|<case>|<refused|accepted>|<message>
       STALE|<absent|travelled|refused>|<detail>
     Exit 0 always.
@@ -49,7 +53,11 @@ if ($errors -and $errors.Count -gt 0) {
     Write-Output ('PARSE|' + [string]$errors.Count + ' parse error(s) in the gate')
     exit 0
 }
-$wanted = @('Get-BundleArtifacts', 'New-EquivalenceBundle', 'Test-BundleIdentity')
+# The accepted read envelope is the real one, not a restatement.
+. (Join-Path (Split-Path -Parent $here) 'bootstrap/windows/com_lifecycle.ps1')
+$wanted = @('Get-BundleArtifacts', 'New-EquivalenceBundle', 'Get-WorkbookDigest',
+            'Copy-EquivalenceWorkbook', 'Test-CopyIdentity', 'Get-EquivalenceComparablePath',
+            'Wait-EquivalenceWorkbookReady')
 foreach ($name in $wanted) {
     $body = $null
     foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
@@ -101,36 +109,39 @@ $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ('pccm-fakework-' +
     [System.Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $WorkDir -Force
 
-$left = $null; $right = $null
+$bundle = $null
 try {
-    $left = New-EquivalenceBundle -Mode 'Endpoints' -Manifest $manifest -Stamp 'flow'
-    $right = New-EquivalenceBundle -Mode 'Bulk' -Manifest $manifest -Stamp 'flow'
+    $bundle = New-EquivalenceBundle -Mode 'Baseline' -Manifest $manifest -Stamp 'flow'
 } catch {
-    Write-Output ('REFUSE|two-bundles|refused|' + (($_.Exception.Message) -replace '\s+', ' '))
+    Write-Output ('REFUSE|one-bundle|refused|' + (($_.Exception.Message) -replace '\s+', ' '))
 }
-
-if (($null -ne $left) -and ($null -ne $right)) {
-    foreach ($key in @($left.Digests.Keys)) { Write-Output ('BUNDLE|Endpoints|' + $key) }
-    foreach ($key in @($right.Digests.Keys)) { Write-Output ('BUNDLE|Bulk|' + $key) }
-    Write-Output ('ROOTS|' + $(if ([string]$left.Root -ne [string]$right.Root) { 'isolated' }
-                               else { 'shared' }) + '|' + [string]$left.Root + ' :: ' +
-                  [string]$right.Root)
-    $problems = @(Test-BundleIdentity -Left $left -Right $right)
-    Write-Output ('IDENTITY|' + $(if ($problems.Count -eq 0) { 'identical' } else { 'differ' }) +
-                  '|' + ($problems -join '; '))
-
-    # ONE ARTIFACT EDITED, AND THE COMPARISON MUST NOTICE. Without this the
-    # identity check could be vacuous and nobody would know.
-    $victim = Join-Path ([string]$right.Root) 'stage_b_manifest.json'
-    Set-Content -LiteralPath $victim -Value '{"fake":"tampered"}' -NoNewline
-    $right.Digests['stage_b_manifest.json'] =
-        [string](Get-FileHash -LiteralPath $victim -Algorithm SHA256).Hash
-    $damaged = @(Test-BundleIdentity -Left $left -Right $right)
-    Write-Output ('DAMAGED|' + $(if ($damaged.Count -eq 0) { 'identical' } else { 'differ' }) +
-                  '|' + ($damaged -join '; '))
+if ($null -ne $bundle) {
+    foreach ($key in @($bundle.Digests.Keys)) { Write-Output ('BUNDLE|Baseline|' + $key) }
+    # A FAKE CANONICAL WORKBOOK where the bootstrap would have left it, copied
+    # twice through the real function, and the three digests compared.
+    $stageB = [string]$bundle.StageB
+    Set-Content -LiteralPath $stageB -Value 'fake-verified-stage-b-workbook' -NoNewline
+    $canonical = Get-WorkbookDigest -Path $stageB
+    $copies = @()
+    try {
+        foreach ($mode in @('Endpoints', 'Bulk')) {
+            $copy = Copy-EquivalenceWorkbook -Source $stageB -Root ([string]$bundle.Root) -Mode $mode
+            $copies += $copy
+            Write-Output ('COPY|' + $mode + '|' + [string]$copy.Path)
+        }
+        $problems = @(Test-CopyIdentity -Canonical $canonical -Copies $copies)
+        Write-Output ('IDENTITY|' + $(if ($problems.Count -eq 0) { 'identical' } else { 'differ' }) +
+                      '|' + ($problems -join '; '))
+        $victim = [string]$copies[1].Path
+        Set-Content -LiteralPath $victim -Value 'fake-tampered-copy' -NoNewline
+        $copies[1] = [pscustomobject]@{ Mode = 'Bulk'; Path = $victim; Digest = (Get-WorkbookDigest -Path $victim) }
+        $damaged = @(Test-CopyIdentity -Canonical $canonical -Copies $copies)
+        Write-Output ('DAMAGED|' + $(if ($damaged.Count -eq 0) { 'identical' } else { 'differ' }) +
+                      '|' + ($damaged -join '; '))
+    } catch {
+        Write-Output ('IDENTITY|differ|copying failed: ' + (($_.Exception.Message) -replace '\s+', ' '))
+    }
 }
-
-# --- THE REFUSALS, EACH BEFORE EXCEL COULD HAVE STARTED ---------------------
 function Test-Refusal {
     param([string]$Case, [scriptblock]$Arrange)
     $script:BuildDir = New-FakeBuild
@@ -139,7 +150,7 @@ function Test-Refusal {
     $null = New-Item -ItemType Directory -Path $script:WorkDir -Force
     & $Arrange
     try {
-        $null = New-EquivalenceBundle -Mode 'Endpoints' -Manifest $manifest -Stamp $Case
+        $null = New-EquivalenceBundle -Mode 'Baseline' -Manifest $manifest -Stamp $Case
         Write-Output ('REFUSE|' + $Case + '|accepted|the bundle was built anyway')
     } catch {
         Write-Output ('REFUSE|' + $Case + '|refused|' + (($_.Exception.Message) -replace '\s+', ' '))
@@ -169,7 +180,7 @@ $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ('pccm-fakework-' +
     [System.Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $WorkDir -Force
 try {
-    $stale = New-EquivalenceBundle -Mode 'Endpoints' -Manifest $manifest -Stamp 'stale'
+    $stale = New-EquivalenceBundle -Mode 'Baseline' -Manifest $manifest -Stamp 'stale'
     $carried = Test-Path -LiteralPath (Join-Path ([string]$stale.Root) 'PCCM_stageB.xlsm')
     Write-Output ('STALE|' + $(if ($carried) { 'travelled' } else { 'absent' }) +
                   '|the bundle holds ' + [string]@($stale.Digests.Keys).Count + ' artifact(s)')
@@ -179,6 +190,57 @@ try {
 Remove-Item -LiteralPath $BuildDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
 
+
+# =============================================================================
+# THE READINESS BARRIER, over a workbook whose answers are scripted. Each read
+# the barrier makes is recorded; a scripted `nothing` answers null once. Sleeps
+# are counted, not slept.
+# =============================================================================
+$script:Reads = New-Object System.Collections.ArrayList
+$script:Slept = 0
+$script:Answers = @{}
+$script:ScriptedSheets = $null
+function Start-Sleep { param([int]$Milliseconds, [int]$Seconds) $script:Slept = $script:Slept + $Milliseconds + (1000 * $Seconds) }
+function Get-Scripted {
+    param([string]$Member, $Default)
+    $null = $script:Reads.Add($Member)
+    if ($script:Answers.ContainsKey($Member) -and ($script:Answers[$Member].Count -gt 0)) {
+        $next = $script:Answers[$Member][0]
+        $script:Answers[$Member] = @($script:Answers[$Member] | Select-Object -Skip 1)
+        if ($next -eq '<nothing>') { return $null }
+        return $next
+    }
+    return $Default
+}
+function New-ScriptedWorkbook {
+    param([string]$Path)
+    $sheets = Microsoft.PowerShell.Utility\New-Object PSObject
+    $sheets | Add-Member -MemberType ScriptMethod -Name Item -Value { param($Key) return (Get-Scripted -Member 'Item' -Default 'sheet') }
+    $wb = Microsoft.PowerShell.Utility\New-Object PSObject
+    $wb | Add-Member -MemberType ScriptProperty -Name FullName -Value ([scriptblock]::Create("return (Get-Scripted -Member 'FullName' -Default '" + $Path.Replace("'", "''") + "')"))
+    $wb | Add-Member -MemberType ScriptProperty -Name Worksheets -Value { return (Get-Scripted -Member 'Worksheets' -Default $script:ScriptedSheets) }
+    $script:ScriptedSheets = $sheets
+    return $wb
+}
+$expected = Join-Path ([System.IO.Path]::GetTempPath()) 'PCCM_equiv_endpoints.xlsm'
+foreach ($case in @(
+        @{ Name = 'first-answer';           Answers = @{};                                          Path = $expected; Max = 12 },
+        @{ Name = 'two-nothings-then-ready'; Answers = @{ FullName = @('<nothing>', '<nothing>') }; Path = $expected; Max = 12 },
+        @{ Name = 'worksheet-nothing-once';  Answers = @{ Item = @('<nothing>') };                  Path = $expected; Max = 12 },
+        @{ Name = 'wrong-workbook';          Answers = @{ FullName = @('C:\somewhere\else.xlsm') }; Path = $expected; Max = 12 },
+        @{ Name = 'never-ready';             Answers = @{ Worksheets = @('<nothing>', '<nothing>', '<nothing>', '<nothing>') }; Path = $expected; Max = 3 })) {
+    $script:Reads.Clear(); $script:Slept = 0
+    $script:Answers = @{}
+    foreach ($k in @($case.Answers.Keys)) { $script:Answers[$k] = @($case.Answers[$k]) }
+    $wb = New-ScriptedWorkbook -Path ([string]$case.Path)
+    try {
+        $ready = Wait-EquivalenceWorkbookReady -Workbook $wb -ExpectedPath $expected -KnownSheet 'Cost Lines' -MaxAttempts ([int]$case.Max)
+        Write-Output ('READY|' + $case.Name + '|ok|attempt=' + [string]$ready.Attempt + '|waited=' + [string]$ready.WaitedMs + '|slept=' + [string]$script:Slept)
+    } catch {
+        Write-Output ('READY|' + $case.Name + '|refused|' + (($_.Exception.Message) -replace '\s+', ' ') + '|slept=' + [string]$script:Slept)
+    }
+    Write-Output ('READYREADS|' + $case.Name + '|' + ((@($script:Reads) | Select-Object -Unique) -join ','))
+}
 Remove-Item -LiteralPath $BuildDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
 exit 0
