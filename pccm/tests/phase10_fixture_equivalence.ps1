@@ -39,8 +39,27 @@
     Two Excel sessions, two Stage-B bootstraps, two disposable workbooks. Neither
     workbook is ever saved. Shutdown is the accepted com_lifecycle path.
 
-    Prints EQUIV|<field family>|<match|differ>|<detail> and
-    CALC|<mode>|<status>|<fingerprint>. Exit 0 always.
+    THE VOCABULARY IS UNAMBIGUOUS, because run 1 printed `PASS|Endpoints|RAISED`
+    for a pass that never produced a workbook, and a reader could take that for a
+    pass. PASS is now reserved for a pass that COMPLETED:
+
+      BUNDLE|<mode>|<relative path>|<sha256>   one required artifact, as copied
+      BUNDLE|identical                         the two starting bundles agree
+      BUNDLE|differ|<detail>                   they do not - nothing is built
+      PASS|<mode>|COMPLETED|<detail>           this pass built and calculated
+      FAIL|<mode>|SETUP|<detail>               the bundle could not be prepared
+      FAIL|<mode>|BOOTSTRAP|<detail>           Stage-B did not produce a workbook
+      FAIL|<mode>|RAISED|<detail>              anything after Excel started
+      EQUIV|<family>|match|<detail>            a real comparison, equal
+      EQUIV|<family>|differ|<detail>           a real comparison, unequal
+      EQUIV|<not evaluated>|invalid|<detail>   NO comparison happened
+      CALC|<mode>|<result>|<status>|<print>    only from a COMPLETED pass
+      CALCEQUIV|match / differ                only when both passes COMPLETED
+
+    `differ` is reserved for a comparison that actually ran. A setup failure is
+    `invalid`, never `differ`, and emits no CALC or CALCEQUIV line at all.
+
+    Exit 0 always.
 #>
 param(
     [string]$Runner,
@@ -99,6 +118,150 @@ foreach ($name in $wanted) {
 # The runner keeps these in script scope; the lifted copies need them too.
 $script:FixtureWindowModule = 'modPhase10FixtureWindow'
 $script:FixtureWindowSource = 'phase10_fixture_window.bas'
+
+# ===========================================================================
+# THE STARTING BUNDLE
+# ===========================================================================
+# WHAT RUN 1 GOT WRONG. This gate copied the Stage-A workbook and the generated
+# `vba` directory into each disposable workdir and then invoked
+# `build_stage_b.ps1 -BuildDir <that dir>`. It did NOT copy
+# `stage_b_manifest.json`, which is the first thing the bootstrap reads:
+#
+#   build_stage_b.ps1:86   $manifestPath = Join-Path $BuildDir 'stage_b_manifest.json'
+#   build_stage_b.ps1:93   if (-not (Test-Path -LiteralPath $manifestPath)) {
+#   build_stage_b.ps1:94       throw "stage_b_manifest.json not found at $manifestPath..."
+#
+# Both passes therefore failed before Excel was started, and the message told the
+# operator to run Stage A - which had already been run, in the repository root,
+# where the artifact still sat.
+#
+# THE LIST IS DERIVED, NOT COPIED FROM THE BENCHMARK. `build_stage_b.ps1`
+# resolves exactly three things against the SUPPLIED BuildDir:
+#
+#   stage_b_manifest.json          :86  - the authority for everything else
+#   $manifest.stage_a_filename     :98  - the Stage-A workbook
+#   <BuildDir>/<leaf of manifest.vba.generated_dir>
+#                                  :125 - the GENERATED modules only
+#
+# and two things against the REPOSITORY, deliberately:
+#
+#   $pccmRoot/$manifest.vba.source_dir  :124 - the version-controlled modules
+#   $srcDir/$manifest.vba.document_module.file  :274 - ThisWorkbook
+#
+# Those two are shared input and are the same files for any build, which is the
+# distinction build_stage_b.ps1's own comment draws. Nothing else is read from the
+# BuildDir: `grep -c inspection build_stage_b.ps1` is 0, so the two Gate-B
+# inspection projections the benchmark also copies are not part of this contract
+# and are read by this gate from the repository build directory.
+#
+# `$manifest.stage_b_filename` is the OUTPUT, and it must not be carried in: a
+# stale repository .xlsm copied into the workdir would be opened instead of the
+# one this bundle builds.
+function Get-BundleArtifacts {
+    param($Manifest)
+    $generatedLeaf = Split-Path -Leaf ([string]$Manifest.vba.generated_dir)
+    if ([string]::IsNullOrWhiteSpace($generatedLeaf)) {
+        throw 'the manifest declares no generated VBA directory'
+    }
+    return @(
+        [pscustomobject]@{ Name = 'stage_b_manifest.json'; Kind = 'file' }
+        [pscustomobject]@{ Name = [string]$Manifest.stage_a_filename; Kind = 'file' }
+        [pscustomobject]@{ Name = $generatedLeaf; Kind = 'directory' }
+    )
+}
+
+# ONE PRISTINE BUNDLE PER PASS, AND ITS DIGEST.
+#
+# Each pass gets its OWN directory under the work root, so neither can see the
+# other's Stage-B workbook, its mutated copy of the manifest, or anything else.
+# The repository build directory is READ and never written.
+function New-EquivalenceBundle {
+    param([string]$Mode, $Manifest, [string]$Stamp)
+    $root = Join-Path $WorkDir ('pccm-equivalence-' + $Mode.ToLower() + '-' + $Stamp)
+    if (Test-Path -LiteralPath $root) {
+        throw ('the disposable bundle directory ' + $root + ' already exists')
+    }
+    $null = New-Item -ItemType Directory -Path $root -Force
+
+    $digests = New-Object System.Collections.Specialized.OrderedDictionary
+    foreach ($artifact in @(Get-BundleArtifacts -Manifest $Manifest)) {
+        $source = Join-Path $BuildDir ([string]$artifact.Name)
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw ([string]$artifact.Name + ' is not in the repository build directory ' +
+                   $BuildDir + '. Run the Stage-A build first: python pccm\builder\build_stage_a.py')
+        }
+        if ([string]$artifact.Kind -eq 'directory') {
+            Copy-Item -LiteralPath $source -Destination $root -Recurse
+        } else {
+            Copy-Item -LiteralPath $source -Destination $root
+        }
+        # EVERY FILE THAT ARRIVED, HASHED. A directory contributes one entry per
+        # file so a missing generated module is a difference rather than a silence.
+        $landed = Join-Path $root ([string]$artifact.Name)
+        if (-not (Test-Path -LiteralPath $landed)) {
+            throw ([string]$artifact.Name + ' did not arrive in ' + $root)
+        }
+        foreach ($file in @(Get-ChildItem -LiteralPath $landed -Recurse -File -ErrorAction Stop)) {
+            # THE KEY IS SEPARATOR-INDEPENDENT. Trimming only a backslash left a
+            # leading separator on any host whose separator is not one, and the
+            # two bundles would then be compared by keys that no longer named the
+            # same artifact. Both separators are trimmed and the survivor is
+            # normalised, so `vba/modConstants.bas` is the key either way.
+            $relative = $file.FullName.Substring($root.Length)
+            $relative = $relative.TrimStart([char]92, [char]47).Replace([char]92, [char]47)
+            $digests.Add($relative, [string](Get-FileHash -LiteralPath $file.FullName `
+                -Algorithm SHA256).Hash)
+        }
+    }
+    # AND THE OUTPUT MUST NOT BE PRESENT. A stale Stage-B workbook carried in would
+    # be opened instead of the one this bundle is about to build.
+    $stageB = Join-Path $root ([string]$Manifest.stage_b_filename)
+    if (Test-Path -LiteralPath $stageB) {
+        throw ('a Stage-B workbook is already present at ' + $stageB +
+               ' before the bootstrap ran, so the bundle carried a stale build')
+    }
+    # NOTHING IS WRITTEN HERE. A function that emits to the output stream AND
+    # returns a value has its return polluted by everything it wrote: `$bundle`
+    # would be an array of report lines with the object at the end, and the very
+    # first `$bundle.Root` would fail. The caller prints from `Digests`.
+    return [pscustomobject]@{
+        Mode = $Mode
+        Root = $root
+        Digests = $digests
+        StageB = $stageB
+    }
+}
+
+# THE TWO STARTING STATES ARE THE SAME STARTING STATE, or nothing is built.
+#
+# Both bundles come from one repository Stage-A build, so they SHOULD be
+# identical - which is exactly why it is worth proving rather than assuming. A
+# difference here would mean the two passes were never comparable and every
+# EQUIV line afterwards would be measuring the wrong thing.
+function Test-BundleIdentity {
+    param($Left, $Right)
+    $problems = @()
+    $leftKeys = @($Left.Digests.Keys)
+    $rightKeys = @($Right.Digests.Keys)
+    foreach ($key in $leftKeys) {
+        if (-not $Right.Digests.Contains($key)) {
+            $problems += ($key + ' is only in the ' + $Left.Mode + ' bundle')
+            continue
+        }
+        if ([string]$Left.Digests[$key] -cne [string]$Right.Digests[$key]) {
+            $problems += ($key + ' differs: ' + $Left.Mode + '=' +
+                          [string]$Left.Digests[$key] + ' ' + $Right.Mode + '=' +
+                          [string]$Right.Digests[$key])
+        }
+    }
+    foreach ($key in $rightKeys) {
+        if (-not $Left.Digests.Contains($key)) {
+            $problems += ($key + ' is only in the ' + $Right.Mode + ' bundle')
+        }
+    }
+    if ($leftKeys.Count -lt 1) { $problems += 'the bundles are empty' }
+    return $problems
+}
 
 # ===========================================================================
 # THE STATE SNAPSHOT
@@ -194,18 +357,17 @@ function Get-EquivalenceSnapshot {
 # ONE PASS: BOOTSTRAP, BUILD ONE WAY, SNAPSHOT, CALCULATE, SHUT DOWN
 # ===========================================================================
 function Invoke-EquivalencePass {
-    param([string]$Mode, $Manifest, $Inspection, $SimInspection, $Plan)
-    $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss-fff')
-    $tempRoot = Join-Path $WorkDir ('pccm-equivalence-' + $Mode.ToLower() + '-' + $stamp)
-    $null = New-Item -ItemType Directory -Path $tempRoot -Force
-    Copy-Item -LiteralPath (Join-Path $BuildDir ([string]$Manifest.stage_a_filename)) -Destination $tempRoot
-    Copy-Item -LiteralPath (Join-Path $BuildDir 'vba') -Destination $tempRoot -Recurse
+    param($Bundle, $Manifest, $Inspection, $SimInspection, $Plan)
+    $Mode = [string]$Bundle.Mode
+    $tempRoot = [string]$Bundle.Root
 
+    # THE BOOTSTRAP RUNS AGAINST THIS PASS'S OWN BUNDLE and nothing shared.
     $bootstrap = Join-Path $windows 'build_stage_b.ps1'
     & $bootstrap -BuildDir $tempRoot -Force | Out-Null
-    $stageB = Join-Path $tempRoot ([string]$Manifest.stage_b_filename)
+    $stageB = [string]$Bundle.StageB
     if (-not (Test-Path -LiteralPath $stageB)) {
-        throw ('the Stage-B bootstrap produced no workbook for the ' + $Mode + ' pass')
+        throw ('BOOTSTRAP: the Stage-B bootstrap produced no workbook for the ' + $Mode +
+               ' pass at ' + $stageB)
     }
 
     $excel = $null; $workbooks = $null; $wb = $null
@@ -272,7 +434,15 @@ function Invoke-EquivalencePass {
         Invoke-NamedRelease $rel $excel      'Application'; $excel     = $null
         [System.GC]::Collect()
         [System.GC]::WaitForPendingFinalizers()
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    # COMPLETED MEANS BOTH HALVES ARRIVED. A snapshot with no calculation, or a
+    # calculation with no snapshot, is not a pass this gate may compare.
+    if ($null -eq $snapshot) {
+        throw ('RAISED: the ' + $Mode + ' pass produced no state snapshot')
+    }
+    if ([string]::IsNullOrWhiteSpace($calcFingerprint)) {
+        throw ('RAISED: the ' + $Mode + ' pass produced no calculation fingerprint; ' +
+               'result was ' + [char]39 + $calcResult + [char]39)
     }
     return [pscustomobject]@{
         Mode = $Mode
@@ -291,48 +461,105 @@ $inspection    = Get-Content -LiteralPath (Join-Path $BuildDir 'phase5_gate_b_in
 $simInspection = Get-Content -LiteralPath (Join-Path $BuildDir 'phase6_gate_b_inspection.json') -Raw | ConvertFrom-Json
 $plan          = Get-Content -LiteralPath (Join-Path $BuildDir 'phase10_benchmark_plan.json') -Raw | ConvertFrom-Json
 
-$passes = @{}
+# --- BOTH STARTING BUNDLES, BEFORE EITHER IS BUILT --------------------------
+$stamp = (Get-Date).ToString('yyyyMMdd-HHmmss-fff')
+$bundles = @{}
+$setupFailed = $false
 foreach ($mode in @('Endpoints', 'Bulk')) {
     try {
-        $passes[$mode] = Invoke-EquivalencePass -Mode $mode -Manifest $manifest `
-            -Inspection $inspection -SimInspection $simInspection -Plan $plan
-        Write-Output ('PASS|' + $mode + '|BUILT')
+        $bundles[$mode] = New-EquivalenceBundle -Mode $mode -Manifest $manifest -Stamp $stamp
+        foreach ($relative in @($bundles[$mode].Digests.Keys)) {
+            Write-Output ('BUNDLE|' + $mode + '|' + $relative + '|' +
+                          [string]$bundles[$mode].Digests[$relative])
+        }
     } catch {
-        Write-Output ('PASS|' + $mode + '|RAISED|' + (($_.Exception.Message) -replace '\s+', ' '))
+        $setupFailed = $true
+        Write-Output ('FAIL|' + $mode + '|SETUP|' + (($_.Exception.Message) -replace '\s+', ' '))
     }
-}
-if (-not ($passes.ContainsKey('Endpoints') -and $passes.ContainsKey('Bulk'))) {
-    Write-Output 'EQUIV|<no comparison>|differ|one of the two passes did not build'
-    exit 0
 }
 
-$reference = $passes['Endpoints']
-$optimised = $passes['Bulk']
-foreach ($field in @($reference.State.Keys)) {
-    $left = [string]$reference.State[$field]
-    $right = ''
-    if ($optimised.State.Contains($field)) { $right = [string]$optimised.State[$field] }
-    else { $right = '<absent>' }
-    if ($left -ceq $right) {
-        Write-Output ('EQUIV|' + $field + '|match|' + [string]$left.Length + ' chars')
+if (-not $setupFailed) {
+    $problems = @(Test-BundleIdentity -Left $bundles['Endpoints'] -Right $bundles['Bulk'])
+    if ($problems.Count -gt 0) {
+        $setupFailed = $true
+        Write-Output ('BUNDLE|differ|' + ($problems -join '; '))
     } else {
-        Write-Output ('EQUIV|' + $field + '|differ|endpoints=' + $left + ' :: bulk=' + $right)
+        Write-Output ('BUNDLE|identical|' +
+                      [string]@($bundles['Endpoints'].Digests.Keys).Count + ' artifact(s)')
     }
 }
-foreach ($field in @($optimised.State.Keys)) {
-    if (-not $reference.State.Contains($field)) {
-        Write-Output ('EQUIV|' + $field + '|differ|only the bulk pass reported this field')
+
+# --- THE TWO PASSES ---------------------------------------------------------
+# NOTHING IS BUILT IF THE STARTING STATES DID NOT AGREE. Refusing here is the
+# whole point of proving identity before Excel is started.
+$passes = @{}
+if (-not $setupFailed) {
+    foreach ($mode in @('Endpoints', 'Bulk')) {
+        try {
+            $passes[$mode] = Invoke-EquivalencePass -Bundle $bundles[$mode] -Manifest $manifest `
+                -Inspection $inspection -SimInspection $simInspection -Plan $plan
+            Write-Output ('PASS|' + $mode + '|COMPLETED|fixture built and PCCM_Calculate ran')
+        } catch {
+            # THE STAGE IS NAMED. A bootstrap that produced no workbook and a COM
+            # call that raised inside Excel are different facts, and run 1 proved
+            # that collapsing them into one word costs a round.
+            $detail = ($_.Exception.Message) -replace '\s+', ' '
+            $stage = 'RAISED'
+            if ($detail -like 'BOOTSTRAP:*') { $stage = 'BOOTSTRAP'; $detail = $detail.Substring(10).Trim() }
+            elseif ($detail -like 'RAISED:*') { $detail = $detail.Substring(7).Trim() }
+            Write-Output ('FAIL|' + $mode + '|' + $stage + '|' + $detail)
+        }
     }
 }
-foreach ($pass in @($reference, $optimised)) {
-    Write-Output ('CALC|' + $pass.Mode + '|' + $pass.CalcResult + '|' + $pass.CalcStatus +
-                  '|' + $pass.CalcFingerprint)
-}
-if (($reference.CalcFingerprint -ceq $optimised.CalcFingerprint) -and
-    (-not [string]::IsNullOrWhiteSpace($reference.CalcFingerprint))) {
-    Write-Output 'CALCEQUIV|match|the production calculation fingerprint is identical'
+
+# --- THE COMPARISON, WHICH ONLY SPEAKS IF IT HAPPENED -----------------------
+# `differ` IS RESERVED FOR A REAL COMPARISON. Run 1 printed it after a setup
+# failure, which reads as "the two fixtures are not equivalent" and was not what
+# happened at all.
+$completed = @($passes.Keys)
+if ($completed.Count -ne 2) {
+    $why = 'no pass completed'
+    if ($completed.Count -eq 1) { $why = 'only the ' + [string]$completed[0] + ' pass completed' }
+    if ($setupFailed) { $why = 'the starting bundles were not prepared and proved identical' }
+    Write-Output ('EQUIV|<not evaluated>|invalid|comparison was not executed: ' + $why)
 } else {
-    Write-Output ('CALCEQUIV|differ|endpoints=' + $reference.CalcFingerprint +
-                  ' :: bulk=' + $optimised.CalcFingerprint)
+    $reference = $passes['Endpoints']
+    $optimised = $passes['Bulk']
+    foreach ($field in @($reference.State.Keys)) {
+        $left = [string]$reference.State[$field]
+        $right = '<absent>'
+        if ($optimised.State.Contains($field)) { $right = [string]$optimised.State[$field] }
+        if ($left -ceq $right) {
+            Write-Output ('EQUIV|' + $field + '|match|' + [string]$left.Length + ' chars')
+        } else {
+            Write-Output ('EQUIV|' + $field + '|differ|endpoints=' + $left + ' :: bulk=' + $right)
+        }
+    }
+    foreach ($field in @($optimised.State.Keys)) {
+        if (-not $reference.State.Contains($field)) {
+            Write-Output ('EQUIV|' + $field + '|differ|only the bulk pass reported this field')
+        }
+    }
+    # CALC AND CALCEQUIV EXIST ONLY HERE, inside the branch where both passes
+    # completed - so a setup failure cannot print a placeholder verdict on a
+    # calculation that never ran.
+    foreach ($pass in @($reference, $optimised)) {
+        Write-Output ('CALC|' + $pass.Mode + '|' + $pass.CalcResult + '|' + $pass.CalcStatus +
+                      '|' + $pass.CalcFingerprint)
+    }
+    if ($reference.CalcFingerprint -ceq $optimised.CalcFingerprint) {
+        Write-Output 'CALCEQUIV|match|the production calculation fingerprint is identical'
+    } else {
+        Write-Output ('CALCEQUIV|differ|endpoints=' + $reference.CalcFingerprint +
+                      ' :: bulk=' + $optimised.CalcFingerprint)
+    }
+}
+
+# --- THE DISPOSABLE BUNDLES -------------------------------------------------
+# Removed last, and only the ones that were created. A bundle whose pass failed
+# is removed too: it is disposable by construction and the diagnosis is in the
+# FAIL line, not in the directory.
+foreach ($mode in @($bundles.Keys)) {
+    Remove-Item -LiteralPath ([string]$bundles[$mode].Root) -Recurse -Force -ErrorAction SilentlyContinue
 }
 exit 0

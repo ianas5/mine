@@ -80,6 +80,12 @@ FILESYSTEM_CONTROLS = (
     "test_181_the_sample_validator_returns_a_flat_list_and_stays_strict",
     "test_182_a_re_wrapped_list_still_breaks_and_the_guard_refuses_it",
     "test_185_the_shape_harness_reads_the_real_runner_and_starts_no_excel",
+    # The EXECUTED bundle proof, same reason again: a subprocess over the gate on
+    # disk. Mutated by `_gate_mutation` below.
+    "test_211_both_bundles_receive_every_required_artifact",
+    "test_212_the_two_bundles_are_isolated_and_proved_identical",
+    "test_213_a_missing_required_artifact_refuses_before_excel",
+    "test_214_no_stale_stage_b_workbook_travels_into_a_bundle",
 )
 
 # The control-flow controls, which `_flow_mutation` reruns against damaged rows.
@@ -2114,8 +2120,9 @@ def test_210_a_gate_that_judges_its_own_evidence_is_rejected() -> None:
     to decide, and a vacuous comparison would then look like a pass."""
     _equivalence_mutation(
         "test_200",
-        "if (($reference.CalcFingerprint -ceq $optimised.CalcFingerprint) -and",
-        "if ($false) { exit 1 }\nif (($reference.CalcFingerprint -ceq $optimised.CalcFingerprint) -and")
+        "    if ($reference.CalcFingerprint -ceq $optimised.CalcFingerprint) {",
+        "    if ($false) { exit 1 }\n"
+        "    if ($reference.CalcFingerprint -ceq $optimised.CalcFingerprint) {")
 
 
 def test_211_claiming_the_gate_passed_while_it_is_unrun_is_rejected() -> None:
@@ -2144,6 +2151,202 @@ def test_213_dropping_the_cost_derivation_from_the_record_is_rejected() -> None:
         "test_203",
         "| `modProfiling.SyncRows` | every existing weight into a Dictionary",
         "| the profiling sync | every existing weight into a Dictionary")
+
+
+# ===========================================================================
+# Q. THE EQUIVALENCE GATE'S STARTING BUNDLE
+# ===========================================================================
+# The five the authorisation named, plus the ones the corrected vocabulary now
+# makes mutable. Each damages the gate on disk and re-runs the executed bundle
+# harness against it, because which files arrive where is behaviour.
+BUNDLE_CONTROLS = (
+    "test_210_the_bundle_contract_is_derived_from_the_bootstrap",
+    "test_211_both_bundles_receive_every_required_artifact",
+    "test_212_the_two_bundles_are_isolated_and_proved_identical",
+    "test_213_a_missing_required_artifact_refuses_before_excel",
+    "test_214_no_stale_stage_b_workbook_travels_into_a_bundle",
+    "test_215_a_pass_that_did_not_complete_cannot_be_reported_as_PASS",
+    "test_216_differ_is_reserved_for_a_comparison_that_actually_ran",
+    "test_217_calc_and_calcequiv_cannot_be_emitted_without_two_calculations",
+    "test_218_nothing_is_built_when_the_starting_states_disagree",
+    "test_219_the_equivalence_field_set_is_unchanged",
+)
+
+
+def _gate_mutation(expected: str, before: str, after: str) -> None:
+    """Damage the equivalence gate ON DISK and re-run the bundle harness on it.
+
+    ON DISK, because the bundle harness lifts the gate's functions by AST through
+    a subprocess - an in-memory copy is invisible to it, which is the same reason
+    the flow and shape harnesses are mutated this way.
+    """
+    path = conformance.EQUIV_HARNESS
+    with path.open(encoding="utf-8", newline="") as handle:
+        original = handle.read()
+    damaged = original.replace(before.replace("\n", "\r\n"), after.replace("\n", "\r\n"), 1)
+    if damaged == original:
+        raise RuntimeError(
+            f"the mutation changed nothing: {before[:60]!r} is no longer in the gate")
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(damaged)
+    refused = []
+    try:
+        conformance._MEMO.pop("equiv_harness", None)
+        conformance._MEMO.pop("bundle", None)
+        for name in BUNDLE_CONTROLS:
+            try:
+                getattr(conformance, name)()
+            except BaseException:  # noqa: BLE001 - any refusal counts
+                refused.append(name)
+    finally:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(original)
+        conformance._MEMO.pop("equiv_harness", None)
+        conformance._MEMO.pop("bundle", None)
+    assert refused, "the mutation survived every bundle check"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+def test_230_omitting_the_manifest_from_the_bundle_is_rejected() -> None:
+    """THE EXACT DEFECT RUN 1 DIED ON. `stage_b_manifest.json` is the first thing
+    build_stage_b.ps1 reads from the supplied -BuildDir, and without it both
+    passes fail before Excel with a message telling the operator to run the Stage
+    A they had just run."""
+    _gate_mutation(
+        "test_21",
+        "    return @(\n"
+        "        [pscustomobject]@{ Name = 'stage_b_manifest.json'; Kind = 'file' }\n",
+        "    return @(\n")
+
+
+def test_231_omitting_the_stage_a_workbook_from_the_bundle_is_rejected() -> None:
+    """THE OTHER FILE THE BOOTSTRAP RESOLVES AGAINST THE BuildDir. Without it the
+    bootstrap throws at line 100 instead of 94 - a different line, the same dead
+    run."""
+    _gate_mutation(
+        "test_21",
+        "        [pscustomobject]@{ Name = [string]$Manifest.stage_a_filename; Kind = 'file' }\n",
+        "")
+
+
+def test_232_omitting_the_generated_vba_from_the_bundle_is_rejected() -> None:
+    """THE GENERATED MODULES ARE BUILD-DIRECTORY-RELATIVE ON PURPOSE. Resolving
+    them against the repository instead is the defect build_stage_b.ps1's own
+    comment records: the harness would import modConstants from the real build
+    while testing a disposable one."""
+    _gate_mutation(
+        "test_21",
+        "        [pscustomobject]@{ Name = $generatedLeaf; Kind = 'directory' }\n",
+        "")
+
+
+def test_233_sharing_one_mutable_workdir_between_the_passes_is_rejected() -> None:
+    """TWO PASSES IN ONE DIRECTORY IS ONE PASS. The Bulk bootstrap would overwrite
+    the Endpoints workbook, and the comparison would be of one workbook against
+    itself - which would pass, and mean nothing."""
+    _gate_mutation(
+        "test_212",
+        "    $root = Join-Path $WorkDir ('pccm-equivalence-' + $Mode.ToLower() + '-' + $Stamp)\n"
+        "    if (Test-Path -LiteralPath $root) {\n"
+        "        throw ('the disposable bundle directory ' + $root + ' already exists')\n"
+        "    }",
+        "    $root = Join-Path $WorkDir ('pccm-equivalence-shared-' + $Stamp)")
+
+
+def test_234_removing_the_bundle_hash_equality_check_is_rejected() -> None:
+    """THE TWO PASSES MUST START FROM THE SAME BYTES. Without the comparison a
+    difference in the starting state would be invisible, and every EQUIV line
+    afterwards would be about two different workbooks."""
+    _gate_mutation(
+        "test_212",
+        "        if ([string]$Left.Digests[$key] -cne [string]$Right.Digests[$key]) {",
+        "        if ($false) {")
+
+
+def test_235_not_hashing_the_bundle_at_all_is_rejected() -> None:
+    """A COMPARISON OVER AN EMPTY DIGEST MAP IS VACUOUS, and would report
+    identical every time."""
+    _gate_mutation(
+        "test_212",
+        "            $digests.Add($relative, [string](Get-FileHash -LiteralPath $file.FullName `\n"
+        "                -Algorithm SHA256).Hash)",
+        "            $null = $relative")
+
+
+def test_236_restoring_the_PASS_RAISED_vocabulary_is_rejected() -> None:
+    """RUN 1 PRINTED `PASS|Endpoints|RAISED` FOR A PASS THAT NEVER BUILT ANYTHING.
+    A reader scanning for PASS would have counted two."""
+    _gate_mutation(
+        "test_215",
+        "            Write-Output ('FAIL|' + $mode + '|' + $stage + '|' + $detail)",
+        "            Write-Output ('PASS|' + $mode + '|RAISED|' + $detail)")
+
+
+def test_237_reporting_a_setup_failure_as_differ_is_rejected() -> None:
+    """`differ` MEANS THE TWO FIXTURES ARE NOT EQUIVALENT. Run 1 printed it after a
+    setup failure, which is a claim it had no evidence for."""
+    _gate_mutation(
+        "test_216",
+        "    Write-Output ('EQUIV|<not evaluated>|invalid|comparison was not executed: ' + $why)",
+        "    Write-Output ('EQUIV|<no comparison>|differ|' + $why)")
+
+
+def test_238_emitting_calcequiv_without_two_calculations_is_rejected() -> None:
+    """NO PLACEHOLDER VERDICT ON A CALCULATION THAT NEVER RAN. Moving CALCEQUIV
+    outside the both-completed branch would have printed one after run 1."""
+    _gate_mutation(
+        "test_217",
+        "$completed = @($passes.Keys)\n",
+        "$completed = @($passes.Keys)\n"
+        "Write-Output 'CALCEQUIV|match|the production calculation fingerprint is identical'\n")
+
+
+def test_239_completing_a_pass_without_a_fingerprint_is_rejected() -> None:
+    """COMPLETED MEANS BOTH HALVES ARRIVED. A pass that snapshotted and never
+    calculated would be compared, and CALCEQUIV would compare two empty strings
+    and call them equal."""
+    _gate_mutation(
+        "test_215",
+        "    if ([string]::IsNullOrWhiteSpace($calcFingerprint)) {",
+        "    if ($false) {")
+
+
+def test_240_building_the_passes_before_proving_identity_is_rejected() -> None:
+    """REFUSING BEFORE EXCEL IS THE POINT. Running the passes regardless would burn
+    two Stage-B bootstraps and two Excel sessions to produce a comparison that was
+    never valid."""
+    _gate_mutation(
+        "test_218",
+        "$passes = @{}\nif (-not $setupFailed) {\n",
+        "$passes = @{}\nif ($true) {\n")
+
+
+def test_241_carrying_a_stale_stage_b_workbook_into_a_bundle_is_rejected() -> None:
+    """THE OUTPUT IS NOT AN INPUT. A stale .xlsm in the bundle would be opened by
+    the pass instead of the one its own bootstrap just built."""
+    _gate_mutation(
+        "test_214",
+        "        [pscustomobject]@{ Name = [string]$Manifest.stage_a_filename; Kind = 'file' }",
+        "        [pscustomobject]@{ Name = [string]$Manifest.stage_a_filename; Kind = 'file' }\n"
+        "        [pscustomobject]@{ Name = [string]$Manifest.stage_b_filename; Kind = 'file' }")
+
+
+def test_242_narrowing_the_equivalence_field_set_is_rejected() -> None:
+    """A BROKEN SETUP IS NO REASON TO COMPARE LESS. Dropping a family would make
+    the gate pass on a fixture that differed in exactly that family."""
+    _gate_mutation(
+        "test_219",
+        "    $state.Add('fingerprint.calculation_inputs', [string]$Excel.Run('PCCM_CurrentInputFingerprint'))",
+        "    $null = 'calculation inputs not compared'")
+
+
+def test_243_softening_the_run_1_record_is_rejected() -> None:
+    """RUN 1 WAS INVALID, NOT A DIFFERENCE. A record that let it read as a semantic
+    result would licence a Bulk baseline on evidence that does not exist."""
+    _record_mutation(
+        "test_220",
+        "**No semantic equivalence claim may be made from it.**",
+        "The comparison was inconclusive.")
 
 
 def test_144_deleting_a_definition_a_dot_sourced_file_calls_is_rejected() -> None:

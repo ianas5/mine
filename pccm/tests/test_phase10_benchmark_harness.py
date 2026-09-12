@@ -2297,6 +2297,298 @@ def test_189_both_shape_root_causes_are_recorded_as_separate_defects() -> None:
     assert "byte-identical to `ce5951f`" in section
 
 
+BUNDLE_HARNESS = PCCM_ROOT / "tests" / "phase10_bundle_flow.ps1"
+
+# WHAT build_stage_b.ps1 RESOLVES AGAINST THE SUPPLIED -BuildDir, and therefore
+# what every disposable bundle must carry. Derived from the bootstrap, not from
+# what the benchmark happens to copy.
+BUNDLE_REQUIRED = {
+    "file": ("stage_b_manifest.json", "PCCM_stageA.xlsx"),
+    "directory": ("vba",),
+}
+BUNDLE_FILES = ("stage_b_manifest.json", "PCCM_stageA.xlsx",
+                "vba/modConstants.bas", "vba/modCalcContract.bas",
+                "vba/modSimContract.bas")
+
+
+def _bundle_rows() -> dict:
+    """Run the bundle harness and group its tagged lines."""
+    if "bundle" not in _MEMO:
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-File", str(BUNDLE_HARNESS), "-Gate", str(EQUIV_HARNESS)],
+            capture_output=True, text=True, timeout=300)
+        assert done.returncode == 0, done.stdout + done.stderr
+        rows = {"artifact": [], "bundle": {}, "roots": None, "identity": None,
+                "damaged": None, "refuse": {}, "stale": None, "unmet": []}
+        for line in done.stdout.splitlines():
+            if line.startswith(("PARSE|", "MISSING|")):
+                rows["unmet"].append(line)
+            elif line.startswith("ARTIFACT|"):
+                kind, name = line[len("ARTIFACT|"):].split("|", 1)
+                rows["artifact"].append((kind, name))
+            elif line.startswith("BUNDLE|"):
+                mode, path = line[len("BUNDLE|"):].split("|", 1)
+                rows["bundle"].setdefault(mode, []).append(path)
+            elif line.startswith("ROOTS|"):
+                rows["roots"] = line[len("ROOTS|"):].split("|", 1)
+            elif line.startswith("IDENTITY|"):
+                rows["identity"] = line[len("IDENTITY|"):].split("|", 1)
+            elif line.startswith("DAMAGED|"):
+                rows["damaged"] = line[len("DAMAGED|"):].split("|", 1)
+            elif line.startswith("REFUSE|"):
+                case, verdict, detail = line[len("REFUSE|"):].split("|", 2)
+                rows["refuse"][case] = (verdict, detail)
+            elif line.startswith("STALE|"):
+                rows["stale"] = line[len("STALE|"):].split("|", 1)
+        _MEMO["bundle"] = rows
+    return _MEMO["bundle"]
+
+
+# ===========================================================================
+# Q. THE EQUIVALENCE GATE'S STARTING BUNDLE
+# ===========================================================================
+# Run 1 failed before Excel in BOTH passes: the gate copied the Stage-A workbook
+# and the generated `vba` directory into each workdir and not
+# `stage_b_manifest.json`, which build_stage_b.ps1 reads first from the supplied
+# -BuildDir. Every source-reading control passed. File plumbing is behaviour, so
+# these controls execute it.
+def test_210_the_bundle_contract_is_derived_from_the_bootstrap() -> None:
+    """NOT COPIED FROM THE BENCHMARK'S LIST. `build_stage_b.ps1` resolves exactly
+    three things against the supplied -BuildDir, and two deliberately against the
+    repository - the distinction its own comment draws. The inspections the
+    benchmark also copies are NOT part of this contract: the bootstrap never reads
+    one."""
+    bootstrap = (BOOTSTRAP / "build_stage_b.ps1").read_text(encoding="utf-8")
+    # THE THREE FROM THE BuildDir.
+    assert "$manifestPath = Join-Path $BuildDir 'stage_b_manifest.json'" in bootstrap
+    assert "$stageAPath = Join-Path $BuildDir $manifest.stage_a_filename" in bootstrap
+    assert "$genDir  = Join-Path $BuildDir (Split-Path -Leaf $manifest.vba.generated_dir)" in bootstrap
+    # THE TWO FROM THE REPOSITORY, which is why they are not in the bundle.
+    assert "$srcDir  = Join-Path $pccmRoot $manifest.vba.source_dir" in bootstrap
+    assert "$docFile = Join-Path $srcDir ([string]$docModule.file)" in bootstrap
+    # AND NOTHING ELSE: no inspection projection is read from either.
+    assert "inspection" not in bootstrap.lower(), (
+        "the bootstrap now reads an inspection, so the bundle contract is incomplete")
+    # THE OUTPUT IS NOT AN INPUT.
+    assert "$stageBPath = Join-Path $BuildDir $manifest.stage_b_filename" in bootstrap
+
+    # THE GATE'S DERIVED LIST MATCHES, and it derives the directory from the
+    # manifest rather than naming 'vba'.
+    artifacts = _function(_equiv_harness(), "Get-BundleArtifacts")
+    assert "Split-Path -Leaf ([string]$Manifest.vba.generated_dir)" in artifacts
+    assert "'stage_b_manifest.json'" in artifacts
+    assert "[string]$Manifest.stage_a_filename" in artifacts
+    assert "stage_b_filename" not in artifacts, "the gate carries the output into the bundle"
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_211_both_bundles_receive_every_required_artifact() -> None:
+    """EXECUTED, because run 1 proved a source-reading control cannot see a file
+    that was never copied. The harness drives the real bundle builder against a
+    fake build directory and reports what arrived."""
+    rows = _bundle_rows()
+    assert rows["unmet"] == [], rows["unmet"]
+    got = {(kind, name) for kind, name in rows["artifact"]}
+    want = {(kind, name) for kind, names in BUNDLE_REQUIRED.items() for name in names}
+    assert got == want, (sorted(got), sorted(want))
+    for mode in ("Endpoints", "Bulk"):
+        assert mode in rows["bundle"], mode
+        assert sorted(rows["bundle"][mode]) == sorted(BUNDLE_FILES), (mode, rows["bundle"][mode])
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_212_the_two_bundles_are_isolated_and_proved_identical() -> None:
+    """NEITHER PASS MAY SEE THE OTHER'S WORKBOOK, and both must start from the same
+    bytes or nothing is comparable. The identity check is proved non-vacuous by
+    editing one artifact and requiring the comparison to notice, with both
+    digests."""
+    rows = _bundle_rows()
+    assert rows["roots"][0] == "isolated", rows["roots"]
+    assert rows["identity"][0] == "identical", rows["identity"]
+    assert rows["damaged"][0] == "differ", rows["damaged"]
+    assert "stage_b_manifest.json differs" in rows["damaged"][1], rows["damaged"]
+    # BOTH DIGESTS ARE NAMED, so a reader can see which side changed.
+    assert rows["damaged"][1].count("=") >= 2, rows["damaged"]
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_213_a_missing_required_artifact_refuses_before_excel() -> None:
+    """EACH ONE, BY NAME. Run 1's diagnosis told the operator to run Stage A, which
+    had already been run - so the refusal now names the artifact AND the directory
+    it was looked for in."""
+    rows = _bundle_rows()
+    for case, expected in (("missing-manifest", "stage_b_manifest.json"),
+                           ("missing-stage-a-workbook", "PCCM_stageA.xlsx"),
+                           ("missing-generated-vba", "vba")):
+        assert case in rows["refuse"], case
+        verdict, detail = rows["refuse"][case]
+        assert verdict == "refused", (case, verdict, detail)
+        assert expected in detail, (case, detail)
+        assert "is not in the repository build directory" in detail, (case, detail)
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_214_no_stale_stage_b_workbook_travels_into_a_bundle() -> None:
+    """THE OUTPUT IS NOT AN INPUT. A stale `PCCM_stageB.xlsm` beside the Stage-A
+    workbook must not be copied, or the pass would open last week's build instead
+    of the one it just made - and every EQUIV line would be about the wrong
+    workbook."""
+    rows = _bundle_rows()
+    assert rows["stale"][0] == "absent", rows["stale"]
+    # AND THE BUILDER REFUSES ONE THAT IS SOMEHOW PRESENT, which is the other half.
+    builder = _function(_equiv_harness(), "New-EquivalenceBundle")
+    assert "$Manifest.stage_b_filename" in builder
+    assert "carried a stale build" in builder
+
+
+def test_215_a_pass_that_did_not_complete_cannot_be_reported_as_PASS() -> None:
+    """RUN 1 PRINTED `PASS|Endpoints|RAISED` FOR A PASS THAT NEVER BUILT A
+    WORKBOOK. PASS now belongs only to a pass that completed, and a failure names
+    its stage: SETUP before any build, BOOTSTRAP when Stage-B produced nothing,
+    RAISED for anything after Excel started."""
+    code = _ps_code(_equiv_harness())
+    assert "('PASS|' + $mode + '|COMPLETED|" in code, code
+    assert "('FAIL|' + $mode + '|SETUP|'" in code
+    assert "('FAIL|' + $mode + '|' + $stage + '|'" in code
+    assert "$stage = 'RAISED'" in code
+    assert "$stage = 'BOOTSTRAP'" in code
+    # THE OLD VOCABULARY IS GONE FROM THE CODE. The header still QUOTES it, in the
+    # sentence explaining why it was wrong, and quoting it is the opposite of
+    # emitting it.
+    assert "'|RAISED|'" not in code.replace("$stage", "")
+    for line in code.splitlines():
+        if "'PASS|'" in line:
+            assert "COMPLETED" in line, f"a PASS line that is not a completion: {line.strip()}"
+    assert "PASS|Endpoints|RAISED" in _equiv_harness(), (
+        "the header no longer records the vocabulary defect it was corrected for")
+    # AND COMPLETED MEANS BOTH HALVES ARRIVED.
+    pass_fn = _function(code, "Invoke-EquivalencePass")
+    # THE CONDITIONS, NOT THE MESSAGES. An `if ($false)` in front of either throw
+    # leaves both sentences in the file and both checks gone - and a pass that
+    # calculated nothing would then be compared, with CALCEQUIV comparing two
+    # empty strings and calling them equal.
+    assert "if ($null -eq $snapshot) {" in pass_fn, (
+        "the snapshot check no longer tests anything")
+    assert "if ([string]::IsNullOrWhiteSpace($calcFingerprint)) {" in pass_fn, (
+        "the fingerprint check no longer tests anything")
+    assert "produced no state snapshot" in pass_fn
+    assert "produced no calculation fingerprint" in pass_fn
+
+
+def test_216_differ_is_reserved_for_a_comparison_that_actually_ran() -> None:
+    """RUN 1 PRINTED `differ` AFTER A SETUP FAILURE, which reads as "the two
+    fixtures are not equivalent" and was not what happened. A comparison that did
+    not happen is `invalid`, and the reason is named."""
+    harness = _equiv_harness()
+    assert "EQUIV|<not evaluated>|invalid|comparison was not executed: " in harness
+    assert "$completed.Count -ne 2" in harness
+    # EVERY `differ` EMISSION SITS INSIDE THE BOTH-COMPLETED BRANCH.
+    invalid_at = harness.index("EQUIV|<not evaluated>|invalid")
+    for marker in ("|differ|endpoints=", "|differ|only the bulk pass reported this field"):
+        assert harness.index(marker) > invalid_at, (
+            f"a differ emission precedes the not-evaluated branch: {marker}")
+    # AND THE ONE SURVIVING `differ` ON THE BUNDLE IS ABOUT THE BUNDLE, not a
+    # fixture comparison.
+    assert "'BUNDLE|differ|'" in harness
+
+
+def test_217_calc_and_calcequiv_cannot_be_emitted_without_two_calculations() -> None:
+    """NO PLACEHOLDER VERDICT ON A CALCULATION THAT NEVER RAN. Both CALC lines and
+    CALCEQUIV live inside the branch entered only when both passes completed - and
+    completion already requires a fingerprint."""
+    code = _ps_code(_equiv_harness())
+    guard = code.index("if ($completed.Count -ne 2) {")
+    for marker in ("'CALC|' + $pass.Mode", "CALCEQUIV|match", "CALCEQUIV|differ"):
+        assert code.index(marker) > guard, f"{marker} is emitted outside the guard"
+    # TWO IN THE CODE - the match and the differ - and the header lists a third,
+    # which is documentation rather than an emission.
+    assert code.count("CALCEQUIV|") == 2, code.count("CALCEQUIV|")
+    assert "$reference.CalcFingerprint -ceq $optimised.CalcFingerprint" in code
+
+
+def test_218_nothing_is_built_when_the_starting_states_disagree() -> None:
+    """REFUSING BEFORE EXCEL IS THE POINT OF PROVING IDENTITY. Two bundles that
+    differ were never comparable, and building them anyway would produce EQUIV
+    lines about two different starting workbooks."""
+    harness = _equiv_harness()
+    assert "if (-not $setupFailed) {" in harness
+    bundles_at = harness.index("$problems = @(Test-BundleIdentity")
+    passes_at = harness.index("$passes = @{}")
+    assert bundles_at < passes_at, "identity is checked after the passes run"
+    # THE PASS LOOP IS GUARDED BY IT.
+    tail = harness[passes_at:]
+    assert tail.index("if (-not $setupFailed) {") < tail.index("Invoke-EquivalencePass"), tail[:400]
+
+
+def test_219_the_equivalence_field_set_is_unchanged() -> None:
+    """A BROKEN SETUP IS NO REASON TO COMPARE LESS. Every family the gate was built
+    to compare is still compared, and the snapshot function is byte-identical to
+    the one 99cb472 shipped."""
+    harness = _equiv_harness()
+    for piece in ("'.ids'", "'.body'", "'.headers'", "'.columns'",
+                  "'counter.'", "'applied.'", "'structural.state'",
+                  "'structural.report'", "'fingerprint.calculation_inputs'",
+                  "'fingerprint.simulation_request'", "'modelcheck.calculation_state'"):
+        assert piece in harness, f"the snapshot omits {piece}"
+    assert "@('cost_profiling', 'risk_profiling', 'inflation')" in harness
+    assert harness.count("@('cost_lines', 'risk_register')") >= 2
+    for name in ("nmBaseYear_Applied", "nmStartYear_Applied", "nmDuration_Applied",
+                 "nmLastYear_Applied", "nmYearCount_Applied",
+                 "nmInflFirstYear", "nmInflLastYear"):
+        assert name in harness, name
+    assert "$excel.Run('PCCM_Calculate')" in harness
+    # BYTE-IDENTICAL TO WHAT SHIPPED, so the setup correction cannot have touched it.
+    accepted = _git("show", "99cb472:pccm/tests/phase10_fixture_equivalence.ps1")
+    assert (_function(harness, "Get-EquivalenceSnapshot")
+            == _function(accepted, "Get-EquivalenceSnapshot")), (
+        "the snapshot changed while the setup was being corrected")
+
+
+def test_220_the_bulk_path_is_still_not_authorised_and_the_run_is_recorded() -> None:
+    """RUN 1 WAS INVALID, NOT A DIFFERENCE. It must be on the record as a setup
+    failure that reached no comparison, and Bulk must still be opt-in with
+    Endpoints the default."""
+    section = " ".join(_run_evidence_section("## Equivalence run 1").split())
+    for fact in ("99cb472", "before Excel was started", "stage_b_manifest.json",
+                 "INVALID", "No semantic equivalence claim may be made",
+                 "PASS|Endpoints|RAISED"):
+        assert fact in section, f"the run-1 record omits: {fact}"
+    assert "does NOT mean the fixtures differ" in section
+    # AND THE DEFAULT HAS NOT MOVED.
+    assert "[string]$FixtureMode = 'Endpoints'" in _runner()
+
+
+def test_221_the_bundle_harness_tests_the_shipping_gate_and_starts_no_excel() -> None:
+    """IT LIFTS THE REAL FUNCTIONS BY AST. A harness that reimplemented the bundle
+    builder would have passed run 1 too."""
+    harness = BUNDLE_HARNESS.read_text(encoding="utf-8")
+    assert "FunctionDefinitionAst" in harness and "Invoke-Expression" in harness
+    for lifted in ("'Get-BundleArtifacts', 'New-EquivalenceBundle', 'Test-BundleIdentity'",):
+        assert lifted in harness, lifted
+    # THE CODE, NOT THE EXPLANATION. The harness names `build_stage_b.ps1` in the
+    # paragraph saying what it does NOT run, which is the opposite of running it.
+    code = _ps_code(harness)
+    for banned in ("New-Object -ComObject", "Excel.Application", "Workbooks",
+                   "build_stage_b"):
+        assert banned not in code, f"the bundle harness reaches past file plumbing: {banned}"
+    assert "build_stage_b.ps1" in harness, (
+        "the harness no longer says which bootstrap contract it is about")
+    assert "phase10_bundle_flow" not in _runner()
+
+
+def test_222_production_is_byte_identical_to_the_accepted_revision() -> None:
+    """A SETUP FIX TOUCHES NO PRODUCTION, NO TIMING AND NO FIXTURE SEMANTICS."""
+    for commit in ("99cb472", "f3b3a33", "ce5951f"):
+        changed = _production_changed_since(commit)
+        assert changed == [], (commit, changed)
+    # THE BULK BUILDER AND THE TIMED PATH ARE UNTOUCHED BY THIS ROUND.
+    accepted = _code_at("99cb472")
+    for name in BULK_FUNCTIONS + ("Invoke-BenchmarkExecution", "Test-BenchmarkSample",
+                                  "Assert-BenchmarkProblemList"):
+        assert _function(_code(), name) == _function(accepted, name), (
+            f"{name} changed while the equivalence setup was being corrected")
+
+
 EQUIV_HARNESS = PCCM_ROOT / "tests" / "phase10_fixture_equivalence.ps1"
 
 # The four timed operations and the production endpoint each must reach. Read
@@ -2323,6 +2615,22 @@ def _equiv_harness() -> str:
     if "equiv_harness" not in _MEMO:
         _MEMO["equiv_harness"] = EQUIV_HARNESS.read_text(encoding="utf-8")
     return _MEMO["equiv_harness"]
+
+
+def _ps_code(text: str) -> str:
+    """A PowerShell file with its help block and comment lines removed.
+
+    SAME RULE AS `_code`. Both PowerShell harnesses here DOCUMENT the vocabulary
+    they must not misuse and the bootstrap they must not reach - they have to name
+    those things to explain them. Everything that asserts what a harness DOES
+    reads this; everything that asserts what it SAYS reads the raw text.
+
+    NOT MEMOISED: it is derived from text the mutation battery installs, and a
+    cache would compare every mutation after the first against undamaged source.
+    """
+    body = re.sub(r"<#.*?#>", "", text, flags=re.S)
+    return "\n".join(line for line in body.splitlines()
+                      if not line.strip().startswith("#"))
 
 
 BULK_FUNCTIONS = ("Set-BenchmarkRangeBlock", "Set-BenchmarkRegisterRowCount",
@@ -2586,7 +2894,11 @@ def test_200_the_equivalence_gate_exists_tests_the_shipping_builder_and_judges_n
     assert "'Set-BenchmarkBulkFixture'" in harness
     assert "Set-Phase5Fixture" in harness, "the gate does not build the reference way"
     # BOTH PASSES, AND THE SAME WINDOW FOR EACH.
-    assert "foreach ($mode in @('Endpoints', 'Bulk'))" in harness
+    # BOTH LOOPS. The gate walks the two modes twice - once to build the starting
+    # bundles and once to run the passes - and a mutation that narrowed either one
+    # would leave the other to satisfy a bare `in` check.
+    assert harness.count("foreach ($mode in @('Endpoints', 'Bulk'))") == 2, (
+        "the gate no longer walks both modes for both the bundles and the passes")
     # THE CALL, NOT THE NAME. The gate also NAMES every function it lifts by AST,
     # and naming one is the opposite of calling it - so the count is over
     # invocations, of which there is exactly one, shared by both passes.

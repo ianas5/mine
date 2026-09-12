@@ -1892,3 +1892,136 @@ Two things, and both are what the gate is for:
    on a protected sheet inside the window. Same class as the value writes Run 3
    proved permitted, but as a block rather than a cell.
 
+## Equivalence run 1 — INVALID — NO COMPARISON WAS EXECUTED
+
+**Harness commit:** `99cb472`. Windows PowerShell 5.1. Stage A immediately before
+the run: 351 passed, 0 failed.
+
+Both passes failed **before Excel was started**:
+
+```
+stage_b_manifest.json not found at <Endpoints temp>\stage_b_manifest.json
+stage_b_manifest.json not found at <Bulk temp>\stage_b_manifest.json
+```
+
+No Endpoints fixture was built. No Bulk fixture was built. No Excel comparison
+occurred. No `PCCM_Calculate` comparison occurred.
+
+```
+Equivalence run 1: INVALID / NOT EXECUTED
+```
+
+**No semantic equivalence claim may be made from it.** Bulk remains not approved
+for formal baseline use; PERF-LARGE must not be rerun; the endpoint fixture
+remains the only proven fixture path.
+
+### The final line was misleading, and so was the per-pass line
+
+The gate printed `EQUIV|<no comparison>|differ|one of the two passes did not
+build`. That **does NOT mean the fixtures differ** — it means the harness never
+reached comparison. It also printed `PASS|Endpoints|RAISED` and
+`PASS|Bulk|RAISED`: a pass that raised before producing a workbook is not a PASS.
+Both are corrected below.
+
+---
+
+## The workdir contract, and why the manifest was absent
+
+`build_stage_b.ps1` resolves exactly **three** things against the supplied
+`-BuildDir`:
+
+| artifact | where | line |
+|---|---|---|
+| `stage_b_manifest.json` | `$BuildDir` | 86; the throw at 93–94 is the message above |
+| `$manifest.stage_a_filename` → `PCCM_stageA.xlsx` | `$BuildDir` | 98, 100 |
+| the **generated** VBA directory, `Split-Path -Leaf $manifest.vba.generated_dir` → `vba` | `$BuildDir` | 125 |
+
+and **two** deliberately against the repository, not the BuildDir:
+
+| artifact | where | line |
+|---|---|---|
+| `$manifest.vba.source_dir` → `src/vba` (the 29 version-controlled modules) | `$pccmRoot` | 124 |
+| `$manifest.vba.document_module.file` → `src/vba/ThisWorkbook.vba` | `$srcDir` | 274 |
+
+That split is the bootstrap's own documented rule: source modules are shared
+input; generated projections must come from the build being assembled.
+`$manifest.stage_b_filename` is the **output** and must not pre-exist unless
+`-Force`.
+
+Nothing else is read from the BuildDir — `grep -c inspection build_stage_b.ps1`
+is **0**, so the two Gate-B inspection projections the benchmark also copies are
+not part of this contract. The gate reads them from the repository build
+directory, which is correct.
+
+**The gate copied two of the three.** It copied the Stage-A workbook and the
+`vba` directory and not the manifest, so the bootstrap threw on its first read —
+and its message, written for an operator who had never built Stage A, told this
+operator to do the thing they had just done.
+
+`git show 99cb472` on the gate shows the two `Copy-Item` calls; the benchmark at
+the same revision makes **five**, and the manifest is one of the three the
+bootstrap actually needs.
+
+---
+
+## The correction
+
+### One pristine bundle per pass, derived not guessed
+
+`Get-BundleArtifacts` returns the three BuildDir artifacts, taking the generated
+directory's name from `$Manifest.vba.generated_dir` rather than naming `vba`.
+`New-EquivalenceBundle` creates a directory per pass under the work root, copies
+each artifact, hashes **every file that arrived** with SHA-256, and refuses if a
+Stage-B workbook is present before the bootstrap runs.
+
+### Starting-state identity, proved before Excel
+
+`Test-BundleIdentity` compares the two digest maps key by key in both directions.
+The driver builds **both** bundles first, prints one `BUNDLE|<mode>|<path>|<sha>`
+line per file, and only then — if the maps agree — runs the passes. If they
+disagree it prints `BUNDLE|differ|…` and **nothing is built**.
+
+Digest keys are separator-normalised, so `vba/modConstants.bas` is the key on any
+host.
+
+### The vocabulary
+
+| line | meaning |
+|---|---|
+| `PASS\|<mode>\|COMPLETED\|…` | this pass built a fixture **and** produced a calculation fingerprint |
+| `FAIL\|<mode>\|SETUP\|…` | the bundle could not be prepared |
+| `FAIL\|<mode>\|BOOTSTRAP\|…` | Stage-B produced no workbook |
+| `FAIL\|<mode>\|RAISED\|…` | anything after Excel started |
+| `EQUIV\|<family>\|match\|differ` | a comparison that really ran |
+| `EQUIV\|<not evaluated>\|invalid\|…` | no comparison happened, and why |
+| `CALC\|…`, `CALCEQUIV\|…` | only from the branch where **both** passes completed |
+
+`PASS` cannot coexist with a failure: completion now requires both a state
+snapshot and a non-empty fingerprint. `differ` is reserved for a real comparison.
+`CALC` and `CALCEQUIV` are emitted only inside the both-completed branch, so a
+setup failure cannot print a placeholder verdict on a calculation that never ran.
+
+### Two defects the Linux harness caught before Windows could
+
+1. **`New-EquivalenceBundle` both wrote and returned.** A function that emits to
+   the output stream *and* returns a value has its return polluted: `$bundle`
+   came back as an array of report lines with the object at the end, and the very
+   first `$bundle.Root` failed. The same "assign, never emit" rule this project
+   recorded for COM collections. The caller prints from `Digests` now.
+2. **The relative digest key trimmed only a backslash**, leaving a leading
+   separator on any host whose separator is not one. Both are trimmed and the
+   survivor normalised.
+
+`tests/phase10_bundle_flow.ps1` lifts the three bundle functions by AST and drives
+them against a fake build directory: the derived list, five files per bundle,
+isolated roots, identity, identity proved non-vacuous by editing one artifact, a
+refusal for each missing artifact, and a stale Stage-B workbook proved not to
+travel. Excel is never started.
+
+### What did not change
+
+The snapshot function is **byte-identical** to `99cb472` — every field family the
+gate was built to compare is still compared. Production, the bulk builder, the
+timed path, the timing semantics and the iteration matrix are untouched, and
+`-FixtureMode` still defaults to `Endpoints`.
+
