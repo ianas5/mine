@@ -381,14 +381,16 @@ def test_54_unprotecting_the_workbook_during_verification_is_refused() -> None:
 
 def test_55_dropping_the_retry_report_is_refused() -> None:
     """REQUIRED: total retry duration finite AND reported."""
+    # RE-ANCHORED, NOT LOOSENED. The ledger now has two readers and each reports
+    # its own slice, so the statement this mutation damages moved with it.
     _mutate("build", "test_50",
-            "    $retryLines = @(Get-ComRetryLedger)",
+            "    $retryLines = @(@(Get-ComRetryLedger) | Select-Object -Skip $verifyRetryBase)",
             "    $retryLines = @()")
 
 
 def test_56_hiding_the_wait_total_is_refused() -> None:
     _mutate("build", "test_50",
-            "ms waited in total\" -f $retryLines.Count, (Get-ComRetryWaitTotal))",
+            "ms waited in total\" -f $retryLines.Count, ((Get-ComRetryWaitTotal) - $verifyRetryWaitBase))",
             "read(s) were reissued\" -f $retryLines.Count)")
 
 
@@ -457,6 +459,243 @@ def test_71_a_new_unaccounted_harness_is_refused() -> None:
         assert failed, "a harness on neither list passed unnoticed"
     finally:
         bench.FROZEN_HARNESSES = saved
+
+
+# ===========================================================================
+# G. THE BUILD-OPERATION INSTRUMENTATION AND THE FOUR OPTED-IN READS
+# ===========================================================================
+# THE NEW CONTROLS RUN A HARNESS AGAINST THE FILE ON DISK, so an in-memory
+# mutation would never reach them: the damaged copy would sit in `_MEMO` while
+# pwsh read the undamaged file and reported a clean sweep over the damage. These
+# mutations therefore write the file, re-run the whole battery, and restore it in
+# a `finally` - the same shape the reserved-row battery uses for the same reason.
+_ON_DISK = {
+    "lifecycle": conformance.LIFECYCLE_PS1,
+    "build": conformance.BUILD_PS1,
+    "gate": conformance.GATE_PS1,
+    "evidence": conformance.EVIDENCE_MD,
+}
+
+
+def _mutate_on_disk(key: str, expected: str, before: str, after: str) -> None:
+    """Damage one file ON DISK, re-run everything, and always put it back."""
+    path = _ON_DISK[key]
+    with path.open(encoding="utf-8", newline="") as handle:
+        original = handle.read()
+    crlf = "\r\n" in original
+    damaged = original.replace(
+        before.replace("\n", "\r\n") if crlf else before,
+        after.replace("\n", "\r\n") if crlf else after, 1)
+    if damaged == original:
+        raise RuntimeError(
+            f"the mutation changed nothing: {before[:70]!r} is no longer in {key}")
+    try:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(damaged)
+        conformance._MEMO.clear()
+        conformance._FLOW.clear()
+        refused = _run_battery()
+    finally:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(original)
+        conformance._MEMO.clear()
+        conformance._FLOW.clear()
+    assert refused, "the mutation survived the whole conformance battery"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+def test_80_retrying_every_com_exception_is_refused_when_executed() -> None:
+    """THE NAMED MUTATION, CAUGHT BY BEHAVIOUR RATHER THAN BY TEXT. Retrying on the
+    exception TYPE turns "the call never ran" into "something went wrong, try
+    again" - and the harness then reissues an error Excel ACCEPTED."""
+    _mutate_on_disk(
+        "lifecycle", "test_6",
+        "            $name = Get-ComRejectionName $_\n",
+        "            $name = ''\n"
+        "            if ($_.Exception -is [System.Runtime.InteropServices.COMException]) "
+        "{ $name = 'any COM failure' }\n"
+        "            if ($null -ne $_.Exception.InnerException -and "
+        "$_.Exception.InnerException -is [System.Runtime.InteropServices.COMException]) "
+        "{ $name = 'any COM failure' }\n")
+
+
+def test_81_removing_the_attempt_bound_is_refused() -> None:
+    """A LIMIT THAT IS NEVER CONSULTED IS NOT A LIMIT. With the attempt reason gone,
+    only the budget can end the loop, and an always-refused read is reissued far
+    past the three attempts it was allowed."""
+    _mutate_on_disk(
+        "lifecycle", "test_6",
+        "            if ($attempts -ge $MaxAttempts) {\n"
+        "                $reason = ('attempt limit of ' + [string]$MaxAttempts + ' reached')\n"
+        "            } elseif",
+        "            if ($false) {\n"
+        "                $reason = ('attempt limit of ' + [string]$MaxAttempts + ' reached')\n"
+        "            } elseif")
+
+
+def test_82_removing_the_total_wait_bound_is_refused() -> None:
+    """THE OTHER BOUND, AND IT IS TESTED SEPARATELY BECAUSE A SMALL ATTEMPT LIMIT
+    WOULD OTHERWISE HIDE IT. With the budget check gone, a five-millisecond budget
+    stops meaning anything and the read is reissued up to its attempt limit."""
+    _mutate_on_disk(
+        "lifecycle", "test_67",
+        "            } elseif (($waitedMs + $delay) -gt $TotalBudgetMs) {",
+        "            } elseif ($false) {")
+
+
+def test_83_swallowing_an_exhausted_rejection_is_refused() -> None:
+    """THE WORST FAILURE MODE AVAILABLE HERE. A retry that gives up and RETURNS
+    hands the caller a $null it never read, and the bootstrap reports state it did
+    not observe."""
+    _mutate_on_disk(
+        "lifecycle", "test_6",
+        "                $script:comRetryWaitMs = $script:comRetryWaitMs + $waitedMs\n"
+        "                throw\n",
+        "                $script:comRetryWaitMs = $script:comRetryWaitMs + $waitedMs\n"
+        "                $answered = $true\n"
+        "                break\n")
+
+
+def test_84_routing_saveas_through_the_retry_is_refused() -> None:
+    """SaveAs IS NOT IDEMPOTENT AND ITS REFUSAL IS NOT PROVEN. Reissuing a SaveAs
+    Excel may or may not have accepted is exactly the guess the refusal contract
+    does not license."""
+    _mutate_on_disk(
+        "build", "test_7",
+        "    $wb.SaveAs($stageBPath, [int]$manifest.xlsm_file_format)",
+        "    $null = (Invoke-StageBBuildRead -Target $wb -Member 'SaveAs' `\n"
+        "                 -Operation 'saveas.xlsm' -Description 'SaveAs').Value")
+
+
+def test_85_routing_the_module_import_through_the_retry_is_refused() -> None:
+    """A REISSUED Import CAN LEAVE modConstants1 BESIDE modConstants. The build's
+    own comment says so, and Excel will do it without complaint."""
+    _mutate_on_disk(
+        "build", "test_7",
+        "            $imported = $vbcomps.Import($file)",
+        "            $imported = (Invoke-StageBBuildRead -Target $vbcomps -Member 'Import' `\n"
+        "                             -Operation 'vbcomponents.import' -Description 'Import').Value")
+
+
+def test_86_routing_the_button_creation_through_the_retry_is_refused() -> None:
+    """A REISSUED AddShape LEAVES TWO BUTTONS. The manifest declares eleven, and a
+    twelfth with the same OnAction would still read back correctly."""
+    _mutate_on_disk(
+        "build", "test_7",
+        "            $shp = $shapes.AddShape(5, [double]$anchor.Left, [double]$anchor.Top, [double]$button.width, [double]$button.height)",
+        "            $shp = (Invoke-StageBBuildRead -Target $shapes -Member 'AddShape' `\n"
+        "                        -Operation 'button.add' -Description 'AddShape').Value")
+
+
+def test_87_omitting_the_operation_from_the_failure_is_refused() -> None:
+    """THE ENTIRE POINT OF THE BATCH. Without the label the transcript is back to
+    naming a region, which is what four runs already produced."""
+    _mutate_on_disk(
+        "build", "test_62",
+        "    Add-Step 'Stage-B build' 'FAIL' ('operation=' + $failedOp + '; ' + (Format-Err $_))",
+        "    Add-Step 'Stage-B build' 'FAIL' (Format-Err $_)")
+
+
+def test_88_dropping_a_label_before_a_named_operation_is_refused() -> None:
+    """A LABEL THAT IS NEVER SET CANNOT APPEAR IN A DIAGNOSTIC, and the operation
+    before it would be blamed for this one's refusal."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    Set-StageBBuildOp 'workbook.save'\n    $wb.Save()",
+        "    $wb.Save()")
+
+
+def test_89_opening_the_vocabulary_to_any_string_is_refused() -> None:
+    """A CLOSED VOCABULARY IS WHAT MAKES A LABEL TRACEABLE. If any string is
+    accepted, a misspelling reaches the transcript and maps to no call site."""
+    _mutate_on_disk(
+        "build", "test_61",
+        "    if ($script:StageBBuildOps -notcontains $Operation) {",
+        "    if ($false) {")
+
+
+def test_90_setting_the_label_after_forwarding_the_read_is_refused() -> None:
+    """A READ REFUSED ON ITS FIRST ATTEMPT WOULD CARRY THE PREVIOUS OPERATION'S
+    NAME - a diagnostic that is confidently wrong, which is worse than none."""
+    _mutate_on_disk(
+        "build", "test_69",
+        "    $null = Set-StageBBuildOp $Operation\n"
+        "    $record = Invoke-ComRetryRead -Target $Target -Member $Member -Description $Description",
+        "    $record = Invoke-ComRetryRead -Target $Target -Member $Member -Description $Description\n"
+        "    $null = Set-StageBBuildOp $Operation")
+
+
+def test_91_suppressing_the_clean_run_line_is_refused() -> None:
+    """SILENCE AND SUCCESS LOOKED IDENTICAL IN ALL FOUR RUNS. "Nothing was refused"
+    has to be printed, or a build that waited nine seconds reads like a quiet one."""
+    _mutate_on_disk(
+        "build", "test_79",
+        "    Add-Step 'Transient COM rejections (build)' 'PASS' 'COMREJECT|build|none|attempts=0|waited=0'",
+        "    $null = 'no line'")
+
+
+def test_92_a_blanket_sleep_in_the_bootstrap_is_refused() -> None:
+    """THE FIX IS NOT "WAIT A BIT AND HOPE". A sleep after the open would be a
+    readiness gate under another name, and it is not authorised."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    Set-StageBBuildOp 'saveas.xlsm'\n"
+        "    $wb.SaveAs($stageBPath, [int]$manifest.xlsm_file_format)",
+        "    Start-Sleep -Milliseconds 1500\n"
+        "    Set-StageBBuildOp 'saveas.xlsm'\n"
+        "    $wb.SaveAs($stageBPath, [int]$manifest.xlsm_file_format)")
+
+
+def test_93_an_inter_pass_drain_in_the_gate_is_refused() -> None:
+    """NOT AUTHORISED, AND IT WOULD HIDE THE CAUSE. Both instances shut down
+    naturally; a pause between the passes treats a symptom nobody has explained."""
+    _mutate_on_disk(
+        "gate", "test_76",
+        "    $bootstrapExit = $LASTEXITCODE",
+        "    Start-Sleep -Seconds 20\n"
+        "    $bootstrapExit = $LASTEXITCODE")
+
+
+def test_94_dropping_the_bootstrap_exit_check_is_refused() -> None:
+    """THE HALF-BUILT WORKBOOK. Without it, a build refused after SaveAs leaves an
+    .xlsm with no modules and the pass reports a fixture result against it."""
+    _mutate_on_disk(
+        "gate", "test_78",
+        "    if ($bootstrapExit -ne 0) {",
+        "    if ($false) {")
+
+
+def test_95_claiming_the_historical_failing_call_is_refused() -> None:
+    """THE EVIDENCE RULE. Static work cannot name the call runs 3 and 4 were refused
+    on. A record that says it was VBProject would licence a correction built on a
+    guess."""
+    _mutate_on_disk(
+        "evidence", "test_85",
+        "**`VBProject` acquisition is a CANDIDATE and nothing more.**",
+        "**The rejected call was `VBProject` acquisition.** the failing call was identified.")
+
+
+def test_96_softening_the_runs_3_and_4_verdict_is_refused() -> None:
+    """A RECORD THAT LET THEM READ AS A SEMANTIC RESULT WOULD LICENCE A BULK
+    BASELINE ON EVIDENCE THAT DOES NOT EXIST."""
+    # THE ANCHOR IS THE RUNS-3/4 SENTENCE, not the phrase. Run 2's record carries
+    # the same words, and a first-occurrence replacement damaged that section
+    # instead - the mutation then survived because it was aimed at the wrong one.
+    _mutate_on_disk(
+        "evidence", "test_85",
+        "No semantic comparison was executed. This record\n"
+        "**must not be read as a fixture DIFFER**.",
+        "The Bulk pass differed from Endpoints.")
+
+
+def test_97_erasing_the_missing_identification_from_the_record_is_refused() -> None:
+    """THE FINDING IS THAT THE LOG COULD NOT SAY. Dropping that sentence leaves a
+    record in which four runs simply failed, and the reason for this batch
+    disappears."""
+    _mutate_on_disk(
+        "evidence", "test_85",
+        "### The old Stage-B log did not identify the exact rejected COM operation",
+        "### The old Stage-B log")
 
 
 if __name__ == "__main__":

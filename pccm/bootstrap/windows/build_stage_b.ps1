@@ -75,6 +75,130 @@ function Add-Step {
 
 function Add-Note { param([string]$Text) $null = $notes.Add($Text) }
 
+# ===========================================================================
+# WHICH COM CALL WAS REFUSED
+# ===========================================================================
+# TWO CONSECUTIVE EQUIVALENCE RUNS DIED IN THE BUILD BLOCK AND THE TRANSCRIPT
+# COULD NOT SAY WHERE. The block is one try/catch around eleven distinct COM
+# operations, and its catch reported the whole region by one name:
+#
+#     [FAIL] Stage-B build
+#            System.Runtime.InteropServices.COMException: Call was rejected by
+#            callee. (0x80010001 RPC_E_CALL_REJECTED)
+#
+# Twice, identically, and there was no way to tell SaveAs from VBProject from a
+# button. The region was identified; the CALL was not.
+#
+# SO THE BLOCK NAMES WHAT IT IS DOING. One variable, set immediately before each
+# operation, out of a CLOSED vocabulary - a label that is not on the list throws
+# HERE, rather than turning up in a diagnostic nobody can map back to a call
+# site. It retries nothing, waits for nothing and decides nothing. Its whole job
+# is that the NEXT Windows run names the refused call instead of narrowing it to
+# a region, because the correction that follows depends entirely on which call
+# it was: a refused property get may simply be reissued, and a refused SaveAs,
+# Import or AddShape may not.
+$script:StageBBuildOps = @(
+    'open.workbook'
+    'saveas.xlsm'
+    'worksheets.acquire'
+    'codename.write'
+    'vbproject.acquire'
+    'vbcomponents.acquire'
+    'vbcomponents.import'
+    'thisworkbook.write'
+    'button.add'
+    'protection.apply'
+    'workbook.save'
+)
+# NOT one of the labels, and deliberately not blank: a failure before the first
+# labelled operation must read as "no operation had begun", which is a different
+# finding from "the label was lost".
+$script:StageBBuildOp         = '<before the first labelled operation>'
+$script:StageBBuildRejections = New-Object System.Collections.ArrayList
+
+function Set-StageBBuildOp {
+    param([string]$Operation)
+    if ($script:StageBBuildOps -notcontains $Operation) {
+        throw ('Set-StageBBuildOp: ' + $Operation + ' is not in the closed Stage-B build ' +
+               'operation vocabulary (' + ($script:StageBBuildOps -join ', ') + ').')
+    }
+    $script:StageBBuildOp = $Operation
+}
+
+function Get-StageBBuildOp { return [string]$script:StageBBuildOp }
+
+function Get-StageBBuildRejections { return @($script:StageBBuildRejections) }
+
+# The HRESULT as HEX, from the first COMException in the chain, or '' when the
+# error is not a COM failure at all. PRINTED EITHER WAY, because "the call was
+# refused" and "a VBA error came back" are different findings and reporting them
+# in the same words is how four runs produced one sentence.
+function Get-StageBComHResult {
+    param($ErrorRecord)
+    if ($null -eq $ErrorRecord) { return '' }
+    $ex = $null
+    try { $ex = $ErrorRecord.Exception } catch { return '' }
+    # BOUNDED, like the classifier it sits beside: a cyclic InnerException chain
+    # would otherwise hang a diagnostic.
+    for ($depth = 0; $depth -lt 5; $depth++) {
+        if ($null -eq $ex) { return '' }
+        if ($ex -is [System.Runtime.InteropServices.COMException]) {
+            try { return ('0x' + ([int]$ex.ErrorCode).ToString('x8')) } catch { return '' }
+        }
+        $next = $null
+        try { $next = $ex.InnerException } catch { $next = $null }
+        $ex = $next
+    }
+    return ''
+}
+
+# ONE line, and it says WHICH OF THE TWO IT IS. A refused call never ran, so it
+# may be reissued; a call Excel accepted and failed describes something that
+# actually happened. The classifier that draws that line is the accepted one in
+# com_lifecycle.ps1 - this only formats its answer.
+function New-StageBRejectionLine {
+    param([string]$Operation, $ErrorRecord)
+    $shown = Get-StageBComHResult $ErrorRecord
+    if ($shown -eq '') { $shown = 'none' }
+    $name = Get-ComRejectionName $ErrorRecord
+    if ([string]::IsNullOrWhiteSpace($name)) {
+        return ('COMFAIL|build|' + $Operation + '|hresult=' + $shown +
+                '|the call was accepted and failed; it was NOT refused')
+    }
+    return ('COMREJECT|build|' + $Operation + '|hresult=' + $shown + '|' + $name +
+            '|the call was refused before it ran')
+}
+
+# BUILD-ONLY, READ-ONLY, AND NARROWER THAN THE HELPER IT FORWARDS TO. It takes an
+# object and a MEMBER NAME and hands both to the accepted Invoke-ComRetryRead
+# unchanged: same two retryable HRESULTs, same three bounds, same original error
+# rethrown on exhaustion. There is no scriptblock parameter and no -Key either,
+# so the only thing expressible through this is a plain PROPERTY GET - not a
+# write, not an Open, not a SaveAs, not even an Item lookup. All it adds is the
+# operation label and one concise line when a read actually had to be reissued.
+function Invoke-StageBBuildRead {
+    param($Target, [string]$Member, [string]$Operation, [string]$Description)
+    $null = Set-StageBBuildOp $Operation
+    $record = Invoke-ComRetryRead -Target $Target -Member $Member -Description $Description
+    if ([int]$record.Attempts -gt 1) {
+        $null = $script:StageBBuildRejections.Add(
+            ('COMREJECT|build|' + $Operation + '|attempts=' + [string]$record.Attempts +
+             '|waited=' + [string]$record.WaitedMs + '|' + [string]$record.Rejections +
+             '|answered'))
+    }
+    # NOTHING IS NOT AN ANSWER. A PowerShell host can DISCARD an exception thrown
+    # by a property getter and hand back $null instead of raising - proved on this
+    # repository's own harness host. If Excel's adapter ever behaves that way, the
+    # operation that was refused must still be the one that gets named here,
+    # rather than surfacing three statements later as a null-reference on an
+    # object nobody can trace back to a call.
+    if ($null -eq $record.Value) {
+        throw ('Invoke-StageBBuildRead: ' + $Description + ' answered with nothing at ' +
+               $Operation + '. The read was not refused and it was not answered.')
+    }
+    return $record
+}
+
 Write-Host ''
 Write-Host 'PCCM - Stage-B bootstrap (.xlsx -> .xlsm)' -ForegroundColor Cyan
 Write-Host '=========================================' -ForegroundColor Cyan
@@ -152,6 +276,11 @@ $vbproj = $null; $vbcomps = $null
 $buildExcelIdentity = $null
 $rel1 = $null
 $buildOk = $false
+# THE LEDGER IS PROCESS-WIDE AND NOW HAS TWO READERS. Without a baseline the
+# verification step would report the BUILD's reissued reads as its own, and
+# "no verification read was refused" would stop being true.
+$buildRetryBase     = @(Get-ComRetryLedger).Count
+$buildRetryWaitBase = Get-ComRetryWaitTotal
 
 try {
     $excel = New-Object -ComObject Excel.Application
@@ -161,32 +290,56 @@ try {
     $excel.AskToUpdateLinks = $false
     Add-Step 'Open an owned Excel instance' 'PASS' ("pid {0} (identity source {1})" -f $buildExcelIdentity.ProcessId, $buildExcelIdentity.Source)
 
+    Set-StageBBuildOp 'open.workbook'
     $workbooks = $excel.Workbooks
     $wb = $workbooks.Open($stageAPath)
     Add-Step 'Open the Stage-A workbook' 'PASS' $stageAPath
 
     # --- 3. save as .xlsm --------------------------------------------------
     if (Test-Path -LiteralPath $stageBPath) { Remove-Item -LiteralPath $stageBPath -Force }
+    # THE SaveAs ITSELF IS NOT RETRIED and must not be. A SaveAs Excel may or may
+    # not have accepted is not something to reissue on a guess; if this is the
+    # refused call, the label above is what says so and the correction is a
+    # separate decision.
+    Set-StageBBuildOp 'saveas.xlsm'
     $wb.SaveAs($stageBPath, [int]$manifest.xlsm_file_format)
-    $actualFormat = [int]$wb.FileFormat
+    $actualFormat = [int](Invoke-StageBBuildRead -Target $wb -Member 'FileFormat' `
+                              -Operation 'saveas.xlsm' `
+                              -Description 'the Stage-B workbook FileFormat').Value
     if ($actualFormat -ne [int]$manifest.xlsm_file_format) {
         throw ("SaveAs produced FileFormat {0}, expected {1}." -f $actualFormat, $manifest.xlsm_file_format)
     }
     Add-Step 'Save as macro-enabled .xlsm' 'PASS' ("FileFormat={0}; {1}" -f $actualFormat, $stageBPath)
 
     # --- 4. CodeNames -------------------------------------------------------
-    $worksheets = $wb.Worksheets
+    # THREE PLAIN PROPERTY GETS, AND THE REOPEN PATH ALREADY RETRIES ALL THREE.
+    # Worksheets, VBProject and VBComponents are acquisitions: they read a member
+    # and move nothing. The verification block below reissues exactly these
+    # members on exactly these classes of object, so opting the BUILD's copies in
+    # adds no new judgement - it applies one already accepted, at the reads that
+    # sit closest to the workbook opening.
+    $worksheets = (Invoke-StageBBuildRead -Target $wb -Member 'Worksheets' `
+                       -Operation 'worksheets.acquire' `
+                       -Description 'the Stage-B workbook Worksheets collection').Value
     try {
-        $vbproj = $wb.VBProject
+        $vbproj = (Invoke-StageBBuildRead -Target $wb -Member 'VBProject' `
+                       -Operation 'vbproject.acquire' `
+                       -Description 'the Stage-B workbook VBProject').Value
     } catch {
+        # STILL REACHED. A Trust Center refusal is not a message-filter rejection,
+        # so the helper rethrows it on the first attempt and this guidance path is
+        # exactly as available as it was before the read was wrapped.
         if (Test-TrustAccessError $_) {
             Add-Note (Get-TrustAccessGuidance)
             throw 'Excel refused programmatic access to the VBA project. See the guidance below.'
         }
         throw
     }
-    $vbcomps = $vbproj.VBComponents
+    $vbcomps = (Invoke-StageBBuildRead -Target $vbproj -Member 'VBComponents' `
+                    -Operation 'vbcomponents.acquire' `
+                    -Description 'the Stage-B VBComponents collection').Value
 
+    Set-StageBBuildOp 'codename.write'
     $codeNameFails = @()
     foreach ($sheet in $manifest.sheets) {
         $ws = $null; $comp = $null; $props = $null; $prop = $null
@@ -217,6 +370,7 @@ try {
     # --- 5. import VBA ------------------------------------------------------
     # Remove any same-named component first so a re-run replaces rather than
     # duplicating (Excel would otherwise create a modConstants1 beside it).
+    Set-StageBBuildOp 'vbcomponents.import'
     foreach ($file in $moduleFiles) {
         $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($file)
         # The acquire/use path is wrapped. With the release written inline after
@@ -276,6 +430,7 @@ try {
         }
         $docText = Get-Content -LiteralPath $docFile -Raw
         $docComp = $null; $codeModule = $null
+        Set-StageBBuildOp 'thisworkbook.write'
         try {
             $docComp = $vbcomps.Item([string]$docModule.component)
             $codeModule = $docComp.CodeModule
@@ -304,6 +459,7 @@ try {
     }
 
     # --- 6. buttons ---------------------------------------------------------
+    Set-StageBBuildOp 'button.add'
     foreach ($button in $manifest.buttons) {
         $ws = $null; $shapes = $null; $shp = $null; $anchor = $null; $tf = $null; $tr = $null; $existing = $null
         try {
@@ -357,6 +513,7 @@ try {
         if (-not $protection.passwordless) {
             throw 'The manifest asks for protection with a password. This build has none and will not invent one.'
         }
+        Set-StageBBuildOp 'protection.apply'
         $protectFails = @()
         foreach ($sheetName in @($protection.sheets)) {
             $pws = $null
@@ -392,13 +549,42 @@ try {
     }
 
     # --- 8. save ------------------------------------------------------------
+    Set-StageBBuildOp 'workbook.save'
     $wb.Save()
     Add-Step 'Save the Stage-B workbook' 'PASS' $stageBPath
     $buildOk = $true
 } catch {
-    Add-Step 'Stage-B build' 'FAIL' (Format-Err $_)
+    # THE OPERATION, NOT THE REGION. This is the line that four runs could not
+    # answer, and the reason the exact rejected call is still unknown.
+    $failedOp = Get-StageBBuildOp
+    Add-Step 'Stage-B build' 'FAIL' ('operation=' + $failedOp + '; ' + (Format-Err $_))
+    # A DIAGNOSTIC MAY NOT REPLACE THE FAILURE IT DESCRIBES. If classifying the
+    # error throws, the build failure above still stands and is still reported.
+    try   { Add-Note (New-StageBRejectionLine -Operation $failedOp -ErrorRecord $_) }
+    catch { Add-Note ('COMFAIL|build|' + $failedOp + '|hresult=unclassified|the error could ' +
+                      'not be classified; the build failure above stands') }
     $buildOk = $false
 }
+
+# REPORTED ON EVERY RUN, REFUSED OR NOT. A silent clean build and a build that
+# spent nine seconds reissuing three refused reads looked identical in the last
+# four transcripts, so "nothing was refused" is now a printed line too. It
+# describes what happened and decides nothing: a build that failed stays failed.
+$buildRejections = @(Get-StageBBuildRejections)
+$buildLedger     = @(@(Get-ComRetryLedger) | Select-Object -Skip $buildRetryBase)
+$buildRetryWait  = (Get-ComRetryWaitTotal) - $buildRetryWaitBase
+if ($buildLedger.Count -eq 0 -and $buildRejections.Count -eq 0) {
+    Add-Step 'Transient COM rejections (build)' 'PASS' 'COMREJECT|build|none|attempts=0|waited=0'
+} else {
+    Add-Step 'Transient COM rejections (build)' 'PASS' `
+        ("{0} build read(s) were refused and reissued; {1} ms waited in total" -f $buildLedger.Count, $buildRetryWait)
+    foreach ($line in $buildRejections) { Add-Note $line }
+    foreach ($line in $buildLedger)     { Add-Note ('COM read (build): ' + $line) }
+}
+
+# The verification step reports ITS OWN slice, from here on.
+$verifyRetryBase     = @(Get-ComRetryLedger).Count
+$verifyRetryWaitBase = Get-ComRetryWaitTotal
 
 # --- shutdown of the build instance, leaf before parent --------------------
 $rel1 = New-ReleaseLedger 'build instance'
@@ -557,12 +743,12 @@ if ($buildOk) {
     # so a retried run can never look like an untroubled one. This step describes
     # what happened; it decides nothing. A verification that failed above stays
     # failed, and an exhausted retry appears here AND as that failure.
-    $retryLines = @(Get-ComRetryLedger)
+    $retryLines = @(@(Get-ComRetryLedger) | Select-Object -Skip $verifyRetryBase)
     if ($retryLines.Count -eq 0) {
         Add-Step 'Transient COM rejections' 'PASS' 'no verification read was refused; 0 ms waited'
     } else {
         Add-Step 'Transient COM rejections' 'PASS' `
-            ("{0} read(s) were refused and reissued; {1} ms waited in total" -f $retryLines.Count, (Get-ComRetryWaitTotal))
+            ("{0} read(s) were refused and reissued; {1} ms waited in total" -f $retryLines.Count, ((Get-ComRetryWaitTotal) - $verifyRetryWaitBase))
         foreach ($line in $retryLines) { Add-Note ('COM read: ' + $line) }
     }
 

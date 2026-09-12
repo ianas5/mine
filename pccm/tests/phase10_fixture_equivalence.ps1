@@ -364,7 +364,18 @@ function Invoke-EquivalencePass {
     # THE BOOTSTRAP RUNS AGAINST THIS PASS'S OWN BUNDLE and nothing shared.
     $bootstrap = Join-Path $windows 'build_stage_b.ps1'
     & $bootstrap -BuildDir $tempRoot -Force | Out-Null
+    # THE EXIT CODE, NOT ONLY THE FILE. A build that saved the .xlsm and was then
+    # refused at a later operation leaves the workbook on disk WITHOUT its modules,
+    # its buttons or its protection - and Test-Path alone would let this pass open
+    # it and report a fixture result against a half-built workbook. The bootstrap
+    # names the failing operation in its own transcript above.
+    $bootstrapExit = $LASTEXITCODE
     $stageB = [string]$Bundle.StageB
+    if ($bootstrapExit -ne 0) {
+        throw ('BOOTSTRAP: the Stage-B bootstrap for the ' + $Mode + ' pass exited ' +
+               [string]$bootstrapExit + '; its transcript above names the failing operation. ' +
+               'A workbook may exist and be half-built, so this pass is not run.')
+    }
     if (-not (Test-Path -LiteralPath $stageB)) {
         throw ('BOOTSTRAP: the Stage-B bootstrap produced no workbook for the ' + $Mode +
                ' pass at ' + $stageB)

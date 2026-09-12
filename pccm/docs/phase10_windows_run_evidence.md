@@ -2168,3 +2168,150 @@ as empty strings — so if Endpoints had 25 physical rows and Bulk had 12, that
 would be a real `differ`. The correction makes Bulk match physically as well as
 semantically rather than teaching the comparison to ignore the difference.
 
+
+---
+
+## Equivalence runs 3 and 4 — INVALID / NOT EVALUATED — STAGE-B WAS REFUSED
+
+**Harness commit:** `1e0edb2`. Windows PowerShell 5.1. The same command was run
+twice and failed identically both times.
+
+### What both runs did
+
+| step | outcome |
+|---|---|
+| bundles | built, and proved identical |
+| Endpoints pass | **completed**, `PASS|Endpoints|COMPLETED` |
+| Endpoints `PCCM_Calculate` | ran |
+| Bulk Stage-B — owned Excel instance | opened |
+| Bulk Stage-B — Stage-A workbook | opened |
+| Bulk Stage-B — build | **raised `System.Runtime.InteropServices.COMException: Call was rejected by callee. HRESULT 0x80010001 RPC_E_CALL_REJECTED`** |
+| shutdown | clean, no forced stop |
+| Bulk fixture construction | **never began** |
+| semantic comparison | **never ran** |
+
+```
+FAIL|Bulk|SETUP|BOOTSTRAP|RAISED
+EQUIV|<not evaluated>|invalid|comparison was not executed: only the Endpoints
+                              pass completed
+```
+
+### What runs 3 and 4 are not
+
+No semantic comparison was executed. This record
+**must not be read as a fixture DIFFER**.
+They are **not** a Bulk semantic failure either — the Bulk builder was never
+reached. They are **not** equivalence evidence in either direction.
+**Bulk remains NOT authorised.**
+
+```
+Equivalence runs 3 and 4: INVALID / NOT EVALUATED
+```
+
+### The old Stage-B log did not identify the exact rejected COM operation
+
+This is the finding that matters, and it is structural rather than inferred. The
+Stage-B build is **one** `try`/`catch` around eleven distinct COM operations, and
+its catch reported the whole region under one name:
+
+```powershell
+} catch {
+    Add-Step 'Stage-B build' 'FAIL' (Format-Err $_)
+```
+
+So the transcript carried the HRESULT and the name of a **region**. It could not
+distinguish `Workbooks.Open` completion from `SaveAs`, from the worksheet
+collection, from a CodeName write, from `VBProject`, from `VBComponents`, from the
+module import, from the `ThisWorkbook` write, from a button, from protection, or
+from the final `Save`.
+
+**`VBProject` acquisition is a CANDIDATE and nothing more.** It is the leading one
+on this repository's own runtime precedent — the reopen verification path already
+reads `VBProject` through `Invoke-ComRetryRead`, because that member was observed
+to be refused at runtime — but precedent about a member is not identification of a
+call. Two further candidates are named without preference: `SaveAs`, and the
+`Worksheets` acquisition.
+
+**No claim is made here about which call was refused.** The instrumentation added
+in this batch exists so the **next** Windows run states it outright.
+
+### What the next run will report
+
+The build block now sets a label from a closed eleven-word vocabulary immediately
+before each operation, and the catch reports it:
+
+```
+[FAIL] Stage-B build
+       operation=vbproject.acquire; System.Runtime.InteropServices.COMException: ...
+COMREJECT|build|vbproject.acquire|hresult=0x80010001|RPC_E_CALL_REJECTED (0x80010001)|the call was refused before it ran
+```
+
+A call Excel **accepted** and that then failed is reported differently, because it
+is a different finding:
+
+```
+COMFAIL|build|thisworkbook.write|hresult=0x800a03ec|the call was accepted and failed; it was NOT refused
+```
+
+and a clean build says so rather than falling silent:
+
+```
+[PASS] Transient COM rejections (build)
+       COMREJECT|build|none|attempts=0|waited=0
+```
+
+### A second defect, found while reading the gate
+
+`Invoke-EquivalencePass` checked only that a Stage-B workbook **existed** after the
+bootstrap. A build refused **after** its `SaveAs` leaves the `.xlsm` on disk with
+no modules, no buttons and no protection, and the pass would have opened it and
+reported a fixture result against a half-built workbook. The bootstrap's exit code
+is now checked first, using the `BOOTSTRAP:` vocabulary the gate already had.
+
+### What was deliberately NOT done
+
+* **No readiness gate** after `Workbooks.Open`. Workbook readiness is not yet known
+  to be the failing condition, and a poll inserted before the evidence exists could
+  make the symptom disappear without proving its cause.
+* **No inter-pass drain, sleep or quiet period.** Both Excel instances shut down
+  naturally in the observed runs, so nothing links the second-pass failure to a
+  lifecycle overlap.
+* **No retry around any mutation** — `SaveAs`, `VBComponents.Import`,
+  `CodeModule.AddFromString`, `Shapes.AddShape`, `Protect`, `Save`. If the next run
+  names one of these, that is where it stops and a postcondition-aware correction
+  is a separate decision.
+* **No retry around a property SET**, including the CodeName writes.
+* **`Invoke-ComRetryRead` is byte-identical to `1e0edb2`.** This batch adds four
+  call sites, not capability.
+* The two passes remain two bundles and two Excel sessions.
+
+### The four reads that were opted in, and why only those
+
+| read | label | why it is eligible |
+|---|---|---|
+| `$wb.FileFormat` | `saveas.xlsm` | property get; the reopen path already reissues `FileFormat` |
+| `$wb.Worksheets` | `worksheets.acquire` | collection acquisition; reopen path reissues `Worksheets` |
+| `$wb.VBProject` | `vbproject.acquire` | property get; reopen path reissues `VBProject` |
+| `$vbproj.VBComponents` | `vbcomponents.acquire` | collection acquisition; reopen path reissues `VBComponents` |
+
+The rule is **precedent, not preference**: a build read is eligible only where the
+accepted verification block already reissues the same member on the same class of
+object. `$excel.Workbooks` is a pure property get too, and is deliberately **left
+out** — verification does not reissue it, so there is no accepted precedent to
+apply. If the next run is refused there, that is exactly the outcome the labels
+exist to report.
+
+### A host behaviour that had to be worked around, and what it does not prove
+
+PowerShell 7.4.6 **discards** an exception thrown by a **.NET** property getter:
+`$obj.$member` yields `$null` and `$Error` is not even populated. A **method** call
+raises a `MethodInvocationException` whose `InnerException` is the `COMException` —
+which is exactly the chain `Get-ComRejectionName` walks, and why it walks one. So
+the executed harness drives the retry loop through a method, and the wrapper's own
+logic through a stubbed helper.
+
+**This is a fact about the harness host, not about Excel.** COM objects use a
+different PowerShell adapter, and the rejection actually observed on Windows
+arrived as a catchable `COMException`. The wrapper nevertheless refuses a read that
+neither raised nor answered, so if Excel's adapter ever swallows one, the operation
+is still named at the point it happened.

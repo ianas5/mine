@@ -733,6 +733,13 @@ CHANGED_BY_DECLARATION = {
     # the reopened workbook, twice in a row. com_lifecycle.ps1 gained the bounded
     # read-boundary retry that settles it, and build_stage_b.ps1's verification
     # block now reads through that helper. Neither is a scenario harness.
+    #
+    # W6. build_stage_b.ps1 changed again, and for a related reason: two
+    # equivalence runs were refused in its BUILD block, where one try/catch around
+    # eleven COM operations could report only the region. It now labels each
+    # operation from a closed vocabulary, reports which one was in flight, and
+    # reissues four declared property gets through the SAME accepted helper -
+    # which is itself byte-identical, so this widened call sites and not capability.
     "com_lifecycle.ps1",
     "build_stage_b.ps1",
     # W5. PERF-SMALL aborted on `ClearContents` under worksheet protection, so the
@@ -2050,7 +2057,16 @@ def test_156_the_shim_is_test_only_and_never_production() -> None:
     # AND IT ADDS NO NEW MACHINE DEPENDENCY: the Stage-B bootstrap this runner
     # already invokes reaches VBProject too, so a host that could not import
     # could not have produced the workbook in the first place.
-    assert "$wb.VBProject" in (BOOTSTRAP / "build_stage_b.ps1").read_text(encoding="utf-8")
+    # THE PROPERTY, NOT ONE SPELLING OF IT. The Stage-B diagnostic batch routed
+    # this read through the accepted COM retry, so `$wb.VBProject` is now
+    # `-Target $wb -Member 'VBProject'`. What matters here is unchanged: the
+    # bootstrap reaches the VBA project object model, so a host that could not
+    # import could not have produced the workbook.
+    bootstrap_src = (BOOTSTRAP / "build_stage_b.ps1").read_text(encoding="utf-8")
+    assert ("$wb.VBProject" in bootstrap_src
+            or "-Target $wb -Member 'VBProject'" in bootstrap_src), \
+        "the bootstrap no longer reaches VBProject at all"
+    assert "Test-TrustAccessError" in bootstrap_src, "the Trust Center guidance path is gone"
 
 
 def test_157_the_protection_state_is_read_in_vba_not_across_com() -> None:
