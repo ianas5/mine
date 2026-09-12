@@ -2315,3 +2315,162 @@ different PowerShell adapter, and the rejection actually observed on Windows
 arrived as a catchable `COMException`. The wrapper nevertheless refuses a read that
 neither raised nor answered, so if Excel's adapter ever swallows one, the operation
 is still named at the point it happened.
+
+---
+
+## The diagnostic run that named the rejected call — `saveas.xlsm`
+
+**Harness commit:** `3d34b26`. Windows PowerShell 5.1. Stage A immediately before
+the run: 351 passed, 0 failed.
+
+### The instrumentation answered the question it was built for
+
+```
+[PASS] Read Stage-A build outputs
+[PASS] Open an owned Excel instance
+[PASS] Open the Stage-A workbook
+[FAIL] Stage-B build
+       operation=saveas.xlsm;
+       System.Runtime.InteropServices.COMException: Call was rejected by callee.
+       HRESULT 0x80010001 RPC_E_CALL_REJECTED
+COMREJECT|build|none|attempts=0|waited=0
+```
+
+**The exact rejected BUILD operation is `saveas.xlsm` — `Workbook.SaveAs`.**
+
+The `COMREJECT|build|none|attempts=0|waited=0` line matters as much as the label:
+**no read was reissued**, so the four opted-in property gets had nothing to do
+with this rejection. The refusal is in the save itself, and it happens before
+worksheet acquisition, `VBProject`, `VBComponents`, the module import, the
+`ThisWorkbook` write, the buttons, protection, the final `Save`, and any Bulk
+fixture construction.
+
+Endpoints completed and its real `PCCM_Calculate` ran. Shutdown was clean —
+`Workbook.Close=True`, `Application.Quit=True`, natural PID exit, no emergency
+cleanup, COM releases clean.
+
+```
+FAIL|Bulk|BOOTSTRAP|...
+EQUIV|<not evaluated>|invalid|comparison was not executed: only the Endpoints
+                              pass completed
+```
+
+No Bulk fixture was built. No comparison ran. This record
+**must not be read as a fixture DIFFER**.
+It is **INVALID / NOT EVALUATED**, and **Bulk remains NOT authorised**.
+
+Runs 3 and 4 stay historically unresolved at exact-call level; the log that would
+have named them did not exist yet. This run establishes the *current, repeatable*
+rejection.
+
+### The diagnostic wording, corrected
+
+The line the build emits says *"the call was refused before it ran"*. That is what
+the OLE message-filter **contract** says, and for a property get it is the whole
+answer. **It is not proof that `SaveAs` made zero state change**, because `SaveAs`
+is **non-idempotent**: it writes a file and rebinds the workbook. The contract is
+therefore no longer used as the licence to reissue it. The licence is **observed
+state**.
+
+### Why the observation is conclusive here
+
+The build **deletes the target immediately before the call**, so at the moment
+`SaveAs` is attempted the target provably does not exist and the workbook is
+provably bound to the Stage-A path in the Stage-A format. Three independent facts
+then separate the outcomes:
+
+| fact | read how |
+|---|---|
+| which file the workbook is bound to | `Workbook.FullName` |
+| what format it is in | `Workbook.FileFormat` |
+| whether the target is on disk | `Test-Path` |
+
+Both COM reads go through the **accepted read-only retry helper**, so an
+inspection that is itself refused is reissued rather than mistaken for a finding.
+
+| state | requires | action |
+|---|---|---|
+| **COMPLETED** | bound to target **and** format 52 **and** target exists | accept; **never reissue** |
+| **NOT EXECUTED** | bound to source **and** source format **and** target absent | one bounded retry permitted |
+| **AMBIGUOUS** | anything else, including an unreadable inspection | **abort**; no retry, no cleanup |
+
+The source format is **read before the call**, not assumed — "nothing moved" is
+only provable against what the workbook was.
+
+### The bounded algorithm
+
+```
+attempt SaveAs
+  returned normally  -> verify all three facts; not COMPLETED is a FAILURE
+  non-retryable error-> rethrow immediately, no inspection
+  refused (0x80010001 / 0x8001010A)
+        -> inspect postconditions BEFORE any second call
+              COMPLETED     -> accept, do not reissue
+              NOT EXECUTED  -> bounded backoff, then retry
+              AMBIGUOUS     -> abort with the evidence intact
+```
+
+Bounds are the **accepted envelope's own values** — 12 attempts, 250 ms rising to
+2000 ms, 15000 ms total — not new numbers. Exhaustion rethrows the **original**
+rejection.
+
+### Diagnostics
+
+```
+SAVEAS|attempt=1|success
+SAVEAS|verified|path=True|format=52|exists=True
+
+SAVEAS|attempt=1|rejected|0x80010001
+SAVEAS|postcondition|not-executed|boundToTarget=False|boundToSource=True|format=51|targetExists=False|sourceExists=True|readError=none
+SAVEAS|attempt=2|success
+
+SAVEAS|postcondition|completed|...
+SAVEAS|attempt=1|completed-despite-rejection
+
+SAVEAS|postcondition|ambiguous|...
+SAVEAS|attempt=1|error|0x800a03ec
+```
+
+### Executed, not asserted
+
+`tests/phase10_stage_b_build_ops_flow.ps1` drives the real settlement against a
+fake whose `SaveAs` is a **method** (so its exception really propagates) and which
+can leave any partial state a half-done save could leave. Excel is never started.
+
+| case | SaveAs calls | outcome |
+|---|---|---|
+| clean first attempt | **1** | completed, all three verified |
+| refused, NOT EXECUTED | **2** | completed on the retry |
+| refused `0x8001010A`, NOT EXECUTED | **2** | completed on the retry |
+| refused but COMPLETED | **1** | accepted, **never reissued** |
+| target exists, still bound to source | **1** | AMBIGUOUS, abort |
+| rebound, no file, old format | **1** | AMBIGUOUS, abort |
+| format moved, nothing else | **1** | AMBIGUOUS, abort |
+| rebound + file, wrong format | **1** | AMBIGUOUS, abort |
+| rebound + format, no file | **1** | AMBIGUOUS, abort |
+| inspection unreadable | **1** | AMBIGUOUS, abort |
+| `0x800A03EC` (accepted and failed) | **1** | rethrown, **no inspection** |
+| not a COM failure | **1** | rethrown, no inspection |
+| always refused, 3 attempts allowed | **3** | original `0x80010001` rethrown |
+| always refused, 5 ms budget, 50 allowed | **3** | original rethrown |
+
+Path comparison was proved too: a separator difference is **not** a rebind, and
+two genuinely different paths are **not** equal.
+
+### What is still NOT known, and is not claimed
+
+**We know WHERE the rejection occurs. We do not know WHY Excel rejects the
+second-session `SaveAs`.** No claim is made about lifecycle overlap, an Excel
+readiness race, OneDrive, file locking, modal state or message-filter timing.
+None of those has been independently proved, and this batch settles
+**safe recovery, not root cause**. If the next run shows a `COMPLETED` or `NOT EXECUTED` settlement the
+build proceeds; if it shows `AMBIGUOUS`, that is new evidence and a separate
+decision.
+
+### Still not done
+
+No readiness gate. No inter-pass drain. No blanket sleep — the one sleep in the
+bootstrap is the SaveAs backoff, reachable only after a postcondition **proved**
+the save did not happen. No retry on the module import, the `ThisWorkbook` write,
+button creation, protection or the final `Save`. No retry on any property SET.
+`Invoke-ComRetryRead` byte-identical. Two bundles, two Excel sessions.

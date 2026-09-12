@@ -556,15 +556,17 @@ def test_83_swallowing_an_exhausted_rejection_is_refused() -> None:
         "                break\n")
 
 
-def test_84_routing_saveas_through_the_retry_is_refused() -> None:
-    """SaveAs IS NOT IDEMPOTENT AND ITS REFUSAL IS NOT PROVEN. Reissuing a SaveAs
-    Excel may or may not have accepted is exactly the guess the refusal contract
-    does not license."""
+def test_84_routing_saveas_through_the_read_retry_is_refused() -> None:
+    """RE-ANCHORED, NOT LOOSENED. SaveAs is still not idempotent; what changed is
+    that it now has a POSTCONDITION-GATED recovery of its own, so the mutation that
+    matters is routing it through the blind READ retry instead - a reissue with no
+    observation behind it, which is exactly the guess the refusal contract does not
+    license."""
     _mutate_on_disk(
-        "build", "test_7",
-        "    $wb.SaveAs($stageBPath, [int]$manifest.xlsm_file_format)",
-        "    $null = (Invoke-StageBBuildRead -Target $wb -Member 'SaveAs' `\n"
-        "                 -Operation 'saveas.xlsm' -Description 'SaveAs').Value")
+        "build", "test_",
+        "            $Workbook.SaveAs($TargetPath, $TargetFormat)",
+        "            $null = (Invoke-StageBBuildRead -Target $Workbook -Member 'SaveAs' `\n"
+        "                         -Operation 'saveas.xlsm' -Description 'SaveAs').Value")
 
 
 def test_85_routing_the_module_import_through_the_retry_is_refused() -> None:
@@ -637,13 +639,16 @@ def test_91_suppressing_the_clean_run_line_is_refused() -> None:
 def test_92_a_blanket_sleep_in_the_bootstrap_is_refused() -> None:
     """THE FIX IS NOT "WAIT A BIT AND HOPE". A sleep after the open would be a
     readiness gate under another name, and it is not authorised."""
+    # RE-ANCHORED to the workbook open, which is where a readiness sleep would
+    # actually be put. The old anchor was the SaveAs statement that has since moved
+    # into its own function.
     _mutate_on_disk(
         "build", "test_",
-        "    Set-StageBBuildOp 'saveas.xlsm'\n"
-        "    $wb.SaveAs($stageBPath, [int]$manifest.xlsm_file_format)",
+        "    Set-StageBBuildOp 'open.workbook'\n"
+        "    $workbooks = $excel.Workbooks",
         "    Start-Sleep -Milliseconds 1500\n"
-        "    Set-StageBBuildOp 'saveas.xlsm'\n"
-        "    $wb.SaveAs($stageBPath, [int]$manifest.xlsm_file_format)")
+        "    Set-StageBBuildOp 'open.workbook'\n"
+        "    $workbooks = $excel.Workbooks")
 
 
 def test_93_an_inter_pass_drain_in_the_gate_is_refused() -> None:
@@ -696,6 +701,231 @@ def test_97_erasing_the_missing_identification_from_the_record_is_refused() -> N
         "evidence", "test_85",
         "### The old Stage-B log did not identify the exact rejected COM operation",
         "### The old Stage-B log")
+
+
+# ===========================================================================
+# H. THE SaveAs SETTLEMENT
+# ===========================================================================
+# WINDOWS NAMED saveas.xlsm, AND SaveAs WRITES A FILE. Every way of turning
+# "observe, then decide" back into "decide, then hope" is fed in here, and the
+# executed harness - which counts the actual SaveAs calls - is what catches it.
+def test_98_blindly_reissuing_the_save_is_refused() -> None:
+    """THE WHOLE SETTLEMENT IN ONE MUTATION. Retrying on the refusal contract alone
+    reissues a save that may already have written the workbook."""
+    _mutate_on_disk(
+        "build", "test_9",
+        "            $state = Get-StageBSaveAsPostcondition -Workbook $Workbook `\n"
+        "                -SourcePath $SourcePath -TargetPath $TargetPath `\n"
+        "                -TargetFormat $TargetFormat -SourceFormat $SourceFormat\n"
+        "            Add-Note ('SAVEAS|postcondition|' + $state.State + '|' + $state.Detail)\n"
+        "            if ($state.State -eq 'completed') {",
+        "            $state = [pscustomobject]@{ State = 'not-executed'; FullName = ''; "
+        "FileFormat = 0; BoundToTarget = $false; BoundToSource = $true; "
+        "TargetExists = $false; SourceExists = $true; ReadError = ''; Detail = 'assumed' }\n"
+        "            Add-Note ('SAVEAS|postcondition|' + $state.State + '|' + $state.Detail)\n"
+        "            if ($state.State -eq 'completed') {")
+
+
+def test_99_treating_the_target_file_alone_as_a_completed_save_is_refused() -> None:
+    """A FILE ON DISK IS WHAT A HALF-WRITTEN SAVE LOOKS LIKE TOO. Accepting it
+    would carry a workbook the build does not own into the module import."""
+    _mutate_on_disk(
+        "build", "test_9",
+        "    } elseif ($boundToTarget -and ($format -eq $TargetFormat) -and $targetExists) {",
+        "    } elseif ($targetExists) {")
+
+
+def test_100_treating_a_changed_path_alone_as_a_completed_save_is_refused() -> None:
+    """A REBOUND WORKBOOK WITH NO FILE IS NOT A SAVE."""
+    _mutate_on_disk(
+        "build", "test_9",
+        "    } elseif ($boundToTarget -and ($format -eq $TargetFormat) -and $targetExists) {",
+        "    } elseif ($boundToTarget) {")
+
+
+def test_101_treating_a_changed_format_alone_as_a_completed_save_is_refused() -> None:
+    """THE FORMAT MOVING IN MEMORY IS NOT THE FILE BEING WRITTEN."""
+    _mutate_on_disk(
+        "build", "test_9",
+        "    } elseif ($boundToTarget -and ($format -eq $TargetFormat) -and $targetExists) {",
+        "    } elseif ($format -eq $TargetFormat) {")
+
+
+def test_102_retrying_an_ambiguous_save_is_refused() -> None:
+    """THE STATE THAT MUST NEVER REISSUE. If the save can be proved neither to have
+    happened nor to have been skipped, a second attempt is a coin toss with the
+    workbook."""
+    _mutate_on_disk(
+        "build", "test_9",
+        "            if ($state.State -ne 'not-executed') {\n"
+        "                throw ('SAVEAS AMBIGUOUS after ",
+        "            if ($false) {\n"
+        "                throw ('SAVEAS AMBIGUOUS after ")
+
+
+def test_103_retrying_a_non_rpc_com_error_is_refused() -> None:
+    """AN ERROR EXCEL ACCEPTED DESCRIBES SOMETHING THAT HAPPENED. Reissuing the
+    save over it is exactly the guess the refusal contract does not license."""
+    _mutate_on_disk(
+        "build", "test_",
+        "            if ([string]::IsNullOrWhiteSpace($refused)) {\n"
+        "                # EXCEL ACCEPTED THIS ONE AND IT FAILED. That describes something\n"
+        "                # which actually happened, and nothing here may reissue it.\n"
+        "                Add-Note ('SAVEAS|attempt=' + [string]$attempt + '|error|' + $hres)\n"
+        "                throw\n"
+        "            }",
+        "            if ([string]::IsNullOrWhiteSpace($refused)) {\n"
+        "                Add-Note ('SAVEAS|attempt=' + [string]$attempt + '|error|' + $hres)\n"
+        "                $refused = 'treated as refused'\n"
+        "            }")
+
+
+def test_104_reissuing_a_save_that_completed_is_refused() -> None:
+    """IT WOULD OVERWRITE THE WORKBOOK THIS BUILD ALREADY OWNS."""
+    _mutate_on_disk(
+        "build", "test_9",
+        "            if ($state.State -eq 'completed') {",
+        "            if ($false) {")
+
+
+def test_105_dropping_the_fullname_verification_is_refused() -> None:
+    """WITHOUT IT, A SAVE THAT WROTE THE FILE BUT LEFT THE WORKBOOK ON THE SOURCE
+    READS AS COMPLETE - and every later step writes into the wrong workbook."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    $boundToTarget = ($seen -ne '') -and ($seen -eq (Get-StageBComparablePath $TargetPath))",
+        "    $boundToTarget = $true")
+
+
+def test_106_dropping_the_fileformat_verification_is_refused() -> None:
+    """A .xlsx SAVED UNDER AN .xlsm NAME HAS NO VBA PROJECT, and the import would
+    fail three steps later with nothing pointing back to here."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    } elseif ($boundToTarget -and ($format -eq $TargetFormat) -and $targetExists) {",
+        "    } elseif ($boundToTarget -and $targetExists) {")
+
+
+def test_107_dropping_the_target_existence_verification_is_refused() -> None:
+    """THE WORKBOOK CAN CLAIM A PATH IT NEVER WROTE."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    $targetExists  = [bool](Test-Path -LiteralPath $TargetPath)",
+        "    $targetExists  = $true")
+
+
+def test_108_removing_the_save_attempt_bound_is_refused() -> None:
+    """A BOUND THAT IS NEVER CONSULTED IS NOT A BOUND, and an unbounded SaveAs loop
+    on a Windows host holds an Excel process open and produces no transcript."""
+    _mutate_on_disk(
+        "build", "test_97",
+        "            if ($attempt -ge $MaxAttempts) { throw }",
+        "            if ($false) { throw }")
+
+
+def test_109_removing_the_save_wait_bound_is_refused() -> None:
+    """THE OTHER BOUND, TESTED SEPARATELY because a small attempt limit would
+    otherwise hide it."""
+    _mutate_on_disk(
+        "build", "test_97",
+        "            if (($waitedMs + $delay) -gt $TotalBudgetMs) { throw }",
+        "            if ($false) { throw }")
+
+
+def test_110_swallowing_an_exhausted_save_failure_is_refused() -> None:
+    """THE WORST OUTCOME AVAILABLE. A save that gave up and RETURNED would let the
+    module import run against a workbook that was never written."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    throw ('Invoke-StageBSaveAs: the save was never completed after ' +\n"
+        "           [string]$attempt + ' attempt(s).')",
+        "    return (New-StageBSaveAsResult -State ([pscustomobject]@{ State = 'completed'; "
+        "FullName = $TargetPath; FileFormat = $TargetFormat; Detail = 'assumed' }) "
+        "-Attempts $attempt -WaitedMs $waitedMs)")
+
+
+def test_111_routing_the_module_import_through_the_save_retry_is_refused() -> None:
+    """THE SETTLEMENT IS FOR ONE CALL. Import has no postcondition of this kind and
+    a reissued one leaves modConstants1 beside modConstants."""
+    _mutate_on_disk(
+        "build", "test_101",
+        "            $imported = $vbcomps.Import($file)",
+        "            $imported = Invoke-StageBSaveAs -Workbook $vbcomps -SourcePath $file `\n"
+        "                            -TargetPath $file -TargetFormat 52 -SourceFormat 51")
+
+
+def test_112_accepting_a_normal_return_without_verifying_it_is_refused() -> None:
+    """A COM METHOD THAT RETURNED IS NOT A SAVE THAT HAPPENED. This is the quiet
+    path, and it is the one a reader is most likely to trust."""
+    _mutate_on_disk(
+        "build", "test_89",
+        "        if ($state.State -ne 'completed') {\n"
+        "            throw ('SaveAs returned without error but its postconditions do not prove ' +\n"
+        "                   'the save: ' + $state.Detail)\n"
+        "        }",
+        "        if ($false) {\n"
+        "            throw ('SaveAs returned without error but its postconditions do not prove ' +\n"
+        "                   'the save: ' + $state.Detail)\n"
+        "        }")
+
+
+def test_113_a_blanket_sleep_outside_the_save_retry_is_refused() -> None:
+    """THE SLEEP IS GATED ON AN OBSERVATION. One anywhere else is the readiness gate
+    this batch is not authorised to add."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    Set-StageBBuildOp 'vbcomponents.import'",
+        "    Start-Sleep -Milliseconds 2000\n"
+        "    Set-StageBBuildOp 'vbcomponents.import'")
+
+
+def test_114_ungating_the_backoff_from_the_observation_is_refused() -> None:
+    """SLEEPING BEFORE THE STATE IS KNOWN turns the settlement back into a wait."""
+    _mutate_on_disk(
+        "build", "test_14",
+        "            Add-Note ('SAVEAS|attempt=' + [string]$attempt + '|rejected|' + $hres)\n"
+        "            # INSPECT BEFORE ANY SECOND CALL. This is the whole settlement.",
+        "            Add-Note ('SAVEAS|attempt=' + [string]$attempt + '|rejected|' + $hres)\n"
+        "            Start-Sleep -Milliseconds 50\n"
+        "            # INSPECT BEFORE ANY SECOND CALL. This is the whole settlement.")
+
+
+def test_115_cleaning_up_an_ambiguous_save_is_refused() -> None:
+    """NO SILENT CLEANUP THAT DESTROYS EVIDENCE. The half-written file is the only
+    record of what happened."""
+    _mutate_on_disk(
+        "build", "test_93",
+        "                throw ('SAVEAS AMBIGUOUS after ' + [string]$attempt + ' attempt(s): the ' +",
+        "                Remove-Item -LiteralPath $TargetPath -Force -ErrorAction SilentlyContinue\n"
+        "                throw ('SAVEAS AMBIGUOUS after ' + [string]$attempt + ' attempt(s): the ' +")
+
+
+def test_116_hard_coding_the_source_format_is_refused() -> None:
+    """'NOTHING MOVED' IS ONLY PROVABLE AGAINST WHAT THE WORKBOOK WAS. A literal 51
+    here is this script restating a contract it is supposed to read."""
+    _mutate_on_disk(
+        "build", "test_99",
+        "    } elseif ($boundToSource -and ($format -eq $SourceFormat) -and (-not $targetExists)) {",
+        "    } elseif ($boundToSource -and ($format -eq 51) -and (-not $targetExists)) {")
+
+
+def test_117_removing_the_pre_save_target_deletion_is_refused() -> None:
+    """IT IS WHAT MAKES THE OBSERVATION CONCLUSIVE. With a stale target left in
+    place, 'the file is there' stops meaning 'this call put it there'."""
+    _mutate_on_disk(
+        "build", "test_100",
+        "    if (Test-Path -LiteralPath $stageBPath) { Remove-Item -LiteralPath $stageBPath -Force }",
+        "    $null = 'the stale target is left alone'")
+
+
+def test_118_speculating_about_the_root_cause_in_the_record_is_refused() -> None:
+    """WE KNOW WHERE, NOT WHY. A record that names a cause nobody proved would send
+    the next batch after the wrong thing."""
+    _mutate_on_disk(
+        "evidence", "test_104",
+        "**We know WHERE the rejection occurs. We do not know WHY Excel rejects the\n"
+        "second-session `SaveAs`.**",
+        "**The cause is a lifecycle overlap between the two Excel sessions.**")
 
 
 if __name__ == "__main__":

@@ -44,6 +44,10 @@
       LEDGER|<case>|<ledger line>
       WRAP|<case>|<label at forward>|<attempts>|<lines>|<outcome>|<line>
       HOST|<property-get outcome>|<method-call outcome>
+      SAVE|<case>|<SaveAs calls>|<attempts>|<waited>|<format>|<outcome>|<state>
+      SAVENOTE|<case>|<diagnostic line>
+      SAVESTATE|<case>|<state>|<detail>
+      SAVEPATH|<case>|<are the two paths the same>
     Exit 0 always.
 #>
 param(
@@ -96,8 +100,15 @@ Invoke-Expression $vocabText
 $script:StageBBuildOp         = '<before the first labelled operation>'
 $script:StageBBuildRejections = New-Object System.Collections.ArrayList
 
-foreach ($name in @('Set-StageBBuildOp', 'Get-StageBBuildOp', 'Get-StageBBuildRejections',
-                    'Get-StageBComHResult', 'New-StageBRejectionLine', 'Invoke-StageBBuildRead')) {
+# Add-Note is lifted too, because the SaveAs settlement REPORTS through it and
+# the diagnostic lines are part of what has to be observed.
+$notes = New-Object System.Collections.ArrayList
+
+foreach ($name in @('Add-Note', 'Set-StageBBuildOp', 'Get-StageBBuildOp',
+                    'Get-StageBBuildRejections', 'Get-StageBComHResult',
+                    'New-StageBRejectionLine', 'Invoke-StageBBuildRead',
+                    'Get-StageBComparablePath', 'Get-StageBSaveAsPostcondition',
+                    'Invoke-StageBSaveAs', 'New-StageBSaveAsResult')) {
     $body = $null
     foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
         if ($fn.Name -eq $name) { $body = $fn.Extent.Text }
@@ -234,6 +245,135 @@ foreach ($c in @(
         Write-Output ('LEDGER|' + $c.case + '|' + $line)
     }
 }
+
+# ---------------------------------------------------------------------------
+# CS. SaveAs: SETTLED BY ITS POSTCONDITION
+# ---------------------------------------------------------------------------
+# WINDOWS NAMED saveas.xlsm AS THE REJECTED CALL, and SaveAs writes a file and
+# rebinds the workbook. 'The message filter says the call never ran' is a contract,
+# not an observation, so what is driven here is the OBSERVATION: three independent
+# facts, and every combination of them that is not all-source or all-target.
+#
+# The fake's SaveAs is a METHOD, so its exception really propagates, and it can
+# apply each partial side effect a real half-completed save could leave behind.
+Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+public class PccmFakeWorkbook {
+    // BOOLEANS, NOT NULLABLE STRINGS. PowerShell coerces $null to "" when it
+    // assigns to a string field, so a `!= null` guard here fired on an empty path
+    // and File.WriteAllText raised ArgumentException instead of the COMException
+    // the case was testing - a fake that failed for the wrong reason.
+    public static int    Calls      = 0;
+    public static int    Fails      = 0;
+    public static int    Code       = -2147418111;
+    public static bool   PlainError = false;
+    public static string Bound      = "";
+    public static string Target     = "";
+    public static int    Format     = 51;
+    public static bool   Rebind     = false;
+    public static int    SetFormat  = -1;
+    public static bool   MakeFile   = false;
+    public static bool   NullName   = false;
+    // A SaveAs that RETURNS and does nothing. Excel returning from a method is not
+    // the same as the save having happened, and nothing else here tests that.
+    public static bool   Silent     = false;
+    public object FullName   { get { if (NullName) return null; return Bound; } }
+    public object FileFormat { get { return Format; } }
+    public void SaveAs(object path, object format) {
+        Calls++;
+        if (Calls <= Fails) {
+            // Whatever partial state this case says a half-done save would leave.
+            if (Rebind)        Bound  = Target;
+            if (SetFormat >= 0) Format = SetFormat;
+            if (MakeFile)      File.WriteAllText(Target, "partial");
+            if (PlainError) throw new InvalidOperationException("Excel accepted this and it failed");
+            throw new COMException("Call was rejected by callee.", Code);
+        }
+        if (Silent) return;
+        Bound  = (string)path;
+        Format = Convert.ToInt32(format);
+        File.WriteAllText((string)path, "stage b");
+    }
+}
+'@
+
+$saveRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('pccm_saveas_' + [System.Guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $saveRoot -Force
+$srcPath = Join-Path $saveRoot 'PCCM_stageA.xlsx'
+$tgtPath = Join-Path $saveRoot 'PCCM_stageB.xlsm'
+Set-Content -LiteralPath $srcPath -Value 'stage a' -NoNewline
+
+$saveCases = @(
+    # name                fails code          plain    rebind   setfmt file     nullname att delay budget
+    @{ n='clean';         f=0;  c=-2147418111; p=$false; r=$false; sf=-1; cf=$false; nn=$false; a=12; d=1; b=15000; s=$false },
+    @{ n='silent-success'; f=0; c=-2147418111; p=$false; r=$false; sf=-1; cf=$false; nn=$false; a=12; d=1; b=15000; s=$true },
+    @{ n='not-executed';  f=1;  c=-2147418111; p=$false; r=$false; sf=-1; cf=$false; nn=$false; a=12; d=1; b=15000 ; s=$false },
+    @{ n='retrylater';    f=1;  c=-2147417846; p=$false; r=$false; sf=-1; cf=$false; nn=$false; a=12; d=1; b=15000 ; s=$false },
+    @{ n='completed';     f=1;  c=-2147418111; p=$false; r=$true;  sf=52; cf=$true;  nn=$false; a=12; d=1; b=15000 ; s=$false },
+    @{ n='amb-file-only'; f=99; c=-2147418111; p=$false; r=$false; sf=-1; cf=$true;  nn=$false; a=12; d=1; b=15000 ; s=$false },
+    @{ n='amb-path-only'; f=99; c=-2147418111; p=$false; r=$true;  sf=-1; cf=$false; nn=$false; a=12; d=1; b=15000 ; s=$false },
+    @{ n='amb-fmt-only';  f=99; c=-2147418111; p=$false; r=$false; sf=52; cf=$false; nn=$false; a=12; d=1; b=15000 ; s=$false },
+    @{ n='amb-path-file'; f=99; c=-2147418111; p=$false; r=$true;  sf=-1; cf=$true;  nn=$false; a=12; d=1; b=15000 ; s=$false },
+    @{ n='amb-path-fmt';  f=99; c=-2147418111; p=$false; r=$true;  sf=52; cf=$false; nn=$false; a=12; d=1; b=15000 ; s=$false },
+    @{ n='amb-null-name'; f=99; c=-2147418111; p=$false; r=$false; sf=-1; cf=$false; nn=$true;  a=12; d=1; b=15000 ; s=$false },
+    @{ n='accepted-err';  f=99; c=-2146827284; p=$false; r=$false; sf=-1; cf=$false; nn=$false; a=12; d=1; b=15000 ; s=$false },
+    @{ n='not-com-err';   f=99; c=0;           p=$true;  r=$false; sf=-1; cf=$false; nn=$false; a=12; d=1; b=15000 ; s=$false },
+    @{ n='attempt-bound'; f=99; c=-2147418111; p=$false; r=$false; sf=-1; cf=$false; nn=$false; a=3;  d=1; b=10000 ; s=$false },
+    @{ n='budget-bound';  f=99; c=-2147418111; p=$false; r=$false; sf=-1; cf=$false; nn=$false; a=50; d=2; b=5 ; s=$false }
+)
+foreach ($c in $saveCases) {
+    if (Test-Path -LiteralPath $tgtPath) { Remove-Item -LiteralPath $tgtPath -Force }
+    $notes.Clear()
+    $null = Set-StageBBuildOp 'saveas.xlsm'
+    [PccmFakeWorkbook]::Calls      = 0
+    [PccmFakeWorkbook]::Fails      = [int]$c.f
+    [PccmFakeWorkbook]::Code       = [int]$c.c
+    [PccmFakeWorkbook]::PlainError = [bool]$c.p
+    [PccmFakeWorkbook]::Bound      = $srcPath
+    [PccmFakeWorkbook]::Format     = 51
+    [PccmFakeWorkbook]::NullName   = [bool]$c.nn
+    [PccmFakeWorkbook]::Target     = $tgtPath
+    [PccmFakeWorkbook]::Rebind     = [bool]$c.r
+    [PccmFakeWorkbook]::SetFormat  = [int]$c.sf
+    [PccmFakeWorkbook]::MakeFile   = [bool]$c.cf
+    [PccmFakeWorkbook]::Silent     = [bool]$c.s
+    $fake = New-Object PccmFakeWorkbook
+
+    $outcome = 'returned'; $state = '<none>'; $attempts = -1; $waited = -1; $format = -1
+    try {
+        $result = Invoke-StageBSaveAs -Workbook $fake -SourcePath $srcPath -TargetPath $tgtPath `
+            -TargetFormat 52 -SourceFormat 51 `
+            -MaxAttempts ([int]$c.a) -FirstDelayMs ([int]$c.d) -MaxDelayMs ([int]$c.d) `
+            -TotalBudgetMs ([int]$c.b)
+        $state = [string]$result.State
+        $attempts = [int]$result.Attempts
+        $waited = [int]$result.WaitedMs
+        $format = [int]$result.FileFormat
+    } catch {
+        $outcome = 'RAISED'
+        $state = (Get-StageBComHResult $_)
+        if ($state -eq '') { $state = 'no-hresult' }
+    }
+    Write-Output ('SAVE|' + $c.n + '|' + [string][PccmFakeWorkbook]::Calls + '|' +
+                  [string]$attempts + '|' + [string]$waited + '|' + [string]$format + '|' +
+                  $outcome + '|' + $state)
+    foreach ($line in @($notes)) { Write-Output ('SAVENOTE|' + $c.n + '|' + $line) }
+}
+
+# A postcondition inspection that cannot read anything is AMBIGUOUS, not evidence.
+$unreadable = Get-StageBSaveAsPostcondition -Workbook $null -SourcePath $srcPath `
+    -TargetPath $tgtPath -TargetFormat 52 -SourceFormat 51
+Write-Output ('SAVESTATE|unreadable|' + $unreadable.State + '|' + $unreadable.Detail)
+
+# Separator and case differences are not a rebind.
+Write-Output ('SAVEPATH|same|' + [string]((Get-StageBComparablePath $tgtPath) -eq
+              (Get-StageBComparablePath ($tgtPath.Replace([System.IO.Path]::DirectorySeparatorChar, '/')))))
+Write-Output ('SAVEPATH|different|' + [string]((Get-StageBComparablePath $tgtPath) -eq
+              (Get-StageBComparablePath $srcPath)))
+
+Remove-Item -LiteralPath $saveRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---------------------------------------------------------------------------
 # D. THE WRAPPER'S OWN LOGIC, AGAINST A STUBBED HELPER

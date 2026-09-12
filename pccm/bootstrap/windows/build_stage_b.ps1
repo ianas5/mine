@@ -199,6 +199,214 @@ function Invoke-StageBBuildRead {
     return $record
 }
 
+# ===========================================================================
+# SaveAs: A NON-IDEMPOTENT CALL SETTLED BY ITS POSTCONDITION, NOT BY A CONTRACT
+# ===========================================================================
+# WINDOWS NAMED IT. The labelled build reported, repeatably:
+#
+#     [FAIL] Stage-B build
+#            operation=saveas.xlsm; System.Runtime.InteropServices.COMException:
+#            Call was rejected by callee. 0x80010001 RPC_E_CALL_REJECTED
+#     COMREJECT|build|none|attempts=0|waited=0
+#
+# The last line matters as much as the first: NO READ was reissued, so the read
+# retry had nothing to do with this. The rejection is in Workbook.SaveAs, before
+# the worksheets, the VBProject, the modules, the buttons, the protection and the
+# final save.
+#
+# AND THE OLD WORDING WILL NOT DO. 'the call was refused before it ran' is what
+# the message-filter contract says, and for a property get that is enough. SaveAs
+# WRITES A FILE AND REBINDS THE WORKBOOK. Reissuing one on the strength of a
+# contract is precisely the guess this project refuses, so the contract is not
+# used as the licence here at all: the licence is OBSERVED STATE.
+#
+# WHY THE OBSERVATION IS CONCLUSIVE HERE, AND WOULD NOT BE ANYWHERE. The build
+# DELETES the target immediately before the call, so at the moment SaveAs is
+# attempted the target provably does not exist and the workbook is provably bound
+# to the Stage-A path in the Stage-A format. Three independent facts therefore
+# separate the two outcomes, and they cannot be half-true together:
+#
+#   the workbook's FullName   - bound to the target, or still to the source
+#   the workbook's FileFormat - the target's 52, or the source's original
+#   the target file on disk   - present, or absent
+#
+# Anything other than all-three-target or all-three-source is AMBIGUOUS, and an
+# ambiguous save is not retried and not cleaned up: it aborts and says so, with
+# the evidence intact.
+#
+# WHY THIS IS NOT A GENERAL RETRY. It is one function, for one call, gated on one
+# observation. Nothing else in this bootstrap gains a mutation retry, and
+# Invoke-ComRetryRead is untouched - it still cannot express a write.
+
+# Excel answers with an absolute path in the host's own separator. The build's own
+# paths come through Join-Path from a caller-supplied BuildDir, so both sides are
+# normalised before they are compared; a case or separator difference is not a
+# rebind, and reading one as a rebind would manufacture an ambiguous state.
+function Get-StageBComparablePath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    $text = $Path
+    try {
+        $text = $text.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $text = [System.IO.Path]::GetFullPath($text)
+    } catch { $text = $Path }
+    return $text.TrimEnd([System.IO.Path]::DirectorySeparatorChar).ToLowerInvariant()
+}
+
+# READ-ONLY, AND IT DECIDES NOTHING BY ITSELF. It reports what is observable and
+# which of the three states that adds up to. Both COM reads go through the
+# accepted read-only helper, so a postcondition inspection that is itself refused
+# is reissued rather than being mistaken for a finding.
+function Get-StageBSaveAsPostcondition {
+    param($Workbook, [string]$SourcePath, [string]$TargetPath,
+          [int]$TargetFormat, [int]$SourceFormat)
+    $fullName  = ''
+    $format    = 0
+    $readError = ''
+    try {
+        $fullName = [string](Invoke-StageBBuildRead -Target $Workbook -Member 'FullName' `
+                        -Operation 'saveas.xlsm' `
+                        -Description 'the workbook FullName after SaveAs').Value
+        $format = [int](Invoke-StageBBuildRead -Target $Workbook -Member 'FileFormat' `
+                      -Operation 'saveas.xlsm' `
+                      -Description 'the workbook FileFormat after SaveAs').Value
+    } catch {
+        # A READ THAT COULD NOT BE ANSWERED IS NOT EVIDENCE OF ANYTHING. It makes
+        # the state ambiguous, which is the state that never retries.
+        $readError = Format-Err $_
+    }
+    $seen          = Get-StageBComparablePath $fullName
+    $boundToTarget = ($seen -ne '') -and ($seen -eq (Get-StageBComparablePath $TargetPath))
+    $boundToSource = ($seen -ne '') -and ($seen -eq (Get-StageBComparablePath $SourcePath))
+    $targetExists  = [bool](Test-Path -LiteralPath $TargetPath)
+    $sourceExists  = [bool](Test-Path -LiteralPath $SourcePath)
+
+    # THREE FACTS, ALL OF THEM, FOR EITHER ANSWER. Any single one of them on its
+    # own is exactly the partial evidence that must NOT settle this: a target that
+    # exists while the workbook is still bound to the source is a half-written
+    # file, not a completed save.
+    $state = 'ambiguous'
+    if ($readError -ne '') {
+        $state = 'ambiguous'
+    } elseif ($boundToTarget -and ($format -eq $TargetFormat) -and $targetExists) {
+        $state = 'completed'
+    } elseif ($boundToSource -and ($format -eq $SourceFormat) -and (-not $targetExists)) {
+        $state = 'not-executed'
+    }
+    return [pscustomobject]@{
+        State         = $state
+        FullName      = $fullName
+        FileFormat    = $format
+        BoundToTarget = $boundToTarget
+        BoundToSource = $boundToSource
+        TargetExists  = $targetExists
+        SourceExists  = $sourceExists
+        ReadError     = $readError
+        Detail        = ('boundToTarget=' + [string]$boundToTarget +
+                         '|boundToSource=' + [string]$boundToSource +
+                         '|format=' + [string]$format +
+                         '|targetExists=' + [string]$targetExists +
+                         '|sourceExists=' + [string]$sourceExists +
+                         '|readError=' + $(if ($readError -eq '') { 'none' } else { $readError }))
+    }
+}
+
+# THE ONLY MUTATION IN THIS BOOTSTRAP WITH A RECOVERY PATH, and the bounds are the
+# accepted envelope's rather than new numbers. Every reissue is gated on an
+# observation, so the sequence is: attempt, and on a REFUSED call inspect before
+# deciding - never inspect after deciding, and never decide without inspecting.
+function Invoke-StageBSaveAs {
+    param($Workbook, [string]$SourcePath, [string]$TargetPath,
+          [int]$TargetFormat, [int]$SourceFormat,
+          [int]$MaxAttempts   = 12,
+          [int]$FirstDelayMs  = 250,
+          [int]$MaxDelayMs    = 2000,
+          [int]$TotalBudgetMs = 15000)
+    if ($null -eq $Workbook) { throw 'Invoke-StageBSaveAs: no workbook.' }
+    if ($MaxAttempts -lt 1) { throw 'Invoke-StageBSaveAs: MaxAttempts must be at least 1.' }
+    if ($TotalBudgetMs -lt 0) { throw 'Invoke-StageBSaveAs: TotalBudgetMs may not be negative.' }
+
+    $attempt  = 0
+    $waitedMs = 0
+    $delay    = $FirstDelayMs
+
+    # THE BOUND IS IN THE HEAD, as it is in the read helper: a loop whose only
+    # exits are a break and a throw is bounded in fact and unbounded to a reader.
+    while ($attempt -lt $MaxAttempts) {
+        $attempt = $attempt + 1
+        $refused = ''
+        try {
+            $Workbook.SaveAs($TargetPath, $TargetFormat)
+        } catch {
+            $refused = Get-ComRejectionName $_
+            $hres = Get-StageBComHResult $_
+            if ($hres -eq '') { $hres = 'none' }
+            if ([string]::IsNullOrWhiteSpace($refused)) {
+                # EXCEL ACCEPTED THIS ONE AND IT FAILED. That describes something
+                # which actually happened, and nothing here may reissue it.
+                Add-Note ('SAVEAS|attempt=' + [string]$attempt + '|error|' + $hres)
+                throw
+            }
+            Add-Note ('SAVEAS|attempt=' + [string]$attempt + '|rejected|' + $hres)
+            # INSPECT BEFORE ANY SECOND CALL. This is the whole settlement.
+            $state = Get-StageBSaveAsPostcondition -Workbook $Workbook `
+                -SourcePath $SourcePath -TargetPath $TargetPath `
+                -TargetFormat $TargetFormat -SourceFormat $SourceFormat
+            Add-Note ('SAVEAS|postcondition|' + $state.State + '|' + $state.Detail)
+            if ($state.State -eq 'completed') {
+                # IT HAPPENED. Reissuing it now would overwrite the workbook this
+                # build already owns, so the exception is the news and the state
+                # is the answer.
+                Add-Note ('SAVEAS|attempt=' + [string]$attempt +
+                          '|completed-despite-rejection')
+                return (New-StageBSaveAsResult -State $state -Attempts $attempt -WaitedMs $waitedMs)
+            }
+            if ($state.State -ne 'not-executed') {
+                throw ('SAVEAS AMBIGUOUS after ' + [string]$attempt + ' attempt(s): the ' +
+                       'save can be proved neither to have happened nor to have been ' +
+                       'skipped, so it is not reissued and nothing is cleaned up. ' +
+                       $state.Detail)
+            }
+            if ($attempt -ge $MaxAttempts) { throw }
+            if (($waitedMs + $delay) -gt $TotalBudgetMs) { throw }
+            Start-Sleep -Milliseconds $delay
+            $waitedMs = $waitedMs + $delay
+            $delay = [Math]::Min(($delay + $FirstDelayMs), $MaxDelayMs)
+            continue
+        }
+        # THE CALL RETURNED, WHICH IS NOT THE SAME AS THE SAVE HAVING HAPPENED. The
+        # same three facts are required of a normal return as of a refused one.
+        $state = Get-StageBSaveAsPostcondition -Workbook $Workbook `
+            -SourcePath $SourcePath -TargetPath $TargetPath `
+            -TargetFormat $TargetFormat -SourceFormat $SourceFormat
+        Add-Note ('SAVEAS|attempt=' + [string]$attempt + '|success')
+        Add-Note ('SAVEAS|verified|path=' + [string]$state.BoundToTarget +
+                  '|format=' + [string]$state.FileFormat +
+                  '|exists=' + [string]$state.TargetExists)
+        if ($state.State -ne 'completed') {
+            throw ('SaveAs returned without error but its postconditions do not prove ' +
+                   'the save: ' + $state.Detail)
+        }
+        return (New-StageBSaveAsResult -State $state -Attempts $attempt -WaitedMs $waitedMs)
+    }
+    # UNREACHABLE WHILE EVERY PATH ABOVE RETURNS OR THROWS, and it still throws
+    # rather than letting a changed head bound turn 'never saved' into a save.
+    throw ('Invoke-StageBSaveAs: the save was never completed after ' +
+           [string]$attempt + ' attempt(s).')
+}
+
+function New-StageBSaveAsResult {
+    param($State, [int]$Attempts, [int]$WaitedMs)
+    return [pscustomobject]@{
+        State      = [string]$State.State
+        FullName   = [string]$State.FullName
+        FileFormat = [int]$State.FileFormat
+        Attempts   = $Attempts
+        WaitedMs   = $WaitedMs
+        Detail     = [string]$State.Detail
+    }
+}
+
 Write-Host ''
 Write-Host 'PCCM - Stage-B bootstrap (.xlsx -> .xlsm)' -ForegroundColor Cyan
 Write-Host '=========================================' -ForegroundColor Cyan
@@ -297,19 +505,22 @@ try {
 
     # --- 3. save as .xlsm --------------------------------------------------
     if (Test-Path -LiteralPath $stageBPath) { Remove-Item -LiteralPath $stageBPath -Force }
-    # THE SaveAs ITSELF IS NOT RETRIED and must not be. A SaveAs Excel may or may
-    # not have accepted is not something to reissue on a guess; if this is the
-    # refused call, the label above is what says so and the correction is a
-    # separate decision.
+    # THE SOURCE FORMAT IS READ FIRST, and it is not a detail. 'Nothing moved' can
+    # only be proved against what the workbook was BEFORE the call, and hard-coding
+    # the .xlsx format here would be this script restating a contract it is
+    # supposed to read.
     Set-StageBBuildOp 'saveas.xlsm'
-    $wb.SaveAs($stageBPath, [int]$manifest.xlsm_file_format)
-    $actualFormat = [int](Invoke-StageBBuildRead -Target $wb -Member 'FileFormat' `
+    $sourceFormat = [int](Invoke-StageBBuildRead -Target $wb -Member 'FileFormat' `
                               -Operation 'saveas.xlsm' `
-                              -Description 'the Stage-B workbook FileFormat').Value
+                              -Description 'the Stage-A workbook FileFormat before SaveAs').Value
+    $saveAs = Invoke-StageBSaveAs -Workbook $wb -SourcePath $stageAPath -TargetPath $stageBPath `
+                  -TargetFormat ([int]$manifest.xlsm_file_format) -SourceFormat $sourceFormat
+    $actualFormat = [int]$saveAs.FileFormat
     if ($actualFormat -ne [int]$manifest.xlsm_file_format) {
         throw ("SaveAs produced FileFormat {0}, expected {1}." -f $actualFormat, $manifest.xlsm_file_format)
     }
-    Add-Step 'Save as macro-enabled .xlsm' 'PASS' ("FileFormat={0}; {1}" -f $actualFormat, $stageBPath)
+    Add-Step 'Save as macro-enabled .xlsm' 'PASS' `
+        ("FileFormat={0}; attempt(s)={1}; waited={2} ms; {3}" -f $actualFormat, $saveAs.Attempts, $saveAs.WaitedMs, $stageBPath)
 
     # --- 4. CodeNames -------------------------------------------------------
     # THREE PLAIN PROPERTY GETS, AND THE REOPEN PATH ALREADY RETRIES ALL THREE.

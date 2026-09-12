@@ -76,9 +76,30 @@ DECLARED_BUILD_READS = {
     "VBComponents": "vbcomponents.acquire",
 }
 
+# Reads that exist ONLY to settle a refused SaveAs. They have no verification
+# precedent - the reopen block never reads FullName - and they do not need one:
+# they are pure property gets whose whole purpose is to observe whether a
+# non-idempotent call happened. Declared separately so the precedent rule that
+# governs the four build reads above is not quietly widened to mean anything.
+DECLARED_POSTCONDITION_READS = {
+    "FullName": "saveas.xlsm",
+    "FileFormat": "saveas.xlsm",
+}
+
+# The build-only functions that carry the SaveAs settlement. Named, so a retry
+# hidden in one of them is inside what the controls look at rather than above it.
+SAVEAS_HELPERS = (
+    "Get-StageBComparablePath",
+    "Get-StageBSaveAsPostcondition",
+    "Invoke-StageBSaveAs",
+    "New-StageBSaveAsResult",
+)
+
 # Every non-idempotent build mutation. A retry around any of these would be a
 # guess about whether Excel accepted it, which is the one thing the refusal
-# contract does not license.
+# contract does not license. SaveAs is the single DECLARED exception, and its
+# recovery is gated on an observation rather than on the refusal contract - see
+# test_86 onward.
 NEVER_RETRIED = (
     "Open", "SaveAs", "Save", "Import", "Remove", "AddFromString", "DeleteLines",
     "AddShape", "Protect", "Unprotect", "Delete", "Add", "Run", "Quit", "Close",
@@ -231,7 +252,8 @@ def _flow() -> dict:
             capture_output=True, text=True, timeout=300)
         assert done.returncode == 0, done.stdout + done.stderr
         rows: dict = {"ops": [], "label": {}, "hres": {}, "line": {}, "retry": {},
-                      "ledger": {}, "wrap": {}, "host": (), "unmet": []}
+                      "ledger": {}, "wrap": {}, "host": (), "unmet": [],
+                      "save": {}, "savenote": {}, "savestate": {}, "savepath": {}}
         for raw in done.stdout.splitlines():
             if raw.startswith(("PARSE|", "MISSING|")):
                 rows["unmet"].append(raw)
@@ -259,6 +281,23 @@ def _flow() -> dict:
             elif raw.startswith("HOST|"):
                 prop, method = raw[len("HOST|"):].split("|", 1)
                 rows["host"] = (prop, method)
+            elif raw.startswith("SAVE|"):
+                case, calls, attempts, waited, fmt, outcome, state = \
+                    raw[len("SAVE|"):].split("|", 6)
+                rows["save"][case] = {
+                    "calls": int(calls), "attempts": int(attempts),
+                    "waited": int(waited), "format": int(fmt),
+                    "outcome": outcome, "state": state,
+                }
+            elif raw.startswith("SAVENOTE|"):
+                case, line = raw[len("SAVENOTE|"):].split("|", 1)
+                rows["savenote"].setdefault(case, []).append(line)
+            elif raw.startswith("SAVESTATE|"):
+                case, state, detail = raw[len("SAVESTATE|"):].split("|", 2)
+                rows["savestate"][case] = (state, detail)
+            elif raw.startswith("SAVEPATH|"):
+                case, same = raw[len("SAVEPATH|"):].split("|", 1)
+                rows["savepath"][case] = (same == "True")
             elif raw.startswith("WRAP|"):
                 body = raw[len("WRAP|"):]
                 if body.startswith("forwarded-arguments|"):
@@ -393,7 +432,15 @@ def test_13_the_delay_is_capped_and_never_shrinks_the_way_out() -> None:
 
 def test_14_the_only_sleep_in_either_script_is_inside_the_bounded_retry() -> None:
     """NO BLIND SLEEP. The fix is not 'wait a bit and hope'; a Start-Sleep outside
-    the retry loop, or a fixed one before verification, is refused here."""
+    a bounded retry loop, or a fixed one before verification, is refused here.
+
+    DECLARED CHANGE. This used to read `"Start-Sleep" not in _build_code()`, and
+    that became false when Windows named SaveAs as the rejected call and the save
+    gained a bounded recovery. The rule is unchanged and is now stated where it
+    actually lives: EVERY sleep in either script is inside a bounded retry loop,
+    and the bootstrap's one sleep is additionally reachable only after a
+    postcondition inspection PROVED the save did not happen.
+    """
     lifecycle = _lifecycle_code()
     sleeps = [m.start() for m in re.finditer(r"Start-Sleep", lifecycle)]
     retry = _function("Invoke-ComRetryRead")
@@ -402,7 +449,15 @@ def test_14_the_only_sleep_in_either_script_is_inside_the_bounded_retry() -> Non
         window = lifecycle[max(0, at - 400) : at + 60]
         assert any(window in block or lifecycle[at : at + 40] in block
                    for block in (retry, wait_exit)), lifecycle[at - 200 : at + 60]
-    assert "Start-Sleep" not in _build_code(), "the bootstrap sleeps outside the retry"
+    code = _build_code()
+    saveas = _ps_function(code, "Invoke-StageBSaveAs")
+    build_sleeps = [m.start() for m in re.finditer(r"Start-Sleep", code)]
+    assert len(build_sleeps) == 1, f"the bootstrap sleeps in {len(build_sleeps)} places"
+    assert "Start-Sleep" in saveas, "the bootstrap's sleep is not in the SaveAs retry"
+    # AND IT IS GATED ON THE OBSERVATION, not merely on the refusal.
+    gate = saveas.index("if ($state.State -ne 'not-executed') {")
+    sleep_at = saveas.index("Start-Sleep")
+    assert gate < sleep_at, "the sleep is reached before the state is established"
 
 
 def test_14a_the_retry_loop_carries_its_bound_in_its_own_head() -> None:
@@ -578,18 +633,33 @@ def test_33_the_build_block_retries_only_its_declared_property_gets() -> None:
       * each declared read must carry the operation label its member belongs to;
       * NO write may be retried by ANY path - both helper names are checked.
     """
-    block = _joined(_build_block())
-    calls = re.findall(r"Invoke-(?:ComRetryRead|StageBBuildRead)\b[^\n]*", block)
+    # THE BLOCK AND THE BUILD-ONLY HELPERS, because a retry defined above the
+    # slice is still a retry the build performs. The previous form of this control
+    # missed exactly that, and the SaveAs settlement moved reads out of the block.
+    code = _build_code()
+    scope = _joined(_build_block()) + "\n" + "\n".join(
+        _joined(_ps_function(code, name)) for name in
+        (("Invoke-StageBBuildRead",) + SAVEAS_HELPERS))
+    block = scope
+    allowed = dict(DECLARED_BUILD_READS)
+    allowed.update(DECLARED_POSTCONDITION_READS)
+    # -Target IS ON EVERY CALL AND ON NO DEFINITION, so `function Invoke-...` and
+    # the param block are not mistaken for retried reads.
+    calls = [line for line in
+             re.findall(r"Invoke-(?:ComRetryRead|StageBBuildRead)\b[^\n]*", block)
+             if "-Target " in line]
     assert calls, "the build block retries nothing at all, so nothing is declared"
     for call in calls:
+        if "-Target $Target -Member $Member" in call:
+            continue  # the wrapper's own single forwarding line
         assert "Invoke-StageBBuildRead" in call, (
             f"the build block calls the general helper directly: {call}")
         member = re.search(r"-Member '(\w+)'", call)
         assert member, call
         name = member.group(1)
-        assert name in DECLARED_BUILD_READS, (
+        assert name in allowed, (
             f"{name} is retried in the build block but is not a declared read")
-        expected = DECLARED_BUILD_READS[name]
+        expected = allowed[name]
         assert f"-Operation '{expected}'" in call, (
             f"the {name} read does not carry the {expected} label: {call}")
         for banned in NEVER_RETRIED:
@@ -597,7 +667,7 @@ def test_33_the_build_block_retries_only_its_declared_property_gets() -> None:
     # EVERY DECLARED READ MUST ACTUALLY BE THERE. A declaration for a read that no
     # longer exists is a stale exemption, and it would let a later edit drop the
     # retry without a single control noticing.
-    for member, label in DECLARED_BUILD_READS.items():
+    for member, label in allowed.items():
         assert f"-Member '{member}'" in block, f"the declared read {member} is gone"
         assert f"-Operation '{label}'" in block, f"the declared label {label} is gone"
     # AND THE REOPEN PATH IS WHY EACH ONE IS ALLOWED. If verification stops
@@ -611,8 +681,12 @@ def test_33_the_build_block_retries_only_its_declared_property_gets() -> None:
 # The complete set of members the retry helper is allowed to name. Read-only,
 # every one of them, and NAMED -- a proximity check around the write call sites
 # lets a retried write slip past simply by sitting on its own line.
+# FullName was added when SaveAs gained a postcondition: proving whether a refused
+# save happened means asking the workbook which file it is now bound to. It is a
+# property get like every other name here, and it moves nothing.
 RETRYABLE_MEMBERS = {"FileFormat", "Worksheets", "VBProject", "VBComponents",
-                     "Count", "CodeName", "Shapes", "OnAction", "Name", "Item"}
+                     "Count", "CodeName", "Shapes", "OnAction", "Name", "Item",
+                     "FullName"}
 
 
 def test_34_opening_the_workbook_is_never_retried() -> None:
@@ -1020,14 +1094,24 @@ def test_72_the_accepted_helper_itself_was_not_broadened() -> None:
 
 
 def test_73_nothing_that_mutates_the_workbook_is_retried() -> None:
-    """REQUIRED CONTROL, NAMED PER OPERATION. SaveAs, the module import, the
-    ThisWorkbook write, the button creation, the protection call and the final
-    Save are each labelled so a refusal NAMES them - and none of them is inside a
-    retry. The label is the deliverable; reissuing them is a separate decision
-    nobody has taken."""
+    """REQUIRED CONTROL, NAMED PER OPERATION. The module import, the ThisWorkbook
+    write, the button creation, the protection call and the final Save are each
+    labelled so a refusal NAMES them - and none of them is inside a retry.
+
+    DECLARED EXCEPTION: SaveAs. Windows named it as the rejected call, and it now
+    has a recovery - but not on the strength of the refusal contract. Its call
+    moved into `Invoke-StageBSaveAs`, where every reissue is gated on an observed
+    postcondition, so the anchor here moved with it and the call is checked by
+    test_86 onward instead. The other five are still bare, and this proves it.
+    """
     joined = _joined(_build_block())
+    # THE SaveAs CALL IS NO LONGER IN THE BLOCK AT ALL, and that is the declaration:
+    # it is in one named function and nowhere else in the script.
+    code = _joined(_build_code())
+    assert "$wb.SaveAs(" not in joined, "the build block still calls SaveAs directly"
+    assert code.count(".SaveAs(") == 1, "SaveAs is called in more than one place"
+    assert ".SaveAs(" in _joined(_ps_function(_build_code(), "Invoke-StageBSaveAs"))
     mutations = {
-        "saveas.xlsm": "$wb.SaveAs($stageBPath",
         "vbcomponents.import": "$vbcomps.Import($file)",
         "thisworkbook.write": "$codeModule.AddFromString($docText)",
         "button.add": "$shapes.AddShape(5,",
@@ -1047,6 +1131,7 @@ def test_73_nothing_that_mutates_the_workbook_is_retried() -> None:
     # would name it only for whatever failed next.
     for label, call in mutations.items():
         assert joined.index(f"Set-StageBBuildOp '{label}'") < joined.index(call), label
+    assert joined.index("Set-StageBBuildOp 'saveas.xlsm'") < joined.index("Invoke-StageBSaveAs")
 
 
 def test_74_every_other_structural_mutation_is_also_left_alone() -> None:
@@ -1067,18 +1152,23 @@ def test_75_no_blanket_sleep_and_no_readiness_gate_was_added() -> None:
     inserted before the evidence exists could make the symptom disappear without
     ever proving its cause."""
     code = _build_code()
-    assert "Start-Sleep" not in code, "the bootstrap sleeps outside the retry"
+    # THE ONLY SLEEP IS THE POSTCONDITION-GATED SaveAs BACKOFF - see test_14, which
+    # states that rule where it lives. Nothing else may wait for anything.
+    outside = code.replace(_ps_function(code, "Invoke-StageBSaveAs"), "")
+    assert "Start-Sleep" not in outside, "the bootstrap sleeps outside the SaveAs retry"
     for banned in ("Wait-ExcelReady", "Test-ExcelReady", "Wait-WorkbookReady",
                    "readiness", "-Member 'Ready'", "Start-Process", "Get-Random"):
         assert banned not in code, f"a readiness mechanism appeared: {banned}"
     # THE STRUCTURAL CHECK, NOT A WORD LIST. A post-Open readiness poll would live
-    # between the Open and the SaveAs, and there is nothing between them.
+    # between the Open and the save, and there is nothing there but the source
+    # FileFormat read the NOT-EXECUTED proof needs.
     joined = _joined(_build_block())
     span = joined[joined.index("$wb = $workbooks.Open($stageAPath)")
-                  : joined.index("$wb.SaveAs($stageBPath")]
-    for banned in ("Invoke-ComRetryRead", "Invoke-StageBBuildRead", "Start-Sleep",
-                   "while", "do {", "for ("):
+                  : joined.index("$saveAs = Invoke-StageBSaveAs")]
+    for banned in ("Start-Sleep", "while", "do {", "for (", "-Member 'Worksheets'",
+                   "-Member 'VBProject'"):
         assert banned not in span, f"something was inserted after the Open: {span!r}"
+    assert span.count("Invoke-StageBBuildRead") == 1, span
 
 
 def test_76_no_inter_pass_drain_was_added_to_the_equivalence_gate() -> None:
@@ -1224,6 +1314,375 @@ def test_85_the_historical_runs_do_not_claim_an_exact_rejected_operation() -> No
     lowered = section.lower()
     assert "no comparison" in lowered or "no semantic comparison" in lowered
     assert "never began" in lowered or "never reached" in lowered
+
+
+# ===========================================================================
+# H. SaveAs: WINDOWS NAMED IT, AND ITS POSTCONDITION SETTLES IT
+# ===========================================================================
+# THE DIAGNOSTIC WORKED. The labelled build reported, repeatably:
+#
+#     [FAIL] Stage-B build
+#            operation=saveas.xlsm; ... 0x80010001 RPC_E_CALL_REJECTED
+#     COMREJECT|build|none|attempts=0|waited=0
+#
+# The second line matters as much as the first: no read was reissued, so the read
+# retry had nothing to do with this. SaveAs writes a file and rebinds the
+# workbook, so 'the message filter says the call never ran' is a CONTRACT and not
+# an observation - and these controls exist to keep the licence being the
+# observation.
+def test_86_the_save_is_one_dedicated_function_and_not_a_general_retry() -> None:
+    """REQUIRED CONTROL: SaveAs is the ONLY non-read operation with special
+    treatment, and the treatment lives in one named function that the accepted
+    read helper knows nothing about."""
+    code = _build_code()
+    saveas = _ps_function(code, "Invoke-StageBSaveAs")
+    # It does not use, wrap or re-implement the read helper's loop.
+    assert "Invoke-ComRetryRead" not in saveas, "the SaveAs retry goes through the read helper"
+    # The classifier IS shared, deliberately: a second copy of "which HRESULTs are
+    # refusals" is how two answers to one question appear.
+    assert "Get-ComRejectionName" in saveas
+    assert "$script:ComRetryableHResults" not in code, "the HRESULT table was copied"
+    # And no OTHER mutation gained a function like this one.
+    for banned in ("Invoke-StageBImport", "Invoke-StageBSave ", "Invoke-StageBProtect",
+                   "Invoke-StageBAddShape", "Invoke-StageBAddFromString"):
+        assert f"function {banned}" not in code, f"{banned} exists"
+
+
+def test_87_the_accepted_read_helper_is_still_byte_identical() -> None:
+    """REQUIRED CONTROL. The SaveAs settlement may not have reached into the read
+    retry on its way past."""
+    assert _lifecycle() == _at("3d34b26", "pccm/bootstrap/windows/com_lifecycle.ps1")
+
+
+def test_88_only_the_two_rpc_rejections_can_lead_to_a_reissued_save() -> None:
+    """EXECUTED. An HRESULT Excel returned from a call it ACCEPTED, and an error
+    that is not a COM failure at all, are rethrown after exactly ONE SaveAs - and
+    no postcondition is even inspected, because there is nothing to decide."""
+    flow = _flow()
+    assert not flow["unmet"], flow["unmet"]
+    for case, expected in (("accepted-err", "0x800a03ec"), ("not-com-err", "no-hresult")):
+        row = flow["save"][case]
+        assert row["outcome"] == "RAISED", (case, row)
+        assert row["calls"] == 1, f"{case} reissued SaveAs {row['calls']} times"
+        assert row["state"] == expected, (case, row["state"])
+        notes = flow["savenote"][case]
+        assert any(line.startswith("SAVEAS|attempt=1|error|") for line in notes), notes
+        assert not any("postcondition" in line for line in notes), (
+            f"{case} inspected a postcondition for a call Excel accepted")
+    # And both refusals DO reach the settlement.
+    for case, code in (("not-executed", "0x80010001"), ("retrylater", "0x8001010a")):
+        notes = flow["savenote"][case]
+        assert f"SAVEAS|attempt=1|rejected|{code}" in notes, notes
+
+
+def test_89_a_clean_save_is_still_verified_before_anything_is_built_on_it() -> None:
+    """REQUIRED CONTROL, EXECUTED. A COM method that returned is not a save that
+    happened. All three facts are checked even on the quiet path."""
+    flow = _flow()
+    row = flow["save"]["clean"]
+    assert (row["calls"], row["attempts"], row["waited"]) == (1, 1, 0), row
+    assert row["state"] == "completed" and row["format"] == 52, row
+    notes = flow["savenote"]["clean"]
+    assert "SAVEAS|attempt=1|success" in notes, notes
+    assert "SAVEAS|verified|path=True|format=52|exists=True" in notes, notes
+    # EXECUTED, AND THIS IS THE CASE THE MUTATION BATTERY EXPOSED AS UNTESTED. A
+    # SaveAs that RETURNS and does nothing must FAIL. Asserting only that the
+    # refusal's sentence is present let an `if ($false)` in front of it survive.
+    silent = flow["save"]["silent-success"]
+    assert silent["outcome"] == "RAISED", f"a save that did nothing was accepted: {silent}"
+    assert silent["calls"] == 1, silent
+    notes = flow["savenote"]["silent-success"]
+    assert "SAVEAS|attempt=1|success" in notes, notes
+    assert "SAVEAS|verified|path=False|format=51|exists=False" in notes, notes
+    saveas = _ps_function(_build_code(), "Invoke-StageBSaveAs")
+    assert "returned without error but its postconditions do not prove" in saveas
+    assert "if ($state.State -ne 'completed') {" in saveas
+
+
+def test_90_the_three_authoritative_facts_are_all_three_required() -> None:
+    """THE CONDITION, NOT THE COMMENT. COMPLETED needs the workbook bound to the
+    target AND the target format AND the file present; NOT EXECUTED needs the
+    source on all three."""
+    checker = _ps_function(_build_code(), "Get-StageBSaveAsPostcondition")
+    assert "$boundToTarget -and ($format -eq $TargetFormat) -and $targetExists" in checker
+    assert "$boundToSource -and ($format -eq $SourceFormat) -and (-not $targetExists)" in checker
+    assert "$state = 'ambiguous'" in checker, "ambiguous is not the default"
+    # The default must be set BEFORE the two positive tests, so an unmatched state
+    # falls to ambiguous rather than to whatever was there last.
+    assert checker.index("$state = 'ambiguous'") < checker.index("$state = 'completed'")
+    # AND THE READS ARE READS. Nothing in the checker writes.
+    for banned in (".SaveAs(", ".Save()", "Remove-Item", "Set-Content", "New-Item",
+                   ".Delete(", "= $TargetPath", "Move-Item", "Copy-Item"):
+        assert banned not in checker, f"the postcondition checker mutates: {banned}"
+
+
+def test_91_a_completed_save_is_never_reissued() -> None:
+    """EXECUTED, AND THE MOST DANGEROUS CASE. A SaveAs that completed and then
+    reported a rejection must be ACCEPTED: reissuing it would overwrite the
+    workbook this build already owns."""
+    flow = _flow()
+    row = flow["save"]["completed"]
+    assert row["calls"] == 1, f"a completed save was reissued ({row['calls']} calls)"
+    assert row["outcome"] == "returned" and row["state"] == "completed", row
+    notes = flow["savenote"]["completed"]
+    assert "SAVEAS|postcondition|completed|" in "|".join(notes) or any(
+        line.startswith("SAVEAS|postcondition|completed") for line in notes), notes
+    assert any("completed-despite-rejection" in line for line in notes), notes
+
+
+def test_92_a_save_proved_not_to_have_happened_may_be_reissued_once_more() -> None:
+    """EXECUTED. This is the only state that permits a second SaveAs, and the
+    second one is what makes the run recoverable rather than merely diagnosed."""
+    flow = _flow()
+    for case, code in (("not-executed", "0x80010001"), ("retrylater", "0x8001010a")):
+        row = flow["save"][case]
+        assert row["calls"] == 2, (case, row)
+        assert row["attempts"] == 2 and row["state"] == "completed", (case, row)
+        assert row["waited"] > 0, f"{case} did not back off at all"
+        notes = flow["savenote"][case]
+        assert any(line.startswith("SAVEAS|postcondition|not-executed") for line in notes), notes
+        assert "SAVEAS|attempt=2|success" in notes, notes
+
+
+def test_93_an_ambiguous_save_is_never_reissued_and_never_cleaned_up() -> None:
+    """EXECUTED, FIVE PARTIAL STATES. Target present but still bound to the source;
+    rebound with no file; the format moved and nothing else; rebound with a file
+    but the wrong format; rebound and reformatted with no file. Each is exactly
+    ONE SaveAs and an abort - and the evidence is left where it is."""
+    flow = _flow()
+    for case in ("amb-file-only", "amb-path-only", "amb-fmt-only",
+                 "amb-path-file", "amb-path-fmt"):
+        row = flow["save"][case]
+        assert row["outcome"] == "RAISED", (case, row)
+        assert row["calls"] == 1, f"{case} reissued an ambiguous save ({row['calls']})"
+        notes = flow["savenote"][case]
+        assert any(line.startswith("SAVEAS|postcondition|ambiguous") for line in notes), notes
+    # NOTHING IS DELETED OR MOVED to tidy an ambiguous save away.
+    saveas = _ps_function(_build_code(), "Invoke-StageBSaveAs")
+    for banned in ("Remove-Item", "Move-Item", "Copy-Item", ".Delete(", "Clear-Content"):
+        assert banned not in saveas, f"an ambiguous save is cleaned up: {banned}"
+    assert "nothing is cleaned up" in saveas
+
+
+def test_94_no_single_fact_is_enough_on_its_own() -> None:
+    """REQUIRED CONTROLS 12-14, EXECUTED AS THREE SEPARATE CASES. The file
+    existing, the path having changed, and the format having changed are each, on
+    their own, AMBIGUOUS - because each is what a half-completed save looks like."""
+    flow = _flow()
+    detail = {case: "|".join(flow["savenote"][case]) for case in
+              ("amb-file-only", "amb-path-only", "amb-fmt-only")}
+    # target exists, nothing else moved
+    assert "targetExists=True" in detail["amb-file-only"]
+    assert "boundToSource=True" in detail["amb-file-only"]
+    assert flow["save"]["amb-file-only"]["outcome"] == "RAISED"
+    # rebound, but no file and the old format
+    assert "boundToTarget=True" in detail["amb-path-only"]
+    assert "targetExists=False" in detail["amb-path-only"]
+    assert flow["save"]["amb-path-only"]["outcome"] == "RAISED"
+    # the format moved and nothing else
+    assert "format=52" in detail["amb-fmt-only"]
+    assert "boundToTarget=False" in detail["amb-fmt-only"]
+    assert flow["save"]["amb-fmt-only"]["outcome"] == "RAISED"
+
+
+def test_95_an_unreadable_postcondition_is_ambiguous_and_not_evidence() -> None:
+    """EXECUTED. If the inspection itself cannot be answered, that is not proof of
+    anything - least of all that the save did not happen."""
+    flow = _flow()
+    state, detail = flow["savestate"]["unreadable"]
+    assert state == "ambiguous", (state, detail)
+    assert "readError=" in detail and "readError=none" not in detail
+    # A workbook that answers a read with NOTHING is the same finding.
+    row = flow["save"]["amb-null-name"]
+    assert row["outcome"] == "RAISED" and row["calls"] == 1, row
+    assert any(line.startswith("SAVEAS|postcondition|ambiguous")
+               for line in flow["savenote"]["amb-null-name"])
+
+
+def test_96_the_inspection_always_precedes_the_next_save() -> None:
+    """REQUIRED CONTROL 8. In source: on a refused call the postcondition is read
+    BEFORE any decision, and every path out of that catch either returns, throws,
+    or falls through to the bounded backoff."""
+    saveas = _ps_function(_build_code(), "Invoke-StageBSaveAs")
+    rejected = saveas.index("Add-Note ('SAVEAS|attempt=' + [string]$attempt + '|rejected|'")
+    inspect = saveas.index("$state = Get-StageBSaveAsPostcondition", rejected)
+    completed = saveas.index("if ($state.State -eq 'completed') {", inspect)
+    notexec = saveas.index("if ($state.State -ne 'not-executed') {", inspect)
+    sleep_at = saveas.index("Start-Sleep", inspect)
+    assert rejected < inspect < completed < notexec < sleep_at, "the order is wrong"
+    # The second SaveAs is only reachable after that sequence.
+    assert saveas.count(".SaveAs(") == 1, "there is more than one SaveAs statement"
+    assert saveas.index(".SaveAs(") < inspect
+
+
+def test_97_both_bounds_hold_on_the_save_as_well() -> None:
+    """EXECUTED, AND SEPARATELY. Three attempts allowed means three SaveAs calls;
+    a five-millisecond budget ends it well before fifty. And the ORIGINAL rejection
+    is what escapes - not a substitute."""
+    flow = _flow()
+    attempt_bound = flow["save"]["attempt-bound"]
+    assert attempt_bound["calls"] == 3, attempt_bound
+    assert attempt_bound["outcome"] == "RAISED"
+    assert attempt_bound["state"] == "0x80010001", attempt_bound
+    budget = flow["save"]["budget-bound"]
+    assert budget["calls"] < 50, budget
+    assert budget["outcome"] == "RAISED" and budget["state"] == "0x80010001", budget
+    # The bound is in the loop head, as it is in the read helper.
+    saveas = _ps_function(_build_code(), "Invoke-StageBSaveAs")
+    heads = re.findall(r"while\s*\(([^)]*)\)\s*\{", saveas)
+    assert heads and all("-lt " in head for head in heads), heads
+    assert "while ($true)" not in saveas and "do {" not in saveas
+    assert "if ($attempt -ge $MaxAttempts) { throw }" in saveas
+    assert "if (($waitedMs + $delay) -gt $TotalBudgetMs) { throw }" in saveas
+    assert "$waitedMs = $waitedMs + $delay" in saveas
+    # A LOOP THAT ENDED WITHOUT SAVING NEVER RETURNS A SAVE. The head bound creates
+    # a way out that no path currently takes, so it gets the same guard the read
+    # helper's does - and the mutation battery proved this was missing.
+    guard = saveas.index("throw ('Invoke-StageBSaveAs: the save was never completed after '")
+    assert saveas.rindex("New-StageBSaveAsResult") < guard, \
+        "a result can be returned after the loop ended without a save"
+
+
+def test_98_a_path_is_compared_as_a_path_and_not_as_a_string() -> None:
+    """EXECUTED. A separator or case difference is not a rebind, and reading one as
+    a rebind would manufacture an ambiguous state out of nothing."""
+    flow = _flow()
+    assert flow["savepath"]["same"] is True, "the same path compared unequal"
+    assert flow["savepath"]["different"] is False, "two different paths compared equal"
+    norm = _ps_function(_build_code(), "Get-StageBComparablePath")
+    assert "GetFullPath" in norm and "ToLowerInvariant" in norm
+    assert "DirectorySeparatorChar" in norm
+
+
+def test_99_the_source_format_is_read_before_the_save_and_not_assumed() -> None:
+    """'NOTHING MOVED' IS ONLY PROVABLE AGAINST WHAT THE WORKBOOK WAS. The .xlsx
+    format is not restated here; it is read, and it is read BEFORE the call."""
+    joined = _joined(_build_block())
+    assert "-Description 'the Stage-A workbook FileFormat before SaveAs'" in joined
+    read_at = joined.index("$sourceFormat = [int](Invoke-StageBBuildRead")
+    call_at = joined.index("$saveAs = Invoke-StageBSaveAs")
+    assert read_at < call_at, "the source format is read after the save"
+    assert "-SourceFormat $sourceFormat" in joined
+    # AND THE TARGET FORMAT STILL COMES FROM THE MANIFEST.
+    assert "-TargetFormat ([int]$manifest.xlsm_file_format)" in joined
+    assert "51" not in _ps_function(_build_code(), "Get-StageBSaveAsPostcondition"), \
+        "the source format is hard-coded in the checker"
+    assert _manifest()["xlsm_file_format"] == 52
+
+
+def test_100_the_build_still_deletes_the_target_before_saving() -> None:
+    """THIS IS WHAT MAKES THE OBSERVATION CONCLUSIVE. Because the target provably
+    does not exist when SaveAs is attempted, 'the file is there' afterwards means
+    this call put it there. Leave that deletion alone and the whole settlement
+    weakens to a guess."""
+    joined = _joined(_build_block())
+    delete_at = joined.index("Remove-Item -LiteralPath $stageBPath -Force")
+    call_at = joined.index("$saveAs = Invoke-StageBSaveAs")
+    assert delete_at < call_at, "the stale target is removed after the save"
+    assert "if (Test-Path -LiteralPath $stageBPath) { Remove-Item" in joined
+
+
+def test_101_the_five_other_mutations_still_have_no_recovery_path() -> None:
+    """REQUIRED CONTROLS 20-24. The import, the document module, the buttons, the
+    protection and the final Save are untouched by this batch: no retry, no
+    postcondition, no second attempt."""
+    code = _joined(_build_code())
+    for call in ("$vbcomps.Import($file)", "$codeModule.AddFromString($docText)",
+                 "$shapes.AddShape(5,", "$pws.Protect([Type]::Missing", "$wb.Save()"):
+        assert call in code, f"the call site is gone: {call}"
+        assert code.count(call) == 1, f"{call} appears more than once"
+        for line in code.splitlines():
+            if call in line:
+                for banned in ("Invoke-ComRetryRead", "Invoke-StageBBuildRead",
+                               "Invoke-StageBSaveAs", "Postcondition"):
+                    assert banned not in line, line
+    # And none of them sits inside a loop that could reissue it.
+    saveas = _ps_function(_build_code(), "Invoke-StageBSaveAs")
+    for call in ("Import(", "AddFromString(", "AddShape(", ".Protect(", "$wb.Save()"):
+        assert call not in saveas, f"{call} was pulled into the SaveAs retry"
+
+
+def test_102_the_gate_still_refuses_a_half_built_workbook() -> None:
+    """REQUIRED CONTROL 25, AND MORE IMPORTANT NOW THAN WHEN IT WAS ADDED. An
+    ambiguous save can leave a target file on disk while Stage-B exits nonzero, and
+    target-file existence must never read as a successful bootstrap."""
+    pass_fn = _ps_function(_gate(), "Invoke-EquivalencePass")
+    assert "$bootstrapExit = $LASTEXITCODE" in pass_fn
+    assert pass_fn.index("if ($bootstrapExit -ne 0) {") < \
+        pass_fn.index("if (-not (Test-Path -LiteralPath $stageB)) {")
+    assert "half-built" in pass_fn
+    assert "BOOTSTRAP:" in pass_fn
+    # The bootstrap really does exit nonzero on a build failure.
+    code = _build_code()
+    assert "Add-Step 'Stage-B build' 'FAIL'" in code
+    assert "if ($Status -eq 'FAIL') { $null = $failures.Add($Name) }" in code
+    assert "if ($failures.Count -eq 0) {" in code and "exit 1" in code
+
+
+def test_103_the_freezes_this_batch_may_not_touch() -> None:
+    """REQUIRED CONTROLS 26-29. Production VBA, the benchmark runner, the
+    reserved-row correction and the equivalence snapshot are all byte-identical to
+    the Windows-tested revision."""
+    done = subprocess.run(["git", "diff", "--name-only", "3d34b26", "--", "pccm/src/vba"],
+                          cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
+    assert done.stdout.strip() == "", done.stdout
+    assert BENCHMARK_PS1.read_text(encoding="utf-8") == \
+        _at("3d34b26", "pccm/bootstrap/windows/phase10_benchmark.ps1"), \
+        "the benchmark runner changed"
+    for name in ("Set-BenchmarkRegisterRowCount", "New-BenchmarkRegisterBlock",
+                 "Get-BenchmarkPermanentId", "Set-BenchmarkBulkFixture"):
+        now = _ps_function(BENCHMARK_PS1.read_text(encoding="utf-8"), name)
+        then = _ps_function(_at("3d34b26", "pccm/bootstrap/windows/phase10_benchmark.ps1"), name)
+        assert now == then, f"{name} changed"
+    assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
+        _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
+                     "Get-EquivalenceSnapshot"), "Get-EquivalenceSnapshot moved"
+
+
+def test_104_the_diagnostic_no_longer_asserts_a_contract_as_a_fact() -> None:
+    """THE CORRECTED WORDING. 'The call was refused before it ran' is what the
+    message-filter contract says. For a property get that is the whole answer; for
+    SaveAs it is not, and the record now says which kind of claim it is."""
+    code = _build_code()
+    line = _ps_function(code, "New-StageBRejectionLine")
+    assert "refused before it ran" in line, "the read-side wording disappeared entirely"
+    # THE QUALIFICATION IS IN THE SOURCE where the distinction lives.
+    # RAW SOURCE, not the comment-stripped view: the distinction between a
+    # contract and an observation is exactly the thing that has to be written down
+    # for the next person, and _build_code() blanks comments by design.
+    raw = _build()
+    header = raw[raw.index("# SaveAs: A NON-IDEMPOTENT CALL")
+                 : raw.index("function Get-StageBComparablePath")]
+    assert "contract" in header.lower(), header[-800:]
+    assert "OBSERVED STATE" in header or "observation" in header.lower()
+    assert "non-idempotent" in header.lower()
+    # And the evidence record carries the correction.
+    text = _evidence()
+    at = text.index("## The diagnostic run that named the rejected call")
+    after = text.find("\n## ", at + 10)
+    section = text[at:] if after == -1 else text[at:after]
+    assert "saveas.xlsm" in section
+    assert "COMREJECT|build|none|attempts=0|waited=0" in section
+    assert "not sufficient proof" in section or "is not proof" in section
+    assert "non-idempotent" in section
+    # THE PROPERTY IS "NOT ASSERTED", NOT "NOT MENTIONED". The record has to name
+    # the speculations it is refusing, or a later reader cannot tell a considered
+    # refusal from an omission - so the ban applies to everything BEFORE the
+    # disclaimer, and the disclaimer itself must name them.
+    marker = "### What is still NOT known, and is not claimed"
+    assert marker in section, section[-600:]
+    asserted, disclaimed = section.split(marker, 1)
+    for overclaim in ("lifecycle overlap", "readiness race", "OneDrive",
+                      "file locking", "modal state", "message-filter timing"):
+        assert overclaim.lower() not in asserted.lower(), \
+            f"the record speculates beyond the evidence: {overclaim}"
+        assert overclaim.lower() in disclaimed.lower(), \
+            f"the record does not say {overclaim} is unproved"
+    assert "do not know WHY" in disclaimed or "not know why" in disclaimed.lower()
+    assert "not root cause" in disclaimed.lower() or "not speculative root cause" in disclaimed.lower()
+    assert "INVALID / NOT EVALUATED" in section
+    assert "must not be read as a fixture DIFFER" in section
+    assert "why" in section.lower()
 
 
 if __name__ == "__main__":
